@@ -58,7 +58,7 @@ declare global {
 export function setupTestApi(
   panelOrchestrator: PanelOrchestrator,
   panelRegistry: PanelRegistry,
-  panelView: PanelView | null,
+  panelView: PanelView | null
 ): void {
   if (process.env["NATSTACK_TEST_MODE"] !== "1") {
     return;

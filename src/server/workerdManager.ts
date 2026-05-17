@@ -26,10 +26,7 @@ import {
   getPhysicalPathForAsarPath,
   getPlatformPackageBinaryPath,
 } from "@natstack/shared/runtimePaths";
-import {
-  getInternalDOBundle,
-  isInternalDOSource,
-} from "./internalDOs/internalDoLoader.js";
+import { getInternalDOBundle, isInternalDOSource } from "./internalDOs/internalDoLoader.js";
 
 const log = createDevLogger("WorkerdManager");
 declare const __filename: string | undefined;
@@ -39,7 +36,7 @@ declare const __filename: string | undefined;
 // CJS provides it natively. Avoid spelling import.meta here: esbuild warns
 // whenever import.meta appears in CJS output, even behind typeof guards.
 const requireFromUrl: string =
-  (typeof __filename !== "undefined" && __filename)
+  typeof __filename !== "undefined" && __filename
     ? pathToFileURL(__filename).href
     : pathToFileURL(process.cwd() + "/").href;
 
@@ -159,7 +156,10 @@ export class WorkerdManager {
 
   // DO support: shared services (one per source)
   /** Shared DO services — keyed by `${source}:${className}`. Source-scoped: two workers CAN have same className if different source. */
-  private doServices = new Map<string, { buildKey: string; className: string; serviceName: string; source: string }>();
+  private doServices = new Map<
+    string,
+    { buildKey: string; className: string; serviceName: string; source: string }
+  >();
   /** Session ID — generated once per WorkerdManager lifetime, used for restart detection in bootstrap. */
   private sessionId = crypto.randomUUID();
   private dispatchSecret = crypto.randomBytes(32).toString("base64url");
@@ -193,7 +193,7 @@ export class WorkerdManager {
       const packagedCandidate = getPlatformPackageBinaryPath(
         appRoot,
         platformPackage,
-        `workerd${maybeExeExtension}`,
+        `workerd${maybeExeExtension}`
       );
       if (fs.existsSync(packagedCandidate)) {
         this.workerdBinary = packagedCandidate;
@@ -216,16 +216,96 @@ export class WorkerdManager {
     // binary with execFileSync(), which leaves the actual child process outside
     // our process tree and breaks restart/shutdown determinism.
     const candidates = [
-      path.join(process.cwd(), "node_modules", "@cloudflare", "workerd-linux-64", "bin", `workerd${maybeExeExtension}`),
-      path.join(process.cwd(), "node_modules", "@cloudflare", "workerd-linux-arm64", "bin", `workerd${maybeExeExtension}`),
-      path.join(process.cwd(), "node_modules", "@cloudflare", "workerd-darwin-64", "bin", `workerd${maybeExeExtension}`),
-      path.join(process.cwd(), "node_modules", "@cloudflare", "workerd-darwin-arm64", "bin", `workerd${maybeExeExtension}`),
-      path.join(process.cwd(), "node_modules", "@cloudflare", "workerd-windows-64", "bin", `workerd${maybeExeExtension}`),
-      path.join(__dirname, "..", "..", "node_modules", "@cloudflare", "workerd-linux-64", "bin", `workerd${maybeExeExtension}`),
-      path.join(__dirname, "..", "..", "node_modules", "@cloudflare", "workerd-linux-arm64", "bin", `workerd${maybeExeExtension}`),
-      path.join(__dirname, "..", "..", "node_modules", "@cloudflare", "workerd-darwin-64", "bin", `workerd${maybeExeExtension}`),
-      path.join(__dirname, "..", "..", "node_modules", "@cloudflare", "workerd-darwin-arm64", "bin", `workerd${maybeExeExtension}`),
-      path.join(__dirname, "..", "..", "node_modules", "@cloudflare", "workerd-windows-64", "bin", `workerd${maybeExeExtension}`),
+      path.join(
+        process.cwd(),
+        "node_modules",
+        "@cloudflare",
+        "workerd-linux-64",
+        "bin",
+        `workerd${maybeExeExtension}`
+      ),
+      path.join(
+        process.cwd(),
+        "node_modules",
+        "@cloudflare",
+        "workerd-linux-arm64",
+        "bin",
+        `workerd${maybeExeExtension}`
+      ),
+      path.join(
+        process.cwd(),
+        "node_modules",
+        "@cloudflare",
+        "workerd-darwin-64",
+        "bin",
+        `workerd${maybeExeExtension}`
+      ),
+      path.join(
+        process.cwd(),
+        "node_modules",
+        "@cloudflare",
+        "workerd-darwin-arm64",
+        "bin",
+        `workerd${maybeExeExtension}`
+      ),
+      path.join(
+        process.cwd(),
+        "node_modules",
+        "@cloudflare",
+        "workerd-windows-64",
+        "bin",
+        `workerd${maybeExeExtension}`
+      ),
+      path.join(
+        __dirname,
+        "..",
+        "..",
+        "node_modules",
+        "@cloudflare",
+        "workerd-linux-64",
+        "bin",
+        `workerd${maybeExeExtension}`
+      ),
+      path.join(
+        __dirname,
+        "..",
+        "..",
+        "node_modules",
+        "@cloudflare",
+        "workerd-linux-arm64",
+        "bin",
+        `workerd${maybeExeExtension}`
+      ),
+      path.join(
+        __dirname,
+        "..",
+        "..",
+        "node_modules",
+        "@cloudflare",
+        "workerd-darwin-64",
+        "bin",
+        `workerd${maybeExeExtension}`
+      ),
+      path.join(
+        __dirname,
+        "..",
+        "..",
+        "node_modules",
+        "@cloudflare",
+        "workerd-darwin-arm64",
+        "bin",
+        `workerd${maybeExeExtension}`
+      ),
+      path.join(
+        __dirname,
+        "..",
+        "..",
+        "node_modules",
+        "@cloudflare",
+        "workerd-windows-64",
+        "bin",
+        `workerd${maybeExeExtension}`
+      ),
     ];
 
     for (const candidate of candidates) {
@@ -309,11 +389,7 @@ export class WorkerdManager {
         if (name === canonical) {
           const routes = this.deps.getManifestRoutes(options.source);
           if (routes.length > 0) {
-            this.deps.routeRegistry.registerWorkerRoutes(
-              options.source,
-              name,
-              routes,
-            );
+            this.deps.routeRegistry.registerWorkerRoutes(options.source, name, routes);
           }
         }
       }
@@ -364,7 +440,10 @@ export class WorkerdManager {
     log.info(`Worker instance "${name}" destroyed`);
   }
 
-  async updateInstance(name: string, updates: Partial<WorkerCreateOptions>): Promise<WorkerInstance> {
+  async updateInstance(
+    name: string,
+    updates: Partial<WorkerCreateOptions>
+  ): Promise<WorkerInstance> {
     const instance = this.instances.get(name);
     if (!instance) {
       throw new Error(`Worker instance "${name}" not found`);
@@ -405,7 +484,10 @@ export class WorkerdManager {
     return this.deps.getWorkerdGatewayToken();
   }
 
-  getDoCodeIdentity(source: string, className: string): { repoPath: string; effectiveVersion: string } | null {
+  getDoCodeIdentity(
+    source: string,
+    className: string
+  ): { repoPath: string; effectiveVersion: string } | null {
     const service = this.doServices.get(`${source}:${className}`);
     if (!service) {
       return null;
@@ -489,12 +571,16 @@ export class WorkerdManager {
         compatibilityDate: "2025-12-01",
         // `nodejs_compat` gives worker DOs access to the Node-compatible
         // subset workerd ships (buffer, util, events, etc.). Required by
-        // `@mariozechner/pi-agent-core` and the harness image / pi-ai code
+        // `@earendil-works/pi-agent-core` and the harness image / pi-ai code
         // paths that assume a Node-ish runtime.
         compatibilityFlags: ["nodejs_compat"],
         globalOutbound: networkServiceName,
         durableObjectNamespaces: [
-          { className, uniqueKey: `${doService.source.replace(/\//g, "_")}:${className}`, enableSql: true },
+          {
+            className,
+            uniqueKey: `${doService.source.replace(/\//g, "_")}:${className}`,
+            enableSql: true,
+          },
         ],
         durableObjectStorage: {
           localDisk: diskServiceName,
@@ -609,7 +695,11 @@ export class WorkerdManager {
     // (for the /_w/ lookup key, so same-named classes from different sources don't collide).
     const doClassNames = Array.from(this.doServices.entries())
       .filter(([, svc]) => doServiceNames.has(svc.serviceName))
-      .map(([, svc]) => ({ className: svc.className, source: svc.source, serviceName: svc.serviceName }));
+      .map(([, svc]) => ({
+        className: svc.className,
+        source: svc.source,
+        serviceName: svc.serviceName,
+      }));
 
     // Auto-generate router worker
     const hasAnyService = instanceNames.length > 0 || doClassNames.length > 0;
@@ -631,7 +721,10 @@ export class WorkerdManager {
 
       const routerCode = this.generateRouterCode(instanceNames, doClassNames);
       routerBindings.push({ name: "DISPATCH_SECRET", text: this.dispatchSecret });
-      routerBindings.push({ name: "WORKERD_GATEWAY_TOKEN", text: this.deps.getWorkerdGatewayToken() });
+      routerBindings.push({
+        name: "WORKERD_GATEWAY_TOKEN",
+        text: this.deps.getWorkerdGatewayToken(),
+      });
 
       services.push({
         name: "router",
@@ -651,30 +744,35 @@ export class WorkerdManager {
 
     // Inject WORKERD_URL into DO services (needs port to be resolved)
     for (const svc of services) {
-      const worker = (svc as Record<string, unknown>)["worker"] as Record<string, unknown> | undefined;
+      const worker = (svc as Record<string, unknown>)["worker"] as
+        | Record<string, unknown>
+        | undefined;
       if (worker?.["durableObjectNamespaces"]) {
-        (worker["bindings"] as object[]).push(
-          { name: "WORKERD_URL", text: `http://127.0.0.1:${this.port}` },
-        );
+        (worker["bindings"] as object[]).push({
+          name: "WORKERD_URL",
+          text: `http://127.0.0.1:${this.port}`,
+        });
       }
     }
 
     return {
       services,
       sockets: hasAnyService
-        ? [{
-            name: "http",
-            address: `127.0.0.1:${this.port}`,
-            http: {},
-            service: { name: "router" },
-          }]
+        ? [
+            {
+              name: "http",
+              address: `127.0.0.1:${this.port}`,
+              http: {},
+              service: { name: "router" },
+            },
+          ]
         : [],
     };
   }
 
   private generateRouterCode(
     instanceNames: string[],
-    doClassNames: { className: string; source: string; serviceName: string }[] = [],
+    doClassNames: { className: string; source: string; serviceName: string }[] = []
   ): string {
     const cases = instanceNames.map((name) => {
       const bindingName = `worker_${name.replace(/[^a-zA-Z0-9_]/g, "_")}`;
@@ -912,17 +1010,30 @@ ${doBlock}${cases.join("\n")}
       // process actually died — so track exit observation explicitly.
       let exited = false;
       await new Promise<void>((resolve) => {
-        const onExit = () => { exited = true; resolve(); };
+        const onExit = () => {
+          exited = true;
+          resolve();
+        };
         proc.once("exit", onExit);
-        setTimeout(() => { proc.removeListener("exit", onExit); resolve(); }, 3000);
+        setTimeout(() => {
+          proc.removeListener("exit", onExit);
+          resolve();
+        }, 3000);
       });
       if (!exited) {
         // SIGTERM timed out — force reap so the socket can be reclaimed.
-        try { proc.kill("SIGKILL"); } catch { /* already gone */ }
+        try {
+          proc.kill("SIGKILL");
+        } catch {
+          /* already gone */
+        }
         await new Promise<void>((resolve) => {
           const onExit = () => resolve();
           proc.once("exit", onExit);
-          setTimeout(() => { proc.removeListener("exit", onExit); resolve(); }, 1000);
+          setTimeout(() => {
+            proc.removeListener("exit", onExit);
+            resolve();
+          }, 1000);
         });
       }
     }
@@ -946,7 +1057,7 @@ ${doBlock}${cases.join("\n")}
    * Called at startup so all DO classes are available before any request arrives.
    */
   async registerAllDOClasses(
-    doClasses: Array<{ source: string; className: string }>,
+    doClasses: Array<{ source: string; className: string }>
   ): Promise<void> {
     let added = false;
     for (const { source, className } of doClasses) {
@@ -1020,7 +1131,10 @@ ${doBlock}${cases.join("\n")}
     try {
       await this.waitForHttpReady(2_000);
     } catch (err) {
-      log.warn(`workerd process is present but not accepting HTTP; restarting before DO dispatch:`, err);
+      log.warn(
+        `workerd process is present but not accepting HTTP; restarting before DO dispatch:`,
+        err
+      );
       await this.restartWorkerd();
     }
   }
@@ -1047,7 +1161,7 @@ ${doBlock}${cases.join("\n")}
         const response = await fetch(`http://127.0.0.1:${this.port}/__natstack_workerd_ready`, {
           method: "GET",
           headers: {
-            "Authorization": `Bearer ${this.deps.getWorkerdGatewayToken()}`,
+            Authorization: `Bearer ${this.deps.getWorkerdGatewayToken()}`,
           },
         });
         await response.arrayBuffer().catch(() => undefined);
@@ -1082,7 +1196,9 @@ ${doBlock}${cases.join("\n")}
     const targetFile = path.join(storagePath, `${targetHash}.sqlite`);
 
     if (!fs.existsSync(sourceFile)) {
-      throw new Error(`Source DO storage not found: ${ref.className}/${ref.objectKey} (expected ${sourceFile})`);
+      throw new Error(
+        `Source DO storage not found: ${ref.className}/${ref.objectKey} (expected ${sourceFile})`
+      );
     }
     fs.copyFileSync(sourceFile, targetFile);
 
@@ -1100,8 +1216,9 @@ ${doBlock}${cases.join("\n")}
     const base = path.join(storagePath, hash);
 
     for (const suffix of [".sqlite", ".sqlite-wal", ".sqlite-shm"]) {
-      try { fs.unlinkSync(base + suffix); }
-      catch (err: unknown) {
+      try {
+        fs.unlinkSync(base + suffix);
+      } catch (err: unknown) {
         if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
       }
     }
@@ -1225,13 +1342,13 @@ ${doBlock}${cases.join("\n")}
         if (svc.source === source) liveDoClasses.add(svc.className);
       }
       const canonical = canonicalInstanceNameForSource(source);
-      const hasCanonicalInstance = this.instances.has(canonical)
-        && this.instances.get(canonical)!.source === source;
+      const hasCanonicalInstance =
+        this.instances.has(canonical) && this.instances.get(canonical)!.source === source;
       this.deps.routeRegistry.reconcileWorkerRoutes(
         source,
         newRoutes,
         liveDoClasses,
-        hasCanonicalInstance ? canonical : null,
+        hasCanonicalInstance ? canonical : null
       );
     }
 

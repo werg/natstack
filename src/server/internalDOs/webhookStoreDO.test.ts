@@ -37,7 +37,10 @@ describe("WebhookStoreDO", () => {
     expect(a.createdAt).toBeGreaterThan(0);
     expect(a.updatedAt).toBe(a.createdAt);
 
-    const b = await call<WebhookIngressSubscription>("create", input({ label: "beta", ownerCallerId: "panel:other" }));
+    const b = await call<WebhookIngressSubscription>(
+      "create",
+      input({ label: "beta", ownerCallerId: "panel:other" })
+    );
     expect(b.subscriptionId).not.toBe(a.subscriptionId);
 
     const fetched = await call<WebhookIngressSubscription | null>("get", a.subscriptionId);
@@ -58,7 +61,11 @@ describe("WebhookStoreDO", () => {
     const reread = await call<WebhookIngressSubscription | null>("get", a.subscriptionId);
     expect((reread!.verifier as { secret: string }).secret).toBe("rotated");
 
-    const revoked: WebhookIngressSubscription = { ...rotated, revokedAt: Date.now(), updatedAt: rotated.updatedAt + 1 };
+    const revoked: WebhookIngressSubscription = {
+      ...rotated,
+      revokedAt: Date.now(),
+      updatedAt: rotated.updatedAt + 1,
+    };
     await call("replace", revoked);
     const afterRevoke = await call<WebhookIngressSubscription | null>("get", a.subscriptionId);
     expect(afterRevoke!.revokedAt).toBeTruthy();
@@ -85,7 +92,7 @@ describe("WebhookStoreDO", () => {
           toleranceMs: 300000,
         },
         replay: { deliveryIdHeader: "X-GitHub-Delivery", ttlMs: 60000 },
-      }),
+      })
     );
 
     const fetched = await call<WebhookIngressSubscription | null>("get", created.subscriptionId);

@@ -81,13 +81,10 @@ vi.mock("electron", () => {
 });
 
 // Import after mocks are set up
-import {
-  ViewManager,
-} from "./viewManager.js";
-import { BaseWindow, WebContentsView, session } from "electron";
+import { ViewManager } from "./viewManager.js";
+import { BaseWindow, WebContentsView } from "electron";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type MockBaseWindow = any;
+type MockBaseWindow = InstanceType<typeof BaseWindow>;
 
 describe("ViewManager", () => {
   let mockWindow: MockBaseWindow;
@@ -95,8 +92,7 @@ describe("ViewManager", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    mockWindow = new (BaseWindow as any)();
+    mockWindow = new BaseWindow();
   });
 
   describe("initialization", () => {
@@ -148,6 +144,19 @@ describe("ViewManager", () => {
       expect(vm.hasView("test-panel")).toBe(true);
     });
 
+    it("tracks views by webContents id without scanning", () => {
+      const view = vm.createView({
+        id: "test-panel",
+        type: "panel",
+      });
+
+      expect(vm.findViewIdByWebContentsId(view.webContents.id)).toBe("test-panel");
+
+      vm.destroyView("test-panel");
+
+      expect(vm.findViewIdByWebContentsId(view.webContents.id)).toBeNull();
+    });
+
     it("creates a browser view with default session", () => {
       const view = vm.createView({
         id: "test-browser",
@@ -177,7 +186,6 @@ describe("ViewManager", () => {
         });
       }).toThrow("View already exists: test-view");
     });
-
   });
 
   describe("native shell overlays", () => {
@@ -202,7 +210,13 @@ describe("ViewManager", () => {
       expect(overlayView).toBeTruthy();
       expect(overlayView.setBounds).toHaveBeenCalledWith({ x: 20, y: 40, width: 240, height: 180 });
       expect(overlayView.setVisible).toHaveBeenCalledWith(true);
-      expect(overlayView.webContents.loadURL).toHaveBeenCalledWith(expect.stringContaining("data:text/html"));
+      expect(overlayView.webContents.loadURL).toHaveBeenCalledWith(
+        expect.stringContaining("data:text/html")
+      );
+      const loadedUrl = overlayView.webContents.loadURL.mock.calls[0]?.[0] as string;
+      const overlayHtml = decodeURIComponent(loadedUrl.slice(loadedUrl.indexOf(",") + 1));
+      expect(overlayHtml).toContain("Content-Security-Policy");
+      expect(overlayHtml).toContain("script-src 'none'");
       expect(mockWindow.contentView.removeChildView).toHaveBeenCalledWith(overlayView);
       expect(mockWindow.contentView.addChildView).toHaveBeenCalledWith(overlayView);
       expect(panelView.setVisible).toHaveBeenCalledWith(true);
@@ -277,6 +291,24 @@ describe("ViewManager", () => {
       vm.setViewVisible("test-view", false);
       expect(view.setVisible).toHaveBeenCalledWith(false);
       expect(vm.isViewVisible("test-view")).toBe(false);
+    });
+
+    it("ignores hiding a missing view", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      expect(() => vm.setViewVisible("missing-view", false)).not.toThrow();
+
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it("warns when showing a missing view", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      vm.setViewVisible("missing-view", true);
+
+      expect(warnSpy).toHaveBeenCalledWith("[ViewManager] View not found: missing-view");
+      warnSpy.mockRestore();
     });
   });
 
@@ -451,7 +483,9 @@ describe("ViewManager", () => {
       // Should cycle visibility (first call passes cooldown)
       const visibleCalls = (view.setVisible as Mock).mock.calls;
       const falseIdx = visibleCalls.findIndex((c: unknown[]) => c[0] === false);
-      const trueIdx = visibleCalls.findIndex((c: unknown[], i: number) => i > falseIdx && c[0] === true);
+      const trueIdx = visibleCalls.findIndex(
+        (c: unknown[], i: number) => i > falseIdx && c[0] === true
+      );
       expect(falseIdx).toBeGreaterThanOrEqual(0);
       expect(trueIdx).toBeGreaterThan(falseIdx);
     });
@@ -673,5 +707,4 @@ describe("ViewManager", () => {
       expect(view.setVisible).not.toHaveBeenCalled();
     });
   });
-
 });

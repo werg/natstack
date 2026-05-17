@@ -15,7 +15,9 @@ const mockLoadRemoteCredentials = vi.fn();
 
 vi.mock("@natstack/shared/workspace/loader", () => ({
   resolveWorkspaceName: () => null,
-  resolveOrCreateWorkspace: () => { throw new Error("not used in these tests"); },
+  resolveOrCreateWorkspace: () => {
+    throw new Error("not used in these tests");
+  },
 }));
 
 vi.mock("./remoteCredentialStore.js", () => ({
@@ -149,7 +151,11 @@ describe("parseRemoteStartupMode priority", () => {
     process.env["NATSTACK_REMOTE_URL"] = "https://a:1";
     process.env["NATSTACK_REMOTE_TOKEN"] = "t";
     process.env["NATSTACK_REMOTE_FINGERPRINT"] = "AB:CD:EF";
-    mockLoadRemoteCredentials.mockReturnValue({ url: "https://s:1", token: "t", fingerprint: "00:11:22" });
+    mockLoadRemoteCredentials.mockReturnValue({
+      url: "https://s:1",
+      token: "t",
+      fingerprint: "00:11:22",
+    });
     const result = mod.parseRemoteStartupMode()!;
     expect(result.tls?.fingerprint).toBe("AB:CD:EF");
   });

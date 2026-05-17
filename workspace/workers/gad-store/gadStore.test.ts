@@ -168,7 +168,7 @@ describe("GadWorkspaceDO immutable persistence", () => {
     const calls = await call<Array<Record<string, unknown>>>("listGadBranchToolCalls", {
       branchId: "branch-tool-integrity",
     });
-    expect(calls.find((row) => row.tool_call_id === "orphan-tool")).toMatchObject({
+    expect(calls.find((row) => row["tool_call_id"] === "orphan-tool")).toMatchObject({
       status: "complete",
       result_summary: "observed without request",
     });
@@ -471,7 +471,7 @@ describe("GadWorkspaceDO immutable persistence", () => {
       stateHash: mainMutation.headStateHash,
       branchId: "child-state",
     });
-    expect(childInheritedProducer?.trajectory_id).toBe(mainProducer?.trajectory_id);
+    expect(childInheritedProducer?.["trajectory_id"]).toBe(mainProducer?.["trajectory_id"]);
 
     const childMutation = await call<any>("appendGadTrajectoryBatch", {
       branchId: "child-state",

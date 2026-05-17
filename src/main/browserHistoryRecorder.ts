@@ -1,5 +1,8 @@
 import { createDevLogger } from "@natstack/dev-log";
-import { canonicalizeBrowserHistoryUrl, type BrowserNavigationIntent } from "@natstack/shared/panelCommands";
+import {
+  canonicalizeBrowserHistoryUrl,
+  type BrowserNavigationIntent,
+} from "@natstack/shared/panelCommands";
 import type { ServerClient } from "./serverClient.js";
 
 const log = createDevLogger("BrowserHistoryRecorder");
@@ -27,25 +30,37 @@ export class BrowserHistoryRecorder {
     const previous = this.recentRecords.get(key);
     if (previous && now - previous < DUPLICATE_WINDOW_MS) return;
     this.recentRecords.set(key, now);
-    void this.serverClient.call("browser-data", "recordHistoryVisit", [{
-      url,
-      title,
-      transition,
-      typed: Boolean(intent.typed),
-      visitTime: now,
-    }]).catch((error: unknown) => {
-      log.warn(`Failed to record browser history: ${error instanceof Error ? error.message : String(error)}`);
-    });
+    void this.serverClient
+      .call("browser-data", "recordHistoryVisit", [
+        {
+          url,
+          title,
+          transition,
+          typed: Boolean(intent.typed),
+          visitTime: now,
+        },
+      ])
+      .catch((error: unknown) => {
+        log.warn(
+          `Failed to record browser history: ${error instanceof Error ? error.message : String(error)}`
+        );
+      });
   }
 
   updateTitle(url: string, title: string): void {
     if (!/^https?:\/\//i.test(url) || !title.trim()) return;
-    void this.serverClient.call("browser-data", "updateHistoryTitle", [{
-      url,
-      title,
-      observedAt: Date.now(),
-    }]).catch((error: unknown) => {
-      log.warn(`Failed to update browser history title: ${error instanceof Error ? error.message : String(error)}`);
-    });
+    void this.serverClient
+      .call("browser-data", "updateHistoryTitle", [
+        {
+          url,
+          title,
+          observedAt: Date.now(),
+        },
+      ])
+      .catch((error: unknown) => {
+        log.warn(
+          `Failed to update browser history title: ${error instanceof Error ? error.message : String(error)}`
+        );
+      });
   }
 }

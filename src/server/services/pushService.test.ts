@@ -39,7 +39,7 @@ describe("pushService", () => {
           category: APPROVAL_CATEGORY_DECIDE,
           actionsJson: DECISION_ACTIONS_JSON,
         },
-      },
+      }
     );
 
     expect(message).toMatchObject({
@@ -74,7 +74,7 @@ describe("pushService", () => {
           approvalId: "approval-2",
           category: APPROVAL_CATEGORY_DECIDE,
         },
-      },
+      }
     );
 
     expect(message).toMatchObject({
@@ -122,7 +122,7 @@ describe("pushService", () => {
         clientId: "mobile-1",
         title: "Approve",
         category: APPROVAL_CATEGORY_DECIDE,
-      }),
+      })
     ).rejects.toMatchObject({ code: "messaging/registration-token-not-registered" });
     expect(service.internal.listRegistrations()).toEqual([]);
     expect(JSON.parse(fs.readFileSync(registrationsPath, "utf-8"))).toEqual([]);
@@ -192,7 +192,7 @@ describe("pushService", () => {
         clientId: "mobile-1",
         title: "Approve",
         category: APPROVAL_CATEGORY_DECIDE,
-      }),
+      })
     ).resolves.toMatchObject({ sent: true, logOnly: true, platform: "ios" });
   });
 
@@ -240,7 +240,7 @@ describe("pushService", () => {
           approvalId: "approval-1",
           cancelKey: "approval-1",
         },
-      },
+      }
     );
 
     expect(message).toMatchObject({

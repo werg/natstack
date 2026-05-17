@@ -5,28 +5,33 @@
  * they get browserPreload.ts with autofill only.
  */
 
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 
 // ID-based event listener pattern (contextBridge cannot serialize closures)
 let nextListenerId = 1;
-const activeListeners = new Map<number, (...args: any[]) => void>();
+const activeListeners = new Map<
+  number,
+  (event: IpcRendererEvent, eventName: string, payload: unknown) => void
+>();
 
 const natstackShell = {
   // Panel lifecycle (Electron-owned UI mutations)
   getPanelInit: () => ipcRenderer.invoke("natstack:getPanelInit"),
   getBootstrapConfig: () => ipcRenderer.invoke("natstack:getPanelInit"),
   getInfo: () => ipcRenderer.invoke("natstack:bridge.getInfo"),
-  setStateArgs: (updates: Record<string, unknown>) => ipcRenderer.invoke("natstack:bridge.setStateArgs", updates),
-  closeSelf: () => ipcRenderer.invoke("natstack:bridge.closeSelf"),
-  closeChild: (childId: string) => ipcRenderer.invoke("natstack:bridge.closeChild", childId),
-  focusPanel: (panelId: string) => ipcRenderer.invoke("natstack:bridge.focusPanel", panelId),
+  setStateArgs: (updates: Record<string, unknown>) =>
+    ipcRenderer.invoke("natstack:bridge.setStateArgs", updates),
+  closeSelf: () => ipcRenderer.invoke("natstack:closeSelf"),
+  closeChild: (childId: string) => ipcRenderer.invoke("natstack:closeChild", childId),
+  focusPanel: (panelId: string) => ipcRenderer.invoke("natstack:focusPanel", panelId),
   createBrowserPanel: (url: string, opts?: unknown) =>
-    ipcRenderer.invoke("natstack:bridge.createBrowserPanel", url, opts),
+    ipcRenderer.invoke("natstack:createBrowserPanel", url, opts),
 
   // Electron-native
-  openDevtools: () => ipcRenderer.invoke("natstack:bridge.openDevtools"),
-  openFolderDialog: (opts?: unknown) => ipcRenderer.invoke("natstack:bridge.openFolderDialog", opts),
-  openExternal: (url: string, options?: unknown) => ipcRenderer.invoke("natstack:bridge.openExternal", url, options),
+  openDevtools: () => ipcRenderer.invoke("natstack:openDevtools"),
+  openFolderDialog: (opts?: unknown) => ipcRenderer.invoke("natstack:openFolderDialog", opts),
+  openExternal: (url: string, options?: unknown) =>
+    ipcRenderer.invoke("natstack:openExternal", url, options),
 
   // Browser automation (CdpServer)
   getCdpEndpoint: (id: string) => ipcRenderer.invoke("natstack:getCdpEndpoint", id),
@@ -45,7 +50,8 @@ const natstackShell = {
   // Returns a numeric subscription ID; call removeEventListener(id) to unsubscribe.
   addEventListener: (handler: (event: string, payload: unknown) => void): number => {
     const id = nextListenerId++;
-    const listener = (_e: unknown, event: string, payload: unknown) => handler(event, payload);
+    const listener = (_e: IpcRendererEvent, event: string, payload: unknown) =>
+      handler(event, payload);
     activeListeners.set(id, listener);
     ipcRenderer.on("natstack:event", listener);
     return id;

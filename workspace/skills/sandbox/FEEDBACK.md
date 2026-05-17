@@ -96,7 +96,7 @@ export default function MyForm({ onSubmit, onCancel, onError, chat }) {
   // onSubmit(value) — return data to the agent and close the form
   // onCancel() — signal cancellation
   // onError(message) — signal error
-  // chat — ChatSandboxValue (publish, callMethod, rpc)
+  // chat — ChatSandboxValue (publish, callMethod, callMethodResult, rpc)
 }
 ```
 

@@ -145,7 +145,14 @@ export class PackageGraph {
 // Discovery
 // ---------------------------------------------------------------------------
 
-const WORKSPACE_SCOPES = ["@workspace/", "@workspace-panels/", "@workspace-about/", "@workspace-agents/", "@workspace-workers/", "@workspace-skills/"];
+const WORKSPACE_SCOPES = [
+  "@workspace/",
+  "@workspace-panels/",
+  "@workspace-about/",
+  "@workspace-agents/",
+  "@workspace-workers/",
+  "@workspace-skills/",
+];
 
 function isInternalDep(name: string): boolean {
   return WORKSPACE_SCOPES.some((scope) => name.startsWith(scope));
@@ -217,11 +224,7 @@ function readPackageJson(dir: string): PackageJson | null {
   }
 }
 
-function scanDirectory(
-  dir: string,
-  workspaceRoot: string,
-  kind: GraphNode["kind"],
-): GraphNode[] {
+function scanDirectory(dir: string, workspaceRoot: string, kind: GraphNode["kind"]): GraphNode[] {
   if (!fs.existsSync(dir)) return [];
   const nodes: GraphNode[] = [];
 
@@ -272,7 +275,9 @@ function scanTemplates(dir: string, workspaceRoot: string): GraphNode[] {
     const templateDir = path.join(dir, entry.name);
     const configPath = path.join(templateDir, "template.json");
     if (!fs.existsSync(configPath)) {
-      console.warn(`[PackageGraph] Template directory ${entry.name} has no template.json, skipping`);
+      console.warn(
+        `[PackageGraph] Template directory ${entry.name} has no template.json, skipping`
+      );
       continue;
     }
 
@@ -358,7 +363,7 @@ export function discoverPackageGraph(workspaceRoot: string): PackageGraph {
         node.internalDepRefs[templateName] = { raw: "workspace:*", mode: "default" };
       } else {
         console.warn(
-          `[PackageGraph] ${node.name} references template "${node.manifest.template}" which does not exist`,
+          `[PackageGraph] ${node.name} references template "${node.manifest.template}" which does not exist`
         );
       }
     } else if (hasDefaultTemplate) {
@@ -378,9 +383,7 @@ export function discoverPackageGraph(workspaceRoot: string): PackageGraph {
   for (const node of graph.allNodes()) {
     for (const dep of node.internalDeps) {
       if (!graph.has(dep)) {
-        console.warn(
-          `[PackageGraph] ${node.name} depends on ${dep} which is not in the workspace`
-        );
+        console.warn(`[PackageGraph] ${node.name} depends on ${dep} which is not in the workspace`);
         // Remove missing deps to avoid topo sort errors
         node.internalDeps = node.internalDeps.filter((d) => d !== dep);
       }

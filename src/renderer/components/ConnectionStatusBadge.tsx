@@ -41,13 +41,16 @@ export function ConnectionStatusBadge({ onOpenSettings }: { onOpenSettings: () =
   const [health, setHealth] = useState<HealthSample | null>(null);
 
   useEffect(() => {
-    app.getInfo().then((info) => {
-      setSnap({
-        mode: info.connectionMode ?? "local",
-        status: info.connectionStatus ?? "connected",
-        remoteHost: info.remoteHost,
-      });
-    }).catch(() => {});
+    app
+      .getInfo()
+      .then((info) => {
+        setSnap({
+          mode: info.connectionMode ?? "local",
+          status: info.connectionStatus ?? "connected",
+          remoteHost: info.remoteHost,
+        });
+      })
+      .catch(() => {});
   }, []);
 
   useShellEvent(
@@ -58,14 +61,14 @@ export function ConnectionStatusBadge({ onOpenSettings }: { onOpenSettings: () =
         status: payload.status,
         remoteHost: payload.remoteHost,
       });
-    }, []),
+    }, [])
   );
 
   useShellEvent(
     "server-health",
     useCallback((payload: HealthSample) => {
       setHealth(payload);
-    }, []),
+    }, [])
   );
 
   if (!snap) return null;
@@ -77,10 +80,10 @@ export function ConnectionStatusBadge({ onOpenSettings }: { onOpenSettings: () =
     snap.status === "disconnected"
       ? `Disconnected from ${snap.mode === "remote" ? `remote server ${snap.remoteHost ?? ""}` : "local server"}`
       : snap.status === "connecting"
-      ? "Reconnecting to server…"
-      : snap.mode === "remote"
-      ? `Connected to ${snap.remoteHost ?? "remote server"}`
-      : "Connected (local)";
+        ? "Reconnecting to server…"
+        : snap.mode === "remote"
+          ? `Connected to ${snap.remoteHost ?? "remote server"}`
+          : "Connected (local)";
 
   // Append health poll details when we have a sample AND the connection is
   // live. `health.error` means the most recent poll failed — surface it so a
@@ -98,14 +101,16 @@ export function ConnectionStatusBadge({ onOpenSettings }: { onOpenSettings: () =
   }
 
   const badgeColor =
-    snap.status === "disconnected" ? "red"
-    : snap.status === "connecting" ? "amber"
-    : "green";
+    snap.status === "disconnected" ? "red" : snap.status === "connecting" ? "amber" : "green";
 
   const icon =
-    snap.status === "disconnected" ? <CrossCircledIcon />
-    : snap.status === "connecting" ? <UpdateIcon />
-    : <GlobeIcon />;
+    snap.status === "disconnected" ? (
+      <CrossCircledIcon />
+    ) : snap.status === "connecting" ? (
+      <UpdateIcon />
+    ) : (
+      <GlobeIcon />
+    );
 
   return (
     <Tooltip content={tooltip}>

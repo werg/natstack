@@ -1,15 +1,12 @@
 /**
  * ServerProcessManager — spawns and manages the natstack-server child process.
  *
- * Uses utilityProcess.fork() in Electron or child_process.fork() in Node.js.
+ * Uses Electron utilityProcess.fork().
  * Communicates via IPC messages (ready, shutdown, error).
  */
 
-import {
-  type ProcessAdapter,
-  hasElectronUtilityProcess,
-  createNodeProcessAdapter,
-} from "@natstack/process-adapter";
+import { type ProcessAdapter } from "@natstack/process-adapter";
+import { shell, utilityProcess } from "electron";
 import { getEsbuildBinaryPath, getServerProcessEntryPath } from "./paths.js";
 
 export interface ServerPorts {
@@ -19,41 +16,50 @@ export interface ServerPorts {
   shellToken?: string;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 export class ServerProcessManager {
   private proc: ProcessAdapter | null = null;
   private ports: ServerPorts | null = null;
   private isShuttingDown = false;
   private restartTimestamps: number[] = [];
 
-  constructor(private config: {
-    /** Managed workspace root directory (contains source/ and state/) */
-    wsDir: string;
-    appRoot: string;
-    isEphemeral?: boolean;
-    logLevel?: string;
-    /** Called if the server process exits unexpectedly */
-    onCrash: (code: number | null) => void;
-    /** Called after an unexpected server process exit is restarted in-place. */
-    onRestart?: (ports: ServerPorts) => void;
-    /**
-     * Called when the server requests an Electron-app-level relaunch into a
-     * different workspace (via `workspace.select`). Typical implementation:
-     * `app.relaunch({ args: ["--workspace", name] }); app.exit(0);`.
-     */
-    onRelaunch?: (name: string) => void;
-    /**
-     * Called when the server requests opening a URL in the user's default
-     * browser (e.g. auth service OAuth flow). If omitted, the manager falls
-     * back to Electron's `shell.openExternal` directly.
-     */
-    onOpenExternal?: (url: string) => void;
-    /**
-     * Handle typed IPC requests from the server that expect a response.
-     * Called with the request type and full message; the return value is
-     * merged into the response and sent back with the same correlation ID.
-     */
-    onIpcRequest?: (type: string, msg: Record<string, unknown>) => Promise<Record<string, unknown> | null>;
-  }) {}
+  constructor(
+    private config: {
+      /** Managed workspace root directory (contains source/ and state/) */
+      wsDir: string;
+      appRoot: string;
+      isEphemeral?: boolean;
+      logLevel?: string;
+      /** Called if the server process exits unexpectedly */
+      onCrash: (code: number | null) => void;
+      /** Called after an unexpected server process exit is restarted in-place. */
+      onRestart?: (ports: ServerPorts) => void;
+      /**
+       * Called when the server requests an Electron-app-level relaunch into a
+       * different workspace (via `workspace.select`). Typical implementation:
+       * `app.relaunch({ args: ["--workspace", name] }); app.exit(0);`.
+       */
+      onRelaunch?: (name: string) => void;
+      /**
+       * Called when the server requests opening a URL in the user's default
+       * browser (e.g. auth service OAuth flow). If omitted, the manager falls
+       * back to Electron's `shell.openExternal` directly.
+       */
+      onOpenExternal?: (url: string) => void;
+      /**
+       * Handle typed IPC requests from the server that expect a response.
+       * Called with the request type and full message; the return value is
+       * merged into the response and sent back with the same correlation ID.
+       */
+      onIpcRequest?: (
+        type: string,
+        msg: Record<string, unknown>
+      ) => Promise<Record<string, unknown> | null>;
+    }
+  ) {}
 
   async start(): Promise<ServerPorts> {
     const proc = this.spawn();
@@ -84,33 +90,44 @@ export class ServerProcessManager {
     // Listen for post-startup messages from the server. waitForReady() consumes
     // the one-shot `ready`/`error` messages; this handler picks up everything
     // afterwards.
-    proc.on("message", (msg: any) => {
-      if (msg?.type === "workspace-relaunch" && typeof msg.name === "string") {
-        this.config.onRelaunch?.(msg.name);
-      } else if (msg?.type === "open-external" && typeof msg.url === "string") {
+    proc.on("message", (msg: unknown) => {
+      if (!isRecord(msg)) return;
+      if (msg["type"] === "workspace-relaunch" && typeof msg["name"] === "string") {
+        this.config.onRelaunch?.(msg["name"]);
+      } else if (msg["type"] === "open-external" && typeof msg["url"] === "string") {
         // Auth service (and potentially others) asks Electron main to open
         // a URL in the user's default browser. Used by the OAuth login flow
         // to hand off to shell.openExternal without exposing openExternal
         // access to panels/workers.
         if (this.config.onOpenExternal) {
-          this.config.onOpenExternal(msg.url);
-        } else if (hasElectronUtilityProcess()) {
+          this.config.onOpenExternal(msg["url"]);
+        } else {
           try {
-            const { shell } = require("electron");
-            shell.openExternal(msg.url);
+            shell.openExternal(msg["url"]);
           } catch (err) {
             console.error("[ServerProcessManager] shell.openExternal failed:", err);
           }
         }
-      } else if (msg?.type?.endsWith("-request") && typeof msg.id === "string" && this.config.onIpcRequest) {
+      } else if (
+        typeof msg["type"] === "string" &&
+        msg["type"].endsWith("-request") &&
+        typeof msg["id"] === "string" &&
+        this.config.onIpcRequest
+      ) {
         // Request/response IPC: dispatch to handler, send correlated response
-        const responseType = (msg.type as string).replace(/-request$/, "-response");
-        void this.config.onIpcRequest(msg.type, msg).then((result) => {
-          proc.postMessage({ type: responseType, id: msg.id, ...(result ?? {}) });
-        }).catch((err) => {
-          console.error(`[ServerProcessManager] IPC request handler error for ${msg.type}:`, err);
-          proc.postMessage({ type: responseType, id: msg.id, error: String(err) });
-        });
+        const responseType = msg["type"].replace(/-request$/, "-response");
+        void this.config
+          .onIpcRequest(msg["type"], msg)
+          .then((result) => {
+            proc.postMessage({ type: responseType, id: msg["id"], ...(result ?? {}) });
+          })
+          .catch((err) => {
+            console.error(
+              `[ServerProcessManager] IPC request handler error for ${msg["type"]}:`,
+              err
+            );
+            proc.postMessage({ type: responseType, id: msg["id"], error: String(err) });
+          });
       }
     });
 
@@ -186,31 +203,35 @@ export class ServerProcessManager {
       ...(this.config.logLevel ? { NATSTACK_LOG_LEVEL: this.config.logLevel } : {}),
     };
 
-    if (hasElectronUtilityProcess()) {
-      const { utilityProcess } = require("electron");
-      return utilityProcess.fork(bundlePath, [], {
-        serviceName: "natstack-server",
-        stdio: "pipe",
-        env,
-      }) as unknown as ProcessAdapter;
-    }
-
-    // Node.js fallback (testing, non-Electron environments)
-    return createNodeProcessAdapter(bundlePath, env);
+    return utilityProcess.fork(bundlePath, [], {
+      serviceName: "natstack-server",
+      stdio: "pipe",
+      env,
+    }) as unknown as ProcessAdapter;
   }
 
   private waitForReady(proc: ProcessAdapter): Promise<ServerPorts> {
     return new Promise((resolve, reject) => {
-      proc.on("message", (msg: any) => {
-        if (msg?.type === "ready") {
+      proc.on("message", (msg: unknown) => {
+        if (!isRecord(msg)) return;
+        if (msg["type"] === "ready") {
+          if (
+            typeof msg["gatewayPort"] !== "number" ||
+            typeof msg["adminToken"] !== "string" ||
+            (msg["workerdPort"] !== undefined && typeof msg["workerdPort"] !== "number") ||
+            (msg["shellToken"] !== undefined && typeof msg["shellToken"] !== "string")
+          ) {
+            reject(new Error("Server startup returned an invalid ready payload"));
+            return;
+          }
           resolve({
-            workerdPort: msg.workerdPort,
-            gatewayPort: msg.gatewayPort,
-            adminToken: msg.adminToken,
-            shellToken: msg.shellToken,
+            workerdPort: msg["workerdPort"],
+            gatewayPort: msg["gatewayPort"],
+            adminToken: msg["adminToken"],
+            shellToken: msg["shellToken"],
           });
-        } else if (msg?.type === "error") {
-          reject(new Error(`Server startup failed: ${msg.message}`));
+        } else if (msg["type"] === "error") {
+          reject(new Error(`Server startup failed: ${String(msg["message"])}`));
         }
       });
 

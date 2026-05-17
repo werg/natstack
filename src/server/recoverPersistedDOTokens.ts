@@ -49,7 +49,7 @@ export interface RecoveryResult {
  */
 export function recoverPersistedDOTokens(
   tokenManager: TokenManager,
-  statePath: string,
+  statePath: string
 ): RecoveryResult {
   const root = path.join(statePath, DO_STORAGE_SUBPATH);
   const result: RecoveryResult = { recovered: 0, skipped: 0, errors: 0 };
@@ -87,9 +87,7 @@ export function recoverPersistedDOTokens(
       try {
         db = new DatabaseSync(filePath, { readOnly: true });
         const rows = db
-          .prepare(
-            "SELECT key, value FROM state WHERE key IN ('__instanceToken', '__instanceId')",
-          )
+          .prepare("SELECT key, value FROM state WHERE key IN ('__instanceToken', '__instanceId')")
           .all() as Array<{ key: string; value: string }>;
 
         let token: string | null = null;
@@ -115,11 +113,15 @@ export function recoverPersistedDOTokens(
         } else {
           result.errors++;
           console.warn(
-            `[Server] DO token recovery: failed to read ${path.join(classDir.name, file)}: ${msg}`,
+            `[Server] DO token recovery: failed to read ${path.join(classDir.name, file)}: ${msg}`
           );
         }
       } finally {
-        try { db?.close(); } catch { /* ignore close errors */ }
+        try {
+          db?.close();
+        } catch {
+          /* ignore close errors */
+        }
       }
     }
   }

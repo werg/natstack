@@ -17,9 +17,11 @@ const shellTransport: TransportBridge = createIpcTransport();
 // Expose the transport global for the shell client's direct @workspace/rpc bridge
 declare global {
   var __natstackTransport: TransportBridge | undefined;
-  var __natstackShellOverlay: {
-    onEvent: (handler: (event: unknown) => void) => () => void;
-  } | undefined;
+  var __natstackShellOverlay:
+    | {
+        onEvent: (handler: (event: unknown) => void) => () => void;
+      }
+    | undefined;
 }
 
 // Set global directly (shell uses contextIsolation: false)

@@ -32,14 +32,6 @@ const DEFAULT_TTLS: Record<NotificationPayload["type"], number> = {
   consent: 0,
 };
 
-const TYPE_COLORS: Record<NotificationPayload["type"], string> = {
-  info: "blue",
-  success: "green",
-  warning: "orange",
-  error: "red",
-  consent: "violet",
-};
-
 const TYPE_BG: Record<NotificationPayload["type"], string> = {
   info: "var(--blue-3)",
   success: "var(--green-3)",
@@ -76,7 +68,6 @@ export function NotificationBar() {
   const timerCleanups = useRef<Map<string, () => void>>(new Map());
   const barRef = useRef<HTMLDivElement>(null);
 
-
   // Handle incoming notifications
   useShellEvent(
     "notification:show",
@@ -86,7 +77,7 @@ export function NotificationBar() {
         next.set(payload.id, payload);
         return next;
       });
-    }, []),
+    }, [])
   );
 
   const dismissNotification = useCallback((id: string) => {
@@ -108,9 +99,12 @@ export function NotificationBar() {
   // Handle dismiss requests
   useShellEvent(
     "notification:dismiss",
-    useCallback((payload: { id: string }) => {
-      dismissNotification(payload.id);
-    }, [dismissNotification]),
+    useCallback(
+      (payload: { id: string }) => {
+        dismissNotification(payload.id);
+      },
+      [dismissNotification]
+    )
   );
 
   const handleAction = useCallback(
@@ -119,7 +113,7 @@ export function NotificationBar() {
       void notification.reportAction(notificationId, actionId);
       dismissNotification(notificationId);
     },
-    [dismissNotification],
+    [dismissNotification]
   );
 
   // Auto-dismiss timers
@@ -260,4 +254,3 @@ function ToastNotification({
     </Flex>
   );
 }
-

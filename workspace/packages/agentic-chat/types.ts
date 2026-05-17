@@ -6,6 +6,7 @@ export type {
   ConnectionConfig,
   AgenticChatActions,
   ChatSandboxValue,
+  ChatMethodResult,
   SandboxConfig,
   ToolProviderDeps,
   ToolProvider,

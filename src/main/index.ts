@@ -12,7 +12,7 @@ import * as path from "path";
 // Silence Electron security warnings in dev; panels run in isolated webviews.
 process.env["ELECTRON_DISABLE_SECURITY_WARNINGS"] = "true";
 
-import { isDev } from "./utils.js";
+import { isDev, assertHttpUrl } from "./utils.js";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("App");
@@ -32,6 +32,7 @@ import { loadCentralEnv, deleteWorkspaceDir } from "@natstack/shared/workspace/l
 import { CentralDataManager } from "@natstack/shared/centralData";
 import { resolveStartupMode, getRemoteUserDataDir, type StartupMode } from "./startupMode.js";
 import { establishServerSession, type SessionConnection } from "./serverSession.js";
+import { handleExternalOpenPayload, type ExternalOpenPayload } from "./oauthLoopbackHandoff.js";
 import { CdpServer } from "./cdpServer.js";
 import { TokenManager } from "@natstack/shared/tokenManager";
 import { EventService } from "@natstack/shared/eventsService";
@@ -125,6 +126,8 @@ let mainWindow: BaseWindow | null = null;
 let viewManager: ViewManager | null = null;
 let isCleaningUp = false; // Prevent re-entry in will-quit handler
 let autofillManager: import("./autofill/autofillManager.js").AutofillManager | null = null;
+const corsApprovalCache = new Set<string>();
+const pendingCorsApprovals = new Map<string, Promise<{ allowed: boolean; cacheable: boolean }>>();
 let browserDataStoreForCredentialCapture: {
   cookies: {
     getByDomain(domain?: string): Promise<
@@ -159,10 +162,6 @@ function toStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
     : [];
-}
-
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function globMatches(pattern: string, value: string): boolean {
@@ -299,6 +298,116 @@ function importedCookieMatchesOrigin(
   );
 }
 
+function getHttpOrigin(rawUrl: string): string | null {
+  try {
+    const url = new URL(rawUrl);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+function getWebRequestPanelCallerId(
+  details: Electron.OnHeadersReceivedListenerDetails
+): string | null {
+  if (!viewManager) return null;
+  const webContentsId = details.webContentsId ?? details.webContents?.id;
+  if (typeof webContentsId !== "number") return null;
+  const shellContents = viewManager.getShellWebContents();
+  if (shellContents && !shellContents.isDestroyed() && shellContents.id === webContentsId) {
+    return null;
+  }
+  return viewManager.findViewIdByWebContentsId(webContentsId);
+}
+
+function getCorsRequestOrigin(details: Electron.OnHeadersReceivedListenerDetails): string | null {
+  const referrerOrigin = details.referrer ? getHttpOrigin(details.referrer) : null;
+  if (referrerOrigin) return referrerOrigin;
+  const currentUrl =
+    details.webContents && !details.webContents.isDestroyed() ? details.webContents.getURL() : "";
+  return currentUrl ? getHttpOrigin(currentUrl) : null;
+}
+
+async function authorizeCorsResponseAccess(
+  details: Electron.OnHeadersReceivedListenerDetails
+): Promise<{ allowed: boolean; requestOrigin: string | null }> {
+  if (details.resourceType !== "xhr") {
+    return { allowed: false, requestOrigin: null };
+  }
+  const targetOrigin = getHttpOrigin(details.url);
+  const requestOrigin = getCorsRequestOrigin(details);
+  if (!targetOrigin || !requestOrigin || targetOrigin === requestOrigin) {
+    return { allowed: false, requestOrigin };
+  }
+
+  const callerId = getWebRequestPanelCallerId(details);
+  if (!callerId || !serverSession?.serverClient) {
+    return { allowed: false, requestOrigin };
+  }
+
+  const cacheKey = `${callerId}\x00${targetOrigin}`;
+  if (corsApprovalCache.has(cacheKey)) {
+    return { allowed: true, requestOrigin };
+  }
+
+  let pending = pendingCorsApprovals.get(cacheKey);
+  if (!pending) {
+    pending = serverSession.serverClient
+      .call("corsApproval", "authorize", [
+        {
+          callerId,
+          targetUrl: details.url,
+          requestOrigin,
+        },
+      ])
+      .then((result: unknown) => {
+        const response = result as { allowed?: unknown; decision?: unknown };
+        const allowed = response.allowed === true;
+        const cacheable = allowed && response.decision !== "once";
+        if (cacheable) corsApprovalCache.add(cacheKey);
+        return { allowed, cacheable };
+      })
+      .catch((error: unknown) => {
+        log.warn(`CORS approval failed: ${error instanceof Error ? error.message : String(error)}`);
+        return { allowed: false, cacheable: false };
+      })
+      .finally(() => {
+        pendingCorsApprovals.delete(cacheKey);
+      });
+    pendingCorsApprovals.set(cacheKey, pending);
+  }
+
+  const result = await pending;
+  return { allowed: result.allowed, requestOrigin };
+}
+
+function withCorsRelaxedHeaders(
+  responseHeaders: Record<string, string[]> | undefined,
+  requestOrigin: string
+): Record<string, string[]> {
+  const strippedCorsHeaderNames = new Set([
+    "access-control-allow-origin",
+    "access-control-allow-headers",
+    "access-control-allow-methods",
+    "access-control-allow-credentials",
+    "access-control-expose-headers",
+  ]);
+  const headers: Record<string, string[]> = {};
+  for (const [key, value] of Object.entries(responseHeaders ?? {})) {
+    const lower = key.toLowerCase();
+    if (!strippedCorsHeaderNames.has(lower)) {
+      headers[key] = value;
+    }
+  }
+  headers["access-control-allow-origin"] = [requestOrigin];
+  headers["access-control-allow-headers"] = ["*"];
+  headers["access-control-allow-methods"] = ["GET, POST, PUT, PATCH, DELETE, OPTIONS"];
+  headers["access-control-allow-credentials"] = ["true"];
+  headers["access-control-expose-headers"] = ["*"];
+  return headers;
+}
+
 async function handleCredentialSessionCaptureRequest(
   msg: CredentialSessionCaptureRequest
 ): Promise<Record<string, unknown>> {
@@ -358,17 +467,20 @@ async function handleCredentialSessionCaptureRequest(
       name: "Credential sign-in",
       focus: true,
     });
-    const webContents = viewManager.getWebContents(panel.id);
-    const browserSession = session.fromPartition(BROWSER_SESSION_PARTITION);
-    const completionPattern =
-      typeof msg.completionUrlPattern === "string" ? msg.completionUrlPattern : undefined;
-    const deadline = Date.now() + 300_000;
 
-    while (Date.now() < deadline) {
-      const currentUrl = webContents && !webContents.isDestroyed() ? webContents.getURL() : "";
-      const completionSatisfied =
-        !completionPattern || (currentUrl && globMatches(completionPattern, currentUrl));
-      if (completionSatisfied) {
+    try {
+      const webContents = viewManager.getWebContents(panel.id);
+      if (!webContents || webContents.isDestroyed()) {
+        return { error: "failed to create browser panel" };
+      }
+
+      const browserSession = session.fromPartition(BROWSER_SESSION_PARTITION);
+      const completionPattern =
+        typeof msg.completionUrlPattern === "string" ? msg.completionUrlPattern : undefined;
+      const timeout = 300_000;
+
+      // Helper to check if cookies are captured
+      const tryCaptureCredentials = async (): Promise<Record<string, unknown> | null> => {
         const captured: Electron.Cookie[] = [];
         for (const origin of origins) {
           const originCookies = await browserSession.cookies.get({ url: origin });
@@ -397,10 +509,99 @@ async function handleCredentialSessionCaptureRequest(
                 : (material.expiresAt ?? maxExpiresAt),
           };
         }
-      }
-      await wait(1_000);
+        return null;
+      };
+
+      type CaptureResult = Record<string, unknown> | { error: string };
+      type CookieChangeCause =
+        | "explicit"
+        | "overwrite"
+        | "expired"
+        | "evicted"
+        | "expired-overwrite";
+
+      const immediate = await tryCaptureCredentials();
+      if (immediate && !completionPattern) return immediate;
+
+      const captureResult = await new Promise<CaptureResult>((resolve) => {
+        let settled = false;
+        let completionReached =
+          !completionPattern ||
+          (!!webContents.getURL() && globMatches(completionPattern, webContents.getURL()));
+        let captureInFlight: Promise<void> | null = null;
+
+        const cleanup = () => {
+          clearTimeout(timeoutId);
+          browserSession.cookies.off("changed", onCookiesChanged);
+          webContents.off("did-navigate", onNavigate);
+          webContents.off("did-navigate-in-page", onNavigate);
+          webContents.off("did-redirect-navigation", onRedirect);
+          webContents.off("destroyed", onDestroyed);
+        };
+
+        const finish = (result: CaptureResult) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve(result);
+        };
+
+        const attemptCapture = () => {
+          if (settled || !completionReached || captureInFlight) return;
+          captureInFlight = tryCaptureCredentials()
+            .then((result) => {
+              if (result) finish(result);
+            })
+            .catch((error: unknown) => {
+              finish({ error: error instanceof Error ? error.message : String(error) });
+            })
+            .finally(() => {
+              captureInFlight = null;
+            });
+        };
+
+        const markCompletionIfMatched = (url: string) => {
+          if (completionPattern && globMatches(completionPattern, url)) {
+            completionReached = true;
+          }
+          attemptCapture();
+        };
+
+        const onCookiesChanged = (
+          _event: Electron.Event,
+          cookie: Electron.Cookie,
+          _cause: CookieChangeCause,
+          removed: boolean
+        ) => {
+          if (removed || !cookieNames.includes(cookie.name)) return;
+          attemptCapture();
+        };
+        const onNavigate = (_event: Electron.Event, url: string) => markCompletionIfMatched(url);
+        const onRedirect = (
+          details: Electron.Event<Electron.WebContentsDidRedirectNavigationEventParams>
+        ) => markCompletionIfMatched(details.url);
+        const onDestroyed = () => finish({ error: "user closed sign-in window" });
+        const timeoutId = setTimeout(() => finish({ error: "session capture timed out" }), timeout);
+
+        browserSession.cookies.on("changed", onCookiesChanged);
+        webContents.on("did-navigate", onNavigate);
+        webContents.on("did-navigate-in-page", onNavigate);
+        webContents.on("did-redirect-navigation", onRedirect);
+        webContents.on("destroyed", onDestroyed);
+
+        if (immediate && completionReached) {
+          finish(immediate);
+          return;
+        }
+
+        attemptCapture();
+      });
+
+      return captureResult;
+    } finally {
+      // Always close the panel on exit (success, timeout, or user close)
+      await panelOrchestrator.closePanel(panel.id).catch(() => {});
     }
-    return { error: "session capture timed out" };
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };
   }
@@ -550,16 +751,26 @@ function createWindow(): void {
 app.on("ready", async () => {
   performance.mark("startup:ready");
 
-  // Strip CORS restrictions for app panels (defaultSession).
-  // App panels are trusted workspace code that needs to call external APIs
-  // (Gmail, Notion, etc.) directly via fetch(). Browser panels use
-  // a separate "persist:browser" partition and are unaffected.
+  // Default to browser CORS. For panel fetch/XHR responses, relax CORS only
+  // after the trusted shell approval flow grants that panel access to the
+  // target origin. Browser panels use a separate "persist:browser" partition
+  // and are unaffected.
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-    const headers = { ...details.responseHeaders };
-    headers["access-control-allow-origin"] = ["*"];
-    headers["access-control-allow-headers"] = ["*"];
-    headers["access-control-allow-methods"] = ["*"];
-    callback({ responseHeaders: headers });
+    void authorizeCorsResponseAccess(details)
+      .then(({ allowed, requestOrigin }) => {
+        callback({
+          responseHeaders:
+            allowed && requestOrigin
+              ? withCorsRelaxedHeaders(details.responseHeaders, requestOrigin)
+              : details.responseHeaders,
+        });
+      })
+      .catch((error: unknown) => {
+        log.warn(
+          `CORS header handling failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+        callback({ responseHeaders: details.responseHeaders });
+      });
   });
 
   // -------------------------------------------------------------------------
@@ -572,11 +783,11 @@ app.on("ready", async () => {
   // a known-sensitive set on every session that gets created (default,
   // persist:browser, persist:panel:*).
   //
-  // TODO(security-audit-agent-1): the shell partition currently shares the
-  // default session with panels. Once shell is moved to its own partition
-  // (audit C4 hardening — owned by another agent in src/main/viewManager.ts
-  // and the shell BrowserWindow setup), the shell partition can be allowed
-  // to request these permissions while panel partitions stay default-deny.
+  // TODO(security): the shell partition currently shares the default session
+  // with panels. Once shell is moved to its own partition (see the related
+  // hardening work in src/main/viewManager.ts and the shell BrowserWindow
+  // setup), the shell partition can be allowed to request these permissions
+  // while panel partitions stay default-deny.
   // -------------------------------------------------------------------------
   const SENSITIVE_PERMISSIONS = new Set<string>([
     "geolocation",
@@ -736,18 +947,15 @@ app.on("ready", async () => {
     if (event.startsWith("event:")) {
       const bareEvent = event.slice("event:".length);
       if (bareEvent === "external-open:open") {
-        const { url, oauthLoopback } = payload as { url?: string; oauthLoopback?: unknown };
-        if (oauthLoopback) {
-          log.warn("[externalOpen] client-loopback OAuth handoff is not supported by Electron; ignoring external open request.");
-          return;
-        }
-        if (typeof url === "string") {
-          void shell.openExternal(url).catch((err: unknown) => {
-            log.warn(
-              `[externalOpen] shell.openExternal failed: ${err instanceof Error ? err.message : String(err)}`
-            );
-          });
-        }
+        void handleExternalOpenPayload(payload as ExternalOpenPayload, {
+          openExternal: (url) => shell.openExternal(url),
+          forwardOAuthCallback: (request) =>
+            serverClientRef!.call("credentials", "forwardOAuthCallback", [request]),
+        }).catch((err: unknown) => {
+          log.warn(
+            `[externalOpen] OAuth browser handoff failed: ${err instanceof Error ? err.message : String(err)}`
+          );
+        });
       }
       if (bareEvent === "browser-panel:open") {
         const { url, parentPanelId } = payload as { url?: string; parentPanelId?: string };
@@ -1155,35 +1363,17 @@ app.on("ready", async () => {
     });
 
     // Panel lifecycle
-    ipcMain.handle("natstack:bridge.closeSelf", async (event) => {
-      const callerId = resolveCallerId(event);
-      return panelOrchestrator!.closePanel(callerId);
-    });
     ipcMain.handle("natstack:closeSelf", async (event) => {
       const callerId = resolveCallerId(event);
       return panelOrchestrator!.closePanel(callerId);
-    });
-    ipcMain.handle("natstack:bridge.closeChild", async (event, childId: string) => {
-      const callerId = resolveCallerId(event);
-      return panelOrchestrator!.closeChild(callerId, childId);
     });
     ipcMain.handle("natstack:closeChild", async (event, childId: string) => {
       const callerId = resolveCallerId(event);
       return panelOrchestrator!.closeChild(callerId, childId);
     });
-    ipcMain.handle("natstack:bridge.focusPanel", async (_event, panelId: string) => {
-      panelOrchestrator!.focusPanel(panelId);
-    });
     ipcMain.handle("natstack:focusPanel", async (_event, panelId: string) => {
       panelOrchestrator!.focusPanel(panelId);
     });
-    ipcMain.handle(
-      "natstack:bridge.createBrowserPanel",
-      async (event, url: string, opts?: { name?: string; focus?: boolean }) => {
-        const callerId = resolveCallerId(event);
-        return panelOrchestrator!.createBrowserPanel(callerId, url, opts);
-      }
-    );
     ipcMain.handle(
       "natstack:createBrowserPanel",
       async (event, url: string, opts?: { name?: string; focus?: boolean }) => {
@@ -1208,23 +1398,10 @@ app.on("ready", async () => {
     });
 
     // Electron-native
-    ipcMain.handle("natstack:bridge.openDevtools", async (event) => {
-      const callerId = resolveCallerId(event);
-      if (!viewManager) throw new Error("ViewManager not initialized");
-      viewManager.openDevTools(callerId);
-    });
     ipcMain.handle("natstack:openDevtools", async (event) => {
       const callerId = resolveCallerId(event);
       if (!viewManager) throw new Error("ViewManager not initialized");
       viewManager.openDevTools(callerId);
-    });
-    ipcMain.handle("natstack:bridge.openFolderDialog", async (event, opts?: { title?: string }) => {
-      requireShellSender(event, "natstack:bridge.openFolderDialog");
-      const result = await dialog.showOpenDialog({
-        properties: ["openDirectory", "createDirectory"],
-        title: opts?.title ?? "Select Folder",
-      });
-      return result.canceled ? null : (result.filePaths[0] ?? null);
     });
     ipcMain.handle("natstack:openFolderDialog", async (event, opts?: { title?: string }) => {
       requireShellSender(event, "natstack:openFolderDialog");
@@ -1247,17 +1424,6 @@ app.on("ready", async () => {
           filters: opts?.filters,
         });
         return result.canceled ? null : (result.filePaths[0] ?? null);
-      }
-    );
-    ipcMain.handle(
-      "natstack:bridge.openExternal",
-      async (event, url: string, options?: unknown) => {
-        const caller = resolveCaller(event);
-        if (caller.callerKind === "shell") {
-          await sc.call("externalOpen", "openExternal", [url, options]);
-        } else {
-          await sc.call("externalOpen", "openExternalForCaller", [{ ...caller, url, options }]);
-        }
       }
     );
     ipcMain.handle("natstack:openExternal", async (event, url: string, options?: unknown) => {
@@ -1291,6 +1457,7 @@ app.on("ready", async () => {
     ipcMain.handle("natstack:navigate", async (event, browserId: string, url: string) => {
       // Audit #9: caller must own the target view OR be the shell.
       requireOwnsViewOrShell(event, browserId, "natstack:navigate");
+      assertHttpUrl(url);
       const wc = viewManager!.getWebContents(browserId);
       if (!wc) throw new Error(`Browser webContents not found for ${browserId}`);
       try {

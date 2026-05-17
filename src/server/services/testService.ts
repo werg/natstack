@@ -10,7 +10,13 @@ export function createTestService(deps: {
   return {
     name: "test",
     description: "Run tests on workspace panels/packages",
-    policy: { allowed: ["panel", "server", "worker"] },
+    // Security: restricted to server-only. Panels and workers must not invoke
+    // test.run directly — vitest executes arbitrary *.test.ts files from
+    // panel context folders inside the server process, enabling RCE with
+    // access to admin tokens and gateway secrets.
+    // If a panel needs to trigger tests, route through a server-side API that
+    // adds proper sandboxing and explicit approval gating.
+    policy: { allowed: ["server"] },
     methods: {
       run: { args: z.tuple([z.string()]).rest(z.unknown()) },
     },
@@ -23,7 +29,7 @@ export function createTestService(deps: {
           panelTestSetupPath: deps.panelTestSetupPath,
         },
         method,
-        args as unknown[],
+        args as unknown[]
       );
     },
   };

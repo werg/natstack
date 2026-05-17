@@ -29,4 +29,5 @@ export type {
   MethodHistoryEntry,
   MethodCallStatus,
   AgentMessage,
+  ChatMethodResult,
 } from "@workspace/agentic-core";

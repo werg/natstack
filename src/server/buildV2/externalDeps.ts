@@ -27,7 +27,7 @@ import type { PackageGraph, GraphNode } from "./packageGraph.js";
  */
 export function collectTransitiveExternalDeps(
   unit: GraphNode,
-  graph: PackageGraph,
+  graph: PackageGraph
 ): Record<string, string> {
   const externals: Record<string, string> = {};
   const visited = new Set<string>();
@@ -95,13 +95,23 @@ function getExternalDepsBaseDir(): string {
   return path.join(getUserDataPath(), "external-deps");
 }
 
+function isFileSystemErrorCode(error: unknown, codes: readonly string[]): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  return typeof code === "string" && codes.includes(code);
+}
+
+function warnCleanupFailure(pathName: string, error: unknown): void {
+  console.warn(
+    `[externalDeps] Failed to remove ${pathName}: ${error instanceof Error ? error.message : String(error)}`
+  );
+}
+
 /**
  * Get or install external dependencies. Returns the path to the
  * node_modules directory.
  */
-export async function ensureExternalDeps(
-  deps: Record<string, string>,
-): Promise<string> {
+export async function ensureExternalDeps(deps: Record<string, string>): Promise<string> {
   if (Object.keys(deps).length === 0) {
     // No external deps — return a dummy path
     return "";
@@ -126,7 +136,7 @@ export async function ensureExternalDeps(
     if (!NPM_DEP_VERSION_RE.test(version)) {
       throw new Error(
         `Refusing non-registry npm specifier for ${name}: "${version}". ` +
-        `Only strict semver, "latest", or "*" allowed.`,
+          `Only strict semver, "latest", or "*" allowed.`
       );
     }
   }
@@ -155,10 +165,7 @@ export async function ensureExternalDeps(
     private: true,
     dependencies: deps,
   };
-  fs.writeFileSync(
-    path.join(tmpDir, "package.json"),
-    JSON.stringify(pkgJson, null, 2),
-  );
+  fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify(pkgJson, null, 2));
 
   try {
     runNpmInstall(tmpDir);
@@ -169,11 +176,15 @@ export async function ensureExternalDeps(
     // Race-safe promotion: try rename, handle concurrent winner
     try {
       fs.renameSync(tmpDir, cacheDir);
-    } catch (err: any) {
-      if (err.code === "ENOTEMPTY" || err.code === "EEXIST" || err.code === "ENOTDIR") {
+    } catch (err: unknown) {
+      if (isFileSystemErrorCode(err, ["ENOTEMPTY", "EEXIST", "ENOTDIR"])) {
         // Another process won — verify their sentinel, use their cache
         if (fs.existsSync(sentinelPath)) {
-          try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+          try {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+          } catch (cleanupError) {
+            warnCleanupFailure(tmpDir, cleanupError);
+          }
           return nodeModulesDir;
         }
         // Winner incomplete — remove stale dir, retry rename
@@ -182,8 +193,16 @@ export async function ensureExternalDeps(
           fs.renameSync(tmpDir, cacheDir);
         } catch {
           // Clean up both dirs to avoid stale state, let build fail transiently
-          try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
-          try { fs.rmSync(cacheDir, { recursive: true, force: true }); } catch {}
+          try {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+          } catch (cleanupError) {
+            warnCleanupFailure(tmpDir, cleanupError);
+          }
+          try {
+            fs.rmSync(cacheDir, { recursive: true, force: true });
+          } catch (cleanupError) {
+            warnCleanupFailure(cacheDir, cleanupError);
+          }
           throw new Error(`External deps cache race: failed to install for key ${key}`);
         }
       } else {
@@ -196,11 +215,11 @@ export async function ensureExternalDeps(
     // Clean up temp dir on failure
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch {
-      // Ignore
+    } catch (cleanupError) {
+      warnCleanupFailure(tmpDir, cleanupError);
     }
     throw new Error(
-      `Failed to install external dependencies: ${error instanceof Error ? error.message : String(error)}`,
+      `Failed to install external dependencies: ${error instanceof Error ? error.message : String(error)}`
     );
   }
 }

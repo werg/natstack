@@ -7,26 +7,31 @@
 
 import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
-import type { WorkerdManager } from "../workerdManager.js";
+import type { WorkerdManager, WorkerCreateOptions } from "../workerdManager.js";
 import type { BuildSystemV2 } from "../buildV2/index.js";
+import type { DORef } from "../doDispatch.js";
 
-const createOptionsSchema = z.object({
-  source: z.string(),
-  contextId: z.string(),
-  name: z.string().optional(),
-  env: z.record(z.string()).optional(),
-  bindings: z.record(z.unknown()).optional(),
-  stateArgs: z.record(z.unknown()).optional(),
-  ref: z.string().optional(),
-  parentId: z.string().optional(),
-}).strict();
+const createOptionsSchema = z
+  .object({
+    source: z.string(),
+    contextId: z.string(),
+    name: z.string().optional(),
+    env: z.record(z.string()).optional(),
+    bindings: z.record(z.unknown()).optional(),
+    stateArgs: z.record(z.unknown()).optional(),
+    ref: z.string().optional(),
+    parentId: z.string().optional(),
+  })
+  .strict();
 
-const updateOptionsSchema = z.object({
-  env: z.record(z.string()).optional(),
-  bindings: z.record(z.unknown()).optional(),
-  stateArgs: z.record(z.unknown()).optional(),
-  ref: z.string().optional(),
-}).strict();
+const updateOptionsSchema = z
+  .object({
+    env: z.record(z.string()).optional(),
+    bindings: z.record(z.unknown()).optional(),
+    stateArgs: z.record(z.unknown()).optional(),
+    ref: z.string().optional(),
+  })
+  .strict();
 
 const doRefSchema = z.object({
   source: z.string(),
@@ -70,18 +75,26 @@ export function createWorkerdService(deps: {
 
       switch (method) {
         case "createInstance":
-          return stripToken(await wm.createInstance(args[0] as any));
+          return stripToken(
+            await wm.createInstance(createOptionsSchema.parse(args[0]) as WorkerCreateOptions)
+          );
         case "destroyInstance":
           return wm.destroyInstance(args[0] as string);
         case "updateInstance":
-          return stripToken(await wm.updateInstance(args[0] as string, args[1] as any));
+          return stripToken(
+            await wm.updateInstance(
+              args[0] as string,
+              updateOptionsSchema.parse(args[1]) as Partial<WorkerCreateOptions>
+            )
+          );
         case "listInstances":
           return wm.listInstances();
         case "getInstanceStatus":
           return wm.getInstanceStatus(args[0] as string);
         case "listInstanceSources": {
           const graph = deps.buildSystem.getGraph();
-          return graph.allNodes()
+          return graph
+            .allNodes()
             .filter((n) => n.kind === "worker")
             .map((n) => ({
               name: n.name,
@@ -94,9 +107,9 @@ export function createWorkerdService(deps: {
         case "restartAll":
           return wm.restartAll();
         case "cloneDO":
-          return wm.cloneDO(args[0] as any, args[1] as string);
+          return wm.cloneDO(doRefSchema.parse(args[0]) as DORef, args[1] as string);
         case "destroyDO":
-          await wm.destroyDO(args[0] as any);
+          await wm.destroyDO(doRefSchema.parse(args[0]) as DORef);
           return { ok: true };
         default:
           throw new Error(`Unknown workerd method: ${method}`);

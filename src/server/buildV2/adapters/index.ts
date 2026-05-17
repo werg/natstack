@@ -17,7 +17,7 @@ export function getAdapter(framework: string): FrameworkAdapter {
   const adapter = adapters.get(framework);
   if (!adapter) {
     throw new Error(
-      `Unknown framework adapter: "${framework}". Available: ${[...adapters.keys()].join(", ")}`,
+      `Unknown framework adapter: "${framework}". Available: ${[...adapters.keys()].join(", ")}`
     );
   }
   return adapter;

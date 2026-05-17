@@ -9,7 +9,7 @@ const mockStartVitest = vi.hoisted(() =>
   vi.fn().mockResolvedValue({
     state: { getFiles: () => [] },
     close: vi.fn(),
-  }),
+  })
 );
 
 vi.mock("fs", () => ({
@@ -22,13 +22,14 @@ vi.mock("vitest/node", () => ({
 }));
 
 import { handleTestCall } from "@natstack/shared/services/testRunnerService";
+import type { ContextFolderManager } from "@natstack/shared/contextFolderManager";
 
 describe("handleTestCall", () => {
   const mockContextFolderManager = {
     ensureContextFolder: vi.fn().mockResolvedValue("/workspace/.contexts/ctx_123"),
   };
   const options = {
-    contextFolderManager: mockContextFolderManager as any,
+    contextFolderManager: mockContextFolderManager as unknown as ContextFolderManager,
     workspaceRoot: "/workspace",
     panelTestSetupPath: "/natstack/src/main/services/testSetup.ts",
   };
@@ -44,38 +45,35 @@ describe("handleTestCall", () => {
   });
 
   it("throws on unknown method", async () => {
-    await expect(
-      handleTestCall(options, "unknown", ["ctx_123", "panels/my-app"]),
-    ).rejects.toThrow("Unknown test method: unknown");
+    await expect(handleTestCall(options, "unknown", ["ctx_123", "panels/my-app"])).rejects.toThrow(
+      "Unknown test method: unknown"
+    );
   });
 
   it("throws when target directory does not exist", async () => {
     mockExistsSync.mockReturnValue(false);
 
-    await expect(
-      handleTestCall(options, "run", ["ctx_123", "panels/nonexistent"]),
-    ).rejects.toThrow("Target directory does not exist: panels/nonexistent");
+    await expect(handleTestCall(options, "run", ["ctx_123", "panels/nonexistent"])).rejects.toThrow(
+      "Target directory does not exist: panels/nonexistent"
+    );
   });
 
   it("throws when target is a file instead of directory", async () => {
     mockStatSync.mockReturnValue({ isDirectory: () => false });
 
     await expect(
-      handleTestCall(options, "run", ["ctx_123", "panels/my-app/index.ts"]),
+      handleTestCall(options, "run", ["ctx_123", "panels/my-app/index.ts"])
     ).rejects.toThrow("Target must be a directory: panels/my-app/index.ts");
   });
 
   it("throws on directory traversal", async () => {
-    await expect(
-      handleTestCall(options, "run", ["ctx_123", "../../etc"]),
-    ).rejects.toThrow("Path escapes context root");
+    await expect(handleTestCall(options, "run", ["ctx_123", "../../etc"])).rejects.toThrow(
+      "Path escapes context root"
+    );
   });
 
   it("returns 'no test files found' when vitest finds nothing", async () => {
-    const result = await handleTestCall(options, "run", [
-      "ctx_123",
-      "panels/empty-app",
-    ]);
+    const result = await handleTestCall(options, "run", ["ctx_123", "panels/empty-app"]);
 
     expect(result.summary).toContain("No test files found");
     expect(result.total).toBe(0);
@@ -89,19 +87,19 @@ describe("handleTestCall", () => {
       expect.any(Array),
       expect.objectContaining({
         setupFiles: [options.panelTestSetupPath],
-      }),
+      })
     );
   });
 
   it("throws when panel setup file does not exist", async () => {
     // First two existsSync calls: target dir check (true), then setup file check (false)
     mockExistsSync
-      .mockReturnValueOnce(true)   // targetPath exists
+      .mockReturnValueOnce(true) // targetPath exists
       .mockReturnValueOnce(false); // panelTestSetupPath does not exist
 
-    await expect(
-      handleTestCall(options, "run", ["ctx_123", "panels/my-app"]),
-    ).rejects.toThrow("Panel test setup file not found");
+    await expect(handleTestCall(options, "run", ["ctx_123", "panels/my-app"])).rejects.toThrow(
+      "Panel test setup file not found"
+    );
   });
 
   it("does not inject panel setup file for package targets", async () => {
@@ -112,24 +110,19 @@ describe("handleTestCall", () => {
       expect.any(Array),
       expect.objectContaining({
         setupFiles: [],
-      }),
+      })
     );
   });
 
   it("passes test name filter to vitest", async () => {
-    await handleTestCall(options, "run", [
-      "ctx_123",
-      "panels/my-app",
-      undefined,
-      "should render",
-    ]);
+    await handleTestCall(options, "run", ["ctx_123", "panels/my-app", undefined, "should render"]);
 
     expect(mockStartVitest).toHaveBeenCalledWith(
       expect.anything(),
       expect.any(Array),
       expect.objectContaining({
         testNamePattern: "should render",
-      }),
+      })
     );
   });
 
@@ -150,10 +143,7 @@ describe("handleTestCall", () => {
       close: vi.fn(),
     });
 
-    const result = await handleTestCall(options, "run", [
-      "ctx_123",
-      "panels/my-app",
-    ]);
+    const result = await handleTestCall(options, "run", ["ctx_123", "panels/my-app"]);
 
     expect(result.passed).toBe(2);
     expect(result.failed).toBe(0);
@@ -186,17 +176,12 @@ describe("handleTestCall", () => {
       close: vi.fn(),
     });
 
-    const result = await handleTestCall(options, "run", [
-      "ctx_123",
-      "panels/my-app",
-    ]);
+    const result = await handleTestCall(options, "run", ["ctx_123", "panels/my-app"]);
 
     expect(result.passed).toBe(1);
     expect(result.failed).toBe(1);
     expect(result.total).toBe(2);
     expect(result.summary).toBe("1 of 2 tests failed");
-    expect(result.details[0]!.errors).toContain(
-      "handles click: Expected true to be false",
-    );
+    expect(result.details[0]!.errors).toContain("handles click: Expected true to be false");
   });
 });

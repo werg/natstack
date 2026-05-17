@@ -12,10 +12,12 @@ export interface ShellPresenceServiceResult {
   internal: ShellPresenceInternal;
 }
 
-export function createShellPresenceService(deps: {
-  now?: () => number;
-  defaultMaxAgeMs?: number;
-} = {}): ShellPresenceServiceResult {
+export function createShellPresenceService(
+  deps: {
+    now?: () => number;
+    defaultMaxAgeMs?: number;
+  } = {}
+): ShellPresenceServiceResult {
   const now = deps.now ?? (() => Date.now());
   const defaultMaxAgeMs = deps.defaultMaxAgeMs ?? 6_000;
   const activeShells = new Map<string, number>();

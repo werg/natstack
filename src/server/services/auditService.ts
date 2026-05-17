@@ -4,12 +4,14 @@ import { AuditLog } from "@natstack/shared/credentials/audit";
 import type { AuditEntry, CredentialAuditEvent } from "@natstack/shared/credentials/types";
 
 const auditQuerySchema = z.object({
-  filter: z.object({
-    workerId: z.string().optional(),
-    providerId: z.string().optional(),
-    connectionId: z.string().optional(),
-    method: z.string().optional(),
-  }).optional(),
+  filter: z
+    .object({
+      workerId: z.string().optional(),
+      providerId: z.string().optional(),
+      connectionId: z.string().optional(),
+      method: z.string().optional(),
+    })
+    .optional(),
   limit: z.number().int().positive().optional(),
   after: z.number().optional(),
 });

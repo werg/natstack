@@ -45,7 +45,7 @@ export function configurePublicUrl(opts: ConfigurePublicUrlOptions): void {
 export function getPublicUrl(): string {
   if (!state) {
     throw new Error(
-      "publicUrl not configured — call configurePublicUrl() after the gateway starts",
+      "publicUrl not configured — call configurePublicUrl() after the gateway starts"
     );
   }
   if (state.override) return state.override;

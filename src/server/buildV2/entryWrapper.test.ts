@@ -25,7 +25,9 @@ describe("generateModuleMapBootstrap (panel target)", () => {
 
   it("uses idempotent initialization so repeated boots don't clobber state", () => {
     const code = generateModuleMapBootstrap("panel");
-    expect(code).toMatch(/__natstackModuleMap__\s*=\s*globalThis\.__natstackModuleMap__\s*\|\|\s*\{\}/);
+    expect(code).toMatch(
+      /__natstackModuleMap__\s*=\s*globalThis\.__natstackModuleMap__\s*\|\|\s*\{\}/
+    );
   });
 
   it("__natstackRequire__ throws a clear error for unknown modules", () => {
@@ -54,8 +56,9 @@ describe("generateModuleMapBootstrap (worker target)", () => {
   });
 
   it("worker bootstrap is strictly smaller than panel bootstrap", () => {
-    expect(generateModuleMapBootstrap("worker").length)
-      .toBeLessThan(generateModuleMapBootstrap("panel").length);
+    expect(generateModuleMapBootstrap("worker").length).toBeLessThan(
+      generateModuleMapBootstrap("panel").length
+    );
   });
 });
 
@@ -123,7 +126,7 @@ describe("generateWorkerEntry", () => {
   it("JSON-quotes paths to handle special characters", () => {
     const code = generateWorkerEntry(
       "/tmp/path with spaces/_expose.js",
-      "/src/path with spaces/index.ts",
+      "/src/path with spaces/index.ts"
     );
     expect(code).toContain('"/tmp/path with spaces/_expose.js"');
     expect(code).toContain('"/src/path with spaces/index.ts"');
@@ -144,7 +147,7 @@ describe("injectHtmlTransforms", () => {
     const html = injectHtmlTransforms(
       '<html><head><title>Panel</title></head><body><div id="root"></div><script src="bundle.js"></script></body></html>',
       "/panels/chat/",
-      true,
+      true
     );
 
     expect(html).toContain('<link rel="stylesheet" href="./bundle.css" />');
@@ -155,7 +158,7 @@ describe("injectHtmlTransforms", () => {
     const html = injectHtmlTransforms(
       '<html><head><link rel="stylesheet" href="./bundle.css" /></head><body><script src="./bundle.js"></script></body></html>',
       "/panels/chat/",
-      true,
+      true
     );
 
     expect(html.match(/bundle\.css/g)).toHaveLength(1);

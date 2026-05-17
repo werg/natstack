@@ -63,7 +63,12 @@ function callerLabel(approval: PendingApproval): string {
   return approval.callerKind === "worker" ? "Worker" : "Panel";
 }
 
-function payloadFor(approval: PendingApproval, title: string, body: string, category: string): PushApprovalDataPayload {
+function payloadFor(
+  approval: PendingApproval,
+  title: string,
+  body: string,
+  category: string
+): PushApprovalDataPayload {
   return {
     kind: "approval-prompt",
     approvalId: approval.approvalId,
@@ -123,7 +128,9 @@ export function createApprovalPushBridge(deps: ApprovalPushBridgeDeps): Approval
     };
 
     if (deps.shellPresence.isAnyShellActive()) {
-      trackedApproval.timers.push(setTimeoutFn(() => sendIfPending("presence-stale"), presenceMaxAgeMs));
+      trackedApproval.timers.push(
+        setTimeoutFn(() => sendIfPending("presence-stale"), presenceMaxAgeMs)
+      );
       trackedApproval.timers.push(setTimeoutFn(() => sendIfPending("deadline"), delayMs));
       return;
     }

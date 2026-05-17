@@ -54,9 +54,7 @@ describe("ServiceDispatcher.registerService", () => {
     expect(result).toBe(3);
 
     // Invalid args (strings instead of numbers)
-    await expect(sd.dispatch(ctx, "math", "add", ["a", "b"])).rejects.toThrow(
-      "Invalid args"
-    );
+    await expect(sd.dispatch(ctx, "math", "add", ["a", "b"])).rejects.toThrow("Invalid args");
   });
 
   it("allows unknown methods (no schema validation)", async () => {
@@ -114,7 +112,7 @@ describe("ServiceDispatcher.registerService", () => {
 
     const defs = sd.getServiceDefinitions();
     expect(defs).toHaveLength(2);
-    expect(defs.map(d => d.name).sort()).toEqual(["a", "b"]);
+    expect(defs.map((d) => d.name).sort()).toEqual(["a", "b"]);
   });
 
   it("getMethodSchema returns schema for known methods", () => {

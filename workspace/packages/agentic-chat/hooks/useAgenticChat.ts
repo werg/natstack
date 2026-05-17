@@ -34,6 +34,8 @@ import type {
   ChatInputContextValue,
   ActionBarData,
 } from "../types";
+import { unwrapChatMethodResult } from "@workspace/agentic-core";
+import type { ChatMethodResult } from "@workspace/agentic-core";
 
 /** Pending agent info passed from launcher */
 interface PendingAgentInfo {
@@ -155,7 +157,12 @@ export function useAgenticChat({
     },
     callMethod: async (pid: string, method: string, callArgs: unknown) => {
       const handle = core.clientRef.current!.callMethod(pid, method, callArgs);
-      return (handle as { result: Promise<unknown> }).result;
+      const result = await (handle as { result: Promise<ChatMethodResult> }).result;
+      return unwrapChatMethodResult(result);
+    },
+    callMethodResult: async (pid: string, method: string, callArgs: unknown) => {
+      const handle = core.clientRef.current!.callMethod(pid, method, callArgs);
+      return (handle as { result: Promise<ChatMethodResult> }).result;
     },
     contextId: contextId ?? "",
     channelId: channelName,

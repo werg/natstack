@@ -3,16 +3,9 @@ import type { FrameworkAdapter } from "./types.js";
 export const reactAdapter: FrameworkAdapter = {
   id: "react",
 
-  dedupePackages: [
-    "react",
-    "react-dom",
-    "react/jsx-runtime",
-    "react/jsx-dev-runtime",
-  ],
+  dedupePackages: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],
 
-  forcedSplitPackages: [
-    "@radix-ui/react-icons",
-  ],
+  forcedSplitPackages: ["@radix-ui/react-icons"],
 
   jsx: "automatic",
   tsconfigJsx: "react-jsx",

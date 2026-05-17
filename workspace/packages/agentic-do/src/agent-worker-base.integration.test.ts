@@ -22,13 +22,14 @@ import { describe, it, expect, vi } from "vitest";
 import type {
   AgentEvent,
   AgentMessage,
-} from "@mariozechner/pi-agent-core";
+} from "@earendil-works/pi-agent-core";
 import type { ChannelEvent } from "@natstack/harness/types";
 import type { PiRunner } from "@natstack/harness";
 
 import { createTestDO } from "@workspace/runtime/worker/test-utils";
 
 import { AgentWorkerBase } from "./agent-worker-base.js";
+import type { ChannelClient } from "./channel-client.js";
 import { ContentBlockProjector } from "./content-block-projector.js";
 
 // ─── Fake PiRunner ───────────────────────────────────────────────────────────
@@ -43,6 +44,13 @@ interface FakeRunnerState {
   executeToolDirectImpl?: (toolName: string, toolCallId: string, params: unknown) => Promise<any>;
   replaceHistoryCalls: AgentMessage[][];
   emit: (event: AgentEvent) => void;
+}
+
+interface SentMessage {
+  participantId: string;
+  messageId: string;
+  content: string;
+  opts?: unknown;
 }
 
 function makeFakeRunner(): { fake: PiRunner; state: FakeRunnerState } {
@@ -123,6 +131,7 @@ class TestWorker extends AgentWorkerBase {
   static override schemaVersion = 99;
 
   public fakeState: FakeRunnerState | null = null;
+  public sentMessages: SentMessage[] = [];
 
   /** Skip the real roster RPC. */
   protected override async refreshRoster(): Promise<void> { /* no-op */ }
@@ -152,12 +161,51 @@ class TestWorker extends AgentWorkerBase {
     return { handle: "test", name: "Test", type: "agent" as const, metadata: {}, methods: [] };
   }
 
+  protected override createChannelClient(_channelId: string): ChannelClient {
+    return {
+      send: async (participantId: string, messageId: string, content: string, opts?: unknown) => {
+        this.sentMessages.push({ participantId, messageId, content, opts });
+      },
+      update: async () => { /* no-op */ },
+      complete: async () => { /* no-op */ },
+      error: async () => { /* no-op */ },
+      sendEphemeral: async () => { /* no-op */ },
+      sendEphemeralEvent: async () => { /* no-op */ },
+      updateMetadata: async () => { /* no-op */ },
+      setTypingState: async () => { /* no-op */ },
+      subscribe: async () => ({ ok: true }),
+      unsubscribe: async () => { /* no-op */ },
+      getParticipants: async () => [
+        { participantId: "panel-1", metadata: { type: "panel", hostPlatform: "electron" } },
+      ],
+      callMethod: async () => { /* no-op */ },
+      cancelCall: async () => { /* no-op */ },
+      getEventRange: async () => [],
+      updateConfig: async (config: Record<string, unknown>) => config,
+    } as unknown as ChannelClient;
+  }
+
   readPromptConfig(channelId: string) {
     return this.getRunnerPromptConfig(channelId);
   }
 
   resumeAfterCredential(channelId: string): Promise<boolean> {
     return this.resumeAfterModelCredentialConnected(channelId);
+  }
+
+  resumeAfterCredentialFor(
+    channelId: string,
+    opts: { providerId?: string; modelBaseUrl?: string },
+  ): Promise<boolean> {
+    return this.resumeAfterModelCredentialConnected(channelId, opts);
+  }
+
+  emitCredentialCard(channelId: string): Promise<void> {
+    return (this as any).emitModelCredentialRequiredCard(
+      channelId,
+      "openai-codex",
+      "https://api.openai.com/v1",
+    );
   }
 }
 
@@ -669,6 +717,89 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
     ]);
   });
 
+  it("resumes after a restarted worker re-emits the persisted credential card", async () => {
+    const { instance, sql } = await createTestDO(TestWorker);
+    const messages: AgentMessage[] = [
+      { role: "user", content: "hello", timestamp: 1 },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "" }],
+        stopReason: "error",
+        errorMessage: "No URL-bound model credential is configured for model provider: openai-codex",
+        timestamp: 2,
+      } as AgentMessage,
+    ];
+    sql.exec(
+      `INSERT INTO subscriptions (channel_id, context_id, subscribed_at, config, participant_id)
+       VALUES (?, ?, ?, ?, ?)`,
+      "ch-1",
+      "ctx-1",
+      Date.now(),
+      null,
+      "agent-1",
+    );
+    await (instance as any).saveMessages("ch-1", messages);
+    await (instance as TestWorker).emitCredentialCard("ch-1");
+    await flush();
+
+    const card = (instance as TestWorker).sentMessages.find((message) =>
+      (message.opts as { contentType?: string } | undefined)?.contentType === "inline_ui"
+    );
+    expect(card).toBeDefined();
+    expect(JSON.parse(card!.content).props).toMatchObject({
+      providerId: "openai-codex",
+      modelBaseUrl: "https://api.openai.com/v1",
+      agentParticipantId: "agent-1",
+      browserHandoffCallerId: "panel-1",
+      browserHandoffPlatform: "electron",
+    });
+    expect(sql.exec(
+      `SELECT * FROM model_credential_interruptions WHERE channel_id = ?`,
+      "ch-1",
+    ).toArray()).toHaveLength(0);
+
+    const resumed = await (instance as TestWorker).resumeAfterCredentialFor("ch-1", {
+      providerId: "openai-codex",
+      modelBaseUrl: "https://api.openai.com/v1",
+    });
+    await flush();
+
+    expect(resumed).toBe(true);
+    expect(instance.fakeState!.continueCount).toBe(1);
+    expect(cachedMessages(instance, "ch-1")).toEqual([
+      { role: "user", content: "hello", timestamp: 1 },
+    ]);
+  });
+
+  it("resumes a fresh workspace credential interruption before the assistant error is persisted", async () => {
+    const { instance, sql } = await createTestDO(TestWorker);
+
+    await (instance as any).saveMessages("ch-1", [
+      { role: "user", content: "hello", timestamp: 1 },
+    ]);
+    await (instance as any).recordModelCredentialInterruption(
+      "ch-1",
+      "openai-codex",
+      "https://api.openai.com/v1",
+    );
+
+    const resumed = await (instance as TestWorker).resumeAfterCredentialFor("ch-1", {
+      providerId: "openai-codex",
+      modelBaseUrl: "https://api.openai.com/v1",
+    });
+    await flush();
+
+    expect(resumed).toBe(true);
+    expect(instance.fakeState!.continueCount).toBe(1);
+    expect(cachedMessages(instance, "ch-1")).toEqual([
+      { role: "user", content: "hello", timestamp: 1 },
+    ]);
+    expect(sql.exec(
+      `SELECT * FROM model_credential_interruptions WHERE channel_id = ?`,
+      "ch-1",
+    ).toArray()).toHaveLength(0);
+  });
+
   it("does not resume after unrelated assistant errors", async () => {
     const { instance } = await createTestDO(TestWorker);
 
@@ -698,6 +829,32 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
     ]);
 
     const resumed = await (instance as TestWorker).resumeAfterCredential("ch-1");
+    await flush();
+
+    expect(resumed).toBe(false);
+    expect(instance.fakeState!.continueCount).toBe(0);
+  });
+
+  it("does not replay an older credential interruption after a newer user turn", async () => {
+    const { instance } = await createTestDO(TestWorker);
+
+    await (instance as any).saveMessages("ch-1", [
+      { role: "user", content: "needs credential", timestamp: 1 },
+    ]);
+    await (instance as any).recordModelCredentialInterruption(
+      "ch-1",
+      "openai-codex",
+      "https://api.openai.com/v1",
+    );
+    await (instance as any).saveMessages("ch-1", [
+      { role: "user", content: "needs credential", timestamp: 1 },
+      { role: "user", content: "newer turn", timestamp: 2 },
+    ]);
+
+    const resumed = await (instance as TestWorker).resumeAfterCredentialFor("ch-1", {
+      providerId: "openai-codex",
+      modelBaseUrl: "https://api.openai.com/v1",
+    });
     await flush();
 
     expect(resumed).toBe(false);

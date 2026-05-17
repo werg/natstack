@@ -117,10 +117,14 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
   // happen to be schema-valid). Omit the methods entirely instead: callers
   // get a single, consistent "Unknown workspace method: create" that makes
   // it obvious the API isn't available in this mode.
-  const catalogMethods: ServiceDefinition["methods"] = deps.centralData ? {
-    create: { args: z.tuple([z.string(), z.object({ forkFrom: z.string().optional() }).optional()]) },
-    delete: { args: z.tuple([z.string()]) },
-  } : {};
+  const catalogMethods: ServiceDefinition["methods"] = deps.centralData
+    ? {
+        create: {
+          args: z.tuple([z.string(), z.object({ forkFrom: z.string().optional() }).optional()]),
+        },
+        delete: { args: z.tuple([z.string()]) },
+      }
+    : {};
 
   return {
     name: "workspace",
@@ -141,10 +145,16 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
         args: z.tuple([z.string()]),
         policy: { allowed: ["shell"] },
       },
-      setInitPanels: { args: z.tuple([z.array(z.object({
-        source: z.string(),
-        stateArgs: z.record(z.unknown()).optional(),
-      }))]) },
+      setInitPanels: {
+        args: z.tuple([
+          z.array(
+            z.object({
+              source: z.string(),
+              stateArgs: z.record(z.unknown()).optional(),
+            })
+          ),
+        ]),
+      },
       // SECURITY: arbitrary config-field writes — server-internal use
       // only. Panels MUST NOT mutate workspace config fields directly.
       setConfigField: {
@@ -226,7 +236,9 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
         }
 
         case "setInitPanels": {
-          const [initPanels] = args as [Array<{ source: string; stateArgs?: Record<string, unknown> }>];
+          const [initPanels] = args as [
+            Array<{ source: string; stateArgs?: Record<string, unknown> }>,
+          ];
           deps.setConfigField("initPanels", initPanels);
           return;
         }

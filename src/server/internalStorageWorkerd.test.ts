@@ -57,7 +57,9 @@ function createWorkerdHarness(overrides: Partial<WorkerdManagerDeps> = {}) {
   });
   dispatch.setGetDispatchSecret(() => manager.getDispatchSecret());
   dispatch.setGetWorkerdGatewayToken(() => manager.getWorkerdGatewayToken());
-  dispatch.setEnsureDO((source, className, objectKey) => manager.ensureDO(source, className, objectKey));
+  dispatch.setEnsureDO((source, className, objectKey) =>
+    manager.ensureDO(source, className, objectKey)
+  );
 
   return { manager, dispatch };
 }
@@ -75,14 +77,26 @@ describe("internal storage DOs under workerd", () => {
   it("supports PanelStoreDO FTS5 search in real workerd storage", async () => {
     const harness = createWorkerdHarness();
     manager = harness.manager;
-    await manager.registerAllDOClasses([
-      { source: INTERNAL_DO_SOURCE, className: "PanelStoreDO" },
-    ]);
+    await manager.registerAllDOClasses([{ source: INTERNAL_DO_SOURCE, className: "PanelStoreDO" }]);
 
-    const ref = { source: INTERNAL_DO_SOURCE, className: "PanelStoreDO", objectKey: "workspace-fts" };
+    const ref = {
+      source: INTERNAL_DO_SOURCE,
+      className: "PanelStoreDO",
+      objectKey: "workspace-fts",
+    };
     const snapshot = { source: "panels/search/index.tsx", stateArgs: {} };
-    await harness.dispatch.dispatch(ref, "createPanel", { id: "root", title: "Root", parentId: null, snapshot });
-    await harness.dispatch.dispatch(ref, "createPanel", { id: "child", title: "Search Console", parentId: "root", snapshot });
+    await harness.dispatch.dispatch(ref, "createPanel", {
+      id: "root",
+      title: "Root",
+      parentId: null,
+      snapshot,
+    });
+    await harness.dispatch.dispatch(ref, "createPanel", {
+      id: "child",
+      title: "Search Console",
+      parentId: "root",
+      snapshot,
+    });
     await harness.dispatch.dispatch(ref, "indexPanel", {
       id: "child",
       title: "Search Console",
@@ -106,20 +120,26 @@ describe("internal storage DOs under workerd", () => {
     ]);
 
     const ref = { source: INTERNAL_DO_SOURCE, className: "BrowserDataDO", objectKey: "global" };
-    await harness.dispatch.dispatch(ref, "addHistoryBatch", [{
-      url: "https://example.com/docs/storage",
-      title: "Durable storage guide",
-      visitCount: 3,
-      typedCount: 1,
-      firstVisitTime: 100,
-      lastVisitTime: 200,
-    }]);
+    await harness.dispatch.dispatch(ref, "addHistoryBatch", [
+      {
+        url: "https://example.com/docs/storage",
+        title: "Durable storage guide",
+        visitCount: 3,
+        typedCount: 1,
+        firstVisitTime: 100,
+        lastVisitTime: 200,
+      },
+    ]);
 
-    await expect(harness.dispatch.dispatch(ref, "searchHistory", "durable", 10)).resolves.toMatchObject([
+    await expect(
+      harness.dispatch.dispatch(ref, "searchHistory", "durable", 10)
+    ).resolves.toMatchObject([
       { url: "https://example.com/docs/storage", title: "Durable storage guide" },
     ]);
     await expect(harness.dispatch.dispatch(ref, "deleteHistoryRange", 100, 200)).resolves.toBe(1);
-    await expect(harness.dispatch.dispatch(ref, "searchHistory", "durable", 10)).resolves.toEqual([]);
+    await expect(harness.dispatch.dispatch(ref, "searchHistory", "durable", 10)).resolves.toEqual(
+      []
+    );
   }, 30_000);
 
   it("persists gad provenance through real workerd DO dispatch", async () => {
@@ -197,7 +217,11 @@ describe("internal storage DOs under workerd", () => {
       { source: INTERNAL_DO_SOURCE, className: "BrowserDataDO" },
     ]);
 
-    const ref = { source: INTERNAL_DO_SOURCE, className: "BrowserDataDO", objectKey: "global-record" };
+    const ref = {
+      source: INTERNAL_DO_SOURCE,
+      className: "BrowserDataDO",
+      objectKey: "global-record",
+    };
     await harness.dispatch.dispatch(ref, "recordHistoryVisit", {
       url: "https://example.com/app",
       title: "Example App",
@@ -210,7 +234,12 @@ describe("internal storage DOs under workerd", () => {
       title: "Example App Updated",
       observedAt: 150,
     });
-    await expect(harness.dispatch.dispatch(ref, "searchHistoryForAutocomplete", { query: "updated", limit: 10 })).resolves.toMatchObject([
+    await expect(
+      harness.dispatch.dispatch(ref, "searchHistoryForAutocomplete", {
+        query: "updated",
+        limit: 10,
+      })
+    ).resolves.toMatchObject([
       {
         url: "https://example.com/app",
         title: "Example App Updated",
@@ -227,7 +256,12 @@ describe("internal storage DOs under workerd", () => {
       visitTime: 200,
     });
 
-    await expect(harness.dispatch.dispatch(ref, "searchHistoryForAutocomplete", { query: "updated", limit: 10 })).resolves.toMatchObject([
+    await expect(
+      harness.dispatch.dispatch(ref, "searchHistoryForAutocomplete", {
+        query: "updated",
+        limit: 10,
+      })
+    ).resolves.toMatchObject([
       {
         url: "https://example.com/app",
         title: "Example App Updated",
@@ -295,7 +329,9 @@ describe("internal storage DOs under workerd", () => {
     });
 
     expect(typeof id).toBe("number");
-    await expect(harness.dispatch.dispatch(ref, "getPasswordForSite", "https://example.com/login")).resolves.toMatchObject([
+    await expect(
+      harness.dispatch.dispatch(ref, "getPasswordForSite", "https://example.com/login")
+    ).resolves.toMatchObject([
       {
         origin_url: "https://example.com/login",
         username: "ada",
@@ -318,16 +354,18 @@ describe("internal storage DOs under workerd", () => {
     ]);
 
     const ref = { source: INTERNAL_DO_SOURCE, className: "BrowserDataDO", objectKey: "global" };
-    const id = await harness.dispatch.dispatch(ref, "addPassword", {
+    const id = (await harness.dispatch.dispatch(ref, "addPassword", {
       url: "https://example.com/login",
       username: "ada",
       password: "first secret",
       actionUrl: "https://example.com/session",
       realm: "",
       timesUsed: 0,
-    }) as number;
+    })) as number;
 
-    await expect(harness.dispatch.dispatch(ref, "getPasswordForSite", "https://example.com")).resolves.toMatchObject([
+    await expect(
+      harness.dispatch.dispatch(ref, "getPasswordForSite", "https://example.com")
+    ).resolves.toMatchObject([
       {
         id,
         origin_url: "https://example.com/login",
@@ -336,9 +374,13 @@ describe("internal storage DOs under workerd", () => {
       },
     ]);
 
-    await expect(harness.dispatch.dispatch(ref, "isNeverSave", "https://never.example")).resolves.toBe(false);
+    await expect(
+      harness.dispatch.dispatch(ref, "isNeverSave", "https://never.example")
+    ).resolves.toBe(false);
     await harness.dispatch.dispatch(ref, "addNeverSave", "https://never.example");
-    await expect(harness.dispatch.dispatch(ref, "isNeverSave", "https://never.example")).resolves.toBe(true);
+    await expect(
+      harness.dispatch.dispatch(ref, "isNeverSave", "https://never.example")
+    ).resolves.toBe(true);
 
     await harness.dispatch.dispatch(ref, "updateLastUsed", id);
     await expect(harness.dispatch.dispatch(ref, "getPasswords")).resolves.toMatchObject([
@@ -363,7 +405,11 @@ describe("internal storage DOs under workerd", () => {
       timesUsed: 1,
     };
     await expect(harness.dispatch.dispatch(ref, "addPasswordsBatch", [password])).resolves.toBe(1);
-    await expect(harness.dispatch.dispatch(ref, "addPasswordsBatch", [{ ...password, password: "second secret", timesUsed: 7 }])).resolves.toBe(1);
+    await expect(
+      harness.dispatch.dispatch(ref, "addPasswordsBatch", [
+        { ...password, password: "second secret", timesUsed: 7 },
+      ])
+    ).resolves.toBe(1);
     await expect(harness.dispatch.dispatch(ref, "getPasswords")).resolves.toMatchObject([
       {
         origin_url: "https://example.com/login",

@@ -4,7 +4,12 @@ import type { PanelOrchestrator } from "../panelOrchestrator.js";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import type { PanelView } from "../panelView.js";
 import type { ViewManager } from "../viewManager.js";
-import type { BranchInfo, CommitInfo, ThemeAppearance, WorkspaceNode } from "@natstack/shared/types";
+import type {
+  BranchInfo,
+  CommitInfo,
+  ThemeAppearance,
+  WorkspaceNode,
+} from "@natstack/shared/types";
 import type { ServerClient } from "../serverClient.js";
 import {
   buildPanelChromeState,
@@ -17,7 +22,10 @@ import {
   type PanelRepoState,
 } from "@natstack/shared/panelChrome";
 import { getPanelSource } from "@natstack/shared/panel/accessors";
-import { BROWSER_NAVIGATION_TRANSITIONS, type BrowserNavigationIntent } from "@natstack/shared/panelCommands";
+import {
+  BROWSER_NAVIGATION_TRANSITIONS,
+  type BrowserNavigationIntent,
+} from "@natstack/shared/panelCommands";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("PanelShellService");
@@ -25,7 +33,7 @@ const log = createDevLogger("PanelShellService");
 async function getPanelAddressOptions(
   source: string,
   ref?: string,
-  serverClient?: ServerClient | null,
+  serverClient?: ServerClient | null
 ): Promise<PanelAddressOptions> {
   return getSharedPanelAddressOptions({
     source,
@@ -37,7 +45,7 @@ async function getPanelAddressOptions(
 async function getBrowserAddressOptions(
   query: string,
   registry: PanelRegistry,
-  serverClient?: ServerClient | null,
+  serverClient?: ServerClient | null
 ): Promise<BrowserAddressOptions> {
   return getSharedBrowserAddressOptions({
     query,
@@ -48,42 +56,60 @@ async function getBrowserAddressOptions(
 
 function createGitAdapter(serverClient: ServerClient) {
   return {
-    getWorkspaceTree: () => serverClient.call("git", "getWorkspaceTree", []) as Promise<{ children: WorkspaceNode[] }>,
-    findRepoForPath: (source: string) => serverClient.call("git", "findRepoForPath", [source]) as Promise<{ repoPath: string; relativePath: string } | null>,
-    status: (repoPath: string) => serverClient.call("git", "status", [repoPath]) as Promise<PanelRepoState & { repoPath: string }>,
-    listBranches: (repoPath: string) => serverClient.call("git", "listBranches", [repoPath]) as Promise<BranchInfo[]>,
-    listCommits: (repoPath: string, ref: string, limit: number) => serverClient.call("git", "listCommits", [repoPath, ref, limit]) as Promise<CommitInfo[]>,
+    getWorkspaceTree: () =>
+      serverClient.call("git", "getWorkspaceTree", []) as Promise<{ children: WorkspaceNode[] }>,
+    findRepoForPath: (source: string) =>
+      serverClient.call("git", "findRepoForPath", [source]) as Promise<{
+        repoPath: string;
+        relativePath: string;
+      } | null>,
+    status: (repoPath: string) =>
+      serverClient.call("git", "status", [repoPath]) as Promise<
+        PanelRepoState & { repoPath: string }
+      >,
+    listBranches: (repoPath: string) =>
+      serverClient.call("git", "listBranches", [repoPath]) as Promise<BranchInfo[]>,
+    listCommits: (repoPath: string, ref: string, limit: number) =>
+      serverClient.call("git", "listCommits", [repoPath, ref, limit]) as Promise<CommitInfo[]>,
   };
 }
 
 function createBrowserDataAdapter(serverClient: ServerClient) {
   return {
     searchHistoryForAutocomplete: (query: string, limit: number) =>
-      serverClient.call("browser-data", "searchHistoryForAutocomplete", [{ query, limit }]) as Promise<Record<string, unknown>[]>,
+      serverClient.call("browser-data", "searchHistoryForAutocomplete", [
+        { query, limit },
+      ]) as Promise<Record<string, unknown>[]>,
     getHistory: (query: { limit: number }) =>
-      serverClient.call("browser-data", "getHistory", [query]) as Promise<Record<string, unknown>[]>,
+      serverClient.call("browser-data", "getHistory", [query]) as Promise<
+        Record<string, unknown>[]
+      >,
     searchBookmarks: (query: string) =>
-      serverClient.call("browser-data", "searchBookmarks", [query]) as Promise<Record<string, unknown>[]>,
+      serverClient.call("browser-data", "searchBookmarks", [query]) as Promise<
+        Record<string, unknown>[]
+      >,
     getSearchEngines: () =>
-      serverClient.call("browser-data", "getSearchEngines", []) as Promise<Record<string, unknown>[]>,
+      serverClient.call("browser-data", "getSearchEngines", []) as Promise<
+        Record<string, unknown>[]
+      >,
   };
 }
 
 async function getRepoState(
   source: string,
-  serverClient?: ServerClient | null,
+  serverClient?: ServerClient | null
 ): Promise<PanelRepoState | undefined> {
   if (!serverClient || isBrowserPanelSource(source) || source.startsWith("about/")) {
     return undefined;
   }
 
   try {
-    const repo = await serverClient.call("git", "findRepoForPath", [source]) as {
+    const repo = (await serverClient.call("git", "findRepoForPath", [source])) as {
       repoPath: string;
       relativePath: string;
     } | null;
     const repoPath = repo?.repoPath ?? source;
-    const status = await serverClient.call("git", "status", [repoPath]) as {
+    const status = (await serverClient.call("git", "status", [repoPath])) as {
       repoPath: string;
       branch: string | null;
       commit: string | null;
@@ -120,9 +146,19 @@ export function createPanelShellService(deps: {
       updateTheme: { args: z.tuple([z.unknown()]) },
       openDevTools: { args: z.tuple([z.string()]) },
       getChromeState: { args: z.tuple([z.string()]) },
-      getAddressOptions: { args: z.union([z.tuple([z.string()]), z.tuple([z.string(), z.string().optional()])]) },
+      getAddressOptions: {
+        args: z.union([z.tuple([z.string()]), z.tuple([z.string(), z.string().optional()])]),
+      },
       getBrowserAddressOptions: { args: z.tuple([z.string()]) },
-      markBrowserNavigationIntent: { args: z.tuple([z.string(), z.object({ transition: z.enum(BROWSER_NAVIGATION_TRANSITIONS).optional(), typed: z.boolean().optional() })]) },
+      markBrowserNavigationIntent: {
+        args: z.tuple([
+          z.string(),
+          z.object({
+            transition: z.enum(BROWSER_NAVIGATION_TRANSITIONS).optional(),
+            typed: z.boolean().optional(),
+          }),
+        ]),
+      },
       reload: { args: z.tuple([z.string()]) },
       reloadView: { args: z.tuple([z.string()]) },
       forceReloadView: { args: z.tuple([z.string()]) },
@@ -135,14 +171,72 @@ export function createPanelShellService(deps: {
       initGitRepo: { args: z.tuple([z.string()]) },
       updatePanelState: { args: z.tuple([z.string(), z.record(z.unknown())]) },
       createAboutPanel: { args: z.tuple([z.unknown()]) },
-      navigate: { args: z.tuple([z.string(), z.string(), z.object({ ref: z.string().optional(), contextId: z.string().optional(), stateArgs: z.record(z.unknown()).optional() }).optional()]) },
-      create: { args: z.tuple([z.string(), z.object({ name: z.string().optional(), isRoot: z.boolean().optional(), ref: z.string().optional() }).optional()]) },
-      createChild: { args: z.tuple([z.string(), z.string(), z.object({ name: z.string().optional(), focus: z.boolean().optional(), ref: z.string().optional() }).optional()]) },
-      createBrowser: { args: z.tuple([z.string(), z.object({ name: z.string().optional(), focus: z.boolean().optional() }).optional()]) },
-      createBrowserChild: { args: z.tuple([z.string(), z.string(), z.object({ name: z.string().optional(), focus: z.boolean().optional() }).optional()]) },
-      movePanel: { args: z.tuple([z.object({ panelId: z.string(), newParentId: z.string().nullable(), targetPosition: z.number() })]) },
-      getChildrenPaginated: { args: z.tuple([z.object({ parentId: z.string(), offset: z.number(), limit: z.number() })]) },
-      getRootPanelsPaginated: { args: z.tuple([z.object({ offset: z.number(), limit: z.number() })]) },
+      navigate: {
+        args: z.tuple([
+          z.string(),
+          z.string(),
+          z
+            .object({
+              ref: z.string().optional(),
+              contextId: z.string().optional(),
+              stateArgs: z.record(z.unknown()).optional(),
+            })
+            .optional(),
+        ]),
+      },
+      create: {
+        args: z.tuple([
+          z.string(),
+          z
+            .object({
+              name: z.string().optional(),
+              isRoot: z.boolean().optional(),
+              ref: z.string().optional(),
+            })
+            .optional(),
+        ]),
+      },
+      createChild: {
+        args: z.tuple([
+          z.string(),
+          z.string(),
+          z
+            .object({
+              name: z.string().optional(),
+              focus: z.boolean().optional(),
+              ref: z.string().optional(),
+            })
+            .optional(),
+        ]),
+      },
+      createBrowser: {
+        args: z.tuple([
+          z.string(),
+          z.object({ name: z.string().optional(), focus: z.boolean().optional() }).optional(),
+        ]),
+      },
+      createBrowserChild: {
+        args: z.tuple([
+          z.string(),
+          z.string(),
+          z.object({ name: z.string().optional(), focus: z.boolean().optional() }).optional(),
+        ]),
+      },
+      movePanel: {
+        args: z.tuple([
+          z.object({
+            panelId: z.string(),
+            newParentId: z.string().nullable(),
+            targetPosition: z.number(),
+          }),
+        ]),
+      },
+      getChildrenPaginated: {
+        args: z.tuple([z.object({ parentId: z.string(), offset: z.number(), limit: z.number() })]),
+      },
+      getRootPanelsPaginated: {
+        args: z.tuple([z.object({ offset: z.number(), limit: z.number() })]),
+      },
       getCollapsedIds: { args: z.tuple([]) },
       setCollapsed: { args: z.tuple([z.string(), z.boolean()]) },
       expandIds: { args: z.tuple([z.array(z.string())]) },
@@ -165,12 +259,19 @@ export function createPanelShellService(deps: {
 
         case "notifyFocused": {
           const panelId = args[0] as string;
+          if (!registry.getPanel(panelId)) {
+            log.verbose(` Ignoring focus notification for missing panel: ${panelId}`);
+            return;
+          }
+
           try {
             // Orchestrator handles: registry.updateSelectedPath, server persist,
             // sendPanelEvent(focus), navigate-to-panel event
             lifecycle.focusPanel(panelId);
             vm.refreshVisiblePanel();
-            void lifecycle.rebuildUnloadedPanel(panelId).catch((err: unknown) => console.warn(`[Panel] Rebuild failed for ${panelId}:`, err));
+            void lifecycle
+              .rebuildUnloadedPanel(panelId)
+              .catch((err: unknown) => console.warn(`[Panel] Rebuild failed for ${panelId}:`, err));
           } catch (error) {
             console.error(`[Panel] Failed to focus panel ${panelId}:`, error);
           }
@@ -274,7 +375,14 @@ export function createPanelShellService(deps: {
 
         case "archive": {
           const panelId = args[0] as string;
-          await lifecycle.closePanel(panelId);
+          try {
+            await lifecycle.closePanel(panelId);
+          } catch (error) {
+            log.warn(
+              ` Archive failed for panel ${panelId}: ${error instanceof Error ? error.message : String(error)}`
+            );
+            throw error;
+          }
           return;
         }
 
@@ -291,13 +399,16 @@ export function createPanelShellService(deps: {
         }
 
         case "updatePanelState": {
-          const [panelId, state] = args as [string, {
-            url?: string;
-            pageTitle?: string;
-            isLoading?: boolean;
-            canGoBack?: boolean;
-            canGoForward?: boolean;
-          }];
+          const [panelId, state] = args as [
+            string,
+            {
+              url?: string;
+              pageTitle?: string;
+              isLoading?: boolean;
+              canGoBack?: boolean;
+              canGoForward?: boolean;
+            },
+          ];
           // updatePanelState is handled by PanelView's browser state tracking
           // This was a method on PanelManager that's now in PanelView
           // For now, delegate to the panel view
@@ -327,21 +438,29 @@ export function createPanelShellService(deps: {
         case "navigate": {
           const panelId = args[0] as string;
           const source = args[1] as string;
-          const opts = args[2] as { ref?: string; contextId?: string; stateArgs?: Record<string, unknown> } | undefined;
+          const opts = args[2] as
+            | { ref?: string; contextId?: string; stateArgs?: Record<string, unknown> }
+            | undefined;
           return lifecycle.navigatePanel(panelId, source, opts);
         }
 
         case "createBrowser": {
           const url = args[0] as string;
           const opts = args[1] as { name?: string; focus?: boolean } | undefined;
-          return lifecycle.createBrowserPanel("shell", url, { ...opts, focus: opts?.focus ?? true });
+          return lifecycle.createBrowserPanel("shell", url, {
+            ...opts,
+            focus: opts?.focus ?? true,
+          });
         }
 
         case "createBrowserChild": {
           const parentId = args[0] as string;
           const url = args[1] as string;
           const opts = args[2] as { name?: string; focus?: boolean } | undefined;
-          return lifecycle.createBrowserPanel(parentId, url, { ...opts, focus: opts?.focus ?? true });
+          return lifecycle.createBrowserPanel(parentId, url, {
+            ...opts,
+            focus: opts?.focus ?? true,
+          });
         }
 
         case "movePanel": {

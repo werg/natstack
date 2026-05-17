@@ -33,9 +33,7 @@ describe("RouteRegistry", () => {
 
     it("defaults objectKey to 'singleton'", () => {
       const reg = new RouteRegistry();
-      reg.registerDoRoutes("workers/foo", "A", [
-        makeDecl({ durableObject: { className: "A" } }),
-      ]);
+      reg.registerDoRoutes("workers/foo", "A", [makeDecl({ durableObject: { className: "A" } })]);
       const res = reg.lookup("/_r/w/workers/foo/hello", "GET", false);
       expect(res).toMatchObject({ kind: "worker-do", objectKey: "singleton" });
     });
@@ -94,9 +92,7 @@ describe("RouteRegistry", () => {
       reg.registerDoRoutes("workers/foo", "DO1", [
         makeDecl({ path: "/do", durableObject: { className: "DO1" } }),
       ]);
-      reg.registerWorkerRoutes("workers/foo", "foo", [
-        makeDecl({ path: "/reg" }),
-      ]);
+      reg.registerWorkerRoutes("workers/foo", "foo", [makeDecl({ path: "/reg" })]);
       reg.unregisterWorkerRoutes("workers/foo");
       expect(reg.lookup("/_r/w/workers/foo/reg", "GET", false)).toBeNull();
       expect(reg.lookup("/_r/w/workers/foo/do", "GET", false)).not.toBeNull();
@@ -122,11 +118,13 @@ describe("RouteRegistry", () => {
 
     it("extracts :params", () => {
       const reg = new RouteRegistry();
-      reg.registerService([{
-        serviceName: "svc",
-        path: "/webhook/:id",
-        handler: () => {},
-      }]);
+      reg.registerService([
+        {
+          serviceName: "svc",
+          path: "/webhook/:id",
+          handler: () => {},
+        },
+      ]);
       const res = reg.lookup("/_r/s/svc/webhook/abc-123", "POST", false);
       expect(res).not.toBeNull();
       if (res && res !== "method-not-allowed" && res.kind === "service") {
@@ -136,12 +134,14 @@ describe("RouteRegistry", () => {
 
     it("returns method-not-allowed for method mismatch with path match", () => {
       const reg = new RouteRegistry();
-      reg.registerService([{
-        serviceName: "svc",
-        path: "/x",
-        methods: ["GET"],
-        handler: () => {},
-      }]);
+      reg.registerService([
+        {
+          serviceName: "svc",
+          path: "/x",
+          methods: ["GET"],
+          handler: () => {},
+        },
+      ]);
       expect(reg.lookup("/_r/s/svc/x", "POST", false)).toBe("method-not-allowed");
     });
   });
@@ -156,18 +156,28 @@ describe("RouteRegistry", () => {
 
     it("admin-token auth is surfaced to the gateway", () => {
       const reg = new RouteRegistry();
-      reg.registerService([{
-        serviceName: "s", path: "/x", auth: "admin-token", handler: () => {},
-      }]);
+      reg.registerService([
+        {
+          serviceName: "s",
+          path: "/x",
+          auth: "admin-token",
+          handler: () => {},
+        },
+      ]);
       const res = reg.lookup("/_r/s/s/x", "GET", false);
       expect(res).toMatchObject({ auth: "admin-token" });
     });
 
     it("caller-token auth is surfaced to the gateway", () => {
       const reg = new RouteRegistry();
-      reg.registerService([{
-        serviceName: "s", path: "/x", auth: "caller-token", handler: () => {},
-      }]);
+      reg.registerService([
+        {
+          serviceName: "s",
+          path: "/x",
+          auth: "caller-token",
+          handler: () => {},
+        },
+      ]);
       const res = reg.lookup("/_r/s/s/x", "GET", false);
       expect(res).toMatchObject({ auth: "caller-token" });
     });
@@ -180,10 +190,15 @@ describe("RouteRegistry", () => {
 
     it("ws routes only match upgrade when websocket=true", () => {
       const reg = new RouteRegistry();
-      reg.registerService([{
-        serviceName: "s", path: "/x", websocket: true,
-        handler: () => {}, onUpgrade: () => {},
-      }]);
+      reg.registerService([
+        {
+          serviceName: "s",
+          path: "/x",
+          websocket: true,
+          handler: () => {},
+          onUpgrade: () => {},
+        },
+      ]);
       expect(reg.lookup("/_r/s/s/x", "GET", true)).not.toBeNull();
     });
   });
@@ -213,12 +228,7 @@ describe("RouteRegistry", () => {
         makeDecl({ path: "/a" }),
         makeDecl({ path: "/b" }),
       ]);
-      reg.reconcileWorkerRoutes(
-        "workers/foo",
-        [makeDecl({ path: "/a" })],
-        new Set(),
-        "foo",
-      );
+      reg.reconcileWorkerRoutes("workers/foo", [makeDecl({ path: "/a" })], new Set(), "foo");
       expect(reg.lookup("/_r/w/workers/foo/a", "GET", false)).not.toBeNull();
       expect(reg.lookup("/_r/w/workers/foo/b", "GET", false)).toBeNull();
     });
@@ -232,7 +242,7 @@ describe("RouteRegistry", () => {
           makeDecl({ path: "/dead", durableObject: { className: "Dead" } }),
         ],
         new Set(["Live"]),
-        null,
+        null
       );
       expect(reg.lookup("/_r/w/workers/foo/live", "GET", false)).not.toBeNull();
       expect(reg.lookup("/_r/w/workers/foo/dead", "GET", false)).toBeNull();
@@ -240,12 +250,7 @@ describe("RouteRegistry", () => {
 
     it("skips regular routes when canonical instance is absent", () => {
       const reg = new RouteRegistry();
-      reg.reconcileWorkerRoutes(
-        "workers/foo",
-        [makeDecl({ path: "/x" })],
-        new Set(),
-        null,
-      );
+      reg.reconcileWorkerRoutes("workers/foo", [makeDecl({ path: "/x" })], new Set(), null);
       expect(reg.lookup("/_r/w/workers/foo/x", "GET", false)).toBeNull();
     });
   });

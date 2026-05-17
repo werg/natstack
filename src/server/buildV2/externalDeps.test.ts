@@ -17,7 +17,7 @@ import { collectTransitiveExternalDeps } from "./externalDeps.js";
 function makeNode(
   name: string,
   dependencies: Record<string, string> = {},
-  internalDeps: string[] = [],
+  internalDeps: string[] = []
 ): GraphNode {
   return {
     path: `/ws/packages/${name}`,
@@ -53,12 +53,12 @@ describe("collectTransitiveExternalDeps", () => {
     const middle = makeNode(
       "@workspace/middle",
       { "@workspace/inner": "workspace:*", axios: "^1.0.0" },
-      ["@workspace/inner"],
+      ["@workspace/inner"]
     );
     const outer = makeNode(
       "@workspace/outer",
       { "@workspace/middle": "workspace:*", react: "^18.0.0" },
-      ["@workspace/middle"],
+      ["@workspace/middle"]
     );
     graph.addNode(inner);
     graph.addNode(middle);
@@ -98,7 +98,7 @@ describe("collectTransitiveExternalDeps", () => {
         "@workspace/b": "workspace:*",
         lodash: "^4.16.0",
       },
-      ["@workspace/a", "@workspace/b"],
+      ["@workspace/a", "@workspace/b"]
     );
     graph.addNode(a);
     graph.addNode(b);
@@ -119,7 +119,7 @@ describe("collectTransitiveExternalDeps", () => {
         "@workspace/a": "workspace:*",
         "@workspace/b": "workspace:*",
       },
-      ["@workspace/a", "@workspace/b"],
+      ["@workspace/a", "@workspace/b"]
     );
     graph.addNode(a);
     graph.addNode(b);
@@ -133,20 +133,16 @@ describe("collectTransitiveExternalDeps", () => {
     const graph = new PackageGraph();
     // Create a diamond: root -> a, root -> b, a -> shared, b -> shared
     const shared = makeNode("@workspace/shared", { zod: "^3.0.0" });
-    const a = makeNode(
-      "@workspace/a",
-      { "@workspace/shared": "workspace:*", react: "^18.0.0" },
-      ["@workspace/shared"],
-    );
-    const b = makeNode(
-      "@workspace/b",
-      { "@workspace/shared": "workspace:*", axios: "^1.0.0" },
-      ["@workspace/shared"],
-    );
+    const a = makeNode("@workspace/a", { "@workspace/shared": "workspace:*", react: "^18.0.0" }, [
+      "@workspace/shared",
+    ]);
+    const b = makeNode("@workspace/b", { "@workspace/shared": "workspace:*", axios: "^1.0.0" }, [
+      "@workspace/shared",
+    ]);
     const root = makeNode(
       "@workspace/root",
       { "@workspace/a": "workspace:*", "@workspace/b": "workspace:*" },
-      ["@workspace/a", "@workspace/b"],
+      ["@workspace/a", "@workspace/b"]
     );
     graph.addNode(shared);
     graph.addNode(a);

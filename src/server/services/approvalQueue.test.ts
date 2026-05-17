@@ -233,9 +233,7 @@ describe("approvalQueue", () => {
       effectiveVersion: "hash-1",
       title: "Add GitHub",
       credentialLabel: "GitHub",
-      audience: [
-        { url: "https://api.github.com/", match: "origin" },
-      ],
+      audience: [{ url: "https://api.github.com/", match: "origin" }],
       injection: {
         type: "header",
         name: "authorization",
@@ -243,9 +241,7 @@ describe("approvalQueue", () => {
       },
       accountIdentity: { providerUserId: "github-pat" },
       scopes: ["contents:read"],
-      fields: [
-        { name: "token", label: "Fine-grained PAT", type: "secret", required: true },
-      ],
+      fields: [{ name: "token", label: "Fine-grained PAT", type: "secret", required: true }],
     });
 
     const pending = queue.listPending()[0]!;

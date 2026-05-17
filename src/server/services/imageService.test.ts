@@ -48,9 +48,18 @@ describe("imageService", () => {
 
     it("detects WebP magic bytes", async () => {
       const webp = new Uint8Array([
-        0x52, 0x49, 0x46, 0x46, // RIFF
-        0x00, 0x00, 0x00, 0x00, // size placeholder
-        0x57, 0x45, 0x42, 0x50, // WEBP
+        0x52,
+        0x49,
+        0x46,
+        0x46, // RIFF
+        0x00,
+        0x00,
+        0x00,
+        0x00, // size placeholder
+        0x57,
+        0x45,
+        0x42,
+        0x50, // WEBP
       ]);
       const result = await service.handler(ctx, "detectMimeType", [webp]);
       expect(result).toBe("image/webp");
@@ -78,11 +87,7 @@ describe("imageService", () => {
 
     it("returns wasResized=false for an already-tiny PNG within all limits", async () => {
       const data = tinyPng();
-      const result = (await service.handler(ctx, "resize", [
-        data,
-        "image/png",
-        undefined,
-      ])) as {
+      const result = (await service.handler(ctx, "resize", [data, "image/png", undefined])) as {
         data: Uint8Array;
         mimeType: string;
         wasResized: boolean;
@@ -108,11 +113,10 @@ describe("imageService", () => {
 
     it("returns identity when source equals target", async () => {
       const data = tinyPng();
-      const result = (await service.handler(ctx, "convert", [
-        data,
-        "image/png",
-        "image/png",
-      ])) as { data: Uint8Array; mimeType: string };
+      const result = (await service.handler(ctx, "convert", [data, "image/png", "image/png"])) as {
+        data: Uint8Array;
+        mimeType: string;
+      };
       expect(result.mimeType).toBe("image/png");
       expect(result.data).toBeInstanceOf(Uint8Array);
       expect(result.data.length).toBe(data.length);

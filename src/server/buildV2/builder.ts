@@ -16,6 +16,7 @@
 import * as esbuild from "esbuild";
 import * as fs from "fs";
 import * as path from "path";
+import * as os from "os";
 import { createHash } from "crypto";
 import type { GraphNode, PackageGraph } from "./packageGraph.js";
 import * as buildStore from "./buildStore.js";
@@ -56,22 +57,32 @@ export function initBuilder(appNodeModules: string | string[]): void {
 const MAX_CONCURRENT_BUILDS = 4;
 
 const PANEL_ASSET_LOADERS: Record<string, esbuild.Loader> = {
-  ".png": "file", ".jpg": "file", ".jpeg": "file", ".gif": "file",
-  ".webp": "file", ".avif": "file", ".svg": "file", ".ico": "file",
-  ".bmp": "file", ".tif": "file", ".tiff": "file",
-  ".woff": "file", ".woff2": "file", ".ttf": "file", ".otf": "file", ".eot": "file",
-  ".mp3": "file", ".wav": "file", ".ogg": "file", ".mp4": "file", ".webm": "file",
-  ".wasm": "file", ".pdf": "file",
+  ".png": "file",
+  ".jpg": "file",
+  ".jpeg": "file",
+  ".gif": "file",
+  ".webp": "file",
+  ".avif": "file",
+  ".svg": "file",
+  ".ico": "file",
+  ".bmp": "file",
+  ".tif": "file",
+  ".tiff": "file",
+  ".woff": "file",
+  ".woff2": "file",
+  ".ttf": "file",
+  ".otf": "file",
+  ".eot": "file",
+  ".mp3": "file",
+  ".wav": "file",
+  ".ogg": "file",
+  ".mp4": "file",
+  ".webm": "file",
+  ".wasm": "file",
+  ".pdf": "file",
 };
 
-const KNOWN_NATIVE_EXTERNALS = [
-  "*.node", "fsevents", "bufferutil", "utf-8-validate",
-  "node-pty", "cpu-features", "@parcel/watcher",
-];
-
-const TEXT_EXTENSIONS = new Set([
-  ".js", ".css", ".json", ".map", ".svg", ".txt", ".md", ".html",
-]);
+const TEXT_EXTENSIONS = new Set([".js", ".css", ".json", ".map", ".svg", ".txt", ".md", ".html"]);
 
 // Framework-agnostic packages that frequently dominate bundle size.
 // Framework-specific split packages live in the adapter (e.g., @radix-ui/react-icons in React adapter).
@@ -149,9 +160,11 @@ const inFlightLibraryBuilds = new Map<string, Promise<{ bundle: string }>>();
  * exports-based dist/ paths to their TypeScript source equivalents.
  */
 const PANEL_CONDITIONS = ["natstack-panel", "import", "default"] as const;
-const NODE_CONDITIONS = ["import", "default"] as const;
 
-function parseGraphImport(importPath: string, graph: PackageGraph): { packageName: string; subpath: string } | null {
+function parseGraphImport(
+  importPath: string,
+  graph: PackageGraph
+): { packageName: string; subpath: string } | null {
   const names = graph
     .allNodes()
     .map((node) => node.name)
@@ -173,7 +186,7 @@ function createWorkspaceResolvePlugin(
   graph: PackageGraph,
   workspaceRoot: string,
   sourceRoot: string,
-  conditions: readonly string[] = PANEL_CONDITIONS,
+  conditions: readonly string[] = PANEL_CONDITIONS
 ): esbuild.Plugin {
   return {
     name: "workspace-packages",
@@ -231,9 +244,7 @@ function createWorkspaceResolvePlugin(
   };
 }
 
-const SOURCE_ENTRY_CANDIDATES = [
-  "src/index.ts", "src/index.tsx", "index.ts", "index.tsx",
-];
+const SOURCE_ENTRY_CANDIDATES = ["src/index.ts", "src/index.tsx", "index.ts", "index.tsx"];
 
 /** Common build output directories that tsc/other compilers write to (gitignored). */
 const BUILD_OUTPUT_DIRS = ["dist", "lib", "build", "out"];
@@ -356,7 +367,7 @@ function expandExternalSpecifiers(externals: Record<string, string>): string[] {
 function pickForcedSplitModules(
   forcedSplitPackages: readonly string[],
   transitiveExternals: Record<string, string>,
-  exposeModules: string[],
+  exposeModules: string[]
 ): string[] {
   const selected = new Set<string>();
 
@@ -376,10 +387,7 @@ function pickForcedSplitModules(
   return [...selected].sort();
 }
 
-function createDedupePlugin(
-  runtimeNodeModules: string,
-  packages: string[],
-): esbuild.Plugin | null {
+function createDedupePlugin(runtimeNodeModules: string, packages: string[]): esbuild.Plugin | null {
   if (!runtimeNodeModules || !fs.existsSync(runtimeNodeModules)) {
     return null;
   }
@@ -425,23 +433,17 @@ function createFsShimPlugin(resolveDir: string): esbuild.Plugin {
   return {
     name: "fs-shim",
     setup(build) {
-      build.onResolve(
-        { filter: /^(fs|node:fs|fs\/promises|node:fs\/promises)$/ },
-        (args) => ({
-          path: args.path,
-          namespace: "workspace-fs-shim",
-        }),
-      );
+      build.onResolve({ filter: /^(fs|node:fs|fs\/promises|node:fs\/promises)$/ }, (args) => ({
+        path: args.path,
+        namespace: "workspace-fs-shim",
+      }));
 
-      build.onLoad(
-        { filter: /.*/, namespace: "workspace-fs-shim" },
-        (args) => {
-          const isPromises =
-            args.path === "fs/promises" || args.path === "node:fs/promises";
-          // @workspace/runtime exports `fs` as a Proxy object with async methods.
-          // We destructure individual methods from it for Node fs/promises compat.
-          const contents = isPromises
-            ? `import { fs as _fs } from "@workspace/runtime";
+      build.onLoad({ filter: /.*/, namespace: "workspace-fs-shim" }, (args) => {
+        const isPromises = args.path === "fs/promises" || args.path === "node:fs/promises";
+        // @workspace/runtime exports `fs` as a Proxy object with async methods.
+        // We destructure individual methods from it for Node fs/promises compat.
+        const contents = isPromises
+          ? `import { fs as _fs } from "@workspace/runtime";
 export const readFile = (...a) => _fs.readFile(...a);
 export const writeFile = (...a) => _fs.writeFile(...a);
 export const readdir = (...a) => _fs.readdir(...a);
@@ -468,7 +470,7 @@ export const mkdtemp = () => { throw new Error("mkdtemp is not available in work
 export const watch = () => { throw new Error("watch is not available in workspace panels"); };
 export const cp = () => { throw new Error("cp is not available in workspace panels"); };
 export const constants = {};`
-            : `import { fs as _fs } from "@workspace/runtime";
+          : `import { fs as _fs } from "@workspace/runtime";
 export const promises = _fs;
 export const readFile = (...a) => _fs.readFile(...a);
 export const writeFile = (...a) => _fs.writeFile(...a);
@@ -490,9 +492,8 @@ export const statSync = existsSync;
 export const mkdirSync = existsSync;
 export const realpathSync = existsSync;
 export default { promises: _fs, readFile: (...a) => _fs.readFile(...a), writeFile: (...a) => _fs.writeFile(...a), readdir: (...a) => _fs.readdir(...a), stat: (...a) => _fs.stat(...a), constants: {}, existsSync, readFileSync, writeFileSync, readdirSync, statSync, mkdirSync, realpathSync };`;
-          return { contents, loader: "js", resolveDir };
-        },
-      );
+        return { contents, loader: "js", resolveDir };
+      });
     },
   };
 }
@@ -501,31 +502,25 @@ function createPathShimPlugin(resolveDir: string): esbuild.Plugin {
   return {
     name: "path-shim",
     setup(build) {
-      build.onResolve(
-        { filter: /^(path|node:path|path\/posix|node:path\/posix)$/ },
-        (args) => ({
-          path: args.path,
-          namespace: "workspace-path-shim",
-        }),
-      );
+      build.onResolve({ filter: /^(path|node:path|path\/posix|node:path\/posix)$/ }, (args) => ({
+        path: args.path,
+        namespace: "workspace-path-shim",
+      }));
 
-      build.onLoad(
-        { filter: /.*/, namespace: "workspace-path-shim" },
-        () => ({
-          contents: `export { basename, dirname, extname, format, isAbsolute, join, normalize, parse, relative, resolve, sep, delimiter, toNamespacedPath } from "pathe";
+      build.onLoad({ filter: /.*/, namespace: "workspace-path-shim" }, () => ({
+        contents: `export { basename, dirname, extname, format, isAbsolute, join, normalize, parse, relative, resolve, sep, delimiter, toNamespacedPath } from "pathe";
 import * as pathe from "pathe";
 export const posix = pathe;
 export default pathe;`,
-          loader: "js",
-          resolveDir,
-        }),
-      );
+        loader: "js",
+        resolveDir,
+      }));
     },
   };
 }
 
 function createCryptoShimPlugin(
-  options: { includeNodePrefix?: boolean; resolveDir?: string } = {},
+  options: { includeNodePrefix?: boolean; resolveDir?: string } = {}
 ): esbuild.Plugin {
   const includeNodePrefix = options.includeNodePrefix ?? true;
   const resolveDir = options.resolveDir ?? process.cwd();
@@ -537,13 +532,11 @@ function createCryptoShimPlugin(
         (args) => ({
           path: args.path,
           namespace: "workspace-crypto-shim",
-        }),
+        })
       );
 
-      build.onLoad(
-        { filter: /.*/, namespace: "workspace-crypto-shim" },
-        () => ({
-          contents: `/* Shim: Node crypto → Web Crypto API / sha.js for browser-like builds.
+      build.onLoad({ filter: /.*/, namespace: "workspace-crypto-shim" }, () => ({
+        contents: `/* Shim: Node crypto → Web Crypto API / sha.js for browser-like builds.
  *
  * Only the subset needed by bundled dependencies (e.g. isomorphic-git) is
  * provided.  Everything else throws so we notice quickly if a new call-site
@@ -576,10 +569,9 @@ export function createHash(algorithm) {
 }
 
 export default { getRandomValues, randomBytes, createHash };`,
-          loader: "js",
-          resolveDir,
-        }),
-      );
+        loader: "js",
+        resolveDir,
+      }));
     },
   };
 }
@@ -622,7 +614,7 @@ export function injectHtmlTransforms(
   html: string,
   baseHref: string,
   hasCss: boolean,
-  externals?: Record<string, string>,
+  externals?: Record<string, string>
 ): string {
   let result = html;
   if (
@@ -638,9 +630,7 @@ export function injectHtmlTransforms(
     }
   }
   // Inject CSP if not present
-  if (
-    !/<meta[^>]+http-equiv\s*=\s*["']Content-Security-Policy["']/i.test(result)
-  ) {
+  if (!/<meta[^>]+http-equiv\s*=\s*["']Content-Security-Policy["']/i.test(result)) {
     result = result.replace(/(<head\b[^>]*>)/i, `$1\n  ${PANEL_CSP_META}`);
   }
   // Inject base href if not present
@@ -663,7 +653,7 @@ export function injectHtmlTransforms(
   // Replace bundle.js script with loader
   result = result.replace(
     /<script\b[^>]*\bsrc\s*=\s*["'](?:\.\/)?bundle\.js(?:\?[^"']*)?["'][^>]*><\/script>/i,
-    `<script src="/__loader.js"></script>`,
+    `<script src="/__loader.js"></script>`
   );
   return result;
 }
@@ -673,7 +663,7 @@ function generatePanelHtml(
   relativePath: string,
   templateHtmlPath: string | null,
   adapter: FrameworkAdapter,
-  options: { hasCss: boolean; externals?: Record<string, string> },
+  options: { hasCss: boolean; externals?: Record<string, string> }
 ): string {
   const baseHref = `/${relativePath}/`;
 
@@ -684,15 +674,14 @@ function generatePanelHtml(
   }
 
   // Adapter-generated fallback HTML
-  const cssLink = options.hasCss
-    ? `\n  <link rel="stylesheet" href="./bundle.css" />`
-    : "";
-  const importMapScript = options.externals && Object.keys(options.externals).length > 0
-    ? `<script type="importmap">${JSON.stringify({ imports: options.externals })}</script>\n  `
-    : "";
+  const cssLink = options.hasCss ? `\n  <link rel="stylesheet" href="./bundle.css" />` : "";
+  const importMapScript =
+    options.externals && Object.keys(options.externals).length > 0
+      ? `<script type="importmap">${JSON.stringify({ imports: options.externals })}</script>\n  `
+      : "";
 
   const cdnLinks = (adapter.cdnStylesheets ?? [])
-    .map(url => `<link rel="stylesheet" href="${escapeHtml(url)}">`)
+    .map((url) => `<link rel="stylesheet" href="${escapeHtml(url)}">`)
     .join("\n  ");
   const additionalCss = adapter.additionalCss ?? "";
   const rootElement = adapter.rootElementHtml ?? '<div id="root"></div>';
@@ -761,14 +750,13 @@ globalThis.__natstackRequireAsync__ = async function(id) {
 
 export function generateExposeModuleCode(
   exposeModules: string[],
-  target: BootstrapTarget = "panel",
+  target: BootstrapTarget = "panel"
 ): string {
   const importLines = exposeModules.map(
-    (dep, index) => `import * as __mod${index}__ from ${JSON.stringify(dep)};`,
+    (dep, index) => `import * as __mod${index}__ from ${JSON.stringify(dep)};`
   );
   const registerLines = exposeModules.map(
-    (dep, index) =>
-      `globalThis.__natstackModuleMap__[${JSON.stringify(dep)}] = __mod${index}__;`,
+    (dep, index) => `globalThis.__natstackModuleMap__[${JSON.stringify(dep)}] = __mod${index}__;`
   );
 
   // Register Node built-in shims if @workspace/runtime is exposed.
@@ -805,7 +793,7 @@ function isSyntheticSplitEntryOutput(fileName: string): boolean {
 function generatePanelEntry(
   exposeEntryFile: string,
   entryFile: string,
-  adapter: FrameworkAdapter,
+  adapter: FrameworkAdapter
 ): string {
   return adapter.generateEntry(exposeEntryFile, entryFile);
 }
@@ -866,11 +854,14 @@ export async function buildUnit(
   graph: PackageGraph,
   workspaceRoot: string,
   commitMap?: Map<string, string>,
-  options?: BuildUnitOptions,
+  options?: BuildUnitOptions
 ): Promise<BuildResult> {
-  const sourcemap = options?.library ? false : (node.manifest.sourcemap !== false);
+  const sourcemap = options?.library ? false : node.manifest.sourcemap !== false;
   const effectiveEv = options?.library
-    ? `${ev}:lib:${createHash("sha256").update(JSON.stringify(options.externals ?? [])).digest("hex").slice(0, 12)}`
+    ? `${ev}:lib:${createHash("sha256")
+        .update(JSON.stringify(options.externals ?? []))
+        .digest("hex")
+        .slice(0, 12)}`
     : ev;
   const buildKey = computeBuildKey(node.name, effectiveEv, sourcemap);
 
@@ -882,7 +873,16 @@ export async function buildUnit(
   const inFlight = inFlightBuilds.get(buildKey);
   if (inFlight) return inFlight;
 
-  const buildPromise = doBuild(node, ev, buildKey, graph, workspaceRoot, sourcemap, commitMap, options);
+  const buildPromise = doBuild(
+    node,
+    ev,
+    buildKey,
+    graph,
+    workspaceRoot,
+    sourcemap,
+    commitMap,
+    options
+  );
   inFlightBuilds.set(buildKey, buildPromise);
 
   try {
@@ -900,7 +900,7 @@ async function doBuild(
   workspaceRoot: string,
   sourcemap: boolean,
   commitMap?: Map<string, string>,
-  options?: BuildUnitOptions,
+  options?: BuildUnitOptions
 ): Promise<BuildResult> {
   await acquireSemaphore();
 
@@ -909,13 +909,37 @@ async function doBuild(
 
   try {
     if (options?.library) {
-      return await buildLibraryBundle(node, ev, buildKey, graph, workspaceRoot, extracted.sourceRoot, options.externals ?? []);
+      return await buildLibraryBundle(
+        node,
+        ev,
+        buildKey,
+        graph,
+        workspaceRoot,
+        extracted.sourceRoot,
+        options.externals ?? []
+      );
     } else if (node.kind === "worker") {
-      return await buildWorker(node, ev, buildKey, graph, workspaceRoot, sourcemap, extracted.sourceRoot);
+      return await buildWorker(
+        node,
+        ev,
+        buildKey,
+        graph,
+        workspaceRoot,
+        sourcemap,
+        extracted.sourceRoot
+      );
     } else if (node.kind === "template") {
       throw new Error(`Templates are not buildable: ${node.name}`);
     } else {
-      return await buildPanel(node, ev, buildKey, graph, workspaceRoot, sourcemap, extracted.sourceRoot);
+      return await buildPanel(
+        node,
+        ev,
+        buildKey,
+        graph,
+        workspaceRoot,
+        sourcemap,
+        extracted.sourceRoot
+      );
     }
   } finally {
     releaseSemaphore();
@@ -948,13 +972,9 @@ async function prepareBuildEnv(
   buildKey: string,
   graph: PackageGraph,
   workspaceRoot: string,
-  sourceRoot: string,
+  sourceRoot: string
 ): Promise<BuildEnv> {
-  const outdir = path.join(
-    require("os").tmpdir(),
-    "natstack-builds",
-    `build-${buildKey}`,
-  );
+  const outdir = path.join(os.tmpdir(), "natstack-builds", `build-${buildKey}`);
   fs.mkdirSync(outdir, { recursive: true });
 
   const sourcePath = remapPath(node.path, workspaceRoot, sourceRoot);
@@ -998,7 +1018,7 @@ function storeSimpleBuild(
   bundle: string,
   node: GraphNode,
   ev: string,
-  sourcemap: boolean,
+  sourcemap: boolean
 ): BuildResult {
   const artifacts: BuildArtifacts = { bundle };
   const metadata: BuildMetadata = {
@@ -1022,10 +1042,10 @@ async function buildPanel(
   graph: PackageGraph,
   workspaceRoot: string,
   sourcemap: boolean,
-  sourceRoot: string,
+  sourceRoot: string
 ): Promise<BuildResult> {
   const env = await prepareBuildEnv(node, buildKey, graph, workspaceRoot, sourceRoot);
-  const { outdir, sourcePath, entryFile, nodePaths } = env;
+  const { outdir, entryFile, nodePaths } = env;
 
   // Read extracted manifest for ref-correct build decisions
   const panelSourcePath = path.join(sourceRoot, node.relativePath);
@@ -1046,7 +1066,11 @@ async function buildPanel(
     ...(extractedManifest.dedupeModules ?? []),
   ]);
   const allForcedSplitPackages = [...FORCED_SPLIT_PACKAGES, ...adapter.forcedSplitPackages];
-  const forcedSplitModules = pickForcedSplitModules(allForcedSplitPackages, env.externalDeps, exposeModules);
+  const forcedSplitModules = pickForcedSplitModules(
+    allForcedSplitPackages,
+    env.externalDeps,
+    exposeModules
+  );
   const { resolveDir } = env;
 
   // Generate expose/wrapper entries.
@@ -1062,7 +1086,7 @@ async function buildPanel(
   for (const [index, specifier] of forcedSplitModules.entries()) {
     const moduleEntry = path.join(
       outdir,
-      `_split_${index}_${sanitizeModuleForFileName(specifier)}.js`,
+      `_split_${index}_${sanitizeModuleForFileName(specifier)}.js`
     );
     fs.writeFileSync(moduleEntry, generateForcedSplitEntry(specifier));
     entryPoints[`split-${index}`] = moduleEntry;
@@ -1119,21 +1143,21 @@ async function buildPanel(
     if (isVerboseBuildLogEnabled() && result.metafile) {
       const outputs = Object.entries(result.metafile.outputs);
       const jsChunks = outputs
-        .filter(([outputPath, meta]) =>
-          outputPath.endsWith(".js") && !meta.entryPoint && Object.keys(meta.inputs).length > 0
+        .filter(
+          ([outputPath, meta]) =>
+            outputPath.endsWith(".js") && !meta.entryPoint && Object.keys(meta.inputs).length > 0
         )
         .map(([, meta]) => meta);
-      const largestChunkBytes = jsChunks.reduce(
-        (max, meta) => Math.max(max, meta.bytes),
-        0,
+      const largestChunkBytes = jsChunks.reduce((max, meta) => Math.max(max, meta.bytes), 0);
+      const mainBundleEntry = outputs.find(
+        ([outputPath]) => outputPath.endsWith("/bundle.js") || outputPath === "bundle.js"
       );
-      const mainBundleEntry = outputs.find(([outputPath]) => outputPath.endsWith("/bundle.js") || outputPath === "bundle.js");
       const mainBundleBytes = mainBundleEntry?.[1].bytes;
       const bundleSizeText = formatBytes(mainBundleBytes ?? 0);
       const largestChunkText = jsChunks.length > 0 ? formatBytes(largestChunkBytes) : "0B";
 
       console.log(
-        `[BuildV2] ${node.name}: main=${bundleSizeText}, chunks=${jsChunks.length}, largestChunk=${largestChunkText}`,
+        `[BuildV2] ${node.name}: main=${bundleSizeText}, chunks=${jsChunks.length}, largestChunk=${largestChunkText}`
       );
     }
 
@@ -1141,12 +1165,8 @@ async function buildPanel(
     const bundlePath = path.join(outdir, "bundle.js");
     const cssPath = path.join(outdir, "bundle.css");
 
-    const bundle = fs.existsSync(bundlePath)
-      ? fs.readFileSync(bundlePath, "utf-8")
-      : "";
-    const css = fs.existsSync(cssPath)
-      ? fs.readFileSync(cssPath, "utf-8")
-      : undefined;
+    const bundle = fs.existsSync(bundlePath) ? fs.readFileSync(bundlePath, "utf-8") : "";
+    const css = fs.existsSync(cssPath) ? fs.readFileSync(cssPath, "utf-8") : undefined;
 
     // Collect assets (chunks, images, etc.)
     const assets: Record<string, { content: string; encoding?: "base64" }> = {};
@@ -1212,7 +1232,7 @@ const WORKER_CONDITIONS = ["worker", "workerd", "import", "default"] as const;
 /**
  * Node built-ins that workerd does NOT provide via `nodejs_compat` and must
  * be stubbed out of worker bundles. The SDK dependencies of
- * `@mariozechner/pi-ai` (aws-sdk credential providers, undici, proxy-agent,
+ * `@earendil-works/pi-ai` (aws-sdk credential providers, undici, proxy-agent,
  * etc.) import these modules at module scope but only call them inside
  * code paths (e.g. file-based SSO credential loaders) that the NatStack
  * agent worker never reaches. Stubbing to an empty / throwing module keeps
@@ -1271,18 +1291,16 @@ function createWorkerNodeStubPlugin(): esbuild.Plugin {
         }
         return undefined;
       });
-      build.onLoad(
-        { filter: /.*/, namespace: "worker-node-stub" },
-        (args) => {
-          // Emit every named export an aws-sdk / proxy-agent / undici
-          // transitive dep might reach for at module scope. Each export
-          // is a throwing stub — if runtime actually hits one of these
-          // the worker gets a clear error. The list only needs to cover
-          // names referenced in ES `import { name } from` at bundle
-          // time; additional names resolved through default/namespace
-          // imports get picked up by the Proxy default export.
-          const msg = `Node built-in "${args.path}" is not available in the workerd agent worker runtime`;
-          const contents = `
+      build.onLoad({ filter: /.*/, namespace: "worker-node-stub" }, (args) => {
+        // Emit every named export an aws-sdk / proxy-agent / undici
+        // transitive dep might reach for at module scope. Each export
+        // is a throwing stub — if runtime actually hits one of these
+        // the worker gets a clear error. The list only needs to cover
+        // names referenced in ES `import { name } from` at bundle
+        // time; additional names resolved through default/namespace
+        // imports get picked up by the Proxy default export.
+        const msg = `Node built-in "${args.path}" is not available in the workerd agent worker runtime`;
+        const contents = `
 const err = () => { throw new Error(${JSON.stringify(msg)}); };
 const stubFn = new Proxy(function () { return err(); }, {
   get(_, prop) {
@@ -1369,9 +1387,8 @@ export const createContext = stubFn;
 // readline
 export const createInterface = stubFn;
 `;
-          return { contents, loader: "js" };
-        },
-      );
+        return { contents, loader: "js" };
+      });
     },
   };
 }
@@ -1379,8 +1396,8 @@ export const createInterface = stubFn;
 /**
  * Node built-in modules that must stay external in the worker bundle so that
  * workerd's `nodejs_compat` compat flag satisfies them at runtime. These are
- * pulled in transitively by `@mariozechner/pi-agent-core` /
- * `@mariozechner/pi-ai` (and their SDK dependencies: openai, anthropic,
+ * pulled in transitively by `@earendil-works/pi-agent-core` /
+ * `@earendil-works/pi-ai` (and their SDK dependencies: openai, anthropic,
  * google/genai, undici, proxy-agent, aws-sdk credential providers, etc.).
  *
  * Filesystem modules are included in this list too — the code paths that
@@ -1447,7 +1464,7 @@ async function buildWorker(
   graph: PackageGraph,
   workspaceRoot: string,
   sourcemap: boolean,
-  sourceRoot: string,
+  sourceRoot: string
 ): Promise<BuildResult> {
   const env = await prepareBuildEnv(node, buildKey, graph, workspaceRoot, sourceRoot);
   const { outdir, entryFile, nodePaths, resolveDir } = env;
@@ -1512,8 +1529,8 @@ async function buildWorker(
       logLevel: "warning",
       conditions: [...WORKER_CONDITIONS],
       // Fall back to the `main` field for packages that ship without
-      // `exports` or `module` (e.g. `@mariozechner/pi-agent-core`,
-      // `@mariozechner/pi-ai`). Without this, esbuild refuses to resolve
+      // `exports` or `module` (e.g. `@earendil-works/pi-agent-core`,
+      // `@earendil-works/pi-ai`). Without this, esbuild refuses to resolve
       // a `main`-only package in "neutral" platform mode.
       mainFields: ["module", "main"],
       // Node built-ins that workerd's nodejs_compat flag provides at
@@ -1548,7 +1565,7 @@ async function buildLibraryBundle(
   graph: PackageGraph,
   workspaceRoot: string,
   sourceRoot: string,
-  externals: string[],
+  externals: string[]
 ): Promise<BuildResult> {
   const env = await prepareBuildEnv(node, buildKey, graph, workspaceRoot, sourceRoot);
 
@@ -1625,7 +1642,7 @@ function validateNpmVersion(version: string): void {
   if (SEMVER_RE.test(version)) return;
   throw new Error(
     `Invalid npm version "${version}". Only strict semver, "latest", or "*" are allowed; ` +
-    `file:, git+, http(s)://, github:, npm:, and local-path specifiers are rejected.`,
+      `file:, git+, http(s)://, github:, npm:, and local-path specifiers are rejected.`
   );
 }
 
@@ -1656,7 +1673,7 @@ function npmBuildKey(specifier: string, version: string, externals: string[]): s
 export async function buildNpmLibrary(
   specifier: string,
   version: string,
-  externals: string[],
+  externals: string[]
 ): Promise<string> {
   validateNpmSpecifier(specifier);
   validateNpmVersion(version);
@@ -1685,7 +1702,7 @@ async function doNpmBuild(
   specifier: string,
   version: string,
   externals: string[],
-  buildKey: string,
+  buildKey: string
 ): Promise<BuildResult> {
   await acquireSemaphore();
 
@@ -1698,9 +1715,9 @@ async function doNpmBuild(
     }
 
     const outdir = path.join(
-      require("os").tmpdir(),
+      os.tmpdir(),
       "natstack-builds",
-      `npm-${specifier.replace(/[/@]/g, "_")}-${Date.now()}`,
+      `npm-${specifier.replace(/[/@]/g, "_")}-${Date.now()}`
     );
     fs.mkdirSync(outdir, { recursive: true });
 
@@ -1764,7 +1781,7 @@ async function doNpmBuild(
  */
 export async function buildPlatformLibrary(
   specifier: string,
-  externals: string[],
+  externals: string[]
 ): Promise<string> {
   if (_appNodeModules.length === 0) {
     throw new Error("App node_modules not configured — cannot build @natstack/* packages");
@@ -1793,15 +1810,15 @@ export async function buildPlatformLibrary(
 async function doPlatformBuild(
   specifier: string,
   externals: string[],
-  buildKey: string,
+  buildKey: string
 ): Promise<{ bundle: string }> {
   await acquireSemaphore();
 
   try {
     const outdir = path.join(
-      require("os").tmpdir(),
+      os.tmpdir(),
       "natstack-builds",
-      `platform-${specifier.replace(/[/@]/g, "_")}-${Date.now()}`,
+      `platform-${specifier.replace(/[/@]/g, "_")}-${Date.now()}`
     );
     fs.mkdirSync(outdir, { recursive: true });
 
@@ -1841,7 +1858,11 @@ async function doPlatformBuild(
 
       return { bundle: bundleContent };
     } finally {
-      try { fs.rmSync(outdir, { recursive: true, force: true }); } catch { /* ignore */ }
+      try {
+        fs.rmSync(outdir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
     }
   } finally {
     releaseSemaphore();
@@ -1865,8 +1886,14 @@ function resolveEntryPoint(node: GraphNode, sourcePath: string): string {
 
   // Try common entry points
   for (const candidate of [
-    "index.tsx", "index.ts", "index.jsx", "index.js",
-    "src/index.tsx", "src/index.ts", "src/index.jsx", "src/index.js",
+    "index.tsx",
+    "index.ts",
+    "index.jsx",
+    "index.js",
+    "src/index.tsx",
+    "src/index.ts",
+    "src/index.jsx",
+    "src/index.js",
   ]) {
     const full = path.join(sourcePath, candidate);
     if (fs.existsSync(full)) return full;

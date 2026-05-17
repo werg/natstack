@@ -6,13 +6,13 @@ describe("resolveWithinContext", () => {
 
   it("resolves a valid relative path", () => {
     expect(resolveWithinContext(root, "panels/my-app")).toBe(
-      "/workspace/.contexts/abc/panels/my-app",
+      "/workspace/.contexts/abc/panels/my-app"
     );
   });
 
   it("resolves nested paths", () => {
     expect(resolveWithinContext(root, "panels/my-app/src/index.tsx")).toBe(
-      "/workspace/.contexts/abc/panels/my-app/src/index.tsx",
+      "/workspace/.contexts/abc/panels/my-app/src/index.tsx"
     );
   });
 
@@ -22,14 +22,12 @@ describe("resolveWithinContext", () => {
 
   it("throws on directory traversal", () => {
     expect(() => resolveWithinContext(root, "../../etc/passwd")).toThrow(
-      "Path escapes context root",
+      "Path escapes context root"
     );
   });
 
   it("throws on absolute path outside root", () => {
-    expect(() => resolveWithinContext(root, "/etc/passwd")).toThrow(
-      "Path escapes context root",
-    );
+    expect(() => resolveWithinContext(root, "/etc/passwd")).toThrow("Path escapes context root");
   });
 });
 
@@ -46,13 +44,13 @@ describe("validateFilePathWithinRoot", () => {
 
   it("throws on directory traversal escaping panel root", () => {
     expect(() => validateFilePathWithinRoot(panelRoot, "../../other-panel/secrets.ts")).toThrow(
-      "file_path escapes panel root",
+      "file_path escapes panel root"
     );
   });
 
   it("throws on absolute path outside panel root", () => {
     expect(() => validateFilePathWithinRoot(panelRoot, "/etc/passwd")).toThrow(
-      "file_path escapes panel root",
+      "file_path escapes panel root"
     );
   });
 

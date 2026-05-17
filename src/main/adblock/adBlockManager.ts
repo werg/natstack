@@ -309,7 +309,9 @@ export class AdBlockManager {
    * Get the page URL for whitelist checking.
    * Uses tracked main frame URL if available, falls back to referrer or request URL.
    */
-  private getPageUrlForWhitelist(details: Electron.OnBeforeRequestListenerDetails | Electron.OnHeadersReceivedListenerDetails): string {
+  private getPageUrlForWhitelist(
+    details: Electron.OnBeforeRequestListenerDetails | Electron.OnHeadersReceivedListenerDetails
+  ): string {
     // First try the tracked main frame URL for this webContents
     if (details.webContentsId) {
       const mainFrameUrl = this.mainFrameUrls.get(details.webContentsId);
@@ -567,7 +569,11 @@ export class AdBlockManager {
   /**
    * Increment a stat counter for both global and per-panel tracking.
    */
-  private incrementStats(webContentsId: number | undefined, stat: keyof AdBlockStats, amount: number = 1): void {
+  private incrementStats(
+    webContentsId: number | undefined,
+    stat: keyof AdBlockStats,
+    amount: number = 1
+  ): void {
     // Increment global stats
     this.stats[stat] += amount;
 
@@ -782,4 +788,3 @@ export class AdBlockManager {
     return this.mainFrameUrls.get(webContentsId);
   }
 }
-

@@ -48,24 +48,26 @@ describe("gitService", () => {
       },
     });
 
-    await expect(service.handler(
-      { callerId: "panel:source", callerKind: "panel" },
-      "createRepo",
-      ["panels/new"],
-    )).rejects.toThrow("Git write permission denied");
+    await expect(
+      service.handler({ callerId: "panel:source", callerKind: "panel" }, "createRepo", [
+        "panels/new",
+      ])
+    ).rejects.toThrow("Git write permission denied");
 
-    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
-      kind: "capability",
-      capability: "internal-git-write",
-      dedupKey: null,
-      repoPath: "panels/source",
-      effectiveVersion: "version-1",
-      resource: {
-        type: "git-repo",
-        label: "Repository",
-        value: "panels/new",
-      },
-    }));
+    expect(approvalQueue.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "capability",
+        capability: "internal-git-write",
+        dedupKey: null,
+        repoPath: "panels/source",
+        effectiveVersion: "version-1",
+        resource: {
+          type: "git-repo",
+          label: "Repository",
+          value: "panels/new",
+        },
+      })
+    );
   });
 
   it("rejects escaping createRepo paths before prompting for permission", async () => {
@@ -86,11 +88,11 @@ describe("gitService", () => {
       },
     });
 
-    await expect(service.handler(
-      { callerId: "panel:source", callerKind: "panel" },
-      "createRepo",
-      ["../outside"],
-    )).rejects.toThrow("Invalid repo path: escapes workspace root");
+    await expect(
+      service.handler({ callerId: "panel:source", callerKind: "panel" }, "createRepo", [
+        "../outside",
+      ])
+    ).rejects.toThrow("Invalid repo path: escapes workspace root");
 
     expect(approvalQueue.request).not.toHaveBeenCalled();
   });
@@ -114,29 +116,32 @@ describe("gitService", () => {
       },
     });
 
-    await expect(service.handler(
-      { callerId: "panel:source", callerKind: "panel" },
-      "setSharedRemote",
-      ["panels/chat", { name: "origin", url: "https://github.com/acme/chat.git" }],
-    )).rejects.toThrow("Shared remote configuration denied");
+    await expect(
+      service.handler({ callerId: "panel:source", callerKind: "panel" }, "setSharedRemote", [
+        "panels/chat",
+        { name: "origin", url: "https://github.com/acme/chat.git" },
+      ])
+    ).rejects.toThrow("Shared remote configuration denied");
 
-    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
-      kind: "capability",
-      capability: "workspace-shared-git-remote",
-      dedupKey: null,
-      title: "Configure shared remote",
-      resource: {
-        type: "git-remote",
-        label: "Workspace repo",
-        value: "panels/chat",
-      },
-      details: expect.arrayContaining([
-        { label: "Operation", value: "Add or update shared remote" },
-        { label: "Repository path", value: "panels/chat" },
-        { label: "Remote name", value: "origin" },
-        { label: "Remote URL", value: "github.com/acme/chat.git" },
-      ]),
-    }));
+    expect(approvalQueue.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "capability",
+        capability: "workspace-shared-git-remote",
+        dedupKey: null,
+        title: "Configure shared remote",
+        resource: {
+          type: "git-remote",
+          label: "Workspace repo",
+          value: "panels/chat",
+        },
+        details: expect.arrayContaining([
+          { label: "Operation", value: "Add or update shared remote" },
+          { label: "Repository path", value: "panels/chat" },
+          { label: "Remote name", value: "origin" },
+          { label: "Remote URL", value: "github.com/acme/chat.git" },
+        ]),
+      })
+    );
   });
 
   it("uses a targeted approval for workspace repo imports", async () => {
@@ -159,31 +164,33 @@ describe("gitService", () => {
       },
     });
 
-    await expect(service.handler(
-      { callerId: "panel:source", callerKind: "panel" },
-      "importProject",
-      [{
-        path: "skills/example",
-        remote: { name: "origin", url: "https://github.com/acme/example.git" },
-      }],
-    )).rejects.toThrow("Project import denied");
+    await expect(
+      service.handler({ callerId: "panel:source", callerKind: "panel" }, "importProject", [
+        {
+          path: "skills/example",
+          remote: { name: "origin", url: "https://github.com/acme/example.git" },
+        },
+      ])
+    ).rejects.toThrow("Project import denied");
 
-    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
-      kind: "capability",
-      capability: "workspace-project-import",
-      dedupKey: null,
-      title: "Add project repo",
-      resource: {
-        type: "workspace-project",
-        label: "Project path",
-        value: "skills/example",
-      },
-      details: expect.arrayContaining([
-        { label: "Project path", value: "skills/example" },
-        { label: "Remote name", value: "origin" },
-        { label: "Remote URL", value: "github.com/acme/example.git" },
-      ]),
-    }));
+    expect(approvalQueue.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "capability",
+        capability: "workspace-project-import",
+        dedupKey: null,
+        title: "Add project repo",
+        resource: {
+          type: "workspace-project",
+          label: "Project path",
+          value: "skills/example",
+        },
+        details: expect.arrayContaining([
+          { label: "Project path", value: "skills/example" },
+          { label: "Remote name", value: "origin" },
+          { label: "Remote URL", value: "github.com/acme/example.git" },
+        ]),
+      })
+    );
   });
 
   it("rejects imports outside supported workspace source parents before prompting", async () => {
@@ -206,14 +213,14 @@ describe("gitService", () => {
       },
     });
 
-    await expect(service.handler(
-      { callerId: "panel:source", callerKind: "panel" },
-      "importProject",
-      [{
-        path: "random/example",
-        remote: { name: "origin", url: "https://github.com/acme/example.git" },
-      }],
-    )).rejects.toThrow("Imports must target one of");
+    await expect(
+      service.handler({ callerId: "panel:source", callerKind: "panel" }, "importProject", [
+        {
+          path: "random/example",
+          remote: { name: "origin", url: "https://github.com/acme/example.git" },
+        },
+      ])
+    ).rejects.toThrow("Imports must target one of");
 
     expect(approvalQueue.request).not.toHaveBeenCalled();
   });
@@ -223,9 +230,12 @@ describe("gitService", () => {
     const gitServer = {
       getWorkspaceTree: vi.fn(async () => ({
         children: [
-          { name: "panels", path: "panels", isGitRepo: false, children: [
-            { name: "present", path: "panels/present", isGitRepo: true, children: [] },
-          ] },
+          {
+            name: "panels",
+            path: "panels",
+            isGitRepo: false,
+            children: [{ name: "present", path: "panels/present", isGitRepo: true, children: [] }],
+          },
         ],
       })),
       invalidateTreeCache: vi.fn(),
@@ -269,7 +279,7 @@ describe("gitService", () => {
     const result = await service.handler(
       { callerId: "panel:source", callerKind: "panel" },
       "completeWorkspaceDependencies",
-      [{}],
+      [{}]
     );
 
     expect(result).toEqual({
@@ -278,16 +288,16 @@ describe("gitService", () => {
         { path: "panels/present", reason: "already-present" },
         { path: "random/unsupported", reason: "unsupported-path" },
       ],
-      failed: [
-        { path: "skills/missing", error: "Project import denied" },
-      ],
+      failed: [{ path: "skills/missing", error: "Project import denied" }],
     });
     expect(approvalQueue.request).toHaveBeenCalledTimes(1);
-    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
-      capability: "workspace-project-import",
-      resource: expect.objectContaining({
-        value: "skills/missing",
-      }),
-    }));
+    expect(approvalQueue.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capability: "workspace-project-import",
+        resource: expect.objectContaining({
+          value: "skills/missing",
+        }),
+      })
+    );
   });
 });

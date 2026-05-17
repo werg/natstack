@@ -5,7 +5,7 @@
  * The React adapter (@workspace/agentic-chat) re-exports these and adds
  * its own UI-specific types on top.
  *
- * Pi (`@mariozechner/pi-agent-core`) owns the agent message shape now.
+ * Pi (`@earendil-works/pi-agent-core`) owns the agent message shape now.
  * `AgentMessage` is re-exported from `index.ts` for downstream consumers.
  */
 
@@ -13,6 +13,7 @@ import type { MethodDefinition } from "@natstack/pubsub";
 import type { RecoveryCoordinator } from "@natstack/shared/shell/recoveryCoordinator";
 import type { ScopesApi } from "@workspace/eval";
 import type { SandboxOptions, SandboxResult } from "@workspace/eval";
+import type { ChatMethodResult } from "./method-result.js";
 
 // The canonical participant metadata shape lives in @natstack/pubsub so that
 // lower-level packages (like @workspace/agentic-do, which can't depend on
@@ -50,7 +51,10 @@ export interface AgenticChatActions {
 /** Chat API exposed to sandboxed code (eval, inline_ui, action bars, feedback_custom) */
 export interface ChatSandboxValue {
   publish: (eventType: string, payload: unknown, options?: { persist?: boolean }) => Promise<unknown>;
+  /** Call a participant method and resolve to the provider's result payload. */
   callMethod: (participantId: string, method: string, args: unknown) => Promise<unknown>;
+  /** Call a participant method and resolve to the full pubsub result envelope. */
+  callMethodResult: (participantId: string, method: string, args: unknown) => Promise<ChatMethodResult>;
   contextId: string;
   channelId: string | null;
   rpc: { call: (target: string, method: string, ...args: unknown[]) => Promise<unknown> };

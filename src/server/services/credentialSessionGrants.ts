@@ -13,11 +13,19 @@ export interface CredentialSessionGrantResource {
 export class CredentialSessionGrantStore {
   private readonly grants = new Set<string>();
 
-  grant(credentialId: string, scope: CredentialSessionGrantScope, resource?: CredentialSessionGrantResource): void {
+  grant(
+    credentialId: string,
+    scope: CredentialSessionGrantScope,
+    resource?: CredentialSessionGrantResource
+  ): void {
     this.grants.add(sessionGrantKey(credentialId, scope, resource));
   }
 
-  has(credentialId: string, scope: CredentialSessionGrantScope, resource?: CredentialSessionGrantResource): boolean {
+  has(
+    credentialId: string,
+    scope: CredentialSessionGrantScope,
+    resource?: CredentialSessionGrantResource
+  ): boolean {
     return this.grants.has(sessionGrantKey(credentialId, scope, resource));
   }
 }
@@ -25,7 +33,7 @@ export class CredentialSessionGrantStore {
 function sessionGrantKey(
   credentialId: string,
   scope: CredentialSessionGrantScope,
-  resource?: CredentialSessionGrantResource,
+  resource?: CredentialSessionGrantResource
 ): string {
   const resourceParts = resource
     ? [resource.bindingId, resource.resource, resource.action]
@@ -39,10 +47,5 @@ function sessionGrantKey(
       scope.effectiveVersion ?? "",
     ]);
   }
-  return JSON.stringify([
-    credentialId,
-    ...resourceParts,
-    "caller",
-    scope.callerId ?? "",
-  ]);
+  return JSON.stringify([credentialId, ...resourceParts, "caller", scope.callerId ?? ""]);
 }

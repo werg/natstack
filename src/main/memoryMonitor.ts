@@ -1,3 +1,4 @@
+import { app } from "electron";
 import type { ViewManager } from "./viewManager.js";
 import { createDevLogger } from "@natstack/dev-log";
 
@@ -37,7 +38,6 @@ export async function logMemorySnapshot(options: MemorySnapshotOptions = {}): Pr
 
   let metrics: Electron.ProcessMetric[];
   try {
-    const { app } = require("electron");
     metrics = app.getAppMetrics();
   } catch {
     return; // No metrics available outside Electron
@@ -63,7 +63,7 @@ export async function logMemorySnapshot(options: MemorySnapshotOptions = {}): Pr
         mb: Math.round(memMb * 10) / 10,
         url: truncate(contents.getURL() || "(empty)", 80),
       };
-    }),
+    })
   );
 
   const nonNull = entries.filter(Boolean);
@@ -72,15 +72,13 @@ export async function logMemorySnapshot(options: MemorySnapshotOptions = {}): Pr
   const sortedByMem = nonNull.sort((a, b) => (b?.mb ?? 0) - (a?.mb ?? 0));
 
   const mainMetric = metrics.find((m) => m.type === "Browser");
-  const mainMb = mainMetric ? Math.round(mainMetric.memory.workingSetSize / 1024 * 10) / 10 : "?";
+  const mainMb = mainMetric ? Math.round((mainMetric.memory.workingSetSize / 1024) * 10) / 10 : "?";
 
   const reason = options.reason ? `[${options.reason}]` : "";
   const lines = sortedByMem.map(
-    (e) => `  ${e!.mb.toString().padStart(7)}MB  ${e!.id.padEnd(42)} ${e!.url}`,
+    (e) => `  ${e!.mb.toString().padStart(7)}MB  ${e!.id.padEnd(42)} ${e!.url}`
   );
-  log.info(
-    `Memory snapshot ${reason}\n  Main: ${mainMb}MB\n${lines.join("\n")}`,
-  );
+  log.info(`Memory snapshot ${reason}\n  Main: ${mainMb}MB\n${lines.join("\n")}`);
 }
 
 export function startMemoryMonitor(): void {

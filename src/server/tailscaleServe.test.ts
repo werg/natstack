@@ -3,8 +3,7 @@ import { classifyServeError, classifyServeStatus } from "./tailscaleServe.js";
 
 describe("classifyServeStatus", () => {
   it("treats empty status as empty", () => {
-    expect(classifyServeStatus({}, { port: 3030, hostname: "host.tailnet.ts.net" }))
-      .toBe("empty");
+    expect(classifyServeStatus({}, { port: 3030, hostname: "host.tailnet.ts.net" })).toBe("empty");
   });
 
   it("matches when a Web handler proxies to the same port via 127.0.0.1", () => {
@@ -15,8 +14,9 @@ describe("classifyServeStatus", () => {
         },
       },
     };
-    expect(classifyServeStatus(status, { port: 3030, hostname: "host.tailnet.ts.net" }))
-      .toBe("matches");
+    expect(classifyServeStatus(status, { port: 3030, hostname: "host.tailnet.ts.net" })).toBe(
+      "matches"
+    );
   });
 
   it("matches when proxy uses localhost instead of 127.0.0.1", () => {
@@ -27,8 +27,9 @@ describe("classifyServeStatus", () => {
         },
       },
     };
-    expect(classifyServeStatus(status, { port: 3030, hostname: "host.tailnet.ts.net" }))
-      .toBe("matches");
+    expect(classifyServeStatus(status, { port: 3030, hostname: "host.tailnet.ts.net" })).toBe(
+      "matches"
+    );
   });
 
   it("treats a handler pointing to a different port as a conflict", () => {
@@ -39,8 +40,9 @@ describe("classifyServeStatus", () => {
         },
       },
     };
-    expect(classifyServeStatus(status, { port: 3030, hostname: "host.tailnet.ts.net" }))
-      .toBe("conflict");
+    expect(classifyServeStatus(status, { port: 3030, hostname: "host.tailnet.ts.net" })).toBe(
+      "conflict"
+    );
   });
 
   it("matches under the legacy Services key as well as Web", () => {
@@ -51,8 +53,9 @@ describe("classifyServeStatus", () => {
         },
       },
     };
-    expect(classifyServeStatus(status, { port: 3030, hostname: "host.tailnet.ts.net" }))
-      .toBe("matches");
+    expect(classifyServeStatus(status, { port: 3030, hostname: "host.tailnet.ts.net" })).toBe(
+      "matches"
+    );
   });
 
   it("considers a static-content handler (no Proxy) a conflict", () => {
@@ -63,8 +66,9 @@ describe("classifyServeStatus", () => {
         },
       },
     };
-    expect(classifyServeStatus(status, { port: 3030, hostname: "host.tailnet.ts.net" }))
-      .toBe("conflict");
+    expect(classifyServeStatus(status, { port: 3030, hostname: "host.tailnet.ts.net" })).toBe(
+      "conflict"
+    );
   });
 });
 

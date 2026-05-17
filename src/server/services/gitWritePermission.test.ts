@@ -10,7 +10,9 @@ function tempStatePath(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "natstack-git-write-"));
 }
 
-function createApprovalQueueMock(decision: Awaited<ReturnType<ApprovalQueue["request"]>> = "session"): ApprovalQueue {
+function createApprovalQueueMock(
+  decision: Awaited<ReturnType<ApprovalQueue["request"]>> = "session"
+): ApprovalQueue {
   return {
     request: vi.fn(async () => decision),
     requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
@@ -46,30 +48,36 @@ describe("gitWritePermission", () => {
       },
     });
 
-    await expect(authorizer({
-      callerId: "panel:source",
-      callerKind: "panel",
-      repoPath: "/panels/target.git",
-    })).resolves.toMatchObject({ allowed: true });
-    await expect(authorizer({
-      callerId: "panel:source",
-      callerKind: "panel",
-      repoPath: "panels/target",
-    })).resolves.toMatchObject({ allowed: true });
+    await expect(
+      authorizer({
+        callerId: "panel:source",
+        callerKind: "panel",
+        repoPath: "/panels/target.git",
+      })
+    ).resolves.toMatchObject({ allowed: true });
+    await expect(
+      authorizer({
+        callerId: "panel:source",
+        callerKind: "panel",
+        repoPath: "panels/target",
+      })
+    ).resolves.toMatchObject({ allowed: true });
 
     expect(approvalQueue.request).toHaveBeenCalledTimes(1);
-    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
-      kind: "capability",
-      capability: INTERNAL_GIT_WRITE_CAPABILITY,
-      dedupKey: null,
-      repoPath: "panels/source",
-      effectiveVersion: "version-1",
-      resource: {
-        type: "git-repo",
-        label: "Repository",
-        value: "panels/target",
-      },
-    }));
+    expect(approvalQueue.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "capability",
+        capability: INTERNAL_GIT_WRITE_CAPABILITY,
+        dedupKey: null,
+        repoPath: "panels/source",
+        effectiveVersion: "version-1",
+        resource: {
+          type: "git-repo",
+          label: "Repository",
+          value: "panels/target",
+        },
+      })
+    );
   });
 
   it("does not reuse allow-once git write permissions", async () => {
@@ -87,8 +95,16 @@ describe("gitWritePermission", () => {
       },
     });
 
-    await authorizer({ callerId: "worker:source", callerKind: "worker", repoPath: "packages/target" });
-    await authorizer({ callerId: "worker:source", callerKind: "worker", repoPath: "packages/target" });
+    await authorizer({
+      callerId: "worker:source",
+      callerKind: "worker",
+      repoPath: "packages/target",
+    });
+    await authorizer({
+      callerId: "worker:source",
+      callerKind: "worker",
+      repoPath: "packages/target",
+    });
 
     expect(approvalQueue.request).toHaveBeenCalledTimes(2);
   });
@@ -110,19 +126,22 @@ describe("gitWritePermission", () => {
 
     await authorizer({ callerId: "panel:source", callerKind: "panel", repoPath: "meta" });
 
-    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
-      title: "Edit workspace config",
-      description: "Allow this code version to push changes to sensitive workspace configuration.",
-      resource: {
-        type: "git-repo",
-        label: "Config repository",
-        value: "meta",
-      },
-      details: expect.arrayContaining([
-        { label: "Operation", value: "git push to meta" },
-        { label: "Scope", value: "Workspace prompts, settings, and shared git remotes" },
-      ]),
-    }));
+    expect(approvalQueue.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Edit workspace config",
+        description:
+          "Allow this code version to push changes to sensitive workspace configuration.",
+        resource: {
+          type: "git-repo",
+          label: "Config repository",
+          value: "meta",
+        },
+        details: expect.arrayContaining([
+          { label: "Operation", value: "git push to meta" },
+          { label: "Scope", value: "Workspace prompts, settings, and shared git remotes" },
+        ]),
+      })
+    );
   });
 
   it("denies unknown callers before prompting", async () => {
@@ -135,11 +154,13 @@ describe("gitWritePermission", () => {
       },
     });
 
-    await expect(authorizer({
-      callerId: "panel:unknown",
-      callerKind: "panel",
-      repoPath: "panels/target",
-    })).resolves.toMatchObject({
+    await expect(
+      authorizer({
+        callerId: "panel:unknown",
+        callerKind: "panel",
+        repoPath: "panels/target",
+      })
+    ).resolves.toMatchObject({
       allowed: false,
       reason: "Unknown capability caller: panel:unknown",
     });

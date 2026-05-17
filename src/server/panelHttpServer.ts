@@ -31,7 +31,9 @@ function loadBrowserTransport(): string {
   try {
     return fs.readFileSync(transportPath, "utf-8");
   } catch {
-    log.info(`[PanelHttpServer] Browser transport not found at ${transportPath}, using inline stub`);
+    log.info(
+      `[PanelHttpServer] Browser transport not found at ${transportPath}, using inline stub`
+    );
     return `console.warn("[NatStack] Browser transport not available — panel RPC will not work.");`;
   }
 }
@@ -104,7 +106,10 @@ const ASSET_MIME_TYPES: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 }
 
@@ -122,7 +127,9 @@ function extractSourcePath(pathname: string): { source: string; resource: string
 
 function shouldLogPanelResourceRequests(): boolean {
   if (process.env["NATSTACK_PANEL_RESOURCE_LOG"] === "0") return false;
-  return process.env["NATSTACK_PANEL_RESOURCE_LOG"] === "1" || process.env["NODE_ENV"] === "development";
+  return (
+    process.env["NATSTACK_PANEL_RESOURCE_LOG"] === "1" || process.env["NODE_ENV"] === "development"
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -157,7 +164,12 @@ export class PanelHttpServer {
   private wss: WebSocketServer | null = null;
   private cdpBridge: CdpBridge | null = null;
 
-  constructor(host = "127.0.0.1", managementToken?: string, externalHost = "localhost", protocol: "http" | "https" = "http") {
+  constructor(
+    host = "127.0.0.1",
+    managementToken?: string,
+    externalHost = "localhost",
+    protocol: "http" | "https" = "http"
+  ) {
     this.host = host;
     this.managementToken = managementToken ?? null;
     this.externalHost = externalHost;
@@ -174,7 +186,7 @@ export class PanelHttpServer {
     if (looksRemote && !this.managementToken) {
       log.warn(
         `PanelHttpServer bound to non-loopback host (${host}) without a management token: ` +
-        `management API will be unreachable (default-deny). Configure a management token to enable it.`,
+          `management API will be unreachable (default-deny). Configure a management token to enable it.`
       );
     }
   }
@@ -296,7 +308,10 @@ export class PanelHttpServer {
   // =========================================================================
 
   /** Handle an HTTP request from the gateway (in-process dispatch). */
-  handleGatewayRequest(req: import("http").IncomingMessage, res: import("http").ServerResponse): void {
+  handleGatewayRequest(
+    req: import("http").IncomingMessage,
+    res: import("http").ServerResponse
+  ): void {
     this.handleRequest(req, res).catch((err) => {
       log.warn(`Request handler error: ${err}`);
       if (!res.headersSent) {
@@ -307,7 +322,11 @@ export class PanelHttpServer {
   }
 
   /** Handle a WebSocket upgrade from the gateway (CDP bridge). */
-  handleGatewayUpgrade(req: import("http").IncomingMessage, socket: import("stream").Duplex, head: Buffer): void {
+  handleGatewayUpgrade(
+    req: import("http").IncomingMessage,
+    socket: import("stream").Duplex,
+    head: Buffer
+  ): void {
     if (this.cdpBridge && this.wss) {
       this.cdpBridge.handleUpgrade(req, socket, head, this.wss);
     } else {
@@ -321,19 +340,25 @@ export class PanelHttpServer {
 
   private async handleRequest(
     req: import("http").IncomingMessage,
-    res: import("http").ServerResponse,
+    res: import("http").ServerResponse
   ): Promise<void> {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     const pathname = url.pathname;
 
     // ── Static runtime helpers ────────────────────────────────────────────
     if (pathname === "/__loader.js") {
-      res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" });
+      res.writeHead(200, {
+        "Content-Type": "application/javascript; charset=utf-8",
+        "Cache-Control": "no-store",
+      });
       res.end(CONFIG_LOADER_JS);
       return;
     }
     if (pathname === "/__transport.js") {
-      res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" });
+      res.writeHead(200, {
+        "Content-Type": "application/javascript; charset=utf-8",
+        "Cache-Control": "no-store",
+      });
       res.end(BROWSER_TRANSPORT_JS);
       return;
     }
@@ -384,7 +409,7 @@ export class PanelHttpServer {
     res: import("http").ServerResponse,
     source: string,
     resource: string,
-    routeLabel: string,
+    routeLabel: string
   ): void {
     if (!shouldLogPanelResourceRequests()) return;
     const startedAt = Date.now();
@@ -392,12 +417,11 @@ export class PanelHttpServer {
     const userAgent = req.headers["user-agent"];
     res.once("finish", () => {
       const durationMs = Date.now() - startedAt;
-      const client = typeof userAgent === "string" && userAgent.includes("NatStack-Mobile")
-        ? "mobile"
-        : "web";
+      const client =
+        typeof userAgent === "string" && userAgent.includes("NatStack-Mobile") ? "mobile" : "web";
       log.info(
         `Panel resource ${method} ${source}${resource} route=${routeLabel} ` +
-        `status=${res.statusCode} durationMs=${durationMs} client=${client}`,
+          `status=${res.statusCode} durationMs=${durationMs} client=${client}`
       );
     });
   }
@@ -422,7 +446,7 @@ export class PanelHttpServer {
     source: string,
     panelLabel: string,
     waitForResult = true,
-    ref?: string,
+    ref?: string
   ): Promise<void> {
     const flightKey = this.buildCacheKey(source, ref);
 
@@ -435,17 +459,20 @@ export class PanelHttpServer {
         res.end("Panel build service unavailable");
         return;
       }
-      const promise = this.callbacks.getBuild(source, ref).then((result) => {
-        this.storeBuild(source, result, ref);
-        this.buildErrors.delete(flightKey);
-        this.buildInFlight.delete(flightKey);
-      }).catch((err) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        log.info(`Build failed for ${flightKey}: ${msg}`);
-        this.buildErrors.set(flightKey, msg);
-        this.buildInFlight.delete(flightKey);
-        this.callbacks?.onBuildComplete?.(source, msg);
-      });
+      const promise = this.callbacks
+        .getBuild(source, ref)
+        .then((result) => {
+          this.storeBuild(source, result, ref);
+          this.buildErrors.delete(flightKey);
+          this.buildInFlight.delete(flightKey);
+        })
+        .catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          log.info(`Build failed for ${flightKey}: ${msg}`);
+          this.buildErrors.set(flightKey, msg);
+          this.buildInFlight.delete(flightKey);
+          this.callbacks?.onBuildComplete?.(source, msg);
+        });
       this.buildInFlight.set(flightKey, promise);
     }
 
@@ -501,7 +528,7 @@ export class PanelHttpServer {
     req: import("http").IncomingMessage,
     res: import("http").ServerResponse,
     _url: URL,
-    pathname: string,
+    pathname: string
   ): void {
     // CORS
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -530,7 +557,11 @@ export class PanelHttpServer {
     // Bearer token auth (default-deny — see validateManagementAuth).
     if (!this.validateManagementAuth(req)) {
       res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Unauthorized — provide management token via Authorization: Bearer <token>" }));
+      res.end(
+        JSON.stringify({
+          error: "Unauthorized — provide management token via Authorization: Bearer <token>",
+        })
+      );
       return;
     }
 
@@ -566,7 +597,7 @@ export class PanelHttpServer {
   }
 
   private serveApiPanels(res: import("http").ServerResponse): void {
-    const panels = (this.callbacks?.listPanels?.() ?? []).map(p => ({
+    const panels = (this.callbacks?.listPanels?.() ?? []).map((p) => ({
       ...p,
       url: `${this.protocol}://${this.externalHost}:${this.port}/${p.source}/?contextId=${encodeURIComponent(p.contextId)}`,
     }));
@@ -614,7 +645,11 @@ export class PanelHttpServer {
   /**
    * Serve a build error page instead of looping on a failed build.
    */
-  private serveBuildErrorPage(res: import("http").ServerResponse, source: string, error: string): void {
+  private serveBuildErrorPage(
+    res: import("http").ServerResponse,
+    source: string,
+    error: string
+  ): void {
     const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -649,7 +684,7 @@ export class PanelHttpServer {
   private servePanelResource(
     res: import("http").ServerResponse,
     build: CachedBuild,
-    resource: string,
+    resource: string
   ): void {
     // ── HTML (static — no per-panel injection) ──
     if (resource === "/" || resource === "/index.html") {
@@ -725,11 +760,11 @@ export class PanelHttpServer {
   private serveIndex(res: import("http").ServerResponse): void {
     // Use callbacks for running panels
     const runningPanels = this.callbacks?.listPanels?.() ?? [];
-    const runningSources = new Set(runningPanels.map(p => p.source));
+    const runningSources = new Set(runningPanels.map((p) => p.source));
 
     // Active panels: currently running with direct links
-    const activeEntries = runningPanels.map(p => {
-        const url = `${this.protocol}://${this.externalHost}:${this.port}/${p.source}/?contextId=${encodeURIComponent(p.contextId)}`;
+    const activeEntries = runningPanels.map((p) => {
+      const url = `${this.protocol}://${this.externalHost}:${this.port}/${p.source}/?contextId=${encodeURIComponent(p.contextId)}`;
       return `<li>
   <a href="${url}">${escapeHtml(p.title)}</a>
   <span class="badge running">running</span>
@@ -773,9 +808,10 @@ export class PanelHttpServer {
 </head>
 <body>
   <h1>NatStack Panels</h1>
-  ${allEntries.length > 0
-    ? `<ul>${allEntries.join("\n")}</ul>`
-    : `<p class="empty">No panels available. Add panels to the workspace <code>panels/</code> directory.</p>`
+  ${
+    allEntries.length > 0
+      ? `<ul>${allEntries.join("\n")}</ul>`
+      : `<p class="empty">No panels available. Add panels to the workspace <code>panels/</code> directory.</p>`
   }
 </body>
 </html>`;

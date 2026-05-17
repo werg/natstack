@@ -100,6 +100,54 @@ describe("PanelManager", () => {
     expect(registry.getPanel(created.panelId)).toBeUndefined();
   });
 
+  it("removes closed panels from the tree even if token cleanup fails", async () => {
+    const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-panel-manager-"));
+    tempDirs.push(workspacePath);
+
+    const panelDir = path.join(workspacePath, "panels", "cleanup");
+    fs.mkdirSync(panelDir, { recursive: true });
+    fs.writeFileSync(path.join(panelDir, "package.json"), JSON.stringify({
+      name: "cleanup",
+      natstack: {
+        title: "Cleanup Panel",
+      },
+    }));
+
+    const registry = new PanelRegistry({});
+    const store = new PanelStoreMemory();
+    const tokenClient = {
+      ensurePanelToken: vi.fn(async (panelId: string) => ({
+        token: `rpc-${panelId}`,
+      })),
+      revokePanelToken: vi.fn(async () => {
+        throw new Error("token cleanup failed");
+      }),
+      updatePanelContext: vi.fn(async () => {}),
+      updatePanelParent: vi.fn(async () => {}),
+    };
+
+    const manager = new PanelManager({
+      store,
+      registry,
+      workspacePath,
+      tokenClient,
+      serverInfo: {
+        gatewayConfig: { serverUrl: "http://127.0.0.1:42773" },
+      },
+    });
+
+    const created = await manager.create("panels/cleanup", {
+      isRoot: true,
+      addAsRoot: true,
+    });
+
+    await expect(manager.close(created.panelId)).resolves.toEqual({ closedIds: [created.panelId] });
+    expect(await store.isArchived(created.panelId)).toBe(true);
+    expect(registry.getPanel(created.panelId)).toBeUndefined();
+    expect(registry.getRootPanels()).toHaveLength(0);
+    expect(tokenClient.revokePanelToken).toHaveBeenCalledWith(created.panelId);
+  });
+
   it("builds remote bootstrap URLs with gateway-routed RPC and pubsub endpoints", async () => {
     const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-panel-manager-"));
     tempDirs.push(workspacePath);

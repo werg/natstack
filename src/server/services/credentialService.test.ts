@@ -15,7 +15,10 @@ import type { ClientConfigRecord } from "../../../packages/shared/src/credential
 import { createCredentialService } from "./credentialService.js";
 import { CredentialSessionGrantStore } from "./credentialSessionGrants.js";
 import { TokenManager } from "@natstack/shared/tokenManager";
-import { installPanelTokenPersistence, recoverPersistedPanelTokens } from "../persistedPanelTokens.js";
+import {
+  installPanelTokenPersistence,
+  recoverPersistedPanelTokens,
+} from "../persistedPanelTokens.js";
 
 class MemoryCredentialStore {
   private readonly credentials = new Map<string, Credential>();
@@ -47,7 +50,9 @@ class MemoryCredentialStore {
   }
 
   async listUrlBound(): Promise<Credential[]> {
-    return [...this.credentials.values()].filter((credential) => credential.providerId === "url-bound");
+    return [...this.credentials.values()].filter(
+      (credential) => credential.providerId === "url-bound"
+    );
   }
 
   async remove(providerId: string, connectionId: string): Promise<void> {
@@ -94,9 +99,12 @@ class MemoryClientConfigStore {
   summarize(
     configId: string,
     record: ClientConfigRecord | null,
-    requestedFields?: readonly { name: string; type: "text" | "secret" }[],
+    requestedFields?: readonly { name: string; type: "text" | "secret" }[]
   ) {
-    const fields: Record<string, { configured: boolean; type: "text" | "secret"; updatedAt?: number }> = {};
+    const fields: Record<
+      string,
+      { configured: boolean; type: "text" | "secret"; updatedAt?: number }
+    > = {};
     const names = requestedFields?.length
       ? requestedFields
       : Object.entries(record?.fields ?? {}).map(([name, field]) => ({ name, type: field.type }));
@@ -120,11 +128,9 @@ class MemoryClientConfigStore {
 }
 
 function jwtWithPayload(payload: Record<string, unknown>): string {
-  return [
-    "header",
-    Buffer.from(JSON.stringify(payload)).toString("base64url"),
-    "signature",
-  ].join(".");
+  return ["header", Buffer.from(JSON.stringify(payload)).toString("base64url"), "signature"].join(
+    "."
+  );
 }
 
 function approvingQueue(decision: "once" | "session" | "version" | "repo" = "version") {
@@ -153,10 +159,12 @@ function targetedOpenEventService(emit: ReturnType<typeof vi.fn>) {
       emit(event, payload);
       return callerId.length > 0;
     }),
-    emitToConnection: vi.fn((callerId: string, _connectionId: string, event: string, payload: unknown) => {
-      emit(event, payload);
-      return callerId.length > 0;
-    }),
+    emitToConnection: vi.fn(
+      (callerId: string, _connectionId: string, event: string, payload: unknown) => {
+        emit(event, payload);
+        return callerId.length > 0;
+      }
+    ),
   };
 }
 
@@ -164,13 +172,15 @@ async function startOAuthConnection(
   service: ReturnType<typeof createCredentialService>,
   emit: ReturnType<typeof vi.fn>,
   ctx: { callerId: string; callerKind: "panel" },
-  request: unknown,
+  request: unknown
 ) {
   const pending = service.handler(ctx, "connect", [request]) as Promise<StoredCredentialSummary>;
-  await vi.waitFor(() => expect(emit).toHaveBeenCalledWith(
-    "external-open:open",
-    expect.objectContaining({ callerId: ctx.callerId }),
-  ));
+  await vi.waitFor(() =>
+    expect(emit).toHaveBeenCalledWith(
+      "external-open:open",
+      expect.objectContaining({ callerId: ctx.callerId })
+    )
+  );
   const lastCall = emit.mock.calls[emit.mock.calls.length - 1]!;
   const authorizeUrl = new URL(lastCall[1].url);
   const redirectUri = authorizeUrl.searchParams.get("redirect_uri");
@@ -182,10 +192,12 @@ async function startOAuthConnection(
 
 async function deliverOAuthCallback(redirectUri: string, params: URLSearchParams): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    http.get(`${redirectUri}?${params.toString()}`, (res) => {
-      res.resume();
-      res.on("end", resolve);
-    }).on("error", reject);
+    http
+      .get(`${redirectUri}?${params.toString()}`, (res) => {
+        res.resume();
+        res.on("end", resolve);
+      })
+      .on("error", reject);
   });
 }
 
@@ -211,17 +223,19 @@ describe("credentialService", () => {
       },
     });
 
-    const stored = await service.handler(
+    const stored = (await service.handler(
       { callerId: "worker:test", callerKind: "worker" },
       "storeCredential",
-      [{
-        label: "Example API",
-        audience: [{ url: "https://API.example.com:443/v1?ignored=1", match: "path-prefix" }],
-        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
-        material: { type: "bearer-token", token: "secret-token" },
-        accountIdentity: { providerUserId: "acct-1" },
-      }],
-    ) as StoredCredentialSummary;
+      [
+        {
+          label: "Example API",
+          audience: [{ url: "https://API.example.com:443/v1?ignored=1", match: "path-prefix" }],
+          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+          material: { type: "bearer-token", token: "secret-token" },
+          accountIdentity: { providerUserId: "acct-1" },
+        },
+      ]
+    )) as StoredCredentialSummary;
 
     expect(stored).toMatchObject({
       label: "Example API",
@@ -234,19 +248,17 @@ describe("credentialService", () => {
     const persisted = await store.loadUrlBound(stored.id);
     expect(persisted?.accessToken).toBe("secret-token");
 
-    const listed = await service.handler(
+    const listed = (await service.handler(
       { callerId: "worker:test", callerKind: "worker" },
       "listStoredCredentials",
-      [],
-    ) as StoredCredentialSummary[];
+      []
+    )) as StoredCredentialSummary[];
     expect(listed).toHaveLength(1);
     expect(JSON.stringify(listed)).not.toContain("secret-token");
 
-    await service.handler(
-      { callerId: "worker:test", callerKind: "worker" },
-      "revokeCredential",
-      [{ credentialId: stored.id }],
-    );
+    await service.handler({ callerId: "worker:test", callerKind: "worker" }, "revokeCredential", [
+      { credentialId: stored.id },
+    ]);
     expect((await store.loadUrlBound(stored.id))?.revokedAt).toEqual(expect.any(Number));
     expect(auditLog.entries).toHaveLength(1);
   });
@@ -279,24 +291,24 @@ describe("credentialService", () => {
       },
     });
 
-    const stored = await service.handler(
+    const stored = (await service.handler(
       { callerId: "worker:test", callerKind: "worker" },
       "requestCredentialInput",
-      [{
-        title: "Add GitHub",
-        credential: {
-          label: "GitHub",
-          audience: [{ url: "https://api.github.com/", match: "origin" }],
-          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
-          accountIdentity: { providerUserId: "github-pat" },
-          metadata: { providerId: "github" },
+      [
+        {
+          title: "Add GitHub",
+          credential: {
+            label: "GitHub",
+            audience: [{ url: "https://api.github.com/", match: "origin" }],
+            injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+            accountIdentity: { providerUserId: "github-pat" },
+            metadata: { providerId: "github" },
+          },
+          fields: [{ name: "token", label: "Fine-grained PAT", type: "secret", required: true }],
+          material: { type: "bearer-token", tokenField: "token" },
         },
-        fields: [
-          { name: "token", label: "Fine-grained PAT", type: "secret", required: true },
-        ],
-        material: { type: "bearer-token", tokenField: "token" },
-      }],
-    ) as StoredCredentialSummary;
+      ]
+    )) as StoredCredentialSummary;
 
     expect(stored).toMatchObject({
       label: "GitHub",
@@ -348,25 +360,31 @@ describe("credentialService", () => {
         audience: [{ url: "https://api.github.com/", match: "origin" }],
         injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
       },
-      fields: [
-        { name: "token", label: "Fine-grained PAT", type: "secret", required: true },
-      ],
+      fields: [{ name: "token", label: "Fine-grained PAT", type: "secret", required: true }],
       material: { type: "bearer-token", tokenField: "token" },
     };
     const ctx = { callerId: "worker:test", callerKind: "worker" as const };
 
-    await expect(service.handler(ctx, "requestCredentialInput", [{
-      ...baseRequest,
-      fields: [
-        ...baseRequest.fields,
-        { name: "username", label: "Username", type: "text", required: true },
-      ],
-    }])).rejects.toThrow("Credential input expects exactly one secret field");
+    await expect(
+      service.handler(ctx, "requestCredentialInput", [
+        {
+          ...baseRequest,
+          fields: [
+            ...baseRequest.fields,
+            { name: "username", label: "Username", type: "text", required: true },
+          ],
+        },
+      ])
+    ).rejects.toThrow("Credential input expects exactly one secret field");
 
-    await expect(service.handler(ctx, "requestCredentialInput", [{
-      ...baseRequest,
-      fields: [{ name: "token", label: "Token", type: "text", required: true }],
-    }])).rejects.toThrow("Credential input tokenField must be a secret field");
+    await expect(
+      service.handler(ctx, "requestCredentialInput", [
+        {
+          ...baseRequest,
+          fields: [{ name: "token", label: "Token", type: "text", required: true }],
+        },
+      ])
+    ).rejects.toThrow("Credential input tokenField must be a secret field");
 
     expect(approvalQueue.requestCredentialInput).not.toHaveBeenCalled();
   });
@@ -376,28 +394,31 @@ describe("credentialService", () => {
     const service = createCredentialService({
       credentialStore: store as never,
       codeIdentityResolver: {
-        resolveByCallerId: (callerId: string) => callerId === "worker:owner"
-          ? { callerId, callerKind: "worker", repoPath: "/owner", effectiveVersion: "hash-1" }
-          : { callerId, callerKind: "worker", repoPath: "/other", effectiveVersion: "hash-2" },
+        resolveByCallerId: (callerId: string) =>
+          callerId === "worker:owner"
+            ? { callerId, callerKind: "worker", repoPath: "/owner", effectiveVersion: "hash-1" }
+            : { callerId, callerKind: "worker", repoPath: "/other", effectiveVersion: "hash-2" },
       },
     });
 
-    const stored = await service.handler(
+    const stored = (await service.handler(
       { callerId: "worker:owner", callerKind: "worker" },
       "storeCredential",
-      [{
-        label: "Example API",
-        audience: [{ url: "https://api.example.test/", match: "origin" }],
-        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
-        material: { type: "bearer-token", token: "secret-token" },
-      }],
-    ) as StoredCredentialSummary;
+      [
+        {
+          label: "Example API",
+          audience: [{ url: "https://api.example.test/", match: "origin" }],
+          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+          material: { type: "bearer-token", token: "secret-token" },
+        },
+      ]
+    )) as StoredCredentialSummary;
 
-    await expect(service.handler(
-      { callerId: "worker:other", callerKind: "worker" },
-      "revokeCredential",
-      [{ credentialId: stored.id }],
-    )).rejects.toThrow(/not authorized to revoke/);
+    await expect(
+      service.handler({ callerId: "worker:other", callerKind: "worker" }, "revokeCredential", [
+        { credentialId: stored.id },
+      ])
+    ).rejects.toThrow(/not authorized to revoke/);
 
     expect((await store.loadUrlBound(stored.id))?.revokedAt).toBeUndefined();
   });
@@ -416,41 +437,53 @@ describe("credentialService", () => {
       codeIdentityResolver: {
         resolveByCallerId: (callerId: string) => {
           if (callerId === "worker:first" || callerId === "do:worker:first") {
-            return { callerId, callerKind: "worker", repoPath: "/agent", effectiveVersion: "hash-1" };
+            return {
+              callerId,
+              callerKind: "worker",
+              repoPath: "/agent",
+              effectiveVersion: "hash-1",
+            };
           }
           if (callerId === "worker:new-version") {
-            return { callerId, callerKind: "worker", repoPath: "/agent", effectiveVersion: "hash-2" };
+            return {
+              callerId,
+              callerKind: "worker",
+              repoPath: "/agent",
+              effectiveVersion: "hash-2",
+            };
           }
           return null;
         },
       },
     });
 
-    const stored = await service.handler(
+    const stored = (await service.handler(
       { callerId: "worker:first", callerKind: "worker" },
       "storeCredential",
-      [{
-        label: "Example API",
-        audience: [{ url: "https://api.example.test/", match: "origin" }],
-        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
-        material: { type: "bearer-token", token: "secret-token" },
-      }],
-    ) as StoredCredentialSummary;
+      [
+        {
+          label: "Example API",
+          audience: [{ url: "https://api.example.test/", match: "origin" }],
+          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+          material: { type: "bearer-token", token: "secret-token" },
+        },
+      ]
+    )) as StoredCredentialSummary;
 
     expect((await store.loadUrlBound(stored.id))?.grants).toEqual([]);
     approvalQueue.request.mockClear();
 
-    await expect(service.handler(
-      { callerId: "do:worker:first", callerKind: "worker" },
-      "resolveCredential",
-      [{ url: "https://api.example.test/v1" }],
-    )).resolves.toMatchObject({ id: stored.id });
+    await expect(
+      service.handler({ callerId: "do:worker:first", callerKind: "worker" }, "resolveCredential", [
+        { url: "https://api.example.test/v1" },
+      ])
+    ).resolves.toMatchObject({ id: stored.id });
     expect(approvalQueue.request).toHaveBeenCalledTimes(1);
 
     await service.handler(
       { callerId: "worker:new-version", callerKind: "worker" },
       "resolveCredential",
-      [{ url: "https://api.example.test/v1" }],
+      [{ url: "https://api.example.test/v1" }]
     );
     expect(approvalQueue.request).toHaveBeenCalledTimes(2);
   });
@@ -467,33 +500,36 @@ describe("credentialService", () => {
       approvalQueue: approvalQueue as never,
       sessionGrantStore: new CredentialSessionGrantStore(),
       codeIdentityResolver: {
-        resolveByCallerId: (callerId: string) => callerId === "worker:owner"
-          ? { callerId, callerKind: "worker", repoPath: "/owner", effectiveVersion: "hash-1" }
-          : { callerId, callerKind: "worker", repoPath: "/consumer", effectiveVersion: "hash-1" },
+        resolveByCallerId: (callerId: string) =>
+          callerId === "worker:owner"
+            ? { callerId, callerKind: "worker", repoPath: "/owner", effectiveVersion: "hash-1" }
+            : { callerId, callerKind: "worker", repoPath: "/consumer", effectiveVersion: "hash-1" },
       },
     });
 
-    const stored = await service.handler(
+    const stored = (await service.handler(
       { callerId: "worker:owner", callerKind: "worker" },
       "storeCredential",
-      [{
-        label: "Example API",
-        audience: [{ url: "https://api.example.test/", match: "origin" }],
-        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
-        material: { type: "bearer-token", token: "secret-token" },
-      }],
-    ) as StoredCredentialSummary;
+      [
+        {
+          label: "Example API",
+          audience: [{ url: "https://api.example.test/", match: "origin" }],
+          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+          material: { type: "bearer-token", token: "secret-token" },
+        },
+      ]
+    )) as StoredCredentialSummary;
     approvalQueue.request.mockClear();
 
     await service.handler(
       { callerId: "worker:consumer", callerKind: "worker" },
       "resolveCredential",
-      [{ url: "https://api.example.test/v1" }],
+      [{ url: "https://api.example.test/v1" }]
     );
     await service.handler(
       { callerId: "worker:consumer", callerKind: "worker" },
       "resolveCredential",
-      [{ url: "https://api.example.test/v1" }],
+      [{ url: "https://api.example.test/v1" }]
     );
 
     expect(approvalQueue.request).toHaveBeenCalledTimes(2);
@@ -512,33 +548,36 @@ describe("credentialService", () => {
       approvalQueue: approvalQueue as never,
       sessionGrantStore: new CredentialSessionGrantStore(),
       codeIdentityResolver: {
-        resolveByCallerId: (callerId: string) => callerId === "worker:owner"
-          ? { callerId, callerKind: "worker", repoPath: "/owner", effectiveVersion: "hash-1" }
-          : { callerId, callerKind: "worker", repoPath: "/consumer", effectiveVersion: "hash-1" },
+        resolveByCallerId: (callerId: string) =>
+          callerId === "worker:owner"
+            ? { callerId, callerKind: "worker", repoPath: "/owner", effectiveVersion: "hash-1" }
+            : { callerId, callerKind: "worker", repoPath: "/consumer", effectiveVersion: "hash-1" },
       },
     });
 
-    const stored = await service.handler(
+    const stored = (await service.handler(
       { callerId: "worker:owner", callerKind: "worker" },
       "storeCredential",
-      [{
-        label: "Example API",
-        audience: [{ url: "https://api.example.test/", match: "origin" }],
-        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
-        material: { type: "bearer-token", token: "secret-token" },
-      }],
-    ) as StoredCredentialSummary;
+      [
+        {
+          label: "Example API",
+          audience: [{ url: "https://api.example.test/", match: "origin" }],
+          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+          material: { type: "bearer-token", token: "secret-token" },
+        },
+      ]
+    )) as StoredCredentialSummary;
     approvalQueue.request.mockClear();
 
     await service.handler(
       { callerId: "worker:consumer", callerKind: "worker" },
       "resolveCredential",
-      [{ url: "https://api.example.test/v1" }],
+      [{ url: "https://api.example.test/v1" }]
     );
     await service.handler(
       { callerId: "worker:consumer", callerKind: "worker" },
       "resolveCredential",
-      [{ url: "https://api.example.test/v1" }],
+      [{ url: "https://api.example.test/v1" }]
     );
 
     expect(approvalQueue.request).toHaveBeenCalledTimes(1);
@@ -551,7 +590,7 @@ describe("credentialService", () => {
         scope: decision,
         repoPath: "/consumer",
         grantedBy: decision,
-      }),
+      })
     );
   });
 
@@ -590,27 +629,36 @@ describe("credentialService", () => {
     expect(authorizeUrl.searchParams.get("code_challenge_method")).toBe("S256");
     expect(authorizeUrl.searchParams.get("prompt")).toBe("consent");
 
-    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      expect(init?.method).toBe("POST");
-      const body = init?.body as URLSearchParams;
-      expect(body.get("grant_type")).toBe("authorization_code");
-      expect(body.get("client_id")).toBe("client-1");
-      expect(body.get("code_verifier")).toBeTruthy();
-      return new Response(JSON.stringify({
-        access_token: "oauth-access-token",
-        refresh_token: "must-not-persist",
-        token_type: "Bearer",
-        expires_in: 3600,
-      }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        expect(init?.method).toBe("POST");
+        const body = init?.body as URLSearchParams;
+        expect(body.get("grant_type")).toBe("authorization_code");
+        expect(body.get("client_id")).toBe("client-1");
+        expect(body.get("code_verifier")).toBeTruthy();
+        return new Response(
+          JSON.stringify({
+            access_token: "oauth-access-token",
+            refresh_token: "must-not-persist",
+            token_type: "Bearer",
+            expires_in: 3600,
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }
+        );
+      })
+    );
 
-    await deliverOAuthCallback(started.redirectUri, new URLSearchParams({
-      code: "code-1",
-      state: started.state,
-    }));
+    await deliverOAuthCallback(
+      started.redirectUri,
+      new URLSearchParams({
+        code: "code-1",
+        state: started.state,
+      })
+    );
     const completed = await started.pending;
 
     expect(completed).toMatchObject({
@@ -656,60 +704,76 @@ describe("credentialService", () => {
       approvalQueue: approvalQueue as never,
     });
     const ctx = { callerId: "panel:test", callerKind: "panel" as const };
-    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const body = init?.body as URLSearchParams;
-      expect(body.get("redirect_uri")).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/oauth\/callback$/);
-      return new Response(JSON.stringify({
-        access_token: "oauth-access-token",
-        refresh_token: "must-not-persist",
-        token_type: "Bearer",
-        expires_in: 3600,
-      }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = init?.body as URLSearchParams;
+        expect(body.get("redirect_uri")).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/oauth\/callback$/);
+        return new Response(
+          JSON.stringify({
+            access_token: "oauth-access-token",
+            refresh_token: "must-not-persist",
+            token_type: "Bearer",
+            expires_in: 3600,
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }
+        );
+      })
+    );
 
-    const pending = service.handler(ctx, "connect", [{
-      flow: {
-        type: "oauth2-auth-code-pkce",
-        authorizeUrl: "https://auth.example.test/oauth/authorize",
-        tokenUrl: "https://auth.example.test/oauth/token",
-        clientId: "client-1",
-        scopes: ["read"],
+    const pending = service.handler(ctx, "connect", [
+      {
+        flow: {
+          type: "oauth2-auth-code-pkce",
+          authorizeUrl: "https://auth.example.test/oauth/authorize",
+          tokenUrl: "https://auth.example.test/oauth/token",
+          clientId: "client-1",
+          scopes: ["read"],
+        },
+        credential: {
+          label: "Example OAuth",
+          audience: [{ url: "https://api.example.test/", match: "origin" }],
+          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+        },
       },
-      credential: {
-        label: "Example OAuth",
-        audience: [{ url: "https://api.example.test/", match: "origin" }],
-        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
-      },
-    }]) as Promise<StoredCredentialSummary>;
+    ]) as Promise<StoredCredentialSummary>;
 
-    await vi.waitFor(() => expect(emit).toHaveBeenCalledWith(
-      "external-open:open",
-      expect.objectContaining({ callerId: "panel:test" }),
-    ));
+    await vi.waitFor(() =>
+      expect(emit).toHaveBeenCalledWith(
+        "external-open:open",
+        expect.objectContaining({ callerId: "panel:test" })
+      )
+    );
     const authorizeUrl = new URL(emit.mock.calls[0]![1].url);
     const redirectUri = authorizeUrl.searchParams.get("redirect_uri");
     const state = authorizeUrl.searchParams.get("state");
     expect(redirectUri).toBeTruthy();
     expect(state).toBeTruthy();
     await new Promise<void>((resolve, reject) => {
-      http.get(`${redirectUri}?code=code-1&state=${state}`, (res) => {
-        res.resume();
-        res.on("end", resolve);
-      }).on("error", reject);
+      http
+        .get(`${redirectUri}?code=code-1&state=${state}`, (res) => {
+          res.resume();
+          res.on("end", resolve);
+        })
+        .on("error", reject);
     });
 
     const completed = await pending;
     expect(completed.label).toBe("Example OAuth");
     expect((await store.loadUrlBound(completed.id))?.accessToken).toBe("oauth-access-token");
-    expect(JSON.stringify(await store.loadUrlBound(completed.id))).not.toContain("must-not-persist");
-    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
-      credentialLabel: "Example OAuth",
-      oauthAuthorizeOrigin: "https://auth.example.test",
-      oauthTokenOrigin: "https://auth.example.test",
-    }));
+    expect(JSON.stringify(await store.loadUrlBound(completed.id))).not.toContain(
+      "must-not-persist"
+    );
+    expect(approvalQueue.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        credentialLabel: "Example OAuth",
+        oauthAuthorizeOrigin: "https://auth.example.test",
+        oauthTokenOrigin: "https://auth.example.test",
+      })
+    );
   });
 
   it("credentials.connect can open OAuth externally for a worker-requested panel handoff", async () => {
@@ -724,46 +788,62 @@ describe("credentialService", () => {
       } as never,
       approvalQueue: approvingQueue() as never,
     });
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
-      access_token: "token",
-      expires_in: 3600,
-    }), { status: 200, headers: { "content-type": "application/json" } })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              access_token: "token",
+              expires_in: 3600,
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          )
+      )
+    );
 
-    const pending = service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
-      spec: {
-        flow: {
-        type: "oauth2-auth-code-pkce",
-          authorizeUrl: "https://auth.example.test/oauth/authorize",
-          tokenUrl: "https://auth.example.test/oauth/token",
-          clientId: "client-1",
+    const pending = service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [
+      {
+        spec: {
+          flow: {
+            type: "oauth2-auth-code-pkce",
+            authorizeUrl: "https://auth.example.test/oauth/authorize",
+            tokenUrl: "https://auth.example.test/oauth/token",
+            clientId: "client-1",
+          },
+          credential: {
+            label: "Example OAuth",
+            audience: [{ url: "https://api.example.test/", match: "origin" }],
+            injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+          },
+          browser: "external",
         },
-        credential: {
-          label: "Example OAuth",
-          audience: [{ url: "https://api.example.test/", match: "origin" }],
-          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+        handoffTarget: {
+          callerId: "panel:test",
+          callerKind: "panel",
         },
-        browser: "external",
       },
-      handoffTarget: {
-        callerId: "panel:test",
-        callerKind: "panel",
-      },
-    }]) as Promise<StoredCredentialSummary>;
+    ]) as Promise<StoredCredentialSummary>;
 
-    await vi.waitFor(() => expect(eventService.emitToConnection).toHaveBeenCalledWith(
-      "shell:owner",
-      "owner-conn",
-      "external-open:open",
-      expect.objectContaining({
-        callerId: "worker:test",
-        callerKind: "worker",
-      }),
-    ));
+    await vi.waitFor(() =>
+      expect(eventService.emitToConnection).toHaveBeenCalledWith(
+        "shell:owner",
+        "owner-conn",
+        "external-open:open",
+        expect.objectContaining({
+          callerId: "worker:test",
+          callerKind: "worker",
+        })
+      )
+    );
     const authorizeUrl = new URL(emit.mock.calls[0]![1].url);
-    await deliverOAuthCallback(authorizeUrl.searchParams.get("redirect_uri")!, new URLSearchParams({
-      code: "code-1",
-      state: authorizeUrl.searchParams.get("state")!,
-    }));
+    await deliverOAuthCallback(
+      authorizeUrl.searchParams.get("redirect_uri")!,
+      new URLSearchParams({
+        code: "code-1",
+        state: authorizeUrl.searchParams.get("state")!,
+      })
+    );
     await pending;
   });
 
@@ -786,48 +866,64 @@ describe("credentialService", () => {
       } as never,
       approvalQueue: approvingQueue() as never,
     });
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
-      access_token: "token",
-      expires_in: 3600,
-    }), { status: 200, headers: { "content-type": "application/json" } })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              access_token: "token",
+              expires_in: 3600,
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          )
+      )
+    );
 
-    const pending = service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
-      spec: {
-        flow: {
-          type: "oauth2-auth-code-pkce",
-          authorizeUrl: "https://auth.example.test/oauth/authorize",
-          tokenUrl: "https://auth.example.test/oauth/token",
-          clientId: "client-1",
+    const pending = service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [
+      {
+        spec: {
+          flow: {
+            type: "oauth2-auth-code-pkce",
+            authorizeUrl: "https://auth.example.test/oauth/authorize",
+            tokenUrl: "https://auth.example.test/oauth/token",
+            clientId: "client-1",
+          },
+          credential: {
+            label: "Example OAuth",
+            audience: [{ url: "https://api.example.test/", match: "origin" }],
+            injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+          },
+          browser: "external",
         },
-        credential: {
-          label: "Example OAuth",
-          audience: [{ url: "https://api.example.test/", match: "origin" }],
-          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+        handoffTarget: {
+          callerId: "panel:test",
+          callerKind: "panel",
         },
-        browser: "external",
       },
-      handoffTarget: {
-        callerId: "panel:test",
-        callerKind: "panel",
-      },
-    }]) as Promise<StoredCredentialSummary>;
+    ]) as Promise<StoredCredentialSummary>;
 
-    await vi.waitFor(() => expect(eventService.emitToConnection).toHaveBeenCalledWith(
-      "shell:owner",
-      "stale-owner-conn",
-      "external-open:open",
-      expect.any(Object),
-    ));
+    await vi.waitFor(() =>
+      expect(eventService.emitToConnection).toHaveBeenCalledWith(
+        "shell:owner",
+        "stale-owner-conn",
+        "external-open:open",
+        expect.any(Object)
+      )
+    );
     expect(eventService.emitToCaller).toHaveBeenCalledWith(
       "shell:owner",
       "external-open:open",
-      expect.objectContaining({ callerId: "worker:test" }),
+      expect.objectContaining({ callerId: "worker:test" })
     );
     const authorizeUrl = new URL(emit.mock.calls[0]![1].url);
-    await deliverOAuthCallback(authorizeUrl.searchParams.get("redirect_uri")!, new URLSearchParams({
-      code: "code-1",
-      state: authorizeUrl.searchParams.get("state")!,
-    }));
+    await deliverOAuthCallback(
+      authorizeUrl.searchParams.get("redirect_uri")!,
+      new URLSearchParams({
+        code: "code-1",
+        state: authorizeUrl.searchParams.get("state")!,
+      })
+    );
     await pending;
   });
 
@@ -850,43 +946,59 @@ describe("credentialService", () => {
       tokenManager: recovered,
       approvalQueue: approvingQueue() as never,
     });
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
-      access_token: "token",
-      expires_in: 3600,
-    }), { status: 200, headers: { "content-type": "application/json" } })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              access_token: "token",
+              expires_in: 3600,
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          )
+      )
+    );
 
-    const pending = service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
-      spec: {
-        flow: {
-          type: "oauth2-auth-code-pkce",
-          authorizeUrl: "https://auth.example.test/oauth/authorize",
-          tokenUrl: "https://auth.example.test/oauth/token",
-          clientId: "client-1",
+    const pending = service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [
+      {
+        spec: {
+          flow: {
+            type: "oauth2-auth-code-pkce",
+            authorizeUrl: "https://auth.example.test/oauth/authorize",
+            tokenUrl: "https://auth.example.test/oauth/token",
+            clientId: "client-1",
+          },
+          credential: {
+            label: "Example OAuth",
+            audience: [{ url: "https://api.example.test/", match: "origin" }],
+            injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+          },
+          browser: "external",
         },
-        credential: {
-          label: "Example OAuth",
-          audience: [{ url: "https://api.example.test/", match: "origin" }],
-          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+        handoffTarget: {
+          callerId: "panel:test",
+          callerKind: "panel",
         },
-        browser: "external",
       },
-      handoffTarget: {
-        callerId: "panel:test",
-        callerKind: "panel",
-      },
-    }]) as Promise<StoredCredentialSummary>;
+    ]) as Promise<StoredCredentialSummary>;
 
-    await vi.waitFor(() => expect(eventService.emitToCaller).toHaveBeenCalledWith(
-      "shell:owner",
-      "external-open:open",
-      expect.objectContaining({ callerId: "worker:test" }),
-    ));
+    await vi.waitFor(() =>
+      expect(eventService.emitToCaller).toHaveBeenCalledWith(
+        "shell:owner",
+        "external-open:open",
+        expect.objectContaining({ callerId: "worker:test" })
+      )
+    );
     expect(eventService.emitToConnection).not.toHaveBeenCalled();
     const authorizeUrl = new URL(emit.mock.calls[0]![1].url);
-    await deliverOAuthCallback(authorizeUrl.searchParams.get("redirect_uri")!, new URLSearchParams({
-      code: "code-1",
-      state: authorizeUrl.searchParams.get("state")!,
-    }));
+    await deliverOAuthCallback(
+      authorizeUrl.searchParams.get("redirect_uri")!,
+      new URLSearchParams({
+        code: "code-1",
+        state: authorizeUrl.searchParams.get("state")!,
+      })
+    );
     await pending;
   });
 
@@ -899,46 +1011,62 @@ describe("credentialService", () => {
       tokenManager: { getPanelOwner: vi.fn(() => "shell:owner") } as never,
       approvalQueue: approvingQueue() as never,
     });
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
-      access_token: "token",
-      expires_in: 3600,
-    }), { status: 200, headers: { "content-type": "application/json" } })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              access_token: "token",
+              expires_in: 3600,
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          )
+      )
+    );
 
-    const pending = service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
-      spec: {
-        flow: {
-        type: "oauth2-auth-code-pkce",
-          authorizeUrl: "https://auth.example.test/oauth/authorize",
-          tokenUrl: "https://auth.example.test/oauth/token",
-          clientId: "client-1",
+    const pending = service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [
+      {
+        spec: {
+          flow: {
+            type: "oauth2-auth-code-pkce",
+            authorizeUrl: "https://auth.example.test/oauth/authorize",
+            tokenUrl: "https://auth.example.test/oauth/token",
+            clientId: "client-1",
+          },
+          credential: {
+            label: "Example OAuth",
+            audience: [{ url: "https://api.example.test/", match: "origin" }],
+            injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+          },
+          browser: "internal",
         },
-        credential: {
-          label: "Example OAuth",
-          audience: [{ url: "https://api.example.test/", match: "origin" }],
-          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+        handoffTarget: {
+          callerId: "panel:test",
+          callerKind: "panel",
         },
-        browser: "internal",
       },
-      handoffTarget: {
-        callerId: "panel:test",
-        callerKind: "panel",
-      },
-    }]) as Promise<StoredCredentialSummary>;
+    ]) as Promise<StoredCredentialSummary>;
 
-    await vi.waitFor(() => expect(eventService.emitToCaller).toHaveBeenCalledWith(
-      "shell:owner",
-      "browser-panel:open",
-      expect.objectContaining({
-        parentPanelId: "panel:test",
-        callerId: "worker:test",
-        callerKind: "worker",
-      }),
-    ));
+    await vi.waitFor(() =>
+      expect(eventService.emitToCaller).toHaveBeenCalledWith(
+        "shell:owner",
+        "browser-panel:open",
+        expect.objectContaining({
+          parentPanelId: "panel:test",
+          callerId: "worker:test",
+          callerKind: "worker",
+        })
+      )
+    );
     const authorizeUrl = new URL(emit.mock.calls[0]![1].url);
-    await deliverOAuthCallback(authorizeUrl.searchParams.get("redirect_uri")!, new URLSearchParams({
-      code: "code-1",
-      state: authorizeUrl.searchParams.get("state")!,
-    }));
+    await deliverOAuthCallback(
+      authorizeUrl.searchParams.get("redirect_uri")!,
+      new URLSearchParams({
+        code: "code-1",
+        state: authorizeUrl.searchParams.get("state")!,
+      })
+    );
     await pending;
   });
 
@@ -953,25 +1081,29 @@ describe("credentialService", () => {
       approvalQueue: approvingQueue() as never,
     });
 
-    await expect(service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
-      spec: {
-        flow: {
-        type: "oauth2-auth-code-pkce",
-          authorizeUrl: "https://auth.example.test/oauth/authorize",
-          tokenUrl: "https://auth.example.test/oauth/token",
-          clientId: "client-1",
+    await expect(
+      service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [
+        {
+          spec: {
+            flow: {
+              type: "oauth2-auth-code-pkce",
+              authorizeUrl: "https://auth.example.test/oauth/authorize",
+              tokenUrl: "https://auth.example.test/oauth/token",
+              clientId: "client-1",
+            },
+            credential: {
+              label: "Example OAuth",
+              audience: [{ url: "https://api.example.test/", match: "origin" }],
+              injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+            },
+          },
+          handoffTarget: {
+            callerId: "panel:missing",
+            callerKind: "panel",
+          },
         },
-        credential: {
-          label: "Example OAuth",
-          audience: [{ url: "https://api.example.test/", match: "origin" }],
-          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
-        },
-      },
-      handoffTarget: {
-        callerId: "panel:missing",
-        callerKind: "panel",
-      },
-    }])).rejects.toMatchObject({ code: "browser_unavailable" });
+      ])
+    ).rejects.toMatchObject({ code: "browser_unavailable" });
   });
 
   it("fails immediately when a panel handoff has no connected shell owner", async () => {
@@ -988,25 +1120,29 @@ describe("credentialService", () => {
       approvalQueue: approvingQueue() as never,
     });
 
-    await expect(service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
-      spec: {
-        flow: {
-        type: "oauth2-auth-code-pkce",
-          authorizeUrl: "https://auth.example.test/oauth/authorize",
-          tokenUrl: "https://auth.example.test/oauth/token",
-          clientId: "client-1",
+    await expect(
+      service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [
+        {
+          spec: {
+            flow: {
+              type: "oauth2-auth-code-pkce",
+              authorizeUrl: "https://auth.example.test/oauth/authorize",
+              tokenUrl: "https://auth.example.test/oauth/token",
+              clientId: "client-1",
+            },
+            credential: {
+              label: "Example OAuth",
+              audience: [{ url: "https://api.example.test/", match: "origin" }],
+              injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+            },
+          },
+          handoffTarget: {
+            callerId: "panel:missing-owner",
+            callerKind: "panel",
+          },
         },
-        credential: {
-          label: "Example OAuth",
-          audience: [{ url: "https://api.example.test/", match: "origin" }],
-          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
-        },
-      },
-      handoffTarget: {
-        callerId: "panel:missing-owner",
-        callerKind: "panel",
-      },
-    }])).rejects.toMatchObject({ code: "browser_unavailable" });
+      ])
+    ).rejects.toMatchObject({ code: "browser_unavailable" });
     expect(emitToCaller).not.toHaveBeenCalled();
     expect(emitToConnection).not.toHaveBeenCalled();
   });
@@ -1019,40 +1155,57 @@ describe("credentialService", () => {
       eventService: targetedOpenEventService(emit) as never,
       approvalQueue: approvingQueue() as never,
     });
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
-      access_token: "token",
-      expires_in: 3600,
-    }), { status: 200, headers: { "content-type": "application/json" } })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              access_token: "token",
+              expires_in: 3600,
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          )
+      )
+    );
 
-    const pending = service.handler({ callerId: "shell", callerKind: "shell" }, "connect", [{
-      flow: {
-        type: "oauth2-auth-code-pkce",
-        authorizeUrl: "https://auth.example.test/oauth/authorize",
-        tokenUrl: "https://auth.example.test/oauth/token",
-        clientId: "client-1",
+    const pending = service.handler({ callerId: "shell", callerKind: "shell" }, "connect", [
+      {
+        flow: {
+          type: "oauth2-auth-code-pkce",
+          authorizeUrl: "https://auth.example.test/oauth/authorize",
+          tokenUrl: "https://auth.example.test/oauth/token",
+          clientId: "client-1",
+        },
+        credential: {
+          label: "Example OAuth",
+          audience: [{ url: "https://api.example.test/", match: "origin" }],
+          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+        },
+        redirect: {
+          type: "client-forwarded",
+          callbackUri: "https://auth.snugenv.com/oauth/callback/example",
+        },
       },
-      credential: {
-        label: "Example OAuth",
-        audience: [{ url: "https://api.example.test/", match: "origin" }],
-        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
-      },
-      redirect: {
-        type: "client-forwarded",
-        callbackUri: "https://auth.snugenv.com/oauth/callback/example",
-      },
-    }]) as Promise<StoredCredentialSummary>;
+    ]) as Promise<StoredCredentialSummary>;
 
-    await vi.waitFor(() => expect(emit).toHaveBeenCalledWith(
-      "external-open:open",
-      expect.objectContaining({ callerId: "shell" }),
-    ));
+    await vi.waitFor(() =>
+      expect(emit).toHaveBeenCalledWith(
+        "external-open:open",
+        expect.objectContaining({ callerId: "shell" })
+      )
+    );
     const authorizeUrl = new URL(emit.mock.calls[0]![1].url);
-    expect(authorizeUrl.searchParams.get("redirect_uri")).toBe("https://auth.snugenv.com/oauth/callback/example");
+    expect(authorizeUrl.searchParams.get("redirect_uri")).toBe(
+      "https://auth.snugenv.com/oauth/callback/example"
+    );
     const state = authorizeUrl.searchParams.get("state")!;
 
-    await service.handler({ callerId: "shell", callerKind: "shell" }, "forwardOAuthCallback", [{
-      url: `https://auth.snugenv.com/oauth/callback/example?code=code-1&state=${state}`,
-    }]);
+    await service.handler({ callerId: "shell", callerKind: "shell" }, "forwardOAuthCallback", [
+      {
+        url: `https://auth.snugenv.com/oauth/callback/example?code=code-1&state=${state}`,
+      },
+    ]);
 
     await expect(pending).resolves.toMatchObject({ label: "Example OAuth" });
   });
@@ -1067,71 +1220,93 @@ describe("credentialService", () => {
       tokenManager: { getPanelOwner: vi.fn(() => "shell:owner") } as never,
       approvalQueue: approvingQueue() as never,
     });
-    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const body = init?.body as URLSearchParams;
-      expect(body.get("redirect_uri")).toBe("http://localhost:1455/auth/callback");
-      return new Response(JSON.stringify({
-        access_token: "token",
-        expires_in: 3600,
-      }), { status: 200, headers: { "content-type": "application/json" } });
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = init?.body as URLSearchParams;
+        expect(body.get("redirect_uri")).toBe("http://localhost:1455/auth/callback");
+        return new Response(
+          JSON.stringify({
+            access_token: "token",
+            expires_in: 3600,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      })
+    );
 
-    const pending = service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
-      spec: {
-        flow: {
-          type: "oauth2-auth-code-pkce",
-          authorizeUrl: "https://auth.example.test/oauth/authorize",
-          tokenUrl: "https://auth.example.test/oauth/token",
-          clientId: "client-1",
+    const pending = service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [
+      {
+        spec: {
+          flow: {
+            type: "oauth2-auth-code-pkce",
+            authorizeUrl: "https://auth.example.test/oauth/authorize",
+            tokenUrl: "https://auth.example.test/oauth/token",
+            clientId: "client-1",
+          },
+          credential: {
+            label: "Example OAuth",
+            audience: [{ url: "https://api.example.test/", match: "origin" }],
+            injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+          },
+          redirect: {
+            type: "client-loopback",
+            host: "localhost",
+            port: 1455,
+            callbackPath: "/auth/callback",
+          },
+          browser: "external",
         },
-        credential: {
-          label: "Example OAuth",
-          audience: [{ url: "https://api.example.test/", match: "origin" }],
-          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+        handoffTarget: {
+          callerId: "panel:test",
+          callerKind: "panel",
         },
-        redirect: {
-          type: "client-loopback",
-          host: "localhost",
-          port: 1455,
-          callbackPath: "/auth/callback",
-        },
-        browser: "external",
       },
-      handoffTarget: {
-        callerId: "panel:test",
-        callerKind: "panel",
-      },
-    }]) as Promise<StoredCredentialSummary>;
+    ]) as Promise<StoredCredentialSummary>;
 
-    await vi.waitFor(() => expect(eventService.emitToCaller).toHaveBeenCalledWith(
-      "shell:owner",
-      "external-open:open",
-      expect.objectContaining({
-        callerId: "worker:test",
-        oauthLoopback: expect.objectContaining({
-          redirectUri: "http://localhost:1455/auth/callback",
-          host: "localhost",
-          port: 1455,
-          callbackPath: "/auth/callback",
-        }),
-      }),
-    ));
+    await vi.waitFor(() =>
+      expect(eventService.emitToCaller).toHaveBeenCalledWith(
+        "shell:owner",
+        "external-open:open",
+        expect.objectContaining({
+          callerId: "worker:test",
+          oauthLoopback: expect.objectContaining({
+            redirectUri: "http://localhost:1455/auth/callback",
+            host: "localhost",
+            port: 1455,
+            callbackPath: "/auth/callback",
+          }),
+        })
+      )
+    );
     const payload = emit.mock.calls[0]![1] as {
       url: string;
       oauthLoopback: { transactionId: string; state: string };
     };
     const authorizeUrl = new URL(payload.url);
-    expect(authorizeUrl.searchParams.get("redirect_uri")).toBe("http://localhost:1455/auth/callback");
+    expect(authorizeUrl.searchParams.get("redirect_uri")).toBe(
+      "http://localhost:1455/auth/callback"
+    );
 
-    await expect(service.handler({ callerId: "shell:other", callerKind: "shell" }, "forwardOAuthCallback", [{
-      transactionId: payload.oauthLoopback.transactionId,
-      url: `http://localhost:1455/auth/callback?code=code-1&state=${payload.oauthLoopback.state}`,
-    }])).rejects.toMatchObject({ code: "client_not_authorized" });
+    await expect(
+      service.handler({ callerId: "shell:other", callerKind: "shell" }, "forwardOAuthCallback", [
+        {
+          transactionId: payload.oauthLoopback.transactionId,
+          url: `http://localhost:1455/auth/callback?code=code-1&state=${payload.oauthLoopback.state}`,
+        },
+      ])
+    ).rejects.toMatchObject({ code: "client_not_authorized" });
 
-    await service.handler({ callerId: "shell:owner", callerKind: "shell" }, "forwardOAuthCallback", [{
-      transactionId: payload.oauthLoopback.transactionId,
-      url: `http://localhost:1455/auth/callback?code=code-1&state=${payload.oauthLoopback.state}`,
-    }]);
+    await service.handler(
+      { callerId: "shell:owner", callerKind: "shell" },
+      "forwardOAuthCallback",
+      [
+        {
+          transactionId: payload.oauthLoopback.transactionId,
+          url: `http://localhost:1455/auth/callback?code=code-1&state=${payload.oauthLoopback.state}`,
+        },
+      ]
+    );
 
     await expect(pending).resolves.toMatchObject({ label: "Example OAuth" });
     expect((await store.loadUrlBound((await pending).id))?.accessToken).toBe("token");
@@ -1160,26 +1335,30 @@ describe("credentialService", () => {
       approvalQueue: approvingQueue() as never,
     });
 
-    await expect(service.handler({ callerId: "shell", callerKind: "shell" }, "connect", [{
-      flow: {
-        type: "oauth1a",
-        requestTokenUrl: "https://auth.example.test/oauth/request_token",
-        authorizeUrl: "https://auth.example.test/oauth/authorize",
-        accessTokenUrl: "https://auth.example.test/oauth/access_token",
-        clientConfigId: "twitter",
-      },
-      credential: {
-        label: "Example OAuth1",
-        audience: [{ url: "https://api.example.test/", match: "origin" }],
-        injection: { type: "oauth1-signature" },
-      },
-      redirect: {
-        type: "client-loopback",
-        host: "localhost",
-        port: 1455,
-        callbackPath: "/auth/callback",
-      },
-    }])).rejects.toMatchObject({ code: "unsupported_flow" });
+    await expect(
+      service.handler({ callerId: "shell", callerKind: "shell" }, "connect", [
+        {
+          flow: {
+            type: "oauth1a",
+            requestTokenUrl: "https://auth.example.test/oauth/request_token",
+            authorizeUrl: "https://auth.example.test/oauth/authorize",
+            accessTokenUrl: "https://auth.example.test/oauth/access_token",
+            clientConfigId: "twitter",
+          },
+          credential: {
+            label: "Example OAuth1",
+            audience: [{ url: "https://api.example.test/", match: "origin" }],
+            injection: { type: "oauth1-signature" },
+          },
+          redirect: {
+            type: "client-loopback",
+            host: "localhost",
+            port: 1455,
+            callbackPath: "/auth/callback",
+          },
+        },
+      ])
+    ).rejects.toMatchObject({ code: "unsupported_flow" });
   });
 
   it("rejects forwarded OAuth callbacks that do not match the bound redirect URI", async () => {
@@ -1190,29 +1369,33 @@ describe("credentialService", () => {
       approvalQueue: approvingQueue() as never,
     });
 
-    const pending = service.handler({ callerId: "shell", callerKind: "shell" }, "connect", [{
-      flow: {
-        type: "oauth2-auth-code-pkce",
-        authorizeUrl: "https://auth.example.test/oauth/authorize",
-        tokenUrl: "https://auth.example.test/oauth/token",
-        clientId: "client-1",
+    const pending = service.handler({ callerId: "shell", callerKind: "shell" }, "connect", [
+      {
+        flow: {
+          type: "oauth2-auth-code-pkce",
+          authorizeUrl: "https://auth.example.test/oauth/authorize",
+          tokenUrl: "https://auth.example.test/oauth/token",
+          clientId: "client-1",
+        },
+        credential: {
+          label: "Example OAuth",
+          audience: [{ url: "https://api.example.test/", match: "origin" }],
+          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+        },
+        redirect: {
+          type: "client-forwarded",
+          callbackUri: "https://auth.snugenv.com/oauth/callback/example",
+        },
       },
-      credential: {
-        label: "Example OAuth",
-        audience: [{ url: "https://api.example.test/", match: "origin" }],
-        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
-      },
-      redirect: {
-        type: "client-forwarded",
-        callbackUri: "https://auth.snugenv.com/oauth/callback/example",
-      },
-    }]) as Promise<StoredCredentialSummary>;
+    ]) as Promise<StoredCredentialSummary>;
 
     await vi.waitFor(() => expect(emit).toHaveBeenCalled());
     const state = new URL(emit.mock.calls[0]![1].url).searchParams.get("state")!;
-    await service.handler({ callerId: "shell", callerKind: "shell" }, "forwardOAuthCallback", [{
-      url: `https://evil.example.test/oauth/callback/example?code=code-1&state=${state}`,
-    }]);
+    await service.handler({ callerId: "shell", callerKind: "shell" }, "forwardOAuthCallback", [
+      {
+        url: `https://evil.example.test/oauth/callback/example?code=code-1&state=${state}`,
+      },
+    ]);
 
     await expect(pending).rejects.toMatchObject({ code: "redirect_mismatch" });
   });
@@ -1224,24 +1407,28 @@ describe("credentialService", () => {
       approvalQueue: approvingQueue() as never,
     });
 
-    await expect(service.handler({ callerId: "panel:test", callerKind: "panel" }, "connect", [{
-      flow: {
-        type: "oauth2-auth-code-pkce",
-        authorizeUrl: "https://auth.example.test/oauth/authorize",
-        tokenUrl: "https://auth.example.test/oauth/token",
-        clientId: "client-1",
-      },
-      credential: {
-        label: "Example OAuth",
-        audience: [{ url: "https://api.example.test/", match: "origin" }],
-        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
-      },
-      browserHandoff: {
-        openMode: "external",
-        targetCallerId: "panel:other",
-        targetCallerKind: "panel",
-      },
-    }])).rejects.toThrow();
+    await expect(
+      service.handler({ callerId: "panel:test", callerKind: "panel" }, "connect", [
+        {
+          flow: {
+            type: "oauth2-auth-code-pkce",
+            authorizeUrl: "https://auth.example.test/oauth/authorize",
+            tokenUrl: "https://auth.example.test/oauth/token",
+            clientId: "client-1",
+          },
+          credential: {
+            label: "Example OAuth",
+            audience: [{ url: "https://api.example.test/", match: "origin" }],
+            injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+          },
+          browserHandoff: {
+            openMode: "external",
+            targetCallerId: "panel:other",
+            targetCallerKind: "panel",
+          },
+        },
+      ])
+    ).rejects.toThrow();
   });
 
   it("rejects panel callers that try to use the internal handoff envelope", async () => {
@@ -1251,25 +1438,29 @@ describe("credentialService", () => {
       approvalQueue: approvingQueue() as never,
     });
 
-    await expect(service.handler({ callerId: "panel:test", callerKind: "panel" }, "connect", [{
-      spec: {
-        flow: {
-        type: "oauth2-auth-code-pkce",
-          authorizeUrl: "https://auth.example.test/oauth/authorize",
-          tokenUrl: "https://auth.example.test/oauth/token",
-          clientId: "client-1",
+    await expect(
+      service.handler({ callerId: "panel:test", callerKind: "panel" }, "connect", [
+        {
+          spec: {
+            flow: {
+              type: "oauth2-auth-code-pkce",
+              authorizeUrl: "https://auth.example.test/oauth/authorize",
+              tokenUrl: "https://auth.example.test/oauth/token",
+              clientId: "client-1",
+            },
+            credential: {
+              label: "Example OAuth",
+              audience: [{ url: "https://api.example.test/", match: "origin" }],
+              injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+            },
+          },
+          handoffTarget: {
+            callerId: "panel:other",
+            callerKind: "panel",
+          },
         },
-        credential: {
-          label: "Example OAuth",
-          audience: [{ url: "https://api.example.test/", match: "origin" }],
-          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
-        },
-      },
-      handoffTarget: {
-        callerId: "panel:other",
-        callerKind: "panel",
-      },
-    }])).rejects.toMatchObject({ code: "client_not_authorized" });
+      ])
+    ).rejects.toMatchObject({ code: "client_not_authorized" });
   });
 
   it("surfaces sanitized OAuth token endpoint error details", async () => {
@@ -1294,21 +1485,37 @@ describe("credentialService", () => {
       },
     });
 
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
-      error: "invalid_client",
-      error_description: "Unauthorized",
-      refresh_token: "must-not-leak",
-    }), { status: 400, headers: { "content-type": "application/json" } })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: "invalid_client",
+              error_description: "Unauthorized",
+              refresh_token: "must-not-leak",
+            }),
+            { status: 400, headers: { "content-type": "application/json" } }
+          )
+      )
+    );
 
     const pendingError: Promise<Error> = started.pending.then(
-      () => { throw new Error("expected OAuth connection to fail"); },
-      (error: Error) => error,
+      () => {
+        throw new Error("expected OAuth connection to fail");
+      },
+      (error: Error) => error
     );
-    await deliverOAuthCallback(started.redirectUri, new URLSearchParams({
-      code: "code-1",
-      state: started.state,
-    }));
-    expect((await pendingError).message).toBe("OAuth token exchange failed: 400 invalid_client: Unauthorized");
+    await deliverOAuthCallback(
+      started.redirectUri,
+      new URLSearchParams({
+        code: "code-1",
+        state: started.state,
+      })
+    );
+    expect((await pendingError).message).toBe(
+      "OAuth token exchange failed: 400 invalid_client: Unauthorized"
+    );
   });
 
   it("maps provider-denied OAuth callbacks to approval_denied", async () => {
@@ -1334,13 +1541,18 @@ describe("credentialService", () => {
     });
 
     const pendingError: Promise<Error> = started.pending.then(
-      () => { throw new Error("expected OAuth connection to fail"); },
-      (error: Error) => error,
+      () => {
+        throw new Error("expected OAuth connection to fail");
+      },
+      (error: Error) => error
     );
-    await deliverOAuthCallback(started.redirectUri, new URLSearchParams({
-      error: "access_denied",
-      state: started.state,
-    }));
+    await deliverOAuthCallback(
+      started.redirectUri,
+      new URLSearchParams({
+        error: "access_denied",
+        state: started.state,
+      })
+    );
 
     await expect(pendingError).resolves.toMatchObject({ code: "approval_denied" });
   });
@@ -1369,16 +1581,18 @@ describe("credentialService", () => {
     });
     const ctx = { callerId: "panel:test", callerKind: "panel" as const };
 
-    const status = await service.handler(ctx, "configureClient", [{
-      configId: "google-workspace",
-      title: "Configure Google Workspace OAuth",
-      authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
-      tokenUrl: "https://oauth2.googleapis.com/token",
-      fields: [
-        { name: "clientId", label: "Client ID", type: "text", required: true },
-        { name: "clientSecret", label: "Client secret", type: "secret", required: true },
-      ],
-    }]);
+    const status = await service.handler(ctx, "configureClient", [
+      {
+        configId: "google-workspace",
+        title: "Configure Google Workspace OAuth",
+        authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+        tokenUrl: "https://oauth2.googleapis.com/token",
+        fields: [
+          { name: "clientId", label: "Client ID", type: "text", required: true },
+          { name: "clientSecret", label: "Client secret", type: "secret", required: true },
+        ],
+      },
+    ]);
 
     expect(status).toMatchObject({
       configId: "google-workspace",
@@ -1391,7 +1605,9 @@ describe("credentialService", () => {
       },
     });
     expect(JSON.stringify(status)).not.toContain("secret-1");
-    expect((await clientConfigStore.load("google-workspace"))?.fields["clientSecret"]?.value).toBe("secret-1");
+    expect((await clientConfigStore.load("google-workspace"))?.fields["clientSecret"]?.value).toBe(
+      "secret-1"
+    );
   });
 
   it("authorizes client config status and prompts before deletion", async () => {
@@ -1421,29 +1637,30 @@ describe("credentialService", () => {
       clientConfigStore: clientConfigStore as never,
       approvalQueue: approvalQueue as never,
       codeIdentityResolver: {
-        resolveByCallerId: (callerId: string) => callerId === "panel:owner"
-          ? { callerId, callerKind: "panel", repoPath: "/repo", effectiveVersion: "hash-1" }
-          : { callerId, callerKind: "panel", repoPath: "/other", effectiveVersion: "hash-1" },
+        resolveByCallerId: (callerId: string) =>
+          callerId === "panel:owner"
+            ? { callerId, callerKind: "panel", repoPath: "/repo", effectiveVersion: "hash-1" }
+            : { callerId, callerKind: "panel", repoPath: "/other", effectiveVersion: "hash-1" },
       },
     });
 
-    await expect(service.handler(
-      { callerId: "panel:other", callerKind: "panel" },
-      "getClientConfigStatus",
-      [{ configId: "google-workspace" }],
-    )).rejects.toThrow("client_not_authorized");
+    await expect(
+      service.handler({ callerId: "panel:other", callerKind: "panel" }, "getClientConfigStatus", [
+        { configId: "google-workspace" },
+      ])
+    ).rejects.toThrow("client_not_authorized");
 
-    await service.handler(
-      { callerId: "panel:owner", callerKind: "panel" },
-      "deleteClientConfig",
-      [{ configId: "google-workspace" }],
+    await service.handler({ callerId: "panel:owner", callerKind: "panel" }, "deleteClientConfig", [
+      { configId: "google-workspace" },
+    ]);
+
+    expect(approvalQueue.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "capability",
+        capability: "client-config-delete",
+        title: "Disable service configuration",
+      })
     );
-
-    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
-      kind: "capability",
-      capability: "client-config-delete",
-      title: "Disable service configuration",
-    }));
     expect(await clientConfigStore.load("google-workspace")).toMatchObject({ status: "deleted" });
   });
 
@@ -1473,18 +1690,30 @@ describe("credentialService", () => {
       ],
     };
 
-    await expect(service.handler(ctx, "configureClient", [{
-      ...baseRequest,
-      authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth#frag",
-    }])).rejects.toThrow("authorizeUrl must not include a fragment");
-    await expect(service.handler(ctx, "configureClient", [{
-      ...baseRequest,
-      tokenUrl: "https://oauth2.googleapis.com/token?client_secret=inline",
-    }])).rejects.toThrow("tokenUrl must not include query parameters");
-    await expect(service.handler(ctx, "configureClient", [{
-      ...baseRequest,
-      tokenUrl: "https://oauth2.googleapis.com/token#frag",
-    }])).rejects.toThrow("tokenUrl must not include a fragment");
+    await expect(
+      service.handler(ctx, "configureClient", [
+        {
+          ...baseRequest,
+          authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth#frag",
+        },
+      ])
+    ).rejects.toThrow("authorizeUrl must not include a fragment");
+    await expect(
+      service.handler(ctx, "configureClient", [
+        {
+          ...baseRequest,
+          tokenUrl: "https://oauth2.googleapis.com/token?client_secret=inline",
+        },
+      ])
+    ).rejects.toThrow("tokenUrl must not include query parameters");
+    await expect(
+      service.handler(ctx, "configureClient", [
+        {
+          ...baseRequest,
+          tokenUrl: "https://oauth2.googleapis.com/token#frag",
+        },
+      ])
+    ).rejects.toThrow("tokenUrl must not include a fragment");
   });
 
   it("builds URL-bound client config PKCE without exposing client secrets in userland request", async () => {
@@ -1532,20 +1761,29 @@ describe("credentialService", () => {
     expect(authorizeUrl.searchParams.get("client_secret")).toBeNull();
     expect(authorizeUrl.searchParams.get("access_type")).toBe("offline");
 
-    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const body = init?.body as URLSearchParams;
-      expect(body.get("client_id")).toBe("client-1");
-      expect(body.get("client_secret")).toBe("secret-1");
-      return new Response(JSON.stringify({
-        access_token: "token",
-        expires_in: 3600,
-      }), { status: 200, headers: { "content-type": "application/json" } });
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = init?.body as URLSearchParams;
+        expect(body.get("client_id")).toBe("client-1");
+        expect(body.get("client_secret")).toBe("secret-1");
+        return new Response(
+          JSON.stringify({
+            access_token: "token",
+            expires_in: 3600,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      })
+    );
 
-    await deliverOAuthCallback(started.redirectUri, new URLSearchParams({
-      code: "code-1",
-      state: started.state,
-    }));
+    await deliverOAuthCallback(
+      started.redirectUri,
+      new URLSearchParams({
+        code: "code-1",
+        state: started.state,
+      })
+    );
     await started.pending;
   });
 
@@ -1570,32 +1808,46 @@ describe("credentialService", () => {
       approvalQueue: approvingQueue() as never,
     });
 
-    const started = await startOAuthConnection(service, emit, { callerId: "panel:test", callerKind: "panel" }, {
-      flow: {
-        type: "oauth2-auth-code-pkce",
-        clientConfigId: "google-workspace",
-      },
-      credential: {
-        label: "Google Workspace",
-        audience: [{ url: "https://www.googleapis.com/", match: "origin" }],
-        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
-      },
-    });
+    const started = await startOAuthConnection(
+      service,
+      emit,
+      { callerId: "panel:test", callerKind: "panel" },
+      {
+        flow: {
+          type: "oauth2-auth-code-pkce",
+          clientConfigId: "google-workspace",
+        },
+        credential: {
+          label: "Google Workspace",
+          audience: [{ url: "https://www.googleapis.com/", match: "origin" }],
+          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+        },
+      }
+    );
 
-    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const body = init?.body as URLSearchParams;
-      expect(body.get("client_id")).toBe("client-1");
-      expect(body.get("client_secret")).toBe("secret-1");
-      return new Response(JSON.stringify({
-        access_token: "token",
-        expires_in: 3600,
-      }), { status: 200, headers: { "content-type": "application/json" } });
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = init?.body as URLSearchParams;
+        expect(body.get("client_id")).toBe("client-1");
+        expect(body.get("client_secret")).toBe("secret-1");
+        return new Response(
+          JSON.stringify({
+            access_token: "token",
+            expires_in: 3600,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      })
+    );
 
-    await deliverOAuthCallback(started.redirectUri, new URLSearchParams({
-      code: "code-1",
-      state: started.state,
-    }));
+    await deliverOAuthCallback(
+      started.redirectUri,
+      new URLSearchParams({
+        code: "code-1",
+        state: started.state,
+      })
+    );
     await started.pending;
   });
 
@@ -1619,33 +1871,47 @@ describe("credentialService", () => {
       approvalQueue: approvingQueue() as never,
     });
 
-    const started = await startOAuthConnection(service, emit, { callerId: "panel:test", callerKind: "panel" }, {
-      flow: {
-        type: "oauth2-auth-code-pkce",
-        clientConfigId: "public-app",
-      },
-      credential: {
-        label: "Public App",
-        audience: [{ url: "https://api.example.test/", match: "origin" }],
-        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
-      },
-    });
+    const started = await startOAuthConnection(
+      service,
+      emit,
+      { callerId: "panel:test", callerKind: "panel" },
+      {
+        flow: {
+          type: "oauth2-auth-code-pkce",
+          clientConfigId: "public-app",
+        },
+        credential: {
+          label: "Public App",
+          audience: [{ url: "https://api.example.test/", match: "origin" }],
+          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+        },
+      }
+    );
 
-    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const body = init?.body as URLSearchParams;
-      expect(body.get("client_id")).toBe("client-1");
-      expect(body.get("client_secret")).toBeNull();
-      expect(body.get("client_assertion")).toBeNull();
-      return new Response(JSON.stringify({
-        access_token: "token",
-        expires_in: 3600,
-      }), { status: 200, headers: { "content-type": "application/json" } });
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = init?.body as URLSearchParams;
+        expect(body.get("client_id")).toBe("client-1");
+        expect(body.get("client_secret")).toBeNull();
+        expect(body.get("client_assertion")).toBeNull();
+        return new Response(
+          JSON.stringify({
+            access_token: "token",
+            expires_in: 3600,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      })
+    );
 
-    await deliverOAuthCallback(started.redirectUri, new URLSearchParams({
-      code: "code-1",
-      state: started.state,
-    }));
+    await deliverOAuthCallback(
+      started.redirectUri,
+      new URLSearchParams({
+        code: "code-1",
+        state: started.state,
+      })
+    );
     await started.pending;
   });
 
@@ -1683,16 +1949,20 @@ describe("credentialService", () => {
       approvalQueue: approvalQueue as never,
     });
 
-    await expect(service.handler({ callerId: "panel:test", callerKind: "panel" as const }, "configureClient", [{
-      configId: "google-workspace",
-      title: "Configure Google Workspace OAuth",
-      authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
-      tokenUrl: "https://evil.example.test/token",
-      fields: [
-        { name: "clientId", label: "Client ID", type: "text", required: true },
-        { name: "clientSecret", label: "Client secret", type: "secret", required: true },
-      ],
-    }])).rejects.toThrow("tokenUrl is immutable");
+    await expect(
+      service.handler({ callerId: "panel:test", callerKind: "panel" as const }, "configureClient", [
+        {
+          configId: "google-workspace",
+          title: "Configure Google Workspace OAuth",
+          authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+          tokenUrl: "https://evil.example.test/token",
+          fields: [
+            { name: "clientId", label: "Client ID", type: "text", required: true },
+            { name: "clientSecret", label: "Client secret", type: "secret", required: true },
+          ],
+        },
+      ])
+    ).rejects.toThrow("tokenUrl is immutable");
   });
 
   it("surfaces OAuth origins and domain mismatch in credential approval requests", async () => {
@@ -1729,21 +1999,35 @@ describe("credentialService", () => {
       },
     });
 
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
-      access_token: "token",
-    }), { status: 200, headers: { "content-type": "application/json" } })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              access_token: "token",
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          )
+      )
+    );
 
-    await deliverOAuthCallback(started.redirectUri, new URLSearchParams({
-      code: "code-1",
-      state: started.state,
-    }));
+    await deliverOAuthCallback(
+      started.redirectUri,
+      new URLSearchParams({
+        code: "code-1",
+        state: started.state,
+      })
+    );
     await started.pending;
 
-    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
-      oauthAuthorizeOrigin: "https://accounts.example-login.test",
-      oauthTokenOrigin: "https://accounts.example-login.test",
-      oauthAudienceDomainMismatch: true,
-    }));
+    expect(approvalQueue.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        oauthAuthorizeOrigin: "https://accounts.example-login.test",
+        oauthTokenOrigin: "https://accounts.example-login.test",
+        oauthAudienceDomainMismatch: true,
+      })
+    );
   });
 
   it("rejects OAuth extra authorize params that override host-controlled PKCE fields", async () => {
@@ -1754,20 +2038,24 @@ describe("credentialService", () => {
     });
     const ctx = { callerId: "panel:test", callerKind: "panel" as const };
 
-    await expect(service.handler(ctx, "connect", [{
-      flow: {
-        type: "oauth2-auth-code-pkce",
-        authorizeUrl: "https://auth.example.test/oauth/authorize",
-        tokenUrl: "https://auth.example.test/oauth/token",
-        clientId: "client-1",
-        extraAuthorizeParams: { state: "attacker" },
-      },
-      credential: {
-        label: "Example OAuth",
-        audience: [{ url: "https://api.example.test", match: "origin" }],
-        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
-      },
-    }])).rejects.toThrow(/cannot override state/);
+    await expect(
+      service.handler(ctx, "connect", [
+        {
+          flow: {
+            type: "oauth2-auth-code-pkce",
+            authorizeUrl: "https://auth.example.test/oauth/authorize",
+            tokenUrl: "https://auth.example.test/oauth/token",
+            clientId: "client-1",
+            extraAuthorizeParams: { state: "attacker" },
+          },
+          credential: {
+            label: "Example OAuth",
+            audience: [{ url: "https://api.example.test", match: "origin" }],
+            injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+          },
+        },
+      ])
+    ).rejects.toThrow(/cannot override state/);
   });
 
   it("accepts OAuth token responses that omit token_type", async () => {
@@ -1793,15 +2081,27 @@ describe("credentialService", () => {
       },
     });
 
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
-      access_token: "token",
-      expires_in: 3600,
-    }), { status: 200, headers: { "content-type": "application/json" } })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              access_token: "token",
+              expires_in: 3600,
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          )
+      )
+    );
 
-    await deliverOAuthCallback(started.redirectUri, new URLSearchParams({
-      code: "code-1",
-      state: started.state,
-    }));
+    await deliverOAuthCallback(
+      started.redirectUri,
+      new URLSearchParams({
+        code: "code-1",
+        state: started.state,
+      })
+    );
     const completed = await started.pending;
 
     expect((await store.loadUrlBound(completed.id))?.accessToken).toBe("token");
@@ -1834,17 +2134,29 @@ describe("credentialService", () => {
       },
     });
 
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
-      access_token: jwtWithPayload({
-        "https://api.example.test/auth": { account_id: "acct-from-token" },
-      }),
-      expires_in: 3600,
-    }), { status: 200, headers: { "content-type": "application/json" } })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              access_token: jwtWithPayload({
+                "https://api.example.test/auth": { account_id: "acct-from-token" },
+              }),
+              expires_in: 3600,
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          )
+      )
+    );
 
-    await deliverOAuthCallback(started.redirectUri, new URLSearchParams({
-      code: "code-1",
-      state: started.state,
-    }));
+    await deliverOAuthCallback(
+      started.redirectUri,
+      new URLSearchParams({
+        code: "code-1",
+        state: started.state,
+      })
+    );
     const completed = await started.pending;
 
     expect(completed.accountIdentity?.providerUserId).toBe("acct-from-token");
@@ -1880,24 +2192,33 @@ describe("credentialService", () => {
       },
     });
 
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input) === "https://auth.example.test/userinfo") {
-        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer token");
-        return new Response(JSON.stringify({ sub: "acct-userinfo", email: "dev@example.test" }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      }
-      return new Response(JSON.stringify({
-        access_token: "token",
-        expires_in: 3600,
-      }), { status: 200, headers: { "content-type": "application/json" } });
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === "https://auth.example.test/userinfo") {
+          expect(new Headers(init?.headers).get("authorization")).toBe("Bearer token");
+          return new Response(JSON.stringify({ sub: "acct-userinfo", email: "dev@example.test" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            access_token: "token",
+            expires_in: 3600,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      })
+    );
 
-    await deliverOAuthCallback(started.redirectUri, new URLSearchParams({
-      code: "code-1",
-      state: started.state,
-    }));
+    await deliverOAuthCallback(
+      started.redirectUri,
+      new URLSearchParams({
+        code: "code-1",
+        state: started.state,
+      })
+    );
     const completed = await started.pending;
 
     expect(completed.accountIdentity).toMatchObject({
@@ -1929,13 +2250,18 @@ describe("credentialService", () => {
     });
 
     const stateError: Promise<Error> = started.pending.then(
-      () => { throw new Error("expected OAuth connection to fail"); },
-      (error: Error) => error,
+      () => {
+        throw new Error("expected OAuth connection to fail");
+      },
+      (error: Error) => error
     );
-    await deliverOAuthCallback(started.redirectUri, new URLSearchParams({
-      code: "code-1",
-      state: "wrong",
-    })).catch((error: NodeJS.ErrnoException) => {
+    await deliverOAuthCallback(
+      started.redirectUri,
+      new URLSearchParams({
+        code: "code-1",
+        state: "wrong",
+      })
+    ).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ECONNRESET" && !/ECONNRESET/.test(error.message)) throw error;
     });
     expect((await stateError).message).toMatch(/state_mismatch/);
@@ -1955,20 +2281,34 @@ describe("credentialService", () => {
       },
     });
 
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
-      access_token: "token",
-      token_type: "mac",
-      expires_in: 3600,
-    }), { status: 200, headers: { "content-type": "application/json" } })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              access_token: "token",
+              token_type: "mac",
+              expires_in: 3600,
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          )
+      )
+    );
 
     const tokenTypeError: Promise<Error> = started2.pending.then(
-      () => { throw new Error("expected OAuth connection to fail"); },
-      (error: Error) => error,
+      () => {
+        throw new Error("expected OAuth connection to fail");
+      },
+      (error: Error) => error
     );
-    await deliverOAuthCallback(started2.redirectUri, new URLSearchParams({
-      code: "code-1",
-      state: started2.state,
-    })).catch((error: NodeJS.ErrnoException) => {
+    await deliverOAuthCallback(
+      started2.redirectUri,
+      new URLSearchParams({
+        code: "code-1",
+        state: started2.state,
+      })
+    ).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ECONNRESET" && !/ECONNRESET/.test(error.message)) throw error;
     });
     expect((await tokenTypeError).message).toMatch(/bearer token_type/);
@@ -1980,7 +2320,12 @@ describe("credentialService", () => {
     await clientConfigStore.save({
       configId: "svc",
       currentVersion: "v1",
-      owner: { callerId: "worker:test", callerKind: "worker", repoPath: "worker:test", effectiveVersion: "unknown" },
+      owner: {
+        callerId: "worker:test",
+        callerKind: "worker",
+        repoPath: "worker:test",
+        effectiveVersion: "unknown",
+      },
       authorizeUrl: "https://auth.example.test/oauth/authorize",
       tokenUrl: "https://auth.example.test/oauth/token",
       status: "active",
@@ -1993,32 +2338,44 @@ describe("credentialService", () => {
       createdAt: 1,
       updatedAt: 1,
     });
-    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      expect((init?.body as URLSearchParams).get("grant_type")).toBe("client_credentials");
-      return new Response(JSON.stringify({
-        access_token: "service-token",
-        token_type: "Bearer",
-        expires_in: 3600,
-      }), { status: 200, headers: { "content-type": "application/json" } });
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        expect((init?.body as URLSearchParams).get("grant_type")).toBe("client_credentials");
+        return new Response(
+          JSON.stringify({
+            access_token: "service-token",
+            token_type: "Bearer",
+            expires_in: 3600,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      })
+    );
     const service = createCredentialService({
       credentialStore: store as never,
       clientConfigStore: clientConfigStore as never,
       approvalQueue: approvingQueue("session") as never,
     });
-    const stored = await service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
-      flow: {
-        type: "oauth2-client-credentials",
-        tokenUrl: "https://auth.example.test/oauth/token",
-        clientConfigId: "svc",
-        tokenAuth: "client_secret_post",
-      },
-      credential: {
-        label: "Service API",
-        audience: [{ url: "https://api.example.test/", match: "origin" }],
-        injection: { type: "header", name: "authorization", valueTemplate: "Bearer {token}" },
-      },
-    }]) as StoredCredentialSummary;
+    const stored = (await service.handler(
+      { callerId: "worker:test", callerKind: "worker" },
+      "connect",
+      [
+        {
+          flow: {
+            type: "oauth2-client-credentials",
+            tokenUrl: "https://auth.example.test/oauth/token",
+            clientConfigId: "svc",
+            tokenAuth: "client_secret_post",
+          },
+          credential: {
+            label: "Service API",
+            audience: [{ url: "https://api.example.test/", match: "origin" }],
+            injection: { type: "header", name: "authorization", valueTemplate: "Bearer {token}" },
+          },
+        },
+      ]
+    )) as StoredCredentialSummary;
 
     expect(stored.id).toBeTruthy();
     expect((await store.loadUrlBound(stored.id))?.accessToken).toBe("service-token");
@@ -2035,7 +2392,12 @@ describe("credentialService", () => {
     await clientConfigStore.save({
       configId: "svc-jwt",
       currentVersion: "v1",
-      owner: { callerId: "worker:test", callerKind: "worker", repoPath: "worker:test", effectiveVersion: "unknown" },
+      owner: {
+        callerId: "worker:test",
+        callerKind: "worker",
+        repoPath: "worker:test",
+        effectiveVersion: "unknown",
+      },
       authorizeUrl: "https://auth.example.test/oauth/authorize",
       tokenUrl: "https://auth.example.test/oauth/token",
       status: "active",
@@ -2049,37 +2411,53 @@ describe("credentialService", () => {
       createdAt: 1,
       updatedAt: 1,
     });
-    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const body = init?.body as URLSearchParams;
-      expect(body.get("client_assertion_type")).toBe("urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
-      expect(body.get("client_assertion")?.split(".")).toHaveLength(3);
-      expect(body.get("client_secret")).toBeNull();
-      return new Response(JSON.stringify({
-        access_token: "service-token",
-        token_type: "Bearer",
-        expires_in: 3600,
-      }), { status: 200, headers: { "content-type": "application/json" } });
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = init?.body as URLSearchParams;
+        expect(body.get("client_assertion_type")).toBe(
+          "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+        );
+        expect(body.get("client_assertion")?.split(".")).toHaveLength(3);
+        expect(body.get("client_secret")).toBeNull();
+        return new Response(
+          JSON.stringify({
+            access_token: "service-token",
+            token_type: "Bearer",
+            expires_in: 3600,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      })
+    );
     const service = createCredentialService({
       credentialStore: store as never,
       clientConfigStore: clientConfigStore as never,
       approvalQueue: approvingQueue("session") as never,
     });
-    const stored = await service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
-      flow: {
-        type: "oauth2-client-credentials",
-        tokenUrl: "https://auth.example.test/oauth/token",
-        clientConfigId: "svc-jwt",
-        tokenAuth: "private_key_jwt",
-      },
-      credential: {
-        label: "Service API",
-        audience: [{ url: "https://api.example.test/", match: "origin" }],
-        injection: { type: "header", name: "authorization", valueTemplate: "Bearer {token}" },
-      },
-    }]) as StoredCredentialSummary;
+    const stored = (await service.handler(
+      { callerId: "worker:test", callerKind: "worker" },
+      "connect",
+      [
+        {
+          flow: {
+            type: "oauth2-client-credentials",
+            tokenUrl: "https://auth.example.test/oauth/token",
+            clientConfigId: "svc-jwt",
+            tokenAuth: "private_key_jwt",
+          },
+          credential: {
+            label: "Service API",
+            audience: [{ url: "https://api.example.test/", match: "origin" }],
+            injection: { type: "header", name: "authorization", valueTemplate: "Bearer {token}" },
+          },
+        },
+      ]
+    )) as StoredCredentialSummary;
 
-    expect((await store.loadUrlBound(stored.id))?.metadata?.["oauthTokenAuth"]).toBe("private_key_jwt");
+    expect((await store.loadUrlBound(stored.id))?.metadata?.["oauthTokenAuth"]).toBe(
+      "private_key_jwt"
+    );
     expect(JSON.stringify(stored)).not.toContain("PRIVATE KEY");
   });
 
@@ -2094,7 +2472,12 @@ describe("credentialService", () => {
     await clientConfigStore.save({
       configId: "device-jwt",
       currentVersion: "v1",
-      owner: { callerId: "panel:test", callerKind: "panel", repoPath: "panel:test", effectiveVersion: "unknown" },
+      owner: {
+        callerId: "panel:test",
+        callerKind: "panel",
+        repoPath: "panel:test",
+        effectiveVersion: "unknown",
+      },
       authorizeUrl: "https://auth.example.test/device",
       tokenUrl: "https://auth.example.test/token",
       status: "active",
@@ -2108,27 +2491,38 @@ describe("credentialService", () => {
       updatedAt: 1,
     });
     const emit = vi.fn();
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const body = init?.body as URLSearchParams;
-      expect(body.get("client_assertion_type")).toBe("urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
-      expect(body.get("client_assertion")?.split(".")).toHaveLength(3);
-      expect(body.get("client_secret")).toBeNull();
-      if (url === "https://auth.example.test/device") {
-        return new Response(JSON.stringify({
-          device_code: "device-1",
-          user_code: "USR-CODE",
-          verification_uri: "https://auth.example.test/verify",
-          interval: 1,
-          expires_in: 5,
-        }), { status: 200, headers: { "content-type": "application/json" } });
-      }
-      return new Response(JSON.stringify({
-        access_token: "device-token",
-        token_type: "Bearer",
-        expires_in: 3600,
-      }), { status: 200, headers: { "content-type": "application/json" } });
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const body = init?.body as URLSearchParams;
+        expect(body.get("client_assertion_type")).toBe(
+          "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+        );
+        expect(body.get("client_assertion")?.split(".")).toHaveLength(3);
+        expect(body.get("client_secret")).toBeNull();
+        if (url === "https://auth.example.test/device") {
+          return new Response(
+            JSON.stringify({
+              device_code: "device-1",
+              user_code: "USR-CODE",
+              verification_uri: "https://auth.example.test/verify",
+              interval: 1,
+              expires_in: 5,
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            access_token: "device-token",
+            token_type: "Bearer",
+            expires_in: 3600,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      })
+    );
     const service = createCredentialService({
       credentialStore: store as never,
       clientConfigStore: clientConfigStore as never,
@@ -2136,21 +2530,27 @@ describe("credentialService", () => {
       approvalQueue: approvingQueue("session") as never,
     });
 
-    const stored = await service.handler({ callerId: "panel:test", callerKind: "panel" }, "connect", [{
-      flow: {
-        type: "oauth2-device-code",
-        deviceAuthorizationUrl: "https://auth.example.test/device",
-        tokenUrl: "https://auth.example.test/token",
-        clientConfigId: "device-jwt",
-        tokenAuth: "private_key_jwt",
-        pollIntervalSeconds: 1,
-      },
-      credential: {
-        label: "Device API",
-        audience: [{ url: "https://api.example.test/", match: "origin" }],
-        injection: { type: "header", name: "authorization", valueTemplate: "Bearer {token}" },
-      },
-    }]) as StoredCredentialSummary;
+    const stored = (await service.handler(
+      { callerId: "panel:test", callerKind: "panel" },
+      "connect",
+      [
+        {
+          flow: {
+            type: "oauth2-device-code",
+            deviceAuthorizationUrl: "https://auth.example.test/device",
+            tokenUrl: "https://auth.example.test/token",
+            clientConfigId: "device-jwt",
+            tokenAuth: "private_key_jwt",
+            pollIntervalSeconds: 1,
+          },
+          credential: {
+            label: "Device API",
+            audience: [{ url: "https://api.example.test/", match: "origin" }],
+            injection: { type: "header", name: "authorization", valueTemplate: "Bearer {token}" },
+          },
+        },
+      ]
+    )) as StoredCredentialSummary;
 
     expect(stored.id).toBeTruthy();
     expect((await store.loadUrlBound(stored.id))?.accessToken).toBe("device-token");
@@ -2162,7 +2562,12 @@ describe("credentialService", () => {
     await clientConfigStore.save({
       configId: "device-cancel",
       currentVersion: "v1",
-      owner: { callerId: "panel:test", callerKind: "panel", repoPath: "panel:test", effectiveVersion: "unknown" },
+      owner: {
+        callerId: "panel:test",
+        callerKind: "panel",
+        repoPath: "panel:test",
+        effectiveVersion: "unknown",
+      },
       authorizeUrl: "https://auth.example.test/device",
       tokenUrl: "https://auth.example.test/token",
       status: "active",
@@ -2173,22 +2578,29 @@ describe("credentialService", () => {
       updatedAt: 1,
     });
 
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url === "https://auth.example.test/device") {
-        return new Response(JSON.stringify({
-          device_code: "device-2",
-          user_code: "ABCD-1234",
-          verification_uri: "https://auth.example.test/verify",
-          interval: 1,
-          expires_in: 60,
-        }), { status: 200, headers: { "content-type": "application/json" } });
-      }
-      // Provider never grants — would poll until cancelled or expired.
-      return new Response(JSON.stringify({ error: "authorization_pending" }), {
-        status: 400, headers: { "content-type": "application/json" },
-      });
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "https://auth.example.test/device") {
+          return new Response(
+            JSON.stringify({
+              device_code: "device-2",
+              user_code: "ABCD-1234",
+              verification_uri: "https://auth.example.test/verify",
+              interval: 1,
+              expires_in: 60,
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          );
+        }
+        // Provider never grants — would poll until cancelled or expired.
+        return new Response(JSON.stringify({ error: "authorization_pending" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      })
+    );
 
     const presentDeviceCode = vi.fn();
     const controller = new AbortController();
@@ -2212,20 +2624,22 @@ describe("credentialService", () => {
       approvalQueue: customQueue as never,
     });
 
-    const pending = service.handler({ callerId: "panel:test", callerKind: "panel" }, "connect", [{
-      flow: {
-        type: "oauth2-device-code",
-        deviceAuthorizationUrl: "https://auth.example.test/device",
-        tokenUrl: "https://auth.example.test/token",
-        clientConfigId: "device-cancel",
-        pollIntervalSeconds: 1,
+    const pending = service.handler({ callerId: "panel:test", callerKind: "panel" }, "connect", [
+      {
+        flow: {
+          type: "oauth2-device-code",
+          deviceAuthorizationUrl: "https://auth.example.test/device",
+          tokenUrl: "https://auth.example.test/token",
+          clientConfigId: "device-cancel",
+          pollIntervalSeconds: 1,
+        },
+        credential: {
+          label: "Device API",
+          audience: [{ url: "https://api.example.test/", match: "origin" }],
+          injection: { type: "header", name: "authorization", valueTemplate: "Bearer {token}" },
+        },
       },
-      credential: {
-        label: "Device API",
-        audience: [{ url: "https://api.example.test/", match: "origin" }],
-        injection: { type: "header", name: "authorization", valueTemplate: "Bearer {token}" },
-      },
-    }]) as Promise<StoredCredentialSummary>;
+    ]) as Promise<StoredCredentialSummary>;
 
     await vi.waitFor(() => expect(presentDeviceCode).toHaveBeenCalled());
     const presented = presentDeviceCode.mock.calls[0]![0] as {
@@ -2256,14 +2670,20 @@ describe("credentialService", () => {
       credentialStore: store as never,
       approvalQueue: approvalQueue as never,
     });
-    const stored = await service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
-      flow: { type: "aws-sigv4" },
-      credential: {
-        label: "AWS",
-        audience: [{ url: "https://s3.us-east-1.amazonaws.com/", match: "origin" }],
-        injection: { type: "aws-sigv4", service: "s3", region: "us-east-1" },
-      },
-    }]) as StoredCredentialSummary;
+    const stored = (await service.handler(
+      { callerId: "worker:test", callerKind: "worker" },
+      "connect",
+      [
+        {
+          flow: { type: "aws-sigv4" },
+          credential: {
+            label: "AWS",
+            audience: [{ url: "https://s3.us-east-1.amazonaws.com/", match: "origin" }],
+            injection: { type: "aws-sigv4", service: "s3", region: "us-east-1" },
+          },
+        },
+      ]
+    )) as StoredCredentialSummary;
 
     const persisted = await store.loadUrlBound(stored.id);
     expect(persisted?.accessToken).toBe("AKIATEST");
@@ -2277,20 +2697,28 @@ describe("credentialService", () => {
       credentialStore: store as never,
       approvalQueue: approvingQueue("session") as never,
     });
-    const stored = await service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
-      flow: { type: "ssh-key" },
-      credential: {
-        label: "Git SSH",
-        audience: [{ url: "https://github.com/example/repo", match: "path-prefix" }],
-        injection: { type: "ssh-key" },
-        bindings: [{
-          id: "git",
-          use: "git-ssh",
-          audience: [{ url: "https://github.com/example/repo", match: "path-prefix" }],
-          injection: { type: "ssh-key" },
-        }],
-      },
-    }]) as StoredCredentialSummary;
+    const stored = (await service.handler(
+      { callerId: "worker:test", callerKind: "worker" },
+      "connect",
+      [
+        {
+          flow: { type: "ssh-key" },
+          credential: {
+            label: "Git SSH",
+            audience: [{ url: "https://github.com/example/repo", match: "path-prefix" }],
+            injection: { type: "ssh-key" },
+            bindings: [
+              {
+                id: "git",
+                use: "git-ssh",
+                audience: [{ url: "https://github.com/example/repo", match: "path-prefix" }],
+                injection: { type: "ssh-key" },
+              },
+            ],
+          },
+        },
+      ]
+    )) as StoredCredentialSummary;
 
     const persisted = await store.loadUrlBound(stored.id);
     expect(persisted?.sshPrivateKey).toContain("PRIVATE KEY");
@@ -2305,30 +2733,39 @@ describe("credentialService", () => {
       credentialStore: store as never,
       approvalQueue: approvingQueue("session") as never,
       sessionCredentialCapture: {
-        captureCookies: vi.fn(async () => ({ cookieHeader: "sid=secret", expiresAt: Date.now() + 60_000 })),
+        captureCookies: vi.fn(async () => ({
+          cookieHeader: "sid=secret",
+          expiresAt: Date.now() + 60_000,
+        })),
       },
     });
-    const stored = await service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
-      flow: {
-        type: "browser-cookie-session",
-        signInUrl: "https://app.example.test/login",
-        capture: {
-          cookies: ["sid"],
-          origins: ["https://app.example.test"],
+    const stored = (await service.handler(
+      { callerId: "worker:test", callerKind: "worker" },
+      "connect",
+      [
+        {
+          flow: {
+            type: "browser-cookie-session",
+            signInUrl: "https://app.example.test/login",
+            capture: {
+              cookies: ["sid"],
+              origins: ["https://app.example.test"],
+            },
+          },
+          credential: {
+            label: "App session",
+            audience: [{ url: "https://app.example.test/", match: "origin" }],
+            injection: { type: "cookie" },
+          },
+          browser: "external",
         },
-      },
-      credential: {
-        label: "App session",
-        audience: [{ url: "https://app.example.test/", match: "origin" }],
-        injection: { type: "cookie" },
-      },
-      browser: "external",
-    }]) as StoredCredentialSummary;
+      ]
+    )) as StoredCredentialSummary;
 
     expect(stored.injection).toEqual({ type: "cookie" });
     expect((await store.loadUrlBound(stored.id))?.cookieHeader).toBe("sid=secret");
     expect(JSON.stringify(stored)).not.toContain("sid=secret");
-    expect((service as never)).toBeTruthy();
+    expect(service as never).toBeTruthy();
   });
 
   it("stores SAML browser sessions captured as scoped cookies", async () => {
@@ -2342,26 +2779,40 @@ describe("credentialService", () => {
           cookieHeader: "saml_sid=secret",
           cookieSession: {
             origins: ["https://idp.example.test"],
-            cookies: [{ name: "saml_sid", value: "secret", domain: "sp.example.test", path: "/", secure: true }],
+            cookies: [
+              {
+                name: "saml_sid",
+                value: "secret",
+                domain: "sp.example.test",
+                path: "/",
+                secure: true,
+              },
+            ],
           },
           expiresAt: Date.now() + 60_000,
         })),
       },
     });
-    const stored = await service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
-      flow: {
-        type: "saml-browser-session",
-        signInUrl: "https://idp.example.test/login",
-        spAudience: "https://sp.example.test/metadata",
-        capture: { cookies: ["saml_sid"] },
-      },
-      credential: {
-        label: "SAML session",
-        audience: [{ url: "https://sp.example.test/", match: "origin" }],
-        injection: { type: "cookie" },
-      },
-      browser: "internal",
-    }]) as StoredCredentialSummary;
+    const stored = (await service.handler(
+      { callerId: "worker:test", callerKind: "worker" },
+      "connect",
+      [
+        {
+          flow: {
+            type: "saml-browser-session",
+            signInUrl: "https://idp.example.test/login",
+            spAudience: "https://sp.example.test/metadata",
+            capture: { cookies: ["saml_sid"] },
+          },
+          credential: {
+            label: "SAML session",
+            audience: [{ url: "https://sp.example.test/", match: "origin" }],
+            injection: { type: "cookie" },
+          },
+          browser: "internal",
+        },
+      ]
+    )) as StoredCredentialSummary;
 
     const persisted = await store.loadUrlBound(stored.id);
     expect(persisted?.cookieHeader).toBe("saml_sid=secret");
@@ -2396,14 +2847,12 @@ describe("credentialService", () => {
         scopesUsed: [],
         retries: 0,
         breakerState: "closed",
-      } satisfies AuditEntry,
+      } satisfies AuditEntry
     );
     const service = createCredentialService({ auditLog: auditLog as never });
-    const entries = await service.handler(
-      { callerId: "shell", callerKind: "shell" },
-      "audit",
-      [{}],
-    ) as AuditEntry[];
+    const entries = (await service.handler({ callerId: "shell", callerKind: "shell" }, "audit", [
+      {},
+    ])) as AuditEntry[];
     expect(entries).toHaveLength(1);
     expect(entries[0]?.method).toBe("GET");
   });

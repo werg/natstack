@@ -34,4 +34,3 @@ export function createScopeService(deps: { doDispatch: DODispatch }): ServiceDef
     handler: (_ctx, method, args) => deps.doDispatch.dispatch(ref, method, ...args),
   };
 }
-

@@ -34,7 +34,7 @@ const serverElectronConfig = {
              "node-git-server", "vitest", "vitest/node", "vite",
              // Agent SDKs: must stay external — they use import.meta.url at module scope
              // to locate config files, which breaks when bundled into CJS.
-             "@mariozechner/pi-agent-core", "@mariozechner/pi-ai"],
+             "@earendil-works/pi-agent-core", "@earendil-works/pi-ai"],
   sourcemap: isDev,
   minify: !isDev,
   logOverride,
@@ -110,7 +110,7 @@ const serverConfig = {
              "node-git-server", "vitest", "vitest/node", "vite",
              // Agent SDKs: must stay external — they use import.meta.url at module scope
              // to locate config files relative to their install path.
-             "@mariozechner/pi-agent-core", "@mariozechner/pi-ai"],
+             "@earendil-works/pi-agent-core", "@earendil-works/pi-ai"],
   plugins: [electronStubPlugin],
   sourcemap: isDev,
   minify: !isDev,
@@ -332,7 +332,6 @@ const rendererConfig = {
 
 function copyAssets() {
   fs.copyFileSync("src/renderer/index.html", "dist/index.html");
-  fs.copyFileSync("src/server/server-bootstrap.cjs", "dist/server-bootstrap.cjs");
 }
 
 function copyDirectoryRecursive(srcDir, destDir) {

@@ -1,7 +1,7 @@
 /**
  * AgentWorkerBase — Pi-native agent DO base.
  *
- * Embeds `@mariozechner/pi-agent-core`'s `Agent` in-process via `PiRunner`
+ * Embeds `@earendil-works/pi-agent-core`'s `Agent` in-process via `PiRunner`
  * from `@natstack/harness`. One PiRunner per channel, owned by the DO for
  * the lifetime of the chat. The runner drives agent state (messages,
  * streaming, tool calls); durable transcript persistence lives in gad,
@@ -53,8 +53,8 @@ import {
   type SystemPromptMode,
   DispatchedError,
 } from "@natstack/harness";
-import type { AgentEvent, AgentMessage, AgentToolResult } from "@mariozechner/pi-agent-core";
-import { getModel as getPiModel, type ImageContent } from "@mariozechner/pi-ai";
+import type { AgentEvent, AgentMessage, AgentToolResult } from "@earendil-works/pi-agent-core";
+import { getModel as getPiModel, type ImageContent } from "@earendil-works/pi-ai";
 
 import { DOIdentity } from "./identity.js";
 import { SubscriptionManager } from "./subscription-manager.js";
@@ -152,13 +152,16 @@ export default function ModelCredentialRequiredCard({ props, chat }) {
         browserHandoffCallerKind: props.browserHandoffCallerKind,
         browserHandoffPlatform: resolveBrowserHandoffPlatform(),
       });
-      setStatus("done");
       if (props.agentParticipantId) {
-        await chat.callMethod(props.agentParticipantId, "credentialConnected", {
+        const result = await chat.callMethod(props.agentParticipantId, "credentialConnected", {
           providerId,
           modelBaseUrl,
-        }).catch(() => {});
+        });
+        if (!result?.resumed) {
+          throw new Error("Credential connected, but there was no interrupted turn to continue.");
+        }
       }
+      setStatus("done");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setStatus("error");
@@ -320,8 +323,24 @@ function trimTrailingEmptyAbortedAssistant(messages: AgentMessage[]): AgentMessa
   return hasVisibleContent ? messages : messages.slice(0, -1);
 }
 
+function isCredentialRequiredAssistantMessage(message: AgentMessage | undefined): boolean {
+  const candidate = message as
+    | { role?: string; stopReason?: string; errorMessage?: string }
+    | undefined;
+  return candidate?.role === "assistant" &&
+    candidate.stopReason === "error" &&
+    !!credentialRequiredMessage(candidate.errorMessage ?? "");
+}
+
 interface RunnerEntry {
   runner: PiRunner;
+}
+
+interface ModelCredentialInterruption {
+  providerId: string;
+  modelBaseUrl?: string;
+  resumeCount: number;
+  createdAt: number;
 }
 
 type AgentAbortReason =
@@ -412,6 +431,16 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         last_delivered_seq INTEGER NOT NULL
       )
     `);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS model_credential_interruptions (
+        channel_id TEXT NOT NULL,
+        provider_id TEXT NOT NULL,
+        model_base_url TEXT,
+        resume_count INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (channel_id, provider_id)
+      )
+    `);
   }
 
   // ── Identity bootstrap ──────────────────────────────────────────────────
@@ -476,6 +505,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         url: modelBaseUrl,
       });
       if (!credential) {
+        await this.recordModelCredentialInterruption(channelId, providerId, modelBaseUrl);
         await this.emitModelCredentialRequiredCard(channelId, providerId, modelBaseUrl);
         throw new Error(
           `No URL-bound model credential is configured for model provider: ${providerId}`,
@@ -1267,6 +1297,58 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.messageCache.set(channelId, messages);
   }
 
+  private async recordModelCredentialInterruption(
+    channelId: string,
+    providerId: string,
+    modelBaseUrl: string,
+  ): Promise<void> {
+    const messages = await this.loadMessages(channelId);
+    this.sql.exec(
+      `INSERT OR REPLACE INTO model_credential_interruptions
+        (channel_id, provider_id, model_base_url, resume_count, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      channelId,
+      providerId,
+      modelBaseUrl,
+      messages.length,
+      Date.now(),
+    );
+  }
+
+  private getModelCredentialInterruption(
+    channelId: string,
+    providerId: string,
+    modelBaseUrl?: string,
+  ): ModelCredentialInterruption | null {
+    const rows = this.sql.exec(
+      `SELECT provider_id, model_base_url, resume_count, created_at
+       FROM model_credential_interruptions
+       WHERE channel_id = ? AND provider_id = ?`,
+      channelId,
+      providerId,
+    ).toArray();
+    if (rows.length === 0) return null;
+    const row = rows[0]!;
+    const storedModelBaseUrl = row["model_base_url"] as string | null;
+    if (modelBaseUrl && storedModelBaseUrl && storedModelBaseUrl !== modelBaseUrl) {
+      return null;
+    }
+    return {
+      providerId: row["provider_id"] as string,
+      ...(storedModelBaseUrl ? { modelBaseUrl: storedModelBaseUrl } : {}),
+      resumeCount: Number(row["resume_count"]),
+      createdAt: Number(row["created_at"]),
+    };
+  }
+
+  private clearModelCredentialInterruption(channelId: string, providerId: string): void {
+    this.sql.exec(
+      `DELETE FROM model_credential_interruptions WHERE channel_id = ? AND provider_id = ?`,
+      channelId,
+      providerId,
+    );
+  }
+
   private async ensureChannelContext(channelId: string): Promise<void> {
     await this.recoverDispatchesForChannel(channelId);
     await this.refreshRoster(channelId);
@@ -1953,24 +2035,27 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     return { result: { error: "not implemented" }, isError: true };
   }
 
-  protected async resumeAfterModelCredentialConnected(channelId: string): Promise<boolean> {
+  protected async resumeAfterModelCredentialConnected(
+    channelId: string,
+    opts?: { providerId?: string; modelBaseUrl?: string },
+  ): Promise<boolean> {
     await this.ensureChannelContext(channelId);
     const entry = this.runners.get(channelId);
     if (!entry) return false;
 
+    const providerId = opts?.providerId ?? this.getModelProviderId();
+    const interruption = this.getModelCredentialInterruption(channelId, providerId, opts?.modelBaseUrl);
     const messages = await this.loadMessages(channelId);
-    const last = messages[messages.length - 1] as
-      | { role?: string; stopReason?: string; errorMessage?: string }
-      | undefined;
-    if (
-      last?.role !== "assistant" ||
-      last.stopReason !== "error" ||
-      !credentialRequiredMessage(last.errorMessage ?? "")
-    ) {
+    const last = messages[messages.length - 1];
+    let resumableMessages: AgentMessage[];
+    if (isCredentialRequiredAssistantMessage(last)) {
+      resumableMessages = messages.slice(0, -1);
+    } else if (interruption && messages.length === interruption.resumeCount) {
+      resumableMessages = messages.slice(0, interruption.resumeCount);
+    } else {
       return false;
     }
 
-    const resumableMessages = messages.slice(0, -1);
     const resumeFrom = resumableMessages[resumableMessages.length - 1] as
       | { role?: string }
       | undefined;
@@ -1980,7 +2065,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     await this.saveMessages(channelId, resumableMessages);
     entry.runner.replaceHistory(resumableMessages);
-    this.credentialPromptCardsEmitted.delete(`${channelId}::model-credential::${this.getModelProviderId()}`);
+    this.clearModelCredentialInterruption(channelId, providerId);
+    this.credentialPromptCardsEmitted.delete(`${channelId}::model-credential::${providerId}`);
     const projector = this.getOrCreateProjector(channelId);
     const dispatcher = this.getOrCreateDispatcher(channelId, entry.runner, projector);
     dispatcher.submitContinue();

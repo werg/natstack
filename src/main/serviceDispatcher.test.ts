@@ -39,9 +39,7 @@ describe("ServiceDispatcher", () => {
     const sd = new ServiceDispatcher();
     sd.markInitialized();
 
-    await expect(sd.dispatch(ctx, "nope", "foo", [])).rejects.toThrow(
-      "Unknown service"
-    );
+    await expect(sd.dispatch(ctx, "nope", "foo", [])).rejects.toThrow("Unknown service");
   });
 
   it("dispatch calls registered handler and returns result", async () => {
@@ -55,17 +53,22 @@ describe("ServiceDispatcher", () => {
 
   it("dispatch wraps non-ServiceError exceptions in ServiceError", async () => {
     const sd = new ServiceDispatcher();
-    sd.registerService(makeService("fail", async () => { throw new Error("boom"); }));
+    sd.registerService(
+      makeService("fail", async () => {
+        throw new Error("boom");
+      })
+    );
     sd.markInitialized();
 
     try {
       await sd.dispatch(ctx, "fail", "run", []);
       expect.fail("should have thrown");
-    } catch (err: any) {
+    } catch (err: unknown) {
       expect(err).toBeInstanceOf(ServiceError);
-      expect(err.service).toBe("fail");
-      expect(err.method).toBe("run");
-      expect(err.message).toContain("boom");
+      const serviceError = err as ServiceError;
+      expect(serviceError.service).toBe("fail");
+      expect(serviceError.method).toBe("run");
+      expect(serviceError.message).toContain("boom");
     }
   });
 
@@ -132,9 +135,7 @@ describe("ServiceDispatcher", () => {
     expect(result).toBe("hello world");
 
     // Invalid args
-    await expect(sd.dispatch(ctx, "typed", "greet", [42])).rejects.toThrow(
-      "Invalid args"
-    );
+    await expect(sd.dispatch(ctx, "typed", "greet", [42])).rejects.toThrow("Invalid args");
   });
 
   it("getMethodSchema returns method definition", () => {

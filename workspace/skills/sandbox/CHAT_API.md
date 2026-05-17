@@ -18,6 +18,13 @@ interface ChatSandboxValue {
   /** Call a method on a channel participant */
   callMethod(participantId: string, method: string, args: unknown): Promise<unknown>;
 
+  /** Call a method and return the full transport result envelope */
+  callMethodResult(participantId: string, method: string, args: unknown): Promise<{
+    content: unknown;
+    attachments?: unknown[];
+    contentType?: string;
+  }>;
+
   /** Current context ID */
   contextId: string;
 
@@ -51,6 +58,7 @@ await chat.publish("message", { content: "..." }, { persist: false }); // epheme
 ## chat.callMethod
 
 Call a registered method on a specific channel participant. Blocks until the method returns.
+This resolves to the provider's actual return value.
 
 ```typescript
 // Call a method on an agent
@@ -58,6 +66,17 @@ const result = await chat.callMethod("agent-participant-id", "someMethod", { arg
 ```
 
 This is useful for inline UI components that need to trigger agent-side behavior directly.
+
+## chat.callMethodResult
+
+Call a registered method and receive the full PubSub method-result envelope.
+Use this only when you need result metadata such as `attachments` or `contentType`.
+For normal method calls, prefer `chat.callMethod()`.
+
+```typescript
+const result = await chat.callMethodResult("agent-participant-id", "someMethod", {});
+console.log(result.content, result.contentType, result.attachments);
+```
 
 ## chat.rpc
 

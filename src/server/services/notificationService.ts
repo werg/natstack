@@ -22,17 +22,21 @@ export interface NotificationServiceInternal {
   waitForAction(id: string, timeoutMs?: number): Promise<string>;
 }
 
-export function createNotificationService(deps: {
-  eventService: EventService;
-}): { definition: ServiceDefinition; internal: NotificationServiceInternal } {
+export function createNotificationService(deps: { eventService: EventService }): {
+  definition: ServiceDefinition;
+  internal: NotificationServiceInternal;
+} {
   const { eventService } = deps;
 
   /** Pending action resolvers keyed by notification ID */
-  const pendingActions = new Map<string, {
-    resolve: (actionId: string) => void;
-    reject: (reason: Error) => void;
-    timer: ReturnType<typeof setTimeout>;
-  }>();
+  const pendingActions = new Map<
+    string,
+    {
+      resolve: (actionId: string) => void;
+      reject: (reason: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
 
   const internal: NotificationServiceInternal = {
     show(opts) {
@@ -71,26 +75,34 @@ export function createNotificationService(deps: {
     policy: { allowed: ["shell", "panel", "worker", "server"] },
     methods: {
       show: {
-        args: z.tuple([z.object({
-          id: z.string().optional(),
-          type: z.enum(["info", "success", "warning", "error", "consent"]),
-          title: z.string(),
-          message: z.string().optional(),
-          consent: z.object({
-            provider: z.string(),
-            scopes: z.array(z.string()),
-            callerId: z.string(),
-            callerTitle: z.string(),
-            callerKind: z.enum(["panel", "worker"]),
-          }).optional(),
-          ttl: z.number().optional(),
-          actions: z.array(z.object({
-            id: z.string(),
-            label: z.string(),
-            variant: z.enum(["solid", "soft", "ghost"]).optional(),
-          })).optional(),
-          sourcePanelId: z.string().optional(),
-        })]),
+        args: z.tuple([
+          z.object({
+            id: z.string().optional(),
+            type: z.enum(["info", "success", "warning", "error", "consent"]),
+            title: z.string(),
+            message: z.string().optional(),
+            consent: z
+              .object({
+                provider: z.string(),
+                scopes: z.array(z.string()),
+                callerId: z.string(),
+                callerTitle: z.string(),
+                callerKind: z.enum(["panel", "worker"]),
+              })
+              .optional(),
+            ttl: z.number().optional(),
+            actions: z
+              .array(
+                z.object({
+                  id: z.string(),
+                  label: z.string(),
+                  variant: z.enum(["solid", "soft", "ghost"]).optional(),
+                })
+              )
+              .optional(),
+            sourcePanelId: z.string().optional(),
+          }),
+        ]),
       },
       dismiss: {
         args: z.tuple([z.string()]),

@@ -13,7 +13,12 @@ function tempDir(): string {
 describe("UserlandApprovalGrantStore", () => {
   it("records, looks up, lists, and revokes grants", async () => {
     const store = new UserlandApprovalGrantStore({ statePath: tempDir() });
-    await store.record({ callerId: "worker:alpha", callerKind: "worker" }, { id: "team-x:foo", label: "Foo" }, "allow", 10);
+    await store.record(
+      { callerId: "worker:alpha", callerKind: "worker" },
+      { id: "team-x:foo", label: "Foo" },
+      "allow",
+      10
+    );
 
     expect(store.lookup("worker:alpha", "team-x:foo")).toMatchObject({ choice: "allow" });
     expect(store.list("worker:alpha")).toHaveLength(1);
@@ -25,12 +30,19 @@ describe("UserlandApprovalGrantStore", () => {
   it("persists across store instances without repo or version fields", async () => {
     const statePath = tempDir();
     const store = new UserlandApprovalGrantStore({ statePath });
-    await store.record({ callerId: "panel:one", callerKind: "panel" }, { id: "subject-1" }, "yes", 20);
+    await store.record(
+      { callerId: "panel:one", callerKind: "panel" },
+      { id: "subject-1" },
+      "yes",
+      20
+    );
 
     const restarted = new UserlandApprovalGrantStore({ statePath });
     expect(restarted.lookup("panel:one", "subject-1")).toMatchObject({ choice: "yes" });
 
-    const raw = JSON.parse(fs.readFileSync(path.join(statePath, "userland-approval-grants.json"), "utf8"));
+    const raw = JSON.parse(
+      fs.readFileSync(path.join(statePath, "userland-approval-grants.json"), "utf8")
+    );
     expect(raw.grants[0]).not.toHaveProperty("repoPath");
     expect(raw.grants[0]).not.toHaveProperty("effectiveVersion");
     expect(raw.grants[0].principal).not.toHaveProperty("repoPath");

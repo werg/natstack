@@ -29,13 +29,18 @@ import {
   computeBuildKey,
   getCommitAt,
   resolveDepRefToGitRef,
-  type EffectiveVersionMap,
   type ContentHashMap,
   type ChangeSet,
 } from "./effectiveVersion.js";
 import * as buildStore from "./buildStore.js";
 import type { BuildResult } from "./buildStore.js";
-import { buildUnit, buildNpmLibrary, buildPlatformLibrary, initBuilder, type BuildUnitOptions } from "./builder.js";
+import {
+  buildUnit,
+  buildNpmLibrary,
+  buildPlatformLibrary,
+  initBuilder,
+  type BuildUnitOptions,
+} from "./builder.js";
 import { PushTrigger } from "./pushTrigger.js";
 import type { GitServer } from "@natstack/git-server";
 
@@ -57,7 +62,11 @@ export interface BuildSystemV2 {
   getBuild(unitPath: string, ref?: string, options?: BuildUnitOptions): Promise<BuildResult>;
 
   /** Build an npm package as a CJS library bundle for sandbox use. */
-  getBuildNpm(specifier: string, version: string, externals?: string[]): Promise<{ bundle: string }>;
+  getBuildNpm(
+    specifier: string,
+    version: string,
+    externals?: string[]
+  ): Promise<{ bundle: string }>;
 
   /** Get effective version for a unit */
   getEffectiveVersion(unitName: string): string | null;
@@ -98,7 +107,7 @@ export interface BuildSystemV2 {
 export async function initBuildSystemV2(
   workspaceRoot: string,
   gitServer: GitServer,
-  appNodeModules: string | string[],
+  appNodeModules: string | string[]
 ): Promise<BuildSystemV2> {
   console.log("[BuildV2] Initializing...");
 
@@ -120,7 +129,7 @@ export async function initBuildSystemV2(
   const changeset = diffEvMaps(previousEvMap, initResult.evMap);
   console.log(
     `[BuildV2] EV diff: ${changeset.changed.length} changed, ` +
-      `${changeset.added.length} added, ${changeset.removed.length} removed`,
+      `${changeset.added.length} added, ${changeset.removed.length} removed`
   );
 
   // Step 4: Persist new ref state + EV map
@@ -161,7 +170,7 @@ export async function initBuildSystemV2(
         } catch (error) {
           console.error(
             `[BuildV2] Failed to build ${node.name}:`,
-            error instanceof Error ? error.message : String(error),
+            error instanceof Error ? error.message : String(error)
           );
         }
       });
@@ -173,7 +182,12 @@ export async function initBuildSystemV2(
   }
 
   // Step 6: Start push trigger (subscribes to git push events)
-  const pushTrigger = new PushTrigger(graph, initResult.evMap, initResult.contentHashes, workspaceRoot);
+  const pushTrigger = new PushTrigger(
+    graph,
+    initResult.evMap,
+    initResult.contentHashes,
+    workspaceRoot
+  );
   pushTrigger.subscribeTo(gitServer);
   console.log("[BuildV2] Push trigger started");
 
@@ -194,7 +208,11 @@ export async function initBuildSystemV2(
   // ---------------------------------------------------------------------------
 
   return {
-    async getBuild(unitPath: string, ref?: string, options?: BuildUnitOptions): Promise<BuildResult> {
+    async getBuild(
+      unitPath: string,
+      ref?: string,
+      options?: BuildUnitOptions
+    ): Promise<BuildResult> {
       // unitPath can be a package name or workspace-relative path
       let node = resolveUnit(currentGraph, unitPath, workspaceRoot);
       if (!node) {
@@ -251,7 +269,13 @@ export async function initBuildSystemV2(
         walkDeps(node);
 
         // Recompute EV at the requested ref
-        const refResult = recomputeFromNode(currentGraph, node.name, currentEvMap, currentContentHashes, commitSha);
+        const refResult = recomputeFromNode(
+          currentGraph,
+          node.name,
+          currentEvMap,
+          currentContentHashes,
+          commitSha
+        );
         const ev = refResult.evMap[node.name];
         if (!ev) {
           throw new Error(`No effective version for ${node.name} at ref ${ref}`);
@@ -271,7 +295,12 @@ export async function initBuildSystemV2(
       try {
         const freshTreeHash = await computeGitTreeHashAsync(node.path);
         if (freshTreeHash !== currentContentHashes[node.name]) {
-          const result = recomputeFromNode(currentGraph, node.name, currentEvMap, currentContentHashes);
+          const result = recomputeFromNode(
+            currentGraph,
+            node.name,
+            currentEvMap,
+            currentContentHashes
+          );
           const freshEv = result.evMap[node.name];
           if (freshEv && freshEv !== ev) {
             currentEvMap = result.evMap;
@@ -292,7 +321,11 @@ export async function initBuildSystemV2(
       return buildUnit(node, ev, currentGraph, workspaceRoot, undefined, options);
     },
 
-    async getBuildNpm(specifier: string, version: string, externals?: string[]): Promise<{ bundle: string }> {
+    async getBuildNpm(
+      specifier: string,
+      version: string,
+      externals?: string[]
+    ): Promise<{ bundle: string }> {
       const bundle = await buildNpmLibrary(specifier, version, externals ?? []);
       return { bundle };
     },
@@ -317,12 +350,10 @@ export async function initBuildSystemV2(
       pushTrigger.updateState(newGraph, result.evMap, result.contentHashes);
 
       // Trigger builds for changed buildable units
-      const buildableChanged = [...changes.changed, ...changes.added].filter(
-        (name) => {
-          const n = newGraph.tryGet(name);
-          return n && n.kind !== "package" && n.kind !== "template";
-        },
-      );
+      const buildableChanged = [...changes.changed, ...changes.added].filter((name) => {
+        const n = newGraph.tryGet(name);
+        return n && n.kind !== "package" && n.kind !== "template";
+      });
 
       for (const name of buildableChanged) {
         const n = newGraph.get(name);
@@ -336,7 +367,7 @@ export async function initBuildSystemV2(
           } catch (error) {
             console.error(
               `[BuildV2] Failed to rebuild ${name}:`,
-              error instanceof Error ? error.message : String(error),
+              error instanceof Error ? error.message : String(error)
             );
           }
         }
@@ -405,7 +436,7 @@ export async function initBuildSystemV2(
 function resolveUnit(
   graph: PackageGraph,
   unitPath: string,
-  workspaceRoot: string,
+  _workspaceRoot: string
 ): GraphNode | null {
   // Try direct name lookup first
   const byName = graph.tryGet(unitPath);

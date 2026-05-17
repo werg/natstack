@@ -49,7 +49,11 @@ function readCdpAuthToken(ws: WebSocket): Promise<string | null> {
         resolve(null);
         return;
       }
-      if (parsed.type !== "natstack:cdp-auth" || typeof parsed.token !== "string" || parsed.token.length === 0) {
+      if (
+        parsed.type !== "natstack:cdp-auth" ||
+        typeof parsed.token !== "string" ||
+        parsed.token.length === 0
+      ) {
         cleanup();
         ws.close(4001, "Invalid CDP auth frame");
         resolve(null);
@@ -203,7 +207,9 @@ export class CdpServer {
     for (const [ownerId, browsers] of this.panelBrowsers) {
       if (browsers.has(browserId)) {
         // Found the owner, check if requesting panel is an ancestor
-        log.verbose(`[CDP Access] Browser ${browserId} owned by ${ownerId}, checking ancestor ${panelId}`);
+        log.verbose(
+          `[CDP Access] Browser ${browserId} owned by ${ownerId}, checking ancestor ${panelId}`
+        );
         if (ownerId.startsWith(panelId + "/")) {
           log.verbose(`[CDP Access] Granted: ${panelId} is ancestor of ${ownerId}`);
           return true;
@@ -211,7 +217,12 @@ export class CdpServer {
       }
     }
 
-    log.verbose(`[CDP Access] Denied: ${panelId} has no access to ${browserId}. panelBrowsers:`, Array.from(this.panelBrowsers.entries()).map(([id, set]) => `${id}->[${Array.from(set).join(",")}]`));
+    log.verbose(
+      `[CDP Access] Denied: ${panelId} has no access to ${browserId}. panelBrowsers:`,
+      Array.from(this.panelBrowsers.entries()).map(
+        ([id, set]) => `${id}->[${Array.from(set).join(",")}]`
+      )
+    );
     return false;
   }
 
@@ -328,18 +339,14 @@ export class CdpServer {
           if (this.viewManager) {
             const vm = this.viewManager;
             // withViewVisible returns null if view not found, so fallback to direct capture
-            result = await vm.withViewVisible(browserId, capture) ?? await capture();
+            result = (await vm.withViewVisible(browserId, capture)) ?? (await capture());
           } else {
             result = await capture();
           }
         } else {
           // Forward other CDP commands directly
           // Pass sessionId to support flattened CDP sessions (iframes, targets, etc.)
-          result = await contents.debugger.sendCommand(
-            msg.method,
-            msg.params,
-            sessionId
-          );
+          result = await contents.debugger.sendCommand(msg.method, msg.params, sessionId);
         }
 
         // Include sessionId in response so client can route to correct session

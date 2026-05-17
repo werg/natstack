@@ -7,7 +7,7 @@
  */
 
 import { createDevLogger } from "@natstack/dev-log";
-import type { Panel, PanelSnapshot } from "@natstack/shared/types";
+import type { PanelSnapshot } from "@natstack/shared/types";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { EventService } from "@natstack/shared/eventsService";
@@ -20,10 +20,13 @@ import type {
   PanelCreateOptions,
 } from "@natstack/shared/panelInterfaces";
 import type { WorkspaceConfig } from "@natstack/shared/workspace/types";
+import { buildPanelUrl } from "@natstack/shared/panelFactory";
 import {
-  buildPanelUrl,
-} from "@natstack/shared/panelFactory";
-import { getCurrentSnapshot, getPanelSource, getPanelContextId, getPanelRef, getPanelStateArgs } from "@natstack/shared/panel/accessors";
+  getCurrentSnapshot,
+  getPanelSource,
+  getPanelContextId,
+  getPanelRef,
+} from "@natstack/shared/panel/accessors";
 
 const log = createDevLogger("PanelOrchestrator");
 
@@ -35,7 +38,10 @@ export interface PanelOrchestratorDeps {
   shellCore: PanelManager;
 
   getPanelView?: () => PanelViewLike | null;
-  cdpServer: { revokeTokenForPanel(panelId: string): void; unregisterBrowser?(panelId: string): void };
+  cdpServer: {
+    revokeTokenForPanel(panelId: string): void;
+    unregisterBrowser?(panelId: string): void;
+  };
   panelHttpServer: PanelHttpServerLike;
   externalHost: string;
   protocol: "http" | "https";
@@ -58,16 +64,36 @@ export class PanelOrchestrator implements BridgePanelManager {
   }
 
   // Convenience accessors
-  private get registry() { return this.deps.registry; }
-  private get tokenManager() { return this.deps.tokenManager; }
-  private get eventService() { return this.deps.eventService; }
-  private get serverClient() { return this.deps.serverClient; }
-  private get shellCore() { return this.deps.shellCore; }
-  private get externalHost() { return this.deps.externalHost; }
-  private getPanelView() { return this.deps.getPanelView?.() ?? null; }
-  private get panelHttpServer() { return this.deps.panelHttpServer; }
-  private get cdpServer() { return this.deps.cdpServer; }
-  private get workspaceConfig() { return this.deps.workspaceConfig; }
+  private get registry() {
+    return this.deps.registry;
+  }
+  private get tokenManager() {
+    return this.deps.tokenManager;
+  }
+  private get eventService() {
+    return this.deps.eventService;
+  }
+  private get serverClient() {
+    return this.deps.serverClient;
+  }
+  private get shellCore() {
+    return this.deps.shellCore;
+  }
+  private get externalHost() {
+    return this.deps.externalHost;
+  }
+  private getPanelView() {
+    return this.deps.getPanelView?.() ?? null;
+  }
+  private get panelHttpServer() {
+    return this.deps.panelHttpServer;
+  }
+  private get cdpServer() {
+    return this.deps.cdpServer;
+  }
+  private get workspaceConfig() {
+    return this.deps.workspaceConfig;
+  }
 
   // =========================================================================
   // Panel creation
@@ -77,7 +103,7 @@ export class PanelOrchestrator implements BridgePanelManager {
     callerId: string,
     source: string,
     options?: PanelCreateOptions,
-    stateArgs?: Record<string, unknown>,
+    stateArgs?: Record<string, unknown>
   ): Promise<{ id: string; title: string }> {
     const caller = this.registry.getPanel(callerId);
     if (!caller) throw new Error(`Caller panel not found: ${callerId}`);
@@ -103,7 +129,11 @@ export class PanelOrchestrator implements BridgePanelManager {
       }
 
       // Update build state from cache
-      const buildCached = this.panelHttpServer?.hasBuild(result.source, result.options["ref"] as string | undefined) ?? false;
+      const buildCached =
+        this.panelHttpServer?.hasBuild(
+          result.source,
+          result.options["ref"] as string | undefined
+        ) ?? false;
       this.registry.updateArtifacts(result.panelId, {
         htmlPath: panelUrl ?? undefined,
         buildState: buildCached ? "ready" : "building",
@@ -122,7 +152,12 @@ export class PanelOrchestrator implements BridgePanelManager {
   async navigatePanel(
     panelId: string,
     source: string,
-    options?: { ref?: string; contextId?: string; env?: Record<string, string>; stateArgs?: Record<string, unknown> },
+    options?: {
+      ref?: string;
+      contextId?: string;
+      env?: Record<string, string>;
+      stateArgs?: Record<string, unknown>;
+    }
   ): Promise<{ id: string; title: string }> {
     const result = await this.shellCore.navigate(panelId, source, options);
     const panel = this.registry.getPanel(panelId);
@@ -132,7 +167,10 @@ export class PanelOrchestrator implements BridgePanelManager {
     return { id: result.panelId, title: result.title };
   }
 
-  async navigatePanelHistory(panelId: string, delta: -1 | 1): Promise<{ id: string; title: string } | null> {
+  async navigatePanelHistory(
+    panelId: string,
+    delta: -1 | 1
+  ): Promise<{ id: string; title: string } | null> {
     const panel = await this.shellCore.navigateHistory(panelId, delta);
     if (!panel) return null;
     await this.loadSnapshotIntoView(panelId, getCurrentSnapshot(panel));
@@ -148,7 +186,7 @@ export class PanelOrchestrator implements BridgePanelManager {
    */
   async createRootPanel(
     source: string,
-    options?: { name?: string; isRoot?: boolean; ref?: string },
+    options?: { name?: string; isRoot?: boolean; ref?: string }
   ): Promise<{ id: string; title: string }> {
     const name = options?.name ?? `${source.replace(/\//g, "-")}~${Date.now().toString(36)}`;
 
@@ -189,7 +227,11 @@ export class PanelOrchestrator implements BridgePanelManager {
       const view = this.getPanelView();
       if (panelUrl && view) {
         const panel = this.registry.getPanel(result.id);
-        await view.createViewForPanel(result.id, panelUrl, panel ? getPanelContextId(panel) : undefined);
+        await view.createViewForPanel(
+          result.id,
+          panelUrl,
+          panel ? getPanelContextId(panel) : undefined
+        );
       }
 
       this.registry.notifyPanelTreeUpdate();
@@ -203,7 +245,7 @@ export class PanelOrchestrator implements BridgePanelManager {
 
   async createInitPanel(
     source: string,
-    stateArgs?: Record<string, unknown>,
+    stateArgs?: Record<string, unknown>
   ): Promise<{ id: string; title: string }> {
     const result = await this.shellCore.create(source, {
       isRoot: true,
@@ -231,7 +273,7 @@ export class PanelOrchestrator implements BridgePanelManager {
   async createBrowserPanel(
     callerId: string,
     url: string,
-    options?: { name?: string; focus?: boolean },
+    options?: { name?: string; focus?: boolean }
   ): Promise<{ id: string; title: string }> {
     // Defensive: reject non-string or non-http(s) URLs early
     if (typeof url !== "string" || !/^https?:\/\//i.test(url)) {
@@ -281,10 +323,20 @@ export class PanelOrchestrator implements BridgePanelManager {
     // Determine sibling to focus before removal
     const parentId = this.registry.findParentId(panelId);
     const parent = parentId ? this.registry.getPanel(parentId) : null;
+    const focusedPanelId = this.registry.getFocusedPanelId();
+    const focusedPanelWillClose = Boolean(
+      focusedPanelId &&
+      (focusedPanelId === panelId || this.registry.isDescendantOf(focusedPanelId, panelId))
+    );
     let siblingToFocus: string | null = null;
-    if (parent && parent.selectedChildId === panelId) {
+    if (focusedPanelWillClose && parent) {
       const siblings = parent.children.filter((c) => c.id !== panelId);
       siblingToFocus = siblings.length > 0 ? siblings[siblings.length - 1]!.id : parentId;
+    } else if (focusedPanelWillClose && !parentId) {
+      const roots = this.registry.getRootPanels();
+      const rootIndex = roots.findIndex((p) => p.id === panelId);
+      const nextRoot = rootIndex >= 0 ? (roots[rootIndex + 1] ?? roots[rootIndex - 1]) : undefined;
+      siblingToFocus = nextRoot?.id ?? null;
     }
 
     // Server handles recursive close + resource cleanup
@@ -381,7 +433,8 @@ export class PanelOrchestrator implements BridgePanelManager {
     this.registry.notifyPanelTreeUpdate();
     if (focusedWasReset && focusedPanelId) {
       void this.rebuildUnloadedPanel(focusedPanelId).catch((e) =>
-        console.warn(`[PanelOrchestrator] Failed to rebuild ${focusedPanelId}:`, e));
+        console.warn(`[PanelOrchestrator] Failed to rebuild ${focusedPanelId}:`, e)
+      );
     }
   }
 
@@ -405,16 +458,18 @@ export class PanelOrchestrator implements BridgePanelManager {
   // State mutation
   // =========================================================================
 
-  async handleSetStateArgs(
-    panelId: string,
-    updates: Record<string, unknown>,
-  ): Promise<unknown> {
+  async handleSetStateArgs(panelId: string, updates: Record<string, unknown>): Promise<unknown> {
     const validated = await this.shellCore.updateStateArgs(panelId, updates);
     this.registry.updateStateArgs(panelId, validated as Record<string, unknown>);
     return validated;
   }
 
-  async replaceCurrentSnapshot(panelId: string, contextId: string, source?: string, stateArgs?: Record<string, unknown>): Promise<void> {
+  async replaceCurrentSnapshot(
+    panelId: string,
+    contextId: string,
+    source?: string,
+    stateArgs?: Record<string, unknown>
+  ): Promise<void> {
     await this.shellCore.replaceCurrentSnapshot(panelId, {
       contextId,
       ...(source !== undefined && { source }),
@@ -468,7 +523,9 @@ export class PanelOrchestrator implements BridgePanelManager {
       for (const entry of this.registry.listPanels()) {
         const panel = this.registry.getPanel(entry.panelId);
         if (panel) {
-          const hasBuildArtifacts = Boolean(panel.artifacts?.htmlPath || panel.artifacts?.bundlePath);
+          const hasBuildArtifacts = Boolean(
+            panel.artifacts?.htmlPath || panel.artifacts?.bundlePath
+          );
           if (panel.artifacts?.buildState !== "pending" || hasBuildArtifacts) {
             this.registry.updateArtifacts(entry.panelId, {
               buildState: "pending",
@@ -480,7 +537,10 @@ export class PanelOrchestrator implements BridgePanelManager {
       this.registry.notifyPanelTreeUpdate();
     } else {
       const entries = this.workspaceConfig?.initPanels;
-      log.info(`[initializePanelTree] No existing roots. initPanels config:`, JSON.stringify(entries));
+      log.info(
+        `[initializePanelTree] No existing roots. initPanels config:`,
+        JSON.stringify(entries)
+      );
       if (entries && entries.length > 0) {
         for (const entry of [...entries].reverse()) {
           try {
@@ -552,9 +612,15 @@ export class PanelOrchestrator implements BridgePanelManager {
     } else if (data["type"] === "theme") {
       this.deps.sendPanelEvent(panelId, "runtime:theme", { theme: data["theme"] });
     } else if (data["type"] === "child-created") {
-      this.deps.sendPanelEvent(panelId, "runtime:child-created", { childId: data["childId"], url: data["url"] });
+      this.deps.sendPanelEvent(panelId, "runtime:child-created", {
+        childId: data["childId"],
+        url: data["url"],
+      });
     } else if (data["type"] === "child-creation-error") {
-      this.deps.sendPanelEvent(panelId, "runtime:child-creation-error", { url: data["url"], error: data["error"] });
+      this.deps.sendPanelEvent(panelId, "runtime:child-creation-error", {
+        url: data["url"],
+        error: data["error"],
+      });
     }
   }
 
@@ -562,7 +628,11 @@ export class PanelOrchestrator implements BridgePanelManager {
   // Persistence delegation (server-first)
   // =========================================================================
 
-  async movePanel(panelId: string, newParentId: string | null, targetPosition: number): Promise<void> {
+  async movePanel(
+    panelId: string,
+    newParentId: string | null,
+    targetPosition: number
+  ): Promise<void> {
     await this.shellCore.movePanel(panelId, newParentId, targetPosition);
   }
 
@@ -638,8 +708,12 @@ export class PanelOrchestrator implements BridgePanelManager {
     await view.createViewForPanel(panelId, panelUrl, snapshot.contextId);
     this.registry.updateArtifacts(panelId, {
       htmlPath: panelUrl,
-      buildState: this.panelHttpServer?.hasBuild(snapshot.source, snapshot.options.ref) ? "ready" : "building",
-      buildProgress: this.panelHttpServer?.hasBuild(snapshot.source, snapshot.options.ref) ? undefined : "Waiting for build...",
+      buildState: this.panelHttpServer?.hasBuild(snapshot.source, snapshot.options.ref)
+        ? "ready"
+        : "building",
+      buildProgress: this.panelHttpServer?.hasBuild(snapshot.source, snapshot.options.ref)
+        ? undefined
+        : "Waiting for build...",
     });
     this.registry.notifyPanelTreeUpdate();
   }

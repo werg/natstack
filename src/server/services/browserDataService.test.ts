@@ -19,17 +19,25 @@ function fakeDODispatch(handlers: Record<string, (...args: unknown[]) => unknown
     if (!handler) throw new Error(`unmocked DO method: ${method}`);
     return handler(...args);
   };
-  return { calls, dispatch: dispatch as DODispatch["dispatch"] } as { calls: DispatchCall[]; dispatch: DODispatch["dispatch"] };
+  return { calls, dispatch: dispatch as DODispatch["dispatch"] } as {
+    calls: DispatchCall[];
+    dispatch: DODispatch["dispatch"];
+  };
 }
 
-interface EmittedEvent { event: string; payload: unknown }
+interface EmittedEvent {
+  event: string;
+  payload: unknown;
+}
 
 function fakeEventService() {
   const emitted: EmittedEvent[] = [];
   return {
     emitted,
     eventService: {
-      emit(event: string, payload: unknown) { emitted.push({ event, payload }); },
+      emit(event: string, payload: unknown) {
+        emitted.push({ event, payload });
+      },
     } as never,
   };
 }
@@ -44,13 +52,20 @@ describe("browserDataService — handler routing", () => {
       updateLastUsed: () => undefined,
     });
     const evt = fakeEventService();
-    const svc = createBrowserDataService({ eventService: evt.eventService, doDispatch: { dispatch: fake.dispatch } as DODispatch });
+    const svc = createBrowserDataService({
+      eventService: evt.eventService,
+      doDispatch: { dispatch: fake.dispatch } as DODispatch,
+    });
 
     await svc.handler(ctx, "addNeverSavePassword", ["https://example.test"]);
     await svc.handler(ctx, "updatePasswordLastUsed", [42]);
     const isNever = await svc.handler(ctx, "isNeverSavePassword", ["https://example.test"]);
 
-    expect(fake.calls.map(c => c.method)).toEqual(["addNeverSave", "updateLastUsed", "isNeverSave"]);
+    expect(fake.calls.map((c) => c.method)).toEqual([
+      "addNeverSave",
+      "updateLastUsed",
+      "isNeverSave",
+    ]);
     expect(fake.calls[0]!.args).toEqual(["https://example.test"]);
     expect(fake.calls[1]!.args).toEqual([42]);
     expect(fake.calls[2]!.args).toEqual(["https://example.test"]);
@@ -68,7 +83,10 @@ describe("browserDataService — handler routing", () => {
       clearCookies: () => 3,
     });
     const evt = fakeEventService();
-    const svc = createBrowserDataService({ eventService: evt.eventService, doDispatch: { dispatch: fake.dispatch } as DODispatch });
+    const svc = createBrowserDataService({
+      eventService: evt.eventService,
+      doDispatch: { dispatch: fake.dispatch } as DODispatch,
+    });
 
     await svc.handler(ctx, "addBookmark", [{ title: "ex", folderPath: "/", dateAdded: 1 }]);
     await svc.handler(ctx, "deleteBookmark", [7]);
@@ -78,7 +96,7 @@ describe("browserDataService — handler routing", () => {
     await svc.handler(ctx, "setPermission", ["https://x.test", "geolocation", "deny"]);
     await svc.handler(ctx, "clearCookies", ["x.test"]);
 
-    expect(evt.emitted.map(e => (e.payload as { dataType: string }).dataType)).toEqual([
+    expect(evt.emitted.map((e) => (e.payload as { dataType: string }).dataType)).toEqual([
       "bookmarks",
       "bookmarks",
       "history",
@@ -87,7 +105,7 @@ describe("browserDataService — handler routing", () => {
       "permissions",
       "cookies",
     ]);
-    expect(evt.emitted.every(e => e.event === "browser-data-changed")).toBe(true);
+    expect(evt.emitted.every((e) => e.event === "browser-data-changed")).toBe(true);
   });
 
   it("does not emit browser-data-changed for pure reads", async () => {
@@ -106,7 +124,10 @@ describe("browserDataService — handler routing", () => {
       isNeverSave: () => false,
     });
     const evt = fakeEventService();
-    const svc = createBrowserDataService({ eventService: evt.eventService, doDispatch: { dispatch: fake.dispatch } as DODispatch });
+    const svc = createBrowserDataService({
+      eventService: evt.eventService,
+      doDispatch: { dispatch: fake.dispatch } as DODispatch,
+    });
 
     await svc.handler(ctx, "getBookmarks", [undefined]);
     await svc.handler(ctx, "getHistory", [{ limit: 10 }]);
@@ -130,19 +151,34 @@ describe("browserDataService — handler routing", () => {
       updateHistoryTitle: () => undefined,
     });
     const evt = fakeEventService();
-    const svc = createBrowserDataService({ eventService: evt.eventService, doDispatch: { dispatch: fake.dispatch } as DODispatch });
+    const svc = createBrowserDataService({
+      eventService: evt.eventService,
+      doDispatch: { dispatch: fake.dispatch } as DODispatch,
+    });
 
-    await expect(svc.handler(ctx, "recordHistoryVisit", [{
-      url: "https://example.test",
-      title: "Example",
-      transition: "back_forward",
-      typed: true,
-      visitTime: 10,
-    }])).resolves.toBe(12);
-    await svc.handler(ctx, "updateHistoryTitle", [{ url: "https://example.test", title: "Example 2", observedAt: 20 }]);
+    await expect(
+      svc.handler(ctx, "recordHistoryVisit", [
+        {
+          url: "https://example.test",
+          title: "Example",
+          transition: "back_forward",
+          typed: true,
+          visitTime: 10,
+        },
+      ])
+    ).resolves.toBe(12);
+    await svc.handler(ctx, "updateHistoryTitle", [
+      { url: "https://example.test", title: "Example 2", observedAt: 20 },
+    ]);
 
-    expect(fake.calls.map((call) => call.method)).toEqual(["recordHistoryVisit", "updateHistoryTitle"]);
-    expect(evt.emitted.map(e => (e.payload as { dataType: string }).dataType)).toEqual(["history", "history"]);
+    expect(fake.calls.map((call) => call.method)).toEqual([
+      "recordHistoryVisit",
+      "updateHistoryTitle",
+    ]);
+    expect(evt.emitted.map((e) => (e.payload as { dataType: string }).dataType)).toEqual([
+      "history",
+      "history",
+    ]);
   });
 
   it("enforces shell-only browser history access through the dispatcher", async () => {
@@ -150,27 +186,59 @@ describe("browserDataService — handler routing", () => {
       searchHistoryForAutocomplete: () => [],
       recordHistoryVisit: () => 1,
     });
-    const svc = createBrowserDataService({ eventService: fakeEventService().eventService, doDispatch: { dispatch: fake.dispatch } as DODispatch });
+    const svc = createBrowserDataService({
+      eventService: fakeEventService().eventService,
+      doDispatch: { dispatch: fake.dispatch } as DODispatch,
+    });
     const dispatcher = new ServiceDispatcher();
     dispatcher.registerService(svc);
     dispatcher.markInitialized();
 
-    await expect(dispatcher.dispatch(ctx, "browser-data", "recordHistoryVisit", [{
-      url: "https://example.test",
-      transition: "back_forward",
-    }])).resolves.toBe(1);
-    await expect(dispatcher.dispatch({ callerId: "panel-1", callerKind: "panel" }, "browser-data", "searchHistoryForAutocomplete", [{ query: "ex", limit: 5 }]))
-      .rejects.toBeInstanceOf(ServiceAccessError);
+    await expect(
+      dispatcher.dispatch(ctx, "browser-data", "recordHistoryVisit", [
+        {
+          url: "https://example.test",
+          transition: "back_forward",
+        },
+      ])
+    ).resolves.toBe(1);
+    await expect(
+      dispatcher.dispatch(
+        { callerId: "panel-1", callerKind: "panel" },
+        "browser-data",
+        "searchHistoryForAutocomplete",
+        [{ query: "ex", limit: 5 }]
+      )
+    ).rejects.toBeInstanceOf(ServiceAccessError);
   });
 
   it("translates DO bookmark rows into Netscape HTML and Chromium JSON exports", async () => {
     const allBookmarks = [
-      { id: 1, title: "Example", url: "https://example.test", folder_path: "/", date_added: 1700000000000, tags: '["news"]', keyword: null },
-      { id: 2, title: "Docs", url: "https://docs.test", folder_path: "/Reference", date_added: 1700000001000, tags: null, keyword: "docs" },
+      {
+        id: 1,
+        title: "Example",
+        url: "https://example.test",
+        folder_path: "/",
+        date_added: 1700000000000,
+        tags: '["news"]',
+        keyword: null,
+      },
+      {
+        id: 2,
+        title: "Docs",
+        url: "https://docs.test",
+        folder_path: "/Reference",
+        date_added: 1700000001000,
+        tags: null,
+        keyword: "docs",
+      },
     ];
     const fake = fakeDODispatch({ getAllBookmarks: () => allBookmarks });
     const evt = fakeEventService();
-    const svc = createBrowserDataService({ eventService: evt.eventService, doDispatch: { dispatch: fake.dispatch } as DODispatch });
+    const svc = createBrowserDataService({
+      eventService: evt.eventService,
+      doDispatch: { dispatch: fake.dispatch } as DODispatch,
+    });
 
     const html = (await svc.handler(ctx, "exportBookmarks", ["html"])) as string;
     expect(html).toContain("<DL>");
@@ -183,17 +251,34 @@ describe("browserDataService — handler routing", () => {
 
     const json = (await svc.handler(ctx, "exportBookmarks", ["json"])) as string;
     const arr = JSON.parse(json) as Array<{ title: string; url: string }>;
-    expect(arr.map(b => b.title)).toEqual(["Example", "Docs"]);
+    expect(arr.map((b) => b.title)).toEqual(["Example", "Docs"]);
   });
 
   it("exports passwords in chrome and firefox CSV formats", async () => {
     const passwords = [
-      { id: 1, origin_url: "https://example.test", username: "alice", password: "p@ss", action_url: "https://example.test/login", realm: "" },
-      { id: 2, origin_url: "https://other.test", username: "bob", password: "secret", action_url: "", realm: "Other" },
+      {
+        id: 1,
+        origin_url: "https://example.test",
+        username: "alice",
+        password: "p@ss",
+        action_url: "https://example.test/login",
+        realm: "",
+      },
+      {
+        id: 2,
+        origin_url: "https://other.test",
+        username: "bob",
+        password: "secret",
+        action_url: "",
+        realm: "Other",
+      },
     ];
     const fake = fakeDODispatch({ getPasswords: () => passwords });
     const evt = fakeEventService();
-    const svc = createBrowserDataService({ eventService: evt.eventService, doDispatch: { dispatch: fake.dispatch } as DODispatch });
+    const svc = createBrowserDataService({
+      eventService: evt.eventService,
+      doDispatch: { dispatch: fake.dispatch } as DODispatch,
+    });
 
     const chromeCsv = (await svc.handler(ctx, "exportPasswords", ["csv-chrome"])) as string;
     expect(chromeCsv.split("\n")[0]).toMatch(/name|url|username|password/i);
@@ -207,16 +292,54 @@ describe("browserDataService — handler routing", () => {
 
   it("aggregates a full browser-data export bundle", async () => {
     const fake = fakeDODispatch({
-      getAllBookmarks: () => [{ id: 1, title: "B", url: "https://b.test", folder_path: "/", date_added: 1, tags: null, keyword: null }],
+      getAllBookmarks: () => [
+        {
+          id: 1,
+          title: "B",
+          url: "https://b.test",
+          folder_path: "/",
+          date_added: 1,
+          tags: null,
+          keyword: null,
+        },
+      ],
       getHistory: (q: unknown) => {
         expect((q as { limit: number }).limit).toBe(2147483647);
-        return [{ id: 1, url: "https://h.test", title: "H", visit_count: 3, last_visit: 1700000000000 }];
+        return [
+          { id: 1, url: "https://h.test", title: "H", visit_count: 3, last_visit: 1700000000000 },
+        ];
       },
-      getCookies: () => [{ name: "c", value: "v", domain: "x.test", host_only: 1, path: "/", expiration_date: null, secure: 1, http_only: 0, same_site: "lax", source_scheme: "secure", source_port: 443 }],
-      getPasswords: () => [{ id: 1, origin_url: "https://p.test", username: "u", password: "p", action_url: null, realm: null }],
+      getCookies: () => [
+        {
+          name: "c",
+          value: "v",
+          domain: "x.test",
+          host_only: 1,
+          path: "/",
+          expiration_date: null,
+          secure: 1,
+          http_only: 0,
+          same_site: "lax",
+          source_scheme: "secure",
+          source_port: 443,
+        },
+      ],
+      getPasswords: () => [
+        {
+          id: 1,
+          origin_url: "https://p.test",
+          username: "u",
+          password: "p",
+          action_url: null,
+          realm: null,
+        },
+      ],
     });
     const evt = fakeEventService();
-    const svc = createBrowserDataService({ eventService: evt.eventService, doDispatch: { dispatch: fake.dispatch } as DODispatch });
+    const svc = createBrowserDataService({
+      eventService: evt.eventService,
+      doDispatch: { dispatch: fake.dispatch } as DODispatch,
+    });
 
     const bundleJson = (await svc.handler(ctx, "exportAll", [])) as string;
     const bundle = JSON.parse(bundleJson) as {
@@ -236,7 +359,12 @@ describe("browserDataService — handler routing", () => {
   it("rejects unknown methods", async () => {
     const fake = fakeDODispatch({});
     const evt = fakeEventService();
-    const svc = createBrowserDataService({ eventService: evt.eventService, doDispatch: { dispatch: fake.dispatch } as DODispatch });
-    await expect(svc.handler(ctx, "nonexistent", [])).rejects.toThrow(/Unknown browser-data method/);
+    const svc = createBrowserDataService({
+      eventService: evt.eventService,
+      doDispatch: { dispatch: fake.dispatch } as DODispatch,
+    });
+    await expect(svc.handler(ctx, "nonexistent", [])).rejects.toThrow(
+      /Unknown browser-data method/
+    );
   });
 });

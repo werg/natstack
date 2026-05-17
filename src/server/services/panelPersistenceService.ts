@@ -9,7 +9,10 @@ const ref = (workspaceId: string) => ({
   objectKey: workspaceId,
 });
 
-export function createPanelPersistenceService(deps: { doDispatch: DODispatch; workspaceId: string }): ServiceDefinition {
+export function createPanelPersistenceService(deps: {
+  doDispatch: DODispatch;
+  workspaceId: string;
+}): ServiceDefinition {
   const dispatch = (method: string, args: unknown[]) =>
     deps.doDispatch.dispatch(ref(deps.workspaceId), method, ...args);
 

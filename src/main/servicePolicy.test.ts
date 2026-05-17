@@ -3,12 +3,13 @@
  */
 
 import { checkServiceAccess, type PolicyRegistry } from "@natstack/shared/servicePolicy";
+import type { CallerKind } from "@natstack/shared/serviceDispatcher";
 
-function makeRegistry(policies: Record<string, { allowed: string[] }>): PolicyRegistry {
+function makeRegistry(policies: Record<string, { allowed: CallerKind[] }>): PolicyRegistry {
   return {
     getPolicy: (service) => {
       const p = policies[service];
-      return p ? { allowed: p.allowed as any[] } : undefined;
+      return p ? { allowed: p.allowed } : undefined;
     },
   };
 }

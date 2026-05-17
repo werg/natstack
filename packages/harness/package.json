@@ -31,8 +31,9 @@
     "zod": "^3.24.4"
   },
   "optionalDependencies": {
-    "re2": "^1.24.0"
+    "re2": "1.24.0"
   },
+  "//": "re2 pinned to exact version to match patches/re2@1.24.0.patch",
   "devDependencies": {
     "@types/ws": "^8.5.14",
     "typescript": "^5.9.3"

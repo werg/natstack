@@ -9,6 +9,7 @@ let _menuPanelLifecycle: BridgePanelManager | null = null;
 let _menuPanelRegistry: PanelRegistry | null = null;
 let _menuViewManager: ViewManager | null = null;
 let _menuEventService: EventService | null = null;
+const panelDevToolsShortcutInterceptors = new WeakSet<WebContents>();
 
 /** Set the event service for menu operations. Called from index.ts. */
 export function setMenuEventService(es: EventService): void {
@@ -67,6 +68,47 @@ function stopFocusedPanel(): void {
   const focusedId = _menuPanelRegistry?.getFocusedPanelId();
   if (!focusedId || !_menuViewManager) return;
   _menuViewManager.stop(focusedId);
+}
+
+function openFocusedPanelDevTools(): boolean {
+  const focusedId = _menuPanelRegistry?.getFocusedPanelId();
+  if (!focusedId || !_menuViewManager?.hasView(focusedId)) {
+    return false;
+  }
+  _menuViewManager.openDevTools(focusedId);
+  return true;
+}
+
+function togglePanelDevTools(): void {
+  if (!openFocusedPanelDevTools()) {
+    eventService().emit("toggle-panel-devtools");
+  }
+}
+
+function isPanelDevToolsInput(input: Electron.Input): boolean {
+  if (input.type !== "keyDown") {
+    return false;
+  }
+  if (input.key.toLowerCase() !== "i" && input.code !== "KeyI") {
+    return false;
+  }
+  const hasPrimary = process.platform === "darwin" ? input.meta : input.control;
+  return hasPrimary && input.shift && !input.alt;
+}
+
+function interceptPanelDevToolsShortcut(shellContents: WebContents): void {
+  if (panelDevToolsShortcutInterceptors.has(shellContents)) {
+    return;
+  }
+  panelDevToolsShortcutInterceptors.add(shellContents);
+
+  shellContents.on("before-input-event", (event, input) => {
+    if (!isPanelDevToolsInput(input)) {
+      return;
+    }
+    event.preventDefault();
+    togglePanelDevTools();
+  });
 }
 
 /**
@@ -135,8 +177,16 @@ export function buildCommonMenuItems(
     view.push({ type: "separator" });
   }
   view.push(
-    { label: "Reload Panel", accelerator: "CmdOrCtrl+R", click: () => dispatchChromeCommand("reload-panel") },
-    { label: "Force Reload View", accelerator: "CmdOrCtrl+Shift+R", click: () => dispatchChromeCommand("force-reload-view") },
+    {
+      label: "Reload Panel",
+      accelerator: "CmdOrCtrl+R",
+      click: () => dispatchChromeCommand("reload-panel"),
+    },
+    {
+      label: "Force Reload View",
+      accelerator: "CmdOrCtrl+Shift+R",
+      click: () => dispatchChromeCommand("force-reload-view"),
+    },
     { label: "Stop Loading", accelerator: "Esc", click: () => dispatchChromeCommand("stop") },
     {
       label: "Toggle Address Bar",
@@ -163,9 +213,7 @@ export function buildCommonMenuItems(
     {
       label: "Toggle Panel DevTools",
       accelerator: "CmdOrCtrl+Shift+I",
-      click: () => {
-        eventService().emit("toggle-panel-devtools");
-      },
+      click: () => togglePanelDevTools(),
     },
     {
       label: "Toggle App DevTools",
@@ -231,6 +279,8 @@ export function setupMenu(
   shellContents: WebContents,
   options?: { onHistoryBack?: () => void; onHistoryForward?: () => void }
 ): void {
+  interceptPanelDevToolsShortcut(shellContents);
+
   const isMac = process.platform === "darwin";
   const backAccelerator = isMac ? "Cmd+[" : "Alt+Left";
   const forwardAccelerator = isMac ? "Cmd+]" : "Alt+Right";
@@ -332,8 +382,16 @@ export function setupMenu(
       label: "View",
       submenu: [
         ...viewSubmenu,
-        { label: "Reload Panel", accelerator: "CmdOrCtrl+R", click: () => dispatchChromeCommand("reload-panel") },
-        { label: "Force Reload View", accelerator: "CmdOrCtrl+Shift+R", click: () => dispatchChromeCommand("force-reload-view") },
+        {
+          label: "Reload Panel",
+          accelerator: "CmdOrCtrl+R",
+          click: () => dispatchChromeCommand("reload-panel"),
+        },
+        {
+          label: "Force Reload View",
+          accelerator: "CmdOrCtrl+Shift+R",
+          click: () => dispatchChromeCommand("force-reload-view"),
+        },
         { label: "Stop Loading", accelerator: "Esc", click: () => dispatchChromeCommand("stop") },
         { type: "separator" },
         {
@@ -365,9 +423,7 @@ export function setupMenu(
         {
           label: "Toggle Panel Developer Tools",
           accelerator: "CmdOrCtrl+Shift+I",
-          click: () => {
-            eventService().emit("toggle-panel-devtools");
-          },
+          click: () => togglePanelDevTools(),
         },
         {
           label: "Toggle App Developer Tools",

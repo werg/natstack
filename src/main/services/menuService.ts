@@ -23,7 +23,12 @@ export function createMenuService(deps: {
     policy: { allowed: ["shell"] },
     methods: {
       showHamburger: { args: z.tuple([z.object({ x: z.number(), y: z.number() })]) },
-      showContext: { args: z.tuple([z.array(z.object({ id: z.string(), label: z.string() })), z.object({ x: z.number(), y: z.number() })]) },
+      showContext: {
+        args: z.tuple([
+          z.array(z.object({ id: z.string(), label: z.string() })),
+          z.object({ x: z.number(), y: z.number() }),
+        ]),
+      },
       showPanelContext: { args: z.tuple([z.string(), z.object({ x: z.number(), y: z.number() })]) },
     },
     handler: async (_ctx, method, args) => {
@@ -38,7 +43,11 @@ export function createMenuService(deps: {
 
           const clearBuildCache = async () => {
             if (deps.serverClient) {
-              try { await deps.serverClient.call("build", "recompute", []); } catch (e) { console.warn("[App] Build recompute failed:", e); }
+              try {
+                await deps.serverClient.call("build", "recompute", []);
+              } catch (e) {
+                console.warn("[App] Build recompute failed:", e);
+              }
             }
             try {
               lifecycle.invalidateReadyPanels();

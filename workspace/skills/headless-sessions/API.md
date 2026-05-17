@@ -35,7 +35,8 @@ interface SessionManagerConfig {
 |--------|-------------|
 | `send(text, options?)` | Send a message. Options: `attachments`, `idempotencyKey`. Returns `messageId` |
 | `interrupt(agentId)` | Interrupt an agent (sends "pause" method call) |
-| `callMethod(participantId, method, args)` | Call a method on another participant |
+| `callMethod(participantId, method, args)` | Call a method on another participant and return the provider payload |
+| `callMethodResult(participantId, method, args)` | Call a method and return the full `{ content, attachments, contentType }` result envelope |
 | `loadEarlierMessages()` | Load older messages (pagination) |
 | `startTyping()` | Send typing indicator |
 | `stopTyping()` | Clear typing indicator |

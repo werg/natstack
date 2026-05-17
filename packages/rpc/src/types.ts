@@ -160,6 +160,7 @@ export const ELECTRON_LOCAL_SERVICE_NAMES = [
   "app",
   "browser",
   "browser-session-sync",
+  "events",
   "menu",
   "panel",
   "remoteCred",

@@ -46,9 +46,7 @@ export interface RemoteHealthPollHandle {
   stop(): void;
 }
 
-export function startRemoteHealthPoll(
-  opts: RemoteHealthPollOptions,
-): RemoteHealthPollHandle {
+export function startRemoteHealthPoll(opts: RemoteHealthPollOptions): RemoteHealthPollHandle {
   const intervalMs = opts.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -57,12 +55,9 @@ export function startRemoteHealthPoll(
   // pooling works, and the fingerprint check runs per fresh TLS handshake.
   // Fingerprint pinning takes priority over CA path (the fingerprint IS the
   // trust anchor when it's set).
-  const fingerprintAgent = opts.fingerprint
-    ? createPinnedHttpsAgent(opts.fingerprint)
-    : null;
-  const caAgent = opts.caPath && !fingerprintAgent
-    ? new HttpsAgent({ ca: fs.readFileSync(opts.caPath) })
-    : null;
+  const fingerprintAgent = opts.fingerprint ? createPinnedHttpsAgent(opts.fingerprint) : null;
+  const caAgent =
+    opts.caPath && !fingerprintAgent ? new HttpsAgent({ ca: fs.readFileSync(opts.caPath) }) : null;
 
   function schedule(delay: number) {
     if (stopped) return;
@@ -108,7 +103,7 @@ export function startRemoteHealthPoll(
       timeout: REQUEST_TIMEOUT_MS,
       headers: {
         // Header form keeps the admin token out of any URL / request log.
-        "Authorization": `Bearer ${opts.adminToken}`,
+        Authorization: `Bearer ${opts.adminToken}`,
       },
       ...(isTls && fingerprintAgent ? { agent: fingerprintAgent } : {}),
       ...(isTls && !fingerprintAgent && caAgent ? { agent: caAgent } : {}),

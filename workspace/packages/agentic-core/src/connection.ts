@@ -98,6 +98,7 @@ export class ConnectionManager {
         type: this.metadata.type,
         reconnect: true,
         clientId: this.config.clientId,
+        metadata: this.metadata,
         methods,
         replayMode: "stream",
         recoveryCoordinator: this.config.recoveryCoordinator,

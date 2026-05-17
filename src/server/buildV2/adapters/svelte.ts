@@ -1,13 +1,11 @@
 import type * as esbuild from "esbuild";
+import sveltePlugin from "esbuild-svelte";
 import type { FrameworkAdapter } from "./types.js";
 
 export const svelteAdapter: FrameworkAdapter = {
   id: "svelte",
 
-  dedupePackages: [
-    "svelte",
-    "svelte/internal",
-  ],
+  dedupePackages: ["svelte", "svelte/internal"],
 
   forcedSplitPackages: [],
 
@@ -16,7 +14,6 @@ export const svelteAdapter: FrameworkAdapter = {
   tsconfigJsx: undefined,
 
   plugins(): esbuild.Plugin[] {
-    const sveltePlugin = require("esbuild-svelte");
     return [
       sveltePlugin({
         compilerOptions: {

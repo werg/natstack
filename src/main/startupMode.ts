@@ -11,9 +11,7 @@ import { isIP } from "net";
 import { createDevLogger } from "@natstack/dev-log";
 import { isDev } from "./utils.js";
 import { getAppRoot, getCentralConfigDirectory } from "./paths.js";
-import {
-  resolveWorkspaceName,
-} from "@natstack/shared/workspace/loader";
+import { resolveWorkspaceName } from "@natstack/shared/workspace/loader";
 import { resolveLocalWorkspaceStartup } from "@natstack/shared/workspace/startup";
 import type { CentralDataManager } from "@natstack/shared/centralData";
 import { loadRemoteCredentials } from "./remoteCredentialStore.js";
@@ -43,9 +41,8 @@ function isLoopbackHostname(hostname: string): boolean {
     return true;
   }
 
-  const normalized = hostname.startsWith("[") && hostname.endsWith("]")
-    ? hostname.slice(1, -1)
-    : hostname;
+  const normalized =
+    hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
 
   if (normalized === "::1") {
     return true;
@@ -82,18 +79,10 @@ export function parseRemoteStartupMode(): {
   const stored = loadRemoteCredentials();
 
   // Resolution order: env var -> safeStorage-backed store.
-  const rawUrl =
-    process.env["NATSTACK_REMOTE_URL"] ??
-    stored?.url;
-  const adminToken =
-    process.env["NATSTACK_REMOTE_TOKEN"] ??
-    stored?.token;
-  const deviceId =
-    process.env["NATSTACK_REMOTE_DEVICE_ID"] ??
-    stored?.deviceId;
-  const refreshToken =
-    process.env["NATSTACK_REMOTE_REFRESH_TOKEN"] ??
-    stored?.refreshToken;
+  const rawUrl = process.env["NATSTACK_REMOTE_URL"] ?? stored?.url;
+  const adminToken = process.env["NATSTACK_REMOTE_TOKEN"] ?? stored?.token;
+  const deviceId = process.env["NATSTACK_REMOTE_DEVICE_ID"] ?? stored?.deviceId;
+  const refreshToken = process.env["NATSTACK_REMOTE_REFRESH_TOKEN"] ?? stored?.refreshToken;
 
   if (!rawUrl || !adminToken) return null;
 
@@ -105,22 +94,20 @@ export function parseRemoteStartupMode(): {
   }
 
   if (remoteUrl.protocol !== "http:" && remoteUrl.protocol !== "https:") {
-    throw new Error(`Invalid NATSTACK_REMOTE_URL: protocol must be http or https, got "${remoteUrl.protocol}"`);
+    throw new Error(
+      `Invalid NATSTACK_REMOTE_URL: protocol must be http or https, got "${remoteUrl.protocol}"`
+    );
   }
 
   if (!isTrustworthyRemoteOrigin(remoteUrl)) {
     throw new Error(
       "Invalid NATSTACK_REMOTE_URL: remote panel mode requires HTTPS, or loopback HTTP " +
-      "(localhost, 127.0.0.1, ::1)"
+        "(localhost, 127.0.0.1, ::1)"
     );
   }
 
-  const caPath =
-    process.env["NATSTACK_REMOTE_CA"] ??
-    stored?.caPath;
-  const fingerprint =
-    process.env["NATSTACK_REMOTE_FINGERPRINT"] ??
-    stored?.fingerprint;
+  const caPath = process.env["NATSTACK_REMOTE_CA"] ?? stored?.caPath;
+  const fingerprint = process.env["NATSTACK_REMOTE_FINGERPRINT"] ?? stored?.fingerprint;
   const tls: RemoteTlsOptions | undefined =
     caPath || fingerprint ? { caPath, fingerprint: normalizeFingerprint(fingerprint) } : undefined;
 
@@ -177,7 +164,9 @@ export function resolveStartupMode(centralData: CentralDataManager): StartupMode
     name: wsName ?? undefined,
     isDev: isDev(),
   });
-  log.info(`[Workspace] Loaded: ${startup.resolved.wsDir} (id: ${startup.resolved.workspace.config.id})`);
+  log.info(
+    `[Workspace] Loaded: ${startup.resolved.wsDir} (id: ${startup.resolved.workspace.config.id})`
+  );
   return {
     kind: "local",
     wsDir: startup.resolved.wsDir,

@@ -38,7 +38,11 @@ export interface PushTriggerEvents {
   "build-complete": { name: string; buildKey: string };
   "build-error": { name: string; error: string };
   "change-detected": { names: string[] };
-  "graph-updated": { graph: PackageGraph; evMap: EffectiveVersionMap; contentHashes: ContentHashMap };
+  "graph-updated": {
+    graph: PackageGraph;
+    evMap: EffectiveVersionMap;
+    contentHashes: ContentHashMap;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -59,7 +63,7 @@ export class PushTrigger extends EventEmitter {
     graph: PackageGraph,
     evMap: EffectiveVersionMap,
     contentHashes: ContentHashMap,
-    workspaceRoot: string,
+    workspaceRoot: string
   ) {
     super();
     this.graph = graph;
@@ -81,7 +85,11 @@ export class PushTrigger extends EventEmitter {
     }
   }
 
-  updateState(graph: PackageGraph, evMap: EffectiveVersionMap, contentHashes: ContentHashMap): void {
+  updateState(
+    graph: PackageGraph,
+    evMap: EffectiveVersionMap,
+    contentHashes: ContentHashMap
+  ): void {
     this.graph = graph;
     this.evMap = evMap;
     this.contentHashes = contentHashes;
@@ -93,12 +101,12 @@ export class PushTrigger extends EventEmitter {
       // Unknown repo — likely a newly created project not yet in the package graph.
       // Trigger full rediscovery so it gets picked up and built.
       console.log(
-        `[PushTrigger] Push from unknown repo "${event.repo}", triggering full rediscovery`,
+        `[PushTrigger] Push from unknown repo "${event.repo}", triggering full rediscovery`
       );
       this.queue = this.queue
         .then(() => this.fullRediscovery())
         .catch((error) =>
-          console.error(`[PushTrigger] Error during rediscovery for ${event.repo}:`, error),
+          console.error(`[PushTrigger] Error during rediscovery for ${event.repo}:`, error)
         );
       return;
     }
@@ -113,7 +121,7 @@ export class PushTrigger extends EventEmitter {
         // Main/master keeps fast incremental path.
         if (!isMainLike) {
           console.log(
-            `[PushTrigger] Tracked ref push ${event.branch} for ${nodeName}, triggering full rediscovery`,
+            `[PushTrigger] Tracked ref push ${event.branch} for ${nodeName}, triggering full rediscovery`
           );
           await this.fullRediscovery();
           return;
@@ -122,7 +130,7 @@ export class PushTrigger extends EventEmitter {
         // Main/master: check if package.json deps/manifest changed — if so, full rediscovery
         if (this.checkPackageJsonChanged(nodeName, event.commit)) {
           console.log(
-            `[PushTrigger] package.json changed for ${nodeName}, triggering full rediscovery`,
+            `[PushTrigger] package.json changed for ${nodeName}, triggering full rediscovery`
           );
           await this.fullRediscovery();
         } else {
@@ -130,7 +138,7 @@ export class PushTrigger extends EventEmitter {
         }
       })
       .catch((error) =>
-        console.error(`[PushTrigger] Error processing push for ${nodeName}:`, error),
+        console.error(`[PushTrigger] Error processing push for ${nodeName}:`, error)
       );
   }
 
@@ -190,7 +198,13 @@ export class PushTrigger extends EventEmitter {
     }
 
     // 2. Recompute EVs using the pushed node's pinned commit (no graph mutation)
-    const result = recomputeFromNode(this.graph, nodeName, this.evMap, this.contentHashes, commitSha);
+    const result = recomputeFromNode(
+      this.graph,
+      nodeName,
+      this.evMap,
+      this.contentHashes,
+      commitSha
+    );
     const changeset = diffEvMaps(this.evMap, result.evMap);
 
     // Update state and persist
@@ -200,7 +214,11 @@ export class PushTrigger extends EventEmitter {
     persistRefState(snapshotRefState(this.graph));
 
     // Sync to build system closure
-    this.emit("graph-updated", { graph: this.graph, evMap: result.evMap, contentHashes: result.contentHashes });
+    this.emit("graph-updated", {
+      graph: this.graph,
+      evMap: result.evMap,
+      contentHashes: result.contentHashes,
+    });
 
     const allChanged = [...changeset.changed, ...changeset.added];
     if (allChanged.length === 0) return;
@@ -240,10 +258,11 @@ export class PushTrigger extends EventEmitter {
   private checkPackageJsonChanged(nodeName: string, commitSha: string): boolean {
     const node = this.graph.get(nodeName);
     try {
-      const pkgStr = execGitFileSync(
-        ["show", `${commitSha}:package.json`],
-        { cwd: node.path, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-      );
+      const pkgStr = execGitFileSync(["show", `${commitSha}:package.json`], {
+        cwd: node.path,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      });
       const pkg = JSON.parse(pkgStr);
       const newDeps = { ...pkg.peerDependencies, ...pkg.dependencies };
       const newManifest = pkg.natstack ?? {};
@@ -251,7 +270,8 @@ export class PushTrigger extends EventEmitter {
       // Compare deps (names AND versions) — sorted to avoid key-order false positives
       if (sortedJsonStr(newDeps) !== sortedJsonStr(node.dependencies)) return true;
       // Compare manifest — sorted for same reason
-      if (sortedJsonStr(newManifest) !== sortedJsonStr(node.manifest as Record<string, unknown>)) return true;
+      if (sortedJsonStr(newManifest) !== sortedJsonStr(node.manifest as Record<string, unknown>))
+        return true;
       return false;
     } catch {
       return true; // Can't read — assume changed (safe)
@@ -296,7 +316,11 @@ export class PushTrigger extends EventEmitter {
     persistRefState(snapshotRefState(newGraph));
 
     // 5. Emit graph-updated so index.ts can sync
-    this.emit("graph-updated", { graph: newGraph, evMap: result.evMap, contentHashes: result.contentHashes });
+    this.emit("graph-updated", {
+      graph: newGraph,
+      evMap: result.evMap,
+      contentHashes: result.contentHashes,
+    });
 
     // 6. Build changed units using the same commitMap
     const allChanged = [...changeset.changed, ...changeset.added];

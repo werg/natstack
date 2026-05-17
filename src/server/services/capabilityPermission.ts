@@ -40,7 +40,7 @@ export interface CapabilityPermissionResult {
 
 export async function requestCapabilityPermission(
   deps: CapabilityPermissionDeps,
-  request: CapabilityPermissionRequest,
+  request: CapabilityPermissionRequest
 ): Promise<CapabilityPermissionResult> {
   const callerKind = normalizeCallerKind(request.callerKind);
   if (!callerKind) {
@@ -85,7 +85,7 @@ export async function requestCapabilityPermission(
 
 export function resolveCapabilityIdentity(
   callerId: string,
-  codeIdentityResolver: Pick<CodeIdentityResolver, "resolveByCallerId"> | undefined,
+  codeIdentityResolver: Pick<CodeIdentityResolver, "resolveByCallerId"> | undefined
 ): CapabilityGrantIdentity {
   const identity = codeIdentityResolver?.resolveByCallerId(callerId);
   return {

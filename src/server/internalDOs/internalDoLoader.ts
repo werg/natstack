@@ -36,9 +36,10 @@ function loadBundle(): InternalDOBundle {
   // Production path: the build inlines the internal-DO bundle as a string
   // constant via esbuild `define`, eliminating any runtime file lookup. See
   // `build.mjs` (the `internalDoBundleDefine` block).
-  const inlined = typeof globalThis.__NATSTACK_INTERNAL_DO_BUNDLE__ === "string"
-    ? globalThis.__NATSTACK_INTERNAL_DO_BUNDLE__
-    : undefined;
+  const inlined =
+    typeof globalThis.__NATSTACK_INTERNAL_DO_BUNDLE__ === "string"
+      ? globalThis.__NATSTACK_INTERNAL_DO_BUNDLE__
+      : undefined;
   if (inlined && inlined.length > 0) {
     return {
       bundle: inlined,
@@ -64,6 +65,6 @@ function loadBundle(): InternalDOBundle {
     };
   }
   throw new Error(
-    `Internal Durable Object bundle not available. The production build inlines this via esbuild define; for source/test runs, build first with \`pnpm build\` so ${candidates.join(" or ")} exists.`,
+    `Internal Durable Object bundle not available. The production build inlines this via esbuild define; for source/test runs, build first with \`pnpm build\` so ${candidates.join(" or ")} exists.`
   );
 }

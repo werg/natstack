@@ -2,6 +2,7 @@ import { WebContentsView, ipcMain, type BaseWindow } from "electron";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("ShellOverlayView");
+const OVERLAY_CSP_META = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'none'">`;
 
 export interface ShellOverlayBounds {
   x: number;
@@ -44,7 +45,7 @@ export class ShellOverlayView {
 
   constructor(
     private readonly preloadPath: string,
-    private readonly onEvent: (event: ShellOverlayEvent) => void,
+    private readonly onEvent: (event: ShellOverlayEvent) => void
   ) {
     ipcMain.on("natstack:shell-overlay:event", this.handleOverlayEvent);
     ipcMain.on("natstack:shell-overlay:hide", this.handleHide);
@@ -66,13 +67,18 @@ export class ShellOverlayView {
 
     view.setBounds(bounds);
     view.setVisible(true);
-    void view.webContents.loadURL(this.toDataUrl(options.html)).then(() => {
-      if (options.focus && !view.webContents.isDestroyed()) {
-        view.webContents.focus();
-      }
-    }).catch((error: unknown) => {
-      log.warn(`Failed to load shell overlay ${options.id}: ${error instanceof Error ? error.message : String(error)}`);
-    });
+    void view.webContents
+      .loadURL(this.toDataUrl(options.html))
+      .then(() => {
+        if (options.focus && !view.webContents.isDestroyed()) {
+          view.webContents.focus();
+        }
+      })
+      .catch((error: unknown) => {
+        log.warn(
+          `Failed to load shell overlay ${options.id}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      });
     this.bringToFront();
   }
 
@@ -82,7 +88,9 @@ export class ShellOverlayView {
     if (options.bounds) this.view.setBounds(this.clampBounds(options.bounds));
     if (options.html) {
       void this.view.webContents.loadURL(this.toDataUrl(options.html)).catch((error: unknown) => {
-        log.warn(`Failed to update shell overlay ${options.id ?? this.overlayId ?? "<unknown>"}: ${error instanceof Error ? error.message : String(error)}`);
+        log.warn(
+          `Failed to update shell overlay ${options.id ?? this.overlayId ?? "<unknown>"}: ${error instanceof Error ? error.message : String(error)}`
+        );
       });
     }
     if (this.visible) this.bringToFront();
@@ -141,7 +149,9 @@ export class ShellOverlayView {
 
   private isOwnSender(senderId: number): boolean {
     if (this.overlayWcId === senderId) return true;
-    log.warn(`Rejected shell overlay IPC from sender id=${senderId} expected=${this.overlayWcId ?? "<none>"}`);
+    log.warn(
+      `Rejected shell overlay IPC from sender id=${senderId} expected=${this.overlayWcId ?? "<none>"}`
+    );
     return false;
   }
 
@@ -155,6 +165,16 @@ export class ShellOverlayView {
   }
 
   private toDataUrl(html: string): string {
-    return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+    return `data:text/html;charset=utf-8,${encodeURIComponent(this.withCsp(html))}`;
+  }
+
+  private withCsp(html: string): string {
+    if (/http-equiv=["']Content-Security-Policy["']/i.test(html)) {
+      return html;
+    }
+    if (/<head[^>]*>/i.test(html)) {
+      return html.replace(/<head[^>]*>/i, (head) => `${head}\n${OVERLAY_CSP_META}`);
+    }
+    return `<!doctype html><html><head>${OVERLAY_CSP_META}</head><body>${html}</body></html>`;
   }
 }

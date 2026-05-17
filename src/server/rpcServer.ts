@@ -16,19 +16,19 @@ import {
   type RpcResponse,
 } from "@natstack/rpc";
 import { createWsServerTransport, type WsServerTransportInternal } from "./wsServerTransport.js";
-import type { WsClientMessage, WsServerMessage } from "../../packages/shared/src/ws/protocol.js";
-import type { ToolExecutionResult } from "../../packages/shared/src/types.js";
-import type { WsClientInfo } from "../../packages/shared/src/serviceDispatcher.js";
+import type { WsClientMessage, WsServerMessage } from "@natstack/shared/ws/protocol";
+import type { ToolExecutionResult } from "@natstack/shared/types";
 import { createDevLogger } from "@natstack/dev-log";
 import {
   parseServiceMethod,
   ServiceDispatcher,
   type CallerKind,
   type ServiceContext,
-} from "../../packages/shared/src/serviceDispatcher.js";
-import { checkServiceAccess } from "../../packages/shared/src/servicePolicy.js";
-import type { TokenManager } from "../../packages/shared/src/tokenManager.js";
-import { WsEventSession, type EventService } from "../../packages/shared/src/eventsService.js";
+  type WsClientInfo,
+} from "@natstack/shared/serviceDispatcher";
+import { checkServiceAccess } from "@natstack/shared/servicePolicy";
+import type { TokenManager } from "@natstack/shared/tokenManager";
+import { WsEventSession, type EventService } from "@natstack/shared/eventsService";
 
 const log = createDevLogger("RpcServer");
 
@@ -100,13 +100,14 @@ class ConnectionRegistry {
 
   getCallerConnections(callerId: string): WsClientState[] {
     return [...(this.callerConnections.get(callerId)?.values() ?? [])].filter(
-      (client) => client.ws.readyState === WebSocket.OPEN,
+      (client) => client.ws.readyState === WebSocket.OPEN
     );
   }
 
   pickPrimary(callerId: string): WsClientState | undefined {
     return this.getCallerConnections(callerId).sort(
-      (a, b) => a.authenticatedAt - b.authenticatedAt || a.connectionId.localeCompare(b.connectionId),
+      (a, b) =>
+        a.authenticatedAt - b.authenticatedAt || a.connectionId.localeCompare(b.connectionId)
     )[0];
   }
 
@@ -139,7 +140,7 @@ class ConnectionRegistry {
     callerId: string,
     connectionId: string,
     bridge: RpcBridge,
-    transport: WsServerTransportInternal,
+    transport: WsServerTransportInternal
   ): void {
     let bridges = this.bridges.get(callerId);
     if (!bridges) {
@@ -311,7 +312,7 @@ export class RpcServer {
     callerId: string,
     connectionId: string,
     bridge: RpcBridge,
-    transport: WsServerTransportInternal,
+    transport: WsServerTransportInternal
   ): void {
     this.connections.setBridge(callerId, connectionId, bridge, transport);
   }
@@ -401,7 +402,8 @@ export class RpcServer {
       const msg: WsServerMessage = {
         type: "ws:auth-result",
         success: false,
-        error: "Admin token cannot authenticate RPC; issue a device credential and refresh a shell token first.",
+        error:
+          "Admin token cannot authenticate RPC; issue a device credential and refresh a shell token first.",
       };
       ws.send(JSON.stringify(msg));
       ws.close(4006, "Admin token cannot authenticate RPC");
@@ -495,7 +497,7 @@ export class RpcServer {
     if (this.deps.eventService) {
       try {
         this.deps.eventService.registerSession(
-          new WsEventSession(ws, callerKind, callerId, connectionId),
+          new WsEventSession(ws, callerKind, callerId, connectionId)
         );
       } catch (err) {
         log.warn(`Failed to register event session for ${callerId}: ${(err as Error).message}`);
@@ -629,7 +631,7 @@ export class RpcServer {
     client: WsClientState,
     targetId: string,
     message: RpcMessage,
-    targetConnectionId?: string,
+    targetConnectionId?: string
   ): void {
     const auth = this.checkRelayAuth(client.callerId, client.callerKind, targetId);
     if (!auth.ok) {
@@ -649,7 +651,7 @@ export class RpcServer {
               message,
             });
           },
-          (err) => this.sendRouteError(client, targetId, message, err),
+          (err) => this.sendRouteError(client, targetId, message, err)
         );
         return;
       }
@@ -664,7 +666,13 @@ export class RpcServer {
       if (message.type === "request") {
         const { requestId, method: reqMethod, args: reqArgs } = message;
         this.recordRoutedRequestOrigin(requestId, client);
-        void this.relayCall(client.callerId, targetId, reqMethod, reqArgs ?? [], targetConnectionId).then(
+        void this.relayCall(
+          client.callerId,
+          targetId,
+          reqMethod,
+          reqArgs ?? [],
+          targetConnectionId
+        ).then(
           (result) => {
             void this.sendRoutedResponseToOrigin(client, targetId, {
               type: "response",
@@ -844,7 +852,7 @@ export class RpcServer {
   private async sendRoutedResponseToOrigin(
     origin: WsClientState,
     fromId: string,
-    message: RpcResponse,
+    message: RpcResponse
   ): Promise<void> {
     const originClient = await this.resolveWsRelayTarget(origin.callerId, origin.connectionId);
     this.sendToWs(originClient.ws, {
@@ -856,7 +864,8 @@ export class RpcServer {
 
   private handleClose(client: WsClientState, code?: number, reason?: string): void {
     const connectionKey = this.connectionKey(client.callerId, client.connectionId);
-    const wasReplaced = this.connections.getConnection(client.callerId, client.connectionId) !== client;
+    const wasReplaced =
+      this.connections.getConnection(client.callerId, client.connectionId) !== client;
     this.connections.removeClient(client);
 
     if (client.callerKind === "panel") {
@@ -1056,7 +1065,15 @@ export class RpcServer {
     for await (const chunk of req) {
       chunks.push(chunk as Buffer);
     }
-    const body = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>;
+
+    let body: Record<string, unknown>;
+    try {
+      body = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>;
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid JSON body" }));
+      return;
+    }
 
     // Auth: validate Bearer token
     const authHeader = req.headers["authorization"];
@@ -1071,7 +1088,8 @@ export class RpcServer {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(
         JSON.stringify({
-          error: "Admin token cannot authenticate RPC; issue a device credential and refresh a shell token first.",
+          error:
+            "Admin token cannot authenticate RPC; issue a device credential and refresh a shell token first.",
         })
       );
       return;
@@ -1225,7 +1243,7 @@ export class RpcServer {
     targetId: string,
     method: string,
     args: unknown[],
-    targetConnectionId?: string,
+    targetConnectionId?: string
   ): Promise<unknown> {
     const isPanelOrShellTarget = !targetId.startsWith("do:") && !targetId.startsWith("worker:");
     if (isPanelOrShellTarget) {
@@ -1243,7 +1261,9 @@ export class RpcServer {
         const reconnectedClient = await this.resolveWsRelayTarget(targetId, targetConnectionId);
         const bridge = this.connections.getBridge(targetId, reconnectedClient.connectionId);
         if (!bridge) {
-          throw new Error(`Target ${targetId}:${targetConnectionId} reconnected but bridge missing`);
+          throw new Error(
+            `Target ${targetId}:${targetConnectionId} reconnected but bridge missing`
+          );
         }
         return await bridge.call(targetId, method, ...args);
       }
@@ -1376,10 +1396,10 @@ export class RpcServer {
       if (wsClients.length > 0) {
         for (const wsClient of wsClients) {
           this.sendToWs(wsClient.ws, {
-          type: "ws:routed",
-          fromId,
-          message: { type: "event", fromId, event, payload },
-        });
+            type: "ws:routed",
+            fromId,
+            message: { type: "event", fromId, event, payload },
+          });
         }
         return;
       }
@@ -1389,10 +1409,10 @@ export class RpcServer {
         case "reconnected":
           for (const wsClient of this.getCallerConnections(targetId)) {
             this.sendToWs(wsClient.ws, {
-            type: "ws:routed",
-            fromId,
-            message: { type: "event", fromId, event, payload },
-          });
+              type: "ws:routed",
+              fromId,
+              message: { type: "event", fromId, event, payload },
+            });
           }
           return;
         case "server-shutdown":
@@ -1464,7 +1484,7 @@ export class RpcServer {
 
   private async resolveWsRelayTarget(
     targetId: string,
-    connectionId?: string,
+    connectionId?: string
   ): Promise<WsClientState> {
     const wsClient = connectionId
       ? this.getConnection(targetId, connectionId)
@@ -1489,7 +1509,7 @@ export class RpcServer {
         if (code === "RECONNECT_GRACE_EXPIRED") {
           throw createRelayError(
             `Target ${targetId} did not reconnect within grace window`,
-            "RECONNECT_GRACE_EXPIRED",
+            "RECONNECT_GRACE_EXPIRED"
           );
         }
         throw error;
@@ -1498,7 +1518,7 @@ export class RpcServer {
       const reconnected = this.getConnection(targetId, connectionId);
       if (reconnected) return reconnected;
       throw new Error(
-        `Invariant violated: reconnect waiter resolved for ${targetId}:${connectionId} but no client found`,
+        `Invariant violated: reconnect waiter resolved for ${targetId}:${connectionId} but no client found`
       );
     }
 

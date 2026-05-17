@@ -1,4 +1,7 @@
-import { DurableObjectBase, type DurableObjectContext } from "../../../workspace/packages/runtime/src/worker/durable-base.js";
+import {
+  DurableObjectBase,
+  type DurableObjectContext,
+} from "../../../workspace/packages/runtime/src/worker/durable-base.js";
 import type { WebhookIngressSubscription } from "../../../packages/shared/src/webhooks/ingress.js";
 
 interface WebhookIngressSubscriptionRow {
@@ -45,7 +48,9 @@ export class WebhookStoreDO extends DurableObjectBase {
     `);
   }
 
-  create(input: Omit<WebhookIngressSubscription, "subscriptionId" | "createdAt" | "updatedAt">): WebhookIngressSubscription {
+  create(
+    input: Omit<WebhookIngressSubscription, "subscriptionId" | "createdAt" | "updatedAt">
+  ): WebhookIngressSubscription {
     const now = Date.now();
     const subscription: WebhookIngressSubscription = {
       ...input,
@@ -58,7 +63,8 @@ export class WebhookStoreDO extends DurableObjectBase {
   }
 
   get(subscriptionId: string): WebhookIngressSubscription | null {
-    const row = this.sql.exec(this.selectSql("WHERE subscription_id = ?"), subscriptionId)
+    const row = this.sql
+      .exec(this.selectSql("WHERE subscription_id = ?"), subscriptionId)
       .toArray()[0] as unknown as WebhookIngressSubscriptionRow | undefined;
     return row ? this.fromRow(row) : null;
   }
@@ -99,7 +105,7 @@ export class WebhookStoreDO extends DurableObjectBase {
       subscription.publicUrl,
       subscription.revokedAt ?? null,
       subscription.createdAt,
-      subscription.updatedAt,
+      subscription.updatedAt
     );
   }
 
@@ -131,7 +137,9 @@ export class WebhookStoreDO extends DurableObjectBase {
       ownerCallerKind: row.owner_caller_kind,
       target: JSON.parse(row.target_json) as WebhookIngressSubscription["target"],
       verifier: JSON.parse(row.verifier_json) as WebhookIngressSubscription["verifier"],
-      replay: row.replay_json ? JSON.parse(row.replay_json) as WebhookIngressSubscription["replay"] : undefined,
+      replay: row.replay_json
+        ? (JSON.parse(row.replay_json) as WebhookIngressSubscription["replay"])
+        : undefined,
       publicUrl: row.public_url,
       revokedAt: row.revoked_at ?? undefined,
       createdAt: row.created_at,
@@ -139,4 +147,3 @@ export class WebhookStoreDO extends DurableObjectBase {
     };
   }
 }
-

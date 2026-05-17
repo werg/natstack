@@ -437,7 +437,7 @@ export function getFillScript(
   usernameSelector: string | null,
   passwordSelector: string,
   username: string,
-  password: string,
+  password: string
 ): string {
   return `(function() {
   function fillField(el, val) {
@@ -451,7 +451,7 @@ export function getFillScript(
     el.dispatchEvent(new Event('input', {bubbles: true}));
     el.dispatchEvent(new Event('change', {bubbles: true}));
   }
-  ${usernameSelector ? `fillField(document.querySelector(${JSON.stringify(usernameSelector)}), ${JSON.stringify(username)});` : ''}
+  ${usernameSelector ? `fillField(document.querySelector(${JSON.stringify(usernameSelector)}), ${JSON.stringify(username)});` : ""}
   fillField(document.querySelector(${JSON.stringify(passwordSelector)}), ${JSON.stringify(password)});
 })()`;
 }

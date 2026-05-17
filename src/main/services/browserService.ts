@@ -3,8 +3,13 @@ import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { CdpEndpoint, CdpServer } from "../cdpServer.js";
 import type { ViewManager } from "../viewManager.js";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
+import { assertHttpUrl } from "../utils.js";
 
-export function getCdpEndpointForCaller(cdpServer: CdpServer, browserId: string, callerId: string): CdpEndpoint {
+export function getCdpEndpointForCaller(
+  cdpServer: CdpServer,
+  browserId: string,
+  callerId: string
+): CdpEndpoint {
   const endpoint = cdpServer.getCdpEndpoint(browserId, callerId);
   if (!endpoint) {
     throw new Error("Access denied: you do not own this browser panel");
@@ -52,6 +57,7 @@ export function createBrowserService(deps: {
 
         case "navigate": {
           const [, url] = args as [string, string];
+          assertHttpUrl(url);
           assertOwner();
           const wc = getContents();
           try {

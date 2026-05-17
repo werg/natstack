@@ -3,10 +3,7 @@ import * as path from "node:path";
 
 import { canonicalKey } from "@natstack/shared/canonicalKey";
 import { writeJsonFileAtomic } from "./atomicFile.js";
-import type {
-  UserlandApprovalGrant,
-  UserlandApprovalSubject,
-} from "@natstack/shared/approvals";
+import type { UserlandApprovalGrant, UserlandApprovalSubject } from "@natstack/shared/approvals";
 
 interface UserlandApprovalGrantFile {
   grants: UserlandApprovalGrant[];
@@ -22,9 +19,11 @@ export class UserlandApprovalGrantStore {
   }
 
   lookup(callerId: string, subjectId: string): UserlandApprovalGrant | null {
-    return this.persistent.grants.find((grant) =>
-      grant.principal.callerId === callerId && grant.subject.id === subjectId
-    ) ?? null;
+    return (
+      this.persistent.grants.find(
+        (grant) => grant.principal.callerId === callerId && grant.subject.id === subjectId
+      ) ?? null
+    );
   }
 
   // `record`/`revoke` are `async` even though `save()` is sync today: the
@@ -34,7 +33,7 @@ export class UserlandApprovalGrantStore {
     principal: UserlandApprovalGrant["principal"],
     subject: UserlandApprovalSubject,
     choice: string,
-    now = Date.now(),
+    now = Date.now()
   ): Promise<void> {
     const next: UserlandApprovalGrant = {
       principal: {
@@ -47,7 +46,9 @@ export class UserlandApprovalGrantStore {
     };
     const key = keyFor(next.principal.callerId, next.subject.id);
     this.persistent.grants = [
-      ...this.persistent.grants.filter((grant) => keyFor(grant.principal.callerId, grant.subject.id) !== key),
+      ...this.persistent.grants.filter(
+        (grant) => keyFor(grant.principal.callerId, grant.subject.id) !== key
+      ),
       next,
     ];
     this.save();
@@ -57,7 +58,7 @@ export class UserlandApprovalGrantStore {
     const key = keyFor(callerId, subjectId);
     const before = this.persistent.grants.length;
     this.persistent.grants = this.persistent.grants.filter(
-      (grant) => keyFor(grant.principal.callerId, grant.subject.id) !== key,
+      (grant) => keyFor(grant.principal.callerId, grant.subject.id) !== key
     );
     const removed = this.persistent.grants.length !== before;
     if (removed) this.save();
@@ -70,7 +71,9 @@ export class UserlandApprovalGrantStore {
 
   private load(): void {
     try {
-      const parsed = JSON.parse(fs.readFileSync(this.filePath, "utf8")) as UserlandApprovalGrantFile;
+      const parsed = JSON.parse(
+        fs.readFileSync(this.filePath, "utf8")
+      ) as UserlandApprovalGrantFile;
       this.persistent = {
         grants: Array.isArray(parsed.grants) ? parsed.grants.filter(isGrant) : [],
       };
@@ -95,13 +98,13 @@ function isGrant(value: unknown): value is UserlandApprovalGrant {
   if (!value || typeof value !== "object") return false;
   const grant = value as Partial<UserlandApprovalGrant>;
   return (
-    typeof grant.choice === "string"
-    && typeof grant.grantedAt === "number"
-    && !!grant.principal
-    && typeof grant.principal.callerId === "string"
-    && (grant.principal.callerKind === "panel" || grant.principal.callerKind === "worker")
-    && !!grant.subject
-    && typeof grant.subject.id === "string"
-    && (grant.subject.label === undefined || typeof grant.subject.label === "string")
+    typeof grant.choice === "string" &&
+    typeof grant.grantedAt === "number" &&
+    !!grant.principal &&
+    typeof grant.principal.callerId === "string" &&
+    (grant.principal.callerKind === "panel" || grant.principal.callerKind === "worker") &&
+    !!grant.subject &&
+    typeof grant.subject.id === "string" &&
+    (grant.subject.label === undefined || typeof grant.subject.label === "string")
   );
 }

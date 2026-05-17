@@ -1282,7 +1282,9 @@ export class GadWorkspaceDO extends DurableObjectBase {
             break;
           }
           seen.add(id);
-          const beforeFileVersionId = current["before_file_version_id"] == null ? null : asNumber(current["before_file_version_id"]);
+          const beforeFileVersionId: number | null = current["before_file_version_id"] == null
+            ? null
+            : asNumber(current["before_file_version_id"]);
           if (beforeFileVersionId == null) break;
           current = hunksByAfterVersion.get(`${asString(current["path"])}\0${beforeFileVersionId}`)?.[0];
         }
@@ -1698,6 +1700,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
     stateTransition?: StateTransitionPlan;
   }, payload: JsonRecord, trajectoryId: number): void {
     const transition = item.stateTransition;
+    if (!transition) return;
     if (!transition?.newFile && asString(payload["operation"]) !== "delete") return;
     const path = transition.newFile?.path ?? asString(payload["path"]);
     if (!path) return;
@@ -1884,7 +1887,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
         existing["result_summary"] = asString(payload["summary"]);
         existing["completed_at"] = row["created_at"] ?? null;
       }
-      existing["source_trajectory_id"] = existing["result_trajectory_id"] ?? existing["request_trajectory_id"];
+      existing["source_trajectory_id"] = existing["result_trajectory_id"] ?? existing["request_trajectory_id"] ?? null;
       calls.set(toolCallId, existing);
     }
     return [...calls.values()];

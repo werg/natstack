@@ -1,4 +1,7 @@
-import { DurableObjectBase, type DurableObjectContext } from "../../../workspace/packages/runtime/src/worker/durable-base.js";
+import {
+  DurableObjectBase,
+  type DurableObjectContext,
+} from "../../../workspace/packages/runtime/src/worker/durable-base.js";
 import { BROWSER_DATA_SCHEMA } from "../../../packages/browser-data/src/storage/schema.js";
 import type {
   ImportedAutofillEntry,
@@ -31,38 +34,56 @@ export class BrowserDataDO extends DurableObjectBase {
   }
 
   getBookmarks(folderPath = "/") {
-    return this.sql.exec(`SELECT * FROM bookmarks WHERE folder_path = ? ORDER BY position`, folderPath).toArray();
+    return this.sql
+      .exec(`SELECT * FROM bookmarks WHERE folder_path = ? ORDER BY position`, folderPath)
+      .toArray();
   }
 
   getAllBookmarks() {
     return this.sql.exec(`SELECT * FROM bookmarks ORDER BY folder_path, position`).toArray();
   }
 
-  addBookmark(bookmark: { title: string; url?: string; folderPath?: string; dateAdded?: number; tags?: string[] | string; keyword?: string; position?: number }): number {
-    const result = this.sql.exec(
-      `INSERT INTO bookmarks (title, url, folder_path, date_added, tags, keyword, position)
+  addBookmark(bookmark: {
+    title: string;
+    url?: string;
+    folderPath?: string;
+    dateAdded?: number;
+    tags?: string[] | string;
+    keyword?: string;
+    position?: number;
+  }): number {
+    const result = this.sql
+      .exec(
+        `INSERT INTO bookmarks (title, url, folder_path, date_added, tags, keyword, position)
        VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-      bookmark.title,
-      bookmark.url ?? null,
-      bookmark.folderPath ?? "/",
-      bookmark.dateAdded ?? Date.now(),
-      Array.isArray(bookmark.tags) ? JSON.stringify(bookmark.tags) : bookmark.tags ?? null,
-      bookmark.keyword ?? null,
-      bookmark.position ?? 0,
-    ).one() as { id: number };
+        bookmark.title,
+        bookmark.url ?? null,
+        bookmark.folderPath ?? "/",
+        bookmark.dateAdded ?? Date.now(),
+        Array.isArray(bookmark.tags) ? JSON.stringify(bookmark.tags) : (bookmark.tags ?? null),
+        bookmark.keyword ?? null,
+        bookmark.position ?? 0
+      )
+      .one() as { id: number };
     return result.id;
   }
 
   updateBookmark(id: number, partial: Record<string, unknown>): void {
-    this.updateByMap("bookmarks", id, {
-      title: "title",
-      url: "url",
-      folderPath: "folder_path",
-      tags: "tags",
-      keyword: "keyword",
-      position: "position",
-      faviconId: "favicon_id",
-    }, partial, { date_modified: Date.now() });
+    this.updateByMap(
+      "bookmarks",
+      id,
+      {
+        title: "title",
+        url: "url",
+        folderPath: "folder_path",
+        tags: "tags",
+        keyword: "keyword",
+        position: "position",
+        faviconId: "favicon_id",
+      },
+      partial,
+      { date_modified: Date.now() }
+    );
   }
 
   deleteBookmark(id: number): void {
@@ -70,18 +91,32 @@ export class BrowserDataDO extends DurableObjectBase {
   }
 
   moveBookmark(id: number, folderPath: string, position: number): void {
-    this.sql.exec(`UPDATE bookmarks SET folder_path = ?, position = ?, date_modified = ? WHERE id = ?`, folderPath, position, Date.now(), id);
+    this.sql.exec(
+      `UPDATE bookmarks SET folder_path = ?, position = ?, date_modified = ? WHERE id = ?`,
+      folderPath,
+      position,
+      Date.now(),
+      id
+    );
   }
 
   searchBookmarks(query: string) {
-    return this.sql.exec(
-      `SELECT * FROM bookmarks WHERE title LIKE ? OR url LIKE ? ORDER BY date_added DESC`,
-      `%${query}%`,
-      `%${query}%`,
-    ).toArray();
+    return this.sql
+      .exec(
+        `SELECT * FROM bookmarks WHERE title LIKE ? OR url LIKE ? ORDER BY date_added DESC`,
+        `%${query}%`,
+        `%${query}%`
+      )
+      .toArray();
   }
 
-  getHistory(query: { search?: string; startTime?: number; endTime?: number; limit?: number; offset?: number }) {
+  getHistory(query: {
+    search?: string;
+    startTime?: number;
+    endTime?: number;
+    limit?: number;
+    offset?: number;
+  }) {
     const conditions: string[] = [];
     const params: unknown[] = [];
     if (query.search) {
@@ -98,19 +133,23 @@ export class BrowserDataDO extends DurableObjectBase {
     }
     params.push(query.limit ?? 100, query.offset ?? 0);
     const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-    return this.sql.exec(`SELECT * FROM history ${where} ORDER BY last_visit DESC LIMIT ? OFFSET ?`, ...params).toArray();
+    return this.sql
+      .exec(`SELECT * FROM history ${where} ORDER BY last_visit DESC LIMIT ? OFFSET ?`, ...params)
+      .toArray();
   }
 
   searchHistory(query: string, limit = 50) {
-    return this.sql.exec(
-      `SELECT h.* FROM history h
+    return this.sql
+      .exec(
+        `SELECT h.* FROM history h
        JOIN history_fts fts ON h.id = fts.rowid
        WHERE history_fts MATCH ?
        ORDER BY h.last_visit DESC
        LIMIT ?`,
-      this.escapeFts5Query(query),
-      limit,
-    ).toArray();
+        this.escapeFts5Query(query),
+        limit
+      )
+      .toArray();
   }
 
   searchHistoryForAutocomplete(query: { query: string; limit?: number }) {
@@ -127,29 +166,42 @@ export class BrowserDataDO extends DurableObjectBase {
     };
 
     try {
-      addRows(this.sql.exec(
-        `SELECT h.* FROM history h
+      addRows(
+        this.sql
+          .exec(
+            `SELECT h.* FROM history h
          JOIN history_fts fts ON h.id = fts.rowid
          WHERE history_fts MATCH ?
          ORDER BY h.last_visit DESC
          LIMIT ?`,
-        this.escapeFts5Query(trimmed.split(/\s+/).map((token) => `${token}*`).join(" ")),
-        limit,
-      ).toArray() as Record<string, unknown>[]);
+            this.escapeFts5Query(
+              trimmed
+                .split(/\s+/)
+                .map((token) => `${token}*`)
+                .join(" ")
+            ),
+            limit
+          )
+          .toArray() as Record<string, unknown>[]
+      );
     } catch {
       // FTS tokenization can reject unusual user input; LIKE fallback below still applies.
     }
 
     const pattern = `%${this.escapeLikePattern(trimmed)}%`;
-    addRows(this.sql.exec(
-      `SELECT * FROM history
+    addRows(
+      this.sql
+        .exec(
+          `SELECT * FROM history
        WHERE url LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\'
        ORDER BY last_visit DESC
        LIMIT ?`,
-      pattern,
-      pattern,
-      limit,
-    ).toArray() as Record<string, unknown>[]);
+          pattern,
+          pattern,
+          limit
+        )
+        .toArray() as Record<string, unknown>[]
+    );
 
     return [...byId.values()]
       .sort((a, b) => Number(b["last_visit"] ?? 0) - Number(a["last_visit"] ?? 0))
@@ -160,8 +212,9 @@ export class BrowserDataDO extends DurableObjectBase {
     const visitTime = request.visitTime ?? Date.now();
     const title = request.title?.trim() || null;
     const typedCount = request.typed ? 1 : 0;
-    const row = this.sql.exec(
-      `INSERT INTO history (url, title, visit_count, typed_count, first_visit, last_visit)
+    const row = this.sql
+      .exec(
+        `INSERT INTO history (url, title, visit_count, typed_count, first_visit, last_visit)
        VALUES (?, ?, 1, ?, ?, ?)
        ON CONFLICT(url) DO UPDATE SET
          title = CASE
@@ -177,19 +230,20 @@ export class BrowserDataDO extends DurableObjectBase {
          END,
          last_visit = MAX(history.last_visit, excluded.last_visit)
        RETURNING id`,
-      request.url,
-      title,
-      typedCount,
-      visitTime,
-      visitTime,
-    ).one() as { id: number };
+        request.url,
+        title,
+        typedCount,
+        visitTime,
+        visitTime
+      )
+      .one() as { id: number };
 
     this.sql.exec(
       `INSERT INTO history_visits (history_id, visit_time, transition, from_visit_id)
        VALUES (?, ?, ?, NULL)`,
       row.id,
       visitTime,
-      request.transition ?? "link",
+      request.transition ?? "link"
     );
     return row.id;
   }
@@ -205,7 +259,7 @@ export class BrowserDataDO extends DurableObjectBase {
          title = excluded.title`,
       request.url,
       title,
-      observedAt,
+      observedAt
     );
   }
 
@@ -230,21 +284,24 @@ export class BrowserDataDO extends DurableObjectBase {
 
   async getPasswordForSite(url: string) {
     const prefix = `${this.escapeLikePattern(url.replace(/\/+$/, ""))}/%`;
-    const rows = this.sql.exec(
-      `SELECT * FROM passwords
+    const rows = this.sql
+      .exec(
+        `SELECT * FROM passwords
        WHERE origin_url = ? OR origin_url LIKE ? ESCAPE '\\'
        ORDER BY COALESCE(date_last_used, date_created, 0) DESC, times_used DESC`,
-      url,
-      prefix,
-    ).toArray();
+        url,
+        prefix
+      )
+      .toArray();
     return Promise.all(rows.map((row) => this.passwordRow(row)));
   }
 
   async addPassword(password: ImportedPassword): Promise<number> {
     const encrypted = await this.encryptPasswordFields(password.username, password.password);
     const now = Date.now();
-    const result = this.sql.exec(
-      `INSERT INTO passwords (origin_url, username_hash, username_encrypted, password_encrypted,
+    const result = this.sql
+      .exec(
+        `INSERT INTO passwords (origin_url, username_hash, username_encrypted, password_encrypted,
         action_url, realm, date_created, date_last_used, date_password_changed, times_used)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(origin_url, username_hash, action_url, realm) DO UPDATE SET
@@ -254,17 +311,18 @@ export class BrowserDataDO extends DurableObjectBase {
          date_password_changed = excluded.date_password_changed,
          times_used = excluded.times_used
        RETURNING id`,
-      password.url,
-      encrypted.usernameHash,
-      encrypted.usernameEncrypted,
-      encrypted.passwordEncrypted,
-      password.actionUrl ?? "",
-      password.realm ?? "",
-      password.dateCreated ?? now,
-      password.dateLastUsed ?? null,
-      password.datePasswordChanged ?? null,
-      password.timesUsed ?? 0,
-    ).one() as { id: number };
+        password.url,
+        encrypted.usernameHash,
+        encrypted.usernameEncrypted,
+        encrypted.passwordEncrypted,
+        password.actionUrl ?? "",
+        password.realm ?? "",
+        password.dateCreated ?? now,
+        password.dateLastUsed ?? null,
+        password.datePasswordChanged ?? null,
+        password.timesUsed ?? 0
+      )
+      .one() as { id: number };
     return result.id;
   }
 
@@ -275,7 +333,7 @@ export class BrowserDataDO extends DurableObjectBase {
       sets.push("username_hash = ?", "username_encrypted = ?");
       params.push(
         await this.hashUsername(partial.username),
-        await this.encryptText(partial.username),
+        await this.encryptText(partial.username)
       );
     }
     if (partial.password !== undefined) {
@@ -301,11 +359,13 @@ export class BrowserDataDO extends DurableObjectBase {
 
   getAutofillSuggestions(fieldName: string, prefix?: string) {
     const pattern = `${prefix ?? ""}%`;
-    return this.sql.exec(
-      `SELECT * FROM autofill WHERE field_name = ? AND value LIKE ? ORDER BY times_used DESC, date_last_used DESC LIMIT 20`,
-      fieldName,
-      pattern,
-    ).toArray();
+    return this.sql
+      .exec(
+        `SELECT * FROM autofill WHERE field_name = ? AND value LIKE ? ORDER BY times_used DESC, date_last_used DESC LIMIT 20`,
+        fieldName,
+        pattern
+      )
+      .toArray();
   }
 
   getSearchEngines() {
@@ -331,13 +391,19 @@ export class BrowserDataDO extends DurableObjectBase {
       origin,
       permission,
       setting,
-      Date.now(),
+      Date.now()
     );
   }
 
   getCookies(domain?: string) {
     return domain
-      ? this.sql.exec(`SELECT * FROM cookies WHERE domain = ? OR domain = ? ORDER BY created_at DESC`, domain, `.${domain}`).toArray()
+      ? this.sql
+          .exec(
+            `SELECT * FROM cookies WHERE domain = ? OR domain = ? ORDER BY created_at DESC`,
+            domain,
+            `.${domain}`
+          )
+          .toArray()
       : this.sql.exec(`SELECT * FROM cookies ORDER BY created_at DESC`).toArray();
   }
 
@@ -386,7 +452,7 @@ export class BrowserDataDO extends DurableObjectBase {
         entry.visitCount,
         entry.typedCount ?? 0,
         entry.firstVisitTime ?? entry.lastVisitTime,
-        entry.lastVisitTime,
+        entry.lastVisitTime
       );
     });
   }
@@ -420,7 +486,7 @@ export class BrowserDataDO extends DurableObjectBase {
         cookie.sourceScheme,
         cookie.sourcePort,
         now,
-        now,
+        now
       );
     });
   }
@@ -478,7 +544,7 @@ export class BrowserDataDO extends DurableObjectBase {
         r.dateCreated,
         r.dateLastUsed,
         r.datePasswordChanged,
-        r.timesUsed,
+        r.timesUsed
       );
     });
   }
@@ -496,7 +562,7 @@ export class BrowserDataDO extends DurableObjectBase {
         entry.value,
         entry.dateCreated ?? null,
         entry.dateLastUsed ?? null,
-        entry.timesUsed,
+        entry.timesUsed
       );
     });
   }
@@ -512,7 +578,7 @@ export class BrowserDataDO extends DurableObjectBase {
         engine.searchUrl,
         engine.suggestUrl ?? null,
         engine.faviconUrl ?? null,
-        engine.isDefault ? 1 : 0,
+        engine.isDefault ? 1 : 0
       );
     });
   }
@@ -532,7 +598,7 @@ export class BrowserDataDO extends DurableObjectBase {
         favicon.url,
         favicon.data,
         favicon.mimeType,
-        Date.now(),
+        Date.now()
       );
     });
   }
@@ -542,12 +608,13 @@ export class BrowserDataDO extends DurableObjectBase {
       `INSERT INTO password_never_save (origin, date_added) VALUES (?, ?)
        ON CONFLICT(origin) DO NOTHING`,
       origin,
-      Date.now(),
+      Date.now()
     );
   }
 
   isNeverSave(origin: string): boolean {
-    const row = this.sql.exec(`SELECT 1 AS present FROM password_never_save WHERE origin = ?`, origin)
+    const row = this.sql
+      .exec(`SELECT 1 AS present FROM password_never_save WHERE origin = ?`, origin)
       .toArray()[0] as { present: number } | undefined;
     return row !== undefined;
   }
@@ -556,7 +623,7 @@ export class BrowserDataDO extends DurableObjectBase {
     this.sql.exec(
       `UPDATE passwords SET date_last_used = ?, times_used = times_used + 1 WHERE id = ?`,
       Date.now(),
-      id,
+      id
     );
   }
 
@@ -570,7 +637,7 @@ export class BrowserDataDO extends DurableObjectBase {
       entry["itemsImported"],
       entry["itemsSkipped"],
       Date.now(),
-      JSON.stringify(entry["warnings"] ?? []),
+      JSON.stringify(entry["warnings"] ?? [])
     );
   }
 
@@ -609,7 +676,13 @@ export class BrowserDataDO extends DurableObjectBase {
     return processed;
   }
 
-  private updateByMap(table: string, id: number, map: Record<string, string>, partial: Record<string, unknown>, extra: Record<string, unknown> = {}): void {
+  private updateByMap(
+    table: string,
+    id: number,
+    map: Record<string, string>,
+    partial: Record<string, unknown>,
+    extra: Record<string, unknown> = {}
+  ): void {
     const sets: string[] = [];
     const params: unknown[] = [];
     for (const [key, column] of Object.entries(map)) {
@@ -656,7 +729,7 @@ export class BrowserDataDO extends DurableObjectBase {
       this.masterKeyBytes(),
       { name: "HMAC", hash: "SHA-256" },
       false,
-      ["sign"],
+      ["sign"]
     );
     const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(username));
     return this.bytesToBase64(new Uint8Array(signature));
@@ -668,7 +741,7 @@ export class BrowserDataDO extends DurableObjectBase {
     const ciphertext = await crypto.subtle.encrypt(
       { name: "AES-GCM", iv },
       key,
-      new TextEncoder().encode(plaintext),
+      new TextEncoder().encode(plaintext)
     );
     const packed = new Uint8Array(iv.length + ciphertext.byteLength);
     packed.set(iv, 0);
@@ -686,13 +759,10 @@ export class BrowserDataDO extends DurableObjectBase {
   }
 
   private async aesKey(): Promise<CryptoKey> {
-    return crypto.subtle.importKey(
-      "raw",
-      this.masterKeyBytes(),
-      { name: "AES-GCM" },
-      false,
-      ["encrypt", "decrypt"],
-    );
+    return crypto.subtle.importKey("raw", this.masterKeyBytes(), { name: "AES-GCM" }, false, [
+      "encrypt",
+      "decrypt",
+    ]);
   }
 
   private masterKeyBytes(): Uint8Array<ArrayBuffer> {

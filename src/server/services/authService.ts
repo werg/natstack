@@ -12,7 +12,12 @@ const IssueDeviceBodySchema = z.object({
 });
 
 const CreatePairingCodeBodySchema = z.object({
-  ttlMs: z.number().int().min(30_000).max(60 * 60 * 1000).optional(),
+  ttlMs: z
+    .number()
+    .int()
+    .min(30_000)
+    .max(60 * 60 * 1000)
+    .optional(),
 });
 
 const CompletePairingBodySchema = z.object({
@@ -156,7 +161,9 @@ export function createAuthService(deps: {
       handler: async (_req, res) => {
         sendJson(res, 200, {
           serverId: deps.deviceAuthStore.getServerId(),
-          devices: deps.deviceAuthStore.listDevices().map(({ refreshTokenHash: _secret, ...device }) => device),
+          devices: deps.deviceAuthStore
+            .listDevices()
+            .map(({ refreshTokenHash: _secret, ...device }) => device),
         });
       },
     },
@@ -193,7 +200,7 @@ function responseForCredential(
     getServerBootId: () => string;
     getWorkspaceId: () => string;
   },
-  credential: { deviceId: string; refreshToken: string; label: string; platform?: string },
+  credential: { deviceId: string; refreshToken: string; label: string; platform?: string }
 ): Record<string, unknown> {
   const shellToken = deps.tokenManager.ensureToken(shellCallerId(credential.deviceId), "shell");
   return {

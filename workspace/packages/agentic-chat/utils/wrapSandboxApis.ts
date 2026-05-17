@@ -26,6 +26,8 @@ export function wrapChatForErrorReporting(
       trackPromise(chat.publish(...args), onError),
     callMethod: (...args: Parameters<ChatSandboxValue["callMethod"]>) =>
       trackPromise(chat.callMethod(...args), onError),
+    callMethodResult: (...args: Parameters<ChatSandboxValue["callMethodResult"]>) =>
+      trackPromise(chat.callMethodResult(...args), onError),
     rpc: {
       call: (...args: Parameters<ChatSandboxValue["rpc"]["call"]>) =>
         trackPromise(chat.rpc.call(...args), onError),

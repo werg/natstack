@@ -24,7 +24,11 @@ import type {
   UserlandApprovalOption,
   UserlandApprovalSubject,
 } from "@natstack/shared/approvals";
-import type { AccountIdentity, CredentialInjection, UrlAudience } from "@natstack/shared/credentials/types";
+import type {
+  AccountIdentity,
+  CredentialInjection,
+  UrlAudience,
+} from "@natstack/shared/credentials/types";
 
 /** Terminal decision surfaced back to queue waiters (dismiss collapses to deny). */
 export type GrantedDecision = "once" | "session" | "version" | "repo" | "deny";
@@ -130,7 +134,9 @@ export type ApprovalQueueRequest =
   | ClientConfigApprovalQueueRequest
   | CredentialInputApprovalQueueRequest
   | DeviceCodeApprovalQueueRequest;
-export type DecisionApprovalQueueRequest = CredentialApprovalQueueRequest | CapabilityApprovalQueueRequest;
+export type DecisionApprovalQueueRequest =
+  | CredentialApprovalQueueRequest
+  | CapabilityApprovalQueueRequest;
 
 export type ClientConfigApprovalResult =
   | { decision: "submit"; values: Record<string, string> }
@@ -173,7 +179,9 @@ interface QueueEntry {
 export interface ApprovalQueue {
   request(req: DecisionApprovalQueueRequest): Promise<GrantedDecision>;
   requestClientConfig(req: ClientConfigApprovalQueueRequest): Promise<ClientConfigApprovalResult>;
-  requestCredentialInput(req: CredentialInputApprovalQueueRequest): Promise<FieldInputApprovalResult>;
+  requestCredentialInput(
+    req: CredentialInputApprovalQueueRequest
+  ): Promise<FieldInputApprovalResult>;
   requestUserland(req: UserlandApprovalQueueRequest): Promise<UserlandApprovalResult>;
   presentDeviceCode(req: DeviceCodeApprovalQueueRequest): DeviceCodeApprovalHandle;
   onPendingChanged?(listener: (pending: PendingApproval[]) => void): () => void;
@@ -190,7 +198,9 @@ export interface ApprovalQueueWithListeners extends ApprovalQueue {
 
 export type SensitiveActionQueue = ApprovalQueue;
 
-export function createApprovalQueue(deps: { eventService: EventService }): ApprovalQueueWithListeners {
+export function createApprovalQueue(deps: {
+  eventService: EventService;
+}): ApprovalQueueWithListeners {
   const { eventService } = deps;
   const entriesById = new Map<string, QueueEntry>();
   const entriesByDedupKey = new Map<string, QueueEntry>();
@@ -339,7 +349,7 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
   function enqueueFieldInputRequest(
     req: ClientConfigApprovalQueueRequest | CredentialInputApprovalQueueRequest,
     expectedKind: "client-config" | "credential-input",
-    collisionMessage: string,
+    collisionMessage: string
   ): Promise<FieldInputApprovalResult> {
     const dedupKey = dedupKeyFor(req);
     let entry = entriesByDedupKey.get(dedupKey);
@@ -377,7 +387,11 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
             return;
           }
           e.fieldInputWaiters.delete(waiterId);
-          if (e.waiters.size === 0 && e.fieldInputWaiters.size === 0 && e.userlandWaiters.size === 0) {
+          if (
+            e.waiters.size === 0 &&
+            e.fieldInputWaiters.size === 0 &&
+            e.userlandWaiters.size === 0
+          ) {
             removeEntry(e);
             emitPendingChanged();
           }
@@ -399,7 +413,11 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
     });
   }
 
-  function submitFieldInput(approvalId: string, expectedKind: "client-config" | "credential-input", values: Record<string, string>): void {
+  function submitFieldInput(
+    approvalId: string,
+    expectedKind: "client-config" | "credential-input",
+    values: Record<string, string>
+  ): void {
     const entry = entriesById.get(approvalId);
     if (!entry || entry.approval.kind !== expectedKind) return;
 
@@ -464,7 +482,11 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
               return;
             }
             e.waiters.delete(waiterId);
-            if (e.waiters.size === 0 && e.fieldInputWaiters.size === 0 && e.userlandWaiters.size === 0) {
+            if (
+              e.waiters.size === 0 &&
+              e.fieldInputWaiters.size === 0 &&
+              e.userlandWaiters.size === 0
+            ) {
               removeEntry(e);
               emitPendingChanged();
             }
@@ -490,7 +512,7 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
       return enqueueFieldInputRequest(
         req,
         "client-config",
-        "Approval dedup collision for client config request",
+        "Approval dedup collision for client config request"
       );
     },
 
@@ -498,7 +520,7 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
       return enqueueFieldInputRequest(
         req,
         "credential-input",
-        "Approval dedup collision for credential input request",
+        "Approval dedup collision for credential input request"
       );
     },
 
@@ -594,7 +616,11 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
               return;
             }
             e.userlandWaiters.delete(waiterId);
-            if (e.waiters.size === 0 && e.fieldInputWaiters.size === 0 && e.userlandWaiters.size === 0) {
+            if (
+              e.waiters.size === 0 &&
+              e.fieldInputWaiters.size === 0 &&
+              e.userlandWaiters.size === 0
+            ) {
               removeEntry(e);
               emitPendingChanged();
             }
@@ -629,8 +655,7 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
 
       removeEntry(entry);
 
-      const granted: GrantedDecision =
-        decision === "dismiss" ? "deny" : decision;
+      const granted: GrantedDecision = decision === "dismiss" ? "deny" : decision;
 
       for (const waiter of entry.waiters.values()) {
         if (waiter.signal && waiter.onAbort) {

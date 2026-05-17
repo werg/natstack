@@ -2,11 +2,11 @@
  * Tests for browser service.
  */
 
-import {
-  getCdpEndpointForCaller,
-  createBrowserService,
-} from "../services/browserService.js";
+import { getCdpEndpointForCaller, createBrowserService } from "../services/browserService.js";
 import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
+import type { CdpServer } from "../cdpServer.js";
+import type { ViewManager } from "../viewManager.js";
+import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 
 describe("getCdpEndpointForCaller", () => {
   it("returns endpoint when cdpServer.getCdpEndpoint succeeds", () => {
@@ -14,7 +14,11 @@ describe("getCdpEndpointForCaller", () => {
     const cdpServer = {
       getCdpEndpoint: vi.fn().mockReturnValue(endpoint),
     };
-    const result = getCdpEndpointForCaller(cdpServer as any, "browser-1", "panel-1");
+    const result = getCdpEndpointForCaller(
+      cdpServer as unknown as CdpServer,
+      "browser-1",
+      "panel-1"
+    );
     expect(cdpServer.getCdpEndpoint).toHaveBeenCalledWith("browser-1", "panel-1");
     expect(result).toEqual(endpoint);
   });
@@ -24,7 +28,7 @@ describe("getCdpEndpointForCaller", () => {
       getCdpEndpoint: vi.fn().mockReturnValue(null),
     };
     expect(() =>
-      getCdpEndpointForCaller(cdpServer as any, "browser-1", "panel-1"),
+      getCdpEndpointForCaller(cdpServer as unknown as CdpServer, "browser-1", "panel-1")
     ).toThrow("Access denied: you do not own this browser panel");
   });
 });
@@ -48,9 +52,9 @@ describe("browserService handler", () => {
   const panelManager = {};
 
   const svc = createBrowserService({
-    cdpServer: cdpServer as any,
-    getViewManager: () => viewManager as any,
-    panelRegistry: panelManager as any,
+    cdpServer: cdpServer as unknown as CdpServer,
+    getViewManager: () => viewManager as unknown as ViewManager,
+    panelRegistry: panelManager as unknown as PanelRegistry,
   });
   const handler = svc.handler;
   const ctx: ServiceContext = { callerId: "panel-1", callerKind: "panel" };
@@ -77,15 +81,73 @@ describe("browserService handler", () => {
     // ERR_ABORTED should be silently ignored
     mockWc.loadURL.mockRejectedValue({ code: "ERR_ABORTED" });
     await expect(
-      handler(ctx, "navigate", ["browser-1", "https://example.com"]),
+      handler(ctx, "navigate", ["browser-1", "https://example.com"])
     ).resolves.toBeUndefined();
   });
 
   it("navigate throws when caller does not own browser", async () => {
     cdpServer.panelOwnsBrowser.mockReturnValue(false);
-    await expect(
-      handler(ctx, "navigate", ["browser-1", "https://example.com"]),
-    ).rejects.toThrow("Access denied");
+    await expect(handler(ctx, "navigate", ["browser-1", "https://example.com"])).rejects.toThrow(
+      "Access denied"
+    );
+  });
+
+  describe("navigate URL scheme allow-list", () => {
+    it("allows https:// URLs", async () => {
+      await expect(
+        handler(ctx, "navigate", ["browser-1", "https://example.com"])
+      ).resolves.toBeUndefined();
+      expect(mockWc.loadURL).toHaveBeenCalledWith("https://example.com");
+    });
+
+    it("allows http:// URLs", async () => {
+      await expect(
+        handler(ctx, "navigate", ["browser-1", "http://example.com"])
+      ).resolves.toBeUndefined();
+      expect(mockWc.loadURL).toHaveBeenCalledWith("http://example.com");
+    });
+
+    it("rejects file:// URLs", async () => {
+      await expect(handler(ctx, "navigate", ["browser-1", "file:///etc/passwd"])).rejects.toThrow(
+        "only http and https are allowed"
+      );
+      expect(mockWc.loadURL).not.toHaveBeenCalled();
+    });
+
+    it("rejects javascript: URLs", async () => {
+      await expect(handler(ctx, "navigate", ["browser-1", "javascript:alert(1)"])).rejects.toThrow(
+        "only http and https are allowed"
+      );
+      expect(mockWc.loadURL).not.toHaveBeenCalled();
+    });
+
+    it("rejects javascript: URLs case-insensitively", async () => {
+      await expect(handler(ctx, "navigate", ["browser-1", "JavaScript:alert(1)"])).rejects.toThrow(
+        "only http and https are allowed"
+      );
+      expect(mockWc.loadURL).not.toHaveBeenCalled();
+    });
+
+    it("rejects empty string", async () => {
+      await expect(handler(ctx, "navigate", ["browser-1", ""])).rejects.toThrow(
+        "only http and https are allowed"
+      );
+      expect(mockWc.loadURL).not.toHaveBeenCalled();
+    });
+
+    it("rejects chrome:// URLs", async () => {
+      await expect(handler(ctx, "navigate", ["browser-1", "chrome://settings"])).rejects.toThrow(
+        "only http and https are allowed"
+      );
+      expect(mockWc.loadURL).not.toHaveBeenCalled();
+    });
+
+    it("rejects data: URLs", async () => {
+      await expect(
+        handler(ctx, "navigate", ["browser-1", "data:text/html,<h1>hi</h1>"])
+      ).rejects.toThrow("only http and https are allowed");
+      expect(mockWc.loadURL).not.toHaveBeenCalled();
+    });
   });
 
   it("goBack checks ownership and delegates", async () => {
@@ -102,7 +164,7 @@ describe("browserService handler", () => {
 
   it("throws on unknown method", async () => {
     await expect(handler(ctx, "unknownMethod", ["browser-1"])).rejects.toThrow(
-      "Unknown browser method: unknownMethod",
+      "Unknown browser method: unknownMethod"
     );
   });
 });

@@ -35,6 +35,8 @@ import {
   type WireNewMessage,
   type WireUpdateMessage,
   type WireErrorMessage,
+  unwrapChatMethodResult,
+  type ChatMethodResult,
 } from "@workspace/agentic-core";
 import type {
   PubSubClient,
@@ -259,8 +261,13 @@ export class HeadlessSession {
       callMethod: async (participantId: string, method: string, args: unknown) => {
         if (!this._client) throw new Error("Not connected");
         const handle = this._client.callMethod(participantId, method, args);
-        const result = await (handle as { result?: Promise<unknown> }).result;
-        return result;
+        const result = await (handle as { result: Promise<ChatMethodResult> }).result;
+        return unwrapChatMethodResult(result);
+      },
+      callMethodResult: async (participantId: string, method: string, args: unknown) => {
+        if (!this._client) throw new Error("Not connected");
+        const handle = this._client.callMethod(participantId, method, args);
+        return (handle as { result: Promise<ChatMethodResult> }).result;
       },
       contextId: "",
       channelId: this._channelId,
@@ -517,7 +524,14 @@ export class HeadlessSession {
   async callMethod(participantId: string, method: string, args: unknown): Promise<unknown> {
     if (!this._client) throw new Error("Not connected");
     const handle = this._client.callMethod(participantId, method, args);
-    return (handle as { result?: Promise<unknown> }).result;
+    const result = await (handle as { result: Promise<ChatMethodResult> }).result;
+    return unwrapChatMethodResult(result);
+  }
+
+  async callMethodResult(participantId: string, method: string, args: unknown): Promise<ChatMethodResult> {
+    if (!this._client) throw new Error("Not connected");
+    const handle = this._client.callMethod(participantId, method, args);
+    return (handle as { result: Promise<ChatMethodResult> }).result;
   }
 
   async loadEarlierMessages(): Promise<void> {

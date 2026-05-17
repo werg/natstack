@@ -56,9 +56,11 @@ export function isIpLiteral(host: string): boolean {
  * Used by ws's `createConnection` option AND by `HttpsAgent.createConnection`
  * via `createPinnedHttpsAgent()` below.
  */
-export function createPinnedTlsSocket(
-  opts: { host: string; port: number; expectedFingerprint: string },
-): tls.TLSSocket {
+export function createPinnedTlsSocket(opts: {
+  host: string;
+  port: number;
+  expectedFingerprint: string;
+}): tls.TLSSocket {
   const sock = tls.connect({
     host: opts.host,
     port: opts.port,
@@ -74,9 +76,9 @@ export function createPinnedTlsSocket(
     }
     const actual = sha256Fingerprint(cert.raw);
     if (actual !== opts.expectedFingerprint) {
-      sock.destroy(new Error(
-        `TLS fingerprint mismatch: expected ${opts.expectedFingerprint}, got ${actual}`,
-      ));
+      sock.destroy(
+        new Error(`TLS fingerprint mismatch: expected ${opts.expectedFingerprint}, got ${actual}`)
+      );
     }
   });
   return sock;
@@ -94,9 +96,11 @@ export function createPinnedTlsSocket(
  */
 export function createPinnedHttpsAgent(expectedFingerprint: string): HttpsAgent {
   const agent = new HttpsAgent();
-  (agent as unknown as {
-    createConnection: (opts: tls.ConnectionOptions) => tls.TLSSocket;
-  }).createConnection = (opts: tls.ConnectionOptions): tls.TLSSocket => {
+  (
+    agent as unknown as {
+      createConnection: (opts: tls.ConnectionOptions) => tls.TLSSocket;
+    }
+  ).createConnection = (opts: tls.ConnectionOptions): tls.TLSSocket => {
     const host = opts.host ?? "127.0.0.1";
     const port = typeof opts.port === "string" ? parseInt(opts.port, 10) : (opts.port ?? 443);
     return createPinnedTlsSocket({ host, port, expectedFingerprint });
@@ -134,7 +138,7 @@ export function createPinnedHttpsAgent(expectedFingerprint: string): HttpsAgent 
 export function installPinnedVerifyProcOnSession(
   targetSession: Session,
   managedHost: string,
-  expectedFingerprintUpper: string,
+  expectedFingerprintUpper: string
 ): void {
   targetSession.setCertificateVerifyProc((request, callback) => {
     const sameManagedHost = request.hostname === managedHost;
@@ -188,7 +192,7 @@ function partitionShouldBePinned(partition: string | null): boolean {
  */
 export function installPinnedTlsForAllPartitions(
   managedHost: string,
-  expectedFingerprint: string,
+  expectedFingerprint: string
 ): () => void {
   const upper = expectedFingerprint.toUpperCase();
 
