@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import { ServiceAccessError, type ServiceContext } from "@natstack/shared/serviceDispatcher";
 import type { ContextFolderManager } from "@natstack/shared/contextFolderManager";
 import { resolveContextScope } from "@natstack/shared/contextMiddleware";
 import { typeCheckRpcMethods } from "@natstack/shared/typecheck/service";
@@ -27,7 +28,66 @@ function extractPanelSourceFromCallerId(callerId: string): string | undefined {
 
 export function createTypecheckService(deps: {
   contextFolderManager: ContextFolderManager;
+  /**
+   * Resolves the contextId bound to a caller (panel/worker). Returned undefined
+   * means "no context bound" — in that case panel/worker callers must not
+   * supply a contextId.
+   *
+   * Wired from FsService.getCallerContext at the composition root. Defined as
+   * a callback (rather than depending on FsService directly) so this module
+   * stays free of the fs-service surface and the test seam is trivial.
+   */
+  getCallerContext: (callerId: string) => string | undefined;
 }): ServiceDefinition {
+  /**
+   * Enforce caller↔context binding for panel/worker callers.
+   *
+   * - If the caller did not supply a contextId, returns undefined (the
+   *   handler proceeds against the workspace root, no `ensureContextFolder`
+   *   is triggered for an arbitrary id).
+   * - If the caller is a panel or worker and supplied a contextId, it MUST
+   *   match the contextId bound to that caller. Mismatches are rejected
+   *   without ever calling `resolveContextScope`, so no context-folder
+   *   side-effects (`ensureContextFolder` → `git clone --shared`) are
+   *   triggered by an unauthorized caller.
+   * - Server callers retain the existing behaviour (any contextId is
+   *   allowed — they are trusted).
+   *
+   * Throws `ServiceAccessError` (code: "EACCES"), which the service
+   * dispatcher passes through unchanged because it already extends
+   * `ServiceError`. That preserves the error name and code on the wire.
+   */
+  const enforceContextBinding = (
+    ctx: ServiceContext,
+    method: string,
+    suppliedCtxId: string | undefined
+  ): string | undefined => {
+    if (suppliedCtxId === undefined) return undefined;
+    if (ctx.callerKind !== "panel" && ctx.callerKind !== "worker") {
+      return suppliedCtxId;
+    }
+    const bound = deps.getCallerContext(ctx.callerId);
+    if (!bound) {
+      throw new ServiceAccessError(
+        "typecheck",
+        method,
+        ctx.callerKind,
+        `typecheck.${method}: no context registered for ${ctx.callerKind} ${ctx.callerId}; ` +
+          `cannot supply contextId from a non-bound caller`
+      );
+    }
+    if (suppliedCtxId !== bound) {
+      throw new ServiceAccessError(
+        "typecheck",
+        method,
+        ctx.callerKind,
+        `typecheck.${method}: contextId does not match caller's bound context; ` +
+          `panels and workers may only supply their own contextId`
+      );
+    }
+    return suppliedCtxId;
+  };
+
   return {
     name: "typecheck",
     description: "TypeScript type checking for panels and packages",
@@ -145,12 +205,12 @@ export function createTypecheckService(deps: {
               );
             }
           }
-          const panelPath = await resolvePanelPath(rawPanelPath, args[3] as string | undefined);
-          await validateFilePath(
-            panelPath,
-            args[1] as string | undefined,
-            args[3] as string | undefined
-          );
+          // Enforce caller↔context binding BEFORE any resolveContextScope call
+          // (which would otherwise create a foreign context folder via
+          // ensureContextFolder). See enforceContextBinding above.
+          const ctxId = enforceContextBinding(ctx, "check", args[3] as string | undefined);
+          const panelPath = await resolvePanelPath(rawPanelPath, ctxId);
+          await validateFilePath(panelPath, args[1] as string | undefined, ctxId);
           return typeCheckRpcMethods["typecheck.check"](
             panelPath,
             args[1] as string | undefined,
@@ -158,15 +218,9 @@ export function createTypecheckService(deps: {
           );
         }
         case "getTypeInfo": {
-          const panelPath = await resolvePanelPath(
-            args[0] as string,
-            args[5] as string | undefined
-          );
-          await validateFilePath(
-            panelPath,
-            args[1] as string | undefined,
-            args[5] as string | undefined
-          );
+          const ctxId = enforceContextBinding(ctx, "getTypeInfo", args[5] as string | undefined);
+          const panelPath = await resolvePanelPath(args[0] as string, ctxId);
+          await validateFilePath(panelPath, args[1] as string | undefined, ctxId);
           return typeCheckRpcMethods["typecheck.getTypeInfo"](
             panelPath,
             args[1] as string,
@@ -176,15 +230,9 @@ export function createTypecheckService(deps: {
           );
         }
         case "getCompletions": {
-          const panelPath = await resolvePanelPath(
-            args[0] as string,
-            args[5] as string | undefined
-          );
-          await validateFilePath(
-            panelPath,
-            args[1] as string | undefined,
-            args[5] as string | undefined
-          );
+          const ctxId = enforceContextBinding(ctx, "getCompletions", args[5] as string | undefined);
+          const panelPath = await resolvePanelPath(args[0] as string, ctxId);
+          await validateFilePath(panelPath, args[1] as string | undefined, ctxId);
           return typeCheckRpcMethods["typecheck.getCompletions"](
             panelPath,
             args[1] as string,
