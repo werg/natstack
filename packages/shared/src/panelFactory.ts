@@ -170,8 +170,7 @@ export function buildPanelFromResult(
     id: result.panelId,
     title: result.title,
     children: [],
-    selectedChildId: null,
-    history: { entries: [initialSnapshot], index: 0 },
+    snapshot: initialSnapshot,
     artifacts,
   };
 }

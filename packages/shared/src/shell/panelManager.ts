@@ -2,7 +2,12 @@ import * as path from "path";
 import { createDevLogger } from "@natstack/dev-log";
 import type { PanelRegistry } from "../panelRegistry.js";
 import type { Panel, PanelSnapshot, ThemeAppearance } from "../types.js";
-import type { PanelSearchIndex } from "../panelPersistenceTypes.js";
+import type {
+  PanelSearchIndex,
+  PanelSnapshotResult,
+  PanelOpsSinceResult,
+  SubmittedPanelOp,
+} from "../panelOpsTypes.js";
 import type { WorkspaceConfig } from "../workspace/types.js";
 import { loadPanelManifest } from "../panelTypes.js";
 import { validateStateArgs } from "../stateArgsValidator.js";
@@ -14,7 +19,7 @@ import {
   resolveSource,
 } from "../panelFactory.js";
 import { createSnapshot, getCurrentSnapshot, getPanelContextId, getPanelOptions, getPanelSource, getPanelStateArgs } from "../panel/accessors.js";
-import type { PanelStore } from "./panelStore.js";
+import { between as rankBetween, first as firstRank } from "../lexorank.js";
 
 const log = createDevLogger("PanelManager");
 
@@ -64,8 +69,10 @@ export interface NavigatePanelOptions {
 }
 
 export interface PanelManagerDeps {
-  store: PanelStore;
   registry: PanelRegistry;
+  workspaceSync: WorkspaceSyncClient;
+  activationClient?: ActivationClient;
+  viewState?: LocalPanelViewStateStore;
   tokenClient: TokenClient;
   serverInfo: PanelManagerServerInfo;
   workspacePath: string;
@@ -74,26 +81,77 @@ export interface PanelManagerDeps {
   allowMissingManifests?: boolean;
 }
 
+export interface WorkspaceSyncClient {
+  getSnapshot(): Promise<PanelSnapshotResult>;
+  getOpsSince(baseRevision: number): Promise<PanelOpsSinceResult>;
+  submitOps(baseRevision: number, ops: SubmittedPanelOp[]): Promise<{
+    acceptedOps: string[];
+    rejectedOps: Array<{ opId: string; reason: string }>;
+    revision: number;
+  }>;
+}
+
+export interface ActivationClient {
+  markPanelActive(panelId: string): Promise<void>;
+}
+
+export interface LocalPanelViewState {
+  collapsedIds: string[];
+}
+
+export interface LocalPanelViewStateStore {
+  load(): Promise<LocalPanelViewState | null> | LocalPanelViewState | null;
+  save(state: LocalPanelViewState): Promise<void> | void;
+}
+
 export class PanelManager {
-  private readonly store: PanelStore;
   private readonly registry: PanelRegistry;
+  private readonly workspaceSync: WorkspaceSyncClient;
+  private readonly activationClient?: ActivationClient;
+  private readonly viewState?: LocalPanelViewStateStore;
   private readonly tokenClient: TokenClient;
   private readonly serverInfo: PanelManagerServerInfo;
   private readonly workspacePath: string;
   private readonly searchIndex: PanelSearchIndex | null;
   private readonly workspaceConfig?: WorkspaceConfig;
   private readonly allowMissingManifests: boolean;
+  private readonly collapsedIds = new Set<string>();
   private currentTheme: "light" | "dark" = "dark";
+  private lastSeenRevision = 0;
+  private viewStateLoaded = false;
 
   constructor(deps: PanelManagerDeps) {
-    this.store = deps.store;
     this.registry = deps.registry;
+    this.workspaceSync = deps.workspaceSync;
+    this.activationClient = deps.activationClient;
+    this.viewState = deps.viewState;
     this.tokenClient = deps.tokenClient;
     this.serverInfo = deps.serverInfo;
     this.workspacePath = deps.workspacePath;
     this.searchIndex = deps.searchIndex ?? null;
     this.workspaceConfig = deps.workspaceConfig;
     this.allowMissingManifests = deps.allowMissingManifests ?? false;
+  }
+
+  getLastSeenRevision(): number {
+    return this.lastSeenRevision;
+  }
+
+  async syncSnapshot(): Promise<{ rootPanels: Panel[]; revision: number }> {
+    await this.ensureViewStateLoaded();
+    const snapshot = await this.workspaceSync.getSnapshot();
+    this.lastSeenRevision = snapshot.revision;
+    this.registry.repopulate(snapshot.tree, [...this.collapsedIds]);
+    return { rootPanels: snapshot.tree, revision: snapshot.revision };
+  }
+
+  async syncSince(baseRevision = this.lastSeenRevision): Promise<void> {
+    const result = await this.workspaceSync.getOpsSince(baseRevision);
+    if (result.snapshotRequired || result.ops.length > 0) {
+      await this.syncSnapshot();
+      return;
+    }
+    this.lastSeenRevision = result.revision;
   }
 
   async create(source: string, opts?: CreatePanelOptions): Promise<CreatePanelResult> {
@@ -116,22 +174,17 @@ export class PanelManager {
       snapshot.autoArchiveWhenEmpty = true;
     }
 
-    let createdInStore = false;
     try {
-      await this.store.createPanel({
-        id: panelId,
-        title: manifest.title,
+      await this.submitWorkspaceOps([{
+        opId: this.createOpId("panel.create", panelId),
+        type: "panel.create",
+        panelId,
         parentId: opts?.parentId ?? null,
+        positionId: this.rankForPosition(opts?.parentId ?? null, opts?.addAsRoot ? this.registry.getRootPanels().length : 0),
         snapshot,
-      });
-      createdInStore = true;
+        title: manifest.title,
+      }]);
 
-      if (opts?.parentId) {
-        await this.store.setSelectedChild(opts.parentId, panelId);
-      }
-
-      const panel = this.hydratePanel(panelId, manifest.title, snapshot);
-      this.registry.addPanel(panel, opts?.parentId ?? null, { addAsRoot: opts?.addAsRoot });
       this.indexPanel(panelId, manifest.title, relativePath);
 
       return {
@@ -144,9 +197,6 @@ export class PanelManager {
         autoArchiveWhenEmpty: snapshot.autoArchiveWhenEmpty,
       };
     } catch (error) {
-      if (createdInStore) {
-        await Promise.resolve(this.store.archivePanel(panelId)).catch(() => {});
-      }
       this.registry.removePanel(panelId);
       await Promise.resolve(this.tokenClient.revokePanelToken(panelId)).catch(() => {});
       throw error;
@@ -174,25 +224,16 @@ export class PanelManager {
     await this.tokenClient.ensurePanelToken(panelId, contextId, parentId, `browser:${url}`);
 
     const snapshot = createSnapshot(`browser:${url}`, contextId, {});
-    let createdInStore = false;
     try {
-      await this.store.createPanel({
-        id: panelId,
-        title: opts?.name ?? parsed.hostname,
+      await this.submitWorkspaceOps([{
+        opId: this.createOpId("panel.create", panelId),
+        type: "panel.create",
+        panelId,
         parentId,
+        positionId: this.rankForPosition(parentId, opts?.addAsRoot ? this.registry.getRootPanels().length : 0),
         snapshot,
-      });
-      createdInStore = true;
-
-      if (parentId) {
-        await this.store.setSelectedChild(parentId, panelId);
-      }
-
-      const panel = this.hydratePanel(panelId, opts?.name ?? parsed.hostname, snapshot, {
-        buildState: "ready",
-        htmlPath: url,
-      });
-      this.registry.addPanel(panel, parentId, { addAsRoot: opts?.addAsRoot });
+        title: opts?.name ?? parsed.hostname,
+      }]);
 
       return {
         panelId,
@@ -204,9 +245,6 @@ export class PanelManager {
         options: {},
       };
     } catch (error) {
-      if (createdInStore) {
-        await Promise.resolve(this.store.archivePanel(panelId)).catch(() => {});
-      }
       this.registry.removePanel(panelId);
       await Promise.resolve(this.tokenClient.revokePanelToken(panelId)).catch(() => {});
       throw error;
@@ -237,10 +275,12 @@ export class PanelManager {
 
   async close(panelId: string): Promise<{ closedIds: string[] }> {
     const closedIds = this.collectSubtree(panelId);
-    for (const id of closedIds) {
-      await this.store.archivePanel(id);
-      this.registry.removePanel(id);
-    }
+    await this.submitWorkspaceOps([{
+      opId: this.createOpId("panel.archive", panelId),
+      type: "panel.archive" as const,
+      panelId,
+    }]);
+    for (const id of closedIds) this.registry.removePanel(id);
     for (const id of closedIds) {
       await this.tokenClient.revokePanelToken(id).catch((error: unknown) => {
         log.warn(`Failed to revoke panel token for ${id}: ${error instanceof Error ? error.message : String(error)}`);
@@ -274,8 +314,15 @@ export class PanelManager {
     }
 
     const nextSnapshot = { ...getCurrentSnapshot(panel), stateArgs: validation.data };
-    await this.store.updatePanel(panelId, { snapshot: nextSnapshot });
-    this.registry.updateStateArgs(panelId, validation.data as Record<string, unknown>);
+    const nextHistory = this.replaceCurrentHistory(panel, nextSnapshot);
+    await this.submitWorkspaceOps([{
+      opId: this.createOpId("panel.setSnapshot", panelId),
+      type: "panel.setSnapshot",
+      panelId,
+      snapshot: nextSnapshot,
+      history: nextHistory,
+    }]);
+    if (this.registry.getPanel(panelId)) this.registry.replaceCurrentSnapshot(panelId, nextSnapshot, nextHistory);
     return validation.data as Record<string, unknown>;
   }
 
@@ -295,8 +342,15 @@ export class PanelManager {
     }
     if (updates.stateArgs) nextSnapshot.stateArgs = updates.stateArgs;
 
-    await this.store.updatePanel(panelId, { snapshot: nextSnapshot });
-    if (this.registry.getPanel(panelId)) this.registry.replaceCurrentSnapshot(panelId, nextSnapshot);
+    const nextHistory = this.replaceCurrentHistory(panel, nextSnapshot);
+    await this.submitWorkspaceOps([{
+      opId: this.createOpId("panel.setSnapshot", panelId),
+      type: "panel.setSnapshot",
+      panelId,
+      snapshot: nextSnapshot,
+      history: nextHistory,
+    }]);
+    if (this.registry.getPanel(panelId)) this.registry.replaceCurrentSnapshot(panelId, nextSnapshot, nextHistory);
     if (updates.contextId) {
       await this.tokenClient.updatePanelContext(panelId, updates.contextId);
     }
@@ -307,15 +361,25 @@ export class PanelManager {
     const nextSnapshot = this.createNavigationSnapshot(panel, source, opts);
     const manifest = this.tryResolveManifestForSource(nextSnapshot.source) ?? { title: path.basename(nextSnapshot.source) };
 
-    await this.store.pushHistorySnapshot(panelId, nextSnapshot);
-    await this.store.setTitle(panelId, manifest.title);
+    const nextHistory = this.pushHistory(panel, nextSnapshot);
+    await this.submitWorkspaceOps([
+      {
+        opId: this.createOpId("panel.setSnapshot", panelId),
+        type: "panel.setSnapshot",
+        panelId,
+        snapshot: nextSnapshot,
+        history: nextHistory,
+      },
+      {
+        opId: this.createOpId("panel.setTitle", panelId),
+        type: "panel.setTitle",
+        panelId,
+        title: manifest.title,
+      },
+    ]);
 
     const livePanel = this.registry.getPanel(panelId);
     if (livePanel) {
-      const nextHistory = {
-        entries: livePanel.history.entries.slice(0, livePanel.history.index + 1).concat(nextSnapshot),
-        index: livePanel.history.index + 1,
-      };
       livePanel.title = manifest.title;
       this.registry.replaceCurrentSnapshot(panelId, nextSnapshot, nextHistory);
     }
@@ -338,8 +402,16 @@ export class PanelManager {
 
   async navigateHistory(panelId: string, delta: -1 | 1): Promise<Panel | null> {
     const before = await this.requireStoredPanel(panelId);
-    const panel = await this.store.navigateHistory(panelId, delta);
-    if (!panel) return null;
+    const nextHistory = this.navigateHistoryState(before, delta);
+    const nextSnapshot = nextHistory.entries[nextHistory.index]!;
+    await this.submitWorkspaceOps([{
+      opId: this.createOpId("panel.setSnapshot", panelId),
+      type: "panel.setSnapshot",
+      panelId,
+      snapshot: nextSnapshot,
+      history: nextHistory,
+    }]);
+    const panel = await this.requireStoredPanel(panelId);
 
     const livePanel = this.registry.getPanel(panelId);
     if (livePanel) {
@@ -353,7 +425,12 @@ export class PanelManager {
   }
 
   async updateTitle(panelId: string, title: string): Promise<void> {
-    await this.store.setTitle(panelId, title);
+    await this.submitWorkspaceOps([{
+      opId: this.createOpId("panel.setTitle", panelId),
+      type: "panel.setTitle",
+      panelId,
+      title,
+    }]);
     const livePanel = this.registry.getPanel(panelId);
     if (livePanel) {
       livePanel.title = title;
@@ -362,13 +439,22 @@ export class PanelManager {
   }
 
   async movePanel(panelId: string, newParentId: string | null, targetPosition: number): Promise<void> {
-    await this.store.movePanel(panelId, newParentId, targetPosition);
+    await this.submitWorkspaceOps([{
+      opId: this.createOpId("panel.move", panelId),
+      type: "panel.move",
+      panelId,
+      parentId: newParentId,
+      positionId: this.rankForPosition(newParentId, targetPosition, panelId),
+    }]);
     this.registry.movePanel(panelId, newParentId, targetPosition);
     await this.tokenClient.updatePanelParent(panelId, newParentId);
   }
 
   async loadTree(): Promise<{ rootPanels: Panel[]; collapsedIds: string[] }> {
-    const rootPanels = await this.store.getFullTree();
+    await this.ensureViewStateLoaded();
+    const snapshot = await this.workspaceSync.getSnapshot();
+    this.lastSeenRevision = snapshot.revision;
+    const rootPanels = snapshot.tree;
     await this.cleanupChildlessAutoArchivePanels(rootPanels);
     const activeRoots: Panel[] = [];
     for (const panel of rootPanels) {
@@ -376,9 +462,8 @@ export class PanelManager {
         activeRoots.push(panel);
       }
     }
-    const collapsedIds = await this.store.getCollapsedIds();
-    this.registry.repopulate(activeRoots, collapsedIds);
-    return { rootPanels: activeRoots, collapsedIds };
+    this.registry.repopulate(activeRoots, [...this.collapsedIds]);
+    return { rootPanels: activeRoots, collapsedIds: [...this.collapsedIds] };
   }
 
   async shutdownCleanup(livePanelIds: string[]): Promise<void> {
@@ -386,34 +471,46 @@ export class PanelManager {
     const visit = async (panels: Panel[]) => {
       for (const panel of panels) {
         if (!liveSet.has(panel.id)) {
-          await this.store.archivePanel(panel.id);
+          await this.submitWorkspaceOps([{
+            opId: this.createOpId("panel.archive", panel.id),
+            type: "panel.archive",
+            panelId: panel.id,
+          }]);
+          continue;
         }
         if (panel.children.length > 0) {
           await visit(panel.children);
         }
       }
     };
-    await visit(await this.store.getFullTree());
+    const snapshot = await this.workspaceSync.getSnapshot();
+    await visit(snapshot.tree);
   }
 
   async setCollapsed(panelId: string, collapsed: boolean): Promise<void> {
-    await this.store.setCollapsed(panelId, collapsed);
+    await this.ensureViewStateLoaded();
+    if (collapsed) this.collapsedIds.add(panelId);
+    else this.collapsedIds.delete(panelId);
     this.registry.setCollapsed(panelId, collapsed);
+    await this.persistViewState();
   }
 
   async expandIds(panelIds: string[]): Promise<void> {
-    await this.store.setCollapsedBatch(panelIds, false);
+    await this.ensureViewStateLoaded();
+    for (const panelId of panelIds) this.collapsedIds.delete(panelId);
     this.registry.setCollapsedBatch(panelIds, false);
+    await this.persistViewState();
   }
 
-  getCollapsedIds(): Promise<string[]> {
-    return Promise.resolve(this.store.getCollapsedIds());
+  async getCollapsedIds(): Promise<string[]> {
+    await this.ensureViewStateLoaded();
+    return [...this.collapsedIds];
   }
 
   async notifyFocused(panelId: string): Promise<void> {
-    await this.store.updateSelectedPath(panelId);
     this.registry.updateSelectedPath(panelId);
     this.searchIndex?.incrementAccessCount(panelId);
+    await this.activationClient?.markPanelActive(panelId).catch(() => {});
   }
 
   setCurrentTheme(theme: ThemeAppearance): void {
@@ -439,14 +536,14 @@ export class PanelManager {
     const { token } = await this.tokenClient.ensurePanelToken(
       panelId,
       getPanelContextId(panel),
-      this.registry.findParentId(panelId) ?? await this.store.getParentId(panelId),
+      this.registry.findParentId(panelId) ?? this.findParentIdInRegistry(panelId),
       getPanelSource(panel),
     );
 
     return buildBootstrapConfig({
       panelId,
       contextId: getPanelContextId(panel),
-      parentId: this.registry.findParentId(panelId) ?? await this.store.getParentId(panelId),
+      parentId: this.registry.findParentId(panelId) ?? this.findParentIdInRegistry(panelId),
       source: getPanelSource(panel),
       theme: this.currentTheme,
       gatewayConfig: {
@@ -471,17 +568,31 @@ export class PanelManager {
         panel.children = nextChildren;
       }
       if (getCurrentSnapshot(panel).autoArchiveWhenEmpty && panel.children.length === 0) {
-        await this.store.archivePanel(panel.id);
+        await this.submitWorkspaceOps([{
+          opId: this.createOpId("panel.archive", panel.id),
+          type: "panel.archive",
+          panelId: panel.id,
+        }]);
       }
     }
   }
 
-  private async isAutoArchived(panelId: string): Promise<boolean> {
-    try {
-      return Boolean(await this.store.isArchived(panelId));
-    } catch {
-      return false;
+  private async ensureViewStateLoaded(): Promise<void> {
+    if (this.viewStateLoaded) return;
+    this.viewStateLoaded = true;
+    const state = await Promise.resolve(this.viewState?.load()).catch(() => null);
+    for (const panelId of state?.collapsedIds ?? []) {
+      this.collapsedIds.add(panelId);
     }
+  }
+
+  private async persistViewState(): Promise<void> {
+    await Promise.resolve(this.viewState?.save({ collapsedIds: [...this.collapsedIds] })).catch(() => {});
+  }
+
+  private async isAutoArchived(panelId: string): Promise<boolean> {
+    void panelId;
+    return false;
   }
 
   private collectSubtree(panelId: string): string[] {
@@ -507,6 +618,7 @@ export class PanelManager {
       title,
       children: [],
       selectedChildId: null,
+      snapshot,
       history: { entries: [snapshot], index: 0 },
       artifacts,
     };
@@ -529,6 +641,27 @@ export class PanelManager {
     );
     if (manifest.autoArchiveWhenEmpty) snapshot.autoArchiveWhenEmpty = true;
     return snapshot;
+  }
+
+  private pushHistory(panel: Panel, snapshot: PanelSnapshot): NonNullable<Panel["history"]> {
+    const history = panel.history ?? { entries: [getCurrentSnapshot(panel)], index: 0 };
+    const nextEntries = history.entries.slice(0, history.index + 1).concat(snapshot);
+    return { entries: nextEntries, index: nextEntries.length - 1 };
+  }
+
+  private replaceCurrentHistory(panel: Panel, snapshot: PanelSnapshot): NonNullable<Panel["history"]> {
+    const history = panel.history ?? { entries: [getCurrentSnapshot(panel)], index: 0 };
+    const entries = history.entries.slice();
+    entries[history.index] = snapshot;
+    return { entries, index: history.index };
+  }
+
+  private navigateHistoryState(panel: Panel, delta: -1 | 1): NonNullable<Panel["history"]> {
+    const history = panel.history ?? { entries: [getCurrentSnapshot(panel)], index: 0 };
+    return {
+      entries: history.entries,
+      index: Math.max(0, Math.min(history.entries.length - 1, history.index + delta)),
+    };
   }
 
   private resolveManifest(
@@ -580,9 +713,42 @@ export class PanelManager {
   }
 
   private async requireStoredPanel(panelId: string): Promise<Panel> {
-    const panel = await this.store.getPanel(panelId);
+    let panel = this.registry.getPanel(panelId) ?? null;
+    if (!panel) {
+      await this.syncSnapshot();
+      panel = this.registry.getPanel(panelId) ?? null;
+    }
     if (!panel) throw new Error(`Panel not found: ${panelId}`);
     return panel;
+  }
+
+  private async submitWorkspaceOps(ops: SubmittedPanelOp[]): Promise<void> {
+    const result = await this.workspaceSync.submitOps(this.lastSeenRevision, ops);
+    const rejected = result.rejectedOps.filter((entry) => !result.acceptedOps.includes(entry.opId));
+    this.lastSeenRevision = result.revision;
+    if (rejected.length > 0) {
+      throw new Error(`Workspace op rejected: ${rejected[0]!.reason}`);
+    }
+    await this.syncSnapshot();
+  }
+
+  private rankForPosition(parentId: string | null, targetPosition: number, excludePanelId?: string): string {
+    const siblings = parentId
+      ? (this.registry.getPanel(parentId)?.children ?? [])
+      : this.registry.getRootPanels();
+    const filtered = excludePanelId ? siblings.filter((panel) => panel.id !== excludePanelId) : siblings;
+    const clamped = Math.max(0, Math.min(targetPosition, filtered.length));
+    if (filtered.length === 0) return firstRank();
+    return rankBetween(filtered[clamped - 1]?.positionId, filtered[clamped]?.positionId);
+  }
+
+  private findParentIdInRegistry(panelId: string): string | null {
+    return this.registry.findParentId(panelId);
+  }
+
+  private createOpId(type: SubmittedPanelOp["type"], panelId: string): string {
+    const random = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+    return `${type}:${panelId}:${random}`;
   }
 
   private indexPanel(panelId: string, title: string, panelPath: string): void {

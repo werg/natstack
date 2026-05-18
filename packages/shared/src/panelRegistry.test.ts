@@ -16,8 +16,7 @@ function makePanel(id: string, overrides?: Partial<Panel>): Panel {
     id,
     title: id,
     children: [],
-    selectedChildId: null,
-    history: { entries: [snapshot], index: 0 },
+    snapshot,
     artifacts: {},
     ...overrides,
   };
@@ -77,7 +76,6 @@ describe("PanelRegistry", () => {
 
       expect(registry.getPanel("child")).toBe(child);
       expect(parent.children[0]).toBe(child);
-      expect(parent.selectedChildId).toBe("child");
     });
 
     it("throws when adding a child to a nonexistent parent", () => {
@@ -184,7 +182,6 @@ describe("PanelRegistry", () => {
 
       expect(registry.getPanel("child")).toBeUndefined();
       expect(parent.children.length).toBe(0);
-      expect(parent.selectedChildId).toBeNull();
     });
   });
 
@@ -300,9 +297,9 @@ describe("PanelRegistry", () => {
 
       registry.updateSelectedPath("leaf");
 
-      expect(root.selectedChildId).toBe("mid");
-      expect(mid.selectedChildId).toBe("leaf");
       expect(registry.getFocusedPanelId()).toBe("leaf");
+      expect(registry.getPanel("root")?.selectedChildId).toBe("mid");
+      expect(registry.getPanel("mid")?.selectedChildId).toBe("leaf");
     });
   });
 

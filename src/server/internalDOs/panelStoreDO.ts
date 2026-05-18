@@ -4,12 +4,20 @@ import {
 } from "../../../workspace/packages/runtime/src/worker/durable-base.js";
 import type { Panel, PanelSnapshot, PanelSummary } from "../../../packages/shared/src/types.js";
 import type {
-  CreatePanelInput,
+  AppendPanelOpResult,
+  AppendPanelOpsResult,
   IndexablePanel,
   PanelContext,
+  PanelOpsSinceResult,
   PanelSearchResult,
-  UpdatePanelInput,
-} from "../../../packages/shared/src/panelPersistenceTypes.js";
+  PanelSnapshotResult,
+  PersistedPanelOp,
+  SubmittedPanelOp,
+} from "../../../packages/shared/src/panelOpsTypes.js";
+import {
+  between as rankBetween,
+  first as firstRank,
+} from "../../../packages/shared/src/lexorank.js";
 import { assertPresent } from "../../lintHelpers";
 
 interface DbPanelRow {
@@ -17,17 +25,26 @@ interface DbPanelRow {
   title: string;
   workspace_id: string;
   parent_id: string | null;
-  position: number;
-  selected_child_id: string | null;
+  position_id: string;
+  position_actor_id: string;
+  position_op_id: string;
   created_at: number;
   updated_at: number;
-  history: string;
-  history_index: number;
+  snapshot: string;
+  history: string | null;
+  history_index: number | null;
   archived_at: number | null;
+  archived_by: string | null;
+}
+
+class PanelOpsRejected extends Error {
+  constructor(readonly rejectedOps: Array<{ opId: string; reason: string }>) {
+    super("Panel ops rejected");
+  }
 }
 
 export class PanelStoreDO extends DurableObjectBase {
-  static override schemaVersion = 1;
+  static override schemaVersion = 6;
 
   constructor(ctx: DurableObjectContext, env: unknown) {
     super(ctx, env);
@@ -41,14 +58,16 @@ export class PanelStoreDO extends DurableObjectBase {
         title TEXT NOT NULL,
         workspace_id TEXT NOT NULL,
         parent_id TEXT REFERENCES panels(id),
-        position INTEGER NOT NULL DEFAULT 0,
-        selected_child_id TEXT,
-        collapsed INTEGER NOT NULL DEFAULT 0,
+        position_id TEXT NOT NULL DEFAULT '000001000000',
+        position_actor_id TEXT NOT NULL DEFAULT '',
+        position_op_id TEXT NOT NULL DEFAULT '',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
+        snapshot TEXT NOT NULL,
         history TEXT NOT NULL,
         history_index INTEGER NOT NULL DEFAULT 0,
-        archived_at INTEGER DEFAULT NULL
+        archived_at INTEGER DEFAULT NULL,
+        archived_by TEXT DEFAULT NULL
       )
     `);
     this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_panels_parent ON panels(parent_id)`);
@@ -64,6 +83,25 @@ export class PanelStoreDO extends DurableObjectBase {
         keywords TEXT,
         access_count INTEGER NOT NULL DEFAULT 0,
         last_indexed_at INTEGER NOT NULL
+      )
+    `);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS panel_ops (
+        revision INTEGER PRIMARY KEY,
+        op_id TEXT NOT NULL UNIQUE,
+        actor_id TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        payload TEXT NOT NULL
+      )
+    `);
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_panel_ops_actor ON panel_ops(actor_id, revision)`
+    );
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS workspace_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
       )
     `);
     this.sql.exec(`
@@ -108,29 +146,196 @@ export class PanelStoreDO extends DurableObjectBase {
     `);
   }
 
+  protected override migrate(fromVersion: number, toVersion: number): void {
+    void toVersion;
+    if (fromVersion === 0) return;
+    if (fromVersion < 3 && this.hasPanelColumn("history") && this.hasPanelColumn("position")) {
+      this.sql.exec(`ALTER TABLE panels RENAME TO panels_old`);
+      this.sql.exec(`
+        CREATE TABLE panels (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          parent_id TEXT REFERENCES panels(id),
+          position_id TEXT NOT NULL DEFAULT '000001000000',
+          position_actor_id TEXT NOT NULL DEFAULT '',
+          position_op_id TEXT NOT NULL DEFAULT '',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          snapshot TEXT NOT NULL,
+          history TEXT NOT NULL,
+          history_index INTEGER NOT NULL DEFAULT 0,
+          archived_at INTEGER DEFAULT NULL,
+          archived_by TEXT DEFAULT NULL
+        )
+      `);
+      this.sql.exec(`
+        INSERT INTO panels (
+          id, title, workspace_id, parent_id, position_id, position_actor_id, position_op_id,
+          created_at, updated_at, snapshot, history, history_index, archived_at, archived_by
+        )
+        SELECT
+          id, title, workspace_id, parent_id, printf('%012d', (position + 1) * 1000000), '', '',
+          created_at, updated_at,
+          json_extract(history, '$[' || history_index || ']'),
+          history,
+          history_index,
+          archived_at, NULL
+        FROM panels_old
+      `);
+      this.sql.exec(`DROP TABLE panels_old`);
+      this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_panels_parent ON panels(parent_id)`);
+      this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_panels_workspace ON panels(workspace_id)`);
+    }
+    if (fromVersion < 4 && this.hasPanelColumn("position")) {
+      this.sql.exec(`ALTER TABLE panels RENAME TO panels_old`);
+      this.sql.exec(`
+        CREATE TABLE panels (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          parent_id TEXT REFERENCES panels(id),
+          position_id TEXT NOT NULL DEFAULT '000001000000',
+          position_actor_id TEXT NOT NULL DEFAULT '',
+          position_op_id TEXT NOT NULL DEFAULT '',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          snapshot TEXT NOT NULL,
+          history TEXT NOT NULL,
+          history_index INTEGER NOT NULL DEFAULT 0,
+          archived_at INTEGER DEFAULT NULL,
+          archived_by TEXT DEFAULT NULL
+        )
+      `);
+      this.sql.exec(`
+        INSERT INTO panels (
+          id, title, workspace_id, parent_id, position_id, position_actor_id, position_op_id,
+          created_at, updated_at, snapshot, history, history_index, archived_at, archived_by
+        )
+        SELECT
+          id, title, workspace_id, parent_id, printf('%012d', (position + 1) * 1000000),
+          '', '', created_at, updated_at, snapshot, json_array(snapshot), 0, archived_at, NULL
+        FROM panels_old
+      `);
+      this.sql.exec(`DROP TABLE panels_old`);
+      this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_panels_parent ON panels(parent_id)`);
+      this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_panels_workspace ON panels(workspace_id)`);
+    }
+    if (fromVersion < 5 && !this.hasPanelColumn("archived_by")) {
+      this.sql.exec(`ALTER TABLE panels ADD COLUMN archived_by TEXT DEFAULT NULL`);
+    }
+    if (fromVersion < 6) {
+      if (!this.hasPanelColumn("history")) {
+        this.sql.exec(`ALTER TABLE panels ADD COLUMN history TEXT`);
+        this.sql.exec(`UPDATE panels SET history = json_array(snapshot) WHERE history IS NULL`);
+      }
+      if (!this.hasPanelColumn("history_index")) {
+        this.sql.exec(`ALTER TABLE panels ADD COLUMN history_index INTEGER NOT NULL DEFAULT 0`);
+      }
+    }
+  }
+
   getWorkspaceId(): string {
     return this.objectKey;
   }
 
-  createPanel(input: CreatePanelInput): void {
-    const now = Date.now();
-    this.shiftSiblingPositions(input.parentId, 0, now);
-    this.sql.exec(
-      `INSERT INTO panels (
-        id, title, workspace_id, parent_id, position, selected_child_id,
-        created_at, updated_at, history, history_index
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      input.id,
-      input.title,
-      this.getWorkspaceId(),
-      input.parentId,
-      0,
-      null,
-      now,
-      now,
-      JSON.stringify([input.snapshot]),
-      0
-    );
+  appendOp(op: SubmittedPanelOp, actorId: string): AppendPanelOpResult {
+    return this.ctx.storage.transactionSync(() => this.appendOpInTransaction(op, actorId));
+  }
+
+  appendOps(ops: SubmittedPanelOp[], actorId: string): AppendPanelOpsResult {
+    try {
+      return this.ctx.storage.transactionSync(() => {
+        const acceptedOps: string[] = [];
+        for (const op of ops) {
+          const result = this.appendOpInTransaction(op, actorId);
+          if (result.accepted || result.alreadyApplied) {
+            acceptedOps.push(op.opId);
+          } else {
+            throw new PanelOpsRejected([
+              { opId: op.opId, reason: result.rejectedReason ?? "UNKNOWN" },
+            ]);
+          }
+        }
+        return { acceptedOps, rejectedOps: [], revision: this.getRevision() };
+      });
+    } catch (error) {
+      if (error instanceof PanelOpsRejected) {
+        return { acceptedOps: [], rejectedOps: error.rejectedOps, revision: this.getRevision() };
+      }
+      throw error;
+    }
+  }
+
+  getOpsSince(baseRevision: number, limit = 1000): PanelOpsSinceResult {
+    const revision = this.getRevision();
+    if (revision - baseRevision > 10_000) {
+      return { ops: [], revision, snapshotRequired: true };
+    }
+    const oldest = this.sql.exec(`SELECT MIN(revision) as revision FROM panel_ops`).one() as {
+      revision: number | null;
+    };
+    if (oldest.revision != null && baseRevision < oldest.revision - 1) {
+      return { ops: [], revision, snapshotRequired: true };
+    }
+    const rows = this.sql
+      .exec(
+        `SELECT revision, op_id, actor_id, ts, type, payload
+         FROM panel_ops
+         WHERE revision > ?
+         ORDER BY revision ASC
+         LIMIT ?`,
+        baseRevision,
+        limit
+      )
+      .toArray() as Array<{
+      revision: number;
+      op_id: string;
+      actor_id: string;
+      ts: number;
+      type: string;
+      payload: string;
+    }>;
+    const ops = rows.map((row) => ({
+      ...(JSON.parse(row.payload) as SubmittedPanelOp),
+      actorId: row.actor_id,
+      ts: row.ts,
+      revision: row.revision,
+    })) as PersistedPanelOp[];
+    return { ops, revision };
+  }
+
+  getSnapshot(): PanelSnapshotResult {
+    return { tree: this.getFullTree(), revision: this.getRevision() };
+  }
+
+  compactOps(throughRevision?: number) {
+    return this.ctx.storage.transactionSync(() => {
+      const revision = this.getRevision();
+      const target = Math.max(0, Math.min(Math.floor(throughRevision ?? revision), revision));
+      if (target > 0) {
+        this.sql.exec(`DELETE FROM panel_ops WHERE revision <= ?`, target);
+      }
+      this.sql.exec(
+        `INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('compactedThroughRevision', ?)`,
+        String(target)
+      );
+      const retained = this.sql.exec(`SELECT COUNT(*) as count FROM panel_ops`).one() as {
+        count: number;
+      };
+      return {
+        compactedThroughRevision: target,
+        retainedOps: retained.count,
+        revision,
+      };
+    });
+  }
+
+  getRevision(): number {
+    const row = this.sql
+      .exec(`SELECT value FROM workspace_meta WHERE key = 'revision'`)
+      .toArray()[0] as { value: string } | undefined;
+    return row ? Number.parseInt(row.value, 10) || 0 : 0;
   }
 
   getPanel(panelId: string): Panel | null {
@@ -142,32 +347,32 @@ export class PanelStoreDO extends DurableObjectBase {
 
   getRootPanels(): PanelSummary[] {
     return this.summaryRows(
-      `SELECT p.id, p.title, p.position,
+      `SELECT p.id, p.title, p.position_id,
         (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
        FROM panels p
        WHERE p.parent_id IS NULL AND p.workspace_id = ? AND p.archived_at IS NULL
-       ORDER BY p.position`,
+       ORDER BY p.position_id, p.position_actor_id, p.position_op_id`,
       this.getWorkspaceId()
     );
   }
 
   getChildren(parentId: string): PanelSummary[] {
     return this.summaryRows(
-      `SELECT p.id, p.title, p.position,
+      `SELECT p.id, p.title, p.position_id,
         (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
        FROM panels p WHERE p.parent_id = ? AND p.archived_at IS NULL
-       ORDER BY p.position`,
+       ORDER BY p.position_id, p.position_actor_id, p.position_op_id`,
       parentId
     );
   }
 
   getSiblings(panelId: string): PanelSummary[] {
     return this.summaryRows(
-      `SELECT p.id, p.title, p.position,
+      `SELECT p.id, p.title, p.position_id,
         (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
        FROM panels p
        WHERE p.parent_id = (SELECT parent_id FROM panels WHERE id = ?) AND p.archived_at IS NULL
-       ORDER BY p.position`,
+       ORDER BY p.position_id, p.position_actor_id, p.position_op_id`,
       panelId
     );
   }
@@ -214,174 +419,11 @@ export class PanelStoreDO extends DurableObjectBase {
     return row.count;
   }
 
-  updatePanel(panelId: string, input: UpdatePanelInput): void {
-    const updates = ["updated_at = ?"];
-    const params: unknown[] = [Date.now()];
-    if (input.selectedChildId !== undefined) {
-      updates.push("selected_child_id = ?");
-      params.push(input.selectedChildId);
-    }
-    if (input.parentId !== undefined) {
-      updates.push("parent_id = ?");
-      params.push(input.parentId);
-    }
-    if (input.snapshot !== undefined) {
-      updates.push("history = ?", "history_index = ?");
-      const row = this.requireRow(panelId);
-      const history = this.parseHistory(row);
-      const historyIndex = this.normalizeHistoryIndex(row, history);
-      history[historyIndex] = input.snapshot;
-      params.push(JSON.stringify(history), historyIndex);
-    }
-    params.push(panelId);
-    this.sql.exec(`UPDATE panels SET ${updates.join(", ")} WHERE id = ?`, ...params);
-  }
-
-  pushHistorySnapshot(panelId: string, snapshot: PanelSnapshot): void {
-    const row = this.requireRow(panelId);
-    const history = this.parseHistory(row);
-    const historyIndex = this.normalizeHistoryIndex(row, history);
-    const nextHistory = history.slice(0, historyIndex + 1);
-    nextHistory.push(snapshot);
-    this.sql.exec(
-      `UPDATE panels SET history = ?, history_index = ?, updated_at = ? WHERE id = ?`,
-      JSON.stringify(nextHistory),
-      nextHistory.length - 1,
-      Date.now(),
-      panelId
-    );
-  }
-
-  navigateHistory(panelId: string, delta: -1 | 1): Panel | null {
-    const row = this.requireRow(panelId);
-    const history = this.parseHistory(row);
-    const historyIndex = this.normalizeHistoryIndex(row, history);
-    const nextIndex = Math.max(0, Math.min(history.length - 1, historyIndex + delta));
-    if (nextIndex !== historyIndex) {
-      this.sql.exec(
-        `UPDATE panels SET history_index = ?, updated_at = ? WHERE id = ?`,
-        nextIndex,
-        Date.now(),
-        panelId
-      );
-    }
-    const nextRow = { ...row, history_index: nextIndex };
-    return this.rowToPanel(nextRow);
-  }
-
-  setSelectedChild(panelId: string, childId: string | null): void {
-    this.sql.exec(
-      `UPDATE panels SET selected_child_id = ?, updated_at = ? WHERE id = ?`,
-      childId,
-      Date.now(),
-      panelId
-    );
-  }
-
-  updateSelectedPath(focusedPanelId: string): void {
-    const now = Date.now();
-    const visited = new Set<string>();
-    let currentId: string | null = focusedPanelId;
-    for (let depth = 0; currentId && depth < 100; depth++) {
-      if (visited.has(currentId)) break;
-      visited.add(currentId);
-      const row = this.sql
-        .exec(`SELECT parent_id FROM panels WHERE id = ?`, currentId)
-        .toArray()[0] as { parent_id: string | null } | undefined;
-      if (!row) break;
-      if (row.parent_id) {
-        this.sql.exec(
-          `UPDATE panels SET selected_child_id = ?, updated_at = ? WHERE id = ?`,
-          currentId,
-          now,
-          row.parent_id
-        );
-      }
-      currentId = row.parent_id;
-    }
-  }
-
-  setTitle(panelId: string, title: string): void {
-    this.sql.exec(
-      `UPDATE panels SET title = ?, updated_at = ? WHERE id = ?`,
-      title,
-      Date.now(),
-      panelId
-    );
-  }
-
-  movePanel(panelId: string, newParentId: string | null, targetPosition: number): void {
-    const currentRow = this.sql
-      .exec(`SELECT parent_id FROM panels WHERE id = ?`, panelId)
-      .toArray()[0] as { parent_id: string | null } | undefined;
-    if (!currentRow) throw new Error(`Panel ${panelId} not found`);
-    const oldParentId = currentRow.parent_id;
-    const now = Date.now();
-    this.shiftSiblingPositions(newParentId, targetPosition, now);
-    this.sql.exec(
-      `UPDATE panels SET parent_id = ?, position = ?, updated_at = ? WHERE id = ?`,
-      newParentId,
-      targetPosition,
-      now,
-      panelId
-    );
-    if (oldParentId !== newParentId) this.normalizePositions(oldParentId);
-    this.normalizePositions(newParentId);
-  }
-
-  getChildrenPaginated(
-    parentId: string,
-    offset: number,
-    limit: number
-  ): { children: PanelSummary[]; total: number; hasMore: boolean } {
-    const total = (
-      this.sql
-        .exec(
-          `SELECT COUNT(*) as count FROM panels WHERE parent_id = ? AND archived_at IS NULL`,
-          parentId
-        )
-        .one() as { count: number }
-    ).count;
-    const children = this.summaryRows(
-      `SELECT p.id, p.title, p.position,
-        (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
-       FROM panels p WHERE p.parent_id = ? AND p.archived_at IS NULL
-       ORDER BY p.position ASC LIMIT ? OFFSET ?`,
-      parentId,
-      limit,
-      offset
-    );
-    return { children, total, hasMore: offset + children.length < total };
-  }
-
-  getRootPanelsPaginated(
-    offset: number,
-    limit: number
-  ): { panels: PanelSummary[]; total: number; hasMore: boolean } {
-    const total = (
-      this.sql
-        .exec(
-          `SELECT COUNT(*) as count FROM panels WHERE parent_id IS NULL AND workspace_id = ? AND archived_at IS NULL`,
-          this.getWorkspaceId()
-        )
-        .one() as { count: number }
-    ).count;
-    const panels = this.summaryRows(
-      `SELECT p.id, p.title, p.position,
-        (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
-       FROM panels p WHERE p.parent_id IS NULL AND p.workspace_id = ? AND p.archived_at IS NULL
-       ORDER BY p.position ASC LIMIT ? OFFSET ?`,
-      this.getWorkspaceId(),
-      limit,
-      offset
-    );
-    return { panels, total, hasMore: offset + panels.length < total };
-  }
-
   getFullTree(): Panel[] {
     const rows = this.sql
       .exec(
-        `SELECT * FROM panels WHERE workspace_id = ? AND archived_at IS NULL ORDER BY position`,
+        `SELECT * FROM panels WHERE workspace_id = ? AND archived_at IS NULL
+         ORDER BY position_id, position_actor_id, position_op_id`,
         this.getWorkspaceId()
       )
       .toArray() as unknown as DbPanelRow[];
@@ -404,51 +446,6 @@ export class PanelStoreDO extends DurableObjectBase {
       | { parent_id: string | null }
       | undefined;
     return row?.parent_id ?? null;
-  }
-
-  getCollapsedIds(): string[] {
-    const rows = this.sql
-      .exec(
-        `SELECT id FROM panels WHERE workspace_id = ? AND collapsed = 1 AND archived_at IS NULL`,
-        this.getWorkspaceId()
-      )
-      .toArray() as Array<{ id: string }>;
-    return rows.map((row) => row.id);
-  }
-
-  setCollapsed(panelId: string, collapsed: boolean): void {
-    this.sql.exec(
-      `UPDATE panels SET collapsed = ?, updated_at = ? WHERE id = ?`,
-      collapsed ? 1 : 0,
-      Date.now(),
-      panelId
-    );
-  }
-
-  setCollapsedBatch(panelIds: string[], collapsed: boolean): void {
-    const now = Date.now();
-    const value = collapsed ? 1 : 0;
-    for (const id of panelIds) {
-      this.sql.exec(`UPDATE panels SET collapsed = ?, updated_at = ? WHERE id = ?`, value, now, id);
-    }
-  }
-
-  archivePanel(panelId: string): void {
-    const now = Date.now();
-    this.sql.exec(
-      `UPDATE panels SET archived_at = ?, updated_at = ? WHERE id = ?`,
-      now,
-      now,
-      panelId
-    );
-  }
-
-  unarchivePanel(panelId: string): void {
-    this.sql.exec(
-      `UPDATE panels SET archived_at = NULL, updated_at = ? WHERE id = ?`,
-      Date.now(),
-      panelId
-    );
   }
 
   isArchived(panelId: string): boolean {
@@ -549,84 +546,253 @@ export class PanelStoreDO extends DurableObjectBase {
       this.getWorkspaceId()
     );
     for (const row of rows) {
-      const history = JSON.parse(row.history) as Array<{ source?: string }>;
-      const current = history[row.history_index] ?? history[0];
+      const current = JSON.parse(row.snapshot) as { source?: string };
       this.indexPanel({ id: row.id, title: row.title, path: current?.source });
     }
   }
 
-  private shiftSiblingPositions(
-    parentId: string | null,
-    targetPosition: number,
-    now: number
-  ): void {
+  private appendOpInTransaction(op: SubmittedPanelOp, actorId: string): AppendPanelOpResult {
+    if (!op.opId || !op.type || !actorId) {
+      return { accepted: false, revision: this.getRevision(), rejectedReason: "MALFORMED" };
+    }
+
+    const existing = this.sql
+      .exec(`SELECT revision FROM panel_ops WHERE op_id = ?`, op.opId)
+      .toArray()[0] as { revision: number } | undefined;
+    if (existing) {
+      return { accepted: false, alreadyApplied: true, revision: existing.revision };
+    }
+
+    const ts = Date.now();
+    const validation = this.validateOp(op);
+    if (!validation.ok) {
+      return { accepted: false, revision: this.getRevision(), rejectedReason: validation.reason };
+    }
+
+    const revision = this.getRevision() + 1;
     this.sql.exec(
-      `UPDATE panels
-       SET position = position + 1, updated_at = ?
-       WHERE (parent_id = ? OR (parent_id IS NULL AND ? IS NULL))
-         AND workspace_id = ?
-         AND position >= ?
-         AND archived_at IS NULL`,
-      now,
-      parentId,
-      parentId,
-      this.getWorkspaceId(),
-      targetPosition
+      `INSERT INTO panel_ops (revision, op_id, actor_id, ts, type, payload)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      revision,
+      op.opId,
+      actorId,
+      ts,
+      op.type,
+      JSON.stringify(op)
     );
+    this.applyOp(op, ts, actorId);
+    this.sql.exec(
+      `INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('revision', ?)`,
+      String(revision)
+    );
+    return { accepted: true, revision };
   }
 
-  private normalizePositions(parentId: string | null): void {
-    const rows =
-      parentId === null
-        ? this.sql
-            .exec(
-              `SELECT id, position FROM panels WHERE parent_id IS NULL AND workspace_id = ? ORDER BY position ASC`,
-              this.getWorkspaceId()
-            )
-            .toArray()
-        : this.sql
-            .exec(
-              `SELECT id, position FROM panels WHERE parent_id = ? ORDER BY position ASC`,
-              parentId
-            )
-            .toArray();
-    const now = Date.now();
-    (rows as Array<{ id: string; position: number }>).forEach((row, index) => {
-      if (row.position !== index) {
+  private validateOp(op: SubmittedPanelOp): { ok: true } | { ok: false; reason: string } {
+    switch (op.type) {
+      case "panel.create":
+        if (this.panelExists(op.panelId)) return { ok: false, reason: "EXISTS" };
+        if (!this.isValidSnapshot(op.snapshot)) return { ok: false, reason: "MALFORMED_SNAPSHOT" };
+        if (!this.isValidPositionId(op.positionId))
+          return { ok: false, reason: "MALFORMED_POSITION" };
+        if (op.parentId && !this.panelExists(op.parentId)) {
+          return { ok: false, reason: "STALE_PARENT" };
+        }
+        return { ok: true };
+      case "panel.archive":
+      case "panel.restore":
+        if (!this.panelExists(op.panelId)) return { ok: false, reason: "NOT_FOUND" };
+        return { ok: true };
+      case "panel.move":
+        if (!this.panelExists(op.panelId)) return { ok: false, reason: "NOT_FOUND" };
+        if (this.isArchived(op.panelId)) return { ok: false, reason: "ARCHIVED" };
+        if (!this.isValidPositionId(op.positionId))
+          return { ok: false, reason: "MALFORMED_POSITION" };
+        if (op.parentId && !this.panelExists(op.parentId)) {
+          return { ok: false, reason: "STALE_PARENT" };
+        }
+        return { ok: true };
+      case "panel.setSnapshot":
+        if (!this.panelExists(op.panelId)) return { ok: false, reason: "NOT_FOUND" };
+        if (this.isArchived(op.panelId)) return { ok: false, reason: "ARCHIVED" };
+        if (!this.isValidSnapshot(op.snapshot)) return { ok: false, reason: "MALFORMED_SNAPSHOT" };
+        if (op.history && !this.isValidHistory(op.history)) {
+          return { ok: false, reason: "MALFORMED_HISTORY" };
+        }
+        return { ok: true };
+      case "panel.setTitle":
+        if (!this.panelExists(op.panelId)) return { ok: false, reason: "NOT_FOUND" };
+        if (this.isArchived(op.panelId)) return { ok: false, reason: "ARCHIVED" };
+        return { ok: true };
+    }
+  }
+
+  private applyOp(op: SubmittedPanelOp, ts: number, actorId: string): void {
+    switch (op.type) {
+      case "panel.create":
         this.sql.exec(
-          `UPDATE panels SET position = ?, updated_at = ? WHERE id = ?`,
-          index,
-          now,
-          row.id
+          `INSERT INTO panels (
+            id, title, workspace_id, parent_id, position_id, position_actor_id, position_op_id,
+            created_at, updated_at, snapshot, history, history_index
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          op.panelId,
+          op.title,
+          this.getWorkspaceId(),
+          op.parentId,
+          op.positionId,
+          actorId,
+          op.opId,
+          ts,
+          ts,
+          JSON.stringify(op.snapshot),
+          JSON.stringify([op.snapshot]),
+          0
         );
+        return;
+      case "panel.archive":
+        this.sql.exec(
+          `WITH RECURSIVE subtree(id) AS (
+             SELECT id FROM panels WHERE id = ?
+             UNION ALL
+             SELECT p.id FROM panels p JOIN subtree s ON p.parent_id = s.id
+           )
+           UPDATE panels
+           SET archived_at = ?, archived_by = ?, updated_at = ?
+           WHERE id IN (SELECT id FROM subtree)`,
+          op.panelId,
+          ts,
+          actorId,
+          ts
+        );
+        return;
+      case "panel.restore": {
+        const row = this.requireRow(op.panelId);
+        const parentUnavailable =
+          row.parent_id != null &&
+          !this.sql
+            .exec(`SELECT 1 FROM panels WHERE id = ? AND archived_at IS NULL`, row.parent_id)
+            .toArray()[0];
+        if (parentUnavailable) {
+          const positionId = this.rankForPosition(null, this.getRootPanels().length, op.panelId);
+          this.sql.exec(
+            `UPDATE panels
+             SET parent_id = NULL, position_id = ?, position_actor_id = ?, position_op_id = ?,
+                 archived_at = NULL, archived_by = NULL, updated_at = ?
+             WHERE id = ?`,
+            positionId,
+            actorId,
+            op.opId,
+            ts,
+            op.panelId
+          );
+          return;
+        }
+        this.sql.exec(
+          `UPDATE panels SET archived_at = NULL, archived_by = NULL, updated_at = ? WHERE id = ?`,
+          ts,
+          op.panelId
+        );
+        return;
       }
-    });
+      case "panel.move": {
+        const currentRow = this.requireRow(op.panelId);
+        const oldParentId = currentRow.parent_id;
+        this.sql.exec(
+          `UPDATE panels SET parent_id = ?, position_id = ?, position_actor_id = ?, position_op_id = ?, updated_at = ? WHERE id = ?`,
+          op.parentId,
+          op.positionId,
+          actorId,
+          op.opId,
+          ts,
+          op.panelId
+        );
+        void oldParentId;
+        return;
+      }
+      case "panel.setTitle":
+        this.sql.exec(
+          `UPDATE panels SET title = ?, updated_at = ? WHERE id = ?`,
+          op.title,
+          ts,
+          op.panelId
+        );
+        return;
+      case "panel.setSnapshot": {
+        const history = this.normalizeHistory(
+          op.history ?? { entries: [op.snapshot], index: 0 },
+          op.snapshot
+        );
+        this.sql.exec(
+          `UPDATE panels SET snapshot = ?, history = ?, history_index = ?, updated_at = ? WHERE id = ?`,
+          JSON.stringify(op.snapshot),
+          JSON.stringify(history.entries),
+          history.index,
+          ts,
+          op.panelId
+        );
+        return;
+      }
+    }
+  }
+
+  private hasPanelColumn(columnName: string): boolean {
+    const rows = this.sql.exec(`PRAGMA table_info(panels)`).toArray() as Array<{ name: string }>;
+    return rows.some((row) => row.name === columnName);
+  }
+
+  private rankForPosition(
+    parentId: string | null,
+    targetPosition: number,
+    excludePanelId?: string
+  ): string {
+    const rows = this.sql
+      .exec(
+        `SELECT id, position_id FROM panels
+         WHERE (parent_id = ? OR (parent_id IS NULL AND ? IS NULL))
+           AND workspace_id = ?
+           AND archived_at IS NULL
+         ORDER BY position_id, position_actor_id, position_op_id`,
+        parentId,
+        parentId,
+        this.getWorkspaceId()
+      )
+      .toArray() as Array<{ id: string; position_id: string }>;
+    const siblings = excludePanelId ? rows.filter((row) => row.id !== excludePanelId) : rows;
+    if (siblings.length === 0) return firstRank();
+    const clamped = Math.max(0, Math.min(targetPosition, siblings.length));
+    return rankBetween(siblings[clamped - 1]?.position_id, siblings[clamped]?.position_id);
   }
 
   private summaryRows(sql: string, ...args: unknown[]): PanelSummary[] {
     const rows = this.sql.exec(sql, ...args).toArray() as Array<{
       id: string;
       title: string;
-      position: number;
+      position_id: string;
       child_count: number;
     }>;
-    return rows.map((row) => ({
+    return rows.map((row, index) => ({
       id: row.id,
       title: row.title,
       childCount: row.child_count,
-      position: row.position,
+      position: index,
     }));
   }
 
   private rowToPanel(row: DbPanelRow): Panel {
-    const history = this.parseHistory(row);
-    const historyIndex = this.normalizeHistoryIndex(row, history);
+    const snapshot = JSON.parse(row.snapshot) as PanelSnapshot;
+    const history = this.normalizeHistory(
+      row.history
+        ? { entries: JSON.parse(row.history) as PanelSnapshot[], index: row.history_index ?? 0 }
+        : undefined,
+      snapshot
+    );
     return {
       id: row.id,
       title: row.title,
       children: [],
-      selectedChildId: row.selected_child_id,
-      history: { entries: history, index: historyIndex },
+      positionId: row.position_id,
+      snapshot,
+      history,
       artifacts: {},
     };
   }
@@ -639,16 +805,47 @@ export class PanelStoreDO extends DurableObjectBase {
     return row;
   }
 
-  private parseHistory(row: DbPanelRow): PanelSnapshot[] {
-    const history = JSON.parse(row.history) as PanelSnapshot[];
-    if (!Array.isArray(history) || history.length === 0) {
-      throw new Error(`Panel ${row.id} has invalid history: must be non-empty array`);
-    }
-    return history;
+  private isValidSnapshot(value: unknown): value is PanelSnapshot {
+    const snapshot = value as Partial<PanelSnapshot> | null;
+    return Boolean(
+      snapshot &&
+      typeof snapshot === "object" &&
+      typeof snapshot.source === "string" &&
+      typeof snapshot.contextId === "string" &&
+      snapshot.options &&
+      typeof snapshot.options === "object"
+    );
   }
 
-  private normalizeHistoryIndex(row: DbPanelRow, history: PanelSnapshot[]): number {
-    return row.history_index < 0 || row.history_index >= history.length ? 0 : row.history_index;
+  private isValidPositionId(value: unknown): value is string {
+    return typeof value === "string" && value.length > 0 && value.length <= 128;
+  }
+
+  private isValidHistory(value: unknown): value is NonNullable<Panel["history"]> {
+    const history = value as Partial<NonNullable<Panel["history"]>> | null;
+    if (!history || !Array.isArray(history.entries)) return false;
+    if (!Number.isInteger(history.index)) return false;
+    const index = history.index;
+    if (history.entries.length === 0) return false;
+    if (index == null || index < 0 || index >= history.entries.length) return false;
+    if (!history.entries.every((entry) => this.isValidSnapshot(entry))) return false;
+    return true;
+  }
+
+  private normalizeHistory(
+    history: NonNullable<Panel["history"]> | undefined,
+    currentSnapshot: PanelSnapshot
+  ): NonNullable<Panel["history"]> {
+    if (!this.isValidHistory(history)) {
+      return { entries: [currentSnapshot], index: 0 };
+    }
+    const current = history.entries[history.index];
+    if (JSON.stringify(current) !== JSON.stringify(currentSnapshot)) {
+      const entries = history.entries.slice();
+      entries[history.index] = currentSnapshot;
+      return { entries, index: history.index };
+    }
+    return history;
   }
 
   private sanitizeQuery(query: string): string {

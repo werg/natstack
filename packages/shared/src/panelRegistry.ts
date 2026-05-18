@@ -3,11 +3,11 @@
  *
  * Owns:
  * - The in-memory panel map and root panel list
- * - Tree relationships (parent/child, selectedChildId)
+ * - Tree relationships (parent/child)
  * - Debounced tree-update notifications via onTreeUpdated callback
  *
  * Does NOT own:
- * - Persistence (server panel service owns SQLite via PanelPersistence)
+ * - Persistence (workspace-sync owns SQLite-backed shared state)
  * - Electron views, tokens, build orchestration
  * - State-arg validation against manifests
  */
@@ -263,9 +263,7 @@ export class PanelRegistry implements PanelRelationshipProvider {
       if (parent) {
         parent.children = parent.children.filter((c) => c.id !== panelId);
         if (parent.selectedChildId === panelId) {
-          // Auto-select the next remaining child (or null if none left)
-          const nextChild = parent.children.length > 0 ? parent.children[parent.children.length - 1]!.id : null;
-          parent.selectedChildId = nextChild;
+          parent.selectedChildId = parent.children[0]?.id ?? null;
         }
       }
     } else {
@@ -334,8 +332,7 @@ export class PanelRegistry implements PanelRelationshipProvider {
   }
 
   /**
-   * Update the selected path in the in-memory tree when a panel is focused.
-   * Walks up from the focused panel and sets each ancestor's selectedChildId.
+   * Update the focused panel in local memory.
    */
   updateSelectedPath(focusedPanelId: string): void {
     this.focusedPanelId = focusedPanelId;
@@ -355,16 +352,14 @@ export class PanelRegistry implements PanelRelationshipProvider {
       if (!parentId) break;
 
       const parent = this.panels.get(parentId);
-      if (parent) {
-        parent.selectedChildId = currentId;
-      }
+      if (parent) parent.selectedChildId = currentId;
 
       currentId = parentId;
       depth++;
     }
 
     if (depth >= MAX_DEPTH) {
-      console.error(`[PanelRegistry] Max depth exceeded in updateSelectedPath`);
+      console.error("[PanelRegistry] Max depth exceeded in updateSelectedPath");
     }
   }
 
@@ -478,6 +473,9 @@ export class PanelRegistry implements PanelRelationshipProvider {
     if (collapsedPanelIds) {
       this.collapsedIds = new Set(collapsedPanelIds);
     }
+    if (this.focusedPanelId && this.panels.has(this.focusedPanelId)) {
+      this.updateSelectedPath(this.focusedPanelId);
+    }
   }
 
   /**
@@ -503,6 +501,9 @@ export class PanelRegistry implements PanelRelationshipProvider {
 
     if (collapsedPanelIds) {
       this.collapsedIds = new Set(collapsedPanelIds);
+    }
+    if (this.focusedPanelId && this.panels.has(this.focusedPanelId)) {
+      this.updateSelectedPath(this.focusedPanelId);
     }
 
     this.notifyPanelTreeUpdate();

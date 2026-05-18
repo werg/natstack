@@ -25,8 +25,7 @@ function makePanel(source: string): Panel {
     id: "panel-1",
     title: "Panel",
     children: [],
-    selectedChildId: null,
-    history: { entries: [snapshot], index: 0 },
+    snapshot,
     artifacts: { buildState: "ready" },
   };
 }

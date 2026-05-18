@@ -157,7 +157,7 @@ export function getPanelSourceKind(source: string): PanelSourceKind {
   return isBrowserPanelSource(source) ? "browser" : "panel";
 }
 
-export function getPanelDisplayAddress(panel: Pick<Panel, "id" | "history">, navigation?: PanelNavigationState): string {
+export function getPanelDisplayAddress(panel: Pick<Panel, "id" | "snapshot">, navigation?: PanelNavigationState): string {
   const snapshot = getCurrentSnapshot(panel);
   const source = snapshot.source;
   const browserUrl = browserUrlFromPanelSource(source);
@@ -165,7 +165,7 @@ export function getPanelDisplayAddress(panel: Pick<Panel, "id" | "history">, nav
   return source;
 }
 
-export function getPanelEditableAddress(panel: Pick<Panel, "id" | "history">, navigation?: PanelNavigationState): string {
+export function getPanelEditableAddress(panel: Pick<Panel, "id" | "snapshot">, navigation?: PanelNavigationState): string {
   return getPanelDisplayAddress(panel, navigation);
 }
 

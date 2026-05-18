@@ -58,8 +58,6 @@ export interface CommonDeps {
 export async function registerPanelServices(deps: CommonDeps): Promise<void> {
   const {
     container,
-    dispatcher,
-    tokenManager,
     workspace,
     workspacePath,
     workspaceConfig,
@@ -69,60 +67,6 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
   } = deps;
   const path = await import("path");
   const { rpcService } = await import("@natstack/shared/managedService");
-
-  {
-    const { createPanelService } = await import("./services/panelService.js");
-    const { createPanelPersistenceClient } = await import("./services/panelPersistenceClient.js");
-
-    container.register({
-      name: "panelService",
-      dependencies: ["fsService"],
-      async start(resolve) {
-        const fsServiceInst = assertPresent(
-          resolve<import("@natstack/shared/fsService").FsService>("fsService")
-        );
-        const panelPersistenceRpc = {
-          call: (service: string, method: string, args: unknown[]) =>
-            dispatcher.dispatch(
-              { callerId: "server", callerKind: "server" },
-              service,
-              method,
-              args
-            ),
-        };
-        const persistence = createPanelPersistenceClient(panelPersistenceRpc);
-        const searchIndex = persistence;
-        const { protocol, externalHost } = hostConfig;
-        const urlConfig = new (await import("./services/panelService.js")).PanelUrlConfig({
-          protocol,
-          externalHost,
-          gatewayPort: 0,
-        });
-
-        return {
-          persistence,
-          searchIndex,
-          urlConfig,
-          definition: createPanelService({
-            persistence,
-            searchIndex,
-            tokenManager,
-            fsService: fsServiceInst,
-            workspacePath,
-            urlConfig,
-            codeIdentityResolver: deps.codeIdentityResolver,
-            getEffectiveVersion: deps.getEffectiveVersion,
-          }),
-        };
-      },
-      getServiceDefinition() {
-        const inst = container.get<{
-          definition: import("@natstack/shared/serviceDefinition").ServiceDefinition;
-        }>("panelService");
-        return inst?.definition;
-      },
-    });
-  }
 
   {
     const { createWorkspaceService } = await import("./services/workspaceService.js");

@@ -910,6 +910,16 @@ app.on("ready", async () => {
       )
     );
   };
+  const recoverShellStateFromServer = async (kind: "resubscribe" | "cold-recover") => {
+    await replayShellSubscriptionsToServer();
+    const manager = shellCore?.panelManager;
+    if (!manager) return;
+    if (kind === "cold-recover") {
+      await manager.syncSnapshot();
+      return;
+    }
+    await manager.syncSince();
+  };
 
   // Bridge server→main events. Two distinct sources arrive through this
   // callback (serverClient.onEvent), and both need handling:
@@ -1019,6 +1029,12 @@ app.on("ready", async () => {
           void replayShellSubscriptionsToServer();
         }
         previousStatus = status;
+      },
+      onRecovery: (kind) => {
+        void recoverShellStateFromServer(kind).catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          log.warn(`[recovery] ${kind} failed: ${msg}`);
+        });
       },
     });
     serverClientRef = serverSession.serverClient;
@@ -1661,6 +1677,10 @@ app.on("will-quit", (event) => {
 app.on("activate", () => {
   if (mainWindow === null && serverSession) {
     void createWindow();
+  }
+  const focusedPanelId = panelRegistry?.getFocusedPanelId();
+  if (focusedPanelId) {
+    void shellCore?.panelManager.notifyFocused(focusedPanelId).catch(() => {});
   }
 });
 

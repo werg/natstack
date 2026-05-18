@@ -84,19 +84,37 @@ describe("internal storage DOs under workerd", () => {
       className: "PanelStoreDO",
       objectKey: "workspace-fts",
     };
-    const snapshot = { source: "panels/search/index.tsx", stateArgs: {} };
-    await harness.dispatch.dispatch(ref, "createPanel", {
-      id: "root",
-      title: "Root",
-      parentId: null,
-      snapshot,
-    });
-    await harness.dispatch.dispatch(ref, "createPanel", {
-      id: "child",
-      title: "Search Console",
-      parentId: "root",
-      snapshot,
-    });
+    const snapshot = {
+      source: "panels/search/index.tsx",
+      contextId: "ctx-search",
+      options: {},
+      stateArgs: {},
+    };
+    await harness.dispatch.dispatch(
+      ref,
+      "appendOps",
+      [
+        {
+          opId: "fts-create-root",
+          type: "panel.create",
+          panelId: "root",
+          parentId: null,
+          positionId: "000001000000",
+          snapshot,
+          title: "Root",
+        },
+        {
+          opId: "fts-create-child",
+          type: "panel.create",
+          panelId: "child",
+          parentId: "root",
+          positionId: "000001000000",
+          snapshot,
+          title: "Search Console",
+        },
+      ],
+      "actor-a"
+    );
     await harness.dispatch.dispatch(ref, "indexPanel", {
       id: "child",
       title: "Search Console",
@@ -108,8 +126,255 @@ describe("internal storage DOs under workerd", () => {
     await expect(harness.dispatch.dispatch(ref, "search", "durable", 5)).resolves.toMatchObject([
       { id: "child", title: "Search Console" },
     ]);
-    await harness.dispatch.dispatch(ref, "archivePanel", "child");
+    await harness.dispatch.dispatch(
+      ref,
+      "appendOp",
+      { opId: "fts-archive-child", type: "panel.archive", panelId: "child" },
+      "actor-a"
+    );
     await expect(harness.dispatch.dispatch(ref, "search", "durable", 5)).resolves.toEqual([]);
+  }, 30_000);
+
+  it("persists PanelStoreDO ops and returns consistent snapshots", async () => {
+    const harness = createWorkerdHarness();
+    manager = harness.manager;
+    await manager.registerAllDOClasses([{ source: INTERNAL_DO_SOURCE, className: "PanelStoreDO" }]);
+
+    const ref = {
+      source: INTERNAL_DO_SOURCE,
+      className: "PanelStoreDO",
+      objectKey: "workspace-ops",
+    };
+    const snapshot = {
+      source: "panels/search/index.tsx",
+      contextId: "ctx-search",
+      options: {},
+      stateArgs: {},
+    };
+    await expect(
+      harness.dispatch.dispatch(
+        ref,
+        "appendOp",
+        {
+          opId: "op-create-root",
+          type: "panel.create",
+          panelId: "root",
+          parentId: null,
+          positionId: "000001000000",
+          snapshot,
+          title: "Root",
+        },
+        "actor-a"
+      )
+    ).resolves.toMatchObject({ accepted: true, revision: 1 });
+    await expect(
+      harness.dispatch.dispatch(
+        ref,
+        "appendOp",
+        {
+          opId: "op-title-root",
+          type: "panel.setTitle",
+          panelId: "root",
+          title: "Renamed",
+        },
+        "actor-b"
+      )
+    ).resolves.toMatchObject({ accepted: true, revision: 2 });
+    const nextSnapshot = {
+      source: "panels/other/index.tsx",
+      contextId: "ctx-search",
+      options: {},
+      stateArgs: { q: "next" },
+    };
+    await expect(
+      harness.dispatch.dispatch(
+        ref,
+        "appendOp",
+        {
+          opId: "op-snapshot-root",
+          type: "panel.setSnapshot",
+          panelId: "root",
+          snapshot: nextSnapshot,
+          history: { entries: [snapshot, nextSnapshot], index: 1 },
+        },
+        "actor-a"
+      )
+    ).resolves.toMatchObject({ accepted: true, revision: 3 });
+    await expect(
+      harness.dispatch.dispatch(
+        ref,
+        "appendOp",
+        {
+          opId: "op-title-root",
+          type: "panel.setTitle",
+          panelId: "root",
+          title: "Renamed",
+        },
+        "actor-b"
+      )
+    ).resolves.toMatchObject({ accepted: false, alreadyApplied: true, revision: 2 });
+
+    await expect(harness.dispatch.dispatch(ref, "getOpsSince", 0)).resolves.toMatchObject({
+      revision: 3,
+      ops: [
+        { opId: "op-create-root", actorId: "actor-a", revision: 1 },
+        { opId: "op-title-root", actorId: "actor-b", revision: 2 },
+        { opId: "op-snapshot-root", actorId: "actor-a", revision: 3 },
+      ],
+    });
+    await expect(harness.dispatch.dispatch(ref, "getSnapshot")).resolves.toMatchObject({
+      revision: 3,
+      tree: [
+        {
+          id: "root",
+          title: "Renamed",
+          snapshot: nextSnapshot,
+          history: { entries: [snapshot, nextSnapshot], index: 1 },
+        },
+      ],
+    });
+    await expect(harness.dispatch.dispatch(ref, "compactOps", 1)).resolves.toMatchObject({
+      compactedThroughRevision: 1,
+      retainedOps: 2,
+      revision: 3,
+    });
+    await expect(harness.dispatch.dispatch(ref, "getOpsSince", 0)).resolves.toMatchObject({
+      revision: 3,
+      snapshotRequired: true,
+      ops: [],
+    });
+    await expect(harness.dispatch.dispatch(ref, "getOpsSince", 1)).resolves.toMatchObject({
+      revision: 3,
+      ops: [
+        { opId: "op-title-root", actorId: "actor-b", revision: 2 },
+        { opId: "op-snapshot-root", actorId: "actor-a", revision: 3 },
+      ],
+    });
+  }, 30_000);
+
+  it("rejects malformed PanelStoreDO history and rolls back failed batches", async () => {
+    const harness = createWorkerdHarness();
+    manager = harness.manager;
+    await manager.registerAllDOClasses([{ source: INTERNAL_DO_SOURCE, className: "PanelStoreDO" }]);
+
+    const ref = {
+      source: INTERNAL_DO_SOURCE,
+      className: "PanelStoreDO",
+      objectKey: "workspace-op-validation",
+    };
+    const snapshot = { source: "panels/root/index.tsx", contextId: "ctx-root", options: {} };
+    await harness.dispatch.dispatch(
+      ref,
+      "appendOp",
+      {
+        opId: "create-root",
+        type: "panel.create",
+        panelId: "root",
+        parentId: null,
+        positionId: "000001000000",
+        snapshot,
+        title: "Root",
+      },
+      "actor-a"
+    );
+
+    await expect(
+      harness.dispatch.dispatch(
+        ref,
+        "appendOps",
+        [
+          { opId: "rename-root", type: "panel.setTitle", panelId: "root", title: "Renamed" },
+          {
+            opId: "bad-history",
+            type: "panel.setSnapshot",
+            panelId: "root",
+            snapshot,
+            history: { entries: [], index: 0 },
+          },
+        ],
+        "actor-a"
+      )
+    ).resolves.toMatchObject({
+      acceptedOps: [],
+      rejectedOps: [{ opId: "bad-history", reason: "MALFORMED_HISTORY" }],
+      revision: 1,
+    });
+
+    await expect(harness.dispatch.dispatch(ref, "getSnapshot")).resolves.toMatchObject({
+      revision: 1,
+      tree: [{ id: "root", title: "Root", history: { entries: [snapshot], index: 0 } }],
+    });
+  }, 30_000);
+
+  it("applies PanelStoreDO tombstone and restore rules", async () => {
+    const harness = createWorkerdHarness();
+    manager = harness.manager;
+    await manager.registerAllDOClasses([{ source: INTERNAL_DO_SOURCE, className: "PanelStoreDO" }]);
+
+    const ref = {
+      source: INTERNAL_DO_SOURCE,
+      className: "PanelStoreDO",
+      objectKey: "workspace-tombstones",
+    };
+    const snapshot = { source: "panels/search/index.tsx", contextId: "ctx", options: {} };
+    await harness.dispatch.dispatch(
+      ref,
+      "appendOps",
+      [
+        {
+          opId: "create-root",
+          type: "panel.create",
+          panelId: "root",
+          parentId: null,
+          positionId: "000001000000",
+          snapshot,
+          title: "Root",
+        },
+        {
+          opId: "create-child",
+          type: "panel.create",
+          panelId: "child",
+          parentId: "root",
+          positionId: "000001000000",
+          snapshot,
+          title: "Child",
+        },
+      ],
+      "actor-a"
+    );
+    await expect(
+      harness.dispatch.dispatch(
+        ref,
+        "appendOp",
+        { opId: "archive-root", type: "panel.archive", panelId: "root" },
+        "actor-a"
+      )
+    ).resolves.toMatchObject({ accepted: true });
+    await expect(
+      harness.dispatch.dispatch(
+        ref,
+        "appendOp",
+        {
+          opId: "move-child-while-archived",
+          type: "panel.move",
+          panelId: "child",
+          parentId: null,
+          positionId: "000002000000",
+        },
+        "actor-b"
+      )
+    ).resolves.toMatchObject({ accepted: false, rejectedReason: "ARCHIVED" });
+    await expect(
+      harness.dispatch.dispatch(
+        ref,
+        "appendOp",
+        { opId: "restore-child", type: "panel.restore", panelId: "child" },
+        "actor-b"
+      )
+    ).resolves.toMatchObject({ accepted: true });
+    await expect(harness.dispatch.dispatch(ref, "getSnapshot")).resolves.toMatchObject({
+      tree: [{ id: "child", title: "Child" }],
+    });
   }, 30_000);
 
   it("supports BrowserDataDO history FTS5 search in real workerd storage", async () => {

@@ -50,7 +50,8 @@ export interface FullPanel {
   parentId: string | null;
   position: number;
   selectedChildId: string | null;
-  history: Panel["history"];
+  snapshot: Panel["snapshot"];
+  history?: Panel["history"];
   navigation?: PanelNavigationState;
   artifacts: PanelArtifacts;
   path?: string;
@@ -334,7 +335,8 @@ function panelToFull(panel: Panel, parentId: string | null, position: number): F
     contextId: getPanelContextId(panel),
     parentId,
     position,
-    selectedChildId: panel.selectedChildId,
+    selectedChildId: panel.selectedChildId ?? null,
+    snapshot: panel.snapshot,
     history: panel.history,
     navigation: panel.navigation,
     artifacts: panel.artifacts ?? {},
@@ -596,7 +598,7 @@ export function useDescendantSiblingGroups(
 
     // Walk down the selected path
     while (currentPanel && depth < maxDepth) {
-      const selectedChildId = currentPanel.selectedChildId;
+      const selectedChildId = currentPanel.selectedChildId ?? currentPanel.children[0]?.id;
       if (!selectedChildId) break;
 
       // Check if selected child exists

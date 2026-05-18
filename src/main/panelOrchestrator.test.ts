@@ -13,8 +13,7 @@ function makePanel(id: string, children: Panel[] = []): Panel {
     id,
     title: id,
     children,
-    selectedChildId: null,
-    history: { entries: [snapshot], index: 0 },
+    snapshot,
     artifacts: {},
   };
 }

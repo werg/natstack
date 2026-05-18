@@ -1,5 +1,5 @@
 /**
- * Panel accessor functions for the PanelSnapshot history architecture.
+ * Panel accessor functions for the shared panel snapshot.
  */
 
 import type { CreateChildOptions } from "@natstack/types";
@@ -8,16 +8,22 @@ import type { Panel, PanelSnapshot, PackageManifest, StateArgsValue } from "../t
 /**
  * Get the current snapshot for a panel.
  */
-export function getCurrentSnapshot(panel: Pick<Panel, "id" | "history">): PanelSnapshot {
-  const snapshot = panel.history.entries[panel.history.index];
-  if (!snapshot) {
-    throw new Error(`Panel ${panel.id} has no snapshot at history index ${panel.history.index}`);
+export function getCurrentSnapshot(panel: Pick<Panel, "id" | "snapshot" | "history">): PanelSnapshot {
+  if (panel.history) {
+    const snapshot = panel.history.entries[panel.history.index];
+    if (!snapshot) {
+      throw new Error(`Panel ${panel.id} has no snapshot at history index ${panel.history.index}`);
+    }
+    return snapshot;
   }
-  return snapshot;
+  return panel.snapshot;
 }
 
 export function replaceCurrentSnapshot(panel: Panel, snapshot: PanelSnapshot): void {
-  panel.history.entries[panel.history.index] = snapshot;
+  if (panel.history) {
+    panel.history.entries[panel.history.index] = snapshot;
+  }
+  panel.snapshot = snapshot;
 }
 
 export function replacePanelHistory(panel: Panel, entries: PanelSnapshot[], index: number): void {
@@ -26,41 +32,43 @@ export function replacePanelHistory(panel: Panel, entries: PanelSnapshot[], inde
   }
   const nextIndex = Math.max(0, Math.min(index, entries.length - 1));
   panel.history = { entries, index: nextIndex };
+  panel.snapshot = entries[nextIndex]!;
 }
 
 export function pushPanelHistorySnapshot(panel: Panel, snapshot: PanelSnapshot): void {
+  const history = panel.history ?? { entries: [panel.snapshot], index: 0 };
   replacePanelHistory(
     panel,
-    panel.history.entries.slice(0, panel.history.index + 1).concat(snapshot),
-    panel.history.index + 1,
+    history.entries.slice(0, history.index + 1).concat(snapshot),
+    history.index + 1,
   );
 }
 
 /**
  * Get the panel source (path or URL) from the current snapshot.
  */
-export function getPanelSource(panel: Pick<Panel, "id" | "history">): string {
+export function getPanelSource(panel: Pick<Panel, "id" | "snapshot" | "history">): string {
   return getCurrentSnapshot(panel).source;
 }
 
 /**
  * Get the panel options from the current snapshot.
  */
-export function getPanelOptions(panel: Pick<Panel, "id" | "history">): PanelSnapshot["options"] {
+export function getPanelOptions(panel: Pick<Panel, "id" | "snapshot" | "history">): PanelSnapshot["options"] {
   return getCurrentSnapshot(panel).options;
 }
 
 /**
  * Get panel environment variables from the current snapshot.
  */
-export function getPanelEnv(panel: Pick<Panel, "id" | "history">): Record<string, string> | undefined {
+export function getPanelEnv(panel: Pick<Panel, "id" | "snapshot" | "history">): Record<string, string> | undefined {
   return getPanelOptions(panel).env;
 }
 
 /**
  * Get the resolved context ID for a panel.
  */
-export function getPanelContextId(panel: Pick<Panel, "id" | "history">): string {
+export function getPanelContextId(panel: Pick<Panel, "id" | "snapshot" | "history">): string {
   return getCurrentSnapshot(panel).contextId;
 }
 
@@ -74,18 +82,18 @@ export function getInjectHostThemeVariables(panel: Panel, manifest?: PackageMani
 /**
  * Get the resolved URL for a panel.
  */
-export function getBrowserResolvedUrl(panel: Pick<Panel, "id" | "history">): string | undefined {
+export function getBrowserResolvedUrl(panel: Pick<Panel, "id" | "snapshot" | "history">): string | undefined {
   return getCurrentSnapshot(panel).resolvedUrl;
 }
 
-export function getPanelRef(panel: Pick<Panel, "id" | "history">): string | undefined {
+export function getPanelRef(panel: Pick<Panel, "id" | "snapshot" | "history">): string | undefined {
   return getCurrentSnapshot(panel).options.ref;
 }
 
 export function getPanelHistoryState(panel: Panel): { canGoBack: boolean; canGoForward: boolean } {
   return {
-    canGoBack: panel.history.index > 0,
-    canGoForward: panel.history.index < panel.history.entries.length - 1,
+    canGoBack: Boolean(panel.navigation?.canGoBack || (panel.history && panel.history.index > 0)),
+    canGoForward: Boolean(panel.navigation?.canGoForward || (panel.history && panel.history.index < panel.history.entries.length - 1)),
   };
 }
 
@@ -93,7 +101,7 @@ export function getPanelHistoryState(panel: Panel): { canGoBack: boolean; canGoF
  * Get the state args for a panel from the current snapshot.
  * Returns undefined if not set.
  */
-export function getPanelStateArgs(panel: Pick<Panel, "id" | "history">): StateArgsValue | undefined {
+export function getPanelStateArgs(panel: Pick<Panel, "id" | "snapshot" | "history">): StateArgsValue | undefined {
   return getCurrentSnapshot(panel).stateArgs;
 }
 

@@ -50,7 +50,7 @@ function recordingRpc(): {
   captured: Array<{ target: string; method: string; args: unknown[] }>;
 } {
   const captured: Array<{ target: string; method: string; args: unknown[] }> = [];
-  const callImpl = async (target: string, method: string, ...args: unknown[]): Promise<unknown> => {
+  const callImpl = async (target: string, method: string, args: unknown[]): Promise<unknown> => {
     captured.push({ target, method, args });
     return undefined;
   };

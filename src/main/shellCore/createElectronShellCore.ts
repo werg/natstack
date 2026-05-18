@@ -1,8 +1,13 @@
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import { PanelManager } from "@natstack/shared/shell/panelManager";
-import { PanelStoreRpc } from "@natstack/shared/shell/panelStoreRpc";
 import type { ServerClient } from "../serverClient.js";
-import { createPanelPersistenceClient } from "../../server/services/panelPersistenceClient.js";
+import type {
+  AppendPanelOpsResult,
+  PanelOpsSinceResult,
+  PanelSnapshotResult,
+  SubmittedPanelOp,
+} from "@natstack/shared/panelOpsTypes";
+import { createElectronLocalViewStateStore } from "./localViewState.js";
 
 export function createElectronShellCore(deps: {
   statePath: string;
@@ -14,17 +19,29 @@ export function createElectronShellCore(deps: {
   gatewayConfig: { serverUrl: string };
   workspaceConfig?: import("@natstack/shared/workspace/types").WorkspaceConfig;
 }) {
-  const persistence = createPanelPersistenceClient(deps.serverClient);
-  const searchIndex = persistence;
-  const store = new PanelStoreRpc((method, args) =>
-    deps.serverClient.call("panel-persistence", method, args)
-  );
   const panelManager = new PanelManager({
-    store,
     registry: deps.registry,
+    workspaceSync: {
+      getSnapshot: () =>
+        deps.serverClient.call("workspace-sync", "getSnapshot", []) as Promise<PanelSnapshotResult>,
+      getOpsSince: (baseRevision) =>
+        deps.serverClient.call("workspace-sync", "getOpsSince", [
+          baseRevision,
+        ]) as Promise<PanelOpsSinceResult>,
+      submitOps: (baseRevision, ops: SubmittedPanelOp[]) =>
+        deps.serverClient.call("workspace-sync", "submitOps", [
+          baseRevision,
+          ops,
+        ]) as Promise<AppendPanelOpsResult>,
+    },
+    activationClient: {
+      markPanelActive: (panelId) =>
+        deps.serverClient.call("presence", "markPanelActive", [panelId]) as Promise<void>,
+    },
+    viewState: createElectronLocalViewStateStore(deps.statePath),
     workspacePath: deps.workspacePath,
     allowMissingManifests: deps.allowMissingManifests,
-    searchIndex,
+    searchIndex: null,
     workspaceConfig: deps.workspaceConfig,
     serverInfo: {
       gatewayConfig: deps.gatewayConfig,
@@ -51,8 +68,6 @@ export function createElectronShellCore(deps: {
 
   return {
     panelManager,
-    persistence,
-    searchIndex,
-    shutdown: () => store.close?.(),
+    shutdown: () => {},
   };
 }

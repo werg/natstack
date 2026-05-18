@@ -30,7 +30,7 @@ Framework-owned storage is implemented as internal DO classes in
 |---|---|---|---|
 | `ScopeStoreDO` | `scope` | `global` | `repl_scopes` |
 | `WebhookStoreDO` | `webhookIngress` | `global` | `webhook_ingress_subscriptions` |
-| `PanelStoreDO` | `panel-persistence` | workspace id | `panels`, `panel_search_metadata`, `panel_fts` |
+| `PanelStoreDO` | `workspace-sync` | workspace id | `panels`, `panel_ops`, `workspace_meta`, `panel_search_metadata`, `panel_fts` |
 | `BrowserDataDO` | `browser-data` | `global` | bookmarks, history, history FTS, passwords, cookies, autofill, permissions, import log |
 
 `PanelStoreDO` and `BrowserDataDO` use FTS5 in workerd. Tests that assert FTS
