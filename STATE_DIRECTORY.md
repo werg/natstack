@@ -23,7 +23,7 @@ Content-addressed build store. Each build is stored immutably at `{userData}/bui
   ├── bundle.js
   ├── bundle.css      (panels/about only)
   ├── index.html      (panels/about only)
-  ├── package.json    (agents only — {"type":"module"})
+  ├── package.json    (workers/extensions only — {"type":"module"})
   ├── assets/         (chunks, images, fonts)
   └── metadata.json   (sentinel — kind, name, ev, sourcemap, builtAt)
 ```
@@ -60,7 +60,11 @@ git-replacement system) is responsible for tracking reachability and calling
 
 ### `build-artifacts/`
 
-Stores external dependency installs (npm `node_modules`) for panels and agents, keyed by a hash of the merged dependency set.
+Stores external dependency installs (npm `node_modules`) for panels and workers, keyed by a hash of the merged dependency set. Extension runtime dependencies that may run lifecycle scripts are stored separately under `extension-runtime-deps/`.
+
+### `extension-runtime-deps/`
+
+Stores extension runtime dependency installs for packages esbuild leaves external, keyed by dependency hash plus platform, architecture, and Node ABI. Unlike `external-deps/`, this cache may run package lifecycle scripts because extension install/update approval grants native-code trust.
 
 ### `context-scopes/`
 

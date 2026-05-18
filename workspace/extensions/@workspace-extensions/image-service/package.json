@@ -1,0 +1,17 @@
+{
+  "name": "@workspace-extensions/image-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "displayName": "Image Service",
+    "entry": "index.ts",
+    "sourcemap": true,
+    "extension": {
+      "activationEvents": ["*"]
+    }
+  },
+  "dependencies": {
+    "@natstack/shared": "workspace:*"
+  }
+}

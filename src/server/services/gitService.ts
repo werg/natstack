@@ -30,6 +30,7 @@ import type { CodeIdentityResolver } from "./codeIdentityResolver.js";
 import type { EgressProxy } from "./egressProxy.js";
 import { requestCapabilityPermission } from "./capabilityPermission.js";
 import { INTERNAL_GIT_WRITE_CAPABILITY } from "./gitWritePermission.js";
+import { deleteDynamicProperty } from "../../lintHelpers";
 
 /**
  * Allowed characters in user-supplied git refs/paths. Disallow anything that
@@ -106,7 +107,7 @@ export function createGitService(deps: GitServiceDeps): ServiceDefinition {
   return {
     name: "git",
     description: "Git operations and scoped filesystem access for panels",
-    policy: { allowed: ["shell", "panel", "server", "worker"] },
+    policy: { allowed: ["shell", "panel", "server", "worker", "extension"] },
     methods: {
       getWorkspaceTree: { args: z.tuple([]) },
       findRepoForPath: { args: z.tuple([z.string()]) },
@@ -639,7 +640,7 @@ async function collectGitBody(body: Uint8Array | AsyncIterable<Uint8Array>): Pro
 
 function mutateWorkspaceConfig(target: WorkspaceConfig, next: WorkspaceConfig): void {
   for (const key of Object.keys(target) as Array<keyof WorkspaceConfig>) {
-    delete target[key];
+    deleteDynamicProperty(target, key);
   }
   Object.assign(target, next);
 }

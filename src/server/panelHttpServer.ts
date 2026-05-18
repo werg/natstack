@@ -13,6 +13,7 @@ import { constantTimeStringEqual } from "@natstack/shared/tokenManager";
 import type { BuildResult, BuildMetadata } from "./buildV2/buildStore.js";
 import type { CdpBridge } from "./cdpBridge.js";
 import { CONFIG_LOADER_JS } from "./configLoader.js";
+import { assertPresent } from "../lintHelpers";
 
 const log = createDevLogger("PanelHttpServer");
 
@@ -122,7 +123,7 @@ function escapeHtml(s: string): string {
 function extractSourcePath(pathname: string): { source: string; resource: string } | null {
   const match = pathname.match(/^\/([^/]+\/[^/]+)(\/.*)?$/);
   if (!match) return null;
-  return { source: match[1]!, resource: match[2] || "/" };
+  return { source: assertPresent(match[1]), resource: match[2] || "/" };
 }
 
 function shouldLogPanelResourceRequests(): boolean {
@@ -484,7 +485,7 @@ export class PanelHttpServer {
     // Wait briefly — if build is already cached in buildStore, getBuild returns fast
     const FAST_RESOLVE_MS = 500;
     const resolved = await Promise.race([
-      this.buildInFlight.get(flightKey)!.then(() => true),
+      assertPresent(this.buildInFlight.get(flightKey)).then(() => true),
       new Promise<false>((r) => setTimeout(() => r(false), FAST_RESOLVE_MS)),
     ]);
 
@@ -546,7 +547,10 @@ export class PanelHttpServer {
     // misconfigured. Even GETs with a body are rejected.
     const contentLength = req.headers["content-length"];
     if (contentLength) {
-      const len = parseInt(Array.isArray(contentLength) ? contentLength[0]! : contentLength, 10);
+      const len = parseInt(
+        Array.isArray(contentLength) ? assertPresent(contentLength[0]) : contentLength,
+        10
+      );
       if (Number.isFinite(len) && len > MANAGEMENT_MAX_BODY_BYTES) {
         res.writeHead(413, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Payload too large" }));

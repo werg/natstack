@@ -13,6 +13,7 @@ import type { ServerClient } from "./serverClient.js";
 import type { EventService, Subscriber } from "@natstack/shared/eventsService";
 import type { CallerKind } from "@natstack/shared/serviceDispatcher";
 import type { WebSocket } from "ws";
+import { assertPresent } from "../lintHelpers";
 
 /** Electron-main services that are not owned by the NatStack server process. */
 const ELECTRON_LOCAL_SERVICES: ReadonlySet<string> = new Set(ELECTRON_LOCAL_SERVICE_NAMES);
@@ -46,7 +47,7 @@ class IpcSubscriber implements Subscriber {
 
   send(channel: string, payload: unknown): void {
     if (!this.isAlive) return;
-    const wc = this.getWebContents()!;
+    const wc = assertPresent(this.getWebContents());
     // Deliver as an RPC event message that the shell transport understands
     wc.send("natstack:rpc:message", "main", {
       type: "event",

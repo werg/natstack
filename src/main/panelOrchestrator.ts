@@ -27,6 +27,7 @@ import {
   getPanelContextId,
   getPanelRef,
 } from "@natstack/shared/panel/accessors";
+import { assertPresent } from "../lintHelpers";
 
 const log = createDevLogger("PanelOrchestrator");
 
@@ -331,7 +332,8 @@ export class PanelOrchestrator implements BridgePanelManager {
     let siblingToFocus: string | null = null;
     if (focusedPanelWillClose && parent) {
       const siblings = parent.children.filter((c) => c.id !== panelId);
-      siblingToFocus = siblings.length > 0 ? siblings[siblings.length - 1]!.id : parentId;
+      siblingToFocus =
+        siblings.length > 0 ? assertPresent(siblings[siblings.length - 1]).id : parentId;
     } else if (focusedPanelWillClose && !parentId) {
       const roots = this.registry.getRootPanels();
       const rootIndex = roots.findIndex((p) => p.id === panelId);
@@ -553,7 +555,7 @@ export class PanelOrchestrator implements BridgePanelManager {
       }
       const newRoots = this.registry.getRootPanels();
       if (newRoots.length > 0) {
-        this.focusPanel(newRoots[0]!.id);
+        this.focusPanel(assertPresent(newRoots[0]).id);
       }
       this.registry.notifyPanelTreeUpdate();
     }

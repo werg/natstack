@@ -56,11 +56,12 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `getBrowserHandle` | value |  |  |
 | `openPanel` | value |  |  |
 | `adblock` | namespace | `getStats`, `isActive`, `getStatsForPanel`, `isEnabledForPanel`, `setEnabledForPanel`, `resetStatsForPanel`, `getPanelUrl`, `addToWhitelist`, `removeFromWhitelist` |  |
-| `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo`, `openPanel` |  |
+| `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo`, `openPanel`, `units` |  |
 | `credentials` | namespace | `store`, `connect`, `configureClient`, `requestCredentialInput`, `getClientConfigStatus`, `deleteClientConfig`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl`, `gitHttp` |  |
 | `git` | namespace | `http`, `importProject`, `completeWorkspaceDependencies`, `setSharedRemote`, `removeSharedRemote`, `client` |  |
 | `gad` | namespace | `rawSql`, `query`, `status`, `ensureBlob`, `ensureGadBranch`, `getGadBranchHead`, `appendGadTrajectoryBatch`, `materializePiMessages`, `listGadBranchTrajectory`, `listGadBranchToolCalls`, `forkGadBranch`, `listGadBranches`, `listGadBranchFiles`, `diffGadStates`, `readGadFileAtState`, `getGadToolProvenance`, `getGadStateProducer`, `blameGadFileSnippet`, `enqueueGadIndexJob`, `processGadIndexJobs`, `validateGadHashes`, `clearDirtyAfterValidation`, `checkGadIntegrity`, `revokeRawSqlWriteApproval` |  |
 | `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
+| `extensions` | namespace | `use`, `on`, `list`, `install`, `uninstall`, `setEnabled`, `update`, `reload` |  |
 | `requestApproval` | value |  |  |
 | `revokeApproval` | value |  |  |
 | `listApprovals` | value |  |  |

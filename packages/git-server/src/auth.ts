@@ -63,7 +63,7 @@ export class GitAuthManager {
       return { allowed: true };
     }
 
-    if (callerKind === "shell" || callerKind === "server") {
+    if (callerKind === "shell" || callerKind === "server" || callerKind === "extension") {
       return { allowed: true };
     }
 

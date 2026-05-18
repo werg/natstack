@@ -13,6 +13,7 @@ import {
   clearRemoteCredentials,
 } from "../remoteCredentialStore.js";
 import { createServerClient } from "../serverClient.js";
+import { assertPresent } from "../../lintHelpers";
 
 export interface RemoteCredCurrent {
   configured: boolean;
@@ -44,7 +45,7 @@ const TEST_CONNECT_TIMEOUT_MS = 7_000;
 /** Compute SHA-256 fingerprint of a DER cert buffer as uppercase colon hex. */
 function sha256Fingerprint(der: Buffer): string {
   const hex = createHash("sha256").update(der).digest("hex").toUpperCase();
-  return hex.match(/.{2}/g)!.join(":");
+  return assertPresent(hex.match(/.{2}/g)).join(":");
 }
 
 /** TLS-connect to host:port and grab the peer leaf-cert fingerprint without

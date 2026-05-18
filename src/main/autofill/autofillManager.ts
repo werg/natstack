@@ -25,6 +25,7 @@ import {
 } from "./contentScript.js";
 import { AutofillOverlay } from "./autofillOverlay.js";
 import { createDevLogger } from "@natstack/dev-log";
+import { assertPresent } from "../../lintHelpers";
 
 const log = createDevLogger("Autofill");
 
@@ -467,7 +468,7 @@ export class AutofillManager {
       if (pulled.fields.type === "login" && state.credentials.length > 0) {
         if (state.credentials.length === 1) {
           // Auto-fill single credential
-          await this.fillCredential(wcId, wc, state.credentials[0]!, pulled.fields);
+          await this.fillCredential(wcId, wc, assertPresent(state.credentials[0]), pulled.fields);
           state.hasAutoFilled = true;
         }
         // Inject key icon on the password field
@@ -509,7 +510,7 @@ export class AutofillManager {
       !state.hasAutoFilled
     ) {
       // Single credential + first focus (before auto-fill) -> fill now
-      await this.fillCredential(wcId, wc, state.credentials[0]!, state.fields);
+      await this.fillCredential(wcId, wc, assertPresent(state.credentials[0]), state.fields);
       state.hasAutoFilled = true;
     }
 
@@ -741,7 +742,7 @@ export class AutofillManager {
     const origin = state.origin;
 
     // Check store for existing credential
-    const existing = state.credentials.find((c) => c.username === snapshot!.username);
+    const existing = state.credentials.find((c) => c.username === assertPresent(snapshot).username);
 
     if (existing) {
       if (existing.password === snapshot.password) {
@@ -828,10 +829,13 @@ export class AutofillManager {
         if (!details.url.startsWith(watcher.origin)) continue;
 
         // Header names can vary in casing across servers/Electron versions
+        const responseHeaders = details.responseHeaders;
         const setsCookie =
-          details.responseHeaders != null &&
-          Object.keys(details.responseHeaders).some(
-            (k) => k.toLowerCase() === "set-cookie" && details.responseHeaders![k]!.length > 0
+          responseHeaders != null &&
+          Object.keys(responseHeaders).some(
+            (k) =>
+              k.toLowerCase() === "set-cookie" &&
+              (assertPresent(responseHeaders[k]) ?? []).length > 0
           );
 
         const matchesAction = watcher.actionUrl

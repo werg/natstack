@@ -6,6 +6,7 @@ import { findServicePort } from "@natstack/port-utils";
 import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { ViewManager } from "./viewManager.js";
 import { createDevLogger } from "@natstack/dev-log";
+import { assertPresent } from "../lintHelpers";
 
 const log = createDevLogger("CdpServer");
 export interface CdpEndpoint {
@@ -143,7 +144,7 @@ export class CdpServer {
     if (!this.panelBrowsers.has(parentPanelId)) {
       this.panelBrowsers.set(parentPanelId, new Set());
     }
-    this.panelBrowsers.get(parentPanelId)!.add(browserId);
+    assertPresent(this.panelBrowsers.get(parentPanelId)).add(browserId);
   }
 
   /**
@@ -269,9 +270,9 @@ export class CdpServer {
     });
 
     await new Promise<void>((resolve, reject) => {
-      this.server!.once("error", reject);
+      assertPresent(this.server).once("error", reject);
       // Bind loopback only — never expose CDP to non-loopback (audit #34).
-      this.server!.listen(port, CDP_BIND_HOST, () => resolve());
+      assertPresent(this.server).listen(port, CDP_BIND_HOST, () => resolve());
     });
 
     this.actualPort = port;
@@ -280,7 +281,7 @@ export class CdpServer {
   }
 
   private async handleConnection(ws: WebSocket, req: http.IncomingMessage): Promise<void> {
-    const url = new URL(req.url!, `http://localhost`);
+    const url = new URL(assertPresent(req.url), `http://localhost`);
     const browserId = url.pathname.slice(1); // Remove leading /
     const token = await readCdpAuthToken(ws);
     if (!token) return;
@@ -312,7 +313,7 @@ export class CdpServer {
     if (!this.activeConnections.has(browserId)) {
       this.activeConnections.set(browserId, new Set());
     }
-    this.activeConnections.get(browserId)!.add(ws);
+    assertPresent(this.activeConnections.get(browserId)).add(ws);
 
     // Attach debugger if not already attached (with lock to prevent race condition)
     await this.ensureDebuggerAttached(browserId, contents);
@@ -504,7 +505,7 @@ export class CdpServer {
 
     if (this.server) {
       return new Promise((resolve) => {
-        this.server!.close(() => {
+        assertPresent(this.server).close(() => {
           this.actualPort = null;
           this.server = null;
           console.log("[CdpServer] Stopped");

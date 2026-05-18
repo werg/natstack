@@ -15,6 +15,7 @@
  */
 
 import { constantTimeStringEqual, type TokenManager } from "@natstack/shared/tokenManager";
+import { assertPresent } from "../lintHelpers";
 
 // ---------------------------------------------------------------------------
 // DORef — source-scoped Durable Object identity
@@ -282,9 +283,9 @@ export class DODispatch {
     // Token-based path: use postToDOWithToken when tokenManager + getWorkerdUrl are set
     if (this.tokenManager && this.getWorkerdUrl && this.getWorkerdGatewayToken) {
       const buildDeps = (): PostToDOWithTokenDeps => ({
-        tokenManager: this.tokenManager!,
-        workerdUrl: this.getWorkerdUrl!(),
-        workerdGatewayToken: this.getWorkerdGatewayToken!(),
+        tokenManager: assertPresent(this.tokenManager),
+        workerdUrl: assertPresent(this.getWorkerdUrl)(),
+        workerdGatewayToken: assertPresent(this.getWorkerdGatewayToken)(),
         dispatchSecret: this.getDispatchSecret ? this.getDispatchSecret() : undefined,
       });
       try {

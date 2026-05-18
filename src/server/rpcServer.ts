@@ -287,6 +287,16 @@ export class RpcServer {
        * had nowhere to go).
        */
       eventService?: EventService;
+      /**
+       * Optional: the EgressProxy. When provided, the server exposes a
+       * `POST /rpc/stream` endpoint that performs a credentialed upstream
+       * fetch with a streaming response body. Without this, the streaming
+       * endpoint returns 503.
+       */
+      egressProxy?: Pick<
+        import("./services/egressProxy.js").EgressProxy,
+        "forwardProxyFetchStream"
+      >;
     }
   ) {
     this.dispatcher = deps.dispatcher;
@@ -555,7 +565,39 @@ export class RpcServer {
     }
   }
 
+  /**
+   * In-flight streaming WS RPC handlers. Keyed by
+   * `${callerId}\0${connectionId}\0${requestId}` — NOT by
+   * `requestId` alone — because two clients can reuse the same
+   * `requestId` and we'd otherwise let one cancel the other's
+   * stream. The triple uniquely identifies a stream within the
+   * server.
+   */
+  private wsStreamAborts = new Map<string, AbortController>();
+
+  private wsStreamKey(callerId: string, connectionId: string, requestId: string): string {
+    return `${callerId}\x00${connectionId}\x00${requestId}`;
+  }
+
   private async handleRpc(client: WsClientState, message: RpcMessage): Promise<void> {
+    if (message.type === "stream-request") {
+      await this.handleWsStreamRequest(client, message);
+      return;
+    }
+    if (message.type === "stream-cancel") {
+      // Look up by the full {callerId, connectionId, requestId}
+      // triple — a peer can only cancel streams it owns.
+      const controller = this.wsStreamAborts.get(
+        this.wsStreamKey(client.callerId, client.connectionId, message.requestId)
+      );
+      if (controller) controller.abort();
+      return;
+    }
+    if (message.type === "stream-frame") {
+      // Stream frames flow server→client during a streaming response.
+      // A client sending one is malformed; ignore.
+      return;
+    }
     if (message.type !== "request") return;
 
     const request = message as RpcRequest;
@@ -868,6 +910,17 @@ export class RpcServer {
       this.connections.getConnection(client.callerId, client.connectionId) !== client;
     this.connections.removeClient(client);
 
+    // Abort any in-flight streaming RPCs owned by this connection.
+    // Without this, the upstream fetch keeps draining bytes that
+    // nobody can read — `sendToWs` would silently drop the frames.
+    const streamKeyPrefix = this.wsStreamKey(client.callerId, client.connectionId, "");
+    for (const [key, controller] of this.wsStreamAborts) {
+      if (key.startsWith(streamKeyPrefix)) {
+        controller.abort();
+        this.wsStreamAborts.delete(key);
+      }
+    }
+
     if (client.callerKind === "panel") {
       this.lastDisconnectAt.set(client.callerId, Date.now());
       log.info("panel disconnected", {
@@ -1052,6 +1105,14 @@ export class RpcServer {
     req: import("http").IncomingMessage,
     res: import("http").ServerResponse
   ): Promise<void> {
+    // Streaming proxy-fetch endpoint — separate route because it uses
+    // chunked transfer with a binary frame format, not the JSON
+    // request/response of the regular RPC.
+    if (req.method === "POST" && req.url === "/rpc/stream") {
+      await this.handleStreamingProxyFetch(req, res);
+      return;
+    }
+
     // Only handle POST /rpc
     if (req.method !== "POST" || req.url !== "/rpc") {
       res.writeHead(404);
@@ -1173,6 +1234,334 @@ export class RpcServer {
     }
 
     throw new Error(`Unknown message type: ${type}`);
+  }
+
+  /**
+   * `POST /rpc/stream` — credentialed upstream fetch with a streaming
+   * response body. Request body is the same shape as the regular
+   * `credentials.proxyFetch` RPC args; response is a chunked binary
+   * stream framed by `packages/shared/src/credentials/streamFraming.ts`.
+   *
+   * Only `credentials.proxyFetch` is exposed here: a service+method
+   * allow-list keeps the streaming surface deliberately narrow, since
+   * arbitrary RPC methods aren't designed for incremental delivery.
+   */
+  /**
+   * Pre-flight validation for streaming proxy fetch — runs the
+   * method allow-list, egress-proxy availability check, and param
+   * presence/decoding. Callable BEFORE the transport commits to a
+   * response (so HTTP can return a real 400/503 status code, not a
+   * 200-with-error-frame). Returns either a ready-to-execute call
+   * descriptor or a rejection with status + error message.
+   */
+  private validateStreamingProxyFetch(request: {
+    method: string;
+    callerKind: CallerKind;
+    args: unknown[];
+  }):
+    | {
+        ok: true;
+        egress: Pick<import("./services/egressProxy.js").EgressProxy, "forwardProxyFetchStream">;
+        proxyParams: {
+          url: string;
+          method: string;
+          headers?: Record<string, string>;
+          body?: string | Uint8Array;
+          credentialId?: string;
+        };
+      }
+    | { ok: false; status: number; error: string } {
+    if (request.method !== "credentials.proxyFetch") {
+      return {
+        ok: false,
+        status: 400,
+        error: `Method '${request.method}' is not exposed on the streaming endpoint. Only 'credentials.proxyFetch' is allowed.`,
+      };
+    }
+    const egress = this.deps.egressProxy;
+    if (!egress) {
+      return { ok: false, status: 503, error: "Streaming proxy fetch is unavailable" };
+    }
+    // Run the same service-policy check as `POST /rpc` /
+    // non-streaming WS RPC. Without this the streaming endpoints
+    // would silently allow caller-kinds that the regular path
+    // denies. Service+method parse never fails here since the
+    // method allow-list above already rejected anything other than
+    // `credentials.proxyFetch`.
+    try {
+      checkServiceAccess("credentials", request.callerKind, this.dispatcher, "proxyFetch");
+    } catch (err) {
+      return {
+        ok: false,
+        status: 403,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    const params = (request.args?.[0] ?? {}) as {
+      url?: string;
+      method?: string;
+      headers?: Record<string, string>;
+      body?: string;
+      bodyBase64?: string;
+      credentialId?: string;
+    };
+    if (!params.url || !params.method) {
+      return { ok: false, status: 400, error: "Missing required params: url and method" };
+    }
+    const upstreamBody: string | Uint8Array | undefined =
+      params.bodyBase64 !== undefined
+        ? new Uint8Array(Buffer.from(params.bodyBase64, "base64"))
+        : params.body;
+    return {
+      ok: true,
+      egress,
+      proxyParams: {
+        url: params.url,
+        method: params.method,
+        headers: params.headers,
+        body: upstreamBody,
+        credentialId: params.credentialId,
+      },
+    };
+  }
+
+  private async handleStreamingProxyFetch(
+    req: import("http").IncomingMessage,
+    res: import("http").ServerResponse
+  ): Promise<void> {
+    // Auth — same flow as `POST /rpc`.
+    const authHeader = req.headers["authorization"];
+    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    if (!token) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Missing authorization" }));
+      return;
+    }
+    if (this.deps.tokenManager.validateAdminToken(token)) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          error:
+            "Admin token cannot authenticate RPC; issue a device credential and refresh a shell token first.",
+        })
+      );
+      return;
+    }
+    const entry = this.deps.tokenManager.validateToken(token);
+    if (!entry) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid token" }));
+      return;
+    }
+    const callerId = entry.callerId;
+    const callerKind = entry.callerKind;
+
+    // Read request body (capped).
+    const chunks: Buffer[] = [];
+    let total = 0;
+    const MAX_REQUEST_BODY = 16 * 1024 * 1024;
+    for await (const chunk of req) {
+      const buf = chunk as Buffer;
+      total += buf.byteLength;
+      if (total > MAX_REQUEST_BODY) {
+        res.writeHead(413, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Request body too large for streaming proxy fetch" }));
+        return;
+      }
+      chunks.push(buf);
+    }
+    let body: Record<string, unknown>;
+    try {
+      body = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>;
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid JSON body" }));
+      return;
+    }
+
+    const method = body["method"] as string | undefined;
+    const args = (body["args"] as unknown[]) ?? [];
+
+    // Run validation BEFORE committing to a 200 response, so policy
+    // failures (wrong method, no egress proxy, missing params,
+    // policy violation) come back as proper HTTP error statuses.
+    const check = this.validateStreamingProxyFetch({
+      method: method ?? "",
+      callerKind,
+      args,
+    });
+    if (!check.ok) {
+      res.writeHead(check.status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: check.error }));
+      return;
+    }
+
+    // Cancellation: HTTP transport close = caller went away.
+    const abortController = new AbortController();
+    req.on("close", () => abortController.abort());
+    res.on("close", () => abortController.abort());
+
+    const codec = await import("../../packages/shared/src/credentials/streamFraming.js");
+    const writeBytes = (bytes: Uint8Array): Promise<void> =>
+      new Promise<void>((resolve, reject) => {
+        const ok = res.write(bytes, (err) => {
+          if (err) reject(err);
+        });
+        if (ok) resolve();
+        else res.once("drain", () => resolve());
+      });
+
+    // HTTP encodes frames as raw binary on the chunked response —
+    // no base64 overhead since the response IS a binary stream.
+    const emitFrame = async (
+      frame: import("./services/egressProxy.js").StreamFrame
+    ): Promise<void> => {
+      if (frame.kind === "head") {
+        await writeBytes(
+          codec.encodeHeadFrame({
+            status: frame.status,
+            statusText: frame.statusText,
+            headerPairs: frame.headerPairs,
+            finalUrl: frame.finalUrl,
+          })
+        );
+      } else if (frame.kind === "chunk") {
+        await writeBytes(codec.encodeDataFrame(frame.bytes));
+      } else if (frame.kind === "end") {
+        await writeBytes(codec.encodeEndFrame({ bytesIn: frame.bytesIn }));
+      } else if (frame.kind === "error") {
+        await writeBytes(
+          codec.encodeErrorFrame({
+            status: frame.status,
+            message: frame.message,
+            code: frame.code,
+          })
+        );
+      }
+    };
+
+    // Headers go out before the first frame.
+    res.writeHead(200, {
+      "Content-Type": "application/vnd.natstack.credentialed-fetch+binary",
+      "Cache-Control": "no-store",
+      "X-Accel-Buffering": "no",
+    });
+
+    try {
+      await check.egress.forwardProxyFetchStream(
+        { callerId, ...check.proxyParams },
+        emitFrame,
+        abortController.signal
+      );
+    } catch (err) {
+      try {
+        await emitFrame({
+          kind: "error",
+          status: 502,
+          message: err instanceof Error ? err.message : String(err),
+        });
+      } catch {
+        // Best-effort — connection may already be torn down.
+      }
+    } finally {
+      res.end();
+    }
+  }
+
+  /**
+   * Handle a WS-delivered `stream-request`. Mirrors the HTTP
+   * `/rpc/stream` route's policy (method allow-list,
+   * `credentials.proxyFetch` only) but pipes frames back as
+   * `stream-frame` messages wrapped in the `ws:rpc` envelope. WS is
+   * the panel/shell transport, so this is the path that gives panel
+   * `credentials.fetch` real streaming — no more synthetic-buffered
+   * fallback.
+   */
+  private async handleWsStreamRequest(
+    client: WsClientState,
+    request: import("@natstack/rpc").RpcStreamRequest
+  ): Promise<void> {
+    const sendFrame = (frameType: number, payload: string): void => {
+      this.sendToWs(client.ws, {
+        type: "ws:rpc",
+        message: {
+          type: "stream-frame",
+          requestId: request.requestId,
+          fromId: "main",
+          frameType,
+          payload,
+        },
+      });
+    };
+
+    // WS encodes DATA frames as base64 in JSON (the `ws:rpc`
+    // envelope is JSON-serialized). The HTTP endpoint avoids this
+    // overhead by writing raw bytes to the chunked response.
+    const emitFrame = (frame: import("./services/egressProxy.js").StreamFrame): void => {
+      if (frame.kind === "head") {
+        sendFrame(
+          0x01,
+          JSON.stringify({
+            status: frame.status,
+            statusText: frame.statusText,
+            headerPairs: frame.headerPairs,
+            finalUrl: frame.finalUrl,
+          })
+        );
+      } else if (frame.kind === "chunk") {
+        let binary = "";
+        for (const byte of frame.bytes) binary += String.fromCharCode(byte);
+        sendFrame(0x02, btoa(binary));
+      } else if (frame.kind === "end") {
+        sendFrame(0x03, JSON.stringify({ bytesIn: frame.bytesIn }));
+      } else if (frame.kind === "error") {
+        sendFrame(
+          0x04,
+          JSON.stringify({
+            status: frame.status,
+            message: frame.message,
+            code: frame.code,
+          })
+        );
+      }
+    };
+
+    // WS has no separate-status-code path — pre-flight failures
+    // become ERROR frames just like in-flight failures. The client's
+    // `streamCall` promise rejects with the error message either way.
+    const check = this.validateStreamingProxyFetch({
+      method: request.method,
+      callerKind: client.callerKind,
+      args: request.args,
+    });
+    if (!check.ok) {
+      emitFrame({ kind: "error", status: check.status, message: check.error });
+      return;
+    }
+
+    const abortController = new AbortController();
+    const streamKey = this.wsStreamKey(client.callerId, client.connectionId, request.requestId);
+    this.wsStreamAborts.set(streamKey, abortController);
+
+    try {
+      await check.egress.forwardProxyFetchStream(
+        { callerId: client.callerId, ...check.proxyParams },
+        emitFrame,
+        abortController.signal
+      );
+    } catch (err) {
+      try {
+        emitFrame({
+          kind: "error",
+          status: 502,
+          message: err instanceof Error ? err.message : String(err),
+        });
+      } catch {
+        // Best-effort — client may already be gone.
+      }
+    } finally {
+      this.wsStreamAborts.delete(streamKey);
+    }
   }
 
   // ===========================================================================

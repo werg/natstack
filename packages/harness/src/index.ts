@@ -71,6 +71,16 @@ export type {
   AskUserDeps,
 } from "./extensions/ask-user.js";
 
+export { createWebToolsExtension } from "./extensions/web/index.js";
+export type {
+  WebToolsDeps,
+  WebRpcCaller,
+  SearchResult,
+  ProviderName,
+  CredentialPresenceProbe,
+} from "./extensions/web/index.js";
+export { SEARCH_PROVIDER_ORIGINS } from "./extensions/web/provider.js";
+
 // UI bridge
 export {
   DispatchedError,

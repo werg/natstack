@@ -19,6 +19,8 @@ import type {
   PendingCredentialInputApproval,
   PendingClientConfigApproval,
   PendingDeviceCodeApproval,
+  PendingExtensionApproval,
+  PendingExtensionApprovalAction,
   PendingUserlandApproval,
   UserlandApprovalChoice,
   UserlandApprovalOption,
@@ -73,6 +75,31 @@ export interface CapabilityApprovalQueueRequest extends ApprovalQueueRequestBase
   details?: PendingCapabilityApproval["details"];
 }
 
+export interface ExtensionApprovalQueueRequest extends ApprovalQueueRequestBase {
+  kind: "extension";
+  dedupKey?: string | null;
+  action: PendingExtensionApprovalAction;
+  extensionName: string;
+  version?: string | null;
+  source: PendingExtensionApproval["source"];
+  title: string;
+  description: string;
+  ev?: string | null;
+  previousEv?: string | null;
+  sha?: string | null;
+  previousSha?: string | null;
+  activeDependencyEvs?: Record<string, string>;
+  candidateDependencyEvs?: Record<string, string>;
+  activeRuntimeDepsKey?: string | null;
+  candidateRuntimeDepsKey?: string | null;
+  extensionDiff?: PendingExtensionApproval["extensionDiff"];
+  workspaceDepChanges?: PendingExtensionApproval["workspaceDepChanges"];
+  externalDepChanges?: PendingExtensionApproval["externalDepChanges"];
+  integrity?: string | null;
+  capabilities?: string[];
+  details?: PendingExtensionApproval["details"];
+}
+
 export interface ClientConfigApprovalQueueRequest extends ApprovalQueueRequestBase {
   kind: "client-config";
   configId: string;
@@ -97,6 +124,8 @@ export interface CredentialInputApprovalQueueRequest extends ApprovalQueueReques
 
 export interface UserlandApprovalQueueRequest {
   principal: ApprovalPrincipal;
+  /** Issuer of the request — defaults to principal when omitted. */
+  issuer?: import("@natstack/shared/approvals").UserlandApprovalIssuer;
   subject: UserlandApprovalSubject;
   title: string;
   summary?: string;
@@ -131,12 +160,14 @@ export interface DeviceCodeApprovalHandle {
 export type ApprovalQueueRequest =
   | CredentialApprovalQueueRequest
   | CapabilityApprovalQueueRequest
+  | ExtensionApprovalQueueRequest
   | ClientConfigApprovalQueueRequest
   | CredentialInputApprovalQueueRequest
   | DeviceCodeApprovalQueueRequest;
 export type DecisionApprovalQueueRequest =
   | CredentialApprovalQueueRequest
-  | CapabilityApprovalQueueRequest;
+  | CapabilityApprovalQueueRequest
+  | ExtensionApprovalQueueRequest;
 
 export type ClientConfigApprovalResult =
   | { decision: "submit"; values: Record<string, string> }
@@ -240,6 +271,14 @@ export function createApprovalQueue(deps: {
         req.resource?.value ?? "",
       ].join("\x00");
     }
+    if (req.kind === "extension") {
+      if (req.dedupKey === null) {
+        return ["extension-isolated", randomUUID()].join("\x00");
+      }
+      return ["extension", req.action, req.extensionName, req.source.repo, req.source.ref].join(
+        "\x00"
+      );
+    }
     if (req.kind === "client-config") {
       return [
         "client-config",
@@ -266,7 +305,17 @@ export function createApprovalQueue(deps: {
   }
 
   function userlandDedupKeyFor(req: UserlandApprovalQueueRequest): string {
-    return canonicalKey(["userland", req.principal.callerId, req.subject.id]);
+    const issuer = req.issuer ?? {
+      kind: req.principal.callerKind,
+      id: req.principal.callerId,
+    };
+    return canonicalKey([
+      "userland",
+      req.principal.callerId,
+      issuer.kind,
+      issuer.id,
+      req.subject.id,
+    ]);
   }
 
   function createPendingApproval(req: ApprovalQueueRequest): PendingApproval {
@@ -288,6 +337,37 @@ export function createApprovalQueue(deps: {
         resource: req.resource,
         details: req.details,
       } satisfies PendingCapabilityApproval;
+    }
+    if (req.kind === "extension") {
+      return {
+        ...base,
+        kind: "extension",
+        action: req.action,
+        extensionName: req.extensionName,
+        version: req.version,
+        source: req.source,
+        title: req.title,
+        description: req.description,
+        ev: req.ev,
+        previousEv: req.previousEv,
+        sha: req.sha,
+        previousSha: req.previousSha,
+        activeDependencyEvs: req.activeDependencyEvs,
+        candidateDependencyEvs: req.candidateDependencyEvs,
+        activeRuntimeDepsKey: req.activeRuntimeDepsKey,
+        candidateRuntimeDepsKey: req.candidateRuntimeDepsKey,
+        extensionDiff: req.extensionDiff,
+        workspaceDepChanges: req.workspaceDepChanges,
+        externalDepChanges: req.externalDepChanges,
+        integrity: req.integrity,
+        capabilities: req.capabilities ?? [
+          "node:fs",
+          "node:child_process",
+          "node:net",
+          "userland:*",
+        ],
+        details: req.details,
+      } satisfies PendingExtensionApproval;
     }
     if (req.kind === "client-config") {
       return {
@@ -578,6 +658,7 @@ export function createApprovalQueue(deps: {
           effectiveVersion: req.principal.effectiveVersion,
           requestedAt: Date.now(),
           kind: "userland",
+          ...(req.issuer ? { issuer: req.issuer } : {}),
           subject: req.subject,
           title: req.title,
           summary: req.summary,

@@ -7,6 +7,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { assertPresent, deleteDynamicProperty } from "../lintHelpers";
 
 // Mocks must be set up before the startupMode module is imported, so we
 // resetModules + re-import in each test.
@@ -41,7 +42,7 @@ const ENV_KEYS = [
   "NATSTACK_REMOTE_FINGERPRINT",
 ];
 function clearEnv() {
-  for (const k of ENV_KEYS) delete process.env[k];
+  for (const k of ENV_KEYS) deleteDynamicProperty(process.env, k);
 }
 
 describe("parseRemoteStartupMode priority", () => {
@@ -63,7 +64,7 @@ describe("parseRemoteStartupMode priority", () => {
     process.env["NATSTACK_REMOTE_URL"] = "https://env:1";
     process.env["NATSTACK_REMOTE_TOKEN"] = "env-token";
     mockLoadRemoteCredentials.mockReturnValue({ url: "https://store:1", token: "store-token" });
-    const result = mod.parseRemoteStartupMode()!;
+    const result = assertPresent(mod.parseRemoteStartupMode());
     expect(result.remoteUrl.href).toBe("https://env:1/");
     expect(result.adminToken).toBe("env-token");
   });
@@ -75,7 +76,7 @@ describe("parseRemoteStartupMode priority", () => {
       deviceId: "dev_store",
       refreshToken: "refresh-store",
     });
-    const result = mod.parseRemoteStartupMode()!;
+    const result = assertPresent(mod.parseRemoteStartupMode());
     expect(result.remoteUrl.href).toBe("https://store:1/");
     expect(result.adminToken).toBe("store-token");
     expect(result.deviceId).toBe("dev_store");
@@ -93,7 +94,7 @@ describe("parseRemoteStartupMode priority", () => {
       deviceId: "dev_store",
       refreshToken: "refresh-store",
     });
-    const result = mod.parseRemoteStartupMode()!;
+    const result = assertPresent(mod.parseRemoteStartupMode());
     expect(result.deviceId).toBe("dev_env");
     expect(result.refreshToken).toBe("refresh-env");
   });
@@ -113,7 +114,7 @@ describe("parseRemoteStartupMode priority", () => {
   it("accepts loopback HTTP origins", () => {
     process.env["NATSTACK_REMOTE_URL"] = "http://localhost:1455";
     process.env["NATSTACK_REMOTE_TOKEN"] = "t";
-    const result = mod.parseRemoteStartupMode()!;
+    const result = assertPresent(mod.parseRemoteStartupMode());
     expect(result.remoteUrl.href).toBe("http://localhost:1455/");
   });
 
@@ -143,7 +144,7 @@ describe("parseRemoteStartupMode priority", () => {
     process.env["NATSTACK_REMOTE_URL"] = "https://a:1";
     process.env["NATSTACK_REMOTE_TOKEN"] = "t";
     process.env["NATSTACK_REMOTE_FINGERPRINT"] = "a".repeat(64);
-    const result = mod.parseRemoteStartupMode()!;
+    const result = assertPresent(mod.parseRemoteStartupMode());
     expect(result.tls?.fingerprint).toMatch(/^AA(:AA){31}$/);
   });
 
@@ -156,7 +157,7 @@ describe("parseRemoteStartupMode priority", () => {
       token: "t",
       fingerprint: "00:11:22",
     });
-    const result = mod.parseRemoteStartupMode()!;
+    const result = assertPresent(mod.parseRemoteStartupMode());
     expect(result.tls?.fingerprint).toBe("AB:CD:EF");
   });
 });

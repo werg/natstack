@@ -15,6 +15,7 @@ import { spawnSync } from "child_process";
 import type { GraphNode, PackageGraph } from "./packageGraph.js";
 import { getCommitAt, resolveMainRef } from "./effectiveVersion.js";
 import { spawnGitSync } from "@natstack/shared/gitRuntime";
+import { assertPresent } from "../../lintHelpers";
 
 // ---------------------------------------------------------------------------
 // Git Archive Extraction
@@ -133,7 +134,7 @@ export function extractSourceForBuild(
   // Phase 2: Extract each node at its captured SHA
   try {
     for (const node of nodes) {
-      const sha = resolvedMap.get(node.name)!;
+      const sha = assertPresent(resolvedMap.get(node.name));
       // Sanity check: SHA should be a hex string, not a version spec
       if (sha && !sha.match(/^[0-9a-f]{7,40}$/i) && !sha.startsWith("refs/")) {
         throw new Error(

@@ -31,6 +31,7 @@ import type {
   PanelArtifacts,
 } from "@natstack/shared/types";
 import { getPanelContextId, getPanelSource } from "@natstack/shared/panel/accessors";
+import { assertPresent } from "../../../lintHelpers";
 
 // Re-export types for consumers
 export type { PanelSummary, PanelAncestor, DescendantSiblingGroup };
@@ -87,7 +88,7 @@ export function flattenTree(
   result: FlattenedPanel[] = []
 ): FlattenedPanel[] {
   for (let index = 0; index < panels.length; index++) {
-    const panel = panels[index]!;
+    const panel = assertPresent(panels[index]);
     const isCollapsed = collapsedIds.has(panel.id);
 
     result.push({
@@ -130,8 +131,8 @@ export function getProjection(
     return { depth: 0, parentId: null };
   }
 
-  const activeItem = items[activeItemIndex]!;
-  const overItem = items[overItemIndex]!;
+  const activeItem = assertPresent(items[activeItemIndex]);
+  const overItem = assertPresent(items[overItemIndex]);
 
   // Check if dragging up to immediate preceding sibling
   // In this case, we want to allow nesting under the over item

@@ -10,6 +10,7 @@ import type {
   PanelSearchResult,
   UpdatePanelInput,
 } from "../../../packages/shared/src/panelPersistenceTypes.js";
+import { assertPresent } from "../../lintHelpers";
 
 interface DbPanelRow {
   id: string;
@@ -388,9 +389,9 @@ export class PanelStoreDO extends DurableObjectBase {
     for (const row of rows) panelMap.set(row.id, this.rowToPanel(row));
     const roots: Panel[] = [];
     for (const row of rows) {
-      const panel = panelMap.get(row.id)!;
+      const panel = assertPresent(panelMap.get(row.id));
       if (row.parent_id && panelMap.has(row.parent_id)) {
-        panelMap.get(row.parent_id)!.children.push(panel);
+        assertPresent(panelMap.get(row.parent_id)).children.push(panel);
       } else if (!row.parent_id) {
         roots.push(panel);
       }

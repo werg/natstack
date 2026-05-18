@@ -64,6 +64,7 @@ import {
   type CredentialSessionGrantResource,
   type CredentialSessionGrantScope,
 } from "./credentialSessionGrants.js";
+import { assertPresent } from "../../lintHelpers";
 
 const log = createDevLogger("CredentialService");
 const IDENTIFIER_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9._@+=:-]{0,127}$/;
@@ -558,10 +559,19 @@ const proxyFetchParamsSchema = z
     url: z.string().url(),
     method: z.string().min(1).max(16),
     headers: z.record(z.string()).optional(),
+    /** UTF-8 text request body. Mutually exclusive with `bodyBase64`. */
     body: z.string().optional(),
+    /**
+     * Binary request body, base64-encoded. Used when the caller has a
+     * Uint8Array / ArrayBuffer / Blob. Mutually exclusive with `body`.
+     */
+    bodyBase64: z.string().optional(),
     credentialId: identifierSchema.optional(),
   })
-  .strict();
+  .strict()
+  .refine((p) => !(p.body !== undefined && p.bodyBase64 !== undefined), {
+    message: "credentials.proxyFetch: provide either `body` or `bodyBase64`, not both",
+  });
 
 const proxyGitHttpParamsSchema = z
   .object({
@@ -1300,7 +1310,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     if (request.fields.length !== 1) {
       throw new Error("Credential input expects exactly one secret field");
     }
-    const tokenField = request.fields[0]!;
+    const tokenField = assertPresent(request.fields[0]);
     if (tokenField.name !== request.material.tokenField) {
       throw new Error("Credential input tokenField must match the submitted secret field");
     }
@@ -3411,20 +3421,38 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   ): Promise<{
     status: number;
     statusText: string;
-    headers: Record<string, string>;
-    body: string;
+    /**
+     * Headers as ordered pairs. Preserves duplicate `Set-Cookie`
+     * entries (which the Fetch spec doesn't combine on iteration)
+     * across the RPC boundary; a flat Record would silently drop all
+     * but the last one.
+     */
+    headerPairs: Array<[string, string]>;
+    /** Final URL after any redirects the upstream fetch followed. Mirrors `Response.url`. */
+    finalUrl: string;
+    /** Response body, base64-encoded. Always set; empty string for zero-byte bodies. */
+    bodyBase64: string;
   }> {
     if (!egressProxy) {
       throw new Error("Egress proxy is unavailable");
     }
-    return egressProxy.forwardProxyFetch({
+    const requestBody: string | Uint8Array | undefined =
+      params.bodyBase64 !== undefined ? Buffer.from(params.bodyBase64, "base64") : params.body;
+    const result = await egressProxy.forwardProxyFetch({
       callerId: ctx.callerId,
       url: params.url,
       method: params.method,
       headers: params.headers,
-      body: params.body,
+      body: requestBody,
       credentialId: params.credentialId,
     });
+    return {
+      status: result.status,
+      statusText: result.statusText,
+      headerPairs: result.headerPairs,
+      finalUrl: result.finalUrl,
+      bodyBase64: Buffer.from(result.body).toString("base64"),
+    };
   }
 
   async function proxyGitHttp(
@@ -3907,7 +3935,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   const definition: ServiceDefinition = {
     name: "credentials",
     description: "URL-bound userland credential storage and egress",
-    policy: { allowed: ["shell", "panel", "server", "worker"] },
+    policy: { allowed: ["shell", "panel", "server", "worker", "extension"] },
     methods: {
       storeCredential: { args: z.tuple([storeUrlBoundCredentialParamsSchema]) },
       connect: { args: z.tuple([connectCredentialParamsSchema]) },

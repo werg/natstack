@@ -8,6 +8,7 @@ import {
   type WorkerdManagerDeps,
   type WorkerCreateOptions,
 } from "./workerdManager.js";
+import { spawn } from "child_process";
 
 // Mock child_process to prevent actual workerd spawning
 vi.mock("child_process", () => ({
@@ -46,7 +47,9 @@ vi.mock("child_process", () => ({
 
 // Mock port-utils
 vi.mock("@natstack/port-utils", () => ({
-  findServicePort: vi.fn().mockResolvedValue(49552),
+  findServicePort: vi.fn(async (service: string) =>
+    service === "workerdInspector" ? 49652 : 49552
+  ),
   releaseServicePort: vi.fn(),
 }));
 
@@ -287,6 +290,20 @@ describe("WorkerdManager", () => {
     it("getInstanceStatus returns null for unknown", () => {
       const mgr = new WorkerdManager(createMockDeps());
       expect(mgr.getInstanceStatus("nope")).toBeNull();
+    });
+
+    it("starts workerd with a dev inspector and exposes it for running workers", async () => {
+      const mgr = new WorkerdManager(createMockDeps());
+
+      await mgr.createInstance(defaultCreateOptions());
+
+      expect(spawn).toHaveBeenLastCalledWith(
+        expect.any(String),
+        expect.arrayContaining(["--inspector-addr=127.0.0.1:49652"]),
+        expect.any(Object)
+      );
+      expect(mgr.getWorkerInspectorUrl("workers/hello")).toBe("http://127.0.0.1:49652");
+      expect(mgr.getWorkerInspectorUrl("workers/missing")).toBeNull();
     });
   });
 

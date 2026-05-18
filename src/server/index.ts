@@ -19,6 +19,8 @@ import * as path from "path";
 import * as fs from "fs";
 import { randomBytes } from "crypto";
 import { getPublicUrl } from "./publicUrl.js";
+import { assertPresent, deleteDynamicProperty } from "../lintHelpers";
+
 // __filename is available natively in CJS and via the esbuild banner shim in ESM.
 declare const __filename: string;
 
@@ -40,6 +42,26 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
 }
 
+const UNIT_LOG_LEVEL_RANK = { debug: 10, info: 20, warn: 30, error: 40 } as const;
+
+function filterUnitLogs(
+  records: import("./services/workspaceService.js").WorkspaceUnitLogRecord[],
+  opts?: {
+    since?: number;
+    level?: import("./services/workspaceService.js").WorkspaceUnitLogRecord["level"];
+    limit?: number;
+  }
+): import("./services/workspaceService.js").WorkspaceUnitLogRecord[] {
+  const minLevel = opts?.level ? UNIT_LOG_LEVEL_RANK[opts.level] : null;
+  const filtered = records.filter(
+    (record) =>
+      (opts?.since === undefined || record.timestamp >= opts.since) &&
+      (minLevel === null || UNIT_LOG_LEVEL_RANK[record.level] >= minLevel)
+  );
+  const limit = opts?.limit && opts.limit > 0 ? Math.min(Math.floor(opts.limit), 1000) : 200;
+  return filtered.slice(-limit);
+}
+
 function detectServerIpcChannel(): IpcChannel | null {
   // Electron utilityProcess: process.parentPort exists
   const parentPort = (process as NodeJS.Process & { parentPort?: ElectronParentPort }).parentPort;
@@ -57,7 +79,7 @@ function detectServerIpcChannel(): IpcChannel | null {
   // Node.js fork: process.send exists
   if (typeof process.send === "function") {
     return {
-      postMessage: (msg: unknown) => process.send!(msg),
+      postMessage: (msg: unknown) => assertPresent(process.send)(msg),
       on: (_event: string, handler: (msg: unknown) => void) => {
         process.on("message", handler);
       },
@@ -84,7 +106,7 @@ if (ipcChannel) {
     const record = asRecord(msg);
     const id = typeof record?.["id"] === "string" ? record["id"] : null;
     if (id && pendingIpcResponses.has(id)) {
-      pendingIpcResponses.get(id)!(msg);
+      assertPresent(pendingIpcResponses.get(id))(msg);
       pendingIpcResponses.delete(id);
     }
   });
@@ -276,7 +298,7 @@ function parseArgs(argv: string[]): CliArgs {
   ]);
 
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
+    const arg = assertPresent(argv[i]);
     let key: string;
     let value: string | undefined;
 
@@ -593,6 +615,12 @@ async function main() {
     | "http"
     | "https";
   const configuredExternalHost = process.env["NATSTACK_HOST"] ?? args.host ?? "localhost";
+  let extensionHostForGateway: import("@natstack/extension-host").ExtensionHost | null = null;
+  const requiredBuiltInExtensions = [
+    "@workspace-extensions/image-service",
+    "@workspace-extensions/typecheck-service",
+    "@workspace-extensions/browser-data",
+  ];
 
   const { createGitWriteAuthorizer } = await import("./services/gitWritePermission.js");
   const { WORKSPACE_GIT_INIT_PATTERNS } = await import("@natstack/shared/workspace/sourceDirs");
@@ -626,6 +654,8 @@ async function main() {
       grantStore: capabilityGrantStore,
       codeIdentityResolver,
     }),
+    pushAuthorizer: (request) =>
+      extensionHostForGateway?.authorizeSourcePush(request) ?? { allowed: true },
   });
 
   // Create ContextFolderManager before core services
@@ -752,7 +782,6 @@ async function main() {
   const { createTokensService } = await import("./services/tokensService.js");
   const { createGitService } = await import("./services/gitService.js");
   const { createTestService } = await import("./services/testService.js");
-  const { createTypecheckService } = await import("./services/typecheckService.js");
   const { createWorkerService } = await import("./services/workerService.js");
 
   // Resolve testSetup.ts relative to this module's location
@@ -762,7 +791,7 @@ async function main() {
     path.resolve(serverDir, "../src/main/services/testSetup.ts"),
   ];
   const panelTestSetupPath: string =
-    setupCandidates.find((p) => fs.existsSync(p)) ?? setupCandidates[0]!;
+    setupCandidates.find((p) => fs.existsSync(p)) ?? assertPresent(setupCandidates[0]);
 
   {
     let buildSystemInstance: import("./buildV2/index.js").BuildSystemV2 | null = null;
@@ -770,10 +799,12 @@ async function main() {
       name: "build",
       dependencies: ["buildSystem"],
       start: async (resolve) => {
-        buildSystemInstance = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
+        buildSystemInstance = assertPresent(
+          resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")
+        );
       },
       getServiceDefinition() {
-        return createBuildService({ buildSystem: buildSystemInstance! });
+        return createBuildService({ buildSystem: assertPresent(buildSystemInstance) });
       },
     });
   }
@@ -784,7 +815,9 @@ async function main() {
       name: "tokens",
       dependencies: ["tokenManager", "fsService"],
       async start(resolve) {
-        const fsService = resolve<import("@natstack/shared/fsService").FsService>("fsService")!;
+        const fsService = assertPresent(
+          resolve<import("@natstack/shared/fsService").FsService>("fsService")
+        );
         // Only persist the admin token centrally in standalone mode. In
         // IPC/Electron-embedded mode the token is consumed by the parent
         // process from the ready message, and writing it into the shared
@@ -829,11 +862,44 @@ async function main() {
   container.register(
     rpcService(createTestService({ contextFolderManager, workspacePath, panelTestSetupPath }))
   );
+  // Per-worker-source ring buffer feeding `workspace.units.logs`. Same shape
+  // as the extension log store: capped at 1000 records per source, FIFO drop.
+  const workerUnitLogs = new Map<
+    string,
+    import("./services/workspaceService.js").WorkspaceUnitLogRecord[]
+  >();
+  const workerUnitLogsAppend = (
+    source: string,
+    record: import("./services/workspaceService.js").WorkspaceUnitLogRecord
+  ): void => {
+    const existing = workerUnitLogs.get(source) ?? [];
+    existing.push(record);
+    if (existing.length > 1000) existing.splice(0, existing.length - 1000);
+    workerUnitLogs.set(source, existing);
+  };
   {
     const { createWorkerLogService } = await import("./services/workerLogService.js");
-    container.register(rpcService(createWorkerLogService()));
+    container.register(
+      rpcService(
+        createWorkerLogService({
+          onLog: (entry) => {
+            if (!entry.source) return;
+            const record: import("./services/workspaceService.js").WorkspaceUnitLogRecord = {
+              workspaceId: workspace.config.id,
+              unitName: entry.source,
+              kind: "worker",
+              timestamp: entry.timestamp,
+              level: entry.level,
+              message: entry.message,
+              source: "console",
+            };
+            workerUnitLogsAppend(entry.source, record);
+            eventService.emit("workspace:unit-log", record);
+          },
+        })
+      )
+    );
   }
-  container.register(rpcService(createTypecheckService({ contextFolderManager })));
   container.register(rpcService(createEventsServiceDefinition(eventService)));
 
   // ── Approval-gated host capabilities ──
@@ -881,11 +947,14 @@ async function main() {
       name: "approvalPushBridge",
       dependencies: ["push", "shellPresence"],
       start: async (resolve) => {
-        const push = resolve<import("./services/pushService.js").PushServiceResult>("push")!;
-        const shellPresence =
+        const push = assertPresent(
+          resolve<import("./services/pushService.js").PushServiceResult>("push")
+        );
+        const shellPresence = assertPresent(
           resolve<import("./services/shellPresenceService.js").ShellPresenceServiceResult>(
-            "shellPresence",
-          )!;
+            "shellPresence"
+          )
+        );
         return createApprovalPushBridge({
           approvalQueue,
           push: push.internal,
@@ -1035,8 +1104,9 @@ async function main() {
       const doDispatch = new DODispatch();
 
       // Dispatch DO method calls via HTTP POST to the workerd /_w/ URL scheme.
-      const workerdManager =
-        resolve<import("./workerdManager.js").WorkerdManager>("workerdManager")!;
+      const workerdManager = assertPresent(
+        resolve<import("./workerdManager.js").WorkerdManager>("workerdManager")
+      );
       doDispatch.setDispatcher(async (urlPath, args) => {
         const port = workerdManager.getPort();
         if (!port) {
@@ -1106,7 +1176,9 @@ async function main() {
       name: "scope",
       dependencies: ["doDispatch"],
       async start(resolve) {
-        const doDispatch = resolve<import("./doDispatch.js").DODispatch>("doDispatch")!;
+        const doDispatch = assertPresent(
+          resolve<import("./doDispatch.js").DODispatch>("doDispatch")
+        );
         scopeDefinition = createScopeService({ doDispatch });
       },
       getServiceDefinition() {
@@ -1125,7 +1197,9 @@ async function main() {
       name: "panel-persistence",
       dependencies: ["doDispatch"],
       async start(resolve) {
-        const doDispatch = resolve<import("./doDispatch.js").DODispatch>("doDispatch")!;
+        const doDispatch = assertPresent(
+          resolve<import("./doDispatch.js").DODispatch>("doDispatch")
+        );
         panelPersistenceDefinition = createPanelPersistenceService({
           doDispatch,
           workspaceId: workspace.config.id,
@@ -1139,24 +1213,10 @@ async function main() {
     });
   }
 
-  {
-    const { createBrowserDataService } = await import("./services/browserDataService.js");
-    let browserDataDefinition:
-      | import("@natstack/shared/serviceDefinition").ServiceDefinition
-      | null = null;
-    container.register({
-      name: "browser-data",
-      dependencies: ["doDispatch"],
-      async start(resolve) {
-        const doDispatch = resolve<import("./doDispatch.js").DODispatch>("doDispatch")!;
-        browserDataDefinition = createBrowserDataService({ doDispatch, eventService });
-      },
-      getServiceDefinition() {
-        if (!browserDataDefinition) throw new Error("browser-data service not initialized");
-        return browserDataDefinition;
-      },
-    });
-  }
+  // browser-data is now an extension at
+  // workspace/extensions/@workspace-extensions/browser-data — callers reach it
+  // through `extensions.invoke`. The extension proxies to the BrowserDataDO
+  // via workers.callDO, so storage stays in workerd unchanged.
 
   // ── Generic public webhook ingress ──
   {
@@ -1166,7 +1226,9 @@ async function main() {
       name: "webhookIngress",
       dependencies: ["doDispatch"],
       async start(resolve) {
-        const doDispatch = resolve<import("./doDispatch.js").DODispatch>("doDispatch")!;
+        const doDispatch = assertPresent(
+          resolve<import("./doDispatch.js").DODispatch>("doDispatch")
+        );
         webhookIngress = createWebhookIngressService({
           relaySigningSecret: process.env["NATSTACK_RELAY_SIGNING_SECRET"],
           publicBaseUrl: process.env["NATSTACK_WEBHOOK_PUBLIC_URL"] ?? "https://hooks.snugenv.com",
@@ -1208,8 +1270,12 @@ async function main() {
       name: "gad",
       dependencies: ["doDispatch", "buildSystem"],
       async start(resolve) {
-        const doDispatch = resolve<import("./doDispatch.js").DODispatch>("doDispatch")!;
-        const buildSystem = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
+        const doDispatch = assertPresent(
+          resolve<import("./doDispatch.js").DODispatch>("doDispatch")
+        );
+        const buildSystem = assertPresent(
+          resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")
+        );
         gadDefinition = createGadService({
           doDispatch,
           resolveStore: () => toDORef(resolveUserlandService(buildSystem, "natstack.gad.workspace.v1")),
@@ -1237,7 +1303,7 @@ async function main() {
   let adminToken: string;
   let tokenSource: "env" | "persisted" | "generated" = "generated";
   if (process.env["NATSTACK_ADMIN_TOKEN"]) {
-    adminToken = process.env["NATSTACK_ADMIN_TOKEN"]!;
+    adminToken = assertPresent(process.env["NATSTACK_ADMIN_TOKEN"]);
     tokenSource = "env";
   } else if (!ipcChannel) {
     const persisted = loadPersistedAdminToken();
@@ -1265,13 +1331,65 @@ async function main() {
     name: "rpcServer",
     dependencies: ["tokenManager"],
     async start() {
-      const server = new RpcServer({ tokenManager, dispatcher, eventService });
+      const server = new RpcServer({ tokenManager, dispatcher, eventService, egressProxy });
       server.initHandlers();
       rpcServerForGateway = server;
       return { server };
     },
     async stop(instance: { server: import("./rpcServer.js").RpcServer }) {
       await instance?.server?.stop();
+    },
+  });
+
+  // ── Extension host RPC service ──
+  container.register({
+    name: "extensionHost",
+    dependencies: ["buildSystem", "tokenManager"],
+    async start(resolve) {
+      const { ExtensionHost } = await import("@natstack/extension-host");
+      const buildSystemInst = assertPresent(
+        resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")
+      );
+      const tokenManagerInst = assertPresent(
+        resolve<import("@natstack/shared/tokenManager").TokenManager>("tokenManager")
+      );
+      const host = new ExtensionHost({
+        statePath,
+        workspacePath,
+        workspaceId: workspace.config.id,
+        buildSystem: buildSystemInst,
+        tokenManager: tokenManagerInst,
+        eventService,
+        approvalQueue,
+        userlandApprovalGrantStore,
+        notificationService: notificationResult.internal,
+        codeIdentityResolver,
+        getGatewayUrl: () => {
+          if (!gatewayPortResolved) {
+            throw new Error("Gateway port not finalized before extension startup");
+          }
+          const isTls = !!(hostConfig.tlsCert && hostConfig.tlsKey);
+          return `${isTls ? "https" : "http"}://127.0.0.1:${gatewayPortResolved}`;
+        },
+        extensionTransport: {
+          call(name, method, ...args) {
+            const rpcServer = rpcServerForGateway;
+            if (!rpcServer) throw new Error("RPC server is not initialized");
+            return rpcServer.callTarget(name, method, ...args);
+          },
+        },
+      });
+      extensionHostForGateway = host;
+      return host;
+    },
+    async stop(instance: import("@natstack/extension-host").ExtensionHost) {
+      await instance?.shutdown();
+    },
+    getServiceDefinition(instance?: import("@natstack/extension-host").ExtensionHost) {
+      if (!instance) {
+        instance = container.get<import("@natstack/extension-host").ExtensionHost>("extensionHost");
+      }
+      return instance.createServiceDefinition();
     },
   });
 
@@ -1283,9 +1401,15 @@ async function main() {
       name: "workersRpc",
       dependencies: ["doDispatch", "buildSystem", "fsService"],
       async start(resolve) {
-        const doDispatch = resolve<import("./doDispatch.js").DODispatch>("doDispatch")!;
-        const buildSystemInst = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
-        const fsServiceInst = resolve<import("@natstack/shared/fsService").FsService>("fsService")!;
+        const doDispatch = assertPresent(
+          resolve<import("./doDispatch.js").DODispatch>("doDispatch")
+        );
+        const buildSystemInst = assertPresent(
+          resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")
+        );
+        const fsServiceInst = assertPresent(
+          resolve<import("@natstack/shared/fsService").FsService>("fsService")
+        );
         workerServiceDef = createWorkerService({
           doDispatch,
           buildSystem: buildSystemInst,
@@ -1327,8 +1451,12 @@ async function main() {
       dependencies: ["buildSystem", "fsService"],
       async start(resolve) {
         const { WorkerdManager } = await import("./workerdManager.js");
-        buildSystemForWorkerd = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
-        const fsServiceInst = resolve<import("@natstack/shared/fsService").FsService>("fsService")!;
+        buildSystemForWorkerd = assertPresent(
+          resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")
+        );
+        const fsServiceInst = assertPresent(
+          resolve<import("@natstack/shared/fsService").FsService>("fsService")
+        );
 
         workerdManagerInstance = new WorkerdManager({
           tokenManager,
@@ -1339,7 +1467,7 @@ async function main() {
             }
             return `http://127.0.0.1:${gatewayPortResolved}`;
           },
-          getBuild: (unitPath, ref) => buildSystemForWorkerd!.getBuild(unitPath, ref),
+          getBuild: (unitPath, ref) => assertPresent(buildSystemForWorkerd).getBuild(unitPath, ref),
           workspacePath,
           statePath,
           routeRegistry,
@@ -1473,6 +1601,130 @@ async function main() {
     eventService,
     requestRelaunch,
     requestWorkspaceList,
+    listWorkspaceUnits: () => {
+      const buildSystem = container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");
+      const extensionRows = extensionHostForGateway?.listWorkspaceUnits() ?? [];
+      const extensionsBySource = new Map(extensionRows.map((row) => [row.source, row]));
+      const workerInstances = new Map(
+        workerdManagerForGateway?.listInstances().map((instance) => [instance.source, instance]) ??
+          []
+      );
+      const rows: import("./services/workspaceService.js").WorkspaceUnitStatus[] = [];
+      for (const node of buildSystem?.getGraph().allNodes() ?? []) {
+        if (node.kind !== "panel" && node.kind !== "worker" && node.kind !== "extension") continue;
+        if (node.kind === "extension") {
+          rows.push(
+            extensionsBySource.get(node.relativePath) ?? {
+              name: node.name,
+              kind: "extension",
+              source: node.relativePath,
+              displayName: node.manifest.displayName ?? node.name,
+              enabled: false,
+              status: "stopped",
+              ev: buildSystem?.getEffectiveVersion(node.name) ?? null,
+              lastError: null,
+              health: null,
+              methods: [],
+              hasFetch: false,
+              respawn: null,
+              inspectorUrl: null,
+            }
+          );
+          continue;
+        }
+        const workerInstance =
+          node.kind === "worker" ? workerInstances.get(node.relativePath) : null;
+        rows.push({
+          name: node.name,
+          kind: node.kind,
+          source: node.relativePath,
+          displayName: node.manifest.displayName ?? node.manifest.title ?? node.name,
+          status: workerInstance
+            ? workerInstance.status === "starting"
+              ? "building"
+              : workerInstance.status
+            : "available",
+          ev: workerInstance?.buildKey ?? buildSystem?.getEffectiveVersion(node.name) ?? null,
+          inspectorUrl: workerInstance
+            ? (workerdManagerForGateway?.getWorkerInspectorUrl(workerInstance.source) ?? null)
+            : null,
+          bindings:
+            node.kind === "worker" && workerInstance
+              ? ((workerInstance as { bindings?: Record<string, unknown> | null }).bindings ?? null)
+              : null,
+          lastBuiltAt: null,
+          pendingApproval: null,
+          availableUpdate: null,
+        });
+      }
+      return rows;
+    },
+    restartWorkspaceUnit: async (
+      ctx: import("@natstack/shared/serviceDispatcher").ServiceContext,
+      name: string
+    ) => {
+      // Resolve by kind via the build graph so callers can use either the
+      // package name or the workspace-relative source path. Extensions go
+      // through the approval-gated reload; workers re-spawn through workerd's
+      // config-reload path. Panels have no host-driven restart concept — a
+      // panel restarts on the next page navigation.
+      const extensionHost = extensionHostForGateway;
+      if (extensionHost?.registry.get(name)) {
+        await extensionHost.reload(ctx, name);
+        return;
+      }
+      const buildSystem = container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");
+      const node = buildSystem
+        ?.getGraph()
+        .allNodes()
+        .find((candidate) => candidate.name === name || candidate.relativePath === name);
+      if (!node) {
+        throw new Error(`Workspace unit not found: ${name}`);
+      }
+      if (node.kind === "worker") {
+        const workerdManager = workerdManagerForGateway;
+        if (!workerdManager) throw new Error("Worker runtime is not available");
+        const instance = workerdManager
+          .listInstances()
+          .find((entry) => entry.source === node.relativePath);
+        if (!instance) {
+          throw new Error(`Worker has no running instance to restart: ${node.relativePath}`);
+        }
+        await workerdManager.updateInstance(instance.name, {});
+        return;
+      }
+      if (node.kind === "panel") {
+        throw new Error(
+          "Panels restart on next page navigation; no host-driven restart is available"
+        );
+      }
+      throw new Error(`Workspace unit kind not restartable: ${node.kind}`);
+    },
+    listWorkspaceUnitLogs: (
+      name: string,
+      opts?: {
+        since?: number;
+        level?: import("./services/workspaceService.js").WorkspaceUnitLogRecord["level"];
+        limit?: number;
+      }
+    ) => {
+      // Resolve the unit kind from the build graph (the same surface
+      // listWorkspaceUnits uses) and pull from the corresponding store.
+      const buildSystem = container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");
+      const node = buildSystem
+        ?.getGraph()
+        .allNodes()
+        .find((candidate) => candidate.name === name || candidate.relativePath === name);
+      const kind = node?.kind;
+      if (kind === "worker") {
+        const source = node?.relativePath ?? name;
+        const buffer = workerUnitLogs.get(source) ?? [];
+        return filterUnitLogs(buffer, opts);
+      }
+      // Default and extension: the extension host has its own buffer and
+      // also returns [] if the name is unknown.
+      return extensionHostForGateway?.listWorkspaceUnitLogs(name, opts) ?? [];
+    },
     codeIdentityResolver,
     getEffectiveVersion: async (source: string) => {
       const buildSystem = container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");
@@ -1507,14 +1759,6 @@ async function main() {
     container.register(rpcService(createSettingsServiceStandalone({ dispatcher })));
   }
 
-  // ── W1k: image service (server-side resize/convert via photon WASM) ──
-  // Placed at the end of the registration block to minimize merge conflicts
-  // with parallel tracks editing the auth/AI sections above.
-  {
-    const { createImageService } = await import("./services/imageService.js");
-    container.register(rpcService(createImageService()));
-  }
-
   // ── Per-workspace content-addressable blobstore ──
   {
     const { createBlobstoreService } = await import("./services/blobstoreService.js");
@@ -1547,6 +1791,7 @@ async function main() {
       ).server;
     },
     getGitHandler: () => gitServer,
+    getExtensionHttpHandler: () => extensionHostForGateway,
     getWorkerdPort: () => workerdManagerForGateway?.getPort() ?? null,
     externalHost: hostConfig.externalHost,
     bindHost: hostConfig.bindHost,
@@ -1687,6 +1932,11 @@ async function main() {
   panelServiceData?.urlConfig?.finalizeForGateway(gatewayPort);
 
   dispatcher.markInitialized();
+
+  const extensionHost =
+    container.get<import("@natstack/extension-host").ExtensionHost>("extensionHost");
+  await extensionHost.ensureBuiltInExtensions(requiredBuiltInExtensions);
+  await extensionHost.startEnabled();
 
   // ===========================================================================
   // Report ready
@@ -1977,7 +2227,7 @@ function collectWorkspaceRepoPaths(
 function replaceWorkspaceConfig<T extends object>(target: T, next: T): void {
   const mutableTarget = target as Record<string, unknown>;
   for (const key of Object.keys(mutableTarget)) {
-    delete mutableTarget[key];
+    deleteDynamicProperty(mutableTarget, key);
   }
   Object.assign(target, next);
 }

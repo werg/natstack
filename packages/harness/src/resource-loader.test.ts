@@ -19,7 +19,10 @@ function createMockRpc(responses: Record<string, unknown>): RpcCaller {
     }
     return responses[key];
   });
-  return { call: call as RpcCaller["call"] };
+  return {
+    call: call as RpcCaller["call"],
+    streamCall: vi.fn(async () => new Response()) as unknown as RpcCaller["streamCall"],
+  };
 }
 
 const SAMPLE_SKILLS: SkillEntry[] = [
@@ -99,7 +102,10 @@ describe("loadNatStackResources", () => {
       if (method === "workspace.listSkills") return skillsPromise;
       throw new Error(`unexpected method: ${method}`);
     });
-    const rpc: RpcCaller = { call: call as RpcCaller["call"] };
+    const rpc: RpcCaller = {
+      call: call as RpcCaller["call"],
+      streamCall: vi.fn(async () => new Response()) as unknown as RpcCaller["streamCall"],
+    };
 
     const loadPromise = loadNatStackResources({ rpc });
     // Both calls should be in flight before either resolves.

@@ -7,7 +7,10 @@ const CHANNEL_TARGET = "do:workers/pubsub-channel:PubSubChannel:chat-1";
 function createConfig(): ConnectionConfig {
   const call = vi.fn((target: string, method: string) => {
     if (target === "main" && method === "workers.resolveService") {
-      return Promise.resolve({ kind: "durable-object", targetId: CHANNEL_TARGET });
+      return Promise.resolve({
+        kind: "durable-object",
+        targetId: CHANNEL_TARGET,
+      });
     }
     if (method === "subscribe") return new Promise(() => {});
     return Promise.resolve(undefined);

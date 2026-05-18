@@ -7,7 +7,7 @@
 
 ### Effective Versions
 
-Every buildable unit — package, panel, about page, agent — gets an **effective version** (EV): a single hash capturing its own content and all its transitive internal dependencies.
+Every buildable unit — package, panel, about page, worker, extension — gets an **effective version** (EV): a single hash capturing its own content and all its transitive internal dependencies.
 
 ```
 ev(leaf)    = hash(treeHash(leaf))
@@ -26,7 +26,7 @@ The build key is the full cache identity:
 build_key = hash(BUILD_CACHE_VERSION, unitName, ev, sourcemap)
 ```
 
-`BUILD_CACHE_VERSION` (currently `"3"`) is incremented when build logic changes (plugins, esbuild options, shims) to invalidate all cached builds. Unit name is included to prevent different units with identical EVs from sharing builds.
+`BUILD_CACHE_VERSION` (currently `"10"`) is incremented when build logic changes (plugins, esbuild options, shims) to invalidate all cached builds. Unit name is included to prevent different units with identical EVs from sharing builds.
 
 ### Content-Addressed Build Store
 
@@ -37,7 +37,7 @@ Builds are stored immutably at `{userData}/builds/{build_key}/`:
   ├── bundle.js
   ├── bundle.css      (panels/about only)
   ├── index.html      (panels/about only)
-  ├── package.json    (agents only — {"type":"module"})
+  ├── package.json    (workers/extensions only — {"type":"module"})
   ├── assets/         (chunks, images, fonts)
   └── metadata.json   (sentinel — kind, name, ev, sourcemap, builtAt)
 ```
@@ -57,14 +57,14 @@ src/server/buildV2/
 ├── buildStore.ts         ← Content-addressed artifact storage
 ├── externalDeps.ts       ← Transitive external dep collection + cached npm install
 ├── sourceExtractor.ts    ← Git archive extraction for reproducible builds
-├── builder.ts            ← esbuild orchestration (panels + agents)
+├── builder.ts            ← esbuild orchestration (panels + workers + extensions)
 ├── pushTrigger.ts        ← Git push event → EV recompute → rebuild
 └── index.ts              ← Public API + RPC service handler
 ```
 
 ### Package Graph (`packageGraph.ts`)
 
-Scans six workspace directories:
+Scans seven workspace directories:
 
 | Directory | Kind | Scope |
 |-----------|------|-------|
@@ -72,10 +72,11 @@ Scans six workspace directories:
 | `workspace/panels/` | `panel` | `@workspace-panels/*` |
 | `workspace/about/` | `panel` | `@workspace-about/*` |
 | `workspace/workers/` | `worker` | `@workspace-workers/*` |
+| `workspace/extensions/` | `extension` | `@workspace-extensions/*` |
 | `workspace/skills/` | `package` | `@workspace-skills/*` |
 | `workspace/templates/` | `template` | — |
 
-Each unit's `package.json` is read. Dependencies matching any workspace scope (`@workspace/`, `@workspace-panels/`, `@workspace-about/`, `@workspace-workers/`, `@workspace-skills/`) become internal edges in the DAG. Both `dependencies` and `peerDependencies` are included (peers first, so regular deps override on conflict).
+Each unit's `package.json` is read. Dependencies matching any workspace scope (`@workspace/`, `@workspace-panels/`, `@workspace-about/`, `@workspace-workers/`, `@workspace-extensions/`, `@workspace-skills/`) become internal edges in the DAG. Both `dependencies` and `peerDependencies` are included (peers first, so regular deps override on conflict).
 
 The graph supports **dependency ref specs** — internal deps can pin to specific branches, refs, or commits:
 
@@ -115,7 +116,7 @@ The extracted tree is cleaned up after the build completes.
 
 ### External Dependencies (`externalDeps.ts`)
 
-For panels and agents, external npm dependencies (react, zod, radix-ui, etc.) must include **transitive externals from all internal packages** — not just the top-level unit's own `package.json`.
+For panels, workers, and extensions, external npm dependencies (react, zod, radix-ui, etc.) must include **transitive externals from all internal packages** — not just the top-level unit's own `package.json`.
 
 `collectTransitiveExternalDeps` walks the package graph, collecting all non-workspace dependencies. Dependencies with `workspace:` protocol are skipped (resolvable via root `node_modules`). When versions conflict, the higher version wins.
 
@@ -137,12 +138,12 @@ Two build strategies, selected by unit kind:
 - Manifest `exposeModules` register modules on `globalThis.__natstackModuleMap__`
 - Output: `bundle.js` + `bundle.css` + `index.html` + `assets/`
 
-**Agent build** (node target):
+**Extension build** (node target):
 - `platform: "node"`, `target: "node20"`, `format: "esm"`
 - Code splitting disabled
 - No fs/path shims
 - Native addons externalized (`*.node`, `fsevents`, `bufferutil`, etc.)
-- Output: `bundle.mjs` (stored as `bundle.js` in build store with `package.json` `{"type":"module"}`)
+- Output: `bundle.js` in the build store with `package.json` `{"type":"module"}`
 
 **Library build** (CJS, for sandbox eval):
 - `platform: "browser"`, `format: "cjs"`
@@ -161,7 +162,7 @@ Two build strategies, selected by unit kind:
 
 **Concurrency:** Semaphore with `MAX_CONCURRENT_BUILDS = 4`. Build coalescing deduplicates concurrent builds of the same key.
 
-**Workspace resolve plugin:** Resolves `@workspace/*` imports from the git-extracted source tree. Reads `package.json` exports fields with condition-based resolution (panel: `natstack-panel`, `import`, `default`; agent: `import`, `default`). Since extracted source lacks `dist/` (gitignored), the plugin maps `dist/` paths to their TypeScript source equivalents.
+**Workspace resolve plugin:** Resolves `@workspace/*` imports from the git-extracted source tree. Reads `package.json` exports fields with condition-based resolution (panel: `natstack-panel`, `import`, `default`; extension: `import`, `default`). Since extracted source lacks `dist/` (gitignored), the plugin maps `dist/` paths to their TypeScript source equivalents.
 
 ### Push Trigger (`pushTrigger.ts`)
 
@@ -220,8 +221,8 @@ workspace/
 │   ├── dirty-repo/
 │   ├── model-provider-config/
 │   └── ...
-└── agents/                ← AI agents (node target)
-    ├── claude-agent-responder/
+└── extensions/            ← trusted Node extensions
+    ├── @workspace-extensions/
     ├── test-echo/
     └── ...
 ```
@@ -279,6 +280,6 @@ Unit metadata lives in `package.json` under the `natstack` key:
 2. Snapshot current ref state (main-branch commit per repo)
 3. Compute EVs with cold-start optimization (diff against persisted refs)
 4. Persist ref state + EV map
-5. Build any missing buildable units (panels, about pages, agents — not packages)
+5. Build any missing buildable units (panels, about pages, workers, extensions — not packages)
 6. Start push trigger (subscribes to git server push events)
 7. Return public API handle

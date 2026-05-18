@@ -27,6 +27,7 @@ import {
 import type { PanelContextMenuAction } from "@natstack/shared/types";
 import { menu, panel } from "../shell/client.js";
 import { activeWorkspaceNameAtom, workspaceChooserDialogOpenAtom } from "../state/appModeAtoms.js";
+import { assertPresent } from "../../lintHelpers";
 
 // ============================================================================
 // Style Constants
@@ -561,7 +562,7 @@ export function LazyPanelTreeSidebar({
               );
             }
 
-            const item = flattenedItems[virtualRow.index]!;
+            const item = assertPresent(flattenedItems[virtualRow.index]);
             return (
               <Box
                 key={item.id}

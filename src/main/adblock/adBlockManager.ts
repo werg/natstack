@@ -17,6 +17,7 @@ import { session, ipcMain } from "electron";
 import { parse } from "tldts";
 import { getCentralConfigDirectory } from "../paths.js";
 import { createDevLogger } from "@natstack/dev-log";
+import { deleteDynamicProperty } from "../../lintHelpers";
 
 const log = createDevLogger("AdBlock");
 
@@ -409,7 +410,7 @@ export class AdBlockManager {
           for (const [name, values] of Object.entries(responseHeaders)) {
             if (name.toLowerCase() === CSP_HEADER_NAME) {
               policies.push(...values);
-              delete responseHeaders[name];
+              deleteDynamicProperty(responseHeaders, name);
             }
           }
 

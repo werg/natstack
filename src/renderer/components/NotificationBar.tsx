@@ -22,6 +22,7 @@ import {
 import { useShellEvent } from "../shell/useShellEvent";
 import { view, notification } from "../shell/client";
 import type { NotificationPayload } from "@natstack/shared/events";
+import { assertPresent } from "../../lintHelpers";
 
 /** Default TTLs by notification type (ms). 0 = no auto-dismiss. */
 const DEFAULT_TTLS: Record<NotificationPayload["type"], number> = {
@@ -174,7 +175,7 @@ export function NotificationBar() {
 
   // Show the most recent notification (last added)
   const entries = Array.from(notifications.values());
-  const current = entries[entries.length - 1]!;
+  const current = assertPresent(entries[entries.length - 1]);
   const queueCount = entries.length - 1;
 
   return (

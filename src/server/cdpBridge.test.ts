@@ -42,6 +42,20 @@ function waitForClose(ws: WebSocket): Promise<{ code: number; reason: string }> 
   });
 }
 
+async function waitForEndpoint(
+  harness: BridgeHarness,
+  browserId = "browser-1",
+  panelId = "panel-1"
+): Promise<NonNullable<ReturnType<CdpBridge["getCdpEndpoint"]>>> {
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    const endpoint = harness.bridge.getCdpEndpoint(browserId, panelId);
+    if (endpoint) return endpoint;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for CDP endpoint: ${browserId}`);
+}
+
 async function createHarness(): Promise<BridgeHarness> {
   const tokenManager = new TokenManager();
   const panelToken = tokenManager.createToken("panel-1", "panel");
@@ -95,7 +109,7 @@ describe("CdpBridge authentication", () => {
     const harness = await createHarness();
     await connectExtension(harness);
 
-    const endpoint = harness.bridge.getCdpEndpoint("browser-1", "panel-1");
+    const endpoint = await waitForEndpoint(harness);
     expect(endpoint).toEqual({
       wsEndpoint: `ws://127.0.0.1:${harness.port}/cdp/browser-1`,
       token: harness.panelToken,
@@ -113,10 +127,9 @@ describe("CdpBridge authentication", () => {
     const harness = await createHarness();
     await connectExtension(harness);
 
-    const endpoint = harness.bridge.getCdpEndpoint("browser-1", "panel-1");
-    expect(endpoint).not.toBeNull();
+    const endpoint = await waitForEndpoint(harness);
 
-    const client = new WebSocket(`${endpoint!.wsEndpoint}?token=${endpoint!.token}`);
+    const client = new WebSocket(`${endpoint.wsEndpoint}?token=${endpoint.token}`);
     harness.sockets.push(client);
     await waitForOpen(client);
     client.send(

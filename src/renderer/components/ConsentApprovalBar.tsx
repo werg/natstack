@@ -30,6 +30,7 @@ import type {
   PendingCredentialInputApproval,
   PendingClientConfigApproval,
   PendingDeviceCodeApproval,
+  PendingExtensionApproval,
   PendingUserlandApproval,
 } from "@natstack/shared/approvals";
 import {
@@ -136,19 +137,19 @@ export function ConsentApprovalBar() {
   const callerLabel = current.callerKind === "worker" ? "Worker" : "Panel";
   const extraCount = pendingAccess.length - 1;
   const copy = getApprovalCopy(current, callerLabel);
+  const isExtensionApproval = current.kind === "extension";
+  const accent = isExtensionApproval ? "amber" : "sky";
 
   return (
     <Box
       ref={barRef}
       style={{
-        // Panel surface beneath, flat alpha-sky tint layered on top.
-        // The two-property form is needed because background-image draws over
-        // background-color; using `background` shorthand would clobber one.
         backgroundColor: "var(--color-panel-solid)",
-        backgroundImage: "linear-gradient(var(--sky-a3), var(--sky-a3))",
+        backgroundImage: `linear-gradient(var(--${accent}-a3), var(--${accent}-a3))`,
         borderBottom: "1px solid var(--gray-a6)",
-        // Accent strip on top edge.
-        boxShadow: ["inset 0 3px 0 0 var(--sky-9)", "0 4px 12px -4px var(--black-a6)"].join(", "),
+        boxShadow: [`inset 0 3px 0 0 var(--${accent}-9)`, "0 4px 12px -4px var(--black-a6)"].join(
+          ", "
+        ),
         flexShrink: 0,
       }}
     >
@@ -161,12 +162,14 @@ export function ConsentApprovalBar() {
               width: 32,
               height: 32,
               borderRadius: 8,
-              backgroundColor: "var(--sky-9)",
-              color: "var(--sky-contrast)",
+              backgroundColor: `var(--${accent}-9)`,
+              color: `var(--${accent}-contrast)`,
               flexShrink: 0,
             }}
           >
-            {current.kind === "capability" || current.kind === "device-code" ? (
+            {isExtensionApproval ? (
+              <ExclamationTriangleIcon width={16} height={16} />
+            ) : current.kind === "capability" || current.kind === "device-code" ? (
               <ExternalLinkIcon width={16} height={16} />
             ) : (
               <LockClosedIcon width={16} height={16} />
@@ -179,7 +182,7 @@ export function ConsentApprovalBar() {
                 size="1"
                 weight="bold"
                 style={{
-                  color: "var(--sky-11)",
+                  color: `var(--${accent}-11)`,
                   textTransform: "uppercase",
                   letterSpacing: "0.05em",
                 }}
@@ -267,10 +270,36 @@ function StandardApprovalActions({
   approval,
   decide,
 }: {
-  approval: PendingCredentialApproval | PendingCapabilityApproval;
+  approval: PendingCredentialApproval | PendingCapabilityApproval | PendingExtensionApproval;
   decide: (decision: ApprovalDecision) => void;
 }) {
   const copy = getStandardActionCopy(approval);
+  if (approval.kind === "extension") {
+    return (
+      <Flex align="center" className="approval-actions" gap="2" wrap="wrap">
+        <DecisionButton
+          label={copy.once.label}
+          description={copy.once.description}
+          color="amber"
+          variant="solid"
+          onClick={() => decide("once")}
+        />
+        <DecisionButton
+          label="Deny"
+          description={copy.denyDescription}
+          color="red"
+          icon={<CrossCircledIcon />}
+          style={{ marginLeft: 6 }}
+          onClick={() => decide("deny")}
+        />
+        <Tooltip content="Dismiss">
+          <IconButton size="1" variant="ghost" color="gray" onClick={() => decide("dismiss")}>
+            <Cross2Icon />
+          </IconButton>
+        </Tooltip>
+      </Flex>
+    );
+  }
   return (
     <Flex align="center" className="approval-actions" gap="2" wrap="wrap">
       <DecisionButton
@@ -448,7 +477,7 @@ function DecisionButton({
 }: {
   label: string;
   description: string;
-  color?: "red" | "sky";
+  color?: "amber" | "red" | "sky";
   variant?: "solid" | "soft" | "surface" | "outline";
   icon?: ReactNode;
   style?: CSSProperties;
@@ -645,6 +674,8 @@ function ApprovalDetails({
           <UserlandDetails approval={approval} />
         ) : approval.kind === "device-code" ? (
           <DeviceCodeDetails approval={approval} />
+        ) : approval.kind === "extension" ? (
+          <ExtensionDetails approval={approval} />
         ) : (
           <CapabilityDetails approval={approval} />
         )}
@@ -967,9 +998,280 @@ function CapabilityDetails({ approval }: { approval: PendingCapabilityApproval }
   );
 }
 
-function UserlandDetails({ approval }: { approval: PendingUserlandApproval }) {
+function ExtensionDetails({ approval }: { approval: PendingExtensionApproval }) {
+  const dependencyRows = Object.entries(approval.candidateDependencyEvs ?? {});
+  const workspaceDepChanges = approval.workspaceDepChanges ?? [];
+  const externalDepChanges = approval.externalDepChanges ?? [];
+  const extensionDiff = approval.extensionDiff;
   return (
     <>
+      <Detail
+        icon={<ExclamationTriangleIcon />}
+        label="Extension"
+        value={<InlineCode>{approval.extensionName}</InlineCode>}
+      />
+      <Detail
+        icon={<LockClosedIcon />}
+        label="Action"
+        value={<InlineCode>{approval.action}</InlineCode>}
+      />
+      <Detail
+        icon={<GlobeIcon />}
+        label="Source"
+        value={<InlineCode>{`${approval.source.repo}@${approval.source.ref}`}</InlineCode>}
+      />
+      {approval.version ? (
+        <Detail
+          icon={<LockClosedIcon />}
+          label="Package"
+          value={<InlineCode>{approval.version}</InlineCode>}
+        />
+      ) : null}
+      {approval.previousSha || approval.sha ? (
+        <Detail
+          icon={<LockClosedIcon />}
+          label="Commit"
+          value={
+            <Flex align="center" gap="1" wrap="wrap">
+              {approval.previousSha ? <IdCode value={approval.previousSha} /> : null}
+              {approval.sha ? (
+                <IdCode prefix={approval.previousSha ? "to" : undefined} value={approval.sha} />
+              ) : null}
+            </Flex>
+          }
+        />
+      ) : null}
+      {approval.previousEv || approval.ev ? (
+        <Detail
+          icon={<LockClosedIcon />}
+          label="EV"
+          value={
+            <Flex align="center" gap="1" wrap="wrap">
+              {approval.previousEv ? <IdCode value={approval.previousEv} /> : null}
+              {approval.ev ? (
+                <IdCode prefix={approval.previousEv ? "to" : undefined} value={approval.ev} />
+              ) : null}
+            </Flex>
+          }
+        />
+      ) : null}
+      {approval.activeRuntimeDepsKey || approval.candidateRuntimeDepsKey ? (
+        <Detail
+          icon={<LockClosedIcon />}
+          label="Runtime"
+          value={
+            <Flex align="center" gap="1" wrap="wrap">
+              {approval.activeRuntimeDepsKey ? (
+                <IdCode value={approval.activeRuntimeDepsKey} />
+              ) : null}
+              {approval.candidateRuntimeDepsKey ? (
+                <IdCode
+                  prefix={approval.activeRuntimeDepsKey ? "to" : undefined}
+                  value={approval.candidateRuntimeDepsKey}
+                />
+              ) : null}
+            </Flex>
+          }
+        />
+      ) : null}
+      {dependencyRows.length > 0 ? (
+        <Detail
+          icon={<LockClosedIcon />}
+          label="Deps"
+          value={
+            <Flex align="center" gap="1" wrap="wrap">
+              {dependencyRows.map(([name, ev]) => (
+                <Code key={name} size="1" variant="soft" style={{ maxWidth: 360 }}>
+                  {name}: {truncateId(ev)}
+                </Code>
+              ))}
+            </Flex>
+          }
+        />
+      ) : null}
+      {extensionDiff && hasExtensionDiff(extensionDiff) ? (
+        <Detail
+          icon={<LockClosedIcon />}
+          label="Diff"
+          value={<ExtensionDiffSummary diff={extensionDiff} />}
+        />
+      ) : null}
+      {workspaceDepChanges.length > 0 ? (
+        <Detail
+          icon={<LockClosedIcon />}
+          label="Workspace"
+          value={
+            <ExtensionChangeSection title="Workspace dependency changes">
+              {workspaceDepChanges.map((change) => (
+                <ExtensionChangeRow
+                  key={change.name}
+                  name={change.name}
+                  from={change.fromEv}
+                  to={change.toEv}
+                />
+              ))}
+            </ExtensionChangeSection>
+          }
+        />
+      ) : null}
+      {externalDepChanges.length > 0 ? (
+        <Detail
+          icon={<LockClosedIcon />}
+          label="External"
+          value={
+            <ExtensionChangeSection title="External dependency changes">
+              {externalDepChanges.map((change) => (
+                <ExtensionChangeRow
+                  key={change.name}
+                  name={change.name}
+                  from={change.fromVersion}
+                  to={change.toVersion}
+                />
+              ))}
+            </ExtensionChangeSection>
+          }
+        />
+      ) : null}
+      {approval.integrity ? (
+        <Detail
+          icon={<LockClosedIcon />}
+          label="Integrity"
+          value={<IdCode value={approval.integrity} />}
+        />
+      ) : null}
+      <Detail
+        icon={<ExclamationTriangleIcon />}
+        label="Access"
+        value={
+          <Flex align="center" gap="1" wrap="wrap">
+            {approval.capabilities.map((capability) => (
+              <Badge key={capability} color="amber" variant="soft">
+                {capability}
+              </Badge>
+            ))}
+          </Flex>
+        }
+      />
+      {(approval.details ?? []).map((detail) => (
+        <Detail
+          key={detail.label}
+          icon={<LockClosedIcon />}
+          label={detail.label}
+          value={<InlineCode>{detail.value}</InlineCode>}
+        />
+      ))}
+    </>
+  );
+}
+
+function ExtensionDiffSummary({
+  diff,
+}: {
+  diff: NonNullable<PendingExtensionApproval["extensionDiff"]>;
+}) {
+  const stat = diff.stat;
+  return (
+    <ExtensionChangeSection title="Extension source changes">
+      {diff.previousSha || diff.sha ? (
+        <Flex align="center" gap="1" wrap="wrap">
+          {diff.previousSha ? <IdCode value={diff.previousSha} /> : null}
+          {diff.sha ? (
+            <IdCode prefix={diff.previousSha ? "to" : undefined} value={diff.sha} />
+          ) : null}
+        </Flex>
+      ) : null}
+      {diff.commit ? (
+        <Text size="1" color="gray" style={{ lineHeight: 1.35 }}>
+          {diff.commit.message || "No commit message"} by {diff.commit.author.name || "unknown"}
+        </Text>
+      ) : null}
+      {stat ? (
+        <Flex align="center" gap="1" wrap="wrap">
+          <Badge color="gray" variant="outline">
+            {stat.filesChanged} files
+          </Badge>
+          <Badge color="green" variant="soft">
+            +{stat.insertions}
+          </Badge>
+          <Badge color="red" variant="soft">
+            -{stat.deletions}
+          </Badge>
+        </Flex>
+      ) : null}
+      {diff.push ? (
+        <Text size="1" color="gray">
+          {diff.push.ref}
+          {diff.push.pushedBy ? ` by ${diff.push.pushedBy}` : ""}
+        </Text>
+      ) : null}
+    </ExtensionChangeSection>
+  );
+}
+
+function ExtensionChangeSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <details>
+      <summary style={{ cursor: "pointer" }}>
+        <Text size="1" weight="medium">
+          {title}
+        </Text>
+      </summary>
+      <Flex direction="column" gap="1" pt="1">
+        {children}
+      </Flex>
+    </details>
+  );
+}
+
+function ExtensionChangeRow({
+  name,
+  from,
+  to,
+}: {
+  name: string;
+  from?: string | null;
+  to?: string | null;
+}) {
+  return (
+    <Flex align="center" gap="1" wrap="wrap">
+      <Code size="1" variant="soft">
+        {name}
+      </Code>
+      {from ? (
+        <IdCode value={from} />
+      ) : (
+        <Badge color="gray" variant="outline">
+          new
+        </Badge>
+      )}
+      {to ? (
+        <IdCode prefix="to" value={to} />
+      ) : (
+        <Badge color="gray" variant="outline">
+          removed
+        </Badge>
+      )}
+    </Flex>
+  );
+}
+
+function hasExtensionDiff(diff: NonNullable<PendingExtensionApproval["extensionDiff"]>): boolean {
+  return Boolean(diff.sha || diff.previousSha || diff.stat || diff.commit || diff.push);
+}
+
+function UserlandDetails({ approval }: { approval: PendingUserlandApproval }) {
+  const issuer = approval.issuer;
+  const showIssuer =
+    issuer && (issuer.kind !== approval.callerKind || issuer.id !== approval.callerId);
+  return (
+    <>
+      {showIssuer && issuer ? (
+        <Detail
+          icon={<PersonIcon />}
+          label="Asked by"
+          value={<InlineCode>{`${issuer.kind} ${issuer.label ?? issuer.id}`}</InlineCode>}
+        />
+      ) : null}
       <Detail
         icon={<LockClosedIcon />}
         label="Subject"

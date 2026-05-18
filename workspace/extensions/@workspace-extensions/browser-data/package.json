@@ -1,0 +1,17 @@
+{
+  "name": "@workspace-extensions/browser-data",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "displayName": "Browser Data",
+    "entry": "index.ts",
+    "sourcemap": true,
+    "extension": {
+      "activationEvents": ["*"]
+    }
+  },
+  "dependencies": {
+    "@natstack/browser-data": "workspace:*"
+  }
+}

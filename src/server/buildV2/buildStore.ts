@@ -15,6 +15,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import { getUserDataPath } from "@natstack/env-paths";
+import { assertPresent } from "../../lintHelpers";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -32,11 +33,27 @@ export interface BuildArtifacts {
 }
 
 export interface BuildMetadata {
-  kind: "panel" | "package" | "worker" | "template";
+  kind: "panel" | "package" | "worker" | "extension" | "template";
   name: string;
   ev: string;
   sourcemap: boolean;
   framework?: string;
+  runtimeDepsKey?: string | null;
+  extensionRuntimeAbi?: string | null;
+  extensionDependencyMode?: "auto" | "bundle" | "external";
+  extensionExternalDeps?: Record<string, string>;
+  extensionClassifiedDeps?: Array<{
+    name: string;
+    version: string;
+    external: boolean;
+    format: "cjs" | "esm" | "unknown";
+    reasons: string[];
+    explanation: string;
+  }>;
+  extensionSmokeTest?: {
+    mode: "child-process";
+    passed: boolean;
+  };
   builtAt: string;
 }
 
@@ -201,8 +218,8 @@ export function put(key: string, artifacts: BuildArtifacts, metadata: BuildMetad
   // Write bundle
   fs.writeFileSync(path.join(tmpDir, "bundle.js"), artifacts.bundle);
 
-  // Ensure Node.js treats bundle.js as ESM (workers are format: "esm")
-  if (metadata.kind === "worker") {
+  // Ensure Node.js treats bundle.js as ESM.
+  if (metadata.kind === "worker" || metadata.kind === "extension") {
     fs.writeFileSync(path.join(tmpDir, "package.json"), '{"type":"module"}');
   }
 
@@ -243,7 +260,7 @@ export function put(key: string, artifacts: BuildArtifacts, metadata: BuildMetad
         } catch (cleanupError) {
           warnCleanupFailure(tmpDir, cleanupError);
         }
-        return get(key)!;
+        return assertPresent(get(key));
       }
       // Winner incomplete — remove stale dir, retry rename
       try {
@@ -273,7 +290,7 @@ export function put(key: string, artifacts: BuildArtifacts, metadata: BuildMetad
     }
   }
 
-  return get(key)!;
+  return assertPresent(get(key));
 }
 
 export function gc(activeKeys: Set<string>): { freed: number } {

@@ -46,6 +46,10 @@ function makeWorkerCtx(callerId: string): ServiceContext {
   return { callerId, callerKind: "worker" };
 }
 
+function makeExtensionCtx(callerId: string): ServiceContext {
+  return { callerId, callerKind: "extension" };
+}
+
 describe("FsService", () => {
   let tmpRoot: string;
   let service: FsService;
@@ -207,6 +211,22 @@ describe("FsService", () => {
       };
       expect(stat.isFile).toBe(true);
       expect(stat.size).toBe(2);
+    });
+  });
+
+  describe("extension callers", () => {
+    it("resolve fs paths as unrestricted host paths without a bound context", async () => {
+      const ctx = makeExtensionCtx("@workspace-extensions/fs-test");
+      const absolutePath = path.join(tmpRoot, "outside-context.txt");
+      writeFileSync(absolutePath, "extension-visible");
+
+      await expect(
+        service.handleCall(ctx, "readFile", [absolutePath, "utf8"]),
+      ).resolves.toBe("extension-visible");
+      await service.handleCall(ctx, "writeFile", [absolutePath, "updated"]);
+      await expect(
+        service.handleCall(ctx, "readFile", [absolutePath, "utf8"]),
+      ).resolves.toBe("updated");
     });
   });
 });

@@ -16,6 +16,7 @@ import * as crypto from "crypto";
 import { getUserDataPath } from "@natstack/env-paths";
 import { runNpmInstall } from "@natstack/shared/npmInstaller";
 import type { PackageGraph, GraphNode } from "./packageGraph.js";
+import { assertPresent } from "../../lintHelpers";
 
 // ---------------------------------------------------------------------------
 // Transitive collection
@@ -27,33 +28,137 @@ import type { PackageGraph, GraphNode } from "./packageGraph.js";
  */
 export function collectTransitiveExternalDeps(
   unit: GraphNode,
-  graph: PackageGraph
+  graph: PackageGraph,
+  workspaceRoot?: string,
+  packageRoots: string[] = []
 ): Record<string, string> {
   const externals: Record<string, string> = {};
   const visited = new Set<string>();
+  const visitedPackageJson = new Set<string>();
 
-  function walk(node: GraphNode) {
-    if (visited.has(node.name)) return;
-    visited.add(node.name);
-
-    for (const [name, version] of Object.entries(node.dependencies)) {
-      if (graph.isInternal(name)) {
-        const dep = graph.tryGet(name);
-        if (dep) walk(dep);
-      } else {
-        // Skip workspace:* deps — these are @natstack/* platform packages
-        // resolved via appNodeModules (declared in builder.initBuilder()).
-        if (version.startsWith("workspace:")) continue;
-        // External dependency — take higher version if conflict
-        if (!externals[name] || compareVersions(version, externals[name]!) > 0) {
-          externals[name] = version;
-        }
-      }
+  function recordExternal(name: string, version: string) {
+    // Skip workspace:* deps — these are source packages resolved from the app
+    // install or the package graph. Their own npm deps are collected by walking
+    // the package.json when available.
+    if (version.startsWith("workspace:")) return;
+    // External dependency — take higher version if conflict
+    if (!externals[name] || compareVersions(version, assertPresent(externals[name])) > 0) {
+      externals[name] = version;
     }
   }
 
-  walk(unit);
+  function walkDeps(dependencies: Record<string, string>, options: { walkWorkspaceDeps: boolean }) {
+    for (const [name, version] of Object.entries(dependencies)) {
+      if (graph.isInternal(name)) {
+        const dep = graph.tryGet(name);
+        if (dep) walkNode(dep);
+        continue;
+      }
+      if (version.startsWith("workspace:") && options.walkWorkspaceDeps) {
+        const pkg = workspaceRoot
+          ? readWorkspacePackageJson(workspaceRoot, name, packageRoots)
+          : null;
+        if (pkg) walkPackageJson(pkg.path, pkg.dependencies);
+        continue;
+      }
+      recordExternal(name, version);
+    }
+  }
+
+  function walkPackageJson(packageJsonPath: string, dependencies: Record<string, string>) {
+    if (visitedPackageJson.has(packageJsonPath)) return;
+    visitedPackageJson.add(packageJsonPath);
+    walkDeps(dependencies, { walkWorkspaceDeps: false });
+  }
+
+  function walkNode(node: GraphNode) {
+    if (visited.has(node.name)) return;
+    visited.add(node.name);
+    walkDeps(node.dependencies, { walkWorkspaceDeps: true });
+  }
+
+  walkNode(unit);
   return externals;
+}
+
+function readWorkspacePackageJson(
+  workspaceRoot: string,
+  packageName: string,
+  packageRoots: string[] = []
+): { path: string; dependencies: Record<string, string> } | null {
+  for (const pkgJsonPath of workspacePackageJsonCandidates(
+    workspaceRoot,
+    packageName,
+    packageRoots
+  )) {
+    if (!fs.existsSync(pkgJsonPath)) continue;
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as {
+        name?: string;
+        dependencies?: Record<string, string>;
+        peerDependencies?: Record<string, string>;
+      };
+      if (pkg.name !== packageName) continue;
+      return {
+        path: pkgJsonPath,
+        dependencies: { ...pkg.peerDependencies, ...pkg.dependencies },
+      };
+    } catch {
+      continue;
+    }
+  }
+
+  for (const baseDir of workspacePackageRoots(workspaceRoot)) {
+    if (!fs.existsSync(baseDir)) continue;
+    for (const entry of fs.readdirSync(baseDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+      const pkgJsonPath = path.join(baseDir, entry.name, "package.json");
+      if (!fs.existsSync(pkgJsonPath)) continue;
+      try {
+        const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as {
+          name?: string;
+          dependencies?: Record<string, string>;
+          peerDependencies?: Record<string, string>;
+        };
+        if (pkg.name !== packageName) continue;
+        return {
+          path: pkgJsonPath,
+          dependencies: { ...pkg.peerDependencies, ...pkg.dependencies },
+        };
+      } catch {
+        continue;
+      }
+    }
+  }
+  return null;
+}
+
+function workspacePackageJsonCandidates(
+  workspaceRoot: string,
+  packageName: string,
+  packageRoots: string[]
+): string[] {
+  const candidates: string[] = [];
+  const addNodeModulesCandidate = (baseDir: string) => {
+    candidates.push(path.join(baseDir, ...packageName.split("/"), "package.json"));
+  };
+  const addWorkspacePackageCandidate = (baseDir: string) => {
+    candidates.push(path.join(baseDir, packageName.replace(/^@[^/]+\//, ""), "package.json"));
+  };
+
+  for (const baseDir of packageRoots) {
+    addNodeModulesCandidate(baseDir);
+  }
+  for (const baseDir of workspacePackageRoots(workspaceRoot)) {
+    addWorkspacePackageCandidate(baseDir);
+  }
+
+  return candidates;
+}
+
+function workspacePackageRoots(workspaceRoot: string): string[] {
+  const repoRoot = path.dirname(workspaceRoot);
+  return [path.join(workspaceRoot, "packages"), path.join(repoRoot, "packages")];
 }
 
 /**
@@ -95,6 +200,10 @@ function getExternalDepsBaseDir(): string {
   return path.join(getUserDataPath(), "external-deps");
 }
 
+function getExtensionRuntimeDepsBaseDir(): string {
+  return path.join(getUserDataPath(), "extension-runtime-deps");
+}
+
 function isFileSystemErrorCode(error: unknown, codes: readonly string[]): boolean {
   if (!(error instanceof Error)) return false;
   const code = (error as NodeJS.ErrnoException).code;
@@ -112,6 +221,37 @@ function warnCleanupFailure(pathName: string, error: unknown): void {
  * node_modules directory.
  */
 export async function ensureExternalDeps(deps: Record<string, string>): Promise<string> {
+  return ensureDepsInstalled(deps, {
+    baseDir: getExternalDepsBaseDir(),
+    key: hashDeps(deps),
+    ignoreScripts: true,
+  });
+}
+
+export async function ensureExtensionRuntimeDeps(
+  deps: Record<string, string>
+): Promise<{ key: string | null; nodeModulesDir: string }> {
+  if (Object.keys(deps).length === 0) {
+    return { key: null, nodeModulesDir: "" };
+  }
+  const key = [
+    hashDeps(deps),
+    process.platform,
+    process.arch,
+    `abi${process.versions.modules ?? "unknown"}`,
+  ].join("-");
+  const nodeModulesDir = await ensureDepsInstalled(deps, {
+    baseDir: getExtensionRuntimeDepsBaseDir(),
+    key,
+    ignoreScripts: false,
+  });
+  return { key, nodeModulesDir };
+}
+
+async function ensureDepsInstalled(
+  deps: Record<string, string>,
+  options: { baseDir: string; key: string; ignoreScripts: boolean }
+): Promise<string> {
   if (Object.keys(deps).length === 0) {
     // No external deps — return a dummy path
     return "";
@@ -141,14 +281,20 @@ export async function ensureExternalDeps(deps: Record<string, string>): Promise<
     }
   }
 
-  const key = hashDeps(deps);
-  const cacheDir = path.join(getExternalDepsBaseDir(), key);
+  const cacheDir = path.join(options.baseDir, options.key);
   const sentinelPath = path.join(cacheDir, ".ready");
   const nodeModulesDir = path.join(cacheDir, "node_modules");
 
   // Check sentinel
   if (fs.existsSync(sentinelPath)) {
-    return nodeModulesDir;
+    if (fs.existsSync(nodeModulesDir)) {
+      return nodeModulesDir;
+    }
+    try {
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+    } catch (cleanupError) {
+      warnCleanupFailure(cacheDir, cleanupError);
+    }
   }
 
   // Install to temp dir, then atomically rename. Use crypto.randomBytes for
@@ -168,7 +314,7 @@ export async function ensureExternalDeps(deps: Record<string, string>): Promise<
   fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify(pkgJson, null, 2));
 
   try {
-    runNpmInstall(tmpDir);
+    runNpmInstall(tmpDir, { ignoreScripts: options.ignoreScripts });
 
     // Write sentinel inside tmpDir BEFORE rename so winner is always complete
     fs.writeFileSync(path.join(tmpDir, ".ready"), new Date().toISOString());
@@ -203,7 +349,7 @@ export async function ensureExternalDeps(deps: Record<string, string>): Promise<
           } catch (cleanupError) {
             warnCleanupFailure(cacheDir, cleanupError);
           }
-          throw new Error(`External deps cache race: failed to install for key ${key}`);
+          throw new Error(`External deps cache race: failed to install for key ${options.key}`);
         }
       } else {
         throw err;

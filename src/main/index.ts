@@ -55,6 +55,7 @@ import { AdBlockManager } from "./adblock/index.js";
 import { startMemoryMonitor, setMemoryMonitorViewManager } from "./memoryMonitor.js";
 // ServerProcessManager and createServerClient are now used by serverSession.ts
 import { getPanelSource } from "@natstack/shared/panelTypes";
+import { assertPresent } from "../lintHelpers";
 
 // =============================================================================
 // Early Diagnostics (enabled via NATSTACK_DEBUG_PATHS=1)
@@ -699,7 +700,7 @@ function createWindow(): void {
     }
 
     viewManager.onViewCrashed((viewId, reason) => {
-      panelView!.handleViewCrashed(viewId, reason);
+      assertPresent(panelView).handleViewCrashed(viewId, reason);
     });
 
     setupTestApi(panelOrchestrator, panelRegistry, panelView);
@@ -900,10 +901,12 @@ app.on("ready", async () => {
     log.info(`[events] replaying ${events.length} shell subscription(s) to server`);
     await Promise.all(
       events.map((event) =>
-        serverClientRef!.call("events", "subscribe", [event]).catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          log.warn(`[events] replay subscribe(${event}) failed: ${msg}`);
-        })
+        assertPresent(serverClientRef)
+          .call("events", "subscribe", [event])
+          .catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            log.warn(`[events] replay subscribe(${event}) failed: ${msg}`);
+          })
       )
     );
   };
@@ -950,7 +953,7 @@ app.on("ready", async () => {
         void handleExternalOpenPayload(payload as ExternalOpenPayload, {
           openExternal: (url) => shell.openExternal(url),
           forwardOAuthCallback: (request) =>
-            serverClientRef!.call("credentials", "forwardOAuthCallback", [request]),
+            assertPresent(serverClientRef).call("credentials", "forwardOAuthCallback", [request]),
         }).catch((err: unknown) => {
           log.warn(
             `[externalOpen] OAuth browser handoff failed: ${err instanceof Error ? err.message : String(err)}`
@@ -1071,7 +1074,7 @@ app.on("ready", async () => {
     });
 
     // PanelHttpServer is created by serverSession (RPC-backed proxy)
-    const conn = serverSession!;
+    const conn = assertPresent(serverSession);
 
     // Create IpcDispatcher (replaces Electron-side RpcServer for shell)
     // Forwards server-service calls to the server, dispatches Electron-local
@@ -1124,7 +1127,7 @@ app.on("ready", async () => {
       if (!panelView) throw new Error("PanelView not initialized yet");
       return panelView;
     };
-    const getViewManager = () => viewManager!;
+    const getViewManager = () => assertPresent(viewManager);
 
     const { createAppService } = await import("./services/appService.js");
     const { createPanelShellService } = await import("./services/panelShellService.js");
@@ -1207,7 +1210,7 @@ app.on("ready", async () => {
           autofillManager = new AutofillManager({
             passwordStore: browserDataClient.passwords,
             eventService,
-            getViewManager: () => viewManager!,
+            getViewManager: () => assertPresent(viewManager),
             autofillOverlayPreloadPath: path.join(__dirname, "autofillOverlayPreload.cjs"),
           });
           return browserDataClient;
@@ -1365,20 +1368,20 @@ app.on("ready", async () => {
     // Panel lifecycle
     ipcMain.handle("natstack:closeSelf", async (event) => {
       const callerId = resolveCallerId(event);
-      return panelOrchestrator!.closePanel(callerId);
+      return assertPresent(panelOrchestrator).closePanel(callerId);
     });
     ipcMain.handle("natstack:closeChild", async (event, childId: string) => {
       const callerId = resolveCallerId(event);
-      return panelOrchestrator!.closeChild(callerId, childId);
+      return assertPresent(panelOrchestrator).closeChild(callerId, childId);
     });
     ipcMain.handle("natstack:focusPanel", async (_event, panelId: string) => {
-      panelOrchestrator!.focusPanel(panelId);
+      assertPresent(panelOrchestrator).focusPanel(panelId);
     });
     ipcMain.handle(
       "natstack:createBrowserPanel",
       async (event, url: string, opts?: { name?: string; focus?: boolean }) => {
         const callerId = resolveCallerId(event);
-        return panelOrchestrator!.createBrowserPanel(callerId, url, opts);
+        return assertPresent(panelOrchestrator).createBrowserPanel(callerId, url, opts);
       }
     );
     ipcMain.handle("natstack:bridge.getInfo", async (event) => {
@@ -1452,13 +1455,13 @@ app.on("ready", async () => {
     ipcMain.handle("natstack:getCdpEndpoint", async (event, browserId: string) => {
       const callerId = resolveCallerId(event);
       const { getCdpEndpointForCaller } = await import("./services/browserService.js");
-      return getCdpEndpointForCaller(cdpServer!, browserId, callerId);
+      return getCdpEndpointForCaller(assertPresent(cdpServer), browserId, callerId);
     });
     ipcMain.handle("natstack:navigate", async (event, browserId: string, url: string) => {
       // Audit #9: caller must own the target view OR be the shell.
       requireOwnsViewOrShell(event, browserId, "natstack:navigate");
       assertHttpUrl(url);
-      const wc = viewManager!.getWebContents(browserId);
+      const wc = assertPresent(viewManager).getWebContents(browserId);
       if (!wc) throw new Error(`Browser webContents not found for ${browserId}`);
       try {
         await wc.loadURL(url);
@@ -1470,19 +1473,19 @@ app.on("ready", async () => {
     });
     ipcMain.handle("natstack:goBack", async (event, browserId: string) => {
       requireOwnsViewOrShell(event, browserId, "natstack:goBack");
-      viewManager!.getWebContents(browserId)?.goBack();
+      assertPresent(viewManager).getWebContents(browserId)?.goBack();
     });
     ipcMain.handle("natstack:goForward", async (event, browserId: string) => {
       requireOwnsViewOrShell(event, browserId, "natstack:goForward");
-      viewManager!.getWebContents(browserId)?.goForward();
+      assertPresent(viewManager).getWebContents(browserId)?.goForward();
     });
     ipcMain.handle("natstack:reload", async (event, browserId: string) => {
       requireOwnsViewOrShell(event, browserId, "natstack:reload");
-      viewManager!.getWebContents(browserId)?.reload();
+      assertPresent(viewManager).getWebContents(browserId)?.reload();
     });
     ipcMain.handle("natstack:stop", async (event, browserId: string) => {
       requireOwnsViewOrShell(event, browserId, "natstack:stop");
-      viewManager!.getWebContents(browserId)?.stop();
+      assertPresent(viewManager).getWebContents(browserId)?.stop();
     });
 
     // createWindow will create ViewManager, PanelView, and initialize panel tree
@@ -1618,8 +1621,8 @@ app.on("will-quit", (event) => {
       if (session.serverProcessManager) {
         stopPromises.push(
           cleanupThenClose.then(() =>
-            session
-              .serverProcessManager!.shutdown()
+            assertPresent(session.serverProcessManager)
+              .shutdown()
               .then(() => console.log("[App] Server process stopped"))
               .catch((e) => console.error("[App] Server process shutdown error:", e))
           )

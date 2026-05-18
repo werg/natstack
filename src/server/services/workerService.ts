@@ -15,6 +15,7 @@ import type { DODispatch } from "../doDispatch.js";
 import type { BuildSystemV2 } from "../buildV2/index.js";
 import { createDevLogger } from "@natstack/dev-log";
 import { resolveUserlandService, toDORef } from "../userlandServices.js";
+import { assertPresent } from "../../lintHelpers";
 
 const log = createDevLogger("WorkerService");
 const CHANNEL_SERVICE_PROTOCOL = "natstack.channel.v1";
@@ -31,7 +32,7 @@ export function createWorkerService(deps: {
     description: "Worker DO operations (call, list)",
     // Service-level policy admits the read/list surface to all kinds.
     // Mutating callDO is tightened per-method below.
-    policy: { allowed: ["shell", "server", "panel", "worker"] },
+    policy: { allowed: ["shell", "server", "panel", "worker", "extension"] },
     methods: {
       listSources: {
         description: "List available worker sources with durable object classes",
@@ -74,7 +75,7 @@ export function createWorkerService(deps: {
               name: n.name,
               source: n.relativePath,
               title: n.manifest.title,
-              classes: n.manifest.durable!.classes,
+              classes: assertPresent(n.manifest.durable).classes,
             }));
         }
 

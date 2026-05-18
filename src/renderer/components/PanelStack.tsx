@@ -31,6 +31,7 @@ import { useNavigation } from "./NavigationContext";
 import { LazyPanelTreeSidebar } from "./LazyPanelTreeSidebar";
 import { useShellEvent } from "../shell/useShellEvent";
 import { SavePasswordBar } from "./SavePasswordBar";
+import { assertPresent } from "../../lintHelpers";
 
 interface PanelStackProps {
   onTitleChange?: (title: string) => void;
@@ -130,7 +131,7 @@ export function PanelStack({
   // Initial panel selection - set visible panel when root panels load
   useEffect(() => {
     if (!visiblePanelId && rootPanels.length > 0) {
-      setVisiblePanelId(rootPanels[0]!.id);
+      setVisiblePanelId(assertPresent(rootPanels[0]).id);
     }
   }, [rootPanels, visiblePanelId]);
 
@@ -148,7 +149,7 @@ export function PanelStack({
         // Only fall back if we still have the same ID and still can't find the panel
         // This prevents incorrectly falling back during panel creation
         if (currentId === visiblePanelId) {
-          return rootPanels[0]!.id;
+          return assertPresent(rootPanels[0]).id;
         }
         return currentId;
       });
@@ -227,14 +228,14 @@ export function PanelStack({
       case "back":
         await panelService.markBrowserNavigationIntent(
           panelId,
-          getBrowserNavigationIntentForCommand("back")!
+          assertPresent(getBrowserNavigationIntentForCommand("back"))
         );
         await panelService.goBack(panelId);
         break;
       case "forward":
         await panelService.markBrowserNavigationIntent(
           panelId,
-          getBrowserNavigationIntentForCommand("forward")!
+          assertPresent(getBrowserNavigationIntentForCommand("forward"))
         );
         await panelService.goForward(panelId);
         break;
@@ -242,14 +243,14 @@ export function PanelStack({
       case "reload-panel":
         await panelService.markBrowserNavigationIntent(
           panelId,
-          getBrowserNavigationIntentForCommand("reload-panel")!
+          assertPresent(getBrowserNavigationIntentForCommand("reload-panel"))
         );
         await panelService.reload(panelId);
         break;
       case "reload-view":
         await panelService.markBrowserNavigationIntent(
           panelId,
-          getBrowserNavigationIntentForCommand("reload-view")!
+          assertPresent(getBrowserNavigationIntentForCommand("reload-view"))
         );
         await panelService.reloadView(panelId);
         break;
@@ -257,7 +258,7 @@ export function PanelStack({
       case "force-reload-view":
         await panelService.markBrowserNavigationIntent(
           panelId,
-          getBrowserNavigationIntentForCommand("force-reload-view")!
+          assertPresent(getBrowserNavigationIntentForCommand("force-reload-view"))
         );
         await panelService.forceReloadView(panelId);
         break;
@@ -445,35 +446,35 @@ export function PanelStack({
         case "back":
           void panelService.markBrowserNavigationIntent(
             panelId,
-            getBrowserNavigationIntentForCommand(command.type)!
+            assertPresent(getBrowserNavigationIntentForCommand(command.type))
           );
           void panelService.goBack(panelId);
           return;
         case "forward":
           void panelService.markBrowserNavigationIntent(
             panelId,
-            getBrowserNavigationIntentForCommand(command.type)!
+            assertPresent(getBrowserNavigationIntentForCommand(command.type))
           );
           void panelService.goForward(panelId);
           return;
         case "reload-panel":
           void panelService.markBrowserNavigationIntent(
             panelId,
-            getBrowserNavigationIntentForCommand(command.type)!
+            assertPresent(getBrowserNavigationIntentForCommand(command.type))
           );
           void panelService.reload(panelId);
           return;
         case "reload-view":
           void panelService.markBrowserNavigationIntent(
             panelId,
-            getBrowserNavigationIntentForCommand(command.type)!
+            assertPresent(getBrowserNavigationIntentForCommand(command.type))
           );
           void panelService.reloadView(panelId);
           return;
         case "force-reload-view":
           void panelService.markBrowserNavigationIntent(
             panelId,
-            getBrowserNavigationIntentForCommand(command.type)!
+            assertPresent(getBrowserNavigationIntentForCommand(command.type))
           );
           void panelService.forceReloadView(panelId);
           return;

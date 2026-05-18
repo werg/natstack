@@ -20,11 +20,13 @@ if (!g.__natstackTransport) throw new Error("Shell transport not available");
 const transport: RpcTransport = {
   send: g.__natstackTransport.send,
   onMessage: (_sourceId, handler) =>
-    g.__natstackTransport!.onMessage((fromId, msg) => {
+    assertPresent(g.__natstackTransport).onMessage((fromId, msg) => {
       if (fromId === "main") handler(msg as RpcMessage);
     }),
   onAnyMessage: (handler) =>
-    g.__natstackTransport!.onMessage((fromId, msg) => handler(fromId, msg as RpcMessage)),
+    assertPresent(g.__natstackTransport).onMessage((fromId, msg) =>
+      handler(fromId, msg as RpcMessage)
+    ),
 };
 
 const rpc: RpcBridge = createRpcBridge({
@@ -349,6 +351,7 @@ export const notification = {
 // =============================================================================
 
 import type { ApprovalDecision, PendingApproval } from "@natstack/shared/approvals";
+import { assertPresent } from "../../lintHelpers";
 
 export const shellApproval = {
   resolve: (approvalId: string, decision: ApprovalDecision) =>

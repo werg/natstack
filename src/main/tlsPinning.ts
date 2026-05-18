@@ -24,11 +24,12 @@ import * as fs from "fs";
 import * as tls from "tls";
 import { Agent as HttpsAgent } from "https";
 import { app, session, type Session } from "electron";
+import { assertPresent } from "../lintHelpers";
 
 /** SHA-256 fingerprint of a DER cert buffer as uppercase colon-separated hex. */
 export function sha256Fingerprint(der: Buffer): string {
   const hex = createHash("sha256").update(der).digest("hex").toUpperCase();
-  return hex.match(/.{2}/g)!.join(":");
+  return assertPresent(hex.match(/.{2}/g)).join(":");
 }
 
 /** SHA-256 fingerprint of a PEM-encoded certificate string. */

@@ -1,5 +1,9 @@
 /**
- * @natstack/pubsub - PubSub client for NatStack
+ * `@natstack/pubsub` — stateful pub/sub channels with structured
+ * method calls, participant presence, missed-context replay, and
+ * chat-shaped binary attachments. For point-to-point fetch-shaped
+ * RPC (with streaming bodies) use `@natstack/rpc` instead. See
+ * `docs/architecture/rpc-vs-pubsub.md` for the boundary.
  *
  * Provides real-time messaging between panels and workers via RPC
  * with Durable Object message history.

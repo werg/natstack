@@ -45,6 +45,26 @@ function requestCapability(queue: ReturnType<typeof createQueue>) {
   });
 }
 
+function requestExtension(queue: ReturnType<typeof createQueue>) {
+  return queue.request({
+    kind: "extension",
+    callerId: "panel:1",
+    callerKind: "panel",
+    repoPath: "panels/example",
+    effectiveVersion: "hash-1",
+    action: "install",
+    extensionName: "@workspace-extensions/image-service",
+    version: "1.0.0",
+    source: {
+      kind: "internal-git",
+      repo: "extensions/@workspace-extensions/image-service",
+      ref: "HEAD",
+    },
+    title: "Install extension",
+    description: "Install and run this extension.",
+  });
+}
+
 async function flush(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
@@ -266,6 +286,40 @@ describe("approvalPushBridge", () => {
 
     queue.resolve(queue.listPending()[0]!.approvalId, "deny");
     await expect(promise).resolves.toEqual({ decision: "deny" });
+  });
+
+  it("sends extension approvals with approve, deny, and open actions only", async () => {
+    const queue = createQueue();
+    const push = createPushMock();
+    createApprovalPushBridge({
+      approvalQueue: queue,
+      push,
+      shellPresence: {
+        isAnyShellActive: () => false,
+        markActive: vi.fn(),
+        getActiveShellCount: () => 0,
+      },
+    });
+
+    const promise = requestExtension(queue);
+    await flush();
+
+    expect(push.sendBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: APPROVAL_CATEGORY_DECIDE,
+        data: expect.objectContaining({
+          approvalKind: "extension",
+          actionsJson: JSON.stringify([
+            { id: "once", title: "Approve" },
+            { id: "deny", title: "Deny" },
+            { id: "open", title: "Open" },
+          ]),
+        }),
+      })
+    );
+
+    queue.resolve(queue.listPending()[0]!.approvalId, "once");
+    await expect(promise).resolves.toBe("once");
   });
 
   it("does not send a cancel for a delayed approval that never pushed", async () => {

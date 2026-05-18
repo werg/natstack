@@ -28,6 +28,7 @@ import * as buildStore from "./buildStore.js";
 import { buildUnit } from "./builder.js";
 import type { GitPushEvent, GitServer } from "@natstack/git-server";
 import { execGitFileSync } from "@natstack/shared/gitRuntime";
+import { assertPresent } from "../../lintHelpers";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -123,7 +124,7 @@ export class PushTrigger extends EventEmitter {
           console.log(
             `[PushTrigger] Tracked ref push ${event.branch} for ${nodeName}, triggering full rediscovery`
           );
-          await this.fullRediscovery();
+          await this.fullRediscovery(nodeName);
           return;
         }
 
@@ -132,7 +133,7 @@ export class PushTrigger extends EventEmitter {
           console.log(
             `[PushTrigger] package.json changed for ${nodeName}, triggering full rediscovery`
           );
-          await this.fullRediscovery();
+          await this.fullRediscovery(nodeName);
         } else {
           await this.processChange(nodeName, event.commit);
         }
@@ -230,9 +231,10 @@ export class PushTrigger extends EventEmitter {
       const node = this.graph.tryGet(name);
       if (!node) continue;
       if (node.kind === "package" || node.kind === "template") continue; // Packages/templates are not directly buildable
+      if (node.kind === "extension" && name !== nodeName) continue;
 
-      const ev = result.evMap[name]!;
-      const sourcemap = node.manifest.sourcemap !== false;
+      const ev = assertPresent(result.evMap[name]);
+      const sourcemap = node.kind === "extension" ? true : node.manifest.sourcemap !== false;
       const buildKey = computeBuildKey(name, ev, sourcemap);
 
       if (buildStore.has(buildKey)) continue; // Already built
@@ -285,7 +287,7 @@ export class PushTrigger extends EventEmitter {
    * Snapshot-first: captures commit SHAs for all nodes before computing EVs,
    * ensuring EV/source consistency when the same commitMap is used for extraction.
    */
-  private async fullRediscovery(): Promise<void> {
+  private async fullRediscovery(sourceNodeName?: string): Promise<void> {
     // 1. Fresh graph from disk
     const newGraph = discoverPackageGraph(this.workspaceRoot);
 
@@ -332,9 +334,10 @@ export class PushTrigger extends EventEmitter {
       const node = newGraph.tryGet(name);
       if (!node) continue;
       if (node.kind === "package" || node.kind === "template") continue;
+      if (node.kind === "extension" && name !== sourceNodeName) continue;
 
-      const ev = result.evMap[name]!;
-      const sourcemap = node.manifest.sourcemap !== false;
+      const ev = assertPresent(result.evMap[name]);
+      const sourcemap = node.kind === "extension" ? true : node.manifest.sourcemap !== false;
       const buildKey = computeBuildKey(name, ev, sourcemap);
 
       if (buildStore.has(buildKey)) continue;

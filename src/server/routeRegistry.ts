@@ -29,6 +29,7 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import type { Duplex } from "stream";
 import { createDevLogger } from "@natstack/dev-log";
+import { assertPresent } from "../lintHelpers";
 
 const log = createDevLogger("RouteRegistry");
 
@@ -159,7 +160,7 @@ function matchPattern(pattern: CompiledPattern, path: string): Record<string, st
   if (!m) return null;
   const params: Record<string, string> = {};
   for (let i = 0; i < pattern.paramNames.length; i++) {
-    params[pattern.paramNames[i]!] = m[i + 1] ?? "";
+    params[assertPresent(pattern.paramNames[i])] = m[i + 1] ?? "";
   }
   return params;
 }
@@ -401,8 +402,8 @@ export class RouteRegistry {
           return {
             kind: "worker-do",
             source: e.source,
-            className: e.className!,
-            objectKey: e.objectKey!,
+            className: assertPresent(e.className),
+            objectKey: assertPresent(e.objectKey),
             remainder: remainderPath,
             auth: e.auth,
             websocket: e.websocket,
@@ -411,7 +412,7 @@ export class RouteRegistry {
         return {
           kind: "worker-regular",
           source: e.source,
-          targetInstanceName: e.targetInstanceName!,
+          targetInstanceName: assertPresent(e.targetInstanceName),
           remainder: remainderPath,
           auth: e.auth,
           websocket: e.websocket,
@@ -423,7 +424,7 @@ export class RouteRegistry {
     if (kindSeg === "s") {
       // /_r/s/<serviceName>/<path...>
       if (segs.length < 2) return null;
-      const serviceName = segs[1]!;
+      const serviceName = assertPresent(segs[1]);
       const remainderPath = "/" + segs.slice(2).join("/");
       const entries = this.serviceRoutes.get(serviceName);
       if (!entries || entries.length === 0) return null;

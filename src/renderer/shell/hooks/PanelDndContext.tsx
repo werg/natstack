@@ -51,6 +51,7 @@ import {
   findParentAtDepth,
   type FlattenedPanel,
 } from "./PanelTreeContext.js";
+import { assertPresent } from "../../../lintHelpers";
 
 // ============================================================================
 // Constants
@@ -448,7 +449,7 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
       const siblingsByParent = new Map<string | null, FlattenedPanel[]>();
 
       for (let i = 0; i < flattenedItems.length; i++) {
-        const item = flattenedItems[i]!;
+        const item = assertPresent(flattenedItems[i]);
         indexMap.set(item.id, i);
 
         const parentKey = item.parentId;

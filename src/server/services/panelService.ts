@@ -30,6 +30,7 @@ import {
   getPanelStateArgs,
 } from "@natstack/shared/panel/accessors";
 import type { CodeIdentityResolver } from "./codeIdentityResolver.js";
+import { assertPresent, deleteDynamicProperty } from "../../lintHelpers";
 
 /**
  * Mutable URL config for panel-facing endpoints.
@@ -293,7 +294,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
 
           // Tokens
           tokenManager.createToken(panelId, "panel");
-          const gatewayToken = tokenManager.getToken(panelId)!;
+          const gatewayToken = assertPresent(tokenManager.getToken(panelId));
 
           // FS context registration (skip browser panels)
           fsService.registerCallerContext(panelId, contextId);
@@ -517,7 +518,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           const currentArgs = getPanelStateArgs(panel) ?? {};
           const merged = { ...currentArgs, ...updates };
           for (const key of Object.keys(merged)) {
-            if (merged[key] === null) delete merged[key];
+            if (merged[key] === null) deleteDynamicProperty(merged, key);
           }
 
           const validation = validateStateArgs(merged, schema);
@@ -678,7 +679,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           const contextId = generateContextId(aboutPanelId);
 
           tokenManager.createToken(aboutPanelId, "panel");
-          const gatewayToken = tokenManager.getToken(aboutPanelId)!;
+          const gatewayToken = assertPresent(tokenManager.getToken(aboutPanelId));
 
           fsService.registerCallerContext(aboutPanelId, contextId);
 

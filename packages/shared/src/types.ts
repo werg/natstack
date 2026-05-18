@@ -32,12 +32,28 @@ export type {
  * optional in the type.
  */
 export interface PackageManifest {
+  /** Human-readable display name shared by all workspace unit kinds. */
+  displayName?: string;
   /** Display title (required at runtime for panels; workers don't need it). */
   title?: string;
   /** Optional description shown in the launcher and used as documentation. */
   description?: string;
   /** Entry file relative to the package root (e.g., `"index.tsx"`, `"index.ts"`). */
   entry?: string;
+  /** Extension discriminator block. Presence marks this package as an extension unit. */
+  extension?: {
+    /** v1 accepts only eager activation (`"*"`). */
+    activationEvents?: string[];
+    /**
+     * Extension dependency handling. Defaults to "auto": bundle ordinary JS
+     * dependencies and externalize packages that need runtime assets/native code.
+     */
+    dependencyMode?: "auto" | "bundle" | "external";
+  };
+  /** Future shared manifest discriminator for worker units. */
+  worker?: Record<string, unknown>;
+  /** Future shared manifest discriminator for panel units. */
+  panel?: Record<string, unknown>;
   // ----- Panel-only fields -----
   /** Top-level package.json dependencies merged in by `loadPanelManifest`. */
   dependencies?: Record<string, string>;

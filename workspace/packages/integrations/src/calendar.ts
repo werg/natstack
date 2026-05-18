@@ -1,6 +1,9 @@
 import { hasRecentPushDelivery } from "./pushState.js";
 import { googleWorkspaceCredential } from "./providers.js";
-import { getUrlCredentialClient, type UrlCredentialClient } from "./urlCredentialClient.js";
+import type {
+  CredentialClient,
+  UrlCredentialHandle,
+} from "../../runtime/src/shared/credentials.js";
 
 const GOOGLE_CALENDAR_BASE_URL = "https://www.googleapis.com/calendar/v3";
 const DEFAULT_PUSH_QUIET_WINDOW_MS = 5 * 60_000;
@@ -94,15 +97,6 @@ export interface StartPollingOptions {
   onError?: (error: Error) => void | Promise<void>;
 }
 
-let googleWorkspace: UrlCredentialClient | undefined;
-
-async function ensureAuth(): Promise<UrlCredentialClient> {
-  if (!googleWorkspace) {
-    googleWorkspace = await getUrlCredentialClient(googleWorkspaceCredential);
-  }
-  return googleWorkspace;
-}
-
 class GoogleCalendarApiError extends Error {
   status: number;
 
@@ -166,201 +160,185 @@ function buildEventsQuery(options: ListEventsOptions = {}): string {
   return query ? `?${query}` : "";
 }
 
-async function calendarFetch<T>(
-  path: string,
-  init: RequestInit = {},
-): Promise<T> {
-  const handle = await ensureAuth();
-  const headers = new Headers(init.headers);
-  headers.set("Accept", "application/json");
-
-  if (init.body && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-
-  const response = await handle.fetch(`${GOOGLE_CALENDAR_BASE_URL}${path}`, {
-    ...init,
-    headers,
-  });
-
-  if (!response.ok) {
-    throw new GoogleCalendarApiError(response.status, response.statusText, await response.text());
-  }
-
-  if (response.status === 204) {
-    return undefined as T;
-  }
-
-  return (await response.json()) as T;
+export interface CalendarClient {
+  handle(): Promise<UrlCredentialHandle>;
+  listCalendars(): Promise<CalendarListEntry[]>;
+  listEvents(calendarId: string, options?: ListEventsOptions): Promise<ListEventsResult>;
+  getEvent(calendarId: string, eventId: string): Promise<CalendarEvent>;
+  createEvent(calendarId: string, event: CalendarEvent): Promise<CalendarEvent>;
+  updateEvent(calendarId: string, eventId: string, event: CalendarEvent): Promise<CalendarEvent>;
+  deleteEvent(calendarId: string, eventId: string): Promise<void>;
+  startPolling(options: StartPollingOptions): () => void;
 }
 
-export async function listCalendars(): Promise<CalendarListEntry[]> {
-  const calendars: CalendarListEntry[] = [];
-  let pageToken: string | undefined;
-
-  do {
-    const query = pageToken ? `?${new URLSearchParams({ pageToken }).toString()}` : "";
-    const page = await calendarFetch<CalendarListResponse>(
-      `/users/me/calendarList${query}`,
-    );
-
-    calendars.push(...(page.items ?? []));
-    pageToken = page.nextPageToken;
-  } while (pageToken);
-
-  return calendars;
-}
-
-export async function listEvents(
-  calendarId: string,
-  options: ListEventsOptions = {},
-): Promise<ListEventsResult> {
-  const events: CalendarEvent[] = [];
-  let pageToken: string | undefined;
-  let nextSyncToken = options.syncToken;
-
-  do {
-    const params = new URLSearchParams(buildEventsQuery(options).slice(1));
-    if (pageToken) {
-      params.set("pageToken", pageToken);
+/**
+ * Build a Google Calendar client bound to the given `CredentialClient`.
+ * The credential handle is resolved on first use and memoized.
+ */
+export function createCalendarClient(credentials: CredentialClient): CalendarClient {
+  let handlePromise: Promise<UrlCredentialHandle> | null = null;
+  const handle = (): Promise<UrlCredentialHandle> => {
+    if (!handlePromise) {
+      const p = credentials.forAudience({
+        ...googleWorkspaceCredential,
+        label: googleWorkspaceCredential.displayName,
+      });
+      // Cache success only; let the user retry after registering
+      // a credential mid-session.
+      p.catch(() => {
+        if (handlePromise === p) handlePromise = null;
+      });
+      handlePromise = p;
     }
-
-    const query = params.toString();
-    const page = await calendarFetch<EventsListResponse>(
-      `/calendars/${encodePathSegment(calendarId)}/events${query ? `?${query}` : ""}`,
-    );
-
-    events.push(...(page.items ?? []));
-    pageToken = page.nextPageToken;
-    if (page.nextSyncToken) {
-      nextSyncToken = page.nextSyncToken;
-    }
-  } while (pageToken);
-
-  return { items: events, nextSyncToken };
-}
-
-export async function getEvent(
-  calendarId: string,
-  eventId: string,
-): Promise<CalendarEvent> {
-  return calendarFetch<CalendarEvent>(
-    `/calendars/${encodePathSegment(calendarId)}/events/${encodePathSegment(eventId)}`,
-  );
-}
-
-export async function createEvent(
-  calendarId: string,
-  event: CalendarEvent,
-): Promise<CalendarEvent> {
-  return calendarFetch<CalendarEvent>(
-    `/calendars/${encodePathSegment(calendarId)}/events`,
-    {
-      method: "POST",
-      body: JSON.stringify(event),
-    },
-  );
-}
-
-export async function updateEvent(
-  calendarId: string,
-  eventId: string,
-  event: CalendarEvent,
-): Promise<CalendarEvent> {
-  return calendarFetch<CalendarEvent>(
-    `/calendars/${encodePathSegment(calendarId)}/events/${encodePathSegment(eventId)}`,
-    {
-      method: "PUT",
-      body: JSON.stringify(event),
-    },
-  );
-}
-
-export async function deleteEvent(
-  calendarId: string,
-  eventId: string,
-): Promise<void> {
-  await calendarFetch<void>(
-    `/calendars/${encodePathSegment(calendarId)}/events/${encodePathSegment(eventId)}`,
-    {
-      method: "DELETE",
-    },
-  );
-}
-
-export function startPolling(options: StartPollingOptions): () => void {
-  const intervalMs = options.intervalMs ?? 60_000;
-  let active = true;
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  let syncToken = options.syncToken;
-
-  const scheduleNextPoll = () => {
-    if (!active) {
-      return;
-    }
-
-    timeoutId = setTimeout(() => {
-      void poll();
-    }, intervalMs);
+    return handlePromise;
   };
 
-  const poll = async () => {
-    try {
-      const handle = await ensureAuth();
-      if (
-        options.standDownWhenPushActive !== false &&
-        syncToken &&
-        await hasRecentPushDelivery(
-          "google-workspace",
-          "events.changed",
-          handle.credentialId,
-          options.pushQuietWindowMs ?? DEFAULT_PUSH_QUIET_WINDOW_MS,
-        )
-      ) {
-        return;
-      }
-
-      const result = await listEvents(options.calendarId, syncToken
-        ? {
-            syncToken,
-            maxResults: options.maxResults,
-            showDeleted: true,
-            singleEvents: options.singleEvents,
-          }
-        : {
-            timeMin: options.timeMin,
-            timeMax: options.timeMax,
-            maxResults: options.maxResults,
-            showDeleted: options.showDeleted,
-            singleEvents: options.singleEvents,
-            orderBy: options.orderBy,
-          });
-
-      for (const event of result.items) {
-        await options.onEventChange(event);
-      }
-
-      if (result.nextSyncToken) {
-        syncToken = result.nextSyncToken;
-      }
-    } catch (error) {
-      if (error instanceof GoogleCalendarApiError && error.status === 410) {
-        syncToken = undefined;
-      } else if (options.onError) {
-        await options.onError(error instanceof Error ? error : new Error(String(error)));
-      }
-    } finally {
-      scheduleNextPoll();
+  const apiFetch = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
+    const auth = await handle();
+    const headers = new Headers(init.headers);
+    headers.set("Accept", "application/json");
+    if (init.body && !headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
     }
+    const response = await auth.fetch(`${GOOGLE_CALENDAR_BASE_URL}${path}`, { ...init, headers });
+    if (!response.ok) {
+      throw new GoogleCalendarApiError(response.status, response.statusText, await response.text());
+    }
+    if (response.status === 204) return undefined as T;
+    return (await response.json()) as T;
   };
 
-  void poll();
+  const listCalendars = async (): Promise<CalendarListEntry[]> => {
+    const calendars: CalendarListEntry[] = [];
+    let pageToken: string | undefined;
+    do {
+      const query = pageToken ? `?${new URLSearchParams({ pageToken }).toString()}` : "";
+      const page = await apiFetch<CalendarListResponse>(`/users/me/calendarList${query}`);
+      calendars.push(...(page.items ?? []));
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+    return calendars;
+  };
 
-  return () => {
-    active = false;
-    if (timeoutId) {
-      clearTimeout(timeoutId);
-    }
+  const listEvents = async (
+    calendarId: string,
+    options: ListEventsOptions = {},
+  ): Promise<ListEventsResult> => {
+    const events: CalendarEvent[] = [];
+    let pageToken: string | undefined;
+    let nextSyncToken = options.syncToken;
+    do {
+      const params = new URLSearchParams(buildEventsQuery(options).slice(1));
+      if (pageToken) params.set("pageToken", pageToken);
+      const query = params.toString();
+      const page = await apiFetch<EventsListResponse>(
+        `/calendars/${encodePathSegment(calendarId)}/events${query ? `?${query}` : ""}`,
+      );
+      events.push(...(page.items ?? []));
+      pageToken = page.nextPageToken;
+      if (page.nextSyncToken) nextSyncToken = page.nextSyncToken;
+    } while (pageToken);
+    return { items: events, nextSyncToken };
+  };
+
+  const startPolling = (options: StartPollingOptions): (() => void) => {
+    const intervalMs = options.intervalMs ?? 60_000;
+    let active = true;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let syncToken = options.syncToken;
+
+    const scheduleNextPoll = () => {
+      if (!active) return;
+      timeoutId = setTimeout(() => {
+        void poll();
+      }, intervalMs);
+    };
+
+    const poll = async () => {
+      try {
+        const auth = await handle();
+        if (
+          options.standDownWhenPushActive !== false &&
+          syncToken &&
+          (await hasRecentPushDelivery(
+            "google-workspace",
+            "events.changed",
+            auth.credentialId,
+            options.pushQuietWindowMs ?? DEFAULT_PUSH_QUIET_WINDOW_MS,
+          ))
+        ) {
+          return;
+        }
+
+        const result = await listEvents(
+          options.calendarId,
+          syncToken
+            ? {
+                syncToken,
+                maxResults: options.maxResults,
+                showDeleted: true,
+                singleEvents: options.singleEvents,
+              }
+            : {
+                timeMin: options.timeMin,
+                timeMax: options.timeMax,
+                maxResults: options.maxResults,
+                showDeleted: options.showDeleted,
+                singleEvents: options.singleEvents,
+                orderBy: options.orderBy,
+              },
+        );
+
+        for (const event of result.items) {
+          await options.onEventChange(event);
+        }
+        if (result.nextSyncToken) syncToken = result.nextSyncToken;
+      } catch (error) {
+        if (error instanceof GoogleCalendarApiError && error.status === 410) {
+          syncToken = undefined;
+        } else if (options.onError) {
+          await options.onError(error instanceof Error ? error : new Error(String(error)));
+        }
+      } finally {
+        scheduleNextPoll();
+      }
+    };
+
+    void poll();
+    return () => {
+      active = false;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+  };
+
+  return {
+    handle,
+    listCalendars,
+    listEvents,
+    getEvent: (calendarId, eventId) =>
+      apiFetch<CalendarEvent>(
+        `/calendars/${encodePathSegment(calendarId)}/events/${encodePathSegment(eventId)}`,
+      ),
+    createEvent: (calendarId, event) =>
+      apiFetch<CalendarEvent>(`/calendars/${encodePathSegment(calendarId)}/events`, {
+        method: "POST",
+        body: JSON.stringify(event),
+      }),
+    updateEvent: (calendarId, eventId, event) =>
+      apiFetch<CalendarEvent>(
+        `/calendars/${encodePathSegment(calendarId)}/events/${encodePathSegment(eventId)}`,
+        {
+          method: "PUT",
+          body: JSON.stringify(event),
+        },
+      ),
+    deleteEvent: async (calendarId, eventId) => {
+      await apiFetch<void>(
+        `/calendars/${encodePathSegment(calendarId)}/events/${encodePathSegment(eventId)}`,
+        { method: "DELETE" },
+      );
+    },
+    startPolling,
   };
 }
 
@@ -395,12 +373,6 @@ function isWebhookEvent(value: unknown): value is {
 
 export const calendar = {
   manifest,
-  listCalendars,
-  listEvents,
-  getEvent,
-  createEvent,
-  updateEvent,
-  deleteEvent,
-  startPolling,
+  createCalendarClient,
   onEventsChanged,
 } as const;

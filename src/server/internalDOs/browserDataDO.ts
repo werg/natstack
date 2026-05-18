@@ -15,6 +15,7 @@ import type {
   RecordHistoryVisitRequest,
   UpdateHistoryTitleRequest,
 } from "../../../packages/browser-data/src/types.js";
+import { assertPresent } from "../../lintHelpers";
 
 const BATCH_SIZE = 1000;
 
@@ -422,7 +423,7 @@ export class BrowserDataDO extends DurableObjectBase {
 
   async addBookmarksBatch(bookmarks: ImportedBookmark[]): Promise<number> {
     return this.runBatch(bookmarks.length, (i) => {
-      const bm = bookmarks[i]!;
+      const bm = assertPresent(bookmarks[i]);
       this.addBookmark({
         title: bm.title,
         url: bm.url,
@@ -437,7 +438,7 @@ export class BrowserDataDO extends DurableObjectBase {
 
   async addHistoryBatch(entries: ImportedHistoryEntry[]): Promise<number> {
     return this.runBatch(entries.length, (i) => {
-      const entry = entries[i]!;
+      const entry = assertPresent(entries[i]);
       this.sql.exec(
         `INSERT INTO history (url, title, visit_count, typed_count, first_visit, last_visit)
          VALUES (?, ?, ?, ?, ?, ?)
@@ -460,7 +461,7 @@ export class BrowserDataDO extends DurableObjectBase {
   async addCookiesBatch(cookies: ImportedCookie[]): Promise<number> {
     const now = Date.now();
     return this.runBatch(cookies.length, (i) => {
-      const cookie = cookies[i]!;
+      const cookie = assertPresent(cookies[i]);
       this.sql.exec(
         `INSERT INTO cookies (name, value, domain, host_only, path, expiration_date, secure, http_only,
           same_site, source_scheme, source_port, created_at, last_accessed)
@@ -524,7 +525,7 @@ export class BrowserDataDO extends DurableObjectBase {
       });
     }
     return this.runBatch(prepared.length, (i) => {
-      const r = prepared[i]!;
+      const r = assertPresent(prepared[i]);
       this.sql.exec(
         `INSERT INTO passwords (origin_url, username_hash, username_encrypted, password_encrypted,
           action_url, realm, date_created, date_last_used, date_password_changed, times_used)
@@ -551,7 +552,7 @@ export class BrowserDataDO extends DurableObjectBase {
 
   async addAutofillBatch(entries: ImportedAutofillEntry[]): Promise<number> {
     return this.runBatch(entries.length, (i) => {
-      const entry = entries[i]!;
+      const entry = assertPresent(entries[i]);
       this.sql.exec(
         `INSERT INTO autofill (field_name, value, date_created, date_last_used, times_used)
          VALUES (?, ?, ?, ?, ?)
@@ -569,7 +570,7 @@ export class BrowserDataDO extends DurableObjectBase {
 
   async addSearchEnginesBatch(engines: ImportedSearchEngine[]): Promise<number> {
     return this.runBatch(engines.length, (i) => {
-      const engine = engines[i]!;
+      const engine = assertPresent(engines[i]);
       this.sql.exec(
         `INSERT INTO search_engines (name, keyword, search_url, suggest_url, favicon_url, is_default)
          VALUES (?, ?, ?, ?, ?, ?)`,
@@ -585,14 +586,14 @@ export class BrowserDataDO extends DurableObjectBase {
 
   async addPermissionsBatch(permissions: ImportedPermission[]): Promise<number> {
     return this.runBatch(permissions.length, (i) => {
-      const p = permissions[i]!;
+      const p = assertPresent(permissions[i]);
       this.setPermission(p.origin, p.permission, p.setting);
     });
   }
 
   async addFaviconsBatch(favicons: ImportedFavicon[]): Promise<number> {
     return this.runBatch(favicons.length, (i) => {
-      const favicon = favicons[i]!;
+      const favicon = assertPresent(favicons[i]);
       this.sql.exec(
         `INSERT OR REPLACE INTO favicons (url, data, mime_type, last_updated) VALUES (?, ?, ?, ?)`,
         favicon.url,

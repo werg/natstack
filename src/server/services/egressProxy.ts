@@ -34,6 +34,7 @@ import {
   type CredentialSessionGrantResource,
 } from "./credentialSessionGrants.js";
 import { CredentialLifecycleError, type CredentialLifecycle } from "./credentialLifecycle.js";
+import { deleteDynamicProperty } from "../../lintHelpers";
 
 const HOP_BY_HOP_REQUEST_HEADERS = new Set([
   "connection",
@@ -102,6 +103,24 @@ class ForwardRejection extends Error {
   }
 }
 
+/**
+ * Frames emitted by `forwardProxyFetchStream`. The HTTP-stream serializer
+ * encodes each one as a length-prefixed binary frame (see frame-codec.ts);
+ * the client-side decoder reconstructs them and pipes the bytes into a
+ * `Response` body's ReadableStream.
+ */
+export type StreamFrame =
+  | {
+      kind: "head";
+      status: number;
+      statusText: string;
+      headerPairs: Array<[string, string]>;
+      finalUrl: string;
+    }
+  | { kind: "chunk"; bytes: Uint8Array }
+  | { kind: "end"; bytesIn: number }
+  | { kind: "error"; status: number; message: string; code?: string };
+
 interface CircuitState {
   failures: number;
   state: AuditEntry["breakerState"];
@@ -165,16 +184,28 @@ export class EgressProxy {
     url: string;
     method: string;
     headers?: Record<string, string>;
-    body?: string;
+    body?: string | Uint8Array;
     credentialId?: string;
   }): Promise<{
     status: number;
     statusText: string;
-    headers: Record<string, string>;
-    body: string;
+    /**
+     * Headers as ordered pairs (not a flat Record) so multiple
+     * `Set-Cookie` entries — which the Fetch spec deliberately does
+     * NOT combine when iterating — round-trip intact.
+     */
+    headerPairs: Array<[string, string]>;
+    /**
+     * Final URL after any redirects the underlying fetch followed.
+     * Mirrors `Response.url`. Falls back to the requested URL when
+     * the runtime didn't expose it.
+     */
+    finalUrl: string;
+    body: Uint8Array;
   }> {
     const body = params.body;
-    const bytesOut = body ? Buffer.byteLength(body) : 0;
+    const bytesOut =
+      body === undefined ? 0 : typeof body === "string" ? Buffer.byteLength(body) : body.byteLength;
     return this.executeAuthorizedRequest({
       callerId: params.callerId,
       method: params.method.toUpperCase(),
@@ -188,22 +219,147 @@ export class EgressProxy {
         const response = await fetch(targetUrl.toString(), {
           method: params.method,
           headers: headers as HeadersInit,
-          body,
+          body: body as BodyInit | undefined,
         });
-        const responseBody = await response.text();
+        const responseBody = new Uint8Array(await response.arrayBuffer());
         return {
           statusCode: response.status,
-          bytesIn: Buffer.byteLength(responseBody),
+          bytesIn: responseBody.byteLength,
           bytesOut,
           payload: {
             status: response.status,
             statusText: response.statusText,
-            headers: Object.fromEntries(response.headers.entries()),
+            headerPairs: Array.from(response.headers.entries()) as Array<[string, string]>,
+            finalUrl: response.url || targetUrl.toString(),
             body: responseBody,
           },
         };
       },
     });
+  }
+
+  /**
+   * Streaming variant of `forwardProxyFetch`. Performs the same credential
+   * resolution + audit + retry machinery, but instead of buffering the
+   * upstream response body it pumps it through a sink one chunk at a
+   * time. The sink is called with:
+   *
+   *   - `{ kind: "head", status, statusText, headerPairs, finalUrl }`
+   *     exactly once, as soon as the upstream response headers arrive.
+   *   - `{ kind: "chunk", bytes }` zero or more times as response body
+   *     chunks arrive from the upstream.
+   *   - `{ kind: "end", bytesIn }` exactly once when the upstream body
+   *     EOFs cleanly.
+   *
+   * Retries: only meaningful BEFORE the head frame is emitted. Once
+   * downstream consumers have seen the head, the response is committed —
+   * a mid-stream upstream error surfaces as a `kind: "error"` frame and
+   * is not retried.
+   *
+   * Audit logging is finalized after the stream completes (or errors),
+   * with `bytesIn` totaled across all emitted chunks.
+   */
+  async forwardProxyFetchStream(
+    params: {
+      callerId: string;
+      url: string;
+      method: string;
+      headers?: Record<string, string>;
+      body?: string | Uint8Array;
+      credentialId?: string;
+    },
+    sink: (frame: StreamFrame) => Promise<void> | void,
+    abortSignal?: AbortSignal
+  ): Promise<{ status: number; bytesIn: number }> {
+    const body = params.body;
+    const bytesOut =
+      body === undefined ? 0 : typeof body === "string" ? Buffer.byteLength(body) : body.byteLength;
+
+    let bytesInTotal = 0;
+
+    const result = await this.executeAuthorizedRequest({
+      callerId: params.callerId,
+      method: params.method.toUpperCase(),
+      targetUrl: new URL(params.url),
+      inputHeaders: params.headers ?? {},
+      credentialId: params.credentialId,
+      credentialUse: "fetch",
+      initialBytesOut: bytesOut,
+      // Retries are unsafe once the head frame has been emitted (the
+      // caller has already seen a partial response). Disable retries
+      // entirely for the streaming path to keep the contract simple.
+      replaySafe: false,
+      maxRetries: 0,
+      execute: async (targetUrl, headers) => {
+        const upstream = await fetch(targetUrl.toString(), {
+          method: params.method,
+          headers: headers as HeadersInit,
+          body: body as BodyInit | undefined,
+          signal: abortSignal,
+        });
+
+        await sink({
+          kind: "head",
+          status: upstream.status,
+          statusText: upstream.statusText,
+          headerPairs: Array.from(upstream.headers.entries()) as Array<[string, string]>,
+          finalUrl: upstream.url || targetUrl.toString(),
+        });
+
+        // Post-HEAD errors are caught INSIDE the execute callback so
+        // `executeAuthorizedRequest` records the correct audit entry
+        // (real status + accumulated bytesIn). If we let them throw,
+        // the audit log would record `status: 500, bytesIn: 0` even
+        // for a multi-MB partial response.
+        let finalStatus = upstream.status;
+        try {
+          if (upstream.body) {
+            const reader = upstream.body.getReader();
+            try {
+              while (true) {
+                if (abortSignal?.aborted) {
+                  await reader.cancel().catch(() => {});
+                  throw new Error("Streaming proxy fetch aborted by caller");
+                }
+                const { value, done } = await reader.read();
+                if (done) break;
+                if (value && value.byteLength > 0) {
+                  bytesInTotal += value.byteLength;
+                  await sink({ kind: "chunk", bytes: value });
+                }
+              }
+            } finally {
+              reader.releaseLock();
+            }
+          }
+          await sink({ kind: "end", bytesIn: bytesInTotal });
+        } catch (err) {
+          // Mid-stream upstream failure. Surface as an error frame so
+          // the consumer's ReadableStream gets an error rather than a
+          // truncated body, and return 502 to the audit log along
+          // with the bytes we did manage to forward.
+          try {
+            await sink({
+              kind: "error",
+              status: 502,
+              message: err instanceof Error ? err.message : String(err),
+            });
+          } catch {
+            // Best-effort — connection may already be torn down.
+          }
+          finalStatus = 502;
+        }
+
+        return {
+          statusCode: finalStatus,
+          bytesIn: bytesInTotal,
+          bytesOut,
+          payload: { status: finalStatus, bytesIn: bytesInTotal },
+        };
+      },
+    });
+
+    return result;
   }
 
   async forwardGitHttp(params: {
@@ -275,7 +431,7 @@ export class EgressProxy {
     const injection = binding?.injection ?? credential?.bindings?.[0]?.injection;
     if (credential && injection) {
       for (const headerName of credentialCarrierStripHeaders(injection)) {
-        delete headers[headerName.toLowerCase()];
+        deleteDynamicProperty(headers, headerName.toLowerCase());
       }
       if (injection.type === "query-param") {
         const modified = new URL(targetUrl.toString());
@@ -386,6 +542,7 @@ export class EgressProxy {
     credentialId?: string;
     credentialUse?: CredentialBindingUse;
     initialBytesOut?: number;
+    maxRetries?: number;
     replaySafe?: boolean;
     execute: (targetUrl: URL, headers: OutgoingHttpHeaders) => Promise<RequestExecutionResult<T>>;
   }): Promise<T> {
@@ -408,9 +565,12 @@ export class EgressProxy {
         credentialUse: params.credentialUse ?? "fetch",
       });
       const executionKey = executionPolicyKey(authorization, params.targetUrl);
-      const maxAttempts = shouldRetryRequest(params.method, params.replaySafe)
-        ? DEFAULT_RETRY_ATTEMPTS + 1
-        : 1;
+      const maxAttempts =
+        (params.maxRetries !== undefined
+          ? params.maxRetries
+          : shouldRetryRequest(params.method, params.replaySafe)
+            ? DEFAULT_RETRY_ATTEMPTS
+            : 0) + 1;
       let lastError: unknown;
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         breakerState = getCircuitState(this.circuits, executionKey);

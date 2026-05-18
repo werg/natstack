@@ -22,6 +22,7 @@ import type { Duplex } from "stream";
 import type { TokenManager } from "@natstack/shared/tokenManager";
 import { constantTimeStringEqual } from "@natstack/shared/tokenManager";
 import { createDevLogger } from "@natstack/dev-log";
+import { assertPresent } from "../lintHelpers";
 
 const log = createDevLogger("CdpBridge");
 
@@ -271,7 +272,7 @@ export class CdpBridge {
       }
 
       try {
-        this.extensionWs!.send(JSON.stringify(msg));
+        assertPresent(this.extensionWs).send(JSON.stringify(msg));
       } catch (err) {
         clearTimeout(timer);
         this.pendingNavCommands.delete(requestId);
@@ -314,7 +315,7 @@ export class CdpBridge {
       });
 
       const requestId = String(this.nextRequestId++);
-      this.extensionWs!.send(
+      assertPresent(this.extensionWs).send(
         JSON.stringify({
           type: "nav:command",
           requestId,
@@ -356,7 +357,7 @@ export class CdpBridge {
         timer,
       });
 
-      this.extensionWs!.send(
+      assertPresent(this.extensionWs).send(
         JSON.stringify({
           type: "nav:command",
           requestId,
@@ -643,7 +644,7 @@ export class CdpBridge {
     if (!this.clientConnections.has(browserId)) {
       this.clientConnections.set(browserId, new Set());
     }
-    this.clientConnections.get(browserId)!.add(ws);
+    assertPresent(this.clientConnections.get(browserId)).add(ws);
 
     log.info(`Client connected for browser ${browserId}`);
 

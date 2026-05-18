@@ -2,7 +2,11 @@
  * Tests for PackageGraph class.
  */
 
-import { PackageGraph, type GraphNode } from "./packageGraph.js";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
+import { discoverPackageGraph, PackageGraph, type GraphNode } from "./packageGraph.js";
 
 /** Helper: create a minimal GraphNode for testing. */
 function makeNode(
@@ -184,5 +188,47 @@ describe("PackageGraph", () => {
       const reverseDeps = graph.getReverseDeps("A");
       expect(reverseDeps.size).toBe(0);
     });
+  });
+});
+
+describe("discoverPackageGraph extension units", () => {
+  it("discovers scoped extension packages under workspace/extensions", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-ext-graph-"));
+    try {
+      const runtimeDir = path.join(root, "packages", "runtime");
+      const extensionDir = path.join(root, "extensions", "@acme", "git-tools");
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      fs.mkdirSync(extensionDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(runtimeDir, "package.json"),
+        JSON.stringify({
+          name: "@workspace/runtime",
+          version: "0.0.0",
+          natstack: {},
+        })
+      );
+      fs.writeFileSync(
+        path.join(extensionDir, "package.json"),
+        JSON.stringify({
+          name: "@workspace-extensions/git-tools",
+          version: "1.0.0",
+          dependencies: {
+            "@workspace/runtime": "workspace:*",
+          },
+          natstack: {
+            entry: "index.ts",
+            extension: { activationEvents: ["*"] },
+          },
+        })
+      );
+
+      const graph = discoverPackageGraph(root);
+      const node = graph.get("@workspace-extensions/git-tools");
+      expect(node.kind).toBe("extension");
+      expect(node.relativePath).toBe("extensions/@acme/git-tools");
+      expect(node.internalDeps).toContain("@workspace/runtime");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

@@ -3,6 +3,7 @@ import type { EventService } from "@natstack/shared/eventsService";
 import type { ViewManager } from "./viewManager.js";
 import type { BridgePanelManager } from "@natstack/shared/panelInterfaces";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
+import { assertPresent } from "../lintHelpers";
 
 // Set during initialization — always non-null after startup
 let _menuPanelLifecycle: BridgePanelManager | null = null;
@@ -201,7 +202,7 @@ export function buildCommonMenuItems(
       label: "Refresh Panel Display",
       click: () => {
         if (_menuViewManager) {
-          const vm = _menuViewManager!;
+          const vm = assertPresent(_menuViewManager);
           vm.refreshVisiblePanel();
           vm.forceRepaintVisiblePanel();
         }
@@ -231,7 +232,7 @@ export function buildCommonMenuItems(
     dev.push({
       label: "Clear Build Cache",
       click: async () => {
-        await options.includeClearCache!();
+        await assertPresent(options.includeClearCache)();
       },
     });
   }
@@ -407,7 +408,7 @@ export function setupMenu(
           label: "Refresh Panel Display",
           click: () => {
             if (_menuViewManager) {
-              const vm = _menuViewManager!;
+              const vm = assertPresent(_menuViewManager);
               vm.refreshVisiblePanel();
               vm.forceRepaintVisiblePanel();
             }

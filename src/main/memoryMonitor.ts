@@ -1,6 +1,7 @@
 import { app } from "electron";
 import type { ViewManager } from "./viewManager.js";
 import { createDevLogger } from "@natstack/dev-log";
+import { assertPresent } from "../lintHelpers";
 
 const log = createDevLogger("MemoryMonitor");
 
@@ -76,7 +77,8 @@ export async function logMemorySnapshot(options: MemorySnapshotOptions = {}): Pr
 
   const reason = options.reason ? `[${options.reason}]` : "";
   const lines = sortedByMem.map(
-    (e) => `  ${e!.mb.toString().padStart(7)}MB  ${e!.id.padEnd(42)} ${e!.url}`
+    (e) =>
+      `  ${assertPresent(e).mb.toString().padStart(7)}MB  ${assertPresent(e).id.padEnd(42)} ${assertPresent(e).url}`
   );
   log.info(`Memory snapshot ${reason}\n  Main: ${mainMb}MB\n${lines.join("\n")}`);
 }

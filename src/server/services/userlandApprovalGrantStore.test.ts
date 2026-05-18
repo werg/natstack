@@ -50,11 +50,11 @@ describe("UserlandApprovalGrantStore", () => {
   });
 
   it("uses the documented flat key shape", () => {
-    expect(parseCanonicalKey(keyFor("worker:alpha", "team-x:foo"))).toEqual([
-      "userland-grant",
-      "worker:alpha",
-      "team-x:foo",
-    ]);
+    expect(
+      parseCanonicalKey(
+        keyFor("worker:alpha", { kind: "worker", id: "worker:alpha" }, "team-x:foo")
+      )
+    ).toEqual(["userland-grant", "worker:alpha", "worker", "worker:alpha", "team-x:foo"]);
   });
 
   it("tolerates malformed files by starting empty and warning", () => {

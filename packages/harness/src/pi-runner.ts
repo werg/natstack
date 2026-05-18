@@ -53,6 +53,8 @@ import {
   type StreamUpdateCallback,
 } from "./extensions/channel-tools.js";
 import { createAskUserExtension, type AskUserParams } from "./extensions/ask-user.js";
+import { createWebToolsExtension } from "./extensions/web/index.js";
+import type { CredentialPresenceProbe } from "./extensions/web/provider.js";
 import { DispatchedError, type NatStackScopedUiContext } from "./natstack-extension-context.js";
 import {
   GadSessionStorage,
@@ -67,7 +69,11 @@ import { AgentWorkerError } from "./errors.js";
 
 export type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 
-const BUILTIN_TOOL_NAMES = ["read", "edit", "write", "grep", "find", "ls"] as const;
+/** Built-in file tool names that are always active alongside roster tools. */
+const BUILTIN_TOOL_NAMES = [
+  "read", "edit", "write", "grep", "find", "ls",
+  "web_search", "web_fetch", "web_read",
+] as const;
 
 export interface PiRunnerGadProvenance {
   branchId: string;
@@ -112,6 +118,22 @@ export interface PiRunnerOptions {
   sessionStorage?: GadSessionStorage;
   onPrepareNextTurn?: (snapshot: TurnSnapshot) => Promise<TurnSnapshot | void> | TurnSnapshot | void;
   compactionPolicy?: CompactionTriggerOptions;
+  /**
+   * Optional probe asking whether the credentials runtime holds a credential
+   * whose audience matches a given provider origin. Used to auto-upgrade
+   * web search from DuckDuckGo to a paid provider when the user has
+   * registered one through the credentials system. The harness never sees
+   * the credential value — auth is injected by the host's fetcher.
+   */
+  hasCredentialForOrigin?: CredentialPresenceProbe;
+  /**
+   * Optional global-fetch override. In production the host wires a
+   * binary-safe credentialed fetcher that routes through the credentials
+   * runtime: auth is auto-attached by URL-audience matching, every call
+   * is audited, and PDFs/images round-trip as bytes. The harness never
+   * sees credential values.
+   */
+  fetcher?: typeof fetch;
 }
 
 export interface PiStateSnapshot {
@@ -173,6 +195,11 @@ export class PiRunner {
       }),
       createAskUserExtension({
         askUser: this.options.askUserCallback,
+      }),
+      createWebToolsExtension({
+        rpc: this.options.rpc,
+        hasCredentialForOrigin: this.options.hasCredentialForOrigin,
+        fetcher: this.options.fetcher,
       }),
     ]);
 

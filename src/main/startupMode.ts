@@ -15,6 +15,7 @@ import { resolveWorkspaceName } from "@natstack/shared/workspace/loader";
 import { resolveLocalWorkspaceStartup } from "@natstack/shared/workspace/startup";
 import type { CentralDataManager } from "@natstack/shared/centralData";
 import { loadRemoteCredentials } from "./remoteCredentialStore.js";
+import { assertPresent } from "../lintHelpers";
 
 const log = createDevLogger("StartupMode");
 
@@ -122,7 +123,7 @@ function normalizeFingerprint(raw: string | undefined): string | undefined {
   if (!raw) return undefined;
   const hex = raw.replace(/[^0-9a-fA-F]/g, "").toUpperCase();
   if (hex.length !== 64) return raw.toUpperCase(); // let caller surface the mismatch
-  return hex.match(/.{2}/g)!.join(":");
+  return assertPresent(hex.match(/.{2}/g)).join(":");
 }
 
 /**

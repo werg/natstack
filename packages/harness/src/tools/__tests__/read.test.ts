@@ -31,13 +31,15 @@ describe("createReadTool", () => {
     await expect(tool.execute("call-1", { path: "missing.txt" })).rejects.toThrow(/not found/i);
   });
 
-  it("returns ImageContent when image.detectMimeType reports an image type", async () => {
+  it("returns ImageContent when the image service extension detects an image type", async () => {
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     const fs = new StubFs({ files: { [`${CWD}/pic.png`]: pngBytes } });
     const rpc = {
-      call: vi.fn().mockImplementation((_target: string, method: string) => {
-        if (method === "image.detectMimeType") return Promise.resolve("image/png");
-        if (method === "image.resize") {
+      call: vi.fn().mockImplementation((_target: string, method: string, extensionName: string, extensionMethod: string) => {
+        expect(method).toBe("extensions.invoke");
+        expect(extensionName).toBe("@workspace-extensions/image-service");
+        if (extensionMethod === "detectMimeType") return Promise.resolve("image/png");
+        if (extensionMethod === "resize") {
           return Promise.resolve({
             data: pngBytes,
             mimeType: "image/png",
@@ -50,6 +52,7 @@ describe("createReadTool", () => {
         }
         return Promise.resolve(null);
       }),
+      streamCall: vi.fn(async () => new Response()),
     };
     const tool = createReadTool(CWD, fs, { rpc });
     const result = await tool.execute("call-1", { path: "pic.png" });

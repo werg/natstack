@@ -27,6 +27,7 @@ import {
   getPlatformPackageBinaryPath,
 } from "@natstack/shared/runtimePaths";
 import { getInternalDOBundle, isInternalDOSource } from "./internalDOs/internalDoLoader.js";
+import { assertPresent } from "../lintHelpers";
 
 const log = createDevLogger("WorkerdManager");
 declare const __filename: string | undefined;
@@ -142,6 +143,10 @@ function canonicalInstanceNameForSource(source: string): string {
   return raw.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
+function workerdInspectorEnabled(): boolean {
+  return process.env["NATSTACK_PROD"] !== "1" && process.env["NODE_ENV"] !== "production";
+}
+
 // ---------------------------------------------------------------------------
 // WorkerdManager
 // ---------------------------------------------------------------------------
@@ -151,6 +156,7 @@ export class WorkerdManager {
   private process: ChildProcess | null = null;
   private configDir: string;
   private port: number | null = null;
+  private inspectorPort: number | null = null;
   private deps: WorkerdManagerDeps;
   private workerdBinary: string | null = null;
 
@@ -474,6 +480,21 @@ export class WorkerdManager {
 
   getPort(): number | null {
     return this.port;
+  }
+
+  getInspectorUrl(): string | null {
+    if (!this.process || !this.inspectorPort) return null;
+    return `http://127.0.0.1:${this.inspectorPort}`;
+  }
+
+  getWorkerInspectorUrl(nameOrSource: string): string | null {
+    const hasInstance = [...this.instances.values()].some(
+      (instance) =>
+        instance.name === nameOrSource ||
+        instance.source === nameOrSource ||
+        instance.callerId === nameOrSource
+    );
+    return hasInstance ? this.getInspectorUrl() : null;
   }
 
   getDispatchSecret(): string {
@@ -935,8 +956,17 @@ ${doBlock}${cases.join("\n")}
     fs.writeFileSync(configPath, capnpText);
 
     const binary = this.findWorkerdBinary();
+    if (!this.inspectorPort && workerdInspectorEnabled()) {
+      const { findServicePort } = await import("@natstack/port-utils");
+      this.inspectorPort = await findServicePort("workerdInspector");
+    }
+    const args = [
+      "serve",
+      ...(this.inspectorPort ? [`--inspector-addr=127.0.0.1:${this.inspectorPort}`] : []),
+      configPath,
+    ];
 
-    this.process = spawn(binary, ["serve", configPath], {
+    this.process = spawn(binary, args, {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env },
     });
@@ -973,8 +1003,8 @@ ${doBlock}${cases.join("\n")}
         }
       };
 
-      this.process!.on("exit", onExit);
-      this.process!.on("error", onError);
+      assertPresent(this.process).on("exit", onExit);
+      assertPresent(this.process).on("error", onError);
 
       // If the process survives 500ms, consider it started
       setTimeout(() => {
@@ -1045,6 +1075,11 @@ ${doBlock}${cases.join("\n")}
       releaseServicePort("workerd", this.port);
     }
     this.port = null;
+    if (this.inspectorPort) {
+      const { releaseServicePort } = await import("@natstack/port-utils");
+      releaseServicePort("workerdInspector", this.inspectorPort);
+    }
+    this.inspectorPort = null;
   }
 
   async restartAll(): Promise<void> {
@@ -1343,7 +1378,8 @@ ${doBlock}${cases.join("\n")}
       }
       const canonical = canonicalInstanceNameForSource(source);
       const hasCanonicalInstance =
-        this.instances.has(canonical) && this.instances.get(canonical)!.source === source;
+        this.instances.has(canonical) &&
+        assertPresent(this.instances.get(canonical)).source === source;
       this.deps.routeRegistry.reconcileWorkerRoutes(
         source,
         newRoutes,
