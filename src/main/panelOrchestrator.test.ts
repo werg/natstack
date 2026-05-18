@@ -26,11 +26,10 @@ function createOrchestrator(registry: PanelRegistry, emit = vi.fn()) {
   };
   const orchestrator = new PanelOrchestrator({
     registry,
-    tokenManager: { revokeToken: vi.fn() } as never,
     eventService: { emit } as never,
     serverClient: {} as never,
     shellCore: shellCore as never,
-    cdpServer: { revokeTokenForPanel: vi.fn() },
+    cdpServer: { cleanupPanelAccess: vi.fn() },
     panelHttpServer: {} as never,
     externalHost: "localhost",
     protocol: "http",

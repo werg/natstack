@@ -29,23 +29,21 @@ export function createElectronShellCore(deps: {
     serverInfo: {
       gatewayConfig: deps.gatewayConfig,
     },
-    tokenClient: {
-      ensurePanelToken: (panelId, contextId, parentId, source) =>
-        deps.serverClient.call("tokens", "ensurePanelToken", [
+    identityClient: {
+      register: (panelId, contextId, parentId, source) =>
+        deps.serverClient.call("principals", "register", [
           panelId,
-          contextId,
-          parentId,
-          source,
-        ]) as Promise<{ token: string }>,
-      revokePanelToken: (panelId) =>
-        deps.serverClient.call("tokens", "revokePanelToken", [panelId]) as Promise<void>,
-      updatePanelContext: (panelId, contextId) =>
-        deps.serverClient.call("tokens", "updatePanelContext", [
-          panelId,
-          contextId,
+          "panel",
+          { contextId, parentId, source },
         ]) as Promise<void>,
-      updatePanelParent: (panelId, parentId) =>
-        deps.serverClient.call("tokens", "updatePanelParent", [panelId, parentId]) as Promise<void>,
+      unregister: (panelId) =>
+        deps.serverClient.call("principals", "unregister", [panelId]) as Promise<void>,
+      bindContext: (panelId, contextId) =>
+        deps.serverClient.call("principals", "bindContext", [panelId, contextId]) as Promise<void>,
+      setParent: (panelId, parentId) =>
+        deps.serverClient.call("principals", "setParent", [panelId, parentId]) as Promise<void>,
+      grantConnection: (panelId) =>
+        deps.serverClient.call("auth", "grantConnection", [panelId]) as Promise<{ token: string }>,
     },
   });
 

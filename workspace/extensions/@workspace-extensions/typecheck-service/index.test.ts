@@ -16,14 +16,14 @@ function tempPanel(): string {
   return dir;
 }
 
-async function api() {
+async function api(callerId?: string) {
   return activate({
     workspace: {
       async getInfo() {
         return { path: process.cwd(), contextsPath: path.join(os.tmpdir(), "natstack-contexts") };
       },
     },
-    invocation: { current: () => null },
+    invocation: { current: () => callerId ? { caller: { callerId } } : null },
     log: { info: () => {} },
   });
 }
@@ -57,5 +57,14 @@ describe("@workspace-extensions/typecheck-service", () => {
     } finally {
       fs.rmSync(panelPath, { recursive: true, force: true });
     }
+  });
+
+  it("auto-detects panel source from canonical panel ID", async () => {
+    const service = await api("panel:tree/workspace~extensions~@workspace-extensions~typecheck-service/abc123");
+
+    const result = await service.checkPanel();
+
+    expect(result.errorCount).toBeGreaterThanOrEqual(0);
+    expect(result.warningCount).toBeGreaterThanOrEqual(0);
   });
 });

@@ -18,9 +18,9 @@ function createConfig(): ConnectionConfig {
   return {
     serverUrl: "ws://unused",
     token: "token",
-    clientId: "panel-1",
+    clientId: "panel:panel-1",
     rpc: {
-      selfId: "panel-1",
+      selfId: "panel:panel-1",
       call,
       onEvent: vi.fn(() => vi.fn()),
     },
@@ -43,7 +43,7 @@ describe("ConnectionManager", () => {
       expect(config.rpc!.call).toHaveBeenCalledWith(
         CHANNEL_TARGET,
         "subscribe",
-        "panel-1",
+        "panel:panel-1",
         expect.any(Object),
       );
     });
@@ -53,7 +53,7 @@ describe("ConnectionManager", () => {
     expect(config.rpc!.call).toHaveBeenCalledWith(
       CHANNEL_TARGET,
       "unsubscribe",
-      "panel-1",
+      "panel:panel-1",
     );
   });
 });

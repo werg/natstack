@@ -29,15 +29,21 @@ export function createMobileShellCore(deps: {
     serverInfo: {
       gatewayConfig: { serverUrl: `${host.protocol}://${hostWithPort}` },
     },
-    tokenClient: {
-      ensurePanelToken: (panelId, contextId, parentId) =>
-        deps.transport.call("main", "tokens.ensurePanelToken", panelId, contextId, parentId) as Promise<{ token: string }>,
-      revokePanelToken: (panelId) =>
-        deps.transport.call("main", "tokens.revokePanelToken", panelId) as Promise<void>,
-      updatePanelContext: (panelId, contextId) =>
-        deps.transport.call("main", "tokens.updatePanelContext", panelId, contextId) as Promise<void>,
-      updatePanelParent: (panelId, parentId) =>
-        deps.transport.call("main", "tokens.updatePanelParent", panelId, parentId) as Promise<void>,
+    identityClient: {
+      register: (panelId, contextId, parentId, source) =>
+        deps.transport.call("main", "principals.register", panelId, "panel", {
+          contextId,
+          parentId,
+          source,
+        }) as Promise<void>,
+      unregister: (panelId) =>
+        deps.transport.call("main", "principals.unregister", panelId) as Promise<void>,
+      bindContext: (panelId, contextId) =>
+        deps.transport.call("main", "principals.bindContext", panelId, contextId) as Promise<void>,
+      setParent: (panelId, parentId) =>
+        deps.transport.call("main", "principals.setParent", panelId, parentId) as Promise<void>,
+      grantConnection: (panelId) =>
+        deps.transport.call("main", "auth.grantConnection", panelId) as Promise<{ token: string }>,
     },
   });
 

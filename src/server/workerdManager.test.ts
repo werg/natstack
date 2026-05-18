@@ -9,6 +9,7 @@ import {
   type WorkerCreateOptions,
 } from "./workerdManager.js";
 import { spawn } from "child_process";
+import { PrincipalRegistry } from "@natstack/shared/principalRegistry";
 
 // Mock child_process to prevent actual workerd spawning
 vi.mock("child_process", () => ({
@@ -54,14 +55,13 @@ vi.mock("@natstack/port-utils", () => ({
 }));
 
 function createMockDeps(overrides: Partial<WorkerdManagerDeps> = {}): WorkerdManagerDeps {
+  const principalRegistry = new PrincipalRegistry();
   return {
     tokenManager: {
       ensureToken: vi.fn().mockReturnValue("mock-token-123"),
       revokeToken: vi.fn(),
     } as unknown as WorkerdManagerDeps["tokenManager"],
     fsService: {
-      registerCallerContext: vi.fn(),
-      unregisterCallerContext: vi.fn(),
       closeHandlesForCaller: vi.fn(),
     } as unknown as WorkerdManagerDeps["fsService"],
     getServerUrl: () => "http://127.0.0.1:9999",
@@ -73,10 +73,7 @@ function createMockDeps(overrides: Partial<WorkerdManagerDeps> = {}): WorkerdMan
     statePath: "/tmp/test-workspace-state",
     getProxyPort: () => 49444,
     getWorkerdGatewayToken: () => "mock-workerd-gateway-token",
-    codeIdentityResolver: {
-      upsertCallerIdentity: vi.fn(),
-      unregisterCaller: vi.fn(),
-    } as unknown as WorkerdManagerDeps["codeIdentityResolver"],
+    principalRegistry,
     ...overrides,
   };
 }
@@ -108,14 +105,14 @@ describe("WorkerdManager", () => {
       expect(instance.status).toBe("running");
     });
 
-    it("registers token and fs context", async () => {
+    it("registers token and principal context", async () => {
       const deps = createMockDeps();
       const mgr = new WorkerdManager(deps);
 
       await mgr.createInstance(defaultCreateOptions());
 
       expect(deps.tokenManager.ensureToken).toHaveBeenCalledWith("worker:hello", "worker");
-      expect(deps.fsService.registerCallerContext).toHaveBeenCalledWith("worker:hello", "ctx-1");
+      expect(deps.principalRegistry?.resolveContext("worker:hello")).toBe("ctx-1");
     });
 
     it("rejects duplicate instance names", async () => {
@@ -146,7 +143,7 @@ describe("WorkerdManager", () => {
       await expect(mgr.createInstance(defaultCreateOptions())).rejects.toThrow("build failed");
 
       expect(deps.tokenManager.revokeToken).toHaveBeenCalledWith("worker:hello");
-      expect(deps.fsService.unregisterCallerContext).toHaveBeenCalledWith("worker:hello");
+      expect(deps.principalRegistry?.resolve("worker:hello")).toBeNull();
       expect(mgr.listInstances()).toHaveLength(0);
     });
   });
@@ -216,7 +213,7 @@ describe("WorkerdManager", () => {
       await mgr.destroyInstance("hello");
 
       expect(deps.tokenManager.revokeToken).toHaveBeenCalledWith("worker:hello");
-      expect(deps.fsService.unregisterCallerContext).toHaveBeenCalledWith("worker:hello");
+      expect(deps.principalRegistry?.resolve("worker:hello")).toBeNull();
       expect(deps.fsService.closeHandlesForCaller).toHaveBeenCalledWith("worker:hello");
       expect(mgr.listInstances()).toHaveLength(0);
     });

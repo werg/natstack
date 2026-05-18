@@ -33,7 +33,7 @@ const log = createDevLogger("PanelView");
 interface CdpServerLike {
   registerBrowser(panelId: string, contentsId: number, parentId: string): void;
   unregisterBrowser(panelId: string): void;
-  revokeTokenForPanel(panelId: string): void;
+  cleanupPanelAccess(panelId: string): void;
 }
 
 interface PanelOrchestratorLike {
@@ -175,7 +175,7 @@ export class PanelView implements PanelViewLike {
     }
     this.cleanupBrowserStateTracking(panelId, contents ?? undefined);
     this.cleanupLinkInterception(panelId, contents ?? undefined);
-    this.cdpServer.revokeTokenForPanel(panelId);
+    this.cdpServer.cleanupPanelAccess(panelId);
     this.cdpServer.unregisterBrowser(panelId);
     this.crashHistory.delete(panelId);
     this.viewManager.destroyView(panelId);

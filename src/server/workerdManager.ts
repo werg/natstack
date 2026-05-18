@@ -19,9 +19,9 @@ import { pathToFileURL } from "url";
 import type { TokenManager } from "@natstack/shared/tokenManager";
 import { createVerifiedCaller, type VerifiedCaller } from "@natstack/shared/serviceDispatcher";
 import type { FsService } from "@natstack/shared/fsService";
+import { PrincipalRegistry } from "@natstack/shared/principalRegistry";
 import type { BuildResult } from "./buildV2/buildStore.js";
 import type { RouteRegistry, ManifestRouteDecl } from "./routeRegistry.js";
-import type { CodeIdentityResolver } from "./services/codeIdentityResolver.js";
 import { createDevLogger } from "@natstack/dev-log";
 import {
   getPhysicalPathForAsarPath,
@@ -133,9 +133,11 @@ export interface WorkerdManagerDeps {
   getManifestRoutes?: (source: string) => ManifestRouteDecl[];
   getProxyPort: (caller: VerifiedCaller) => Promise<number | null> | number | null;
   getWorkerdGatewayToken: () => string;
-  codeIdentityResolver: Pick<CodeIdentityResolver, "upsertCallerIdentity" | "unregisterCaller">;
+  principalRegistry?: PrincipalRegistry;
   cleanupWebhookSubscriptions?: (callerId: string) => Promise<void>;
 }
+
+type ResolvedWorkerdManagerDeps = WorkerdManagerDeps & { principalRegistry: PrincipalRegistry };
 
 /** The canonical regular-worker instance name for a source. Matches the
  *  sanitization that createRegularInstance applies to rawName. */
@@ -158,7 +160,7 @@ export class WorkerdManager {
   private configDir: string;
   private port: number | null = null;
   private inspectorPort: number | null = null;
-  private deps: WorkerdManagerDeps;
+  private deps: ResolvedWorkerdManagerDeps;
   private workerdBinary: string | null = null;
 
   // DO support: shared services (one per source)
@@ -171,9 +173,23 @@ export class WorkerdManager {
   private sessionId = crypto.randomUUID();
 
   constructor(deps: WorkerdManagerDeps) {
-    this.deps = deps;
+    this.deps = { ...deps, principalRegistry: deps.principalRegistry ?? new PrincipalRegistry() };
     this.configDir = path.join(os.tmpdir(), `natstack-workerd-${process.pid}`);
     fs.mkdirSync(this.configDir, { recursive: true });
+  }
+
+  private ensureWorkerBearer(callerId: string): string {
+    const manager = this.deps.tokenManager as TokenManager & {
+      ensureWorkerBearer?: (callerId: string) => string;
+    };
+    return manager.ensureWorkerBearer?.(callerId) ?? manager.ensureToken(callerId, "worker");
+  }
+
+  private revokeWorkerBearer(callerId: string): boolean {
+    const manager = this.deps.tokenManager as TokenManager & {
+      revokeWorkerBearer?: (callerId: string) => boolean;
+    };
+    return manager.revokeWorkerBearer?.(callerId) ?? manager.revokeToken(callerId);
   }
 
   // =========================================================================
@@ -349,10 +365,7 @@ export class WorkerdManager {
     const contextId = options.contextId;
 
     // Create auth token
-    const token = this.deps.tokenManager.ensureToken(callerId, "worker");
-
-    // Register context with FsService
-    this.deps.fsService.registerCallerContext(callerId, contextId);
+    const token = this.ensureWorkerBearer(callerId);
 
     const instance: WorkerInstance = {
       name,
@@ -374,11 +387,12 @@ export class WorkerdManager {
     try {
       const buildResult = await this.deps.getBuild(options.source, options.ref);
       instance.buildKey = buildResult.metadata.ev;
-      this.deps.codeIdentityResolver.upsertCallerIdentity({
-        callerId,
-        callerKind: "worker",
-        repoPath: options.source,
-        effectiveVersion: buildResult.metadata.ev,
+      this.deps.principalRegistry.register({
+        id: callerId,
+        kind: "worker",
+        source: { repoPath: options.source, effectiveVersion: buildResult.metadata.ev },
+        context: { contextId },
+        parent: { parentId: options.parentId ?? null },
       });
       instance.status = "starting";
 
@@ -403,8 +417,8 @@ export class WorkerdManager {
       // Rollback: clean up token, context registration, and instance map entry
       instance.status = "error";
       this.instances.delete(name);
-      this.deps.tokenManager.revokeToken(callerId);
-      this.deps.fsService.unregisterCallerContext(callerId);
+      this.revokeWorkerBearer(callerId);
+      this.deps.principalRegistry.unregisterSubtree(callerId);
       log.error(`Failed to start worker "${name}":`, error);
       throw error;
     }
@@ -419,11 +433,10 @@ export class WorkerdManager {
     }
 
     // Cleanup
-    this.deps.tokenManager.revokeToken(instance.callerId);
-    this.deps.fsService.unregisterCallerContext(instance.callerId);
+    this.revokeWorkerBearer(instance.callerId);
+    this.deps.principalRegistry.unregisterSubtree(instance.callerId);
     this.deps.fsService.closeHandlesForCaller(instance.callerId);
     await this.deps.cleanupWebhookSubscriptions?.(instance.callerId);
-    this.deps.codeIdentityResolver.unregisterCaller(instance.callerId);
     this.instances.delete(name);
 
     // Unregister regular-worker routes if this was the canonical instance.
@@ -551,13 +564,12 @@ export class WorkerdManager {
       // Created once when the service is first built, revoked only when the last instance is destroyed.
       // NOT tied to any individual instance's lifecycle.
       const serviceCallerId = `do-service:${serviceKey}`;
-      const serviceToken = this.deps.tokenManager.ensureToken(serviceCallerId, "worker");
+      const serviceToken = this.ensureWorkerBearer(serviceCallerId);
 
-      this.deps.codeIdentityResolver.upsertCallerIdentity({
-        callerId: serviceCallerId,
-        callerKind: "worker",
-        repoPath: doService.source,
-        effectiveVersion: doService.buildKey,
+      this.deps.principalRegistry.register({
+        id: serviceCallerId,
+        kind: "do-service",
+        source: { repoPath: doService.source, effectiveVersion: doService.buildKey },
       });
       const serviceCaller = createVerifiedCaller(serviceCallerId, "worker", {
         callerId: serviceCallerId,
@@ -629,11 +641,12 @@ export class WorkerdManager {
         const buildResult = await this.deps.getBuild(instance.source, instance.ref);
         bundleContent = buildResult.bundle;
         instance.buildKey = buildResult.metadata.ev;
-        this.deps.codeIdentityResolver.upsertCallerIdentity({
-          callerId: instance.callerId,
-          callerKind: "worker",
-          repoPath: instance.source,
-          effectiveVersion: instance.buildKey,
+        this.deps.principalRegistry.register({
+          id: instance.callerId,
+          kind: "worker",
+          source: { repoPath: instance.source, effectiveVersion: instance.buildKey },
+          context: { contextId: instance.contextId },
+          parent: { parentId: instance.parentId ?? null },
         });
       } catch (err) {
         log.warn(`Skipping worker "${name}" — build not available:`, err);
@@ -1257,15 +1270,16 @@ ${doBlock}${cases.join("\n")}
 
     // Cleanup all instances
     for (const [, instance] of this.instances) {
-      this.deps.tokenManager.revokeToken(instance.callerId);
-      this.deps.fsService.unregisterCallerContext(instance.callerId);
+      this.revokeWorkerBearer(instance.callerId);
+      this.deps.principalRegistry.unregisterSubtree(instance.callerId);
       this.deps.fsService.closeHandlesForCaller(instance.callerId);
     }
     this.instances.clear();
 
     // Cleanup DO tracking — revoke service-level tokens
     for (const [serviceKey] of this.doServices) {
-      this.deps.tokenManager.revokeToken(`do-service:${serviceKey}`);
+      this.revokeWorkerBearer(`do-service:${serviceKey}`);
+      this.deps.principalRegistry.unregister(`do-service:${serviceKey}`);
     }
     this.doServices.clear();
 
@@ -1324,8 +1338,8 @@ ${doBlock}${cases.join("\n")}
       for (const [serviceKey, svc] of Array.from(this.doServices.entries())) {
         if (svc.source !== source) continue;
         if (newClassNames.has(svc.className)) continue;
-        this.deps.tokenManager.revokeToken(`do-service:${serviceKey}`);
-        this.deps.codeIdentityResolver.unregisterCaller(`do-service:${serviceKey}`);
+        this.revokeWorkerBearer(`do-service:${serviceKey}`);
+        this.deps.principalRegistry.unregister(`do-service:${serviceKey}`);
         this.doServices.delete(serviceKey);
         this.deps.routeRegistry?.unregisterDoRoutes(source, svc.className);
         needsRestart = true;

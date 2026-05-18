@@ -5,7 +5,20 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { PanelRegistry } from "../panelRegistry.js";
 import { getCurrentSnapshot } from "../panel/accessors.js";
 import { PanelManager } from "./panelManager.js";
+import type { PanelIdentityClient } from "./panelManager.js";
 import { PanelStoreMemory } from "./panelStoreMemory.js";
+
+function createIdentityClient() {
+  return {
+    register: vi.fn(async () => {}),
+    unregister: vi.fn(async () => {}),
+    bindContext: vi.fn(async () => {}),
+    setParent: vi.fn(async () => {}),
+    grantConnection: vi.fn(async (panelId: string) => ({
+      token: `rpc-${panelId}`,
+    })),
+  } satisfies PanelIdentityClient;
+}
 
 describe("PanelManager", () => {
   const tempDirs: string[] = [];
@@ -37,20 +50,13 @@ describe("PanelManager", () => {
     }));
 
     const registry = new PanelRegistry({});
-    const tokenClient = {
-      ensurePanelToken: vi.fn(async (panelId: string) => ({
-        token: `rpc-${panelId}`,
-      })),
-      revokePanelToken: vi.fn(async () => {}),
-      updatePanelContext: vi.fn(async () => {}),
-      updatePanelParent: vi.fn(async () => {}),
-    };
+    const identityClient = createIdentityClient();
 
     const manager = new PanelManager({
       store: new PanelStoreMemory(),
       registry,
       workspacePath,
-      tokenClient,
+      identityClient,
       serverInfo: {
         gatewayConfig: { serverUrl: "http://127.0.0.1:42773" },
       },
@@ -64,7 +70,7 @@ describe("PanelManager", () => {
 
     expect(created.title).toBe("Example Panel");
     expect(registry.getRootPanels()).toHaveLength(1);
-    expect(tokenClient.ensurePanelToken).toHaveBeenCalledWith(
+    expect(identityClient.register).toHaveBeenCalledWith(
       created.panelId,
       created.contextId,
       null,
@@ -96,7 +102,7 @@ describe("PanelManager", () => {
     expect(getCurrentSnapshot(registry.getPanel(created.panelId)!).stateArgs).toEqual({});
 
     await manager.close(created.panelId);
-    expect(tokenClient.revokePanelToken).toHaveBeenCalledWith(created.panelId);
+    expect(identityClient.unregister).toHaveBeenCalledWith(created.panelId);
     expect(registry.getPanel(created.panelId)).toBeUndefined();
   });
 
@@ -115,22 +121,16 @@ describe("PanelManager", () => {
 
     const registry = new PanelRegistry({});
     const store = new PanelStoreMemory();
-    const tokenClient = {
-      ensurePanelToken: vi.fn(async (panelId: string) => ({
-        token: `rpc-${panelId}`,
-      })),
-      revokePanelToken: vi.fn(async () => {
-        throw new Error("token cleanup failed");
-      }),
-      updatePanelContext: vi.fn(async () => {}),
-      updatePanelParent: vi.fn(async () => {}),
-    };
+    const identityClient = createIdentityClient();
+    identityClient.unregister.mockImplementation(async () => {
+      throw new Error("token cleanup failed");
+    });
 
     const manager = new PanelManager({
       store,
       registry,
       workspacePath,
-      tokenClient,
+      identityClient,
       serverInfo: {
         gatewayConfig: { serverUrl: "http://127.0.0.1:42773" },
       },
@@ -145,7 +145,7 @@ describe("PanelManager", () => {
     expect(await store.isArchived(created.panelId)).toBe(true);
     expect(registry.getPanel(created.panelId)).toBeUndefined();
     expect(registry.getRootPanels()).toHaveLength(0);
-    expect(tokenClient.revokePanelToken).toHaveBeenCalledWith(created.panelId);
+    expect(identityClient.unregister).toHaveBeenCalledWith(created.panelId);
   });
 
   it("builds remote bootstrap URLs with gateway-routed RPC and pubsub endpoints", async () => {
@@ -165,14 +165,7 @@ describe("PanelManager", () => {
       store: new PanelStoreMemory(),
       registry: new PanelRegistry({}),
       workspacePath,
-      tokenClient: {
-        ensurePanelToken: vi.fn(async (panelId: string) => ({
-          token: `rpc-${panelId}`,
-        })),
-        revokePanelToken: vi.fn(async () => {}),
-        updatePanelContext: vi.fn(async () => {}),
-        updatePanelParent: vi.fn(async () => {}),
-      },
+      identityClient: createIdentityClient(),
       serverInfo: {
         gatewayConfig: { serverUrl: "https://natstack.example.com" },
       },
@@ -211,12 +204,7 @@ describe("PanelManager", () => {
       store: new PanelStoreMemory(),
       registry,
       workspacePath,
-      tokenClient: {
-        ensurePanelToken: vi.fn(async (panelId: string) => ({ token: `rpc-${panelId}` })),
-        revokePanelToken: vi.fn(async () => {}),
-        updatePanelContext: vi.fn(async () => {}),
-        updatePanelParent: vi.fn(async () => {}),
-      },
+      identityClient: createIdentityClient(),
       serverInfo: {
         gatewayConfig: { serverUrl: "http://127.0.0.1:42773" },
       },

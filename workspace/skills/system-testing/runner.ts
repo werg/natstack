@@ -1,7 +1,7 @@
 import { HeadlessSession } from "@workspace/agentic-session";
 import { createPanelSandboxConfig } from "@workspace/agentic-core";
 import type { ConnectionConfig } from "@workspace/agentic-core";
-import { rpc, id as panelId } from "@workspace/runtime";
+import { rpc } from "@workspace/runtime";
 
 // The panel's rpc has the full interface (call, onEvent, selfId) that
 // ConnectionConfig.rpc needs. Cast through the specific interface type.
@@ -33,7 +33,7 @@ export class HeadlessRunner {
       config: {
         serverUrl: "",
         token: "",
-        clientId: panelId,
+        clientId: rpcConfig.selfId,
         rpc: rpcConfig,
       },
       sandbox: createPanelSandboxConfig(rpcConfig),

@@ -6,6 +6,7 @@
 
 import { createRuntime } from "./createRuntime.js";
 import { getInjectedConfig, type InjectedConfig } from "../shared/globals.js";
+import { assertPanelPrincipalId } from "@natstack/shared/principalIds";
 import type { RuntimeFs } from "../types.js";
 import type { RpcTransport } from "@natstack/rpc";
 import { _initFsWithRpc } from "../panel/fs.js";
@@ -36,6 +37,9 @@ export function initRuntime(options: InitRuntimeOptions): InitRuntimeResult {
 
   // Apply globals setup if provided
   options.setupGlobals?.();
+  if (config.kind === "panel") {
+    assertPanelPrincipalId(config.id);
+  }
 
   const runtime = createRuntime({
     selfId: config.id,

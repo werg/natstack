@@ -21,6 +21,7 @@ import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync } from "node:
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { FsService } from "./fsService.js";
+import { PrincipalRegistry } from "./principalRegistry.js";
 import type { ContextFolderManager } from "./contextFolderManager.js";
 import { createVerifiedCaller, type ServiceContext } from "./serviceDispatcher.js";
 
@@ -53,10 +54,12 @@ function makeExtensionCtx(callerId: string): ServiceContext {
 describe("FsService", () => {
   let tmpRoot: string;
   let service: FsService;
+  let registry: PrincipalRegistry;
 
   beforeEach(() => {
     tmpRoot = mkdtempSync(path.join(tmpdir(), "natstack-fsservice-"));
-    service = new FsService(makeStubFolderManager(tmpRoot));
+    registry = new PrincipalRegistry();
+    service = new FsService(makeStubFolderManager(tmpRoot), registry);
   });
 
   afterEach(() => {
@@ -73,7 +76,7 @@ describe("FsService", () => {
     it("is an idempotent no-op when worker re-binds to its own host-registered contextId", async () => {
       const ctx = makeWorkerCtx("do:src:class:key");
       // Host pre-registers the caller (mirrors workerdManager.createRegularInstance).
-      service.registerCallerContext(ctx.caller.runtime.id, "ctx-a");
+      registerContext(ctx.caller.runtime.id, "ctx-a");
 
       // bindContext to the same contextId is allowed (idempotent confirmation).
       await service.handleCall(ctx, "bindContext", ["ctx-a"]);
@@ -83,7 +86,7 @@ describe("FsService", () => {
 
     it("rejects worker self-registration when no host context is set", async () => {
       const ctx = makeWorkerCtx("do:src:class:key");
-      // No registerCallerContext call — worker tries to make up a contextId.
+      // No host principal context; worker tries to make up a contextId.
       await expect(
         service.handleCall(ctx, "bindContext", ["ctx-a"]),
       ).rejects.toThrow(/no host-registered context/);
@@ -91,7 +94,7 @@ describe("FsService", () => {
 
     it("rejects cross-context pivot (worker tries to re-bind to another context)", async () => {
       const ctx = makeWorkerCtx("do:src:class:key");
-      service.registerCallerContext(ctx.caller.runtime.id, "ctx-a");
+      registerContext(ctx.caller.runtime.id, "ctx-a");
       await expect(
         service.handleCall(ctx, "bindContext", ["ctx-other"]),
       ).rejects.toThrow(/cross-context pivot blocked/);
@@ -99,7 +102,7 @@ describe("FsService", () => {
 
     it("rejects empty / non-string contextId", async () => {
       const ctx = makeWorkerCtx("do:src:class:key");
-      service.registerCallerContext(ctx.caller.runtime.id, "ctx-a");
+      registerContext(ctx.caller.runtime.id, "ctx-a");
       await expect(
         service.handleCall(ctx, "bindContext", [""]),
       ).rejects.toThrow(/non-empty contextId/);
@@ -110,7 +113,7 @@ describe("FsService", () => {
 
     it("after host-registration, writeFile+readFile roundtrip through the bound context", async () => {
       const ctx = makeWorkerCtx("do:src:class:key");
-      service.registerCallerContext(ctx.caller.runtime.id, "ctx-b");
+      registerContext(ctx.caller.runtime.id, "ctx-b");
       await service.handleCall(ctx, "bindContext", ["ctx-b"]);
       await service.handleCall(ctx, "writeFile", ["/hello.txt", "world"]);
       // File should live inside the stub folder for contextId "ctx-b".
@@ -124,7 +127,7 @@ describe("FsService", () => {
   describe("error code preservation", () => {
     it("readFile of a missing file throws an error with code=ENOENT", async () => {
       const ctx = makeWorkerCtx("do:src:class:key");
-      service.registerCallerContext(ctx.caller.runtime.id, "ctx-c");
+      registerContext(ctx.caller.runtime.id, "ctx-c");
       await service.handleCall(ctx, "bindContext", ["ctx-c"]);
 
       // Catch rather than `.rejects.toThrow` so we can inspect err.code.
@@ -143,7 +146,7 @@ describe("FsService", () => {
   describe("mktemp", () => {
     it("creates .tmp/ and returns a unique path on each call", async () => {
       const ctx = makeWorkerCtx("do:src:class:key");
-      service.registerCallerContext(ctx.caller.runtime.id, "ctx-d");
+      registerContext(ctx.caller.runtime.id, "ctx-d");
       await service.handleCall(ctx, "bindContext", ["ctx-d"]);
 
       const p1 = (await service.handleCall(ctx, "mktemp", [])) as string;
@@ -159,7 +162,7 @@ describe("FsService", () => {
 
     it("honors a custom prefix", async () => {
       const ctx = makeWorkerCtx("do:src:class:key");
-      service.registerCallerContext(ctx.caller.runtime.id, "ctx-e");
+      registerContext(ctx.caller.runtime.id, "ctx-e");
       await service.handleCall(ctx, "bindContext", ["ctx-e"]);
       const p = (await service.handleCall(ctx, "mktemp", ["edit"])) as string;
       expect(p).toMatch(/^\/\.tmp\/edit-[0-9a-f]{32}$/);
@@ -167,7 +170,7 @@ describe("FsService", () => {
 
     it("sanitizes path separators AND leading dots in prefix to prevent `.tmp/` escape and hidden-file collisions", async () => {
       const ctx = makeWorkerCtx("do:src:class:key");
-      service.registerCallerContext(ctx.caller.runtime.id, "ctx-f");
+      registerContext(ctx.caller.runtime.id, "ctx-f");
       await service.handleCall(ctx, "bindContext", ["ctx-f"]);
       const p = (await service.handleCall(ctx, "mktemp", ["../evil"])) as string;
       // `..` get stripped (leading dots), `/` replaced with `_` — result stays
@@ -185,7 +188,7 @@ describe("FsService", () => {
 
     it("returned path can be used to writeFile (atomic-write pattern)", async () => {
       const ctx = makeWorkerCtx("do:src:class:key");
-      service.registerCallerContext(ctx.caller.runtime.id, "ctx-g");
+      registerContext(ctx.caller.runtime.id, "ctx-g");
       await service.handleCall(ctx, "bindContext", ["ctx-g"]);
       const tmp = (await service.handleCall(ctx, "mktemp", ["write"])) as string;
       await service.handleCall(ctx, "writeFile", [tmp, "atomic"]);
@@ -203,7 +206,7 @@ describe("FsService", () => {
       mkdirSync(path.join(tmpRoot, "ctx-h"), { recursive: true });
       writeFileSync(path.join(tmpRoot, "ctx-h", "greeting.txt"), "hi");
 
-      service.registerCallerContext(ctx.caller.runtime.id, "ctx-h");
+      registerContext(ctx.caller.runtime.id, "ctx-h");
       await service.handleCall(ctx, "bindContext", ["ctx-h"]);
       const stat = (await service.handleCall(ctx, "stat", ["/greeting.txt"])) as {
         isFile: boolean;
@@ -229,4 +232,12 @@ describe("FsService", () => {
       ).resolves.toBe("updated");
     });
   });
+
+  function registerContext(callerId: string, contextId: string): void {
+    registry.register({
+      id: callerId,
+      kind: "worker",
+      context: { contextId },
+    });
+  }
 });

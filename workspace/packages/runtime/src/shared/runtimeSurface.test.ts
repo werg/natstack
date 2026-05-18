@@ -42,7 +42,7 @@ function extractInterfaceMembers(source: string, interfaceName: string): Set<str
 
   const members = new Set<string>();
   for (const line of blockMatch[1]!.split("\n")) {
-    const match = line.match(/^\s*(?:readonly\s+)?([A-Za-z0-9_]+)(?:<[^>]+>)?\s*[:(]/);
+    const match = line.match(/^  (?:readonly\s+)?([A-Za-z0-9_]+)(?:<[^>]+>)?\s*[:(]/);
     if (match) members.add(match[1]!);
   }
   return members;

@@ -9,7 +9,7 @@ import { z } from "zod";
 
 const CHANNEL = "test-channel";
 const DO_TARGET = `do:workers/pubsub-channel:PubSubChannel:${CHANNEL}`;
-const SELF_ID = "panel-1";
+const SELF_ID = "panel:panel-1";
 
 // Valid UUIDs for method callIds (schema requires uuid format)
 const CALL_ID_1 = "00000000-0000-4000-8000-000000000001";
@@ -135,7 +135,7 @@ describe("connectViaRpc", () => {
       // Emit replay participants and ready
       await emitReplayAndReady(emit, [
         { id: "agent-1", name: "Claude", type: "agent" },
-        { id: "panel-1", name: "User", type: "panel" },
+        { id: "panel:panel-1", name: "User", type: "panel" },
       ]);
 
       await client.ready();
@@ -144,8 +144,8 @@ describe("connectViaRpc", () => {
       const roster = client.roster;
       expect(roster["agent-1"]).toBeDefined();
       expect(roster["agent-1"]!.metadata).toEqual({ name: "Claude", type: "agent" });
-      expect(roster["panel-1"]).toBeDefined();
-      expect(roster["panel-1"]!.metadata).toEqual({ name: "User", type: "panel" });
+      expect(roster["panel:panel-1"]).toBeDefined();
+      expect(roster["panel:panel-1"]!.metadata).toEqual({ name: "User", type: "panel" });
 
       expect(client.connected).toBe(true);
       expect(client.contextId).toBe("ctx-123");

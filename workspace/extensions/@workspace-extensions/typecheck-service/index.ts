@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import { PANEL_PRINCIPAL_PREFIX } from "@natstack/shared/principalIds";
 import { typeCheckRpcMethods } from "@natstack/shared/typecheck/service";
 
 interface ExtensionContextLike {
@@ -14,8 +15,9 @@ interface ExtensionContextLike {
 }
 
 function extractPanelSourceFromCallerId(callerId: string): string | undefined {
-  if (!callerId.startsWith("tree/")) return undefined;
-  const afterTree = callerId.slice("tree/".length);
+  const treePrefix = `${PANEL_PRINCIPAL_PREFIX}tree/`;
+  if (!callerId.startsWith(treePrefix)) return undefined;
+  const afterTree = callerId.slice(treePrefix.length);
   const slashIdx = afterTree.indexOf("/");
   const segment = slashIdx >= 0 ? afterTree.slice(0, slashIdx) : afterTree;
   if (!segment) return undefined;

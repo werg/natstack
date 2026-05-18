@@ -5,6 +5,7 @@ import * as esbuild from "esbuild";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { TokenManager } from "../../packages/shared/src/tokenManager.js";
+import { PrincipalRegistry } from "../../packages/shared/src/principalRegistry.js";
 import { INTERNAL_DO_SOURCE } from "./internalDOs/internalDoLoader.js";
 import { postToDurableObject, type DORef } from "./workerdRpcRelay.js";
 import { WorkerdManager, type WorkerdManagerDeps } from "./workerdManager.js";
@@ -29,8 +30,6 @@ function createWorkerdHarness(overrides: Partial<WorkerdManagerDeps> = {}) {
   const manager = new WorkerdManager({
     tokenManager,
     fsService: {
-      registerCallerContext: () => {},
-      unregisterCallerContext: () => {},
       closeHandlesForCaller: () => {},
     } as unknown as WorkerdManagerDeps["fsService"],
     getServerUrl: () => "http://127.0.0.1:9",
@@ -41,10 +40,7 @@ function createWorkerdHarness(overrides: Partial<WorkerdManagerDeps> = {}) {
     statePath: mkdtempSync(join(tmpdir(), "natstack-workerd-state-")),
     getProxyPort: () => 9,
     getWorkerdGatewayToken: () => "internal-test-workerd-gateway-token",
-    codeIdentityResolver: {
-      upsertCallerIdentity: () => {},
-      unregisterCaller: () => {},
-    },
+    principalRegistry: new PrincipalRegistry(),
     ...overrides,
   } satisfies WorkerdManagerDeps);
 

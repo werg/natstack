@@ -17,6 +17,7 @@ import type { FileHandle as NodeFileHandle } from "fs/promises";
 import type { ServiceContext } from "./serviceDispatcher.js";
 import type { ContextFolderManager } from "./contextFolderManager.js";
 import { createDevLogger } from "@natstack/dev-log";
+import { PrincipalRegistry } from "./principalRegistry.js";
 
 const log = createDevLogger("FsService");
 
@@ -139,36 +140,18 @@ function serializeDirent(d: fsSync.Dirent) {
 
 export class FsService {
   private readonly contextFolderManager: ContextFolderManager;
-
-  /** callerId → contextId mapping (panels, workers, etc.) */
-  private readonly callerContextMap = new Map<string, string>();
+  private readonly principalRegistry: PrincipalRegistry;
 
   /** handleId → TrackedHandle */
   private readonly openHandles = new Map<number, TrackedHandle>();
   private nextHandleId = 1;
 
-  constructor(contextFolderManager: ContextFolderManager) {
+  constructor(
+    contextFolderManager: ContextFolderManager,
+    principalRegistry: PrincipalRegistry = new PrincipalRegistry(),
+  ) {
     this.contextFolderManager = contextFolderManager;
-  }
-
-  // =========================================================================
-  // Caller context registration
-  // =========================================================================
-
-  registerCallerContext(callerId: string, contextId: string): void {
-    this.callerContextMap.set(callerId, contextId);
-  }
-
-  getCallerContext(callerId: string): string | undefined {
-    return this.callerContextMap.get(callerId);
-  }
-
-  unregisterCallerContext(callerId: string): void {
-    this.callerContextMap.delete(callerId);
-  }
-
-  updateCallerContext(callerId: string, contextId: string): void {
-    this.callerContextMap.set(callerId, contextId);
+    this.principalRegistry = principalRegistry;
   }
 
   // =========================================================================
@@ -208,7 +191,7 @@ export class FsService {
 
     if (ctx.caller.runtime.kind === "panel" || ctx.caller.runtime.kind === "worker") {
       panelId = ctx.caller.runtime.id;
-      const cid = this.callerContextMap.get(panelId);
+      const cid = this.principalRegistry.resolveContext(panelId);
       if (!cid) {
         throw new Error(`No context registered for ${ctx.caller.runtime.kind} ${panelId}`);
       }
@@ -280,8 +263,8 @@ export class FsService {
     // and pivot its fs.* sandbox to the other panel's folder.
     //
     // Hardening: require the caller to already have a context registered
-    // (panel/worker hosts call `registerCallerContext` at panel/worker
-    // creation), and only allow re-binding to that same contextId. This
+    // (panel/worker hosts register the principal context at creation), and
+    // only allow re-binding to that same contextId. This
     // collapses bindContext to an idempotent no-op when invoked legitimately
     // (panel re-init), and rejects every cross-pivot attempt.
     //
@@ -294,7 +277,7 @@ export class FsService {
         throw new Error("bindContext requires a non-empty contextId string");
       }
       if (ctx.caller.runtime.kind === "panel" || ctx.caller.runtime.kind === "worker") {
-        const existing = this.callerContextMap.get(ctx.caller.runtime.id);
+        const existing = this.principalRegistry.resolveContext(ctx.caller.runtime.id);
         if (!existing) {
           throw new Error(
             `bindContext denied: caller ${ctx.caller.runtime.id} has no host-registered context. ` +
@@ -310,7 +293,7 @@ export class FsService {
         // Idempotent — no-op (already registered to the same contextId).
         return;
       }
-      this.registerCallerContext(ctx.caller.runtime.id, contextId);
+      this.principalRegistry.bindContext(ctx.caller.runtime.id, contextId);
       return;
     }
 

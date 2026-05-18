@@ -19,7 +19,7 @@ describe("createPanelTransport", () => {
     delete g.__natstackShell;
   });
 
-  it("routes to canonical endpoint ids without panel-prefix normalization", async () => {
+  it("routes canonical endpoint ids unchanged", async () => {
     const send = vi.fn(async () => {});
     g.__natstackTransport = {
       send,
@@ -29,14 +29,14 @@ describe("createPanelTransport", () => {
     const transport = createPanelTransport();
     const message: RpcMessage = {
       type: "event",
-      fromId: "panel-1",
+      fromId: "panel:panel-1",
       event: "test",
       payload: {},
     };
 
-    await transport.send("panel-2", message);
+    await transport.send("panel:panel-2", message);
 
-    expect(send).toHaveBeenCalledWith("panel-2", message);
+    expect(send).toHaveBeenCalledWith("panel:panel-2", message);
   });
 
   it("delivers incoming messages under their canonical source id", () => {
@@ -53,13 +53,13 @@ describe("createPanelTransport", () => {
     const handler = vi.fn();
     const message: RpcMessage = {
       type: "event",
-      fromId: "panel-1",
+      fromId: "panel:panel-1",
       event: "test",
       payload: {},
     };
-    transport.onMessage("panel-1", handler);
+    transport.onMessage("panel:panel-1", handler);
 
-    incoming("panel-1", message);
+    incoming("panel:panel-1", message);
 
     expect(handler).toHaveBeenCalledWith(message);
   });

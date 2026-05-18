@@ -33,8 +33,8 @@ describe("initRuntime", () => {
     delete g.__natstackShell;
   });
 
-  it("uses the injected panel id as the canonical RPC self id", () => {
-    g.__natstackId = "panel-1";
+  it("uses the injected canonical panel id as the RPC self id", () => {
+    g.__natstackId = "panel:panel-1";
     g.__natstackContextId = "ctx-1";
     g.__natstackKind = "panel";
     g.__natstackGatewayConfig = { serverUrl: "http://127.0.0.1:3000", token: "token" };
@@ -50,7 +50,7 @@ describe("initRuntime", () => {
       fs: {} as never,
     });
 
-    expect(config.id).toBe("panel-1");
-    expect(runtime.rpc.selfId).toBe("panel-1");
+    expect(config.id).toBe("panel:panel-1");
+    expect(runtime.rpc.selfId).toBe("panel:panel-1");
   });
 });

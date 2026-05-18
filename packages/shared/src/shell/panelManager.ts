@@ -18,16 +18,17 @@ import type { PanelStore } from "./panelStore.js";
 
 const log = createDevLogger("PanelManager");
 
-export interface TokenClient {
-  ensurePanelToken(
+export interface PanelIdentityClient {
+  register(
     panelId: string,
     contextId: string,
     parentId: string | null,
     source?: string,
-  ): Promise<{ token: string }>;
-  revokePanelToken(panelId: string): Promise<void>;
-  updatePanelContext(panelId: string, contextId: string): Promise<void>;
-  updatePanelParent(panelId: string, parentId: string | null): Promise<void>;
+  ): Promise<void>;
+  unregister(panelId: string): Promise<void>;
+  bindContext(panelId: string, contextId: string): Promise<void>;
+  setParent(panelId: string, parentId: string | null): Promise<void>;
+  grantConnection(panelId: string): Promise<{ token: string }>;
 }
 
 export interface PanelManagerServerInfo {
@@ -66,7 +67,7 @@ export interface NavigatePanelOptions {
 export interface PanelManagerDeps {
   store: PanelStore;
   registry: PanelRegistry;
-  tokenClient: TokenClient;
+  identityClient: PanelIdentityClient;
   serverInfo: PanelManagerServerInfo;
   workspacePath: string;
   searchIndex?: PanelSearchIndex | null;
@@ -77,7 +78,7 @@ export interface PanelManagerDeps {
 export class PanelManager {
   private readonly store: PanelStore;
   private readonly registry: PanelRegistry;
-  private readonly tokenClient: TokenClient;
+  private readonly identityClient: PanelIdentityClient;
   private readonly serverInfo: PanelManagerServerInfo;
   private readonly workspacePath: string;
   private readonly searchIndex: PanelSearchIndex | null;
@@ -88,7 +89,7 @@ export class PanelManager {
   constructor(deps: PanelManagerDeps) {
     this.store = deps.store;
     this.registry = deps.registry;
-    this.tokenClient = deps.tokenClient;
+    this.identityClient = deps.identityClient;
     this.serverInfo = deps.serverInfo;
     this.workspacePath = deps.workspacePath;
     this.searchIndex = deps.searchIndex ?? null;
@@ -109,7 +110,7 @@ export class PanelManager {
     });
     const contextId = opts?.contextId ?? generateContextId(panelId);
 
-    await this.tokenClient.ensurePanelToken(panelId, contextId, opts?.parentId ?? null, relativePath);
+    await this.identityClient.register(panelId, contextId, opts?.parentId ?? null, relativePath);
 
     const snapshot = createSnapshot(relativePath, contextId, { env: opts?.env, ref: opts?.ref }, validatedStateArgs);
     if (opts?.autoArchiveWhenEmpty || manifest.autoArchiveWhenEmpty) {
@@ -148,7 +149,7 @@ export class PanelManager {
         await Promise.resolve(this.store.archivePanel(panelId)).catch(() => {});
       }
       this.registry.removePanel(panelId);
-      await Promise.resolve(this.tokenClient.revokePanelToken(panelId)).catch(() => {});
+      await Promise.resolve(this.identityClient.unregister(panelId)).catch(() => {});
       throw error;
     }
   }
@@ -171,7 +172,7 @@ export class PanelManager {
     });
     const contextId = generateContextId(panelId);
 
-    await this.tokenClient.ensurePanelToken(panelId, contextId, parentId, `browser:${url}`);
+    await this.identityClient.register(panelId, contextId, parentId, `browser:${url}`);
 
     const snapshot = createSnapshot(`browser:${url}`, contextId, {});
     let createdInStore = false;
@@ -208,7 +209,7 @@ export class PanelManager {
         await Promise.resolve(this.store.archivePanel(panelId)).catch(() => {});
       }
       this.registry.removePanel(panelId);
-      await Promise.resolve(this.tokenClient.revokePanelToken(panelId)).catch(() => {});
+      await Promise.resolve(this.identityClient.unregister(panelId)).catch(() => {});
       throw error;
     }
   }
@@ -242,8 +243,8 @@ export class PanelManager {
       this.registry.removePanel(id);
     }
     for (const id of closedIds) {
-      await this.tokenClient.revokePanelToken(id).catch((error: unknown) => {
-        log.warn(`Failed to revoke panel token for ${id}: ${error instanceof Error ? error.message : String(error)}`);
+      await this.identityClient.unregister(id).catch((error: unknown) => {
+        log.warn(`Failed to unregister panel principal for ${id}: ${error instanceof Error ? error.message : String(error)}`);
       });
     }
     return { closedIds };
@@ -298,7 +299,7 @@ export class PanelManager {
     await this.store.updatePanel(panelId, { snapshot: nextSnapshot });
     if (this.registry.getPanel(panelId)) this.registry.replaceCurrentSnapshot(panelId, nextSnapshot);
     if (updates.contextId) {
-      await this.tokenClient.updatePanelContext(panelId, updates.contextId);
+      await this.identityClient.bindContext(panelId, updates.contextId);
     }
   }
 
@@ -321,7 +322,7 @@ export class PanelManager {
     }
 
     if (nextSnapshot.contextId !== getPanelContextId(panel)) {
-      await this.tokenClient.updatePanelContext(panelId, nextSnapshot.contextId);
+      await this.identityClient.bindContext(panelId, nextSnapshot.contextId);
     }
     this.indexPanel(panelId, manifest.title, nextSnapshot.source);
 
@@ -347,7 +348,7 @@ export class PanelManager {
       this.registry.replaceCurrentSnapshot(panelId, getCurrentSnapshot(panel), panel.history);
     }
     if (getPanelContextId(panel) !== getPanelContextId(before)) {
-      await this.tokenClient.updatePanelContext(panelId, getPanelContextId(panel));
+      await this.identityClient.bindContext(panelId, getPanelContextId(panel));
     }
     return panel;
   }
@@ -364,7 +365,7 @@ export class PanelManager {
   async movePanel(panelId: string, newParentId: string | null, targetPosition: number): Promise<void> {
     await this.store.movePanel(panelId, newParentId, targetPosition);
     this.registry.movePanel(panelId, newParentId, targetPosition);
-    await this.tokenClient.updatePanelParent(panelId, newParentId);
+    await this.identityClient.setParent(panelId, newParentId);
   }
 
   async loadTree(): Promise<{ rootPanels: Panel[]; collapsedIds: string[] }> {
@@ -436,12 +437,13 @@ export class PanelManager {
 
   async getPanelInit(panelId: string): Promise<unknown> {
     const panel = this.registry.getPanel(panelId) ?? await this.requireStoredPanel(panelId);
-    const { token } = await this.tokenClient.ensurePanelToken(
+    await this.identityClient.register(
       panelId,
       getPanelContextId(panel),
       this.registry.findParentId(panelId) ?? await this.store.getParentId(panelId),
       getPanelSource(panel),
     );
+    const { token } = await this.identityClient.grantConnection(panelId);
 
     return buildBootstrapConfig({
       panelId,

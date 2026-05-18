@@ -197,7 +197,7 @@ describe("RouteRegistry × Gateway integration", () => {
     expect(status).toBe(401);
   });
 
-  it("accepts caller-token routes with panel and worker tokens", async () => {
+  it("accepts caller-token routes with worker tokens", async () => {
     h.registry.registerService([
       {
         serviceName: "caller",
@@ -209,14 +209,7 @@ describe("RouteRegistry × Gateway integration", () => {
       },
     ]);
 
-    const panelToken = h.tokenManager.ensureToken("p1", "panel");
     const workerToken = h.tokenManager.ensureToken("w1", "worker");
-
-    await expect(
-      fetchText(`http://127.0.0.1:${h.gatewayPort}/_r/s/caller/token`, {
-        headers: { Authorization: `Bearer ${panelToken}` },
-      })
-    ).resolves.toEqual({ status: 200, body: "caller allowed" });
 
     await expect(
       fetchText(`http://127.0.0.1:${h.gatewayPort}/_r/s/caller/token`, {
