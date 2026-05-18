@@ -1,12 +1,12 @@
 /**
- * Main-process type-check entry points exposed via the typecheck RPC service.
+ * Type-check helper methods used by the typecheck service extension.
  *
  * Runs TypeScript's language service (via @natstack/typecheck) directly
  * against the disk. No external type fetching, no install-on-demand, no
  * callbacks — workspace packages resolve through the workspace context map
  * and everything else flows through standard `node_modules` walking.
  *
- * RPC surface:
+ * Internal method keys:
  *   - typecheck.check          — diagnostics for a file or whole project
  *   - typecheck.getTypeInfo    — hover info at a position
  *   - typecheck.getCompletions — completion list at a position

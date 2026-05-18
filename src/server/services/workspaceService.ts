@@ -24,6 +24,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
 import type { Workspace, WorkspaceConfig } from "@natstack/shared/workspace/types";
 
 /**
@@ -103,6 +104,62 @@ export interface WorkspaceServiceDeps {
    * with workspace.getActive() regardless of runtime mode.
    */
   requestWorkspaceList?: () => Promise<unknown[]>;
+  /** Workspace-unit operational status rows, including extension health. */
+  listUnits?: () => Promise<WorkspaceUnitStatus[]> | WorkspaceUnitStatus[];
+  /** Restart a workspace unit through the owning manager. */
+  restartUnit?: (ctx: ServiceContext, name: string) => Promise<void>;
+  /** Query retained logs for a workspace unit. */
+  listUnitLogs?: (
+    name: string,
+    opts?: { since?: number; level?: WorkspaceUnitLogRecord["level"]; limit?: number },
+  ) => Promise<WorkspaceUnitLogRecord[]> | WorkspaceUnitLogRecord[];
+}
+
+export interface WorkspaceUnitStatus {
+  name: string;
+  kind: "panel" | "worker" | "extension";
+  source: string;
+  displayName?: string;
+  enabled?: boolean;
+  status: "running" | "stopped" | "error" | "pending-approval" | "building" | "available";
+  version?: string;
+  ev?: string | null;
+  activeEv?: string | null;
+  activeBundleKey?: string | null;
+  activeRuntimeDepsKey?: string | null;
+  /** Epoch ms when the currently active build was produced (best-effort; null if unknown). */
+  lastBuiltAt?: number | null;
+  /** Worker bindings (DOs, env). Only populated for kind === "worker". */
+  bindings?: Record<string, unknown> | null;
+  /**
+   * Set when an extension install/update approval is currently in flight,
+   * so a "running units" panel can surface a "pending approval" affordance
+   * without polling the approval queue separately.
+   */
+  pendingApproval?: { kind: string; submittedAt: number } | null;
+  /**
+   * Set when current workspace state would change the unit's runtime inputs
+   * (a dependency push, an external-dep bump). Driven by needsBuildRefresh
+   * for extensions; absent for workers/panels in v1.
+   */
+  availableUpdate?: { reason: "dependency"; checkedAt: number } | null;
+  lastError?: string | null;
+  health?: unknown;
+  methods?: string[];
+  hasFetch?: boolean;
+  respawn?: { attempts: number; nextAttemptAt: number | null } | null;
+  inspectorUrl?: string | null;
+}
+
+export interface WorkspaceUnitLogRecord {
+  workspaceId: string;
+  unitName: string;
+  kind: "extension" | "worker" | "panel";
+  timestamp: number;
+  level: "debug" | "info" | "warn" | "error";
+  message: string;
+  fields?: Record<string, unknown>;
+  source?: "stdout" | "stderr" | "ctx.log" | "console";
 }
 
 export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefinition {
@@ -129,7 +186,7 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
   return {
     name: "workspace",
     description: "Workspace catalog, configuration, and lifecycle (list, create, switch, etc.)",
-    policy: { allowed: ["shell", "panel", "worker", "server"] },
+    policy: { allowed: ["shell", "panel", "worker", "extension", "server"] },
     methods: {
       // Read methods
       getInfo: { args: z.tuple([]) },
@@ -167,6 +224,14 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
       getAgentsMd: { args: z.tuple([]) },
       listSkills: { args: z.tuple([]) },
       readSkill: { args: z.tuple([z.string()]) },
+      "units.list": { args: z.tuple([]) },
+      "units.inspector": { args: z.tuple([z.string()]) },
+      "units.restart": { args: z.tuple([z.string()]) },
+      "units.logs": { args: z.tuple([z.string(), z.object({
+        since: z.number().optional(),
+        level: z.enum(["debug", "info", "warn", "error"]).optional(),
+        limit: z.number().int().positive().max(1000).optional(),
+      }).optional()]) },
     },
     handler: async (ctx, method, args) => {
       switch (method) {
@@ -306,6 +371,33 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
           }
           const skillMdPath = path.join(workspace.path, "skills", name, "SKILL.md");
           return await fs.readFile(skillMdPath, "utf-8");
+        }
+
+        case "units.list":
+          return deps.listUnits ? await deps.listUnits() : [];
+
+        case "units.inspector": {
+          const [name] = args as [string];
+          const rows = deps.listUnits ? await deps.listUnits() : [];
+          const row = rows.find((unit) => unit.name === name || unit.source === name);
+          const url = row?.inspectorUrl ?? null;
+          return url ? { url } : null;
+        }
+
+        case "units.restart": {
+          if (!deps.restartUnit) throw new Error("Workspace unit restart not available");
+          const [name] = args as [string];
+          await deps.restartUnit(ctx, name);
+          return;
+        }
+
+        case "units.logs": {
+          if (!deps.listUnitLogs) return [];
+          const [name, opts] = args as [
+            string,
+            { since?: number; level?: WorkspaceUnitLogRecord["level"]; limit?: number } | undefined,
+          ];
+          return await deps.listUnitLogs(name, opts);
         }
 
         default:

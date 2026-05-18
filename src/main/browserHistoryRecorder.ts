@@ -31,14 +31,18 @@ export class BrowserHistoryRecorder {
     if (previous && now - previous < DUPLICATE_WINDOW_MS) return;
     this.recentRecords.set(key, now);
     void this.serverClient
-      .call("browser-data", "recordHistoryVisit", [
-        {
-          url,
-          title,
-          transition,
-          typed: Boolean(intent.typed),
-          visitTime: now,
-        },
+      .call("extensions", "invoke", [
+        "@workspace-extensions/browser-data",
+        "recordHistoryVisit",
+        [
+          {
+            url,
+            title,
+            transition,
+            typed: Boolean(intent.typed),
+            visitTime: now,
+          },
+        ],
       ])
       .catch((error: unknown) => {
         log.warn(
@@ -50,12 +54,16 @@ export class BrowserHistoryRecorder {
   updateTitle(url: string, title: string): void {
     if (!/^https?:\/\//i.test(url) || !title.trim()) return;
     void this.serverClient
-      .call("browser-data", "updateHistoryTitle", [
-        {
-          url,
-          title,
-          observedAt: Date.now(),
-        },
+      .call("extensions", "invoke", [
+        "@workspace-extensions/browser-data",
+        "updateHistoryTitle",
+        [
+          {
+            url,
+            title,
+            observedAt: Date.now(),
+          },
+        ],
       ])
       .catch((error: unknown) => {
         log.warn(

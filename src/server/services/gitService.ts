@@ -106,7 +106,7 @@ export function createGitService(deps: GitServiceDeps): ServiceDefinition {
   return {
     name: "git",
     description: "Git operations and scoped filesystem access for panels",
-    policy: { allowed: ["shell", "panel", "server", "worker"] },
+    policy: { allowed: ["shell", "panel", "server", "worker", "extension"] },
     methods: {
       getWorkspaceTree: { args: z.tuple([]) },
       findRepoForPath: { args: z.tuple([z.string()]) },

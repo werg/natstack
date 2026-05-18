@@ -12,4 +12,7 @@ export type {
   GitWriteAuthorizationRequest,
   GitWriteAuthorizationResult,
   GitWriteAuthorizer,
+  GitPushAuthorizationRequest,
+  GitPushAuthorizationResult,
+  GitPushAuthorizer,
 } from "./types.js";

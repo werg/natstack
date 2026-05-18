@@ -30,6 +30,12 @@ interface TrackedHandle {
   timer: ReturnType<typeof setTimeout>;
 }
 
+interface FsCallScope {
+  root: string;
+  panelId: string;
+  unrestricted: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Path sandboxing
 // ---------------------------------------------------------------------------
@@ -64,6 +70,16 @@ async function sandboxPath(root: string, userPath: string): Promise<string> {
     }
   }
   return resolved;
+}
+
+async function resolveFsPath(scope: FsCallScope, userPath: string): Promise<string> {
+  if (!scope.unrestricted) {
+    return sandboxPath(scope.root, userPath);
+  }
+  if (typeof userPath !== "string" || userPath.length === 0) {
+    throw new Error("Path must be a non-empty string");
+  }
+  return path.resolve(userPath);
 }
 
 // ---------------------------------------------------------------------------
@@ -186,7 +202,7 @@ export class FsService {
   private async resolveContextRoot(
     ctx: ServiceContext,
     args: unknown[],
-  ): Promise<{ root: string; panelId: string }> {
+  ): Promise<FsCallScope> {
     let contextId: string;
     let panelId: string;
 
@@ -197,6 +213,12 @@ export class FsService {
         throw new Error(`No context registered for ${ctx.callerKind} ${panelId}`);
       }
       contextId = cid;
+    } else if (ctx.callerKind === "extension") {
+      return {
+        root: "",
+        panelId: `extension:${ctx.callerId}`,
+        unrestricted: true,
+      };
     } else {
       // Server-originated calls pass contextId as first arg
       contextId = args.shift() as string;
@@ -207,7 +229,7 @@ export class FsService {
     }
 
     const root = await this.contextFolderManager.ensureContextFolder(contextId);
-    return { root, panelId };
+    return { root, panelId, unrestricted: false };
   }
 
   // =========================================================================
@@ -294,12 +316,13 @@ export class FsService {
 
     // Clone args so shift() in resolveContextRoot doesn't mutate the original
     const args = [...rawArgs];
-    const { root, panelId } = await this.resolveContextRoot(ctx, args);
+    const scope = await this.resolveContextRoot(ctx, args);
+    const { root, panelId } = scope;
 
     switch (method) {
       // ----- File content -----
       case "readFile": {
-        const p = await sandboxPath(root, args[0] as string);
+        const p = await resolveFsPath(scope, args[0] as string);
         const encoding = args[1] as string | undefined;
         if (encoding) {
           return fs.readFile(p, encoding as BufferEncoding);
@@ -309,7 +332,7 @@ export class FsService {
       }
 
       case "writeFile": {
-        const p = await sandboxPath(root, args[0] as string);
+        const p = await resolveFsPath(scope, args[0] as string);
         const data = isBinaryEnvelope(args[1])
           ? decodeBinary(args[1])
           : (args[1] as string);
@@ -318,7 +341,7 @@ export class FsService {
       }
 
       case "appendFile": {
-        const p = await sandboxPath(root, args[0] as string);
+        const p = await resolveFsPath(scope, args[0] as string);
         const data = isBinaryEnvelope(args[1])
           ? decodeBinary(args[1])
           : (args[1] as string);
@@ -328,7 +351,7 @@ export class FsService {
 
       // ----- Directory operations -----
       case "readdir": {
-        const p = await sandboxPath(root, args[0] as string);
+        const p = await resolveFsPath(scope, args[0] as string);
         const opts = args[1] as { withFileTypes?: boolean } | undefined;
         if (opts?.withFileTypes) {
           const entries = await fs.readdir(p, { withFileTypes: true });
@@ -338,21 +361,21 @@ export class FsService {
       }
 
       case "mkdir": {
-        const p = await sandboxPath(root, args[0] as string);
+        const p = await resolveFsPath(scope, args[0] as string);
         const opts = args[1] as { recursive?: boolean } | undefined;
         const result = await fs.mkdir(p, opts);
         // Return first-created path relative to context root (Node API contract)
-        return result ? "/" + path.relative(root, result) : undefined;
+        return result && !scope.unrestricted ? "/" + path.relative(root, result) : result;
       }
 
       case "rmdir": {
-        const p = await sandboxPath(root, args[0] as string);
+        const p = await resolveFsPath(scope, args[0] as string);
         await fs.rmdir(p);
         return;
       }
 
       case "rm": {
-        const p = await sandboxPath(root, args[0] as string);
+        const p = await resolveFsPath(scope, args[0] as string);
         const opts = args[1] as { recursive?: boolean; force?: boolean } | undefined;
         await fs.rm(p, opts);
         return;
@@ -360,17 +383,17 @@ export class FsService {
 
       // ----- Stat / metadata -----
       case "stat": {
-        const p = await sandboxPath(root, args[0] as string);
+        const p = await resolveFsPath(scope, args[0] as string);
         return serializeStat(await fs.stat(p));
       }
 
       case "lstat": {
-        const p = await sandboxPath(root, args[0] as string);
+        const p = await resolveFsPath(scope, args[0] as string);
         return serializeStat(await fs.lstat(p));
       }
 
       case "exists": {
-        const p = await sandboxPath(root, args[0] as string);
+        const p = await resolveFsPath(scope, args[0] as string);
         try {
           await fs.access(p);
           return true;
@@ -380,35 +403,36 @@ export class FsService {
       }
 
       case "access": {
-        const p = await sandboxPath(root, args[0] as string);
+        const p = await resolveFsPath(scope, args[0] as string);
         await fs.access(p, args[1] as number | undefined);
         return;
       }
 
       // ----- File manipulation -----
       case "unlink": {
-        const p = await sandboxPath(root, args[0] as string);
+        const p = await resolveFsPath(scope, args[0] as string);
         await fs.unlink(p);
         return;
       }
 
       case "copyFile": {
-        const src = await sandboxPath(root, args[0] as string);
-        const dest = await sandboxPath(root, args[1] as string);
+        const src = await resolveFsPath(scope, args[0] as string);
+        const dest = await resolveFsPath(scope, args[1] as string);
         await fs.copyFile(src, dest);
         return;
       }
 
       case "rename": {
-        const oldP = await sandboxPath(root, args[0] as string);
-        const newP = await sandboxPath(root, args[1] as string);
+        const oldP = await resolveFsPath(scope, args[0] as string);
+        const newP = await resolveFsPath(scope, args[1] as string);
         await fs.rename(oldP, newP);
         return;
       }
 
       case "realpath": {
-        const p = await sandboxPath(root, args[0] as string);
+        const p = await resolveFsPath(scope, args[0] as string);
         const real = await fs.realpath(p);
+        if (scope.unrestricted) return real;
         // Return relative to root (panel sees paths relative to context root)
         if (!real.startsWith(root + path.sep) && real !== root) {
           throw new Error("Realpath escapes sandbox");
@@ -417,15 +441,16 @@ export class FsService {
       }
 
       case "truncate": {
-        const p = await sandboxPath(root, args[0] as string);
+        const p = await resolveFsPath(scope, args[0] as string);
         await fs.truncate(p, args[1] as number | undefined);
         return;
       }
 
       // ----- Symlinks -----
       case "readlink": {
-        const p = await sandboxPath(root, args[0] as string);
+        const p = await resolveFsPath(scope, args[0] as string);
         const target = await fs.readlink(p);
+        if (scope.unrestricted) return target;
         // If the target is absolute, relativize to prevent leaking host paths
         if (path.isAbsolute(target)) {
           const resolved = path.resolve(path.dirname(p), target);
@@ -447,14 +472,14 @@ export class FsService {
       case "symlink": {
         // Validate that the target resolves within the context root
         const target = args[0] as string;
-        const linkPath = await sandboxPath(root, args[1] as string);
+        const linkPath = await resolveFsPath(scope, args[1] as string);
         // Resolve the target relative to the link's parent directory
         const linkDir = path.dirname(linkPath);
         const resolvedTarget = path.resolve(linkDir, target);
-        if (
+        if (!scope.unrestricted && (
           !resolvedTarget.startsWith(root + path.sep) &&
           resolvedTarget !== root
-        ) {
+        )) {
           throw new Error("Symlink target escapes sandbox");
         }
         await fs.symlink(target, linkPath);
@@ -463,26 +488,26 @@ export class FsService {
 
       // ----- Permissions & timestamps -----
       case "chmod": {
-        const p = await sandboxPath(root, args[0] as string);
+        const p = await resolveFsPath(scope, args[0] as string);
         await fs.chmod(p, args[1] as number);
         return;
       }
 
       case "chown": {
-        const p = await sandboxPath(root, args[0] as string);
+        const p = await resolveFsPath(scope, args[0] as string);
         await fs.chown(p, args[1] as number, args[2] as number);
         return;
       }
 
       case "utimes": {
-        const p = await sandboxPath(root, args[0] as string);
+        const p = await resolveFsPath(scope, args[0] as string);
         await fs.utimes(p, args[1] as number, args[2] as number);
         return;
       }
 
       // ----- File handles -----
       case "open": {
-        const p = await sandboxPath(root, args[0] as string);
+        const p = await resolveFsPath(scope, args[0] as string);
         const flags = (args[1] as string) ?? "r";
         const mode = args[2] as number | undefined;
         const handle = await fs.open(p, flags, mode);

@@ -28,9 +28,6 @@
     ],
     "baseUrl": ".",
     "paths": {
-      "@natstack/ai": [
-        "packages/ai/src/index.ts"
-      ],
       "@natstack/browser-data": [
         "packages/browser-data/src/index.ts"
       ],
@@ -39,6 +36,15 @@
       ],
       "@natstack/env-paths": [
         "packages/env-paths/src/index.ts"
+      ],
+      "@natstack/extension": [
+        "packages/extension/src/index.ts"
+      ],
+      "@natstack/extension-host": [
+        "packages/extension-host/src/index.ts"
+      ],
+      "@natstack/extension-host/child-runtime": [
+        "packages/extension-host/src/childRuntime.ts"
       ],
       "@natstack/git": [
         "packages/git/src/index.ts"

@@ -86,6 +86,16 @@ export interface GitHttpHandler {
   ): Promise<void> | void;
 }
 
+export interface ExtensionHttpHandler {
+  handleExtensionHttpRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+    name: string,
+    remainderPath: string,
+    caller: { callerId: string; callerKind: string },
+  ): Promise<void> | void;
+}
+
 export interface GatewayDeps {
   /** In-process RPC handler */
   rpcHandler?: RpcHandler;
@@ -97,6 +107,8 @@ export interface GatewayDeps {
   getPanelHttpHandler?: () => PanelHttpHandler | null | undefined;
   /** Dynamic in-process git handler getter. */
   getGitHandler?: () => GitHttpHandler | null | undefined;
+  /** Dynamic in-process extension fetch handler getter. */
+  getExtensionHttpHandler?: () => ExtensionHttpHandler | null | undefined;
   /** Workerd port for /_w/ path (reverse proxy) */
   workerdPort?: number | null;
   /** Dynamic workerd port getter. */
@@ -155,6 +167,7 @@ export class Gateway {
       const rpcHandler = this.deps.getRpcHandler?.() ?? this.deps.rpcHandler;
       const panelHttpHandler = this.deps.getPanelHttpHandler?.() ?? this.deps.panelHttpHandler;
       const gitHandler = this.deps.getGitHandler?.();
+      const extensionHttpHandler = this.deps.getExtensionHttpHandler?.();
       const workerdPort = this.deps.getWorkerdPort?.() ?? this.deps.workerdPort;
 
       // /healthz → liveness + (token-gated) detailed status. No auth for basic
@@ -186,6 +199,29 @@ export class Gateway {
           return;
         }
         return proxyRequest(req, res, workerdPort, url, workerdToken);
+      }
+
+      // /_r/ext/<encoded-name>/* → extension fetch surface.
+      if (url.startsWith("/_r/ext/") && extensionHttpHandler) {
+        const parsed = parseExtensionRoute(url);
+        if (!parsed) {
+          res.writeHead(404, { "Content-Type": "text/plain" });
+          res.end("Extension route not found");
+          return;
+        }
+        const entry = validateCallerBearer(req, tokenManager);
+        if (!entry) {
+          res.writeHead(401, { "Content-Type": "text/plain" });
+          res.end("Unauthorized");
+          return;
+        }
+        return extensionHttpHandler.handleExtensionHttpRequest(
+          req,
+          res,
+          parsed.name,
+          parsed.remainderPath,
+          entry,
+        );
       }
 
       // /_r/ → route registry dispatch (worker + service HTTP routes)
@@ -290,6 +326,13 @@ export class Gateway {
           return;
         }
         return proxyUpgrade(req, socket, head, workerdPort, workerdToken);
+      }
+
+      // Extension fetch routes do not support WebSocket upgrade in v1.
+      if (url.startsWith("/_r/ext/")) {
+        socket.write("HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
       }
 
       // /_r/ → route registry dispatch (worker + service WS routes)
@@ -545,6 +588,25 @@ function validateAdminBearer(req: IncomingMessage, adminToken: string | undefine
   const token = extractBearerToken(req);
   if (!token) return false;
   return constantTimeStringEqual(token, adminToken);
+}
+
+function parseExtensionRoute(url: string): { name: string; remainderPath: string } | null {
+  const qIdx = url.indexOf("?");
+  const pathOnly = qIdx === -1 ? url : url.slice(0, qIdx);
+  const prefix = "/_r/ext/";
+  if (!pathOnly.startsWith(prefix)) return null;
+  const rest = pathOnly.slice(prefix.length);
+  const slash = rest.indexOf("/");
+  const encodedName = slash === -1 ? rest : rest.slice(0, slash);
+  if (!encodedName) return null;
+  try {
+    return {
+      name: decodeURIComponent(encodedName),
+      remainderPath: slash === -1 ? "/" : `/${rest.slice(slash + 1)}`,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function enforceAuth(

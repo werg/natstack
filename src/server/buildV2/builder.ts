@@ -1,9 +1,10 @@
 /**
- * Builder — esbuild orchestration for panels, about pages, and workers.
+ * Builder — esbuild orchestration for panels, about pages, workers, and extensions.
  *
  * Two build strategies:
  *   - Panel/About (browser target): ESM, code splitting, fs/path shims
  *   - Worker (workerd target): ESM, no splitting
+ *   - Extension (Node target): ESM, no splitting
  *
  * Build options are manifest-derived, not caller-supplied.
  * Concurrency: semaphore with MAX_CONCURRENT_BUILDS = 4.
@@ -18,13 +19,23 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { createHash } from "crypto";
+import { execFile } from "child_process";
+import { createRequire } from "module";
+import { promisify } from "util";
+import { pathToFileURL } from "url";
 import type { GraphNode, PackageGraph } from "./packageGraph.js";
+import { validateExtensionManifestBlock } from "@natstack/shared/extensionManifest";
 import * as buildStore from "./buildStore.js";
 import type { BuildArtifacts, BuildMetadata, BuildResult } from "./buildStore.js";
 import { computeBuildKey } from "./effectiveVersion.js";
-import { collectTransitiveExternalDeps, ensureExternalDeps } from "./externalDeps.js";
+import {
+  collectTransitiveExternalDeps,
+  ensureExternalDeps,
+  ensureExtensionRuntimeDeps,
+} from "./externalDeps.js";
 import { extractSourceForBuild } from "./sourceExtractor.js";
 import { PANEL_CSP_META } from "@natstack/shared/constants";
+import { EXTENSION_RUNTIME_ABI_VERSION } from "@natstack/shared/extensionRuntimeAbi";
 import { getAdapter } from "./adapters/index.js";
 import type { FrameworkAdapter } from "./adapters/types.js";
 import { resolveTemplate } from "./templateResolver.js";
@@ -55,7 +66,6 @@ export function initBuilder(appNodeModules: string | string[]): void {
 // ---------------------------------------------------------------------------
 
 const MAX_CONCURRENT_BUILDS = 4;
-
 const PANEL_ASSET_LOADERS: Record<string, esbuild.Loader> = {
   ".png": "file",
   ".jpg": "file",
@@ -83,6 +93,37 @@ const PANEL_ASSET_LOADERS: Record<string, esbuild.Loader> = {
 };
 
 const TEXT_EXTENSIONS = new Set([".js", ".css", ".json", ".map", ".svg", ".txt", ".md", ".html"]);
+
+const KNOWN_NATIVE_EXTERNALS = [
+  "*.node",
+  "fsevents",
+  "bufferutil",
+  "utf-8-validate",
+  "node-pty",
+  "cpu-features",
+  "@parcel/watcher",
+];
+
+export type ExtensionDependencyMode = "auto" | "bundle" | "external";
+
+export interface ClassifiedExtensionDep {
+  name: string;
+  version: string;
+  external: boolean;
+  format: "cjs" | "esm" | "unknown";
+  reasons: string[];
+  explanation: string;
+}
+
+export interface ExtensionDependencyDiagnostics {
+  dependencyMode: ExtensionDependencyMode;
+  classifiedDeps: ClassifiedExtensionDep[];
+  runtimeExternalDeps: Record<string, string>;
+  bundledDeps: Record<string, string>;
+  notes: string[];
+}
+
+const execFileAsync = promisify(execFile);
 
 // Framework-agnostic packages that frequently dominate bundle size.
 // Framework-specific split packages live in the adapter (e.g., @radix-ui/react-icons in React adapter).
@@ -362,6 +403,189 @@ function expandExternalSpecifiers(externals: Record<string, string>): string[] {
     }
   }
   return [...patterns];
+}
+
+export function normalizeExtensionDependencyMode(value: unknown): ExtensionDependencyMode {
+  return value === "bundle" || value === "external" || value === "auto" ? value : "auto";
+}
+
+function packageJsonPathForSpecifier(specifier: string, nodePaths: string[]): string | null {
+  const parts = specifier.split("/");
+  const packagePath = specifier.startsWith("@")
+    ? path.join(parts[0] ?? "", parts[1] ?? "")
+    : parts[0] ?? "";
+  for (const root of nodePaths) {
+    if (!root) continue;
+    const candidate = path.join(root, packagePath, "package.json");
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+function hasFileWithExtension(dir: string, extensions: Set<string>): boolean {
+  if (!fs.existsSync(dir)) return false;
+  const stack = [dir];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.name === "node_modules" || entry.name === ".git") continue;
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+      } else if (entry.isFile() && extensions.has(path.extname(entry.name).toLowerCase())) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function explainExtensionDep(
+  name: string,
+  mode: ExtensionDependencyMode,
+  external: boolean,
+  format: ClassifiedExtensionDep["format"],
+  reasons: string[],
+): string {
+  if (mode === "external") return `${name} is externalized because dependencyMode is "external".`;
+  if (mode === "bundle") return `${name} is bundled because dependencyMode is "bundle".`;
+  if (reasons.includes("native")) return `${name} is externalized because it contains native bindings.`;
+  if (reasons.includes("wasm-asset")) return `${name} is externalized because it contains WASM assets.`;
+  if (reasons.includes("missing-package-json")) {
+    return `${name} is bundled by default, but its package.json was not found during classification.`;
+  }
+  if (reasons.includes("unreadable-package-json")) {
+    return `${name} is bundled by default, but its package.json could not be read.`;
+  }
+  return `${name} is bundled because it looks like plain ${format === "esm" ? "ESM" : format === "cjs" ? "CommonJS" : "JavaScript"}.`;
+}
+
+export function classifyExtensionDeps(
+  deps: Record<string, string>,
+  nodePaths: string[],
+  mode: ExtensionDependencyMode,
+): ClassifiedExtensionDep[] {
+  return Object.entries(deps).sort(([a], [b]) => a.localeCompare(b)).map(([name, version]) => {
+    const pkgJsonPath = packageJsonPathForSpecifier(name, nodePaths);
+    const reasons: string[] = [];
+    let format: ClassifiedExtensionDep["format"] = "unknown";
+    if (pkgJsonPath) {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as {
+          type?: string;
+          main?: string;
+          module?: string;
+          binary?: unknown;
+          gypfile?: unknown;
+        };
+        format = pkg.type === "module" ? "esm" : "cjs";
+        const packageDir = path.dirname(pkgJsonPath);
+        if (pkg.binary || pkg.gypfile || hasFileWithExtension(packageDir, new Set([".node"]))) {
+          reasons.push("native");
+        }
+        if (hasFileWithExtension(packageDir, new Set([".wasm"]))) {
+          reasons.push("wasm-asset");
+        }
+      } catch {
+        reasons.push("unreadable-package-json");
+      }
+    } else {
+      reasons.push("missing-package-json");
+    }
+
+    const external = mode === "external"
+      ? true
+      : mode === "bundle"
+        ? false
+        : reasons.includes("native") || reasons.includes("wasm-asset");
+
+    return {
+      name,
+      version,
+      external,
+      format,
+      reasons,
+      explanation: explainExtensionDep(name, mode, external, format, reasons),
+    };
+  });
+}
+
+export function depsRecord(classified: ClassifiedExtensionDep[], external: boolean): Record<string, string> {
+  const selected: Record<string, string> = {};
+  for (const dep of classified) {
+    if (dep.external === external) selected[dep.name] = dep.version;
+  }
+  return selected;
+}
+
+export function analyzeExtensionDependencies(
+  deps: Record<string, string>,
+  nodePaths: string[],
+  dependencyMode: ExtensionDependencyMode,
+): ExtensionDependencyDiagnostics {
+  const classifiedDeps = classifyExtensionDeps(deps, nodePaths, dependencyMode);
+  const runtimeExternalDeps = depsRecord(classifiedDeps, true);
+  const bundledDeps = depsRecord(classifiedDeps, false);
+  const notes: string[] = [];
+  for (const dep of classifiedDeps) {
+    notes.push(dep.explanation);
+    if (dep.external && dep.format === "cjs") {
+      notes.push(
+        `${dep.name} is external CommonJS. Generated ESM code should import it with a default import; named imports fail fast at build time.`,
+      );
+    }
+  }
+  if (classifiedDeps.length === 0) {
+    notes.push("No external npm dependencies were discovered for this extension.");
+  }
+  return { dependencyMode, classifiedDeps, runtimeExternalDeps, bundledDeps, notes };
+}
+
+function createExtensionCjsShimPlugin(
+  outdir: string,
+  deps: ClassifiedExtensionDep[],
+): esbuild.Plugin | null {
+  const cjsExternalDeps = deps.filter((dep) => dep.external && dep.format === "cjs");
+  if (cjsExternalDeps.length === 0) return null;
+  const cjsExternalNames = new Set(cjsExternalDeps.map((dep) => dep.name));
+  const shimDir = path.join(outdir, "_extension-cjs-shims");
+  fs.mkdirSync(shimDir, { recursive: true });
+
+  return {
+    name: "extension-cjs-external-shims",
+    setup(build) {
+      for (const name of cjsExternalNames) {
+        const filter = packageToRegex(name);
+        build.onResolve({ filter }, (args) => {
+          if (args.kind === "require-call") return null;
+          if (args.path !== name) return null;
+          return {
+            path: path.join(shimDir, `${sanitizeModuleForFileName(name)}.mjs`),
+            namespace: "extension-cjs-shim",
+            pluginData: { name },
+          };
+        });
+      }
+      build.onLoad({ filter: /.*/, namespace: "extension-cjs-shim" }, (args) => {
+        const name = (args.pluginData as { name: string }).name;
+        return {
+          loader: "js",
+          contents: [
+            "import { createRequire as __natstackCreateRequire } from 'node:module';",
+            "const require = __natstackCreateRequire(import.meta.url);",
+            `const mod = require(${JSON.stringify(name)});`,
+            "export default mod;",
+          ].join("\n"),
+        };
+      });
+    },
+  };
 }
 
 function pickForcedSplitModules(
@@ -856,18 +1080,25 @@ export async function buildUnit(
   commitMap?: Map<string, string>,
   options?: BuildUnitOptions
 ): Promise<BuildResult> {
-  const sourcemap = options?.library ? false : node.manifest.sourcemap !== false;
+  const sourcemap = options?.library ? false : (node.kind === "extension" ? true : node.manifest.sourcemap !== false);
   const effectiveEv = options?.library
     ? `${ev}:lib:${createHash("sha256")
         .update(JSON.stringify(options.externals ?? []))
         .digest("hex")
         .slice(0, 12)}`
+    : node.kind === "extension"
+      ? `${ev}:extension-runtime-abi:${EXTENSION_RUNTIME_ABI_VERSION}`
     : ev;
   const buildKey = computeBuildKey(node.name, effectiveEv, sourcemap);
 
   // Check store first
   const cached = buildStore.get(buildKey);
-  if (cached) return cached;
+  if (cached) {
+    if (node.kind === "extension") {
+      await refreshCachedExtensionRuntimeDeps(cached);
+    }
+    return cached;
+  }
 
   // Check for in-flight build (coalescing)
   const inFlight = inFlightBuilds.get(buildKey);
@@ -928,6 +1159,8 @@ async function doBuild(
         sourcemap,
         extracted.sourceRoot
       );
+    } else if (node.kind === "extension") {
+      return await buildExtension(node, ev, buildKey, graph, workspaceRoot, extracted.sourceRoot);
     } else if (node.kind === "template") {
       throw new Error(`Templates are not buildable: ${node.name}`);
     } else {
@@ -980,7 +1213,7 @@ async function prepareBuildEnv(
   const sourcePath = remapPath(node.path, workspaceRoot, sourceRoot);
   const entryFile = resolveEntryPoint(node, sourcePath);
 
-  const externalDeps = collectTransitiveExternalDeps(node, graph);
+  const externalDeps = collectTransitiveExternalDeps(node, graph, workspaceRoot, _appNodeModules);
   const nodeModulesDir = await ensureExternalDeps(externalDeps);
   const nodePaths = nodeModulesDir ? [nodeModulesDir] : [];
 
@@ -1018,7 +1251,8 @@ function storeSimpleBuild(
   bundle: string,
   node: GraphNode,
   ev: string,
-  sourcemap: boolean
+  sourcemap: boolean,
+  extraMetadata: Partial<BuildMetadata> = {},
 ): BuildResult {
   const artifacts: BuildArtifacts = { bundle };
   const metadata: BuildMetadata = {
@@ -1026,6 +1260,7 @@ function storeSimpleBuild(
     name: node.name,
     ev,
     sourcemap,
+    ...extraMetadata,
     builtAt: new Date().toISOString(),
   };
   return buildStore.put(buildKey, artifacts, metadata);
@@ -1228,6 +1463,7 @@ async function buildPanel(
 // ---------------------------------------------------------------------------
 
 const WORKER_CONDITIONS = ["worker", "workerd", "import", "default"] as const;
+const EXTENSION_CONDITIONS = ["import", "default"] as const;
 
 /**
  * Node built-ins that workerd does NOT provide via `nodejs_compat` and must
@@ -1551,6 +1787,331 @@ async function buildWorker(
     return storeSimpleBuild(buildKey, bundle, node, ev, sourcemap);
   } finally {
     env.cleanup();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Extension Build
+// ---------------------------------------------------------------------------
+
+function validateExtensionManifest(node: GraphNode, manifest: Record<string, unknown>): void {
+  validateExtensionManifestBlock(manifest, { unitName: node.name });
+}
+
+async function buildExtension(
+  node: GraphNode,
+  ev: string,
+  buildKey: string,
+  graph: PackageGraph,
+  workspaceRoot: string,
+  sourceRoot: string,
+): Promise<BuildResult> {
+  const env = await prepareBuildEnv(node, buildKey, graph, workspaceRoot, sourceRoot);
+  const { outdir, entryFile, nodePaths, resolveDir } = env;
+
+  const extensionSourcePath = path.join(sourceRoot, node.relativePath);
+  const extractedPkgPath = path.join(extensionSourcePath, "package.json");
+  const extractedPkg = JSON.parse(fs.readFileSync(extractedPkgPath, "utf-8")) as {
+    natstack?: Record<string, unknown>;
+  };
+  const extractedManifest = extractedPkg.natstack ?? {};
+  validateExtensionManifest(node, extractedManifest);
+  const extensionManifest = extractedManifest["extension"] as Record<string, unknown> | undefined;
+  const dependencyMode = normalizeExtensionDependencyMode(extensionManifest?.["dependencyMode"]);
+  const dependencyDiagnostics = analyzeExtensionDependencies(
+    env.externalDeps,
+    nodePaths,
+    dependencyMode,
+  );
+  const { classifiedDeps, runtimeExternalDeps } = dependencyDiagnostics;
+  const dedupePackages = normalizeManifestSpecList(
+    extractedManifest["dedupeModules"] as string[] | undefined,
+  );
+
+  const plugins: esbuild.Plugin[] = [
+    createWorkspaceResolvePlugin(graph, workspaceRoot, sourceRoot, EXTENSION_CONDITIONS),
+    createTsExtensionPlugin(sourceRoot),
+  ];
+  const cjsShimPlugin = createExtensionCjsShimPlugin(outdir, classifiedDeps);
+  if (cjsShimPlugin) {
+    plugins.push(cjsShimPlugin);
+  }
+  const dedupePlugin = createDedupePlugin(resolveDir, dedupePackages);
+  if (dedupePlugin) {
+    plugins.push(dedupePlugin);
+  }
+
+  try {
+    await esbuild.build({
+      entryPoints: [entryFile],
+      bundle: true,
+      platform: "node",
+      target: "node20",
+      format: "esm",
+      splitting: false,
+      outfile: path.join(outdir, "bundle.js"),
+      banner: {
+        js: [
+          "import { createRequire as __natstackCreateRequire } from 'node:module';",
+          "import { fileURLToPath as __natstackFileURLToPath } from 'node:url';",
+          "import { dirname as __natstackDirname } from 'node:path';",
+          "const require = __natstackCreateRequire(import.meta.url);",
+          "const __filename = __natstackFileURLToPath(import.meta.url);",
+          "const __dirname = __natstackDirname(__filename);",
+        ].join("\n"),
+      },
+      sourcemap: "inline",
+      metafile: true,
+      logLevel: "warning",
+      conditions: [...EXTENSION_CONDITIONS],
+      mainFields: ["module", "main"],
+      external: [...KNOWN_NATIVE_EXTERNALS, ...expandExternalSpecifiers(runtimeExternalDeps)],
+      plugins,
+      nodePaths,
+      tsconfigRaw: { compilerOptions: {} },
+    });
+
+    const runtimeDeps = await ensureExtensionRuntimeDeps(runtimeExternalDeps);
+    if (runtimeDeps.nodeModulesDir) {
+      linkExtensionRuntimeDeps(outdir, runtimeDeps.nodeModulesDir, node.name);
+    }
+
+    const bundlePath = path.join(outdir, "bundle.js");
+    const bundle = fs.readFileSync(bundlePath, "utf-8");
+    fs.writeFileSync(path.join(outdir, "package.json"), '{"type":"module"}');
+    const smokeResult: BuildResult = {
+      dir: outdir,
+      metadata: {
+        kind: "extension",
+        name: node.name,
+        ev,
+        sourcemap: true,
+        runtimeDepsKey: runtimeDeps.key,
+        extensionRuntimeAbi: EXTENSION_RUNTIME_ABI_VERSION,
+        extensionDependencyMode: dependencyMode,
+        extensionExternalDeps: runtimeExternalDeps,
+        extensionClassifiedDeps: classifiedDeps,
+        builtAt: new Date().toISOString(),
+      },
+      bundlePath,
+      bundle,
+    };
+    await smokeTestExtensionBuild(smokeResult, node, {
+      dependencyDiagnostics,
+    });
+
+    const result = storeSimpleBuild(buildKey, bundle, node, ev, true, {
+      runtimeDepsKey: runtimeDeps.key,
+      extensionRuntimeAbi: EXTENSION_RUNTIME_ABI_VERSION,
+      extensionDependencyMode: dependencyMode,
+      extensionExternalDeps: runtimeExternalDeps,
+      extensionClassifiedDeps: classifiedDeps,
+      extensionSmokeTest: { mode: "child-process", passed: true },
+    });
+    if (runtimeDeps.nodeModulesDir) {
+      linkExtensionRuntimeDeps(result.dir, runtimeDeps.nodeModulesDir, node.name);
+    }
+
+    return result;
+  } finally {
+    env.cleanup();
+  }
+}
+
+async function smokeTestExtensionBuild(
+  result: BuildResult,
+  node: GraphNode,
+  details: {
+    dependencyDiagnostics: ExtensionDependencyDiagnostics;
+  },
+): Promise<void> {
+  const smokeDir = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-extension-smoke-"));
+  const smokeScript = path.join(smokeDir, "smoke.mjs");
+  try {
+    fs.writeFileSync(
+      smokeScript,
+      generateExtensionSmokeScript(
+        result.bundlePath,
+        Object.keys(details.dependencyDiagnostics.runtimeExternalDeps),
+      ),
+    );
+    await execFileAsync(process.execPath, [smokeScript], {
+      cwd: result.dir,
+      env: { ...process.env, NATSTACK_EXTENSION_SMOKE_BUNDLE: result.bundlePath },
+      timeout: 15_000,
+      maxBuffer: 1024 * 1024,
+    });
+  } catch (err) {
+    const diagnostics = details.dependencyDiagnostics;
+    const depSummary = diagnostics.classifiedDeps.map((dep) =>
+      `${dep.name}@${dep.version}:${dep.external ? "external" : "bundled"}:${dep.format}`
+      + (dep.reasons.length ? `(${dep.reasons.join(",")})` : "")
+    );
+    const stderr = typeof (err as { stderr?: unknown }).stderr === "string"
+      ? `\nstderr=${(err as { stderr: string }).stderr.trim()}`
+      : "";
+    const smokeError = new Error(
+      [
+        `Extension smoke test failed for ${node.name}: ${err instanceof Error ? err.message : String(err)}`,
+        `bundle=${result.bundlePath}`,
+        `dependencyMode=${diagnostics.dependencyMode}`,
+        `runtimeDeps=${Object.keys(diagnostics.runtimeExternalDeps).join(",") || "none"}`,
+        `classifiedDeps=${depSummary.join(";") || "none"}`,
+        `diagnostics=${diagnostics.notes.join(" | ")}`,
+        stderr,
+      ].join("\n"),
+    );
+    if (err instanceof Error) {
+      (smokeError as Error & { cause?: unknown }).cause = err;
+    }
+    throw smokeError;
+  } finally {
+    fs.rmSync(smokeDir, { recursive: true, force: true });
+  }
+}
+
+function generateExtensionSmokeScript(bundlePath: string, runtimeExternalDeps: string[]): string {
+  return `
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+const bundlePath = ${JSON.stringify(bundlePath)};
+const runtimeExternalDeps = ${JSON.stringify(runtimeExternalDeps)};
+const require = createRequire(pathToFileURL(bundlePath).href);
+for (const dep of runtimeExternalDeps) {
+  require.resolve(dep);
+}
+function createAsyncNullProxy() {
+  return new Proxy(Object.create(null), {
+    get(_target, prop) {
+      if (typeof prop !== "string" || prop === "then") return undefined;
+      return async () => null;
+    },
+  });
+}
+function createExtensionSmokeContext() {
+  const asyncNull = createAsyncNullProxy();
+  return {
+    name: "smoke-test",
+    version: "0.0.0",
+    storage: asyncNull,
+    fs: asyncNull,
+    git: asyncNull,
+    panel: asyncNull,
+    workspace: {
+      async getInfo() {
+        return { id: "smoke", name: "smoke", path: process.cwd(), contextsPath: process.cwd() };
+      },
+    },
+    workers: {
+      async callDO() {
+        return null;
+      },
+    },
+    credentials: asyncNull,
+    db: asyncNull,
+    webhooks: asyncNull,
+    approvals: {
+      async requestForCaller() {
+        return { kind: "dismissed" };
+      },
+    },
+    notifications: asyncNull,
+    extensions: {
+      use: () => createAsyncNullProxy(),
+      on: () => ({ dispose() {} }),
+      list: async () => [],
+    },
+    invocation: { current: () => null },
+    subscriptions: [],
+    log: {
+      debug() {},
+      info() {},
+      warn() {},
+      error() {},
+    },
+    health: {
+      report() {},
+      healthy() {},
+      degraded() {},
+      unhealthy() {},
+    },
+    emit() {},
+  };
+}
+const mod = await import(pathToFileURL(bundlePath).href);
+const activate = mod["activate"];
+if (typeof activate === "function") {
+  const api = await activate(createExtensionSmokeContext());
+  if (api !== undefined && (api === null || typeof api !== "object")) {
+    throw new Error("activate() must return an object or undefined");
+  }
+}
+`;
+}
+
+async function refreshCachedExtensionRuntimeDeps(result: BuildResult): Promise<void> {
+  const deps = result.metadata.extensionExternalDeps ?? {};
+  if (Object.keys(deps).length === 0) return;
+  if (extensionRuntimeDepsResolvable(result.bundlePath, Object.keys(deps))) return;
+
+  const runtimeDeps = await ensureExtensionRuntimeDeps(deps);
+  if (runtimeDeps.nodeModulesDir) {
+    linkExtensionRuntimeDeps(result.dir, runtimeDeps.nodeModulesDir, result.metadata.name);
+  }
+  if (result.metadata.runtimeDepsKey !== runtimeDeps.key) {
+    result.metadata.runtimeDepsKey = runtimeDeps.key;
+    fs.writeFileSync(path.join(result.dir, "metadata.json"), JSON.stringify(result.metadata, null, 2));
+  }
+}
+
+function extensionRuntimeDepsResolvable(bundlePath: string, deps: string[]): boolean {
+  if (deps.length === 0) return true;
+  const runtimeRequire = createRequire(pathToFileURL(bundlePath).href);
+  try {
+    for (const dep of deps) {
+      runtimeRequire.resolve(dep);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function linkExtensionRuntimeDeps(buildDir: string, nodeModulesDir: string, extensionName: string): void {
+  if (!fs.existsSync(nodeModulesDir)) {
+    throw new Error(
+      `Extension runtime dependencies for ${extensionName} are missing: ${nodeModulesDir}`,
+    );
+  }
+  const link = path.join(buildDir, "node_modules");
+  try {
+    let existing: fs.Stats | null = null;
+    try {
+      existing = fs.lstatSync(link);
+    } catch {
+      existing = null;
+    }
+    if (existing) {
+      const currentTarget = existing.isSymbolicLink() ? fs.readlinkSync(link) : null;
+      const resolvedCurrent = currentTarget
+        ? path.resolve(path.dirname(link), currentTarget)
+        : null;
+      if (resolvedCurrent === nodeModulesDir && fs.existsSync(link)) {
+        return;
+      }
+      if (existing.isSymbolicLink()) {
+        fs.unlinkSync(link);
+      } else {
+        fs.rmSync(link, { recursive: true, force: true });
+      }
+    }
+    fs.symlinkSync(nodeModulesDir, link, "junction");
+  } catch (err) {
+    throw new Error(
+      `Failed to link extension runtime dependencies for ${extensionName}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
   }
 }
 

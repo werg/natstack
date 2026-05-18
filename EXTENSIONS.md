@@ -1,6 +1,6 @@
 # Extension Services
 
-> **Status:** Planning document — design resolved, not yet implemented.
+> **Status:** v1 implemented. The `@natstack/extension`, `@natstack/extension-host` packages and the canary `image-service` and `typecheck-service` extensions are live; a few items in "Future work" remain deferred.
 
 NatStack extensions are **long-lived Node processes** that run alongside the server and expose RPC APIs to userland panels and workers. They extend the application itself — adding new RPC services, reacting to system events, and exposing callable surfaces to userland — in the spirit of VSCode extensions, not browser extensions.
 
@@ -58,6 +58,7 @@ interface RegistryEntry {
   activeSha: string | null;
   activeBundleKey: string | null;
   activeDependencyEvs: Record<string, string>; // workspace deps pinned into active bundle
+  activeExternalDeps: Record<string, string>;  // npm deps + versions captured at approval time
   activeRuntimeDepsKey: string | null; // persisted external dependency lock/materialization
 
   enabled: boolean;
@@ -231,19 +232,25 @@ interface ExtensionContext {
   // extension already has.
   //
   // The long-term shape is narrower than this: only host-substrate clients
-  // (fs, panel, workspace, db, credentials, approvals, notifications,
-  // extensions) genuinely belong here. The capability clients (ai, git
+  // (fs, workspace, workers, credentials, approvals, notifications,
+  // extensions) genuinely belong here. The capability clients (git
   // user-facing methods, webhooks subscriptions) are migration candidates
   // that should become extensions and be reached via ctx.extensions.use(...)
   // instead. The current list matches the panel/worker runtime today;
   // entries drop as each capability migrates. See "Migration candidates".
+  //
+  // `ctx.workers.callDO(source, className, key, method, ...args)` dispatches
+  // into a Durable Object. Useful for extensions whose canonical surface
+  // wraps a workerd-backed store (e.g. browser-data).
+  //
+  // `ctx.panel` and `ctx.db` were considered for the substrate set but are
+  // not exposed in v1: the panel orchestration service is shell-only and
+  // there is no host "db" service. Either could land later as an extension.
   readonly fs: FsClient;
-  readonly ai: AiClient;
   readonly git: GitClient;
-  readonly panel: PanelClient;
   readonly workspace: WorkspaceClient;
+  readonly workers: WorkersClient;          // workers.callDO for DO-backed stores
   readonly credentials: CredentialsClient;
-  readonly db: DbClient;
   readonly webhooks: WebhooksClient;
   readonly approvals: ApprovalsClient;
   readonly notifications: NotificationsClient;
@@ -311,7 +318,7 @@ Clients on `ctx` are bound through the extension process's WebSocket connection 
 
 `ctx.approvals.requestForCaller(...)` is the extension-specific approval path. It reuses the existing userland approval request system, including the same subject/options model, grant storage, pending queue, and shell UI. The key difference is principal and issuer derivation: panels and workers still call `userlandApproval.request` directly and the service derives both the principal and default issuer from `ServiceContext`; extensions call through the extension host, and the host derives the principal from the current `ExtensionInvocation.userlandCaller` and the issuer from the extension identity. The extension never sends `repoPath`, `effectiveVersion`, `callerKind`, or issuer identity as trusted input.
 
-**Parity now, narrower later.** The starting set above mirrors what `@workspace/runtime` already exposes to panels and workers, so an extension has feature parity with the rest of userland from day one and no consumer of the runtime has to learn a new shape. The longer-term target is narrower: only host *substrate* (`fs`, `panel`, `workspace`, `db`, `credentials`, `approvals`, `notifications`, `extensions`) genuinely belongs on `ctx.*`. The capability clients (`ai`, the user-facing portion of `git`, the `webhooks` subscription surface) are migration candidates that should become extensions in their own right and be reached via `ctx.extensions.use(...)` once that work lands. Each capability migration drops its entry from `ctx.*` across all three runtimes (panel, worker, extension) in the same change. The principle: `ctx.*` is what the host *has to* provide; anything that's a discrete capability — even one shipped by default — eventually moves out.
+**Parity now, narrower later.** The starting set above mirrors what `@workspace/runtime` already exposes to panels and workers, so an extension has feature parity with the rest of userland from day one and no consumer of the runtime has to learn a new shape. The longer-term target is narrower: only host *substrate* (`fs`, `workspace`, `workers`, `credentials`, `approvals`, `notifications`, `extensions`) genuinely belongs on `ctx.*`. The capability clients (`ai`, the user-facing portion of `git`, the `webhooks` subscription surface) are migration candidates that should become extensions in their own right and be reached via `ctx.extensions.use(...)` once that work lands. Each capability migration drops its entry from `ctx.*` across all three runtimes (panel, worker, extension) in the same change. The principle: `ctx.*` is what the host *has to* provide; anything that's a discrete capability — even one shipped by default — eventually moves out.
 
 Node's standard library is available globally inside the extension process — `import * as fs from "node:fs"`, child processes, native addons all work normally. There is no host-mediated wrapper; the extension is running in a real Node process.
 
@@ -439,7 +446,7 @@ One route namespace is available to an extension that exposes `fetch`:
 
 - `request` and the returned `Response` use the standard Fetch API types.
 - The `ExtensionFetchContext` passed to `fetch` is the same activated `ExtensionContext` the extension received at `activate`, plus a `waitUntil(promise)` method for fire-and-forget background work the host should wait on before considering the response complete. The activated `ctx` and the fetch `ctx` are not different objects; this is one long-lived context, not a per-request one.
-- The host marshals each Request to the extension process over the existing WebSocket as a structured "fetch envelope" frame, awaits the Response, and proxies bytes back to the caller. Streaming bodies are buffered to a configurable cap (default 10 MB) in v1; true streaming is a future-work item.
+- The host marshals each Request to the extension process over the existing WebSocket as a structured "fetch envelope" frame, awaits the Response, and proxies bytes back to the caller. Small bodies travel inline as base64; larger bodies are transferred through file-backed envelopes so they do not hit the old 10 MB frame cap. Fully live chunk streaming over the WebSocket envelope is still future work.
 - Fetch handlers also run under `ctx.invocation.current()`. Auto-prefix requests get the authenticated caller in the envelope and `userlandCaller` when that caller is a panel/worker.
 - A request that arrives before the extension finishes `activate`, while it's in `pending-approval`, or while it's in `error` gets a 503 with a descriptive body. No queueing.
 - The fetch handler runs in the same process as `activate` — they share state, can call each other's helpers, can share connection pools. If you want a route to call into the extension's RPC API for free, just call your API methods directly inside `fetch`.
@@ -811,7 +818,7 @@ A survey of `src/server/services/` against the extension fit criteria suggests t
 
 3. **`pushService` + `approvalPushBridge`** — FCM push for mobile shells. Optional capability (only relevant if mobile push is wanted), self-contained, has its own credentials needs. Good test of `ctx.credentials` from an extension and of long-lived outbound connections.
 
-4. **`browserDataService`** — bookmarks/history/cookies import from Chrome/Firefox profiles. Needs platform-specific native crypto for cookie decryption — exercises native-addon externalization in the build, and the lifecycle around extensions that need optional native deps (health: degraded when libsecret missing on Linux, etc.).
+4. **`browserDataService`** — migrated to `@workspace-extensions/browser-data`. Bookmarks/history/cookies still persist through `BrowserDataDO`; the extension owns the public API, shell-only enforcement, import completion events, and operational health reporting.
 
 5. **`webhookIngressService`** — deferred until custom/public HTTP routes exist. Webhook URLs must be at fixed, upstream-configured paths (`/webhooks/github`, `/webhooks/stripe`), not under `/_r/ext/*`.
 
@@ -819,9 +826,9 @@ A survey of `src/server/services/` against the extension fit criteria suggests t
 
 These are migrations where the current in-host service is exposed on `ctx.*` to *all* userland — panels, workers, and (until now in this doc) extensions. Migrating them means dropping the `ctx.*` entry across the panel/worker runtime too, and codemodding every consumer to `extensions.use(...)`. The blast radius is much larger than for imageService, so they're deliberately not first canaries.
 
-6. **`ai` / `packages/ai`** — AI provider client (Anthropic, OpenAI, etc.). The textbook capability service: has its own credentials surface, model selection, retry policy. Nothing about it is host-core. Migration: `ctx.ai.*` disappears from panel/worker/extension runtimes; every caller becomes `extensions.use<AiApi>("@workspace-extensions/ai-provider").*`. Opens the door to alternative providers as drop-in replacements at the same canonical path. Big consumer surface — defer until the canaries land and the migration patterns are well-tested.
+6. **AI runtime client** — removed from the runtime surface instead of migrated. The chat agent path already owns current model execution, and there were no active runtime callers left for the old package/client.
 
-7. **`gitService`'s user-facing methods** (`blame`, `log`, `branches`, etc.) — same shape as ai, but with a complication: the in-host git service has *two* caller populations. Build-internal callers (the build pipeline depends on git tree hashing, source extraction, push events) must stay in-host. User-facing callers (panels viewing repo state, extensions inspecting commit history) should migrate. Requires teasing apart the in-host caller graph before migration is mechanical.
+7. **`gitService`'s user-facing methods** (`blame`, `log`, `branches`, etc.) — has a complication: the in-host git service has *two* caller populations. Build-internal callers (the build pipeline depends on git tree hashing, source extraction, push events) must stay in-host. User-facing callers (panels viewing repo state, extensions inspecting commit history) should migrate. Requires teasing apart the in-host caller graph before migration is mechanical.
 
 8. **`webhooks` consumer surface** — once `webhookIngressService` eventually lands as an extension, the corresponding `ctx.webhooks` subscription client also goes away in favor of `extensions.use<WebhookApi>("@workspace-extensions/webhook-ingress")`.
 
@@ -861,7 +868,7 @@ Out of scope for v1, kept as forward-compat anchors:
 - **Custom/public HTTP routes**: top-level gateway paths such as `/webhooks/github`. Needed for webhookIngressService and OAuth callbacks, deliberately out of v1.
 - **Port-claim mechanism**: raw TCP/UDP listeners. Needed for egressProxy and any future protocol-bridge extension. Same install-time conflict and elevated-approval surfacing.
 - **Scheduled-work primitive**: `ctx.schedule(name, intervalOrCron, handler)` with restart-survival via the extension's storage scope. Email-sync-style use cases work today with `setInterval` + self-managed persistence, but the ergonomics could be much better.
-- **HTTP fetch streaming**: v1 buffers bodies to ~10 MB. True streaming over the WebSocket fetch envelope is a bigger frame protocol change.
+- **HTTP fetch streaming**: large extension fetch request/response bodies are now file-backed instead of base64-buffered in the RPC frame. Fully live chunk streaming over the WebSocket fetch envelope remains a bigger frame protocol change.
 - **Per-workspace extension catalogs**: today extensions are workspace units. A central catalog of vetted extensions could layer on top.
 - **Cross-extension type sharing**: today consumers either define interfaces themselves or duplicate types. A generated aggregate `.d.ts` from active extensions becomes pressing once a few services migrate.
 - **Resource limits**: per-extension RSS caps and CPU quotas. The OS can enforce these via `setrlimit`-equivalents; not wired in v1.

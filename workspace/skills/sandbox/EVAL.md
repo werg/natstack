@@ -354,7 +354,13 @@ eval({ code: `
 ```
 eval({ code: `
   import { rpc } from "@workspace/runtime";
-  const result = await rpc.call("main", "typecheck.check", "panels/my-app");
+  const result = await rpc.call(
+    "main",
+    "extensions.invoke",
+    "@workspace-extensions/typecheck-service",
+    "check",
+    ["panels/my-app"],
+  );
   console.log("Type errors:", result);
 `
 })

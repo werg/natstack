@@ -44,8 +44,9 @@ Type-check and run tests via eval:
 
 ```
 eval({ code: `
-  import { rpc } from "@workspace/runtime";
-  const result = await rpc.call("main", "typecheck.check", "panels/my-app");
+  import { extensions } from "@workspace/runtime";
+  const typecheck = extensions.use("@workspace-extensions/typecheck-service");
+  const result = await typecheck.check("panels/my-app");
   console.log(result);
 `
 })

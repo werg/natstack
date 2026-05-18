@@ -434,9 +434,7 @@ function initGitRepos(wsDir: string): void {
     const parentDir = path.join(wsDir, sourceDir);
     if (!fs.existsSync(parentDir)) continue;
 
-    for (const entry of fs.readdirSync(parentDir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const repoDir = path.join(parentDir, entry.name);
+    for (const repoDir of listWorkspaceUnitDirs(parentDir, sourceDir)) {
 
       // Skip if already a git repo
       if (fs.existsSync(path.join(repoDir, ".git"))) continue;
@@ -453,6 +451,26 @@ function initGitRepos(wsDir: string): void {
       );
     }
   }
+}
+
+function listWorkspaceUnitDirs(parentDir: string, sourceDir: string): string[] {
+  const dirs: string[] = [];
+  for (const entry of fs.readdirSync(parentDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const entryPath = path.join(parentDir, entry.name);
+
+    if (sourceDir === "extensions" && entry.name.startsWith("@")) {
+      for (const scoped of fs.readdirSync(entryPath, { withFileTypes: true })) {
+        if (scoped.isDirectory() && !scoped.name.startsWith(".")) {
+          dirs.push(path.join(entryPath, scoped.name));
+        }
+      }
+      continue;
+    }
+
+    dirs.push(entryPath);
+  }
+  return dirs;
 }
 
 export { WORKSPACE_GIT_INIT_PATTERNS, WORKSPACE_SOURCE_DIRS, WORKSPACE_STATE_DIRS };

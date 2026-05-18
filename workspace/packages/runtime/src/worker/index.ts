@@ -35,6 +35,7 @@ import { createCredentialClient, type CredentialClient } from "../shared/credent
 import { createWebhookIngressClient, type WebhookIngressClient } from "../shared/webhooks.js";
 import { createWorkerdClient, type WorkerdClient } from "../shared/workerd.js";
 import { createWorkspaceClient, type WorkspaceClient } from "../shared/workspace.js";
+import { createExtensionsClient, type ExtensionsClient } from "../shared/extensions.js";
 import { createNotificationClient, type NotificationClient } from "../shared/notifications.js";
 import { createGadClient, type GadClient } from "../shared/gad.js";
 import { createParentHandle } from "../shared/handles.js";
@@ -75,6 +76,21 @@ export type {
   WebhookVerifierConfig,
 } from "../shared/webhooks.js";
 export type { NotificationClient } from "../shared/notifications.js";
+export type {
+  WorkspaceClient,
+  WorkspaceConfig,
+  WorkspaceEntry,
+  WorkspaceUnitLogRecord,
+  WorkspaceUnitStatus,
+  WorkspaceUnitsClient,
+} from "../shared/workspace.js";
+export type {
+  Disposable,
+  ExtensionSource,
+  ExtensionsClient,
+  InstallSpec,
+  RegistryEntry,
+} from "../shared/extensions.js";
 export type * from "../shared/gad.js";
 export { DurableObjectBase } from "./durable-base.js";
 export type { DurableObjectContext, SqlStorage, SqlResult, DORef } from "./durable-base.js";
@@ -136,6 +152,7 @@ export interface WorkerRuntime {
   readonly credentials: CredentialClient;
   readonly webhooks: WebhookIngressClient;
   readonly notifications: NotificationClient;
+  readonly extensions: ExtensionsClient;
   readonly contextId: string;
   readonly gatewayConfig: { serverUrl: string; token: string };
   readonly gatewayFetch: GatewayFetch;
@@ -226,6 +243,7 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
   });
   const webhooks = helpfulNamespace("webhooks", createWebhookIngressClient(rpc));
   const notifications = helpfulNamespace("notifications", createNotificationClient(rpc));
+  const extensions = helpfulNamespace("extensions", createExtensionsClient(rpc));
   const gad = helpfulNamespace("gad", createGadClient(rpc));
 
   const parentId = (env.PARENT_ID as string) || null;
@@ -244,6 +262,7 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
     gad,
     webhooks,
     notifications,
+    extensions,
     contextId: env.CONTEXT_ID,
     gatewayConfig,
     gatewayFetch,

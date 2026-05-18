@@ -1,0 +1,18 @@
+{
+  "name": "@workspace-extensions/native-wasm-example",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@silvia-odwyer/photon-node": "^0.3.4"
+  },
+  "natstack": {
+    "displayName": "Native or WASM Example",
+    "entry": "index.ts",
+    "sourcemap": true,
+    "extension": {
+      "activationEvents": ["*"],
+      "dependencyMode": "auto"
+    }
+  }
+}

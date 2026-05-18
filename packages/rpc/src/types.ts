@@ -34,6 +34,8 @@ export interface RpcResponseError {
   error: string;
   /** Original error code (e.g. "ENOENT", "EACCES") preserved across the RPC boundary */
   errorCode?: string;
+  /** Original stack, when available. Intended for diagnostics, not control flow. */
+  errorStack?: string;
 }
 
 /**
@@ -232,7 +234,7 @@ export interface RpcBridgeInternal extends RpcBridge {
   _handleMessage(sourceId: string, message: RpcMessage): void;
 }
 
-export type CallerKind = "shell" | "panel" | "worker" | "server" | "harness";
+export type CallerKind = "shell" | "panel" | "worker" | "extension" | "server" | "harness";
 
 /**
  * Frame yielded by a streaming method handler. Mirrors the wire frame

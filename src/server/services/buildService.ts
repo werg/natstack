@@ -6,7 +6,7 @@ export function createBuildService(deps: { buildSystem: BuildSystemV2 }): Servic
   return {
     name: "build",
     description: "Build system (getBuild, getBuildNpm, recompute, gc, getAboutPages)",
-    policy: { allowed: ["panel", "shell", "server", "worker"] },
+    policy: { allowed: ["panel", "shell", "server", "worker", "extension"] },
     methods: {
       getBuild: {
         args: z.tuple([
@@ -23,7 +23,13 @@ export function createBuildService(deps: { buildSystem: BuildSystemV2 }): Servic
       getBuildNpm: {
         args: z.tuple([z.string(), z.string(), z.array(z.string()).optional()]),
       },
+      getBuildMetadata: { args: z.tuple([z.string()]) },
       getEffectiveVersion: { args: z.tuple([z.string()]) },
+      doctorExtension: {
+        description:
+          "Inspect an extension manifest, dependency routing, cached metadata, and smoke/build status.",
+        args: z.tuple([z.string()]),
+      },
       recompute: { args: z.tuple([]) },
       gc: { args: z.tuple([z.array(z.string())]) },
       getAboutPages: { args: z.tuple([]) },
@@ -49,8 +55,12 @@ export function createBuildService(deps: { buildSystem: BuildSystemV2 }): Servic
             args[1] as string,
             args[2] as string[] | undefined
           );
+        case "getBuildMetadata":
+          return bs.getBuildByKey(args[0] as string)?.metadata ?? null;
         case "getEffectiveVersion":
           return bs.getEffectiveVersion(args[0] as string);
+        case "doctorExtension":
+          return bs.doctorExtension(args[0] as string);
         case "recompute":
           return bs.recompute();
         case "gc":

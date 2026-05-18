@@ -6,8 +6,12 @@ const RESOLVED_DO_TARGET = "do:workers/pubsub-channel:PubSubChannel:chat-1";
 
 function createConfig(): ConnectionConfig {
   const call = vi.fn((_target: string, method: string) => {
-    if (method === "workers.resolveService")
-      return Promise.resolve({ kind: "durable-object", targetId: RESOLVED_DO_TARGET });
+    if (method === "workers.resolveService") {
+      return Promise.resolve({
+        kind: "durable-object",
+        targetId: RESOLVED_DO_TARGET,
+      });
+    }
     if (method === "subscribe") return new Promise(() => {});
     return Promise.resolve(undefined);
   }) as NonNullable<ConnectionConfig["rpc"]>["call"];

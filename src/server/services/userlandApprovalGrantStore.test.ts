@@ -50,8 +50,14 @@ describe("UserlandApprovalGrantStore", () => {
   });
 
   it("uses the documented flat key shape", () => {
-    expect(parseCanonicalKey(keyFor("worker:alpha", "team-x:foo"))).toEqual([
+    expect(parseCanonicalKey(keyFor(
+      "worker:alpha",
+      { kind: "worker", id: "worker:alpha" },
+      "team-x:foo",
+    ))).toEqual([
       "userland-grant",
+      "worker:alpha",
+      "worker",
       "worker:alpha",
       "team-x:foo",
     ]);

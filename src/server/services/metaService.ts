@@ -43,7 +43,7 @@ export function createMetaService(deps: {
   return {
     name: "meta",
     description: "Runtime introspection for services and eval runtime surfaces.",
-    policy: { allowed: ["panel", "worker", "server", "shell"] },
+    policy: { allowed: ["panel", "worker", "extension", "server", "shell"] },
     methods: {
       listServices: {
         description: "List all registered RPC services and their method metadata.",

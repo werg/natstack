@@ -120,7 +120,14 @@ export const adblock = helpfulNamespace("adblock", createAdBlockApi(rpc));
 // is the form most agentic eval code reaches for. Top-level `openPanel` is
 // still exported separately for callers that prefer the flat form.
 import { createWorkspaceClient, type WorkspaceClient } from "../shared/workspace.js";
-export type { WorkspaceClient, WorkspaceEntry, WorkspaceConfig } from "../shared/workspace.js";
+export type {
+  WorkspaceClient,
+  WorkspaceEntry,
+  WorkspaceConfig,
+  WorkspaceUnitLogRecord,
+  WorkspaceUnitStatus,
+  WorkspaceUnitsClient,
+} from "../shared/workspace.js";
 const workspaceClientBase = createWorkspaceClient(rpc);
 const workspaceClient: WorkspaceClient & { openPanel: typeof _openPanel } =
   Object.assign(workspaceClientBase, { openPanel: _openPanel });
@@ -233,6 +240,17 @@ export type {
   WebhookVerifierConfig,
 } from "../shared/webhooks.js";
 export const webhooks = helpfulNamespace("webhooks", createWebhookIngressClient(rpc));
+
+// Extension RPC client.
+import { createExtensionsClient } from "../shared/extensions.js";
+export type {
+  Disposable,
+  ExtensionSource,
+  ExtensionsClient,
+  InstallSpec,
+  RegistryEntry,
+} from "../shared/extensions.js";
+export const extensions = helpfulNamespace("extensions", createExtensionsClient(rpc));
 
 // Userland consent approvals.
 import {

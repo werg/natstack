@@ -48,6 +48,12 @@ importers:
       '@natstack/env-paths':
         specifier: workspace:*
         version: link:packages/env-paths
+      '@natstack/extension':
+        specifier: workspace:*
+        version: link:packages/extension
+      '@natstack/extension-host':
+        specifier: workspace:*
+        version: link:packages/extension-host
       '@natstack/git':
         specifier: workspace:*
         version: link:packages/git
@@ -169,9 +175,6 @@ importers:
       '@eslint/js':
         specifier: ^9.39.1
         version: 9.39.2
-      '@natstack/ai':
-        specifier: workspace:*
-        version: link:packages/ai
       '@playwright/test':
         specifier: ^1.57.0
         version: 1.58.1
@@ -414,28 +417,6 @@ importers:
         specifier: ^4.0.0
         version: 4.86.0(@cloudflare/workers-types@4.20260426.1)
 
-  packages/ai:
-    dependencies:
-      '@natstack/rpc':
-        specifier: workspace:*
-        version: link:../rpc
-      '@natstack/types':
-        specifier: workspace:*
-        version: link:../types
-      zod:
-        specifier: ^3.24.1
-        version: 3.25.76
-      zod-to-json-schema:
-        specifier: ^3.25.0
-        version: 3.25.1(zod@3.25.76)
-    devDependencies:
-      ai:
-        specifier: 6.0.0-beta.114
-        version: 6.0.0-beta.114(zod@3.25.76)
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
-
   packages/browser-data:
     dependencies:
       bplist-parser:
@@ -468,6 +449,37 @@ importers:
         version: 5.9.3
 
   packages/env-paths:
+    devDependencies:
+      '@types/node':
+        specifier: ^24.10.1
+        version: 24.10.9
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
+  packages/extension:
+    devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
+  packages/extension-host:
+    dependencies:
+      '@natstack/extension':
+        specifier: workspace:*
+        version: link:../extension
+      '@natstack/process-adapter':
+        specifier: workspace:*
+        version: link:../process-adapter
+      '@natstack/rpc':
+        specifier: workspace:*
+        version: link:../rpc
+      '@natstack/shared':
+        specifier: workspace:*
+        version: link:../shared
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^24.10.1
@@ -600,6 +612,9 @@ importers:
       '@natstack/types':
         specifier: workspace:*
         version: link:../types
+      '@silvia-odwyer/photon-node':
+        specifier: ^0.3.4
+        version: 0.3.4
 
   packages/typecheck:
     dependencies:
@@ -612,6 +627,24 @@ importers:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
+
+  workspace/extensions/@workspace-extensions/browser-data:
+    dependencies:
+      '@natstack/browser-data':
+        specifier: workspace:*
+        version: link:../../../../packages/browser-data
+
+  workspace/extensions/@workspace-extensions/image-service:
+    dependencies:
+      '@natstack/shared':
+        specifier: workspace:*
+        version: link:../../../../packages/shared
+
+  workspace/extensions/@workspace-extensions/typecheck-service:
+    dependencies:
+      '@natstack/shared':
+        specifier: workspace:*
+        version: link:../../../../packages/shared
 
   workspace/packages/about-shared:
     dependencies:
@@ -927,9 +960,9 @@ importers:
 
   workspace/packages/runtime:
     dependencies:
-      '@natstack/ai':
+      '@natstack/extension':
         specifier: workspace:*
-        version: link:../../../packages/ai
+        version: link:../../../packages/extension
       '@natstack/git':
         specifier: workspace:*
         version: link:../../../packages/git
@@ -1013,32 +1046,6 @@ packages:
 
   7zip-bin@5.2.0:
     resolution: {integrity: sha512-ukTPVhqG4jNzMro2qA9HSCSSVJN3aN7tlb+hfqYCt3ER0yWroeA2VR38MNrOHLQ/cVj+DaIMad0kFCtWWowh/A==}
-
-  '@ai-sdk/gateway@2.0.0-beta.61':
-    resolution: {integrity: sha512-VZ8K1GUFYsFpDe4hz/OJSlPe0EbYMvmtS7ps1ENsB150R17iwnOiW7s37u7vXW52+XwbEiGsObjKgIt4MB1tqw==}
-    engines: {node: '>=18'}
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
-
-  '@ai-sdk/provider-utils@4.0.0-beta.34':
-    resolution: {integrity: sha512-GxLNX8xZlf2BPJaXsR39ignBVfHthBsXVqRN+S7iCx503IdJXi+mrgWQElBRbpqHucOR+3CQ6CIk8SDaCeGb/A==}
-    engines: {node: '>=18'}
-    peerDependencies:
-      '@valibot/to-json-schema': ^1.3.0
-      arktype: ^2.1.22
-      effect: ^3.18.4
-      zod: ^3.25.76 || ^4.1.8
-    peerDependenciesMeta:
-      '@valibot/to-json-schema':
-        optional: true
-      arktype:
-        optional: true
-      effect:
-        optional: true
-
-  '@ai-sdk/provider@3.0.0-beta.17':
-    resolution: {integrity: sha512-1Jek+B4W/8KV48Lcsnl7QBXD22fmwDISz//JRGtPRjexrwr2bSeFJ3yqWpvQo6CYttac9GYf3MTiho4iSl+V2A==}
-    engines: {node: '>=18'}
 
   '@anthropic-ai/sdk@0.91.1':
     resolution: {integrity: sha512-LAmu761tSN9r66ixvmciswUj/ZC+1Q4iAfpedTfSVLeswRwnY3n2Nb6Tsk+cLPP28aLOPWeMgIuTuCcMC6W/iw==}
@@ -4360,9 +4367,6 @@ packages:
   '@speed-highlight/core@1.2.15':
     resolution: {integrity: sha512-BMq1K3DsElxDWawkX6eLg9+CKJrTVGCBAWVuHXVUV2u0s2711qiChLSId6ikYPfxhdYocLNt3wWwSvDiTvFabw==}
 
-  '@standard-schema/spec@1.1.0':
-    resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
-
   '@sveltejs/acorn-typescript@1.0.9':
     resolution: {integrity: sha512-lVJX6qEgs/4DOcRTpo56tmKzVPtoWAaVbL4hfO7t7NVwl9AAXzQR6cihesW1BmNMPl+bK6dreu2sOKBP2Q9CIA==}
     peerDependencies:
@@ -4673,10 +4677,6 @@ packages:
     resolution: {integrity: sha512-WmoN8qaIAo7WTYWbAZuG8PYEhn5fkz7dZrqTBZ7dtt//lL2Gwms1IcnQ5yHqjDfX8Ft5j4YzDM23f87zBfDe9g==}
     deprecated: Potential CWE-502 - Update to 1.3.1 or higher
 
-  '@vercel/oidc@3.0.5':
-    resolution: {integrity: sha512-fnYhv671l+eTTp48gB4zEsTW/YtRgRPnkI2nT7x6qw5rkI1Lq2hTmQIpHPgyThI0znLK+vX2n9XxKdXZ7BUbbw==}
-    engines: {node: '>= 20'}
-
   '@vitest/expect@3.2.4':
     resolution: {integrity: sha512-Io0yyORnB6sikFlt8QW5K7slY4OjqNX9jmJQ02QDda8lyM6B5oNgVWoSoKPac8/kgnCUzuHQKrSLtu/uOqqrig==}
 
@@ -4762,12 +4762,6 @@ packages:
   aggregate-error@3.1.0:
     resolution: {integrity: sha512-4I7Td01quW/RpocfNayFdFVk1qSuoh0E7JrbRJ16nH01HhKFQ88INq9Sd+nd72zqRySlr9BmDA8xlEJ6vJMrYA==}
     engines: {node: '>=8'}
-
-  ai@6.0.0-beta.114:
-    resolution: {integrity: sha512-8LWhsp+jF3INlcVUf6tdUP4P4sJqDcV5y+uc5pZycjXD5MBdLh6w8Eb9FYcmZfb5lbFqxCGbSpIQOyzp0egrKA==}
-    engines: {node: '>=18'}
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
 
   ajv-formats@3.0.1:
     resolution: {integrity: sha512-8iUql50EUR+uUcdRQ3HDqa6EVyo3docL8g5WJ3FNcWmu62IbkGUue/pEyLBW8VGKKucTPgqeks4fIU1DA4yowQ==}
@@ -6892,9 +6886,6 @@ packages:
 
   json-schema-typed@8.0.2:
     resolution: {integrity: sha512-fQhoXdcvc3V28x7C7BMs4P5+kNlgUURe2jmUT1T//oBRMDrqy1QPelJimwZGo7Hg9VPV3EQV5Bnq4hbFy2vetA==}
-
-  json-schema@0.4.0:
-    resolution: {integrity: sha512-es94M3nTIfsEPisRafak+HDLfHXnKBhV3vU5eqPcS3flIWqcxJWgXHXiey3YrpaNsanY5ei1VoYEbOzijuq9BA==}
 
   json-stable-stringify-without-jsonify@1.0.1:
     resolution: {integrity: sha512-Bdboy+l7tA3OGW6FjyFHWkP5LuByj1Tk33Ljyq0axyzdk9//JSi2u3fP1QSmd1KNwq6VOKYGlAu87CisVir6Pw==}
@@ -9706,28 +9697,6 @@ snapshots:
 
   7zip-bin@5.2.0: {}
 
-  '@ai-sdk/gateway@2.0.0-beta.61(zod@3.25.76)':
-    dependencies:
-      '@ai-sdk/provider': 3.0.0-beta.17
-      '@ai-sdk/provider-utils': 4.0.0-beta.34(zod@3.25.76)
-      '@vercel/oidc': 3.0.5
-      zod: 3.25.76
-    transitivePeerDependencies:
-      - '@valibot/to-json-schema'
-      - arktype
-      - effect
-
-  '@ai-sdk/provider-utils@4.0.0-beta.34(zod@3.25.76)':
-    dependencies:
-      '@ai-sdk/provider': 3.0.0-beta.17
-      '@standard-schema/spec': 1.1.0
-      eventsource-parser: 3.0.6
-      zod: 3.25.76
-
-  '@ai-sdk/provider@3.0.0-beta.17':
-    dependencies:
-      json-schema: 0.4.0
-
   '@anthropic-ai/sdk@0.91.1(zod@3.25.76)':
     dependencies:
       json-schema-to-ts: 3.1.1
@@ -12296,7 +12265,8 @@ snapshots:
       - bluebird
       - supports-color
 
-  '@opentelemetry/api@1.9.0': {}
+  '@opentelemetry/api@1.9.0':
+    optional: true
 
   '@pkgjs/parseargs@0.11.0':
     optional: true
@@ -15360,8 +15330,6 @@ snapshots:
 
   '@speed-highlight/core@1.2.15': {}
 
-  '@standard-schema/spec@1.1.0': {}
-
   '@sveltejs/acorn-typescript@1.0.9(acorn@8.15.0)':
     dependencies:
       acorn: 8.15.0
@@ -15748,8 +15716,6 @@ snapshots:
 
   '@ungap/structured-clone@1.3.0': {}
 
-  '@vercel/oidc@3.0.5': {}
-
   '@vitest/expect@3.2.4':
     dependencies:
       '@types/chai': 5.2.3
@@ -15838,18 +15804,6 @@ snapshots:
     dependencies:
       clean-stack: 2.2.0
       indent-string: 4.0.0
-
-  ai@6.0.0-beta.114(zod@3.25.76):
-    dependencies:
-      '@ai-sdk/gateway': 2.0.0-beta.61(zod@3.25.76)
-      '@ai-sdk/provider': 3.0.0-beta.17
-      '@ai-sdk/provider-utils': 4.0.0-beta.34(zod@3.25.76)
-      '@opentelemetry/api': 1.9.0
-      zod: 3.25.76
-    transitivePeerDependencies:
-      - '@valibot/to-json-schema'
-      - arktype
-      - effect
 
   ajv-formats@3.0.1(ajv@8.17.1):
     optionalDependencies:
@@ -18605,8 +18559,6 @@ snapshots:
   json-schema-traverse@1.0.0: {}
 
   json-schema-typed@8.0.2: {}
-
-  json-schema@0.4.0: {}
 
   json-stable-stringify-without-jsonify@1.0.1: {}
 

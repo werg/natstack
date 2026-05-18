@@ -1,0 +1,1 @@
+export const EXTENSION_RUNTIME_ABI_VERSION = "2";

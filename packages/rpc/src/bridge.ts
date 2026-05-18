@@ -164,6 +164,10 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
           type: "response",
           requestId: request.requestId,
           error: error instanceof Error ? error.message : String(error),
+          ...(error instanceof Error && error.stack ? { errorStack: error.stack } : {}),
+          ...(error instanceof Error && typeof (error as NodeJS.ErrnoException).code === "string"
+            ? { errorCode: (error as NodeJS.ErrnoException).code }
+            : {}),
         };
         return config.transport.send(sourceId, response).catch?.(() => {});
       });
@@ -180,6 +184,9 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
       const err = new Error(response.error) as NodeJS.ErrnoException;
       if (response.errorCode) {
         err.code = response.errorCode;
+      }
+      if (response.errorStack) {
+        err.stack = response.errorStack;
       }
       pending.reject(err);
       return;

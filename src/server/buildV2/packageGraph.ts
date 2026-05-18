@@ -1,8 +1,9 @@
 /**
  * Package Graph — DAG discovery from workspace package.json files.
  *
- * Scans workspace/packages/, workspace/panels/, workspace/about/, workspace/agents/,
- * workspace/templates/ and builds an adjacency-list DAG of internal dependencies.
+ * Scans workspace/packages/, workspace/panels/, workspace/about/,
+ * workspace/workers/, workspace/extensions/, workspace/templates/ and builds
+ * an adjacency-list DAG of internal dependencies.
  * Detects cycles, produces topological ordering.
  */
 
@@ -24,7 +25,7 @@ export interface GraphNode {
   /** Package name from package.json (e.g., "@workspace/core") */
   name: string;
   /** Unit kind */
-  kind: "package" | "panel" | "worker" | "template";
+  kind: "package" | "panel" | "worker" | "extension" | "template";
   /** All dependencies from package.json (name → version) */
   dependencies: Record<string, string>;
   /** Resolved internal dependency names */
@@ -152,6 +153,7 @@ const WORKSPACE_SCOPES = [
   "@workspace-agents/",
   "@workspace-workers/",
   "@workspace-skills/",
+  "@workspace-extensions/",
 ];
 
 function isInternalDep(name: string): boolean {
@@ -262,6 +264,56 @@ function scanDirectory(dir: string, workspaceRoot: string, kind: GraphNode["kind
   return nodes;
 }
 
+function scanExtensions(dir: string, workspaceRoot: string): GraphNode[] {
+  if (!fs.existsSync(dir)) return [];
+  const nodes: GraphNode[] = [];
+
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+
+    const first = path.join(dir, entry.name);
+    const candidates: string[] = [];
+    if (entry.name.startsWith("@")) {
+      for (const scoped of fs.readdirSync(first, { withFileTypes: true })) {
+        if (scoped.isDirectory() && !scoped.name.startsWith(".")) {
+          candidates.push(path.join(first, scoped.name));
+        }
+      }
+    } else {
+      candidates.push(first);
+    }
+
+    for (const unitDir of candidates) {
+      const pkg = readPackageJson(unitDir);
+      if (!pkg?.name) continue;
+
+      const allDeps = { ...pkg.peerDependencies, ...pkg.dependencies };
+      const internalDeps: string[] = [];
+      const internalDepRefs: Record<string, InternalDepRef> = {};
+
+      for (const [depName, depSpec] of Object.entries(allDeps)) {
+        if (isInternalDep(depName)) {
+          internalDeps.push(depName);
+          internalDepRefs[depName] = parseInternalDepRef(depSpec);
+        }
+      }
+
+      nodes.push({
+        path: unitDir,
+        relativePath: path.relative(workspaceRoot, unitDir).replace(/\\/g, "/"),
+        name: pkg.name,
+        kind: "extension",
+        dependencies: allDeps,
+        internalDeps,
+        internalDepRefs,
+        manifest: pkg.natstack ?? {},
+      });
+    }
+  }
+
+  return nodes;
+}
+
 import type { TemplateConfig } from "./templateResolver.js";
 
 function scanTemplates(dir: string, workspaceRoot: string): GraphNode[] {
@@ -313,6 +365,7 @@ export function discoverPackageGraph(workspaceRoot: string): PackageGraph {
   const panelsDir = path.join(workspaceRoot, "panels");
   const aboutDir = path.join(workspaceRoot, "about");
   const workersDir = path.join(workspaceRoot, "workers");
+  const extensionsDir = path.join(workspaceRoot, "extensions");
 
   for (const node of scanDirectory(packagesDir, workspaceRoot, "package")) {
     graph.addNode(node);
@@ -324,6 +377,9 @@ export function discoverPackageGraph(workspaceRoot: string): PackageGraph {
     graph.addNode(node);
   }
   for (const node of scanDirectory(workersDir, workspaceRoot, "worker")) {
+    graph.addNode(node);
+  }
+  for (const node of scanExtensions(extensionsDir, workspaceRoot)) {
     graph.addNode(node);
   }
 

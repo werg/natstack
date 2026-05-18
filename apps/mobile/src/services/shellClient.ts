@@ -225,23 +225,27 @@ class MobilePanels {
       panels: this.getTree(),
       browserData: {
         searchHistoryForAutocomplete: (searchQuery, limit) =>
-          this.deps.transport.call<Record<string, unknown>[]>("main", "browser-data.searchHistoryForAutocomplete", { query: searchQuery, limit }),
+          this.invokeBrowserData<Record<string, unknown>[]>("searchHistoryForAutocomplete", [{ query: searchQuery, limit }]),
         getHistory: (historyQuery) =>
-          this.deps.transport.call<Record<string, unknown>[]>("main", "browser-data.getHistory", historyQuery),
+          this.invokeBrowserData<Record<string, unknown>[]>("getHistory", [historyQuery]),
         searchBookmarks: (searchQuery) =>
-          this.deps.transport.call<Record<string, unknown>[]>("main", "browser-data.searchBookmarks", searchQuery),
+          this.invokeBrowserData<Record<string, unknown>[]>("searchBookmarks", [searchQuery]),
         getSearchEngines: () =>
-          this.deps.transport.call<Record<string, unknown>[]>("main", "browser-data.getSearchEngines"),
+          this.invokeBrowserData<Record<string, unknown>[]>("getSearchEngines", []),
       },
     });
   }
 
   async recordHistoryVisit(request: { url: string; title?: string; transition?: string; visitTime?: number; typed?: boolean }): Promise<void> {
-    await this.deps.transport.call("main", "browser-data.recordHistoryVisit", request);
+    await this.invokeBrowserData("recordHistoryVisit", [request]);
   }
 
   async updateHistoryTitle(request: { url: string; title: string; observedAt?: number }): Promise<void> {
-    await this.deps.transport.call("main", "browser-data.updateHistoryTitle", request);
+    await this.invokeBrowserData("updateHistoryTitle", [request]);
+  }
+
+  private invokeBrowserData<T = unknown>(method: string, args: unknown[]): Promise<T> {
+    return this.deps.transport.call<T>("main", "extensions.invoke", "@workspace-extensions/browser-data", method, args);
   }
 
   async updateTheme(theme: ThemeAppearance): Promise<void> {

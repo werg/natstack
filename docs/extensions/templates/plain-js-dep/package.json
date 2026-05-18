@@ -1,0 +1,17 @@
+{
+  "name": "@workspace-extensions/plain-js-dep-example",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "tldts": "^7.0.19"
+  },
+  "natstack": {
+    "displayName": "Plain JS Dependency Example",
+    "entry": "index.ts",
+    "sourcemap": true,
+    "extension": {
+      "activationEvents": ["*"]
+    }
+  }
+}

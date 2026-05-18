@@ -34,6 +34,7 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `onFocus` | value |  |  |
 | `exposeMethod` | value |  |  |
 | `contextId` | value |  |  |
+| `recoveryCoordinator` | value |  | Panel transport recovery phase coordinator. |
 | `parentId` | value |  |  |
 | `fs` | value |  |  |
 | `createGatewayFetch` | value |  | Create a gateway-authenticated fetch helper from an explicit config. |
@@ -55,10 +56,12 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `getBrowserHandle` | value |  |  |
 | `openPanel` | value |  |  |
 | `adblock` | namespace | `getStats`, `isActive`, `getStatsForPanel`, `isEnabledForPanel`, `setEnabledForPanel`, `resetStatsForPanel`, `getPanelUrl`, `addToWhitelist`, `removeFromWhitelist` |  |
-| `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo`, `openPanel` |  |
+| `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo`, `openPanel`, `units` |  |
 | `credentials` | namespace | `store`, `connect`, `configureClient`, `requestCredentialInput`, `getClientConfigStatus`, `deleteClientConfig`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl`, `gitHttp` |  |
 | `git` | namespace | `http`, `importProject`, `completeWorkspaceDependencies`, `setSharedRemote`, `removeSharedRemote`, `client` |  |
+| `gad` | namespace | `rawSql`, `query`, `status`, `ensureBlob`, `ensureBranch`, `recordSession`, `endSession`, `recordTurn`, `beginToolCall`, `completeToolCall`, `recordRead`, `recordMutation`, `listBranches`, `getBranch`, `listBranchFiles`, `forkBranch`, `createBranchSnapshot`, `listBranchSnapshots`, `recordPlan`, `supersedePlan`, `listPlans`, `getPlanChain`, `createChunk`, `addChunkMention`, `relateChunk`, `listChunks`, `getChunkMentions`, `getChunksFor`, `getRelationsFor`, `walkDependencies`, `upsertChunkEmbedding`, `upsertTurnEmbedding`, `findSimilarChunks`, `findSimilarTurns`, `parseFileVersion`, `getStructures`, `findParsedByName`, `getStructuresInRange`, `getSupportedLanguages`, `indexTurn`, `indexFileVersion`, `indexSession`, `getReviewContext`, `setBlobPolicy`, `getBlobPolicy`, `redactBlob`, `listBlobReferences`, `revokeRawSqlWriteApproval` |  |
 | `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
+| `extensions` | namespace | `use`, `on`, `list`, `install`, `uninstall`, `setEnabled`, `update`, `reload` |  |
 | `requestApproval` | value |  |  |
 | `revokeApproval` | value |  |  |
 | `listApprovals` | value |  |  |

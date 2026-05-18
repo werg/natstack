@@ -110,6 +110,28 @@ Available via `import { ... } from "@workspace/runtime"` and `import { ... } fro
 | `buildPanelLink(source, opts)` | Build a URL for panel navigation (low-level — prefer `openPanel`) |
 | `focusPanel(panelId)` | Focus an existing panel by ID (does NOT open new panels) |
 
+### Extension Install / Enable Prompts
+
+`extensions.use(name).method(...)` prompts automatically when the named extension is present in the workspace but not installed or enabled. If you need to prompt explicitly before invoking it, call `extensions.install` for a missing extension or `extensions.setEnabled(name, true)` for an installed disabled extension.
+
+```
+eval({ code: `
+  import { extensions } from "@workspace/runtime";
+  const name = "@workspace-extensions/image-service";
+  const installed = (await extensions.list()).find((entry) => entry.name === name);
+  if (!installed) {
+    await extensions.install({
+      source: { kind: "internal-git", repo: "extensions/@workspace-extensions/image-service", ref: "HEAD" },
+    });
+  } else if (!installed.enabled) {
+    await extensions.setEnabled(name, true);
+  }
+`
+})
+```
+
+The shell will show the user an extension-management approval prompt. If the user denies it, stop and report that the extension is required for the requested operation.
+
 **Pre-injected** (use directly, do NOT import):
 
 | Variable | Description |
@@ -170,7 +192,7 @@ eval({ code: `
 
 **`commitAndPush(dir, message)`** — stages all changes, commits, and pushes. Auto-initializes git if the directory doesn't have `.git` yet.
 
-#### typecheck.checkPanel (recommended)
+#### @workspace-extensions/typecheck-service.checkPanel (recommended)
 
 Type-check a panel. Pass the panel source path, or omit it to auto-detect from the caller's context.
 
@@ -178,9 +200,10 @@ Returns `{ diagnostics, errorCount, warningCount }` where each diagnostic has `{
 
 ```
 eval({ code: `
-  import { rpc } from "@workspace/runtime";
+  import { extensions } from "@workspace/runtime";
+  const typecheck = extensions.use("@workspace-extensions/typecheck-service");
   // Type-check a specific panel
-  const result = await rpc.call("main", "typecheck.checkPanel", "panels/my-app");
+  const result = await typecheck.checkPanel("panels/my-app");
   if (result.errorCount > 0) {
     console.log(result.errorCount + " errors:");
     for (const d of result.diagnostics) {
@@ -193,14 +216,15 @@ eval({ code: `
 })
 ```
 
-#### typecheck.check (advanced)
+#### @workspace-extensions/typecheck-service.check (advanced)
 
-Lower-level type checking with positional args. Prefer `typecheck.checkPanel` for simple whole-panel checks.
+Lower-level type checking with positional args. Prefer `checkPanel` for simple whole-panel checks.
 
 ```
 eval({ code: `
-  import { rpc } from "@workspace/runtime";
-  const result = await rpc.call("main", "typecheck.check", "panels/my-app");
+  import { extensions } from "@workspace/runtime";
+  const typecheck = extensions.use("@workspace-extensions/typecheck-service");
+  const result = await typecheck.check("panels/my-app");
   console.log(result);
 `
 })

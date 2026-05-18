@@ -1,0 +1,14 @@
+{
+  "name": "@workspace-extensions/minimal-example",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "natstack": {
+    "displayName": "Minimal Example",
+    "entry": "index.ts",
+    "sourcemap": true,
+    "extension": {
+      "activationEvents": ["*"]
+    }
+  }
+}

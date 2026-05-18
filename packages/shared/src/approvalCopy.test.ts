@@ -28,6 +28,7 @@ describe("approvalCopy", () => {
     title: string;
     summaryIncludes: string;
     warning?: string;
+    detailsOpen?: boolean;
   }> = [
     {
       name: "capability",
@@ -148,6 +149,30 @@ describe("approvalCopy", () => {
       warning: "The sign-in domain differs from the service domain.",
     },
     {
+      name: "extension source push",
+      approval: {
+        ...base,
+        kind: "extension",
+        action: "source-push",
+        extensionName: "@workspace-extensions/acme",
+        version: "1.2.3",
+        source: { kind: "internal-git", repo: "extensions/acme", ref: "main" },
+        title: "Acme source push",
+        description: "Accepting this push updates trusted native extension code.",
+        previousEv: "ev-old",
+        ev: "ev-new",
+        previousSha: "abc123",
+        sha: "def456",
+        capabilities: ["node:fs", "node:child_process"],
+      },
+      category: "Extension source",
+      title: "Acme source push",
+      summaryIncludes: "update trusted source",
+      warning:
+        "Approving this can run Node extension code with filesystem, network, and process access.",
+      detailsOpen: true,
+    },
+    {
       name: "userland",
       approval: {
         ...base,
@@ -165,14 +190,14 @@ describe("approvalCopy", () => {
 
   it.each(fixtures)(
     "formats $name copy",
-    ({ approval, category, title, summaryIncludes, warning }) => {
+    ({ approval, category, title, summaryIncludes, warning, detailsOpen }) => {
       const copy = getApprovalCopy(approval, approval.callerKind === "worker" ? "Worker" : "Panel");
 
       expect(getApprovalCategoryLabel(approval)).toBe(category);
       expect(copy.title).toBe(title);
       expect(copy.summary).toContain(summaryIncludes);
       expect(copy.warning).toBe(warning);
-      expect(shouldOpenApprovalDetails(approval)).toBe(false);
+      expect(shouldOpenApprovalDetails(approval)).toBe(detailsOpen ?? false);
     }
   );
 
@@ -189,6 +214,12 @@ describe("approvalCopy", () => {
       getStandardActionCopy(capability as Extract<PendingApproval, { kind: "capability" }>).once
         .label
     ).toBe("Open once");
+    expect(
+      getStandardActionCopy(
+        fixtures.find((fixture) => fixture.name === "extension source push")!
+          .approval as Extract<PendingApproval, { kind: "extension" }>
+      ).session.label
+    ).toBe("Allow push");
   });
 
   it("formats low-level detail helpers", () => {

@@ -86,18 +86,17 @@ describe("runtimeSurface manifests", () => {
     const wrappedNamespaces = extractHelpfulNamespaceTargets(panelSource);
 
     expect(new Set(Object.keys(panelRuntimeSurface.exports))).toEqual(exports);
-    expect(wrappedNamespaces).toEqual(
-      new Set([
-        "workers",
-        "adblock",
-        "workspace",
-        "credentials",
-        "git",
-        "gad",
-        "webhooks",
-        "notifications",
-      ])
-    );
+    expect(wrappedNamespaces).toEqual(new Set([
+      "workers",
+      "gad",
+      "adblock",
+      "workspace",
+      "credentials",
+      "git",
+      "webhooks",
+      "extensions",
+      "notifications",
+    ]));
   });
 
   it("matches the worker runtime interface, object shape, and wrapped namespaces", () => {
@@ -108,9 +107,16 @@ describe("runtimeSurface manifests", () => {
 
     expect(new Set(Object.keys(workerRuntimeSurface.exports))).toEqual(interfaceMembers);
     expect(runtimeKeys).toEqual(interfaceMembers);
-    expect(wrappedNamespaces).toEqual(
-      new Set(["workers", "workspace", "credentials", "git", "gad", "webhooks", "notifications"])
-    );
+    expect(wrappedNamespaces).toEqual(new Set([
+      "workers",
+      "workspace",
+      "credentials",
+      "git",
+      "webhooks",
+      "extensions",
+      "notifications",
+      "gad",
+    ]));
   });
 
   it("exposes only the provider-agnostic credential connection API", () => {
