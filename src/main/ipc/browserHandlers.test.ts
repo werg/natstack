@@ -92,6 +92,64 @@ describe("browserService handler", () => {
     );
   });
 
+  describe("navigate URL scheme allow-list", () => {
+    it("allows https:// URLs", async () => {
+      await expect(
+        handler(ctx, "navigate", ["browser-1", "https://example.com"])
+      ).resolves.toBeUndefined();
+      expect(mockWc.loadURL).toHaveBeenCalledWith("https://example.com");
+    });
+
+    it("allows http:// URLs", async () => {
+      await expect(
+        handler(ctx, "navigate", ["browser-1", "http://example.com"])
+      ).resolves.toBeUndefined();
+      expect(mockWc.loadURL).toHaveBeenCalledWith("http://example.com");
+    });
+
+    it("rejects file:// URLs", async () => {
+      await expect(handler(ctx, "navigate", ["browser-1", "file:///etc/passwd"])).rejects.toThrow(
+        "only http and https are allowed"
+      );
+      expect(mockWc.loadURL).not.toHaveBeenCalled();
+    });
+
+    it("rejects javascript: URLs", async () => {
+      await expect(handler(ctx, "navigate", ["browser-1", "javascript:alert(1)"])).rejects.toThrow(
+        "only http and https are allowed"
+      );
+      expect(mockWc.loadURL).not.toHaveBeenCalled();
+    });
+
+    it("rejects javascript: URLs case-insensitively", async () => {
+      await expect(handler(ctx, "navigate", ["browser-1", "JavaScript:alert(1)"])).rejects.toThrow(
+        "only http and https are allowed"
+      );
+      expect(mockWc.loadURL).not.toHaveBeenCalled();
+    });
+
+    it("rejects empty string", async () => {
+      await expect(handler(ctx, "navigate", ["browser-1", ""])).rejects.toThrow(
+        "only http and https are allowed"
+      );
+      expect(mockWc.loadURL).not.toHaveBeenCalled();
+    });
+
+    it("rejects chrome:// URLs", async () => {
+      await expect(handler(ctx, "navigate", ["browser-1", "chrome://settings"])).rejects.toThrow(
+        "only http and https are allowed"
+      );
+      expect(mockWc.loadURL).not.toHaveBeenCalled();
+    });
+
+    it("rejects data: URLs", async () => {
+      await expect(
+        handler(ctx, "navigate", ["browser-1", "data:text/html,<h1>hi</h1>"])
+      ).rejects.toThrow("only http and https are allowed");
+      expect(mockWc.loadURL).not.toHaveBeenCalled();
+    });
+  });
+
   it("goBack checks ownership and delegates", async () => {
     await handler(ctx, "goBack", ["browser-1"]);
     expect(cdpServer.panelOwnsBrowser).toHaveBeenCalledWith("panel-1", "browser-1");

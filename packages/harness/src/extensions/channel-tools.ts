@@ -15,7 +15,7 @@
  * so the extension can re-include them when computing the active set.
  */
 
-import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { PiExtensionAPI, PiExtensionFactory } from "../pi-extension-api.js";
 
 /**

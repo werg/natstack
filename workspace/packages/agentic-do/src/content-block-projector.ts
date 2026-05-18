@@ -13,7 +13,7 @@
  */
 
 import { getDetailedActionDescription } from "@natstack/pubsub";
-import type { AgentEvent } from "@mariozechner/pi-agent-core";
+import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import type { ToolCallPayload, ToolExecutionState } from "@workspace/agentic-core";
 
 import { truncateResult } from "./action-data.js";

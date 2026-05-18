@@ -65,7 +65,7 @@
       "esbuild",
       "node-git-server"
     ],
-    "//overrides": "react-native 0.79 peerDeps react ^19.0.0. Pinning here prevents hoisted React 18 (pulled in transitively by workspace deps) from shadowing RN's requirement in the mobile bundle. Revisit when bumping RN. protobufjs ^7.5.5 patches RCE GHSA-xq3m-2v4x-88gg reachable via @google/genai → pi-ai.",
+    "//overrides": "react-native 0.79 peerDeps react ^19.0.0. Pinning here prevents hoisted React 18 (pulled in transitively by workspace deps) from shadowing RN's requirement in the mobile bundle. protobufjs ^7.5.5 patches RCE GHSA-xq3m-2v4x-88gg reachable via @google/genai → pi-ai. Revisit when bumping RN.",
     "overrides": {
       "react": "19.0.0",
       "react-dom": "19.0.0",
@@ -118,8 +118,8 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@ghostery/adblocker": "^2.13.4",
-    "@mariozechner/pi-agent-core": "^0.70.6",
-    "@mariozechner/pi-ai": "^0.70.6",
+    "@earendil-works/pi-agent-core": "^0.74.0",
+    "@earendil-works/pi-ai": "^0.74.0",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@natstack/browser-data": "workspace:*",
     "@natstack/dev-log": "workspace:*",

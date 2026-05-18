@@ -12,7 +12,7 @@ import * as path from "path";
 // Silence Electron security warnings in dev; panels run in isolated webviews.
 process.env["ELECTRON_DISABLE_SECURITY_WARNINGS"] = "true";
 
-import { isDev } from "./utils.js";
+import { isDev, assertHttpUrl } from "./utils.js";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("App");
@@ -783,11 +783,11 @@ app.on("ready", async () => {
   // a known-sensitive set on every session that gets created (default,
   // persist:browser, persist:panel:*).
   //
-  // TODO(security-audit-agent-1): the shell partition currently shares the
-  // default session with panels. Once shell is moved to its own partition
-  // (audit C4 hardening — owned by another agent in src/main/viewManager.ts
-  // and the shell BrowserWindow setup), the shell partition can be allowed
-  // to request these permissions while panel partitions stay default-deny.
+  // TODO(security): the shell partition currently shares the default session
+  // with panels. Once shell is moved to its own partition (see the related
+  // hardening work in src/main/viewManager.ts and the shell BrowserWindow
+  // setup), the shell partition can be allowed to request these permissions
+  // while panel partitions stay default-deny.
   // -------------------------------------------------------------------------
   const SENSITIVE_PERMISSIONS = new Set<string>([
     "geolocation",
@@ -1457,6 +1457,7 @@ app.on("ready", async () => {
     ipcMain.handle("natstack:navigate", async (event, browserId: string, url: string) => {
       // Audit #9: caller must own the target view OR be the shell.
       requireOwnsViewOrShell(event, browserId, "natstack:navigate");
+      assertHttpUrl(url);
       const wc = viewManager!.getWebContents(browserId);
       if (!wc) throw new Error(`Browser webContents not found for ${browserId}`);
       try {

@@ -2,7 +2,7 @@
 
 This guide covers building Durable Object (DO) workers that participate in AI chat channels. Workers run in workerd (Cloudflare's V8 isolate runtime) and use `this.sql` state that survives across invocations.
 
-NatStack runs Pi (`@mariozechner/pi-agent-core` + `@mariozechner/pi-ai`)
+NatStack runs Pi (`@earendil-works/pi-agent-core` + `@earendil-works/pi-ai`)
 in-process inside each agent worker DO — there is no harness child process
 layer. See `docs/pi-architecture.md` for the full architectural picture and
 `docs/agentic-architecture.md` for the higher-level overview.

@@ -12,7 +12,7 @@ import type {
   PiExtensionUIDialogOptions as ExtensionUIDialogOptions,
   PiExtensionWidgetOptions as ExtensionWidgetOptions,
 } from "./pi-extension-api.js";
-import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 
 export class DispatchedError extends Error {
   constructor(public readonly placeholderResult: AgentToolResult<any>) {
