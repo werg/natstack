@@ -12,9 +12,22 @@ export interface QueuedBackgroundAction {
   queuedAt: number;
 }
 
+export interface QueuedWorkspaceMutation {
+  id: string;
+  service: string;
+  method: string;
+  args: unknown[];
+  queuedAt: number;
+}
+
 interface QueueEnvelope {
   version: 1;
   actions: QueuedBackgroundAction[];
+}
+
+interface WorkspaceMutationEnvelope {
+  version: 1;
+  mutations: QueuedWorkspaceMutation[];
 }
 
 export function loadPendingActions(raw: string | null | undefined, now = Date.now()): QueuedBackgroundAction[] {
@@ -61,6 +74,45 @@ export function pruneStaleActions(
   return actions.filter((entry) => now - entry.queuedAt <= BACKGROUND_ACTION_QUEUE_TTL_MS);
 }
 
+export function loadWorkspaceMutations(raw: string | null | undefined, now = Date.now()): QueuedWorkspaceMutation[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as Partial<WorkspaceMutationEnvelope> | QueuedWorkspaceMutation[];
+    const mutations = Array.isArray(parsed) ? parsed : parsed.mutations;
+    if (!Array.isArray(mutations)) return [];
+    return pruneStaleWorkspaceMutations(mutations.filter(isQueuedWorkspaceMutation), now);
+  } catch {
+    return [];
+  }
+}
+
+export function serializeWorkspaceMutations(mutations: QueuedWorkspaceMutation[]): string {
+  return JSON.stringify({ version: 1, mutations } satisfies WorkspaceMutationEnvelope);
+}
+
+export function enqueueWorkspaceMutation(
+  mutations: QueuedWorkspaceMutation[],
+  mutation: QueuedWorkspaceMutation,
+  now = Date.now(),
+): QueuedWorkspaceMutation[] {
+  const pending = pruneStaleWorkspaceMutations(mutations, now).filter((entry) => entry.id !== mutation.id);
+  return [...pending, mutation];
+}
+
+export function clearWorkspaceMutation(
+  mutations: QueuedWorkspaceMutation[],
+  id: string,
+): QueuedWorkspaceMutation[] {
+  return mutations.filter((entry) => entry.id !== id);
+}
+
+export function pruneStaleWorkspaceMutations(
+  mutations: QueuedWorkspaceMutation[],
+  now = Date.now(),
+): QueuedWorkspaceMutation[] {
+  return mutations.filter((entry) => now - entry.queuedAt <= BACKGROUND_ACTION_QUEUE_TTL_MS);
+}
+
 export function enqueueDeepLink(_currentApprovalId: string | null, approvalId: string): string {
   return approvalId;
 }
@@ -87,6 +139,16 @@ function isQueuedBackgroundAction(value: unknown): value is QueuedBackgroundActi
   const candidate = value as Partial<QueuedBackgroundAction>;
   return typeof candidate.approvalId === "string" &&
     isBackgroundDecision(candidate.decision) &&
+    typeof candidate.queuedAt === "number";
+}
+
+function isQueuedWorkspaceMutation(value: unknown): value is QueuedWorkspaceMutation {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<QueuedWorkspaceMutation>;
+  return typeof candidate.id === "string" &&
+    typeof candidate.service === "string" &&
+    typeof candidate.method === "string" &&
+    Array.isArray(candidate.args) &&
     typeof candidate.queuedAt === "number";
 }
 
