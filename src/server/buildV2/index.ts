@@ -379,29 +379,28 @@ export async function initBuildSystemV2(
         throw new Error(`Build unit is not an extension: ${unitName}`);
       }
 
-      const dependencyMode = normalizeExtensionDependencyMode(node.manifest.extension?.dependencyMode);
+      const dependencyMode = normalizeExtensionDependencyMode(
+        node.manifest.extension?.dependencyMode
+      );
       const externalDeps = collectTransitiveExternalDeps(
         node,
         currentGraph,
         workspaceRoot,
-        appNodeModuleRoots,
+        appNodeModuleRoots
       );
       const nodeModulesDir = await ensureExternalDeps(externalDeps);
-      const nodePaths = [
-        ...(nodeModulesDir ? [nodeModulesDir] : []),
-        ...appNodeModuleRoots,
-      ];
+      const nodePaths = [...(nodeModulesDir ? [nodeModulesDir] : []), ...appNodeModuleRoots];
       const dependencyDiagnostics = analyzeExtensionDependencies(
         externalDeps,
         nodePaths,
-        dependencyMode,
+        dependencyMode
       );
       const ev = currentEvMap[node.name] ?? null;
       const buildKey = ev
         ? computeBuildKey(
             node.name,
             `${ev}:extension-runtime-abi:${EXTENSION_RUNTIME_ABI_VERSION}`,
-            true,
+            true
           )
         : null;
       const build = buildKey ? buildStore.get(buildKey) : null;
@@ -443,9 +442,11 @@ export async function initBuildSystemV2(
       for (const dep of dependencyDiagnostics.classifiedDeps) {
         checks.push({
           name: `dependency:${dep.name}`,
-          status: dep.reasons.includes("missing-package-json") || dep.reasons.includes("unreadable-package-json")
-            ? "warn"
-            : "pass",
+          status:
+            dep.reasons.includes("missing-package-json") ||
+            dep.reasons.includes("unreadable-package-json")
+              ? "warn"
+              : "pass",
           message: dep.explanation,
         });
       }
@@ -476,12 +477,10 @@ export async function initBuildSystemV2(
       pushTrigger.updateState(newGraph, result.evMap, result.contentHashes);
 
       // Trigger builds for changed buildable units
-      const buildableChanged = [...changes.changed, ...changes.added].filter(
-        (name) => {
-          const n = newGraph.tryGet(name);
-          return n && n.kind !== "package" && n.kind !== "template" && n.kind !== "extension";
-        },
-      );
+      const buildableChanged = [...changes.changed, ...changes.added].filter((name) => {
+        const n = newGraph.tryGet(name);
+        return n && n.kind !== "package" && n.kind !== "template" && n.kind !== "extension";
+      });
 
       for (const name of buildableChanged) {
         const n = newGraph.get(name);

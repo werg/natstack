@@ -254,21 +254,21 @@ describe("workspace service handler", () => {
       centralData: makeCentralData(),
       createWorkspace: vi.fn(),
       deleteWorkspaceDir: vi.fn(),
-      listUnits: vi.fn(() => [{
-        name: "@workspace-extensions/git-tools",
-        kind: "extension" as const,
-        source: "extensions/git-tools",
-        status: "running" as const,
-        inspectorUrl: "ws://127.0.0.1:9229/abcdef",
-      }]),
+      listUnits: vi.fn(() => [
+        {
+          name: "@workspace-extensions/git-tools",
+          kind: "extension" as const,
+          source: "extensions/git-tools",
+          status: "running" as const,
+          inspectorUrl: "ws://127.0.0.1:9229/abcdef",
+        },
+      ]),
     });
 
     await expect(
       service.handler(panelCtx, "units.inspector", ["@workspace-extensions/git-tools"])
     ).resolves.toEqual({ url: "ws://127.0.0.1:9229/abcdef" });
-    await expect(
-      service.handler(panelCtx, "units.inspector", ["missing"])
-    ).resolves.toBeNull();
+    await expect(service.handler(panelCtx, "units.inspector", ["missing"])).resolves.toBeNull();
   });
 
   it("create delegates to the createWorkspace dep", async () => {

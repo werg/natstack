@@ -205,7 +205,7 @@ describe("discoverPackageGraph extension units", () => {
           name: "@workspace/runtime",
           version: "0.0.0",
           natstack: {},
-        }),
+        })
       );
       fs.writeFileSync(
         path.join(extensionDir, "package.json"),
@@ -219,7 +219,7 @@ describe("discoverPackageGraph extension units", () => {
             entry: "index.ts",
             extension: { activationEvents: ["*"] },
           },
-        }),
+        })
       );
 
       const graph = discoverPackageGraph(root);

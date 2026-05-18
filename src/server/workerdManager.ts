@@ -487,10 +487,11 @@ export class WorkerdManager {
   }
 
   getWorkerInspectorUrl(nameOrSource: string): string | null {
-    const hasInstance = [...this.instances.values()].some((instance) =>
-      instance.name === nameOrSource ||
-      instance.source === nameOrSource ||
-      instance.callerId === nameOrSource
+    const hasInstance = [...this.instances.values()].some(
+      (instance) =>
+        instance.name === nameOrSource ||
+        instance.source === nameOrSource ||
+        instance.callerId === nameOrSource
     );
     return hasInstance ? this.getInspectorUrl() : null;
   }

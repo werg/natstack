@@ -30,12 +30,7 @@ describe("buildUnit extension builds", () => {
   });
 
   it("builds a scoped workspace extension as a node ESM bundle with inline sourcemaps", async () => {
-    const extensionDir = path.join(
-      workspaceRoot,
-      "extensions",
-      "@workspace-extensions",
-      "hello",
-    );
+    const extensionDir = path.join(workspaceRoot, "extensions", "@workspace-extensions", "hello");
     fs.mkdirSync(extensionDir, { recursive: true });
     fs.writeFileSync(
       path.join(extensionDir, "package.json"),
@@ -50,7 +45,7 @@ describe("buildUnit extension builds", () => {
           sourcemap: true,
           extension: { activationEvents: ["*"] },
         },
-      }),
+      })
     );
     fs.writeFileSync(
       path.join(extensionDir, "index.ts"),
@@ -61,7 +56,7 @@ describe("buildUnit extension builds", () => {
         "  };",
         "}",
         "",
-      ].join("\n"),
+      ].join("\n")
     );
     git(extensionDir, ["init", "-b", "main"]);
     git(extensionDir, ["add", "."]);
@@ -86,7 +81,9 @@ describe("buildUnit extension builds", () => {
       runtimeDepsKey: null,
       extensionRuntimeAbi: "2",
     });
-    expect(fs.readFileSync(path.join(result.dir, "package.json"), "utf8")).toBe('{"type":"module"}');
+    expect(fs.readFileSync(path.join(result.dir, "package.json"), "utf8")).toBe(
+      '{"type":"module"}'
+    );
     expect(result.bundle).toContain("ping() {");
     expect(result.bundle).toContain("sourceMappingURL=data:application/json");
   });
@@ -96,7 +93,7 @@ describe("buildUnit extension builds", () => {
       workspaceRoot,
       "extensions",
       "@workspace-extensions",
-      "cjs-extension",
+      "cjs-extension"
     );
     fs.mkdirSync(extensionDir, { recursive: true });
     fs.writeFileSync(
@@ -112,7 +109,7 @@ describe("buildUnit extension builds", () => {
           sourcemap: true,
           extension: { activationEvents: ["*"] },
         },
-      }),
+      })
     );
     fs.writeFileSync(
       path.join(extensionDir, "cjs-dep.cjs"),
@@ -120,7 +117,7 @@ describe("buildUnit extension builds", () => {
         "const path = require('path');",
         "module.exports = { base: (value) => path.basename(value) };",
         "",
-      ].join("\n"),
+      ].join("\n")
     );
     fs.writeFileSync(
       path.join(extensionDir, "index.ts"),
@@ -132,7 +129,7 @@ describe("buildUnit extension builds", () => {
         "  };",
         "}",
         "",
-      ].join("\n"),
+      ].join("\n")
     );
     git(extensionDir, ["init", "-b", "main"]);
     git(extensionDir, ["add", "."]);

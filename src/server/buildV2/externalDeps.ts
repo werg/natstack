@@ -29,7 +29,7 @@ export function collectTransitiveExternalDeps(
   unit: GraphNode,
   graph: PackageGraph,
   workspaceRoot?: string,
-  packageRoots: string[] = [],
+  packageRoots: string[] = []
 ): Record<string, string> {
   const externals: Record<string, string> = {};
   const visited = new Set<string>();
@@ -54,7 +54,9 @@ export function collectTransitiveExternalDeps(
         continue;
       }
       if (version.startsWith("workspace:") && options.walkWorkspaceDeps) {
-        const pkg = workspaceRoot ? readWorkspacePackageJson(workspaceRoot, name, packageRoots) : null;
+        const pkg = workspaceRoot
+          ? readWorkspacePackageJson(workspaceRoot, name, packageRoots)
+          : null;
         if (pkg) walkPackageJson(pkg.path, pkg.dependencies);
         continue;
       }
@@ -81,9 +83,13 @@ export function collectTransitiveExternalDeps(
 function readWorkspacePackageJson(
   workspaceRoot: string,
   packageName: string,
-  packageRoots: string[] = [],
+  packageRoots: string[] = []
 ): { path: string; dependencies: Record<string, string> } | null {
-  for (const pkgJsonPath of workspacePackageJsonCandidates(workspaceRoot, packageName, packageRoots)) {
+  for (const pkgJsonPath of workspacePackageJsonCandidates(
+    workspaceRoot,
+    packageName,
+    packageRoots
+  )) {
     if (!fs.existsSync(pkgJsonPath)) continue;
     try {
       const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as {
@@ -129,7 +135,7 @@ function readWorkspacePackageJson(
 function workspacePackageJsonCandidates(
   workspaceRoot: string,
   packageName: string,
-  packageRoots: string[],
+  packageRoots: string[]
 ): string[] {
   const candidates: string[] = [];
   const addNodeModulesCandidate = (baseDir: string) => {
@@ -151,10 +157,7 @@ function workspacePackageJsonCandidates(
 
 function workspacePackageRoots(workspaceRoot: string): string[] {
   const repoRoot = path.dirname(workspaceRoot);
-  return [
-    path.join(workspaceRoot, "packages"),
-    path.join(repoRoot, "packages"),
-  ];
+  return [path.join(workspaceRoot, "packages"), path.join(repoRoot, "packages")];
 }
 
 /**
@@ -216,9 +219,7 @@ function warnCleanupFailure(pathName: string, error: unknown): void {
  * Get or install external dependencies. Returns the path to the
  * node_modules directory.
  */
-export async function ensureExternalDeps(
-  deps: Record<string, string>,
-): Promise<string> {
+export async function ensureExternalDeps(deps: Record<string, string>): Promise<string> {
   return ensureDepsInstalled(deps, {
     baseDir: getExternalDepsBaseDir(),
     key: hashDeps(deps),
@@ -227,7 +228,7 @@ export async function ensureExternalDeps(
 }
 
 export async function ensureExtensionRuntimeDeps(
-  deps: Record<string, string>,
+  deps: Record<string, string>
 ): Promise<{ key: string | null; nodeModulesDir: string }> {
   if (Object.keys(deps).length === 0) {
     return { key: null, nodeModulesDir: "" };
@@ -248,7 +249,7 @@ export async function ensureExtensionRuntimeDeps(
 
 async function ensureDepsInstalled(
   deps: Record<string, string>,
-  options: { baseDir: string; key: string; ignoreScripts: boolean },
+  options: { baseDir: string; key: string; ignoreScripts: boolean }
 ): Promise<string> {
   if (Object.keys(deps).length === 0) {
     // No external deps — return a dummy path

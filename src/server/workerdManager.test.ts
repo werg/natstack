@@ -47,7 +47,9 @@ vi.mock("child_process", () => ({
 
 // Mock port-utils
 vi.mock("@natstack/port-utils", () => ({
-  findServicePort: vi.fn(async (service: string) => service === "workerdInspector" ? 49652 : 49552),
+  findServicePort: vi.fn(async (service: string) =>
+    service === "workerdInspector" ? 49652 : 49552
+  ),
   releaseServicePort: vi.fn(),
 }));
 
@@ -298,7 +300,7 @@ describe("WorkerdManager", () => {
       expect(spawn).toHaveBeenLastCalledWith(
         expect.any(String),
         expect.arrayContaining(["--inspector-addr=127.0.0.1:49652"]),
-        expect.any(Object),
+        expect.any(Object)
       );
       expect(mgr.getWorkerInspectorUrl("workers/hello")).toBe("http://127.0.0.1:49652");
       expect(mgr.getWorkerInspectorUrl("workers/missing")).toBeNull();

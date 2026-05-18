@@ -44,12 +44,17 @@ const UNIT_LOG_LEVEL_RANK = { debug: 10, info: 20, warn: 30, error: 40 } as cons
 
 function filterUnitLogs(
   records: import("./services/workspaceService.js").WorkspaceUnitLogRecord[],
-  opts?: { since?: number; level?: import("./services/workspaceService.js").WorkspaceUnitLogRecord["level"]; limit?: number },
+  opts?: {
+    since?: number;
+    level?: import("./services/workspaceService.js").WorkspaceUnitLogRecord["level"];
+    limit?: number;
+  }
 ): import("./services/workspaceService.js").WorkspaceUnitLogRecord[] {
   const minLevel = opts?.level ? UNIT_LOG_LEVEL_RANK[opts.level] : null;
-  const filtered = records.filter((record) =>
-    (opts?.since === undefined || record.timestamp >= opts.since)
-    && (minLevel === null || UNIT_LOG_LEVEL_RANK[record.level] >= minLevel)
+  const filtered = records.filter(
+    (record) =>
+      (opts?.since === undefined || record.timestamp >= opts.since) &&
+      (minLevel === null || UNIT_LOG_LEVEL_RANK[record.level] >= minLevel)
   );
   const limit = opts?.limit && opts.limit > 0 ? Math.min(Math.floor(opts.limit), 1000) : 200;
   return filtered.slice(-limit);
@@ -855,8 +860,14 @@ async function main() {
   );
   // Per-worker-source ring buffer feeding `workspace.units.logs`. Same shape
   // as the extension log store: capped at 1000 records per source, FIFO drop.
-  const workerUnitLogs = new Map<string, import("./services/workspaceService.js").WorkspaceUnitLogRecord[]>();
-  const workerUnitLogsAppend = (source: string, record: import("./services/workspaceService.js").WorkspaceUnitLogRecord): void => {
+  const workerUnitLogs = new Map<
+    string,
+    import("./services/workspaceService.js").WorkspaceUnitLogRecord[]
+  >();
+  const workerUnitLogsAppend = (
+    source: string,
+    record: import("./services/workspaceService.js").WorkspaceUnitLogRecord
+  ): void => {
     const existing = workerUnitLogs.get(source) ?? [];
     existing.push(record);
     if (existing.length > 1000) existing.splice(0, existing.length - 1000);
@@ -864,22 +875,26 @@ async function main() {
   };
   {
     const { createWorkerLogService } = await import("./services/workerLogService.js");
-    container.register(rpcService(createWorkerLogService({
-      onLog: (entry) => {
-        if (!entry.source) return;
-        const record: import("./services/workspaceService.js").WorkspaceUnitLogRecord = {
-          workspaceId: workspace.config.id,
-          unitName: entry.source,
-          kind: "worker",
-          timestamp: entry.timestamp,
-          level: entry.level,
-          message: entry.message,
-          source: "console",
-        };
-        workerUnitLogsAppend(entry.source, record);
-        eventService.emit("workspace:unit-log", record);
-      },
-    })));
+    container.register(
+      rpcService(
+        createWorkerLogService({
+          onLog: (entry) => {
+            if (!entry.source) return;
+            const record: import("./services/workspaceService.js").WorkspaceUnitLogRecord = {
+              workspaceId: workspace.config.id,
+              unitName: entry.source,
+              kind: "worker",
+              timestamp: entry.timestamp,
+              level: entry.level,
+              message: entry.message,
+              source: "console",
+            };
+            workerUnitLogsAppend(entry.source, record);
+            eventService.emit("workspace:unit-log", record);
+          },
+        })
+      )
+    );
   }
   container.register(rpcService(createEventsServiceDefinition(eventService)));
 
@@ -1316,7 +1331,8 @@ async function main() {
     async start(resolve) {
       const { ExtensionHost } = await import("@natstack/extension-host");
       const buildSystemInst = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
-      const tokenManagerInst = resolve<import("@natstack/shared/tokenManager").TokenManager>("tokenManager")!;
+      const tokenManagerInst =
+        resolve<import("@natstack/shared/tokenManager").TokenManager>("tokenManager")!;
       const host = new ExtensionHost({
         statePath,
         workspacePath,
@@ -1560,45 +1576,52 @@ async function main() {
       const extensionRows = extensionHostForGateway?.listWorkspaceUnits() ?? [];
       const extensionsBySource = new Map(extensionRows.map((row) => [row.source, row]));
       const workerInstances = new Map(
-        workerdManagerForGateway?.listInstances().map((instance) => [instance.source, instance]) ?? [],
+        workerdManagerForGateway?.listInstances().map((instance) => [instance.source, instance]) ??
+          []
       );
       const rows: import("./services/workspaceService.js").WorkspaceUnitStatus[] = [];
       for (const node of buildSystem?.getGraph().allNodes() ?? []) {
         if (node.kind !== "panel" && node.kind !== "worker" && node.kind !== "extension") continue;
         if (node.kind === "extension") {
-          rows.push(extensionsBySource.get(node.relativePath) ?? {
-            name: node.name,
-            kind: "extension",
-            source: node.relativePath,
-            displayName: node.manifest.displayName ?? node.name,
-            enabled: false,
-            status: "stopped",
-            ev: buildSystem?.getEffectiveVersion(node.name) ?? null,
-            lastError: null,
-            health: null,
-            methods: [],
-            hasFetch: false,
-            respawn: null,
-            inspectorUrl: null,
-          });
+          rows.push(
+            extensionsBySource.get(node.relativePath) ?? {
+              name: node.name,
+              kind: "extension",
+              source: node.relativePath,
+              displayName: node.manifest.displayName ?? node.name,
+              enabled: false,
+              status: "stopped",
+              ev: buildSystem?.getEffectiveVersion(node.name) ?? null,
+              lastError: null,
+              health: null,
+              methods: [],
+              hasFetch: false,
+              respawn: null,
+              inspectorUrl: null,
+            }
+          );
           continue;
         }
-        const workerInstance = node.kind === "worker" ? workerInstances.get(node.relativePath) : null;
+        const workerInstance =
+          node.kind === "worker" ? workerInstances.get(node.relativePath) : null;
         rows.push({
           name: node.name,
           kind: node.kind,
           source: node.relativePath,
           displayName: node.manifest.displayName ?? node.manifest.title ?? node.name,
           status: workerInstance
-            ? (workerInstance.status === "starting" ? "building" : workerInstance.status)
+            ? workerInstance.status === "starting"
+              ? "building"
+              : workerInstance.status
             : "available",
           ev: workerInstance?.buildKey ?? buildSystem?.getEffectiveVersion(node.name) ?? null,
           inspectorUrl: workerInstance
-            ? workerdManagerForGateway?.getWorkerInspectorUrl(workerInstance.source) ?? null
+            ? (workerdManagerForGateway?.getWorkerInspectorUrl(workerInstance.source) ?? null)
             : null,
-          bindings: node.kind === "worker" && workerInstance
-            ? (workerInstance as { bindings?: Record<string, unknown> | null }).bindings ?? null
-            : null,
+          bindings:
+            node.kind === "worker" && workerInstance
+              ? ((workerInstance as { bindings?: Record<string, unknown> | null }).bindings ?? null)
+              : null,
           lastBuiltAt: null,
           pendingApproval: null,
           availableUpdate: null,
@@ -1608,7 +1631,7 @@ async function main() {
     },
     restartWorkspaceUnit: async (
       ctx: import("@natstack/shared/serviceDispatcher").ServiceContext,
-      name: string,
+      name: string
     ) => {
       // Resolve by kind via the build graph so callers can use either the
       // package name or the workspace-relative source path. Extensions go
@@ -1621,16 +1644,19 @@ async function main() {
         return;
       }
       const buildSystem = container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");
-      const node = buildSystem?.getGraph().allNodes().find((candidate) =>
-        candidate.name === name || candidate.relativePath === name
-      );
+      const node = buildSystem
+        ?.getGraph()
+        .allNodes()
+        .find((candidate) => candidate.name === name || candidate.relativePath === name);
       if (!node) {
         throw new Error(`Workspace unit not found: ${name}`);
       }
       if (node.kind === "worker") {
         const workerdManager = workerdManagerForGateway;
         if (!workerdManager) throw new Error("Worker runtime is not available");
-        const instance = workerdManager.listInstances().find((entry) => entry.source === node.relativePath);
+        const instance = workerdManager
+          .listInstances()
+          .find((entry) => entry.source === node.relativePath);
         if (!instance) {
           throw new Error(`Worker has no running instance to restart: ${node.relativePath}`);
         }
@@ -1638,20 +1664,27 @@ async function main() {
         return;
       }
       if (node.kind === "panel") {
-        throw new Error("Panels restart on next page navigation; no host-driven restart is available");
+        throw new Error(
+          "Panels restart on next page navigation; no host-driven restart is available"
+        );
       }
       throw new Error(`Workspace unit kind not restartable: ${node.kind}`);
     },
     listWorkspaceUnitLogs: (
       name: string,
-      opts?: { since?: number; level?: import("./services/workspaceService.js").WorkspaceUnitLogRecord["level"]; limit?: number },
+      opts?: {
+        since?: number;
+        level?: import("./services/workspaceService.js").WorkspaceUnitLogRecord["level"];
+        limit?: number;
+      }
     ) => {
       // Resolve the unit kind from the build graph (the same surface
       // listWorkspaceUnits uses) and pull from the corresponding store.
       const buildSystem = container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");
-      const node = buildSystem?.getGraph().allNodes().find((candidate) =>
-        candidate.name === name || candidate.relativePath === name
-      );
+      const node = buildSystem
+        ?.getGraph()
+        .allNodes()
+        .find((candidate) => candidate.name === name || candidate.relativePath === name);
       const kind = node?.kind;
       if (kind === "worker") {
         const source = node?.relativePath ?? name;
@@ -1880,7 +1913,8 @@ async function main() {
 
   dispatcher.markInitialized();
 
-  const extensionHost = container.get<import("@natstack/extension-host").ExtensionHost>("extensionHost");
+  const extensionHost =
+    container.get<import("@natstack/extension-host").ExtensionHost>("extensionHost");
   await extensionHost.ensureBuiltInExtensions(requiredBuiltInExtensions);
   await extensionHost.startEnabled();
 

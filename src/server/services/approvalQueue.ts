@@ -275,13 +275,9 @@ export function createApprovalQueue(deps: {
       if (req.dedupKey === null) {
         return ["extension-isolated", randomUUID()].join("\x00");
       }
-      return [
-        "extension",
-        req.action,
-        req.extensionName,
-        req.source.repo,
-        req.source.ref,
-      ].join("\x00");
+      return ["extension", req.action, req.extensionName, req.source.repo, req.source.ref].join(
+        "\x00"
+      );
     }
     if (req.kind === "client-config") {
       return [
@@ -313,7 +309,13 @@ export function createApprovalQueue(deps: {
       kind: req.principal.callerKind,
       id: req.principal.callerId,
     };
-    return canonicalKey(["userland", req.principal.callerId, issuer.kind, issuer.id, req.subject.id]);
+    return canonicalKey([
+      "userland",
+      req.principal.callerId,
+      issuer.kind,
+      issuer.id,
+      req.subject.id,
+    ]);
   }
 
   function createPendingApproval(req: ApprovalQueueRequest): PendingApproval {
@@ -358,7 +360,12 @@ export function createApprovalQueue(deps: {
         workspaceDepChanges: req.workspaceDepChanges,
         externalDepChanges: req.externalDepChanges,
         integrity: req.integrity,
-        capabilities: req.capabilities ?? ["node:fs", "node:child_process", "node:net", "userland:*"],
+        capabilities: req.capabilities ?? [
+          "node:fs",
+          "node:child_process",
+          "node:net",
+          "userland:*",
+        ],
         details: req.details,
       } satisfies PendingExtensionApproval;
     }

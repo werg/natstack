@@ -76,20 +76,17 @@ function createGitAdapter(serverClient: ServerClient) {
 
 function createBrowserDataAdapter(serverClient: ServerClient) {
   const invoke = (method: string, args: unknown[]) =>
-    serverClient.call("extensions", "invoke", [
-      "@workspace-extensions/browser-data",
-      method,
-      args,
-    ]);
+    serverClient.call("extensions", "invoke", ["@workspace-extensions/browser-data", method, args]);
   return {
     searchHistoryForAutocomplete: (query: string, limit: number) =>
-      invoke("searchHistoryForAutocomplete", [{ query, limit }]) as Promise<Record<string, unknown>[]>,
+      invoke("searchHistoryForAutocomplete", [{ query, limit }]) as Promise<
+        Record<string, unknown>[]
+      >,
     getHistory: (query: { limit: number }) =>
       invoke("getHistory", [query]) as Promise<Record<string, unknown>[]>,
     searchBookmarks: (query: string) =>
       invoke("searchBookmarks", [query]) as Promise<Record<string, unknown>[]>,
-    getSearchEngines: () =>
-      invoke("getSearchEngines", []) as Promise<Record<string, unknown>[]>,
+    getSearchEngines: () => invoke("getSearchEngines", []) as Promise<Record<string, unknown>[]>,
   };
 }
 

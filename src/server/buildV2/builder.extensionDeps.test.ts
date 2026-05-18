@@ -9,13 +9,13 @@ function writePackage(
   nodeModules: string,
   name: string,
   pkg: Record<string, unknown>,
-  files: Record<string, string> = {},
+  files: Record<string, string> = {}
 ): void {
   const packageDir = path.join(nodeModules, ...name.split("/"));
   fs.mkdirSync(packageDir, { recursive: true });
   fs.writeFileSync(
     path.join(packageDir, "package.json"),
-    JSON.stringify({ name, version: "1.0.0", ...pkg }),
+    JSON.stringify({ name, version: "1.0.0", ...pkg })
   );
   for (const [relativePath, contents] of Object.entries(files)) {
     const filePath = path.join(packageDir, relativePath);
@@ -39,13 +39,23 @@ describe("extension dependency diagnostics", () => {
   });
 
   it("bundles plain JavaScript dependencies in auto mode", () => {
-    writePackage(nodeModules, "plain-cjs", { main: "index.js" }, { "index.js": "module.exports = {};" });
-    writePackage(nodeModules, "plain-esm", { type: "module" }, { "index.js": "export default {};" });
+    writePackage(
+      nodeModules,
+      "plain-cjs",
+      { main: "index.js" },
+      { "index.js": "module.exports = {};" }
+    );
+    writePackage(
+      nodeModules,
+      "plain-esm",
+      { type: "module" },
+      { "index.js": "export default {};" }
+    );
 
     const diagnostics = analyzeExtensionDependencies(
       { "plain-cjs": "1.0.0", "plain-esm": "1.0.0" },
       [nodeModules],
-      "auto",
+      "auto"
     );
 
     expect(diagnostics.runtimeExternalDeps).toEqual({});
@@ -63,15 +73,19 @@ describe("extension dependency diagnostics", () => {
     const diagnostics = analyzeExtensionDependencies(
       { "native-dep": "1.0.0", "wasm-dep": "1.0.0" },
       [nodeModules],
-      "auto",
+      "auto"
     );
 
     expect(diagnostics.runtimeExternalDeps).toEqual({
       "native-dep": "1.0.0",
       "wasm-dep": "1.0.0",
     });
-    expect(diagnostics.classifiedDeps.find((dep) => dep.name === "native-dep")?.reasons).toContain("native");
-    expect(diagnostics.classifiedDeps.find((dep) => dep.name === "wasm-dep")?.reasons).toContain("wasm-asset");
+    expect(diagnostics.classifiedDeps.find((dep) => dep.name === "native-dep")?.reasons).toContain(
+      "native"
+    );
+    expect(diagnostics.classifiedDeps.find((dep) => dep.name === "wasm-dep")?.reasons).toContain(
+      "wasm-asset"
+    );
   });
 
   it("honors explicit bundle and external modes", () => {
@@ -79,11 +93,11 @@ describe("extension dependency diagnostics", () => {
 
     expect(
       analyzeExtensionDependencies({ "native-dep": "1.0.0" }, [nodeModules], "bundle")
-        .runtimeExternalDeps,
+        .runtimeExternalDeps
     ).toEqual({});
     expect(
       analyzeExtensionDependencies({ "native-dep": "1.0.0" }, [nodeModules], "external")
-        .runtimeExternalDeps,
+        .runtimeExternalDeps
     ).toEqual({ "native-dep": "1.0.0" });
   });
 });

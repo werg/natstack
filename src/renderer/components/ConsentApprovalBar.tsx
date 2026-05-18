@@ -147,10 +147,9 @@ export function ConsentApprovalBar() {
         backgroundColor: "var(--color-panel-solid)",
         backgroundImage: `linear-gradient(var(--${accent}-a3), var(--${accent}-a3))`,
         borderBottom: "1px solid var(--gray-a6)",
-        boxShadow: [
-          `inset 0 3px 0 0 var(--${accent}-9)`,
-          "0 4px 12px -4px var(--black-a6)",
-        ].join(", "),
+        boxShadow: [`inset 0 3px 0 0 var(--${accent}-9)`, "0 4px 12px -4px var(--black-a6)"].join(
+          ", "
+        ),
         flexShrink: 0,
       }}
     >
@@ -1035,7 +1034,9 @@ function ExtensionDetails({ approval }: { approval: PendingExtensionApproval }) 
           value={
             <Flex align="center" gap="1" wrap="wrap">
               {approval.previousSha ? <IdCode value={approval.previousSha} /> : null}
-              {approval.sha ? <IdCode prefix={approval.previousSha ? "to" : undefined} value={approval.sha} /> : null}
+              {approval.sha ? (
+                <IdCode prefix={approval.previousSha ? "to" : undefined} value={approval.sha} />
+              ) : null}
             </Flex>
           }
         />
@@ -1047,7 +1048,9 @@ function ExtensionDetails({ approval }: { approval: PendingExtensionApproval }) 
           value={
             <Flex align="center" gap="1" wrap="wrap">
               {approval.previousEv ? <IdCode value={approval.previousEv} /> : null}
-              {approval.ev ? <IdCode prefix={approval.previousEv ? "to" : undefined} value={approval.ev} /> : null}
+              {approval.ev ? (
+                <IdCode prefix={approval.previousEv ? "to" : undefined} value={approval.ev} />
+              ) : null}
             </Flex>
           }
         />
@@ -1058,7 +1061,9 @@ function ExtensionDetails({ approval }: { approval: PendingExtensionApproval }) 
           label="Runtime"
           value={
             <Flex align="center" gap="1" wrap="wrap">
-              {approval.activeRuntimeDepsKey ? <IdCode value={approval.activeRuntimeDepsKey} /> : null}
+              {approval.activeRuntimeDepsKey ? (
+                <IdCode value={approval.activeRuntimeDepsKey} />
+              ) : null}
               {approval.candidateRuntimeDepsKey ? (
                 <IdCode
                   prefix={approval.activeRuntimeDepsKey ? "to" : undefined}
@@ -1170,7 +1175,9 @@ function ExtensionDiffSummary({
       {diff.previousSha || diff.sha ? (
         <Flex align="center" gap="1" wrap="wrap">
           {diff.previousSha ? <IdCode value={diff.previousSha} /> : null}
-          {diff.sha ? <IdCode prefix={diff.previousSha ? "to" : undefined} value={diff.sha} /> : null}
+          {diff.sha ? (
+            <IdCode prefix={diff.previousSha ? "to" : undefined} value={diff.sha} />
+          ) : null}
         </Flex>
       ) : null}
       {diff.commit ? (
@@ -1180,14 +1187,21 @@ function ExtensionDiffSummary({
       ) : null}
       {stat ? (
         <Flex align="center" gap="1" wrap="wrap">
-          <Badge color="gray" variant="outline">{stat.filesChanged} files</Badge>
-          <Badge color="green" variant="soft">+{stat.insertions}</Badge>
-          <Badge color="red" variant="soft">-{stat.deletions}</Badge>
+          <Badge color="gray" variant="outline">
+            {stat.filesChanged} files
+          </Badge>
+          <Badge color="green" variant="soft">
+            +{stat.insertions}
+          </Badge>
+          <Badge color="red" variant="soft">
+            -{stat.deletions}
+          </Badge>
         </Flex>
       ) : null}
       {diff.push ? (
         <Text size="1" color="gray">
-          {diff.push.ref}{diff.push.pushedBy ? ` by ${diff.push.pushedBy}` : ""}
+          {diff.push.ref}
+          {diff.push.pushedBy ? ` by ${diff.push.pushedBy}` : ""}
         </Text>
       ) : null}
     </ExtensionChangeSection>
@@ -1198,7 +1212,9 @@ function ExtensionChangeSection({ title, children }: { title: string; children: 
   return (
     <details>
       <summary style={{ cursor: "pointer" }}>
-        <Text size="1" weight="medium">{title}</Text>
+        <Text size="1" weight="medium">
+          {title}
+        </Text>
       </summary>
       <Flex direction="column" gap="1" pt="1">
         {children}
@@ -1218,9 +1234,23 @@ function ExtensionChangeRow({
 }) {
   return (
     <Flex align="center" gap="1" wrap="wrap">
-      <Code size="1" variant="soft">{name}</Code>
-      {from ? <IdCode value={from} /> : <Badge color="gray" variant="outline">new</Badge>}
-      {to ? <IdCode prefix="to" value={to} /> : <Badge color="gray" variant="outline">removed</Badge>}
+      <Code size="1" variant="soft">
+        {name}
+      </Code>
+      {from ? (
+        <IdCode value={from} />
+      ) : (
+        <Badge color="gray" variant="outline">
+          new
+        </Badge>
+      )}
+      {to ? (
+        <IdCode prefix="to" value={to} />
+      ) : (
+        <Badge color="gray" variant="outline">
+          removed
+        </Badge>
+      )}
     </Flex>
   );
 }
@@ -1231,7 +1261,8 @@ function hasExtensionDiff(diff: NonNullable<PendingExtensionApproval["extensionD
 
 function UserlandDetails({ approval }: { approval: PendingUserlandApproval }) {
   const issuer = approval.issuer;
-  const showIssuer = issuer && (issuer.kind !== approval.callerKind || issuer.id !== approval.callerId);
+  const showIssuer =
+    issuer && (issuer.kind !== approval.callerKind || issuer.id !== approval.callerId);
   return (
     <>
       {showIssuer && issuer ? (

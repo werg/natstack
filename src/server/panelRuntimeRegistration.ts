@@ -28,15 +28,23 @@ export interface CommonDeps {
   requestRelaunch?: (name: string) => void;
   /** IPC proxy: fetch workspace list from Electron main when centralData is null. */
   requestWorkspaceList?: () => Promise<unknown[]>;
-  listWorkspaceUnits?: () => Promise<import("./services/workspaceService.js").WorkspaceUnitStatus[]> | import("./services/workspaceService.js").WorkspaceUnitStatus[];
+  listWorkspaceUnits?: () =>
+    | Promise<import("./services/workspaceService.js").WorkspaceUnitStatus[]>
+    | import("./services/workspaceService.js").WorkspaceUnitStatus[];
   restartWorkspaceUnit?: (
     ctx: import("@natstack/shared/serviceDispatcher").ServiceContext,
-    name: string,
+    name: string
   ) => Promise<void>;
   listWorkspaceUnitLogs?: (
     name: string,
-    opts?: { since?: number; level?: import("./services/workspaceService.js").WorkspaceUnitLogRecord["level"]; limit?: number },
-  ) => Promise<import("./services/workspaceService.js").WorkspaceUnitLogRecord[]> | import("./services/workspaceService.js").WorkspaceUnitLogRecord[];
+    opts?: {
+      since?: number;
+      level?: import("./services/workspaceService.js").WorkspaceUnitLogRecord["level"];
+      limit?: number;
+    }
+  ) =>
+    | Promise<import("./services/workspaceService.js").WorkspaceUnitLogRecord[]>
+    | import("./services/workspaceService.js").WorkspaceUnitLogRecord[];
   codeIdentityResolver?: Pick<CodeIdentityResolver, "upsertCallerIdentity" | "unregisterCaller">;
   getEffectiveVersion?: (source: string) => Promise<string | undefined>;
 }

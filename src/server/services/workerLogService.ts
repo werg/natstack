@@ -65,7 +65,8 @@ export function workerSourceFromCallerId(callerId: string): string | null {
 export function createWorkerLogService(deps: WorkerLogServiceDeps = {}): ServiceDefinition {
   return {
     name: "workerLog",
-    description: "Forward DO console output to the server terminal and the workspace-unit log stream",
+    description:
+      "Forward DO console output to the server terminal and the workspace-unit log stream",
     policy: { allowed: ["shell", "panel", "server", "worker", "extension"] },
     methods: {
       write: {

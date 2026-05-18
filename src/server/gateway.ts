@@ -92,7 +92,7 @@ export interface ExtensionHttpHandler {
     res: ServerResponse,
     name: string,
     remainderPath: string,
-    caller: { callerId: string; callerKind: string },
+    caller: { callerId: string; callerKind: string }
   ): Promise<void> | void;
 }
 
@@ -220,7 +220,7 @@ export class Gateway {
           res,
           parsed.name,
           parsed.remainderPath,
-          entry,
+          entry
         );
       }
 

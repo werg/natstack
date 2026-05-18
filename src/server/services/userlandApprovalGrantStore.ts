@@ -35,14 +35,23 @@ export class UserlandApprovalGrantStore {
    * is omitted, defaults to the principal — this preserves the direct
    * panel/worker call shape, where the issuer is the principal itself.
    */
-  lookup(callerId: string, subjectId: string, issuer?: UserlandApprovalIssuer): UserlandApprovalGrant | null {
-    return this.persistent.grants.find((grant) => {
-      if (grant.principal.callerId !== callerId) return false;
-      if (grant.subject.id !== subjectId) return false;
-      const grantIssuer = effectiveIssuer(grant);
-      if (issuer) return grantIssuer.kind === issuer.kind && grantIssuer.id === issuer.id;
-      return grantIssuer.kind === grant.principal.callerKind && grantIssuer.id === grant.principal.callerId;
-    }) ?? null;
+  lookup(
+    callerId: string,
+    subjectId: string,
+    issuer?: UserlandApprovalIssuer
+  ): UserlandApprovalGrant | null {
+    return (
+      this.persistent.grants.find((grant) => {
+        if (grant.principal.callerId !== callerId) return false;
+        if (grant.subject.id !== subjectId) return false;
+        const grantIssuer = effectiveIssuer(grant);
+        if (issuer) return grantIssuer.kind === issuer.kind && grantIssuer.id === issuer.id;
+        return (
+          grantIssuer.kind === grant.principal.callerKind &&
+          grantIssuer.id === grant.principal.callerId
+        );
+      }) ?? null
+    );
   }
 
   // `record`/`revoke` are `async` even though `save()` is sync today: the
@@ -53,7 +62,7 @@ export class UserlandApprovalGrantStore {
     subject: UserlandApprovalSubject,
     choice: string,
     now = Date.now(),
-    issuer?: UserlandApprovalIssuer,
+    issuer?: UserlandApprovalIssuer
   ): Promise<void> {
     const next: UserlandApprovalGrant = {
       principal: {
@@ -68,22 +77,30 @@ export class UserlandApprovalGrantStore {
     const nextIssuer = effectiveIssuer(next);
     const key = keyFor(next.principal.callerId, nextIssuer, next.subject.id);
     this.persistent.grants = [
-      ...this.persistent.grants.filter((grant) =>
-        keyFor(grant.principal.callerId, effectiveIssuer(grant), grant.subject.id) !== key
+      ...this.persistent.grants.filter(
+        (grant) =>
+          keyFor(grant.principal.callerId, effectiveIssuer(grant), grant.subject.id) !== key
       ),
       next,
     ];
     this.save();
   }
 
-  async revoke(callerId: string, subjectId: string, issuer?: UserlandApprovalIssuer): Promise<boolean> {
+  async revoke(
+    callerId: string,
+    subjectId: string,
+    issuer?: UserlandApprovalIssuer
+  ): Promise<boolean> {
     const before = this.persistent.grants.length;
     this.persistent.grants = this.persistent.grants.filter((grant) => {
       if (grant.principal.callerId !== callerId) return true;
       if (grant.subject.id !== subjectId) return true;
       const grantIssuer = effectiveIssuer(grant);
       if (issuer) return !(grantIssuer.kind === issuer.kind && grantIssuer.id === issuer.id);
-      return !(grantIssuer.kind === grant.principal.callerKind && grantIssuer.id === grant.principal.callerId);
+      return !(
+        grantIssuer.kind === grant.principal.callerKind &&
+        grantIssuer.id === grant.principal.callerId
+      );
     });
     const removed = this.persistent.grants.length !== before;
     if (removed) this.save();
@@ -115,7 +132,11 @@ export class UserlandApprovalGrantStore {
   }
 }
 
-export function keyFor(callerId: string, issuer: UserlandApprovalIssuer, subjectId: string): string {
+export function keyFor(
+  callerId: string,
+  issuer: UserlandApprovalIssuer,
+  subjectId: string
+): string {
   return canonicalKey(["userland-grant", callerId, issuer.kind, issuer.id, subjectId]);
 }
 
@@ -123,13 +144,11 @@ function isGrant(value: unknown): value is UserlandApprovalGrant {
   if (!value || typeof value !== "object") return false;
   const grant = value as Partial<UserlandApprovalGrant>;
   if (
-    grant.issuer !== undefined
-    && (
-      typeof grant.issuer !== "object"
-      || grant.issuer === null
-      || typeof (grant.issuer as UserlandApprovalIssuer).id !== "string"
-      || !["panel", "worker", "extension"].includes((grant.issuer as UserlandApprovalIssuer).kind)
-    )
+    grant.issuer !== undefined &&
+    (typeof grant.issuer !== "object" ||
+      grant.issuer === null ||
+      typeof (grant.issuer as UserlandApprovalIssuer).id !== "string" ||
+      !["panel", "worker", "extension"].includes((grant.issuer as UserlandApprovalIssuer).kind))
   ) {
     return false;
   }

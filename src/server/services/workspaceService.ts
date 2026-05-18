@@ -111,7 +111,7 @@ export interface WorkspaceServiceDeps {
   /** Query retained logs for a workspace unit. */
   listUnitLogs?: (
     name: string,
-    opts?: { since?: number; level?: WorkspaceUnitLogRecord["level"]; limit?: number },
+    opts?: { since?: number; level?: WorkspaceUnitLogRecord["level"]; limit?: number }
   ) => Promise<WorkspaceUnitLogRecord[]> | WorkspaceUnitLogRecord[];
 }
 
@@ -227,11 +227,18 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
       "units.list": { args: z.tuple([]) },
       "units.inspector": { args: z.tuple([z.string()]) },
       "units.restart": { args: z.tuple([z.string()]) },
-      "units.logs": { args: z.tuple([z.string(), z.object({
-        since: z.number().optional(),
-        level: z.enum(["debug", "info", "warn", "error"]).optional(),
-        limit: z.number().int().positive().max(1000).optional(),
-      }).optional()]) },
+      "units.logs": {
+        args: z.tuple([
+          z.string(),
+          z
+            .object({
+              since: z.number().optional(),
+              level: z.enum(["debug", "info", "warn", "error"]).optional(),
+              limit: z.number().int().positive().max(1000).optional(),
+            })
+            .optional(),
+        ]),
+      },
     },
     handler: async (ctx, method, args) => {
       switch (method) {

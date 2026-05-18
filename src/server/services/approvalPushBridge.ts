@@ -32,7 +32,9 @@ interface TrackedApproval {
 }
 
 function categoryFor(approval: PendingApproval): string {
-  return approval.kind === "credential" || approval.kind === "capability" || approval.kind === "extension"
+  return approval.kind === "credential" ||
+    approval.kind === "capability" ||
+    approval.kind === "extension"
     ? APPROVAL_CATEGORY_DECIDE
     : APPROVAL_CATEGORY_INPUT_REQUIRED;
 }
@@ -56,7 +58,7 @@ const ACTION_TITLES: Record<string, string> = {
 function actionPayloadFor(approval: PendingApproval): Array<{ id: string; title: string }> {
   return actionsFor(approval).map((id) => ({
     id,
-    title: approval.kind === "extension" && id === "once" ? "Approve" : ACTION_TITLES[id] ?? id,
+    title: approval.kind === "extension" && id === "once" ? "Approve" : (ACTION_TITLES[id] ?? id),
   }));
 }
 

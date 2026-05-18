@@ -45,7 +45,7 @@ function waitForClose(ws: WebSocket): Promise<{ code: number; reason: string }> 
 async function waitForEndpoint(
   harness: BridgeHarness,
   browserId = "browser-1",
-  panelId = "panel-1",
+  panelId = "panel-1"
 ): Promise<NonNullable<ReturnType<CdpBridge["getCdpEndpoint"]>>> {
   const deadline = Date.now() + 1_000;
   while (Date.now() < deadline) {

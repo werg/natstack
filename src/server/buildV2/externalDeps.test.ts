@@ -87,7 +87,7 @@ describe("collectTransitiveExternalDeps", () => {
     const extension = makeNode(
       "@workspace-extensions/image-service",
       { "@natstack/shared": "workspace:*" },
-      ["@natstack/shared"],
+      ["@natstack/shared"]
     );
     graph.addNode(shared);
     graph.addNode(extension);
@@ -112,7 +112,7 @@ describe("collectTransitiveExternalDeps", () => {
           dependencies: {
             "@silvia-odwyer/photon-node": "^0.3.4",
           },
-        }),
+        })
       );
 
       const graph = new PackageGraph();
@@ -145,7 +145,7 @@ describe("collectTransitiveExternalDeps", () => {
           dependencies: {
             "@silvia-odwyer/photon-node": "^0.3.4",
           },
-        }),
+        })
       );
 
       const graph = new PackageGraph();

@@ -413,7 +413,7 @@ function packageJsonPathForSpecifier(specifier: string, nodePaths: string[]): st
   const parts = specifier.split("/");
   const packagePath = specifier.startsWith("@")
     ? path.join(parts[0] ?? "", parts[1] ?? "")
-    : parts[0] ?? "";
+    : (parts[0] ?? "");
   for (const root of nodePaths) {
     if (!root) continue;
     const candidate = path.join(root, packagePath, "package.json");
@@ -451,12 +451,14 @@ function explainExtensionDep(
   mode: ExtensionDependencyMode,
   external: boolean,
   format: ClassifiedExtensionDep["format"],
-  reasons: string[],
+  reasons: string[]
 ): string {
   if (mode === "external") return `${name} is externalized because dependencyMode is "external".`;
   if (mode === "bundle") return `${name} is bundled because dependencyMode is "bundle".`;
-  if (reasons.includes("native")) return `${name} is externalized because it contains native bindings.`;
-  if (reasons.includes("wasm-asset")) return `${name} is externalized because it contains WASM assets.`;
+  if (reasons.includes("native"))
+    return `${name} is externalized because it contains native bindings.`;
+  if (reasons.includes("wasm-asset"))
+    return `${name} is externalized because it contains WASM assets.`;
   if (reasons.includes("missing-package-json")) {
     return `${name} is bundled by default, but its package.json was not found during classification.`;
   }
@@ -469,54 +471,60 @@ function explainExtensionDep(
 export function classifyExtensionDeps(
   deps: Record<string, string>,
   nodePaths: string[],
-  mode: ExtensionDependencyMode,
+  mode: ExtensionDependencyMode
 ): ClassifiedExtensionDep[] {
-  return Object.entries(deps).sort(([a], [b]) => a.localeCompare(b)).map(([name, version]) => {
-    const pkgJsonPath = packageJsonPathForSpecifier(name, nodePaths);
-    const reasons: string[] = [];
-    let format: ClassifiedExtensionDep["format"] = "unknown";
-    if (pkgJsonPath) {
-      try {
-        const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as {
-          type?: string;
-          main?: string;
-          module?: string;
-          binary?: unknown;
-          gypfile?: unknown;
-        };
-        format = pkg.type === "module" ? "esm" : "cjs";
-        const packageDir = path.dirname(pkgJsonPath);
-        if (pkg.binary || pkg.gypfile || hasFileWithExtension(packageDir, new Set([".node"]))) {
-          reasons.push("native");
+  return Object.entries(deps)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, version]) => {
+      const pkgJsonPath = packageJsonPathForSpecifier(name, nodePaths);
+      const reasons: string[] = [];
+      let format: ClassifiedExtensionDep["format"] = "unknown";
+      if (pkgJsonPath) {
+        try {
+          const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as {
+            type?: string;
+            main?: string;
+            module?: string;
+            binary?: unknown;
+            gypfile?: unknown;
+          };
+          format = pkg.type === "module" ? "esm" : "cjs";
+          const packageDir = path.dirname(pkgJsonPath);
+          if (pkg.binary || pkg.gypfile || hasFileWithExtension(packageDir, new Set([".node"]))) {
+            reasons.push("native");
+          }
+          if (hasFileWithExtension(packageDir, new Set([".wasm"]))) {
+            reasons.push("wasm-asset");
+          }
+        } catch {
+          reasons.push("unreadable-package-json");
         }
-        if (hasFileWithExtension(packageDir, new Set([".wasm"]))) {
-          reasons.push("wasm-asset");
-        }
-      } catch {
-        reasons.push("unreadable-package-json");
+      } else {
+        reasons.push("missing-package-json");
       }
-    } else {
-      reasons.push("missing-package-json");
-    }
 
-    const external = mode === "external"
-      ? true
-      : mode === "bundle"
-        ? false
-        : reasons.includes("native") || reasons.includes("wasm-asset");
+      const external =
+        mode === "external"
+          ? true
+          : mode === "bundle"
+            ? false
+            : reasons.includes("native") || reasons.includes("wasm-asset");
 
-    return {
-      name,
-      version,
-      external,
-      format,
-      reasons,
-      explanation: explainExtensionDep(name, mode, external, format, reasons),
-    };
-  });
+      return {
+        name,
+        version,
+        external,
+        format,
+        reasons,
+        explanation: explainExtensionDep(name, mode, external, format, reasons),
+      };
+    });
 }
 
-export function depsRecord(classified: ClassifiedExtensionDep[], external: boolean): Record<string, string> {
+export function depsRecord(
+  classified: ClassifiedExtensionDep[],
+  external: boolean
+): Record<string, string> {
   const selected: Record<string, string> = {};
   for (const dep of classified) {
     if (dep.external === external) selected[dep.name] = dep.version;
@@ -527,7 +535,7 @@ export function depsRecord(classified: ClassifiedExtensionDep[], external: boole
 export function analyzeExtensionDependencies(
   deps: Record<string, string>,
   nodePaths: string[],
-  dependencyMode: ExtensionDependencyMode,
+  dependencyMode: ExtensionDependencyMode
 ): ExtensionDependencyDiagnostics {
   const classifiedDeps = classifyExtensionDeps(deps, nodePaths, dependencyMode);
   const runtimeExternalDeps = depsRecord(classifiedDeps, true);
@@ -537,7 +545,7 @@ export function analyzeExtensionDependencies(
     notes.push(dep.explanation);
     if (dep.external && dep.format === "cjs") {
       notes.push(
-        `${dep.name} is external CommonJS. Generated ESM code should import it with a default import; named imports fail fast at build time.`,
+        `${dep.name} is external CommonJS. Generated ESM code should import it with a default import; named imports fail fast at build time.`
       );
     }
   }
@@ -549,7 +557,7 @@ export function analyzeExtensionDependencies(
 
 function createExtensionCjsShimPlugin(
   outdir: string,
-  deps: ClassifiedExtensionDep[],
+  deps: ClassifiedExtensionDep[]
 ): esbuild.Plugin | null {
   const cjsExternalDeps = deps.filter((dep) => dep.external && dep.format === "cjs");
   if (cjsExternalDeps.length === 0) return null;
@@ -1080,7 +1088,11 @@ export async function buildUnit(
   commitMap?: Map<string, string>,
   options?: BuildUnitOptions
 ): Promise<BuildResult> {
-  const sourcemap = options?.library ? false : (node.kind === "extension" ? true : node.manifest.sourcemap !== false);
+  const sourcemap = options?.library
+    ? false
+    : node.kind === "extension"
+      ? true
+      : node.manifest.sourcemap !== false;
   const effectiveEv = options?.library
     ? `${ev}:lib:${createHash("sha256")
         .update(JSON.stringify(options.externals ?? []))
@@ -1088,7 +1100,7 @@ export async function buildUnit(
         .slice(0, 12)}`
     : node.kind === "extension"
       ? `${ev}:extension-runtime-abi:${EXTENSION_RUNTIME_ABI_VERSION}`
-    : ev;
+      : ev;
   const buildKey = computeBuildKey(node.name, effectiveEv, sourcemap);
 
   // Check store first
@@ -1252,7 +1264,7 @@ function storeSimpleBuild(
   node: GraphNode,
   ev: string,
   sourcemap: boolean,
-  extraMetadata: Partial<BuildMetadata> = {},
+  extraMetadata: Partial<BuildMetadata> = {}
 ): BuildResult {
   const artifacts: BuildArtifacts = { bundle };
   const metadata: BuildMetadata = {
@@ -1804,7 +1816,7 @@ async function buildExtension(
   buildKey: string,
   graph: PackageGraph,
   workspaceRoot: string,
-  sourceRoot: string,
+  sourceRoot: string
 ): Promise<BuildResult> {
   const env = await prepareBuildEnv(node, buildKey, graph, workspaceRoot, sourceRoot);
   const { outdir, entryFile, nodePaths, resolveDir } = env;
@@ -1821,11 +1833,11 @@ async function buildExtension(
   const dependencyDiagnostics = analyzeExtensionDependencies(
     env.externalDeps,
     nodePaths,
-    dependencyMode,
+    dependencyMode
   );
   const { classifiedDeps, runtimeExternalDeps } = dependencyDiagnostics;
   const dedupePackages = normalizeManifestSpecList(
-    extractedManifest["dedupeModules"] as string[] | undefined,
+    extractedManifest["dedupeModules"] as string[] | undefined
   );
 
   const plugins: esbuild.Plugin[] = [
@@ -1923,7 +1935,7 @@ async function smokeTestExtensionBuild(
   node: GraphNode,
   details: {
     dependencyDiagnostics: ExtensionDependencyDiagnostics;
-  },
+  }
 ): Promise<void> {
   const smokeDir = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-extension-smoke-"));
   const smokeScript = path.join(smokeDir, "smoke.mjs");
@@ -1932,8 +1944,8 @@ async function smokeTestExtensionBuild(
       smokeScript,
       generateExtensionSmokeScript(
         result.bundlePath,
-        Object.keys(details.dependencyDiagnostics.runtimeExternalDeps),
-      ),
+        Object.keys(details.dependencyDiagnostics.runtimeExternalDeps)
+      )
     );
     await execFileAsync(process.execPath, [smokeScript], {
       cwd: result.dir,
@@ -1943,13 +1955,15 @@ async function smokeTestExtensionBuild(
     });
   } catch (err) {
     const diagnostics = details.dependencyDiagnostics;
-    const depSummary = diagnostics.classifiedDeps.map((dep) =>
-      `${dep.name}@${dep.version}:${dep.external ? "external" : "bundled"}:${dep.format}`
-      + (dep.reasons.length ? `(${dep.reasons.join(",")})` : "")
+    const depSummary = diagnostics.classifiedDeps.map(
+      (dep) =>
+        `${dep.name}@${dep.version}:${dep.external ? "external" : "bundled"}:${dep.format}` +
+        (dep.reasons.length ? `(${dep.reasons.join(",")})` : "")
     );
-    const stderr = typeof (err as { stderr?: unknown }).stderr === "string"
-      ? `\nstderr=${(err as { stderr: string }).stderr.trim()}`
-      : "";
+    const stderr =
+      typeof (err as { stderr?: unknown }).stderr === "string"
+        ? `\nstderr=${(err as { stderr: string }).stderr.trim()}`
+        : "";
     const smokeError = new Error(
       [
         `Extension smoke test failed for ${node.name}: ${err instanceof Error ? err.message : String(err)}`,
@@ -1959,7 +1973,7 @@ async function smokeTestExtensionBuild(
         `classifiedDeps=${depSummary.join(";") || "none"}`,
         `diagnostics=${diagnostics.notes.join(" | ")}`,
         stderr,
-      ].join("\n"),
+      ].join("\n")
     );
     if (err instanceof Error) {
       (smokeError as Error & { cause?: unknown }).cause = err;
@@ -2060,7 +2074,10 @@ async function refreshCachedExtensionRuntimeDeps(result: BuildResult): Promise<v
   }
   if (result.metadata.runtimeDepsKey !== runtimeDeps.key) {
     result.metadata.runtimeDepsKey = runtimeDeps.key;
-    fs.writeFileSync(path.join(result.dir, "metadata.json"), JSON.stringify(result.metadata, null, 2));
+    fs.writeFileSync(
+      path.join(result.dir, "metadata.json"),
+      JSON.stringify(result.metadata, null, 2)
+    );
   }
 }
 
@@ -2077,10 +2094,14 @@ function extensionRuntimeDepsResolvable(bundlePath: string, deps: string[]): boo
   }
 }
 
-function linkExtensionRuntimeDeps(buildDir: string, nodeModulesDir: string, extensionName: string): void {
+function linkExtensionRuntimeDeps(
+  buildDir: string,
+  nodeModulesDir: string,
+  extensionName: string
+): void {
   if (!fs.existsSync(nodeModulesDir)) {
     throw new Error(
-      `Extension runtime dependencies for ${extensionName} are missing: ${nodeModulesDir}`,
+      `Extension runtime dependencies for ${extensionName} are missing: ${nodeModulesDir}`
     );
   }
   const link = path.join(buildDir, "node_modules");
@@ -2110,7 +2131,7 @@ function linkExtensionRuntimeDeps(buildDir: string, nodeModulesDir: string, exte
     throw new Error(
       `Failed to link extension runtime dependencies for ${extensionName}: ${
         err instanceof Error ? err.message : String(err)
-      }`,
+      }`
     );
   }
 }
