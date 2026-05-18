@@ -14,6 +14,7 @@
 
 import { getDetailedActionDescription } from "@natstack/pubsub";
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
+import type { RunnerEvent } from "@natstack/harness";
 import type { ToolCallPayload, ToolExecutionState } from "@workspace/agentic-core";
 
 import { truncateResult } from "./action-data.js";
@@ -70,7 +71,7 @@ export function createInitialProjectorState(): ProjectorState {
  * Pi event traces.
  */
 export function piEventToChannelOps(
-  event: AgentEvent,
+  event: RunnerEvent,
   state: ProjectorState,
   allocMsgId: () => string,
 ): { newState: ProjectorState; ops: ChannelOp[] } {
@@ -135,6 +136,37 @@ export function piEventToChannelOps(
       return {
         newState: replaceToolCall(state, toolCallId, { ...record, payload: nextPayload }),
         ops: [{ kind: "update", msgId: record.msgId, content: JSON.stringify(nextPayload) }],
+      };
+    }
+
+    case "session_compact": {
+      const count = event.compactionEntry.tokensBefore;
+      const msgId = allocMsgId();
+      return {
+        newState: state,
+        ops: [{
+          kind: "send",
+          msgId,
+          content: `Context compacted: ${count} tokens summarized`,
+          contentType: "system",
+        }, { kind: "complete", msgId }],
+      };
+    }
+
+    case "system_event": {
+      if (event.kind !== "orphan_file_mutation_intent") {
+        return { newState: state, ops: [] };
+      }
+      const msgId = allocMsgId();
+      const suffix = event.path ? `: ${event.path}` : "";
+      return {
+        newState: state,
+        ops: [{
+          kind: "send",
+          msgId,
+          content: `Recovered incomplete file mutation${suffix}`,
+          contentType: "system",
+        }, { kind: "complete", msgId }],
       };
     }
 
@@ -435,7 +467,7 @@ export class ContentBlockProjector {
    * fired. (Mid-turn block events continue streaming normally; only the
    * terminal event triggers the sweep.)
    */
-  handleEvent(event: AgentEvent): Promise<void> {
+  handleEvent(event: RunnerEvent): Promise<void> {
     const { newState, ops } = piEventToChannelOps(event, this.state, this.allocMsgId);
     this.state = newState;
     for (const op of ops) this.dispatch(op);

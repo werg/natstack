@@ -7,10 +7,11 @@ import {
   type TurnDispatcherProjector,
   type TurnDispatcherRunner,
 } from "./turn-dispatcher.js";
+import type { RunnerTurnInput } from "@natstack/harness";
 
 // ─── Fakes ───────────────────────────────────────────────────────────────────
 
-/** Deferred Promise — lets tests drive runTurnMessage's resolution timing. */
+/** Deferred Promise — lets tests drive prompt's resolution timing. */
 function deferred<T = void>(): {
   promise: Promise<T>;
   resolve: (value: T) => void;
@@ -28,14 +29,14 @@ function deferred<T = void>(): {
 interface FakeRunnerState {
   runner: TurnDispatcherRunner;
   emit: (event: AgentEvent) => void;
-  /** Active runTurnMessage calls in order. Each entry exposes the msg and a
-   *  deferred that the test resolves/rejects to simulate pi-core completion. */
+  /** Active prompt calls in order. Each entry exposes the input and a
+   *  deferred that the test resolves/rejects to simulate harness completion. */
   runTurnCalls: Array<{
-    msg: AgentMessage;
+    msg: AgentMessage & RunnerTurnInput;
     deferred: ReturnType<typeof deferred<void>>;
   }>;
   continueCalls: Array<ReturnType<typeof deferred<void>>>;
-  steerCalls: AgentMessage[];
+  steerCalls: Array<AgentMessage & RunnerTurnInput>;
   clearSteerCount: number;
   unsubscribed: boolean;
 }
@@ -59,9 +60,9 @@ function makeRunner(): FakeRunnerState {
         listener = null;
       };
     },
-    runTurnMessage(msg) {
+    prompt(msg) {
       const d = deferred<void>();
-      state.runTurnCalls.push({ msg, deferred: d });
+      state.runTurnCalls.push({ msg: msg as AgentMessage & RunnerTurnInput, deferred: d });
       return d.promise;
     },
     continueAgent() {
@@ -69,11 +70,13 @@ function makeRunner(): FakeRunnerState {
       state.continueCalls.push(d);
       return d.promise;
     },
-    steerMessage(msg) {
-      state.steerCalls.push(msg);
+    steer(msg) {
+      state.steerCalls.push(msg as AgentMessage & RunnerTurnInput);
+      return Promise.resolve();
     },
-    clearSteeringQueue() {
+    abort() {
       state.clearSteerCount++;
+      return Promise.resolve({ clearedSteer: [], clearedFollowUp: [] });
     },
   };
   return state;
@@ -89,12 +92,12 @@ function makeProjector(): TurnDispatcherProjector & { closeAllCount: number } {
   return projector;
 }
 
-function makeMsg(tag: string): AgentMessage {
+function makeMsg(tag: string): AgentMessage & RunnerTurnInput {
   return {
     role: "user",
     content: tag,
     timestamp: Date.now(),
-  } as AgentMessage;
+  } as AgentMessage & RunnerTurnInput;
 }
 
 function agentStart(): AgentEvent {
@@ -128,7 +131,7 @@ async function flush(): Promise<void> {
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe("TurnDispatcher — idle submission", () => {
-  it("routes an idle submit to runTurnMessage with the exact AgentMessage", async () => {
+  it("routes an idle submit to prompt with the exact RunnerTurnInput", async () => {
     const runner = makeRunner();
     const projector = makeProjector();
     const typing: boolean[] = [];
@@ -208,7 +211,7 @@ describe("TurnDispatcher — idle submission", () => {
 });
 
 describe("TurnDispatcher — mid-run steer", () => {
-  it("routes a submit during an active run to steerMessage", async () => {
+  it("routes a submit during an active run to steer", async () => {
     const runner = makeRunner();
     const d = new TurnDispatcher({
       runner: runner.runner,
@@ -504,7 +507,7 @@ describe("TurnDispatcher — dispose", () => {
     d.submit(makeMsg("a"));
     d.submit(makeMsg("b"));
     await flush();
-    // drainLoop is now awaiting runTurnMessage(a); b is in pending.
+    // drainLoop is now awaiting prompt(a); b is in pending.
 
     d.dispose();
     // Pretend pi-core eventually finishes (post-dispose). drainLoop's
@@ -551,7 +554,7 @@ describe("TurnDispatcher — reset edge paths", () => {
 
     d.reset();
     d.reset();
-    // Each reset calls clearSteeringQueue unconditionally — that's fine,
+    // Each reset calls abort unconditionally — that's fine,
     // the operation is idempotent, but this test documents the behavior.
     expect(runner.clearSteerCount).toBe(2);
   });

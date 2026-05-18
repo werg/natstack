@@ -9,6 +9,7 @@
 
 import { describe, it, expect } from "vitest";
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
+import type { RunnerEvent } from "@natstack/harness";
 import {
   ContentBlockProjector,
   type ChannelOp,
@@ -72,7 +73,7 @@ function makeAllocator(): () => string {
   return () => `m${++n}`;
 }
 
-function runTrace(events: AgentEvent[]): ChannelOp[] {
+function runTrace(events: RunnerEvent[]): ChannelOp[] {
   let state: ProjectorState = createInitialProjectorState();
   const alloc = makeAllocator();
   const allOps: ChannelOp[] = [];
@@ -219,6 +220,34 @@ function agentEnd(stopReason?: "stop" | "error" | "aborted" | "toolUse" | "lengt
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
+
+describe("piEventToChannelOps — compaction banner", () => {
+  it("projects a compaction event as a one-shot banner send → complete", () => {
+    const compaction: RunnerEvent = {
+      type: "session_compact",
+      fromHook: false,
+      compactionEntry: {
+        type: "compaction",
+        id: "cmp-1",
+        parentId: "msg-1",
+        timestamp: new Date().toISOString(),
+        summary: "summary",
+        firstKeptEntryId: "msg-1",
+        tokensBefore: 47,
+      },
+    };
+    const ops = runTrace([compaction]);
+    expect(ops).toEqual([
+      {
+        kind: "send",
+        msgId: "m1",
+        content: "Context compacted: 47 tokens summarized",
+        contentType: "system",
+      },
+      { kind: "complete", msgId: "m1" },
+    ]);
+  });
+});
 
 describe("piEventToChannelOps — text-only turn", () => {
   it("streams a single text block via send → update → complete", () => {
@@ -531,6 +560,57 @@ describe("ContentBlockProjector", () => {
     const kinds = sink.ops.map((o) => o.kind);
     // 3 completes, one per open block.
     expect(kinds.filter((k) => k === "complete")).toHaveLength(3);
+  });
+
+  it("handleEvent's returned promise resolves only after all dispatched ops land", async () => {
+    // Simulate a slow channel sink: every op waits on a shared barrier so we
+    // can prove the promise returned by handleEvent(agent_end) does NOT
+    // resolve until each preceding send/update/complete has actually run.
+    let barrierResolve: () => void = () => {};
+    const barrier = new Promise<void>((r) => {
+      barrierResolve = r;
+    });
+    const opsLanded: string[] = [];
+    const sink: ProjectorSink = {
+      async send(msgId) {
+        await barrier;
+        opsLanded.push(`send:${msgId}`);
+      },
+      async update(msgId) {
+        await barrier;
+        opsLanded.push(`update:${msgId}`);
+      },
+      async complete(msgId) {
+        await barrier;
+        opsLanded.push(`complete:${msgId}`);
+      },
+      async error() {},
+    };
+    const projector = new ContentBlockProjector(sink, makeAllocator());
+
+    // Fire a complete trace; only await on the final agent_end promise.
+    projector.handleEvent(textStart(0));
+    projector.handleEvent(textDelta(0, "hi"));
+    projector.handleEvent(textEnd(0));
+    let endSettled = false;
+    const endPromise = projector
+      .handleEvent(agentEnd("stop"))
+      .then(() => {
+        endSettled = true;
+      });
+
+    // Let microtasks run; agent_end's chain must still be blocked on the barrier.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(endSettled).toBe(false);
+    expect(opsLanded).toEqual([]);
+
+    // Release the barrier; now agent_end's pendingOp chain can complete.
+    barrierResolve();
+    await endPromise;
+
+    // All sink writes finished before the agent_end-returned promise did.
+    expect(opsLanded).toEqual(["send:m1", "update:m1", "complete:m1"]);
   });
 
   it("closeAll skips tool calls already in terminal state", async () => {

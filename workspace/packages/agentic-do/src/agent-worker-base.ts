@@ -29,8 +29,8 @@
  *
  * Message dispatch flow (normal turn):
  *   onChannelEvent → refreshRoster → getOrCreateRunner → resizeAttachments
- *     → runner.buildUserMessage → TurnDispatcher.submit
- *   TurnDispatcher routes to runTurnMessage (idle) or steerMessage (mid-run);
+ *     → TurnDispatcher.submit
+ *   TurnDispatcher routes to prompt (idle) or steer (mid-run);
  *   typing indicator reflects `running || pending || pendingSteered > 0`.
  */
 
@@ -52,6 +52,10 @@ import {
   type ThinkingLevel,
   type SystemPromptMode,
   DispatchedError,
+  GadSessionStorage,
+  AgentWorkerError,
+  type RunnerEvent,
+  type TurnSnapshot,
 } from "@natstack/harness";
 import type { AgentEvent, AgentMessage, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { getModel as getPiModel, type ImageContent } from "@earendil-works/pi-ai";
@@ -80,26 +84,12 @@ function isExpectedTestServerFailure(error: unknown): boolean {
   return String(error).includes("test-server.invalid") || String(cause).includes("test-server.invalid");
 }
 
-function isGadConflict(error: unknown): boolean {
-  return /\bgad (?:head|state) conflict\b/.test(String(error));
-}
-
 function isTranscriptShapeError(error: unknown): boolean {
+  // Trigger now flows through the adapter's TranscriptShapeError. Fall back
+  // to the legacy string sniff for any code path that still raises a bare
+  // Error with the historical message ("Malformed agent transcript: ...").
+  if (error instanceof Error && error.name === "TranscriptShapeError") return true;
   return /\bMalformed (?:agent|GAD) (?:append|transcript)\b/.test(String(error));
-}
-
-interface GadAppendRequest {
-  workspaceId?: string | null;
-  branchId: string;
-  expectedTrajectoryHash?: string | null;
-  expectedStateHash?: string | null;
-  items: Array<Record<string, unknown>>;
-}
-
-interface GadBranchHead {
-  branchId: string;
-  headTrajectoryHash: string | null;
-  headStateHash: string;
 }
 
 export interface ModelCredentialSummary {
@@ -380,7 +370,7 @@ interface AgentAbortContext {
 }
 
 export abstract class AgentWorkerBase extends DurableObjectBase {
-  static override schemaVersion = 11;
+  static override schemaVersion = 12;
 
   protected identity: DOIdentity;
   protected subscriptions: SubscriptionManager;
@@ -409,17 +399,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   /** Dedup inline credential prompts per channel/provider while this DO is alive. */
   private credentialPromptCardsEmitted = new Set<string>();
 
-  /** Materialized gad message cache; execution-local only. */
-  private messageCache = new Map<string, AgentMessage[]>();
-
   /** Channels with structurally invalid transcript state. Fail closed and
    *  surface one visible error instead of repeatedly reprocessing the same
    *  malformed history. */
   private transcriptPoisonedChannels = new Map<string, string>();
   private transcriptPoisonNotified = new Set<string>();
-
-  /** Pi can execute tools in parallel, while GAD branches have a single immutable head. */
-  private gadAppendQueue = new Map<string, Promise<unknown>>();
 
   /** Phase 0D: Transient poison message tracker. Resets on hibernation. */
   private failedEvents = new Map<number, number>();
@@ -514,7 +498,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
    * PiRunner passes this directly to `pi-ai.getModel(provider, modelId)`.
    */
   protected getModel(): string {
-    throw new Error("AgentWorkerBase subclasses must override getModel()");
+    throw new AgentWorkerError("invalid_state", "AgentWorkerBase subclasses must override getModel()");
   }
 
   protected getThinkingLevel(): ThinkingLevel {
@@ -538,7 +522,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       if (!credential) {
         await this.recordModelCredentialInterruption(channelId, providerId, modelBaseUrl);
         await this.emitModelCredentialRequiredCard(channelId, providerId, modelBaseUrl);
-        throw new Error(
+        throw new AgentWorkerError(
+          "auth",
           `No URL-bound model credential is configured for model provider: ${providerId}`,
         );
       }
@@ -900,7 +885,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     this.dispatches.deleteForChannel(channelId);
     this.subscriptions.deleteSubscription(channelId);
-    this.messageCache.delete(channelId);
     this.transcriptPoisonedChannels.delete(channelId);
     this.transcriptPoisonNotified.delete(channelId);
 
@@ -1059,23 +1043,45 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     if (existing) return existing.runner;
 
     await this.ensureGadBranch(channelId);
-    const initialMessages = await this.loadMessages(channelId);
 
-    const runner = new PiRunner({
+    // Build the GadSessionStorage adapter (Phase 1). The runner owns its
+    // own `Session<GadSessionMetadata>` backed by this adapter; the worker
+    // no longer maintains a messageCache or intercepts gad RPCs.
+    const gadSessionStorage = new GadSessionStorage({
+      rpc: { call: (target, method, ...args) => this.rpc.call(target, method, ...args) },
+      branchId: gadBranchIdForChannel(channelId),
+      channelId,
+      contextId: this.subscriptions.getContextId(channelId),
+      onTranscriptShapeError: (err) => {
+        // Best-effort, fire-and-forget; the adapter re-throws, the caller
+        // surfaces the error to its own catch path. We surface the visible
+        // card here so the user sees it once.
+        void this.handleTranscriptShapeError(channelId, err);
+      },
+    });
+
+    // Build options as a strongly-typed legacy PiRunnerOptions object,
+    // then add the new Phase-1 fields (`gadSessionStorage`,
+    // `onPrepareNextTurn`) via a single cast at construction. This keeps
+    // every callback parameter typed while letting us pass new options
+    // before the PiRunner type definition is updated upstream.
+    const runnerOptions = {
       rpc: {
         call: <T = unknown>(target: string, method: string, ...args: unknown[]): Promise<T> => {
-          if (target === "main" && method === "gad.appendGadTrajectoryBatch") {
-            return this.enqueueGadAppend(channelId, () =>
-              this.appendGadTrajectoryWithRetry(channelId, args[0] as GadAppendRequest)
-            ) as Promise<T>;
-          }
           return this.rpc.call<T>(target, method, ...args);
         },
       },
       fs: this.fs,
       uiCallbacks: this.buildUICallbacks(channelId),
       rosterCallback: () => this.buildRoster(channelId),
-      callMethodCallback: (toolCallId, handle, method, args, signal, onStreamUpdate) =>
+      callMethodCallback: (
+        toolCallId: string,
+        handle: string,
+        method: string,
+        args: unknown,
+        signal: AbortSignal | undefined,
+        onStreamUpdate?: (content: unknown) => void,
+      ) =>
         this.invokeChannelMethod(
           channelId,
           toolCallId,
@@ -1085,14 +1091,17 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           signal,
           onStreamUpdate,
         ),
-      askUserCallback: (toolCallId, params, signal) =>
+      askUserCallback: (
+        toolCallId: string,
+        params: AskUserParams,
+        signal: AbortSignal | undefined,
+      ) =>
         this.askUser(channelId, toolCallId, params, signal),
       model: this.getModel(),
       getApiKey: this.getApiKeyForChannel(channelId),
       thinkingLevel: this.getThinkingLevel(),
       ...this.getRunnerPromptConfig(channelId),
       approvalLevel: this.getApprovalLevel(channelId),
-      initialMessages,
       gad: {
         branchId: gadBranchIdForChannel(channelId),
         channelId,
@@ -1102,71 +1111,49 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           workerRef: this.identity.refOrNull,
         },
       },
-      onTrajectoryAdvanced: async () => {
-        try {
-          const materialized = await this.loadMessages(channelId, { refresh: true });
-          runner.replaceHistory(runner.trimTrailingAbortedAssistant(materialized));
-          await this.drainDeferredDispatchesFor(channelId);
-        } catch (err) {
-          if (isTranscriptShapeError(err)) {
-            await this.handleTranscriptShapeError(channelId, err);
-            return;
-          }
-          throw err;
-        }
+    };
+    const runner = new PiRunner({
+      ...runnerOptions,
+      // Phase 1: hand the runner its session storage adapter. The new
+      // PiRunner uses `sessionStorage` (typed `GadSessionStorage`).
+      sessionStorage: gadSessionStorage,
+      // Phase 4: the only async-between-turns seam. The runner invokes
+      // this between turns; the worker refreshes the roster and
+      // re-evaluates model / thinking-level then.
+      onPrepareNextTurn: async (snapshot) => {
+        await this.prepareNextTurnHook(channelId, snapshot);
       },
     });
 
     await runner.init();
 
-    // Warm-restore: no synthetic snapshot needed — the channel already has
-    // persisted messages that replay on panel connect.
-
     const projector = this.getOrCreateProjector(channelId);
     runner.subscribe((event) => projector.handleEvent(event));
 
-    // Surface terminal-error agent runs as a visible system message and a
-    // worker-log line. Without this, a thrown getApiKey (e.g. "Sign in
-    // required", "Permission required") ends the turn silently — the chat UI
-    // just sees typing stop, and the terminal sees nothing. pi-agent-core's
-    // `handleRunFailure` attaches the thrown error message to the final
-    // assistant message as `errorMessage`; we relay that to both surfaces.
-    runner.subscribe((event) => {
+    // Phase 7: register the only remaining piece of the legacy terminal-error
+    // subscriber — the aborted-turn logging branch (NatStack-specific). The
+    // upstream lifecycle now emits a normal `message_*` sequence for error
+    // terminations, so the projector handles those via the standard
+    // message-event path.
+    //
+    // Register on the typed `hooks` bus (post-Phase 6).
+    const abortedTurnListener = (event: RunnerEvent) => {
       if (event.type !== "agent_end") return;
       const messages = (event as { messages?: unknown[] }).messages;
       if (!Array.isArray(messages) || messages.length === 0) return;
       const last = messages[messages.length - 1] as
         | { role?: string; stopReason?: string; errorMessage?: string }
         | null;
-      if (!last || last.role !== "assistant") return;
-      if (last.stopReason === "aborted") {
-        const msg = last.errorMessage ?? "Turn aborted.";
-        const context = this.abortContexts.get(channelId);
-        this.abortContexts.delete(channelId);
-        console.log(
-          `[AgentWorkerBase] Agent turn aborted on channel=${channelId}: ` +
-          `reason=${context?.reason ?? "unknown"}${context?.detail ? ` detail=${context.detail}` : ""}; ${msg}`,
-        );
-        return;
-      }
-      if (last.stopReason !== "error") return;
-      const msg = last.errorMessage ?? "Turn failed.";
-      if (credentialRequiredMessage(msg)) {
-        this.emitModelCredentialRequiredCard(channelId, this.getModelProviderId(), this.getModelBaseUrl());
-        return;
-      }
-      console.error(`[AgentWorkerBase] Agent turn ended with error on channel=${channelId}: ${msg}`);
-      const participantId = this.subscriptions.getParticipantId(channelId);
-      if (!participantId) return;
-      const channel = this.createChannelClient(channelId);
-      const messageId = crypto.randomUUID();
-      void channel.send(participantId, messageId, msg, {
-        contentType: "error",
-        persist: true,
-      }).catch((err) => {
-        console.error(`[AgentWorkerBase] Failed to emit turn-error message for channel=${channelId}:`, err);
-      });
-    });
+      if (!last || last.role !== "assistant" || last.stopReason !== "aborted") return;
+      const msg = last.errorMessage ?? "Turn aborted.";
+      const context = this.abortContexts.get(channelId);
+      this.abortContexts.delete(channelId);
+      console.log(
+        `[AgentWorkerBase] Agent turn aborted on channel=${channelId}: ` +
+        `reason=${context?.reason ?? "unknown"}${context?.detail ? ` detail=${context.detail}` : ""}; ${msg}`,
+      );
+    };
+    runner.hooks.on("event", abortedTurnListener);
 
     this.runners.set(channelId, { runner });
     // Dispatcher self-subscribes to runner events for absorption tracking
@@ -1174,6 +1161,25 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     // (which expects to hand messages to it).
     this.getOrCreateDispatcher(channelId, runner, projector);
     return runner;
+  }
+
+  /**
+   * Phase 4 — the only async-between-turns seam. The runner invokes this
+   * between turns (after one `turn_end`, before the next provider request);
+   * the worker re-reads the channel roster and re-evaluates model /
+   * thinking-level. The hook receives the current `TurnSnapshot` but the
+   * default implementation only needs `channelId`. Subclasses may override.
+   */
+  protected async prepareNextTurnHook(
+    channelId: string,
+    _snapshot: TurnSnapshot,
+  ): Promise<void> {
+    await this.refreshRoster(channelId);
+    // Re-evaluating `getModel`/`getThinkingLevel` is implicit: the runner
+    // picks up new values via the standard getters on its next prompt.
+    // Subclasses that cache may override this hook to invalidate.
+    void this.getModel();
+    void this.getThinkingLevel();
   }
 
   // ── Per-channel projector (Pi events → channel messages) ───────────────
@@ -1266,8 +1272,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       console.error(`[AgentWorkerBase] Transcript shape error on channel=${channelId}: ${detail}`);
       this.dispatchers.get(channelId)?.reset();
       this.abortContexts.set(channelId, { reason: "interrupt-channel", detail: "transcript-shape-error", at: Date.now() });
-      const runner = this.runners.get(channelId)?.runner as { abortAgent?: () => void } | undefined;
-      runner?.abortAgent?.();
+      const runner = this.runners.get(channelId)?.runner as { abort?: () => Promise<unknown> } | undefined;
+      void runner?.abort?.();
     }
     await this.emitTranscriptShapeError(channelId, existing ?? detail);
   }
@@ -1279,92 +1285,37 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     return true;
   }
 
-  private async loadMessages(channelId: string, opts: { refresh?: boolean } = {}): Promise<AgentMessage[]> {
+  /**
+   * Read the runner's transcript from the Session-backed materialized context.
+   */
+  protected async readRunnerMessages(channelId: string): Promise<AgentMessage[]> {
     if (await this.failIfTranscriptPoisoned(channelId)) {
-      throw new Error(this.transcriptPoisonedChannels.get(channelId));
+      throw new AgentWorkerError(
+        "transcript_shape",
+        this.transcriptPoisonedChannels.get(channelId) ?? "transcript poisoned",
+      );
     }
-    if (!opts.refresh) {
-      const cached = this.messageCache.get(channelId);
-      if (cached) return cached;
-    }
+    const entry = this.runners.get(channelId);
+    if (!entry) return [];
     try {
-      const result = await this.rpc.call<{ messages: AgentMessage[] }>("main", "gad.materializePiMessages", {
-        branchId: gadBranchIdForChannel(channelId),
-      });
-      const messages = validateAgentMessages(result.messages ?? [], `gad.materializePiMessages channel=${channelId}`);
-      this.messageCache.set(channelId, messages);
-      return messages;
+      const runner = entry.runner;
+      if (runner.session) {
+        const ctx = await runner.session.buildContext();
+        return validateAgentMessages(ctx.messages ?? [], `session.buildContext channel=${channelId}`);
+      }
+      const snapshot = await runner.getStateSnapshot();
+      return validateAgentMessages(
+        snapshot.messages,
+        `runner.getStateSnapshot channel=${channelId}`,
+      );
     } catch (err) {
       if (isTranscriptShapeError(err)) {
         await this.handleTranscriptShapeError(channelId, err);
         throw err;
       }
-      const fallback = validateAgentMessages(this.messageCache.get(channelId) ?? [], `messageCache fallback channel=${channelId}`);
-      if (fallback.length > 0) {
-        console.warn(`[AgentWorkerBase] gad.materializePiMessages failed for channel=${channelId}; using cache:`, err);
-      }
-      this.messageCache.set(channelId, fallback);
-      return fallback;
+      console.warn(`[AgentWorkerBase] readRunnerMessages failed for channel=${channelId}:`, err);
     }
-  }
-
-  private async appendGadItems(channelId: string, items: Array<Record<string, unknown>>): Promise<void> {
-    if (items.length === 0) return;
-    if (await this.failIfTranscriptPoisoned(channelId)) return;
-    await this.enqueueGadAppend(channelId, async () => {
-      const head = await this.rpc.call<{
-        branchId: string;
-        headTrajectoryHash: string | null;
-        headStateHash: string;
-      }>("main", "gad.getGadBranchHead", { branchId: gadBranchIdForChannel(channelId) });
-      await this.appendGadTrajectoryWithRetry(channelId, {
-        branchId: head.branchId,
-        expectedTrajectoryHash: head.headTrajectoryHash,
-        expectedStateHash: head.headStateHash,
-        items,
-      });
-      await this.loadMessages(channelId, { refresh: true });
-    }).catch(async (err) => {
-      if (isTranscriptShapeError(err)) {
-        await this.handleTranscriptShapeError(channelId, err);
-        throw err;
-      }
-      if (isExpectedTestServerFailure(err)) return;
-      console.warn(`[AgentWorkerBase] gad append failed for channel=${channelId}:`, err);
-      throw err;
-    });
-  }
-
-  private enqueueGadAppend<T>(channelId: string, fn: () => Promise<T>): Promise<T> {
-    const previous = this.gadAppendQueue.get(channelId) ?? Promise.resolve();
-    const next = previous.catch(() => undefined).then(fn);
-    const tracked = next.catch(() => undefined).finally(() => {
-      if (this.gadAppendQueue.get(channelId) === tracked) this.gadAppendQueue.delete(channelId);
-    });
-    this.gadAppendQueue.set(channelId, tracked);
-    return next;
-  }
-
-  private async appendGadTrajectoryWithRetry(channelId: string, input: GadAppendRequest): Promise<unknown> {
-    let current = input;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        return await this.rpc.call("main", "gad.appendGadTrajectoryBatch", current);
-      } catch (err) {
-        if (!isGadConflict(err) || attempt === 2) throw err;
-        const head = await this.rpc.call<GadBranchHead>("main", "gad.getGadBranchHead", {
-          workspaceId: current.workspaceId ?? null,
-          branchId: current.branchId,
-        });
-        current = {
-          ...current,
-          branchId: head.branchId,
-          expectedTrajectoryHash: head.headTrajectoryHash,
-          expectedStateHash: head.headStateHash,
-        };
-      }
-    }
-    throw new Error(`Failed to append gad trajectory for ${channelId}`);
+    return [];
   }
 
   private async appendAgentContext(channelId: string, event: ChannelEvent): Promise<void> {
@@ -1375,120 +1326,36 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     const content = typeof payload?.["content"] === "string" ? payload["content"] : undefined;
     if (!content) return;
 
-    const messages = await this.loadMessages(channelId);
+    // Ensure the runner exists so its `Session` is the source of truth.
+    const runner = await this.getOrCreateRunner(channelId);
+
     const eventKey = event.id > 0 ? `event:${event.id}` : `message:${event.messageId}`;
-    if (messages.some((message) => {
+
+    // Idempotency: scan existing messages for the marker.
+    const existing = await this.readRunnerMessages(channelId);
+    if (existing.some((message) => {
       const details = (message as { details?: Record<string, unknown> }).details;
       return details?.["__natstack_agent_context_key"] === eventKey;
     })) {
       return;
     }
 
-    const nextMessages: AgentMessage[] = [
-      ...messages,
-      {
-        role: "user",
-        content,
-        timestamp: event.ts ?? Date.now(),
-        details: {
-          __natstack_agent_context: true,
-          __natstack_agent_context_key: eventKey,
-          kind: payload?.["kind"],
-          senderId: event.senderId,
-        },
-      } as AgentMessage,
-    ];
+    const details: Record<string, unknown> = {
+      __natstack_agent_context: true,
+      __natstack_agent_context_key: eventKey,
+      kind: payload?.["kind"],
+      senderId: event.senderId,
+    };
 
-    const savedMessages = await this.saveMessages(channelId, nextMessages);
-    const entry = this.runners.get(channelId);
-    if (entry) entry.runner.replaceHistory(savedMessages);
-  }
+    const timestamp = event.ts ?? Date.now();
+    const newUserMessage = {
+      role: "user",
+      content,
+      timestamp,
+      details,
+    } as AgentMessage;
 
-  private async saveMessages(channelId: string, messages: AgentMessage[]): Promise<AgentMessage[]> {
-    messages = validateAgentMessages(messages, `saveMessages channel=${channelId}`);
-    const previous = validateAgentMessages(this.messageCache.get(channelId) ?? [], `messageCache previous channel=${channelId}`);
-    const items: Array<Record<string, unknown>> = [];
-    for (let i = 0; i < messages.length; i++) {
-      const message = messages[i]!;
-      const role = messageRole(message);
-      const toolCallId = (message as { toolCallId?: string }).toolCallId;
-      const messageId = messageIdFor(i, message);
-      const prior = previous.find((candidate, candidateIndex) =>
-        messageIdFor(candidateIndex, candidate) === messageId &&
-        JSON.stringify(candidate) === JSON.stringify(message)
-      );
-      if (prior) continue;
-      if (role === "toolResult") {
-        if (!toolCallId) {
-          throw new Error(`Malformed agent transcript: toolResult at saveMessages channel=${channelId}[${i}] is missing toolCallId`);
-        }
-        items.push({
-          kind: "tool_result_observed",
-          actor: "worker",
-          messageId,
-          toolCallId,
-          payload: {
-            toolCallId,
-            toolName: (message as { toolName?: string }).toolName ?? toolNameFromMessages(messages, toolCallId),
-            content: (message as { content?: unknown }).content ?? [],
-            details: (message as { details?: unknown }).details ?? null,
-            isError: (message as { isError?: boolean }).isError === true,
-            timestamp: (message as { timestamp?: unknown }).timestamp ?? Date.now(),
-            summary: summarizeUnknownResult((message as { content?: unknown }).content ?? ""),
-          },
-        });
-        continue;
-      }
-      items.push({
-        kind: "message_created",
-        actor: role,
-        messageId,
-        payload: {
-          role,
-          timestamp: (message as { timestamp?: unknown }).timestamp ?? Date.now(),
-          messageIndex: i,
-          details: (message as { details?: unknown }).details ?? null,
-        },
-      });
-      for (const [blockIndex, block] of messageBlocks(message).entries()) {
-        const blockId = `${messageId}:block:${blockIndex}`;
-        const blockToolCallId = toolCallIdFromBlock(block);
-        items.push({
-          kind: "message_block_added",
-          actor: role,
-          messageId,
-          blockId,
-          toolCallId: blockToolCallId,
-          payload: { block, blockIndex },
-        });
-        if (blockToolCallId) {
-          items.push({
-            kind: "tool_call_requested",
-            actor: "assistant",
-            messageId,
-            blockId,
-            toolCallId: blockToolCallId,
-            payload: {
-              block,
-              toolName: toolNameFromBlock(block),
-              parameters: toolParamsFromBlock(block),
-            },
-          });
-        }
-      }
-      items.push({
-        kind: "message_finalized",
-        actor: role,
-        messageId,
-        payload: {
-          stopReason: (message as { stopReason?: unknown }).stopReason ?? null,
-          errorMessage: (message as { errorMessage?: unknown }).errorMessage ?? null,
-        },
-      });
-    }
-    await this.appendGadItems(channelId, items);
-    this.messageCache.set(channelId, messages);
-    return messages;
+    await runner.appendUserMessage(newUserMessage);
   }
 
   private async recordModelCredentialInterruption(
@@ -1496,7 +1363,18 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     providerId: string,
     modelBaseUrl: string,
   ): Promise<void> {
-    const messages = await this.loadMessages(channelId);
+    // Tolerate a missing runner (this method can be called before the
+    // runner is constructed); pass count = 0 in that case.
+    let resumeCount = 0;
+    if (this.runners.has(channelId)) {
+      try {
+        const messages = await this.readRunnerMessages(channelId);
+        resumeCount = messages.length;
+      } catch (err) {
+        // If the read fails (e.g. transcript poisoned), fall back to 0.
+        console.warn(`[AgentWorkerBase] recordModelCredentialInterruption: readRunnerMessages failed:`, err);
+      }
+    }
     this.sql.exec(
       `INSERT OR REPLACE INTO model_credential_interruptions
         (channel_id, provider_id, model_base_url, resume_count, created_at)
@@ -1504,7 +1382,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       channelId,
       providerId,
       modelBaseUrl,
-      messages.length,
+      resumeCount,
       Date.now(),
     );
   }
@@ -1565,13 +1443,13 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   ): Promise<void> {
     const runner = await this.getOrCreateRunner(channelId);
     this.recordAbort(channelId, reason, detail);
-    runner.abortAgent();
+    await runner.abort();
   }
 
   private async recoverDispatchesForChannel(channelId: string): Promise<void> {
     if (this.recoveredChannels.has(channelId)) return;
 
-    const messages = await this.loadMessages(channelId);
+    const messages = await this.readRunnerMessages(channelId);
     const pending = this.dispatches.listForChannel(channelId);
     for (const breadcrumb of pending) {
       if (hasToolResultMessage(messages, breadcrumb.toolCallId)) continue;
@@ -1584,7 +1462,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   private async drainDeferredDispatchesFor(channelId: string): Promise<void> {
     const deferred = this.dispatches.listDeferredForChannel(channelId);
     for (const breadcrumb of deferred) {
-      const messages = await this.loadMessages(channelId);
+      const messages = await this.readRunnerMessages(channelId);
       if (!hasToolResultMessage(messages, breadcrumb.toolCallId)) continue;
       const claimed = this.dispatches.tryClaim(breadcrumb.callId);
       if (!claimed) continue;
@@ -1715,34 +1593,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     } catch (err) {
       this.dispatches.deleteOne(callId);
       this.streamCallbacks.delete(callId);
-      await this.completeGadChannelToolCall(callId, err instanceof Error ? `error: ${err.message}` : `error: ${String(err)}`);
       throw err;
     }
     await this.abortAgentForReason(channelId, "participant-method-dispatch", `${participantHandle}.${method}`);
     return makeDispatchPlaceholder(toolCallId, callId, "tool-call");
-  }
-
-  private async completeGadChannelToolCall(callId: string, summary: string): Promise<void> {
-    const breadcrumb = this.dispatches.peek(callId);
-    if (!breadcrumb) return;
-    try {
-      await this.appendGadItems(breadcrumb.channelId, [{
-        kind: "tool_result_observed",
-        actor: "worker",
-        toolCallId: breadcrumb.toolCallId,
-        payload: {
-          toolCallId: breadcrumb.toolCallId,
-          toolName: breadcrumb.toolName ?? "channel_tool",
-          summary,
-          content: [{ type: "text", text: summary }],
-          details: { dispatchCallId: callId },
-          isError: summary.startsWith("error:"),
-          timestamp: Date.now(),
-        },
-      }]);
-    } catch (err) {
-      console.warn("[AgentWorkerBase] gad tool_result_observed for channel tool failed:", err);
-    }
   }
 
   private async askUser(
@@ -1896,13 +1750,12 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.streamCallbacks.delete(callId);
     const breadcrumb = this.dispatches.peek(callId);
     if (!breadcrumb) return;
-    await this.completeGadChannelToolCall(
-      callId,
-      `${isError ? "error: " : ""}${summarizeUnknownResult(result)}`,
-    );
+    // `tool_result_observed` provenance is written by PiRunner when
+    // `applyResult` replaces the dispatched placeholder with the real
+    // toolResult entry through the Session adapter.
     this.dispatches.bufferResult(callId, result, isError);
 
-    const messages = await this.loadMessages(breadcrumb.channelId);
+    const messages = await this.readRunnerMessages(breadcrumb.channelId);
     if (!hasToolResultMessage(messages, breadcrumb.toolCallId)) return;
 
     const claimed = this.dispatches.tryClaim(callId);
@@ -1930,7 +1783,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     result: unknown,
     isError: boolean,
   ): Promise<void> {
-    let messages = await this.loadMessages(breadcrumb.channelId);
+    let messages = await this.readRunnerMessages(breadcrumb.channelId);
     const timestamp = Date.now();
 
     if (breadcrumb.kind === "approval") {
@@ -2004,8 +1857,17 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     const runner = this.runners.get(breadcrumb.channelId)!.runner;
     messages = runner.trimTrailingAbortedAssistant(messages);
 
-    messages = await this.saveMessages(breadcrumb.channelId, messages);
-    runner.replaceHistory(messages);
+    const toolResultMessage = [...messages].reverse().find((message) => (
+      (message as { role?: string; toolCallId?: string }).role === "toolResult" &&
+      (message as { toolCallId?: string }).toolCallId === breadcrumb.toolCallId
+    ));
+    if (!toolResultMessage) {
+      throw new AgentWorkerError(
+        "invalid_state",
+        `No toolResult message found for ${breadcrumb.toolCallId}`,
+      );
+    }
+    await runner.replaceToolResult(breadcrumb.toolCallId, toolResultMessage);
     this.dispatches.deleteClaimed(breadcrumb.callId, breadcrumb.resolvingToken);
 
     const interruptedAfterDispatch =
@@ -2088,7 +1950,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     const runner = await this.getOrCreateRunner(channelId);
     this.recordAbort(channelId, "ui-prompt-dispatch", kind);
-    runner.abortAgent();
+    await runner.abort();
     const placeholder = makeDispatchPlaceholder(toolCallId, callId, breadcrumbKind);
     throw new DispatchedError(placeholder);
   }
@@ -2153,9 +2015,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     const projector = this.getOrCreateProjector(channelId);
     const input = this.buildTurnInput(event);
     const images = await this.resizeAttachments(channelId, input.attachments);
-    const agentMsg = runner.buildUserMessage(input.content, images);
     const dispatcher = this.getOrCreateDispatcher(channelId, runner, projector);
-    dispatcher.submit(agentMsg, opts);
+    dispatcher.submit({ content: input.content, ...(images ? { images } : {}) }, opts);
   }
 
   /** Resize user-pasted image attachments via the server-side image service.
@@ -2213,7 +2074,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     const providerId = opts?.providerId ?? this.getModelProviderId();
     const interruption = this.getModelCredentialInterruption(channelId, providerId, opts?.modelBaseUrl);
-    const messages = await this.loadMessages(channelId);
+    const messages = await this.readRunnerMessages(channelId);
     const last = messages[messages.length - 1];
     let resumableMessages: AgentMessage[];
     if (isCredentialRequiredAssistantMessage(last)) {
@@ -2231,8 +2092,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       return false;
     }
 
-    resumableMessages = await this.saveMessages(channelId, resumableMessages);
-    entry.runner.replaceHistory(resumableMessages);
+    const messageEntries = (await entry.runner.session?.getEntries())
+      ?.filter((sessionEntry) => sessionEntry.type === "message");
+    const target = messageEntries?.[resumableMessages.length - 1];
+    await entry.runner.session?.moveTo(target?.id ?? null);
     this.clearModelCredentialInterruption(channelId, providerId);
     this.credentialPromptCardsEmitted.delete(`${channelId}::model-credential::${providerId}`);
     const projector = this.getOrCreateProjector(channelId);
@@ -2366,39 +2229,42 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       await this.ensureGadBranch(oldChannelId);
       const oldBranchId = gadBranchIdForChannel(oldChannelId);
       const newBranchId = gadBranchIdForChannel(newChannelId);
-      const head = await this.rpc.call<{ headTrajectoryHash: string | null }>("main", "gad.getGadBranchHead", {
-        branchId: oldBranchId,
-      });
-      let trajectoryHash = head.headTrajectoryHash;
-      let trajectoryId: number | null = null;
+
+      // Phase 1: fork-point resolution uses the envelope-aware
+      // `gad.findBranchEntriesByType` RPC. The legacy `message_id` /
+      // `kind` columns are gone — we now address messages by their
+      // logical chain position (offset within the `message` entries on
+      // this branch's path).
+      let entryId: string | null = null;
       if (forkAtMessageIndex != null) {
-        const chain = await this.rpc.call<Array<Record<string, unknown>>>("main", "gad.listGadBranchTrajectory", {
-          branchId: oldBranchId,
-          limit: null,
-        });
-        const targetMessageId = `msg:${Math.max(0, forkAtMessageIndex - 1)}`;
-        const target = [...chain].reverse().find((row) =>
-          row["message_id"] === targetMessageId && row["kind"] === "message_finalized"
-        ) ?? [...chain].reverse().find((row) => row["message_id"] === targetMessageId);
-        if (target) {
-          trajectoryHash = typeof target["trajectory_hash"] === "string" ? target["trajectory_hash"] : trajectoryHash;
-          trajectoryId = typeof target["trajectory_id"] === "number" ? target["trajectory_id"] : null;
+        const offset = Math.max(0, forkAtMessageIndex - 1);
+        const rows = await this.rpc.call<Array<Record<string, unknown>>>(
+          "main",
+          "gad.findBranchEntriesByType",
+          {
+            branchId: oldBranchId,
+            entryType: "message",
+            offset,
+            limit: 1,
+          },
+        );
+        const first = rows[0];
+        if (first && typeof first["entryId"] === "string") {
+          entryId = first["entryId"];
+        } else if (first && typeof first["entry_id"] === "string") {
+          // Defensive: tolerate either snake_case or camelCase from the
+          // backing RPC during transition.
+          entryId = first["entry_id"] as string;
         }
       }
-      if (!trajectoryHash && trajectoryId == null) {
-        await this.ensureGadBranch(newChannelId);
-        return;
-      }
+
       await this.rpc.call("main", "gad.forkGadBranch", {
         sourceBranchId: oldBranchId,
         newBranchId,
-        trajectoryHash,
-        trajectoryId,
+        entryId,
         channelId: newChannelId,
         contextId: this.subscriptions.getContextId(oldChannelId),
       });
-      this.messageCache.delete(oldChannelId);
-      this.messageCache.delete(newChannelId);
     } catch (err) {
       console.warn(`[AgentWorkerBase] gad fork failed:`, err);
       await this.ensureGadBranch(newChannelId);
@@ -2505,11 +2371,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     const subscriptions = this.sql.exec(`SELECT * FROM subscriptions`).toArray();
     const dispatchedCalls = this.sql.exec(`SELECT * FROM dispatched_calls`).toArray();
     const deliveryCursors = this.sql.exec(`SELECT * FROM delivery_cursor`).toArray();
-    const gadMessageCache = [...this.messageCache.entries()].map(([channelId, messages]) => ({
-      channelId,
-      messages: messages.length,
-    }));
-    return { subscriptions, gadMessageCache, dispatchedCalls, deliveryCursors };
+    return { subscriptions, dispatchedCalls, deliveryCursors };
   }
 
   // Reference SAFE_TOOL_NAMES_DEFAULT to suppress unused-import warnings;
@@ -2570,60 +2432,13 @@ function validateAgentMessages(messages: AgentMessage[], source: string): AgentM
         index,
         toolName: (message as { toolName?: unknown }).toolName,
       });
-      throw new Error(`Malformed agent transcript: toolResult at ${source}[${index}] is missing toolCallId`);
+      throw new AgentWorkerError(
+        "transcript_shape",
+        `Malformed agent transcript: toolResult at ${source}[${index}] is missing toolCallId`,
+      );
     }
   }
   return trimTrailingEmptyAbortedAssistant(messages);
-}
-
-function messageRole(message: AgentMessage | undefined): string {
-  if (!message) return "unknown";
-  return (message as { role?: string }).role ?? "unknown";
-}
-
-function messageIdFor(index: number, message: AgentMessage): string {
-  const existing = (message as { id?: unknown; messageId?: unknown }).id
-    ?? (message as { id?: unknown; messageId?: unknown }).messageId;
-  return typeof existing === "string" ? existing : `msg:${index}`;
-}
-
-function messageBlocks(message: AgentMessage): unknown[] {
-  const content = (message as { content?: unknown }).content;
-  if (typeof content === "string") return [{ type: "text", text: content }];
-  if (Array.isArray(content)) return content;
-  return [];
-}
-
-function toolCallIdFromBlock(block: unknown): string | null {
-  if (!block || typeof block !== "object") return null;
-  const item = block as Record<string, unknown>;
-  return typeof item["id"] === "string"
-    ? item["id"]
-    : typeof item["toolCallId"] === "string"
-      ? item["toolCallId"]
-      : null;
-}
-
-function toolNameFromBlock(block: unknown): string | null {
-  if (!block || typeof block !== "object") return null;
-  const item = block as Record<string, unknown>;
-  return typeof item["name"] === "string"
-    ? item["name"]
-    : typeof item["toolName"] === "string"
-      ? item["toolName"]
-      : null;
-}
-
-function toolParamsFromBlock(block: unknown): Record<string, unknown> | null {
-  if (!block || typeof block !== "object") return null;
-  const item = block as Record<string, unknown>;
-  const params = item["input"] ?? item["arguments"] ?? item["args"];
-  return asJsonRecord(params);
-}
-
-function asJsonRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
 }
 
 function toAgentToolResult(result: unknown): AgentToolResult<any> {
@@ -2642,12 +2457,6 @@ function toAgentToolResult(result: unknown): AgentToolResult<any> {
     content: [{ type: "text", text }],
     details: undefined,
   };
-}
-
-function summarizeUnknownResult(result: unknown): string {
-  const text = typeof result === "string" ? result : JSON.stringify(result) ?? String(result);
-  const compact = text.replace(/\s+/gu, " ").trim();
-  return compact.length > 500 ? `${compact.slice(0, 497)}...` : compact;
 }
 
 function decodeBufferedDispatchResult(json: string): unknown {
