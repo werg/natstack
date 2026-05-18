@@ -1416,6 +1416,31 @@ async function main() {
     });
   }
 
+  {
+    container.register({
+      name: "doDispatch",
+      dependencies: ["workerdManager"],
+      async start(resolve) {
+        const { DODispatch } = await import("./doDispatch.js");
+        const workerdManager = assertPresent(
+          resolve<import("./workerdManager.js").WorkerdManager>("workerdManager")
+        );
+        const doDispatch = new DODispatch();
+        doDispatch.setTokenManager(tokenManager);
+        doDispatch.setGetWorkerdGatewayToken(() => workerdGatewayToken);
+        doDispatch.setGetWorkerdUrl(() => {
+          const port = workerdManager.getPort();
+          if (!port) throw new Error("workerd not running");
+          return `http://127.0.0.1:${port}`;
+        });
+        doDispatch.setEnsureDO((source, className, objectKey) =>
+          workerdManager.ensureDO(source, className, objectKey)
+        );
+        return doDispatch;
+      },
+    });
+  }
+
   // ===========================================================================
   // Panel services, workspace info, PanelHttpServer, FS RPC
   // (extracted to panelRuntimeRegistration.ts)
