@@ -2,6 +2,38 @@
 <html lang="en" style="margin: 0; padding: 0; overflow: hidden">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      Content-Security-Policy: defense-in-depth for the shell renderer.
+
+      The shell runs with `nodeIntegration: true` / `contextIsolation: false`
+      (see src/main/viewManager.ts and GitHub issue #33). That configuration is
+      held safe today by code practices: React JSX escaping, escaped overlay
+      template generation, no `dangerouslySetInnerHTML`, no fetch/WebSocket
+      from the renderer (all I/O routes through IPC), and an empty
+      `additionalArguments`. This CSP enforces those invariants from the page
+      side: no inline scripts, no remote scripts, no network fetches, no
+      iframes/objects/forms. Any future PR that violates them will fail loudly
+      in DevTools rather than silently introduce an XSS sink.
+
+      Notes on each directive:
+        - `default-src 'none'`: strict baseline.
+        - `script-src 'self'`: only the bundled ./renderer/index.js. No eval,
+          no inline scripts. (Node `require()` from the renderer is unaffected
+          by CSP — see issue #33 for why we still want strict script-src.)
+        - `style-src 'self' 'unsafe-inline'`: required for the inline <style>
+          block below, React inline `style={{ }}` props, and Radix Themes.
+        - `img-src 'self' data: blob:`: Radix and React-style inline SVGs may
+          load as data URLs; screenshot/thumbnail blobs flow over IPC.
+        - `font-src 'self' data:`: bundled fonts + inline font fallbacks.
+        - `connect-src 'none'`: shell makes no direct network calls. All RPC
+          flows through Electron IPC, which CSP does not gate.
+        - `base-uri`, `form-action`, `frame-src`, `object-src`, `worker-src`:
+          locked down. The shell has no legitimate need for any of these.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; object-src 'none'; worker-src 'self'"
+    />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>NatStack - Agentic Panel Platform</title>
     <link rel="stylesheet" href="./renderer/index.css" />
