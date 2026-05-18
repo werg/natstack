@@ -85,14 +85,14 @@ function makeCentralData() {
   ];
   return {
     listWorkspaces: vi.fn(() => entries),
-    hasWorkspace: vi.fn((name: string) => entries.some(e => e.name === name)),
+    hasWorkspace: vi.fn((name: string) => entries.some((e) => e.name === name)),
     addWorkspace: vi.fn(),
     removeWorkspace: vi.fn((name: string) => {
-      const idx = entries.findIndex(e => e.name === name);
+      const idx = entries.findIndex((e) => e.name === name);
       if (idx !== -1) entries.splice(idx, 1);
     }),
     touchWorkspace: vi.fn(),
-    getWorkspaceEntry: vi.fn((name: string) => entries.find(e => e.name === name) ?? null),
+    getWorkspaceEntry: vi.fn((name: string) => entries.find((e) => e.name === name) ?? null),
   };
 }
 
@@ -194,7 +194,9 @@ describe("workspace service routing", () => {
 
   it("the obsolete `workspaceInfo` name is not Electron-local", () => {
     // Catches the cleanup regression where someone re-introduces both names.
-    expect((ELECTRON_LOCAL_SERVICE_NAMES as readonly string[]).includes("workspaceInfo")).toBe(false);
+    expect((ELECTRON_LOCAL_SERVICE_NAMES as readonly string[]).includes("workspaceInfo")).toBe(
+      false
+    );
   });
 });
 
@@ -271,7 +273,10 @@ describe("workspace service handler", () => {
 
   it("create delegates to the createWorkspace dep", async () => {
     const service = makeService();
-    const result = await service.handler(panelCtx, "create", ["new-ws", { forkFrom: "test-ws" }]) as { name: string };
+    const result = (await service.handler(panelCtx, "create", [
+      "new-ws",
+      { forkFrom: "test-ws" },
+    ])) as { name: string };
     expect(result.name).toBe("new-ws");
   });
 
@@ -288,7 +293,9 @@ describe("workspace service handler", () => {
 
   it("delete refuses to delete the currently running workspace", async () => {
     const service = makeService();
-    await expect(service.handler(shellCtx, "delete", ["test-ws"])).rejects.toThrow(/currently running/);
+    await expect(service.handler(shellCtx, "delete", ["test-ws"])).rejects.toThrow(
+      /currently running/
+    );
   });
 
   it("setInitPanels delegates to setConfigField", async () => {
@@ -430,16 +437,18 @@ describe("workspace service agent resources", () => {
       mkdirSync(path.join(skillsDir, "alpha"), { recursive: true });
       writeFileSync(
         path.join(skillsDir, "alpha", "SKILL.md"),
-        "---\nname: alpha\ndescription: First skill\n---\n\nbody\n",
+        "---\nname: alpha\ndescription: First skill\n---\n\nbody\n"
       );
       mkdirSync(path.join(skillsDir, "gamma"), { recursive: true });
       writeFileSync(
         path.join(skillsDir, "gamma", "SKILL.md"),
-        '---\nname: "gamma-named"\ndescription: \'Third skill\'\n---\n',
+        "---\nname: \"gamma-named\"\ndescription: 'Third skill'\n---\n"
       );
       const service = makeFsService(wsPath);
-      const result = await service.handler(panelCtx, "listSkills", []) as Array<{
-        name: string; description: string; dirPath: string;
+      const result = (await service.handler(panelCtx, "listSkills", [])) as Array<{
+        name: string;
+        description: string;
+        dirPath: string;
       }>;
       // Sort to make assertion order-independent (readdir order varies by FS).
       result.sort((a, b) => a.name.localeCompare(b.name));
@@ -455,12 +464,12 @@ describe("workspace service agent resources", () => {
       mkdirSync(path.join(skillsDir, "alpha"), { recursive: true });
       writeFileSync(
         path.join(skillsDir, "alpha", "SKILL.md"),
-        "---\nname: alpha\ndescription: Real\n---\n",
+        "---\nname: alpha\ndescription: Real\n---\n"
       );
       // 'broken' exists but has no SKILL.md — must be skipped, not crash.
       mkdirSync(path.join(skillsDir, "broken"), { recursive: true });
       const service = makeFsService(wsPath);
-      const result = await service.handler(panelCtx, "listSkills", []) as Array<{ name: string }>;
+      const result = (await service.handler(panelCtx, "listSkills", [])) as Array<{ name: string }>;
       expect(result).toHaveLength(1);
       expect(result[0]!.name).toBe("alpha");
     });
@@ -471,12 +480,12 @@ describe("workspace service agent resources", () => {
       mkdirSync(path.join(skillsDir, "beta"), { recursive: true });
       writeFileSync(path.join(skillsDir, "beta", "SKILL.md"), "# Just a heading, no frontmatter\n");
       const service = makeFsService(wsPath);
-      const result = await service.handler(panelCtx, "listSkills", []) as Array<{
-        name: string; description: string; dirPath: string;
+      const result = (await service.handler(panelCtx, "listSkills", [])) as Array<{
+        name: string;
+        description: string;
+        dirPath: string;
       }>;
-      expect(result).toEqual([
-        { name: "beta", description: "", dirPath: "skills/beta" },
-      ]);
+      expect(result).toEqual([{ name: "beta", description: "", dirPath: "skills/beta" }]);
     });
 
     it("returns an empty array when skills/ does not exist (ENOENT)", async () => {
@@ -504,23 +513,23 @@ describe("workspace service agent resources", () => {
     it("rejects path traversal attempts like '../etc/passwd'", async () => {
       const wsPath = mkdtempSync(path.join(tmpRoot, "ws-"));
       const service = makeFsService(wsPath);
-      await expect(
-        service.handler(panelCtx, "readSkill", ["../etc/passwd"]),
-      ).rejects.toThrow(/Invalid skill name/);
+      await expect(service.handler(panelCtx, "readSkill", ["../etc/passwd"])).rejects.toThrow(
+        /Invalid skill name/
+      );
     });
 
     it("rejects names containing slashes or dots", async () => {
       const wsPath = mkdtempSync(path.join(tmpRoot, "ws-"));
       const service = makeFsService(wsPath);
-      await expect(
-        service.handler(panelCtx, "readSkill", ["foo/bar"]),
-      ).rejects.toThrow(/Invalid skill name/);
-      await expect(
-        service.handler(panelCtx, "readSkill", ["foo.bar"]),
-      ).rejects.toThrow(/Invalid skill name/);
-      await expect(
-        service.handler(panelCtx, "readSkill", [""]),
-      ).rejects.toThrow(/Invalid skill name/);
+      await expect(service.handler(panelCtx, "readSkill", ["foo/bar"])).rejects.toThrow(
+        /Invalid skill name/
+      );
+      await expect(service.handler(panelCtx, "readSkill", ["foo.bar"])).rejects.toThrow(
+        /Invalid skill name/
+      );
+      await expect(service.handler(panelCtx, "readSkill", [""])).rejects.toThrow(
+        /Invalid skill name/
+      );
     });
   });
 });

@@ -168,12 +168,16 @@ describe("internal storage DOs under workerd", () => {
       { source: "workers/gad-store", className: "GadWorkspaceDO" },
     ]);
 
-    const ref = { source: "workers/gad-store", className: "GadWorkspaceDO", objectKey: "workspace-gad" };
-    const head = await harness.dispatch.dispatch(ref, "ensureGadBranch", {
+    const ref = {
+      source: "workers/gad-store",
+      className: "GadWorkspaceDO",
+      objectKey: "workspace-gad",
+    };
+    const head = (await harness.dispatch.dispatch(ref, "ensureGadBranch", {
       branchId: "branch-live",
       channelId: "channel-live",
       contextId: "context-live",
-    }) as { branchId: string; headTrajectoryHash: string | null; headStateHash: string };
+    })) as { branchId: string; headTrajectoryHash: string | null; headStateHash: string };
     const userMessageId = "01900000-0000-7000-8000-000000000001";
     const intentId = "01900000-0000-7000-8000-000000000002";
     const observedId = "01900000-0000-7000-8000-000000000003";
@@ -224,7 +228,10 @@ describe("internal storage DOs under workerd", () => {
         },
       ],
     });
-    const status = await harness.dispatch.dispatch(ref, "getStatus") as Array<{ metric: string; value: number }>;
+    const status = (await harness.dispatch.dispatch(ref, "getStatus")) as Array<{
+      metric: string;
+      value: number;
+    }>;
     expect(status.find((row) => row.metric === "Branches")?.value).toBe(1);
     expect(status.find((row) => row.metric === "Trajectory items")?.value).toBe(3);
   }, 30_000);

@@ -28,7 +28,7 @@ export type ResolvedUserlandService = DurableObjectServiceResolution | WorkerSer
 export function resolveUserlandService(
   buildSystem: Pick<BuildSystemV2, "getGraph">,
   query: string,
-  objectKey?: string | null,
+  objectKey?: string | null
 ): ResolvedUserlandService {
   for (const node of buildSystem.getGraph().allNodes()) {
     if (node.kind !== "worker") continue;
@@ -54,12 +54,12 @@ export function resolveUserlandService(
       }
       if ("worker" in service && service.worker) {
         const routePath = normalizeRoutePath(service.worker.routePath);
-        const hasRoute = (manifest.routes ?? []).some((route) =>
-          !route.durableObject && normalizeRoutePath(route.path) === routePath
+        const hasRoute = (manifest.routes ?? []).some(
+          (route) => !route.durableObject && normalizeRoutePath(route.path) === routePath
         );
         if (!hasRoute) {
           throw new Error(
-            `Userland service ${service.name} references stateless worker route ${routePath}, but that route is not declared`,
+            `Userland service ${service.name} references stateless worker route ${routePath}, but that route is not declared`
           );
         }
         return {
@@ -81,7 +81,9 @@ export function resolveUserlandService(
 function normalizeRoutePath(routePath: string): string {
   const trimmed = routePath.trim();
   if (!trimmed || trimmed === "/") return "/";
-  return trimmed.startsWith("/") ? trimmed.replace(/\/+$/u, "") : `/${trimmed.replace(/\/+$/u, "")}`;
+  return trimmed.startsWith("/")
+    ? trimmed.replace(/\/+$/u, "")
+    : `/${trimmed.replace(/\/+$/u, "")}`;
 }
 
 export function toDORef(resolution: ResolvedUserlandService): DORef {

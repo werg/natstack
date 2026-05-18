@@ -86,13 +86,15 @@ async function http(method: string, url: string, body?: Buffer | Readable): Prom
 function repeatingReadable(totalBytes: number, chunkBytes = 64 * 1024): Readable {
   const chunk = Buffer.alloc(chunkBytes, 0x61);
   let remaining = totalBytes;
-  return Readable.from((async function* () {
-    while (remaining > 0) {
-      const next = Math.min(remaining, chunkBytes);
-      remaining -= next;
-      yield next === chunk.length ? chunk : chunk.subarray(0, next);
-    }
-  })());
+  return Readable.from(
+    (async function* () {
+      while (remaining > 0) {
+        const next = Math.min(remaining, chunkBytes);
+        remaining -= next;
+        yield next === chunk.length ? chunk : chunk.subarray(0, next);
+      }
+    })()
+  );
 }
 
 function digestForRepeatedByte(byte: number, totalBytes: number, chunkBytes = 64 * 1024): string {
@@ -149,7 +151,9 @@ describe("blobstoreService", () => {
     try {
       const bytes = Buffer.from("same content", "utf8");
       const first = JSON.parse((await http("PUT", `${baseUrl}/blob`, bytes)).body.toString("utf8"));
-      const second = JSON.parse((await http("PUT", `${baseUrl}/blob`, bytes)).body.toString("utf8"));
+      const second = JSON.parse(
+        (await http("PUT", `${baseUrl}/blob`, bytes)).body.toString("utf8")
+      );
 
       expect(second).toEqual(first);
       await expect(fsp.readdir(path.join(blobsDir, "tmp"))).resolves.toEqual([]);
@@ -198,61 +202,53 @@ describe("blobstoreService", () => {
       const put = JSON.parse((await http("PUT", `${baseUrl}/blob`, bytes)).body.toString("utf8"));
       const digest = put.digest as string;
 
-      await expect(dispatcher.dispatch(
-        { callerId: "p1", callerKind: "panel" },
-        "blobstore",
-        "delete",
-        [digest],
-      )).rejects.toMatchObject({ code: "EACCES" });
+      await expect(
+        dispatcher.dispatch({ callerId: "p1", callerKind: "panel" }, "blobstore", "delete", [
+          digest,
+        ])
+      ).rejects.toMatchObject({ code: "EACCES" });
 
-      await expect(dispatcher.dispatch(
-        { callerId: "p1", callerKind: "panel" },
-        "blobstore",
-        "has",
-        [digest],
-      )).resolves.toBe(true);
+      await expect(
+        dispatcher.dispatch({ callerId: "p1", callerKind: "panel" }, "blobstore", "has", [digest])
+      ).resolves.toBe(true);
 
       const stat = await dispatcher.dispatch(
         { callerId: "w1", callerKind: "worker" },
         "blobstore",
         "stat",
-        [digest],
+        [digest]
       );
       expect(stat).toMatchObject({ size: bytes.length });
 
-      await expect(dispatcher.dispatch(
-        { callerId: "shell", callerKind: "shell" },
-        "blobstore",
-        "list",
-        [],
-      )).resolves.toContain(digest);
+      await expect(
+        dispatcher.dispatch({ callerId: "shell", callerKind: "shell" }, "blobstore", "list", [])
+      ).resolves.toContain(digest);
 
-      await expect(dispatcher.dispatch(
-        { callerId: "shell", callerKind: "shell" },
-        "blobstore",
-        "list",
-        [{ prefix: digest.slice(0, 8), limit: 10 }],
-      )).resolves.toEqual([digest]);
+      await expect(
+        dispatcher.dispatch({ callerId: "shell", callerKind: "shell" }, "blobstore", "list", [
+          { prefix: digest.slice(0, 8), limit: 10 },
+        ])
+      ).resolves.toEqual([digest]);
 
-      await expect(dispatcher.dispatch(
-        { callerId: "shell", callerKind: "shell" },
-        "blobstore",
-        "pruneUnreferenced",
-        [{ referenced: [digest], dryRun: true }],
-      )).resolves.toMatchObject({ deleted: [], dryRun: true });
+      await expect(
+        dispatcher.dispatch(
+          { callerId: "shell", callerKind: "shell" },
+          "blobstore",
+          "pruneUnreferenced",
+          [{ referenced: [digest], dryRun: true }]
+        )
+      ).resolves.toMatchObject({ deleted: [], dryRun: true });
 
-      await expect(dispatcher.dispatch(
-        { callerId: "server", callerKind: "server" },
-        "blobstore",
-        "delete",
-        [digest],
-      )).resolves.toBe(true);
-      await expect(dispatcher.dispatch(
-        { callerId: "server", callerKind: "server" },
-        "blobstore",
-        "has",
-        [digest],
-      )).resolves.toBe(false);
+      await expect(
+        dispatcher.dispatch({ callerId: "server", callerKind: "server" }, "blobstore", "delete", [
+          digest,
+        ])
+      ).resolves.toBe(true);
+      await expect(
+        dispatcher.dispatch({ callerId: "server", callerKind: "server" }, "blobstore", "has", [
+          digest,
+        ])
+      ).resolves.toBe(false);
     } finally {
       await stopServer(server);
     }
