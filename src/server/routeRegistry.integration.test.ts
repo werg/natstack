@@ -26,6 +26,7 @@ interface Harness {
   workerdServer: HttpServer;
   /** Record of paths workerd received (for rewrite-assertion). */
   workerdPaths: string[];
+  workerdDispatchSecrets: Array<string | undefined>;
 }
 
 async function startHarness(): Promise<Harness> {
@@ -34,8 +35,11 @@ async function startHarness(): Promise<Harness> {
 
   // Fake workerd — records the path it was called with and echoes it back.
   const workerdPaths: string[] = [];
+  const workerdDispatchSecrets: Array<string | undefined> = [];
   const workerdServer = createServer((req: IncomingMessage, res: ServerResponse) => {
     workerdPaths.push(req.url ?? "(unknown)");
+    const dispatchSecret = req.headers["x-natstack-dispatch-secret"];
+    workerdDispatchSecrets.push(Array.isArray(dispatchSecret) ? dispatchSecret[0] : dispatchSecret);
     res.writeHead(200, { "Content-Type": "text/plain" });
     res.end(`workerd saw ${req.url}`);
   });
@@ -50,13 +54,23 @@ async function startHarness(): Promise<Harness> {
     externalHost: "127.0.0.1",
     bindHost: "127.0.0.1",
     workerdPort,
+    getWorkerdDispatchSecret: () => "workerd-dispatch-secret",
     routeRegistry: registry,
     adminToken: "secret-token",
     tokenManager,
   });
   const gatewayPort = await gateway.start(0);
 
-  return { gateway, gatewayPort, workerdPort, registry, tokenManager, workerdServer, workerdPaths };
+  return {
+    gateway,
+    gatewayPort,
+    workerdPort,
+    registry,
+    tokenManager,
+    workerdServer,
+    workerdPaths,
+    workerdDispatchSecrets,
+  };
 }
 
 async function stopHarness(h: Harness): Promise<void> {
@@ -115,6 +129,9 @@ describe("RouteRegistry × Gateway integration", () => {
     expect(h.workerdPaths.length).toBe(before + 1);
     const seen = h.workerdPaths[h.workerdPaths.length - 1]!;
     expect(seen).toBe("/_w/workers/hello-test/HelloDO/singleton/callback?q=1");
+    expect(h.workerdDispatchSecrets[h.workerdDispatchSecrets.length - 1]).toBe(
+      "workerd-dispatch-secret"
+    );
     expect(body).toContain("/_w/workers/hello-test/HelloDO/singleton/callback");
   });
 
@@ -132,7 +149,22 @@ describe("RouteRegistry × Gateway integration", () => {
     expect(status).toBe(200);
     const seen = h.workerdPaths[h.workerdPaths.length - 1]!;
     expect(seen).toBe("/regular-test/hello");
+    expect(h.workerdDispatchSecrets[h.workerdDispatchSecrets.length - 1]).toBeUndefined();
     expect(h.workerdPaths.length).toBe(before + 1);
+  });
+
+  it("rejects direct /_w/ dispatch without the internal dispatch secret", async () => {
+    const workerToken = h.tokenManager.ensureToken("w-direct", "worker");
+    const before = h.workerdPaths.length;
+
+    const { status, body } = await fetchText(
+      `http://127.0.0.1:${h.gatewayPort}/_w/workers/hello-test/HelloDO/singleton/callback`,
+      { headers: { Authorization: `Bearer ${workerToken}` } }
+    );
+
+    expect(status).toBe(403);
+    expect(body).toBe("Forbidden");
+    expect(h.workerdPaths.length).toBe(before);
   });
 
   it("returns 404 for unknown /_r/ paths", async () => {

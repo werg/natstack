@@ -180,6 +180,7 @@ describe("DODispatch", () => {
         expect.objectContaining({
           headers: expect.objectContaining({
             Authorization: "Bearer workerd-gateway-token",
+            "X-NatStack-Dispatch-Secret": "dispatch-secret",
           }),
         })
       );

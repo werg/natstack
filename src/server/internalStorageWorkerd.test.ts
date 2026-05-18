@@ -55,6 +55,7 @@ function createWorkerdHarness(overrides: Partial<WorkerdManagerDeps> = {}) {
     return postToDurableObject(ref, method, args, {
       workerdUrl: `http://127.0.0.1:${port}`,
       workerdGatewayToken: manager.getWorkerdGatewayToken(),
+      workerdDispatchSecret: manager.getDispatchSecret(),
     });
   };
 

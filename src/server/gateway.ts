@@ -122,6 +122,8 @@ export interface GatewayDeps {
   getWorkerdPort?: () => number | null | undefined;
   /** Optional pre-shared workerd gateway token. */
   workerdGatewayToken?: string;
+  /** Internal secret stamped onto gateway-authorized DO dispatches. */
+  getWorkerdDispatchSecret?: () => string | null | undefined;
   /** External hostname for generated public URLs and origin checks */
   externalHost: string;
   /** Current public URL for origin checks, including --public-url / NATSTACK_PUBLIC_URL overrides. */
@@ -207,7 +209,24 @@ export class Gateway {
           res.end("Service starting up");
           return;
         }
-        return proxyRequest(req, res, workerdPort, url, workerdToken);
+        const dispatchSecret = this.deps.getWorkerdDispatchSecret?.();
+        if (!dispatchSecret) {
+          res.writeHead(503, { "Content-Type": "text/plain" });
+          res.end("DO dispatch unavailable");
+          return;
+        }
+        const providedSecret = req.headers["x-natstack-dispatch-secret"];
+        if (
+          typeof providedSecret !== "string" ||
+          !constantTimeStringEqual(providedSecret, dispatchSecret)
+        ) {
+          res.writeHead(403, { "Content-Type": "text/plain" });
+          res.end("Forbidden");
+          return;
+        }
+        return proxyRequest(req, res, workerdPort, url, workerdToken, undefined, {
+          "X-NatStack-Dispatch-Secret": dispatchSecret,
+        });
       }
 
       // /_r/ext/<encoded-name>/* → extension fetch surface.
@@ -243,7 +262,8 @@ export class Gateway {
           workerdPort,
           adminToken,
           tokenManager,
-          workerdToken
+          workerdToken,
+          this.deps.getWorkerdDispatchSecret?.()
         );
         if (handled) return;
         // Fall through to 404 below — no panel fallback for `/_r/` misses.
@@ -334,7 +354,24 @@ export class Gateway {
           socket.destroy();
           return;
         }
-        return proxyUpgrade(req, socket, head, workerdPort, workerdToken);
+        const dispatchSecret = this.deps.getWorkerdDispatchSecret?.();
+        if (!dispatchSecret) {
+          socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+        const providedSecret = req.headers["x-natstack-dispatch-secret"];
+        if (
+          typeof providedSecret !== "string" ||
+          !constantTimeStringEqual(providedSecret, dispatchSecret)
+        ) {
+          socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+        return proxyUpgrade(req, socket, head, workerdPort, workerdToken, {
+          "X-NatStack-Dispatch-Secret": dispatchSecret,
+        });
       }
 
       // Extension fetch routes do not support WebSocket upgrade in v1.
@@ -355,7 +392,8 @@ export class Gateway {
           workerdPort,
           adminToken,
           tokenManager,
-          workerdToken
+          workerdToken,
+          this.deps.getWorkerdDispatchSecret?.()
         );
         if (handled) return;
         // Miss → fall through to destroy below.
@@ -494,7 +532,8 @@ function proxyRequest(
   targetPort: number,
   targetPath: string,
   upstreamToken: string,
-  hostHeader?: string
+  hostHeader?: string,
+  extraHeaders: Record<string, string> = {}
 ): void {
   // Strip inbound auth/cookie/X-NatStack-* before forwarding (audit #32).
   // Workerd-served code is untrusted-by-design; it must never see the
@@ -504,6 +543,7 @@ function proxyRequest(
   const safeHeaders = stripUpstreamHeaders(req.headers);
   safeHeaders["authorization"] = `Bearer ${upstreamToken}`;
   if (hostHeader) safeHeaders["host"] = hostHeader;
+  Object.assign(safeHeaders, extraHeaders);
 
   const proxyReq = request(
     {
@@ -542,12 +582,14 @@ function proxyUpgrade(
   socket: Duplex,
   head: Buffer,
   targetPort: number,
-  upstreamToken: string
+  upstreamToken: string,
+  extraHeaders: Record<string, string> = {}
 ): void {
   // Strip inbound auth/cookie/X-NatStack-* (audit #32). See proxyRequest.
   // After stripping, stamp the per-upstream gateway bearer.
   const safeHeaders = stripUpstreamHeaders(req.headers);
   safeHeaders["authorization"] = `Bearer ${upstreamToken}`;
+  Object.assign(safeHeaders, extraHeaders);
   const targetSocket = connectNet(targetPort, "127.0.0.1", () => {
     const headers = Object.entries(safeHeaders)
       .filter(([, v]) => v !== undefined)
@@ -678,7 +720,8 @@ function handleRouteRequest(
   workerdPort: number | null | undefined,
   adminToken: string | undefined,
   tokenManager: TokenManager,
-  workerdToken: string
+  workerdToken: string,
+  workerdDispatchSecret?: string | null
 ): boolean {
   const qIdx = url.indexOf("?");
   const pathOnly = qIdx === -1 ? url : url.slice(0, qIdx);
@@ -725,7 +768,16 @@ function handleRouteRequest(
     return true;
   }
   const targetPath = buildWorkerTargetPath(result, url);
-  proxyRequest(req, res, workerdPort, targetPath, workerdToken);
+  if (result.kind === "worker-do" && !workerdDispatchSecret) {
+    res.writeHead(503, { "Content-Type": "text/plain" });
+    res.end("DO dispatch unavailable");
+    return true;
+  }
+  const extraHeaders =
+    result.kind === "worker-do" && workerdDispatchSecret
+      ? { "X-NatStack-Dispatch-Secret": workerdDispatchSecret }
+      : undefined;
+  proxyRequest(req, res, workerdPort, targetPath, workerdToken, undefined, extraHeaders);
   return true;
 }
 
@@ -741,7 +793,8 @@ function handleRouteUpgrade(
   workerdPort: number | null | undefined,
   adminToken: string | undefined,
   tokenManager: TokenManager,
-  workerdToken: string
+  workerdToken: string,
+  workerdDispatchSecret?: string | null
 ): boolean {
   const qIdx = url.indexOf("?");
   const pathOnly = qIdx === -1 ? url : url.slice(0, qIdx);
@@ -778,6 +831,15 @@ function handleRouteUpgrade(
   }
   // Rewrite req.url so the upstream (workerd) sees the rewritten path.
   req.url = buildWorkerTargetPath(result, url);
-  proxyUpgrade(req, socket, head, workerdPort, workerdToken);
+  if (result.kind === "worker-do" && !workerdDispatchSecret) {
+    socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
+    socket.destroy();
+    return true;
+  }
+  const extraHeaders =
+    result.kind === "worker-do" && workerdDispatchSecret
+      ? { "X-NatStack-Dispatch-Secret": workerdDispatchSecret }
+      : undefined;
+  proxyUpgrade(req, socket, head, workerdPort, workerdToken, extraHeaders);
   return true;
 }

@@ -476,6 +476,7 @@ describe("WorkerdManager", () => {
       const fetchedUrls: string[] = [];
       const env = {
         WORKERD_GATEWAY_TOKEN: "mock-workerd-gateway-token",
+        WORKERD_DISPATCH_SECRET: mgr.getDispatchSecret(),
         do_workspace_workers_gad_store_EventStore: {
           idFromName: vi.fn((name: string) => ({ name })),
           get: vi.fn(() => ({
@@ -490,7 +491,12 @@ describe("WorkerdManager", () => {
       const response = await router.fetch(
         new Request(
           "http://router/_w/workspace/workers/gad-store/EventStore/ctx%2Fchat/appendEvents?x=1",
-          { headers: { Authorization: "Bearer mock-workerd-gateway-token" } }
+          {
+            headers: {
+              Authorization: "Bearer mock-workerd-gateway-token",
+              "X-NatStack-Dispatch-Secret": mgr.getDispatchSecret(),
+            },
+          }
         ),
         env
       );
@@ -500,6 +506,49 @@ describe("WorkerdManager", () => {
         "ctx/chat"
       );
       expect(fetchedUrls).toEqual(["http://router/ctx%2Fchat/appendEvents?x=1"]);
+    });
+
+    it("rejects source-scoped DO requests without the dispatch secret", async () => {
+      const mgr = new WorkerdManager(createMockDeps());
+      const code = (
+        mgr as unknown as {
+          generateRouterCode(
+            instanceNames: string[],
+            doClassNames: { className: string; source: string; serviceName: string }[]
+          ): string;
+        }
+      ).generateRouterCode(
+        [],
+        [
+          {
+            source: "workspace/workers/gad-store",
+            className: "EventStore",
+            serviceName: "do_workspace_workers_gad_store_EventStore",
+          },
+        ]
+      );
+      const router = new Function(`${code.replace("export default", "return")}`)() as {
+        fetch(request: Request, env: Record<string, unknown>): Promise<Response>;
+      };
+      const doFetch = vi.fn(async () => new Response("ok"));
+      const env = {
+        WORKERD_GATEWAY_TOKEN: "mock-workerd-gateway-token",
+        WORKERD_DISPATCH_SECRET: mgr.getDispatchSecret(),
+        do_workspace_workers_gad_store_EventStore: {
+          idFromName: vi.fn((name: string) => ({ name })),
+          get: vi.fn(() => ({ fetch: doFetch })),
+        },
+      };
+
+      const response = await router.fetch(
+        new Request("http://router/_w/workspace/workers/gad-store/EventStore/ctx/appendEvents", {
+          headers: { Authorization: "Bearer mock-workerd-gateway-token" },
+        }),
+        env
+      );
+
+      expect(response.status).toBe(403);
+      expect(doFetch).not.toHaveBeenCalled();
     });
   });
 });

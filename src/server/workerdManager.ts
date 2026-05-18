@@ -171,6 +171,8 @@ export class WorkerdManager {
   >();
   /** Session ID — generated once per WorkerdManager lifetime, used for restart detection in bootstrap. */
   private sessionId = crypto.randomUUID();
+  /** Per-manager secret required by the generated router for direct DO dispatch. */
+  private readonly dispatchSecret = crypto.randomBytes(32).toString("hex");
 
   constructor(deps: WorkerdManagerDeps) {
     this.deps = { ...deps, principalRegistry: deps.principalRegistry ?? new PrincipalRegistry() };
@@ -514,6 +516,10 @@ export class WorkerdManager {
     return this.deps.getWorkerdGatewayToken();
   }
 
+  getDispatchSecret(): string {
+    return this.dispatchSecret;
+  }
+
   getDoCodeIdentity(
     source: string,
     className: string
@@ -766,6 +772,10 @@ export class WorkerdManager {
         name: "WORKERD_GATEWAY_TOKEN",
         text: this.deps.getWorkerdGatewayToken(),
       });
+      routerBindings.push({
+        name: "WORKERD_DISPATCH_SECRET",
+        text: this.dispatchSecret,
+      });
 
       services.push({
         name: "router",
@@ -879,6 +889,9 @@ ${doLookupEntries.join(",\n")}
     const prefix = parts[0] || "";
     if (prefix === "__natstack_workerd_ready") {
       return new Response(null, { status: 204 });
+    }
+    if (prefix === "_w" && request.headers.get("X-NatStack-Dispatch-Secret") !== env.WORKERD_DISPATCH_SECRET) {
+      return new Response("Forbidden", { status: 403 });
     }
     const rest = "/" + parts.slice(1).join("/");
     const newUrl = new URL(rest, url.origin);

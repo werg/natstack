@@ -274,6 +274,7 @@ export class RpcServer {
   private wss: WebSocketServer | null = null;
   private workerdUrl: string | null = null;
   private workerdGatewayToken: string | null = null;
+  private workerdDispatchSecret: string | null = null;
   private ensureDOFn:
     | ((source: string, className: string, objectKey: string) => Promise<void>)
     | null = null;
@@ -403,6 +404,10 @@ export class RpcServer {
 
   setWorkerdGatewayToken(token: string): void {
     this.workerdGatewayToken = token;
+  }
+
+  setWorkerdDispatchSecret(secret: string): void {
+    this.workerdDispatchSecret = secret;
   }
 
   setEnsureDO(fn: (source: string, className: string, objectKey: string) => Promise<void>): void {
@@ -1777,11 +1782,13 @@ export class RpcServer {
     }
     const workerdUrl = this.workerdUrl;
     const workerdGatewayToken = this.workerdGatewayToken;
+    const workerdDispatchSecret = this.workerdDispatchSecret;
 
     const dispatch = async () => {
       const result = await postToDurableObject(ref, method, args, {
         workerdUrl,
         workerdGatewayToken,
+        ...(workerdDispatchSecret ? { workerdDispatchSecret } : {}),
         callerId,
         callerKind,
       });
@@ -1902,6 +1909,9 @@ export class RpcServer {
       await postToDurableObject(ref, "__event", [event, payload, fromId], {
         workerdUrl: this.workerdUrl,
         workerdGatewayToken: this.workerdGatewayToken,
+        ...(this.workerdDispatchSecret
+          ? { workerdDispatchSecret: this.workerdDispatchSecret }
+          : {}),
         callerId: fromId,
         callerKind: fromKind,
       });

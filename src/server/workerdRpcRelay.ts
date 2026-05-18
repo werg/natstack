@@ -14,6 +14,7 @@ export function doRefUrl(ref: DORef, method: string): string {
 export interface DurableObjectRelayDeps {
   workerdUrl: string;
   workerdGatewayToken: string;
+  workerdDispatchSecret?: string;
   callerId?: string;
   callerKind?: string;
 }
@@ -29,6 +30,9 @@ export async function postToDurableObject(
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${deps.workerdGatewayToken}`,
+      ...(deps.workerdDispatchSecret
+        ? { "X-NatStack-Dispatch-Secret": deps.workerdDispatchSecret }
+        : {}),
       ...(deps.callerId ? { "X-Natstack-Rpc-Caller-Id": deps.callerId } : {}),
       ...(deps.callerKind ? { "X-Natstack-Rpc-Caller-Kind": deps.callerKind } : {}),
     },

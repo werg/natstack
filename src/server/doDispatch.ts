@@ -154,10 +154,10 @@ export interface VerifyInstanceTokenResult {
  *
  * Wave-2 status (audit 4.8): the receiver inside workerd is the
  * auto-generated router worker (see `WorkerdManager.generateRouterCode`).
- * The router rejects a request when an `X-NatStack-Dispatch-Secret` header is
- * present but does not match `WorkerdManager.dispatchSecret`; absence is
- * allowed so public DO routes keep working. The TokenManager-based envelope
- * check below is the
+ * The generated router requires `X-NatStack-Dispatch-Secret` for every
+ * `/_w/` DO dispatch. `DODispatch` supplies it for server-originated calls,
+ * and the gateway supplies it only after route-registry auth/rewrites for
+ * public DO routes. The TokenManager-based envelope check below is the
  * server-side guard intended for any *in-process* code path that wants
  * to validate the envelope (e.g., test harnesses, future direct-dispatch
  * shims), but workerd itself never calls it — the runtime is bundled JS

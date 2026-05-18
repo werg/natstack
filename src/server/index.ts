@@ -1433,6 +1433,7 @@ async function main() {
           if (!port) throw new Error("workerd not running");
           return `http://127.0.0.1:${port}`;
         });
+        doDispatch.setGetDispatchSecret(() => workerdManager.getDispatchSecret());
         doDispatch.setEnsureDO((source, className, objectKey) =>
           workerdManager.ensureDO(source, className, objectKey)
         );
@@ -1708,6 +1709,7 @@ async function main() {
     tlsKey: hostConfig.tlsKey,
     adminToken,
     workerdGatewayToken,
+    getWorkerdDispatchSecret: () => workerdManagerForGateway?.getDispatchSecret() ?? null,
     tokenManager,
     principalRegistry,
     routeRegistry,
@@ -1834,6 +1836,7 @@ async function main() {
     rpcServerInstance.setWorkerdUrl(`http://127.0.0.1:${workerdPort}`);
   }
   rpcServerInstance.setWorkerdGatewayToken(workerdGatewayToken);
+  rpcServerInstance.setWorkerdDispatchSecret(workerdManager.getDispatchSecret());
   rpcServerInstance.setEnsureDO((source, className, objectKey) =>
     workerdManager.ensureDO(source, className, objectKey)
   );
