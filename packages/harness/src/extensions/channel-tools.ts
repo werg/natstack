@@ -174,7 +174,10 @@ export function createChannelToolsExtension(
     };
 
     pi.on("session_start", async () => reconcile());
-    pi.on("turn_start", async () => reconcile());
+    // turn_start reconcile removed (Phase 4): tools are frozen for the run
+    // by PiRunner's turn snapshot (Phase 2); roster reconcile now runs
+    // between turns through `prepareNextTurn` (the worker's
+    // `prepareNextTurnHook` calls `refreshRoster`).
   };
 }
 

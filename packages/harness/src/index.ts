@@ -4,7 +4,50 @@
 
 // PiRunner — the worker DO instantiates one per channel
 export { PiRunner } from "./pi-runner.js";
-export type { PiRunnerOptions, PiStateSnapshot, ThinkingLevel } from "./pi-runner.js";
+export type {
+  PiRunnerOptions,
+  PiStateSnapshot,
+  ThinkingLevel,
+  PiRunnerGadProvenance,
+  RunnerTurnInput,
+} from "./pi-runner.js";
+
+// TurnSnapshot (Phase 2) — surfaced via `onPrepareNextTurn`.
+export { buildTurnSnapshot } from "./turn-snapshot.js";
+export type { TurnSnapshot, BuildTurnSnapshotInput } from "./turn-snapshot.js";
+
+// HookBus (Phase 6) — typed multi-listener event/hook bus owned by PiRunner.
+export { HookBus } from "./hook-bus.js";
+export type {
+  HookName,
+  HookListenerMap,
+  EventListener,
+  TransformContextListener,
+  BeforeProviderRequestListener,
+  RunnerEvent,
+  NatStackRunnerEvent,
+  OrphanFileMutationIntentEvent,
+} from "./hook-bus.js";
+
+// CompactionTrigger - decides when to call AgentHarness.compact().
+export { CompactionTrigger } from "./compaction-trigger.js";
+export type { CompactionTriggerOptions } from "./compaction-trigger.js";
+
+// Stable runner-level error codes (Phase 7).
+export { AgentWorkerError } from "./errors.js";
+export type { AgentWorkerErrorCode } from "./errors.js";
+
+// Gad session storage adapter (Phase 1) — the worker constructs one per
+// PiRunner and hands it in via `PiRunnerOptions.gadSessionStorage`.
+export {
+  GadSessionStorage,
+  TranscriptShapeError,
+} from "./gad-session-storage.js";
+export type {
+  GadSessionMetadata,
+  GadSessionStorageOptions,
+  GadRpcCaller,
+} from "./gad-session-storage.js";
 export {
   NATSTACK_BASE_SYSTEM_PROMPT,
   composeSystemPrompt,

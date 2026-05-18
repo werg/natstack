@@ -76,7 +76,7 @@ describe("createChannelToolsExtension", () => {
     );
   });
 
-  it("registers new tools added between turns and updates active set", async () => {
+  it("does not re-reconcile on turn_start (Phase 4: tools frozen per-run)", async () => {
     let roster: ChannelToolMethod[] = [
       {
         participantHandle: "ai-chat",
@@ -98,7 +98,9 @@ describe("createChannelToolsExtension", () => {
     expect(api.getActive()).toContain("inline_ui");
     expect(api.getActive()).not.toContain("eval");
 
-    // Add a new tool
+    // The extension no longer subscribes to turn_start. Roster changes
+    // between turns are now visible via prepareNextTurn in the worker;
+    // the extension itself only reconciles at session_start.
     roster = [
       ...roster,
       {
@@ -108,14 +110,13 @@ describe("createChannelToolsExtension", () => {
         parameters: {},
       },
     ];
+    // Firing turn_start is a no-op; no handler is registered for it.
     await api.fire("turn_start");
-    expect(api.registerTool).toHaveBeenCalledTimes(2);
-    expect(api.getActive()).toEqual(
-      expect.arrayContaining([...BUILTIN, "inline_ui", "eval"]),
-    );
+    expect(api.registerTool).toHaveBeenCalledTimes(1);
+    expect(api.getActive()).not.toContain("eval");
   });
 
-  it("hides removed tools by leaving them out of setActiveTools", async () => {
+  it("re-reconciles roster on a subsequent session_start", async () => {
     let roster: ChannelToolMethod[] = [
       { participantHandle: "ai-chat", name: "inline_ui", description: "", parameters: {} },
       { participantHandle: "sandbox", name: "eval", description: "", parameters: {} },
@@ -132,7 +133,7 @@ describe("createChannelToolsExtension", () => {
     expect(api.getActive()).toContain("eval");
 
     roster = roster.filter((m) => m.name !== "eval");
-    await api.fire("turn_start");
+    await api.fire("session_start");
     expect(api.getActive()).toContain("inline_ui");
     expect(api.getActive()).not.toContain("eval");
     // Tool stays registered (Pi has no unregisterTool) but inactive.
