@@ -501,6 +501,38 @@ describe("EgressProxy", () => {
     expect(new TextDecoder().decode(aggregated)).toBe("hello world");
   });
 
+  it("does not retry retryable responses in forwardProxyFetchStream", async () => {
+    const auditLog = new MemoryAuditLog();
+    const proxy = createProxy(createCredential(), auditLog);
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        calls += 1;
+        return new Response("retry", { status: 503, statusText: "Service Unavailable" });
+      })
+    );
+
+    const frames: string[] = [];
+    const result = await proxy.forwardProxyFetchStream(
+      {
+        callerId: "worker:test",
+        credentialId: "cred-1",
+        url: "https://api.example.test/v1/stream",
+        method: "GET",
+      },
+      (frame) => {
+        frames.push(frame.kind);
+      }
+    );
+
+    expect(calls).toBe(1);
+    expect(result.status).toBe(503);
+    expect(result.bytesIn).toBe(5);
+    expect(frames).toEqual(["head", "chunk", "end"]);
+    expect(auditLog.entries[0]).toMatchObject({ retries: 0 });
+  });
+
   it("refreshes expired OAuth credentials before injection", async () => {
     const auditLog = new MemoryAuditLog();
     const credential = createCredential({

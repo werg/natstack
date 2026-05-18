@@ -288,6 +288,7 @@ export class EgressProxy {
       // caller has already seen a partial response). Disable retries
       // entirely for the streaming path to keep the contract simple.
       replaySafe: false,
+      maxRetries: 0,
       execute: async (targetUrl, headers) => {
         const upstream = await fetch(targetUrl.toString(), {
           method: params.method,
@@ -540,6 +541,7 @@ export class EgressProxy {
     credentialId?: string;
     credentialUse?: CredentialBindingUse;
     initialBytesOut?: number;
+    maxRetries?: number;
     replaySafe?: boolean;
     execute: (targetUrl: URL, headers: OutgoingHttpHeaders) => Promise<RequestExecutionResult<T>>;
   }): Promise<T> {
@@ -562,9 +564,12 @@ export class EgressProxy {
         credentialUse: params.credentialUse ?? "fetch",
       });
       const executionKey = executionPolicyKey(authorization, params.targetUrl);
-      const maxAttempts = shouldRetryRequest(params.method, params.replaySafe)
-        ? DEFAULT_RETRY_ATTEMPTS + 1
-        : 1;
+      const maxAttempts =
+        (params.maxRetries !== undefined
+          ? params.maxRetries
+          : shouldRetryRequest(params.method, params.replaySafe)
+            ? DEFAULT_RETRY_ATTEMPTS
+            : 0) + 1;
       let lastError: unknown;
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         breakerState = getCircuitState(this.circuits, executionKey);
