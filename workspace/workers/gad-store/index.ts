@@ -157,6 +157,10 @@ function asNumber(value: unknown): number {
   return typeof value === "number" ? value : Number(value ?? 0);
 }
 
+function optionalInt(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) ? value : null;
+}
+
 function parseRecord(value: string | null | undefined): JsonRecord {
   if (!value) return {};
   try {
@@ -619,7 +623,10 @@ export class GadWorkspaceDO extends DurableObjectBase {
         source_kind TEXT NOT NULL,
         job_kind TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'queued',
+        attempts INTEGER NOT NULL DEFAULT 0,
         error TEXT,
+        locked_at TEXT,
+        completed_at TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
         UNIQUE (source_hash, job_kind)
@@ -962,7 +969,12 @@ export class GadWorkspaceDO extends DurableObjectBase {
 
   enqueueGadIndexJob(input: { sourceHash: string; sourceKind: string; jobKind: string }): { id: number } {
     this.sql.exec(
-      `INSERT OR IGNORE INTO gad_index_jobs (source_hash, source_kind, job_kind) VALUES (?, ?, ?)`,
+      `INSERT INTO gad_index_jobs (source_hash, source_kind, job_kind)
+       VALUES (?, ?, ?)
+       ON CONFLICT(source_hash, job_kind) DO UPDATE SET
+         status = CASE WHEN gad_index_jobs.status = 'failed' THEN 'queued' ELSE gad_index_jobs.status END,
+         error = CASE WHEN gad_index_jobs.status = 'failed' THEN NULL ELSE gad_index_jobs.error END,
+         updated_at = excluded.updated_at`,
       input.sourceHash,
       input.sourceKind,
       input.jobKind,
@@ -971,9 +983,78 @@ export class GadWorkspaceDO extends DurableObjectBase {
     return { id: asNumber(row["id"]) };
   }
 
+  claimGadIndexJobs(input: { limit?: number | null } = {}): JsonRecord[] {
+    const rows = this.sql.exec(
+      `SELECT * FROM gad_index_jobs
+       WHERE status IN ('queued', 'retry')
+       ORDER BY updated_at ASC, id ASC
+       LIMIT ?`,
+      input.limit ?? 100,
+    ).toArray() as JsonRecord[];
+    const lockedAt = nowIso();
+    for (const row of rows) {
+      this.sql.exec(
+        `UPDATE gad_index_jobs
+         SET status = 'running', attempts = attempts + 1, locked_at = ?, updated_at = ?
+         WHERE id = ? AND status IN ('queued', 'retry')`,
+        lockedAt,
+        lockedAt,
+        row["id"] as SqlBinding,
+      );
+    }
+    return rows.map((row) => ({ ...row, status: "running", attempts: asNumber(row["attempts"]) + 1, locked_at: lockedAt, updated_at: lockedAt }));
+  }
+
+  completeGadIndexJob(input: { id: number }): JsonRecord {
+    const completedAt = nowIso();
+    this.sql.exec(
+      `UPDATE gad_index_jobs
+       SET status = 'complete', error = NULL, locked_at = NULL, completed_at = ?, updated_at = ?
+       WHERE id = ? AND status = 'running'`,
+      completedAt,
+      completedAt,
+      input.id,
+    );
+    const row = this.sql.exec(`SELECT * FROM gad_index_jobs WHERE id = ?`, input.id).toArray()[0] as JsonRecord | undefined;
+    if (!row) throw new Error(`Unknown GAD index job: ${input.id}`);
+    if (row["status"] !== "complete") throw new Error(`Cannot complete GAD index job ${input.id} from status ${String(row["status"])}`);
+    return row;
+  }
+
+  failGadIndexJob(input: { id: number; error: string; retry?: boolean | null }): JsonRecord {
+    const failedAt = nowIso();
+    this.sql.exec(
+      `UPDATE gad_index_jobs
+       SET status = ?, error = ?, locked_at = NULL, updated_at = ?
+       WHERE id = ? AND status = 'running'`,
+      input.retry === true ? "retry" : "failed",
+      input.error,
+      failedAt,
+      input.id,
+    );
+    const row = this.sql.exec(`SELECT * FROM gad_index_jobs WHERE id = ?`, input.id).toArray()[0] as JsonRecord | undefined;
+    if (!row) throw new Error(`Unknown GAD index job: ${input.id}`);
+    if (row["status"] !== "retry" && row["status"] !== "failed") throw new Error(`Cannot fail GAD index job ${input.id} from status ${String(row["status"])}`);
+    return row;
+  }
+
+  listGadIndexJobs(input: { status?: string | null; limit?: number | null } = {}): JsonRecord[] {
+    if (input.status) {
+      return this.sql.exec(
+        `SELECT * FROM gad_index_jobs WHERE status = ? ORDER BY updated_at DESC, id DESC LIMIT ?`,
+        input.status,
+        input.limit ?? 100,
+      ).toArray() as JsonRecord[];
+    }
+    return this.sql.exec(
+      `SELECT * FROM gad_index_jobs ORDER BY updated_at DESC, id DESC LIMIT ?`,
+      input.limit ?? 100,
+    ).toArray() as JsonRecord[];
+  }
+
   processGadIndexJobs(input: { limit?: number | null } = {}): { processed: number } {
-    const rows = this.sql.exec(`SELECT id FROM gad_index_jobs WHERE status = 'queued' ORDER BY id LIMIT ?`, input.limit ?? 100).toArray() as JsonRecord[];
-    for (const row of rows) this.sql.exec(`UPDATE gad_index_jobs SET status = 'complete', updated_at = ? WHERE id = ?`, nowIso(), row["id"] as SqlBinding);
+    const rows = this.claimGadIndexJobs(input);
+    for (const row of rows) this.completeGadIndexJob({ id: asNumber(row["id"]) });
     return { processed: rows.length };
   }
 
@@ -1107,6 +1188,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
 
   getStatus(): { metric: string; value: number }[] {
     const count = (table: string) => asNumber(this.sql.exec(`SELECT COUNT(*) AS value FROM ${table}`).one()["value"]);
+    const countWhere = (table: string, where: string) => asNumber(this.sql.exec(`SELECT COUNT(*) AS value FROM ${table} WHERE ${where}`).one()["value"]);
     return [
       { metric: "Pi branches", value: count("pi_branches") },
       { metric: "Pi entries", value: count("pi_session_entries") },
@@ -1114,6 +1196,9 @@ export class GadWorkspaceDO extends DurableObjectBase {
       { metric: "Worktree states", value: count("gad_worktree_states") },
       { metric: "State transitions", value: count("gad_state_transitions") },
       { metric: "File mutations", value: count("gad_file_mutations") },
+      { metric: "Index jobs queued", value: countWhere("gad_index_jobs", "status IN ('queued', 'retry')") },
+      { metric: "Index jobs running", value: countWhere("gad_index_jobs", "status = 'running'") },
+      { metric: "Index jobs failed", value: countWhere("gad_index_jobs", "status = 'failed'") },
     ];
   }
 
@@ -1407,19 +1492,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
         asString(event.payload["summary"]),
         json(event.metadata),
       );
-      this.sql.exec(
-        `INSERT INTO gad_file_change_hunks (
-           mutation_id, path, before_file_version_id, after_file_version_id,
-           old_start_line, old_line_count, new_start_line, new_line_count,
-           old_text_hash, new_text_hash
-         ) VALUES (?, ?, ?, ?, 1, NULL, 1, NULL, ?, ?)`,
-        mutationId,
-        path,
-        projection.beforeFileVersionId,
-        afterFileVersionId,
-        asString(event.payload["beforeHash"]),
-        afterHash,
-      );
+      this.recordMutationHunks(event, mutationId, path, projection.beforeFileVersionId, afterFileVersionId, afterHash);
     }
     const existing = this.sql.exec(`SELECT mutation_id FROM gad_file_mutations WHERE mutation_id = ?`, mutationId).toArray()[0];
     if (existing) {
@@ -1465,6 +1538,45 @@ export class GadWorkspaceDO extends DurableObjectBase {
     }
   }
 
+  private recordMutationHunks(
+    event: GadEventSpec,
+    mutationId: string,
+    path: string,
+    beforeFileVersionId: number | null,
+    afterFileVersionId: number | null,
+    afterHash: string | null,
+  ): void {
+    const payloadHunks = Array.isArray(event.payload["hunks"]) ? event.payload["hunks"] : [];
+    const hunks = payloadHunks.flatMap((hunk) => hunk && typeof hunk === "object" && !Array.isArray(hunk) ? [hunk as JsonRecord] : []);
+    const rows: JsonRecord[] = hunks.length > 0 ? hunks : [{
+      oldStartLine: 1,
+      oldLineCount: null,
+      newStartLine: 1,
+      newLineCount: null,
+      oldTextHash: asString(event.payload["beforeHash"]),
+      newTextHash: afterHash,
+    }];
+    for (const hunk of rows) {
+      this.sql.exec(
+        `INSERT INTO gad_file_change_hunks (
+           mutation_id, path, before_file_version_id, after_file_version_id,
+           old_start_line, old_line_count, new_start_line, new_line_count,
+           old_text_hash, new_text_hash
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        mutationId,
+        asString(hunk["path"]) ? normalizePath(String(hunk["path"])) : path,
+        beforeFileVersionId,
+        afterFileVersionId,
+        optionalInt(hunk["oldStartLine"]) ?? optionalInt(hunk["old_start_line"]) ?? 1,
+        optionalInt(hunk["oldLineCount"]) ?? optionalInt(hunk["old_line_count"]),
+        optionalInt(hunk["newStartLine"]) ?? optionalInt(hunk["new_start_line"]) ?? 1,
+        optionalInt(hunk["newLineCount"]) ?? optionalInt(hunk["new_line_count"]),
+        asString(hunk["oldTextHash"]) ?? asString(hunk["old_text_hash"]) ?? asString(event.payload["beforeHash"]),
+        asString(hunk["newTextHash"]) ?? asString(hunk["new_text_hash"]) ?? afterHash,
+      );
+    }
+  }
+
   private recordDispatch(event: GadEventSpec): void {
     const id = asString(event.payload["dispatchCallId"]) ?? event.eventId;
     if (event.kind === "dispatch_pending") {
@@ -1485,8 +1597,11 @@ export class GadWorkspaceDO extends DurableObjectBase {
       );
       return;
     }
-    const existing = this.sql.exec(`SELECT 1 AS ok FROM gad_dispatches WHERE dispatch_call_id = ?`, id).toArray()[0];
+    const existing = this.sql.exec(`SELECT status FROM gad_dispatches WHERE dispatch_call_id = ?`, id).toArray()[0] as JsonRecord | undefined;
     if (!existing) throw new Error(`Cannot ${event.kind.replace("dispatch_", "")} unknown dispatch: ${id}`);
+    if (existing["status"] !== "pending") {
+      throw new Error(`Cannot ${event.kind.replace("dispatch_", "")} dispatch ${id} from status ${String(existing["status"])}`);
+    }
     this.sql.exec(
       `UPDATE gad_dispatches
        SET latest_event_id = ?, status = ?, result_entry_id = ?, resolved_event_id = ?,
@@ -1521,8 +1636,9 @@ export class GadWorkspaceDO extends DurableObjectBase {
       );
       return;
     }
-    const existing = this.sql.exec(`SELECT 1 AS ok FROM gad_approvals WHERE approval_id = ?`, approvalId).toArray()[0];
+    const existing = this.sql.exec(`SELECT decision FROM gad_approvals WHERE approval_id = ?`, approvalId).toArray()[0] as JsonRecord | undefined;
     if (!existing) throw new Error(`Cannot resolve unknown approval: ${approvalId}`);
+    if (existing["decision"] != null) throw new Error(`Cannot resolve approval ${approvalId} more than once`);
     this.sql.exec(
       `UPDATE gad_approvals
        SET latest_event_id = ?, decision = ?, resolved_event_id = ?, resolved_by = ?, resolved_at = ?

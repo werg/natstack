@@ -55,6 +55,8 @@ function App() {
   const [files, setFiles] = useState<Row[]>([]);
   const [toolCalls, setToolCalls] = useState<Row[]>([]);
   const [status, setStatus] = useState<Row[]>([]);
+  const [integrity, setIntegrity] = useState<Row[]>([]);
+  const [operationStatus, setOperationStatus] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const selectedBranch = useMemo(
     () => branches.find((branch) => asText(branch["branch_id"]) === selectedBranchId) ?? null,
@@ -94,6 +96,40 @@ function App() {
     }
   }
 
+  async function checkIntegrity() {
+    setLoading(true);
+    try {
+      const result = await gad.checkGadIntegrity({});
+      setIntegrity(result.errors);
+      setOperationStatus(result.ok ? "Integrity OK" : `${result.errors.length} integrity issue(s)`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function validateHashes() {
+    setLoading(true);
+    try {
+      const result = await gad.validateGadHashes({});
+      setIntegrity(result.errors.map((message) => ({ message })));
+      setOperationStatus(result.ok ? "Hashes OK" : `${result.errors.length} hash issue(s)`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function replayEvents() {
+    setLoading(true);
+    try {
+      const result = await gad.replayGadEvents({});
+      setOperationStatus(`Replayed ${result.replayed} event(s)`);
+      await refresh();
+      await checkIntegrity();
+    } finally {
+      setLoading(false);
+    }
+  }
+
   useEffect(() => {
     void refresh();
   }, []);
@@ -117,9 +153,21 @@ function App() {
               <Heading size="4">gad Browser</Heading>
               <Text color="gray" size="2">{selectedBranch ? asText(selectedBranch["name"]) : "Workspace provenance"}</Text>
             </Box>
-            <Button size="2" variant="soft" onClick={() => void refresh()} disabled={loading} title="Refresh">
-              <ReloadIcon /> Refresh
-            </Button>
+            <Flex align="center" gap="2" wrap="wrap" justify="end">
+              {operationStatus ? <Text color="gray" size="2">{operationStatus}</Text> : null}
+              <Button size="2" variant="soft" onClick={() => void checkIntegrity()} disabled={loading}>
+                Check Integrity
+              </Button>
+              <Button size="2" variant="soft" onClick={() => void validateHashes()} disabled={loading}>
+                Validate Hashes
+              </Button>
+              <Button size="2" variant="soft" onClick={() => void replayEvents()} disabled={loading}>
+                Replay
+              </Button>
+              <Button size="2" variant="soft" onClick={() => void refresh()} disabled={loading} title="Refresh">
+                <ReloadIcon /> Refresh
+              </Button>
+            </Flex>
           </Flex>
 
           <Grid columns={{ initial: "1", md: "260px 1fr" }} gap="3" style={{ minHeight: 0, flex: 1 }}>
@@ -149,6 +197,7 @@ function App() {
                 <Tabs.Trigger value="events">GAD Events</Tabs.Trigger>
                 <Tabs.Trigger value="files">Files</Tabs.Trigger>
                 <Tabs.Trigger value="tool-calls">Tool Calls</Tabs.Trigger>
+                <Tabs.Trigger value="integrity">Integrity</Tabs.Trigger>
                 <Tabs.Trigger value="status">Status</Tabs.Trigger>
               </Tabs.List>
               <Box pt="3" style={{ height: "calc(100vh - 130px)" }}>
@@ -167,6 +216,9 @@ function App() {
                   </Tabs.Content>
                   <Tabs.Content value="tool-calls">
                     <DataTable rows={toolCalls} columns={["tool_call_id", "assistant_entry_id", "block_id", "tool_name", "created_at"]} />
+                  </Tabs.Content>
+                  <Tabs.Content value="integrity">
+                    <DataTable rows={integrity} columns={["type", "message", "entryId", "eventId", "stateHash", "manifestRootHash"]} />
                   </Tabs.Content>
                   <Tabs.Content value="status">
                     <DataTable rows={status} columns={["metric", "value"]} />

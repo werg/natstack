@@ -244,6 +244,20 @@ export function createGadService(deps: GadServiceDeps): ServiceDefinition {
         ]),
       },
       processGadIndexJobs: { args: z.tuple([ListOptsSchema]) },
+      claimGadIndexJobs: { args: z.tuple([ListOptsSchema]) },
+      completeGadIndexJob: { args: z.tuple([z.object({ id: z.number().int() }).strict()]) },
+      failGadIndexJob: {
+        args: z.tuple([
+          z
+            .object({
+              id: z.number().int(),
+              error: z.string(),
+              retry: z.boolean().nullable().optional(),
+            })
+            .strict(),
+        ]),
+      },
+      listGadIndexJobs: { args: z.tuple([ListOptsSchema]) },
       validateGadHashes: { args: z.tuple([ListOptsSchema]) },
       clearDirtyAfterValidation: { args: z.tuple([ListOptsSchema]) },
       checkGadIntegrity: { args: z.tuple([IntegrityCheckSchema.optional()]) },
@@ -290,6 +304,10 @@ export function createGadService(deps: GadServiceDeps): ServiceDefinition {
         case "blameGadFileSnippet":
         case "enqueueGadIndexJob":
         case "processGadIndexJobs":
+        case "claimGadIndexJobs":
+        case "completeGadIndexJob":
+        case "failGadIndexJob":
+        case "listGadIndexJobs":
         case "validateGadHashes":
         case "clearDirtyAfterValidation":
         case "checkGadIntegrity":

@@ -157,6 +157,16 @@ describe("GadWorkspaceDO clean Pi/GAD persistence", () => {
             inputStateHash: "state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7",
             afterHash: "blob:v1",
             outcome: "ok",
+            hunks: [
+              {
+                oldStartLine: 4,
+                oldLineCount: 2,
+                newStartLine: 4,
+                newLineCount: 3,
+                oldTextHash: "blob:old-lines",
+                newTextHash: "blob:new-lines",
+              },
+            ],
           },
         },
       ],
@@ -194,7 +204,16 @@ describe("GadWorkspaceDO clean Pi/GAD persistence", () => {
       stateHash: outputStateHash,
       path: "src/index.ts",
     });
-    expect(blame[0]).toMatchObject({ mutation_id: "mut-1", tool_call_id: "tc-write" });
+    expect(blame[0]).toMatchObject({
+      mutation_id: "mut-1",
+      tool_call_id: "tc-write",
+      old_start_line: 4,
+      old_line_count: 2,
+      new_start_line: 4,
+      new_line_count: 3,
+      old_text_hash: "blob:old-lines",
+      new_text_hash: "blob:new-lines",
+    });
 
     await call("ensurePiBranch", { branchId: "main" });
     const appended = await call<any>("appendPiEntryBatch", {
@@ -218,6 +237,156 @@ describe("GadWorkspaceDO clean Pi/GAD persistence", () => {
     expect(replay.replayed).toBe(2);
     const replayIntegrity = await call<{ ok: boolean; errors: Array<Record<string, unknown>> }>("checkGadIntegrity", {});
     expect(replayIntegrity).toEqual({ ok: true, errors: [] });
+  });
+
+  it("reports direct corruption across Pi entries, event chains, manifests, and transitions", async () => {
+    const { call, sql } = await createTestDO(GadWorkspaceDO);
+    await call("ensurePiBranch", { branchId: "main" });
+    await call("appendPiEntryBatch", {
+      branchId: "main",
+      items: [{
+        entryId: "msg-1",
+        parentEntryId: null,
+        entryType: "message",
+        payload: { message: { role: "user", content: "hello", timestamp: 1 } },
+      }],
+    });
+    await call("appendGadEvents", {
+      events: [{
+        eventId: "obs-corrupt",
+        kind: "file_mutation_observed",
+        payload: {
+          mutationId: "mut-corrupt",
+          path: "a/b.txt",
+          operation: "write",
+          inputStateHash: "state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7",
+          afterHash: "blob:content",
+          outcome: "ok",
+        },
+      }],
+    });
+
+    sql.exec(
+      "UPDATE pi_session_entries SET raw_entry_json = ? WHERE entry_id = ?",
+      JSON.stringify({ entryId: "msg-1", parentEntryId: null, entryType: "message", actor: null, payload: { message: { role: "user", content: "tampered", timestamp: 1 } }, metadata: null }),
+      "msg-1",
+    );
+    sql.exec("UPDATE gad_events SET prev_event_hash = ? WHERE event_id = ?", "gad-event-v1:bad", "obs-corrupt");
+    sql.exec("UPDATE gad_manifest_entries SET name = ? WHERE name = ?", "renamed.txt", "b.txt");
+    sql.exec("UPDATE gad_state_transitions SET output_state_hash = ? WHERE event_id = ?", "state:missing", "obs-corrupt");
+
+    const integrity = await call<{ ok: boolean; errors: Array<Record<string, unknown>> }>("checkGadIntegrity", {});
+    expect(integrity.ok).toBe(false);
+    expect(integrity.errors.map((error) => error["type"])).toEqual(expect.arrayContaining([
+      "pi-entry",
+      "gad-event",
+      "manifest",
+      "state-transition",
+    ]));
+  });
+
+  it("enforces dispatch and approval lifecycles", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    await expect(call("appendGadEvents", {
+      events: [{
+        eventId: "dispatch-resolve-missing",
+        kind: "dispatch_resolved",
+        payload: { dispatchCallId: "missing", resultEntryId: "entry" },
+      }],
+    })).rejects.toThrow(/unknown dispatch/u);
+
+    await call("appendGadEvents", {
+      events: [
+        {
+          eventId: "dispatch-pending",
+          kind: "dispatch_pending",
+          payload: { dispatchCallId: "dispatch-1", toolCallId: "tc-1", methodName: "tool.run" },
+        },
+        {
+          eventId: "dispatch-resolved",
+          kind: "dispatch_resolved",
+          payload: { dispatchCallId: "dispatch-1", resultEntryId: "entry-1" },
+        },
+      ],
+    });
+    await expect(call("appendGadEvents", {
+      events: [{
+        eventId: "dispatch-resolved-again",
+        kind: "dispatch_resolved",
+        payload: { dispatchCallId: "dispatch-1", resultEntryId: "entry-2" },
+      }],
+    })).rejects.toThrow(/from status resolved/u);
+
+    await expect(call("appendGadEvents", {
+      events: [{
+        eventId: "approval-resolve-missing",
+        kind: "approval_resolved",
+        payload: { approvalId: "missing", decision: "allow" },
+      }],
+    })).rejects.toThrow(/unknown approval/u);
+
+    await call("appendGadEvents", {
+      events: [
+        {
+          eventId: "approval-requested",
+          kind: "approval_requested",
+          payload: { approvalId: "approval-1", toolCallId: "tc-1", requestedByEntryId: "entry-1" },
+        },
+        {
+          eventId: "approval-resolved",
+          kind: "approval_resolved",
+          payload: { approvalId: "approval-1", decision: "allow", resolvedBy: "user" },
+        },
+      ],
+    });
+    await expect(call("appendGadEvents", {
+      events: [{
+        eventId: "approval-resolved-again",
+        kind: "approval_resolved",
+        payload: { approvalId: "approval-1", decision: "deny", resolvedBy: "user" },
+      }],
+    })).rejects.toThrow(/more than once/u);
+  });
+
+  it("tracks index jobs through claim, retry, failure, requeue, and completion", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    const created = await call<{ id: number }>("enqueueGadIndexJob", {
+      sourceHash: "claim:1",
+      sourceKind: "claim",
+      jobKind: "embed",
+    });
+
+    const claimed = await call<Array<Record<string, unknown>>>("claimGadIndexJobs", { limit: 1 });
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]).toMatchObject({ id: created.id, status: "running", attempts: 1 });
+
+    const retry = await call<Record<string, unknown>>("failGadIndexJob", {
+      id: created.id,
+      error: "rate limited",
+      retry: true,
+    });
+    expect(retry).toMatchObject({ status: "retry", error: "rate limited" });
+
+    const retried = await call<Array<Record<string, unknown>>>("claimGadIndexJobs", { limit: 1 });
+    expect(retried[0]).toMatchObject({ id: created.id, status: "running", attempts: 2 });
+
+    const failed = await call<Record<string, unknown>>("failGadIndexJob", {
+      id: created.id,
+      error: "bad source",
+    });
+    expect(failed).toMatchObject({ status: "failed", error: "bad source" });
+
+    await call("enqueueGadIndexJob", {
+      sourceHash: "claim:1",
+      sourceKind: "claim",
+      jobKind: "embed",
+    });
+    const requeued = await call<Array<Record<string, unknown>>>("listGadIndexJobs", { status: "queued" });
+    expect(requeued).toEqual([expect.objectContaining({ id: created.id, error: null })]);
+
+    const reclaimed = await call<Array<Record<string, unknown>>>("claimGadIndexJobs", { limit: 1 });
+    const complete = await call<Record<string, unknown>>("completeGadIndexJob", { id: Number(reclaimed[0]?.["id"]) });
+    expect(complete).toMatchObject({ id: created.id, status: "complete", error: null });
   });
 
   it("forks Pi branches by entry or raw worktree state", async () => {

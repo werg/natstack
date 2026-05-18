@@ -95,6 +95,10 @@ export interface GadClient {
   blameGadFileSnippet(input: { stateHash?: string | null; fileVersionId?: number | null; path: string }): Promise<GadJsonRecord[]>;
   enqueueGadIndexJob(input: { sourceHash: string; sourceKind: string; jobKind: string }): Promise<{ id: number }>;
   processGadIndexJobs(input?: { limit?: number | null }): Promise<{ processed: number }>;
+  claimGadIndexJobs(input?: { limit?: number | null }): Promise<GadJsonRecord[]>;
+  completeGadIndexJob(input: { id: number }): Promise<GadJsonRecord>;
+  failGadIndexJob(input: { id: number; error: string; retry?: boolean | null }): Promise<GadJsonRecord>;
+  listGadIndexJobs(input?: { status?: string | null; limit?: number | null }): Promise<GadJsonRecord[]>;
   validateGadHashes(input?: object): Promise<{ ok: boolean; errors: string[] }>;
   clearDirtyAfterValidation(input?: object): Promise<{ ok: boolean; errors: string[] }>;
   checkGadIntegrity(input?: object): Promise<{ ok: boolean; errors: GadJsonRecord[] }>;
@@ -128,6 +132,10 @@ export function createGadClient(rpc: RpcCaller): GadClient {
     blameGadFileSnippet: (input) => rpc.call("main", "gad.blameGadFileSnippet", input),
     enqueueGadIndexJob: (input) => rpc.call("main", "gad.enqueueGadIndexJob", input),
     processGadIndexJobs: (input) => rpc.call("main", "gad.processGadIndexJobs", input),
+    claimGadIndexJobs: (input) => rpc.call("main", "gad.claimGadIndexJobs", input),
+    completeGadIndexJob: (input) => rpc.call("main", "gad.completeGadIndexJob", input),
+    failGadIndexJob: (input) => rpc.call("main", "gad.failGadIndexJob", input),
+    listGadIndexJobs: (input) => rpc.call("main", "gad.listGadIndexJobs", input),
     validateGadHashes: (input) => rpc.call("main", "gad.validateGadHashes", input),
     clearDirtyAfterValidation: (input) => rpc.call("main", "gad.clearDirtyAfterValidation", input),
     checkGadIntegrity: (input) => rpc.call("main", "gad.checkGadIntegrity", input),
