@@ -515,7 +515,7 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
       // `cleanup` hook in `clearPendingStream` when the stream
       // terminates (END/ERROR/idle timeout/cancel).
       const head = await headPromise;
-      const response = new Response(stream as BodyInit, {
+      const response = new Response(stream as ConstructorParameters<typeof Response>[0], {
         status: head.status,
         statusText: head.statusText,
         headers: new Headers(head.headerPairs),

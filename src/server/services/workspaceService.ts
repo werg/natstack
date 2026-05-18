@@ -20,12 +20,16 @@
  * callback is a no-op and the caller is expected to reconnect manually.
  */
 
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
-import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
+import { ServiceError, type ServiceContext } from "@natstack/shared/serviceDispatcher";
 import type { Workspace, WorkspaceConfig } from "@natstack/shared/workspace/types";
+import type { ApprovalPrincipal } from "@natstack/shared/approvals";
+import type { ApprovalQueue } from "./approvalQueue.js";
+import type { CodeIdentityResolver } from "./codeIdentityResolver.js";
 
 /**
  * Minimal metadata for a skill directory under `<workspace>/skills/<name>/`.
@@ -113,6 +117,10 @@ export interface WorkspaceServiceDeps {
     name: string,
     opts?: { since?: number; level?: WorkspaceUnitLogRecord["level"]; limit?: number }
   ) => Promise<WorkspaceUnitLogRecord[]> | WorkspaceUnitLogRecord[];
+  /** Queue used to gate userland workspace mutations. */
+  approvalQueue?: Pick<ApprovalQueue, "requestUserland">;
+  /** Resolves panel/worker source identity for approval prompts. */
+  codeIdentityResolver?: Pick<CodeIdentityResolver, "resolveByCallerId">;
 }
 
 export interface WorkspaceUnitStatus {
@@ -162,6 +170,138 @@ export interface WorkspaceUnitLogRecord {
   source?: "stdout" | "stderr" | "ctx.log" | "console";
 }
 
+type WorkspaceApprovalOperation =
+  | "create"
+  | "delete"
+  | "select"
+  | "setInitPanels"
+  | "setConfigField";
+
+function isTrustedWorkspaceCaller(ctx: ServiceContext): boolean {
+  return ctx.callerKind === "shell" || ctx.callerKind === "server";
+}
+
+function truncateApprovalValue(value: string, max = 200): string {
+  return value.length <= max ? value : `${value.slice(0, Math.max(0, max - 3))}...`;
+}
+
+function safeSubjectSegment(value: string): string {
+  const cleaned = value.replace(/[^A-Za-z0-9._:/-]+/g, "-").replace(/^-+|-+$/g, "");
+  return cleaned.slice(0, 48) || "unknown";
+}
+
+function describeJson(value: unknown): string {
+  try {
+    return truncateApprovalValue(JSON.stringify(value));
+  } catch {
+    return "[unserializable value]";
+  }
+}
+
+function resolveWorkspacePrincipal(
+  deps: WorkspaceServiceDeps,
+  ctx: ServiceContext,
+  method: WorkspaceApprovalOperation
+): ApprovalPrincipal {
+  if (ctx.callerKind !== "panel" && ctx.callerKind !== "worker") {
+    throw new ServiceError(
+      "workspace",
+      method,
+      "Workspace mutation approvals are only available to panel and worker callers",
+      "EACCES"
+    );
+  }
+  if (!deps.approvalQueue || !deps.codeIdentityResolver) {
+    throw new ServiceError(
+      "workspace",
+      method,
+      "Workspace mutation approval is unavailable",
+      "EACCES"
+    );
+  }
+  const identity = deps.codeIdentityResolver.resolveByCallerId(ctx.callerId);
+  if (!identity) {
+    throw new ServiceError(
+      "workspace",
+      method,
+      `Unknown caller identity: ${ctx.callerId}`,
+      "ENOENT"
+    );
+  }
+  if (identity.callerKind !== ctx.callerKind) {
+    throw new ServiceError(
+      "workspace",
+      method,
+      `Caller identity kind mismatch for ${ctx.callerId}`,
+      "EACCES"
+    );
+  }
+  return {
+    callerId: identity.callerId,
+    callerKind: identity.callerKind,
+    repoPath: identity.repoPath,
+    effectiveVersion: identity.effectiveVersion,
+  };
+}
+
+async function requireWorkspaceApproval(
+  deps: WorkspaceServiceDeps,
+  ctx: ServiceContext,
+  operation: WorkspaceApprovalOperation,
+  approval: {
+    target: string;
+    title: string;
+    summary: string;
+    warning?: string;
+    details?: Array<{ label: string; value: string }>;
+  }
+): Promise<void> {
+  if (isTrustedWorkspaceCaller(ctx)) return;
+  const principal = resolveWorkspacePrincipal(deps, ctx, operation);
+  const approvalQueue = deps.approvalQueue;
+  if (!approvalQueue) {
+    throw new ServiceError(
+      "workspace",
+      operation,
+      "Workspace mutation approval is unavailable",
+      "EACCES"
+    );
+  }
+  const result = await approvalQueue.requestUserland({
+    principal,
+    subject: {
+      id: `workspace:${operation}:${safeSubjectSegment(approval.target)}:${randomUUID()}`,
+      label: `workspace ${operation}`,
+    },
+    title: approval.title,
+    summary: approval.summary,
+    warning: approval.warning,
+    details: [
+      { label: "Caller", value: principal.callerId },
+      { label: "Workspace", value: deps.getConfig().id },
+      { label: "Target", value: truncateApprovalValue(approval.target) },
+      ...(approval.details ?? []),
+    ].slice(0, 8),
+    options: [
+      {
+        value: "allow",
+        label: "Allow",
+        description: "Allow this workspace operation once.",
+        tone: "primary",
+      },
+      {
+        value: "deny",
+        label: "Deny",
+        description: "Block this workspace operation.",
+        tone: "danger",
+      },
+    ],
+  });
+  if (result.kind !== "choice" || result.choice !== "allow") {
+    throw new ServiceError("workspace", operation, "Workspace operation was denied", "EACCES");
+  }
+}
+
 export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefinition {
   const { workspace } = deps;
 
@@ -178,8 +318,12 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
     ? {
         create: {
           args: z.tuple([z.string(), z.object({ forkFrom: z.string().optional() }).optional()]),
+          policy: { allowed: ["shell", "panel", "worker", "server"] },
         },
-        delete: { args: z.tuple([z.string()]) },
+        delete: {
+          args: z.tuple([z.string()]),
+          policy: { allowed: ["shell", "panel", "worker", "server"] },
+        },
       }
     : {};
 
@@ -200,7 +344,7 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
       // app.relaunch() — disruptive and reachable only via shell UI.
       select: {
         args: z.tuple([z.string()]),
-        policy: { allowed: ["shell"] },
+        policy: { allowed: ["shell", "panel", "worker", "server"] },
       },
       setInitPanels: {
         args: z.tuple([
@@ -211,12 +355,13 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
             })
           ),
         ]),
+        policy: { allowed: ["shell", "panel", "worker", "server"] },
       },
       // SECURITY: arbitrary config-field writes — server-internal use
-      // only. Panels MUST NOT mutate workspace config fields directly.
+      // by default, but userland can request a one-shot approval.
       setConfigField: {
         args: z.tuple([z.string(), z.unknown()]),
-        policy: { allowed: ["shell", "server"] },
+        policy: { allowed: ["shell", "panel", "worker", "server"] },
       },
       // Agent resource loading — read AGENTS.md and skill definitions directly
       // from the workspace source tree. Kept server-side because they touch
@@ -277,19 +422,27 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
         case "create": {
           if (!deps.centralData) throw new Error("Workspace creation not available");
           const [name, opts] = args as [string, { forkFrom?: string } | undefined];
+          await requireWorkspaceApproval(deps, ctx, "create", {
+            target: name,
+            title: "Create workspace?",
+            summary: "This panel or worker wants to create a new workspace.",
+            details: opts?.forkFrom ? [{ label: "Fork from", value: opts.forkFrom }] : undefined,
+          });
           return deps.createWorkspace(name, opts);
         }
 
         case "delete": {
-          // Deletion is disruptive — only the shell UI should drive it.
-          if (ctx.callerKind !== "shell") {
-            throw new Error("Only the shell UI can delete workspaces");
-          }
           if (!deps.centralData) throw new Error("Workspace deletion not available");
           const [name] = args as [string];
           if (name === deps.getConfig().id) {
             throw new Error("Cannot delete the currently running workspace");
           }
+          await requireWorkspaceApproval(deps, ctx, "delete", {
+            target: name,
+            title: "Delete workspace?",
+            summary: "This panel or worker wants to permanently delete a workspace.",
+            warning: "This removes the workspace directory and cannot be undone.",
+          });
           deps.deleteWorkspaceDir(name);
           deps.centralData.removeWorkspace(name);
           return;
@@ -297,6 +450,12 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
 
         case "select": {
           const [name] = args as [string];
+          await requireWorkspaceApproval(deps, ctx, "select", {
+            target: name,
+            title: "Switch workspace?",
+            summary: "This panel or worker wants to switch the active workspace.",
+            warning: "Switching workspaces relaunches the app.",
+          });
           // Touch the catalog so the workspace is marked as recently opened.
           deps.centralData?.touchWorkspace(name);
           // Signal the host to relaunch with the new workspace. In IPC mode
@@ -311,12 +470,28 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
           const [initPanels] = args as [
             Array<{ source: string; stateArgs?: Record<string, unknown> }>,
           ];
+          await requireWorkspaceApproval(deps, ctx, "setInitPanels", {
+            target: deps.getConfig().id,
+            title: "Change initial workspace panels?",
+            summary: "This panel or worker wants to change the panels opened for this workspace.",
+            details: [{ label: "Init panels", value: describeJson(initPanels) }],
+          });
           deps.setConfigField("initPanels", initPanels);
           return;
         }
 
         case "setConfigField": {
           const [key, value] = args as [string, unknown];
+          await requireWorkspaceApproval(deps, ctx, "setConfigField", {
+            target: key,
+            title: "Change workspace config?",
+            summary: "This panel or worker wants to write a field in meta/natstack.yml.",
+            warning: "Changing workspace config can affect how the workspace starts and runs.",
+            details: [
+              { label: "Config key", value: key },
+              { label: "New value", value: describeJson(value) },
+            ],
+          });
           deps.setConfigField(key, value);
           return;
         }

@@ -37,6 +37,9 @@
       "@natstack/env-paths": [
         "packages/env-paths/src/index.ts"
       ],
+      "@natstack/extension": [
+        "packages/extension/src/index.ts"
+      ],
       "@natstack/git": [
         "packages/git/src/index.ts"
       ],

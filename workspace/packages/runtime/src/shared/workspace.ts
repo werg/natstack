@@ -80,8 +80,12 @@ export interface WorkspaceClient {
   getConfig(): Promise<WorkspaceConfig>;
   /** Create a new workspace. */
   create(name: string, opts?: { forkFrom?: string }): Promise<WorkspaceEntry>;
+  /** Delete a workspace. Requires host approval for userland callers. */
+  delete(name: string): Promise<void>;
   /** Set the panels created on first initialization (when panel tree is empty). */
   setInitPanels(entries: InitPanelEntry[]): Promise<void>;
+  /** Set an arbitrary active-workspace config field. Requires host approval for userland callers. */
+  setConfigField(key: string, value: unknown): Promise<void>;
   /** Switch to a workspace (triggers app relaunch). */
   switchTo(name: string): Promise<void>;
   /** Workspace unit status and operational controls. */
@@ -96,7 +100,9 @@ export function createWorkspaceClient(rpc: WorkspaceRpc): WorkspaceClient {
     getActiveEntry: () => rpc.call("main", "workspace.getActiveEntry"),
     getConfig: () => rpc.call("main", "workspace.getConfig"),
     create: (name, opts) => rpc.call("main", "workspace.create", name, opts),
+    delete: (name) => rpc.call("main", "workspace.delete", name),
     setInitPanels: (entries) => rpc.call("main", "workspace.setInitPanels", entries),
+    setConfigField: (key, value) => rpc.call("main", "workspace.setConfigField", key, value),
     switchTo: (name) => rpc.call("main", "workspace.select", name),
     units: {
       list: listUnits,

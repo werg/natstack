@@ -13,6 +13,7 @@ import type { Workspace, WorkspaceConfig } from "@natstack/shared/workspace/type
 import type { CentralDataManager } from "@natstack/shared/centralData";
 import type { HostConfig } from "@natstack/shared/hostConfig";
 import type { CodeIdentityResolver } from "./services/codeIdentityResolver.js";
+import type { ApprovalQueue } from "./services/approvalQueue.js";
 import { assertPresent } from "../lintHelpers";
 
 export interface CommonDeps {
@@ -46,7 +47,11 @@ export interface CommonDeps {
   ) =>
     | Promise<import("./services/workspaceService.js").WorkspaceUnitLogRecord[]>
     | import("./services/workspaceService.js").WorkspaceUnitLogRecord[];
-  codeIdentityResolver?: Pick<CodeIdentityResolver, "upsertCallerIdentity" | "unregisterCaller">;
+  approvalQueue?: Pick<ApprovalQueue, "requestUserland">;
+  codeIdentityResolver?: Pick<
+    CodeIdentityResolver,
+    "upsertCallerIdentity" | "unregisterCaller" | "resolveByCallerId"
+  >;
   getEffectiveVersion?: (source: string) => Promise<string | undefined>;
 }
 
@@ -143,6 +148,8 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
           listUnits: deps.listWorkspaceUnits,
           restartUnit: deps.restartWorkspaceUnit,
           listUnitLogs: deps.listWorkspaceUnitLogs,
+          approvalQueue: deps.approvalQueue,
+          codeIdentityResolver: deps.codeIdentityResolver,
         })
       )
     );

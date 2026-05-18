@@ -1729,6 +1729,7 @@ async function main() {
       return extensionHostForGateway?.listWorkspaceUnitLogs(name, opts) ?? [];
     },
     codeIdentityResolver,
+    approvalQueue,
     getEffectiveVersion: async (source: string) => {
       const buildSystem = container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");
       return buildSystem?.getEffectiveVersion(source) ?? undefined;

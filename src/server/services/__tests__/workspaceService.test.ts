@@ -37,6 +37,7 @@ import { createWorkspaceService } from "../workspaceService.js";
 import { createWorkspaceClient } from "../../../../workspace/packages/runtime/src/shared/workspace.js";
 import type { WorkspaceConfig } from "@natstack/shared/workspace/types";
 import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
+import type { UserlandApprovalChoice } from "@natstack/shared/approvals";
 
 /**
  * Build a recording RpcCaller that captures every (target, method, args) tuple
@@ -96,6 +97,10 @@ function makeCentralData() {
   };
 }
 
+function grantedApproval(): UserlandApprovalChoice {
+  return { kind: "choice", choice: "allow" };
+}
+
 function makeService(opts: { requestRelaunch?: (name: string) => void } = {}) {
   return createWorkspaceService({
     workspace: makeWorkspace(),
@@ -105,6 +110,15 @@ function makeService(opts: { requestRelaunch?: (name: string) => void } = {}) {
     createWorkspace: vi.fn((name: string) => ({ name, lastOpened: Date.now() })),
     deleteWorkspaceDir: vi.fn(),
     requestRelaunch: opts.requestRelaunch,
+    approvalQueue: { requestUserland: vi.fn(async () => grantedApproval()) },
+    codeIdentityResolver: {
+      resolveByCallerId: vi.fn((callerId: string) => ({
+        callerId,
+        callerKind: "panel" as const,
+        repoPath: "panels/test",
+        effectiveVersion: "ev-test",
+      })),
+    },
   });
 }
 
@@ -140,7 +154,9 @@ describe("workspace service ↔ client contract", () => {
     await client.getActiveEntry();
     await client.getConfig();
     await client.create("new-ws", { forkFrom: "test-ws" });
+    await client.delete("old-ws");
     await client.setInitPanels([{ source: "panels/chat" }]);
+    await client.setConfigField("title", "Test");
     await client.switchTo("other");
     await client.units.list();
     await client.units.inspector("extensions/foo");
@@ -169,7 +185,9 @@ describe("workspace service ↔ client contract", () => {
     void client.getActiveEntry();
     void client.getConfig();
     void client.create("x");
+    void client.delete("old");
     void client.setInitPanels([]);
+    void client.setConfigField("title", "Test");
     void client.switchTo("x");
     void client.units.list();
     void client.units.inspector("extensions/foo");
@@ -280,9 +298,10 @@ describe("workspace service handler", () => {
     expect(result.name).toBe("new-ws");
   });
 
-  it("delete is shell-only (panels cannot delete workspaces)", async () => {
+  it("delete is approval-gated for panels", async () => {
     const service = makeService();
-    await expect(service.handler(panelCtx, "delete", ["other"])).rejects.toThrow(/shell/);
+    await service.handler(panelCtx, "delete", ["other"]);
+    // Should not throw when approval is granted.
   });
 
   it("delete works from the shell", async () => {
@@ -307,9 +326,41 @@ describe("workspace service handler", () => {
       centralData: makeCentralData(),
       createWorkspace: vi.fn(),
       deleteWorkspaceDir: vi.fn(),
+      approvalQueue: { requestUserland: vi.fn(async () => grantedApproval()) },
+      codeIdentityResolver: {
+        resolveByCallerId: vi.fn((callerId: string) => ({
+          callerId,
+          callerKind: "panel" as const,
+          repoPath: "panels/test",
+          effectiveVersion: "ev-test",
+        })),
+      },
     });
     await service.handler(panelCtx, "setInitPanels", [[{ source: "panels/chat" }]]);
     expect(setConfigField).toHaveBeenCalledWith("initPanels", [{ source: "panels/chat" }]);
+  });
+
+  it("setConfigField delegates to setConfigField after approval", async () => {
+    const setConfigField = vi.fn();
+    const service = createWorkspaceService({
+      workspace: makeWorkspace(),
+      getConfig: () => makeConfig(),
+      setConfigField,
+      centralData: makeCentralData(),
+      createWorkspace: vi.fn(),
+      deleteWorkspaceDir: vi.fn(),
+      approvalQueue: { requestUserland: vi.fn(async () => grantedApproval()) },
+      codeIdentityResolver: {
+        resolveByCallerId: vi.fn((callerId: string) => ({
+          callerId,
+          callerKind: "panel" as const,
+          repoPath: "panels/test",
+          effectiveVersion: "ev-test",
+        })),
+      },
+    });
+    await service.handler(panelCtx, "setConfigField", ["title", "Test"]);
+    expect(setConfigField).toHaveBeenCalledWith("title", "Test");
   });
 });
 
@@ -327,6 +378,15 @@ describe("workspace.select", () => {
       createWorkspace: vi.fn(),
       deleteWorkspaceDir: vi.fn(),
       requestRelaunch,
+      approvalQueue: { requestUserland: vi.fn(async () => grantedApproval()) },
+      codeIdentityResolver: {
+        resolveByCallerId: vi.fn((callerId: string) => ({
+          callerId,
+          callerKind: "panel" as const,
+          repoPath: "panels/test",
+          effectiveVersion: "ev-test",
+        })),
+      },
     });
 
     await service.handler(panelCtx, "select", ["other"]);
@@ -344,6 +404,15 @@ describe("workspace.select", () => {
       centralData: central,
       createWorkspace: vi.fn(),
       deleteWorkspaceDir: vi.fn(),
+      approvalQueue: { requestUserland: vi.fn(async () => grantedApproval()) },
+      codeIdentityResolver: {
+        resolveByCallerId: vi.fn((callerId: string) => ({
+          callerId,
+          callerKind: "panel" as const,
+          repoPath: "panels/test",
+          effectiveVersion: "ev-test",
+        })),
+      },
       // No requestRelaunch — standalone server has no Electron app to relaunch.
     });
 
