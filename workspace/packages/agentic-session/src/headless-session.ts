@@ -90,7 +90,7 @@ export interface HeadlessSessionConfig {
 }
 
 export interface HeadlessWithAgentConfig extends HeadlessSessionConfig {
-  rpcCall: (target: string, method: string, ...args: unknown[]) => Promise<unknown>;
+  rpcCall: (target: string, method: string, args: unknown[]) => Promise<unknown>;
   source: string;
   className: string;
   objectKey?: string;

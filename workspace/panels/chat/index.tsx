@@ -5,7 +5,6 @@
  * default agent DO (AiChatWorker). The panel's own contextId is used
  * directly — no cross-context navigation needed.
  */
-
 import { pubsubConfig, id as panelClientId, contextId, rpc, recoveryCoordinator, focusPanel, useStateArgs, setStateArgs, buildPanelLink } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -14,380 +13,333 @@ import { AgenticChat, ErrorBoundary } from "@workspace/agentic-chat";
 import type { ConnectionConfig, AgenticChatActions, ToolProvider, ToolProviderDeps } from "@workspace/agentic-chat";
 import { createPanelSandboxConfig, buildEvalTool } from "@workspace/agentic-core";
 import { resolveChatContextId } from "./bootstrap.js";
-
 function detectHostPlatform(): "mobile" | "electron" {
-  const explicitPlatform = (globalThis as { __natstackHostPlatform?: unknown }).__natstackHostPlatform;
-  if (explicitPlatform === "mobile") {
-    return "mobile";
-  }
-  if (typeof navigator !== "undefined" && /\bNatStack-Mobile\//.test(navigator.userAgent)) {
-    return "mobile";
-  }
-  return "electron";
+    const explicitPlatform = (globalThis as {
+        __natstackHostPlatform?: unknown;
+    }).__natstackHostPlatform;
+    if (explicitPlatform === "mobile") {
+        return "mobile";
+    }
+    if (typeof navigator !== "undefined" && /\bNatStack-Mobile\//.test(navigator.userAgent)) {
+        return "mobile";
+    }
+    return "electron";
 }
-
 /** Stable metadata object — avoids creating a new object every render */
 const PANEL_METADATA = {
-  name: "Chat Panel",
-  type: "panel" as const,
-  handle: "user",
-  hostPlatform: detectHostPlatform(),
+    name: "Chat Panel",
+    type: "panel" as const,
+    handle: "user",
+    hostPlatform: detectHostPlatform(),
 };
-
 /** Default DO worker source and class for the AI chat agent */
 const DEFAULT_WORKER_SOURCE = "workers/agent-worker";
 const DEFAULT_CLASS_NAME = "AiChatWorker";
 const DEFAULT_HANDLE = "ai-chat";
-
 /** Response shape from workers.listSources */
 interface WorkerSourceEntry {
-  name: string;
-  source: string;
-  title?: string;
-  classes: Array<{ className: string }>;
+    name: string;
+    source: string;
+    title?: string;
+    classes: Array<{
+        className: string;
+    }>;
 }
-
 /** Type for chat panel state args */
 interface ChatStateArgs {
-  channelName?: string;
-  channelConfig?: Record<string, unknown>;
-  contextId?: string;
-  pendingAgents?: Array<{ agentId: string; handle: string }>;
-  agentSource?: string;
-  agentClass?: string;
-  /** If set, automatically sent as the first user message once connected */
-  initialPrompt?: string;
-  /** System prompt for the agent harness */
-  systemPrompt?: string;
-  /** How systemPrompt interacts with NatStack base, workspace prompt, and skills */
-  systemPromptMode?: "append" | "replace-natstack" | "replace";
-  /** Context-relative TSX file to load into the panel-local action bar */
-  actionBarFile?: string | null;
-  /** Props for actionBarFile */
-  actionBarProps?: Record<string, unknown> | null;
-  /** Preferred max height for actionBarFile */
-  actionBarMaxHeight?: number | null;
+    channelName?: string;
+    channelConfig?: Record<string, unknown>;
+    contextId?: string;
+    pendingAgents?: Array<{
+        agentId: string;
+        handle: string;
+    }>;
+    agentSource?: string;
+    agentClass?: string;
+    /** If set, automatically sent as the first user message once connected */
+    initialPrompt?: string;
+    /** System prompt for the agent harness */
+    systemPrompt?: string;
+    /** How systemPrompt interacts with NatStack base, workspace prompt, and skills */
+    systemPromptMode?: "append" | "replace-natstack" | "replace";
+    /** Context-relative TSX file to load into the panel-local action bar */
+    actionBarFile?: string | null;
+    /** Props for actionBarFile */
+    actionBarProps?: Record<string, unknown> | null;
+    /** Preferred max height for actionBarFile */
+    actionBarMaxHeight?: number | null;
 }
-
 /**
  * Subscribe a DO to a channel via the workers service.
  * Ensures the DO is reachable (idempotent) then calls subscribeChannel.
  */
-async function subscribeDOToChannel(
-  source: string,
-  className: string,
-  objectKey: string,
-  channelId: string,
-  channelContextId: string,
-  config?: Record<string, unknown>,
-  replay?: boolean,
-): Promise<{ ok: boolean; participantId?: string }> {
-  if (!channelContextId) {
-    throw new Error("Cannot subscribe an agent DO without a context ID");
-  }
-  // callDO dispatches via DODispatch which internally ensures the DO is alive
-  // on failure (ensureDO + retry). No eager setup needed.
-  return rpc.call<{ ok: boolean; participantId?: string }>(
-    "main",
-    "workers.callDO",
-    source,
-    className,
-    objectKey,
-    "subscribeChannel",
-    { channelId, contextId: channelContextId, config, replay },
-  );
+async function subscribeDOToChannel(source: string, className: string, objectKey: string, channelId: string, channelContextId: string, config?: Record<string, unknown>, replay?: boolean): Promise<{
+    ok: boolean;
+    participantId?: string;
+}> {
+    if (!channelContextId) {
+        throw new Error("Cannot subscribe an agent DO without a context ID");
+    }
+    // callDO dispatches via DODispatch which internally ensures the DO is alive
+    // on failure (ensureDO + retry). No eager setup needed.
+    return rpc.call<{
+        ok: boolean;
+        participantId?: string;
+    }>("main", "workers.callDO", [source,
+        className,
+        objectKey,
+        "subscribeChannel",
+        { channelId, contextId: channelContextId, config, replay }]);
 }
-
 /**
  * Unsubscribe a DO from a channel via the workers service.
  */
-async function unsubscribeDOFromChannel(
-  source: string,
-  className: string,
-  objectKey: string,
-  channelId: string,
-): Promise<void> {
-  await rpc.call("main", "workers.callDO", source, className, objectKey, "unsubscribeChannel", channelId);
+async function unsubscribeDOFromChannel(source: string, className: string, objectKey: string, channelId: string): Promise<void> {
+    await rpc.call("main", "workers.callDO", [source, className, objectKey, "unsubscribeChannel", channelId]);
 }
-
 export default function ChatPanel() {
-  const theme = usePanelTheme();
-  const stateArgs = useStateArgs<ChatStateArgs>();
-  const resolvedContextId = resolveChatContextId(stateArgs.contextId, contextId);
-  const initialPromptCaptured = useRef(stateArgs.initialPrompt);
-
-  // Auto-bootstrap: when no channelName, generate one and spawn the default agent
-  const [bootstrapChannel, setBootstrapChannel] = useState<string | null>(null);
-  const [bootstrapPending, setBootstrapPending] = useState<Array<{ agentId: string; handle: string }> | null>(null);
-  const bootstrapAttempted = useRef(false);
-
-  useEffect(() => {
-    if (stateArgs.channelName || bootstrapAttempted.current || !resolvedContextId) return;
-    bootstrapAttempted.current = true;
-
-    const workerSource = stateArgs.agentSource ?? DEFAULT_WORKER_SOURCE;
-    const className = stateArgs.agentClass ?? DEFAULT_CLASS_NAME;
-    const baseHandle = className === DEFAULT_CLASS_NAME
-      ? DEFAULT_HANDLE
-      : className.replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase();
-
-    const channelName = `chat-${crypto.randomUUID().slice(0, 8)}`;
-    const objectKey = `${baseHandle}-${crypto.randomUUID().slice(0, 8)}`;
-    const pending = [{ agentId: className, handle: baseHandle }];
-
-    void setStateArgs({ channelName, contextId: resolvedContextId, pendingAgents: pending });
-
-    const subscribeConfig: Record<string, unknown> = { handle: baseHandle };
-    if (stateArgs.systemPrompt) subscribeConfig["systemPrompt"] = stateArgs.systemPrompt;
-    if (stateArgs.systemPromptMode) subscribeConfig["systemPromptMode"] = stateArgs.systemPromptMode;
-    subscribeDOToChannel(workerSource, className, objectKey, channelName, resolvedContextId, subscribeConfig, true).catch((err: unknown) => {
-      console.warn(`[ChatPanel] Failed to subscribe agent DO:`, err);
-    });
-
-    setBootstrapChannel(channelName);
-    setBootstrapPending(pending);
-  }, [
-    resolvedContextId,
-    stateArgs.agentClass,
-    stateArgs.agentSource,
-    stateArgs.channelName,
-    stateArgs.systemPrompt,
-    stateArgs.systemPromptMode,
-  ]);
-
-  // Rehydration recovery: when a panel mounts with channelName already set
-  // (persisted from a prior session) but no DO participants are in the
-  // channel, re-subscribe the agent. Covers the case where the original
-  // bootstrap persisted channelName but the subscribeDOToChannel call lost
-  // its race against WS-readiness, leaving the user with a chat that has
-  // no agent. Skipped when this session ran the bootstrap itself (in which
-  // case the in-flight subscribe is authoritative).
-  const rehydrationCheckedRef = useRef(false);
-  useEffect(() => {
-    if (
-      rehydrationCheckedRef.current ||
-      bootstrapAttempted.current ||
-      !stateArgs.channelName ||
-      !resolvedContextId
-    ) return;
-    rehydrationCheckedRef.current = true;
-
-    const channelName = stateArgs.channelName;
-    void (async () => {
-      try {
-        const dos = await rpc.call<Array<{ source: string; className: string; objectKey: string }>>(
-          "main",
-          "workers.getChannelWorkers",
-          channelName,
-        );
-        if (dos.length > 0) return;
-
+    const theme = usePanelTheme();
+    const stateArgs = useStateArgs<ChatStateArgs>();
+    const resolvedContextId = resolveChatContextId(stateArgs.contextId, contextId);
+    const initialPromptCaptured = useRef(stateArgs.initialPrompt);
+    // Auto-bootstrap: when no channelName, generate one and spawn the default agent
+    const [bootstrapChannel, setBootstrapChannel] = useState<string | null>(null);
+    const [bootstrapPending, setBootstrapPending] = useState<Array<{
+        agentId: string;
+        handle: string;
+    }> | null>(null);
+    const bootstrapAttempted = useRef(false);
+    useEffect(() => {
+        if (stateArgs.channelName || bootstrapAttempted.current || !resolvedContextId)
+            return;
+        bootstrapAttempted.current = true;
         const workerSource = stateArgs.agentSource ?? DEFAULT_WORKER_SOURCE;
-        const fallbackClass = stateArgs.agentClass ?? DEFAULT_CLASS_NAME;
-        const fallbackHandle = fallbackClass === DEFAULT_CLASS_NAME
-          ? DEFAULT_HANDLE
-          : fallbackClass.replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase();
-        const pendingList = (stateArgs.pendingAgents && stateArgs.pendingAgents.length > 0)
-          ? stateArgs.pendingAgents
-          : [{ agentId: fallbackClass, handle: fallbackHandle }];
-
-        for (const agent of pendingList) {
-          const objectKey = `${agent.handle}-${crypto.randomUUID().slice(0, 8)}`;
-          const subscribeConfig: Record<string, unknown> = { handle: agent.handle };
-          if (stateArgs.systemPrompt) subscribeConfig["systemPrompt"] = stateArgs.systemPrompt;
-          if (stateArgs.systemPromptMode) subscribeConfig["systemPromptMode"] = stateArgs.systemPromptMode;
-          try {
-            await subscribeDOToChannel(
-              workerSource, agent.agentId, objectKey, channelName, resolvedContextId,
-              subscribeConfig, true,
-            );
-          } catch (err) {
-            console.warn(`[ChatPanel] Failed to re-subscribe agent "${agent.handle}" on rehydration:`, err);
-          }
+        const className = stateArgs.agentClass ?? DEFAULT_CLASS_NAME;
+        const baseHandle = className === DEFAULT_CLASS_NAME
+            ? DEFAULT_HANDLE
+            : className.replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase();
+        const channelName = `chat-${crypto.randomUUID().slice(0, 8)}`;
+        const objectKey = `${baseHandle}-${crypto.randomUUID().slice(0, 8)}`;
+        const pending = [{ agentId: className, handle: baseHandle }];
+        void setStateArgs({ channelName, contextId: resolvedContextId, pendingAgents: pending });
+        const subscribeConfig: Record<string, unknown> = { handle: baseHandle };
+        if (stateArgs.systemPrompt)
+            subscribeConfig["systemPrompt"] = stateArgs.systemPrompt;
+        if (stateArgs.systemPromptMode)
+            subscribeConfig["systemPromptMode"] = stateArgs.systemPromptMode;
+        subscribeDOToChannel(workerSource, className, objectKey, channelName, resolvedContextId, subscribeConfig, true).catch((err: unknown) => {
+            console.warn(`[ChatPanel] Failed to subscribe agent DO:`, err);
+        });
+        setBootstrapChannel(channelName);
+        setBootstrapPending(pending);
+    }, [
+        resolvedContextId,
+        stateArgs.agentClass,
+        stateArgs.agentSource,
+        stateArgs.channelName,
+        stateArgs.systemPrompt,
+        stateArgs.systemPromptMode,
+    ]);
+    // Rehydration recovery: when a panel mounts with channelName already set
+    // (persisted from a prior session) but no DO participants are in the
+    // channel, re-subscribe the agent. Covers the case where the original
+    // bootstrap persisted channelName but the subscribeDOToChannel call lost
+    // its race against WS-readiness, leaving the user with a chat that has
+    // no agent. Skipped when this session ran the bootstrap itself (in which
+    // case the in-flight subscribe is authoritative).
+    const rehydrationCheckedRef = useRef(false);
+    useEffect(() => {
+        if (rehydrationCheckedRef.current ||
+            bootstrapAttempted.current ||
+            !stateArgs.channelName ||
+            !resolvedContextId)
+            return;
+        rehydrationCheckedRef.current = true;
+        const channelName = stateArgs.channelName;
+        void (async () => {
+            try {
+                const dos = await rpc.call<Array<{
+                    source: string;
+                    className: string;
+                    objectKey: string;
+                }>>("main", "workers.getChannelWorkers", [channelName]);
+                if (dos.length > 0)
+                    return;
+                const workerSource = stateArgs.agentSource ?? DEFAULT_WORKER_SOURCE;
+                const fallbackClass = stateArgs.agentClass ?? DEFAULT_CLASS_NAME;
+                const fallbackHandle = fallbackClass === DEFAULT_CLASS_NAME
+                    ? DEFAULT_HANDLE
+                    : fallbackClass.replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase();
+                const pendingList = (stateArgs.pendingAgents && stateArgs.pendingAgents.length > 0)
+                    ? stateArgs.pendingAgents
+                    : [{ agentId: fallbackClass, handle: fallbackHandle }];
+                for (const agent of pendingList) {
+                    const objectKey = `${agent.handle}-${crypto.randomUUID().slice(0, 8)}`;
+                    const subscribeConfig: Record<string, unknown> = { handle: agent.handle };
+                    if (stateArgs.systemPrompt)
+                        subscribeConfig["systemPrompt"] = stateArgs.systemPrompt;
+                    if (stateArgs.systemPromptMode)
+                        subscribeConfig["systemPromptMode"] = stateArgs.systemPromptMode;
+                    try {
+                        await subscribeDOToChannel(workerSource, agent.agentId, objectKey, channelName, resolvedContextId, subscribeConfig, true);
+                    }
+                    catch (err) {
+                        console.warn(`[ChatPanel] Failed to re-subscribe agent "${agent.handle}" on rehydration:`, err);
+                    }
+                }
+            }
+            catch (err) {
+                console.warn(`[ChatPanel] Rehydration agent check failed:`, err);
+            }
+        })();
+    }, [stateArgs.channelName, resolvedContextId]);
+    // Clear initialPrompt from persisted stateArgs after local capture.
+    // AgenticChat may not mount until the channel bootstrap finishes, so the
+    // panel must retain the prompt locally instead of relying on child capture.
+    // Use null (not undefined) because undefined is dropped by JSON serialization.
+    const initialPromptCleared = useRef(false);
+    useEffect(() => {
+        if (stateArgs.initialPrompt && !initialPromptCleared.current) {
+            initialPromptCleared.current = true;
+            void setStateArgs({ initialPrompt: null });
         }
-      } catch (err) {
-        console.warn(`[ChatPanel] Rehydration agent check failed:`, err);
-      }
-    })();
-  }, [stateArgs.channelName, resolvedContextId]);
-
-  // Clear initialPrompt from persisted stateArgs after local capture.
-  // AgenticChat may not mount until the channel bootstrap finishes, so the
-  // panel must retain the prompt locally instead of relying on child capture.
-  // Use null (not undefined) because undefined is dropped by JSON serialization.
-  const initialPromptCleared = useRef(false);
-  useEffect(() => {
-    if (stateArgs.initialPrompt && !initialPromptCleared.current) {
-      initialPromptCleared.current = true;
-      void setStateArgs({ initialPrompt: null });
-    }
-  }, [stateArgs.initialPrompt]);
-
-  // Build ConnectionConfig from runtime
-  const config: ConnectionConfig = {
-    serverUrl: pubsubConfig?.serverUrl ?? "",
-    token: pubsubConfig?.token ?? "",
-    clientId: panelClientId,
-    rpc,
-    recoveryCoordinator,
-  };
-
-  const handleNewConversation = useCallback(() => {
-    window.location.href = buildPanelLink("panels/chat");
-  }, []);
-
-  const handleFocusPanel = useCallback((panelId: string) => {
-    void focusPanel(panelId);
-  }, []);
-
-  const handleReloadPanel = useCallback(async (panelId: string) => {
-    void focusPanel(panelId);
-  }, []);
-
-  const handleActionBarFileChange = useCallback((value: {
-    path: string | null;
-    props?: Record<string, unknown>;
-    maxHeight?: number;
-  }) => {
-    void setStateArgs({
-      actionBarFile: value.path,
-      actionBarProps: value.path ? (value.props ?? null) : null,
-      actionBarMaxHeight: value.path ? (value.maxHeight ?? null) : null,
-    });
-  }, []);
-
-  // Fetch available worker sources (DO agents) on mount
-  const [availableAgents, setAvailableAgents] = useState<Array<{ id: string; name: string; proposedHandle: string; className: string }>>([]);
-  useEffect(() => {
-    rpc.call<WorkerSourceEntry[]>("main", "workers.listSources").then((sources) => {
-      const agents: Array<{ id: string; name: string; proposedHandle: string; className: string }> = [];
-      for (const source of sources) {
-        for (const cls of source.classes) {
-          agents.push({
-            id: source.source,
-            name: source.title ?? source.name,
-            proposedHandle: source.name.split("-")[0] ?? source.name,
-            className: cls.className,
-          });
-        }
-      }
-      setAvailableAgents(agents);
-    }).catch((err) => { console.warn("[ChatPanel] Failed to load worker sources:", err); });
-  }, []);
-
-  const handleAddAgent = useCallback(async (channelName: string, channelContextId?: string, agentId?: string) => {
-    const activeContextId = resolveChatContextId(channelContextId, contextId);
-    if (!activeContextId) {
-      throw new Error("Cannot add an agent without a context ID");
-    }
-    const agent = agentId
-      ? availableAgents.find(a => a.id === agentId || a.className === agentId)
-      : availableAgents[0];
-    const className = agent?.className ?? DEFAULT_CLASS_NAME;
-    const baseHandle = agent?.proposedHandle ?? DEFAULT_HANDLE;
-    const handle = `${baseHandle}-${crypto.randomUUID().slice(0, 4)}`;
-    const objectKey = `${handle}-${crypto.randomUUID().slice(0, 8)}`;
-    await subscribeDOToChannel(
-      agent?.id ?? DEFAULT_WORKER_SOURCE,
-      className,
-      objectKey,
-      channelName,
-      activeContextId,
-    );
-    return { agentId: agent?.id ?? DEFAULT_WORKER_SOURCE, handle };
-  }, [availableAgents]);
-
-  const handleRemoveAgent = useCallback(async (channelName: string, handle: string) => {
-    // Find the DO participant on this channel that matches the handle.
-    // getChannelWorkers returns all DO participants subscribed to the channel.
-    const channelWorkers = await rpc.call<Array<{
-      participantId: string;
-      source: string;
-      className: string;
-      objectKey: string;
-      channelId: string;
-    }>>("main", "workers.getChannelWorkers", channelName);
-
-    // Match by objectKey containing the handle prefix (objectKey is "{handle}-{uuid}")
-    const match = channelWorkers.find(w => w.objectKey.startsWith(handle));
-    if (match) {
-      await unsubscribeDOFromChannel(match.source, match.className, match.objectKey, channelName);
-    } else {
-      // Fallback: try to unsubscribe the first worker if only one is present
-      // TODO: improve handle-to-objectKey resolution when multiple DOs are present
-      console.warn(`[ChatPanel] No DO found matching handle "${handle}" on channel "${channelName}"`);
-      if (channelWorkers.length === 1) {
-        const w = channelWorkers[0]!;
-        await unsubscribeDOFromChannel(w.source, w.className, w.objectKey, channelName);
-      }
-    }
-  }, []);
-
-  const chatActions: AgenticChatActions = useMemo(() => ({
-    onNewConversation: handleNewConversation,
-    onAddAgent: handleAddAgent,
-    onRemoveAgent: handleRemoveAgent,
-    availableAgents,
-    onFocusPanel: handleFocusPanel,
-    onReloadPanel: handleReloadPanel,
-  }), [handleNewConversation, handleAddAgent, handleRemoveAgent, availableAgents, handleFocusPanel, handleReloadPanel]);
-
-  // Sandbox config — provides RPC and import loading to agentic-chat.
-  const sandboxConfig = useMemo(() => createPanelSandboxConfig(rpc), []);
-
-  // Tool provider: only eval tool — all other operations use eval + runtime APIs
-  const toolProvider: ToolProvider = useCallback((deps: ToolProviderDeps) => {
-    return {
-      eval: buildEvalTool({
-        sandbox: sandboxConfig,
-        rpc: sandboxConfig.rpc,
-        runtimeTarget: "panel",
-        // Panel's useAgenticChat provides boundExecuteSandbox which handles
-        // scope enter/exit lifecycle, so we pass it as the override.
-        executeSandbox: deps.executeSandbox,
-        getChatSandboxValue: () => deps.chat,
-        getScope: () => deps.scope,
-      }),
+    }, [stateArgs.initialPrompt]);
+    // Build ConnectionConfig from runtime
+    const config: ConnectionConfig = {
+        serverUrl: pubsubConfig?.serverUrl ?? "",
+        token: pubsubConfig?.token ?? "",
+        clientId: panelClientId,
+        rpc,
+        recoveryCoordinator,
     };
-  }, []);
-
-  // Resolve channel name: from stateArgs (existing chat) or bootstrap (new chat)
-  const channelName = stateArgs.channelName ?? bootstrapChannel;
-  const pendingAgents = stateArgs.pendingAgents ?? bootstrapPending ?? undefined;
-
-  // Still bootstrapping — show a brief loading indicator
-  if (!channelName) {
-    return (
-      <ErrorBoundary>
+    const handleNewConversation = useCallback(() => {
+        window.location.href = buildPanelLink("panels/chat");
+    }, []);
+    const handleFocusPanel = useCallback((panelId: string) => {
+        void focusPanel(panelId);
+    }, []);
+    const handleReloadPanel = useCallback(async (panelId: string) => {
+        void focusPanel(panelId);
+    }, []);
+    const handleActionBarFileChange = useCallback((value: {
+        path: string | null;
+        props?: Record<string, unknown>;
+        maxHeight?: number;
+    }) => {
+        void setStateArgs({
+            actionBarFile: value.path,
+            actionBarProps: value.path ? (value.props ?? null) : null,
+            actionBarMaxHeight: value.path ? (value.maxHeight ?? null) : null,
+        });
+    }, []);
+    // Fetch available worker sources (DO agents) on mount
+    const [availableAgents, setAvailableAgents] = useState<Array<{
+        id: string;
+        name: string;
+        proposedHandle: string;
+        className: string;
+    }>>([]);
+    useEffect(() => {
+        rpc.call<WorkerSourceEntry[]>("main", "workers.listSources", []).then((sources) => {
+            const agents: Array<{
+                id: string;
+                name: string;
+                proposedHandle: string;
+                className: string;
+            }> = [];
+            for (const source of sources) {
+                for (const cls of source.classes) {
+                    agents.push({
+                        id: source.source,
+                        name: source.title ?? source.name,
+                        proposedHandle: source.name.split("-")[0] ?? source.name,
+                        className: cls.className,
+                    });
+                }
+            }
+            setAvailableAgents(agents);
+        }).catch((err) => { console.warn("[ChatPanel] Failed to load worker sources:", err); });
+    }, []);
+    const handleAddAgent = useCallback(async (channelName: string, channelContextId?: string, agentId?: string) => {
+        const activeContextId = resolveChatContextId(channelContextId, contextId);
+        if (!activeContextId) {
+            throw new Error("Cannot add an agent without a context ID");
+        }
+        const agent = agentId
+            ? availableAgents.find(a => a.id === agentId || a.className === agentId)
+            : availableAgents[0];
+        const className = agent?.className ?? DEFAULT_CLASS_NAME;
+        const baseHandle = agent?.proposedHandle ?? DEFAULT_HANDLE;
+        const handle = `${baseHandle}-${crypto.randomUUID().slice(0, 4)}`;
+        const objectKey = `${handle}-${crypto.randomUUID().slice(0, 8)}`;
+        await subscribeDOToChannel(agent?.id ?? DEFAULT_WORKER_SOURCE, className, objectKey, channelName, activeContextId);
+        return { agentId: agent?.id ?? DEFAULT_WORKER_SOURCE, handle };
+    }, [availableAgents]);
+    const handleRemoveAgent = useCallback(async (channelName: string, handle: string) => {
+        // Find the DO participant on this channel that matches the handle.
+        // getChannelWorkers returns all DO participants subscribed to the channel.
+        const channelWorkers = await rpc.call<Array<{
+            participantId: string;
+            source: string;
+            className: string;
+            objectKey: string;
+            channelId: string;
+        }>>("main", "workers.getChannelWorkers", [channelName]);
+        // Match by objectKey containing the handle prefix (objectKey is "{handle}-{uuid}")
+        const match = channelWorkers.find(w => w.objectKey.startsWith(handle));
+        if (match) {
+            await unsubscribeDOFromChannel(match.source, match.className, match.objectKey, channelName);
+        }
+        else {
+            // Fallback: try to unsubscribe the first worker if only one is present
+            // TODO: improve handle-to-objectKey resolution when multiple DOs are present
+            console.warn(`[ChatPanel] No DO found matching handle "${handle}" on channel "${channelName}"`);
+            if (channelWorkers.length === 1) {
+                const w = channelWorkers[0]!;
+                await unsubscribeDOFromChannel(w.source, w.className, w.objectKey, channelName);
+            }
+        }
+    }, []);
+    const chatActions: AgenticChatActions = useMemo(() => ({
+        onNewConversation: handleNewConversation,
+        onAddAgent: handleAddAgent,
+        onRemoveAgent: handleRemoveAgent,
+        availableAgents,
+        onFocusPanel: handleFocusPanel,
+        onReloadPanel: handleReloadPanel,
+    }), [handleNewConversation, handleAddAgent, handleRemoveAgent, availableAgents, handleFocusPanel, handleReloadPanel]);
+    // Sandbox config — provides RPC and import loading to agentic-chat.
+    const sandboxConfig = useMemo(() => createPanelSandboxConfig(rpc), []);
+    // Tool provider: only eval tool — all other operations use eval + runtime APIs
+    const toolProvider: ToolProvider = useCallback((deps: ToolProviderDeps) => {
+        return {
+            eval: buildEvalTool({
+                sandbox: sandboxConfig,
+                rpc: sandboxConfig.rpc,
+                runtimeTarget: "panel",
+                // Panel's useAgenticChat provides boundExecuteSandbox which handles
+                // scope enter/exit lifecycle, so we pass it as the override.
+                executeSandbox: deps.executeSandbox,
+                getChatSandboxValue: () => deps.chat,
+                getScope: () => deps.scope,
+            }),
+        };
+    }, []);
+    // Resolve channel name: from stateArgs (existing chat) or bootstrap (new chat)
+    const channelName = stateArgs.channelName ?? bootstrapChannel;
+    const pendingAgents = stateArgs.pendingAgents ?? bootstrapPending ?? undefined;
+    // Still bootstrapping — show a brief loading indicator
+    if (!channelName) {
+        return (<ErrorBoundary>
         <Theme appearance={theme}>
           <Flex align="center" justify="center" gap="2" style={{ height: "100dvh" }}>
             <Spinner />
             <Text size="2" color="gray">Starting chat...</Text>
           </Flex>
         </Theme>
-      </ErrorBoundary>
-    );
-  }
-
-  return (
-    <>
-      <AgenticChat
-        config={config}
-        channelName={channelName}
-        channelConfig={stateArgs.channelConfig}
-        contextId={resolvedContextId}
-        metadata={PANEL_METADATA}
-        tools={toolProvider}
-        actions={chatActions}
-        theme={theme}
-        pendingAgents={pendingAgents}
-        initialPrompt={initialPromptCaptured.current}
-        sandbox={sandboxConfig}
-        initialActionBarFile={stateArgs.actionBarFile ?? undefined}
-        initialActionBarProps={stateArgs.actionBarProps ?? undefined}
-        initialActionBarMaxHeight={stateArgs.actionBarMaxHeight ?? undefined}
-        onActionBarFileChange={handleActionBarFileChange}
-      />
-    </>
-  );
+      </ErrorBoundary>);
+    }
+    return (<>
+      <AgenticChat config={config} channelName={channelName} channelConfig={stateArgs.channelConfig} contextId={resolvedContextId} metadata={PANEL_METADATA} tools={toolProvider} actions={chatActions} theme={theme} pendingAgents={pendingAgents} initialPrompt={initialPromptCaptured.current} sandbox={sandboxConfig} initialActionBarFile={stateArgs.actionBarFile ?? undefined} initialActionBarProps={stateArgs.actionBarProps ?? undefined} initialActionBarMaxHeight={stateArgs.actionBarMaxHeight ?? undefined} onActionBarFileChange={handleActionBarFileChange}/>
+    </>);
 }

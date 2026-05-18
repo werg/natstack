@@ -45,7 +45,7 @@ describe("ConnectionManager", () => {
     expect(config.rpc!.call).toHaveBeenCalledWith(
       "do:workers/pubsub-channel:PubSubChannel:chat-1",
       "unsubscribe",
-      "panel-1"
+      ["panel-1"]
     );
   });
 });

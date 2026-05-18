@@ -355,12 +355,14 @@ describe("ExtensionHost activation", () => {
     expect(extensionTransport.call).toHaveBeenCalledWith(
       extensionNode.name,
       "extension.invoke",
-      "blame",
-      ["README.md"],
-      expect.objectContaining({
-        extensionName: extensionNode.name,
-        method: "blame",
-      }),
+      [
+        "blame",
+        ["README.md"],
+        expect.objectContaining({
+          extensionName: extensionNode.name,
+          method: "blame",
+        }),
+      ],
     );
   });
 
@@ -418,9 +420,11 @@ describe("ExtensionHost activation", () => {
     expect(extensionTransport.call).toHaveBeenCalledWith(
       extensionNode.name,
       "extension.invoke",
-      "blame",
-      ["README.md"],
-      expect.objectContaining({ extensionName: extensionNode.name }),
+      [
+        "blame",
+        ["README.md"],
+        expect.objectContaining({ extensionName: extensionNode.name }),
+      ],
     );
   });
 
@@ -519,8 +523,9 @@ describe("ExtensionHost activation", () => {
     const capturedChunks: Buffer[] = [];
     let service: ReturnType<ExtensionHost["createServiceDefinition"]>;
     const extensionTransport = {
-      call: vi.fn(async (_name: string, method: string, request: unknown) => {
+      call: vi.fn(async (_name: string, method: string, args: unknown[]) => {
         expect(method).toBe("extension.fetch");
+        const request = args[0];
         const body = (request as { body?: { __stream?: true; id?: string } }).body;
         expect(body).toMatchObject({ __stream: true });
         expect(typeof body?.id).toBe("string");
@@ -571,10 +576,12 @@ describe("ExtensionHost activation", () => {
     expect(extensionTransport.call).toHaveBeenCalledWith(
       extensionNode.name,
       "extension.fetch",
-      expect.objectContaining({
-        body: expect.objectContaining({ __stream: true }),
-      }),
-      expect.objectContaining({ method: "fetch" }),
+      [
+        expect.objectContaining({
+          body: expect.objectContaining({ __stream: true }),
+        }),
+        expect.objectContaining({ method: "fetch" }),
+      ],
     );
     expect(Buffer.concat(capturedChunks)).toEqual(requestBody);
     expect(res.statusCode).toBe(201);
@@ -651,7 +658,7 @@ describe("ExtensionHost activation", () => {
     expect(extensionTransport.call).toHaveBeenCalledWith(
       extensionNode.name,
       "extension.fetchResponseBodyChunk",
-      "response-stream-1",
+      ["response-stream-1"],
     );
   });
 

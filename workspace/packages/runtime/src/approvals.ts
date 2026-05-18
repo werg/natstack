@@ -1,18 +1,6 @@
 import type { RpcCaller } from "@natstack/rpc";
-import type {
-  UserlandApprovalChoice,
-  UserlandApprovalGrant,
-  UserlandApprovalRequest,
-} from "@natstack/shared/approvals";
-
-export type {
-  UserlandApprovalChoice,
-  UserlandApprovalGrant,
-  UserlandApprovalOption,
-  UserlandApprovalRequest,
-  UserlandApprovalSubject,
-} from "@natstack/shared/approvals";
-
+import type { UserlandApprovalChoice, UserlandApprovalGrant, UserlandApprovalRequest, } from "@natstack/shared/approvals";
+export type { UserlandApprovalChoice, UserlandApprovalGrant, UserlandApprovalOption, UserlandApprovalRequest, UserlandApprovalSubject, } from "@natstack/shared/approvals";
 /**
  * Request a user decision for a userland-defined subject.
  *
@@ -29,25 +17,20 @@ export type {
  * `options` for the same in-flight subject will receive a `choice` value taken
  * from the first caller's options.
  */
-export function requestUserlandApproval(
-  rpc: RpcCaller,
-  req: UserlandApprovalRequest,
-): Promise<UserlandApprovalChoice> {
-  return rpc.call<UserlandApprovalChoice>("main", "userlandApproval.request", req);
+export function requestUserlandApproval(rpc: RpcCaller, req: UserlandApprovalRequest): Promise<UserlandApprovalChoice> {
+    return rpc.call<UserlandApprovalChoice>("main", "userlandApproval.request", [req]);
 }
-
 /**
  * Forget the user's stored decision for `subjectId`. The next
  * `requestUserlandApproval` for that subject will prompt again. Idempotent.
  */
 export function revokeUserlandApproval(rpc: RpcCaller, subjectId: string): Promise<boolean> {
-  return rpc.call<boolean>("main", "userlandApproval.revoke", subjectId);
+    return rpc.call<boolean>("main", "userlandApproval.revoke", [subjectId]);
 }
-
 /**
  * List grants currently stored for the calling issuer. Other issuers' grants
  * are not visible.
  */
 export function listUserlandApprovals(rpc: RpcCaller): Promise<UserlandApprovalGrant[]> {
-  return rpc.call<UserlandApprovalGrant[]>("main", "userlandApproval.list");
+    return rpc.call<UserlandApprovalGrant[]>("main", "userlandApproval.list", []);
 }

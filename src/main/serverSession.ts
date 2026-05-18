@@ -190,6 +190,23 @@ async function refreshShellCredential(
   return json as ShellCredentialResponse;
 }
 
+function persistRemoteShellCredential(
+  mode: Extract<StartupMode, { kind: "remote" }>,
+  credential: ShellCredentialResponse
+): void {
+  if (!credential.refreshToken) return;
+  saveRemoteCredentials({
+    url: mode.remoteUrl.href,
+    token: mode.adminToken,
+    deviceId: credential.deviceId,
+    refreshToken: credential.refreshToken,
+    caPath: mode.tls?.caPath,
+    fingerprint: mode.tls?.fingerprint,
+  });
+  mode.deviceId = credential.deviceId;
+  mode.refreshToken = credential.refreshToken;
+}
+
 async function acquireShellCredential(
   mode: Extract<StartupMode, { kind: "remote" }>
 ): Promise<ShellCredentialResponse> {
@@ -207,18 +224,7 @@ async function acquireShellCredential(
   }
 
   const credential = await issueElectronDevice(mode.remoteUrl, mode.adminToken, mode.tls);
-  if (credential.refreshToken) {
-    saveRemoteCredentials({
-      url: mode.remoteUrl.href,
-      token: mode.adminToken,
-      deviceId: credential.deviceId,
-      refreshToken: credential.refreshToken,
-      caPath: mode.tls?.caPath,
-      fingerprint: mode.tls?.fingerprint,
-    });
-    mode.deviceId = credential.deviceId;
-    mode.refreshToken = credential.refreshToken;
-  }
+  persistRemoteShellCredential(mode, credential);
   return credential;
 }
 
@@ -230,6 +236,7 @@ export async function establishServerSession(args: {
   centralData: CentralDataManager;
   onServerEvent: (event: string, payload: unknown) => void;
   onConnectionStatusChanged?: (status: ConnectionStatus) => void;
+  onRecovery?: (kind: "resubscribe" | "cold-recover") => void | Promise<void>;
   onIpcRequest?: (
     type: string,
     msg: Record<string, unknown>
@@ -265,7 +272,6 @@ export async function establishServerSession(args: {
       wsUrl: `${protocol === "https" ? "wss" : "ws"}://${externalHost}:${remotePort}/rpc`,
       tls,
       reconnect: true,
-      maxReconnectAttempts: 10,
       refreshAuthToken: async () => {
         if (!shellCredential.refreshToken) {
           shellCredential = await acquireShellCredential(mode);
@@ -278,12 +284,14 @@ export async function establishServerSession(args: {
           ).catch(() => acquireShellCredential(mode));
         }
         shellToken = shellCredential.shellToken;
+        persistRemoteShellCredential(mode, shellCredential);
         ports.shellToken = shellToken;
         return shellToken;
       },
       onConnectionStatusChanged: (status) => {
         args.onConnectionStatusChanged?.(status);
       },
+      onRecovery: args.onRecovery,
       onDisconnect: () => {
         // Called only after all reconnection attempts are exhausted
         dialog.showErrorBox(
@@ -361,7 +369,6 @@ export async function establishServerSession(args: {
     }
     serverClient = await createServerClient(localGatewayPort, shellToken, {
       reconnect: true,
-      maxReconnectAttempts: 10,
       getWsUrl: () => {
         const url = serverProcessManager?.getCurrentGatewayUrl();
         return url ?? `ws://127.0.0.1:${ports.gatewayPort}/rpc`;
@@ -375,6 +382,7 @@ export async function establishServerSession(args: {
       onConnectionStatusChanged: (status) => {
         args.onConnectionStatusChanged?.(status);
       },
+      onRecovery: args.onRecovery,
       onDisconnect: () => {
         console.error("[App] Server process disconnected");
       },

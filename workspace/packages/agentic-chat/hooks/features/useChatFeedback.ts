@@ -4,245 +4,215 @@
  * Manages feedback_form and feedback_custom method definitions,
  * feedback lifecycle, and dismiss/error handling.
  */
-
 import { useCallback, useRef, useEffect } from "react";
-import type {
-  MethodDefinition,
-  MethodExecutionContext,
-  FeedbackFormArgs,
-  FeedbackCustomArgs,
-  PubSubClient,
-} from "@natstack/pubsub";
-import {
-  FeedbackFormArgsSchema,
-  FeedbackCustomArgsSchema,
-} from "@natstack/pubsub";
-import {
-  useFeedbackManager,
-  type FeedbackResult,
-  type ActiveFeedbackTsx,
-  type ActiveFeedbackSchema,
-  type ActiveFeedback,
-} from "@workspace/tool-ui";
+import type { MethodDefinition, MethodExecutionContext, FeedbackFormArgs, FeedbackCustomArgs, PubSubClient, } from "@natstack/pubsub";
+import { FeedbackFormArgsSchema, FeedbackCustomArgsSchema, } from "@natstack/pubsub";
+import { useFeedbackManager, type FeedbackResult, type ActiveFeedbackTsx, type ActiveFeedbackSchema, type ActiveFeedback, } from "@workspace/tool-ui";
 import { compileComponent } from "@workspace/eval";
 import type { SandboxOptions } from "@workspace/eval";
 import type { FeedbackComponentProps } from "@workspace/tool-ui";
-import {
-  parseEphemeralEvent,
-  type ChatSandboxValue,
-  type MethodHistoryEntry,
-} from "@workspace/agentic-core";
-
+import { parseEphemeralEvent, type ChatSandboxValue, type MethodHistoryEntry, } from "@workspace/agentic-core";
 interface UseChatFeedbackOptions {
-  addMethodHistoryEntry: (entry: MethodHistoryEntry) => void;
-  updateMethodHistoryEntry: (callId: string, updates: Partial<MethodHistoryEntry>) => void;
-  chat: ChatSandboxValue;
-  loadImport?: SandboxOptions["loadImport"];
-  clientRef: React.MutableRefObject<PubSubClient<any> | null>;
-  connected: boolean;
+    addMethodHistoryEntry: (entry: MethodHistoryEntry) => void;
+    updateMethodHistoryEntry: (callId: string, updates: Partial<MethodHistoryEntry>) => void;
+    chat: ChatSandboxValue;
+    loadImport?: SandboxOptions["loadImport"];
+    clientRef: React.MutableRefObject<PubSubClient<any> | null>;
+    connected: boolean;
 }
-
 export interface ChatFeedbackState {
-  activeFeedbacks: Map<string, ActiveFeedback>;
-  /** Ref to current feedbacks — for stable access in callbacks */
-  activeFeedbacksRef: React.MutableRefObject<Map<string, ActiveFeedback>>;
-  /** Raw addFeedback/removeFeedback — needed by useChatTools for tool approval */
-  addFeedback: ReturnType<typeof useFeedbackManager>["addFeedback"];
-  removeFeedback: ReturnType<typeof useFeedbackManager>["removeFeedback"];
-  /** Refs to feedback handlers — for use in connection effect */
-  handleFeedbackFormCallRef: React.MutableRefObject<(callId: string, args: FeedbackFormArgs, ctx: MethodExecutionContext) => Promise<FeedbackResult>>;
-  handleFeedbackCustomCallRef: React.MutableRefObject<(callId: string, args: FeedbackCustomArgs, ctx: MethodExecutionContext) => Promise<FeedbackResult>>;
-  /** Build feedback method definitions for the connection */
-  buildFeedbackMethods: () => Record<string, MethodDefinition>;
-  onFeedbackDismiss: (callId: string) => void;
-  onFeedbackError: (callId: string, error: Error) => void;
+    activeFeedbacks: Map<string, ActiveFeedback>;
+    /** Ref to current feedbacks — for stable access in callbacks */
+    activeFeedbacksRef: React.MutableRefObject<Map<string, ActiveFeedback>>;
+    /** Raw addFeedback/removeFeedback — needed by useChatTools for tool approval */
+    addFeedback: ReturnType<typeof useFeedbackManager>["addFeedback"];
+    removeFeedback: ReturnType<typeof useFeedbackManager>["removeFeedback"];
+    /** Refs to feedback handlers — for use in connection effect */
+    handleFeedbackFormCallRef: React.MutableRefObject<(callId: string, args: FeedbackFormArgs, ctx: MethodExecutionContext) => Promise<FeedbackResult>>;
+    handleFeedbackCustomCallRef: React.MutableRefObject<(callId: string, args: FeedbackCustomArgs, ctx: MethodExecutionContext) => Promise<FeedbackResult>>;
+    /** Build feedback method definitions for the connection */
+    buildFeedbackMethods: () => Record<string, MethodDefinition>;
+    onFeedbackDismiss: (callId: string) => void;
+    onFeedbackError: (callId: string, error: Error) => void;
 }
-
-export function useChatFeedback({
-  addMethodHistoryEntry,
-  updateMethodHistoryEntry,
-  chat,
-  loadImport,
-  clientRef,
-  connected,
-}: UseChatFeedbackOptions): ChatFeedbackState {
-  const { activeFeedbacks, addFeedback, removeFeedback, dismissFeedback, handleFeedbackError } = useFeedbackManager();
-  const activeFeedbacksRef = useRef(activeFeedbacks);
-  activeFeedbacksRef.current = activeFeedbacks;
-
-  const handleFeedbackResult = useCallback((callId: string, feedbackResult: FeedbackResult) => {
-    if (feedbackResult.type === "submit") {
-      updateMethodHistoryEntry(callId, { status: "success", result: feedbackResult.value, completedAt: Date.now() });
-    } else if (feedbackResult.type === "cancel") {
-      updateMethodHistoryEntry(callId, { status: "success", result: null, completedAt: Date.now() });
-    } else {
-      updateMethodHistoryEntry(callId, { status: "error", error: feedbackResult.message, completedAt: Date.now() });
-    }
-  }, [updateMethodHistoryEntry]);
-
-  const handleFeedbackFormCall = useCallback(
-    async (callId: string, args: FeedbackFormArgs, ctx: MethodExecutionContext) => {
-      const entry: MethodHistoryEntry = {
-        callId, methodName: "feedback_form", description: "Display a form to collect user input",
-        args, status: "pending", startedAt: Date.now(), callerId: ctx.callerId, handledLocally: true,
-      };
-      addMethodHistoryEntry(entry);
-      return new Promise<FeedbackResult>((resolve) => {
-        const feedback: ActiveFeedbackSchema = {
-          type: "schema", callId, title: args.title, fields: args.fields, values: args.values ?? {},
-          submitLabel: args.submitLabel, cancelLabel: args.cancelLabel,
-          severity: args.severity, hideSubmit: args.hideSubmit, hideCancel: args.hideCancel, createdAt: Date.now(),
-          complete: (feedbackResult: FeedbackResult) => {
-            removeFeedback(callId); handleFeedbackResult(callId, feedbackResult); resolve(feedbackResult);
-          },
-        };
-        addFeedback(feedback);
-      });
-    },
-    [addFeedback, removeFeedback, addMethodHistoryEntry, handleFeedbackResult]
-  );
-
-  const handleFeedbackCustomCall = useCallback(
-    async (callId: string, args: FeedbackCustomArgs, ctx: MethodExecutionContext) => {
-      const entry: MethodHistoryEntry = {
-        callId, methodName: "feedback_custom", description: "Display a custom React component for user interaction",
-        args, status: "pending", startedAt: Date.now(), callerId: ctx.callerId, handledLocally: true,
-      };
-      addMethodHistoryEntry(entry);
-      const path = args.path?.trim();
-      const sourceCode = path
-        ? await chat.rpc.call("main", "fs.readFile", path, "utf8") as string
-        : args.code;
-      if (!sourceCode) throw new Error("Missing code or path");
-
-      if (!sourceCode.includes("onSubmit")) {
-        console.warn(
-          "[feedback_custom] Component code does not reference 'onSubmit'. " +
-          "The user will not be able to submit a response. Did you forget to destructure { onSubmit } from props?"
-        );
-      }
-      let compiled: Awaited<ReturnType<typeof compileComponent<import("react").ComponentType<FeedbackComponentProps>>>>;
-      try {
-        compiled = await compileComponent<import("react").ComponentType<FeedbackComponentProps>>(sourceCode, {
-          imports: args.imports,
-          sourcePath: path,
-          loadSourceFile: path
-            ? async (filePath: string) => chat.rpc.call("main", "fs.readFile", filePath, "utf8") as Promise<string>
-            : undefined,
-          loadImport,
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        compiled = { success: false, error: message };
-      }
-      if (!compiled.success) {
-        const errorMessage = compiled.error ?? "Unknown compile error";
-        updateMethodHistoryEntry(callId, { status: "error", error: errorMessage, completedAt: Date.now() });
-        // Surface the compile failure to the user as a dismissable schema
-        // feedback card. Without this, a bad TSX from the agent renders
-        // nothing on screen and the method result error flows past the user
-        // silently. After the user dismisses, we throw so the caller sees
-        // an error result via handleMethodCallExec's catch path.
-        await new Promise<void>((resolve) => {
-          const feedback: ActiveFeedbackSchema = {
-            type: "schema",
-            callId,
-            title: "feedback_custom failed to compile",
-            fields: [{ key: "__err", type: "readonly", label: "Error", default: errorMessage }],
-            values: {},
-            hideSubmit: true,
-            cancelLabel: "Dismiss",
-            severity: "danger",
-            createdAt: Date.now(),
-            complete: () => {
-              removeFeedback(callId);
-              resolve();
-            },
-          };
-          addFeedback(feedback);
-        });
-        throw new Error(errorMessage);
-      }
-      const cacheKey = compiled.cacheKey!;
-      return new Promise<FeedbackResult>((resolve) => {
-        let resolved = false;
-        const feedback: ActiveFeedbackTsx = {
-          type: "tsx", callId, Component: compiled.Component!, createdAt: Date.now(), cacheKey, title: args.title,
-          complete: (feedbackResult: FeedbackResult) => {
-            if (resolved) return; // Prevent double-submission
-            resolved = true;
-            removeFeedback(callId);
-            handleFeedbackResult(callId, feedbackResult); resolve(feedbackResult);
-          },
-        };
-        addFeedback(feedback);
-      });
-    },
-    [addFeedback, removeFeedback, addMethodHistoryEntry, updateMethodHistoryEntry, handleFeedbackResult, chat.rpc, loadImport]
-  );
-
-  const onFeedbackDismiss = useCallback((callId: string) => { dismissFeedback(callId); }, [dismissFeedback]);
-
-  // Stable refs for connection effect
-  const handleFeedbackFormCallRef = useRef(handleFeedbackFormCall);
-  const handleFeedbackCustomCallRef = useRef(handleFeedbackCustomCall);
-  useEffect(() => {
-    handleFeedbackFormCallRef.current = handleFeedbackFormCall;
-    handleFeedbackCustomCallRef.current = handleFeedbackCustomCall;
-  }, [handleFeedbackFormCall, handleFeedbackCustomCall]);
-
-  useEffect(() => {
-    const client = clientRef.current;
-    if (!client) return;
-    let cancelled = false;
-    const consume = async () => {
-      try {
-        for await (const event of client.events({ includeEphemeral: true })) {
-          if (cancelled) break;
-          const wire = event as {
-            kind?: string;
-            content?: string;
-            contentType?: string;
-            payload?: { content?: string; contentType?: string };
-          };
-          if (wire.kind !== "ephemeral") continue;
-          const payload = parseEphemeralEvent<{ callId: string }>(
-            {
-              content: wire.content ?? wire.payload?.content ?? "",
-              contentType: wire.contentType ?? wire.payload?.contentType,
-            },
-            "natstack-dispatch-cancel",
-          );
-          if (!payload?.callId) continue;
-          const feedback = activeFeedbacksRef.current.get(payload.callId);
-          if (!feedback) continue;
-          feedback.complete({ type: "cancel" });
+export function useChatFeedback({ addMethodHistoryEntry, updateMethodHistoryEntry, chat, loadImport, clientRef, connected, }: UseChatFeedbackOptions): ChatFeedbackState {
+    const { activeFeedbacks, addFeedback, removeFeedback, dismissFeedback, handleFeedbackError } = useFeedbackManager();
+    const activeFeedbacksRef = useRef(activeFeedbacks);
+    activeFeedbacksRef.current = activeFeedbacks;
+    const handleFeedbackResult = useCallback((callId: string, feedbackResult: FeedbackResult) => {
+        if (feedbackResult.type === "submit") {
+            updateMethodHistoryEntry(callId, { status: "success", result: feedbackResult.value, completedAt: Date.now() });
         }
-      } catch (err) {
-        if (!cancelled) console.error("[useChatFeedback] dispatch cancel listener failed:", err);
-      }
-    };
-    void consume();
-    return () => {
-      cancelled = true;
-    };
-  }, [clientRef, connected]);
-
-  const buildFeedbackMethods = useCallback((): Record<string, MethodDefinition> => {
-    const feedbackFormMethodDef: MethodDefinition = {
-      description: `Show a form to collect user input.
+        else if (feedbackResult.type === "cancel") {
+            updateMethodHistoryEntry(callId, { status: "success", result: null, completedAt: Date.now() });
+        }
+        else {
+            updateMethodHistoryEntry(callId, { status: "error", error: feedbackResult.message, completedAt: Date.now() });
+        }
+    }, [updateMethodHistoryEntry]);
+    const handleFeedbackFormCall = useCallback(async (callId: string, args: FeedbackFormArgs, ctx: MethodExecutionContext) => {
+        const entry: MethodHistoryEntry = {
+            callId, methodName: "feedback_form", description: "Display a form to collect user input",
+            args, status: "pending", startedAt: Date.now(), callerId: ctx.callerId, handledLocally: true,
+        };
+        addMethodHistoryEntry(entry);
+        return new Promise<FeedbackResult>((resolve) => {
+            const feedback: ActiveFeedbackSchema = {
+                type: "schema", callId, title: args.title, fields: args.fields, values: args.values ?? {},
+                submitLabel: args.submitLabel, cancelLabel: args.cancelLabel,
+                severity: args.severity, hideSubmit: args.hideSubmit, hideCancel: args.hideCancel, createdAt: Date.now(),
+                complete: (feedbackResult: FeedbackResult) => {
+                    removeFeedback(callId);
+                    handleFeedbackResult(callId, feedbackResult);
+                    resolve(feedbackResult);
+                },
+            };
+            addFeedback(feedback);
+        });
+    }, [addFeedback, removeFeedback, addMethodHistoryEntry, handleFeedbackResult]);
+    const handleFeedbackCustomCall = useCallback(async (callId: string, args: FeedbackCustomArgs, ctx: MethodExecutionContext) => {
+        const entry: MethodHistoryEntry = {
+            callId, methodName: "feedback_custom", description: "Display a custom React component for user interaction",
+            args, status: "pending", startedAt: Date.now(), callerId: ctx.callerId, handledLocally: true,
+        };
+        addMethodHistoryEntry(entry);
+        const path = args.path?.trim();
+        const sourceCode = path
+            ? await chat.rpc.call("main", "fs.readFile", [path, "utf8"]) as string
+            : args.code;
+        if (!sourceCode)
+            throw new Error("Missing code or path");
+        if (!sourceCode.includes("onSubmit")) {
+            console.warn("[feedback_custom] Component code does not reference 'onSubmit'. " +
+                "The user will not be able to submit a response. Did you forget to destructure { onSubmit } from props?");
+        }
+        let compiled: Awaited<ReturnType<typeof compileComponent<import("react").ComponentType<FeedbackComponentProps>>>>;
+        try {
+            compiled = await compileComponent<import("react").ComponentType<FeedbackComponentProps>>(sourceCode, {
+                imports: args.imports,
+                sourcePath: path,
+                loadSourceFile: path
+                    ? async (filePath: string) => chat.rpc.call("main", "fs.readFile", [filePath, "utf8"]) as Promise<string>
+                    : undefined,
+                loadImport,
+            });
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            compiled = { success: false, error: message };
+        }
+        if (!compiled.success) {
+            const errorMessage = compiled.error ?? "Unknown compile error";
+            updateMethodHistoryEntry(callId, { status: "error", error: errorMessage, completedAt: Date.now() });
+            // Surface the compile failure to the user as a dismissable schema
+            // feedback card. Without this, a bad TSX from the agent renders
+            // nothing on screen and the method result error flows past the user
+            // silently. After the user dismisses, we throw so the caller sees
+            // an error result via handleMethodCallExec's catch path.
+            await new Promise<void>((resolve) => {
+                const feedback: ActiveFeedbackSchema = {
+                    type: "schema",
+                    callId,
+                    title: "feedback_custom failed to compile",
+                    fields: [{ key: "__err", type: "readonly", label: "Error", default: errorMessage }],
+                    values: {},
+                    hideSubmit: true,
+                    cancelLabel: "Dismiss",
+                    severity: "danger",
+                    createdAt: Date.now(),
+                    complete: () => {
+                        removeFeedback(callId);
+                        resolve();
+                    },
+                };
+                addFeedback(feedback);
+            });
+            throw new Error(errorMessage);
+        }
+        const cacheKey = compiled.cacheKey!;
+        return new Promise<FeedbackResult>((resolve) => {
+            let resolved = false;
+            const feedback: ActiveFeedbackTsx = {
+                type: "tsx", callId, Component: compiled.Component!, createdAt: Date.now(), cacheKey, title: args.title,
+                complete: (feedbackResult: FeedbackResult) => {
+                    if (resolved)
+                        return; // Prevent double-submission
+                    resolved = true;
+                    removeFeedback(callId);
+                    handleFeedbackResult(callId, feedbackResult);
+                    resolve(feedbackResult);
+                },
+            };
+            addFeedback(feedback);
+        });
+    }, [addFeedback, removeFeedback, addMethodHistoryEntry, updateMethodHistoryEntry, handleFeedbackResult, chat.rpc, loadImport]);
+    const onFeedbackDismiss = useCallback((callId: string) => { dismissFeedback(callId); }, [dismissFeedback]);
+    // Stable refs for connection effect
+    const handleFeedbackFormCallRef = useRef(handleFeedbackFormCall);
+    const handleFeedbackCustomCallRef = useRef(handleFeedbackCustomCall);
+    useEffect(() => {
+        handleFeedbackFormCallRef.current = handleFeedbackFormCall;
+        handleFeedbackCustomCallRef.current = handleFeedbackCustomCall;
+    }, [handleFeedbackFormCall, handleFeedbackCustomCall]);
+    useEffect(() => {
+        const client = clientRef.current;
+        if (!client)
+            return;
+        let cancelled = false;
+        const consume = async () => {
+            try {
+                for await (const event of client.events({ includeEphemeral: true })) {
+                    if (cancelled)
+                        break;
+                    const wire = event as {
+                        kind?: string;
+                        content?: string;
+                        contentType?: string;
+                        payload?: {
+                            content?: string;
+                            contentType?: string;
+                        };
+                    };
+                    if (wire.kind !== "ephemeral")
+                        continue;
+                    const payload = parseEphemeralEvent<{
+                        callId: string;
+                    }>({
+                        content: wire.content ?? wire.payload?.content ?? "",
+                        contentType: wire.contentType ?? wire.payload?.contentType,
+                    }, "natstack-dispatch-cancel");
+                    if (!payload?.callId)
+                        continue;
+                    const feedback = activeFeedbacksRef.current.get(payload.callId);
+                    if (!feedback)
+                        continue;
+                    feedback.complete({ type: "cancel" });
+                }
+            }
+            catch (err) {
+                if (!cancelled)
+                    console.error("[useChatFeedback] dispatch cancel listener failed:", err);
+            }
+        };
+        void consume();
+        return () => {
+            cancelled = true;
+        };
+    }, [clientRef, connected]);
+    const buildFeedbackMethods = useCallback((): Record<string, MethodDefinition> => {
+        const feedbackFormMethodDef: MethodDefinition = {
+            description: `Show a form to collect user input.
 
 **Result:** \`{ type: "submit", value: { fieldKey: userValue, ... } }\` or \`{ type: "cancel" }\`
 
 **Field types:** string, number, boolean, select (needs \`options\`), slider (\`min\`/\`max\`), segmented (\`options\`)
 **Field props:** \`key\` (required), \`label\` (required), \`type\` (required), \`default\`, \`required\`, \`description\`
 **Pre-populate:** Add \`values: { "key": "existing value" }\``,
-      parameters: FeedbackFormArgsSchema,
-      execute: async (args: unknown, ctx: MethodExecutionContext) => handleFeedbackFormCallRef.current(ctx.callId, args as FeedbackFormArgs, ctx),
-    };
-
-    const feedbackCustomMethodDef: MethodDefinition = {
-      description: `Show a custom React component that blocks until user submits or cancels.
+            parameters: FeedbackFormArgsSchema,
+            execute: async (args: unknown, ctx: MethodExecutionContext) => handleFeedbackFormCallRef.current(ctx.callId, args as FeedbackFormArgs, ctx),
+        };
+        const feedbackCustomMethodDef: MethodDefinition = {
+            description: `Show a custom React component that blocks until user submits or cancels.
 
 **The component receives { onSubmit, onCancel, onError, chat, scope, scopes }:**
 - onSubmit(value) — return data to the agent and close the form
@@ -287,25 +257,23 @@ export default function App({ onSubmit, onCancel }) {
   );
 }
 \`\`\``,
-      parameters: FeedbackCustomArgsSchema,
-      execute: async (args: unknown, ctx: MethodExecutionContext) => handleFeedbackCustomCallRef.current(ctx.callId, args as FeedbackCustomArgs, ctx),
-    };
-
+            parameters: FeedbackCustomArgsSchema,
+            execute: async (args: unknown, ctx: MethodExecutionContext) => handleFeedbackCustomCallRef.current(ctx.callId, args as FeedbackCustomArgs, ctx),
+        };
+        return {
+            feedback_form: feedbackFormMethodDef,
+            feedback_custom: feedbackCustomMethodDef,
+        };
+    }, []);
     return {
-      feedback_form: feedbackFormMethodDef,
-      feedback_custom: feedbackCustomMethodDef,
+        activeFeedbacks,
+        activeFeedbacksRef,
+        addFeedback,
+        removeFeedback,
+        handleFeedbackFormCallRef,
+        handleFeedbackCustomCallRef,
+        buildFeedbackMethods,
+        onFeedbackDismiss,
+        onFeedbackError: handleFeedbackError,
     };
-  }, []);
-
-  return {
-    activeFeedbacks,
-    activeFeedbacksRef,
-    addFeedback,
-    removeFeedback,
-    handleFeedbackFormCallRef,
-    handleFeedbackCustomCallRef,
-    buildFeedbackMethods,
-    onFeedbackDismiss,
-    onFeedbackError: handleFeedbackError,
-  };
 }

@@ -17,13 +17,20 @@ type TestRpcServer = {
     addClient(client: WsClientState): void;
     getCallerConnections(callerId: string): WsClientState[];
   };
-  connectionReconnectWaiters: Map<string, { resolve: (client: WsClientState) => void }>;
-  reconnectWaiters: Map<string, unknown>;
+  sessions: {
+    markConnected(callerId: string, callerKind: WsClientState["callerKind"]): void;
+  };
   handleAuth(ws: unknown, token: string | null, connectionId: string): void;
   handleRoute(client: WsClientState, targetId: string, message: unknown): Promise<void> | void;
   handleClose(client: WsClientState, code: number, reason: string): void;
   handleRpc(client: WsClientState, message: unknown): Promise<void>;
-  relayCall(sourceId: string, targetId: string, method: string, args: unknown[]): Promise<unknown>;
+  relayCall(
+    sourceId: string,
+    targetId: string,
+    method: string,
+    args: unknown[],
+    targetConnectionId?: string
+  ): Promise<unknown>;
 };
 
 function testServer(server: RpcServer): TestRpcServer {
@@ -73,16 +80,6 @@ function createClientWithConnection(callerId: string, connectionId: string): WsC
   return client;
 }
 
-function createDeferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
 function createTestWs() {
   const handlers = new Map<string, (...args: unknown[]) => void>();
   return {
@@ -105,6 +102,7 @@ function createTestWs() {
 
 function registerClient(server: RpcServer, client: WsClientState): void {
   testServer(server).connections.addClient(client);
+  testServer(server).sessions.markConnected(client.callerId, client.callerKind);
 }
 
 describe("RpcServer relay behavior", () => {
@@ -286,19 +284,15 @@ describe("RpcServer relay behavior", () => {
       });
       await Promise.resolve();
 
-      const reconnected = createClientWithConnection("panel-a", "conn-2");
-      registerClient(server, reconnected);
-      const waiter = testServer(server).connectionReconnectWaiters.get("panel-a:conn-2");
-      expect(waiter).toBeTruthy();
-      if (!waiter) throw new Error("Missing reconnect waiter");
-      waiter.resolve(reconnected);
+      const reconnectedWs = createTestWs();
+      testServer(server).handleAuth(reconnectedWs, tokenManager.getToken("panel-a"), "conn-2");
       await Promise.resolve();
       await Promise.resolve();
 
       expect(origin1.ws.send).not.toHaveBeenCalled();
-      expect(reconnected.ws.send).toHaveBeenCalledTimes(1);
+      expect(reconnectedWs.send).toHaveBeenCalledTimes(2);
       expect(
-        JSON.parse((reconnected.ws.send as ReturnType<typeof vi.fn>).mock.calls[0]![0])
+        JSON.parse((reconnectedWs.send as ReturnType<typeof vi.fn>).mock.calls[1]![0])
       ).toMatchObject({
         type: "ws:routed",
         fromId: "panel-b",
@@ -331,42 +325,6 @@ describe("RpcServer relay behavior", () => {
     });
   });
 
-  it("preserves reconnect grace expiry on relayCall", async () => {
-    const { server } = createServer();
-    const deferred = createDeferred<undefined>();
-    testServer(server).reconnectWaiters.set("panel-b", { ...deferred });
-
-    const relay = testServer(server).relayCall("panel-a", "panel-b", "test.method", []);
-    deferred.reject(
-      Object.assign(new Error("Client did not reconnect within grace window"), {
-        code: "RECONNECT_GRACE_EXPIRED",
-      })
-    );
-
-    await expect(relay).rejects.toMatchObject({
-      message: "Target panel-b did not reconnect within grace window",
-      code: "RECONNECT_GRACE_EXPIRED",
-    });
-  });
-
-  it("preserves server shutdown on relayCall", async () => {
-    const { server } = createServer();
-    const deferred = createDeferred<undefined>();
-    testServer(server).reconnectWaiters.set("panel-b", { ...deferred });
-
-    const relay = testServer(server).relayCall("panel-a", "panel-b", "test.method", []);
-    deferred.reject(
-      Object.assign(new Error("Server shutting down"), {
-        code: "SERVER_SHUTTING_DOWN",
-      })
-    );
-
-    await expect(relay).rejects.toMatchObject({
-      message: "Server shutting down",
-      code: "SERVER_SHUTTING_DOWN",
-    });
-  });
-
   it("throws TARGET_NOT_REACHABLE when no reconnect waiter exists", async () => {
     const { server } = createServer();
 
@@ -378,17 +336,15 @@ describe("RpcServer relay behavior", () => {
     });
   });
 
-  it("throws an invariant error when a reconnect waiter resolves without a client", async () => {
+  it("throws TARGET_NOT_REACHABLE immediately for a missing specific connection", async () => {
     const { server } = createServer();
-    const deferred = createDeferred<undefined>();
-    testServer(server).reconnectWaiters.set("panel-b", { ...deferred });
 
-    const relay = testServer(server).relayCall("panel-a", "panel-b", "test.method", []);
-    deferred.resolve(undefined);
-
-    await expect(relay).rejects.toThrow(
-      "Invariant violated: reconnect waiter resolved for panel-b but no client found"
-    );
+    await expect(
+      testServer(server).relayCall("panel-a", "panel-b", "test.method", [], "conn-missing")
+    ).rejects.toMatchObject({
+      message: "Target not reachable: panel-b",
+      code: "TARGET_NOT_REACHABLE",
+    });
   });
 
   it("surfaces response relay failures with ws:routed-response-error", async () => {

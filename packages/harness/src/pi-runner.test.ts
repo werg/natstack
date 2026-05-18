@@ -190,8 +190,8 @@ describe("PiRunner.init", () => {
 
     await runner.init();
 
-    expect(rpcCallSpy).toHaveBeenCalledWith("main", "workspace.getAgentsMd");
-    expect(rpcCallSpy).toHaveBeenCalledWith("main", "workspace.listSkills");
+    expect(rpcCallSpy).toHaveBeenCalledWith("main", "workspace.getAgentsMd", []);
+    expect(rpcCallSpy).toHaveBeenCalledWith("main", "workspace.listSkills", []);
     expect(agentInstances).toHaveLength(1);
 
     const agent = agentInstances[0];

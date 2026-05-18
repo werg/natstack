@@ -11,7 +11,7 @@ function makeRpc(
 ): { rpc: RpcCaller; resolveCalls: Array<{ url: string; credentialId?: string }> } {
   const resolveCalls: Array<{ url: string; credentialId?: string }> = [];
   const rpc: RpcCaller = {
-    call: (async <T = unknown>(_targetId: string, method: string, ...args: unknown[]): Promise<T> => {
+    call: (async <T = unknown>(_targetId: string, method: string, args: unknown[]): Promise<T> => {
       if (method === "credentials.resolveCredential") {
         const input = args[0] as { url: string; credentialId?: string };
         resolveCalls.push(input);
@@ -123,7 +123,7 @@ describe("CredentialClient.forAudience", () => {
     const cred = summary("cred-x", "https://api.example.com/");
     const proxyCalls: unknown[] = [];
     const rpc: RpcCaller = {
-      call: (async <T = unknown>(_targetId: string, method: string, ..._args: unknown[]): Promise<T> => {
+      call: (async <T = unknown>(_targetId: string, method: string, _args: unknown[]): Promise<T> => {
         if (method === "credentials.resolveCredential") return cred as unknown as T;
         throw new Error(`unexpected method: ${method}`);
       }) as RpcCaller["call"],

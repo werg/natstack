@@ -14,6 +14,8 @@ import type { PanelCommandId } from "./panelCommands.js";
 export type EventName =
   | `extensions:${string}`
   | "workspace:unit-log"
+  | "workspace:revision-bumped"
+  | "presence:panel-active"
   | "system-theme-changed"
   | "panel-tree-updated"
   | "open-workspace-switcher"
@@ -139,6 +141,8 @@ export interface EventPayloads {
     sampledAt: number;
   };
   "shell-approval:pending-changed": { pending: PendingApproval[] };
+  "workspace:revision-bumped": { workspaceId: string; revision: number };
+  "presence:panel-active": { panelId: string; ownerCallerId: string; updatedAt: number };
   [key: `extensions:${string}`]: unknown;
   "workspace:unit-log": {
     workspaceId: string;
@@ -177,6 +181,8 @@ export const VALID_EVENT_NAMES: EventName[] = [
   "server-connection-changed",
   "server-health",
   "shell-approval:pending-changed",
+  "workspace:revision-bumped",
+  "presence:panel-active",
 ];
 
 /**
@@ -185,5 +191,7 @@ export const VALID_EVENT_NAMES: EventName[] = [
 export function isValidEventName(name: string): name is EventName {
   if (name.startsWith("extensions:")) return true;
   if (name === "workspace:unit-log") return true;
+  if (name === "workspace:revision-bumped") return true;
+  if (name === "presence:panel-active") return true;
   return VALID_EVENT_NAMES.includes(name as EventName);
 }

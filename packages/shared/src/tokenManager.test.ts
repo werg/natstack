@@ -113,7 +113,7 @@ describe("TokenManager", () => {
     tm.setPanelOwner("panel-1", "shell:owner", "conn-1");
 
     expect(tm.getPanelOwner("panel-1")).toBe("shell:owner");
-    expect(tm.getPanelOwnerConnection("panel-1")).toBe("conn-1");
+    expect(tm.getPanelOwnerConnection("panel-1")).toBeUndefined();
 
     tm.revokeToken("panel-1");
 
@@ -134,7 +134,7 @@ describe("TokenManager", () => {
       callerKind: "panel",
       parentId: "parent",
       ownerCallerId: "shell:owner",
-      ownerConnectionId: "conn-1",
+      ownerConnectionId: undefined,
     }, "panel-1");
   });
 });

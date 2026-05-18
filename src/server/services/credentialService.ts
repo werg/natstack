@@ -59,6 +59,7 @@ import type { CodeIdentityResolver } from "./codeIdentityResolver.js";
 import type { EgressProxy } from "./egressProxy.js";
 import type { ApprovalQueue, GrantedDecision } from "./approvalQueue.js";
 import { CredentialLifecycle, CredentialLifecycleError } from "./credentialLifecycle.js";
+import type { PresenceTracker } from "./presenceService.js";
 import {
   CredentialSessionGrantStore,
   type CredentialSessionGrantResource,
@@ -805,7 +806,8 @@ interface CredentialServiceDeps {
   clientConfigStore?: ClientConfigStore;
   auditLog?: AuditLog;
   eventService?: Pick<EventService, "emit" | "emitToCaller" | "emitToConnection">;
-  tokenManager?: Pick<TokenManager, "getPanelOwner" | "getPanelOwnerConnection">;
+  tokenManager?: Pick<TokenManager, "getPanelOwner">;
+  presence?: Pick<PresenceTracker, "getPanelActiveOwner">;
   egressProxy?: Pick<EgressProxy, "forwardProxyFetch" | "forwardGitHttp">;
   codeIdentityResolver?: Pick<CodeIdentityResolver, "resolveByCallerId">;
   approvalQueue?: ApprovalQueue;
@@ -886,6 +888,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   const auditLog = deps.auditLog;
   const eventService = deps.eventService;
   const tokenManager = deps.tokenManager;
+  const presence = deps.presence;
   const egressProxy = deps.egressProxy;
   const codeIdentityResolver = deps.codeIdentityResolver;
   const approvalQueue = deps.approvalQueue;
@@ -919,12 +922,13 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     }
     if (targetCallerKind === "panel") {
       const ownerCallerId =
-        tokenManager?.getPanelOwner(targetCallerId) ?? (!tokenManager ? targetCallerId : undefined);
+        presence?.getPanelActiveOwner(targetCallerId)?.ownerCallerId ??
+        tokenManager?.getPanelOwner(targetCallerId) ??
+        (!tokenManager ? targetCallerId : undefined);
       if (!ownerCallerId) return null;
       return {
         deliveryCallerId: ownerCallerId,
         deliveryCallerKind: "shell",
-        deliveryConnectionId: tokenManager?.getPanelOwnerConnection?.(targetCallerId),
         parentPanelId: targetCallerId,
       };
     }

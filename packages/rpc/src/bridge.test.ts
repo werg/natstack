@@ -21,7 +21,7 @@ describe("createRpcBridge", () => {
     const bridge = createRpcBridge({ selfId: "test", transport });
     const handler = captureOnAnyMessageHandler(transport);
 
-    const callPromise = bridge.call("target", "greet", "world");
+    const callPromise = bridge.call("target", "greet", ["world"]);
 
     // Extract the requestId from the sent message
     const sendCall = vi.mocked(transport.send).mock.calls[0]!;
@@ -42,13 +42,13 @@ describe("createRpcBridge", () => {
     await expect(callPromise).resolves.toBe("hello world");
   });
 
-  it("pending calls stay pending without a response (no built-in timeout)", async () => {
+  it("pending calls stay pending without an explicit timeout", async () => {
     vi.useFakeTimers();
     try {
       const transport = createMockTransport();
       const bridge = createRpcBridge({ selfId: "test", transport });
 
-      const callPromise = bridge.call("target", "slow.method");
+      const callPromise = bridge.call("target", "slow.method", []);
 
       // Advance well past any historical default timeout — the call must not reject.
       vi.advanceTimersByTime(600_000);
@@ -93,12 +93,36 @@ describe("createRpcBridge", () => {
     });
   });
 
+  it("explicit timeout rejects and clears the pending call", async () => {
+    vi.useFakeTimers();
+    try {
+      const transport = createMockTransport();
+      const bridge = createRpcBridge({ selfId: "test", transport });
+      const handler = captureOnAnyMessageHandler(transport);
+
+      const callPromise = bridge.call("target", "slow.method", [], { timeoutMs: 50 });
+      const sendCall = vi.mocked(transport.send).mock.calls[0]!;
+      const request = sendCall[1] as RpcRequest;
+
+      vi.advanceTimersByTime(50);
+      await expect(callPromise).rejects.toThrow("RPC call timed out after 50ms");
+
+      handler("target", {
+        type: "response",
+        requestId: request.requestId,
+        result: "late",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("error response causes call to reject with Error", async () => {
     const transport = createMockTransport();
     const bridge = createRpcBridge({ selfId: "test", transport });
     const handler = captureOnAnyMessageHandler(transport);
 
-    const callPromise = bridge.call("target", "fail");
+    const callPromise = bridge.call("target", "fail", []);
 
     const sendCall = vi.mocked(transport.send).mock.calls[0]!;
     const request = sendCall[1] as RpcRequest;

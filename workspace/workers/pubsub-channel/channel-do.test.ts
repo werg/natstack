@@ -512,9 +512,7 @@ describe("PubSubChannel", () => {
       expect(mockRpc.call).toHaveBeenCalledWith(
         "do:workers/agent-worker:AiChatWorker:agent-1",
         "onCallResult",
-        "call-1",
-        { ok: true, result: 42 },
-        false,
+        ["call-1", { ok: true, result: 42 }, false],
       );
 
       expect(mockRpc.emit).toHaveBeenCalledWith(

@@ -56,6 +56,7 @@ export interface WsAuthResultMessage {
   callerKind?: string;
   connectionId?: string;
   serverBootId?: string;
+  sessionDirty?: boolean;
   error?: string;
 }
 

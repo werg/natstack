@@ -51,8 +51,8 @@ describe("loadNatStackResources", () => {
     expect(resources.systemPrompt).toBe("System prompt content");
     expect(resources.skills).toEqual(SAMPLE_SKILLS);
     expect(callSpy).toHaveBeenCalledTimes(2);
-    expect(callSpy).toHaveBeenCalledWith("main", "workspace.getAgentsMd");
-    expect(callSpy).toHaveBeenCalledWith("main", "workspace.listSkills");
+    expect(callSpy).toHaveBeenCalledWith("main", "workspace.getAgentsMd", []);
+    expect(callSpy).toHaveBeenCalledWith("main", "workspace.listSkills", []);
   });
 
   it("formats skillIndex as a markdown section listing each skill", async () => {

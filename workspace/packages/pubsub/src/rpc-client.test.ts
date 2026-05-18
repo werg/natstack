@@ -120,11 +120,13 @@ describe("connectViaRpc", () => {
       expect(mockRpc.call).toHaveBeenCalledWith(
         DO_TARGET,
         "subscribe",
-        SELF_ID,
-        expect.objectContaining({
-          transport: "rpc",
-          __participantSessionId: expect.any(String),
-        }),
+        [
+          SELF_ID,
+          expect.objectContaining({
+            transport: "rpc",
+            __participantSessionId: expect.any(String),
+          }),
+        ],
       );
 
       client.close();
@@ -279,10 +281,12 @@ describe("connectViaRpc", () => {
       expect(mockRpc.call).toHaveBeenCalledWith(
         DO_TARGET,
         "publish",
-        SELF_ID,
-        "message",
-        { id: "m1", content: "hello" },
-        expect.objectContaining({ persist: true }),
+        [
+          SELF_ID,
+          "message",
+          { id: "m1", content: "hello" },
+          expect.objectContaining({ persist: true }),
+        ],
       );
     });
 
@@ -363,18 +367,18 @@ describe("connectViaRpc", () => {
       // Wait for the result publish call
       await vi.waitFor(() => {
         const publishCalls = mockRpc.call.mock.calls.filter(
-          (c: unknown[]) => c[1] === "publish" && (c[3] as string) === "method-result",
+          (c: unknown[]) => c[1] === "publish" && ((c[2] as unknown[])[1] as string) === "method-result",
         );
         expect(publishCalls.length).toBeGreaterThanOrEqual(1);
       });
 
       // Find the method-result publish call
       const resultCall = mockRpc.call.mock.calls.find(
-        (c: unknown[]) => c[1] === "publish" && (c[3] as string) === "method-result",
+        (c: unknown[]) => c[1] === "publish" && ((c[2] as unknown[])[1] as string) === "method-result",
       );
       expect(resultCall).toBeDefined();
       // Args: doTarget, "publish", pid, type, payload, opts
-      const resultPayload = resultCall![4] as Record<string, unknown>;
+      const resultPayload = (resultCall![2] as unknown[])[2] as Record<string, unknown>;
       expect(resultPayload["callId"]).toBe(CALL_ID_1);
       expect(resultPayload["content"]).toEqual({ answer: 42 });
       expect(resultPayload["complete"]).toBe(true);
@@ -402,7 +406,7 @@ describe("connectViaRpc", () => {
       await Promise.resolve();
 
       // Verify unsubscribe was called
-      expect(mockRpc.call).toHaveBeenCalledWith(DO_TARGET, "unsubscribe", SELF_ID);
+      expect(mockRpc.call).toHaveBeenCalledWith(DO_TARGET, "unsubscribe", [SELF_ID]);
 
       // Verify disconnect handler fired
       expect(disconnectFn).toHaveBeenCalledTimes(1);
@@ -464,17 +468,13 @@ describe("connectViaRpc", () => {
       expect(mockRpc.call).toHaveBeenCalledWith(
         DO_TARGET,
         "callMethod",
-        SELF_ID,
-        "provider-1",
-        handle.callId,
-        "slowWork",
-        {},
+        [SELF_ID, "provider-1", handle.callId, "slowWork", {}],
       );
 
       controller.abort();
 
       await expect(handle.result).rejects.toMatchObject({ code: "cancelled" });
-      expect(mockRpc.call).toHaveBeenCalledWith(DO_TARGET, "cancelMethodCall", handle.callId);
+      expect(mockRpc.call).toHaveBeenCalledWith(DO_TARGET, "cancelMethodCall", [handle.callId]);
 
       client.close();
     });
@@ -504,7 +504,7 @@ describe("connectViaRpc", () => {
 
       await Promise.resolve();
       expect(settled).toBe(false);
-      expect(mockRpc.call).toHaveBeenCalledWith(DO_TARGET, "cancelMethodCall", handle.callId);
+      expect(mockRpc.call).toHaveBeenCalledWith(DO_TARGET, "cancelMethodCall", [handle.callId]);
 
       resolveCancel();
       await cancelPromise;

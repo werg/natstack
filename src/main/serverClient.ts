@@ -1,19 +1,17 @@
 /**
  * ServerClient — WebSocket RPC client that connects Electron to the server.
- *
- * Supports both local (ws://127.0.0.1:{port}) and remote (ws://{host}:{port}/rpc)
- * connections. Handles RPC calls, disconnect recovery with automatic reconnection
- * (exponential backoff), and server event delivery.
  */
 
 import { WebSocket } from "ws";
-import { randomUUID } from "crypto";
 import * as fs from "fs";
-import type { RpcMessage, RpcResponse } from "@natstack/rpc";
-import type { WsClientMessage, WsServerMessage } from "@natstack/shared/ws/protocol";
-import type { RecoveryKind } from "@natstack/shared/shell/recoveryCoordinator";
-import { redactTokenIn } from "@natstack/shared/redact";
+import {
+  BaseWsTransport,
+  type ConnectionStatus,
+  type WsLike,
+} from "@natstack/shared/shell/transport";
 import { createPinnedTlsSocket } from "./tlsPinning.js";
+
+export type { ConnectionStatus };
 
 export interface TlsPinningOptions {
   /** Path to a CA certificate (PEM) for self-signed servers */
@@ -21,13 +19,6 @@ export interface TlsPinningOptions {
   /** Expected leaf cert SHA-256 fingerprint (uppercase, colon-separated) */
   fingerprint?: string;
 }
-
-interface PendingCall {
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
-}
-
-export type ConnectionStatus = "connected" | "connecting" | "disconnected";
 
 export interface ServerClient {
   /** Call a backend service via the server */
@@ -47,352 +38,119 @@ export interface ServerClientOptions {
   getWsUrl?: () => string;
   /** TLS pinning options — only honored for wss:// URLs */
   tls?: TlsPinningOptions;
-  /** Called when the connection is permanently lost (after all retries exhausted) */
+  /** Called when the connection is permanently lost after explicit non-reconnect close. */
   onDisconnect?: () => void;
   /** Called when connection status changes (for UI indicators) */
   onConnectionStatusChanged?: (status: ConnectionStatus) => void;
   /** Called when the server sends an event */
   onEvent?: (event: string, payload: unknown) => void;
   /** Called after auth when the transport needs subscriptions or state replayed. */
-  onRecovery?: (kind: RecoveryKind) => void | Promise<void>;
+  onRecovery?: (kind: "resubscribe" | "cold-recover") => void | Promise<void>;
   /** Enable automatic reconnection on disconnect (default: false for local, true if wsUrl is set) */
   reconnect?: boolean;
-  /** Maximum number of reconnection attempts (default: 10) */
+  /** Deprecated. Reconnect is now unbounded and this option is ignored. */
   maxReconnectAttempts?: number;
   /** Refresh the caller token after an auth failure during reconnect. */
   refreshAuthToken?: () => Promise<string>;
 }
 
-class ServerAuthError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ServerAuthError";
+class NodeWsLike implements WsLike {
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { data: unknown }) => void) | null = null;
+  onclose: ((event: { code?: number; reason?: string }) => void) | null = null;
+  onerror: ((event: unknown) => void) | null = null;
+
+  constructor(private readonly ws: WebSocket) {
+    ws.on("open", () => this.onopen?.());
+    ws.on("message", (data) => this.onmessage?.({ data: data.toString() }));
+    ws.on("close", (code, reason) => this.onclose?.({ code, reason: reason.toString() }));
+    ws.on("error", (error) => this.onerror?.(error));
+  }
+
+  get readyState(): number {
+    return this.ws.readyState;
+  }
+
+  send(data: string): void {
+    this.ws.send(data);
+  }
+
+  close(code?: number, reason?: string): void {
+    this.ws.close(code, reason);
   }
 }
 
-/** Connect a WebSocket and authenticate. Returns the connected+authed ws. */
-async function connectAndAuth(
+function createWsOptions(
   wsUrl: string,
-  authToken: string,
-  tlsOpts: TlsPinningOptions | undefined,
-  connectionId: string
-): Promise<{ ws: WebSocket; serverBootId?: string }> {
+  tlsOpts: TlsPinningOptions | undefined
+): Record<string, unknown> {
   const isTls = wsUrl.startsWith("wss://");
   const wsOptions: Record<string, unknown> = {};
+  if (!isTls || !tlsOpts) return wsOptions;
 
-  if (isTls && tlsOpts) {
-    if (tlsOpts.caPath) {
-      try {
-        wsOptions["ca"] = fs.readFileSync(tlsOpts.caPath);
-      } catch (err) {
-        throw new Error(`Failed to read CA cert at ${tlsOpts.caPath}: ${(err as Error).message}`);
-      }
-    }
-
-    if (tlsOpts.fingerprint) {
-      // **Fingerprint pinning.** Install a `createConnection` factory that
-      // validates the leaf cert in `secureConnect` — fires between TLS
-      // handshake completion and any app-layer write, so a mismatched peer
-      // is guaranteed never to receive our `ws:auth` frame or the upgrade
-      // request. See `tlsPinning.ts`. `rejectUnauthorized: false` below
-      // only suspends Node's own CA path; the factory's secureConnect
-      // listener is what actually enforces trust.
-      wsOptions["rejectUnauthorized"] = false;
-      wsOptions["checkServerIdentity"] = () => undefined;
-
-      const expected = tlsOpts.fingerprint;
-      const wsProtocolUrl = new URL(wsUrl);
-      const host = wsProtocolUrl.hostname;
-      const port = parseInt(wsProtocolUrl.port, 10) || 443;
-      wsOptions["createConnection"] = () =>
-        createPinnedTlsSocket({ host, port, expectedFingerprint: expected });
-    }
+  if (tlsOpts.caPath) {
+    wsOptions["ca"] = fs.readFileSync(tlsOpts.caPath);
   }
 
-  const ws = new WebSocket(wsUrl, wsOptions);
-  let serverBootId: string | undefined;
+  if (tlsOpts.fingerprint) {
+    wsOptions["rejectUnauthorized"] = false;
+    wsOptions["checkServerIdentity"] = () => undefined;
+    const url = new URL(wsUrl);
+    const host = url.hostname;
+    const port = parseInt(url.port, 10) || 443;
+    wsOptions["createConnection"] = () =>
+      createPinnedTlsSocket({ host, port, expectedFingerprint: tlsOpts.fingerprint! });
+  }
 
-  await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error(`Server WS connection timeout (10s): ${wsUrl}`));
-      ws.close();
-    }, 10_000);
-
-    ws.on("error", (err) => {
-      clearTimeout(timeout);
-      reject(err);
-    });
-
-    ws.on("open", () => {
-      const authMsg: WsClientMessage = { type: "ws:auth", token: authToken, connectionId };
-      ws.send(JSON.stringify(authMsg));
-    });
-
-    ws.on("message", function onAuth(data) {
-      const msg = JSON.parse(data.toString()) as WsServerMessage;
-      if (msg.type === "ws:auth-result") {
-        ws.off("message", onAuth);
-        clearTimeout(timeout);
-        if (msg.success) {
-          serverBootId = msg.serverBootId;
-          resolve();
-        } else {
-          ws.close();
-          reject(new ServerAuthError(`Server auth failed: ${msg.error}`));
-        }
-      }
-    });
-  });
-
-  return { ws, serverBootId };
+  return wsOptions;
 }
 
-/**
- * Create a server client connected to a local or remote server.
- *
- * @param serverRpcPort - Port number (used to build ws://127.0.0.1:{port} when wsUrl is not provided)
- * @param authToken - Caller authentication token
- * @param options - Optional: wsUrl override, disconnect callback, event handler, reconnect settings
- */
 export async function createServerClient(
   serverRpcPort: number,
   authToken: string,
   options?: ServerClientOptions
 ): Promise<ServerClient> {
-  const pendingCalls = new Map<string, PendingCall>();
+  let activeAuthToken = authToken;
   const getWsUrl =
     options?.getWsUrl ?? (() => options?.wsUrl ?? `ws://127.0.0.1:${serverRpcPort}/rpc`);
   const shouldReconnect = options?.reconnect ?? !!(options?.wsUrl || options?.getWsUrl);
-  const maxAttempts = options?.maxReconnectAttempts ?? 10;
-  const tls = options?.tls;
-  const connectionId = randomUUID();
 
-  let ws: WebSocket;
-  let activeAuthToken = authToken;
-  let connectionStatus: ConnectionStatus = "connecting";
-  let closed = false; // true after explicit close()
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  let lastSeenBootId: string | undefined;
-
-  function setStatus(status: ConnectionStatus) {
-    if (status === connectionStatus) return;
-    connectionStatus = status;
-    options?.onConnectionStatusChanged?.(status);
-  }
-
-  function wireErrorHandler(socket: WebSocket) {
-    socket.on("error", (err) => {
-      console.warn("[ServerClient] WebSocket error:", redactTokenIn(err.message, activeAuthToken));
-      // The 'close' event will follow and trigger reconnection
-    });
-  }
-
-  function wireMessageHandler(socket: WebSocket) {
-    socket.on("message", (data) => {
-      let msg: WsServerMessage;
-      try {
-        msg = JSON.parse(data.toString()) as WsServerMessage;
-      } catch (e) {
-        console.warn("[ServerClient] Malformed message from server:", e);
-        return;
-      }
-
-      if (msg.type === "ws:rpc") {
-        const rpcMsg = msg.message as RpcResponse;
-        if (rpcMsg.type === "response") {
-          const pending = pendingCalls.get(rpcMsg.requestId);
-          if (pending) {
-            pendingCalls.delete(rpcMsg.requestId);
-            if ("error" in rpcMsg) {
-              pending.reject(new Error(rpcMsg.error));
-            } else {
-              pending.resolve(rpcMsg.result);
-            }
+  const transport = new BaseWsTransport({
+    selfId: "admin",
+    getWsUrl,
+    reconnect: shouldReconnect,
+    logPrefix: "ServerClient",
+    onConnectionStatusChanged: options?.onConnectionStatusChanged,
+    onDisconnect: options?.onDisconnect,
+    onEvent: options?.onEvent,
+    onRecovery: options?.onRecovery,
+    adapter: {
+      now: () => Date.now(),
+      getAuthToken: async () => activeAuthToken,
+      refreshAuthToken: options?.refreshAuthToken
+        ? async () => {
+            activeAuthToken = await options.refreshAuthToken!();
+            return activeAuthToken;
           }
-        }
-      } else if (msg.type === "ws:event") {
-        options?.onEvent?.(msg.event, msg.payload);
-      } else if (msg.type === "ws:routed-event-error") {
-        options?.onEvent?.("runtime:routed-event-error", {
-          targetId: msg.targetId,
-          event: msg.event,
-          error: msg.error,
-          errorCode: msg.errorCode,
-        });
-      } else if (msg.type === "ws:routed-response-error") {
-        options?.onEvent?.("runtime:routed-response-error", {
-          targetId: msg.targetId,
-          requestId: msg.requestId,
-          error: msg.error,
-          errorCode: msg.errorCode,
-        });
-      }
-    });
-  }
+        : undefined,
+      createSocket: (url) => new NodeWsLike(new WebSocket(url, createWsOptions(url, options?.tls))),
+    },
+  });
 
-  function wireSocket(socket: WebSocket) {
-    wireErrorHandler(socket);
-    wireMessageHandler(socket);
-    wireCloseHandler(socket);
-  }
+  await transport.connectAndWait();
 
-  function emitRecovery(serverBootId?: string) {
-    const previousBootId = lastSeenBootId;
-    lastSeenBootId = serverBootId;
-    void options?.onRecovery?.("resubscribe");
-    if (previousBootId && serverBootId && previousBootId !== serverBootId) {
-      void options?.onRecovery?.("cold-recover");
-    }
-  }
-
-  async function connectWithActiveToken(): Promise<{ socket: WebSocket; serverBootId?: string }> {
-    const { ws: socket, serverBootId } = await connectAndAuth(
-      getWsUrl(),
-      activeAuthToken,
-      tls,
-      connectionId
-    );
-    return { socket, serverBootId };
-  }
-
-  async function refreshAndConnect(): Promise<{ socket: WebSocket; serverBootId?: string } | null> {
-    if (!options?.refreshAuthToken) return null;
-    activeAuthToken = await options.refreshAuthToken();
-    return connectWithActiveToken();
-  }
-
-  async function attemptReconnect() {
-    if (closed) return;
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      if (closed) return;
-      setStatus("connecting");
-
-      // Exponential backoff: 1s, 2s, 4s, 8s, ... capped at 30s
-      const delay = Math.min(1000 * Math.pow(2, attempt - 1), 30_000);
-      console.log(
-        `[ServerClient] Reconnecting (attempt ${attempt}/${maxAttempts}) in ${delay}ms...`
-      );
-
-      await new Promise<void>((resolve) => {
-        reconnectTimer = setTimeout(resolve, delay);
-      });
-      reconnectTimer = null;
-
-      if (closed) return;
-
-      try {
-        const connected = await connectWithActiveToken();
-        ws = connected.socket;
-        wireSocket(ws);
-        setStatus("connected");
-        emitRecovery(connected.serverBootId);
-        console.log(`[ServerClient] Reconnected successfully`);
-        return;
-      } catch (err) {
-        if (err instanceof ServerAuthError) {
-          try {
-            const refreshed = await refreshAndConnect();
-            if (refreshed) {
-              ws = refreshed.socket;
-              wireSocket(ws);
-              setStatus("connected");
-              emitRecovery(refreshed.serverBootId);
-              console.log("[ServerClient] Reconnected successfully after refreshing caller token");
-              return;
-            }
-          } catch (refreshErr) {
-            console.warn(
-              "[ServerClient] Reconnect token refresh failed:",
-              redactTokenIn((refreshErr as Error).message, activeAuthToken)
-            );
-          }
-        }
-        console.warn(
-          `[ServerClient] Reconnect attempt ${attempt} failed:`,
-          redactTokenIn((err as Error).message, activeAuthToken)
-        );
-      }
-    }
-
-    // All retries exhausted
-    console.error(`[ServerClient] Failed to reconnect after ${maxAttempts} attempts`);
-    setStatus("disconnected");
-    options?.onDisconnect?.();
-  }
-
-  function wireCloseHandler(socket: WebSocket) {
-    socket.on("close", () => {
-      if (closed) return;
-      if (socket !== ws) return;
-
-      // Reject pending calls — they won't be answered on the old socket
-      for (const [, pending] of pendingCalls) {
-        pending.reject(new Error("Server disconnected"));
-      }
-      pendingCalls.clear();
-
-      if (shouldReconnect) {
-        setStatus("connecting");
-        void attemptReconnect();
-      } else {
-        setStatus("disconnected");
-        options?.onDisconnect?.();
-      }
-    });
-  }
-
-  // Initial connection
-  const initial = await connectWithActiveToken();
-  ws = initial.socket;
-  wireSocket(ws);
-  setStatus("connected");
-  emitRecovery(initial.serverBootId);
-
-  const client: ServerClient = {
+  return {
     call(service: string, method: string, args: unknown[]): Promise<unknown> {
-      if (ws.readyState !== WebSocket.OPEN) {
-        return Promise.reject(new Error("Server not connected"));
-      }
-
-      const requestId = randomUUID();
-      return new Promise((resolve, reject) => {
-        pendingCalls.set(requestId, { resolve, reject });
-
-        const rpcMsg: RpcMessage = {
-          type: "request",
-          requestId,
-          fromId: "admin",
-          method: `${service}.${method}`,
-          args,
-        };
-        const envelope: WsClientMessage = { type: "ws:rpc", message: rpcMsg };
-        ws.send(JSON.stringify(envelope));
-      });
+      return transport.callMain(`${service}.${method}`, args);
     },
-
     isConnected(): boolean {
-      return ws.readyState === WebSocket.OPEN;
+      return transport.isConnected();
     },
-
     getConnectionStatus(): ConnectionStatus {
-      return connectionStatus;
+      return transport.getConnectionStatus();
     },
-
-    async close(): Promise<void> {
-      closed = true;
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-      if (ws.readyState === WebSocket.CLOSED) return;
-      ws.close(1000, "Client closing");
-      await new Promise<void>((resolve) => {
-        ws.on("close", () => resolve());
-        setTimeout(resolve, 2000);
-      });
+    close(): Promise<void> {
+      return transport.close();
     },
   };
-
-  return client;
 }

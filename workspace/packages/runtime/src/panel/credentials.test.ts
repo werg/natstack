@@ -58,9 +58,11 @@ describe("panel credential OAuth API", () => {
     expect(callMock).toHaveBeenCalledWith(
       "main",
       "credentials.connect",
-      expect.objectContaining({
-        flow: expect.objectContaining({ clientId: "client-1" }),
-      }),
+      [
+        expect.objectContaining({
+          flow: expect.objectContaining({ clientId: "client-1" }),
+        }),
+      ],
     );
   });
 });

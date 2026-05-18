@@ -10,10 +10,10 @@
 import { describe, it, expect, vi } from "vitest";
 import { subscribeHeadlessAgent, getRecommendedChannelConfig } from "./channel.js";
 
-function makeRpcCall(captured: { config?: Record<string, unknown> }): (target: string, method: string, ...args: unknown[]) => Promise<unknown> {
-  return vi.fn(async (_target: string, _method: string, ..._args: unknown[]) => {
+function makeRpcCall(captured: { config?: Record<string, unknown> }): (target: string, method: string, args: unknown[]) => Promise<unknown> {
+  return vi.fn(async (_target: string, _method: string, args: unknown[]) => {
     // workers.callDO(source, className, objectKey, "subscribeChannel", payload)
-    const payload = _args[4] as { config?: Record<string, unknown> } | undefined;
+    const payload = args[4] as { config?: Record<string, unknown> } | undefined;
     captured.config = payload?.config;
     return { ok: true, participantId: "agent-1" };
   });

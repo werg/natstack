@@ -6,7 +6,7 @@
  * connections (e.g., Durable Objects calling back to the server).
  */
 
-import type { RpcBridge } from "@natstack/rpc";
+import type { RpcBridge, RpcCallOptions } from "@natstack/rpc";
 
 const rpcFetch = globalThis.fetch.bind(globalThis);
 
@@ -99,14 +99,51 @@ export function createHttpRpcBridge(config: HttpRpcBridgeConfig): RpcBridge & {
       );
     },
 
-    async call<T>(targetId: string, method: string, ...args: unknown[]): Promise<T> {
+    async call<T>(
+      targetId: string,
+      method: string,
+      args: unknown[],
+      options?: RpcCallOptions,
+    ): Promise<T> {
+      if (options?.signal?.aborted) {
+        throw new Error("RPC call aborted by caller");
+      }
       if (targetId === selfId) {
         // Local dispatch
         const handler = methodHandlers.get(method);
         if (!handler) throw new Error(`No handler for method '${method}'`);
         return handler(...args) as T;
       }
-      return postToServer({ type: "call", targetId, method, args }) as Promise<T>;
+      const request = postToServer({ type: "call", targetId, method, args }) as Promise<T>;
+      if (!options?.timeoutMs && !options?.signal) return request;
+
+      return new Promise<T>((resolve, reject) => {
+        let settled = false;
+        let timeout: ReturnType<typeof setTimeout> | null = null;
+        const cleanup = (): void => {
+          if (timeout) clearTimeout(timeout);
+          options?.signal?.removeEventListener("abort", onAbort);
+        };
+        const settle = (fn: () => void): void => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          fn();
+        };
+        const onAbort = (): void => {
+          settle(() => reject(new Error("RPC call aborted by caller")));
+        };
+        if (typeof options?.timeoutMs === "number" && options.timeoutMs >= 0) {
+          timeout = setTimeout(() => {
+            settle(() => reject(new Error(`RPC call timed out after ${options.timeoutMs}ms`)));
+          }, options.timeoutMs);
+        }
+        options?.signal?.addEventListener("abort", onAbort, { once: true });
+        request.then(
+          (value) => settle(() => resolve(value)),
+          (err) => settle(() => reject(err)),
+        );
+      });
     },
 
     /**

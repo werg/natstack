@@ -35,7 +35,7 @@ function makeMockEnv(
   } as unknown as StoredCredentialSummary;
 
   const rpc: RpcCaller = {
-    call: (async <T = unknown>(_targetId: string, method: string, ..._args: unknown[]): Promise<T> => {
+    call: (async <T = unknown>(_targetId: string, method: string, _args: unknown[]): Promise<T> => {
       if (method === "credentials.resolveCredential") {
         stats.resolveCalls++;
         return credential as unknown as T;

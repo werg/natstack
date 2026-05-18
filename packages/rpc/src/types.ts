@@ -208,7 +208,12 @@ export interface RpcBridge {
     handler: StreamingMethodHandler,
   ): void;
 
-  call<T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T>;
+  call<T = unknown>(
+    targetId: string,
+    method: string,
+    args: unknown[],
+    options?: RpcCallOptions,
+  ): Promise<T>;
   /**
    * Streaming call. Returns a `Response` whose body is a real
    * `ReadableStream<Uint8Array>`. See `RpcCaller.streamCall` for the
@@ -261,8 +266,18 @@ export type StreamingMethodHandler = (
   abortSignal: AbortSignal,
 ) => Promise<void>;
 
+export interface RpcCallOptions {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
 export interface RpcCaller {
-  call<T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T>;
+  call<T = unknown>(
+    targetId: string,
+    method: string,
+    args: unknown[],
+    options?: RpcCallOptions,
+  ): Promise<T>;
   /**
    * Streaming call. Returns a `Response` whose body is a real
    * `ReadableStream<Uint8Array>` — the upstream's response bytes,

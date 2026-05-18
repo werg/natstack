@@ -87,7 +87,7 @@ Resolve at runtime:
 ```ts
 const svc = await workers.resolveService("example.my-store.v1", "tenant-1");
 if (svc.kind === "durable-object") {
-  await rpc.call(svc.targetId, "methodName");
+  await rpc.call(svc.targetId, "methodName", []);
 }
 
 const api = await workers.resolveService("example.my-api.v1");
@@ -464,7 +464,7 @@ The fork worker is a stateless fetch handler that orchestrates the full fork seq
 
 - `runtime.callMain("workerd.cloneDO", ref, newKey)` — clone a DO's SQLite
 - `runtime.callMain("workerd.destroyDO", ref)` — destroy on rollback
-- `rpc.call("do:source:className:objectKey", method, ...args)` — call DO methods via RPC relay
+- `rpc.call("do:source:className:objectKey", method, args)` — call DO methods via RPC relay
 
 Trigger via `POST /fork`:
 

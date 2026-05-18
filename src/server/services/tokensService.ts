@@ -5,11 +5,13 @@ import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { CallerKind } from "@natstack/shared/serviceDispatcher";
 import type { FsService } from "@natstack/shared/fsService";
 import type { CodeIdentityResolver } from "./codeIdentityResolver.js";
+import type { PresenceTracker } from "./presenceService.js";
 
 export function createTokensService(deps: {
   tokenManager: TokenManager;
   fsService: FsService;
   codeIdentityResolver?: Pick<CodeIdentityResolver, "upsertCallerIdentity" | "unregisterCaller">;
+  presence?: Pick<PresenceTracker, "markPanelActive" | "markPanelsOwned">;
   getEffectiveVersion?: (source: string) => Promise<string | undefined>;
   /**
    * Optional — omit in IPC (Electron-embedded) mode where the admin token
@@ -39,6 +41,7 @@ export function createTokensService(deps: {
       revokePanelToken: { args: z.tuple([z.string()]) },
       updatePanelContext: { args: z.tuple([z.string(), z.string()]) },
       updatePanelParent: { args: z.tuple([z.string(), z.string().nullable()]) },
+      reclaimPanels: { args: z.tuple([z.array(z.string())]) },
       /**
        * Rotate the admin token. Generates a fresh 32-byte hex token, persists
        * it to the central config dir (if enabled), swaps it into the token
@@ -79,7 +82,8 @@ export function createTokensService(deps: {
           const token = tm.ensureToken(panelId, "panel");
           tm.setPanelParent(panelId, parentId ?? null);
           if (ctx.callerKind === "shell" || ctx.callerKind === "server") {
-            tm.setPanelOwner(panelId, ctx.callerId, ctx.connectionId);
+            tm.setPanelOwner(panelId, ctx.callerId);
+            deps.presence?.markPanelActive(panelId, ctx.callerId);
           }
           deps.fsService.registerCallerContext(panelId, contextId);
           if (source && deps.codeIdentityResolver) {
@@ -112,6 +116,17 @@ export function createTokensService(deps: {
         case "updatePanelParent": {
           const [panelId, parentId] = args as [string, string | null];
           tm.setPanelParent(panelId, parentId);
+          return;
+        }
+        case "reclaimPanels": {
+          const [panelIds] = args as [string[]];
+          if (ctx.callerKind !== "shell" && ctx.callerKind !== "server") {
+            throw new Error("Only shell/server callers can reclaim panels");
+          }
+          for (const panelId of panelIds) {
+            tm.setPanelOwner(panelId, ctx.callerId);
+          }
+          deps.presence?.markPanelsOwned(panelIds, ctx.callerId);
           return;
         }
         case "rotateAdmin": {

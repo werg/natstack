@@ -217,6 +217,35 @@ class TestWorker extends AgentWorkerBase {
   }
 }
 
+interface CapturedRpcCall {
+  targetId: string;
+  method: string;
+  args: unknown[];
+}
+
+class RpcShapeWorker extends TestWorker {
+  public rpcCalls: CapturedRpcCall[] = [];
+
+  protected override get rpc(): never {
+    return {
+      call: async <T = unknown>(targetId: string, method: string, args: unknown[]): Promise<T> => {
+        this.rpcCalls.push({ targetId, method, args });
+        if (targetId === "main" && method === "workers.resolveService") {
+          return {
+            kind: "durable-object",
+            targetId: "do:workers/pubsub-channel:PubSubChannel:ch-1",
+          } as T;
+        }
+        if (targetId.startsWith("do:") && method === "subscribe") {
+          return { ok: true } as T;
+        }
+        return undefined as T;
+      },
+      streamCall: async () => new Response(),
+    } as never;
+  }
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function userMessage(content: string): ChannelEvent {
@@ -250,6 +279,36 @@ async function flush(): Promise<void> {
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
+  it("passes channel subscription RPC args as a flat args array", async () => {
+    const { instance, call } = await createTestDO(RpcShapeWorker, {
+      WORKER_SOURCE: "workers/agent-worker",
+      WORKER_CLASS_NAME: "AiChatWorker",
+      WORKERD_SESSION_ID: "session-1",
+    });
+
+    await call("subscribeChannel", { channelId: "ch-1", contextId: "ctx-1" });
+
+    const worker = instance as RpcShapeWorker;
+    expect(worker.rpcCalls).toContainEqual({
+      targetId: "main",
+      method: "workers.resolveService",
+      args: ["natstack.channel.v1", "ch-1"],
+    });
+    expect(worker.rpcCalls).toContainEqual({
+      targetId: "do:workers/pubsub-channel:PubSubChannel:ch-1",
+      method: "subscribe",
+      args: [
+        "do:workers/agent-worker:AiChatWorker:test-key",
+        expect.objectContaining({ contextId: "ctx-1", transport: "do" }),
+      ],
+    });
+    expect(worker.rpcCalls).toContainEqual({
+      targetId: "main",
+      method: "fs.bindContext",
+      args: ["ctx-1"],
+    });
+  });
+
   it("reads subscription system prompt config for PiRunner construction", async () => {
     const { instance, sql } = await createTestDO(TestWorker);
     sql.exec(

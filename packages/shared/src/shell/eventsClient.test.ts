@@ -39,7 +39,7 @@ describe("EventsClient", () => {
       expect(rpc.call).toHaveBeenCalledWith(
         "main",
         "events.subscribe",
-        "panel-tree-updated"
+        ["panel-tree-updated"]
       );
     });
 
@@ -51,7 +51,7 @@ describe("EventsClient", () => {
       expect(rpc.call).toHaveBeenCalledWith(
         "main",
         "events.subscribe",
-        "system-theme-changed"
+        ["system-theme-changed"]
       );
     });
   });
@@ -65,7 +65,7 @@ describe("EventsClient", () => {
       expect(rpc.call).toHaveBeenCalledWith(
         "main",
         "events.unsubscribe",
-        "panel-tree-updated"
+        ["panel-tree-updated"]
       );
     });
   });
@@ -76,7 +76,7 @@ describe("EventsClient", () => {
 
       await client.unsubscribeAll();
 
-      expect(rpc.call).toHaveBeenCalledWith("main", "events.unsubscribeAll");
+      expect(rpc.call).toHaveBeenCalledWith("main", "events.unsubscribeAll", []);
     });
   });
 });

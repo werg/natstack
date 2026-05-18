@@ -30,7 +30,7 @@ export interface ConnectionConfig {
   token: string;
   clientId: string;
   rpc?: {
-    call<R = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<R>;
+    call<R = unknown>(targetId: string, method: string, args: unknown[]): Promise<R>;
     onEvent(event: string, listener: (fromId: string, payload: unknown) => void): () => void;
     selfId: string;
   };
@@ -57,12 +57,12 @@ export interface ChatSandboxValue {
   callMethodResult: (participantId: string, method: string, args: unknown) => Promise<ChatMethodResult>;
   contextId: string;
   channelId: string | null;
-  rpc: { call: (target: string, method: string, ...args: unknown[]) => Promise<unknown> };
+  rpc: { call: (target: string, method: string, args: unknown[]) => Promise<unknown> };
 }
 
 /** Sandbox config injected by the panel (keeps agentic-chat runtime-agnostic) */
 export interface SandboxConfig {
-  rpc: { call: (target: string, method: string, ...args: unknown[]) => Promise<unknown> };
+  rpc: { call: (target: string, method: string, args: unknown[]) => Promise<unknown> };
   loadImport: (specifier: string, ref: string | undefined, externals: string[]) => Promise<string>;
 }
 

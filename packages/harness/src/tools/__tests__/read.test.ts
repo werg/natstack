@@ -35,7 +35,8 @@ describe("createReadTool", () => {
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     const fs = new StubFs({ files: { [`${CWD}/pic.png`]: pngBytes } });
     const rpc = {
-      call: vi.fn().mockImplementation((_target: string, method: string, extensionName: string, extensionMethod: string) => {
+      call: vi.fn().mockImplementation((_target: string, method: string, args: unknown[]) => {
+        const [extensionName, extensionMethod] = args;
         expect(method).toBe("extensions.invoke");
         expect(extensionName).toBe("@workspace-extensions/image-service");
         if (extensionMethod === "detectMimeType") return Promise.resolve("image/png");

@@ -17,6 +17,7 @@ export type {
   RpcBridge,
   RpcBridgeConfig,
   RpcBridgeInternal,
+  RpcCallOptions,
   ExposedMethods,
   RpcEventListener,
   RpcCaller,

@@ -19,7 +19,7 @@ export function getRecommendedChannelConfig(): Partial<ChannelConfig> {
 
 export interface SubscribeHeadlessAgentOptions {
   /** RPC call function for reaching the platform */
-  rpcCall: (target: string, method: string, ...args: unknown[]) => Promise<unknown>;
+  rpcCall: (target: string, method: string, args: unknown[]) => Promise<unknown>;
   /** Worker source (e.g., "workers/agent-worker") */
   source: string;
   /** DO class name (e.g., "AiChatWorker") */
@@ -54,9 +54,7 @@ export async function subscribeHeadlessAgent(opts: SubscribeHeadlessAgentOptions
     ...opts.extraConfig,
   };
 
-  return opts.rpcCall(
-    "main",
-    "workers.callDO",
+  return opts.rpcCall("main", "workers.callDO", [
     opts.source,
     opts.className,
     opts.objectKey,
@@ -66,5 +64,5 @@ export async function subscribeHeadlessAgent(opts: SubscribeHeadlessAgentOptions
       contextId: opts.contextId,
       config: subscriptionConfig,
     },
-  ) as Promise<{ ok: boolean; participantId?: string }>;
+  ]) as Promise<{ ok: boolean; participantId?: string }>;
 }

@@ -12,62 +12,53 @@
  * as a string; `workspace.listSkills` returns an array of `SkillEntry`
  * descriptors (one per skill directory under `workspace/skills/`).
  */
-
 import type { RpcCaller } from "@natstack/rpc";
 export type { RpcCaller } from "@natstack/rpc";
-
 export interface SkillEntry {
-  /** Skill identifier; matches the directory name under `workspace/skills/`. */
-  name: string;
-  /** Short human-readable description shown in the skill index. */
-  description: string;
-  /** Absolute path to the skill directory (informational; not used by LLM). */
-  dirPath: string;
+    /** Skill identifier; matches the directory name under `workspace/skills/`. */
+    name: string;
+    /** Short human-readable description shown in the skill index. */
+    description: string;
+    /** Absolute path to the skill directory (informational; not used by LLM). */
+    dirPath: string;
 }
-
 export interface NatStackResources {
-  /** Contents of `workspace/meta/AGENTS.md`. */
-  systemPrompt: string;
-  /** Markdown-formatted skill index suitable for appending to the system prompt. */
-  skillIndex: string;
-  /** Raw skill descriptors. */
-  skills: SkillEntry[];
+    /** Contents of `workspace/meta/AGENTS.md`. */
+    systemPrompt: string;
+    /** Markdown-formatted skill index suitable for appending to the system prompt. */
+    skillIndex: string;
+    /** Raw skill descriptors. */
+    skills: SkillEntry[];
 }
-
 export interface ResourceLoaderDeps {
-  rpc: RpcCaller;
+    rpc: RpcCaller;
 }
-
 /**
  * Fetches the workspace system prompt and skill list in parallel and
  * returns a `NatStackResources` bundle for PiRunner to consume.
  */
-export async function loadNatStackResources(
-  deps: ResourceLoaderDeps,
-): Promise<NatStackResources> {
-  const [systemPrompt, skills] = await Promise.all([
-    deps.rpc.call<string>("main", "workspace.getAgentsMd"),
-    deps.rpc.call<SkillEntry[]>("main", "workspace.listSkills"),
-  ]);
-  const skillIndex = formatSkillIndex(skills);
-  return { systemPrompt, skillIndex, skills };
+export async function loadNatStackResources(deps: ResourceLoaderDeps): Promise<NatStackResources> {
+    const [systemPrompt, skills] = await Promise.all([
+        deps.rpc.call<string>("main", "workspace.getAgentsMd", []),
+        deps.rpc.call<SkillEntry[]>("main", "workspace.listSkills", []),
+    ]);
+    const skillIndex = formatSkillIndex(skills);
+    return { systemPrompt, skillIndex, skills };
 }
-
 /**
  * Renders the skill index as a markdown section. Returns an empty string
  * when there are no skills (so the caller can simply concatenate it with
  * the system prompt without conditional logic).
  */
 export function formatSkillIndex(skills: SkillEntry[]): string {
-  if (skills.length === 0) return "";
-  const lines: string[] = ["", "## Available skills", ""];
-  for (const s of skills) {
-    lines.push(`- **${s.name}** \u2014 ${s.description}`);
-  }
-  lines.push("");
-  lines.push('Use the read tool to load a skill: `read("skills/<name>/SKILL.md")`.');
-  lines.push(
-    "(Skill files are available in the per-context folder under `skills/<name>/`.)",
-  );
-  return lines.join("\n");
+    if (skills.length === 0)
+        return "";
+    const lines: string[] = ["", "## Available skills", ""];
+    for (const s of skills) {
+        lines.push(`- **${s.name}** \u2014 ${s.description}`);
+    }
+    lines.push("");
+    lines.push('Use the read tool to load a skill: `read("skills/<name>/SKILL.md")`.');
+    lines.push("(Skill files are available in the per-context folder under `skills/<name>/`.)");
+    return lines.join("\n");
 }

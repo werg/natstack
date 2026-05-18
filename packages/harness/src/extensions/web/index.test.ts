@@ -69,7 +69,7 @@ function mockResponse(
 function makeBlobstore() {
   const store = new Map<string, string>();
   const call = vi.fn(
-    <T>(target: string, method: string, ...args: unknown[]): Promise<T> => {
+    <T>(target: string, method: string, args: unknown[]): Promise<T> => {
       if (target !== "main") {
         return Promise.reject(new Error(`unexpected rpc target ${target}`));
       }

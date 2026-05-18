@@ -81,27 +81,29 @@ describe("AiChatWorker model credential defaults", () => {
     expect(worker.rpcCall).toHaveBeenCalledWith(
       "main",
       "credentials.connect",
-      expect.objectContaining({
-        spec: expect.objectContaining({
-          browser: "external",
-          flow: expect.objectContaining({
-            type: "oauth2-auth-code-pkce",
+      [
+        expect.objectContaining({
+          spec: expect.objectContaining({
+            browser: "external",
+            flow: expect.objectContaining({
+              type: "oauth2-auth-code-pkce",
+            }),
+            credential: expect.objectContaining({
+              audience: [{ url: "https://chatgpt.com/backend-api", match: "path-prefix" }],
+            }),
+            redirect: {
+              type: "loopback",
+              host: "localhost",
+              port: 1455,
+              callbackPath: "/auth/callback",
+            },
           }),
-          credential: expect.objectContaining({
-            audience: [{ url: "https://chatgpt.com/backend-api", match: "path-prefix" }],
-          }),
-          redirect: {
-            type: "loopback",
-            host: "localhost",
-            port: 1455,
-            callbackPath: "/auth/callback",
+          handoffTarget: {
+            callerId: "panel-1",
+            callerKind: "panel",
           },
         }),
-        handoffTarget: {
-          callerId: "panel-1",
-          callerKind: "panel",
-        },
-      }),
+      ],
     );
 
     await worker.onMethodCall("ch-1", "call-2", "connectModelCredentialOAuth", {
@@ -114,16 +116,18 @@ describe("AiChatWorker model credential defaults", () => {
     expect(worker.rpcCall).toHaveBeenLastCalledWith(
       "main",
       "credentials.connect",
-      expect.objectContaining({
-        spec: expect.objectContaining({
-          redirect: {
-            type: "client-loopback",
-            host: "localhost",
-            port: 1455,
-            callbackPath: "/auth/callback",
-          },
+      [
+        expect.objectContaining({
+          spec: expect.objectContaining({
+            redirect: {
+              type: "client-loopback",
+              host: "localhost",
+              port: 1455,
+              callbackPath: "/auth/callback",
+            },
+          }),
         }),
-      }),
+      ],
     );
   });
 });

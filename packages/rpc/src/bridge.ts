@@ -11,6 +11,7 @@ import type {
   RpcStreamFrameMessage,
   RpcStreamCancel,
   StreamingMethodHandler,
+  RpcCallOptions,
 } from "./types.js";
 
 function generateRequestId(): string {
@@ -50,6 +51,8 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
     {
       resolve: (value: unknown) => void;
       reject: (error: Error) => void;
+      timeout: ReturnType<typeof setTimeout> | null;
+      abortCleanup: (() => void) | null;
     }
   >();
 
@@ -179,6 +182,8 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
       return;
     }
     pendingRequests.delete(response.requestId);
+    if (pending.timeout) clearTimeout(pending.timeout);
+    pending.abortCleanup?.();
 
     if ("error" in response) {
       const err = new Error(response.error) as NodeJS.ErrnoException;
@@ -372,7 +377,15 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
       }
     },
 
-    async call<T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T> {
+    async call<T = unknown>(
+      targetId: string,
+      method: string,
+      args: unknown[],
+      options?: RpcCallOptions,
+    ): Promise<T> {
+      if (options?.signal?.aborted) {
+        throw new Error("RPC call aborted by caller");
+      }
       const requestId = generateRequestId();
       const request: RpcRequest = {
         type: "request",
@@ -383,13 +396,44 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
       };
 
       return new Promise<T>((resolve, reject) => {
+        let timeout: ReturnType<typeof setTimeout> | null = null;
+        let abortCleanup: (() => void) | null = null;
+
+        const rejectPending = (err: Error): void => {
+          const pending = pendingRequests.get(requestId);
+          if (!pending) return;
+          pendingRequests.delete(requestId);
+          if (pending.timeout) clearTimeout(pending.timeout);
+          pending.abortCleanup?.();
+          pending.reject(err);
+        };
+
+        if (typeof options?.timeoutMs === "number" && options.timeoutMs >= 0) {
+          timeout = setTimeout(() => {
+            rejectPending(new Error(`RPC call timed out after ${options.timeoutMs}ms`));
+          }, options.timeoutMs);
+        }
+
+        if (options?.signal) {
+          const onAbort = (): void => {
+            rejectPending(new Error("RPC call aborted by caller"));
+          };
+          options.signal.addEventListener("abort", onAbort, { once: true });
+          abortCleanup = () => options.signal?.removeEventListener("abort", onAbort);
+        }
+
         pendingRequests.set(requestId, {
           resolve: resolve as (value: unknown) => void,
           reject,
+          timeout,
+          abortCleanup,
         });
 
         void Promise.resolve(config.transport.send(targetId, request)).catch((err) => {
+          const pending = pendingRequests.get(requestId);
           pendingRequests.delete(requestId);
+          if (pending?.timeout) clearTimeout(pending.timeout);
+          pending?.abortCleanup?.();
           reject(err);
         });
       });

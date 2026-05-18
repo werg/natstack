@@ -37,7 +37,7 @@ describe("SettingsClient", () => {
 
       const result = await client.getData();
 
-      expect(rpc.call).toHaveBeenCalledWith("main", "settings.getData");
+      expect(rpc.call).toHaveBeenCalledWith("main", "settings.getData", []);
       expect(result).toEqual(data);
     });
   });

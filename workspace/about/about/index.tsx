@@ -1,7 +1,6 @@
 /**
  * About Page - Shell panel showing application information.
  */
-
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "@radix-ui/themes/styles.css";
@@ -9,29 +8,23 @@ import { Theme, Card, Flex, Heading, Text, Box, Link } from "@radix-ui/themes";
 import { rpc } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
 import type { AppInfo } from "@workspace/about-shared/types";
-
 function AboutPage() {
-  const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
-
-  useEffect(() => {
-    rpc.call<AppInfo>("main", "app.getInfo").then(setAppInfo).catch(console.error);
-  }, []);
-
-  return (
-    <Flex align="center" justify="center" style={{ height: "100dvh" }}>
+    const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
+    useEffect(() => {
+        rpc.call<AppInfo>("main", "app.getInfo", []).then(setAppInfo).catch(console.error);
+    }, []);
+    return (<Flex align="center" justify="center" style={{ height: "100dvh" }}>
       <Card size="3" style={{ maxWidth: "400px", textAlign: "center" }}>
         <Flex direction="column" align="center" gap="4">
-          <Box
-            style={{
-              width: "80px",
-              height: "80px",
-              borderRadius: "16px",
-              background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
+          <Box style={{
+            width: "80px",
+            height: "80px",
+            borderRadius: "16px",
+            background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+        }}>
             <Text size="8" style={{ color: "white", fontWeight: "bold" }}>N</Text>
           </Box>
 
@@ -41,11 +34,9 @@ function AboutPage() {
             A composable desktop application framework
           </Text>
 
-          {appInfo && (
-            <Text size="2" color="gray">
+          {appInfo && (<Text size="2" color="gray">
               Version {appInfo.version}
-            </Text>
-          )}
+            </Text>)}
 
           <Flex direction="column" gap="1" mt="2">
             <Text size="2">
@@ -61,21 +52,16 @@ function AboutPage() {
           </Text>
         </Flex>
       </Card>
-    </Flex>
-  );
+    </Flex>);
 }
-
 function ThemedApp() {
-  const theme = usePanelTheme();
-  return (
-    <Theme appearance={theme} radius="medium">
+    const theme = usePanelTheme();
+    return (<Theme appearance={theme} radius="medium">
       <AboutPage />
-    </Theme>
-  );
+    </Theme>);
 }
-
 // Mount the app
 const root = document.getElementById("root");
 if (root) {
-  createRoot(root).render(<ThemedApp />);
+    createRoot(root).render(<ThemedApp />);
 }

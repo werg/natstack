@@ -15,7 +15,7 @@ function createService(tokenManager = new TokenManager()) {
 }
 
 describe("tokensService", () => {
-  it("records the authenticated shell websocket as the panel browser handoff owner", async () => {
+  it("records the authenticated shell caller as the panel browser handoff owner", async () => {
     const { service, tokenManager } = createService();
 
     await service.handler(
@@ -25,7 +25,7 @@ describe("tokensService", () => {
     );
 
     expect(tokenManager.getPanelOwner("panel-1")).toBe("shell:abc");
-    expect(tokenManager.getPanelOwnerConnection("panel-1")).toBe("conn-1");
+    expect(tokenManager.getPanelOwnerConnection("panel-1")).toBeUndefined();
   });
 
   it("records the authenticated local admin websocket as the panel browser handoff owner", async () => {
@@ -39,5 +39,20 @@ describe("tokensService", () => {
     ]);
 
     expect(tokenManager.getPanelOwner("panel-1")).toBe("ws:local-main");
+  });
+
+  it("reclaims panel ownership for the authenticated shell caller", async () => {
+    const { service, tokenManager } = createService();
+    tokenManager.ensureToken("panel-1", "panel");
+    tokenManager.setPanelOwner("panel-1", "shell:old");
+
+    await service.handler(
+      { callerId: "shell:new", callerKind: "shell", connectionId: "conn-2" },
+      "reclaimPanels",
+      [["panel-1"]]
+    );
+
+    expect(tokenManager.getPanelOwner("panel-1")).toBe("shell:new");
+    expect(tokenManager.getPanelOwnerConnection("panel-1")).toBeUndefined();
   });
 });

@@ -29,6 +29,7 @@ import {
 import { checkServiceAccess } from "@natstack/shared/servicePolicy";
 import type { TokenManager } from "@natstack/shared/tokenManager";
 import { WsEventSession, type EventService } from "@natstack/shared/eventsService";
+import { SessionRegistry, type SessionRegistryOptions } from "./rpcServer/sessionRegistry.js";
 
 const log = createDevLogger("RpcServer");
 
@@ -67,17 +68,7 @@ interface PendingToolCall {
 
 type RelayAuthCheck = { ok: true } | { ok: false; reason: string };
 
-type ReconnectOutcome =
-  | { kind: "reconnected"; client: WsClientState }
-  | { kind: "server-shutdown" }
-  | { kind: "grace-expired" }
-  | { kind: "no-waiter" };
-
-type RelayErrorCode =
-  | "RECONNECT_GRACE_EXPIRED"
-  | "SERVER_SHUTTING_DOWN"
-  | "TARGET_NOT_REACHABLE"
-  | "UNKNOWN_TARGET_KIND";
+type RelayErrorCode = "SERVER_SHUTTING_DOWN" | "TARGET_NOT_REACHABLE" | "UNKNOWN_TARGET_KIND";
 
 class ConnectionRegistry {
   private clients = new Map<WebSocket, WsClientState>();
@@ -228,43 +219,10 @@ export class RpcServer {
 
   private connections = new ConnectionRegistry();
   private pendingToolCalls = new Map<string, PendingToolCall>();
-  private disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private sessions: SessionRegistry;
   private lastDisconnectAt = new Map<string, number>();
-  /**
-   * Promises that resolve when a caller (currently in the disconnect grace
-   * window) reconnects, or reject when the grace timer expires. Lets relays
-   * targeting a mid-reconnect client wait briefly instead of failing fast
-   * with "Target not reachable" — see relayCall.
-   */
-  private reconnectWaiters = new Map<
-    string,
-    {
-      promise: Promise<void>;
-      resolve: () => void;
-      reject: (err: Error) => void;
-    }
-  >();
-  private connectionReconnectWaiters = new Map<
-    string,
-    {
-      promise: Promise<void>;
-      resolve: () => void;
-      reject: (err: Error) => void;
-    }
-  >();
-  private routedRequestOrigins = new Map<string, { callerId: string; connectionId: string }>();
 
   private readonly bootId = randomUUID();
-
-  // SCAFFOLD: 3-second reconnect grace window. This closes the relay race for
-  // panels/shells that disconnect briefly and then reconnect, but it is not
-  // considered steady-state architecture.
-  //
-  // Removal condition: reconnect instrumentation shows the observed churn is
-  // either expected page-reload/network behavior or the root cause has been
-  // fixed at the client/runtime layer. If reconnects are being caused by a
-  // bug, fix that bug and delete this grace window.
-  private static readonly DISCONNECT_GRACE_MS = 3000;
 
   private dispatcher: ServiceDispatcher;
 
@@ -287,6 +245,8 @@ export class RpcServer {
        * had nowhere to go).
        */
       eventService?: EventService;
+      sessionTtlMs?: SessionRegistryOptions["ttlMs"];
+      sessionInboxCapacity?: number;
       /**
        * Optional: the EgressProxy. When provided, the server exposes a
        * `POST /rpc/stream` endpoint that performs a credentialed upstream
@@ -300,10 +260,13 @@ export class RpcServer {
     }
   ) {
     this.dispatcher = deps.dispatcher;
-  }
-
-  private connectionKey(callerId: string, connectionId: string): string {
-    return `${callerId}:${connectionId}`;
+    this.sessions = new SessionRegistry({
+      inboxCapacity: deps.sessionInboxCapacity,
+      ttlMs: deps.sessionTtlMs,
+      onSessionExpire: (callerId, callerKind) => {
+        this.deps.onClientDisconnect?.(callerId, callerKind);
+      },
+    });
   }
 
   private getCallerConnections(callerId: string): WsClientState[] {
@@ -434,33 +397,14 @@ export class RpcServer {
     const callerKind = entry.callerKind;
     const callerId = entry.callerId;
     const connectionId = requestedConnectionId || randomUUID();
-    const connectionKey = this.connectionKey(callerId, connectionId);
-
-    // Cancel pending disconnect cleanup for this specific connection.
-    const pendingTimer = this.disconnectTimers.get(connectionKey);
-    if (pendingTimer) {
-      clearTimeout(pendingTimer);
-      this.disconnectTimers.delete(connectionKey);
-    }
-
-    // Wake up caller-level relays waiting for any connection and response
-    // steering waiters waiting for this exact connection.
-    const callerWaiter = this.reconnectWaiters.get(callerId);
-    if (callerWaiter) {
-      this.reconnectWaiters.delete(callerId);
-      callerWaiter.resolve();
-    }
-    const connectionWaiter = this.connectionReconnectWaiters.get(connectionKey);
-    if (connectionWaiter) {
-      this.connectionReconnectWaiters.delete(connectionKey);
-      connectionWaiter.resolve();
-    }
 
     const existing = this.connections.getConnection(callerId, connectionId);
     if (existing) {
       existing.ws.close(4002, "Replaced by new connection");
+      this.sessions.markDisconnected(existing.callerId, existing.callerKind);
       this.cleanupClient(existing);
     }
+    const { sessionDirty } = this.sessions.markConnected(callerId, callerKind);
 
     const client: WsClientState = {
       ws,
@@ -498,8 +442,21 @@ export class RpcServer {
       callerKind,
       connectionId,
       serverBootId: this.bootId,
+      sessionDirty,
     };
     ws.send(JSON.stringify(authResult));
+
+    if (sessionDirty) {
+      this.sessions.clearInbox(callerId);
+    } else {
+      for (const queued of this.sessions.takeInbox(callerId)) {
+        this.sendToWs(ws, {
+          type: "ws:routed",
+          fromId: queued.fromId,
+          message: queued.message,
+        });
+      }
+    }
 
     // Register the authenticated connection as a direct-address event session.
     // Pub/sub subscriptions still opt in per event; direct delivery can target
@@ -682,19 +639,18 @@ export class RpcServer {
     }
 
     if (message.type === "response") {
-      const origin = this.routedRequestOrigins.get(message.requestId);
-      if (origin && origin.callerId === targetId) {
-        this.routedRequestOrigins.delete(message.requestId);
-        void this.resolveWsRelayTarget(origin.callerId, origin.connectionId).then(
-          (originClient) => {
-            this.sendToWs(originClient.ws, {
-              type: "ws:routed",
-              fromId: client.callerId,
-              message,
-            });
-          },
-          (err) => this.sendRouteError(client, targetId, message, err)
-        );
+      const origin = this.sessions.takePendingResponse(targetId, message.requestId);
+      if (origin) {
+        const originClient = this.getConnection(origin.callerId, origin.connectionId);
+        if (originClient?.ws.readyState === WebSocket.OPEN) {
+          this.sendToWs(originClient.ws, {
+            type: "ws:routed",
+            fromId: client.callerId,
+            message,
+          });
+        } else {
+          this.sessions.enqueueResponse(origin.callerId, client.callerId, message);
+        }
         return;
       }
     }
@@ -703,11 +659,22 @@ export class RpcServer {
       ? this.getConnection(targetId, targetConnectionId)
       : this.pickPrimary(targetId);
     if (!targetClient || targetClient.ws.readyState !== WebSocket.OPEN) {
-      // Target not connected via WS — try HTTP relay for workers/DOs, or wait
-      // for a panel/shell client that's mid-reconnect (see relayCall).
       if (message.type === "request") {
+        if (this.sessions.hasSession(targetId)) {
+          this.sessions.recordPendingResponse(
+            client.callerId,
+            client.callerKind,
+            message.requestId,
+            {
+              callerId: client.callerId,
+              connectionId: client.connectionId,
+            }
+          );
+          this.sessions.enqueue(targetId, client.callerId, message);
+          return;
+        }
+
         const { requestId, method: reqMethod, args: reqArgs } = message;
-        this.recordRoutedRequestOrigin(requestId, client);
         void this.relayCall(
           client.callerId,
           targetId,
@@ -716,20 +683,28 @@ export class RpcServer {
           targetConnectionId
         ).then(
           (result) => {
-            void this.sendRoutedResponseToOrigin(client, targetId, {
-              type: "response",
-              requestId,
-              result,
-            }).catch((sendErr) => this.sendRouteError(client, targetId, message, sendErr));
+            this.sendToWs(client.ws, {
+              type: "ws:routed",
+              fromId: targetId,
+              message: {
+                type: "response",
+                requestId,
+                result,
+              },
+            });
           },
           (err) => {
             const errorCode = getErrorCode(err);
-            void this.sendRoutedResponseToOrigin(client, targetId, {
-              type: "response",
-              requestId,
-              error: err instanceof Error ? err.message : String(err),
-              ...(errorCode ? { errorCode } : {}),
-            }).catch((sendErr) => this.sendRouteError(client, targetId, message, sendErr));
+            this.sendToWs(client.ws, {
+              type: "ws:routed",
+              fromId: targetId,
+              message: {
+                type: "response",
+                requestId,
+                error: err instanceof Error ? err.message : String(err),
+                ...(errorCode ? { errorCode } : {}),
+              },
+            });
           }
         );
       } else if (message.type === "response") {
@@ -755,9 +730,11 @@ export class RpcServer {
           });
         }
         const sourceId = trustedSource ? (eventFromId ?? client.callerId) : client.callerId;
-        void this.relayEvent(sourceId, targetId, event, payload).catch((err) => {
-          this.sendRouteError(client, targetId, message, err);
-        });
+        if (!this.sessions.enqueue(targetId, sourceId, { ...message, fromId: sourceId })) {
+          void this.relayEvent(sourceId, targetId, event, payload).catch((err) => {
+            this.sendRouteError(client, targetId, message, err);
+          });
+        }
       }
       return;
     }
@@ -785,7 +762,15 @@ export class RpcServer {
       outboundMessage = { ...message, fromId: sourceId };
     }
     if (outboundMessage.type === "request") {
-      this.recordRoutedRequestOrigin(outboundMessage.requestId, client);
+      this.sessions.recordPendingResponse(
+        client.callerId,
+        client.callerKind,
+        outboundMessage.requestId,
+        {
+          callerId: client.callerId,
+          connectionId: client.connectionId,
+        }
+      );
     }
 
     if (outboundMessage.type === "event" && !targetConnectionId) {
@@ -876,36 +861,7 @@ export class RpcServer {
     }
   }
 
-  private recordRoutedRequestOrigin(requestId: string, client: WsClientState): void {
-    this.routedRequestOrigins.set(requestId, {
-      callerId: client.callerId,
-      connectionId: client.connectionId,
-    });
-
-    // Bound memory if a responder never replies. Drop oldest entries first.
-    const maxEntries = 10_000;
-    while (this.routedRequestOrigins.size > maxEntries) {
-      const oldest = this.routedRequestOrigins.keys().next().value as string | undefined;
-      if (!oldest) break;
-      this.routedRequestOrigins.delete(oldest);
-    }
-  }
-
-  private async sendRoutedResponseToOrigin(
-    origin: WsClientState,
-    fromId: string,
-    message: RpcResponse
-  ): Promise<void> {
-    const originClient = await this.resolveWsRelayTarget(origin.callerId, origin.connectionId);
-    this.sendToWs(originClient.ws, {
-      type: "ws:routed",
-      fromId,
-      message,
-    });
-  }
-
   private handleClose(client: WsClientState, code?: number, reason?: string): void {
-    const connectionKey = this.connectionKey(client.callerId, client.connectionId);
     const wasReplaced =
       this.connections.getConnection(client.callerId, client.connectionId) !== client;
     this.connections.removeClient(client);
@@ -951,117 +907,11 @@ export class RpcServer {
     // the replacement is already connected.
     if (wasReplaced) return;
 
-    if (!this.connectionReconnectWaiters.has(connectionKey)) {
-      let resolveWaiter!: () => void;
-      let rejectWaiter!: (err: Error) => void;
-      const promise = new Promise<void>((res, rej) => {
-        resolveWaiter = res;
-        rejectWaiter = rej;
-      });
-      void promise.catch((error) => {
-        const code = getErrorCode(error);
-        if (code === "RECONNECT_GRACE_EXPIRED" || code === "SERVER_SHUTTING_DOWN") {
-          return;
-        }
-        log.error("unexpected connection reconnect waiter rejection", {
-          callerId: client.callerId,
-          connectionId: client.connectionId,
-          cause: error instanceof Error ? error.message : String(error),
-          errorCode: code,
-        });
-      });
-      this.connectionReconnectWaiters.set(connectionKey, {
-        promise,
-        resolve: resolveWaiter,
-        reject: rejectWaiter,
-      });
-    }
-
-    const callerHasOtherConnections = this.getCallerConnections(client.callerId).length > 0;
-
-    // Grace-period cleanup: wait before firing disconnect callback.
-    // Normal reloads/reconnects will cancel this timer.
-    const existing = this.disconnectTimers.get(connectionKey);
-    if (existing) clearTimeout(existing);
-
-    // Set up a reconnect waiter so any in-flight relay targeting this client
-    // can pause briefly instead of failing fast with "Target not reachable".
-    // The waiter is resolved by handleAuth on reconnect or rejected when the
-    // grace timer expires below.
-    if (!callerHasOtherConnections && !this.reconnectWaiters.has(client.callerId)) {
-      let resolveWaiter!: () => void;
-      let rejectWaiter!: (err: Error) => void;
-      const promise = new Promise<void>((res, rej) => {
-        resolveWaiter = res;
-        rejectWaiter = rej;
-      });
-      // Documented concurrent path: handleClose may reject the waiter before
-      // relayCall/relayEvent actually attach their await, because the client
-      // can fully miss the reconnect window with no in-flight relays. Known
-      // grace/shutdown rejections are expected here; anything else is a bug.
-      void promise.catch((error) => {
-        const code = getErrorCode(error);
-        if (code === "RECONNECT_GRACE_EXPIRED" || code === "SERVER_SHUTTING_DOWN") {
-          return;
-        }
-        log.error("unexpected reconnect waiter rejection", {
-          callerId: client.callerId,
-          cause: error instanceof Error ? error.message : String(error),
-          errorCode: code,
-        });
-      });
-      this.reconnectWaiters.set(client.callerId, {
-        promise,
-        resolve: resolveWaiter,
-        reject: rejectWaiter,
-      });
-    }
-
-    const timer = setTimeout(() => {
-      this.disconnectTimers.delete(connectionKey);
-      // Reject any reconnect waiter so blocked relays fall through to the
-      // real "Target not reachable" path immediately.
-      const waiter = this.reconnectWaiters.get(client.callerId);
-      if (waiter) {
-        this.reconnectWaiters.delete(client.callerId);
-        waiter.reject(
-          createRelayError(
-            "Client did not reconnect within grace window",
-            "RECONNECT_GRACE_EXPIRED"
-          )
-        );
-      }
-      // Only fire if the caller hasn't reconnected
-      const connectionWaiter = this.connectionReconnectWaiters.get(connectionKey);
-      if (connectionWaiter) {
-        this.connectionReconnectWaiters.delete(connectionKey);
-        connectionWaiter.reject(
-          createRelayError(
-            "Client did not reconnect within grace window",
-            "RECONNECT_GRACE_EXPIRED"
-          )
-        );
-      }
-      this.cleanupRoutedOriginsForConnection(client.callerId, client.connectionId);
-      // Only fire if the caller hasn't reconnected
-      if (this.getCallerConnections(client.callerId).length === 0) {
-        this.deps.onClientDisconnect?.(client.callerId, client.callerKind);
-      }
-    }, RpcServer.DISCONNECT_GRACE_MS);
-
-    this.disconnectTimers.set(connectionKey, timer);
+    this.sessions.markDisconnected(client.callerId, client.callerKind);
   }
 
   private cleanupClient(client: WsClientState): void {
     this.connections.removeClient(client);
-  }
-
-  private cleanupRoutedOriginsForConnection(callerId: string, connectionId: string): void {
-    for (const [requestId, origin] of this.routedRequestOrigins) {
-      if (origin.callerId === callerId && origin.connectionId === connectionId) {
-        this.routedRequestOrigins.delete(requestId);
-      }
-    }
   }
 
   // ===========================================================================
@@ -1600,30 +1450,11 @@ export class RpcServer {
     return { ok: true };
   }
 
-  private async awaitReconnectIfPending(targetId: string): Promise<ReconnectOutcome> {
-    const waiter = this.reconnectWaiters.get(targetId);
-    if (!waiter) return { kind: "no-waiter" };
-
-    try {
-      await waiter.promise;
-    } catch (error) {
-      const code = getErrorCode(error);
-      if (code === "SERVER_SHUTTING_DOWN") return { kind: "server-shutdown" };
-      if (code === "RECONNECT_GRACE_EXPIRED") return { kind: "grace-expired" };
-      throw error;
-    }
-
-    const client = this.pickPrimary(targetId);
-    if (client?.ws.readyState === WebSocket.OPEN) {
-      return { kind: "reconnected", client };
-    }
-
-    throw new Error(
-      `Invariant violated: reconnect waiter resolved for ${targetId} but no client found`
-    );
-  }
-
-  async callTarget<T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T> {
+  async callTarget<T = unknown>(
+    targetId: string,
+    method: string,
+    args: unknown[] = []
+  ): Promise<T> {
     return this.relayCall("main", targetId, method, args) as Promise<T>;
   }
 
@@ -1642,40 +1473,11 @@ export class RpcServer {
       if (wsClient?.ws.readyState === WebSocket.OPEN) {
         const bridge = this.connections.getBridge(targetId, wsClient.connectionId);
         if (bridge) {
-          return await bridge.call(targetId, method, ...args);
+          return await bridge.call(targetId, method, args);
         }
       }
 
-      if (targetConnectionId) {
-        const reconnectedClient = await this.resolveWsRelayTarget(targetId, targetConnectionId);
-        const bridge = this.connections.getBridge(targetId, reconnectedClient.connectionId);
-        if (!bridge) {
-          throw new Error(
-            `Target ${targetId}:${targetConnectionId} reconnected but bridge missing`
-          );
-        }
-        return await bridge.call(targetId, method, ...args);
-      }
-
-      const outcome = await this.awaitReconnectIfPending(targetId);
-      switch (outcome.kind) {
-        case "reconnected": {
-          const bridge = this.connections.getBridge(targetId, outcome.client.connectionId);
-          if (!bridge) {
-            throw new Error(`Target ${targetId} reconnected but bridge missing`);
-          }
-          return await bridge.call(targetId, method, ...args);
-        }
-        case "server-shutdown":
-          throw createRelayError("Server shutting down", "SERVER_SHUTTING_DOWN");
-        case "grace-expired":
-          throw createRelayError(
-            `Target ${targetId} did not reconnect within grace window`,
-            "RECONNECT_GRACE_EXPIRED"
-          );
-        case "no-waiter":
-          throw createRelayError(`Target not reachable: ${targetId}`, "TARGET_NOT_REACHABLE");
-      }
+      throw createRelayError(`Target not reachable: ${targetId}`, "TARGET_NOT_REACHABLE");
     }
 
     if (targetId.startsWith("do:")) {
@@ -1694,12 +1496,17 @@ export class RpcServer {
     targetId: string,
     response: RpcResponse
   ): Promise<void> {
-    const client = await this.resolveWsRelayTarget(targetId);
-    this.sendToWs(client.ws, {
-      type: "ws:routed",
-      fromId,
-      message: response,
-    });
+    const client = this.pickPrimary(targetId);
+    if (client?.ws.readyState === WebSocket.OPEN) {
+      this.sendToWs(client.ws, {
+        type: "ws:routed",
+        fromId,
+        message: response,
+      });
+      return;
+    }
+    if (this.sessions.enqueueResponse(targetId, fromId, response)) return;
+    throw createRelayError(`Target not reachable: ${targetId}`, "TARGET_NOT_REACHABLE");
   }
 
   private async relayToDO(
@@ -1793,27 +1600,8 @@ export class RpcServer {
         return;
       }
 
-      const outcome = await this.awaitReconnectIfPending(targetId);
-      switch (outcome.kind) {
-        case "reconnected":
-          for (const wsClient of this.getCallerConnections(targetId)) {
-            this.sendToWs(wsClient.ws, {
-              type: "ws:routed",
-              fromId,
-              message: { type: "event", fromId, event, payload },
-            });
-          }
-          return;
-        case "server-shutdown":
-          throw createRelayError("Server shutting down", "SERVER_SHUTTING_DOWN");
-        case "grace-expired":
-          throw createRelayError(
-            `Target ${targetId} did not reconnect within grace window`,
-            "RECONNECT_GRACE_EXPIRED"
-          );
-        case "no-waiter":
-          throw createRelayError(`Target not reachable: ${targetId}`, "TARGET_NOT_REACHABLE");
-      }
+      this.sessions.enqueue(targetId, fromId, { type: "event", fromId, event, payload });
+      return;
     }
 
     // DO?
@@ -1871,62 +1659,6 @@ export class RpcServer {
     throw createRelayError(`Unknown target kind: ${targetId}`, "UNKNOWN_TARGET_KIND");
   }
 
-  private async resolveWsRelayTarget(
-    targetId: string,
-    connectionId?: string
-  ): Promise<WsClientState> {
-    const wsClient = connectionId
-      ? this.getConnection(targetId, connectionId)
-      : this.pickPrimary(targetId);
-    if (wsClient?.ws.readyState === WebSocket.OPEN) {
-      return wsClient;
-    }
-
-    if (connectionId) {
-      const connectionKey = this.connectionKey(targetId, connectionId);
-      const waiter = this.connectionReconnectWaiters.get(connectionKey);
-      if (!waiter) {
-        throw createRelayError(`Target not reachable: ${targetId}`, "TARGET_NOT_REACHABLE");
-      }
-      try {
-        await waiter.promise;
-      } catch (error) {
-        const code = getErrorCode(error);
-        if (code === "SERVER_SHUTTING_DOWN") {
-          throw createRelayError("Server shutting down", "SERVER_SHUTTING_DOWN");
-        }
-        if (code === "RECONNECT_GRACE_EXPIRED") {
-          throw createRelayError(
-            `Target ${targetId} did not reconnect within grace window`,
-            "RECONNECT_GRACE_EXPIRED"
-          );
-        }
-        throw error;
-      }
-
-      const reconnected = this.getConnection(targetId, connectionId);
-      if (reconnected) return reconnected;
-      throw new Error(
-        `Invariant violated: reconnect waiter resolved for ${targetId}:${connectionId} but no client found`
-      );
-    }
-
-    const outcome = await this.awaitReconnectIfPending(targetId);
-    switch (outcome.kind) {
-      case "reconnected":
-        return outcome.client;
-      case "server-shutdown":
-        throw createRelayError("Server shutting down", "SERVER_SHUTTING_DOWN");
-      case "grace-expired":
-        throw createRelayError(
-          `Target ${targetId} did not reconnect within grace window`,
-          "RECONNECT_GRACE_EXPIRED"
-        );
-      case "no-waiter":
-        throw createRelayError(`Target not reachable: ${targetId}`, "TARGET_NOT_REACHABLE");
-    }
-  }
-
   // ===========================================================================
   // Internal helpers
   // ===========================================================================
@@ -1965,22 +1697,7 @@ export class RpcServer {
     }
     this.pendingToolCalls.clear();
 
-    // Clear disconnect timers
-    for (const timer of this.disconnectTimers.values()) {
-      clearTimeout(timer);
-    }
-    this.disconnectTimers.clear();
-
-    // Reject any reconnect waiters so blocked relays unblock during shutdown.
-    for (const waiter of this.reconnectWaiters.values()) {
-      waiter.reject(createRelayError("Server shutting down", "SERVER_SHUTTING_DOWN"));
-    }
-    this.reconnectWaiters.clear();
-    for (const waiter of this.connectionReconnectWaiters.values()) {
-      waiter.reject(createRelayError("Server shutting down", "SERVER_SHUTTING_DOWN"));
-    }
-    this.connectionReconnectWaiters.clear();
-    this.routedRequestOrigins.clear();
+    this.sessions.clear();
 
     // Close WebSocket server
     if (this.wss) {

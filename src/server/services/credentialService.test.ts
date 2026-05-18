@@ -784,7 +784,6 @@ describe("credentialService", () => {
       eventService: eventService as never,
       tokenManager: {
         getPanelOwner: vi.fn(() => "shell:owner"),
-        getPanelOwnerConnection: vi.fn(() => "owner-conn"),
       } as never,
       approvalQueue: approvingQueue() as never,
     });
@@ -826,9 +825,8 @@ describe("credentialService", () => {
     ]) as Promise<StoredCredentialSummary>;
 
     await vi.waitFor(() =>
-      expect(eventService.emitToConnection).toHaveBeenCalledWith(
+      expect(eventService.emitToCaller).toHaveBeenCalledWith(
         "shell:owner",
-        "owner-conn",
         "external-open:open",
         expect.objectContaining({
           callerId: "worker:test",
@@ -862,7 +860,6 @@ describe("credentialService", () => {
       eventService: eventService as never,
       tokenManager: {
         getPanelOwner: vi.fn(() => "shell:owner"),
-        getPanelOwnerConnection: vi.fn(() => "stale-owner-conn"),
       } as never,
       approvalQueue: approvingQueue() as never,
     });
@@ -903,14 +900,8 @@ describe("credentialService", () => {
       },
     ]) as Promise<StoredCredentialSummary>;
 
-    await vi.waitFor(() =>
-      expect(eventService.emitToConnection).toHaveBeenCalledWith(
-        "shell:owner",
-        "stale-owner-conn",
-        "external-open:open",
-        expect.any(Object)
-      )
-    );
+    await vi.waitFor(() => expect(eventService.emitToCaller).toHaveBeenCalled());
+    expect(eventService.emitToConnection).not.toHaveBeenCalled();
     expect(eventService.emitToCaller).toHaveBeenCalledWith(
       "shell:owner",
       "external-open:open",

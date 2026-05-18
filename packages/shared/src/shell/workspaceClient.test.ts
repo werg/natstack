@@ -40,7 +40,7 @@ describe("WorkspaceClient", () => {
 
       const result = await client.list();
 
-      expect(rpc.call).toHaveBeenCalledWith("main", "workspace.list");
+      expect(rpc.call).toHaveBeenCalledWith("main", "workspace.list", []);
       expect(result).toEqual(entries);
     });
   });
@@ -55,8 +55,7 @@ describe("WorkspaceClient", () => {
       expect(rpc.call).toHaveBeenCalledWith(
         "main",
         "workspace.create",
-        "new-ws",
-        undefined
+        ["new-ws", undefined]
       );
       expect(result).toEqual(entry);
     });
@@ -70,8 +69,7 @@ describe("WorkspaceClient", () => {
       expect(rpc.call).toHaveBeenCalledWith(
         "main",
         "workspace.create",
-        "forked",
-        { forkFrom: "default" }
+        ["forked", { forkFrom: "default" }]
       );
       expect(result).toEqual(entry);
     });
@@ -83,7 +81,7 @@ describe("WorkspaceClient", () => {
 
       await client.delete("old-ws");
 
-      expect(rpc.call).toHaveBeenCalledWith("main", "workspace.delete", "old-ws");
+      expect(rpc.call).toHaveBeenCalledWith("main", "workspace.delete", ["old-ws"]);
     });
   });
 
@@ -93,7 +91,7 @@ describe("WorkspaceClient", () => {
 
       const result = await client.getActive();
 
-      expect(rpc.call).toHaveBeenCalledWith("main", "workspace.getActive");
+      expect(rpc.call).toHaveBeenCalledWith("main", "workspace.getActive", []);
       expect(result).toBe("default");
     });
   });

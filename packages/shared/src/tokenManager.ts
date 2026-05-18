@@ -225,14 +225,10 @@ export class TokenManager {
   setPanelOwner(
     panelId: string,
     ownerCallerId: string,
-    ownerConnectionId?: EphemeralConnectionId | string,
+    _ownerConnectionId?: EphemeralConnectionId | string,
   ): void {
     this.panelOwnerCallerIds.set(panelId, ownerCallerId);
-    if (ownerConnectionId) {
-      this.panelOwnerConnectionIds.set(panelId, ephemeralConnectionId(ownerConnectionId));
-    } else {
-      this.panelOwnerConnectionIds.delete(panelId);
-    }
+    this.panelOwnerConnectionIds.delete(panelId);
     this.emitPanelTokenRecord(panelId);
   }
 
