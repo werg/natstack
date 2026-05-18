@@ -4,6 +4,8 @@ import { TokenManager } from "../../packages/shared/src/tokenManager.js";
 import { RpcServer } from "./rpcServer.js";
 import type { WsClientState } from "./rpcServer.js";
 import { createVerifiedCaller, type ServiceDispatcher } from "@natstack/shared/serviceDispatcher";
+import { PrincipalRegistry } from "@natstack/shared/principalRegistry";
+import { ConnectionGrantService } from "@natstack/shared/connectionGrants";
 
 type MockDispatcher = ServiceDispatcher & {
   dispatch: ReturnType<typeof vi.fn>;
@@ -53,10 +55,10 @@ function testServer(server: RpcServer): TestRpcServer {
 
 function createServer() {
   const tokenManager = new TokenManager();
-  tokenManager.ensureToken("panel-a", "panel");
-  tokenManager.ensureToken("panel-b", "panel");
-  tokenManager.setPanelParent("panel-a", null);
-  tokenManager.setPanelParent("panel-b", null);
+  const principalRegistry = new PrincipalRegistry();
+  principalRegistry.register({ id: "panel-a", kind: "panel" });
+  principalRegistry.register({ id: "panel-b", kind: "panel" });
+  const connectionGrants = new ConnectionGrantService({ registry: principalRegistry });
 
   const dispatcher = {
     dispatch: vi.fn(),
@@ -66,7 +68,10 @@ function createServer() {
 
   return {
     tokenManager,
-    server: new RpcServer({ tokenManager, dispatcher }),
+    principalRegistry,
+    connectionGrants,
+    grantPanel: (panelId: string) => connectionGrants.grant(panelId, "shell:test").token,
+    server: new RpcServer({ tokenManager, dispatcher, principalRegistry, connectionGrants }),
   };
 }
 
@@ -153,25 +158,20 @@ describe("RpcServer relay behavior", () => {
       getPolicy: vi.fn(),
       getMethodPolicy: vi.fn(),
     } as unknown as MockDispatcher;
-    const fsService = {
-      getCallerContext: vi.fn(() => "ctx-1"),
-      registerCallerContext: vi.fn(),
-    };
-    const server = new RpcServer({ tokenManager, dispatcher, fsService });
+    const principalRegistry = new PrincipalRegistry();
+    principalRegistry.register({ id: "panel-a", kind: "panel", context: { contextId: "ctx-1" } });
+    principalRegistry.register({ id: "do-service:workers/example:Store", kind: "do-service" });
+    const server = new RpcServer({ tokenManager, dispatcher, principalRegistry });
 
     await expect(
       testServer(server).relayToDO("panel-a", "panel", "do:workers/example:Store:key", "ping", [])
     ).rejects.toThrow("Cannot relay to DO");
 
-    expect(fsService.registerCallerContext).toHaveBeenCalledWith(
-      "do:workers/example:Store:key",
-      "ctx-1"
-    );
+    expect(principalRegistry.resolveContext("do:workers/example:Store:key")).toBe("ctx-1");
   });
 
   it("keeps distinct connections for the same caller authenticated simultaneously", () => {
-    const { server, tokenManager } = createServer();
-    const token = tokenManager.getToken("panel-a");
+    const { server, grantPanel } = createServer();
     const ws1 = {
       readyState: WebSocket.OPEN,
       send: vi.fn(),
@@ -187,8 +187,8 @@ describe("RpcServer relay behavior", () => {
       off: vi.fn(),
     };
 
-    testServer(server).handleAuth(ws1, token, "conn-1");
-    testServer(server).handleAuth(ws2, token, "conn-2");
+    testServer(server).handleAuth(ws1, grantPanel("panel-a"), "conn-1");
+    testServer(server).handleAuth(ws2, grantPanel("panel-a"), "conn-2");
 
     expect(ws1.close).not.toHaveBeenCalled();
     expect(ws2.close).not.toHaveBeenCalled();
@@ -208,16 +208,15 @@ describe("RpcServer relay behavior", () => {
   });
 
   it("keeps the replacement bridge when the old same-connection socket closes late", () => {
-    const { server, tokenManager } = createServer();
-    const token = tokenManager.getToken("panel-a");
+    const { server, grantPanel } = createServer();
     const ws1 = createTestWs();
     const ws2 = createTestWs();
 
-    testServer(server).handleAuth(ws1, token, "conn-1");
+    testServer(server).handleAuth(ws1, grantPanel("panel-a"), "conn-1");
     const firstBridge = server.getClientBridge("panel-a");
     expect(firstBridge).toBeTruthy();
 
-    testServer(server).handleAuth(ws2, token, "conn-1");
+    testServer(server).handleAuth(ws2, grantPanel("panel-a"), "conn-1");
     const replacementBridge = server.getClientBridge("panel-a");
     expect(replacementBridge).toBeTruthy();
     expect(replacementBridge).not.toBe(firstBridge);
@@ -232,16 +231,15 @@ describe("RpcServer relay behavior", () => {
   });
 
   it("ignores late frames from a replaced same-connection socket", async () => {
-    const { server, tokenManager } = createServer();
-    const token = tokenManager.getToken("panel-a");
+    const { server, grantPanel } = createServer();
     const ws1 = createTestWs();
     const ws2 = createTestWs();
 
     testServer(server).dispatcher.getPolicy.mockReturnValue({ allowed: ["panel"] });
     testServer(server).dispatcher.dispatch.mockResolvedValue("ok");
 
-    testServer(server).handleAuth(ws1, token, "conn-1");
-    testServer(server).handleAuth(ws2, token, "conn-1");
+    testServer(server).handleAuth(ws1, grantPanel("panel-a"), "conn-1");
+    testServer(server).handleAuth(ws2, grantPanel("panel-a"), "conn-1");
 
     ws1.emitMessage({
       type: "ws:rpc",
@@ -258,8 +256,7 @@ describe("RpcServer relay behavior", () => {
   });
 
   it("fans routed events out to every live connection for the target caller", () => {
-    const { server, tokenManager } = createServer();
-    tokenManager.setPanelParent("panel-b", "panel-a");
+    const { server } = createServer();
     const source = createClientWithConnection("panel-a", "source-conn");
     const target1 = createClientWithConnection("panel-b", "conn-1");
     const target2 = createClientWithConnection("panel-b", "conn-2");
@@ -285,8 +282,7 @@ describe("RpcServer relay behavior", () => {
   });
 
   it("steers routed responses back to the origin connection", async () => {
-    const { server, tokenManager } = createServer();
-    tokenManager.setPanelParent("panel-b", "panel-a");
+    const { server } = createServer();
     const origin1 = createClientWithConnection("panel-a", "conn-1");
     const origin2 = createClientWithConnection("panel-a", "conn-2");
     const target = createClientWithConnection("panel-b", "target-conn");
@@ -453,9 +449,8 @@ describe("RpcServer relay behavior", () => {
   });
 
   it("surfaces response relay failures with ws:routed-response-error", async () => {
-    const { server, tokenManager } = createServer();
+    const { server } = createServer();
     const client = createClient();
-    tokenManager.setPanelParent("panel-b", "panel-a");
 
     testServer(server).handleRoute(client, "panel-b", {
       type: "response",

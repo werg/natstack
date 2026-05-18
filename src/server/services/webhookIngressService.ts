@@ -4,7 +4,6 @@ import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
 import type { ServiceRouteDecl } from "../routeRegistry.js";
-import type { CodeIdentityResolver } from "./codeIdentityResolver.js";
 import { doTargetId, type RpcCallerLike } from "@natstack/shared/userlandServiceRpc";
 import { INTERNAL_DO_SOURCE } from "../internalDOs/internalDoLoader.js";
 import {
@@ -193,7 +192,6 @@ export interface WebhookIngressServiceDeps {
   publicBaseUrl?: string;
   store?: WebhookIngressStore;
   rpc?: RpcCallerLike;
-  codeIdentityResolver?: Pick<CodeIdentityResolver, "resolveByCallerId">;
   now?: () => number;
   dispatchToTarget?: (target: WebhookTarget, event: WebhookDeliveryEvent) => Promise<unknown>;
 }

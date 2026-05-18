@@ -11,9 +11,17 @@ describe("GitAuthManager", () => {
   it("keeps protected tree push ownership checks before prompting", () => {
     const auth = new GitAuthManager();
 
-    expect(auth.canAccess("tree/panels/chat/owner", "panel", "tree/panels/chat/other", "push")).toEqual({
+    expect(auth.canAccess("panel:tree/panels/chat/owner", "panel", "tree/panels/chat/other", "push")).toEqual({
       allowed: false,
       reason: expect.stringContaining("cannot push"),
+    });
+  });
+
+  it("allows canonical panel callers to push owned protected tree paths", () => {
+    const auth = new GitAuthManager();
+
+    expect(auth.canAccess("panel:tree/panels/chat", "panel", "tree/panels/chat/child", "push")).toEqual({
+      allowed: true,
     });
   });
 });

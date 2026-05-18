@@ -3,7 +3,7 @@ import { webContents } from "electron";
 import * as http from "http";
 import { URL } from "url";
 import { findServicePort } from "@natstack/port-utils";
-import type { TokenManager } from "@natstack/shared/tokenManager";
+import { CdpGrantService } from "@natstack/shared/cdpGrants";
 import type { ViewManager } from "./viewManager.js";
 import { createDevLogger } from "@natstack/dev-log";
 import { assertPresent } from "../lintHelpers";
@@ -71,14 +71,14 @@ function readCdpAuthToken(ws: WebSocket): Promise<string | null> {
 
 /**
  * CDP WebSocket server for browser panel automation.
- * Uses the global TokenManager for authentication.
+ * Uses short-lived CDP grants for authentication.
  *
  * This server allows panels/workers to connect via WebSocket and send CDP commands
  * to browser panels they own. The server forwards commands to Electron's
  * webContents.debugger API.
  *
  * Security model:
- * - Each panel/worker gets a unique token (shared via global TokenManager)
+ * - getCdpEndpoint issues a short-lived browser-bound grant
  * - Only the parent that created a browser can get its CDP endpoint
  * - Token is validated on WebSocket connection
  * - Multiple connections to the same browser are supported (e.g., reconnects)
@@ -88,8 +88,7 @@ export class CdpServer {
   private wss: WebSocketServer | null = null;
   private actualPort: number | null = null;
 
-  // Global token manager for authentication
-  private tokenManager: TokenManager;
+  private readonly cdpGrants: CdpGrantService;
 
   // browserId -> webContentsId
   private browserRegistry = new Map<string, number>();
@@ -104,8 +103,8 @@ export class CdpServer {
 
   private viewManager: ViewManager | null = null;
 
-  constructor(tokenManager: TokenManager) {
-    this.tokenManager = tokenManager;
+  constructor(cdpGrants: CdpGrantService = new CdpGrantService()) {
+    this.cdpGrants = cdpGrants;
   }
 
   setViewManager(viewManager: ViewManager): void {
@@ -183,8 +182,8 @@ export class CdpServer {
    * Revoke access when a panel is destroyed.
    * Cleans up browser ownership tracking.
    */
-  revokeTokenForPanel(panelId: string): void {
-    // Clean up browser ownership (tokens are managed by GitAuthManager)
+  cleanupPanelAccess(panelId: string): void {
+    // Clean up browser ownership.
     this.panelBrowsers.delete(panelId);
   }
 
@@ -233,10 +232,10 @@ export class CdpServer {
       return null; // Access denied
     }
 
-    const token = this.tokenManager.getToken(requestingPanelId);
+    const { token } = this.cdpGrants.grant(requestingPanelId, browserId);
     return {
       wsEndpoint: `ws://${CDP_BIND_HOST}:${this.getPort()}/${browserId}`,
-      token: token ?? "",
+      token,
     };
   }
 
@@ -286,13 +285,12 @@ export class CdpServer {
     const token = await readCdpAuthToken(ws);
     if (!token) return;
 
-    // Validate token and get panel ID
-    const entry = this.tokenManager.validateToken(token);
-    const panelId = entry?.callerId ?? null;
-    if (!panelId) {
+    const grant = this.cdpGrants.redeem(token, browserId);
+    if (!grant) {
       ws.close(4001, "Invalid token");
       return;
     }
+    const panelId = grant.principalId;
 
     // Validate this panel can access the browser (direct parent or tree ancestor)
     if (!this.canAccessBrowser(panelId, browserId)) {

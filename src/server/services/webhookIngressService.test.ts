@@ -195,11 +195,7 @@ describe("webhookIngressService — RPC surface", () => {
   });
 
   it("scopes panel callers to their own subscriptions and forbids cross-owner revoke", async () => {
-    const { svc } = setup({
-      codeIdentityResolver: {
-        resolveByCallerId: () => ({ repoPath: TARGET.source }) as never,
-      },
-    });
+    const { svc } = setup();
     const a = panelCtx("panel-a");
     const b = panelCtx("panel-b");
 

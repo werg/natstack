@@ -7,6 +7,7 @@
  */
 
 import { randomBytes } from "crypto";
+import { panelPrincipalId } from "./principalIds.js";
 
 /**
  * Validate and sanitize a panel ID segment (e.g., a user-provided name).
@@ -51,7 +52,7 @@ export function generatePanelNonce(): string {
  * optional requested name.
  *
  * ID scheme:
- * - Root panels: `tree/{escapedPath}`
+ * - Root panels: `panel:tree/{escapedPath}`
  * - Named children: `{parentId}/{name}`
  * - Auto-named children: `{parentId}/{escapedPath}/{nonce}`
  *
@@ -71,14 +72,14 @@ export function computePanelId(params: {
   if (isRoot) {
     if (requestedId) {
       const segment = sanitizePanelIdSegment(requestedId);
-      return `tree/${segment}`;
+      return panelPrincipalId(`tree/${segment}`);
     }
     const nonce = generatePanelNonce();
-    return `tree/${escapedPath}/${nonce}`;
+    return panelPrincipalId(`tree/${escapedPath}/${nonce}`);
   }
 
   // Parent prefix: use parent's full ID, or "tree" for root panels
-  const parentPrefix = parent?.id ?? "tree";
+  const parentPrefix = parent?.id ?? panelPrincipalId("tree");
 
   if (requestedId) {
     const segment = sanitizePanelIdSegment(requestedId);

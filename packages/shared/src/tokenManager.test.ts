@@ -1,7 +1,4 @@
-/**
- * Tests for TokenManager.
- */
-
+import { describe, expect, it, beforeEach, vi } from "vitest";
 import { TokenManager } from "./tokenManager.js";
 
 describe("TokenManager", () => {
@@ -11,75 +8,53 @@ describe("TokenManager", () => {
     tm = new TokenManager();
   });
 
-  it("createToken returns a hex string and can be validated", () => {
-    const token = tm.createToken("panel-1", "panel");
+  it("creates and validates non-panel caller tokens", () => {
+    const token = tm.createToken("worker:one", "worker");
     expect(token).toMatch(/^[0-9a-f]{64}$/);
-    const entry = tm.validateToken(token);
-    expect(entry).toEqual({ callerId: "panel-1", callerKind: "panel" });
+    expect(tm.validateToken(token)).toEqual({ callerId: "worker:one", callerKind: "worker" });
   });
 
-  it("createToken throws if duplicate callerId", () => {
-    tm.createToken("panel-1", "panel");
-    expect(() => tm.createToken("panel-1", "panel")).toThrow(
-      'Token already exists for caller "panel-1"'
-    );
+  it("rejects panel bearer tokens", () => {
+    expect(() => tm.createToken("panel:one", "panel")).toThrow(/Panel bearer tokens/);
   });
 
-  it("ensureToken returns existing token for same callerId", () => {
-    const first = tm.ensureToken("panel-1", "panel");
-    const second = tm.ensureToken("panel-1", "panel");
+  it("ensureWorkerBearer returns an existing worker token", () => {
+    const first = tm.ensureWorkerBearer("worker:one");
+    const second = tm.ensureWorkerBearer("worker:one");
     expect(second).toBe(first);
+    expect(tm.validateWorkerBearer(first)).toEqual({ callerId: "worker:one" });
   });
 
-  it("ensureToken creates token if none exists", () => {
-    const token = tm.ensureToken("panel-1", "shell");
-    expect(tm.validateToken(token)).toEqual({ callerId: "panel-1", callerKind: "shell" });
+  it("validateWorkerBearer rejects non-worker tokens", () => {
+    const token = tm.ensureToken("shell:one", "shell");
+    expect(tm.validateWorkerBearer(token)).toBeNull();
   });
 
   it("getToken throws if callerId not found", () => {
     expect(() => tm.getToken("unknown")).toThrow('No token exists for caller "unknown"');
   });
 
-  it("getToken returns existing token", () => {
-    const created = tm.createToken("panel-1", "panel");
-    expect(tm.getToken("panel-1")).toBe(created);
-  });
-
-  it("validateToken returns null for unknown token", () => {
-    expect(tm.validateToken("bad-token")).toBeNull();
-  });
-
-  it("getPanelIdFromToken returns callerId or null", () => {
-    const token = tm.createToken("panel-1", "panel");
-    expect(tm.getPanelIdFromToken(token)).toBe("panel-1");
-    expect(tm.getPanelIdFromToken("bogus")).toBeNull();
-  });
-
   it("revokeToken removes token and notifies listeners", () => {
     const listener = vi.fn();
     tm.onRevoke(listener);
-    const token = tm.createToken("panel-1", "panel");
+    const token = tm.createToken("worker:one", "worker");
 
-    expect(tm.revokeToken("panel-1")).toBe(true);
+    expect(tm.revokeToken("worker:one")).toBe(true);
     expect(tm.validateToken(token)).toBeNull();
-    expect(listener).toHaveBeenCalledWith("panel-1");
-  });
-
-  it("revokeToken returns false for unknown callerId", () => {
-    expect(tm.revokeToken("nope")).toBe(false);
+    expect(listener).toHaveBeenCalledWith("worker:one");
   });
 
   it("clear removes all tokens and notifies for each", () => {
     const listener = vi.fn();
     tm.onRevoke(listener);
-    tm.createToken("a", "panel");
-    tm.createToken("b", "shell");
+    tm.createToken("worker:a", "worker");
+    tm.createToken("shell:b", "shell");
 
     tm.clear();
 
     expect(listener).toHaveBeenCalledTimes(2);
-    expect(listener).toHaveBeenCalledWith("a");
-    expect(listener).toHaveBeenCalledWith("b");
+    expect(listener).toHaveBeenCalledWith("worker:a");
+    expect(listener).toHaveBeenCalledWith("shell:b");
   });
 
   it("setAdminToken / validateAdminToken", () => {
@@ -87,54 +62,5 @@ describe("TokenManager", () => {
     tm.setAdminToken("secret");
     expect(tm.validateAdminToken("secret")).toBe(true);
     expect(tm.validateAdminToken("wrong")).toBe(false);
-  });
-
-  it("tracks panel parent relationships", () => {
-    tm.setPanelParent("root", null);
-    tm.setPanelParent("child", "root");
-    tm.setPanelParent("grandchild", "child");
-
-    expect(tm.getPanelParent("child")).toBe("root");
-    expect(tm.isPanelDescendantOf("grandchild", "root")).toBe(true);
-    expect(tm.isPanelDescendantOf("root", "grandchild")).toBe(false);
-  });
-
-  it("clears panel parent relationships when tokens are revoked", () => {
-    tm.createToken("panel-1", "panel");
-    tm.setPanelParent("panel-1", "parent");
-
-    tm.revokeToken("panel-1");
-
-    expect(tm.getPanelParent("panel-1")).toBeUndefined();
-  });
-
-  it("tracks and clears panel browser handoff owners", () => {
-    tm.createToken("panel-1", "panel");
-    tm.setPanelOwner("panel-1", "shell:owner", "conn-1");
-
-    expect(tm.getPanelOwner("panel-1")).toBe("shell:owner");
-    expect(tm.getPanelOwnerConnection("panel-1")).toBe("conn-1");
-
-    tm.revokeToken("panel-1");
-
-    expect(tm.getPanelOwner("panel-1")).toBeUndefined();
-    expect(tm.getPanelOwnerConnection("panel-1")).toBeUndefined();
-  });
-
-  it("notifies panel token record listeners for panel metadata changes", () => {
-    const listener = vi.fn();
-    tm.onPanelTokenRecordChanged(listener);
-    const token = tm.createToken("panel-1", "panel");
-    tm.setPanelParent("panel-1", "parent");
-    tm.setPanelOwner("panel-1", "shell:owner", "conn-1");
-
-    expect(listener).toHaveBeenLastCalledWith({
-      panelId: "panel-1",
-      token,
-      callerKind: "panel",
-      parentId: "parent",
-      ownerCallerId: "shell:owner",
-      ownerConnectionId: "conn-1",
-    }, "panel-1");
   });
 });

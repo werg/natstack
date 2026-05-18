@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { WebSocket, WebSocketServer } from "ws";
-import { TokenManager } from "@natstack/shared/tokenManager";
 import { CdpBridge } from "./cdpBridge.js";
 
 type BridgeHarness = {
@@ -57,15 +56,12 @@ async function waitForEndpoint(
 }
 
 async function createHarness(): Promise<BridgeHarness> {
-  const tokenManager = new TokenManager();
-  const panelToken = tokenManager.createToken("panel-1", "panel");
   const server = http.createServer();
   const wss = new WebSocketServer({ noServer: true });
 
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = (server.address() as AddressInfo).port;
   const bridge = new CdpBridge({
-    tokenManager,
     adminToken: "admin-token",
     canAccessBrowser: (callerId, browserId) => callerId === "panel-1" && browserId === "browser-1",
     panelOwnsBrowser: (callerId, browserId) => callerId === "panel-1" && browserId === "browser-1",
@@ -73,7 +69,7 @@ async function createHarness(): Promise<BridgeHarness> {
   });
   server.on("upgrade", (req, socket, head) => bridge.handleUpgrade(req, socket, head, wss));
 
-  const harness = { bridge, panelToken, port, server, wss, sockets: [] };
+  const harness = { bridge, panelToken: "", port, server, wss, sockets: [] };
   harnesses.push(harness);
   return harness;
 }
@@ -110,9 +106,9 @@ describe("CdpBridge authentication", () => {
     await connectExtension(harness);
 
     const endpoint = await waitForEndpoint(harness);
-    expect(endpoint).toEqual({
+    expect(endpoint).toMatchObject({
       wsEndpoint: `ws://127.0.0.1:${harness.port}/cdp/browser-1`,
-      token: harness.panelToken,
+      token: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
     expect(endpoint?.wsEndpoint).not.toContain("token=");
 

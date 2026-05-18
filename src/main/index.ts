@@ -34,7 +34,6 @@ import { resolveStartupMode, getRemoteUserDataDir, type StartupMode } from "./st
 import { establishServerSession, type SessionConnection } from "./serverSession.js";
 import { handleExternalOpenPayload, type ExternalOpenPayload } from "./oauthLoopbackHandoff.js";
 import { CdpServer } from "./cdpServer.js";
-import { TokenManager } from "@natstack/shared/tokenManager";
 import { EventService } from "@natstack/shared/eventsService";
 import { isValidEventName, type EventName } from "@natstack/shared/events";
 import { installPinnedTlsForAllPartitions } from "./tlsPinning.js";
@@ -118,7 +117,6 @@ if (startupMode.kind === "local") {
 
 installRemoteTlsPinning(startupMode);
 
-const tokenManager = new TokenManager();
 let cdpServer: CdpServer | null = null;
 let panelRegistry: PanelRegistry | null = null;
 let panelOrchestrator: PanelOrchestrator | null = null;
@@ -1052,7 +1050,7 @@ app.on("ready", async () => {
     }
 
     // CDP server (Electron-local) — must start before panel services
-    cdpServer = new CdpServer(tokenManager);
+    cdpServer = new CdpServer();
     if (viewManager) cdpServer.setViewManager(viewManager);
     const cdpPort = await cdpServer.start();
     log.info(`[CDP] Server started on port ${cdpPort}`);
@@ -1094,7 +1092,6 @@ app.on("ready", async () => {
     // Create PanelOrchestrator
     panelOrchestrator = new PanelOrchestrator({
       registry: panelRegistry,
-      tokenManager,
       eventService,
       serverClient: conn.serverClient,
       shellCore: shellCore.panelManager,

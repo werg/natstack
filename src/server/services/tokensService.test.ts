@@ -4,40 +4,37 @@ import { TokenManager } from "@natstack/shared/tokenManager";
 import { createTokensService } from "./tokensService.js";
 
 function createService(tokenManager = new TokenManager()) {
-  const service = createTokensService({
-    tokenManager,
-    fsService: {
-      registerCallerContext: vi.fn(),
-      unregisterCallerContext: vi.fn(),
-      updateCallerContext: vi.fn(),
-    } as never,
-  });
+  const service = createTokensService({ tokenManager });
   return { service, tokenManager };
 }
 
 describe("tokensService", () => {
-  it("records the authenticated shell websocket as the panel browser handoff owner", async () => {
-    const { service, tokenManager } = createService();
+  it("does not expose panel token lifecycle methods", async () => {
+    const { service } = createService();
 
-    await service.handler(
-      { caller: createVerifiedCaller("shell:abc", "shell"), connectionId: "conn-1" },
-      "ensurePanelToken",
-      ["panel-1", "ctx-1", null, "panels/chat"]
-    );
-
-    expect(tokenManager.getPanelOwner("panel-1")).toBe("shell:abc");
-    expect(tokenManager.getPanelOwnerConnection("panel-1")).toBe("conn-1");
+    await expect(
+      service.handler(
+        { caller: createVerifiedCaller("shell:abc", "shell"), connectionId: "conn-1" },
+        "ensurePanelToken",
+        ["panel:panel-1", "ctx-1", null, "panels/chat"]
+      )
+    ).rejects.toThrow(/Unknown tokens method/);
   });
 
-  it("records the authenticated local admin websocket as the panel browser handoff owner", async () => {
-    const { service, tokenManager } = createService();
+  it("rotates the admin token only after persistence succeeds", async () => {
+    const tokenManager = new TokenManager();
+    tokenManager.setAdminToken("old-token");
+    const persistAdminToken = vi.fn();
+    const service = createTokensService({ tokenManager, persistAdminToken });
 
-    await service.handler(
-      { caller: createVerifiedCaller("ws:local-main", "server") },
-      "ensurePanelToken",
-      ["panel-1", "ctx-1", null, "panels/chat"]
-    );
+    const next = (await service.handler(
+      { caller: createVerifiedCaller("shell:abc", "shell") },
+      "rotateAdmin",
+      []
+    )) as string;
 
-    expect(tokenManager.getPanelOwner("panel-1")).toBe("ws:local-main");
+    expect(persistAdminToken).toHaveBeenCalledWith(next);
+    expect(tokenManager.validateAdminToken(next)).toBe(true);
+    expect(tokenManager.validateAdminToken("old-token")).toBe(false);
   });
 });

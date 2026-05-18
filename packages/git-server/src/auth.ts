@@ -41,7 +41,8 @@ function normalizeRepoPath(repoPath: string): string {
  *
  * Rules:
  * - Fetch (read) is always allowed for authenticated panels
- * - Write (push) to tree/<path> or singleton/<path>: panel ID must match or be a prefix
+ * - Write (push) to tree/<path> or singleton/<path>: canonical panel ID
+ *   panel:<path> must match or be a prefix
  */
 export class GitAuthManager {
   constructor(private getSourceForCaller: (callerId: string) => string | null = () => null) {}
@@ -89,7 +90,8 @@ export class GitAuthManager {
       return { allowed: true };
     }
 
-    if (normalizedPath === callerId || normalizedPath.startsWith(callerId + "/")) {
+    const ownerPanelId = `panel:${normalizedPath}`;
+    if (ownerPanelId === callerId || ownerPanelId.startsWith(callerId + "/")) {
       return { allowed: true };
     }
 

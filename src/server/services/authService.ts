@@ -5,6 +5,7 @@ import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { ServiceRouteDecl } from "../routeRegistry.js";
 import type { ServiceWithRoutes } from "../rpcServiceWithRoutes.js";
 import type { DeviceAuthStore } from "./deviceAuthStore.js";
+import type { ConnectionGrantService } from "@natstack/shared/connectionGrants";
 
 const IssueDeviceBodySchema = z.object({
   label: z.string().min(1).max(128).optional(),
@@ -54,14 +55,19 @@ export function createAuthService(deps: {
   deviceAuthStore: DeviceAuthStore;
   getServerBootId: () => string;
   getWorkspaceId: () => string;
+  connectionGrants?: ConnectionGrantService;
 }): ServiceWithRoutes {
   const definition: ServiceDefinition = {
     name: "auth",
     description: "Gateway authentication bootstrap routes",
     policy: { allowed: ["server", "shell"] },
-    methods: {},
-    handler: async () => {
-      throw new Error("auth has no RPC methods");
+    methods: {
+      grantConnection: { args: z.tuple([z.string()]) },
+    },
+    handler: async (ctx, method, args) => {
+      if (method !== "grantConnection") throw new Error(`Unknown auth method: ${method}`);
+      if (!deps.connectionGrants) throw new Error("Connection grants are not configured");
+      return deps.connectionGrants.grant(args[0] as string, ctx.caller.runtime.id);
     },
   };
 

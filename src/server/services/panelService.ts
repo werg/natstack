@@ -11,8 +11,9 @@ import * as fs from "fs";
 import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { PanelPersistence, PanelSearchIndex } from "@natstack/shared/panelPersistenceTypes";
-import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { FsService } from "@natstack/shared/fsService";
+import type { PrincipalRegistry } from "@natstack/shared/principalRegistry";
+import type { ConnectionGrantService } from "@natstack/shared/connectionGrants";
 import { loadPanelManifest, type LoadedPanelManifest } from "@natstack/shared/panelTypes";
 import { validateStateArgs } from "@natstack/shared/stateArgsValidator";
 import { computePanelId } from "@natstack/shared/panelIdUtils";
@@ -29,8 +30,7 @@ import {
   getPanelSource,
   getPanelStateArgs,
 } from "@natstack/shared/panel/accessors";
-import type { CodeIdentityResolver } from "./codeIdentityResolver.js";
-import { assertPresent, deleteDynamicProperty } from "../../lintHelpers";
+import { deleteDynamicProperty } from "../../lintHelpers";
 
 /**
  * Mutable URL config for panel-facing endpoints.
@@ -66,28 +66,28 @@ export class PanelUrlConfig {
 export interface PanelServiceDeps {
   persistence: PanelPersistence;
   searchIndex: PanelSearchIndex | null;
-  tokenManager: TokenManager;
   fsService: FsService;
+  principalRegistry?: PrincipalRegistry;
+  connectionGrants?: ConnectionGrantService;
   workspacePath: string;
   /** Mutable URL config — reads are late-bound so gateway port updates propagate. */
   urlConfig: PanelUrlConfig;
   /** Optional callback for theme change events (wired to EventService when available). */
   onThemeChanged?: (theme: unknown) => void;
   getEffectiveVersion?: (source: string) => Promise<string | undefined> | string | undefined;
-  codeIdentityResolver?: Pick<CodeIdentityResolver, "upsertCallerIdentity" | "unregisterCaller">;
 }
 
 export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
   const {
     persistence,
     searchIndex,
-    tokenManager,
     fsService,
+    principalRegistry,
+    connectionGrants,
     workspacePath,
     urlConfig,
     onThemeChanged,
     getEffectiveVersion,
-    codeIdentityResolver,
   } = deps;
 
   // Internal helpers
@@ -164,15 +164,21 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
     return ids;
   }
 
-  async function upsertPanelIdentity(panelId: string, source: string): Promise<void> {
+  async function registerPanelIdentity(
+    panelId: string,
+    source: string,
+    contextId: string,
+    parentId: string | null
+  ): Promise<void> {
     const effectiveVersion = source.startsWith("browser:")
       ? ""
       : ((await Promise.resolve(getEffectiveVersion?.(source)).catch(() => undefined)) ?? "");
-    codeIdentityResolver?.upsertCallerIdentity({
-      callerId: panelId,
-      callerKind: "panel",
-      repoPath: source,
-      effectiveVersion,
+    principalRegistry?.register({
+      id: panelId,
+      kind: "panel",
+      source: { repoPath: source, effectiveVersion },
+      context: { contextId },
+      parent: { parentId },
     });
   }
 
@@ -292,12 +298,8 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
 
           const contextId = opts?.contextId ?? generateContextId(panelId);
 
-          // Tokens
-          tokenManager.createToken(panelId, "panel");
-          const gatewayToken = assertPresent(tokenManager.getToken(panelId));
-
-          // FS context registration (skip browser panels)
-          fsService.registerCallerContext(panelId, contextId);
+          await registerPanelIdentity(panelId, relativePath, contextId, opts?.parentId ?? null);
+          const gatewayToken = connectionGrants?.grant(panelId, "server").token ?? "";
 
           // Build env — use pre-computed panel-facing URLs
           const env = buildPanelEnv({
@@ -329,7 +331,6 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
             options: { env },
             autoArchiveWhenEmpty: snapshot.autoArchiveWhenEmpty,
           };
-          await upsertPanelIdentity(panelId, relativePath);
           return result;
         }
 
@@ -341,10 +342,8 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           const closedIds = await collectSubtree(panelId);
 
           for (const id of closedIds) {
-            tokenManager.revokeToken(id);
-            fsService.unregisterCallerContext(id);
+            principalRegistry?.unregister(id);
             fsService.closeHandlesForCaller(id);
-            codeIdentityResolver?.unregisterCaller(id);
             await persistence.archivePanel(id);
           }
 
@@ -377,7 +376,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           });
 
           const contextId = generateContextId(panelId);
-          tokenManager.createToken(panelId, "panel");
+          await registerPanelIdentity(panelId, `browser:${url}`, contextId, parentId);
 
           const snapshot = createSnapshot(`browser:${url}`, contextId, {});
           await persistAndIndex(panelId, opts?.name ?? hostname, parentId, snapshot);
@@ -393,7 +392,6 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
             stateArgs: {},
             options: {},
           };
-          await upsertPanelIdentity(panelId, `browser:${url}`);
           return result;
         }
 
@@ -402,7 +400,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
         // =================================================================
         case "getCredentials": {
           const [panelId] = a as [string];
-          const gatewayToken = tokenManager.ensureToken(panelId, "panel");
+          const gatewayToken = connectionGrants?.grant(panelId, "server").token ?? "";
 
           return {
             gatewayConfig: {
@@ -489,12 +487,19 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
 
           await persistence.updatePanel(panelId, { snapshot: updatedSnapshot });
 
-          // Update FS context mapping if contextId changed
           if (updates.contextId) {
-            fsService.registerCallerContext(panelId, updates.contextId);
+            principalRegistry?.bindContext(panelId, updates.contextId);
           }
           if (updates.source) {
-            await upsertPanelIdentity(panelId, updates.source);
+            const panel = await persistence.getPanel(panelId);
+            if (!panel) throw new Error(`Panel not found: ${panelId}`);
+            const contextId = updates.contextId ?? getCurrentSnapshot(panel).contextId;
+            await registerPanelIdentity(
+              panelId,
+              updates.source,
+              contextId,
+              await persistence.getParentId(panelId)
+            );
           }
           return;
         }
@@ -634,10 +639,8 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           const closedIds = await collectSubtree(panelId);
 
           for (const id of closedIds) {
-            tokenManager.revokeToken(id);
-            fsService.unregisterCallerContext(id);
+            principalRegistry?.unregister(id);
             fsService.closeHandlesForCaller(id);
-            codeIdentityResolver?.unregisterCaller(id);
             await persistence.archivePanel(id);
           }
 
@@ -678,10 +681,8 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
 
           const contextId = generateContextId(aboutPanelId);
 
-          tokenManager.createToken(aboutPanelId, "panel");
-          const gatewayToken = assertPresent(tokenManager.getToken(aboutPanelId));
-
-          fsService.registerCallerContext(aboutPanelId, contextId);
+          await registerPanelIdentity(aboutPanelId, relativePath, contextId, null);
+          const gatewayToken = connectionGrants?.grant(aboutPanelId, "server").token ?? "";
 
           const env = buildPanelEnv({
             panelId: aboutPanelId,

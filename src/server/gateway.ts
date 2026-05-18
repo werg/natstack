@@ -30,7 +30,8 @@ import {
 } from "@natstack/shared/serviceDispatcher";
 import type { RouteRegistry, LookupResult } from "./routeRegistry.js";
 import { assertPresent } from "../lintHelpers";
-import type { CodeIdentityResolver } from "./services/codeIdentityResolver.js";
+import type { PrincipalRegistry } from "@natstack/shared/principalRegistry";
+import { resolveCodeIdentity } from "./services/principalIdentity.js";
 
 const log = createDevLogger("Gateway");
 
@@ -137,8 +138,8 @@ export interface GatewayDeps {
   adminToken?: string;
   /** Caller token manager for route auth modes used by panels/workers/shell/server callers. */
   tokenManager: TokenManager;
-  /** Resolves verified code/build identity for authenticated caller tokens. */
-  codeIdentityResolver?: Pick<CodeIdentityResolver, "resolveByCallerId">;
+  /** Principal metadata for authenticated caller tokens. */
+  principalRegistry?: Pick<PrincipalRegistry, "resolve" | "resolveSource">;
   /** Route registry for `/_r/` dispatch (worker and service routes). Optional
    *  — when absent, `/_r/` paths fall through to 404. */
   routeRegistry?: RouteRegistry;
@@ -196,7 +197,7 @@ export class Gateway {
 
       // /_w/ → workerd reverse proxy
       if (url.startsWith("/_w/")) {
-        if (!validateCallerBearer(req, tokenManager, this.deps.codeIdentityResolver)) {
+        if (!validateCallerBearer(req, tokenManager, this.deps.principalRegistry)) {
           res.writeHead(401, { "Content-Type": "text/plain" });
           res.end("Unauthorized");
           return;
@@ -217,7 +218,7 @@ export class Gateway {
           res.end("Extension route not found");
           return;
         }
-        const entry = validateCallerBearer(req, tokenManager, this.deps.codeIdentityResolver);
+        const entry = validateCallerBearer(req, tokenManager, this.deps.principalRegistry);
         if (!entry) {
           res.writeHead(401, { "Content-Type": "text/plain" });
           res.end("Unauthorized");
@@ -253,7 +254,7 @@ export class Gateway {
         if (req.method === "OPTIONS") {
           return gitHandler.handleHttpRequest(req, res, null);
         }
-        const entry = validateCallerBearer(req, tokenManager, this.deps.codeIdentityResolver);
+        const entry = validateCallerBearer(req, tokenManager, this.deps.principalRegistry);
         if (!entry) {
           res.writeHead(401, { "Content-Type": "text/plain" });
           res.end("Unauthorized");
@@ -323,7 +324,7 @@ export class Gateway {
 
       // /_w/ → workerd WebSocket proxy
       if (url.startsWith("/_w/")) {
-        if (!validateCallerBearer(req, tokenManager, this.deps.codeIdentityResolver)) {
+        if (!validateCallerBearer(req, tokenManager, this.deps.principalRegistry)) {
           socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
           socket.destroy();
           return;
@@ -585,7 +586,7 @@ function extractBearerToken(req: IncomingMessage): string | null {
 function validateCallerBearer(
   req: IncomingMessage,
   tokenManager: TokenManager,
-  codeIdentityResolver?: Pick<CodeIdentityResolver, "resolveByCallerId">
+  principalRegistry?: Pick<PrincipalRegistry, "resolve" | "resolveSource">
 ): VerifiedCaller | null {
   const token = extractBearerToken(req);
   if (!token) return null;
@@ -594,7 +595,9 @@ function validateCallerBearer(
   return createVerifiedCaller(
     entry.callerId,
     entry.callerKind as CallerKind,
-    codeIdentityResolver?.resolveByCallerId(entry.callerId) ?? undefined
+    principalRegistry
+      ? (resolveCodeIdentity(principalRegistry, entry.callerId) ?? undefined)
+      : undefined
   );
 }
 

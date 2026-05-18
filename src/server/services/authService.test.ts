@@ -3,10 +3,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TokenManager } from "@natstack/shared/tokenManager";
+import { createVerifiedCaller } from "@natstack/shared/serviceDispatcher";
 import { Gateway } from "../gateway.js";
 import { RouteRegistry } from "../routeRegistry.js";
 import { createAuthService } from "./authService.js";
 import { DeviceAuthStore } from "./deviceAuthStore.js";
+import { PrincipalRegistry } from "@natstack/shared/principalRegistry";
+import { ConnectionGrantService } from "@natstack/shared/connectionGrants";
 
 type PairingCodeResponse = { code: string };
 type PairingCompleteResponse = {
@@ -142,4 +145,57 @@ describe("auth service device credentials", () => {
       body: (await response.json()) as T,
     };
   }
+});
+
+describe("auth service connection grants", () => {
+  it("rejects grants for unregistered principals", async () => {
+    const registry = new PrincipalRegistry();
+    const connectionGrants = new ConnectionGrantService({ registry });
+    const service = createAuthService({
+      tokenManager: new TokenManager(),
+      deviceAuthStore: new DeviceAuthStore(
+        path.join(fs.mkdtempSync(path.join(os.tmpdir(), "natstack-auth-grant-")), "devices.json")
+      ),
+      getServerBootId: () => "boot_test",
+      getWorkspaceId: () => "workspace_test",
+      connectionGrants,
+    });
+
+    await expect(
+      service.definition.handler(
+        { caller: createVerifiedCaller("shell:test", "shell") },
+        "grantConnection",
+        ["panel:missing"]
+      )
+    ).rejects.toThrow(/unregistered/);
+    connectionGrants.stop();
+  });
+
+  it("issues redeemable grants for registered principals", async () => {
+    const registry = new PrincipalRegistry();
+    registry.register({ id: "panel:one", kind: "panel" });
+    const connectionGrants = new ConnectionGrantService({ registry });
+    const service = createAuthService({
+      tokenManager: new TokenManager(),
+      deviceAuthStore: new DeviceAuthStore(
+        path.join(fs.mkdtempSync(path.join(os.tmpdir(), "natstack-auth-grant-")), "devices.json")
+      ),
+      getServerBootId: () => "boot_test",
+      getWorkspaceId: () => "workspace_test",
+      connectionGrants,
+    });
+
+    const granted = (await service.definition.handler(
+      { caller: createVerifiedCaller("shell:test", "shell") },
+      "grantConnection",
+      ["panel:one"]
+    )) as { token: string; expiresAt: number };
+
+    expect(granted.token).toMatch(/^[0-9a-f]{64}$/);
+    expect(connectionGrants.redeem(granted.token)).toEqual({
+      principalId: "panel:one",
+      issuedBy: "shell:test",
+    });
+    connectionGrants.stop();
+  });
 });

@@ -8,23 +8,17 @@ import type {
   CallerKind,
 } from "../../packages/shared/src/serviceDispatcher.js";
 import { TokenManager } from "../../packages/shared/src/tokenManager.js";
+import { PrincipalRegistry } from "../../packages/shared/src/principalRegistry.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function createTestSetup(opts?: {
-  codeIdentityResolver?: ConstructorParameters<typeof RpcServer>[0]["codeIdentityResolver"];
-}) {
+function createTestSetup(opts?: { principalRegistry?: PrincipalRegistry }) {
   const tokenManager = new TokenManager();
   const adminToken = "test-admin-token";
   tokenManager.setAdminToken(adminToken);
   const workerToken = tokenManager.ensureToken("do:test:Worker:obj1", "worker");
-  const panelToken = tokenManager.ensureToken("panel-abc", "panel");
-  const parentPanelToken = tokenManager.ensureToken("panel-parent", "panel");
-  tokenManager.setPanelParent("panel-parent", null);
-  const childPanelToken = tokenManager.ensureToken("panel-child", "panel");
-  tokenManager.setPanelParent("panel-child", "panel-parent");
-  const unrelatedPanelToken = tokenManager.ensureToken("panel-unrelated", "panel");
-  tokenManager.setPanelParent("panel-unrelated", null);
+  const shellToken = tokenManager.ensureToken("shell:test", "shell");
+  const principalRegistry = opts?.principalRegistry ?? new PrincipalRegistry();
 
   const dispatchResults = new Map<string, unknown>();
   const dispatched: Array<{
@@ -59,7 +53,7 @@ function createTestSetup(opts?: {
   const server = new RpcServer({
     tokenManager,
     dispatcher,
-    ...(opts?.codeIdentityResolver ? { codeIdentityResolver: opts.codeIdentityResolver } : {}),
+    principalRegistry,
   });
 
   return {
@@ -67,10 +61,8 @@ function createTestSetup(opts?: {
     tokenManager,
     adminToken,
     workerToken,
-    panelToken,
-    parentPanelToken,
-    childPanelToken,
-    unrelatedPanelToken,
+    shellToken,
+    principalRegistry,
     dispatcher,
     dispatched,
     dispatchResults,
@@ -197,19 +189,13 @@ describe("RpcServer HTTP POST /rpc", () => {
       await gateway.stop();
       await setup.server.stop();
 
-      const codeIdentityResolver = {
-        resolveByCallerId: vi.fn((callerId: string) =>
-          callerId === "do:workers/agent-worker:AiChatWorker:agent-1"
-            ? {
-                callerId: "do-service:workers/agent-worker:AiChatWorker",
-                callerKind: "worker" as const,
-                repoPath: "workers/agent-worker",
-                effectiveVersion: "hash-1",
-              }
-            : null
-        ),
-      };
-      setup = createTestSetup({ codeIdentityResolver });
+      const principalRegistry = new PrincipalRegistry();
+      principalRegistry.register({
+        id: "do-service:workers/agent-worker:AiChatWorker",
+        kind: "do-service",
+        source: { repoPath: "workers/agent-worker", effectiveVersion: "hash-1" },
+      });
+      setup = createTestSetup({ principalRegistry });
       setup.server.initHandlers();
       gateway = new Gateway({
         tokenManager: setup.tokenManager,
@@ -243,7 +229,7 @@ describe("RpcServer HTTP POST /rpc", () => {
           kind: "worker",
         },
         code: {
-          callerId: "do-service:workers/agent-worker:AiChatWorker",
+          callerId: "do:workers/agent-worker:AiChatWorker:agent-1",
           callerKind: "worker",
           repoPath: "workers/agent-worker",
           effectiveVersion: "hash-1",
@@ -420,8 +406,8 @@ describe("RpcServer HTTP POST /rpc", () => {
   // ── Policy enforcement ──────────────────────────────────────────────────────
 
   describe("policy enforcement", () => {
-    it("rejects panel calling harness service", async () => {
-      const { body } = await postRpc(port, setup.panelToken, {
+    it("rejects shell calling harness service", async () => {
+      const { body } = await postRpc(port, setup.shellToken, {
         method: "harness.spawn",
         args: [{}],
       });
@@ -488,8 +474,8 @@ describe("RpcServer HTTP POST /rpc", () => {
       expect(setup.dispatched).toHaveLength(1);
     });
 
-    it("allows panel relay to an unrelated panel", async () => {
-      const { body } = await postRpc(port, setup.childPanelToken, {
+    it("allows authenticated HTTP callers to relay to an unrelated panel target", async () => {
+      const { body } = await postRpc(port, setup.workerToken, {
         type: "call",
         targetId: "panel-unrelated",
         method: "foo.bar",
@@ -500,8 +486,8 @@ describe("RpcServer HTTP POST /rpc", () => {
       expect(body["error"]).not.toContain("cannot relay to unrelated panel");
     });
 
-    it("allows panel relay to an ancestor panel", async () => {
-      const { body } = await postRpc(port, setup.childPanelToken, {
+    it("allows authenticated HTTP callers to relay to a panel target", async () => {
+      const { body } = await postRpc(port, setup.workerToken, {
         type: "call",
         targetId: "panel-parent",
         method: "foo.bar",
@@ -512,10 +498,10 @@ describe("RpcServer HTTP POST /rpc", () => {
       expect(body["error"]).not.toContain("cannot relay to unrelated panel");
     });
 
-    it("allows panel relay to itself", async () => {
-      const { body } = await postRpc(port, setup.parentPanelToken, {
+    it("allows authenticated HTTP callers to relay to a shell target", async () => {
+      const { body } = await postRpc(port, setup.workerToken, {
         type: "call",
-        targetId: "panel-parent",
+        targetId: "shell:test",
         method: "foo.bar",
         args: [],
       });
@@ -589,6 +575,98 @@ describe("RpcServer HTTP POST /rpc", () => {
         }),
       });
       expect(res.status).toBe(503);
+    });
+
+    it("uses a verified concrete DO caller for streaming proxy fetch", async () => {
+      const tokenManager = new TokenManager();
+      const serviceToken = tokenManager.ensureToken(
+        "do-service:workers/agent-worker:AiChatWorker",
+        "worker"
+      );
+      const principalRegistry = new PrincipalRegistry();
+      principalRegistry.register({
+        id: "do-service:workers/agent-worker:AiChatWorker",
+        kind: "do-service",
+        source: { repoPath: "workers/agent-worker", effectiveVersion: "hash-1" },
+      });
+      const stubEgress = {
+        forwardProxyFetchStream: vi.fn(
+          async (
+            _params: { caller: unknown; url: string; method: string },
+            sink: (frame: {
+              kind: string;
+              status?: number;
+              bytesIn?: number;
+            }) => Promise<void> | void
+          ) => {
+            await sink({ kind: "head", status: 200 });
+            await sink({ kind: "end", bytesIn: 0 });
+            return { status: 200, bytesIn: 0 };
+          }
+        ),
+      };
+      const dispatcher = {
+        dispatch: vi.fn(),
+        getPolicy: vi.fn((service: string) => {
+          if (service === "credentials") {
+            return { allowed: ["shell", "panel", "worker"] as CallerKind[] };
+          }
+          return undefined;
+        }),
+        getMethodPolicy: vi.fn(() => undefined),
+        initialized: true,
+      } as unknown as ServiceDispatcher;
+      const server = new RpcServer({
+        tokenManager,
+        dispatcher,
+        egressProxy: stubEgress,
+        principalRegistry,
+      });
+      server.initHandlers();
+      const gw = new Gateway({
+        tokenManager,
+        externalHost: "localhost",
+        getRpcHandler: () => server,
+      });
+      const p = await gw.start(0);
+      try {
+        const res = await fetch(`http://127.0.0.1:${p}/rpc/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${serviceToken}`,
+            "X-Natstack-Runtime-Id": "do:workers/agent-worker:AiChatWorker:agent-1",
+          },
+          body: JSON.stringify({
+            targetId: "main",
+            method: "credentials.proxyFetch",
+            args: [{ url: "https://example.com/", method: "GET" }],
+          }),
+        });
+        expect(res.status).toBe(200);
+        await res.arrayBuffer();
+        expect(stubEgress.forwardProxyFetchStream).toHaveBeenCalledWith(
+          expect.objectContaining({
+            caller: {
+              runtime: {
+                id: "do:workers/agent-worker:AiChatWorker:agent-1",
+                kind: "worker",
+              },
+              code: {
+                callerId: "do:workers/agent-worker:AiChatWorker:agent-1",
+                callerKind: "worker",
+                repoPath: "workers/agent-worker",
+                effectiveVersion: "hash-1",
+              },
+            },
+          }),
+          expect.any(Function),
+          expect.any(AbortSignal)
+        );
+      } finally {
+        await gw.stop();
+        await server.stop();
+      }
     });
 
     it("rejects methods other than credentials.proxyFetch", async () => {

@@ -31,7 +31,9 @@ import {
 import { checkServiceAccess } from "@natstack/shared/servicePolicy";
 import type { TokenManager } from "@natstack/shared/tokenManager";
 import { WsEventSession, type EventService } from "@natstack/shared/eventsService";
-import type { CodeIdentityResolver } from "./services/codeIdentityResolver.js";
+import type { ConnectionGrantService } from "@natstack/shared/connectionGrants";
+import type { PrincipalRegistry } from "@natstack/shared/principalRegistry";
+import { resolveCodeIdentity } from "./services/principalIdentity.js";
 
 const log = createDevLogger("RpcServer");
 const RPC_RUNTIME_ID_HEADER = "x-natstack-runtime-id";
@@ -60,6 +62,7 @@ function parseDOTarget(targetId: string): { source: string; className: string; o
 export interface WsClientState extends WsClientInfo {
   ws: WebSocket;
   authenticatedAt: number;
+  authorizedBy?: string;
 }
 
 interface PendingToolCall {
@@ -332,18 +335,18 @@ export class RpcServer {
         import("./services/egressProxy.js").EgressProxy,
         "forwardProxyFetchStream"
       >;
-      fsService?: Pick<
-        import("@natstack/shared/fsService").FsService,
-        "getCallerContext" | "registerCallerContext"
-      >;
-      codeIdentityResolver?: Pick<CodeIdentityResolver, "resolveByCallerId">;
+      fsService?: Pick<import("@natstack/shared/fsService").FsService, "closeHandlesForCaller">;
+      principalRegistry?: PrincipalRegistry;
+      connectionGrants?: ConnectionGrantService;
     }
   ) {
     this.dispatcher = deps.dispatcher;
   }
 
   private verifiedCallerFor(callerId: string, callerKind: CallerKind): VerifiedCaller {
-    const code = this.deps.codeIdentityResolver?.resolveByCallerId(callerId) ?? null;
+    const code = this.deps.principalRegistry
+      ? resolveCodeIdentity(this.deps.principalRegistry, callerId)
+      : null;
     return createVerifiedCaller(callerId, callerKind, code);
   }
 
@@ -480,7 +483,10 @@ export class RpcServer {
       return;
     }
 
-    const entry = this.deps.tokenManager.validateToken(token);
+    const grant = this.deps.connectionGrants?.redeem(token);
+    const entry = grant
+      ? { callerId: grant.principalId, callerKind: this.kindForPrincipal(grant.principalId) }
+      : this.deps.tokenManager.validateToken(token);
     if (!entry) {
       const msg: WsServerMessage = {
         type: "ws:auth-result",
@@ -526,6 +532,7 @@ export class RpcServer {
       connectionId,
       authenticated: true,
       authenticatedAt: Date.now(),
+      authorizedBy: grant?.issuedBy,
     };
 
     this.connections.addClient(client);
@@ -577,6 +584,23 @@ export class RpcServer {
     // Set up message handling
     ws.on("message", (data) => this.handleMessage(client, data));
     ws.on("close", (code, reason) => this.handleClose(client, code, reason.toString()));
+  }
+
+  getConnectionForPrincipal(principalId: string): WsClientState | null {
+    return this.pickPrimary(principalId) ?? null;
+  }
+
+  getAuthorizingShell(principalId: string): WsClientState | null {
+    const panelConnection = this.getConnectionForPrincipal(principalId);
+    const authorizingPrincipal = panelConnection?.authorizedBy;
+    if (!authorizingPrincipal) return null;
+    return this.getConnectionForPrincipal(authorizingPrincipal);
+  }
+
+  private kindForPrincipal(principalId: string): CallerKind {
+    const kind = this.deps.principalRegistry?.resolve(principalId)?.kind;
+    if (kind === "panel" || kind === "worker" || kind === "shell" || kind === "server") return kind;
+    return "worker";
   }
 
   private handleMessage(client: WsClientState, data: Buffer | ArrayBuffer | Buffer[]): void {
@@ -1193,8 +1217,8 @@ export class RpcServer {
       res.end(JSON.stringify({ error: "Invalid token" }));
       return;
     }
-    let callerId: string;
     const callerKind = entry.callerKind;
+    let callerId: string;
     try {
       callerId = resolveHttpRuntimeCaller(
         entry.callerId,
@@ -1208,12 +1232,7 @@ export class RpcServer {
     }
 
     try {
-      const runtimeCallerId = resolveHttpRuntimeCaller(
-        callerId,
-        callerKind,
-        req.headers[RPC_RUNTIME_ID_HEADER]
-      );
-      const result = await this.handleHttpRpc(runtimeCallerId, callerKind, body);
+      const result = await this.handleHttpRpc(callerId, callerKind, body);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ result }));
     } catch (err) {
@@ -1384,8 +1403,19 @@ export class RpcServer {
       res.end(JSON.stringify({ error: "Invalid token" }));
       return;
     }
-    const callerId = entry.callerId;
     const callerKind = entry.callerKind;
+    let callerId: string;
+    try {
+      callerId = resolveHttpRuntimeCaller(
+        entry.callerId,
+        callerKind,
+        req.headers[RPC_RUNTIME_ID_HEADER]
+      );
+    } catch (err) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+      return;
+    }
 
     // Read request body (capped).
     const chunks: Buffer[] = [];
@@ -1730,9 +1760,12 @@ export class RpcServer {
     args: unknown[]
   ): Promise<unknown> {
     const ref = parseDOTarget(targetId);
-    const callerContext = this.deps.fsService?.getCallerContext(callerId);
+    const callerContext = this.deps.principalRegistry?.resolveContext(callerId);
     if (callerContext) {
-      this.deps.fsService?.registerCallerContext(targetId, callerContext);
+      const servicePrincipalId = this.deps.principalRegistry?.resolveAlias(targetId) ?? targetId;
+      if (this.deps.principalRegistry?.resolve(servicePrincipalId)) {
+        this.deps.principalRegistry.bindContext(servicePrincipalId, callerContext);
+      }
     }
 
     const { postToDurableObject } = await import("./workerdRpcRelay.js");

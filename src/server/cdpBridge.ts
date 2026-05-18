@@ -19,8 +19,8 @@
 import { WebSocket, type WebSocketServer } from "ws";
 import type { IncomingMessage } from "http";
 import type { Duplex } from "stream";
-import type { TokenManager } from "@natstack/shared/tokenManager";
 import { constantTimeStringEqual } from "@natstack/shared/tokenManager";
+import { CdpGrantService } from "@natstack/shared/cdpGrants";
 import { createDevLogger } from "@natstack/dev-log";
 import { assertPresent } from "../lintHelpers";
 
@@ -29,8 +29,8 @@ const log = createDevLogger("CdpBridge");
 const NAV_COMMAND_TIMEOUT_MS = 30_000;
 
 interface CdpBridgeOptions {
-  tokenManager: TokenManager;
   adminToken: string;
+  cdpGrants?: CdpGrantService;
   canAccessBrowser: (requestingPanelId: string, browserId: string) => boolean;
   panelOwnsBrowser: (requestingPanelId: string, browserId: string) => boolean;
   /** Check if a browserId corresponds to a known panel in the registry. */
@@ -69,8 +69,8 @@ interface ExtensionBridgeMessage {
 }
 
 export class CdpBridge {
-  private tokenManager: TokenManager;
   private adminToken: string;
+  private cdpGrants: CdpGrantService;
   private canAccessBrowser: (requestingPanelId: string, browserId: string) => boolean;
   private panelOwnsBrowser: (requestingPanelId: string, browserId: string) => boolean;
   private isPanelKnown: (browserId: string) => boolean;
@@ -101,8 +101,8 @@ export class CdpBridge {
   private nextRequestId = 1;
 
   constructor(options: CdpBridgeOptions) {
-    this.tokenManager = options.tokenManager;
     this.adminToken = options.adminToken;
+    this.cdpGrants = options.cdpGrants ?? new CdpGrantService();
     this.canAccessBrowser = options.canAccessBrowser;
     this.panelOwnsBrowser = options.panelOwnsBrowser;
     this.isPanelKnown = options.isPanelKnown ?? (() => true);
@@ -190,9 +190,9 @@ export class CdpBridge {
 
       wss.handleUpgrade(req, socket, head, (ws) => {
         void this.authenticateConnection(ws, (token) => {
-          const entry = this.tokenManager.validateToken(token);
-          if (!entry) return false;
-          return this.canAccessBrowser(entry.callerId, browserId);
+          const grant = this.cdpGrants.redeem(token, browserId);
+          if (!grant) return false;
+          return this.canAccessBrowser(grant.principalId, browserId);
         }).then((ok) => {
           if (!ok) return;
           this.handleClientConnection(ws, browserId);
@@ -218,10 +218,10 @@ export class CdpBridge {
       return null;
     }
 
-    const token = this.tokenManager.getToken(requestingPanelId);
+    const { token } = this.cdpGrants.grant(requestingPanelId, browserId);
     return {
       wsEndpoint: `ws://127.0.0.1:${this.port}/cdp/${browserId}`,
-      token: token ?? "",
+      token,
     };
   }
 

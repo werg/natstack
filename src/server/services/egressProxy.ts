@@ -26,7 +26,6 @@ import {
   renderCredentialBasicAuthValue,
   renderCredentialHeaderValue,
 } from "../../../packages/shared/src/credentials/urlAudience.js";
-import type { CodeIdentityResolver, ResolvedCodeIdentity } from "./codeIdentityResolver.js";
 import type { ApprovalQueue, GrantedDecision } from "./approvalQueue.js";
 import {
   CredentialSessionGrantStore,
@@ -38,6 +37,7 @@ import type { VerifiedCaller } from "@natstack/shared/serviceDispatcher";
 import type { CapabilityGrantStore } from "./capabilityGrantStore.js";
 import { requestCapabilityPermission } from "./capabilityPermission.js";
 import { connect as netConnect } from "node:net";
+import type { ResolvedCodeIdentity } from "./principalIdentity.js";
 
 const HOP_BY_HOP_REQUEST_HEADERS = new Set([
   "connection",
@@ -70,7 +70,6 @@ export interface CredentialStore {
 export interface EgressProxyDeps {
   credentialStore: CredentialStore;
   auditLog: Pick<AuditLog, "append">;
-  codeIdentityResolver: Pick<CodeIdentityResolver, "resolveByCallerId">;
   approvalQueue?: ApprovalQueue;
   grantStore?: CapabilityGrantStore;
   sessionGrantStore?: CredentialSessionGrantStore;

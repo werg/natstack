@@ -71,42 +71,42 @@ describe("generatePanelNonce", () => {
 });
 
 describe("computePanelId", () => {
-  it("root panels get tree/{escapedPath}/{nonce}", () => {
+  it("root panels get panel:tree/{escapedPath}/{nonce}", () => {
     const id = computePanelId({ relativePath: "src/index.ts", isRoot: true });
-    expect(id).toMatch(/^tree\/src~index\.ts\/[a-z0-9]+-deadbeef$/);
+    expect(id).toMatch(/^panel:tree\/src~index\.ts\/[a-z0-9]+-deadbeef$/);
   });
 
   it("named children get {parentId}/{name}", () => {
     const id = computePanelId({
       relativePath: "child.ts",
-      parent: { id: "tree/parent" },
+      parent: { id: "panel:tree/parent" },
       requestedId: "my-child",
     });
-    expect(id).toBe("tree/parent/my-child");
+    expect(id).toBe("panel:tree/parent/my-child");
   });
 
   it("auto children get {parentId}/{escapedPath}/{nonce}", () => {
     const id = computePanelId({
       relativePath: "sub/file.ts",
-      parent: { id: "tree/parent" },
+      parent: { id: "panel:tree/parent" },
     });
     // nonce is mocked: timestamp-deadbeef
-    expect(id).toMatch(/^tree\/parent\/sub~file\.ts\/[a-z0-9]+-deadbeef$/);
+    expect(id).toMatch(/^panel:tree\/parent\/sub~file\.ts\/[a-z0-9]+-deadbeef$/);
   });
 
-  it("uses 'tree' as prefix when parent is null", () => {
+  it("uses 'panel:tree' as prefix when parent is null", () => {
     const id = computePanelId({
       relativePath: "file.ts",
       parent: null,
     });
-    expect(id).toMatch(/^tree\/file\.ts\/[a-z0-9]+-deadbeef$/);
+    expect(id).toMatch(/^panel:tree\/file\.ts\/[a-z0-9]+-deadbeef$/);
   });
 
-  it("named child with no parent defaults parentPrefix to 'tree'", () => {
+  it("named child with no parent defaults parentPrefix to 'panel:tree'", () => {
     const id = computePanelId({
       relativePath: "file.ts",
       requestedId: "named",
     });
-    expect(id).toBe("tree/named");
+    expect(id).toBe("panel:tree/named");
   });
 });

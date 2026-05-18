@@ -11,7 +11,6 @@ import * as http from "node:http";
 import { z } from "zod";
 import { createDevLogger } from "@natstack/dev-log";
 import type { EventName, EventPayloads, EventService } from "@natstack/shared/eventsService";
-import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { ServiceRouteDecl } from "../routeRegistry.js";
 import { buildPublicUrl, isPublicUrlVerified } from "../publicUrl.js";
 import type { AuditLog } from "../../../packages/shared/src/credentials/audit.js";
@@ -804,7 +803,12 @@ interface CredentialServiceDeps {
   clientConfigStore?: ClientConfigStore;
   auditLog?: AuditLog;
   eventService?: Pick<EventService, "emit" | "emitToCaller" | "emitToConnection">;
-  tokenManager?: Pick<TokenManager, "getPanelOwner" | "getPanelOwnerConnection">;
+  connectionLookup?: {
+    getAuthorizingShell(principalId: string): {
+      caller: { runtime: { id: string; kind: string } };
+      connectionId: string;
+    } | null;
+  };
   egressProxy?: Pick<EgressProxy, "forwardProxyFetch" | "forwardGitHttp">;
   approvalQueue?: ApprovalQueue;
   sessionGrantStore?: CredentialSessionGrantStore;
@@ -883,7 +887,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   const clientConfigStore = deps.clientConfigStore ?? new ClientConfigStore();
   const auditLog = deps.auditLog;
   const eventService = deps.eventService;
-  const tokenManager = deps.tokenManager;
+  const connectionLookup = deps.connectionLookup;
   const egressProxy = deps.egressProxy;
   const approvalQueue = deps.approvalQueue;
   const sessionGrantStore = deps.sessionGrantStore ?? new CredentialSessionGrantStore();
@@ -916,13 +920,20 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       };
     }
     if (targetCallerKind === "panel") {
-      const ownerCallerId =
-        tokenManager?.getPanelOwner(targetCallerId) ?? (!tokenManager ? targetCallerId : undefined);
-      if (!ownerCallerId) return null;
+      const shellConnection = connectionLookup?.getAuthorizingShell(targetCallerId);
+      if (!shellConnection) {
+        const ownerCallerId = !connectionLookup ? targetCallerId : undefined;
+        if (!ownerCallerId) return null;
+        return {
+          deliveryCallerId: ownerCallerId,
+          deliveryCallerKind: "shell",
+          parentPanelId: targetCallerId,
+        };
+      }
       return {
-        deliveryCallerId: ownerCallerId,
+        deliveryCallerId: shellConnection.caller.runtime.id,
         deliveryCallerKind: "shell",
-        deliveryConnectionId: tokenManager?.getPanelOwnerConnection?.(targetCallerId),
+        deliveryConnectionId: shellConnection.connectionId,
         parentPanelId: targetCallerId,
       };
     }

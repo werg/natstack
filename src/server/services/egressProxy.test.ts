@@ -96,12 +96,6 @@ function createProxy(
       new Map([[credential.id ?? credential.connectionId, credential]])
     ),
     auditLog: auditLog as never,
-    codeIdentityResolver: {
-      resolveByCallerId: (callerId: string) =>
-        callerId === "worker:test"
-          ? { callerId, callerKind: "worker", repoPath: "/repo", effectiveVersion: "hash-1" }
-          : null,
-    },
     ...extraDeps,
   });
 }
@@ -800,14 +794,6 @@ describe("EgressProxy", () => {
       credentialStore: store,
       auditLog: auditLog as never,
       credentialLifecycle: credentialLifecycle as never,
-      codeIdentityResolver: {
-        resolveByCallerId: () => ({
-          callerId: "worker:test",
-          callerKind: "worker",
-          repoPath: "/repo",
-          effectiveVersion: "hash-1",
-        }),
-      },
     });
     vi.stubGlobal(
       "fetch",
@@ -842,14 +828,6 @@ describe("EgressProxy", () => {
           throw new CredentialLifecycleError("client_not_authorized");
         }),
       } as never,
-      codeIdentityResolver: {
-        resolveByCallerId: () => ({
-          callerId: "worker:test",
-          callerKind: "worker",
-          repoPath: "/repo",
-          effectiveVersion: "hash-1",
-        }),
-      },
     });
     vi.stubGlobal("fetch", vi.fn());
 
@@ -949,14 +927,6 @@ describe("EgressProxy", () => {
       credentialStore: new MemoryCredentialStore(new Map([[credential.id!, credential]])),
       auditLog: new MemoryAuditLog() as never,
       approvalQueue: approvalQueue as never,
-      codeIdentityResolver: {
-        resolveByCallerId: () => ({
-          callerId: "worker:test",
-          callerKind: "worker",
-          repoPath: "/repo",
-          effectiveVersion: "hash-1",
-        }),
-      },
     });
     vi.stubGlobal(
       "fetch",
@@ -1047,19 +1017,6 @@ describe("EgressProxy", () => {
       auditLog: new MemoryAuditLog() as never,
       approvalQueue: approvalQueue as never,
       sessionGrantStore: new CredentialSessionGrantStore(),
-      codeIdentityResolver: {
-        resolveByCallerId: (callerId: string) => {
-          if (callerId === "worker:first" || callerId === "do:worker:first") {
-            return {
-              callerId,
-              callerKind: "worker",
-              repoPath: "/repo",
-              effectiveVersion: "hash-1",
-            };
-          }
-          return null;
-        },
-      },
     });
     vi.stubGlobal(
       "fetch",
@@ -1097,19 +1054,6 @@ describe("EgressProxy", () => {
         credentialStore: store,
         auditLog: new MemoryAuditLog() as never,
         approvalQueue: approvalQueue as never,
-        codeIdentityResolver: {
-          resolveByCallerId: (callerId: string) => {
-            if (callerId === "worker:first" || callerId === "do:worker:first") {
-              return {
-                callerId,
-                callerKind: "worker",
-                repoPath: "/repo",
-                effectiveVersion: "hash-1",
-              };
-            }
-            return null;
-          },
-        },
       });
       vi.stubGlobal(
         "fetch",

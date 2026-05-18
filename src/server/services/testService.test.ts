@@ -17,10 +17,10 @@ function createService() {
 
 const serverCtx: ServiceContext = { caller: createVerifiedCaller("server", "server") };
 const panelCtx: ServiceContext = {
-  caller: createVerifiedCaller("tree/panels~my-app/abc123", "panel"),
+  caller: createVerifiedCaller("panel:tree/panels~my-app/abc123", "panel"),
 };
 const workerCtx: ServiceContext = {
-  caller: createVerifiedCaller("tree/workers~alpha/xyz", "worker"),
+  caller: createVerifiedCaller("worker:workers/alpha", "worker"),
 };
 
 describe("testService policy", () => {

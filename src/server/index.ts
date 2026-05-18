@@ -524,33 +524,23 @@ async function main() {
   // ===========================================================================
 
   const tokenManager = new TokenManager();
+  const { PrincipalRegistry } = await import("@natstack/shared/principalRegistry");
+  const { ConnectionGrantService } = await import("@natstack/shared/connectionGrants");
+  const { resolveCodeIdentity } = await import("./services/principalIdentity.js");
+  const principalRegistry = new PrincipalRegistry();
+  principalRegistry.register({ id: "server", kind: "server" });
+  principalRegistry.register({ id: "electron-main", kind: "shell" });
+  const connectionGrants = new ConnectionGrantService({ registry: principalRegistry });
   const serverBootId = `boot_${randomBytes(18).toString("base64url")}`;
   const { DeviceAuthStore } = await import("./services/deviceAuthStore.js");
   const deviceAuthStore = new DeviceAuthStore(path.join(statePath, "auth", "devices.json"));
   const startupPairingCode = !ipcChannel ? deviceAuthStore.createPairingCode() : null;
-
-  try {
-    const { recoverPersistedPanelTokens, installPanelTokenPersistence } =
-      await import("./persistedPanelTokens.js");
-    const summary = recoverPersistedPanelTokens(tokenManager, statePath);
-    installPanelTokenPersistence(tokenManager, statePath);
-    if (summary.recovered > 0 || summary.errors > 0) {
-      console.log(
-        `[Server] Recovered ${summary.recovered} persisted panel token(s)` +
-          (summary.errors > 0 ? ` (${summary.errors} unreadable)` : "")
-      );
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[Server] Panel token recovery unavailable: ${msg}`);
-  }
 
   const workerdGatewayToken = randomBytes(32).toString("hex");
   const { CredentialStore } = await import("../../packages/shared/src/credentials/store.js");
   const { ClientConfigStore } =
     await import("../../packages/shared/src/credentials/clientConfigStore.js");
   const { AuditLog } = await import("../../packages/shared/src/credentials/audit.js");
-  const { CodeIdentityResolver } = await import("./services/codeIdentityResolver.js");
   const { createEgressProxy } = await import("./services/egressProxy.js");
   const { CredentialLifecycle } = await import("./services/credentialLifecycle.js");
   const { CredentialSessionGrantStore } = await import("./services/credentialSessionGrants.js");
@@ -558,7 +548,6 @@ async function main() {
   const credentialStore = new CredentialStore();
   const clientConfigStore = new ClientConfigStore();
   const auditLog = new AuditLog({ logDir: path.join(statePath, "credentials-audit") });
-  const codeIdentityResolver = new CodeIdentityResolver();
   const credentialSessionGrantStore = new CredentialSessionGrantStore();
   const { CapabilityGrantStore } = await import("./services/capabilityGrantStore.js");
   const capabilityGrantStore = new CapabilityGrantStore({ statePath });
@@ -574,7 +563,6 @@ async function main() {
   const egressProxy = createEgressProxy({
     credentialStore,
     auditLog,
-    codeIdentityResolver,
     approvalQueue,
     grantStore: capabilityGrantStore,
     sessionGrantStore: credentialSessionGrantStore,
@@ -611,7 +599,7 @@ async function main() {
     initPatterns: [...WORKSPACE_GIT_INIT_PATTERNS],
     devTargetDir,
     getSourceForCaller: (callerId) =>
-      codeIdentityResolver.resolveByCallerId(callerId)?.repoPath ?? null,
+      resolveCodeIdentity(principalRegistry, callerId)?.repoPath ?? null,
     getAllowedOrigins: () => {
       const port = gatewayPortResolved ?? requestedGatewayPort ?? 0;
       const origins = new Set<string>();
@@ -795,10 +783,7 @@ async function main() {
     container.register({
       name: "tokens",
       dependencies: ["tokenManager", "fsService"],
-      async start(resolve) {
-        const fsService = assertPresent(
-          resolve<import("@natstack/shared/fsService").FsService>("fsService")
-        );
+      async start() {
         // Only persist the admin token centrally in standalone mode. In
         // IPC/Electron-embedded mode the token is consumed by the parent
         // process from the ready message, and writing it into the shared
@@ -808,13 +793,6 @@ async function main() {
           : undefined;
         tokensDefinition = createTokensService({
           tokenManager,
-          fsService,
-          codeIdentityResolver,
-          getEffectiveVersion: async (source: string) => {
-            const buildSystem =
-              container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");
-            return buildSystem?.getEffectiveVersion(source) ?? undefined;
-          },
           persistAdminToken,
         });
       },
@@ -993,7 +971,10 @@ async function main() {
       clientConfigStore,
       auditLog,
       eventService,
-      tokenManager,
+      connectionLookup: {
+        getAuthorizingShell: (principalId: string) =>
+          rpcServerForGateway?.getAuthorizingShell(principalId) ?? null,
+      },
       egressProxy,
       approvalQueue,
       sessionGrantStore: credentialSessionGrantStore,
@@ -1147,7 +1128,6 @@ async function main() {
             call: (targetId, method, ...args) =>
               rpcServer.server.callTarget(targetId, method, ...args),
           },
-          codeIdentityResolver,
           dispatchToTarget: async (target, event) => {
             await rpcServer.server.callTarget(
               `do:${target.source}:${target.className}:${target.objectKey}`,
@@ -1220,7 +1200,8 @@ async function main() {
         eventService,
         egressProxy,
         fsService,
-        codeIdentityResolver,
+        principalRegistry,
+        connectionGrants,
       });
       server.initHandlers();
       rpcServerForGateway = server;
@@ -1253,7 +1234,6 @@ async function main() {
         approvalQueue,
         userlandApprovalGrantStore,
         notificationService: notificationResult.internal,
-        codeIdentityResolver,
         getGatewayUrl: () => {
           if (!gatewayPortResolved) {
             throw new Error("Gateway port not finalized before extension startup");
@@ -1315,7 +1295,7 @@ async function main() {
     container.register({
       name: "fsService",
       async start() {
-        return new FsService(contextFolderManager);
+        return new FsService(contextFolderManager, principalRegistry);
       },
     });
   }
@@ -1365,7 +1345,7 @@ async function main() {
           },
           getProxyPort: (caller) => egressProxy.startForCaller(caller),
           getWorkerdGatewayToken: () => workerdGatewayToken,
-          codeIdentityResolver,
+          principalRegistry,
         });
         workerdManagerForGateway = workerdManagerInstance;
 
@@ -1470,7 +1450,8 @@ async function main() {
   const commonDeps = {
     container,
     dispatcher,
-    tokenManager,
+    principalRegistry,
+    connectionGrants,
     workspace,
     workspacePath,
     workspaceConfig,
@@ -1607,7 +1588,6 @@ async function main() {
       // also returns [] if the name is unknown.
       return extensionHostForGateway?.listWorkspaceUnitLogs(name, opts) ?? [];
     },
-    codeIdentityResolver,
     approvalQueue,
     getEffectiveVersion: async (source: string) => {
       const buildSystem = container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");
@@ -1646,7 +1626,20 @@ async function main() {
   {
     const { createBlobstoreService } = await import("./services/blobstoreService.js");
     const { createAuthService } = await import("./services/authService.js");
+    const { createPrincipalsService } = await import("./services/principalsService.js");
     const { rpcServiceWithRoutes } = await import("./rpcServiceWithRoutes.js");
+    container.register(
+      rpcService(
+        createPrincipalsService({
+          registry: principalRegistry,
+          getEffectiveVersion: async (source: string) => {
+            const buildSystem =
+              container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");
+            return buildSystem?.getEffectiveVersion(source) ?? undefined;
+          },
+        })
+      )
+    );
     container.register(
       rpcServiceWithRoutes(
         createAuthService({
@@ -1654,6 +1647,7 @@ async function main() {
           deviceAuthStore,
           getServerBootId: () => serverBootId,
           getWorkspaceId: () => workspace.config.id,
+          connectionGrants,
         }),
         routeRegistry
       )
@@ -1688,7 +1682,7 @@ async function main() {
     adminToken,
     workerdGatewayToken,
     tokenManager,
-    codeIdentityResolver,
+    principalRegistry,
     routeRegistry,
     getPublicUrl: () => {
       try {
