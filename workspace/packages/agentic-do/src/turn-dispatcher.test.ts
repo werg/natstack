@@ -503,6 +503,26 @@ describe("TurnDispatcher — external aborts", () => {
 
     expect(runner.continueCalls).toHaveLength(1);
   });
+
+  it("warns when continuation completes without runner lifecycle events", async () => {
+    const runner = makeRunner();
+    const log = { warn: vi.fn(), error: vi.fn() };
+    const d = new TurnDispatcher({
+      runner: runner.runner,
+      projector: makeProjector(),
+      notifyTyping: () => {},
+      log,
+    });
+
+    d.submitContinue();
+    await flush();
+    runner.continueCalls[0]!.resolve();
+    await flush();
+
+    expect(log.warn).toHaveBeenCalledWith(
+      "[TurnDispatcher] continueAgent completed without agent_start",
+    );
+  });
 });
 
 describe("TurnDispatcher — reset", () => {

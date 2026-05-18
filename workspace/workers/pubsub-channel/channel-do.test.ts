@@ -2,9 +2,14 @@ import { describe, it, expect, vi } from "vitest";
 import { createTestDO } from "@workspace/runtime/worker/test-utils";
 import { PubSubChannel } from "./channel-do.js";
 
-function setRpcCaller(instance: PubSubChannel, callerId: string | null, callerKind: string | null): void {
+function setRpcCaller(
+  instance: PubSubChannel,
+  callerId: string | null,
+  callerKind: string | null
+): void {
   (instance as unknown as { _currentRpcCallerId: string | null })._currentRpcCallerId = callerId;
-  (instance as unknown as { _currentRpcCallerKind: string | null })._currentRpcCallerKind = callerKind;
+  (instance as unknown as { _currentRpcCallerKind: string | null })._currentRpcCallerKind =
+    callerKind;
 }
 
 describe("PubSubChannel", () => {
@@ -16,21 +21,27 @@ describe("PubSubChannel", () => {
 
       sql.exec(
         `INSERT INTO participants (id, metadata, transport, connected_at)
-         VALUES ('do:workers/agent:AgentDO:key-1', '{"name":"Agent"}', 'do', 1000)`,
+         VALUES ('do:workers/agent:AgentDO:key-1', '{"name":"Agent"}', 'do', 1000)`
       );
       sql.exec(
         `INSERT INTO participants (id, metadata, transport, connected_at)
-         VALUES ('p2', '{"callerKind":"panel"}', 'rpc', 2000)`,
+         VALUES ('p2', '{"callerKind":"panel"}', 'rpc', 2000)`
       );
 
       const participants = await instance.getParticipants();
       expect(participants).toHaveLength(2);
 
-      const doParticipant = participants.find(p => p.participantId === "do:workers/agent:AgentDO:key-1")!;
+      const doParticipant = participants.find(
+        (p) => p.participantId === "do:workers/agent:AgentDO:key-1"
+      )!;
       expect(doParticipant.transport).toBe("do");
-      expect(doParticipant.doRef).toEqual({ source: "workers/agent", className: "AgentDO", objectKey: "key-1" });
+      expect(doParticipant.doRef).toEqual({
+        source: "workers/agent",
+        className: "AgentDO",
+        objectKey: "key-1",
+      });
 
-      const rpcParticipant = participants.find(p => p.participantId === "p2")!;
+      const rpcParticipant = participants.find((p) => p.participantId === "p2")!;
       expect(rpcParticipant.transport).toBe("rpc");
       expect(rpcParticipant.doRef).toBeUndefined();
     });
@@ -68,12 +79,16 @@ describe("PubSubChannel", () => {
 
       expect(result.ok).toBe(true);
 
-      const participants = sql.exec(`SELECT id, transport FROM participants WHERE id = 'do:workers/agent:AgentDO:key-1'`).toArray();
+      const participants = sql
+        .exec(`SELECT id, transport FROM participants WHERE id = 'do:workers/agent:AgentDO:key-1'`)
+        .toArray();
       expect(participants).toHaveLength(1);
       expect(participants[0]!["transport"]).toBe("do");
 
       const roster = await instance.getParticipants();
-      expect(roster.find(p => p.participantId === "do:workers/agent:AgentDO:key-1")?.doRef).toEqual({
+      expect(
+        roster.find((p) => p.participantId === "do:workers/agent:AgentDO:key-1")?.doRef
+      ).toEqual({
         source: "workers/agent",
         className: "AgentDO",
         objectKey: "key-1",
@@ -85,12 +100,14 @@ describe("PubSubChannel", () => {
         __objectKey: "test-channel",
       });
 
-      await instance.subscribe("panel-123", {
+      await instance.subscribe("panel:panel-123", {
         contextId: "ctx-1",
         callerKind: "panel",
       });
 
-      const participants = sql.exec(`SELECT id, transport FROM participants WHERE id = 'panel-123'`).toArray();
+      const participants = sql
+        .exec(`SELECT id, transport FROM participants WHERE id = 'panel:panel-123'`)
+        .toArray();
       expect(participants).toHaveLength(1);
       expect(participants[0]!["transport"]).toBe("rpc");
     });
@@ -100,14 +117,17 @@ describe("PubSubChannel", () => {
         __objectKey: "test-channel",
       });
 
-      (instance as unknown as { _currentRpcCallerId: string })._currentRpcCallerId = "panel-real";
+      (instance as unknown as { _currentRpcCallerId: string })._currentRpcCallerId =
+        "panel:panel-real";
 
       await expect(
-        instance.subscribe("panel-spoofed", {
+        instance.subscribe("panel:panel-spoofed", {
           contextId: "ctx-1",
           callerKind: "panel",
-        }),
-      ).rejects.toThrow("Participant panel-spoofed cannot be subscribed by caller panel-real");
+        })
+      ).rejects.toThrow(
+        "Participant panel:panel-spoofed cannot be subscribed by caller panel:panel-real"
+      );
     });
 
     it("returns replay with REPLAY_LIMIT=50 and sets replayTruncated", async () => {
@@ -120,7 +140,8 @@ describe("PubSubChannel", () => {
         sql.exec(
           `INSERT INTO messages (message_id, type, content, sender_id, ts, persist)
            VALUES (?, 'message', '{"content":"msg"}', 'sender', ?, 1)`,
-          `msg-${i}`, 1000 + i,
+          `msg-${i}`,
+          1000 + i
         );
       }
 
@@ -145,7 +166,8 @@ describe("PubSubChannel", () => {
         sql.exec(
           `INSERT INTO messages (message_id, type, content, sender_id, ts, persist)
            VALUES (?, 'message', '{"content":"msg"}', 'sender', ?, 1)`,
-          `msg-${i}`, 1000 + i,
+          `msg-${i}`,
+          1000 + i
         );
       }
 
@@ -162,16 +184,16 @@ describe("PubSubChannel", () => {
         __objectKey: "test-channel",
       });
 
-      await instance.subscribe("panel-1", {
+      await instance.subscribe("panel:panel-1", {
         contextId: "ctx-1",
         handle: "ai-chat",
       });
 
       await expect(
-        instance.subscribe("panel-2", {
+        instance.subscribe("panel:panel-2", {
           contextId: "ctx-1",
           handle: "ai-chat",
-        }),
+        })
       ).rejects.toThrow(/handle "ai-chat" is already in use/);
     });
 
@@ -180,18 +202,20 @@ describe("PubSubChannel", () => {
         __objectKey: "test-channel",
       });
 
-      await instance.subscribe("panel-1", {
+      await instance.subscribe("panel:panel-1", {
         contextId: "ctx-1",
         handle: "ai-chat",
       });
-      await instance.subscribe("panel-1", {
+      await instance.subscribe("panel:panel-1", {
         contextId: "ctx-1",
         handle: "ai-chat",
       });
 
-      const rows = sql.exec(`SELECT id, handle FROM participants WHERE handle = 'ai-chat'`).toArray();
+      const rows = sql
+        .exec(`SELECT id, handle FROM participants WHERE handle = 'ai-chat'`)
+        .toArray();
       expect(rows).toHaveLength(1);
-      expect(rows[0]!["id"]).toBe("panel-1");
+      expect(rows[0]!["id"]).toBe("panel:panel-1");
     });
 
     it("cleans subscribe-time metadata from stored participant", async () => {
@@ -199,7 +223,7 @@ describe("PubSubChannel", () => {
         __objectKey: "test-channel",
       });
 
-      await instance.subscribe("panel-1", {
+      await instance.subscribe("panel:panel-1", {
         contextId: "ctx-1",
         channelConfig: { title: "Test" },
         replay: true,
@@ -208,7 +232,9 @@ describe("PubSubChannel", () => {
         name: "Alice",
       });
 
-      const row = sql.exec(`SELECT metadata FROM participants WHERE id = 'panel-1'`).toArray();
+      const row = sql
+        .exec(`SELECT metadata FROM participants WHERE id = 'panel:panel-1'`)
+        .toArray();
       const metadata = JSON.parse(row[0]!["metadata"] as string);
       // Subscribe-time hints should be stripped
       expect(metadata["contextId"]).toBeUndefined();
@@ -235,26 +261,30 @@ describe("PubSubChannel", () => {
       sql.exec(
         `INSERT INTO participants (id, metadata, transport, connected_at, session_id)
          VALUES (?, '{}', 'do', ?, 'caller-session')`,
-        "do:workers/agent-worker:AiChatWorker:agent-1", Date.now(),
+        "do:workers/agent-worker:AiChatWorker:agent-1",
+        Date.now()
       );
       sql.exec(
         `INSERT INTO participants (id, metadata, transport, connected_at, session_id)
          VALUES (?, ?, 'rpc', ?, ?)`,
-        "panel-1", '{"name":"old"}', Date.now(), "session-old",
+        "panel:panel-1",
+        '{"name":"old"}',
+        Date.now(),
+        "session-old"
       );
       sql.exec(
         `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, expires_at, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         "11111111-1111-4111-8111-111111111111",
         "do:workers/agent-worker:AiChatWorker:agent-1",
-        "panel-1",
+        "panel:panel-1",
         "feedback_custom",
         '{"code":"x"}',
         0,
-        Date.now(),
+        Date.now()
       );
 
-      await instance.subscribe("panel-1", {
+      await instance.subscribe("panel:panel-1", {
         contextId: "ctx-1",
         name: "new",
         __participantSessionId: "session-new",
@@ -269,27 +299,33 @@ describe("PubSubChannel", () => {
       expect(sql.exec(`SELECT call_id FROM pending_calls`).toArray()).toEqual([
         { call_id: "11111111-1111-4111-8111-111111111111" },
       ]);
-      // No synthetic error is delivered to the caller.
-      const errorDeliveries = mockRpc.call.mock.calls.filter(
-        ([, method]) => method === "onCallResult",
+      // No synthetic completion is emitted while the target is reconnecting.
+      const methodResultEmits = mockRpc.emit.mock.calls.filter(
+        ([, , data]) => (data as any)?.message?.type === "method-result"
       );
-      expect(errorDeliveries).toHaveLength(0);
+      expect(methodResultEmits).toHaveLength(0);
       // A method-call is re-emitted to the new panel session.
       const methodCallEmits = mockRpc.emit.mock.calls.filter(
-        ([, , data]) => (data as any)?.message?.type === "method-call",
+        ([, , data]) => (data as any)?.message?.type === "method-call"
       );
       expect(methodCallEmits).toHaveLength(1);
-      const emitted = methodCallEmits[0]![2] as { message: { payload: { callId: string; methodName: string; args: unknown }; kind: string }; channelId: string };
+      const emitted = methodCallEmits[0]![2] as {
+        message: { payload: { callId: string; methodName: string; args: unknown }; kind: string };
+        channelId: string;
+      };
       expect(emitted.channelId).toBe("test-channel");
       expect(emitted.message.kind).toBe("ephemeral");
       expect(emitted.message.payload.callId).toBe("11111111-1111-4111-8111-111111111111");
       expect(emitted.message.payload.methodName).toBe("feedback_custom");
       expect(emitted.message.payload.args).toEqual({ code: "x" });
       // The replaced-session leave presence event still fires.
-      const leaveMessages = sql.exec(
-        `SELECT content FROM messages WHERE type = 'presence' ORDER BY id ASC`,
-      ).toArray().map(row => JSON.parse(row["content"] as string));
-      expect(leaveMessages.some(msg => msg.action === "leave" && msg.leaveReason === "replaced")).toBe(true);
+      const leaveMessages = sql
+        .exec(`SELECT content FROM messages WHERE type = 'presence' ORDER BY id ASC`)
+        .toArray()
+        .map((row) => JSON.parse(row["content"] as string));
+      expect(
+        leaveMessages.some((msg) => msg.action === "leave" && msg.leaveReason === "replaced")
+      ).toBe(true);
     });
 
     it("does not fail pending calls when the same participant session resubscribes", async () => {
@@ -306,21 +342,24 @@ describe("PubSubChannel", () => {
       sql.exec(
         `INSERT INTO participants (id, metadata, transport, connected_at, session_id)
          VALUES (?, ?, 'rpc', ?, ?)`,
-        "panel-1", '{"name":"old"}', Date.now(), "session-same",
+        "panel:panel-1",
+        '{"name":"old"}',
+        Date.now(),
+        "session-same"
       );
       sql.exec(
         `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, expires_at, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         "22222222-2222-4222-8222-222222222222",
         "caller-1",
-        "panel-1",
+        "panel:panel-1",
         "eval",
         "{}",
         0,
-        Date.now(),
+        Date.now()
       );
 
-      await instance.subscribe("panel-1", {
+      await instance.subscribe("panel:panel-1", {
         contextId: "ctx-1",
         name: "same",
         __participantSessionId: "session-same",
@@ -343,7 +382,8 @@ describe("PubSubChannel", () => {
       sql.exec(
         `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, expires_at, created_at)
          VALUES ('call-1', 'caller-1', 'provider-1', 'doWork', '{}', ?, ?)`,
-        Date.now() + 60000, Date.now(),
+        Date.now() + 60000,
+        Date.now()
       );
 
       await instance.cancelMethodCall("call-1");
@@ -365,39 +405,68 @@ describe("PubSubChannel", () => {
       };
       sql.exec(
         `INSERT INTO participants (id, metadata, transport, connected_at)
-         VALUES ('panel-1', '{}', 'rpc', 1000)`,
+         VALUES ('panel:panel-1', '{}', 'rpc', 1000)`
       );
       sql.exec(
         `INSERT INTO participants (id, metadata, transport, connected_at)
-         VALUES ('do:workers/agent-worker:AiChatWorker:agent-1', '{}', 'do', 1000)`,
+         VALUES ('do:workers/agent-worker:AiChatWorker:agent-1', '{}', 'do', 1000)`
       );
       sql.exec(
         `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, expires_at, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         "55555555-5555-4555-8555-555555555555",
         "do:workers/agent-worker:AiChatWorker:agent-1",
-        "panel-1",
+        "panel:panel-1",
         "eval",
         "{}",
         0,
-        Date.now(),
+        Date.now()
       );
-      setRpcCaller(instance, "panel-1", "panel");
+      setRpcCaller(instance, "panel:panel-1", "panel");
 
-      await instance.publish("panel-1", "method-result", {
-        callId: "55555555-5555-4555-8555-555555555555",
-        content: { ok: true },
-        complete: true,
-        isError: false,
-      }, { persist: true });
+      await instance.publish(
+        "panel:panel-1",
+        "method-result",
+        {
+          callId: "55555555-5555-4555-8555-555555555555",
+          content: { ok: true },
+          complete: true,
+          isError: false,
+        },
+        { persist: true }
+      );
 
       expect(sql.exec(`SELECT call_id FROM pending_calls`).toArray()).toEqual([]);
       expect((instance as any)._rpc.call).toHaveBeenCalledWith(
         "do:workers/agent-worker:AiChatWorker:agent-1",
-        "onCallResult",
-        "55555555-5555-4555-8555-555555555555",
-        { ok: true },
-        false,
+        "onChannelEvent",
+        "test-channel",
+        expect.objectContaining({
+          type: "method-result",
+          payload: expect.objectContaining({
+            callId: "55555555-5555-4555-8555-555555555555",
+            content: { ok: true },
+            complete: true,
+            isError: false,
+          }),
+        }),
+      );
+      expect((instance as any)._rpc.emit).toHaveBeenCalledWith(
+        "do:workers/agent-worker:AiChatWorker:agent-1",
+        "channel:message",
+        expect.objectContaining({
+          channelId: "test-channel",
+          message: expect.objectContaining({
+            kind: "persisted",
+            type: "method-result",
+            payload: expect.objectContaining({
+              callId: "55555555-5555-4555-8555-555555555555",
+              content: { ok: true },
+              complete: true,
+              isError: false,
+            }),
+          }),
+        })
       );
     });
 
@@ -407,12 +476,12 @@ describe("PubSubChannel", () => {
       });
       sql.exec(
         `INSERT INTO participants (id, metadata, transport, connected_at)
-         VALUES ('panel-2', '{}', 'rpc', 1000)`,
+         VALUES ('panel:panel-2', '{}', 'rpc', 1000)`
       );
-      setRpcCaller(instance, "panel-1", "panel");
+      setRpcCaller(instance, "panel:panel-1", "panel");
 
-      await expect(instance.unsubscribe("panel-2")).rejects.toThrow(
-        "unsubscribe: participant panel-2 cannot be used by caller panel-1",
+      await expect(instance.unsubscribe("panel:panel-2")).rejects.toThrow(
+        "unsubscribe: participant panel:panel-2 cannot be used by caller panel:panel-1"
       );
     });
 
@@ -420,16 +489,16 @@ describe("PubSubChannel", () => {
       const { instance } = await createTestDO(PubSubChannel, {
         __objectKey: "test-channel",
       });
-      setRpcCaller(instance, "panel-1", "panel");
+      setRpcCaller(instance, "panel:panel-1", "panel");
 
-      await expect(instance.adminUnsubscribeParticipant("panel-2")).rejects.toThrow(
-        "adminUnsubscribeParticipant: privileged caller required",
+      await expect(instance.adminUnsubscribeParticipant("panel:panel-2")).rejects.toThrow(
+        "adminUnsubscribeParticipant: privileged caller required"
       );
-      await expect(instance.adminUpdateParticipantMetadata("panel-2", {})).rejects.toThrow(
-        "adminUpdateParticipantMetadata: privileged caller required",
+      await expect(instance.adminUpdateParticipantMetadata("panel:panel-2", {})).rejects.toThrow(
+        "adminUpdateParticipantMetadata: privileged caller required"
       );
-      await expect(instance.adminSetParticipantTypingState("panel-2", true)).rejects.toThrow(
-        "adminSetParticipantTypingState: privileged caller required",
+      await expect(instance.adminSetParticipantTypingState("panel:panel-2", true)).rejects.toThrow(
+        "adminSetParticipantTypingState: privileged caller required"
       );
     });
 
@@ -443,23 +512,25 @@ describe("PubSubChannel", () => {
       };
       sql.exec(
         `INSERT INTO participants (id, metadata, transport, connected_at)
-         VALUES ('panel-2', '{"name":"Panel"}', 'rpc', 1000)`,
+         VALUES ('panel:panel-2', '{"name":"Panel"}', 'rpc', 1000)`
       );
       setRpcCaller(instance, "main", "server");
 
-      await instance.adminUpdateParticipantMetadata("panel-2", { name: "Renamed" });
-      await instance.adminSetParticipantTypingState("panel-2", true);
+      await instance.adminUpdateParticipantMetadata("panel:panel-2", { name: "Renamed" });
+      await instance.adminSetParticipantTypingState("panel:panel-2", true);
 
-      const metadataRow = sql.exec(
-        `SELECT metadata FROM participants WHERE id = 'panel-2'`,
-      ).one();
+      const metadataRow = sql
+        .exec(`SELECT metadata FROM participants WHERE id = 'panel:panel-2'`)
+        .one();
       expect(JSON.parse(metadataRow["metadata"] as string)).toEqual({
         name: "Renamed",
         typing: true,
       });
 
-      await instance.adminUnsubscribeParticipant("panel-2");
-      expect(sql.exec(`SELECT id FROM participants WHERE id = 'panel-2'`).toArray()).toEqual([]);
+      await instance.adminUnsubscribeParticipant("panel:panel-2");
+      expect(sql.exec(`SELECT id FROM participants WHERE id = 'panel:panel-2'`).toArray()).toEqual(
+        []
+      );
     });
   });
 
@@ -478,9 +549,10 @@ describe("PubSubChannel", () => {
       sql.exec(
         `INSERT INTO participants (id, metadata, transport, connected_at, session_id)
          VALUES (?, '{}', 'do', ?, 'caller-session')`,
-        "do:workers/agent-worker:AiChatWorker:agent-1", Date.now(),
+        "do:workers/agent-worker:AiChatWorker:agent-1",
+        Date.now()
       );
-      await instance.subscribe("panel-1", {
+      await instance.subscribe("panel:panel-1", {
         contextId: "ctx-1",
         name: "old-panel",
         __participantSessionId: "session-old",
@@ -488,10 +560,10 @@ describe("PubSubChannel", () => {
 
       await instance.callMethod(
         "do:workers/agent-worker:AiChatWorker:agent-1",
-        "panel-1",
+        "panel:panel-1",
         "44444444-4444-4444-8444-444444444444",
         "eval",
-        { code: "await new Promise(() => {})" },
+        { code: "await new Promise(() => {})" }
       );
 
       expect(sql.exec(`SELECT call_id FROM pending_calls`).toArray()).toEqual([
@@ -499,7 +571,7 @@ describe("PubSubChannel", () => {
       ]);
 
       mockRpc.emit.mockClear();
-      await instance.subscribe("panel-1", {
+      await instance.subscribe("panel:panel-1", {
         contextId: "ctx-1",
         name: "new-panel",
         __participantSessionId: "session-new",
@@ -510,77 +582,108 @@ describe("PubSubChannel", () => {
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
 
-      // Call is preserved, no synthetic error is delivered.
+      // Call is preserved, no synthetic completion is emitted.
       expect(sql.exec(`SELECT call_id FROM pending_calls`).toArray()).toEqual([
         { call_id: "44444444-4444-4444-8444-444444444444" },
       ]);
-      const errorDeliveries = mockRpc.call.mock.calls.filter(
-        ([, method]) => method === "onCallResult",
+      const methodResultEmits = mockRpc.emit.mock.calls.filter(
+        ([, , data]) => (data as any)?.message?.type === "method-result"
       );
-      expect(errorDeliveries).toHaveLength(0);
+      expect(methodResultEmits).toHaveLength(0);
       // Method-call is re-emitted to the new session.
       const methodCallEmits = mockRpc.emit.mock.calls.filter(
-        ([, , data]) => (data as any)?.message?.type === "method-call",
+        ([, , data]) => (data as any)?.message?.type === "method-call"
       );
       expect(methodCallEmits).toHaveLength(1);
       expect((methodCallEmits[0]![2] as any).message.payload.callId).toBe(
-        "44444444-4444-4444-8444-444444444444",
+        "44444444-4444-4444-8444-444444444444"
       );
     });
 
-    it("awaits intercepted method-result forwarding before publish resolves", async () => {
+    it("intercepts method-result and broadcasts canonical completion to all participants", async () => {
       const { instance, sql } = await createTestDO(PubSubChannel, {
         __objectKey: "test-channel",
       });
 
-      let resolveCall!: () => void;
-      const callPromise = new Promise<void>((resolve) => {
-        resolveCall = resolve;
-      });
       const mockRpc = {
         emit: vi.fn().mockResolvedValue(undefined),
-        call: vi.fn().mockImplementation(() => callPromise),
+        call: vi.fn().mockResolvedValue(undefined),
       };
       (instance as any)._rpc = mockRpc;
 
       sql.exec(
         `INSERT INTO participants (id, metadata, transport, connected_at)
          VALUES (?, '{}', 'do', ?)`,
-        "do:workers/agent-worker:AiChatWorker:agent-1", Date.now(),
+        "do:workers/agent-worker:AiChatWorker:agent-1",
+        Date.now()
       );
       sql.exec(
         `INSERT INTO participants (id, metadata, transport, connected_at)
          VALUES (?, '{}', 'rpc', ?)`,
-        "panel-1", Date.now(),
+        "panel:panel-1",
+        Date.now()
       );
       sql.exec(
         `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, expires_at, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         "33333333-3333-4333-8333-333333333333",
         "do:workers/agent-worker:AiChatWorker:agent-1",
-        "panel-1",
+        "panel:panel-1",
         "eval",
         "{}",
         0,
-        Date.now(),
+        Date.now()
       );
 
-      let resolved = false;
-      const publishPromise = instance.publish("panel-1", "method-result", {
-        callId: "33333333-3333-4333-8333-333333333333",
-        content: { ok: true },
-        complete: true,
-        isError: false,
-      }, { persist: true }).then(() => {
-        resolved = true;
-      });
+      await instance.publish(
+        "panel:panel-1",
+        "method-result",
+        {
+          callId: "33333333-3333-4333-8333-333333333333",
+          content: { ok: true },
+          complete: true,
+          isError: false,
+        },
+        { persist: true }
+      );
 
-      await Promise.resolve();
-      expect(resolved).toBe(false);
-
-      resolveCall();
-      await publishPromise;
-      expect(resolved).toBe(true);
+      expect(sql.exec(`SELECT call_id FROM pending_calls`).toArray()).toEqual([]);
+      expect(mockRpc.call).toHaveBeenCalledWith(
+        "do:workers/agent-worker:AiChatWorker:agent-1",
+        "onChannelEvent",
+        "test-channel",
+        expect.objectContaining({
+          type: "method-result",
+          payload: expect.objectContaining({
+            callId: "33333333-3333-4333-8333-333333333333",
+            content: { ok: true },
+            complete: true,
+            isError: false,
+          }),
+        }),
+      );
+      for (const participantId of [
+        "do:workers/agent-worker:AiChatWorker:agent-1",
+        "panel:panel-1",
+      ]) {
+        expect(mockRpc.emit).toHaveBeenCalledWith(
+          participantId,
+          "channel:message",
+          expect.objectContaining({
+            channelId: "test-channel",
+            message: expect.objectContaining({
+              kind: "persisted",
+              type: "method-result",
+              payload: expect.objectContaining({
+                callId: "33333333-3333-4333-8333-333333333333",
+                content: { ok: true },
+                complete: true,
+                isError: false,
+              }),
+            }),
+          })
+        );
+      }
     });
 
     it("broadcasts a persisted method-result even when the caller is a DO", async () => {
@@ -597,42 +700,56 @@ describe("PubSubChannel", () => {
       sql.exec(
         `INSERT INTO participants (id, metadata, transport, connected_at)
          VALUES (?, '{}', 'do', ?)`,
-        "do:workers/agent-worker:AiChatWorker:agent-1", Date.now(),
+        "do:workers/agent-worker:AiChatWorker:agent-1",
+        Date.now()
       );
       sql.exec(
         `INSERT INTO participants (id, metadata, transport, connected_at)
          VALUES (?, '{}', 'rpc', ?)`,
-        "panel-1", Date.now(),
+        "panel:panel-1",
+        Date.now()
       );
       sql.exec(
         `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, expires_at, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         "call-1",
         "do:workers/agent-worker:AiChatWorker:agent-1",
-        "panel-1",
+        "panel:panel-1",
         "eval",
         "{}",
         Date.now() + 60_000,
-        Date.now(),
+        Date.now()
       );
 
-      await instance.publish("panel-1", "method-result", {
-        callId: "call-1",
-        content: { ok: true, result: 42 },
-        complete: true,
-        isError: false,
-      }, { persist: true });
+      await instance.publish(
+        "panel:panel-1",
+        "method-result",
+        {
+          callId: "call-1",
+          content: { ok: true, result: 42 },
+          complete: true,
+          isError: false,
+        },
+        { persist: true }
+      );
 
       expect(mockRpc.call).toHaveBeenCalledWith(
         "do:workers/agent-worker:AiChatWorker:agent-1",
-        "onCallResult",
-        "call-1",
-        { ok: true, result: 42 },
-        false,
+        "onChannelEvent",
+        "test-channel",
+        expect.objectContaining({
+          type: "method-result",
+          payload: expect.objectContaining({
+            callId: "call-1",
+            content: { ok: true, result: 42 },
+            complete: true,
+            isError: false,
+          }),
+        }),
       );
 
       expect(mockRpc.emit).toHaveBeenCalledWith(
-        "panel-1",
+        "panel:panel-1",
         "channel:message",
         expect.objectContaining({
           channelId: "test-channel",
@@ -646,12 +763,29 @@ describe("PubSubChannel", () => {
               isError: false,
             }),
           }),
-        }),
+        })
+      );
+      expect(mockRpc.emit).toHaveBeenCalledWith(
+        "do:workers/agent-worker:AiChatWorker:agent-1",
+        "channel:message",
+        expect.objectContaining({
+          channelId: "test-channel",
+          message: expect.objectContaining({
+            kind: "persisted",
+            type: "method-result",
+            payload: expect.objectContaining({
+              callId: "call-1",
+              content: { ok: true, result: 42 },
+              complete: true,
+              isError: false,
+            }),
+          }),
+        })
       );
 
-      const persisted = sql.exec(
-        `SELECT type, sender_id, content FROM messages WHERE type = 'method-result'`,
-      ).toArray();
+      const persisted = sql
+        .exec(`SELECT type, sender_id, content FROM messages WHERE type = 'method-result'`)
+        .toArray();
       expect(persisted).toHaveLength(1);
       expect(persisted[0]!["sender_id"]).toBe("do:workers/agent-worker:AiChatWorker:agent-1");
       expect(JSON.parse(persisted[0]!["content"] as string)).toMatchObject({
@@ -670,15 +804,25 @@ describe("PubSubChannel", () => {
       });
 
       // Simulate parent's __objectKey being in the state table (from cloneDO copy)
-      sql.exec(`INSERT OR REPLACE INTO state (key, value) VALUES ('__objectKey', 'parent-channel')`);
+      sql.exec(
+        `INSERT OR REPLACE INTO state (key, value) VALUES ('__objectKey', 'parent-channel')`
+      );
 
       // Insert some messages to verify trim
-      sql.exec(`INSERT INTO messages (message_id, type, content, sender_id, ts, persist) VALUES ('m1', 'message', '{}', 's1', 1000, 1)`);
-      sql.exec(`INSERT INTO messages (message_id, type, content, sender_id, ts, persist) VALUES ('m2', 'message', '{}', 's1', 2000, 1)`);
-      sql.exec(`INSERT INTO messages (message_id, type, content, sender_id, ts, persist) VALUES ('m3', 'presence', '{}', 's1', 3000, 1)`);
+      sql.exec(
+        `INSERT INTO messages (message_id, type, content, sender_id, ts, persist) VALUES ('m1', 'message', '{}', 's1', 1000, 1)`
+      );
+      sql.exec(
+        `INSERT INTO messages (message_id, type, content, sender_id, ts, persist) VALUES ('m2', 'message', '{}', 's1', 2000, 1)`
+      );
+      sql.exec(
+        `INSERT INTO messages (message_id, type, content, sender_id, ts, persist) VALUES ('m3', 'presence', '{}', 's1', 3000, 1)`
+      );
 
       // Insert a participant
-      sql.exec(`INSERT INTO participants (id, metadata, transport, connected_at) VALUES ('p1', '{}', 'do', 1000)`);
+      sql.exec(
+        `INSERT INTO participants (id, metadata, transport, connected_at) VALUES ('p1', '{}', 'do', 1000)`
+      );
 
       await instance.postClone("parent-channel", 1);
 
@@ -710,13 +854,14 @@ describe("PubSubChannel", () => {
         sql.exec(
           `INSERT INTO messages (message_id, type, content, sender_id, ts, persist)
            VALUES (?, 'message', '{"content":"msg"}', 'sender', ?, 1)`,
-          `msg-${i}`, 1000 + i * 1000,
+          `msg-${i}`,
+          1000 + i * 1000
         );
       }
       // Insert a presence message (id will be 6)
       sql.exec(
         `INSERT INTO messages (message_id, type, content, sender_id, ts, persist)
-         VALUES ('presence-1', 'presence', '{"action":"join"}', 'sender', 6000, 1)`,
+         VALUES ('presence-1', 'presence', '{"action":"join"}', 'sender', 6000, 1)`
       );
 
       await instance.postClone("parent", 3);
@@ -724,8 +869,8 @@ describe("PubSubChannel", () => {
       // Only messages with id <= 3 should remain, minus presence
       const remaining = sql.exec(`SELECT id, type FROM messages ORDER BY id`).toArray();
       expect(remaining).toHaveLength(3);
-      expect(remaining.every(r => (r["id"] as number) <= 3)).toBe(true);
-      expect(remaining.every(r => r["type"] !== "presence")).toBe(true);
+      expect(remaining.every((r) => (r["id"] as number) <= 3)).toBe(true);
+      expect(remaining.every((r) => r["type"] !== "presence")).toBe(true);
     });
   });
 
@@ -737,7 +882,7 @@ describe("PubSubChannel", () => {
 
       sql.exec(
         `INSERT INTO participants (id, metadata, transport, connected_at)
-         VALUES ('agent-1', '{"name":"Agent","type":"agent","handle":"ai-chat"}', 'do', 1000)`,
+         VALUES ('agent-1', '{"name":"Agent","type":"agent","handle":"ai-chat"}', 'do', 1000)`
       );
 
       await instance.setTypingState("agent-1", true);
@@ -761,15 +906,15 @@ describe("PubSubChannel", () => {
 
       sql.exec(
         `INSERT INTO participants (id, metadata, transport, connected_at)
-         VALUES ('agent-1', '{"name":"Agent","type":"agent"}', 'do', 1000)`,
+         VALUES ('agent-1', '{"name":"Agent","type":"agent"}', 'do', 1000)`
       );
 
-      const beforeCount = (sql.exec(`SELECT COUNT(*) as cnt FROM messages`).one()["cnt"] as number);
+      const beforeCount = sql.exec(`SELECT COUNT(*) as cnt FROM messages`).one()["cnt"] as number;
 
       await instance.setTypingState("agent-1", true);
       await instance.setTypingState("agent-1", false);
 
-      const afterCount = (sql.exec(`SELECT COUNT(*) as cnt FROM messages`).one()["cnt"] as number);
+      const afterCount = sql.exec(`SELECT COUNT(*) as cnt FROM messages`).one()["cnt"] as number;
       expect(afterCount).toBe(beforeCount);
     });
 
@@ -794,7 +939,7 @@ describe("PubSubChannel", () => {
 
       sql.exec(
         `INSERT INTO participants (id, metadata, transport, connected_at)
-         VALUES ('agent-1', '{"name":"Agent","type":"agent","handle":"ai-chat"}', 'do', 1000)`,
+         VALUES ('agent-1', '{"name":"Agent","type":"agent","handle":"ai-chat"}', 'do', 1000)`
       );
 
       await instance.setTypingState("agent-1", true);
@@ -805,9 +950,11 @@ describe("PubSubChannel", () => {
       expect(metadata.typing).toBe(true);
 
       // Verify NO presence row was persisted in messages (ephemeral broadcast only)
-      const presenceRows = sql.exec(
-        `SELECT COUNT(*) as cnt FROM messages WHERE type = 'presence' AND content LIKE '%typing%'`,
-      ).one();
+      const presenceRows = sql
+        .exec(
+          `SELECT COUNT(*) as cnt FROM messages WHERE type = 'presence' AND content LIKE '%typing%'`
+        )
+        .one();
       expect(presenceRows["cnt"]).toBe(0);
     });
   });
@@ -838,30 +985,44 @@ describe("PubSubChannel", () => {
       sql.exec(
         `INSERT INTO messages (message_id, type, content, sender_id, ts, persist, content_type)
          VALUES (?, 'message', ?, 'agent', ?, 1, NULL)`,
-        m1, JSON.stringify({ id: m1, content: "Hel" }), 1000,
+        m1,
+        JSON.stringify({ id: m1, content: "Hel" }),
+        1000
       );
       sql.exec(
         `INSERT INTO messages (message_id, type, content, sender_id, ts, persist)
          VALUES (?, 'update-message', ?, 'agent', ?, 1)`,
-        m1, JSON.stringify({ id: m1, content: "lo " }), 1001,
+        m1,
+        JSON.stringify({ id: m1, content: "lo " }),
+        1001
       );
       sql.exec(
         `INSERT INTO messages (message_id, type, content, sender_id, ts, persist, content_type)
          VALUES (?, 'message', ?, 'agent', ?, 1, 'toolCall')`,
-        m2, JSON.stringify({ id: m2, content: "{\"id\":\"tc\",\"name\":\"R\",\"arguments\":{},\"execution\":{\"status\":\"pending\",\"description\":\"\"}}" }), 1002,
+        m2,
+        JSON.stringify({
+          id: m2,
+          content:
+            '{"id":"tc","name":"R","arguments":{},"execution":{"status":"pending","description":""}}',
+        }),
+        1002
       );
       sql.exec(
         `INSERT INTO messages (message_id, type, content, sender_id, ts, persist)
          VALUES (?, 'update-message', ?, 'agent', ?, 1)`,
-        m1, JSON.stringify({ id: m1, content: "world", complete: true }), 1003,
+        m1,
+        JSON.stringify({ id: m1, content: "world", complete: true }),
+        1003
       );
       sql.exec(
         `INSERT INTO messages (message_id, type, content, sender_id, ts, persist)
          VALUES (?, 'update-message', ?, 'agent', ?, 1)`,
-        m2, JSON.stringify({ id: m2, complete: true }), 1004,
+        m2,
+        JSON.stringify({ id: m2, complete: true }),
+        1004
       );
 
-      await instance.subscribe("panel-1", {
+      await instance.subscribe("panel:panel-1", {
         contextId: "ctx-1",
         callerKind: "panel",
         // RPC replay is gated on sinceId / replayMessageLimit.
@@ -877,8 +1038,8 @@ describe("PubSubChannel", () => {
       }
 
       // Panel-targeted emits for 'channel:message' only. Filter out non-panel.
-      const panelEmits = emitted.filter(e => e.subscriberId === "panel-1");
-      const kinds = panelEmits.map(e => e.message["type"] ?? e.message["kind"]);
+      const panelEmits = emitted.filter((e) => e.subscriberId === "panel:panel-1");
+      const kinds = panelEmits.map((e) => e.message["type"] ?? e.message["kind"]);
 
       // Expect messages to land in id order (m1, update, m2, update, update)
       // followed by a ready event at the end.
@@ -887,7 +1048,7 @@ describe("PubSubChannel", () => {
       // Every 'update-message' for a given id must come AFTER its parent 'message'.
       // Wire format: top-level { type, payload: { id, ... } }.
       const firstIdx = (targetId: string, type: "message" | "update-message") =>
-        panelEmits.findIndex(e => {
+        panelEmits.findIndex((e) => {
           if (e.message["type"] !== type) return false;
           const payload = e.message["payload"] as { id?: string } | undefined;
           return payload?.id === targetId;

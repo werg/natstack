@@ -1,15 +1,15 @@
 /**
  * DispatchedCallStore — Durable breadcrumb index for dispatched interactive calls.
  *
- * Each row tracks a dispatched call that must survive DO hibernation:
+ * Each row tracks a dispatched call while its Pi tool promise is suspended:
  * - interactive tool calls routed to channel participants
  * - ask_user
  * - ctx.ui.* prompts
  * - approval-gate prompts
  *
- * The row stays until the final method-result is appended into gad history.
- * Fast results that arrive before the placeholder ToolResultMessage is persisted
- * are buffered in the same row.
+ * The row is a durable cancellation/diagnostic breadcrumb. Results are not
+ * spliced back into a prior transcript; the live tool promise resolves from
+ * the canonical method-result event and writes its normal toolResult message.
  */
 
 import type { SqlStorage } from "@workspace/runtime/worker";
@@ -27,6 +27,10 @@ export interface DispatchedCall {
   toolCallId: string;
   toolName: string | null;
   paramsJson: string | null;
+  targetParticipantId: string | null;
+  methodName: string | null;
+  argsJson: string | null;
+  dispatchedAt: number | null;
   pendingResultJson: string | null;
   pendingIsError: boolean | null;
   abandonedReason: string | null;
@@ -41,6 +45,9 @@ export interface StoreDispatchedCallInput {
   toolCallId: string;
   toolName?: string | null;
   paramsJson?: string | null;
+  targetParticipantId?: string | null;
+  methodName?: string | null;
+  argsJson?: string | null;
 }
 
 export class DispatchedCallStore {
@@ -55,6 +62,10 @@ export class DispatchedCallStore {
         tool_call_id TEXT NOT NULL,
         tool_name TEXT,
         params_json TEXT,
+        target_participant_id TEXT,
+        method_name TEXT,
+        args_json TEXT,
+        dispatched_at INTEGER,
         pending_result_json TEXT,
         pending_is_error INTEGER,
         abandoned_reason TEXT,
@@ -72,6 +83,18 @@ export class DispatchedCallStore {
     if (!columns.has("resolving_token")) {
       this.sql.exec(`ALTER TABLE dispatched_calls ADD COLUMN resolving_token TEXT`);
     }
+    if (!columns.has("target_participant_id")) {
+      this.sql.exec(`ALTER TABLE dispatched_calls ADD COLUMN target_participant_id TEXT`);
+    }
+    if (!columns.has("method_name")) {
+      this.sql.exec(`ALTER TABLE dispatched_calls ADD COLUMN method_name TEXT`);
+    }
+    if (!columns.has("args_json")) {
+      this.sql.exec(`ALTER TABLE dispatched_calls ADD COLUMN args_json TEXT`);
+    }
+    if (!columns.has("dispatched_at")) {
+      this.sql.exec(`ALTER TABLE dispatched_calls ADD COLUMN dispatched_at INTEGER`);
+    }
     this.sql.exec(`
       CREATE INDEX IF NOT EXISTS idx_dispatched_calls_channel
       ON dispatched_calls(channel_id)
@@ -82,14 +105,18 @@ export class DispatchedCallStore {
     this.sql.exec(
       `INSERT OR REPLACE INTO dispatched_calls (
          call_id, channel_id, kind, tool_call_id, tool_name, params_json,
+         target_participant_id, method_name, args_json, dispatched_at,
          pending_result_json, pending_is_error, abandoned_reason, resolving_token, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?)`,
       input.callId,
       input.channelId,
       input.kind,
       input.toolCallId,
       input.toolName ?? null,
       input.paramsJson ?? null,
+      input.targetParticipantId ?? null,
+      input.methodName ?? null,
+      input.argsJson ?? null,
       Date.now(),
     );
   }
@@ -97,6 +124,7 @@ export class DispatchedCallStore {
   peek(callId: string): DispatchedCall | null {
     const rows = this.sql.exec(
       `SELECT call_id, channel_id, kind, tool_call_id, tool_name, params_json,
+              target_participant_id, method_name, args_json, dispatched_at,
               pending_result_json, pending_is_error, abandoned_reason, resolving_token, created_at
          FROM dispatched_calls
         WHERE call_id = ?`,
@@ -106,10 +134,19 @@ export class DispatchedCallStore {
     return mapRow(rows[0]!);
   }
 
+  markDispatched(callId: string): void {
+    this.sql.exec(
+      `UPDATE dispatched_calls SET dispatched_at = ? WHERE call_id = ?`,
+      Date.now(),
+      callId,
+    );
+  }
+
   bufferResult(callId: string, result: unknown, isError: boolean): void {
     this.sql.exec(
       `UPDATE dispatched_calls
-          SET pending_result_json = ?, pending_is_error = ?
+          SET pending_result_json = ?,
+              pending_is_error = ?
         WHERE call_id = ?`,
       JSON.stringify({ value: result }),
       isError ? 1 : 0,
@@ -125,84 +162,13 @@ export class DispatchedCallStore {
     );
   }
 
-  markAbandoned(callId: string, reason: string): void {
-    this.sql.exec(
-      `UPDATE dispatched_calls
-          SET abandoned_reason = ?
-        WHERE call_id = ?`,
-      reason,
-      callId,
-    );
-  }
-
-  tryClaim(callId: string): DispatchedCall | null {
-    const token = crypto.randomUUID();
-    this.sql.exec(
-      `UPDATE dispatched_calls
-          SET resolving_token = ?
-        WHERE call_id = ?
-          AND resolving_token IS NULL`,
-      token,
-      callId,
-    );
-    const rows = this.sql.exec(
-      `SELECT call_id, channel_id, kind, tool_call_id, tool_name, params_json,
-              pending_result_json, pending_is_error, abandoned_reason, resolving_token, created_at
-         FROM dispatched_calls
-        WHERE call_id = ?
-          AND resolving_token = ?`,
-      callId,
-      token,
-    ).toArray();
-    if (rows.length === 0) return null;
-    return mapRow(rows[0]!);
-  }
-
-  releaseClaim(callId: string, resolvingToken: string | null): void {
-    if (!resolvingToken) return;
-    this.sql.exec(
-      `UPDATE dispatched_calls
-          SET resolving_token = NULL
-        WHERE call_id = ?
-          AND resolving_token = ?`,
-      callId,
-      resolvingToken,
-    );
-  }
-
-  deleteClaimed(callId: string, resolvingToken: string | null): void {
-    if (!resolvingToken) {
-      this.deleteOne(callId);
-      return;
-    }
-    this.sql.exec(
-      `DELETE FROM dispatched_calls
-        WHERE call_id = ?
-          AND resolving_token = ?`,
-      callId,
-      resolvingToken,
-    );
-  }
-
   listForChannel(channelId: string): DispatchedCall[] {
     const rows = this.sql.exec(
       `SELECT call_id, channel_id, kind, tool_call_id, tool_name, params_json,
+              target_participant_id, method_name, args_json, dispatched_at,
               pending_result_json, pending_is_error, abandoned_reason, resolving_token, created_at
          FROM dispatched_calls
         WHERE channel_id = ?
-        ORDER BY created_at ASC`,
-      channelId,
-    ).toArray();
-    return rows.map((row) => mapRow(row));
-  }
-
-  listDeferredForChannel(channelId: string): DispatchedCall[] {
-    const rows = this.sql.exec(
-      `SELECT call_id, channel_id, kind, tool_call_id, tool_name, params_json,
-              pending_result_json, pending_is_error, abandoned_reason, resolving_token, created_at
-         FROM dispatched_calls
-        WHERE channel_id = ?
-          AND (pending_result_json IS NOT NULL OR abandoned_reason IS NOT NULL)
         ORDER BY created_at ASC`,
       channelId,
     ).toArray();
@@ -226,6 +192,10 @@ function mapRow(row: Record<string, unknown>): DispatchedCall {
     toolCallId: row["tool_call_id"] as string,
     toolName: (row["tool_name"] as string | null) ?? null,
     paramsJson: (row["params_json"] as string | null) ?? null,
+    targetParticipantId: (row["target_participant_id"] as string | null) ?? null,
+    methodName: (row["method_name"] as string | null) ?? null,
+    argsJson: (row["args_json"] as string | null) ?? null,
+    dispatchedAt: row["dispatched_at"] == null ? null : Number(row["dispatched_at"]),
     pendingResultJson: (row["pending_result_json"] as string | null) ?? null,
     pendingIsError:
       row["pending_is_error"] == null

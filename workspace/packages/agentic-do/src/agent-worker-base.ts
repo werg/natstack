@@ -51,7 +51,6 @@ import {
   type ApprovalLevel,
   type ThinkingLevel,
   type SystemPromptMode,
-  DispatchedError,
   GadSessionStorage,
   AgentWorkerError,
   type RunnerEvent,
@@ -349,8 +348,26 @@ function isCredentialRequiredAssistantMessage(message: AgentMessage | undefined)
     !!credentialRequiredMessage(candidate.errorMessage ?? "");
 }
 
+function hasToolResultMessage(messages: AgentMessage[], toolCallId: string): boolean {
+  return messages.some((message) => {
+    const candidate = message as { role?: string; toolCallId?: unknown };
+    return candidate.role === "toolResult" && candidate.toolCallId === toolCallId;
+  });
+}
+
 interface RunnerEntry {
   runner: PiRunner;
+}
+
+interface MethodResultCompletion {
+  result: unknown;
+  isError: boolean;
+}
+
+interface MethodResultWaiter {
+  channelId: string;
+  resolve: (completion: MethodResultCompletion) => void;
+  reject: (error: unknown) => void;
 }
 
 interface ModelCredentialInterruption {
@@ -362,9 +379,6 @@ interface ModelCredentialInterruption {
 
 type AgentAbortReason =
   | "channel-unsubscribe"
-  | "participant-method-dispatch"
-  | "ask-user-dispatch"
-  | "ui-prompt-dispatch"
   | "interrupt-all"
   | "interrupt-channel";
 
@@ -372,6 +386,17 @@ interface AgentAbortContext {
   reason: AgentAbortReason;
   detail?: string;
   at: number;
+}
+
+function abortedAgentEndMessage(event: RunnerEvent): string | null {
+  if (event.type !== "agent_end") return null;
+  const messages = (event as { messages?: unknown[] }).messages;
+  if (!Array.isArray(messages) || messages.length === 0) return null;
+  const last = messages[messages.length - 1] as
+    | { role?: string; stopReason?: string; errorMessage?: string }
+    | null;
+  if (!last || last.role !== "assistant" || last.stopReason !== "aborted") return null;
+  return last.errorMessage ?? "Turn aborted.";
 }
 
 export abstract class AgentWorkerBase extends DurableObjectBase {
@@ -400,6 +425,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
    *  arrives with complete:false, the callback is invoked with the content.
    *  This bridges ctx.stream() from method providers to Pi's onUpdate. */
   private streamCallbacks = new Map<string, (content: unknown) => void>();
+
+  /** Awaiters for canonical method-result completions. Channel methods are
+   *  first-class tool suspension points: the Pi tool promise stays pending
+   *  until the channel broadcasts the completed result. */
+  private methodResultWaiters = new Map<string, MethodResultWaiter>();
 
   /** Dedup inline credential prompts per channel/provider while this DO is alive. */
   private credentialPromptCardsEmitted = new Set<string>();
@@ -917,7 +947,9 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     if (eventId !== undefined && eventId > 0) {
       const lastSeq = this.getDeliveryCursor(channelId);
-      if (eventId <= lastSeq) return;
+      if (eventId <= lastSeq) {
+        return;
+      }
 
       if (eventId > lastSeq + 1) {
         await this.repairGap(channelId, lastSeq, eventId);
@@ -1043,7 +1075,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           if (cb) cb(payload["content"]);
         }
       } else if (payload?.["complete"] === true && callId) {
-        await this.onCallResult(
+        await this.handleCompletedMethodResult(
           callId,
           payload["content"],
           payload["isError"] === true,
@@ -1193,10 +1225,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     await runner.init();
 
     const projector = this.getOrCreateProjector(channelId);
-    runner.subscribe((event) => projector.handleEvent(event));
     runner.subscribe((event) => {
-      if (event.type !== "tool_result") return;
-      this.scheduleDeferredDispatchDrain(channelId);
+      return projector.handleEvent(event);
     });
 
     // Phase 7: register the only remaining piece of the legacy terminal-error
@@ -1207,14 +1237,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     //
     // Register on the typed `hooks` bus (post-Phase 6).
     const abortedTurnListener = (event: RunnerEvent) => {
-      if (event.type !== "agent_end") return;
-      const messages = (event as { messages?: unknown[] }).messages;
-      if (!Array.isArray(messages) || messages.length === 0) return;
-      const last = messages[messages.length - 1] as
-        | { role?: string; stopReason?: string; errorMessage?: string }
-        | null;
-      if (!last || last.role !== "assistant" || last.stopReason !== "aborted") return;
-      const msg = last.errorMessage ?? "Turn aborted.";
+      const msg = abortedAgentEndMessage(event);
+      if (!msg) return;
       const context = this.abortContexts.get(channelId);
       this.abortContexts.delete(channelId);
       console.log(
@@ -1497,6 +1521,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     await this.refreshRoster(channelId);
     await this.getOrCreateRunner(channelId);
     this.getOrCreateProjector(channelId);
+    await this.drainBufferedRecoveredResults(channelId);
   }
 
   private recordAbort(channelId: string, reason: AgentAbortReason, detail?: string): void {
@@ -1518,57 +1543,19 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.dispatchers.get(channelId)?.markCurrentTurnAborted();
   }
 
-  private abortAgentAfterDispatch(
-    channelId: string,
-    reason: AgentAbortReason,
-    detail?: string,
-  ): void {
-    setTimeout(() => {
-      void this.abortAgentForReason(channelId, reason, detail).catch((err) => {
-        console.warn(
-          `[AgentWorkerBase] Deferred dispatch abort failed for channel=${channelId}:`,
-          err,
-        );
-      });
-    }, 0);
-  }
-
   private async recoverDispatchesForChannel(channelId: string): Promise<void> {
     if (this.recoveredChannels.has(channelId)) return;
-
-    const messages = await this.readRunnerMessages(channelId);
-    const pending = this.dispatches.listForChannel(channelId);
-    for (const breadcrumb of pending) {
-      if (hasToolResultMessage(messages, breadcrumb.toolCallId)) continue;
-      this.dispatches.deleteOne(breadcrumb.callId);
-      await this.sendDispatchCancel(channelId, breadcrumb.callId, "worker-restart");
-    }
     this.recoveredChannels.add(channelId);
   }
 
-  private async drainDeferredDispatchesFor(channelId: string): Promise<void> {
-    const deferred = this.dispatches.listDeferredForChannel(channelId);
-    for (const breadcrumb of deferred) {
-      const messages = await this.readRunnerMessages(channelId);
-      if (!hasToolResultMessage(messages, breadcrumb.toolCallId)) continue;
-      const claimed = this.dispatches.tryClaim(breadcrumb.callId);
-      if (!claimed) continue;
-      try {
-        if (claimed.abandonedReason) {
-          await this.finalizeAbandonedDispatch(claimed, messages);
-        } else if (claimed.pendingResultJson) {
-          await this.applyResult(
-            claimed,
-            decodeBufferedDispatchResult(claimed.pendingResultJson),
-            claimed.pendingIsError ?? false,
-          );
-        } else {
-          this.dispatches.releaseClaim(claimed.callId, claimed.resolvingToken);
-        }
-      } catch (err) {
-        this.dispatches.releaseClaim(claimed.callId, claimed.resolvingToken);
-        throw err;
-      }
+  private async drainBufferedRecoveredResults(channelId: string): Promise<void> {
+    for (const breadcrumb of this.dispatches.listForChannel(channelId)) {
+      if (!breadcrumb.pendingResultJson) continue;
+      await this.completeRecoveredMethodResult(
+        breadcrumb,
+        decodeBufferedDispatchResult(breadcrumb.pendingResultJson),
+        breadcrumb.pendingIsError ?? false,
+      );
     }
   }
 
@@ -1666,6 +1653,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     if (!callerId) throw new Error(`Not subscribed to channel ${channelId}`);
 
     const callId = crypto.randomUUID();
+    const waiter = this.createMethodResultWaiter(channelId, callId, signal);
     if (onStreamUpdate) this.streamCallbacks.set(callId, onStreamUpdate);
     this.dispatches.store({
       callId,
@@ -1674,16 +1662,24 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       toolCallId,
       toolName: `${participantHandle}.${method}`,
       paramsJson: JSON.stringify({ participantHandle, method, args }),
+      targetParticipantId: target.participantId,
+      methodName: method,
+      argsJson: JSON.stringify(args ?? {}),
     });
+    this.dispatches.markDispatched(callId);
     try {
       await channel.callMethod(callerId, target.participantId, callId, method, args);
+      const completion = await waiter.promise;
+      if (completion.isError) return methodErrorResult(completion.result);
+      return toAgentToolResult(completion.result);
     } catch (err) {
-      this.dispatches.deleteOne(callId);
-      this.streamCallbacks.delete(callId);
+      waiter.cancel(err);
+      await this.cancelChannelMethodCall(channelId, callId);
       throw err;
+    } finally {
+      this.streamCallbacks.delete(callId);
+      this.dispatches.deleteOne(callId);
     }
-    this.abortAgentAfterDispatch(channelId, "participant-method-dispatch", `${participantHandle}.${method}`);
-    return makeDispatchPlaceholder(toolCallId, callId, "tool-call");
   }
 
   private async askUser(
@@ -1691,7 +1687,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     toolCallId: string,
     params: AskUserParams,
     signal: AbortSignal | undefined,
-  ): Promise<AgentToolResult<any>> {
+  ): Promise<string | AgentToolResult<any>> {
     if (signal?.aborted) throw new Error("aborted");
     const callerId = this.subscriptions.getParticipantId(channelId);
     if (!callerId) throw new Error(`Not subscribed to channel ${channelId}`);
@@ -1707,20 +1703,29 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     }
 
     const callId = crypto.randomUUID();
+    const waiter = this.createMethodResultWaiter(channelId, callId, signal);
     this.dispatches.store({
       callId,
       channelId,
       kind: "ask-user",
       toolCallId,
+      targetParticipantId: panel.participantId,
+      methodName: "feedback_form",
+      argsJson: JSON.stringify(params),
     });
+    this.dispatches.markDispatched(callId);
     try {
       await channel.callMethod(callerId, panel.participantId, callId, "feedback_form", params);
+      const completion = await waiter.promise;
+      if (completion.isError) return methodErrorResult(completion.result);
+      return resultToAnswerText(completion.result);
     } catch (err) {
-      this.dispatches.deleteOne(callId);
+      waiter.cancel(err);
+      await this.cancelChannelMethodCall(channelId, callId);
       throw err;
+    } finally {
+      this.dispatches.deleteOne(callId);
     }
-    this.abortAgentAfterDispatch(channelId, "ask-user-dispatch");
-    return makeDispatchPlaceholder(toolCallId, callId, "ask-user");
   }
 
   private buildUICallbacks(channelId: string): NatStackScopedUiContext {
@@ -1833,174 +1838,131 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       });
   }
 
-  async onCallResult(callId: string, result: unknown, isError: boolean): Promise<void> {
+  private createMethodResultWaiter(
+    channelId: string,
+    callId: string,
+    signal?: AbortSignal,
+  ): { promise: Promise<MethodResultCompletion>; cancel: (error?: unknown) => void } {
+    let settled = false;
+    let removeAbortListener: (() => void) | undefined;
+    const cleanup = () => {
+      this.methodResultWaiters.delete(callId);
+      removeAbortListener?.();
+      removeAbortListener = undefined;
+    };
+
+    const promise = new Promise<MethodResultCompletion>((resolve, reject) => {
+      const complete = (completion: MethodResultCompletion) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(completion);
+      };
+      const fail = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+      this.methodResultWaiters.set(callId, { channelId, resolve: complete, reject: fail });
+      if (signal) {
+        const onAbort = () => fail(new Error("Request was aborted"));
+        if (signal.aborted) {
+          onAbort();
+        } else {
+          signal.addEventListener("abort", onAbort, { once: true });
+          removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+        }
+      }
+    });
+
+    return {
+      promise,
+      cancel: (error?: unknown) => {
+        const waiter = this.methodResultWaiters.get(callId);
+        waiter?.reject(error ?? new Error("Method call was cancelled"));
+      },
+    };
+  }
+
+  private rejectMethodWaitersForChannel(channelId: string, reason: string): void {
+    for (const [callId, waiter] of this.methodResultWaiters.entries()) {
+      if (waiter.channelId !== channelId) continue;
+      waiter.reject(new Error(reason));
+      this.streamCallbacks.delete(callId);
+    }
+  }
+
+  private async cancelChannelMethodCall(channelId: string, callId: string): Promise<void> {
+    try {
+      await this.createChannelClient(channelId).cancelCall(callId);
+    } catch (err) {
+      console.warn(
+        `[AgentWorkerBase] Failed to cancel channel method call: channel=${channelId} callId=${callId}`,
+        err,
+      );
+    }
+  }
+
+  private async handleCompletedMethodResult(
+    callId: string,
+    result: unknown,
+    isError: boolean,
+  ): Promise<void> {
     this.streamCallbacks.delete(callId);
     const breadcrumb = this.dispatches.peek(callId);
-    if (!breadcrumb) return;
-    // `tool_result_observed` provenance is written by PiRunner when
-    // `applyResult` replaces the dispatched placeholder with the real
-    // toolResult entry through the Session adapter.
-    this.dispatches.bufferResult(callId, result, isError);
-
-    const messages = await this.readRunnerMessages(breadcrumb.channelId);
-    if (!hasToolResultMessage(messages, breadcrumb.toolCallId)) {
-      this.scheduleDeferredDispatchDrain(breadcrumb.channelId);
+    const waiter = this.methodResultWaiters.get(callId);
+    if (waiter) {
+      waiter.resolve({ result, isError });
       return;
     }
-
-    const claimed = this.dispatches.tryClaim(callId);
-    if (!claimed) return;
-    try {
-      if (claimed.abandonedReason) {
-        await this.finalizeAbandonedDispatch(claimed, messages);
-      } else if (claimed.pendingResultJson) {
-        await this.applyResult(
-          claimed,
-          decodeBufferedDispatchResult(claimed.pendingResultJson),
-          claimed.pendingIsError ?? false,
-        );
-      } else {
-        this.dispatches.releaseClaim(claimed.callId, claimed.resolvingToken);
-      }
-    } catch (err) {
-      this.dispatches.releaseClaim(claimed.callId, claimed.resolvingToken);
-      throw err;
+    if (breadcrumb) {
+      this.dispatches.bufferResult(callId, result, isError);
+      await this.completeRecoveredMethodResult(this.dispatches.peek(callId) ?? breadcrumb, result, isError);
+      return;
     }
   }
 
-  private scheduleDeferredDispatchDrain(channelId: string): void {
-    setTimeout(() => {
-      void this.drainDeferredDispatchesFor(channelId).catch((err) => {
-        console.warn(
-          `[AgentWorkerBase] Failed to drain deferred dispatches for channel=${channelId}:`,
-          err,
-        );
-      });
-    }, 0);
-  }
-
-  private async applyResult(
+  private async completeRecoveredMethodResult(
     breadcrumb: DispatchedCall,
     result: unknown,
     isError: boolean,
   ): Promise<void> {
-    let messages = await this.readRunnerMessages(breadcrumb.channelId);
-    const timestamp = Date.now();
-
-    if (breadcrumb.kind === "approval") {
-      if (isError || result === false || result === "deny") {
-        messages = replaceToolResultMessage(messages, breadcrumb.toolCallId, {
-          role: "toolResult",
-          toolCallId: breadcrumb.toolCallId,
-          toolName: breadcrumb.toolName ?? toolNameFromMessages(messages, breadcrumb.toolCallId),
-          content: [{ type: "text", text: "User denied tool call" }],
-          isError: true,
-          timestamp,
-        });
-      } else {
-        await this.ensureChannelContext(breadcrumb.channelId);
-        const runner = this.runners.get(breadcrumb.channelId)!.runner;
-        let execResult: AgentToolResult<any>;
-        try {
-          execResult = await runner.executeToolDirect(
-            breadcrumb.toolName ?? toolNameFromMessages(messages, breadcrumb.toolCallId),
-            breadcrumb.toolCallId,
-            breadcrumb.paramsJson ? JSON.parse(breadcrumb.paramsJson) : {},
-          );
-        } catch (err) {
-          messages = replaceToolResultMessage(messages, breadcrumb.toolCallId, {
-            role: "toolResult",
-            toolCallId: breadcrumb.toolCallId,
-            toolName: breadcrumb.toolName ?? toolNameFromMessages(messages, breadcrumb.toolCallId),
-            content: [{
-              type: "text",
-              text: err instanceof Error ? err.message : String(err),
-            }],
-            details: { __natstack_resume_execution_failed: true },
-            isError: true,
-            timestamp,
-          });
-          await this.finishDispatchResolution(breadcrumb, messages, false);
-          return;
-        }
-        messages = replaceToolResultMessage(messages, breadcrumb.toolCallId, {
-          role: "toolResult",
-          toolCallId: breadcrumb.toolCallId,
-          toolName: breadcrumb.toolName ?? toolNameFromMessages(messages, breadcrumb.toolCallId),
-          content: execResult.content,
-          details: execResult.details,
-          isError: false,
-          timestamp,
-        });
-      }
-    } else {
-      const toolResult = toAgentToolResult(result);
-      messages = replaceToolResultMessage(messages, breadcrumb.toolCallId, {
-        role: "toolResult",
-        toolCallId: breadcrumb.toolCallId,
-        toolName: toolNameFromMessages(messages, breadcrumb.toolCallId),
-        content: toolResult.content,
-        details: toolResult.details,
-        isError,
-        timestamp,
-      });
+    let entry = this.runners.get(breadcrumb.channelId);
+    if (!entry) {
+      await this.ensureChannelContext(breadcrumb.channelId);
+      const current = this.dispatches.peek(breadcrumb.callId);
+      if (!current) return;
+      breadcrumb = current;
+      entry = this.runners.get(breadcrumb.channelId);
     }
-
-    await this.finishDispatchResolution(breadcrumb, messages, true);
-  }
-
-  private async finishDispatchResolution(
-    breadcrumb: DispatchedCall,
-    messages: AgentMessage[],
-    continueWhenClear: boolean,
-  ): Promise<void> {
-    await this.ensureChannelContext(breadcrumb.channelId);
-    const runner = this.runners.get(breadcrumb.channelId)!.runner;
-    messages = runner.trimTrailingAbortedAssistant(messages);
-
-    const toolResultMessage = [...messages].reverse().find((message) => (
-      (message as { role?: string; toolCallId?: string }).role === "toolResult" &&
-      (message as { toolCallId?: string }).toolCallId === breadcrumb.toolCallId
-    ));
-    if (!toolResultMessage) {
+    if (!entry) {
       throw new AgentWorkerError(
         "invalid_state",
-        `No toolResult message found for ${breadcrumb.toolCallId}`,
+        `No runner for recovered dispatch channel ${breadcrumb.channelId}`,
       );
     }
-    await runner.replaceToolResult(breadcrumb.toolCallId, toolResultMessage);
-    this.dispatches.deleteClaimed(breadcrumb.callId, breadcrumb.resolvingToken);
 
-    const interruptedAfterDispatch =
-      (this.lastUserInterruptAt.get(breadcrumb.channelId) ?? 0) >= breadcrumb.createdAt;
-    if (
-      continueWhenClear &&
-      !interruptedAfterDispatch &&
-      this.dispatches.listForChannel(breadcrumb.channelId).length === 0
-    ) {
+    const messages = await this.readRunnerMessages(breadcrumb.channelId);
+    if (!hasToolResultMessage(messages, breadcrumb.toolCallId)) {
+      const toolResult = isError ? methodErrorResult(result) : toAgentToolResult(result);
+      await entry.runner.appendToolResult({
+        role: "toolResult",
+        toolCallId: breadcrumb.toolCallId,
+        toolName: breadcrumb.toolName ?? breadcrumb.methodName ?? "unknown",
+        content: toolResult.content,
+        details: toolResult.details,
+        isError: isError || (toolResult as { isError?: boolean }).isError === true,
+        timestamp: Date.now(),
+      } as AgentMessage);
+    }
+
+    this.dispatches.deleteOne(breadcrumb.callId);
+    if (this.dispatches.listForChannel(breadcrumb.channelId).length === 0) {
       const projector = this.getOrCreateProjector(breadcrumb.channelId);
-      const dispatcher = this.getOrCreateDispatcher(breadcrumb.channelId, runner, projector);
+      const dispatcher = this.getOrCreateDispatcher(breadcrumb.channelId, entry.runner, projector);
       dispatcher.submitContinue();
     }
-  }
-
-  private async finalizeAbandonedDispatch(
-    breadcrumb: DispatchedCall,
-    messages: AgentMessage[],
-  ): Promise<void> {
-    const nextMessages = replaceToolResultMessage(messages, breadcrumb.toolCallId, {
-      role: "toolResult",
-      toolCallId: breadcrumb.toolCallId,
-      toolName: toolNameFromMessages(messages, breadcrumb.toolCallId),
-      content: [{ type: "text", text: "Dispatched call superseded by user message" }],
-      details: {
-        __natstack_dispatch_abandoned: true,
-        callId: breadcrumb.callId,
-      },
-      isError: true,
-      timestamp: Date.now(),
-    });
-    await this.finishDispatchResolution(breadcrumb, nextMessages, false);
   }
 
   private async dispatchUiPrompt(
@@ -2023,6 +1985,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     if (!panel) throw new Error(`No panel participant in channel ${channelId}`);
 
     const callId = crypto.randomUUID();
+    const waiter = this.createMethodResultWaiter(channelId, callId, signal);
     const breadcrumbKind: DispatchedCallKind =
       meta?.mode === "approval" ? "approval" : "ui-prompt";
     this.dispatches.store({
@@ -2035,32 +1998,28 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         breadcrumbKind === "approval"
           ? JSON.stringify(meta?.toolInput ?? {})
           : null,
+      targetParticipantId: panel.participantId,
+      methodName: "ui_prompt",
+      argsJson: JSON.stringify({ kind, ...params }),
     });
+    this.dispatches.markDispatched(callId);
     try {
-      await channel.callMethod(
-        callerId,
-        panel.participantId,
-        callId,
-        "ui_prompt",
-        { kind, ...params },
-      );
+      await channel.callMethod(callerId, panel.participantId, callId, "ui_prompt", { kind, ...params });
+      const completion = await waiter.promise;
+      if (completion.isError) {
+        throw new Error(resultToAnswerText(completion.result));
+      }
+      if (kind === "confirm") return completion.result === true || completion.result === "true";
+      if (completion.result == null) return undefined;
+      return typeof completion.result === "string"
+        ? completion.result
+        : JSON.stringify(completion.result);
     } catch (err) {
-      this.dispatches.deleteOne(callId);
+      waiter.cancel(err);
+      await this.cancelChannelMethodCall(channelId, callId);
       throw err;
-    }
-
-    this.abortAgentAfterDispatch(channelId, "ui-prompt-dispatch", kind);
-    const placeholder = makeDispatchPlaceholder(toolCallId, callId, breadcrumbKind);
-    throw new DispatchedError(placeholder);
-  }
-
-  private async absorbAbandonedDispatches(channelId: string): Promise<void> {
-    const pending = this.dispatches.listForChannel(channelId);
-    if (pending.length === 0) return;
-
-    for (const breadcrumb of pending) {
-      this.dispatches.markAbandoned(breadcrumb.callId, "user-superseded");
-      await this.sendDispatchCancel(channelId, breadcrumb.callId, "user-superseded");
+    } finally {
+      this.dispatches.deleteOne(callId);
     }
   }
 
@@ -2080,16 +2039,20 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   private async notifyDispatchesInterrupted(channelId: string): Promise<void> {
     const pending = this.dispatches.listForChannel(channelId);
+    this.rejectMethodWaitersForChannel(channelId, "Request was aborted");
     if (pending.length === 0) return;
 
     for (const breadcrumb of pending) {
       try {
+        await this.cancelChannelMethodCall(channelId, breadcrumb.callId);
         await this.sendDispatchCancel(channelId, breadcrumb.callId, "user-interrupted");
       } catch (err) {
         console.warn(
           `[AgentWorkerBase] Failed to cancel dispatch ${breadcrumb.callId} on interrupt:`,
           err,
         );
+      } finally {
+        this.dispatches.deleteOne(breadcrumb.callId);
       }
     }
   }
@@ -2107,8 +2070,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   ): Promise<void> {
     if (!this.shouldProcess(event)) return;
     await this.ensureChannelContext(channelId);
-    await this.absorbAbandonedDispatches(channelId);
-    await this.drainDeferredDispatchesFor(channelId);
 
     const runner = this.runners.get(channelId)!.runner;
     const projector = this.getOrCreateProjector(channelId);
@@ -2502,47 +2463,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   protected static readonly _SAFE_TOOL_NAMES_REFERENCE = SAFE_TOOL_NAMES_DEFAULT;
 }
 
-function makeDispatchPlaceholder(
-  toolCallId: string,
-  callId: string,
-  kind: DispatchedCallKind,
-): AgentToolResult<any> {
-  return {
-    content: [{ type: "text", text: `dispatched: ${kind} callId=${callId}` }],
-    details: { __natstack_dispatch: true, callId, kind, toolCallId },
-  };
-}
-
-function hasToolResultMessage(messages: AgentMessage[], toolCallId: string): boolean {
-  return messages.some((message) => (
-    (message as { role?: string; toolCallId?: string }).role === "toolResult" &&
-    (message as { toolCallId?: string }).toolCallId === toolCallId
-  ));
-}
-
-function toolNameFromMessages(messages: AgentMessage[], toolCallId: string): string {
-  const match = messages.find((message) => (
-    (message as { role?: string; toolCallId?: string }).role === "toolResult" &&
-    (message as { toolCallId?: string }).toolCallId === toolCallId
-  )) as { toolName?: string } | undefined;
-  return match?.toolName ?? "unknown";
-}
-
-function replaceToolResultMessage(
-  messages: AgentMessage[],
-  toolCallId: string,
-  replacement: AgentMessage,
-): AgentMessage[] {
-  const index = messages.findIndex((message) => (
-    (message as { role?: string; toolCallId?: string }).role === "toolResult" &&
-    (message as { toolCallId?: string }).toolCallId === toolCallId
-  ));
-  if (index < 0) return messages;
-  const next = messages.slice();
-  next[index] = replacement;
-  return next;
-}
-
 function validateAgentMessages(messages: AgentMessage[], source: string): AgentMessage[] {
   for (const [index, message] of messages.entries()) {
     if ((message as { role?: string }).role !== "toolResult") continue;
@@ -2563,6 +2483,14 @@ function validateAgentMessages(messages: AgentMessage[], source: string): AgentM
   return trimTrailingEmptyAbortedAssistant(messages);
 }
 
+function methodErrorResult(result: unknown): AgentToolResult<any> {
+  return {
+    content: [{ type: "text", text: resultToAnswerText(result) }],
+    details: undefined,
+    isError: true,
+  } as unknown as AgentToolResult<any>;
+}
+
 function toAgentToolResult(result: unknown): AgentToolResult<any> {
   if (
     typeof result === "object" &&
@@ -2571,17 +2499,27 @@ function toAgentToolResult(result: unknown): AgentToolResult<any> {
   ) {
     return result as AgentToolResult<any>;
   }
-  const text =
-    typeof result === "string"
-      ? result
-      : JSON.stringify(result) ?? String(result);
   return {
-    content: [{ type: "text", text }],
+    content: [{ type: "text", text: resultToAnswerText(result) }],
     details: undefined,
   };
 }
 
-function decodeBufferedDispatchResult(json: string): unknown {
-  const parsed = JSON.parse(json) as { value?: unknown };
-  return parsed.value;
+function decodeBufferedDispatchResult(encoded: string): unknown {
+  return (JSON.parse(encoded) as { value?: unknown }).value;
+}
+
+function resultToAnswerText(result: unknown): string {
+  if (result == null) return "";
+  if (typeof result === "string") return result;
+  if (
+    typeof result === "object" &&
+    result !== null
+  ) {
+    const error = (result as { error?: unknown }).error;
+    if (typeof error === "string") return error;
+    const message = (result as { message?: unknown }).message;
+    if (typeof message === "string") return message;
+  }
+  return JSON.stringify(result) ?? String(result);
 }

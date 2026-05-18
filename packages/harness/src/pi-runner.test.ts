@@ -101,4 +101,71 @@ describe("PiRunner", () => {
 
     runner.dispose();
   });
+
+  it("isolates permanent provenance failures so one bad event does not poison retries", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const appendBatch = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Cannot resolve unknown dispatch: missing"))
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("Cannot resolve unknown dispatch: missing"));
+    const runner = new PiRunner(createOptions()) as unknown as {
+      storage: { appendBatch: typeof appendBatch };
+      provenanceQueue: Array<Record<string, unknown>>;
+      flushProvenance(): Promise<void>;
+    };
+    const valid = { eventId: "valid", kind: "system_event", payload: {} };
+    const invalid = {
+      eventId: "invalid",
+      kind: "dispatch_resolved",
+      payload: { dispatchCallId: "missing" },
+    };
+    runner.storage = { appendBatch };
+    runner.provenanceQueue = [valid, invalid];
+
+    try {
+      await runner.flushProvenance();
+
+      expect(appendBatch).toHaveBeenCalledTimes(3);
+      expect(appendBatch).toHaveBeenNthCalledWith(2, [valid]);
+      expect(appendBatch).toHaveBeenNthCalledWith(3, [invalid]);
+      expect(runner.provenanceQueue).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(
+        "[PiRunner] dropping invalid provenance event:",
+        expect.objectContaining({ eventId: "invalid", kind: "dispatch_resolved" }),
+      );
+      expect(warn).not.toHaveBeenCalledWith(
+        "[PiRunner] provenance flush failed:",
+        expect.anything(),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("records completed tool results as resolved dispatch provenance", () => {
+    const runner = new PiRunner(createOptions()) as unknown as {
+      provenanceQueue: Array<Record<string, unknown>>;
+      queueMessageProvenance(message: unknown, messageEntryId: string): void;
+    };
+    runner.provenanceQueue = [];
+
+    runner.queueMessageProvenance(
+      {
+        role: "toolResult",
+        toolCallId: "call_1",
+        toolName: "eval",
+        content: [{ type: "text", text: "done" }],
+      },
+      "entry-result",
+    );
+
+    expect(runner.provenanceQueue).toMatchObject([
+      {
+        kind: "dispatch_resolved",
+        anchorId: "call_1",
+        payload: { dispatchCallId: "call_1", resultEntryId: "entry-result" },
+      },
+    ]);
+  });
 });

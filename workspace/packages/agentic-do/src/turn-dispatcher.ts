@@ -46,6 +46,9 @@ export class TurnDispatcher {
   private drainGeneration = 0;
   private lastTypingOn = false;
   private disposed = false;
+  private activeWork:
+    | { generation: number; kind: WorkItem["kind"]; sawAgentStart: boolean; sawAgentEnd: boolean }
+    | null = null;
   private readonly unsub: () => void;
   private readonly log: Pick<Console, "warn" | "error">;
 
@@ -133,6 +136,10 @@ export class TurnDispatcher {
   private handleEvent(event: RunnerEvent): void {
     if (this.disposed) return;
     switch (event.type) {
+      case "agent_start": {
+        if (this.activeWork) this.activeWork.sawAgentStart = true;
+        return;
+      }
       case "message_start": {
         const msg = (event as { message?: unknown }).message;
         if (!isUserMessage(msg)) return;
@@ -141,6 +148,7 @@ export class TurnDispatcher {
         return;
       }
       case "agent_end": {
+        if (this.activeWork) this.activeWork.sawAgentEnd = true;
         this.running = false;
         if (this.pendingSteered.length > 0) {
           const stranded = this.pendingSteered;
@@ -174,6 +182,12 @@ export class TurnDispatcher {
       while (!this.disposed && generation === this.drainGeneration && this.pending.length > 0) {
         const work = this.pending.shift()!;
         this.running = true;
+        this.activeWork = {
+          generation,
+          kind: work.kind,
+          sawAgentStart: false,
+          sawAgentEnd: false,
+        };
         this.notifyTyping();
         try {
           if (work.kind === "continue") {
@@ -182,6 +196,7 @@ export class TurnDispatcher {
             await this.opts.runner.prompt(work.input);
           }
           if (generation !== this.drainGeneration) return;
+          this.warnIfWorkProducedNoLifecycle(work);
         } catch (err) {
           if (generation !== this.drainGeneration) return;
           this.log.warn(
@@ -208,8 +223,26 @@ export class TurnDispatcher {
       }
     } finally {
       if (generation !== this.drainGeneration) return;
+      this.activeWork = null;
       this.draining = false;
       this.notifyTyping();
+    }
+  }
+
+  private warnIfWorkProducedNoLifecycle(work: WorkItem): void {
+    if (work.kind !== "continue") return;
+    const active = this.activeWork;
+    if (!active || active.generation !== this.drainGeneration || active.kind !== work.kind) return;
+    if (!active.sawAgentStart) {
+      this.log.warn(
+        `[TurnDispatcher] ${work.kind === "continue" ? "continueAgent" : "prompt"} completed without agent_start`,
+      );
+      return;
+    }
+    if (!active.sawAgentEnd) {
+      this.log.warn(
+        `[TurnDispatcher] ${work.kind === "continue" ? "continueAgent" : "prompt"} completed without agent_end`,
+      );
     }
   }
 }

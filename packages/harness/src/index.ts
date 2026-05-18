@@ -83,7 +83,6 @@ export { SEARCH_PROVIDER_ORIGINS } from "./extensions/web/provider.js";
 
 // UI bridge
 export {
-  DispatchedError,
   NatStackExtensionUIContext,
 } from "./natstack-extension-context.js";
 export type { NatStackScopedUiContext } from "./natstack-extension-context.js";

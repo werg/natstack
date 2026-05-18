@@ -20,7 +20,7 @@ Panel (browser)          Channel DO (workerd)     Worker DO (workerd, embeds Pi)
      │                        │    typing-indicator
      │                        │    deltas)
      │                        │                        │
-     │── method-result ──────►│── onCallResult ───────►│── resolve continuation Promise
+     │── method-result ──────►│── persisted event ─────►│── resolve continuation Promise
      │                        │                        │
 ```
 
@@ -162,9 +162,9 @@ metadata-update event.
 Tool callMethod and UI feedback_form awaits use a `pending_calls` SQL table
 plus an in-memory `pendingResolvers` Map. When the worker dispatches a call
 via `channel.callMethod(callerId, targetId, callId, method, args)`, it stores
-a continuation and awaits a Promise. When the channel routes the result via
-`onCallResult(callId, result, isError)`, the worker resolves (or rejects) the
-Promise.
+a continuation and awaits a Promise. When the channel persists and broadcasts
+the corresponding `method-result` event, the worker observes that same channel
+event and resolves (or rejects) the Promise.
 
 This is the bridge between Pi's synchronous-await tool API and the channel's
 asynchronous fire-and-forget call/result protocol.

@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RPC_METHODS } from "@natstack/shared/approvalContract";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import { createVerifiedCaller } from "@natstack/shared/serviceDispatcher";
 import { createApprovalPushBridge, type ApprovalPushBridge } from "../../src/server/services/approvalPushBridge.js";
 import { createApprovalQueue, type ApprovalQueueWithListeners } from "../../src/server/services/approvalQueue.js";
 import { createPushMetrics, type PushMetrics } from "../../src/server/services/pushMetrics.js";
@@ -37,7 +38,11 @@ class FakeTransport {
     if (!service || !method) {
       throw new Error(`No fake service registered for ${rpcMethod}`);
     }
-    return service.handler({ callerId: this.callerId, callerKind: "shell" }, method, args);
+    return service.handler(
+      { caller: createVerifiedCaller(this.callerId, "shell") },
+      method,
+      args
+    );
   }
 }
 

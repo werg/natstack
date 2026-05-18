@@ -30,15 +30,6 @@ export interface ExtensionProcessState {
   rpcToken: string;
 }
 
-export interface ExtensionHostCodeIdentityResolver {
-  resolveByCallerId(callerId: string): {
-    callerId: string;
-    callerKind: "panel" | "worker";
-    repoPath: string;
-    effectiveVersion: string;
-  } | null;
-}
-
 export function invocationFromServiceContext(
   ctx: ServiceContext,
   extensionName: string,

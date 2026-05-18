@@ -122,14 +122,6 @@ function makeHost(overrides: {
     eventService: eventService as any,
     approvalQueue,
     userlandApprovalGrantStore,
-    codeIdentityResolver: {
-      resolveByCallerId: vi.fn((callerId: string) => ({
-        callerId,
-        callerKind: "panel" as const,
-        repoPath: "panels/dev",
-        effectiveVersion: "panel-ev",
-      })),
-    },
     getGatewayUrl: () => "http://127.0.0.1:3000",
     extensionTransport: overrides.extensionTransport ?? {
       call: vi.fn(async () => {

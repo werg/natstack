@@ -33,7 +33,11 @@ import {
 } from "@natstack/shared/userlandServiceRpc";
 
 import type { RuntimeFs } from "./tools/runtime-fs.js";
-import { type NatStackResources, type RpcCaller, loadNatStackResources } from "./resource-loader.js";
+import {
+  type NatStackResources,
+  type RpcCaller,
+  loadNatStackResources,
+} from "./resource-loader.js";
 import { composeSystemPrompt, type SystemPromptMode } from "./system-prompt.js";
 import { PiExtensionRuntime } from "./pi-extension-runtime.js";
 import {
@@ -59,7 +63,7 @@ import {
 import { createAskUserExtension, type AskUserParams } from "./extensions/ask-user.js";
 import { createWebToolsExtension } from "./extensions/web/index.js";
 import type { CredentialPresenceProbe } from "./extensions/web/provider.js";
-import { DispatchedError, type NatStackScopedUiContext } from "./natstack-extension-context.js";
+import type { NatStackScopedUiContext } from "./natstack-extension-context.js";
 import {
   GadSessionStorage,
   type GadSessionMetadata,
@@ -75,8 +79,15 @@ export type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 
 /** Built-in file tool names that are always active alongside roster tools. */
 const BUILTIN_TOOL_NAMES = [
-  "read", "edit", "write", "grep", "find", "ls",
-  "web_search", "web_fetch", "web_read",
+  "read",
+  "edit",
+  "write",
+  "grep",
+  "find",
+  "ls",
+  "web_search",
+  "web_fetch",
+  "web_read",
 ] as const;
 
 export interface PiRunnerGadProvenance {
@@ -109,12 +120,12 @@ export interface PiRunnerOptions {
     method: string,
     args: unknown,
     signal: AbortSignal | undefined,
-    onStreamUpdate?: StreamUpdateCallback,
+    onStreamUpdate?: StreamUpdateCallback
   ) => Promise<AgentToolResult<any>>;
   askUserCallback: (
     toolCallId: string,
     params: AskUserParams,
-    signal: AbortSignal | undefined,
+    signal: AbortSignal | undefined
   ) => Promise<AgentToolResult<any> | string>;
   model: string;
   getApiKey: () => Promise<string>;
@@ -125,7 +136,9 @@ export interface PiRunnerOptions {
   cwd?: string;
   gad?: PiRunnerGadProvenance;
   sessionStorage?: GadSessionStorage;
-  onPrepareNextTurn?: (snapshot: TurnSnapshot) => Promise<TurnSnapshot | void> | TurnSnapshot | void;
+  onPrepareNextTurn?: (
+    snapshot: TurnSnapshot
+  ) => Promise<TurnSnapshot | void> | TurnSnapshot | void;
   compactionPolicy?: CompactionTriggerOptions;
   /**
    * Optional probe asking whether the credentials runtime holds a credential
@@ -276,14 +289,14 @@ export class PiRunner {
     if (!this.harness) throw new AgentWorkerError("invalid_state", "PiRunner not initialized");
 
     this.harnessUnsub = this.harness.subscribe((event, signal) =>
-      this.handleHarnessEvent(event, signal),
+      this.handleHarnessEvent(event, signal)
     );
 
     this.harness.on("context", async (event) => ({
       messages: await this.hooks.emitTransformContext(event.messages),
     }));
     this.harness.on("before_provider_request", (event) =>
-      this.hooks.emitBeforeProviderRequest(event),
+      this.hooks.emitBeforeProviderRequest(event)
     );
     this.harness.on("before_agent_start", async () => {
       this.currentResources = await loadNatStackResources({ rpc: this.options.rpc });
@@ -294,15 +307,15 @@ export class PiRunner {
         await this.recordMutationObserved(
           event.toolCallId,
           event.isError ? "error" : "ok",
-          event.isError ? this.summarizeToolResult({ content: event.content, details: event.details }) : undefined,
+          event.isError
+            ? this.summarizeToolResult({ content: event.content, details: event.details })
+            : undefined
         );
       } else {
-        await this.recordReadOrObservation(
-          event.toolCallId,
-          event.toolName,
-          event.input,
-          { content: event.content, details: event.details },
-        );
+        await this.recordReadOrObservation(event.toolCallId, event.toolName, event.input, {
+          content: event.content,
+          details: event.details,
+        });
       }
       return undefined;
     });
@@ -321,22 +334,15 @@ export class PiRunner {
   private async dispatchToolCallEvent(
     toolCallId: string,
     toolName: string,
-    input: Record<string, unknown>,
-  ): Promise<{ block?: boolean; reason?: string; placeholder?: AgentToolResult<any> } | undefined> {
-    try {
-      const result = await this.extensionRuntime!.dispatch("tool_call", {
-        type: "tool_call",
-        toolCallId,
-        toolName,
-        input,
-      });
-      return result ?? undefined;
-    } catch (err) {
-      if (err instanceof DispatchedError) {
-        return { placeholder: err.placeholderResult };
-      }
-      throw err;
-    }
+    input: Record<string, unknown>
+  ): Promise<{ block?: boolean; reason?: string } | undefined> {
+    const result = await this.extensionRuntime!.dispatch("tool_call", {
+      type: "tool_call",
+      toolCallId,
+      toolName,
+      input,
+    });
+    return result ?? undefined;
   }
 
   private composeCurrentSystemPrompt(): string {
@@ -357,12 +363,17 @@ export class PiRunner {
     await this.extensionRuntime!.dispatch("session_start", { type: "session_start" });
     if (this.harness) {
       const tools = this.computeActiveTools();
-      await this.harness.setTools(tools, tools.map((tool) => tool.name));
+      await this.harness.setTools(
+        tools,
+        tools.map((tool) => tool.name)
+      );
     }
   }
 
   private computeActiveTools(): AgentTool<any>[] {
-    return this.extensionRuntime!.getActiveTools(this.builtinTools).map((tool) => this.wrapTool(tool));
+    return this.extensionRuntime!.getActiveTools(this.builtinTools).map((tool) =>
+      this.wrapTool(tool)
+    );
   }
 
   private wrapTool(tool: AgentTool<any>): AgentTool<any> {
@@ -372,9 +383,8 @@ export class PiRunner {
         const dispatchResult = await this.dispatchToolCallEvent(
           toolCallId,
           tool.name,
-          this.asJsonRecord(params) ?? {},
+          this.asJsonRecord(params) ?? {}
         );
-        if (dispatchResult?.placeholder) return dispatchResult.placeholder;
         if (dispatchResult?.block) {
           throw new Error(dispatchResult.reason ?? `Tool "${tool.name}" blocked`);
         }
@@ -398,7 +408,10 @@ export class PiRunner {
     if (snapshot.thinkingLevel !== this.harness.getThinkingLevel()) {
       await this.harness.setThinkingLevel(snapshot.thinkingLevel);
     }
-    await this.harness.setTools(snapshot.tools, snapshot.tools.map((tool) => tool.name));
+    await this.harness.setTools(
+      snapshot.tools,
+      snapshot.tools.map((tool) => tool.name)
+    );
   }
 
   private async buildSnapshot(): Promise<TurnSnapshot> {
@@ -427,10 +440,7 @@ export class PiRunner {
     }
   }
 
-  private async handleHarnessEvent(
-    event: AgentHarnessEvent,
-    _signal?: AbortSignal,
-  ): Promise<void> {
+  private async handleHarnessEvent(event: AgentHarnessEvent, _signal?: AbortSignal): Promise<void> {
     if (event.type === "agent_start") this.running = true;
     if (event.type === "message_end") {
       await this.handleMessageEnd(event.message);
@@ -472,6 +482,7 @@ export class PiRunner {
     if (role === "toolResult") {
       const toolCallId = (message as { toolCallId?: unknown }).toolCallId;
       const toolName = (message as { toolName?: unknown }).toolName;
+      const details = (message as { details?: unknown }).details;
       if (typeof toolCallId === "string" && toolCallId.length > 0) {
         this.provenanceQueue.push({
           eventId: uuidv7(),
@@ -486,7 +497,7 @@ export class PiRunner {
             toolName: typeof toolName === "string" ? toolName : "unknown",
             summary: this.summarizeToolResult({
               content: (message as { content?: unknown }).content ?? [],
-              details: null,
+              details,
             } as AgentToolResult<unknown>),
           },
         });
@@ -501,9 +512,40 @@ export class PiRunner {
     try {
       await this.storage.appendBatch(batch);
     } catch (err) {
-      this.provenanceQueue = batch.concat(this.provenanceQueue);
-      console.warn("[PiRunner] provenance flush failed:", err);
+      const outcome = await this.flushProvenanceIndividually(batch, err);
+      if (outcome.requeued > 0 || !isPermanentProvenanceError(err)) {
+        console.warn("[PiRunner] provenance flush failed:", err);
+      }
     }
+  }
+
+  private async flushProvenanceIndividually(
+    batch: GadEventSpec[],
+    batchError: unknown
+  ): Promise<{ dropped: number; requeued: number }> {
+    if (!this.storage) return { dropped: 0, requeued: 0 };
+    const retry: GadEventSpec[] = [];
+    let dropped = 0;
+    for (const event of batch) {
+      try {
+        await this.storage.appendBatch([event]);
+      } catch (err) {
+        if (isPermanentProvenanceError(err)) {
+          dropped += 1;
+          console.warn("[PiRunner] dropping invalid provenance event:", {
+            eventId: event.eventId,
+            kind: event.kind,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          continue;
+        }
+        retry.push(event);
+      }
+    }
+    if (retry.length > 0 || !isPermanentProvenanceError(batchError)) {
+      this.provenanceQueue = retry.concat(this.provenanceQueue);
+    }
+    return { dropped, requeued: retry.length };
   }
 
   private async appendMessageWithProvenance(message: AgentMessage): Promise<string> {
@@ -529,28 +571,18 @@ export class PiRunner {
 
   async appendToolResult(message: AgentMessage): Promise<string> {
     if ((message as { role?: string }).role !== "toolResult") {
-      throw new AgentWorkerError("invalid_argument", "appendToolResult requires a toolResult message");
+      throw new AgentWorkerError(
+        "invalid_argument",
+        "appendToolResult requires a toolResult message"
+      );
     }
     return this.appendMessageWithProvenance(message);
-  }
-
-  async replaceToolResult(toolCallId: string, message: AgentMessage): Promise<string> {
-    if (!this.session) throw new AgentWorkerError("invalid_state", "PiRunner not initialized");
-    const entries = (await this.session.getEntries()).filter((entry) => entry.type === "message");
-    const placeholder = [...entries].reverse().find((entry) => {
-      const msg = entry.message as { role?: string; toolCallId?: string };
-      return msg.role === "toolResult" && msg.toolCallId === toolCallId;
-    });
-    if (placeholder) {
-      await this.session.moveTo(placeholder.parentId);
-    }
-    return this.appendToolResult(message);
   }
 
   private async writeMutationIntent(
     toolCallId: string,
     toolName: "edit" | "write",
-    params: unknown,
+    params: unknown
   ): Promise<void> {
     if (!this.storage || !this.options.gad) return;
     const absPath = this.toolInputPath(toolName, params);
@@ -591,7 +623,7 @@ export class PiRunner {
   private async recordMutationObserved(
     toolCallId: string,
     outcome: "ok" | "error",
-    errorMessage?: string,
+    errorMessage?: string
   ): Promise<void> {
     const pending = this.pendingMutations.get(toolCallId);
     if (!pending) return;
@@ -621,7 +653,7 @@ export class PiRunner {
     toolCallId: string,
     toolName: string,
     params: unknown,
-    result: AgentToolResult<any>,
+    result: AgentToolResult<any>
   ): Promise<void> {
     if (!this.storage || !this.options.gad) return;
     const absPath = this.toolInputPath(toolName, params);
@@ -690,7 +722,7 @@ export class PiRunner {
       return await this.options.rpc.call<GadBlobSnapshot>(
         "main",
         "blobstore.putBase64",
-        Buffer.from(value).toString("base64"),
+        Buffer.from(value).toString("base64")
       );
     } catch (err) {
       console.warn("[PiRunner] blobstore put failed:", err);
@@ -703,15 +735,17 @@ export class PiRunner {
     let intents: Array<{ event_id: string; payload_json: string }> = [];
     let observed: Array<{ payload_json: string }> = [];
     try {
-      const intentResult = await this.gad.call<{ rows: Array<{ event_id: string; payload_json: string }> }>(
+      const intentResult = await this.gad.call<{
+        rows: Array<{ event_id: string; payload_json: string }>;
+      }>(
         "query",
         "SELECT event_id, payload_json FROM gad_events WHERE kind = 'file_mutation_planned'",
-        [],
+        []
       );
       const observedResult = await this.gad.call<{ rows: Array<{ payload_json: string }> }>(
         "query",
         "SELECT payload_json FROM gad_events WHERE kind = 'file_mutation_observed'",
-        [],
+        []
       );
       intents = intentResult.rows;
       observed = observedResult.rows;
@@ -721,14 +755,16 @@ export class PiRunner {
     }
 
     const observedParents = new Set(
-      observed.map((o) => {
-        try {
-          const payload = JSON.parse(o.payload_json) as { mutationId?: unknown };
-          return typeof payload.mutationId === "string" ? payload.mutationId : null;
-        } catch {
-          return null;
-        }
-      }).filter((id): id is string => typeof id === "string"),
+      observed
+        .map((o) => {
+          try {
+            const payload = JSON.parse(o.payload_json) as { mutationId?: unknown };
+            return typeof payload.mutationId === "string" ? payload.mutationId : null;
+          } catch {
+            return null;
+          }
+        })
+        .filter((id): id is string => typeof id === "string")
     );
     const orphans = intents.filter((intent) => !observedParents.has(intent.event_id));
     for (const orphan of orphans) {
@@ -741,17 +777,19 @@ export class PiRunner {
         path,
       };
       await this.hooks.emitEvent(event);
-      await this.storage.appendBatch([{
-        eventId: uuidv7(),
-        kind: "system_event",
-        anchorKind: "system",
-        anchorId: orphan.event_id,
-        payload: {
-          kind: event.kind,
-          intentEntryId: event.intentEntryId,
-          path,
+      await this.storage.appendBatch([
+        {
+          eventId: uuidv7(),
+          kind: "system_event",
+          anchorKind: "system",
+          anchorId: orphan.event_id,
+          payload: {
+            kind: event.kind,
+            intentEntryId: event.intentEntryId,
+            path,
+          },
         },
-      }]);
+      ]);
     }
   }
 
@@ -760,8 +798,12 @@ export class PiRunner {
     const cwd = this.options.cwd ?? "/";
     if (toolName === "read" && rawPath) return resolveReadPath(rawPath, cwd);
     if (
-      (toolName === "edit" || toolName === "write" || toolName === "grep" ||
-        toolName === "find" || toolName === "ls") && rawPath
+      (toolName === "edit" ||
+        toolName === "write" ||
+        toolName === "grep" ||
+        toolName === "find" ||
+        toolName === "ls") &&
+      rawPath
     ) {
       return resolveToCwd(rawPath, cwd);
     }
@@ -777,8 +819,11 @@ export class PiRunner {
     const rel = isAbsolute(filePath) ? relativePath(cwd, filePath) : filePath;
     const normalized = rel.replace(/\\/gu, "/").replace(/\/+/gu, "/").replace(/^\.\//u, "");
     if (
-      !normalized || normalized === "." || normalized.startsWith("../") ||
-      normalized === ".." || normalized.startsWith("/")
+      !normalized ||
+      normalized === "." ||
+      normalized.startsWith("../") ||
+      normalized === ".." ||
+      normalized.startsWith("/")
     ) {
       return null;
     }
@@ -798,13 +843,16 @@ export class PiRunner {
   private toolResultText(result: AgentToolResult<any>): string {
     const content = (result as { content?: unknown }).content;
     if (!Array.isArray(content)) return "";
-    return content.map((block) => {
-      if (!block || typeof block !== "object") return String(block);
-      const item = block as { type?: string; text?: string; mimeType?: string };
-      if (item.type === "text") return item.text ?? "";
-      if (item.type === "image") return `[image ${item.mimeType ?? "unknown"}]`;
-      return JSON.stringify(item);
-    }).filter(Boolean).join("\n");
+    return content
+      .map((block) => {
+        if (!block || typeof block !== "object") return String(block);
+        const item = block as { type?: string; text?: string; mimeType?: string };
+        if (item.type === "text") return item.text ?? "";
+        if (item.type === "image") return `[image ${item.mimeType ?? "unknown"}]`;
+        return JSON.stringify(item);
+      })
+      .filter(Boolean)
+      .join("\n");
   }
 
   private stringParam(params: unknown, key: string): string | null {
@@ -871,10 +919,7 @@ export class PiRunner {
   buildUserMessage(input: RunnerTurnInput): AgentMessage {
     return {
       role: "user",
-      content: [
-        { type: "text", text: input.content },
-        ...(input.images ?? []),
-      ],
+      content: [{ type: "text", text: input.content }, ...(input.images ?? [])],
       timestamp: Date.now(),
     } as AgentMessage;
   }
@@ -916,7 +961,7 @@ export class PiRunner {
   async executeToolDirect(
     toolName: string,
     toolCallId: string,
-    params: unknown,
+    params: unknown
   ): Promise<AgentToolResult<any>> {
     this.markToolCallPreApproved(toolCallId);
     const tool = this.computeActiveTools().find((candidate) => candidate.name === toolName);
@@ -932,7 +977,7 @@ export class PiRunner {
         toolCallId,
         params as never,
         new AbortController().signal,
-        undefined,
+        undefined
       );
       if (toolName === "edit" || toolName === "write") {
         await this.recordMutationObserved(toolCallId, "ok");
@@ -946,7 +991,7 @@ export class PiRunner {
         await this.recordMutationObserved(
           toolCallId,
           "error",
-          err instanceof Error ? err.message : String(err),
+          err instanceof Error ? err.message : String(err)
         );
         await this.flushProvenance();
       }
@@ -956,11 +1001,13 @@ export class PiRunner {
 
   trimTrailingAbortedAssistant(messages: AgentMessage[]): AgentMessage[] {
     if (messages.length === 0) return messages;
-    const last = messages[messages.length - 1] as {
-      role?: string;
-      stopReason?: string;
-      content?: unknown;
-    } | undefined;
+    const last = messages[messages.length - 1] as
+      | {
+          role?: string;
+          stopReason?: string;
+          content?: unknown;
+        }
+      | undefined;
     if (!last || last.role !== "assistant" || last.stopReason !== "aborted") {
       return messages;
     }
@@ -1020,7 +1067,7 @@ function resolveModel(modelName: string): Model<any> {
   if (colonIdx < 0) {
     throw new AgentWorkerError(
       "invalid_argument",
-      `PiRunner: model must be "provider:model", got: ${modelName}`,
+      `PiRunner: model must be "provider:model", got: ${modelName}`
     );
   }
   const provider = modelName.slice(0, colonIdx);
@@ -1104,13 +1151,22 @@ function createExecutionEnv(cwd: string, fs: RuntimeFs): ExecutionEnv {
       try {
         const abs = resolveToCwd(path, cwd);
         const entries = await fs.readdir(abs, { withFileTypes: true });
-        return ok(entries.map((entry) => ({
-          name: entry.name,
-          path: resolveToCwd(entry.name, abs),
-          kind: entry.isDirectory() ? "directory" : entry.isSymbolicLink() ? "symlink" : "file",
-          size: 0,
-          mtimeMs: 0,
-        } satisfies FileInfo)));
+        return ok(
+          entries.map(
+            (entry) =>
+              ({
+                name: entry.name,
+                path: resolveToCwd(entry.name, abs),
+                kind: entry.isDirectory()
+                  ? "directory"
+                  : entry.isSymbolicLink()
+                    ? "symlink"
+                    : "file",
+                size: 0,
+                mtimeMs: 0,
+              }) satisfies FileInfo
+          )
+        );
       } catch (err) {
         return fileErr("unknown", path, err);
       }
@@ -1175,7 +1231,7 @@ function createExecutionEnv(cwd: string, fs: RuntimeFs): ExecutionEnv {
         ok: false,
         error: new ExecutionError(
           "shell_unavailable",
-          "Shell execution is not exposed through PiRunner env",
+          "Shell execution is not exposed through PiRunner env"
         ),
       };
     },
@@ -1186,18 +1242,25 @@ function ok<T>(value: T): Result<T, never> {
   return { ok: true, value };
 }
 
-function fileErr<T>(
-  code: FileError["code"],
-  path: string,
-  cause: unknown,
-): Result<T, FileError> {
+function isPermanentProvenanceError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return (
+    /GAD event id collision with different content/u.test(message) ||
+    /Cannot (?:resolve|abandon) unknown dispatch/u.test(message) ||
+    /Cannot (?:resolve|abandon) dispatch .* from status/u.test(message) ||
+    /Cannot resolve unknown approval/u.test(message) ||
+    /Cannot resolve approval .* more than once/u.test(message)
+  );
+}
+
+function fileErr<T>(code: FileError["code"], path: string, cause: unknown): Result<T, FileError> {
   return {
     ok: false,
     error: new FileError(
       code,
       cause instanceof Error ? cause.message : String(cause),
       path,
-      cause instanceof Error ? cause : undefined,
+      cause instanceof Error ? cause : undefined
     ),
   };
 }

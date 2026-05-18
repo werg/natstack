@@ -48,32 +48,43 @@ describe("GadWorkspaceDO clean Pi/GAD persistence", () => {
     expect(result.headEntryId).toBe(assistant);
     expect(result.headEntryHash).toMatch(/^pi-entry-v1:/);
 
-    const context = await call<{ messages: Array<Record<string, unknown>> }>("materializePiMessages", {
-      branchId: "main",
-    });
+    const context = await call<{ messages: Array<Record<string, unknown>> }>(
+      "materializePiMessages",
+      {
+        branchId: "main",
+      }
+    );
     expect(context.messages.map((msg) => msg["role"])).toEqual(["user", "assistant"]);
 
     const blocks = await call<{ rows: Array<Record<string, unknown>> }>(
       "query",
       "SELECT block_type, text, tool_call_id, tool_name FROM pi_message_blocks ORDER BY message_entry_id, block_index",
-      [],
+      []
     );
-    expect(blocks.rows).toEqual(expect.arrayContaining([
-      expect.objectContaining({ block_type: "text", text: "read it" }),
-      expect.objectContaining({ block_type: "toolCall", tool_call_id: "tc-1", tool_name: "read" }),
-    ]));
+    expect(blocks.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ block_type: "text", text: "read it" }),
+        expect.objectContaining({
+          block_type: "toolCall",
+          tool_call_id: "tc-1",
+          tool_name: "read",
+        }),
+      ])
+    );
 
     const tables = await call<{ rows: Array<{ name: string }> }>(
       "query",
       "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
-      [],
+      []
     );
-    expect(tables.rows.map((row) => row.name)).not.toEqual(expect.arrayContaining([
-      "gad_trajectory_items",
-      "gad_branches",
-      "gad_state_roots",
-      "gad_payloads",
-    ]));
+    expect(tables.rows.map((row) => row.name)).not.toEqual(
+      expect.arrayContaining([
+        "gad_trajectory_items",
+        "gad_branches",
+        "gad_state_roots",
+        "gad_payloads",
+      ])
+    );
   });
 
   it("keeps GAD sidecars out of Pi context and records a Merkle event chain", async () => {
@@ -81,12 +92,14 @@ describe("GadWorkspaceDO clean Pi/GAD persistence", () => {
     await call("ensurePiBranch", { branchId: "main" });
     await call("appendPiEntryBatch", {
       branchId: "main",
-      items: [{
-        entryId: id("msg"),
-        parentEntryId: null,
-        entryType: "message",
-        payload: { message: { role: "user", content: "hello", timestamp: 1 } },
-      }],
+      items: [
+        {
+          entryId: id("msg"),
+          parentEntryId: null,
+          entryType: "message",
+          payload: { message: { role: "user", content: "hello", timestamp: 1 } },
+        },
+      ],
     });
 
     await call("appendGadEvents", {
@@ -108,9 +121,12 @@ describe("GadWorkspaceDO clean Pi/GAD persistence", () => {
       ],
     });
 
-    const context = await call<{ messages: Array<Record<string, unknown>> }>("materializePiMessages", {
-      branchId: "main",
-    });
+    const context = await call<{ messages: Array<Record<string, unknown>> }>(
+      "materializePiMessages",
+      {
+        branchId: "main",
+      }
+    );
     expect(context.messages).toHaveLength(1);
 
     const events = await call<Array<Record<string, unknown>>>("listGadEvents", {});
@@ -121,9 +137,11 @@ describe("GadWorkspaceDO clean Pi/GAD persistence", () => {
     const claims = await call<{ rows: Array<Record<string, unknown>> }>(
       "query",
       "SELECT text, status FROM gad_claims",
-      [],
+      []
     );
-    expect(claims.rows).toEqual([expect.objectContaining({ text: "hello was said", status: "active" })]);
+    expect(claims.rows).toEqual([
+      expect.objectContaining({ text: "hello was said", status: "active" }),
+    ]);
   });
 
   it("records file mutations as events, states, transitions, diff, read, and blame data", async () => {
@@ -154,7 +172,8 @@ describe("GadWorkspaceDO clean Pi/GAD persistence", () => {
             toolCallId: "tc-write",
             path: "src/index.ts",
             operation: "write",
-            inputStateHash: "state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7",
+            inputStateHash:
+              "state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7",
             afterHash: "blob:v1",
             outcome: "ok",
             hunks: [
@@ -175,7 +194,7 @@ describe("GadWorkspaceDO clean Pi/GAD persistence", () => {
     const mutation = await call<{ rows: Array<Record<string, unknown>> }>(
       "query",
       "SELECT output_state_hash FROM gad_file_mutations WHERE mutation_id = ?",
-      ["mut-1"],
+      ["mut-1"]
     );
     const outputStateHash = String(mutation.rows[0]?.["output_state_hash"]);
     expect(outputStateHash).toMatch(/^state:[0-9a-f]{64}$/);
@@ -191,13 +210,14 @@ describe("GadWorkspaceDO clean Pi/GAD persistence", () => {
     });
     expect(file).toMatchObject({ path: "src/index.ts", content_hash: "blob:v1" });
 
-    const diff = await call<{ added: Array<Record<string, unknown>>; removed: unknown[]; changed: unknown[] }>(
-      "diffGadStates",
-      {
-        leftStateHash: "state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7",
-        rightStateHash: outputStateHash,
-      },
-    );
+    const diff = await call<{
+      added: Array<Record<string, unknown>>;
+      removed: unknown[];
+      changed: unknown[];
+    }>("diffGadStates", {
+      leftStateHash: "state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7",
+      rightStateHash: outputStateHash,
+    });
     expect(diff.added).toEqual([expect.objectContaining({ path: "src/index.ts" })]);
 
     const blame = await call<Array<Record<string, unknown>>>("blameGadFileSnippet", {
@@ -219,23 +239,31 @@ describe("GadWorkspaceDO clean Pi/GAD persistence", () => {
     const appended = await call<any>("appendPiEntryBatch", {
       branchId: "main",
       expectedStateHash: "state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7",
-      items: [{
-        entryId: "after-mutation",
-        parentEntryId: null,
-        entryType: "message",
-        preStateHash: "state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7",
-        postStateHash: outputStateHash,
-        payload: { message: { role: "assistant", content: "changed", timestamp: 3 } },
-      }],
+      items: [
+        {
+          entryId: "after-mutation",
+          parentEntryId: null,
+          entryType: "message",
+          preStateHash: "state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7",
+          postStateHash: outputStateHash,
+          payload: { message: { role: "assistant", content: "changed", timestamp: 3 } },
+        },
+      ],
     });
     expect(appended.headStateHash).toBe(outputStateHash);
 
-    const integrity = await call<{ ok: boolean; errors: Array<Record<string, unknown>> }>("checkGadIntegrity", {});
+    const integrity = await call<{ ok: boolean; errors: Array<Record<string, unknown>> }>(
+      "checkGadIntegrity",
+      {}
+    );
     expect(integrity).toEqual({ ok: true, errors: [] });
 
     const replay = await call<{ replayed: number }>("replayGadEvents", {});
     expect(replay.replayed).toBe(2);
-    const replayIntegrity = await call<{ ok: boolean; errors: Array<Record<string, unknown>> }>("checkGadIntegrity", {});
+    const replayIntegrity = await call<{ ok: boolean; errors: Array<Record<string, unknown>> }>(
+      "checkGadIntegrity",
+      {}
+    );
     expect(replayIntegrity).toEqual({ ok: true, errors: [] });
   });
 
@@ -244,56 +272,80 @@ describe("GadWorkspaceDO clean Pi/GAD persistence", () => {
     await call("ensurePiBranch", { branchId: "main" });
     await call("appendPiEntryBatch", {
       branchId: "main",
-      items: [{
-        entryId: "msg-1",
-        parentEntryId: null,
-        entryType: "message",
-        payload: { message: { role: "user", content: "hello", timestamp: 1 } },
-      }],
+      items: [
+        {
+          entryId: "msg-1",
+          parentEntryId: null,
+          entryType: "message",
+          payload: { message: { role: "user", content: "hello", timestamp: 1 } },
+        },
+      ],
     });
     await call("appendGadEvents", {
-      events: [{
-        eventId: "obs-corrupt",
-        kind: "file_mutation_observed",
-        payload: {
-          mutationId: "mut-corrupt",
-          path: "a/b.txt",
-          operation: "write",
-          inputStateHash: "state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7",
-          afterHash: "blob:content",
-          outcome: "ok",
+      events: [
+        {
+          eventId: "obs-corrupt",
+          kind: "file_mutation_observed",
+          payload: {
+            mutationId: "mut-corrupt",
+            path: "a/b.txt",
+            operation: "write",
+            inputStateHash:
+              "state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7",
+            afterHash: "blob:content",
+            outcome: "ok",
+          },
         },
-      }],
+      ],
     });
 
     sql.exec(
       "UPDATE pi_session_entries SET raw_entry_json = ? WHERE entry_id = ?",
-      JSON.stringify({ entryId: "msg-1", parentEntryId: null, entryType: "message", actor: null, payload: { message: { role: "user", content: "tampered", timestamp: 1 } }, metadata: null }),
-      "msg-1",
+      JSON.stringify({
+        entryId: "msg-1",
+        parentEntryId: null,
+        entryType: "message",
+        actor: null,
+        payload: { message: { role: "user", content: "tampered", timestamp: 1 } },
+        metadata: null,
+      }),
+      "msg-1"
     );
-    sql.exec("UPDATE gad_events SET prev_event_hash = ? WHERE event_id = ?", "gad-event-v1:bad", "obs-corrupt");
+    sql.exec(
+      "UPDATE gad_events SET prev_event_hash = ? WHERE event_id = ?",
+      "gad-event-v1:bad",
+      "obs-corrupt"
+    );
     sql.exec("UPDATE gad_manifest_entries SET name = ? WHERE name = ?", "renamed.txt", "b.txt");
-    sql.exec("UPDATE gad_state_transitions SET output_state_hash = ? WHERE event_id = ?", "state:missing", "obs-corrupt");
+    sql.exec(
+      "UPDATE gad_state_transitions SET output_state_hash = ? WHERE event_id = ?",
+      "state:missing",
+      "obs-corrupt"
+    );
 
-    const integrity = await call<{ ok: boolean; errors: Array<Record<string, unknown>> }>("checkGadIntegrity", {});
+    const integrity = await call<{ ok: boolean; errors: Array<Record<string, unknown>> }>(
+      "checkGadIntegrity",
+      {}
+    );
     expect(integrity.ok).toBe(false);
-    expect(integrity.errors.map((error) => error["type"])).toEqual(expect.arrayContaining([
-      "pi-entry",
-      "gad-event",
-      "manifest",
-      "state-transition",
-    ]));
+    expect(integrity.errors.map((error) => error["type"])).toEqual(
+      expect.arrayContaining(["pi-entry", "gad-event", "manifest", "state-transition"])
+    );
   });
 
   it("enforces dispatch and approval lifecycles", async () => {
     const { call } = await createTestDO(GadWorkspaceDO);
-    await expect(call("appendGadEvents", {
-      events: [{
-        eventId: "dispatch-resolve-missing",
-        kind: "dispatch_resolved",
-        payload: { dispatchCallId: "missing", resultEntryId: "entry" },
-      }],
-    })).rejects.toThrow(/unknown dispatch/u);
+    await expect(
+      call("appendGadEvents", {
+        events: [
+          {
+            eventId: "dispatch-resolve-missing",
+            kind: "dispatch_resolved",
+            payload: { dispatchCallId: "missing", resultEntryId: "entry" },
+          },
+        ],
+      })
+    ).rejects.toThrow(/unknown dispatch/u);
 
     await call("appendGadEvents", {
       events: [
@@ -309,21 +361,94 @@ describe("GadWorkspaceDO clean Pi/GAD persistence", () => {
         },
       ],
     });
-    await expect(call("appendGadEvents", {
-      events: [{
-        eventId: "dispatch-resolved-again",
-        kind: "dispatch_resolved",
-        payload: { dispatchCallId: "dispatch-1", resultEntryId: "entry-2" },
-      }],
-    })).rejects.toThrow(/from status resolved/u);
+    await call("appendGadEvents", {
+      events: [
+        {
+          eventId: "dispatch-resolved-again",
+          kind: "dispatch_resolved",
+          payload: { dispatchCallId: "dispatch-1", resultEntryId: "entry-1" },
+        },
+      ],
+    });
+    const provenance = await call<Record<string, unknown> | null>("getGadToolProvenance", {
+      toolCallId: "tc-1",
+    });
+    const dispatch = provenance?.["dispatch"] as Record<string, unknown> | undefined;
+    expect(dispatch?.["status"]).toBe("resolved");
+    expect(dispatch?.["result_entry_id"]).toBe("entry-1");
+    await expect(
+      call("appendGadEvents", {
+        events: [
+          {
+            eventId: "dispatch-resolved-conflict",
+            kind: "dispatch_resolved",
+            payload: { dispatchCallId: "dispatch-1", resultEntryId: "entry-2" },
+          },
+        ],
+      })
+    ).rejects.toThrow(/from status resolved/u);
+    await expect(
+      call("appendGadEvents", {
+        events: [
+          {
+            eventId: "dispatch-abandoned-conflict",
+            kind: "dispatch_abandoned",
+            payload: { dispatchCallId: "dispatch-1", abandonedReason: "superseded" },
+          },
+        ],
+      })
+    ).rejects.toThrow(/from status resolved/u);
 
-    await expect(call("appendGadEvents", {
-      events: [{
-        eventId: "approval-resolve-missing",
-        kind: "approval_resolved",
-        payload: { approvalId: "missing", decision: "allow" },
-      }],
-    })).rejects.toThrow(/unknown approval/u);
+    await call("appendGadEvents", {
+      events: [
+        {
+          eventId: "dispatch-pending-abandon",
+          kind: "dispatch_pending",
+          payload: {
+            dispatchCallId: "dispatch-abandon",
+            toolCallId: "tc-abandon",
+            methodName: "tool.wait",
+          },
+        },
+        {
+          eventId: "dispatch-abandoned",
+          kind: "dispatch_abandoned",
+          payload: { dispatchCallId: "dispatch-abandon", abandonedReason: "user-superseded" },
+        },
+      ],
+    });
+    await call("appendGadEvents", {
+      events: [
+        {
+          eventId: "dispatch-abandoned-again",
+          kind: "dispatch_abandoned",
+          payload: { dispatchCallId: "dispatch-abandon", abandonedReason: "user-superseded" },
+        },
+      ],
+    });
+    await expect(
+      call("appendGadEvents", {
+        events: [
+          {
+            eventId: "dispatch-abandoned-conflicting-reason",
+            kind: "dispatch_abandoned",
+            payload: { dispatchCallId: "dispatch-abandon", abandonedReason: "different" },
+          },
+        ],
+      })
+    ).rejects.toThrow(/from status abandoned/u);
+
+    await expect(
+      call("appendGadEvents", {
+        events: [
+          {
+            eventId: "approval-resolve-missing",
+            kind: "approval_resolved",
+            payload: { approvalId: "missing", decision: "allow" },
+          },
+        ],
+      })
+    ).rejects.toThrow(/unknown approval/u);
 
     await call("appendGadEvents", {
       events: [
@@ -339,13 +464,26 @@ describe("GadWorkspaceDO clean Pi/GAD persistence", () => {
         },
       ],
     });
-    await expect(call("appendGadEvents", {
-      events: [{
-        eventId: "approval-resolved-again",
-        kind: "approval_resolved",
-        payload: { approvalId: "approval-1", decision: "deny", resolvedBy: "user" },
-      }],
-    })).rejects.toThrow(/more than once/u);
+    await call("appendGadEvents", {
+      events: [
+        {
+          eventId: "approval-resolved-again",
+          kind: "approval_resolved",
+          payload: { approvalId: "approval-1", decision: "allow", resolvedBy: "user" },
+        },
+      ],
+    });
+    await expect(
+      call("appendGadEvents", {
+        events: [
+          {
+            eventId: "approval-resolved-conflict",
+            kind: "approval_resolved",
+            payload: { approvalId: "approval-1", decision: "deny", resolvedBy: "user" },
+          },
+        ],
+      })
+    ).rejects.toThrow(/more than once/u);
   });
 
   it("appends GAD event batches atomically and treats identical retries as idempotent", async () => {
@@ -384,15 +522,22 @@ describe("GadWorkspaceDO clean Pi/GAD persistence", () => {
     await call("appendGadEvents", goodBatch);
     await call("appendGadEvents", goodBatch);
     const events = await call<Array<Record<string, unknown>>>("listGadEvents", {});
-    expect(events.map((event) => event["event_id"])).toEqual(["idempotent-pending", "idempotent-resolved"]);
+    expect(events.map((event) => event["event_id"])).toEqual([
+      "idempotent-pending",
+      "idempotent-resolved",
+    ]);
 
-    await expect(call("appendGadEvents", {
-      events: [{
-        eventId: "idempotent-resolved",
-        kind: "dispatch_resolved",
-        payload: { dispatchCallId: "dispatch-idempotent", resultEntryId: "different-entry" },
-      }],
-    })).rejects.toThrow(/id collision/u);
+    await expect(
+      call("appendGadEvents", {
+        events: [
+          {
+            eventId: "idempotent-resolved",
+            kind: "dispatch_resolved",
+            payload: { dispatchCallId: "dispatch-idempotent", resultEntryId: "different-entry" },
+          },
+        ],
+      })
+    ).rejects.toThrow(/id collision/u);
   });
 
   it("tracks index jobs through claim, retry, failure, requeue, and completion", async () => {
@@ -428,11 +573,15 @@ describe("GadWorkspaceDO clean Pi/GAD persistence", () => {
       sourceKind: "claim",
       jobKind: "embed",
     });
-    const requeued = await call<Array<Record<string, unknown>>>("listGadIndexJobs", { status: "queued" });
+    const requeued = await call<Array<Record<string, unknown>>>("listGadIndexJobs", {
+      status: "queued",
+    });
     expect(requeued).toEqual([expect.objectContaining({ id: created.id, error: null })]);
 
     const reclaimed = await call<Array<Record<string, unknown>>>("claimGadIndexJobs", { limit: 1 });
-    const complete = await call<Record<string, unknown>>("completeGadIndexJob", { id: Number(reclaimed[0]?.["id"]) });
+    const complete = await call<Record<string, unknown>>("completeGadIndexJob", {
+      id: Number(reclaimed[0]?.["id"]),
+    });
     expect(complete).toMatchObject({ id: created.id, status: "complete", error: null });
   });
 
@@ -442,12 +591,14 @@ describe("GadWorkspaceDO clean Pi/GAD persistence", () => {
     const first = id("entry");
     await call("appendPiEntryBatch", {
       branchId: "main",
-      items: [{
-        entryId: first,
-        parentEntryId: null,
-        entryType: "message",
-        payload: { message: { role: "user", content: "base", timestamp: 1 } },
-      }],
+      items: [
+        {
+          entryId: first,
+          parentEntryId: null,
+          entryType: "message",
+          payload: { message: { role: "user", content: "base", timestamp: 1 } },
+        },
+      ],
     });
 
     const conversationFork = await call<any>("forkPiBranch", {
@@ -463,6 +614,8 @@ describe("GadWorkspaceDO clean Pi/GAD persistence", () => {
       stateHash: "state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7",
     });
     expect(worldFork.headEntryId).toBeNull();
-    expect(worldFork.headStateHash).toBe("state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7");
+    expect(worldFork.headStateHash).toBe(
+      "state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7"
+    );
   });
 });

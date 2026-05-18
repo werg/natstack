@@ -131,7 +131,7 @@ by routing to worker callbacks that send channel events:
 The await primitives (`select`, `confirm`, `input`, `editor`) use the same
 continuation Promise plumbing as `callMethod`: send a `channel.callMethod`
 to a panel participant with the call id, store a continuation, await the
-result via `onCallResult`.
+result via the persisted `method-result` channel event.
 
 ## PiRunner
 

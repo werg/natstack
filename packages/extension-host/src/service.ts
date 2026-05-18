@@ -40,7 +40,6 @@ import {
   type StreamEnvelope,
 } from "./wireEnvelopes.js";
 import type {
-  ExtensionHostCodeIdentityResolver,
   ExtensionHealth,
   ExtensionInvocation,
   InstallSpec,
@@ -158,7 +157,6 @@ export interface ExtensionHostDeps {
   approvalQueue: ApprovalQueueLike;
   userlandApprovalGrantStore: UserlandApprovalGrantStoreLike;
   notificationService?: NotificationServiceLike;
-  codeIdentityResolver: ExtensionHostCodeIdentityResolver;
   getGatewayUrl(): string;
   /**
    * Bridge from the dispatcher to a connected extension's WebSocket. Required
