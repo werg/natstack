@@ -393,6 +393,14 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       call: <T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T> => {
         return this.rpc.call<T>(targetId, method, ...args);
       },
+      streamCall: (
+        targetId: string,
+        method: string,
+        args: unknown[],
+        options?: { signal?: AbortSignal },
+      ): Promise<Response> => {
+        return this.rpc.streamCall(targetId, method, args, options);
+      },
     };
 
     this.identity = new DOIdentity(this.sql);
@@ -707,23 +715,27 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       }
       headers.delete("authorization");
 
-      const result = await this.rpc.call<{
-        status: number;
-        statusText: string;
-        headers: Record<string, string>;
-        body: string;
-      }>("main", "credentials.proxyFetch", {
-        url: targetUrl.toString(),
+      // Route through the credentialed client. The shared client uses
+      // `rpc.streamCall` so model SSE responses arrive as a real
+      // ReadableStream (HTTP transport) — without this the model SDK
+      // would either block until the completion finishes or buffer
+      // the entire event stream before yielding the first token.
+      //
+      // Body forwarded as bytes (not text) so binary model payloads
+      // round-trip intact. `request.signal` forwarded so aborting
+      // the model SDK's fetch reaches the upstream — without that,
+      // a canceled turn keeps the remote completion running.
+      const upstreamBody =
+        request.method === "GET" || request.method === "HEAD"
+          ? undefined
+          : new Uint8Array(await request.arrayBuffer());
+      const upstream = await this.credentials.fetch(targetUrl.toString(), {
         method: request.method,
-        headers: Object.fromEntries(headers.entries()),
-        body: request.method === "GET" || request.method === "HEAD" ? undefined : await request.text(),
+        headers,
+        body: upstreamBody,
+        signal: request.signal,
       });
-
-      return new Response(result.body, {
-        status: result.status,
-        statusText: result.statusText,
-        headers: result.headers,
-      });
+      return upstream;
     };
 
     globals.__natstackModelFetchProxyInstalled = true;
@@ -1073,6 +1085,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       rpc: {
         call: <T = unknown>(target: string, method: string, ...args: unknown[]): Promise<T> =>
           this.rpc.call<T>(target, method, ...args),
+        streamCall: (target, method, args, options) =>
+          this.rpc.streamCall(target, method, args, options),
       },
       fs: this.fs,
       uiCallbacks: this.buildUICallbacks(channelId),
@@ -1091,6 +1105,44 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         this.askUser(channelId, toolCallId, params, signal),
       model: this.getModel(),
       getApiKey: this.getApiKeyForChannel(channelId),
+      hasCredentialForOrigin: async (originUrl) => {
+        try {
+          // `resolveCredential` matches the probe URL against stored
+          // audience patterns. Model credentials are stored against
+          // `modelBaseUrl` with `match: "path-prefix"` (see
+          // `installUrlBoundModelFetchProxy`), so if the caller's
+          // probe is just the origin, a path-prefixed audience like
+          // `https://host/v1/` won't match. When the origins agree,
+          // probe with the full model base URL so path-prefix
+          // credentials are detected.
+          let probeUrl = originUrl;
+          try {
+            const modelBaseUrl = this.getModelBaseUrl();
+            if (new URL(modelBaseUrl).origin === new URL(originUrl).origin) {
+              probeUrl = modelBaseUrl;
+            }
+          } catch {
+            // No model URL configured (or unparseable). Fall through
+            // and probe with the caller's URL as-is — that's correct
+            // for search-provider credentials registered with
+            // `match: "origin"`.
+          }
+          const c = await this.rpc.call<{ id: string } | null>(
+            "main",
+            "credentials.resolveCredential",
+            { url: probeUrl },
+          );
+          return c !== null;
+        } catch {
+          return false;
+        }
+      },
+      // Credentialed fetcher — `this.credentials.fetch` is bound to
+      // this DO's RPC bridge (`this.rpc`) via createCredentialClient
+      // and routes through `rpc.streamCall` so HTTP transport gives
+      // real streaming and other transports synthesize a Response
+      // uniformly. The harness never sees credential values.
+      fetcher: this.credentials.fetch.bind(this.credentials) as typeof fetch,
       thinkingLevel: this.getThinkingLevel(),
       ...this.getRunnerPromptConfig(channelId),
       approvalLevel: this.getApprovalLevel(channelId),

@@ -392,4 +392,222 @@ describe("RpcServer HTTP POST /rpc", () => {
       expect(body["error"]).not.toContain("cannot relay to unrelated panel");
     });
   });
+
+  describe("/rpc/stream service-policy enforcement", () => {
+    it("denies a caller-kind not in the credentials service policy", async () => {
+      // Set up an RpcServer whose dispatcher only allows `shell` on
+      // `credentials`. A worker token should be rejected by
+      // `validateStreamingProxyFetch` BEFORE any frames are emitted.
+      const tokenManager = new TokenManager();
+      const workerToken = tokenManager.ensureToken("do:test:Worker:obj1", "worker");
+      const stubEgress = { forwardProxyFetchStream: vi.fn() };
+      const dispatcher = {
+        dispatch: vi.fn(),
+        getPolicy: vi.fn((service: string) => {
+          if (service === "credentials") {
+            return { allowed: ["shell"] as CallerKind[] };
+          }
+          return undefined;
+        }),
+        getMethodPolicy: vi.fn(() => undefined),
+        initialized: true,
+      } as unknown as ServiceDispatcher;
+      const server = new RpcServer({ tokenManager, dispatcher, egressProxy: stubEgress });
+      server.initHandlers();
+      const gw = new Gateway({
+        tokenManager,
+        externalHost: "localhost",
+        getRpcHandler: () => server,
+      });
+      const p = await gw.start(0);
+      try {
+        const res = await fetch(`http://127.0.0.1:${p}/rpc/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${workerToken}`,
+          },
+          body: JSON.stringify({
+            targetId: "main",
+            method: "credentials.proxyFetch",
+            args: [{ url: "https://example.com/", method: "GET" }],
+          }),
+        });
+        expect(res.status).toBe(403);
+        expect(stubEgress.forwardProxyFetchStream).not.toHaveBeenCalled();
+      } finally {
+        await gw.stop();
+        await server.stop();
+      }
+    });
+  });
+
+  describe("/rpc/stream streaming proxy fetch", () => {
+    it("returns 503 when no egressProxy is wired in", async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/rpc/stream`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${setup.workerToken}`,
+        },
+        body: JSON.stringify({
+          targetId: "main",
+          method: "credentials.proxyFetch",
+          args: [{ url: "https://example.com/", method: "GET" }],
+        }),
+      });
+      expect(res.status).toBe(503);
+    });
+
+    it("rejects methods other than credentials.proxyFetch", async () => {
+      const tokenManager = new TokenManager();
+      const workerToken = tokenManager.ensureToken("do:test:Worker:obj1", "worker");
+      const stubEgress = {
+        forwardProxyFetchStream: vi.fn(),
+      };
+      const dispatcher = {
+        dispatch: vi.fn(),
+        getPolicy: vi.fn(),
+        getMethodPolicy: vi.fn(() => undefined),
+        initialized: true,
+      } as unknown as ServiceDispatcher;
+      const server = new RpcServer({
+        tokenManager,
+        dispatcher,
+        egressProxy: stubEgress,
+      });
+      server.initHandlers();
+      const gw = new Gateway({
+        tokenManager,
+        externalHost: "localhost",
+        getRpcHandler: () => server,
+      });
+      const p = await gw.start(0);
+      try {
+        const res = await fetch(`http://127.0.0.1:${p}/rpc/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${workerToken}`,
+          },
+          body: JSON.stringify({
+            targetId: "main",
+            method: "credentials.listStoredCredentials",
+            args: [],
+          }),
+        });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain("not exposed on the streaming endpoint");
+        expect(stubEgress.forwardProxyFetchStream).not.toHaveBeenCalled();
+      } finally {
+        await gw.stop();
+        await server.stop();
+      }
+    });
+
+    it("emits framed HEAD, DATA, END frames and decodes round-trip", async () => {
+      const tokenManager = new TokenManager();
+      const workerToken = tokenManager.ensureToken("do:test:Worker:obj1", "worker");
+      const stubEgress = {
+        forwardProxyFetchStream: vi.fn(
+          async (
+            _params: { callerId: string; url: string; method: string },
+            sink: (frame: {
+              kind: string;
+              status?: number;
+              statusText?: string;
+              headerPairs?: Array<[string, string]>;
+              finalUrl?: string;
+              bytes?: Uint8Array;
+              bytesIn?: number;
+            }) => Promise<void> | void
+          ) => {
+            await sink({
+              kind: "head",
+              status: 200,
+              statusText: "OK",
+              headerPairs: [
+                ["content-type", "text/plain"],
+                ["set-cookie", "a=1"],
+                ["set-cookie", "b=2"],
+              ],
+              finalUrl: "https://example.com/landing",
+            });
+            await sink({ kind: "chunk", bytes: new Uint8Array([0x68, 0x65]) });
+            await sink({ kind: "chunk", bytes: new Uint8Array([0x6c, 0x6c, 0x6f]) });
+            await sink({ kind: "end", bytesIn: 5 });
+            return { status: 200, bytesIn: 5 };
+          }
+        ),
+      };
+      const dispatcher = {
+        dispatch: vi.fn(),
+        getPolicy: vi.fn((service: string) => {
+          if (service === "credentials") {
+            return { allowed: ["shell", "panel", "worker"] as CallerKind[] };
+          }
+          return undefined;
+        }),
+        getMethodPolicy: vi.fn(() => undefined),
+        initialized: true,
+      } as unknown as ServiceDispatcher;
+      const server = new RpcServer({
+        tokenManager,
+        dispatcher,
+        egressProxy: stubEgress,
+      });
+      server.initHandlers();
+      const gw = new Gateway({
+        tokenManager,
+        externalHost: "localhost",
+        getRpcHandler: () => server,
+      });
+      const p = await gw.start(0);
+      try {
+        const res = await fetch(`http://127.0.0.1:${p}/rpc/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${workerToken}`,
+          },
+          body: JSON.stringify({
+            targetId: "main",
+            method: "credentials.proxyFetch",
+            args: [{ url: "https://example.com/", method: "GET" }],
+          }),
+        });
+        expect(res.status).toBe(200);
+        const buf = new Uint8Array(await res.arrayBuffer());
+
+        const { FrameDecoder, FRAME_HEAD, FRAME_DATA, FRAME_END, parseHeadFrame, parseEndFrame } =
+          await import("../../packages/shared/src/credentials/streamFraming.js");
+
+        const frames: Array<{ type: number; payload: Uint8Array }> = [];
+        const decoder = new FrameDecoder((type, payload) => {
+          frames.push({ type, payload });
+        });
+        await decoder.push(buf);
+
+        expect(frames.map((f) => f.type)).toEqual([FRAME_HEAD, FRAME_DATA, FRAME_DATA, FRAME_END]);
+        const head = parseHeadFrame(frames[0]!.payload);
+        expect(head.status).toBe(200);
+        expect(head.finalUrl).toBe("https://example.com/landing");
+        expect(head.headerPairs.filter(([k]) => k === "set-cookie").map(([, v]) => v)).toEqual([
+          "a=1",
+          "b=2",
+        ]);
+        const bodyBytes = new Uint8Array(
+          frames[1]!.payload.byteLength + frames[2]!.payload.byteLength
+        );
+        bodyBytes.set(frames[1]!.payload, 0);
+        bodyBytes.set(frames[2]!.payload, frames[1]!.payload.byteLength);
+        expect(new TextDecoder().decode(bodyBytes)).toBe("hello");
+        expect(parseEndFrame(frames[3]!.payload).bytesIn).toBe(5);
+      } finally {
+        await gw.stop();
+        await server.stop();
+      }
+    });
+  });
 });

@@ -318,7 +318,10 @@ describe("EgressProxy", () => {
       headers: { authorization: "Bearer attacker" },
     });
 
-    expect(response).toMatchObject({ status: 200, body: "ok" });
+    expect(response.status).toBe(200);
+    expect(new TextDecoder().decode(response.body)).toBe("ok");
+    expect(response.finalUrl).toBe("https://api.example.test/v1/items");
+    expect(Array.isArray(response.headerPairs)).toBe(true);
     expect(auditLog.entries[0]).toMatchObject({
       callerId: "worker:test",
       providerId: "url-bound",
@@ -326,6 +329,208 @@ describe("EgressProxy", () => {
       status: 200,
       scopesUsed: ["read"],
     });
+  });
+
+  it("preserves multiple Set-Cookie headers across the wire", async () => {
+    const auditLog = new MemoryAuditLog();
+    const proxy = createProxy(createCredential(), auditLog);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        const headers = new Headers();
+        headers.append("set-cookie", "a=1; Path=/");
+        headers.append("set-cookie", "b=2; Path=/");
+        headers.append("content-type", "text/plain");
+        return new Response("ok", { status: 200, statusText: "OK", headers });
+      })
+    );
+    const response = await proxy.forwardProxyFetch({
+      callerId: "worker:test",
+      credentialId: "cred-1",
+      url: "https://api.example.test/v1/login",
+      method: "GET",
+    });
+    const cookieEntries = response.headerPairs.filter(([k]) => k.toLowerCase() === "set-cookie");
+    expect(cookieEntries.map(([, v]) => v)).toEqual(["a=1; Path=/", "b=2; Path=/"]);
+  });
+
+  it("reports the post-redirect final URL on `finalUrl`", async () => {
+    const auditLog = new MemoryAuditLog();
+    const proxy = createProxy(createCredential(), auditLog);
+    // We can't easily simulate a redirect through the stub since fetch is
+    // stubbed wholesale, so simulate by constructing a Response with a url
+    // distinct from the requested one. The proxy's `response.url || requestedUrl`
+    // fallback path is what we want to exercise.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        const r = new Response("ok", { status: 200 });
+        // Most runtimes set Response.url to "" for synthetically constructed
+        // Responses; the proxy must fall back to the requested URL.
+        return r;
+      })
+    );
+    const response = await proxy.forwardProxyFetch({
+      callerId: "worker:test",
+      credentialId: "cred-1",
+      url: "https://api.example.test/v1/items",
+      method: "GET",
+    });
+    expect(response.finalUrl).toBe("https://api.example.test/v1/items");
+  });
+
+  it("round-trips binary response bodies as bytes", async () => {
+    // Verifies parity for web_fetch: a PDF magic-header sequence must
+    // come back byte-identical after going through the proxy.
+    const auditLog = new MemoryAuditLog();
+    const proxy = createProxy(createCredential(), auditLog);
+    const pdfMagic = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37]); // "%PDF-1.7"
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(pdfMagic, {
+            status: 200,
+            statusText: "OK",
+            headers: { "content-type": "application/pdf" },
+          })
+      )
+    );
+    const response = await proxy.forwardProxyFetch({
+      callerId: "worker:test",
+      credentialId: "cred-1",
+      url: "https://api.example.test/v1/doc.pdf",
+      method: "GET",
+    });
+    expect(response.status).toBe(200);
+    expect(response.body).toBeInstanceOf(Uint8Array);
+    expect(Array.from(response.body)).toEqual(Array.from(pdfMagic));
+    const contentType = response.headerPairs.find(([k]) => k.toLowerCase() === "content-type")?.[1];
+    expect(contentType).toBe("application/pdf");
+  });
+
+  it("round-trips binary request bodies as bytes", async () => {
+    const auditLog = new MemoryAuditLog();
+    const proxy = createProxy(createCredential(), auditLog);
+    const upload = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]); // PNG magic
+    let receivedBody: Uint8Array | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const ab = await new Response(init?.body as BodyInit).arrayBuffer();
+        receivedBody = new Uint8Array(ab);
+        return new Response(null, { status: 204 });
+      })
+    );
+    await proxy.forwardProxyFetch({
+      callerId: "worker:test",
+      credentialId: "cred-1",
+      url: "https://api.example.test/v1/upload",
+      method: "POST",
+      body: upload,
+    });
+    expect(receivedBody).not.toBeNull();
+    expect(Array.from(receivedBody!)).toEqual(Array.from(upload));
+  });
+
+  it("streams upstream response bytes through forwardProxyFetchStream", async () => {
+    const auditLog = new MemoryAuditLog();
+    const proxy = createProxy(createCredential(), auditLog);
+    // Upstream emits the body as three discrete chunks separated by
+    // microtask boundaries. The streaming forwarder must surface each
+    // chunk as it arrives — not buffer the whole body.
+    const chunks = [
+      new Uint8Array([0x68, 0x65, 0x6c, 0x6c, 0x6f]), // "hello"
+      new Uint8Array([0x20]), // " "
+      new Uint8Array([0x77, 0x6f, 0x72, 0x6c, 0x64]), // "world"
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        const stream = new ReadableStream<Uint8Array>({
+          async start(controller) {
+            for (const chunk of chunks) {
+              controller.enqueue(chunk);
+              // Yield so the consumer can observe chunks individually.
+              await new Promise((resolve) => setTimeout(resolve, 0));
+            }
+            controller.close();
+          },
+        });
+        return new Response(stream, {
+          status: 200,
+          statusText: "OK",
+          headers: { "content-type": "text/plain" },
+        });
+      })
+    );
+
+    const observed: Array<{ kind: string; size?: number; status?: number; finalUrl?: string }> = [];
+    let aggregated = new Uint8Array(0);
+    const result = await proxy.forwardProxyFetchStream(
+      {
+        callerId: "worker:test",
+        credentialId: "cred-1",
+        url: "https://api.example.test/v1/stream",
+        method: "GET",
+      },
+      (frame) => {
+        if (frame.kind === "head") {
+          observed.push({ kind: "head", status: frame.status, finalUrl: frame.finalUrl });
+        } else if (frame.kind === "chunk") {
+          observed.push({ kind: "chunk", size: frame.bytes.byteLength });
+          const next = new Uint8Array(aggregated.byteLength + frame.bytes.byteLength);
+          next.set(aggregated, 0);
+          next.set(frame.bytes, aggregated.byteLength);
+          aggregated = next;
+        } else if (frame.kind === "end") {
+          observed.push({ kind: "end" });
+        }
+      }
+    );
+
+    expect(result.status).toBe(200);
+    expect(result.bytesIn).toBe(11);
+    expect(observed[0]).toEqual({
+      kind: "head",
+      status: 200,
+      finalUrl: "https://api.example.test/v1/stream",
+    });
+    expect(observed.filter((o) => o.kind === "chunk")).toHaveLength(3);
+    expect(observed[observed.length - 1]!.kind).toBe("end");
+    expect(new TextDecoder().decode(aggregated)).toBe("hello world");
+  });
+
+  it("does not retry retryable responses in forwardProxyFetchStream", async () => {
+    const auditLog = new MemoryAuditLog();
+    const proxy = createProxy(createCredential(), auditLog);
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        calls += 1;
+        return new Response("retry", { status: 503, statusText: "Service Unavailable" });
+      })
+    );
+
+    const frames: string[] = [];
+    const result = await proxy.forwardProxyFetchStream(
+      {
+        callerId: "worker:test",
+        credentialId: "cred-1",
+        url: "https://api.example.test/v1/stream",
+        method: "GET",
+      },
+      (frame) => {
+        frames.push(frame.kind);
+      }
+    );
+
+    expect(calls).toBe(1);
+    expect(result.status).toBe(503);
+    expect(result.bytesIn).toBe(5);
+    expect(frames).toEqual(["head", "chunk", "end"]);
+    expect(auditLog.entries[0]).toMatchObject({ retries: 0 });
   });
 
   it("refreshes expired OAuth credentials before injection", async () => {

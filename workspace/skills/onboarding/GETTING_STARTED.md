@@ -29,6 +29,13 @@ eval({ code: `
   } catch {
     importHistory = [];
   }
+  let searchProvider = "duckduckgo";
+  try {
+    const webResearch = await import("@workspace-skills/web-research");
+    searchProvider = await webResearch.getActiveSearchProvider();
+  } catch {
+    // skill optional — fall back to the zero-config DDG default
+  }
   const panels = await fs.readdir("/panels").catch(() => []);
   const providerIds = [...new Set(storedCredentials.map(c =>
     String(c.metadata?.providerId ?? c.providerId ?? "unknown")
@@ -41,6 +48,7 @@ eval({ code: `
     providerIds,
     storedCredentialCount: storedCredentials.length,
     google,
+    searchProvider, // "tavily" | "brave" | "exa" | "duckduckgo"
     browserImportCount: importHistory.length,
     panelCount: panels.length,
   };
@@ -50,7 +58,7 @@ eval({ code: `
 
 - **`workspaceCount <= 1`** → new user. Start from Step 1, explain concepts thoroughly. Note: in IPC/remote mode `workspace.list()` may return `[]` even when an active workspace exists — treat `workspaceCount === 0` with a valid `active` as a new user too.
 - **`workspaceCount > 1`** → returning user. Greet them briefly, mention their active workspace, and ask what they need. Skip to whichever step is relevant, or point them to the right skill directly.
-- Use `providerIds`, Google status, `browserImportCount`, and `panelCount` to make the first recommendations specific.
+- Use `providerIds`, Google status, `searchProvider`, `browserImportCount`, and `panelCount` to make the first recommendations specific. A `searchProvider === "duckduckgo"` value is fine for most users; only suggest upgrading if they bring up research, hit rate limits, or ask about search quality.
 
 ## Step 1: Explore Your Workspace
 
@@ -88,6 +96,7 @@ above the chat history before the first agent reply:
 - **GitHub** — set up GitHub provider integration
 - **Slack** — set up Slack provider integration
 - **Model key** — set up a model or API key provider
+- **Web search upgrade** — register a Tavily / Brave / Exa key so `web_search` graduates from DuckDuckGo (optional; see `web-research` skill)
 - **Custom API** — set up a custom OAuth or API provider
 - **Browser import** — import cookies, bookmarks, passwords, or local browser state
 - **Build panel** — scaffold and launch a panel app
@@ -143,9 +152,12 @@ eval({ code: `
     formatGoogleOnboardingStatus,
     getGoogleOnboardingStatus,
   } from "@workspace-skills/google-workspace";
+  import { getActiveSearchProvider } from "@workspace-skills/web-research";
   const storedCredentials = await credentials.listStoredCredentials();
   const googleStatus = await getGoogleOnboardingStatus();
+  const searchProvider = await getActiveSearchProvider();
   console.log(formatGoogleOnboardingStatus(googleStatus));
+  console.log("Active web_search provider:", searchProvider);
   const providerIds = [...new Set(storedCredentials.map(c =>
     String(c.metadata?.providerId ?? c.providerId ?? "unknown")
   ))];
@@ -157,10 +169,34 @@ eval({ code: `
   } else {
     console.log("No stored provider credentials are configured yet.");
   }
-  return { configured: providerIds.length > 0 || googleStatus.connected, providerIds, googleStatus };
+  return {
+    configured: providerIds.length > 0 || googleStatus.connected,
+    providerIds,
+    googleStatus,
+    searchProvider,
+  };
 `
 })
 ```
+
+### Optional: Upgrade web search
+
+`web_search` works zero-config via DuckDuckGo, but DDG rate-limits and ships
+short snippets. If the user is doing real research or hits a
+`DuckDuckGoBlockedError`, offer to register a Tavily / Brave / Exa key. Use
+the **web-research** skill's helpers — each pops the trusted credential-input
+UI and stores the key encrypted, bound to the provider's API origin:
+
+```
+eval({ code: `
+  import { requestTavilyApiKey } from "@workspace-skills/web-research";
+  await requestTavilyApiKey(); // user pastes the key into the trusted prompt
+` })
+```
+
+Same shape for `requestBraveApiKey()` and `requestExaApiKey()`. Provider
+preference is fixed: **Tavily > Brave > Exa > DuckDuckGo**; the first one
+with a stored credential wins.
 
 ## Step 4: Import Browser Data
 

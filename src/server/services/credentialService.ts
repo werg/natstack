@@ -558,10 +558,19 @@ const proxyFetchParamsSchema = z
     url: z.string().url(),
     method: z.string().min(1).max(16),
     headers: z.record(z.string()).optional(),
+    /** UTF-8 text request body. Mutually exclusive with `bodyBase64`. */
     body: z.string().optional(),
+    /**
+     * Binary request body, base64-encoded. Used when the caller has a
+     * Uint8Array / ArrayBuffer / Blob. Mutually exclusive with `body`.
+     */
+    bodyBase64: z.string().optional(),
     credentialId: identifierSchema.optional(),
   })
-  .strict();
+  .strict()
+  .refine((p) => !(p.body !== undefined && p.bodyBase64 !== undefined), {
+    message: "credentials.proxyFetch: provide either `body` or `bodyBase64`, not both",
+  });
 
 const proxyGitHttpParamsSchema = z
   .object({
@@ -3411,20 +3420,38 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   ): Promise<{
     status: number;
     statusText: string;
-    headers: Record<string, string>;
-    body: string;
+    /**
+     * Headers as ordered pairs. Preserves duplicate `Set-Cookie`
+     * entries (which the Fetch spec doesn't combine on iteration)
+     * across the RPC boundary; a flat Record would silently drop all
+     * but the last one.
+     */
+    headerPairs: Array<[string, string]>;
+    /** Final URL after any redirects the upstream fetch followed. Mirrors `Response.url`. */
+    finalUrl: string;
+    /** Response body, base64-encoded. Always set; empty string for zero-byte bodies. */
+    bodyBase64: string;
   }> {
     if (!egressProxy) {
       throw new Error("Egress proxy is unavailable");
     }
-    return egressProxy.forwardProxyFetch({
+    const requestBody: string | Uint8Array | undefined =
+      params.bodyBase64 !== undefined ? Buffer.from(params.bodyBase64, "base64") : params.body;
+    const result = await egressProxy.forwardProxyFetch({
       callerId: ctx.callerId,
       url: params.url,
       method: params.method,
       headers: params.headers,
-      body: params.body,
+      body: requestBody,
       credentialId: params.credentialId,
     });
+    return {
+      status: result.status,
+      statusText: result.statusText,
+      headerPairs: result.headerPairs,
+      finalUrl: result.finalUrl,
+      bodyBase64: Buffer.from(result.body).toString("base64"),
+    };
   }
 
   async function proxyGitHttp(

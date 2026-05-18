@@ -58,6 +58,8 @@ import {
   createAskUserExtension,
   type AskUserParams,
 } from "./extensions/ask-user.js";
+import { createWebToolsExtension } from "./extensions/web/index.js";
+import type { CredentialPresenceProbe } from "./extensions/web/provider.js";
 import {
   DispatchedError,
   type NatStackScopedUiContext,
@@ -66,7 +68,10 @@ import {
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 /** Built-in file tool names that are always active alongside roster tools. */
-const BUILTIN_TOOL_NAMES = ["read", "edit", "write", "grep", "find", "ls"] as const;
+const BUILTIN_TOOL_NAMES = [
+  "read", "edit", "write", "grep", "find", "ls",
+  "web_search", "web_fetch", "web_read",
+] as const;
 
 export interface PiRunnerGadProvenance {
   sessionId: string;
@@ -133,6 +138,22 @@ export interface PiRunnerOptions {
   cwd?: string;
   /** Enables gad persistence for Pi sessions, turns, reads, and mutations. */
   gad?: PiRunnerGadProvenance;
+  /**
+   * Optional probe asking whether the credentials runtime holds a credential
+   * whose audience matches a given provider origin. Used to auto-upgrade
+   * web search from DuckDuckGo to a paid provider when the user has
+   * registered one through the credentials system. The harness never sees
+   * the credential value — auth is injected by the host's fetcher.
+   */
+  hasCredentialForOrigin?: CredentialPresenceProbe;
+  /**
+   * Optional global-fetch override. In production the host wires a
+   * binary-safe credentialed fetcher that routes through the credentials
+   * runtime: auth is auto-attached by URL-audience matching, every call
+   * is audited, and PDFs/images round-trip as bytes. The harness never
+   * sees credential values.
+   */
+  fetcher?: typeof fetch;
 }
 
 /** Snapshot of Agent state surfaced via the snapshot ephemeral channel stream. */
@@ -191,6 +212,11 @@ export class PiRunner {
       }),
       createAskUserExtension({
         askUser: this.options.askUserCallback,
+      }),
+      createWebToolsExtension({
+        rpc: this.options.rpc,
+        hasCredentialForOrigin: this.options.hasCredentialForOrigin,
+        fetcher: this.options.fetcher,
       }),
     ]);
 

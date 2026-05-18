@@ -37,13 +37,15 @@
     "lint": "eslint src",
     "format": "prettier --write 'src/**/*.{ts,tsx,css,html,json}'",
     "format:check": "prettier --check 'src/**/*.{ts,tsx,css,html,json}'",
+    "quality:check": "pnpm type-check && pnpm lint && pnpm format:check",
     "type-check": "tsc --noEmit && tsc --project tsconfig.workspace.json",
     "type-check:watch": "tsc --noEmit --watch --preserveWatchOutput",
     "test": "pnpm run check:runtime-docs && vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test -c tests/config/playwright.config.ts",
     "test:e2e:headed": "playwright test -c tests/config/playwright.config.ts --headed",
-    "test:all": "pnpm test && pnpm test:e2e"
+    "test:all": "pnpm test && pnpm test:e2e",
+    "prepare": "husky"
   },
   "keywords": [
     "electron",
@@ -102,6 +104,7 @@
     "electron-updater": "^6.3.9",
     "esbuild-svelte": "^0.9.4",
     "eslint": "^9.39.1",
+    "husky": "^9.1.7",
     "jsdom": "^29.0.1",
     "prettier": "^3.6.2",
     "qrcode-terminal": "^0.12.0",

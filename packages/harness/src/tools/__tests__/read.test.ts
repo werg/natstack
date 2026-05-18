@@ -50,6 +50,7 @@ describe("createReadTool", () => {
         }
         return Promise.resolve(null);
       }),
+      streamCall: vi.fn(async () => new Response()),
     };
     const tool = createReadTool(CWD, fs, { rpc });
     const result = await tool.execute("call-1", { path: "pic.png" });

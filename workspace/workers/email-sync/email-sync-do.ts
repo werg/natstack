@@ -15,12 +15,7 @@
 
 import { DurableObjectBase } from "@workspace/runtime/worker";
 import type { DurableObjectContext } from "@workspace/runtime/worker";
-import {
-  fetch as credentialFetch,
-  listStoredCredentials,
-  resolveCredential,
-  type StoredCredentialSummary,
-} from "@workspace/runtime/worker/credentials";
+import { createGmailClient, type GmailClient } from "@workspace/integrations/gmail";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -42,37 +37,10 @@ interface SyncStatus {
   messagesSynced: number;
 }
 
-interface GmailHistoryResponse {
-  history?: Array<{
-    id: string;
-    messagesAdded?: Array<{
-      message: { id: string; threadId: string; labelIds?: string[] };
-    }>;
-  }>;
-  historyId: string;
-  nextPageToken?: string;
-}
-
-interface GmailProfileResponse {
-  emailAddress: string;
-  historyId: string;
-}
-
-interface GmailMessageMetadata {
-  id: string;
-  threadId: string;
-  snippet: string;
-  labelIds?: string[];
-  payload: {
-    headers: Array<{ name: string; value: string }>;
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 const MAX_MESSAGES_PER_SYNC = 50;
 
 // ---------------------------------------------------------------------------
@@ -126,73 +94,16 @@ export class EmailSyncWorker extends DurableObjectBase {
     this.setStateValue("sync_status", JSON.stringify(status));
   }
 
-  // --- Credential handles ---
+  // --- Gmail client ---
+  //
+  // Built lazily on first sync via `createGmailClient`, memoized for
+  // the lifetime of the DO. The factory closes over `this.credentials`
+  // and resolves the URL-bound credential handle once on first call.
 
-  private credentialCache = new Map<string, StoredCredentialSummary>();
-
-  private async getCredential(config: SyncConfig): Promise<StoredCredentialSummary> {
-    const key = `${config.providerId}:${config.connectionId}`;
-    const existing = this.credentialCache.get(key);
-    if (existing) {
-      return existing;
-    }
-    const credentials = await listStoredCredentials();
-    const credential = credentials.find((entry) => entry.id === config.connectionId)
-      ?? await resolveCredential({ url: "https://gmail.googleapis.com/" });
-    if (!credential) {
-      throw new Error("No URL-bound Gmail credential found for email sync");
-    }
-    this.credentialCache.set(key, credential);
-    return credential;
-  }
-
-  // --- Gmail API (native fetch — DOs have outbound network) ---
-
-  private async gmailFetch<T>(path: string, handle: StoredCredentialSummary): Promise<T> {
-    const res = await credentialFetch(`${GMAIL_BASE}${path}`, undefined, { credentialId: handle.id });
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Gmail API ${res.status}: ${body}`);
-    }
-    return res.json() as Promise<T>;
-  }
-
-  private async getProfile(handle: StoredCredentialSummary): Promise<GmailProfileResponse> {
-    return this.gmailFetch("/profile", handle);
-  }
-
-  private async getHistory(
-    handle: StoredCredentialSummary,
-    startHistoryId: string,
-  ): Promise<GmailHistoryResponse> {
-    // Paginate through all history pages to avoid missing messages
-    let pageToken: string | undefined;
-    let combined: GmailHistoryResponse = { historyId: startHistoryId };
-    do {
-      const params = new URLSearchParams({
-        startHistoryId,
-        historyTypes: "messageAdded",
-        maxResults: String(MAX_MESSAGES_PER_SYNC),
-      });
-      if (pageToken) params.set("pageToken", pageToken);
-      const page = await this.gmailFetch<GmailHistoryResponse>(`/history?${params}`, handle);
-      combined.historyId = page.historyId;
-      if (page.history) {
-        combined.history = [...(combined.history ?? []), ...page.history];
-      }
-      pageToken = page.nextPageToken;
-    } while (pageToken);
-    return combined;
-  }
-
-  private async getMessageMetadata(
-    handle: StoredCredentialSummary,
-    messageId: string,
-  ): Promise<GmailMessageMetadata> {
-    return this.gmailFetch(
-      `/messages/${messageId}?format=metadata&metadataHeaders=Subject&metadataHeaders=From`,
-      handle,
-    );
+  private _gmail: GmailClient | null = null;
+  private get gmail(): GmailClient {
+    if (!this._gmail) this._gmail = createGmailClient(this.credentials);
+    return this._gmail;
   }
 
   // --- PubSub publishing ---
@@ -244,10 +155,9 @@ export class EmailSyncWorker extends DurableObjectBase {
       pubsubChannel: body.pubsubChannel,
     };
 
-    // Seed historyId from the user's profile so we only get new messages
+    // Seed historyId from the user's profile so we only get new messages.
     try {
-      const handle = await this.getCredential(config);
-      const profile = await this.getProfile(handle);
+      const profile = await this.gmail.getProfile();
       config.lastHistoryId = profile.historyId;
     } catch (err) {
       console.warn("[EmailSyncWorker] Could not seed historyId:", err);
@@ -310,24 +220,28 @@ export class EmailSyncWorker extends DurableObjectBase {
   // --- Core sync logic ---
 
   private async doSync(config: SyncConfig): Promise<number> {
-    const handle = await this.getCredential(config);
+    const gmail = this.gmail;
 
-    // If no historyId yet, seed it from the profile (first sync)
+    // If no historyId yet, seed it from the profile (first sync).
     if (!config.lastHistoryId) {
-      const profile = await this.getProfile(handle);
+      const profile = await gmail.getProfile();
       config.lastHistoryId = profile.historyId;
       this.setConfig(config);
       return 0;
     }
 
-    // Fetch history since last sync
-    let history: GmailHistoryResponse;
+    // Fetch history since last sync.
+    let history: Awaited<ReturnType<typeof gmail.listHistory>>;
     try {
-      history = await this.getHistory(handle, config.lastHistoryId);
+      history = await gmail.listHistory({
+        startHistoryId: config.lastHistoryId,
+        historyTypes: ["messageAdded"],
+        maxResults: MAX_MESSAGES_PER_SYNC,
+      });
     } catch (err) {
-      // historyId may be expired (404) — reseed from profile
+      // historyId may be expired (404) — reseed from profile.
       if (String(err).includes("404") || String(err).includes("notFound")) {
-        const profile = await this.getProfile(handle);
+        const profile = await gmail.getProfile();
         config.lastHistoryId = profile.historyId;
         this.setConfig(config);
         return 0;
@@ -335,17 +249,17 @@ export class EmailSyncWorker extends DurableObjectBase {
       throw err;
     }
 
-    // Extract new inbox message IDs
+    // Extract new inbox message IDs.
     const newMessageIds = new Set<string>();
     for (const entry of history.history ?? []) {
       for (const added of entry.messagesAdded ?? []) {
-        if (added.message.labelIds?.includes("INBOX")) {
+        if (added.message?.labelIds?.includes("INBOX") && added.message.id) {
           newMessageIds.add(added.message.id);
         }
       }
     }
 
-    // Deduplicate against already-synced messages
+    // Deduplicate against already-synced messages.
     const unseenIds: string[] = [];
     for (const id of newMessageIds) {
       const rows = this.sql.exec(
@@ -356,13 +270,17 @@ export class EmailSyncWorker extends DurableObjectBase {
       }
     }
 
-    // Fetch metadata for unseen messages
+    // Fetch metadata for unseen messages via the client.
     const messages: Array<{ id: string; threadId: string; subject: string; from: string }> = [];
     for (const id of unseenIds.slice(0, MAX_MESSAGES_PER_SYNC)) {
       try {
-        const msg = await this.getMessageMetadata(handle, id);
-        const subject = msg.payload.headers.find(h => h.name === "Subject")?.value ?? "(no subject)";
-        const from = msg.payload.headers.find(h => h.name === "From")?.value ?? "";
+        const msg = await gmail.getMessage(id, {
+          format: "metadata",
+          metadataHeaders: ["Subject", "From"],
+        });
+        const headers = msg.payload?.headers ?? [];
+        const subject = headers.find((h) => h.name === "Subject")?.value ?? "(no subject)";
+        const from = headers.find((h) => h.name === "From")?.value ?? "";
 
         messages.push({ id: msg.id, threadId: msg.threadId, subject, from });
 
@@ -375,11 +293,10 @@ export class EmailSyncWorker extends DurableObjectBase {
       }
     }
 
-    // Advance the history cursor
+    // Advance the history cursor.
     config.lastHistoryId = history.historyId;
     this.setConfig(config);
 
-    // Publish to PubSub channel
     await this.publishNewMessages(messages, config);
 
     if (messages.length > 0) {

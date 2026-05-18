@@ -1,5 +1,8 @@
 import { githubCredential } from "./providers.js";
-import { getUrlCredentialClient, type UrlCredentialClient } from "./urlCredentialClient.js";
+import type {
+  CredentialClient,
+  UrlCredentialHandle,
+} from "../../runtime/src/shared/credentials.js";
 
 const GITHUB_API_BASE = "https://api.github.com";
 const GITHUB_ACCEPT_HEADER = "application/vnd.github+json";
@@ -61,13 +64,15 @@ export interface GitHubIssue {
   id: number;
   number: number;
   title: string;
-  state: string;
+  state: "open" | "closed";
   html_url: string;
   body?: string | null;
   user?: GitHubUser;
   assignees?: GitHubUser[];
   labels?: Array<GitHubLabel | string>;
   repository_url?: string;
+  /** Present on issue payloads that are actually pull requests. */
+  pull_request?: unknown;
   [key: string]: unknown;
 }
 
@@ -151,114 +156,100 @@ function toQueryParams(params?: object): string {
   return query ? `?${query}` : "";
 }
 
-async function githubFetch<T>(
-  path: string,
-  init?: RequestInit,
-  auth?: UrlCredentialClient,
-): Promise<T> {
-  const handle = auth ?? await ensureAuth();
-  const headers = new Headers(init?.headers);
-  headers.set("Accept", GITHUB_ACCEPT_HEADER);
-
-  if (init?.body && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-
-  const response = await handle.fetch(`${GITHUB_API_BASE}${path}`, {
-    ...init,
-    headers,
-  });
-
-  if (!response.ok) {
-    const bodyText = await response.text();
-    throw new Error(
-      `GitHub API request failed: ${response.status} ${response.statusText}${bodyText ? ` - ${bodyText}` : ""}`,
-    );
-  }
-
-  return await response.json() as T;
+/**
+ * Per-context GitHub API client. Build one with `createGitHubClient`
+ * (see below) from a `CredentialClient` — the constructor lazily
+ * resolves the URL-bound credential once, then methods call its
+ * `fetch` directly. No per-method `auth` parameter.
+ */
+export interface UpdateIssueParams {
+  title?: string;
+  body?: string;
+  state?: "open" | "closed";
+  labels?: string[];
+  assignees?: string[];
 }
 
-let github: UrlCredentialClient | undefined;
-
-async function ensureAuth(): Promise<UrlCredentialClient> {
-  if (!github) {
-    github = await getUrlCredentialClient(githubCredential);
-  }
-  return github;
+export interface GitHubClient {
+  /** The underlying URL-credential handle (exposed for `credentialId` access in push correlation). */
+  handle(): Promise<UrlCredentialHandle>;
+  getUser(): Promise<GitHubUser>;
+  listRepos(opts?: ListReposOptions): Promise<GitHubRepo[]>;
+  getRepo(owner: string, repo: string): Promise<GitHubRepo>;
+  listIssues(owner: string, repo: string, opts?: ListIssuesOptions): Promise<GitHubIssue[]>;
+  createIssue(owner: string, repo: string, params: CreateIssueParams): Promise<GitHubIssue>;
+  getIssue(owner: string, repo: string, number: number): Promise<GitHubIssue>;
+  updateIssue(owner: string, repo: string, number: number, params: UpdateIssueParams): Promise<GitHubIssue>;
 }
 
-export async function getUser(auth?: UrlCredentialClient): Promise<GitHubUser> {
-  return githubFetch<GitHubUser>("/user", undefined, auth);
-}
+/**
+ * Build a GitHub client bound to the given `CredentialClient`. The
+ * credential handle is resolved on first use and memoized — methods
+ * don't repeat audience lookup. The harness never sees the
+ * underlying token; auth is injected by the credentialed fetcher.
+ */
+export function createGitHubClient(credentials: CredentialClient): GitHubClient {
+  let handlePromise: Promise<UrlCredentialHandle> | null = null;
+  const handle = (): Promise<UrlCredentialHandle> => {
+    if (!handlePromise) {
+      const p = credentials.forAudience({
+        ...githubCredential,
+        label: githubCredential.displayName,
+      });
+      // Cache resolved success; clear the cache on rejection so a
+      // later call can retry after the user (e.g.) registers a
+      // credential mid-session.
+      p.catch(() => {
+        if (handlePromise === p) handlePromise = null;
+      });
+      handlePromise = p;
+    }
+    return handlePromise;
+  };
 
-export async function listRepos(
-  auth?: UrlCredentialClient,
-  opts?: ListReposOptions,
-): Promise<GitHubRepo[]> {
-  return githubFetch<GitHubRepo[]>(
-    `/user/repos${toQueryParams(opts)}`,
-    undefined,
-    auth,
-  );
-}
+  const apiFetch = async <T>(path: string, init?: RequestInit): Promise<T> => {
+    const auth = await handle();
+    const headers = new Headers(init?.headers);
+    headers.set("Accept", GITHUB_ACCEPT_HEADER);
+    if (init?.body && !headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
+    }
+    const response = await auth.fetch(`${GITHUB_API_BASE}${path}`, { ...init, headers });
+    if (!response.ok) {
+      const bodyText = await response.text();
+      throw new Error(
+        `GitHub API request failed: ${response.status} ${response.statusText}${bodyText ? ` - ${bodyText}` : ""}`,
+      );
+    }
+    return (await response.json()) as T;
+  };
 
-export async function getRepo(
-  owner: string,
-  repo: string,
-  auth?: UrlCredentialClient,
-): Promise<GitHubRepo> {
-  return githubFetch<GitHubRepo>(
-    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
-    undefined,
-    auth,
-  );
-}
+  const enc = encodeURIComponent;
 
-export async function listIssues(
-  owner: string,
-  repo: string,
-  opts?: ListIssuesOptions,
-  auth?: UrlCredentialClient,
-): Promise<GitHubIssue[]> {
-  const labels = Array.isArray(opts?.labels) ? opts.labels.join(",") : opts?.labels;
-  return githubFetch<GitHubIssue[]>(
-    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues${toQueryParams({
-      ...opts,
-      labels,
-    })}`,
-    undefined,
-    auth,
-  );
-}
-
-export async function createIssue(
-  owner: string,
-  repo: string,
-  params: CreateIssueParams,
-  auth?: UrlCredentialClient,
-): Promise<GitHubIssue> {
-  return githubFetch<GitHubIssue>(
-    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues`,
-    {
-      method: "POST",
-      body: JSON.stringify(params),
+  return {
+    handle,
+    getUser: () => apiFetch<GitHubUser>("/user"),
+    listRepos: (opts) => apiFetch<GitHubRepo[]>(`/user/repos${toQueryParams(opts)}`),
+    getRepo: (owner, repo) => apiFetch<GitHubRepo>(`/repos/${enc(owner)}/${enc(repo)}`),
+    listIssues: (owner, repo, opts) => {
+      const labels = Array.isArray(opts?.labels) ? opts.labels.join(",") : opts?.labels;
+      return apiFetch<GitHubIssue[]>(
+        `/repos/${enc(owner)}/${enc(repo)}/issues${toQueryParams({ ...opts, labels })}`,
+      );
     },
-    auth,
-  );
-}
-
-export async function getIssue(
-  owner: string,
-  repo: string,
-  number: number,
-  auth?: UrlCredentialClient,
-): Promise<GitHubIssue> {
-  return githubFetch<GitHubIssue>(
-    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${number}`,
-    undefined,
-    auth,
-  );
+    createIssue: (owner, repo, params) =>
+      apiFetch<GitHubIssue>(`/repos/${enc(owner)}/${enc(repo)}/issues`, {
+        method: "POST",
+        body: JSON.stringify(params),
+      }),
+    getIssue: (owner, repo, number) =>
+      apiFetch<GitHubIssue>(`/repos/${enc(owner)}/${enc(repo)}/issues/${number}`),
+    updateIssue: (owner, repo, number, params) =>
+      apiFetch<GitHubIssue>(`/repos/${enc(owner)}/${enc(repo)}/issues/${number}`, {
+        method: "PATCH",
+        body: JSON.stringify(params),
+      }),
+  };
 }
 
 export function onIssue(event: GitHubIssueWebhookEvent) {

@@ -1268,7 +1268,7 @@ async function main() {
     name: "rpcServer",
     dependencies: ["tokenManager"],
     async start() {
-      const server = new RpcServer({ tokenManager, dispatcher, eventService });
+      const server = new RpcServer({ tokenManager, dispatcher, eventService, egressProxy });
       server.initHandlers();
       rpcServerForGateway = server;
       return { server };

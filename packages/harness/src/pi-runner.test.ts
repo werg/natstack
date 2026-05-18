@@ -395,6 +395,14 @@ describe("PiRunner.runTurn", () => {
 });
 
 describe("PiRunner.buildUserMessage", () => {
+  function hasContent(message: unknown): message is { content: unknown } {
+    return (
+      typeof message === "object"
+      && message !== null
+      && "content" in message
+    );
+  }
+
   it("wraps content + images into an AgentMessage", async () => {
     const runner = new PiRunner(createOptions());
     await runner.init();
@@ -403,15 +411,27 @@ describe("PiRunner.buildUserMessage", () => {
     ];
     const msg = runner.buildUserMessage("update", images);
     expect(msg.role).toBe("user");
+    expect(hasContent(msg)).toBe(true);
+    if (!hasContent(msg)) {
+      throw new Error("buildUserMessage should return user content when images are present");
+    }
+    const contentWithImages = msg.content;
     expect(Array.isArray(msg.content)).toBe(true);
-    expect((msg.content as unknown[])[0]).toEqual({ type: "text", text: "update" });
-    expect((msg.content as unknown[])[1]).toEqual(images[0]);
+    expect((contentWithImages as unknown[])[0]).toEqual({
+      type: "text",
+      text: "update",
+    });
+    expect((contentWithImages as unknown[])[1]).toEqual(images[0]);
   });
 
   it("uses string content when there are no images", async () => {
     const runner = new PiRunner(createOptions());
     await runner.init();
     const msg = runner.buildUserMessage("just words");
+    expect(hasContent(msg)).toBe(true);
+    if (!hasContent(msg)) {
+      throw new Error("buildUserMessage should include content for plain text");
+    }
     expect(msg.content).toBe("just words");
   });
 });

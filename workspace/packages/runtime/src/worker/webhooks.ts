@@ -1,34 +1,10 @@
-import {
-  createWebhookIngressClient,
-  type CreateWebhookIngressSubscriptionRequest,
-  type RotateWebhookIngressSecretResult,
-  type WebhookIngressClient,
-  type WebhookIngressSubscriptionSummary,
-} from "../shared/webhooks.js";
-import { workerHostRpcCaller } from "./hostRpc.js";
-
-const client: WebhookIngressClient = createWebhookIngressClient(workerHostRpcCaller);
-
-export function createSubscription(
-  input: CreateWebhookIngressSubscriptionRequest,
-): Promise<WebhookIngressSubscriptionSummary> {
-  return client.createSubscription(input);
-}
-
-export function listSubscriptions(): Promise<WebhookIngressSubscriptionSummary[]> {
-  return client.listSubscriptions();
-}
-
-export function revokeSubscription(subscriptionId: string): Promise<void> {
-  return client.revokeSubscription(subscriptionId);
-}
-
-export function rotateSecret(
-  subscriptionId: string,
-  secret?: string,
-): Promise<RotateWebhookIngressSecretResult> {
-  return client.rotateSecret(subscriptionId, secret);
-}
+/**
+ * Worker-side webhook ingress client types.
+ *
+ * Worker-side code accesses webhooks through the runtime's `webhooks`
+ * namespace, which is bound to the right RPC bridge for the current
+ * context. See the note in `./credentials.ts` for the same rationale.
+ */
 
 export type {
   CreateWebhookIngressSubscriptionRequest,

@@ -218,8 +218,10 @@ export class Gateway {
         return gitHandler.handleHttpRequest(req, res, entry.callerId, entry.callerKind);
       }
 
-      // POST /rpc → RPC handler (in-process)
-      if (url === "/rpc" && req.method === "POST" && rpcHandler) {
+      // POST /rpc → RPC handler (in-process). `/rpc/stream` is the
+      // streaming proxy fetch variant — same handler dispatches both
+      // based on `req.url`.
+      if ((url === "/rpc" || url === "/rpc/stream") && req.method === "POST" && rpcHandler) {
         return rpcHandler.handleGatewayHttpRequest(req, res);
       }
 

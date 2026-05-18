@@ -231,3 +231,8 @@ For Google Workspace specifically, use the dedicated
 `google-workspace` skill and its setup workflow UI.
 For GitHub specifically, use the dedicated `github` skill and its fine-grained
 PAT setup workflow.
+For keyed web-search providers (Tavily, Brave, Exa) specifically, use the
+`web-research` skill's helpers (`requestTavilyApiKey`, `requestBraveApiKey`,
+`requestExaApiKey`). Each pops the trusted credential-input UI with the
+right audience and header injection so `web_search` auto-upgrades from
+DuckDuckGo on the next call.

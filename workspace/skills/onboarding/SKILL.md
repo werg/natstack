@@ -23,6 +23,7 @@ Guide new users through understanding NatStack and getting their workspace set u
 |-------|-------------|
 | `browser-import` | Importing cookies, passwords, bookmarks, history from existing browsers |
 | `api-integrations` | Connecting third-party APIs (Gmail, GitHub, Slack, etc.) via OAuth |
+| `web-research` | Optional Tavily / Brave / Exa API key setup so `web_search` upgrades past DuckDuckGo |
 | `sandbox` | Learning the eval tool, inline UI, runtime APIs |
 | `paneldev` | Building and launching panels, workers, full development workflow |
 
@@ -85,7 +86,7 @@ chosen setup path.
 
 1. **Explain** — Read [OVERVIEW.md](OVERVIEW.md), introduce key concepts based on what the user already knows
 2. **Recommend first actions** — Keep the first reply short and state-aware; rely on the pinned action bar for the initial setup choices
-3. **API integrations** — Highlight concrete provider choices: Google Workspace, GitHub, Slack, model/API keys, or custom OAuth/API provider. Do not gate this on browser data import.
+3. **API integrations** — Highlight concrete provider choices: Google Workspace, GitHub, Slack, model/API keys, web-search providers (Tavily / Brave / Exa for `web_search`), or custom OAuth/API provider. Do not gate this on browser data import.
 4. **Import browser data** — Use the `browser-import` skill only when the user wants cookies, bookmarks, passwords, or local browser state
 5. **First project** — Use the `paneldev` skill to scaffold and launch a panel
 6. **Explore** — Point to the `sandbox` skill for runtime API exploration

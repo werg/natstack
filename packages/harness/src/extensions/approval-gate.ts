@@ -34,6 +34,9 @@ export const DEFAULT_SAFE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "ls",
   "grep",
   "find",
+  "web_search",
+  "web_fetch",
+  "web_read",
 ]);
 
 export function createApprovalGateExtension(

@@ -53,6 +53,14 @@ interface SentMessage {
   opts?: unknown;
 }
 
+function hasContent(message: unknown): message is { content: unknown } {
+  return (
+    typeof message === "object"
+    && message !== null
+    && "content" in message
+  );
+}
+
 function makeFakeRunner(): { fake: PiRunner; state: FakeRunnerState } {
   const listeners: Array<(event: AgentEvent) => void> = [];
   const state: FakeRunnerState = {
@@ -268,6 +276,9 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
     expect(s.buildCalls).toHaveLength(1);
     expect(s.buildCalls[0]!.content).toBe("hello world");
     expect(s.runTurnCalls).toHaveLength(1);
+    if (!hasContent(s.runTurnCalls[0])) {
+      throw new Error("runTurnMessage should receive user content message");
+    }
     expect(s.runTurnCalls[0]!.content).toBe("hello world");
     expect(s.steerCalls).toHaveLength(0);
   });
@@ -395,6 +406,9 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
     await flush();
 
     expect(instance.fakeState!.steerCalls).toHaveLength(1);
+    if (!hasContent(instance.fakeState!.steerCalls[0])) {
+      throw new Error("steerMessage should receive user content message");
+    }
     expect(instance.fakeState!.steerCalls[0]!.content).toBe("second");
   });
 
@@ -472,6 +486,9 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
     await flush();
 
     expect(s.runTurnCalls).toHaveLength(2);
+    if (!hasContent(s.runTurnCalls[1])) {
+      throw new Error("runTurnMessage should receive user content message");
+    }
     expect(s.runTurnCalls[1]!.content).toBe("r2");
   });
 
