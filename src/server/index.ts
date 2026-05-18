@@ -1244,7 +1244,7 @@ async function main() {
           return `${isTls ? "https" : "http"}://127.0.0.1:${gatewayPortResolved}`;
         },
         extensionTransport: {
-          call(name, method, args) {
+          call(name, method, ...args) {
             const rpcServer = rpcServerForGateway;
             if (!rpcServer) throw new Error("RPC server is not initialized");
             return rpcServer.callTarget(name, method, args);
