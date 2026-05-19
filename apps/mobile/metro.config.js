@@ -58,7 +58,7 @@ const config = {
       }
 
       // 0a. Shim Node builtins pulled in transitively by @natstack/shared.
-      //     panelManager imports trickle down into panelTypes/panelIdUtils
+      //     shell lifecycle imports trickle down into panelTypes/panelIdUtils
       //     which assume a Node runtime. Mobile-safe replacements live in
       //     src/nodeShims — unused APIs throw if accidentally reached.
       if (moduleName === "path" || moduleName === "node:path") {

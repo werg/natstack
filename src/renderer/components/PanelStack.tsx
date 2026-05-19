@@ -1,8 +1,12 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { Box, Card, Flex, Heading, Spinner, Text } from "@radix-ui/themes";
+import { Box, Button, Card, Flex, Heading, Spinner, Text } from "@radix-ui/themes";
 
 import type { LazyTitleNavigationData, LazyStatusNavigationData } from "./navigationTypes";
 import type { PanelContextMenuAction } from "@natstack/shared/types";
+import type {
+  PanelRuntimeLease,
+  PanelRuntimeLeaseChangedEvent,
+} from "@natstack/shared/panel/panelLease";
 import {
   DEFAULT_SEARCH_TEMPLATE,
   applySearchTemplate,
@@ -102,6 +106,7 @@ export function PanelStack({
   // ID-based visible panel state
   const [visiblePanelId, setVisiblePanelId] = useState<string | null>(null);
   const [hostThemeCss, setHostThemeCss] = useState<string | null>(null);
+  const [visibleRuntimeLease, setVisibleRuntimeLease] = useState<PanelRuntimeLease | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState<number>(260);
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const [isResizeHover, setIsResizeHover] = useState(false);
@@ -221,6 +226,37 @@ export function PanelStack({
       [navigateToPanelId]
     )
   );
+
+  useShellEvent(
+    "panel:runtimeLeaseChanged",
+    useCallback(
+      (event: PanelRuntimeLeaseChangedEvent) => {
+        if (event.panelId === visiblePanelId) {
+          setVisibleRuntimeLease(event.next);
+        }
+      },
+      [visiblePanelId]
+    )
+  );
+
+  useEffect(() => {
+    if (!visiblePanelId) {
+      setVisibleRuntimeLease(null);
+      return;
+    }
+    let cancelled = false;
+    void panelService
+      .getRuntimeLease(visiblePanelId)
+      .then((lease) => {
+        if (!cancelled) setVisibleRuntimeLease(lease);
+      })
+      .catch(() => {
+        if (!cancelled) setVisibleRuntimeLease(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [visiblePanelId]);
 
   // Handle panel context menu actions (reload, unload)
   const handlePanelAction = useCallback(async (panelId: string, action: PanelContextMenuAction) => {
@@ -763,6 +799,27 @@ export function PanelStack({
     }
 
     const artifacts = visiblePanel.artifacts;
+    const leasedElsewhere =
+      visibleRuntimeLease && (visibleRuntimeLease.platform !== "desktop" || !artifacts?.htmlPath);
+
+    if (leasedElsewhere) {
+      return (
+        <Flex direction="column" align="center" justify="center" height="100%" gap="3" p="4">
+          <Text size="4" weight="bold">
+            Running on {visibleRuntimeLease.holderLabel}
+          </Text>
+          <Button
+            onClick={() => {
+              void panelService.takeOver(visibleRuntimeLease.panelId).catch((error) => {
+                console.error("Failed to take over panel", error);
+              });
+            }}
+          >
+            Take Over
+          </Button>
+        </Flex>
+      );
+    }
 
     // Error state
     if (artifacts?.error) {

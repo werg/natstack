@@ -2,7 +2,7 @@
  * fsService — Server-side filesystem handler for panel RPC calls.
  *
  * Registered in the Electron main process dispatcher (not SERVER_SERVICES),
- * so panel fs.* calls route through Electron IPC where PanelManager context
+ * so panel fs.* calls route through Electron IPC where panel context
  * is available. In headless mode, registered in the server process dispatcher.
  *
  * All operations are sandboxed to the caller's context folder via path

@@ -39,7 +39,16 @@ export function createRuntime(deps: RuntimeDeps) {
   const shell = (globalThis as any).__natstackShell ?? (globalThis as any).__natstackElectron;
 
   // Initialize the stateArgs bridge for setStateArgs() function
-  _initStateArgsBridge((updates) => shell.setStateArgs(updates));
+  _initStateArgsBridge((updates) => {
+    if (typeof shell?.setStateArgs === "function") {
+      return shell.setStateArgs(updates) as Promise<Record<string, unknown>>;
+    }
+    return base.rpc.call<Record<string, unknown>>(
+      "main",
+      "panel.updateStateArgs",
+      [deps.id, updates],
+    );
+  });
 
   const parentHandleOrNull = deps.parentId ? createParentHandle({ rpc: base.rpc, parentId: deps.parentId }) : null;
   const parent: ParentHandle = parentHandleOrNull ?? noopParent;

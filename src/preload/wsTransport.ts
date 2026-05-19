@@ -12,6 +12,8 @@ type PanelInitPayload = {
   gatewayConfig?: {
     token?: unknown;
   };
+  leaseConnectionId?: unknown;
+  clientLabel?: unknown;
 };
 
 type PanelInitProvider = {
@@ -35,6 +37,10 @@ export interface WsTransportConfig {
   wsPort: number;
   authToken: string;
   callerKind: string;
+  connectionId?: string;
+  clientLabel?: string;
+  clientSessionId?: string;
+  clientPlatform?: "desktop" | "mobile";
   /** Override WebSocket URL. Default: ws://127.0.0.1:{wsPort} */
   wsUrl?: string;
 }
@@ -86,6 +92,8 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
   const bufferedMessages: Array<{ fromId: string; message: RpcMessage }> = [];
   let transportReady = false;
   let authToken = config.authToken;
+  let connectionId = config.connectionId;
+  let clientLabel = config.clientLabel;
 
   const deliver = (fromId: string, message: RpcMessage) => {
     if (!transportReady) {
@@ -146,6 +154,12 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
     if (typeof nextToken === "string" && nextToken.length > 0) {
       authToken = nextToken;
       globals.__natstackGatewayToken = nextToken;
+      if (typeof panelInit.leaseConnectionId === "string") {
+        connectionId = panelInit.leaseConnectionId;
+      }
+      if (typeof panelInit.clientLabel === "string") {
+        clientLabel = panelInit.clientLabel;
+      }
       try {
         sessionStorage.setItem("__natstackPanelInit", JSON.stringify(panelInit));
       } catch {
@@ -158,10 +172,17 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
   const base = new BaseWsTransport({
     selfId: config.viewId,
     getWsUrl: () => config.wsUrl ?? `ws://127.0.0.1:${config.wsPort}`,
+    connectionId: config.connectionId,
     routeTarget: normalizeEndpointId,
-    terminalCloseCodes: [4001, 4005, 4006],
+    terminalCloseCodes: [4001, 4005, 4006, 4090, 4091],
     translateEvent,
     logPrefix: "WsTransport",
+    getAuthMessageFields: () => ({
+      connectionId,
+      clientLabel,
+      clientSessionId: config.clientSessionId,
+      clientPlatform: config.clientPlatform,
+    }),
     adapter: {
       now: () => Date.now(),
       getAuthToken: async () => authToken,

@@ -20,7 +20,7 @@ NatStack is a local workspace with stackable panels, browser automation, workflo
 - Use callouts for important status or caveats, for example:
   \`<Callout.Root color="blue"><Callout.Icon><Icons.InfoCircledIcon /></Callout.Icon><Callout.Text>Short status text.</Callout.Text></Callout.Root>\`
 - Use \`<ActionButton message="...">Label</ActionButton>\` for simple declarative actions that should send a follow-up user message when clicked.
-- Markdown links are clickable in NatStack panels. HTTPS links open browser panels; use \`buildPanelLink\` for workspace panel navigation, \`createBrowserPanel(url, { focus: true })\` for internal browser panels, and approval-gated \`openExternal(url)\` for the system browser.
+- Markdown links are clickable in NatStack panels. HTTPS links open browser panels; use \`createPanel\` then \`navigateToPanel\` for workspace panel navigation, \`createBrowserPanel(url, { focus: true })\` for internal browser panels, and approval-gated \`openExternal(url)\` for the system browser.
 - Keep MDX small and self-contained. Do not use MDX for long app-like interfaces or arbitrary browser JavaScript.
 - Use inline_ui for persistent or interactive workflow UI, dashboards, tables with actions, setup flows, and controls the user may return to later.
 - Use load_action_bar, when available, for compact always-visible controls or workflow status that should stay above chat history until replaced or cleared.

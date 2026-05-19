@@ -7,6 +7,7 @@
  */
 
 import { createDevLogger } from "@natstack/dev-log";
+import { randomUUID } from "crypto";
 import type { PanelSnapshot } from "@natstack/shared/types";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import type { TokenManager } from "@natstack/shared/tokenManager";
@@ -14,7 +15,7 @@ import type { EventService } from "@natstack/shared/eventsService";
 import type { ServerClient } from "./serverClient.js";
 import type { PanelManager } from "@natstack/shared/shell/panelManager";
 import type {
-  BridgePanelManager,
+  BridgePanelLifecycle,
   PanelViewLike,
   PanelHttpServerLike,
   PanelCreateOptions,
@@ -56,9 +57,12 @@ export interface PanelOrchestratorDeps {
   workspaceConfig?: WorkspaceConfig;
 }
 
-export class PanelOrchestrator implements BridgePanelManager {
+export class PanelOrchestrator implements BridgePanelLifecycle {
   private readonly deps: PanelOrchestratorDeps;
   private currentTheme: "light" | "dark" = "dark";
+  private readonly runtimeClientSessionId = `desktop-${randomUUID()}`;
+  private runtimeClientRegistered = false;
+  private readonly runtimeLeaseConnections = new Map<string, string>();
 
   constructor(deps: PanelOrchestratorDeps) {
     this.deps = deps;
@@ -123,7 +127,7 @@ export class PanelOrchestrator implements BridgePanelManager {
         this.focusPanel(result.panelId);
       }
 
-      const panelUrl = this.getPanelUrlForId(result.panelId);
+      const panelUrl = await this.buildPanelLoadUrl(result.panelId);
       const view = this.getPanelView();
       if (panelUrl && view) {
         await view.createViewForPanel(result.panelId, panelUrl, result.contextId);
@@ -202,7 +206,7 @@ export class PanelOrchestrator implements BridgePanelManager {
 
       this.focusPanel(result.panelId);
 
-      const panelUrl = this.getPanelUrlForId(result.panelId);
+      const panelUrl = await this.buildPanelLoadUrl(result.panelId);
       const view = this.getPanelView();
       if (panelUrl && view) {
         await view.createViewForPanel(result.panelId, panelUrl, result.contextId);
@@ -224,7 +228,7 @@ export class PanelOrchestrator implements BridgePanelManager {
 
       this.focusPanel(result.id);
 
-      const panelUrl = this.getPanelUrlForId(result.id);
+      const panelUrl = await this.buildPanelLoadUrl(result.id);
       const view = this.getPanelView();
       if (panelUrl && view) {
         const panel = this.registry.getPanel(result.id);
@@ -256,7 +260,7 @@ export class PanelOrchestrator implements BridgePanelManager {
     try {
       this.tokenManager.createToken(result.panelId, "panel");
 
-      const panelUrl = this.getPanelUrlForId(result.panelId);
+      const panelUrl = await this.buildPanelLoadUrl(result.panelId);
       const view = this.getPanelView();
       if (panelUrl && view) {
         await view.createViewForPanel(result.panelId, panelUrl, result.contextId);
@@ -405,7 +409,7 @@ export class PanelOrchestrator implements BridgePanelManager {
 
     this.panelHttpServer?.invalidateBuild(getPanelSource(panel));
 
-    const panelUrl = this.getPanelUrlForId(panelId);
+    const panelUrl = await this.buildPanelLoadUrl(panelId);
     const view = this.getPanelView();
     if (panelUrl && view) {
       await view.createViewForPanel(panelId, panelUrl, getPanelContextId(panel));
@@ -453,7 +457,14 @@ export class PanelOrchestrator implements BridgePanelManager {
   // =========================================================================
 
   async getBootstrapConfig(callerId: string): Promise<unknown> {
-    return this.shellCore.getPanelInit(callerId);
+    const config = await this.shellCore.getPanelInit(callerId);
+    const leaseConnectionId = this.runtimeLeaseConnections.get(callerId);
+    if (!leaseConnectionId || !config || typeof config !== "object") return config;
+    return {
+      ...(config as Record<string, unknown>),
+      leaseConnectionId,
+      clientLabel: "Desktop",
+    };
   }
 
   // =========================================================================
@@ -603,6 +614,15 @@ export class PanelOrchestrator implements BridgePanelManager {
     this.registry.notifyPanelTreeUpdate();
   }
 
+  getRuntimeClientSessionId(): string {
+    return this.runtimeClientSessionId;
+  }
+
+  async takeOverPanel(panelId: string): Promise<void> {
+    await this.loadPanelIntoView(panelId, "takeOver");
+    this.focusPanel(panelId);
+  }
+
   // =========================================================================
   // WS event helpers
   // =========================================================================
@@ -681,7 +701,44 @@ export class PanelOrchestrator implements BridgePanelManager {
     });
   }
 
-  private async loadSnapshotIntoView(panelId: string, snapshot: PanelSnapshot): Promise<void> {
+  private async loadPanelIntoView(
+    panelId: string,
+    leaseMode: "acquire" | "takeOver" = "acquire"
+  ): Promise<void> {
+    const panel = this.registry.getPanel(panelId);
+    if (!panel) throw new Error(`Panel not found: ${panelId}`);
+    await this.loadSnapshotIntoView(panelId, getCurrentSnapshot(panel), leaseMode);
+  }
+
+  private async buildPanelLoadUrl(
+    panelId: string,
+    leaseMode: "acquire" | "takeOver" = "acquire"
+  ): Promise<string | null> {
+    const panel = this.registry.getPanel(panelId);
+    if (!panel) return null;
+
+    const source = getPanelSource(panel);
+    if (source.startsWith("browser:")) {
+      return source.slice("browser:".length);
+    }
+
+    const leaseConnectionId = await this.acquireRuntimeLease(panelId, leaseMode);
+    return buildPanelUrl({
+      source,
+      contextId: getPanelContextId(panel),
+      ref: getPanelRef(panel),
+      leaseConnectionId,
+      gatewayPort: this.deps.gatewayPort,
+      externalHost: this.externalHost,
+      protocol: this.deps.protocol,
+    });
+  }
+
+  private async loadSnapshotIntoView(
+    panelId: string,
+    snapshot: PanelSnapshot,
+    leaseMode: "acquire" | "takeOver" = "acquire"
+  ): Promise<void> {
     const view = this.getPanelView();
     if (!view) return;
 
@@ -699,10 +756,12 @@ export class PanelOrchestrator implements BridgePanelManager {
       return;
     }
 
+    const leaseConnectionId = await this.acquireRuntimeLease(panelId, leaseMode);
     const panelUrl = buildPanelUrl({
       source: snapshot.source,
       contextId: snapshot.contextId,
       ref: snapshot.options.ref,
+      leaseConnectionId,
       gatewayPort: this.deps.gatewayPort,
       externalHost: this.externalHost,
       protocol: this.deps.protocol,
@@ -724,7 +783,42 @@ export class PanelOrchestrator implements BridgePanelManager {
   // Private helpers
   // =========================================================================
 
+  private async ensureRuntimeClientRegistered(): Promise<void> {
+    if (this.runtimeClientRegistered) return;
+    await this.serverClient.call("panelRuntime", "registerClient", [
+      {
+        clientSessionId: this.runtimeClientSessionId,
+        label: "Desktop",
+        platform: "desktop",
+      },
+    ]);
+    this.runtimeClientRegistered = true;
+  }
+
+  private async acquireRuntimeLease(
+    panelId: string,
+    leaseMode: "acquire" | "takeOver"
+  ): Promise<string> {
+    await this.ensureRuntimeClientRegistered();
+    const leaseConnectionId = `desktop-${panelId}-${randomUUID()}`;
+    const result = (await this.serverClient.call("panelRuntime", leaseMode, [
+      panelId,
+      {
+        clientSessionId: this.runtimeClientSessionId,
+        connectionId: leaseConnectionId,
+      },
+    ])) as { acquired: boolean; lease?: { holderLabel?: string } };
+    if (!result.acquired) {
+      throw new Error(
+        `Panel ${panelId} is running on ${result.lease?.holderLabel ?? "another client"}`
+      );
+    }
+    this.runtimeLeaseConnections.set(panelId, leaseConnectionId);
+    return leaseConnectionId;
+  }
+
   private unloadPanelResources(panelId: string): void {
+    this.runtimeLeaseConnections.delete(panelId);
     // Close open file handles (skip for browser panels)
     // Note: FS handles are managed server-side, but local cleanup still needed
 

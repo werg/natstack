@@ -40,6 +40,7 @@ export interface BuildBootstrapConfigOpts {
 export interface BuildPanelUrlOpts {
   source: string;
   contextId: string;
+  leaseConnectionId?: string;
   ref?: string;
   gatewayPort: number;
   externalHost: string;
@@ -101,10 +102,11 @@ export function buildPanelUrl(opts: BuildPanelUrlOpts): string {
     return opts.source.slice("browser:".length);
   }
 
-  const encodedPath = encodeURIComponent(opts.source).replace(/%2F/g, "/");
   const params = new URLSearchParams();
   params.set("contextId", opts.contextId);
+  if (opts.leaseConnectionId) params.set("lc", opts.leaseConnectionId);
   if (opts.ref) params.set("ref", opts.ref);
+  const encodedPath = encodeURIComponent(opts.source).replace(/%2F/g, "/");
   return `${opts.protocol}://${opts.externalHost}:${opts.gatewayPort}/${encodedPath}/?${params.toString()}`;
 }
 

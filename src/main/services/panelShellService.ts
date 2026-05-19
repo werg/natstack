@@ -141,6 +141,8 @@ export function createPanelShellService(deps: {
       updateTheme: { args: z.tuple([z.unknown()]) },
       openDevTools: { args: z.tuple([z.string()]) },
       getChromeState: { args: z.tuple([z.string()]) },
+      getRuntimeLease: { args: z.tuple([z.string()]) },
+      takeOver: { args: z.tuple([z.string()]) },
       getAddressOptions: {
         args: z.union([z.tuple([z.string()]), z.tuple([z.string(), z.string().optional()])]),
       },
@@ -295,6 +297,17 @@ export function createPanelShellService(deps: {
           if (!panel) throw new Error(`Panel not found: ${panelId}`);
           const repo = await getRepoState(getPanelSource(panel), deps.serverClient);
           return buildPanelChromeState({ panel, repo }) satisfies PanelChromeState;
+        }
+
+        case "getRuntimeLease": {
+          const panelId = args[0] as string;
+          return registry.getRuntimeLease(panelId);
+        }
+
+        case "takeOver": {
+          const panelId = args[0] as string;
+          await lifecycle.takeOverPanel(panelId);
+          return;
         }
 
         case "getAddressOptions": {

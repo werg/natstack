@@ -1,12 +1,12 @@
 import { app, Menu, MenuItemConstructorOptions, type WebContents } from "electron";
 import type { EventService } from "@natstack/shared/eventsService";
 import type { ViewManager } from "./viewManager.js";
-import type { BridgePanelManager } from "@natstack/shared/panelInterfaces";
+import type { BridgePanelLifecycle } from "@natstack/shared/panelInterfaces";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import { assertPresent } from "../lintHelpers";
 
 // Set during initialization — always non-null after startup
-let _menuPanelLifecycle: BridgePanelManager | null = null;
+let _menuPanelLifecycle: BridgePanelLifecycle | null = null;
 let _menuPanelRegistry: PanelRegistry | null = null;
 let _menuViewManager: ViewManager | null = null;
 let _menuEventService: EventService | null = null;
@@ -29,7 +29,7 @@ export function setMenuViewManager(vm: ViewManager): void {
 }
 
 /** Set the panel lifecycle for menu operations. Called from index.ts. */
-export function setMenuPanelLifecycle(lc: BridgePanelManager): void {
+export function setMenuPanelLifecycle(lc: BridgePanelLifecycle): void {
   _menuPanelLifecycle = lc;
 }
 

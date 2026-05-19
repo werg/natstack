@@ -7,6 +7,7 @@
 
 import type { PendingApproval } from "./approvals.js";
 import type { PanelCommandId } from "./panelCommands.js";
+import type { PanelRuntimeLeaseChangedEvent } from "./panel/panelLease.js";
 
 /**
  * Known event names that can be subscribed to.
@@ -16,6 +17,7 @@ export type EventName =
   | "workspace:unit-log"
   | "workspace:revision-bumped"
   | "presence:panel-active"
+  | "panel:runtimeLeaseChanged"
   | "system-theme-changed"
   | "panel-tree-updated"
   | "open-workspace-switcher"
@@ -85,6 +87,7 @@ export interface NotificationPayload {
 export interface EventPayloads {
   "system-theme-changed": "light" | "dark";
   "panel-tree-updated": unknown[]; // Panel tree array
+  "panel:runtimeLeaseChanged": PanelRuntimeLeaseChangedEvent;
   "open-workspace-switcher": void;
   "toggle-address-bar": void;
   "focus-address-bar": void;
@@ -162,6 +165,7 @@ export interface EventPayloads {
 export const VALID_EVENT_NAMES: EventName[] = [
   "system-theme-changed",
   "panel-tree-updated",
+  "panel:runtimeLeaseChanged",
   "open-workspace-switcher",
   "toggle-address-bar",
   "focus-address-bar",
@@ -193,5 +197,6 @@ export function isValidEventName(name: string): name is EventName {
   if (name === "workspace:unit-log") return true;
   if (name === "workspace:revision-bumped") return true;
   if (name === "presence:panel-active") return true;
+  if (name === "panel:runtimeLeaseChanged") return true;
   return VALID_EVENT_NAMES.includes(name as EventName);
 }

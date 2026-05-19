@@ -9,6 +9,7 @@
 
 import type { RpcMessage } from "@natstack/rpc";
 import type { ToolExecutionResult } from "../types.js";
+import type { ClientPlatform } from "../panel/panelLease.js";
 
 // =============================================================================
 // Client → Server messages
@@ -18,6 +19,9 @@ export interface WsAuthMessage {
   type: "ws:auth";
   token: string;
   connectionId?: string;
+  clientSessionId?: string;
+  clientLabel?: string;
+  clientPlatform?: ClientPlatform;
 }
 
 export interface WsRpcMessage {

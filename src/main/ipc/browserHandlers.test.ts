@@ -49,12 +49,12 @@ describe("browserService handler", () => {
   const viewManager = {
     getWebContents: vi.fn().mockReturnValue(mockWc),
   };
-  const panelManager = {};
+  const panelRegistry = {};
 
   const svc = createBrowserService({
     cdpServer: cdpServer as unknown as CdpServer,
     getViewManager: () => viewManager as unknown as ViewManager,
-    panelRegistry: panelManager as unknown as PanelRegistry,
+    panelRegistry: panelRegistry as unknown as PanelRegistry,
   });
   const handler = svc.handler;
   const ctx: ServiceContext = { callerId: "panel-1", callerKind: "panel" };

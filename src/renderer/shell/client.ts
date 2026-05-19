@@ -48,6 +48,7 @@ import type {
   PanelAddressOptions,
   PanelChromeState,
 } from "@natstack/shared/panelChrome";
+import type { PanelRuntimeLease } from "@natstack/shared/panel/panelLease";
 // =============================================================================
 // App Service
 // =============================================================================
@@ -70,6 +71,9 @@ export const panel = {
   openDevTools: (panelId: string) => rpc.call<undefined>("main", "panel.openDevTools", [panelId]),
   getChromeState: (panelId: string) =>
     rpc.call<PanelChromeState>("main", "panel.getChromeState", [panelId]),
+  getRuntimeLease: (panelId: string) =>
+    rpc.call<PanelRuntimeLease | null>("main", "panel.getRuntimeLease", [panelId]),
+  takeOver: (panelId: string) => rpc.call<undefined>("main", "panel.takeOver", [panelId]),
   getAddressOptions: (source: string, ref?: string) =>
     rpc.call<PanelAddressOptions>("main", "panel.getAddressOptions", [source, ref]),
   getBrowserAddressOptions: (query: string) =>

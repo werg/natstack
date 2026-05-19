@@ -14,6 +14,12 @@
 
 import { createDevLogger } from "@natstack/dev-log";
 import type { Panel, PanelArtifacts, PanelInfo, PanelSummary } from "./types.js";
+import type {
+  PanelRuntimeLease,
+  PanelRuntimeLeaseChangedEvent,
+  RuntimeLeaseSnapshot,
+  RuntimeLeaseVersion,
+} from "./panel/panelLease.js";
 import {
   getCurrentSnapshot,
   getPanelSource,
@@ -53,6 +59,8 @@ export class PanelRegistry implements PanelRelationshipProvider {
   private reservedPanelIds: Set<string> = new Set();
   private collapsedIds: Set<string> = new Set();
   private currentTheme: "light" | "dark" = "light";
+  private runtimeLeases: Map<string, PanelRuntimeLease> = new Map();
+  private runtimeLeaseVersion: RuntimeLeaseVersion | null = null;
 
   // Debounce state for panel tree update notifications
   private treeUpdatePending = false;
@@ -252,6 +260,28 @@ export class PanelRegistry implements PanelRelationshipProvider {
     this.notifyPanelTreeUpdate();
   }
 
+  addPanelAt(panel: Panel, parentId: string | null, insertionIndex: number): void {
+    if (this.panels.has(panel.id)) {
+      throw new Error(`Panel already exists: ${panel.id}`);
+    }
+
+    if (parentId) {
+      const parent = this.panels.get(parentId);
+      if (!parent) {
+        throw new Error(`Parent panel not found: ${parentId}`);
+      }
+      const position = Math.max(0, Math.min(insertionIndex, parent.children.length));
+      parent.children.splice(position, 0, panel);
+      parent.selectedChildId = panel.id;
+    } else {
+      const position = Math.max(0, Math.min(insertionIndex, this.rootPanels.length));
+      this.rootPanels.splice(position, 0, panel);
+    }
+
+    this.panels.set(panel.id, panel);
+    this.notifyPanelTreeUpdate();
+  }
+
   /**
    * Remove a panel from the tree (in-memory only — caller handles archiving).
    */
@@ -331,6 +361,19 @@ export class PanelRegistry implements PanelRelationshipProvider {
     this.notifyPanelTreeUpdate();
   }
 
+  reparentPanel(panelId: string, newParentId: string | null, targetPosition: number): void {
+    this.movePanel(panelId, newParentId, targetPosition);
+  }
+
+  updateTitle(panelId: string, title: string): void {
+    const panel = this.panels.get(panelId);
+    if (!panel) {
+      throw new Error(`Panel not found: ${panelId}`);
+    }
+    panel.title = title;
+    this.notifyPanelTreeUpdate();
+  }
+
   /**
    * Update the focused panel in local memory.
    */
@@ -372,6 +415,11 @@ export class PanelRegistry implements PanelRelationshipProvider {
       throw new Error(`Panel not found: ${panelId}`);
     }
     replacePanelCurrentSnapshot(panel, { ...getCurrentSnapshot(panel), stateArgs });
+    this.notifyPanelTreeUpdate();
+  }
+
+  replaceSnapshot(panelId: string, snapshot: ReturnType<typeof getCurrentSnapshot>): void {
+    this.replaceCurrentSnapshot(panelId, snapshot);
   }
 
   replaceCurrentSnapshot(panelId: string, snapshot: ReturnType<typeof getCurrentSnapshot>, history?: Panel["history"]): void {
@@ -400,12 +448,49 @@ export class PanelRegistry implements PanelRelationshipProvider {
     this.currentTheme = theme;
   }
 
+  setTheme(theme: "light" | "dark"): void {
+    this.setCurrentTheme(theme);
+    this.notifyPanelTreeUpdate();
+  }
+
   getCurrentTheme(): "light" | "dark" {
     return this.currentTheme;
   }
 
   setFocusedPanelId(panelId: string): void {
     this.focusedPanelId = panelId;
+  }
+
+  setFocused(panelId: string): void {
+    this.updateSelectedPath(panelId);
+  }
+
+  getRuntimeLease(panelId: string): PanelRuntimeLease | null {
+    return this.runtimeLeases.get(panelId) ?? null;
+  }
+
+  getRuntimeLeases(): PanelRuntimeLease[] {
+    return [...this.runtimeLeases.values()];
+  }
+
+  getRuntimeLeaseVersion(): RuntimeLeaseVersion | null {
+    return this.runtimeLeaseVersion;
+  }
+
+  applyRuntimeLeaseSnapshot(snapshot: RuntimeLeaseSnapshot): void {
+    this.runtimeLeases = new Map(snapshot.leases.map((lease) => [lease.panelId, lease]));
+    this.runtimeLeaseVersion = snapshot.version;
+    this.notifyPanelTreeUpdate();
+  }
+
+  applyRuntimeLeaseChanged(event: PanelRuntimeLeaseChangedEvent): void {
+    if (event.next) {
+      this.runtimeLeases.set(event.panelId, event.next);
+    } else {
+      this.runtimeLeases.delete(event.panelId);
+    }
+    this.runtimeLeaseVersion = event.version;
+    this.notifyPanelTreeUpdate();
   }
 
   /**

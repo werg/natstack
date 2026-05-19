@@ -108,18 +108,22 @@ export async function completePairing(
     label: "Mobile device",
     platform: "mobile",
   });
-  if (typeof response.deviceId !== "string" || typeof response.refreshToken !== "string" || typeof response.shellToken !== "string") {
+  if (
+    typeof response["deviceId"] !== "string" ||
+    typeof response["refreshToken"] !== "string" ||
+    typeof response["shellToken"] !== "string"
+  ) {
     throw new Error("Pairing response did not include device credentials");
   }
   return {
     serverUrl,
-    deviceId: response.deviceId,
-    refreshToken: response.refreshToken,
-    shellToken: response.shellToken,
-    callerId: String(response.callerId ?? ""),
-    serverId: typeof response.serverId === "string" ? response.serverId : undefined,
-    serverBootId: typeof response.serverBootId === "string" ? response.serverBootId : undefined,
-    workspaceId: typeof response.workspaceId === "string" ? response.workspaceId : undefined,
+    deviceId: response["deviceId"],
+    refreshToken: response["refreshToken"],
+    shellToken: response["shellToken"],
+    callerId: String(response["callerId"] ?? ""),
+    serverId: typeof response["serverId"] === "string" ? response["serverId"] : undefined,
+    serverBootId: typeof response["serverBootId"] === "string" ? response["serverBootId"] : undefined,
+    workspaceId: typeof response["workspaceId"] === "string" ? response["workspaceId"] : undefined,
   };
 }
 
@@ -128,16 +132,16 @@ export async function refreshShellToken(credentials: Credentials): Promise<Shell
     deviceId: credentials.deviceId,
     refreshToken: credentials.refreshToken,
   });
-  if (typeof response.shellToken !== "string") {
+  if (typeof response["shellToken"] !== "string") {
     throw new Error("Refresh response did not include a shell token");
   }
   return {
-    shellToken: response.shellToken,
-    callerId: String(response.callerId ?? ""),
+    shellToken: response["shellToken"],
+    callerId: String(response["callerId"] ?? ""),
     deviceId: credentials.deviceId,
-    serverId: typeof response.serverId === "string" ? response.serverId : undefined,
-    serverBootId: typeof response.serverBootId === "string" ? response.serverBootId : undefined,
-    workspaceId: typeof response.workspaceId === "string" ? response.workspaceId : undefined,
+    serverId: typeof response["serverId"] === "string" ? response["serverId"] : undefined,
+    serverBootId: typeof response["serverBootId"] === "string" ? response["serverBootId"] : undefined,
+    workspaceId: typeof response["workspaceId"] === "string" ? response["workspaceId"] : undefined,
   };
 }
 
@@ -150,7 +154,7 @@ async function postAuth(serverUrl: string, path: string, body: unknown): Promise
   });
   const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
   if (!response.ok) {
-    throw new Error(typeof payload.error === "string" ? payload.error : `Auth request failed (${response.status})`);
+    throw new Error(typeof payload["error"] === "string" ? payload["error"] : `Auth request failed (${response.status})`);
   }
   return payload;
 }

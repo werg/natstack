@@ -30,6 +30,8 @@ import { checkServiceAccess } from "@natstack/shared/servicePolicy";
 import type { TokenManager } from "@natstack/shared/tokenManager";
 import { WsEventSession, type EventService } from "@natstack/shared/eventsService";
 import { SessionRegistry, type SessionRegistryOptions } from "./rpcServer/sessionRegistry.js";
+import type { ClientPlatform } from "@natstack/shared/panel/panelLease";
+import type { PanelRuntimeCoordinator } from "./panelRuntimeCoordinator.js";
 
 const log = createDevLogger("RpcServer");
 
@@ -57,6 +59,9 @@ function parseDOTarget(targetId: string): { source: string; className: string; o
 export interface WsClientState extends WsClientInfo {
   ws: WebSocket;
   authenticatedAt: number;
+  clientLabel?: string;
+  clientSessionId?: string;
+  clientPlatform?: ClientPlatform;
 }
 
 interface PendingToolCall {
@@ -175,6 +180,10 @@ class ConnectionRegistry {
     if (bridges?.size === 0) this.bridges.delete(callerId);
   }
 
+  closeConnection(callerId: string, connectionId: string, code: number, reason: string): void {
+    this.callerConnections.get(callerId)?.get(connectionId)?.ws.close(code, reason);
+  }
+
   forEachControlPlane(fn: (client: WsClientState) => void): void {
     for (const callerClients of this.callerConnections.values()) {
       for (const client of callerClients.values()) {
@@ -257,9 +266,13 @@ export class RpcServer {
         import("./services/egressProxy.js").EgressProxy,
         "forwardProxyFetchStream"
       >;
+      runtimeCoordinator?: PanelRuntimeCoordinator;
     }
   ) {
     this.dispatcher = deps.dispatcher;
+    deps.runtimeCoordinator?.setCloseConnection((panelId, connectionId, code, reason) => {
+      this.connections.closeConnection(panelId, connectionId, code, reason);
+    });
     this.sessions = new SessionRegistry({
       inboxCapacity: deps.sessionInboxCapacity,
       ttlMs: deps.sessionTtlMs,
@@ -279,6 +292,13 @@ export class RpcServer {
 
   private getConnection(callerId: string, connectionId: string): WsClientState | undefined {
     return this.connections.getConnection(callerId, connectionId);
+  }
+
+  private pickRoutableTarget(targetId: string, connectionId?: string): WsClientState | undefined {
+    if (connectionId) return this.getConnection(targetId, connectionId);
+    const leaseConnectionId = this.deps.runtimeCoordinator?.resolveRouteConnection(targetId);
+    if (leaseConnectionId) return this.getConnection(targetId, leaseConnectionId);
+    return this.pickPrimary(targetId);
   }
 
   private setBridge(
@@ -357,7 +377,14 @@ export class RpcServer {
         return;
       }
 
-      this.handleAuth(ws, msg.token, msg.connectionId);
+      this.handleAuth(
+        ws,
+        msg.token,
+        msg.connectionId,
+        msg.clientLabel,
+        msg.clientSessionId,
+        msg.clientPlatform
+      );
     };
 
     ws.on("message", onFirstMessage);
@@ -369,7 +396,14 @@ export class RpcServer {
     });
   }
 
-  private handleAuth(ws: WebSocket, token: string, requestedConnectionId?: string): void {
+  private handleAuth(
+    ws: WebSocket,
+    token: string,
+    requestedConnectionId?: string,
+    clientLabel?: string,
+    clientSessionId?: string,
+    clientPlatform?: ClientPlatform
+  ): void {
     // Admin tokens are management-only. RPC clients must use caller tokens.
     if (this.deps.tokenManager.validateAdminToken(token)) {
       const msg: WsServerMessage = {
@@ -398,6 +432,20 @@ export class RpcServer {
     const callerId = entry.callerId;
     const connectionId = requestedConnectionId || randomUUID();
 
+    if (callerKind === "panel") {
+      const auth = this.deps.runtimeCoordinator?.authorizePanelConnection(callerId, connectionId);
+      if (!auth?.ok) {
+        const msg: WsServerMessage = {
+          type: "ws:auth-result",
+          success: false,
+          error: auth?.reason ?? "Panel runtime coordinator is unavailable",
+        };
+        ws.send(JSON.stringify(msg));
+        ws.close(4090, "Panel runtime lease denied");
+        return;
+      }
+    }
+
     const existing = this.connections.getConnection(callerId, connectionId);
     if (existing) {
       existing.ws.close(4002, "Replaced by new connection");
@@ -413,11 +461,15 @@ export class RpcServer {
       callerKind,
       authenticated: true,
       authenticatedAt: Date.now(),
+      clientLabel,
+      clientSessionId,
+      clientPlatform,
     };
 
     this.connections.addClient(client);
 
     if (callerKind === "panel") {
+      this.deps.runtimeCoordinator?.markConnected(callerId, connectionId);
       const previousDisconnectAt = this.lastDisconnectAt.get(callerId);
       log.info("panel connected", {
         callerId,
@@ -655,9 +707,7 @@ export class RpcServer {
       }
     }
 
-    const targetClient = targetConnectionId
-      ? this.getConnection(targetId, targetConnectionId)
-      : this.pickPrimary(targetId);
+    const targetClient = this.pickRoutableTarget(targetId, targetConnectionId);
     if (!targetClient || targetClient.ws.readyState !== WebSocket.OPEN) {
       if (message.type === "request") {
         if (this.sessions.hasSession(targetId)) {
@@ -774,7 +824,13 @@ export class RpcServer {
     }
 
     if (outboundMessage.type === "event" && !targetConnectionId) {
-      for (const connection of this.getCallerConnections(targetId)) {
+      const leaseConnectionId = this.deps.runtimeCoordinator?.resolveRouteConnection(targetId);
+      const connections = leaseConnectionId
+        ? [this.getConnection(targetId, leaseConnectionId)].filter(
+            (connection): connection is WsClientState => Boolean(connection)
+          )
+        : this.getCallerConnections(targetId);
+      for (const connection of connections) {
         this.sendToWs(connection.ws, {
           type: "ws:routed",
           fromId: client.callerId,
@@ -878,6 +934,7 @@ export class RpcServer {
     }
 
     if (client.callerKind === "panel") {
+      this.deps.runtimeCoordinator?.markDisconnected(client.callerId, client.connectionId);
       this.lastDisconnectAt.set(client.callerId, Date.now());
       log.info("panel disconnected", {
         callerId: client.callerId,
@@ -1467,9 +1524,7 @@ export class RpcServer {
   ): Promise<unknown> {
     const isPanelOrShellTarget = !targetId.startsWith("do:") && !targetId.startsWith("worker:");
     if (isPanelOrShellTarget) {
-      const wsClient = targetConnectionId
-        ? this.getConnection(targetId, targetConnectionId)
-        : this.pickPrimary(targetId);
+      const wsClient = this.pickRoutableTarget(targetId, targetConnectionId);
       if (wsClient?.ws.readyState === WebSocket.OPEN) {
         const bridge = this.connections.getBridge(targetId, wsClient.connectionId);
         if (bridge) {
@@ -1496,7 +1551,7 @@ export class RpcServer {
     targetId: string,
     response: RpcResponse
   ): Promise<void> {
-    const client = this.pickPrimary(targetId);
+    const client = this.pickRoutableTarget(targetId);
     if (client?.ws.readyState === WebSocket.OPEN) {
       this.sendToWs(client.ws, {
         type: "ws:routed",
@@ -1588,7 +1643,12 @@ export class RpcServer {
   ): Promise<void> {
     const isPanelOrShellTarget = !targetId.startsWith("do:") && !targetId.startsWith("worker:");
     if (isPanelOrShellTarget) {
-      const wsClients = this.getCallerConnections(targetId);
+      const leaseConnectionId = this.deps.runtimeCoordinator?.resolveRouteConnection(targetId);
+      const wsClients = leaseConnectionId
+        ? [this.getConnection(targetId, leaseConnectionId)].filter(
+            (connection): connection is WsClientState => Boolean(connection)
+          )
+        : this.getCallerConnections(targetId);
       if (wsClients.length > 0) {
         for (const wsClient of wsClients) {
           this.sendToWs(wsClient.ws, {

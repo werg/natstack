@@ -19,6 +19,7 @@ export interface BaseWsTransportConfig {
   connectionId?: string;
   reconnect?: boolean;
   terminalCloseCodes?: number[];
+  getAuthMessageFields?: () => Partial<Extract<WsClientMessage, { type: "ws:auth" }>>;
   routeTarget?: (targetId: string) => string;
   translateEvent?: (event: string, payload: unknown, deliver: (message: RpcMessage) => void) => boolean;
   onConnectionStatusChanged?: (status: ConnectionStatus) => void;
@@ -284,7 +285,12 @@ export class BaseWsTransport {
 
     socket.onopen = () => {
       if (generation !== this.generation || this.socket !== socket) return;
-      socket.send(JSON.stringify({ type: "ws:auth", token, connectionId: this.connectionId } satisfies WsClientMessage));
+      socket.send(JSON.stringify({
+        type: "ws:auth",
+        token,
+        connectionId: this.connectionId,
+        ...this.config.getAuthMessageFields?.(),
+      } satisfies WsClientMessage));
     };
 
     socket.onmessage = (event) => {

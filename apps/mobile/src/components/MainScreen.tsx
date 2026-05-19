@@ -16,7 +16,8 @@ import { colorSchemeAtom, themeColorsAtom } from "../state/themeAtoms";
 import { approvalDeepLinkAtom } from "../state/approvalDeepLinkAtom";
 import { pushToastAtom } from "../state/toastAtoms";
 import { activePanelIdAtom, activePanelTitleAtom, activePanelParentIdAtom, } from "../state/navigationAtoms";
-import { buildPanelUrl, parseHostConfig, getExternalHost, } from "../services/panelUrls";
+import { parseHostConfig, getExternalHost, } from "../services/panelUrls";
+import { materializeMobilePanel } from "../services/panelMaterializer";
 import { handleExternalOpen, type ExternalOpenPayload } from "../services/oauthLoopback";
 import { buildPanelChromeState, buildAddressAutocompleteItems, formatRepoChip, isBrowserPanelSource, parseAddressInput, type AddressAction, type AddressAutocompleteItem, type PanelAddressOptions, type PanelRepoState, } from "@natstack/shared/panelChrome";
 import { applySearchTemplate, canonicalizeBrowserHistoryUrl, getAvailablePanelCommands, getBrowserNavigationIntentForAddressAction, getBrowserNavigationIntentForCommand, type BrowserNavigationIntent, type AddressNavigationMode, type PanelCommandId, } from "@natstack/shared/panelCommands";
@@ -120,6 +121,12 @@ export function MainScreen() {
             return null;
         return shellClient.panels.registry.getPanel(activePanelId) ?? null;
     }, [activePanelId, panelTree, shellClient]);
+    const activeRuntimeLease = useMemo(() => {
+        if (!activePanelId || !shellClient)
+            return null;
+        return shellClient.panels.registry.getRuntimeLease(activePanelId);
+    }, [activePanelId, panelTree, shellClient]);
+    const activePanelLeasedElsewhere = Boolean(activeRuntimeLease && activeRuntimeLease.clientSessionId !== shellClient?.credentials.deviceId);
     const activeChromeState = useMemo(() => {
         if (!activePanel)
             return null;
@@ -277,23 +284,31 @@ export function MainScreen() {
         pendingPanelLoads.current.add(panelId);
         setLoadingPanelId(panelId);
         void (async () => {
-            const snapshot = getCurrentSnapshot(panel);
-            const source = snapshot.source;
-            const managed = !source.startsWith("browser:");
-            const url = managed
-                ? buildPanelUrl(source, snapshot.contextId, hostConfig)
-                : source.slice("browser:".length);
-            const panelInit = managed
-                ? await shellClient.panels.getPanelInit(panelId)
-                : null;
+            const lease = shellClient.panels.registry.getRuntimeLease(panelId);
+            if (lease && lease.clientSessionId !== shellClient.credentials.deviceId) {
+                setWebViewStack((prev) => prev.filter((entry) => entry.panelId !== panelId));
+                return;
+            }
+            const materialized = await materializeMobilePanel({
+                panelId,
+                panel,
+                hostConfig,
+                getPanelInit: (id) => shellClient.panels.getPanelInit(id),
+                acquireLease: (id, opts) => shellClient.panels.acquireLease(id, opts),
+                takeOverLease: (id, opts) => shellClient.panels.takeOverLease(id, opts),
+                leaseMode: "acquire",
+            });
             if (hostConfig.protocol === "http") {
-                console.log(`[MainScreen] Activating panel ${panelId}`, { source, url, managed });
+                console.log(`[MainScreen] Activating panel ${panelId}`, {
+                    url: materialized.url,
+                    managed: materialized.managed,
+                });
             }
             setWebViewStack((prev) => addWebViewEntry(prev, {
                 panelId,
-                url,
-                managed,
-                panelInit,
+                url: materialized.url,
+                managed: materialized.managed,
+                panelInit: materialized.panelInit,
                 lastActive: Date.now(),
             }));
         })().catch((err: unknown) => {
@@ -303,6 +318,38 @@ export function MainScreen() {
             setLoadingPanelId((current) => current === panelId ? null : current);
         });
     }, [hostConfig, shellClient, setActivePanelId]);
+    const takeOverActivePanel = useCallback(() => {
+        if (!activePanelId || !activePanel || !hostConfig || !shellClient)
+            return;
+        pendingPanelLoads.current.add(activePanelId);
+        setLoadingPanelId(activePanelId);
+        void materializeMobilePanel({
+            panelId: activePanelId,
+            panel: activePanel,
+            hostConfig,
+            getPanelInit: (id) => shellClient.panels.getPanelInit(id),
+            acquireLease: (id, opts) => shellClient.panels.acquireLease(id, opts),
+            takeOverLease: (id, opts) => shellClient.panels.takeOverLease(id, opts),
+            leaseMode: "takeOver",
+        }).then((materialized) => {
+            setWebViewStack((prev) => addWebViewEntry(prev, {
+                panelId: materialized.panelId,
+                url: materialized.url,
+                managed: materialized.managed,
+                panelInit: materialized.panelInit,
+                lastActive: Date.now(),
+            }));
+        }).catch((error: unknown) => {
+            pushToast({
+                title: "Take over failed",
+                message: error instanceof Error ? error.message : "Could not take over panel.",
+                tone: "danger",
+            });
+        }).finally(() => {
+            pendingPanelLoads.current.delete(activePanelId);
+            setLoadingPanelId((current) => current === activePanelId ? null : current);
+        });
+    }, [activePanel, activePanelId, hostConfig, pushToast, shellClient]);
     useEffect(() => {
         if (!shellClient)
             return;
@@ -422,11 +469,21 @@ export function MainScreen() {
     useEffect(() => {
         if (!activePanelId)
             return;
+        if (activePanelLeasedElsewhere)
+            return;
         if (!webViewStack.some((entry) => entry.panelId === activePanelId) &&
             !pendingPanelLoads.current.has(activePanelId)) {
             activatePanel(activePanelId);
         }
-    }, [activePanelId, activatePanel, webViewStack]);
+    }, [activePanelId, activePanelLeasedElsewhere, activatePanel, webViewStack]);
+    useEffect(() => {
+        if (!shellClient)
+            return;
+        setWebViewStack((prev) => prev.filter((entry) => {
+            const lease = shellClient.panels.registry.getRuntimeLease(entry.panelId);
+            return !lease || lease.clientSessionId === shellClient.credentials.deviceId;
+        }));
+    }, [panelTree, shellClient]);
     useEffect(() => {
         if (!shellClient)
             return;
@@ -797,7 +854,16 @@ export function MainScreen() {
             <Text style={[styles.loadingText, { color: colors.textSecondary }]}>Loading panel...</Text>
           </View>)}
 
-        {webViewStack.map((entry) => (<View key={entry.panelId} style={styles.webViewSlot} pointerEvents={entry.panelId === activePanelId ? "auto" : "none"}>
+        {activePanelId && activePanelLeasedElsewhere && (<View style={styles.placeholderContainer}>
+            <Text style={[styles.placeholderText, { color: colors.text }]}>
+              Running on {activeRuntimeLease?.holderLabel ?? "another client"}
+            </Text>
+            <Text style={[styles.takeOverButton, { color: colors.primary }]} onPress={takeOverActivePanel}>
+              Take Over
+            </Text>
+          </View>)}
+
+        {!activePanelLeasedElsewhere && webViewStack.map((entry) => (<View key={entry.panelId} style={styles.webViewSlot} pointerEvents={entry.panelId === activePanelId ? "auto" : "none"}>
             <WebViewErrorBoundary panelId={entry.panelId} colors={{
                 background: colors.background,
                 text: colors.text,
@@ -871,6 +937,11 @@ const styles = StyleSheet.create({
     loadingText: {
         fontSize: 14,
         textAlign: "center",
+        marginTop: 12,
+    },
+    takeOverButton: {
+        fontSize: 16,
+        fontWeight: "600",
         marginTop: 12,
     },
 });

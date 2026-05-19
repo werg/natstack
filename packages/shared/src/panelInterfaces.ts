@@ -1,7 +1,7 @@
 /**
  * Shared cross-boundary interfaces.
  *
- * BridgePanelManager: minimal surface used by bridge handlers (implemented by
+ * BridgePanelLifecycle: minimal surface used by bridge handlers (implemented by
  * PanelOrchestrator on Electron and other shell-owned implementations).
  *
  * PanelRelationshipProvider: panel tree relationship queries used by RpcServer
@@ -21,10 +21,9 @@ export const BROWSER_SESSION_PARTITION = "persist:browser";
 /**
  * Minimal panel lifecycle interface — the subset that common bridge handlers need.
  */
-export interface BridgePanelManager {
+export interface BridgePanelLifecycle {
   closePanel(panelId: string): void | Promise<void>;
   getInfo(panelId: string): unknown;
-  handleSetStateArgs(panelId: string, updates: Record<string, unknown>): Promise<unknown> | void;
   focusPanel?(panelId: string): void;
   getBootstrapConfig?(callerId: string): Promise<unknown> | unknown;
   createBrowserPanel?(
@@ -51,7 +50,7 @@ export interface PanelRelationshipProvider {
 
 /**
  * Server interaction abstraction exposed to shell-owned view code. Caller
- * token creation is handled by the shell PanelManager token client, not this
+ * token creation is handled by the shell panel lifecycle adapter, not this
  * generic server info surface.
  */
 export interface ServerInfoLike {

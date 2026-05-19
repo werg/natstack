@@ -9,6 +9,7 @@ import { EventsClient } from "@natstack/shared/shell/eventsClient";
 import { createRecoveryCoordinator } from "@natstack/shared/shell/recoveryCoordinator";
 import type { RecoveryCoordinator } from "@natstack/shared/shell/recoveryCoordinator";
 import type { PanelManager } from "@natstack/shared/shell/panelManager";
+import type { PanelRuntimeLeaseChangedEvent } from "@natstack/shared/panel/panelLease";
 import { getSharedBrowserAddressOptions, getSharedPanelAddressOptions, type BrowserAddressOptions, type PanelAddressOptions, type PanelRepoState, } from "@natstack/shared/panelChrome";
 import { createBridgeAdapter } from "./bridgeAdapter";
 import { MobileTransport, type ConnectionStatus } from "./mobileTransport";
@@ -30,6 +31,7 @@ class MobilePanels {
         transport: MobileTransport;
         onTreeUpdated?: (tree: Panel[]) => void;
         navigateToPanel: (panelId: string) => void;
+        clientSessionId: string;
     }) { }
     get registry(): PanelRegistry {
         if (!this.registryInstance)
@@ -57,6 +59,11 @@ class MobilePanels {
         }
         const initialTheme = Appearance.getColorScheme() === "light" ? "light" : "dark";
         this.panelManager.setCurrentTheme(initialTheme);
+        await this.deps.transport.call("main", "panelRuntime.registerClient", [{
+            clientSessionId: this.deps.clientSessionId,
+            label: "Mobile",
+            platform: "mobile",
+        }]);
         const tree = await this.panelManager.syncSnapshot();
         if (tree.rootPanels.length > 0)
             return;
@@ -259,6 +266,22 @@ class MobilePanels {
     async getPanelInit(panelId: string): Promise<unknown> {
         return this.requireManager().getPanelInit(panelId);
     }
+    async acquireLease(panelId: string, opts: { connectionId: string }): Promise<{ acquired: boolean; lease?: { holderLabel: string } }> {
+        return this.deps.transport.call("main", "panelRuntime.acquire", [panelId, {
+            clientSessionId: this.deps.clientSessionId,
+            connectionId: opts.connectionId,
+        }]);
+    }
+    async takeOverLease(panelId: string, opts: { connectionId: string }): Promise<{ acquired: boolean; lease?: { holderLabel: string } }> {
+        return this.deps.transport.call("main", "panelRuntime.takeOver", [panelId, {
+            clientSessionId: this.deps.clientSessionId,
+            connectionId: opts.connectionId,
+        }]);
+    }
+    applyRuntimeLeaseEvent(event: PanelRuntimeLeaseChangedEvent): void {
+        this.registry.applyRuntimeLeaseChanged(event);
+        this.deps.onTreeUpdated?.(this.getTree());
+    }
     async handleBridgeCall(panelId: string, method: string, args: unknown[]): Promise<unknown> {
         if (!this.bridgeAdapterInstance)
             throw new Error("Panels not initialized");
@@ -299,6 +322,7 @@ export class ShellClient {
             serverUrl: config.credentials.serverUrl,
             transport: this.transport,
             onTreeUpdated: config.onTreeUpdated,
+            clientSessionId: config.credentials.deviceId,
             navigateToPanel: (panelId) => {
                 for (const listener of this.navigationListeners)
                     listener(panelId);
@@ -307,6 +331,9 @@ export class ShellClient {
         this.workspaces = new WorkspaceClient(this.transport);
         this.settings = new SettingsClient(this.transport);
         this.events = new EventsClient(this.transport, this.recovery);
+        this.transport.onEvent("event:panel:runtimeLeaseChanged", (_from: string, payload: unknown) => {
+            this.panels.applyRuntimeLeaseEvent(payload as PanelRuntimeLeaseChangedEvent);
+        });
         this.recovery.registerResubscribeHandler("mobile-panel-tree", async () => {
             await drainWorkspaceMutationQueue(this);
             await this.panels.refresh();
@@ -323,6 +350,7 @@ export class ShellClient {
             config: WorkspaceConfig;
         }>("main", "workspace.getInfo", []);
         await this.panels.init(info.config.id, info.config);
+        await this.events.subscribe("panel:runtimeLeaseChanged");
         await drainWorkspaceMutationQueue(this);
     }
     startPeriodicSync(intervalMs = 30000): void {

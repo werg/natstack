@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { applyStateArgsSnapshot } from "@natstack/shared/panel/applyStateArgsSnapshot";
 
 // Global injected by preload via --natstack-state-args command line arg
 declare global {
@@ -62,6 +63,5 @@ export async function setStateArgs(updates: Record<string, unknown>): Promise<vo
     throw new Error("setStateArgs called before runtime initialization");
   }
   const nextStateArgs = await _setStateArgsBridge(updates);
-  window.__natstackStateArgs = nextStateArgs;
-  window.dispatchEvent(new CustomEvent("natstack:stateArgsChanged", { detail: nextStateArgs }));
+  applyStateArgsSnapshot(nextStateArgs);
 }

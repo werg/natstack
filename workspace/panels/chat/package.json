@@ -6,67 +6,6 @@
   "natstack": {
     "title": "Agentic Chat",
     "entry": "index.tsx",
-    "stateArgs": {
-      "type": "object",
-      "properties": {
-        "channelName": {
-          "type": "string",
-          "description": "Channel to connect to"
-        },
-        "channelConfig": {
-          "type": "object",
-          "description": "Channel configuration"
-        },
-        "contextId": {
-          "type": "string",
-          "description": "Context ID for channel authorization"
-        },
-        "pendingAgents": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "agentId": { "type": "string" },
-              "handle": { "type": "string" }
-            }
-          },
-          "description": "Agents pending subscription"
-        },
-        "agentSource": {
-          "type": "string",
-          "description": "Worker source path for the default agent DO"
-        },
-        "agentClass": {
-          "type": "string",
-          "description": "DO class name for the default agent"
-        },
-        "initialPrompt": {
-          "type": "string",
-          "description": "Initial prompt to auto-send as the first user message"
-        },
-        "systemPrompt": {
-          "type": "string",
-          "description": "System prompt for the agent harness"
-        },
-        "systemPromptMode": {
-          "type": "string",
-          "enum": ["append", "replace-natstack", "replace"],
-          "description": "append (default): layers on NatStack base + workspace prompt + skill index. replace-natstack: replaces the NatStack base while preserving workspace prompt + skill index. replace: replaces everything."
-        },
-        "actionBarFile": {
-          "type": "string",
-          "description": "Context-relative TSX file to load into the panel-local action bar"
-        },
-        "actionBarProps": {
-          "type": "object",
-          "description": "Props passed to the actionBarFile component as { props }"
-        },
-        "actionBarMaxHeight": {
-          "type": "number",
-          "description": "Preferred maximum height in pixels for actionBarFile. Defaults to 180 and is clamped by the chat panel."
-        }
-      }
-    },
     "exposeModules": [
       "react",
       "react/jsx-runtime",

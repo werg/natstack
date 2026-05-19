@@ -6,15 +6,6 @@
   "natstack": {
     "title": "gad Browser",
     "entry": "index.tsx",
-    "stateArgs": {
-      "type": "object",
-      "properties": {
-        "branchId": {
-          "type": "string",
-          "description": "Initial branch id to inspect"
-        }
-      }
-    },
     "exposeModules": [
       "react",
       "react/jsx-runtime",

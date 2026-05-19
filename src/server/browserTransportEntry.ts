@@ -17,12 +17,15 @@
  * - globalThis.__natstackTransport — the TransportBridge instance (single server WS)
  */
 
+import { applyStateArgsSnapshot } from "@natstack/shared/panel/applyStateArgsSnapshot";
 import { createWsTransport, type TransportBridge } from "../preload/wsTransport.js";
 
 type BrowserTransportGlobals = typeof globalThis & {
   __natstackId: string;
   __natstackGatewayToken: string;
   __natstackGatewayRpcWsUrl: string;
+  __natstackLeaseConnectionId?: string;
+  __natstackClientLabel?: string;
   __natstackTransport?: TransportBridge;
   __natstackStateArgs?: unknown;
 };
@@ -43,7 +46,6 @@ function isRuntimeEventMessage(message: unknown): message is RuntimeEventMessage
 }
 
 const globals = globalThis as BrowserTransportGlobals;
-
 const viewId: string = globals.__natstackId;
 const authToken: string = globals.__natstackGatewayToken;
 const wsUrl: string = globals.__natstackGatewayRpcWsUrl;
@@ -54,6 +56,8 @@ globals.__natstackTransport = createWsTransport({
   authToken,
   callerKind: "panel",
   wsUrl,
+  connectionId: globals.__natstackLeaseConnectionId,
+  clientLabel: globals.__natstackClientLabel,
 });
 
 // ---------------------------------------------------------------------------
@@ -64,7 +68,10 @@ globals.__natstackTransport = createWsTransport({
 
 globals.__natstackTransport.onMessage((_fromId: string, message: unknown) => {
   if (isRuntimeEventMessage(message) && message.event === "stateArgs:updated") {
-    globals.__natstackStateArgs = message.payload;
-    window.dispatchEvent(new CustomEvent("natstack:stateArgsChanged", { detail: message.payload }));
+    const stateArgs =
+      message.payload && typeof message.payload === "object"
+        ? (message.payload as Record<string, unknown>)
+        : {};
+    applyStateArgsSnapshot(stateArgs);
   }
 });

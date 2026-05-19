@@ -1,7 +1,7 @@
 /**
  * Panel ID generation utilities.
  *
- * Shared between PanelManager (Electron) and HeadlessPanelManager (server).
+ * Shared between shell and server panel lifecycle code.
  * These functions are pure — no Electron or Node.js-specific dependencies
  * beyond `crypto.randomBytes`.
  */

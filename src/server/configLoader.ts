@@ -102,6 +102,8 @@ export const CONFIG_LOADER_JS = `(async () => {
     __natstackSourceRepo: cfg.sourceRepo,
     __natstackEnv: cfg.env,
     __natstackStateArgs: effectiveStateArgs,
+    __natstackLeaseConnectionId: cfg.leaseConnectionId,
+    __natstackClientLabel: cfg.clientLabel,
     process: { env: cfg.env },
   });
 
