@@ -68,13 +68,19 @@ export const CONFIG_LOADER_JS = `(async () => {
     cfg = parseStoredInit();
   }
 
-  if (!cfg || !cfg.panelId || !cfg.gatewayConfig || !cfg.gatewayConfig.serverUrl || !cfg.gatewayConfig.token) {
+  const entityId = cfg?.entityId ?? cfg?.panelId;
+  const slotId = cfg?.slotId ?? entityId;
+  const connectionId = cfg?.connectionId ?? cfg?.leaseConnectionId;
+
+  if (!cfg || !entityId || !cfg.gatewayConfig || !cfg.gatewayConfig.serverUrl || !cfg.gatewayConfig.token) {
     const root = document.getElementById("root");
     if (root) root.innerHTML = "<p>Open this panel from NatStack.</p>";
     return;
   }
 
-  globalThis.__natstackId = cfg.panelId;
+  globalThis.__natstackEntityId = entityId;
+  globalThis.__natstackId = entityId;
+  globalThis.__natstackSlotId = slotId;
   const gatewayConfig = cfg.gatewayConfig;
   const gatewayRpcWsUrl = gatewayConfig.serverUrl.replace(/^https:/, "wss:").replace(/^http:/, "ws:").replace(/\\/$/, "") + "/rpc";
   globalThis.__natstackGatewayRpcWsUrl = gatewayRpcWsUrl;
@@ -102,7 +108,7 @@ export const CONFIG_LOADER_JS = `(async () => {
     __natstackSourceRepo: cfg.sourceRepo,
     __natstackEnv: cfg.env,
     __natstackStateArgs: effectiveStateArgs,
-    __natstackLeaseConnectionId: cfg.leaseConnectionId,
+    __natstackConnectionId: connectionId,
     __natstackClientLabel: cfg.clientLabel,
     process: { env: cfg.env },
   });

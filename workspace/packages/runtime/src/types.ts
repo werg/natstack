@@ -76,13 +76,6 @@ export interface RuntimeFs {
     readonly X_OK: 1;
   };
   /**
-   * Bind this caller's RPC identity to a context folder for the remainder of
-   * the caller's lifetime. Used by DOs (whose callerId is `do:source:class:key`)
-   * to register themselves with FsService's caller→context map so subsequent
-   * fs calls resolve paths against the correct context root.
-   */
-  bindContext(contextId: string): Promise<void>;
-  /**
    * Create a unique temp file path inside the context's `.tmp/` directory and
    * return it (relative to the context root, with a leading `/`). The file
    * itself is not created — callers use the returned path for atomic writes

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import { INTERNAL_DO_SOURCE } from "../internalDOs/internalDoLoader.js";
-import { doTargetId, type RpcCallerLike } from "@natstack/shared/userlandServiceRpc";
+import type { DODispatch } from "../doDispatch.js";
 
 const scopeEntrySchema = z.object({
   id: z.string(),
@@ -14,7 +14,7 @@ const scopeEntrySchema = z.object({
   createdAt: z.number(),
 });
 
-export function createScopeService(deps: { rpc: RpcCallerLike }): ServiceDefinition {
+export function createScopeService(deps: { doDispatch: DODispatch }): ServiceDefinition {
   const ref = {
     source: INTERNAL_DO_SOURCE,
     className: "ScopeStoreDO",
@@ -24,13 +24,13 @@ export function createScopeService(deps: { rpc: RpcCallerLike }): ServiceDefinit
   return {
     name: "scope",
     description: "REPL scope persistence backed by an internal Durable Object",
-    policy: { allowed: ["panel", "worker", "extension", "shell", "server"] },
+    policy: { allowed: ["panel", "worker", "do", "extension", "shell", "server"] },
     methods: {
       upsert: { args: z.tuple([scopeEntrySchema]) },
       loadCurrent: { args: z.tuple([z.string(), z.string()]) },
       get: { args: z.tuple([z.string()]) },
       list: { args: z.tuple([z.string()]) },
     },
-    handler: (_ctx, method, args) => deps.rpc.call(doTargetId(ref), method, args),
+    handler: (_ctx, method, args) => deps.doDispatch.dispatch(ref, method, ...args),
   };
 }

@@ -43,6 +43,7 @@ function createApprovalQueueMock(
     submitClientConfig: vi.fn(),
     submitCredentialInput: vi.fn(),
     listPending: vi.fn(() => []),
+    cancelForCaller: vi.fn(),
   };
 }
 

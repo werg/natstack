@@ -8,8 +8,22 @@ import { Gateway } from "../gateway.js";
 import { RouteRegistry } from "../routeRegistry.js";
 import { createAuthService } from "./authService.js";
 import { DeviceAuthStore } from "./deviceAuthStore.js";
-import { PrincipalRegistry } from "@natstack/shared/principalRegistry";
+import { EntityCache } from "@natstack/shared/runtime/entityCache";
+import type { EntityRecord } from "@natstack/shared/runtime/entitySpec";
 import { ConnectionGrantService } from "@natstack/shared/connectionGrants";
+
+function makePanelRecord(id: string): EntityRecord {
+  return {
+    id,
+    kind: "panel",
+    source: { repoPath: "", effectiveVersion: "" },
+    contextId: "",
+    key: id,
+    createdAt: Date.now(),
+    status: "active",
+    cleanupComplete: true,
+  };
+}
 
 type PairingCodeResponse = { code: string };
 type PairingCompleteResponse = {
@@ -80,7 +94,7 @@ describe("auth service device credentials", () => {
     expect(completed.body.deviceId).toMatch(/^dev_/);
     expect(completed.body.refreshToken).toBeTruthy();
     expect(completed.body.callerId).toBe(`shell:${completed.body.deviceId}`);
-    expect(tokenManager.validateToken(completed.body.shellToken)?.callerKind).toBe("shell");
+    expect(tokenManager.validateToken(completed.body.shellToken)?.callerKind).toBe("shell-remote");
 
     const refreshed = await postJson<RefreshShellResponse>("/_r/s/auth/refresh-shell", {
       deviceId: completed.body.deviceId,
@@ -149,8 +163,8 @@ describe("auth service device credentials", () => {
 
 describe("auth service connection grants", () => {
   it("rejects grants for unregistered principals", async () => {
-    const registry = new PrincipalRegistry();
-    const connectionGrants = new ConnectionGrantService({ registry });
+    const entityCache = new EntityCache();
+    const connectionGrants = new ConnectionGrantService({ entityCache });
     const service = createAuthService({
       tokenManager: new TokenManager(),
       deviceAuthStore: new DeviceAuthStore(
@@ -172,9 +186,9 @@ describe("auth service connection grants", () => {
   });
 
   it("issues redeemable grants for registered principals", async () => {
-    const registry = new PrincipalRegistry();
-    registry.register({ id: "panel:one", kind: "panel" });
-    const connectionGrants = new ConnectionGrantService({ registry });
+    const entityCache = new EntityCache();
+    entityCache._onActivate(makePanelRecord("panel:one"));
+    const connectionGrants = new ConnectionGrantService({ entityCache });
     const service = createAuthService({
       tokenManager: new TokenManager(),
       deviceAuthStore: new DeviceAuthStore(

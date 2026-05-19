@@ -42,50 +42,44 @@ The `durable.classes` array declares which exported classes are DurableObjects. 
 
 ### Userland Services
 
-Worker packages can advertise services in `natstack.services[]`. This lets
-panels, workers, and host services resolve capabilities by name or protocol
-instead of hardcoding `workers/foo`, DO class names, or route URLs.
+Worker package.json only declares DO classes (workerd binding) via
+`natstack.durable.classes`. Workspace-level declarations — singletons,
+services, and HTTP routes — live in `workspace/meta/natstack.yml`.
 
-DO-backed service:
+DO-backed service (in `workspace/meta/natstack.yml`):
 
-```json
-{
-  "natstack": {
-    "entry": "index.ts",
-    "durable": { "classes": [{ "className": "MyStore" }] },
-    "services": [
-      {
-        "name": "my-store",
-        "protocols": ["example.my-store.v1"],
-        "durableObject": { "className": "MyStore", "objectKey": "main" }
-      }
-    ]
-  }
-}
+```yaml
+singletonObjects:
+  - source: workers/my-store
+    className: MyStore
+    key: main
+
+services:
+  - source: workers/my-store
+    name: my-store
+    protocols: [example.my-store.v1]
+    durableObject: { className: MyStore }    # key joined from singletonObjects
 ```
 
 Stateless worker service:
 
-```json
-{
-  "natstack": {
-    "entry": "index.ts",
-    "routes": [{ "path": "/api", "methods": ["POST"] }],
-    "services": [
-      {
-        "name": "my-api",
-        "protocols": ["example.my-api.v1"],
-        "worker": { "routePath": "/api" }
-      }
-    ]
-  }
-}
+```yaml
+routes:
+  - source: workers/my-api
+    path: /api
+    worker: true
+
+services:
+  - source: workers/my-api
+    name: my-api
+    protocols: [example.my-api.v1]
+    worker: { routePath: /api }
 ```
 
 Resolve at runtime:
 
 ```ts
-const svc = await workers.resolveService("example.my-store.v1", "tenant-1");
+const svc = await workers.resolveService("example.my-store.v1");
 if (svc.kind === "durable-object") {
   await rpc.call(svc.targetId, "methodName", []);
 }
@@ -96,9 +90,10 @@ if (api.kind === "worker") {
 }
 ```
 
-Stateless services must point at a regular `natstack.routes[]` entry in the
-same package. Those routes are live only while the canonical worker instance is
-running.
+A `services[].durableObject` or `routes[].durableObject` entry referencing a
+DO class with no matching `singletonObjects` row is rejected at workspace-load
+time. The package.json no longer carries `services` or `routes` arrays — those
+sections live exclusively in `natstack.yml`.
 
 ### Entry Point (index.ts)
 

@@ -88,10 +88,6 @@ export class StubFs implements RuntimeFs {
     this.dirs.add("/");
   }
 
-  async bindContext(): Promise<void> {
-    // no-op for tests
-  }
-
   async mktemp(prefix?: string): Promise<string> {
     this.tmpCounter++;
     return `/.tmp/${prefix ?? "tmp-"}${this.tmpCounter}`;

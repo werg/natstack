@@ -98,6 +98,9 @@ export class PanelRuntimeCoordinator {
     panelId: string,
     connectionId: string
   ): { ok: true } | { ok: false; reason: string } {
+    // `panelId` is the WS callerId — the panel ENTITY id under the entity
+    // model — and the lease is keyed by the same entity id (the orchestrator
+    // resolves slotId → entityId before calling panelRuntime.acquire).
     const lease = this.leases.get(panelId);
     if (!lease) return { ok: false, reason: "Panel runtime has no active lease" };
     if (lease.connectionId !== connectionId) {

@@ -8,17 +8,31 @@ import type {
   CallerKind,
 } from "../../packages/shared/src/serviceDispatcher.js";
 import { TokenManager } from "../../packages/shared/src/tokenManager.js";
-import { PrincipalRegistry } from "../../packages/shared/src/principalRegistry.js";
+import { EntityCache } from "../../packages/shared/src/runtime/entityCache.js";
+import type { EntityRecord } from "../../packages/shared/src/runtime/entitySpec.js";
+
+function makeDoRecord(id: string, repoPath: string, effectiveVersion: string): EntityRecord {
+  return {
+    id,
+    kind: "do",
+    source: { repoPath, effectiveVersion },
+    contextId: "",
+    key: id,
+    createdAt: Date.now(),
+    status: "active",
+    cleanupComplete: true,
+  };
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function createTestSetup(opts?: { principalRegistry?: PrincipalRegistry }) {
+function createTestSetup(opts?: { entityCache?: EntityCache }) {
   const tokenManager = new TokenManager();
   const adminToken = "test-admin-token";
   tokenManager.setAdminToken(adminToken);
   const workerToken = tokenManager.ensureToken("do:test:Worker:obj1", "worker");
   const shellToken = tokenManager.ensureToken("shell:test", "shell");
-  const principalRegistry = opts?.principalRegistry ?? new PrincipalRegistry();
+  const entityCache = opts?.entityCache ?? new EntityCache();
 
   const dispatchResults = new Map<string, unknown>();
   const dispatched: Array<{
@@ -53,7 +67,7 @@ function createTestSetup(opts?: { principalRegistry?: PrincipalRegistry }) {
   const server = new RpcServer({
     tokenManager,
     dispatcher,
-    principalRegistry,
+    entityCache,
   });
 
   return {
@@ -62,7 +76,7 @@ function createTestSetup(opts?: { principalRegistry?: PrincipalRegistry }) {
     adminToken,
     workerToken,
     shellToken,
-    principalRegistry,
+    entityCache,
     dispatcher,
     dispatched,
     dispatchResults,
@@ -189,13 +203,15 @@ describe("RpcServer HTTP POST /rpc", () => {
       await gateway.stop();
       await setup.server.stop();
 
-      const principalRegistry = new PrincipalRegistry();
-      principalRegistry.register({
-        id: "do-service:workers/agent-worker:AiChatWorker",
-        kind: "do-service",
-        source: { repoPath: "workers/agent-worker", effectiveVersion: "hash-1" },
-      });
-      setup = createTestSetup({ principalRegistry });
+      const entityCache = new EntityCache();
+      entityCache._onActivate(
+        makeDoRecord(
+          "do:workers/agent-worker:AiChatWorker:agent-1",
+          "workers/agent-worker",
+          "hash-1"
+        )
+      );
+      setup = createTestSetup({ entityCache });
       setup.server.initHandlers();
       gateway = new Gateway({
         tokenManager: setup.tokenManager,
@@ -226,11 +242,11 @@ describe("RpcServer HTTP POST /rpc", () => {
       expect(setup.dispatched[0]!.ctx.caller).toEqual({
         runtime: {
           id: "do:workers/agent-worker:AiChatWorker:agent-1",
-          kind: "worker",
+          kind: "do",
         },
         code: {
           callerId: "do:workers/agent-worker:AiChatWorker:agent-1",
-          callerKind: "worker",
+          callerKind: "do",
           repoPath: "workers/agent-worker",
           effectiveVersion: "hash-1",
         },
@@ -583,12 +599,14 @@ describe("RpcServer HTTP POST /rpc", () => {
         "do-service:workers/agent-worker:AiChatWorker",
         "worker"
       );
-      const principalRegistry = new PrincipalRegistry();
-      principalRegistry.register({
-        id: "do-service:workers/agent-worker:AiChatWorker",
-        kind: "do-service",
-        source: { repoPath: "workers/agent-worker", effectiveVersion: "hash-1" },
-      });
+      const entityCache = new EntityCache();
+      entityCache._onActivate(
+        makeDoRecord(
+          "do:workers/agent-worker:AiChatWorker:agent-1",
+          "workers/agent-worker",
+          "hash-1"
+        )
+      );
       const stubEgress = {
         forwardProxyFetchStream: vi.fn(
           async (
@@ -620,7 +638,7 @@ describe("RpcServer HTTP POST /rpc", () => {
         tokenManager,
         dispatcher,
         egressProxy: stubEgress,
-        principalRegistry,
+        entityCache,
       });
       server.initHandlers();
       const gw = new Gateway({
@@ -650,11 +668,11 @@ describe("RpcServer HTTP POST /rpc", () => {
             caller: {
               runtime: {
                 id: "do:workers/agent-worker:AiChatWorker:agent-1",
-                kind: "worker",
+                kind: "do",
               },
               code: {
                 callerId: "do:workers/agent-worker:AiChatWorker:agent-1",
-                callerKind: "worker",
+                callerKind: "do",
                 repoPath: "workers/agent-worker",
                 effectiveVersion: "hash-1",
               },

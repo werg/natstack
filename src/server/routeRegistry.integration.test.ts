@@ -114,12 +114,22 @@ describe("RouteRegistry × Gateway integration", () => {
   });
 
   it("rewrites DO routes to /_w/{source}/{class}/{key}/{path}", async () => {
-    h.registry.registerDoRoutes("workers/hello-test", "HelloDO", [
-      {
-        path: "/callback",
-        durableObject: { className: "HelloDO", objectKey: "singleton" },
-      },
+    const { SingletonRegistry } = await import("@natstack/shared/workspace/singletonRegistry");
+    const singletons = new SingletonRegistry([
+      { source: "workers/hello-test", className: "HelloDO", key: "singleton" },
     ]);
+    h.registry.registerDoRoutes(
+      "workers/hello-test",
+      "HelloDO",
+      [
+        {
+          source: "workers/hello-test",
+          path: "/callback",
+          durableObject: { className: "HelloDO" },
+        },
+      ],
+      singletons
+    );
 
     const before = h.workerdPaths.length;
     const { status, body } = await fetchText(
@@ -138,7 +148,9 @@ describe("RouteRegistry × Gateway integration", () => {
   it("rewrites regular-worker routes to /<instance>/<path>", async () => {
     h.registry.registerWorkerRoutes("workers/regular-test", "regular-test", [
       {
+        source: "workers/regular-test",
         path: "/hello",
+        worker: true,
       },
     ]);
 

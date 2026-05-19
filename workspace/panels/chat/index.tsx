@@ -6,14 +6,14 @@
  * directly — no cross-context navigation needed.
  */
 
-import { pubsubConfig, contextId, rpc, recoveryCoordinator, focusPanel, useStateArgs, setStateArgs, buildPanelLink } from "@workspace/runtime";
+import { pubsubConfig, contextId, rpc, recoveryCoordinator, focusPanel, useStateArgs, getStateArgs, setStateArgs, buildPanelLink } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Flex, Spinner, Text, Theme } from "@radix-ui/themes";
 import { AgenticChat, ErrorBoundary } from "@workspace/agentic-chat";
 import type { ConnectionConfig, AgenticChatActions, ToolProvider, ToolProviderDeps } from "@workspace/agentic-chat";
 import { createPanelSandboxConfig, buildEvalTool } from "@workspace/agentic-core";
-import { resolveChatContextId } from "./bootstrap.js";
+import { appendPendingAgent, resolveChatContextId } from "./bootstrap.js";
 
 function detectHostPlatform(): "mobile" | "electron" {
   const explicitPlatform = (globalThis as { __natstackHostPlatform?: unknown }).__natstackHostPlatform;
@@ -93,12 +93,23 @@ async function getChannelDOParticipants(channelId: string): Promise<ChannelDORef
   return participants.map((p) => parseDoTargetId(p.participantId)).filter((p): p is ChannelDORef => p !== null);
 }
 
+/** Persisted per-agent record. `key` is the stable DO `objectKey` minted once
+ *  when the user first adds the agent, so rehydration reuses the same entity
+ *  row rather than spawning a fresh participant. */
+interface PendingAgent {
+  agentId: string;
+  handle: string;
+  key: string;
+  source: string;
+  className: string;
+}
+
 /** Type for chat panel state args */
 interface ChatStateArgs {
   channelName?: string;
   channelConfig?: Record<string, unknown>;
   contextId?: string;
-  pendingAgents?: Array<{ agentId: string; handle: string }>;
+  pendingAgents?: PendingAgent[];
   agentSource?: string;
   agentClass?: string;
   /** If set, automatically sent as the first user message once connected */
@@ -115,28 +126,41 @@ interface ChatStateArgs {
   actionBarMaxHeight?: number | null;
 }
 
-/** Subscribe a DO to a channel via unified RPC. */
-async function subscribeDOToChannel(
-  source: string,
-  className: string,
-  objectKey: string,
-  channelId: string,
-  channelContextId: string,
-  config?: Record<string, unknown>,
-  replay?: boolean,
-): Promise<{ ok: boolean; participantId?: string }> {
-  if (!channelContextId) {
+/** Create the agent DO entity (or reactivate it if it already exists), then
+ *  subscribe it to the channel. Two explicit steps so the entity is created
+ *  by name via `runtime.createEntity` rather than as a side effect of dispatch. */
+async function createAndSubscribeAgent(args: {
+  source: string;
+  className: string;
+  key: string;
+  channelId: string;
+  channelContextId: string;
+  config?: Record<string, unknown>;
+  replay?: boolean;
+}): Promise<{ ok: boolean; participantId?: string }> {
+  if (!args.channelContextId) {
     throw new Error("Cannot subscribe an agent DO without a context ID");
   }
-  const target = await rpc.call<{ targetId: string }>(
+  const handle = await rpc.call<{ targetId: string }>(
     "main",
-    "workers.resolveDurableObject",
-    [source, className, objectKey],
+    "runtime.createEntity",
+    [{
+      kind: "do",
+      source: args.source,
+      className: args.className,
+      key: args.key,
+      contextId: args.channelContextId,
+    }],
   );
   return rpc.call<{ ok: boolean; participantId?: string }>(
-    target.targetId,
+    handle.targetId,
     "subscribeChannel",
-    [{ channelId, contextId: channelContextId, config, replay }],
+    [{
+      channelId: args.channelId,
+      contextId: args.channelContextId,
+      config: args.config,
+      replay: args.replay,
+    }],
   );
 }
 
@@ -163,7 +187,7 @@ export default function ChatPanel() {
 
   // Auto-bootstrap: when no channelName, generate one and spawn the default agent
   const [bootstrapChannel, setBootstrapChannel] = useState<string | null>(null);
-  const [bootstrapPending, setBootstrapPending] = useState<Array<{ agentId: string; handle: string }> | null>(null);
+  const [bootstrapPending, setBootstrapPending] = useState<PendingAgent[] | null>(null);
   const bootstrapAttempted = useRef(false);
 
   useEffect(() => {
@@ -177,15 +201,30 @@ export default function ChatPanel() {
       : className.replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase();
 
     const channelName = `chat-${crypto.randomUUID().slice(0, 8)}`;
-    const objectKey = `${baseHandle}-${crypto.randomUUID().slice(0, 8)}`;
-    const pending = [{ agentId: className, handle: baseHandle }];
+    // Mint `key` once and persist; rehydration must reuse it.
+    const agentKey = `${baseHandle}-${crypto.randomUUID().slice(0, 8)}`;
+    const pending: PendingAgent[] = [{
+      agentId: className,
+      handle: baseHandle,
+      key: agentKey,
+      source: workerSource,
+      className,
+    }];
 
     void setStateArgs({ channelName, contextId: resolvedContextId, pendingAgents: pending });
 
     const subscribeConfig: Record<string, unknown> = { handle: baseHandle };
     if (stateArgs.systemPrompt) subscribeConfig["systemPrompt"] = stateArgs.systemPrompt;
     if (stateArgs.systemPromptMode) subscribeConfig["systemPromptMode"] = stateArgs.systemPromptMode;
-    subscribeDOToChannel(workerSource, className, objectKey, channelName, resolvedContextId, subscribeConfig, true).catch((err: unknown) => {
+    createAndSubscribeAgent({
+      source: workerSource,
+      className,
+      key: agentKey,
+      channelId: channelName,
+      channelContextId: resolvedContextId,
+      config: subscribeConfig,
+      replay: true,
+    }).catch((err: unknown) => {
       console.warn(`[ChatPanel] Failed to subscribe agent DO:`, err);
     });
 
@@ -202,11 +241,9 @@ export default function ChatPanel() {
 
   // Rehydration recovery: when a panel mounts with channelName already set
   // (persisted from a prior session) but no DO participants are in the
-  // channel, re-subscribe the agent. Covers the case where the original
-  // bootstrap persisted channelName but the subscribeDOToChannel call lost
-  // its race against WS-readiness, leaving the user with a chat that has
-  // no agent. Skipped when this session ran the bootstrap itself (in which
-  // case the in-flight subscribe is authoritative).
+  // channel, re-create+subscribe each persisted agent using its stable
+  // `key` so we hit the same entity row idempotently. Skipped when this
+  // session ran the bootstrap itself.
   const rehydrationCheckedRef = useRef(false);
   useEffect(() => {
     if (
@@ -228,20 +265,50 @@ export default function ChatPanel() {
         const fallbackHandle = fallbackClass === DEFAULT_CLASS_NAME
           ? DEFAULT_HANDLE
           : fallbackClass.replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase();
-        const pendingList = (stateArgs.pendingAgents && stateArgs.pendingAgents.length > 0)
-          ? stateArgs.pendingAgents
-          : [{ agentId: fallbackClass, handle: fallbackHandle }];
+        // Persisted pendingAgents carry the original `key`. If state was
+        // written by an older build that only stored `{agentId, handle}`, mint
+        // and persist a key now so subsequent rehydrations are stable.
+        let pendingList: PendingAgent[];
+        if (stateArgs.pendingAgents && stateArgs.pendingAgents.length > 0) {
+          let mutated = false;
+          pendingList = stateArgs.pendingAgents.map((agent) => {
+            if (agent.key && agent.source && agent.className) return agent;
+            mutated = true;
+            const handle = agent.handle;
+            return {
+              agentId: agent.agentId,
+              handle,
+              key: agent.key ?? `${handle}-${crypto.randomUUID().slice(0, 8)}`,
+              source: agent.source ?? workerSource,
+              className: agent.className ?? agent.agentId,
+            };
+          });
+          if (mutated) void setStateArgs({ pendingAgents: pendingList });
+        } else {
+          pendingList = [{
+            agentId: fallbackClass,
+            handle: fallbackHandle,
+            key: `${fallbackHandle}-${crypto.randomUUID().slice(0, 8)}`,
+            source: workerSource,
+            className: fallbackClass,
+          }];
+          void setStateArgs({ pendingAgents: pendingList });
+        }
 
         for (const agent of pendingList) {
-          const objectKey = `${agent.handle}-${crypto.randomUUID().slice(0, 8)}`;
           const subscribeConfig: Record<string, unknown> = { handle: agent.handle };
           if (stateArgs.systemPrompt) subscribeConfig["systemPrompt"] = stateArgs.systemPrompt;
           if (stateArgs.systemPromptMode) subscribeConfig["systemPromptMode"] = stateArgs.systemPromptMode;
           try {
-            await subscribeDOToChannel(
-              workerSource, agent.agentId, objectKey, channelName, resolvedContextId,
-              subscribeConfig, true,
-            );
+            await createAndSubscribeAgent({
+              source: agent.source,
+              className: agent.className,
+              key: agent.key,
+              channelId: channelName,
+              channelContextId: resolvedContextId,
+              config: subscribeConfig,
+              replay: true,
+            });
           } catch (err) {
             console.warn(`[ChatPanel] Failed to re-subscribe agent "${agent.handle}" on rehydration:`, err);
           }
@@ -325,17 +392,31 @@ export default function ChatPanel() {
       ? availableAgents.find(a => a.id === agentId || a.className === agentId)
       : availableAgents[0];
     const className = agent?.className ?? DEFAULT_CLASS_NAME;
+    const source = agent?.id ?? DEFAULT_WORKER_SOURCE;
     const baseHandle = agent?.proposedHandle ?? DEFAULT_HANDLE;
     const handle = `${baseHandle}-${crypto.randomUUID().slice(0, 4)}`;
-    const objectKey = `${handle}-${crypto.randomUUID().slice(0, 8)}`;
-    await subscribeDOToChannel(
-      agent?.id ?? DEFAULT_WORKER_SOURCE,
+    // Mint key once and persist into pendingAgents so rehydration reuses it.
+    const agentKey = `${handle}-${crypto.randomUUID().slice(0, 8)}`;
+    await createAndSubscribeAgent({
+      source,
       className,
-      objectKey,
-      channelName,
-      activeContextId,
-    );
-    return { agentId: agent?.id ?? DEFAULT_WORKER_SOURCE, handle };
+      key: agentKey,
+      channelId: channelName,
+      channelContextId: activeContextId,
+    });
+    // Persist into stateArgs.pendingAgents so the agent rehydrates on reload.
+    // Read the latest snapshot (rather than the captured `stateArgs`) to avoid
+    // clobbering concurrent additions.
+    const currentArgs = getStateArgs<ChatStateArgs>();
+    const nextPending = appendPendingAgent(currentArgs.pendingAgents, {
+      agentId: className,
+      handle,
+      key: agentKey,
+      source,
+      className,
+    });
+    await setStateArgs({ pendingAgents: nextPending });
+    return { agentId: source, handle };
   }, [availableAgents]);
 
   const handleRemoveAgent = useCallback(async (channelName: string, handle: string) => {

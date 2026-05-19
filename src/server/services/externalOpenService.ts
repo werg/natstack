@@ -35,7 +35,11 @@ export function createExternalOpenService(deps: ExternalOpenServiceDeps): Servic
     const resource = resourceForExternalUrl(url);
 
     let approvalDecision: OpenExternalResult["approvalDecision"];
-    if (ctx.caller.runtime.kind === "panel" || ctx.caller.runtime.kind === "worker") {
+    if (
+      ctx.caller.runtime.kind === "panel" ||
+      ctx.caller.runtime.kind === "worker" ||
+      ctx.caller.runtime.kind === "do"
+    ) {
       if (!deps.grantStore || !deps.approvalQueue) {
         throw new Error("External browser open approval is unavailable");
       }
@@ -71,7 +75,7 @@ export function createExternalOpenService(deps: ExternalOpenServiceDeps): Servic
   return {
     name: "externalOpen",
     description: "Approval-gated system browser opens",
-    policy: { allowed: ["shell", "server", "panel", "worker", "extension"] },
+    policy: { allowed: ["shell", "server", "panel", "worker", "do", "extension"] },
     methods: {
       openExternal: { args: z.tuple([z.string(), OPEN_EXTERNAL_OPTIONS_SCHEMA.optional()]) },
     },

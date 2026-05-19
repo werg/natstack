@@ -30,11 +30,15 @@ export function createCorsApprovalService(deps: {
     ctx: ServiceContext,
     rawRequest: z.infer<typeof authorizeCorsSchema>
   ): Promise<CorsApprovalResult> {
-    if (ctx.caller.runtime.kind !== "panel" && ctx.caller.runtime.kind !== "worker") {
+    if (
+      ctx.caller.runtime.kind !== "panel" &&
+      ctx.caller.runtime.kind !== "worker" &&
+      ctx.caller.runtime.kind !== "do"
+    ) {
       throw new ServiceError(
         SERVICE_NAME,
         "authorize",
-        "corsApproval requires a verified panel or worker caller",
+        "corsApproval requires a verified panel, worker, or DO caller",
         "EACCES"
       );
     }
@@ -78,7 +82,7 @@ export function createCorsApprovalService(deps: {
   return {
     name: SERVICE_NAME,
     description: "Approval-gated CORS response header relaxation",
-    policy: { allowed: ["panel", "worker"] },
+    policy: { allowed: ["panel", "worker", "do"] },
     methods: {
       authorize: { args: z.tuple([authorizeCorsSchema]) },
     },

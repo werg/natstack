@@ -105,7 +105,7 @@ export function createGitService(deps: GitServiceDeps): ServiceDefinition {
   return {
     name: "git",
     description: "Git operations and scoped filesystem access for panels",
-    policy: { allowed: ["shell", "panel", "server", "worker", "extension"] },
+    policy: { allowed: ["shell", "panel", "server", "worker", "do", "extension"] },
     methods: {
       getWorkspaceTree: { args: z.tuple([]) },
       findRepoForPath: { args: z.tuple([z.string()]) },
@@ -434,7 +434,11 @@ async function ensureImportProjectPermission(
   if (ctx.caller.runtime.kind === "shell" || ctx.caller.runtime.kind === "server") {
     return;
   }
-  if (ctx.caller.runtime.kind !== "panel" && ctx.caller.runtime.kind !== "worker") {
+  if (
+    ctx.caller.runtime.kind !== "panel" &&
+    ctx.caller.runtime.kind !== "worker" &&
+    ctx.caller.runtime.kind !== "do"
+  ) {
     throw new Error("Project import is unavailable for this caller");
   }
   if (!deps.approvalQueue || !deps.grantStore) {
@@ -487,7 +491,11 @@ async function ensureSharedRemotePermission(
   if (ctx.caller.runtime.kind === "shell" || ctx.caller.runtime.kind === "server") {
     return;
   }
-  if (ctx.caller.runtime.kind !== "panel" && ctx.caller.runtime.kind !== "worker") {
+  if (
+    ctx.caller.runtime.kind !== "panel" &&
+    ctx.caller.runtime.kind !== "worker" &&
+    ctx.caller.runtime.kind !== "do"
+  ) {
     throw new Error("Shared remote configuration is unavailable for this caller");
   }
   if (!deps.approvalQueue || !deps.grantStore) {
@@ -663,7 +671,11 @@ async function ensureGitWritePermission(
   if (ctx.caller.runtime.kind === "shell" || ctx.caller.runtime.kind === "server") {
     return;
   }
-  if (ctx.caller.runtime.kind !== "panel" && ctx.caller.runtime.kind !== "worker") {
+  if (
+    ctx.caller.runtime.kind !== "panel" &&
+    ctx.caller.runtime.kind !== "worker" &&
+    ctx.caller.runtime.kind !== "do"
+  ) {
     throw new Error("Git write permission is unavailable for this caller");
   }
   if (!deps.approvalQueue || !deps.grantStore) {

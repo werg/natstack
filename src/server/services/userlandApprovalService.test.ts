@@ -37,6 +37,14 @@ const workerCtx: ServiceContext = {
     effectiveVersion: "hash-1",
   }),
 };
+const doCtx: ServiceContext = {
+  caller: createVerifiedCaller("do:workers/alpha:AlphaDO:agent-1", "do", {
+    callerId: "do:workers/alpha:AlphaDO:agent-1",
+    callerKind: "do",
+    repoPath: "workers/alpha",
+    effectiveVersion: "hash-1",
+  }),
+};
 const validRequest = {
   subject: { id: "team-x:foo", label: "Team X foo" },
   title: "Allow foo?",
@@ -52,7 +60,7 @@ describe("userlandApprovalService", () => {
     expect(ELECTRON_LOCAL_SERVICE_NAMES).not.toContain("userlandApproval");
   });
 
-  it("allows panels and workers but rejects shell/server through policy", async () => {
+  it("allows panels, workers, and DOs but rejects shell/server through policy", async () => {
     const { service } = createDeps();
     const dispatcher = new ServiceDispatcher();
     dispatcher.registerService(service);
@@ -61,6 +69,7 @@ describe("userlandApprovalService", () => {
     await expect(dispatcher.dispatch(workerCtx, "userlandApproval", "list", [])).resolves.toEqual(
       []
     );
+    await expect(dispatcher.dispatch(doCtx, "userlandApproval", "list", [])).resolves.toEqual([]);
     await expect(
       dispatcher.dispatch(
         { caller: createVerifiedCaller("shell", "shell") },

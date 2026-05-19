@@ -214,6 +214,23 @@ export class EgressProxy {
     ]);
   }
 
+  /**
+   * Cleanup hook called by `runtime.retireEntity`. Drops the per-caller
+   * attributed listener (if any) and circuit-breaker state. Best-effort.
+   */
+  async dropCaller(callerId: string): Promise<void> {
+    const entry = this.attributedServers.get(callerId);
+    if (entry) {
+      this.attributedServers.delete(callerId);
+      await new Promise<void>((resolve) => entry.server.close(() => resolve()));
+    }
+    for (const key of [...this.circuits.keys()]) {
+      if (key.startsWith(`${callerId}:`) || key === callerId) {
+        this.circuits.delete(key);
+      }
+    }
+  }
+
   async forwardProxyFetch(params: {
     caller: VerifiedCaller;
     url: string;
@@ -958,7 +975,7 @@ export class EgressProxy {
     }
     const decision = await this.deps.approvalQueue.request({
       callerId,
-      callerKind: attribution.callerKind === "panel" ? "panel" : "worker",
+      callerKind: attribution.callerKind,
       repoPath: attribution.repoPath,
       effectiveVersion: attribution.effectiveVersion,
       credentialId: credential.id,

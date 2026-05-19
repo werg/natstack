@@ -19,9 +19,10 @@ import { pathToFileURL } from "url";
 import type { TokenManager } from "@natstack/shared/tokenManager";
 import { createVerifiedCaller, type VerifiedCaller } from "@natstack/shared/serviceDispatcher";
 import type { FsService } from "@natstack/shared/fsService";
-import { PrincipalRegistry } from "@natstack/shared/principalRegistry";
+import { canonicalEntityId } from "@natstack/shared/runtime/entitySpec";
 import type { BuildResult } from "./buildV2/buildStore.js";
 import type { RouteRegistry, ManifestRouteDecl } from "./routeRegistry.js";
+import type { SingletonRegistry } from "@natstack/shared/workspace/singletonRegistry";
 import { createDevLogger } from "@natstack/dev-log";
 import {
   getPhysicalPathForAsarPath,
@@ -89,8 +90,6 @@ export interface WorkerCreateOptions {
   /** Build at a specific git ref (branch, tag, or commit SHA).
    *  Use a commit SHA for immutable pinning (content-addressed cache guarantees same build). */
   ref?: string;
-  /** ID of the creating caller (panel, worker, DO). Used for parent handle support. */
-  parentId?: string;
 }
 
 export interface WorkerInstance {
@@ -105,8 +104,6 @@ export interface WorkerInstance {
   buildKey?: string;
   /** Git ref this instance is built at (branch, tag, or commit SHA). */
   ref?: string;
-  /** ID of the parent panel that created this worker (for parent handle support). */
-  parentId?: string;
   status: "building" | "starting" | "running" | "stopped" | "error";
 }
 
@@ -130,16 +127,17 @@ export interface WorkerdManagerDeps {
    *  registration is a no-op and routes in package manifests have no effect. */
   routeRegistry?: RouteRegistry;
   /** Manifest-route lookup, keyed by source. Used alongside routeRegistry. */
-  getManifestRoutes?: (source: string) => ManifestRouteDecl[];
+  getManifestRoutes?: (source: string) => ReadonlyArray<ManifestRouteDecl>;
+  /** Singleton registry — joins routes' (source,className) to object keys. */
+  singletonRegistry?: SingletonRegistry;
   getProxyPort: (caller: VerifiedCaller) => Promise<number | null> | number | null;
   getWorkerdGatewayToken: () => string;
   /** Override for tests; production uses the default router readiness window. */
   workerdStartupReadyTimeoutMs?: number;
-  principalRegistry?: PrincipalRegistry;
   cleanupWebhookSubscriptions?: (callerId: string) => Promise<void>;
 }
 
-type ResolvedWorkerdManagerDeps = WorkerdManagerDeps & { principalRegistry: PrincipalRegistry };
+type ResolvedWorkerdManagerDeps = WorkerdManagerDeps;
 
 /** The canonical regular-worker instance name for a source. Matches the
  *  sanitization that createRegularInstance applies to rawName. */
@@ -177,7 +175,7 @@ export class WorkerdManager {
   private readonly dispatchSecret = crypto.randomBytes(32).toString("hex");
 
   constructor(deps: WorkerdManagerDeps) {
-    this.deps = { ...deps, principalRegistry: deps.principalRegistry ?? new PrincipalRegistry() };
+    this.deps = deps;
     this.configDir = path.join(os.tmpdir(), `natstack-workerd-${process.pid}`);
     fs.mkdirSync(this.configDir, { recursive: true });
   }
@@ -354,6 +352,163 @@ export class WorkerdManager {
     return this.createRegularInstance(options);
   }
 
+  /**
+   * Ensure a DO class is registered with workerd and return the targetId +
+   * effectiveVersion that the runtime service will record on the entity row.
+   *
+   * Does NOT write an entity row — that's runtimeService.createEntity's job.
+   */
+  async ensureDurableObjectEntity(args: {
+    source: string;
+    ref?: string;
+    className: string;
+    key: string;
+    contextId: string;
+  }): Promise<{ targetId: string; effectiveVersion: string }> {
+    await this.ensureDOClass(args.source, args.className);
+    const serviceKey = `${args.source}:${args.className}`;
+    const svc = this.doServices.get(serviceKey);
+    if (!svc) {
+      throw new Error(
+        `ensureDurableObjectEntity: DO class ${serviceKey} missing from doServices after ensureDOClass`
+      );
+    }
+    const targetId = canonicalEntityId({
+      kind: "do",
+      source: args.source,
+      className: args.className,
+      key: args.key,
+    });
+    return { targetId, effectiveVersion: svc.buildKey };
+  }
+
+  /**
+   * Bring up a worker process for an entity managed by the runtime service.
+   *
+   * Wraps the regular worker creation path but uses an entity-scoped callerId
+   * for token minting and bearer binding. Does not write an entity row.
+   */
+  async startWorker(args: {
+    source: string;
+    ref?: string;
+    key: string;
+    contextId: string;
+    stateArgs?: unknown;
+    env?: Record<string, string>;
+  }): Promise<{ targetId: string; effectiveVersion: string }> {
+    const targetId = canonicalEntityId({ kind: "worker", source: args.source, key: args.key });
+    const name = args.key.replace(/[^a-zA-Z0-9_-]/g, "_");
+
+    if (this.instances.has(name)) {
+      throw new Error(`Worker instance "${name}" already exists`);
+    }
+
+    const callerId = targetId;
+    const token = this.ensureWorkerBearer(callerId);
+
+    const stateArgs =
+      args.stateArgs && typeof args.stateArgs === "object" && !Array.isArray(args.stateArgs)
+        ? (args.stateArgs as Record<string, unknown>)
+        : undefined;
+
+    const instance: WorkerInstance = {
+      name,
+      source: args.source,
+      contextId: args.contextId,
+      callerId,
+      token,
+      env: args.env ?? {},
+      bindings: {},
+      stateArgs,
+      ref: args.ref,
+      status: "building",
+    };
+
+    this.instances.set(name, instance);
+
+    try {
+      const buildResult = await this.deps.getBuild(args.source, args.ref);
+      instance.buildKey = buildResult.metadata.ev;
+      instance.status = "starting";
+
+      await this.restartWorkerd();
+
+      instance.status = "running";
+      log.info(`Worker entity "${targetId}" started (source: ${args.source})`);
+
+      if (this.deps.routeRegistry && this.deps.getManifestRoutes) {
+        const canonical = canonicalInstanceNameForSource(args.source);
+        if (name === canonical) {
+          const routes = this.deps.getManifestRoutes(args.source);
+          if (routes.length > 0) {
+            this.deps.routeRegistry.registerWorkerRoutes(args.source, name, Array.from(routes));
+          }
+        }
+      }
+
+      return { targetId, effectiveVersion: buildResult.metadata.ev };
+    } catch (error) {
+      instance.status = "error";
+      this.instances.delete(name);
+      this.revokeWorkerBearer(callerId);
+      log.error(`Failed to start worker entity "${targetId}":`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Idempotent worker teardown invoked by the runtime-service retire hook.
+   * Revokes the bearer token, drops the worker instance, runs handle/webhook
+   * cleanup, and restarts (or stops) workerd as appropriate.
+   */
+  async stopWorker(callerId: string): Promise<void> {
+    let foundInstance: WorkerInstance | null = null;
+    let foundName: string | null = null;
+    for (const [name, instance] of this.instances) {
+      if (instance.callerId === callerId) {
+        foundInstance = instance;
+        foundName = name;
+        break;
+      }
+    }
+
+    this.revokeWorkerBearer(callerId);
+    this.deps.fsService.closeHandlesForCaller(callerId);
+    await this.deps.cleanupWebhookSubscriptions?.(callerId);
+
+    if (!foundInstance || !foundName) return;
+
+    if (this.deps.routeRegistry) {
+      const canonical = canonicalInstanceNameForSource(foundInstance.source);
+      if (foundInstance.name === canonical) {
+        this.deps.routeRegistry.unregisterWorkerRoutes(foundInstance.source);
+      }
+    }
+
+    foundInstance.status = "stopped";
+    this.instances.delete(foundName);
+
+    if (this.instances.size > 0 || this.doServices.size > 0) {
+      await this.restartWorkerd();
+    } else {
+      await this.stopWorkerd();
+    }
+
+    log.info(`Worker entity "${callerId}" stopped`);
+  }
+
+  /**
+   * Idempotent DO-entity teardown invoked by the runtime-service retire hook.
+   * The concrete-instance row lives in WorkspaceDO (durable); workerd does
+   * its own lazy GC of the DO instance, so this is a best-effort cleanup of
+   * Node-side resources keyed by the targetId.
+   */
+  async destroyDOEntity(targetId: string): Promise<void> {
+    this.revokeWorkerBearer(targetId);
+    this.deps.fsService.closeHandlesForCaller(targetId);
+    await this.deps.cleanupWebhookSubscriptions?.(targetId);
+  }
+
   // ── Regular (non-durable) worker creation ──
 
   private async createRegularInstance(options: WorkerCreateOptions): Promise<WorkerInstance> {
@@ -381,7 +536,6 @@ export class WorkerdManager {
       bindings: options.bindings ?? {},
       stateArgs: options.stateArgs,
       ref: options.ref,
-      parentId: options.parentId,
       status: "building",
     };
 
@@ -391,13 +545,6 @@ export class WorkerdManager {
     try {
       const buildResult = await this.deps.getBuild(options.source, options.ref);
       instance.buildKey = buildResult.metadata.ev;
-      this.deps.principalRegistry.register({
-        id: callerId,
-        kind: "worker",
-        source: { repoPath: options.source, effectiveVersion: buildResult.metadata.ev },
-        context: { contextId },
-        parent: { parentId: options.parentId ?? null },
-      });
       instance.status = "starting";
 
       // Restart workerd process with updated config
@@ -413,7 +560,7 @@ export class WorkerdManager {
         if (name === canonical) {
           const routes = this.deps.getManifestRoutes(options.source);
           if (routes.length > 0) {
-            this.deps.routeRegistry.registerWorkerRoutes(options.source, name, routes);
+            this.deps.routeRegistry.registerWorkerRoutes(options.source, name, Array.from(routes));
           }
         }
       }
@@ -422,7 +569,6 @@ export class WorkerdManager {
       instance.status = "error";
       this.instances.delete(name);
       this.revokeWorkerBearer(callerId);
-      this.deps.principalRegistry.unregisterSubtree(callerId);
       log.error(`Failed to start worker "${name}":`, error);
       throw error;
     }
@@ -438,7 +584,6 @@ export class WorkerdManager {
 
     // Cleanup
     this.revokeWorkerBearer(instance.callerId);
-    this.deps.principalRegistry.unregisterSubtree(instance.callerId);
     this.deps.fsService.closeHandlesForCaller(instance.callerId);
     await this.deps.cleanupWebhookSubscriptions?.(instance.callerId);
     this.instances.delete(name);
@@ -571,14 +716,14 @@ export class WorkerdManager {
       // Service-level auth token — shared by all DO instances of this source:className.
       // Created once when the service is first built, revoked only when the last instance is destroyed.
       // NOT tied to any individual instance's lifecycle.
+      //
+      // NOTE: `do-service:*` here is a WORKERD-SIDE bearer-token key, NOT an
+      // entity id. There is no `entities` row for it; the runtime-entity
+      // model only tracks concrete DO instances (`do:<source>:<cls>:<key>`).
+      // Don't grep this string expecting to find a registered principal.
       const serviceCallerId = `do-service:${serviceKey}`;
       const serviceToken = this.ensureWorkerBearer(serviceCallerId);
 
-      this.deps.principalRegistry.register({
-        id: serviceCallerId,
-        kind: "do-service",
-        source: { repoPath: doService.source, effectiveVersion: doService.buildKey },
-      });
       const serviceCaller = createVerifiedCaller(serviceCallerId, "worker", {
         callerId: serviceCallerId,
         callerKind: "worker",
@@ -649,13 +794,6 @@ export class WorkerdManager {
         const buildResult = await this.deps.getBuild(instance.source, instance.ref);
         bundleContent = buildResult.bundle;
         instance.buildKey = buildResult.metadata.ev;
-        this.deps.principalRegistry.register({
-          id: instance.callerId,
-          kind: "worker",
-          source: { repoPath: instance.source, effectiveVersion: instance.buildKey },
-          context: { contextId: instance.contextId },
-          parent: { parentId: instance.parentId ?? null },
-        });
       } catch (err) {
         log.warn(`Skipping worker "${name}" — build not available:`, err);
         continue;
@@ -673,11 +811,6 @@ export class WorkerdManager {
       // Inject stateArgs as a JSON binding so workers can access initial state
       if (instance.stateArgs && Object.keys(instance.stateArgs).length > 0) {
         bindings.push({ name: "STATE_ARGS", json: JSON.stringify(instance.stateArgs) });
-      }
-
-      // Inject parent ID if provided (for parent handle support)
-      if (instance.parentId) {
-        bindings.push({ name: "PARENT_ID", text: instance.parentId });
       }
 
       // Add user-defined env as text bindings
@@ -1171,10 +1304,16 @@ ${doBlock}${cases.join("\n")}
 
   /** Register DO-backed routes from a source's manifest for the given class. */
   private registerRoutesForDoClass(source: string, className: string): void {
-    if (!this.deps.routeRegistry || !this.deps.getManifestRoutes) return;
+    if (!this.deps.routeRegistry || !this.deps.getManifestRoutes || !this.deps.singletonRegistry)
+      return;
     const routes = this.deps.getManifestRoutes(source);
     if (routes.length === 0) return;
-    this.deps.routeRegistry.registerDoRoutes(source, className, routes);
+    this.deps.routeRegistry.registerDoRoutes(
+      source,
+      className,
+      Array.from(routes),
+      this.deps.singletonRegistry
+    );
   }
 
   /**
@@ -1313,7 +1452,6 @@ ${doBlock}${cases.join("\n")}
     // Cleanup all instances
     for (const [, instance] of this.instances) {
       this.revokeWorkerBearer(instance.callerId);
-      this.deps.principalRegistry.unregisterSubtree(instance.callerId);
       this.deps.fsService.closeHandlesForCaller(instance.callerId);
     }
     this.instances.clear();
@@ -1321,7 +1459,6 @@ ${doBlock}${cases.join("\n")}
     // Cleanup DO tracking — revoke service-level tokens
     for (const [serviceKey] of this.doServices) {
       this.revokeWorkerBearer(`do-service:${serviceKey}`);
-      this.deps.principalRegistry.unregister(`do-service:${serviceKey}`);
     }
     this.doServices.clear();
 
@@ -1381,7 +1518,6 @@ ${doBlock}${cases.join("\n")}
         if (svc.source !== source) continue;
         if (newClassNames.has(svc.className)) continue;
         this.revokeWorkerBearer(`do-service:${serviceKey}`);
-        this.deps.principalRegistry.unregister(`do-service:${serviceKey}`);
         this.doServices.delete(serviceKey);
         this.deps.routeRegistry?.unregisterDoRoutes(source, svc.className);
         needsRestart = true;
@@ -1415,7 +1551,7 @@ ${doBlock}${cases.join("\n")}
     // Reconcile routes: manifest may have added, removed, or changed route
     // entries for this source. The registry is rebuilt from scratch for this
     // source using the current manifest + live DO classes + canonical instance.
-    if (this.deps.routeRegistry && this.deps.getManifestRoutes) {
+    if (this.deps.routeRegistry && this.deps.getManifestRoutes && this.deps.singletonRegistry) {
       const newRoutes = this.deps.getManifestRoutes(source);
       const liveDoClasses = new Set<string>();
       for (const svc of this.doServices.values()) {
@@ -1427,9 +1563,10 @@ ${doBlock}${cases.join("\n")}
         assertPresent(this.instances.get(canonical)).source === source;
       this.deps.routeRegistry.reconcileWorkerRoutes(
         source,
-        newRoutes,
+        Array.from(newRoutes),
         liveDoClasses,
-        hasCanonicalInstance ? canonical : null
+        hasCanonicalInstance ? canonical : null,
+        this.deps.singletonRegistry
       );
     }
 

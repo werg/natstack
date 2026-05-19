@@ -20,7 +20,6 @@ const createOptionsSchema = z
     bindings: z.record(z.unknown()).optional(),
     stateArgs: z.record(z.unknown()).optional(),
     ref: z.string().optional(),
-    parentId: z.string().optional(),
   })
   .strict();
 
@@ -46,7 +45,7 @@ export function createWorkerdService(deps: {
   return {
     name: "workerd",
     description: "Worker instance management (workerd runtime)",
-    policy: { allowed: ["server", "panel", "worker", "extension"] },
+    policy: { allowed: ["server", "panel", "worker", "do", "extension"] },
     methods: {
       createInstance: { args: z.tuple([createOptionsSchema]) },
       destroyInstance: { args: z.tuple([z.string()]) },

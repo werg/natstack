@@ -16,7 +16,7 @@ export interface ClientConfigRecord {
   currentVersion?: string;
   owner?: {
     callerId: string;
-    callerKind: "panel" | "worker" | "shell" | "server";
+    callerKind: "panel" | "worker" | "do" | "shell" | "server";
     repoPath: string;
     effectiveVersion: string;
   };

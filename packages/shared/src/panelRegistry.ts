@@ -7,7 +7,7 @@
  * - Debounced tree-update notifications via onTreeUpdated callback
  *
  * Does NOT own:
- * - Persistence (workspace-sync owns SQLite-backed shared state)
+ * - Persistence (workspace-state owns SQLite-backed shared state on WorkspaceDO)
  * - Electron views, tokens, build orchestration
  * - State-arg validation against manifests
  */

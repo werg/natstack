@@ -912,15 +912,11 @@ app.on("ready", async () => {
       )
     );
   };
-  const recoverShellStateFromServer = async (kind: "resubscribe" | "cold-recover") => {
+  const recoverShellStateFromServer = async (_kind: "resubscribe" | "cold-recover") => {
     await replayShellSubscriptionsToServer();
     const manager = shellCore?.panelManager;
     if (!manager) return;
-    if (kind === "cold-recover") {
-      await manager.syncSnapshot();
-      return;
-    }
-    await manager.syncSince();
+    await manager.syncSnapshot();
   };
 
   // Bridge server→main events. Two distinct sources arrive through this
@@ -1348,6 +1344,15 @@ app.on("ready", async () => {
       return viewId;
     };
 
+    const tryResolveCallerId = (event: Electron.IpcMainInvokeEvent): string | null => {
+      if (!viewManager) return null;
+      try {
+        return resolveCallerId(event);
+      } catch {
+        return null;
+      }
+    };
+
     /**
      * Resolve both the caller id and caller kind from an IPC event sender.
      * Audit findings #19 / #43 / #44: handlers must derive callerKind from
@@ -1395,7 +1400,8 @@ app.on("ready", async () => {
     };
 
     ipcMain.handle("natstack:getPanelInit", async (event) => {
-      const callerId = resolveCallerId(event);
+      const callerId = tryResolveCallerId(event);
+      if (!callerId) return null;
       return panelOrchestrator?.getBootstrapConfig(callerId);
     });
 
@@ -1430,7 +1436,8 @@ app.on("ready", async () => {
       }
     );
     ipcMain.handle("natstack:getBootstrapConfig", async (event) => {
-      const callerId = resolveCallerId(event);
+      const callerId = tryResolveCallerId(event);
+      if (!callerId) return null;
       return panelOrchestrator?.getBootstrapConfig(callerId);
     });
 

@@ -66,9 +66,6 @@ export function createRpcFs(rpc: RpcCaller): RuntimeFs {
     }
     return {
         constants: FS_CONSTANTS,
-        async bindContext(contextId: string): Promise<void> {
-            await call<void>("bindContext", contextId);
-        },
         async mktemp(prefix?: string): Promise<string> {
             return call<string>("mktemp", prefix);
         },

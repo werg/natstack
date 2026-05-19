@@ -30,10 +30,43 @@ function createApprovalQueueMock(
     submitClientConfig: vi.fn(),
     submitCredentialInput: vi.fn(),
     listPending: vi.fn(() => []),
+    cancelForCaller: vi.fn(),
   };
 }
 
 describe("corsApprovalService", () => {
+  it("approval-gates DO access to target origins", async () => {
+    const approvalQueue = createApprovalQueueMock("session");
+    const service = createCorsApprovalService({
+      approvalQueue,
+      grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
+    });
+    const ctx = {
+      caller: createVerifiedCaller("do:workers/agent-worker:AiChatWorker:agent-1", "do", {
+        callerId: "do:workers/agent-worker:AiChatWorker:agent-1",
+        callerKind: "do",
+        repoPath: "workers/agent-worker",
+        effectiveVersion: "version-1",
+      }),
+    };
+
+    await expect(
+      service.handler(ctx, "authorize", [
+        {
+          targetUrl: "https://api.example.com/v1/models",
+          requestOrigin: "http://localhost:9100",
+        },
+      ])
+    ).resolves.toMatchObject({ allowed: true, decision: "session" });
+    expect(approvalQueue.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callerId: "do:workers/agent-worker:AiChatWorker:agent-1",
+        callerKind: "do",
+        repoPath: "workers/agent-worker",
+      })
+    );
+  });
+
   it("approval-gates panel access to target origins", async () => {
     const approvalQueue = createApprovalQueueMock("session");
     const service = createCorsApprovalService({

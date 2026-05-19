@@ -53,6 +53,9 @@ export function checkServiceAccess(
   }
 
   if (!policy.allowed.includes(callerKind)) {
+    // DOs run worker code and retain access to services that already admit
+    // worker runtimes unless a method explicitly includes/excludes `do`.
+    if (callerKind === "do" && policy.allowed.includes("worker")) return;
     throw new Error(
       `Service '${service}' is not accessible to ${callerKind} callers`
     );

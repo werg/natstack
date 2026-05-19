@@ -59,8 +59,8 @@ export interface NotificationConsentData {
   callerId: string;
   /** Human-readable name of the caller */
   callerTitle: string;
-  /** Whether the caller is a worker (affects display text) */
-  callerKind: "panel" | "worker";
+  /** Runtime kind requesting consent. */
+  callerKind: "panel" | "worker" | "do";
 }
 
 /**
@@ -99,13 +99,29 @@ export interface EventPayloads {
   "external-open:open": {
     url: string;
     callerId: string;
-    callerKind: "panel" | "worker" | "extension" | "shell" | "server" | "harness";
+    callerKind:
+      | "panel"
+      | "worker"
+      | "do"
+      | "extension"
+      | "shell"
+      | "shell-remote"
+      | "server"
+      | "harness";
   };
   "browser-panel:open": {
     url: string;
     parentPanelId: string;
     callerId: string;
-    callerKind: "panel" | "worker" | "extension" | "shell" | "server" | "harness";
+    callerKind:
+      | "panel"
+      | "worker"
+      | "do"
+      | "extension"
+      | "shell"
+      | "shell-remote"
+      | "server"
+      | "harness";
   };
   "browser-import-progress": {
     requestId: string;

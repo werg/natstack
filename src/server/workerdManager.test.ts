@@ -10,7 +10,6 @@ import {
 } from "./workerdManager.js";
 import { spawn } from "child_process";
 import { findServicePort } from "@natstack/port-utils";
-import { PrincipalRegistry } from "@natstack/shared/principalRegistry";
 
 // Mock child_process to prevent actual workerd spawning
 vi.mock("child_process", () => ({
@@ -56,7 +55,6 @@ vi.mock("@natstack/port-utils", () => ({
 }));
 
 function createMockDeps(overrides: Partial<WorkerdManagerDeps> = {}): WorkerdManagerDeps {
-  const principalRegistry = new PrincipalRegistry();
   return {
     tokenManager: {
       ensureToken: vi.fn().mockReturnValue("mock-token-123"),
@@ -75,7 +73,6 @@ function createMockDeps(overrides: Partial<WorkerdManagerDeps> = {}): WorkerdMan
     getProxyPort: () => 49444,
     getWorkerdGatewayToken: () => "mock-workerd-gateway-token",
     workerdStartupReadyTimeoutMs: 50,
-    principalRegistry,
     ...overrides,
   };
 }
@@ -122,14 +119,13 @@ describe("WorkerdManager", () => {
       expect(instance.status).toBe("running");
     });
 
-    it("registers token and principal context", async () => {
+    it("mints a bearer token for the worker callerId", async () => {
       const deps = createMockDeps();
       const mgr = new WorkerdManager(deps);
 
       await mgr.createInstance(defaultCreateOptions());
 
       expect(deps.tokenManager.ensureToken).toHaveBeenCalledWith("worker:hello", "worker");
-      expect(deps.principalRegistry?.resolveContext("worker:hello")).toBe("ctx-1");
     });
 
     it("rejects duplicate instance names", async () => {
@@ -160,7 +156,6 @@ describe("WorkerdManager", () => {
       await expect(mgr.createInstance(defaultCreateOptions())).rejects.toThrow("build failed");
 
       expect(deps.tokenManager.revokeToken).toHaveBeenCalledWith("worker:hello");
-      expect(deps.principalRegistry?.resolve("worker:hello")).toBeNull();
       expect(mgr.listInstances()).toHaveLength(0);
     });
   });
@@ -230,7 +225,6 @@ describe("WorkerdManager", () => {
       await mgr.destroyInstance("hello");
 
       expect(deps.tokenManager.revokeToken).toHaveBeenCalledWith("worker:hello");
-      expect(deps.principalRegistry?.resolve("worker:hello")).toBeNull();
       expect(deps.fsService.closeHandlesForCaller).toHaveBeenCalledWith("worker:hello");
       expect(mgr.listInstances()).toHaveLength(0);
     });

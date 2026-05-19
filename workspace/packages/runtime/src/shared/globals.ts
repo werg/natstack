@@ -15,8 +15,12 @@ export interface GatewayConfig {
  * Injected globals available in both panel and worker environments.
  */
 declare global {
-  /** Unique identifier for this panel or worker */
+  /** Runtime entity ID for this panel or worker */
+  var __natstackEntityId: string | undefined;
+  /** Deprecated alias for __natstackEntityId. */
   var __natstackId: string | undefined;
+  /** Stable workspace slot id for panel tree operations. */
+  var __natstackSlotId: string | undefined;
   /** Context ID for storage partition (format: {mode}_{type}_{identifier}) */
   var __natstackContextId: string | undefined;
   /** Environment kind: "panel" or "shell" */
@@ -34,7 +38,9 @@ declare global {
 }
 
 export interface InjectedConfig {
+  entityId: string;
   id: string;
+  slotId?: string;
   contextId: string;
   kind: "panel" | "shell";
   parentId: string | null;
@@ -48,7 +54,9 @@ export interface InjectedConfig {
 // Access globals via globalThis to support VM sandbox environments
 // where globals are set on the context object
 const g = globalThis as unknown as {
+  __natstackEntityId?: string;
   __natstackId?: string;
+  __natstackSlotId?: string;
   __natstackContextId?: string;
   __natstackKind?: "panel" | "shell";
   __natstackParentId?: string | null;
@@ -70,9 +78,10 @@ function toWebSocketUrl(serverUrl: string): string {
  * Get the injected configuration from globals.
  */
 export function getInjectedConfig(): InjectedConfig {
-  if (typeof g.__natstackId === "undefined" || !g.__natstackId) {
+  const entityId = g.__natstackEntityId ?? g.__natstackId;
+  if (typeof entityId === "undefined" || !entityId) {
     throw new Error(
-      "NatStack runtime globals not found. Expected __natstackId to be defined."
+      "NatStack runtime globals not found. Expected __natstackEntityId to be defined."
     );
   }
   if (typeof g.__natstackGitConfig !== "undefined" || typeof g.__natstackPubSubConfig !== "undefined") {
@@ -98,7 +107,9 @@ export function getInjectedConfig(): InjectedConfig {
   };
 
   return {
-    id: g.__natstackId,
+    entityId,
+    id: entityId,
+    slotId: g.__natstackSlotId,
     contextId: g.__natstackContextId ?? "",
     kind: g.__natstackKind ?? "panel",
     parentId:

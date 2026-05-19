@@ -22,11 +22,15 @@ export function createUserlandApprovalService(deps: {
   grantStore: Pick<UserlandApprovalGrantStore, "lookup" | "record" | "revoke" | "list">;
 }): ServiceDefinition {
   async function resolvePrincipal(ctx: ServiceContext, method: string): Promise<ApprovalPrincipal> {
-    if (ctx.caller.runtime.kind !== "panel" && ctx.caller.runtime.kind !== "worker") {
+    if (
+      ctx.caller.runtime.kind !== "panel" &&
+      ctx.caller.runtime.kind !== "worker" &&
+      ctx.caller.runtime.kind !== "do"
+    ) {
       throw new ServiceError(
         SERVICE_NAME,
         method,
-        "userlandApproval is only available to panels and workers",
+        "userlandApproval is only available to panels, workers, and DOs",
         "EACCES"
       );
     }
@@ -96,7 +100,7 @@ export function createUserlandApprovalService(deps: {
   return {
     name: SERVICE_NAME,
     description: "Userland-managed consent approvals",
-    policy: { allowed: ["panel", "worker"] },
+    policy: { allowed: ["panel", "worker", "do"] },
     methods: {
       request: { args: z.tuple([userlandApprovalRequestSchema]) },
       revoke: { args: z.tuple([userlandApprovalSubjectIdSchema]) },

@@ -86,37 +86,9 @@ export interface PackageManifest {
   // ----- Worker-only fields -----
   /** Durable Object classes exported by this worker (workers only). */
   durable?: { classes: Array<{ className: string }> };
-  /**
-   * Userland services offered by this package. A service can be backed by a
-   * Durable Object class or by the package's canonical stateless worker route.
-   * Callers should resolve services by `name` or protocol instead of hardcoding
-   * source/class paths.
-   */
-  services?: Array<{
-    name: string;
-    title?: string;
-    description?: string;
-    protocols?: string[];
-    policy?: {
-      allowed?: Array<"panel" | "shell" | "server" | "worker" | "extension" | "harness">;
-    };
-  } & (
-    | { durableObject: { className: string; objectKey?: string }; worker?: never }
-    | { worker: { routePath: string }; durableObject?: never }
-  )>;
-  /**
-   * HTTP routes this worker exposes via the gateway's `/_r/w/<source>/...` namespace.
-   * Each entry binds either a DO class (when `durableObject` is set) or the worker's
-   * default `fetch` export (regular-worker route, only bound on the canonical-name
-   * instance). Default auth is "public" — handlers own their own validation.
-   */
-  routes?: Array<{
-    path: string;
-    methods?: ("GET" | "POST" | "PUT" | "DELETE" | "PATCH")[];
-    durableObject?: { className: string; objectKey?: string };
-    auth?: "public" | "admin-token" | "caller-token";
-    websocket?: boolean;
-  }>;
+  // Note: userland services and HTTP routes are no longer declared per worker.
+  // They live in `workspace/meta/natstack.yml` under `services:` and `routes:`,
+  // joined against `singletonObjects:` for DO singleton keys.
 }
 
 export type ThemeMode = "light" | "dark" | "system";

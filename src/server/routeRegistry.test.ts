@@ -9,18 +9,31 @@ import {
   type ManifestRouteDecl,
   type ServiceRouteDecl,
 } from "./routeRegistry.js";
+import { SingletonRegistry } from "@natstack/shared/workspace/singletonRegistry";
 
 function makeDecl(overrides: Partial<ManifestRouteDecl> = {}): ManifestRouteDecl {
-  return { path: "/hello", ...overrides };
+  return { source: "workers/foo", path: "/hello", worker: true, ...overrides };
+}
+
+function makeSingletons(
+  rows: Array<{ source: string; className: string; key: string }>
+): SingletonRegistry {
+  return new SingletonRegistry(rows);
 }
 
 describe("RouteRegistry", () => {
   describe("worker routes — DO-backed", () => {
     it("registers and looks up a DO route", () => {
       const reg = new RouteRegistry();
-      reg.registerDoRoutes("workers/foo", "MyDO", [
-        makeDecl({ path: "/callback", durableObject: { className: "MyDO" } }),
+      const singletons = makeSingletons([
+        { source: "workers/foo", className: "MyDO", key: "singleton" },
       ]);
+      reg.registerDoRoutes(
+        "workers/foo",
+        "MyDO",
+        [makeDecl({ path: "/callback", worker: undefined, durableObject: { className: "MyDO" } })],
+        singletons
+      );
       const res = reg.lookup("/_r/w/workers/foo/callback", "GET", false);
       expect(res).toMatchObject({
         kind: "worker-do",
@@ -31,30 +44,51 @@ describe("RouteRegistry", () => {
       });
     });
 
-    it("defaults objectKey to 'singleton'", () => {
+    it("uses the singleton key from the singletonRegistry", () => {
       const reg = new RouteRegistry();
-      reg.registerDoRoutes("workers/foo", "A", [makeDecl({ durableObject: { className: "A" } })]);
-      const res = reg.lookup("/_r/w/workers/foo/hello", "GET", false);
-      expect(res).toMatchObject({ kind: "worker-do", objectKey: "singleton" });
-    });
-
-    it("respects explicit objectKey", () => {
-      const reg = new RouteRegistry();
-      reg.registerDoRoutes("workers/foo", "A", [
-        makeDecl({ durableObject: { className: "A", objectKey: "tenant-1" } }),
+      const singletons = makeSingletons([
+        { source: "workers/foo", className: "A", key: "tenant-1" },
       ]);
+      reg.registerDoRoutes(
+        "workers/foo",
+        "A",
+        [makeDecl({ worker: undefined, durableObject: { className: "A" } })],
+        singletons
+      );
       const res = reg.lookup("/_r/w/workers/foo/hello", "GET", false);
-      expect(res).toMatchObject({ objectKey: "tenant-1" });
+      expect(res).toMatchObject({ kind: "worker-do", objectKey: "tenant-1" });
     });
 
     it("filters by className — routes for other classes are ignored", () => {
       const reg = new RouteRegistry();
-      reg.registerDoRoutes("workers/foo", "A", [
-        makeDecl({ path: "/a", durableObject: { className: "A" } }),
-        makeDecl({ path: "/b", durableObject: { className: "B" } }),
+      const singletons = makeSingletons([
+        { source: "workers/foo", className: "A", key: "a-key" },
+        { source: "workers/foo", className: "B", key: "b-key" },
       ]);
+      reg.registerDoRoutes(
+        "workers/foo",
+        "A",
+        [
+          makeDecl({ path: "/a", worker: undefined, durableObject: { className: "A" } }),
+          makeDecl({ path: "/b", worker: undefined, durableObject: { className: "B" } }),
+        ],
+        singletons
+      );
       expect(reg.lookup("/_r/w/workers/foo/a", "GET", false)).not.toBeNull();
       expect(reg.lookup("/_r/w/workers/foo/b", "GET", false)).toBeNull();
+    });
+
+    it("throws when no singleton row exists for (source, className)", () => {
+      const reg = new RouteRegistry();
+      const singletons = makeSingletons([]);
+      expect(() =>
+        reg.registerDoRoutes(
+          "workers/foo",
+          "A",
+          [makeDecl({ worker: undefined, durableObject: { className: "A" } })],
+          singletons
+        )
+      ).toThrow(/Missing singletonObjects/);
     });
   });
 
@@ -74,7 +108,7 @@ describe("RouteRegistry", () => {
       const reg = new RouteRegistry();
       reg.registerWorkerRoutes("workers/foo", "foo", [
         makeDecl({ path: "/x" }),
-        makeDecl({ path: "/y", durableObject: { className: "DO1" } }),
+        makeDecl({ path: "/y", worker: undefined, durableObject: { className: "DO1" } }),
       ]);
       expect(reg.lookup("/_r/w/workers/foo/x", "GET", false)).not.toBeNull();
       expect(reg.lookup("/_r/w/workers/foo/y", "GET", false)).toBeNull();
@@ -89,9 +123,15 @@ describe("RouteRegistry", () => {
 
     it("preserves DO routes when regular routes are unregistered", () => {
       const reg = new RouteRegistry();
-      reg.registerDoRoutes("workers/foo", "DO1", [
-        makeDecl({ path: "/do", durableObject: { className: "DO1" } }),
+      const singletons = makeSingletons([
+        { source: "workers/foo", className: "DO1", key: "singleton" },
       ]);
+      reg.registerDoRoutes(
+        "workers/foo",
+        "DO1",
+        [makeDecl({ path: "/do", worker: undefined, durableObject: { className: "DO1" } })],
+        singletons
+      );
       reg.registerWorkerRoutes("workers/foo", "foo", [makeDecl({ path: "/reg" })]);
       reg.unregisterWorkerRoutes("workers/foo");
       expect(reg.lookup("/_r/w/workers/foo/reg", "GET", false)).toBeNull();
@@ -224,25 +264,37 @@ describe("RouteRegistry", () => {
   describe("reconcileWorkerRoutes", () => {
     it("drops routes no longer in the manifest", () => {
       const reg = new RouteRegistry();
+      const singletons = makeSingletons([]);
       reg.registerWorkerRoutes("workers/foo", "foo", [
         makeDecl({ path: "/a" }),
         makeDecl({ path: "/b" }),
       ]);
-      reg.reconcileWorkerRoutes("workers/foo", [makeDecl({ path: "/a" })], new Set(), "foo");
+      reg.reconcileWorkerRoutes(
+        "workers/foo",
+        [makeDecl({ path: "/a" })],
+        new Set(),
+        "foo",
+        singletons
+      );
       expect(reg.lookup("/_r/w/workers/foo/a", "GET", false)).not.toBeNull();
       expect(reg.lookup("/_r/w/workers/foo/b", "GET", false)).toBeNull();
     });
 
     it("skips DO routes whose class is not live", () => {
       const reg = new RouteRegistry();
+      const singletons = makeSingletons([
+        { source: "workers/foo", className: "Live", key: "live-key" },
+        { source: "workers/foo", className: "Dead", key: "dead-key" },
+      ]);
       reg.reconcileWorkerRoutes(
         "workers/foo",
         [
-          makeDecl({ path: "/live", durableObject: { className: "Live" } }),
-          makeDecl({ path: "/dead", durableObject: { className: "Dead" } }),
+          makeDecl({ path: "/live", worker: undefined, durableObject: { className: "Live" } }),
+          makeDecl({ path: "/dead", worker: undefined, durableObject: { className: "Dead" } }),
         ],
         new Set(["Live"]),
-        null
+        null,
+        singletons
       );
       expect(reg.lookup("/_r/w/workers/foo/live", "GET", false)).not.toBeNull();
       expect(reg.lookup("/_r/w/workers/foo/dead", "GET", false)).toBeNull();
@@ -250,7 +302,14 @@ describe("RouteRegistry", () => {
 
     it("skips regular routes when canonical instance is absent", () => {
       const reg = new RouteRegistry();
-      reg.reconcileWorkerRoutes("workers/foo", [makeDecl({ path: "/x" })], new Set(), null);
+      const singletons = makeSingletons([]);
+      reg.reconcileWorkerRoutes(
+        "workers/foo",
+        [makeDecl({ path: "/x" })],
+        new Set(),
+        null,
+        singletons
+      );
       expect(reg.lookup("/_r/w/workers/foo/x", "GET", false)).toBeNull();
     });
   });

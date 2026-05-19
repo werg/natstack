@@ -3,6 +3,13 @@ import type { VerifiedCaller } from "@natstack/shared/serviceDispatcher";
 import type { ApprovalQueue, GrantedDecision } from "./approvalQueue.js";
 import type { CapabilityGrantStore } from "./capabilityGrantStore.js";
 
+/**
+ * Canonical capability name guarding cross-context durable-object entity access.
+ * Re-exported here so callers can import the constant from the capability
+ * permission module rather than redefining it.
+ */
+export const RUNTIME_CROSS_CONTEXT_ENTITY = "runtime.crossContextEntity" as const;
+
 export interface CapabilityPermissionResource {
   type: string;
   label: string;
@@ -42,7 +49,10 @@ export async function requestCapabilityPermission(
 ): Promise<CapabilityPermissionResult> {
   const callerKind = normalizeCallerKind(request.caller.runtime.kind);
   if (!callerKind) {
-    return { allowed: false, reason: "Capability caller is not a panel or worker" };
+    return {
+      allowed: false,
+      reason: "Capability caller is not a panel, worker, or durable object",
+    };
   }
 
   const identity = request.caller.code;
@@ -81,8 +91,8 @@ export async function requestCapabilityPermission(
   return { allowed: true, decision };
 }
 
-function normalizeCallerKind(kind: string): "panel" | "worker" | null {
-  if (kind === "panel" || kind === "worker") {
+export function normalizeCallerKind(kind: string): "panel" | "worker" | "do" | null {
+  if (kind === "panel" || kind === "worker" || kind === "do") {
     return kind;
   }
   return null;

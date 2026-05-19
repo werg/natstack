@@ -200,11 +200,15 @@ function resolveWorkspacePrincipal(
   ctx: ServiceContext,
   method: WorkspaceApprovalOperation
 ): ApprovalPrincipal {
-  if (ctx.caller.runtime.kind !== "panel" && ctx.caller.runtime.kind !== "worker") {
+  if (
+    ctx.caller.runtime.kind !== "panel" &&
+    ctx.caller.runtime.kind !== "worker" &&
+    ctx.caller.runtime.kind !== "do"
+  ) {
     throw new ServiceError(
       "workspace",
       method,
-      "Workspace mutation approvals are only available to panel and worker callers",
+      "Workspace mutation approvals are only available to panel, worker, and DO callers",
       "EACCES"
     );
   }
@@ -315,11 +319,11 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
     ? {
         create: {
           args: z.tuple([z.string(), z.object({ forkFrom: z.string().optional() }).optional()]),
-          policy: { allowed: ["shell", "panel", "worker", "server"] },
+          policy: { allowed: ["shell", "panel", "worker", "do", "server"] },
         },
         delete: {
           args: z.tuple([z.string()]),
-          policy: { allowed: ["shell", "panel", "worker", "server"] },
+          policy: { allowed: ["shell", "panel", "worker", "do", "server"] },
         },
       }
     : {};
@@ -327,7 +331,7 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
   return {
     name: "workspace",
     description: "Workspace catalog, configuration, and lifecycle (list, create, switch, etc.)",
-    policy: { allowed: ["shell", "panel", "worker", "extension", "server"] },
+    policy: { allowed: ["shell", "panel", "worker", "do", "extension", "server"] },
     methods: {
       // Read methods
       getInfo: { args: z.tuple([]) },
@@ -341,7 +345,7 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
       // app.relaunch() — disruptive and reachable only via shell UI.
       select: {
         args: z.tuple([z.string()]),
-        policy: { allowed: ["shell", "panel", "worker", "server"] },
+        policy: { allowed: ["shell", "panel", "worker", "do", "server"] },
       },
       setInitPanels: {
         args: z.tuple([
@@ -352,13 +356,13 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
             })
           ),
         ]),
-        policy: { allowed: ["shell", "panel", "worker", "server"] },
+        policy: { allowed: ["shell", "panel", "worker", "do", "server"] },
       },
       // SECURITY: arbitrary config-field writes — server-internal use
       // by default, but userland can request a one-shot approval.
       setConfigField: {
         args: z.tuple([z.string(), z.unknown()]),
-        policy: { allowed: ["shell", "panel", "worker", "server"] },
+        policy: { allowed: ["shell", "panel", "worker", "do", "server"] },
       },
       // Agent resource loading — read AGENTS.md and skill definitions directly
       // from the workspace source tree. Kept server-side because they touch

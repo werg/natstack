@@ -30,7 +30,7 @@ import {
 } from "@natstack/shared/serviceDispatcher";
 import type { RouteRegistry, LookupResult } from "./routeRegistry.js";
 import { assertPresent } from "../lintHelpers";
-import type { PrincipalRegistry } from "@natstack/shared/principalRegistry";
+import type { EntityCache } from "@natstack/shared/runtime/entityCache";
 import { resolveCodeIdentity } from "./services/principalIdentity.js";
 
 const log = createDevLogger("Gateway");
@@ -141,7 +141,7 @@ export interface GatewayDeps {
   /** Caller token manager for route auth modes used by panels/workers/shell/server callers. */
   tokenManager: TokenManager;
   /** Principal metadata for authenticated caller tokens. */
-  principalRegistry?: Pick<PrincipalRegistry, "resolve" | "resolveSource">;
+  entityCache?: Pick<EntityCache, "resolve" | "resolveActive" | "resolveSource">;
   /** Route registry for `/_r/` dispatch (worker and service routes). Optional
    *  — when absent, `/_r/` paths fall through to 404. */
   routeRegistry?: RouteRegistry;
@@ -199,7 +199,7 @@ export class Gateway {
 
       // /_w/ → workerd reverse proxy
       if (url.startsWith("/_w/")) {
-        if (!validateCallerBearer(req, tokenManager, this.deps.principalRegistry)) {
+        if (!validateCallerBearer(req, tokenManager, this.deps.entityCache)) {
           res.writeHead(401, { "Content-Type": "text/plain" });
           res.end("Unauthorized");
           return;
@@ -237,7 +237,7 @@ export class Gateway {
           res.end("Extension route not found");
           return;
         }
-        const entry = validateCallerBearer(req, tokenManager, this.deps.principalRegistry);
+        const entry = validateCallerBearer(req, tokenManager, this.deps.entityCache);
         if (!entry) {
           res.writeHead(401, { "Content-Type": "text/plain" });
           res.end("Unauthorized");
@@ -274,7 +274,7 @@ export class Gateway {
         if (req.method === "OPTIONS") {
           return gitHandler.handleHttpRequest(req, res, null);
         }
-        const entry = validateCallerBearer(req, tokenManager, this.deps.principalRegistry);
+        const entry = validateCallerBearer(req, tokenManager, this.deps.entityCache);
         if (!entry) {
           res.writeHead(401, { "Content-Type": "text/plain" });
           res.end("Unauthorized");
@@ -344,7 +344,7 @@ export class Gateway {
 
       // /_w/ → workerd WebSocket proxy
       if (url.startsWith("/_w/")) {
-        if (!validateCallerBearer(req, tokenManager, this.deps.principalRegistry)) {
+        if (!validateCallerBearer(req, tokenManager, this.deps.entityCache)) {
           socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
           socket.destroy();
           return;
@@ -628,7 +628,7 @@ function extractBearerToken(req: IncomingMessage): string | null {
 function validateCallerBearer(
   req: IncomingMessage,
   tokenManager: TokenManager,
-  principalRegistry?: Pick<PrincipalRegistry, "resolve" | "resolveSource">
+  entityCache?: Pick<EntityCache, "resolveActive">
 ): VerifiedCaller | null {
   const token = extractBearerToken(req);
   if (!token) return null;
@@ -637,9 +637,7 @@ function validateCallerBearer(
   return createVerifiedCaller(
     entry.callerId,
     entry.callerKind as CallerKind,
-    principalRegistry
-      ? (resolveCodeIdentity(principalRegistry, entry.callerId) ?? undefined)
-      : undefined
+    entityCache ? (resolveCodeIdentity(entityCache, entry.callerId) ?? undefined) : undefined
   );
 }
 

@@ -36,6 +36,7 @@ describe("externalOpenService", () => {
       submitClientConfig: vi.fn(),
       submitCredentialInput: vi.fn(),
       listPending: vi.fn(() => []),
+      cancelForCaller: vi.fn(),
     };
   }
 
@@ -54,6 +55,35 @@ describe("externalOpenService", () => {
       repoPath: "workers/example",
       effectiveVersion: "version-1",
     });
+
+  const doCaller = () =>
+    createVerifiedCaller("do:workers/example:ExampleDO:agent-1", "do", {
+      callerId: "do:workers/example:ExampleDO:agent-1",
+      callerKind: "do",
+      repoPath: "workers/example",
+      effectiveVersion: "version-1",
+    });
+
+  it("requests approval for DO opens", async () => {
+    const eventService = new EventService();
+    const approvalQueue = createApprovalQueueMock();
+    const service = createExternalOpenService({
+      eventService,
+      approvalQueue,
+      grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
+    });
+
+    await expect(
+      service.handler({ caller: doCaller() }, "openExternal", ["https://example.com/path"])
+    ).resolves.toEqual({ approvalDecision: "session" });
+    expect(approvalQueue.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callerId: "do:workers/example:ExampleDO:agent-1",
+        callerKind: "do",
+        repoPath: "workers/example",
+      })
+    );
+  });
 
   it("requests approval for panel opens and emits approved browser events", async () => {
     const eventService = new EventService();

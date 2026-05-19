@@ -17,7 +17,7 @@ import type { FileHandle as NodeFileHandle } from "fs/promises";
 import type { ServiceContext } from "./serviceDispatcher.js";
 import type { ContextFolderManager } from "./contextFolderManager.js";
 import { createDevLogger } from "@natstack/dev-log";
-import { PrincipalRegistry } from "./principalRegistry.js";
+import { EntityCache } from "./runtime/entityCache.js";
 
 const log = createDevLogger("FsService");
 
@@ -140,7 +140,7 @@ function serializeDirent(d: fsSync.Dirent) {
 
 export class FsService {
   private readonly contextFolderManager: ContextFolderManager;
-  private readonly principalRegistry: PrincipalRegistry;
+  private readonly entityCache: EntityCache;
 
   /** handleId → TrackedHandle */
   private readonly openHandles = new Map<number, TrackedHandle>();
@@ -148,10 +148,10 @@ export class FsService {
 
   constructor(
     contextFolderManager: ContextFolderManager,
-    principalRegistry: PrincipalRegistry = new PrincipalRegistry(),
+    entityCache: EntityCache = new EntityCache(),
   ) {
     this.contextFolderManager = contextFolderManager;
-    this.principalRegistry = principalRegistry;
+    this.entityCache = entityCache;
   }
 
   // =========================================================================
@@ -189,9 +189,14 @@ export class FsService {
     let contextId: string;
     let panelId: string;
 
-    if (ctx.caller.runtime.kind === "panel" || ctx.caller.runtime.kind === "worker") {
+    if (
+      ctx.caller.runtime.kind === "panel" ||
+      ctx.caller.runtime.kind === "worker" ||
+      ctx.caller.runtime.kind === "do" ||
+      ctx.caller.runtime.kind === "harness"
+    ) {
       panelId = ctx.caller.runtime.id;
-      const cid = this.principalRegistry.resolveContext(panelId);
+      const cid = this.entityCache.resolveContext(panelId);
       if (!cid) {
         throw new Error(`No context registered for ${ctx.caller.runtime.kind} ${panelId}`);
       }
@@ -254,49 +259,6 @@ export class FsService {
     method: string,
     rawArgs: unknown[],
   ): Promise<unknown> {
-    // `bindContext` is special: it registers the caller→context mapping and
-    // therefore must run *before* resolveContextRoot (which would otherwise
-    // throw "No context registered" for an unbound caller).
-    //
-    // Audit finding #39 (filesystem report) / #7 (cross-cutting summary):
-    // previously, any panel/worker could call `bindContext("<another-panel's-contextId>")`
-    // and pivot its fs.* sandbox to the other panel's folder.
-    //
-    // Hardening: require the caller to already have a context registered
-    // (panel/worker hosts register the principal context at creation), and
-    // only allow re-binding to that same contextId. This
-    // collapses bindContext to an idempotent no-op when invoked legitimately
-    // (panel re-init), and rejects every cross-pivot attempt.
-    //
-    // For server / shell callers (which manage contexts on behalf of others)
-    // we leave the legacy behaviour: those caller kinds aren't normally
-    // routed through fs.bindContext, but if they are we trust them.
-    if (method === "bindContext") {
-      const contextId = rawArgs[0];
-      if (typeof contextId !== "string" || contextId.length === 0) {
-        throw new Error("bindContext requires a non-empty contextId string");
-      }
-      if (ctx.caller.runtime.kind === "panel" || ctx.caller.runtime.kind === "worker") {
-        const existing = this.principalRegistry.resolveContext(ctx.caller.runtime.id);
-        if (!existing) {
-          throw new Error(
-            `bindContext denied: caller ${ctx.caller.runtime.id} has no host-registered context. ` +
-              `Panels/workers cannot self-register a context.`,
-          );
-        }
-        if (existing !== contextId) {
-          throw new Error(
-            `bindContext denied: caller ${ctx.caller.runtime.id} cannot re-bind from ` +
-              `context ${existing} to ${contextId} (cross-context pivot blocked).`,
-          );
-        }
-        // Idempotent — no-op (already registered to the same contextId).
-        return;
-      }
-      this.principalRegistry.bindContext(ctx.caller.runtime.id, contextId);
-      return;
-    }
-
     // Clone args so shift() in resolveContextRoot doesn't mutate the original
     const args = [...rawArgs];
     const scope = await this.resolveContextRoot(ctx, args);

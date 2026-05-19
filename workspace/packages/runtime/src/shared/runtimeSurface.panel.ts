@@ -14,6 +14,7 @@ export const panelRuntimeSurface: RuntimeSurface = {
     isValidContextId: valueEntry(),
     getInstanceId: valueEntry(),
     id: valueEntry(),
+    entityId: valueEntry("Panel entity id (panel:<historyEntryKey>) — same as `id`."),
     rpc: valueEntry(),
     parent: valueEntry(),
     getParent: valueEntry(),

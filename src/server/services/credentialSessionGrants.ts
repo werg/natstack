@@ -28,6 +28,27 @@ export class CredentialSessionGrantStore {
   ): boolean {
     return this.grants.has(sessionGrantKey(credentialId, scope, resource));
   }
+
+  /**
+   * Drop every session-scope grant tied to this caller id. Called from the
+   * runtime-retire cleanup hook so a retired panel/worker/DO can never reach
+   * a credential it was once granted access to, even if its principal id is
+   * reused later.
+   */
+  dropForCaller(callerId: string): number {
+    if (!callerId) return 0;
+    let dropped = 0;
+    const suffix = JSON.stringify(callerId);
+    for (const key of this.grants) {
+      // Caller-scoped grants serialize the callerId as the trailing JSON
+      // element; bail fast if the key doesn't end with it.
+      if (key.endsWith(`,${suffix}]`)) {
+        this.grants.delete(key);
+        dropped += 1;
+      }
+    }
+    return dropped;
+  }
 }
 
 function sessionGrantKey(

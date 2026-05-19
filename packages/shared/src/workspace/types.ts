@@ -143,6 +143,60 @@ export interface InitPanelEntry {
 }
 
 /**
+ * Caller kinds permitted in workspace `services[].policy.allowed`.
+ * Kept inline (rather than re-imported from serviceDispatcher) so this types
+ * file stays free of runtime-side dependencies.
+ */
+export type WorkspaceServiceCallerKind =
+  | "panel"
+  | "shell"
+  | "server"
+  | "worker"
+  | "extension"
+  | "harness";
+
+/**
+ * A stable Durable Object singleton declared in `workspace/meta/natstack.yml`.
+ * Every workspace `services[]` / `routes[]` entry that targets a DO class must
+ * resolve to one of these via `(source, className)`.
+ */
+export interface WorkspaceSingletonObjectDecl {
+  /** Worker source path, e.g. `"workers/gad-store"`. */
+  source: string;
+  /** Durable Object class name as exported from the worker module. */
+  className: string;
+  /** Stable singleton object key (e.g. `"workspace-gad"`). */
+  key: string;
+  /** Optional context binding (free-form; e.g. workspace id). */
+  contextId?: string;
+}
+
+/** Userland service declaration in `workspace/meta/natstack.yml`. */
+export type WorkspaceServiceDecl = {
+  source: string;
+  name: string;
+  title?: string;
+  description?: string;
+  protocols?: string[];
+  policy?: { allowed?: WorkspaceServiceCallerKind[] };
+} & (
+  | { durableObject: { className: string }; worker?: never }
+  | { worker: { routePath: string }; durableObject?: never }
+);
+
+/** HTTP route declaration in `workspace/meta/natstack.yml`. */
+export interface WorkspaceRouteDecl {
+  source: string;
+  path: string;
+  methods?: ("GET" | "POST" | "PUT" | "DELETE" | "PATCH")[];
+  durableObject?: { className: string };
+  /** When true, binds the canonical regular-worker instance's default fetch. */
+  worker?: boolean;
+  auth?: "public" | "admin-token" | "caller-token";
+  websocket?: boolean;
+}
+
+/**
  * Workspace configuration from meta/natstack.yml
  * This is specific to each workspace/project.
  */
@@ -157,6 +211,16 @@ export interface WorkspaceConfig {
    * Example: [{ source: "panels/chat", stateArgs: { initialPrompt: "Hello", systemPrompt: "You are..." } }]
    */
   initPanels?: InitPanelEntry[];
+  /**
+   * Stable DO singletons. Any `services[]` / `routes[]` entry referencing a
+   * `durableObject.className` MUST have a matching `(source, className)` row
+   * here. Workspace load fails otherwise.
+   */
+  singletonObjects?: WorkspaceSingletonObjectDecl[];
+  /** Userland service declarations. */
+  services?: WorkspaceServiceDecl[];
+  /** HTTP route declarations exposed under `/_r/w/<source>/...`. */
+  routes?: WorkspaceRouteDecl[];
 }
 
 /**

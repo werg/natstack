@@ -8,12 +8,19 @@ export interface ExtensionInvocation {
   method: string;
   caller: {
     callerId: string;
-    callerKind: "panel" | "worker" | "shell" | "extension" | "http";
+    callerKind:
+      | "panel"
+      | "worker"
+      | "do"
+      | "shell"
+      | "shell-remote"
+      | "extension"
+      | "http";
     connectionId?: string;
   };
   userlandCaller?: {
     callerId: string;
-    callerKind: "panel" | "worker";
+    callerKind: "panel" | "worker" | "do";
     repoPath: string;
     effectiveVersion: string;
   };

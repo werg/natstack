@@ -83,7 +83,7 @@ class MobilePanels {
         }
     }
     async refresh(): Promise<void> {
-        await this.requireManager().syncSince();
+        await this.requireManager().syncSnapshot();
     }
     async recoverSnapshot(): Promise<void> {
         await this.requireManager().syncSnapshot();

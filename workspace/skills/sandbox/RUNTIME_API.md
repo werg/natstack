@@ -18,6 +18,7 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `isValidContextId` | value |  |  |
 | `getInstanceId` | value |  |  |
 | `id` | value |  |  |
+| `entityId` | value |  | Panel entity id (panel:<historyEntryKey>) — same as `id`. |
 | `rpc` | value |  |  |
 | `parent` | value |  |  |
 | `getParent` | value |  |  |

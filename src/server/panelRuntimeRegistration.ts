@@ -169,11 +169,6 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
       },
       getServiceDefinition() {
         const fsMethodSchema = { args: z.tuple([z.string()]).rest(z.unknown()) };
-        // `bindContext` is special: it takes exactly one string (the contextId)
-        // and is invoked before any caller→context mapping exists, so its args
-        // must validate against a bare tuple rather than the generic
-        // `[string, ...unknown[]]` path-first shape.
-        const bindContextSchema = { args: z.tuple([z.string()]) };
         // `mktemp` takes an optional prefix string; no leading path arg.
         const mktempSchema = { args: z.tuple([z.string().optional()]) };
         // Per-method policy for sandbox-escape primitives. `symlink` and
@@ -187,7 +182,7 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
         return {
           name: "fs",
           description: "Per-context filesystem operations (sandboxed to context folder)",
-          policy: { allowed: ["panel", "server", "worker", "extension"] },
+          policy: { allowed: ["panel", "server", "worker", "do", "extension"] },
           methods: {
             readFile: fsMethodSchema,
             writeFile: fsMethodSchema,
@@ -198,7 +193,6 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
             close: fsMethodSchema,
             read: fsMethodSchema,
             write: fsMethodSchema,
-            bindContext: bindContextSchema,
             mktemp: mktempSchema,
             symlink: { ...fsMethodSchema, policy: { allowed: ["shell", "extension"] } },
             chown: { ...fsMethodSchema, policy: { allowed: ["shell", "extension"] } },

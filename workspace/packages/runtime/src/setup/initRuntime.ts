@@ -38,13 +38,14 @@ export function initRuntime(options: InitRuntimeOptions): InitRuntimeResult {
   // Apply globals setup if provided
   options.setupGlobals?.();
   if (config.kind === "panel") {
-    assertPanelPrincipalId(config.id);
+    assertPanelPrincipalId(config.entityId);
   }
 
   const runtime = createRuntime({
-    selfId: config.id,
+    selfId: config.entityId,
     createTransport: options.createTransport,
-    id: config.id,
+    entityId: config.entityId,
+    slotId: config.slotId,
     contextId: config.contextId,
     parentId: config.parentId,
     initialTheme: config.initialTheme,

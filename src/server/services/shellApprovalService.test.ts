@@ -19,6 +19,7 @@ describe("shellApprovalService", () => {
         submitClientConfig: vi.fn(),
         submitCredentialInput: vi.fn(),
         listPending: vi.fn(() => []),
+        cancelForCaller: vi.fn(),
       },
     });
 
@@ -56,6 +57,7 @@ describe("shellApprovalService", () => {
             options: [{ value: "allow", label: "Allow" }],
           },
         ]),
+        cancelForCaller: vi.fn(),
       },
     });
 
@@ -97,6 +99,7 @@ describe("shellApprovalService", () => {
         submitClientConfig: vi.fn(),
         submitCredentialInput: vi.fn(),
         listPending: vi.fn(() => []),
+        cancelForCaller: vi.fn(),
       },
     });
 

@@ -81,7 +81,7 @@ export const userlandApprovalRequestSchema = z.object({
 /** The verified runtime caller that issued the prompt. Populated by the dispatcher. */
 export interface ApprovalPrincipal {
   callerId: string;
-  callerKind: "panel" | "worker";
+  callerKind: "panel" | "worker" | "do";
   repoPath: string;
   effectiveVersion: string;
 }
@@ -98,14 +98,14 @@ export interface UserlandApprovalSubject {
  * this identifies the extension acting on behalf of the principal.
  */
 export interface UserlandApprovalIssuer {
-  kind: "panel" | "worker" | "extension";
+  kind: "panel" | "worker" | "do" | "extension";
   id: string;
   label?: string;
 }
 
 /** A persisted decision for one flat (principal, subject) pair. */
 export interface UserlandApprovalGrant {
-  principal: { callerId: string; callerKind: "panel" | "worker" };
+  principal: { callerId: string; callerKind: "panel" | "worker" | "do" };
   issuer?: UserlandApprovalIssuer;
   subject: UserlandApprovalSubject;
   choice: string;
@@ -116,7 +116,7 @@ export interface PendingApprovalBase {
   // principal == { callerId, callerKind, repoPath, effectiveVersion }
   approvalId: string;
   callerId: string;
-  callerKind: "panel" | "worker";
+  callerKind: "panel" | "worker" | "do";
   repoPath: string;
   effectiveVersion: string;
   requestedAt: number;

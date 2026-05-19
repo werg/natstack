@@ -416,11 +416,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   /** Last explicit user stop per channel. Suppresses late dispatch continuations. */
   private lastUserInterruptAt = new Map<string, number>();
 
-  /** Channels whose `fs.bindContext` has been called at least once per DO
-   *  lifetime. The FsService caller→context map is process-scoped, so we
-   *  only need to bind once per DO startup per context. */
-  private _fsContextBound = new Set<string>();
-
   /** Streaming callbacks keyed by method callId. When a method-result event
    *  arrives with complete:false, the callback is invoked with the content.
    *  This bridges ctx.stream() from method providers to Pi's onUpdate. */
@@ -445,6 +440,39 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   private static readonly POISON_MAX_ATTEMPTS = 3;
   private recoveredChannels = new Set<string>();
   private gad: DurableObjectServiceClient;
+
+  /** Cached contextId for this DO instance — fetched via `runtime.resolveContext`
+   *  on first need and reused for every subsequent check. The runtime entity row
+   *  is immutable for the lifetime of a DO instance, so caching is safe. */
+  private _ownContextId: string | null = null;
+
+  /** Resolve this DO instance's own canonical id (`do:<source>:<class>:<key>`)
+   *  from the workerd env bindings + objectKey accessor. */
+  private getOwnCanonicalId(): string {
+    const source = (this.env as Record<string, string>)["WORKER_SOURCE"];
+    const className = (this.env as Record<string, string>)["WORKER_CLASS_NAME"];
+    if (!source || !className) {
+      throw new Error(
+        "getOwnCanonicalId: WORKER_SOURCE / WORKER_CLASS_NAME env bindings missing",
+      );
+    }
+    return `do:${source}:${className}:${this.objectKey}`;
+  }
+
+  /** Look up this DO's contextId via `runtime.resolveContext`. Cached after first
+   *  successful lookup. Throws if the runtime row cannot be found. */
+  private async resolveOwnContextId(): Promise<string> {
+    if (this._ownContextId != null) return this._ownContextId;
+    const canonicalId = this.getOwnCanonicalId();
+    const ctx = await this.rpc.call<string | null>("main", "runtime.resolveContext", [
+      canonicalId,
+    ]);
+    if (ctx == null || ctx === "") {
+      throw new Error(`resolveOwnContextId: no runtime entity row for ${canonicalId}`);
+    }
+    this._ownContextId = ctx;
+    return ctx;
+  }
 
   constructor(ctx: DurableObjectContext, env: unknown) {
     super(ctx, env);
@@ -854,6 +882,17 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     config?: unknown;
     replay?: boolean;
   }): Promise<{ ok: boolean; participantId: string }> {
+    // Security: a buggy or malicious caller can hand us any string for
+    // opts.contextId. Before subscribing, verify that the requested contextId
+    // actually matches this DO's own runtime contextId — otherwise a caller
+    // could pivot this DO into another context's channel feed.
+    const ownContextId = await this.resolveOwnContextId();
+    if (opts.contextId !== ownContextId) {
+      throw new Error(
+        `subscribeChannel denied: contextId ${opts.contextId} does not match DO context ${ownContextId}`,
+      );
+    }
+
     const descriptor = this.getParticipantInfo(opts.channelId, opts.config);
     const result = await this.subscriptions.subscribe({
       channelId: opts.channelId,
@@ -862,22 +901,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       descriptor,
       replay: opts.replay,
     });
-
-    // Bind this DO's caller identity to the context folder in FsService's
-    // caller→context map. Required before `runtime.fs.*` calls can resolve
-    // paths. Idempotent; guarded by _fsContextBound so we don't re-call
-    // across repeated subscribes to the same context.
-    if (!this._fsContextBound.has(opts.contextId)) {
-      try {
-        await this.rpc.call<void>("main", "fs.bindContext", [opts.contextId]);
-        this._fsContextBound.add(opts.contextId);
-      } catch (err) {
-        console.warn(
-          `[AgentWorkerBase] fs.bindContext failed for contextId=${opts.contextId}:`,
-          err,
-        );
-      }
-    }
 
     if (result.channelConfig?.["approvalLevel"] != null) {
       const level = result.channelConfig["approvalLevel"] as number;
@@ -2271,7 +2294,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.dispatchers.clear();
     this.runners.clear();
     this.projectors.clear();
-    this._fsContextBound.clear(); // Re-bind fs context on first resubscribe.
 
     if (contextId) {
       await this.subscribeChannel({ channelId: newChannelId, contextId, config });

@@ -239,7 +239,15 @@ export interface RpcBridgeInternal extends RpcBridge {
   _handleMessage(sourceId: string, message: RpcMessage): void;
 }
 
-export type CallerKind = "shell" | "panel" | "worker" | "extension" | "server" | "harness";
+export type CallerKind =
+  | "shell"
+  | "shell-remote"
+  | "panel"
+  | "worker"
+  | "do"
+  | "extension"
+  | "server"
+  | "harness";
 
 /**
  * Frame yielded by a streaming method handler. Mirrors the wire frame

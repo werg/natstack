@@ -84,7 +84,7 @@ interface ApprovalQueueLike {
   request(req: ({
     kind: "capability";
     callerId: string;
-    callerKind: "panel" | "worker";
+    callerKind: "panel" | "worker" | "do";
     repoPath: string;
     effectiveVersion: string;
     capability: string;
@@ -96,7 +96,7 @@ interface ApprovalQueueLike {
   } | {
     kind: "extension";
     callerId: string;
-    callerKind: "panel" | "worker";
+    callerKind: "panel" | "worker" | "do";
     repoPath: string;
     effectiveVersion: string;
     dedupKey?: string | null;
@@ -124,7 +124,7 @@ interface ApprovalQueueLike {
   requestUserland(req: {
     principal: {
       callerId: string;
-      callerKind: "panel" | "worker";
+      callerKind: "panel" | "worker" | "do";
       repoPath: string;
       effectiveVersion: string;
     };
@@ -139,7 +139,7 @@ interface NotificationServiceLike {
 interface UserlandApprovalGrantStoreLike {
   lookup(callerId: string, subjectId: string, issuer?: UserlandApprovalIssuer): { choice: string } | null;
   record(
-    principal: { callerId: string; callerKind: "panel" | "worker" },
+    principal: { callerId: string; callerKind: "panel" | "worker" | "do" },
     subject: { id: string; label?: string },
     choice: string,
     now?: number,
@@ -329,7 +329,7 @@ export class ExtensionHost {
     return {
       name: "extensions",
       description: "Installed extension management and invocation",
-      policy: { allowed: ["panel", "worker", "shell", "extension"] },
+      policy: { allowed: ["panel", "worker", "do", "shell", "extension"] },
       methods: {
         invoke: { args: z.tuple([z.string(), z.string(), z.array(z.unknown())]) },
         list: { args: z.tuple([]) },
@@ -990,7 +990,11 @@ export class ExtensionHost {
       return { allowed: true };
     }
 
-    if (request.caller.runtime.kind !== "panel" && request.caller.runtime.kind !== "worker") {
+    if (
+      request.caller.runtime.kind !== "panel" &&
+      request.caller.runtime.kind !== "worker" &&
+      request.caller.runtime.kind !== "do"
+    ) {
       return {
         allowed: false,
         reason: `Extension source pushes from ${request.caller.runtime.kind} callers are not supported`,
@@ -1239,12 +1243,16 @@ export class ExtensionHost {
     name: string,
   ): Promise<void> {
     // Trusted internal callers (CLI shell) are pre-authorized and skip the
-    // user prompt. Panels and workers always go through approval. Other
+    // user prompt. Panels, workers, and DOs always go through approval. Other
     // caller kinds (e.g., `extension`) are rejected — extensions cannot
     // self-install other extensions in v1. `server` is not in the
     // dispatcher's allow list for `extensions`, so it never reaches here.
     if (ctx.caller.runtime.kind === "shell") return;
-    if (ctx.caller.runtime.kind !== "panel" && ctx.caller.runtime.kind !== "worker") {
+    if (
+      ctx.caller.runtime.kind !== "panel" &&
+      ctx.caller.runtime.kind !== "worker" &&
+      ctx.caller.runtime.kind !== "do"
+    ) {
       throw new ServiceError(
         "extensions",
         action,

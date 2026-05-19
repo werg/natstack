@@ -88,13 +88,17 @@ export class BaseWsTransport {
 
   connectAndWait(timeoutMs = 10_000): Promise<void> {
     if (this.isConnected()) return Promise.resolve();
+    let shouldConnect = false;
     if (!this.firstConnectPromise) {
       this.firstConnectPromise = new Promise<void>((resolve, reject) => {
         this.firstConnectResolve = resolve;
         this.firstConnectReject = reject;
       });
+      shouldConnect = !this.socket || this.status === "disconnected";
     }
-    this.connect();
+    if (shouldConnect) {
+      this.connect();
+    }
     return new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error(`Server WS connection timeout (${timeoutMs}ms): ${this.config.getWsUrl()}`));

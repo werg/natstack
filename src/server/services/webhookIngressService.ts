@@ -207,6 +207,7 @@ export function createWebhookIngressService(deps: WebhookIngressServiceDeps = {}
   internal: {
     store: WebhookIngressStore;
     verifyRelayEnvelope(req: IncomingMessage, rawBody: Buffer): boolean;
+    revokeForCaller(callerId: string): Promise<number>;
   };
 } {
   const store =
@@ -374,7 +375,7 @@ export function createWebhookIngressService(deps: WebhookIngressServiceDeps = {}
   const definition: ServiceDefinition = {
     name: "webhookIngress",
     description: "Generic public webhook ingress subscriptions",
-    policy: { allowed: ["shell", "server", "panel", "worker", "extension"] },
+    policy: { allowed: ["shell", "server", "panel", "worker", "do", "extension"] },
     methods: {
       createSubscription: {
         args: z.tuple([createSubscriptionSchema]),
@@ -416,7 +417,20 @@ export function createWebhookIngressService(deps: WebhookIngressServiceDeps = {}
         handler: handleIngressRoute,
       },
     ],
-    internal: { store, verifyRelayEnvelope },
+    internal: {
+      store,
+      verifyRelayEnvelope,
+      async revokeForCaller(callerId: string): Promise<number> {
+        const subs = await store.list(callerId);
+        let revoked = 0;
+        for (const sub of subs) {
+          if (sub.revokedAt != null) continue;
+          await store.replace({ ...sub, revokedAt: Date.now() });
+          revoked += 1;
+        }
+        return revoked;
+      },
+    },
   };
 }
 

@@ -4,8 +4,10 @@
  * Owns the `/_r/` URL namespace served by the gateway (see `gateway.ts`). Two
  * kinds of routes are supported:
  *
- * - **Worker routes** (`/_r/w/<source>/<path>`) — declared in package manifests
- *   (`natstack.routes[]`). Each entry is either DO-backed (`durableObject` set,
+ * - **Worker routes** (`/_r/w/<source>/<path>`) — declared in the workspace
+ *   config (`workspace/meta/natstack.yml` → `routes[]`). Each entry is either
+ *   DO-backed (`durableObject` set, joined against `singletonObjects[]` to get
+ *   the object key) or worker-backed (`worker: true`,
  *   dispatched via workerd's `/_w/` router) or bound to the default `fetch` of
  *   a regular worker (the canonical-name instance only).
  *
@@ -29,6 +31,8 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import type { Duplex } from "stream";
 import { createDevLogger } from "@natstack/dev-log";
+import type { SingletonRegistry } from "@natstack/shared/workspace/singletonRegistry";
+import type { WorkspaceRouteDecl } from "@natstack/shared/workspace/types";
 import { assertPresent } from "../lintHelpers";
 
 const log = createDevLogger("RouteRegistry");
@@ -36,14 +40,15 @@ const log = createDevLogger("RouteRegistry");
 export type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
 export type RouteAuth = "public" | "admin-token" | "caller-token";
 
-/** Shape declared in a package manifest's `natstack.routes[]` entry. */
-export interface ManifestRouteDecl {
-  path: string;
-  methods?: HttpMethod[];
-  durableObject?: { className: string; objectKey?: string };
-  auth?: RouteAuth;
-  websocket?: boolean;
-}
+/**
+ * Shape consumed by routeRegistry for worker/DO route registration. Mirrors
+ * `WorkspaceRouteDecl` from natstack.yml: routes either set
+ * `durableObject.className` (DO-backed) or `worker: true` (regular-worker
+ * canonical fetch). The DO `objectKey` is NOT carried per-entry — it is
+ * resolved by joining the route's `(source, className)` against the
+ * workspace's `SingletonRegistry`.
+ */
+export type ManifestRouteDecl = WorkspaceRouteDecl;
 
 /** Service-owned route (server-local; not shared). */
 export interface ServiceRouteDecl {
@@ -177,13 +182,26 @@ export class RouteRegistry {
 
   /**
    * Register DO-backed routes for a specific class of a source. Callers may
-   * pass the full `manifest.natstack.routes` list; only entries whose
+   * pass the full workspace `routes[]` list; only entries whose
    * `durableObject.className` matches `className` are registered.
+   *
+   * The DO `objectKey` is resolved by joining `(source, className)` against
+   * the workspace's `SingletonRegistry` — there is no per-route fallback.
    */
-  registerDoRoutes(source: string, className: string, routes: ManifestRouteDecl[]): void {
+  registerDoRoutes(
+    source: string,
+    className: string,
+    routes: ManifestRouteDecl[],
+    singletonRegistry: SingletonRegistry
+  ): void {
     for (const r of routes) {
       if (!r.durableObject) continue;
       if (r.durableObject.className !== className) continue;
+      const objectKey = singletonRegistry.requireKey(
+        source,
+        className,
+        `route ${source} ${r.path}`
+      );
       this.addWorkerEntry(source, {
         kind: "worker-do",
         source,
@@ -193,7 +211,7 @@ export class RouteRegistry {
         auth: r.auth ?? "public",
         websocket: r.websocket ?? false,
         className: r.durableObject.className,
-        objectKey: r.durableObject.objectKey ?? "singleton",
+        objectKey,
       });
     }
   }
@@ -209,6 +227,7 @@ export class RouteRegistry {
   ): void {
     for (const r of routes) {
       if (r.durableObject) continue;
+      if (!r.worker) continue;
       this.addWorkerEntry(source, {
         kind: "worker-regular",
         source,
@@ -261,7 +280,8 @@ export class RouteRegistry {
     source: string,
     newRoutes: ManifestRouteDecl[],
     liveDoClasses: Set<string>,
-    canonicalInstanceName: string | null
+    canonicalInstanceName: string | null,
+    singletonRegistry: SingletonRegistry
   ): void {
     // Drop all existing entries for this source and rebuild from scratch.
     // **This is safe only because route entries carry no per-registration
@@ -275,6 +295,11 @@ export class RouteRegistry {
     for (const r of newRoutes) {
       if (r.durableObject) {
         if (!liveDoClasses.has(r.durableObject.className)) continue;
+        const objectKey = singletonRegistry.requireKey(
+          source,
+          r.durableObject.className,
+          `route ${source} ${r.path}`
+        );
         this.addWorkerEntry(source, {
           kind: "worker-do",
           source,
@@ -284,9 +309,9 @@ export class RouteRegistry {
           auth: r.auth ?? "public",
           websocket: r.websocket ?? false,
           className: r.durableObject.className,
-          objectKey: r.durableObject.objectKey ?? "singleton",
+          objectKey,
         });
-      } else {
+      } else if (r.worker) {
         if (!canonicalInstanceName) continue;
         this.addWorkerEntry(source, {
           kind: "worker-regular",

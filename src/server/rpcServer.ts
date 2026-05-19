@@ -32,7 +32,7 @@ import { checkServiceAccess } from "@natstack/shared/servicePolicy";
 import type { TokenManager } from "@natstack/shared/tokenManager";
 import { WsEventSession, type EventService } from "@natstack/shared/eventsService";
 import type { ConnectionGrantService } from "@natstack/shared/connectionGrants";
-import type { PrincipalRegistry } from "@natstack/shared/principalRegistry";
+import type { EntityCache } from "@natstack/shared/runtime/entityCache";
 import { resolveCodeIdentity } from "./services/principalIdentity.js";
 import { SessionRegistry, type SessionRegistryOptions } from "./rpcServer/sessionRegistry.js";
 import type { ClientPlatform } from "@natstack/shared/panel/panelLease";
@@ -89,6 +89,8 @@ type ReconnectOutcome =
 type RelayErrorCode =
   | "RECONNECT_GRACE_EXPIRED"
   | "SERVER_SHUTTING_DOWN"
+  | "DO_CONTEXT_MISMATCH"
+  | "DO_NOT_CREATED"
   | "TARGET_NOT_REACHABLE"
   | "UNKNOWN_TARGET_KIND";
 
@@ -348,7 +350,7 @@ export class RpcServer {
         "forwardProxyFetchStream"
       >;
       fsService?: Pick<import("@natstack/shared/fsService").FsService, "closeHandlesForCaller">;
-      principalRegistry?: PrincipalRegistry;
+      entityCache?: EntityCache;
       connectionGrants?: ConnectionGrantService;
       sessionInboxCapacity?: SessionRegistryOptions["inboxCapacity"];
       sessionTtlMs?: SessionRegistryOptions["ttlMs"];
@@ -369,8 +371,8 @@ export class RpcServer {
   }
 
   private verifiedCallerFor(callerId: string, callerKind: CallerKind): VerifiedCaller {
-    const code = this.deps.principalRegistry
-      ? resolveCodeIdentity(this.deps.principalRegistry, callerId)
+    const code = this.deps.entityCache
+      ? resolveCodeIdentity(this.deps.entityCache, callerId)
       : null;
     return createVerifiedCaller(callerId, callerKind, code);
   }
@@ -547,7 +549,27 @@ export class RpcServer {
       ws.close(4006, "Invalid token");
       return;
     }
-    const callerKind = entry.callerKind;
+    // Shell-attribution invariant (plan §Core decisions):
+    //   - kind:"shell"        — IN-PROCESS dispatch only (Electron main IPC
+    //                            handlers). Never authenticates over WS.
+    //   - kind:"shell-remote" — WS-authenticated trusted clients (Electron
+    //                            main → child-server in standalone mode, or
+    //                            paired remote devices). Issued via the
+    //                            shellToken bootstrap / device-refresh flows.
+    // We reject any token claiming kind:"shell" at the WS boundary, then
+    // rebrand kind:"shell-remote" → kind:"shell" on the connection so all
+    // downstream policy checks see a single trust level.
+    if (entry.callerKind === "shell") {
+      const msg: WsServerMessage = {
+        type: "ws:auth-result",
+        success: false,
+        error: 'kind:"shell" cannot authenticate over WebSocket — use a shell-remote token',
+      };
+      ws.send(JSON.stringify(msg));
+      ws.close(4006, 'kind:"shell" cannot authenticate over WebSocket — use a shell-remote token');
+      return;
+    }
+    const callerKind: CallerKind = entry.callerKind === "shell-remote" ? "shell" : entry.callerKind;
     const callerId = entry.callerId;
     const connectionId = requestedConnectionId || randomUUID();
     const connectionKey = this.connectionKey(callerId, connectionId);
@@ -681,8 +703,17 @@ export class RpcServer {
   }
 
   private kindForPrincipal(principalId: string): CallerKind {
-    const kind = this.deps.principalRegistry?.resolve(principalId)?.kind;
-    if (kind === "panel" || kind === "worker" || kind === "shell" || kind === "server") return kind;
+    const kind = this.deps.entityCache?.resolve(principalId)?.kind;
+    if (kind === "shell") {
+      // entity-cache bootstrap rows for the trusted shell principal carry
+      // kind:"shell" (the in-process identity), but on a WS connection-grant
+      // path the caller is reaching us over WS — report it as shell-remote
+      // so the handshake-rebrand path takes over cleanly.
+      return "shell-remote";
+    }
+    if (kind === "panel" || kind === "worker" || kind === "do" || kind === "server") {
+      return kind;
+    }
     return "worker";
   }
 
@@ -1306,7 +1337,7 @@ export class RpcServer {
       res.end(JSON.stringify({ error: "Invalid token" }));
       return;
     }
-    const callerKind = entry.callerKind;
+    let callerKind = entry.callerKind;
     let callerId: string;
     try {
       callerId = resolveHttpRuntimeCaller(
@@ -1314,6 +1345,7 @@ export class RpcServer {
         callerKind,
         req.headers[RPC_RUNTIME_ID_HEADER]
       );
+      if (callerId !== entry.callerId) callerKind = this.kindForPrincipal(callerId);
     } catch (err) {
       res.writeHead(403, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
@@ -1492,7 +1524,7 @@ export class RpcServer {
       res.end(JSON.stringify({ error: "Invalid token" }));
       return;
     }
-    const callerKind = entry.callerKind;
+    let callerKind = entry.callerKind;
     let callerId: string;
     try {
       callerId = resolveHttpRuntimeCaller(
@@ -1500,6 +1532,7 @@ export class RpcServer {
         callerKind,
         req.headers[RPC_RUNTIME_ID_HEADER]
       );
+      if (callerId !== entry.callerId) callerKind = this.kindForPrincipal(callerId);
     } catch (err) {
       res.writeHead(403, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
@@ -1852,12 +1885,16 @@ export class RpcServer {
     args: unknown[]
   ): Promise<unknown> {
     const ref = parseDOTarget(targetId);
-    const callerContext = this.deps.principalRegistry?.resolveContext(callerId);
-    if (callerContext) {
-      const servicePrincipalId = this.deps.principalRegistry?.resolveAlias(targetId) ?? targetId;
-      if (this.deps.principalRegistry?.resolve(servicePrincipalId)) {
-        this.deps.principalRegistry.bindContext(servicePrincipalId, callerContext);
-      }
+    // Assertion-only: the concrete DO entity must exist before dispatch.
+    // Method-specific context checks (e.g. subscribeChannel) belong in the
+    // DO's own handler, not in the generic relay path. Cross-context calls
+    // to shared singletons (panel → GadWorkspaceDO) must pass through.
+    const cache = this.deps.entityCache;
+    if (cache && !cache.resolveActive(targetId)) {
+      throw createRelayError(
+        `DO ${targetId} is not registered as an active runtime entity. Call runtime.createEntity first.`,
+        "DO_NOT_CREATED"
+      );
     }
 
     const { postToDurableObject } = await import("./workerdRpcRelay.js");

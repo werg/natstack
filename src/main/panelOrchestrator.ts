@@ -60,7 +60,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
   private currentTheme: "light" | "dark" = "dark";
   private readonly runtimeClientSessionId = `desktop-${randomUUID()}`;
   private runtimeClientRegistered = false;
-  private readonly runtimeLeaseConnections = new Map<string, string>();
+  private readonly runtimeConnectionBySlot = new Map<string, string>();
 
   constructor(deps: PanelOrchestratorDeps) {
     this.deps = deps;
@@ -378,11 +378,11 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
 
   async getBootstrapConfig(callerId: string): Promise<unknown> {
     const config = await this.shellCore.getPanelInit(callerId);
-    const leaseConnectionId = this.runtimeLeaseConnections.get(callerId);
-    if (!leaseConnectionId || !config || typeof config !== "object") return config;
+    const connectionId = this.runtimeConnectionBySlot.get(callerId);
+    if (!connectionId || !config || typeof config !== "object") return config;
     return {
       ...(config as Record<string, unknown>),
-      leaseConnectionId,
+      connectionId,
       clientLabel: "Desktop",
     };
   }
@@ -617,7 +617,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
       source,
       contextId: getPanelContextId(panel),
       ref: getPanelRef(panel),
-      leaseConnectionId: this.runtimeLeaseConnections.get(panelId),
+      connectionId: this.runtimeConnectionBySlot.get(panelId),
       gatewayPort: this.deps.gatewayPort,
       externalHost: this.externalHost,
       protocol: this.deps.protocol,
@@ -695,12 +695,12 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
       return source.slice("browser:".length);
     }
 
-    const leaseConnectionId = await this.acquireRuntimeLease(panelId, leaseMode);
+    const connectionId = await this.acquireRuntimeLease(panelId, leaseMode);
     return buildPanelUrl({
       source,
       contextId: getPanelContextId(panel),
       ref: getPanelRef(panel),
-      leaseConnectionId,
+      connectionId,
       gatewayPort: this.deps.gatewayPort,
       externalHost: this.externalHost,
       protocol: this.deps.protocol,
@@ -729,12 +729,12 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
       return;
     }
 
-    const leaseConnectionId = await this.acquireRuntimeLease(panelId, leaseMode);
+    const connectionId = await this.acquireRuntimeLease(panelId, leaseMode);
     const panelUrl = buildPanelUrl({
       source: snapshot.source,
       contextId: snapshot.contextId,
       ref: snapshot.options.ref,
-      leaseConnectionId,
+      connectionId,
       gatewayPort: this.deps.gatewayPort,
       externalHost: this.externalHost,
       protocol: this.deps.protocol,
@@ -773,12 +773,13 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     leaseMode: "acquire" | "takeOver"
   ): Promise<string> {
     await this.ensureRuntimeClientRegistered();
-    const leaseConnectionId = `desktop-${panelId}-${randomUUID()}`;
+    const runtimeEntityId = await this.shellCore.getCurrentEntityId(panelId);
+    const connectionId = `desktop-${panelId}-${randomUUID()}`;
     const result = (await this.serverClient.call("panelRuntime", leaseMode, [
-      panelId,
+      runtimeEntityId,
       {
         clientSessionId: this.runtimeClientSessionId,
-        connectionId: leaseConnectionId,
+        connectionId,
       },
     ])) as { acquired: boolean; lease?: { holderLabel?: string } };
     if (!result.acquired) {
@@ -786,12 +787,12 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
         `Panel ${panelId} is running on ${result.lease?.holderLabel ?? "another client"}`
       );
     }
-    this.runtimeLeaseConnections.set(panelId, leaseConnectionId);
-    return leaseConnectionId;
+    this.runtimeConnectionBySlot.set(panelId, connectionId);
+    return connectionId;
   }
 
   private unloadPanelResources(panelId: string): void {
-    this.runtimeLeaseConnections.delete(panelId);
+    this.runtimeConnectionBySlot.delete(panelId);
     // Close open file handles (skip for browser panels)
     // Note: FS handles are managed server-side, but local cleanup still needed
 

@@ -9,18 +9,27 @@
 import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { CallerKind } from "@natstack/shared/serviceDispatcher";
+import type { WorkspaceDeclarations } from "@natstack/shared/workspace/singletonRegistry";
 import type { BuildSystemV2 } from "../buildV2/index.js";
 import { resolveUserlandService } from "../userlandServices.js";
 import { assertPresent } from "../../lintHelpers";
 import { INTERNAL_DO_CLASSES, INTERNAL_DO_SOURCE } from "../internalDOs/internalDoLoader.js";
 
-export function createWorkerService(deps: { buildSystem: BuildSystemV2 }): ServiceDefinition {
-  const { buildSystem } = deps;
+export function createWorkerService(deps: {
+  buildSystem: BuildSystemV2;
+  workspaceDecls: WorkspaceDeclarations;
+  activateDurableObject?: (args: {
+    source: string;
+    className: string;
+    objectKey: string;
+  }) => Promise<void>;
+}): ServiceDefinition {
+  const { buildSystem, workspaceDecls } = deps;
 
   return {
     name: "workers",
     description: "Worker discovery and userland service resolution",
-    policy: { allowed: ["shell", "server", "panel", "worker", "extension"] },
+    policy: { allowed: ["shell", "server", "panel", "worker", "do", "extension"] },
     methods: {
       listSources: {
         description: "List available worker sources with durable object classes",
@@ -58,43 +67,48 @@ export function createWorkerService(deps: { buildSystem: BuildSystemV2 }): Servi
         }
 
         case "listServices": {
-          return buildSystem
-            .getGraph()
-            .allNodes()
-            .filter((n) => n.kind === "worker")
-            .flatMap((n) =>
-              (n.manifest.services ?? []).map((service) => {
-                const base = {
-                  name: service.name,
-                  title: service.title,
-                  description: service.description,
-                  protocols: service.protocols ?? [],
-                  source: n.relativePath,
-                };
-                if ("durableObject" in service && service.durableObject) {
-                  return {
-                    ...base,
-                    kind: "durable-object",
-                    className: service.durableObject.className,
-                    defaultObjectKey: service.durableObject.objectKey ?? null,
-                  };
-                }
-                return {
-                  ...base,
-                  kind: "worker",
-                  routePath: service.worker.routePath,
-                };
-              })
-            );
+          return workspaceDecls.services.map((service) => {
+            const base = {
+              name: service.name,
+              title: service.title,
+              description: service.description,
+              protocols: service.protocols ?? [],
+              source: service.source,
+            };
+            if (service.durableObject) {
+              const singleton = workspaceDecls.singletons.find(
+                service.source,
+                service.durableObject.className
+              );
+              return {
+                ...base,
+                kind: "durable-object" as const,
+                className: service.durableObject.className,
+                defaultObjectKey: singleton ? singleton.key : null,
+              };
+            }
+            return {
+              ...base,
+              kind: "worker" as const,
+              routePath: service.worker.routePath,
+            };
+          });
         }
 
         case "resolveService": {
           const service = resolveUserlandService(
-            buildSystem,
+            workspaceDecls,
             args[0] as string,
             (args[1] as string | null | undefined) ?? undefined
           );
           assertUserlandServiceAccess(service.name, service.policy, ctx.caller.runtime.kind);
+          if (service.kind === "durable-object") {
+            await deps.activateDurableObject?.({
+              source: service.source,
+              className: service.className,
+              objectKey: service.objectKey,
+            });
+          }
           return service;
         }
 
@@ -102,8 +116,15 @@ export function createWorkerService(deps: { buildSystem: BuildSystemV2 }): Servi
           const source = args[0] as string;
           const className = args[1] as string;
           const objectKey = args[2] as string;
-          assertDurableObjectExists(buildSystem, source, className, ctx.caller.runtime.kind);
+          assertDurableObjectExists(
+            buildSystem,
+            workspaceDecls,
+            source,
+            className,
+            ctx.caller.runtime.kind
+          );
           const targetId = `do:${source}:${className}:${objectKey}`;
+          await deps.activateDurableObject?.({ source, className, objectKey });
           return { kind: "durable-object", source, className, objectKey, targetId };
         }
 
@@ -116,6 +137,7 @@ export function createWorkerService(deps: { buildSystem: BuildSystemV2 }): Servi
 
 function assertDurableObjectExists(
   buildSystem: BuildSystemV2,
+  workspaceDecls: WorkspaceDeclarations,
   source: string,
   className: string,
   callerKind: CallerKind
@@ -133,12 +155,14 @@ function assertDurableObjectExists(
     .find((node) => node.kind === "worker" && node.relativePath === source);
   const classes = worker?.manifest.durable?.classes ?? [];
   if (classes.some((entry) => entry.className === className)) {
-    const services = worker?.manifest.services ?? [];
-    const backingPolicies = services
+    const backingPolicies = workspaceDecls.services
       .filter(
-        (service) => "durableObject" in service && service.durableObject?.className === className
+        (service) => service.source === source && service.durableObject?.className === className
       )
-      .map((service) => ({ name: service.name, policy: service.policy }));
+      .map((service) => ({
+        name: service.name,
+        policy: service.policy as { allowed?: CallerKind[] } | undefined,
+      }));
     for (const service of backingPolicies) {
       assertUserlandServiceAccess(service.name, service.policy, callerKind);
     }
@@ -161,7 +185,8 @@ function assertUserlandServiceAccess(
     err.code = "EACCES";
     throw err;
   }
-  if (!allowed.includes(callerKind)) {
+  const effectiveKinds: CallerKind[] = callerKind === "do" ? ["do", "worker"] : [callerKind];
+  if (!effectiveKinds.some((kind) => allowed.includes(kind))) {
     const err = new Error(
       `Caller kind '${callerKind}' cannot resolve userland service '${serviceName}'`
     ) as NodeJS.ErrnoException;

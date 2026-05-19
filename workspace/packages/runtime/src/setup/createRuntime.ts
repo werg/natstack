@@ -23,7 +23,9 @@ import { _initStateArgsBridge } from "../panel/stateArgs.js";
 export interface RuntimeDeps {
   selfId: string;
   createTransport: () => RpcTransport;
-  id: string;
+  entityId: string;
+  id?: string;
+  slotId?: string;
   contextId: string;
   parentId: string | null;
   initialTheme: ThemeAppearance;
@@ -35,7 +37,8 @@ export interface RuntimeDeps {
 }
 
 export function createRuntime(deps: RuntimeDeps) {
-  const base = createBaseRuntime(deps);
+  const entityId = deps.entityId;
+  const base = createBaseRuntime({ ...deps, id: entityId });
   const shell = (globalThis as any).__natstackShell ?? (globalThis as any).__natstackElectron;
 
   // Initialize the stateArgs bridge for setStateArgs() function
@@ -46,7 +49,7 @@ export function createRuntime(deps: RuntimeDeps) {
     return base.rpc.call<Record<string, unknown>>(
       "main",
       "panel.updateStateArgs",
-      [deps.id, updates],
+      [entityId, updates],
     );
   });
 
@@ -67,6 +70,8 @@ export function createRuntime(deps: RuntimeDeps) {
 
   return {
     id: base.id,
+    entityId: base.id,
+    slotId: deps.slotId ?? base.id,
     parentId: deps.parentId,
 
     rpc: base.rpc,

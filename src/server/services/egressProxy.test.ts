@@ -118,6 +118,7 @@ function createApprovalQueueMock(
     submitClientConfig: vi.fn(),
     submitCredentialInput: vi.fn(),
     listPending: vi.fn(() => []),
+    cancelForCaller: vi.fn(),
   };
 }
 
@@ -1002,6 +1003,83 @@ describe("EgressProxy", () => {
     ).rejects.toThrow(/credential-caller-not-granted/);
 
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps caller grants scoped to a concrete DO object key", async () => {
+    const credential = createCredential({
+      grants: [
+        {
+          bindingId: "api",
+          use: "fetch",
+          resource: "https://api.example.test/v1",
+          action: "use",
+          scope: "caller",
+          callerId: "do:workers/agent-worker:AiChatWorker:object-a",
+          grantedAt: 1,
+          grantedBy: "self",
+        },
+      ],
+    });
+    const proxy = createProxy(credential);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("ok", { status: 200, statusText: "OK" }))
+    );
+
+    await proxy.forwardProxyFetch({
+      caller: workerCaller("do:workers/agent-worker:AiChatWorker:object-a"),
+      credentialId: "cred-1",
+      url: "https://api.example.test/v1/items",
+      method: "GET",
+    });
+
+    await expect(
+      proxy.forwardProxyFetch({
+        caller: workerCaller("do:workers/agent-worker:AiChatWorker:object-b"),
+        credentialId: "cred-1",
+        url: "https://api.example.test/v1/items",
+        method: "GET",
+      })
+    ).rejects.toThrow(/credential-caller-not-granted/);
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows repo grants to span concrete DO object keys from the same source", async () => {
+    const credential = createCredential({
+      grants: [
+        {
+          bindingId: "api",
+          use: "fetch",
+          resource: "https://api.example.test/v1",
+          action: "use",
+          scope: "repo",
+          repoPath: "/repo",
+          grantedAt: 1,
+          grantedBy: "self",
+        },
+      ],
+    });
+    const proxy = createProxy(credential);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("ok", { status: 200, statusText: "OK" }))
+    );
+
+    await proxy.forwardProxyFetch({
+      caller: workerCaller("do:workers/agent-worker:AiChatWorker:object-a"),
+      credentialId: "cred-1",
+      url: "https://api.example.test/v1/items",
+      method: "GET",
+    });
+    await proxy.forwardProxyFetch({
+      caller: workerCaller("do:workers/agent-worker:AiChatWorker:object-b"),
+      credentialId: "cred-1",
+      url: "https://api.example.test/v1/items",
+      method: "GET",
+    });
+
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it("keeps session grants in memory across callers with the same code version", async () => {

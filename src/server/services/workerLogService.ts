@@ -67,7 +67,7 @@ export function createWorkerLogService(deps: WorkerLogServiceDeps = {}): Service
     name: "workerLog",
     description:
       "Forward DO console output to the server terminal and the workspace-unit log stream",
-    policy: { allowed: ["shell", "panel", "server", "worker", "extension"] },
+    policy: { allowed: ["shell", "panel", "server", "worker", "do", "extension"] },
     methods: {
       write: {
         args: z.tuple([z.enum(["log", "info", "warn", "error"]), z.string()]),

@@ -70,22 +70,6 @@ describe("workerdService", () => {
     ).rejects.toThrow(/Invalid args/);
   });
 
-  it("accepts parentId on createInstance", async () => {
-    await dispatcher.dispatch(workerCtx, "workerd", "createInstance", [
-      {
-        source: "workers/hello",
-        contextId: "ctx-1",
-        parentId: "panel-abc",
-      },
-    ]);
-
-    expect(deps.workerdManager.createInstance).toHaveBeenCalledWith({
-      source: "workers/hello",
-      contextId: "ctx-1",
-      parentId: "panel-abc",
-    });
-  });
-
   it("rejects unknown createInstance fields", async () => {
     await expect(
       dispatcher.dispatch(workerCtx, "workerd", "createInstance", [

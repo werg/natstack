@@ -12,6 +12,7 @@ type PanelInitPayload = {
   gatewayConfig?: {
     token?: unknown;
   };
+  connectionId?: unknown;
   leaseConnectionId?: unknown;
   clientLabel?: unknown;
 };
@@ -154,8 +155,9 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
     if (typeof nextToken === "string" && nextToken.length > 0) {
       authToken = nextToken;
       globals.__natstackGatewayToken = nextToken;
-      if (typeof panelInit.leaseConnectionId === "string") {
-        connectionId = panelInit.leaseConnectionId;
+      const nextConnectionId = panelInit.connectionId ?? panelInit.leaseConnectionId;
+      if (typeof nextConnectionId === "string") {
+        connectionId = nextConnectionId;
       }
       if (typeof panelInit.clientLabel === "string") {
         clientLabel = panelInit.clientLabel;
@@ -210,7 +212,7 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
   base.connect();
 
   return {
-    send(targetId, message) {
+    async send(targetId, message) {
       const rpcMessage = message as RpcMessage;
       if (
         !rpcMessage ||
@@ -218,6 +220,9 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
         typeof (rpcMessage as { type?: unknown }).type !== "string"
       ) {
         return Promise.reject(new Error("Invalid RPC message"));
+      }
+      if (!base.isConnected()) {
+        await base.connectAndWait();
       }
       return base.send(targetId, rpcMessage);
     },

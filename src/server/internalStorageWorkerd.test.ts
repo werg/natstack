@@ -5,7 +5,6 @@ import * as esbuild from "esbuild";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { TokenManager } from "../../packages/shared/src/tokenManager.js";
-import { PrincipalRegistry } from "../../packages/shared/src/principalRegistry.js";
 import { INTERNAL_DO_SOURCE } from "./internalDOs/internalDoLoader.js";
 import { postToDurableObject, type DORef } from "./workerdRpcRelay.js";
 import { WorkerdManager, type WorkerdManagerDeps } from "./workerdManager.js";
@@ -40,7 +39,6 @@ function createWorkerdHarness(overrides: Partial<WorkerdManagerDeps> = {}) {
     statePath: mkdtempSync(join(tmpdir(), "natstack-workerd-state-")),
     getProxyPort: () => 9,
     getWorkerdGatewayToken: () => "internal-test-workerd-gateway-token",
-    principalRegistry: new PrincipalRegistry(),
     ...overrides,
   } satisfies WorkerdManagerDeps);
 
@@ -72,314 +70,119 @@ describe("internal storage DOs under workerd", () => {
     }
   });
 
-  it("supports PanelStoreDO FTS5 search in real workerd storage", async () => {
+  it("round-trips entity activate / resolve / retire / gc through WorkspaceDO under workerd", async () => {
     const harness = createWorkerdHarness();
     manager = harness.manager;
-    await manager.registerAllDOClasses([{ source: INTERNAL_DO_SOURCE, className: "PanelStoreDO" }]);
-
+    await manager.registerAllDOClasses([{ source: INTERNAL_DO_SOURCE, className: "WorkspaceDO" }]);
     const ref = {
       source: INTERNAL_DO_SOURCE,
-      className: "PanelStoreDO",
-      objectKey: "workspace-fts",
+      className: "WorkspaceDO",
+      objectKey: "workspace-test",
     };
-    const snapshot = {
-      source: "panels/search/index.tsx",
-      contextId: "ctx-search",
-      options: {},
-      stateArgs: {},
-    };
-    await harness.callDurableObject(
-      ref,
-      "appendOp",
-      {
-        opId: "op-create-root",
-        type: "panel.create",
-        panelId: "root",
-        parentId: null,
-        positionId: "000001000000",
-        snapshot,
-        title: "Root",
-      },
-      "actor-a"
-    );
-    await harness.callDurableObject(
-      ref,
-      "appendOp",
-      {
-        opId: "op-create-child",
-        type: "panel.create",
-        panelId: "child",
-        parentId: "root",
-        positionId: "000002000000",
-        snapshot,
-        title: "Search Console",
-      },
-      "actor-a"
-    );
-    await harness.callDurableObject(ref, "indexPanel", {
-      id: "child",
-      title: "Search Console",
-      path: "panels/search/index.tsx",
-      manifestDescription: "Finds durable object storage records",
-      tags: ["storage", "fts"],
-    });
 
-    await expect(harness.callDurableObject(ref, "search", "durable", 5)).resolves.toMatchObject([
-      { id: "child", title: "Search Console" },
-    ]);
-    await harness.callDurableObject(
-      ref,
-      "appendOp",
-      {
-        opId: "op-archive-child",
-        type: "panel.archive",
-        panelId: "child",
-      },
-      "actor-a"
-    );
-    await expect(harness.callDurableObject(ref, "search", "durable", 5)).resolves.toEqual([]);
+    const activateInput = {
+      kind: "panel",
+      source: { repoPath: "panels/example", effectiveVersion: "v1" },
+      contextId: "ctx-1",
+      key: "entry-1",
+    };
+    const record = (await harness.callDurableObject(ref, "entityActivate", activateInput)) as {
+      id: string;
+      kind: string;
+      status: string;
+    };
+    expect(record.kind).toBe("panel");
+    expect(record.status).toBe("active");
+
+    const resolved = (await harness.callDurableObject(ref, "entityResolveActive", record.id)) as {
+      id: string;
+      status: string;
+    };
+    expect(resolved.id).toBe(record.id);
+    expect(resolved.status).toBe("active");
+
+    const retired = (await harness.callDurableObject(ref, "entityRetire", record.id)) as {
+      id: string;
+      status: string;
+    };
+    expect(retired.status).toBe("retired");
+
+    const deleted = (await harness.callDurableObject(ref, "entityGc", {
+      all: true,
+      graceMs: 0,
+    })) as string[];
+    expect(deleted).toEqual([record.id]);
+    await expect(
+      harness.callDurableObject(ref, "entityResolveActive", record.id)
+    ).resolves.toBeNull();
   }, 30_000);
 
-  it("persists PanelStoreDO ops and returns consistent snapshots", async () => {
+  it("indexes panels into FTS5 and returns matches via WorkspaceDO.panelSearch under real workerd storage", async () => {
     const harness = createWorkerdHarness();
     manager = harness.manager;
-    await manager.registerAllDOClasses([{ source: INTERNAL_DO_SOURCE, className: "PanelStoreDO" }]);
-
+    await manager.registerAllDOClasses([{ source: INTERNAL_DO_SOURCE, className: "WorkspaceDO" }]);
     const ref = {
       source: INTERNAL_DO_SOURCE,
-      className: "PanelStoreDO",
-      objectKey: "workspace-ops",
+      className: "WorkspaceDO",
+      objectKey: "workspace-fts5",
     };
-    const snapshot = {
-      source: "panels/search/index.tsx",
-      contextId: "ctx-search",
-      options: {},
-      stateArgs: {},
-    };
-    await expect(
-      harness.callDurableObject(
-        ref,
-        "appendOp",
-        {
-          opId: "op-create-root",
-          type: "panel.create",
-          panelId: "root",
-          parentId: null,
-          positionId: "000001000000",
-          snapshot,
-          title: "Root",
-        },
-        "actor-a"
-      )
-    ).resolves.toMatchObject({ accepted: true, revision: 1 });
-    await expect(
-      harness.callDurableObject(
-        ref,
-        "appendOp",
-        {
-          opId: "op-title-root",
-          type: "panel.setTitle",
-          panelId: "root",
-          title: "Renamed",
-        },
-        "actor-b"
-      )
-    ).resolves.toMatchObject({ accepted: true, revision: 2 });
-    const nextSnapshot = {
-      source: "panels/other/index.tsx",
-      contextId: "ctx-search",
-      options: {},
-      stateArgs: { q: "next" },
-    };
-    await expect(
-      harness.callDurableObject(
-        ref,
-        "appendOp",
-        {
-          opId: "op-snapshot-root",
-          type: "panel.setSnapshot",
-          panelId: "root",
-          snapshot: nextSnapshot,
-          history: { entries: [snapshot, nextSnapshot], index: 1 },
-        },
-        "actor-a"
-      )
-    ).resolves.toMatchObject({ accepted: true, revision: 3 });
-    await expect(
-      harness.callDurableObject(
-        ref,
-        "appendOp",
-        {
-          opId: "op-title-root",
-          type: "panel.setTitle",
-          panelId: "root",
-          title: "Renamed",
-        },
-        "actor-b"
-      )
-    ).resolves.toMatchObject({ accepted: false, alreadyApplied: true, revision: 2 });
 
-    await expect(harness.callDurableObject(ref, "getOpsSince", 0)).resolves.toMatchObject({
-      revision: 3,
-      ops: [
-        { opId: "op-create-root", actorId: "actor-a", revision: 1 },
-        { opId: "op-title-root", actorId: "actor-b", revision: 2 },
-        { opId: "op-snapshot-root", actorId: "actor-a", revision: 3 },
-      ],
+    // Index two panels; the search index lives on panel_fts (FTS5 virtual
+    // table) which is only available under real workerd, not sql.js.
+    await harness.callDurableObject(ref, "panelIndex", {
+      id: "slot-alpha",
+      title: "Alpha chat panel",
+      manifestDescription: "primary chat workspace",
+      keywords: ["chat", "alpha"],
     });
-    await expect(harness.callDurableObject(ref, "getSnapshot")).resolves.toMatchObject({
-      revision: 3,
-      tree: [
-        {
-          id: "root",
-          title: "Renamed",
-          snapshot: nextSnapshot,
-          history: { entries: [snapshot, nextSnapshot], index: 1 },
-        },
-      ],
+    await harness.callDurableObject(ref, "panelIndex", {
+      id: "slot-beta",
+      title: "Beta notes panel",
+      manifestDescription: "scratchpad for notes",
+      keywords: ["notes"],
     });
-    await expect(harness.callDurableObject(ref, "compactOps", 1)).resolves.toMatchObject({
-      compactedThroughRevision: 1,
-      retainedOps: 2,
-      revision: 3,
-    });
-    await expect(harness.callDurableObject(ref, "getOpsSince", 0)).resolves.toMatchObject({
-      revision: 3,
-      snapshotRequired: true,
-      ops: [],
-    });
-    await expect(harness.callDurableObject(ref, "getOpsSince", 1)).resolves.toMatchObject({
-      revision: 3,
-      ops: [
-        { opId: "op-title-root", actorId: "actor-b", revision: 2 },
-        { opId: "op-snapshot-root", actorId: "actor-a", revision: 3 },
-      ],
-    });
-  }, 30_000);
 
-  it("rejects malformed PanelStoreDO history and rolls back failed batches", async () => {
-    const harness = createWorkerdHarness();
-    manager = harness.manager;
-    await manager.registerAllDOClasses([{ source: INTERNAL_DO_SOURCE, className: "PanelStoreDO" }]);
-
-    const ref = {
-      source: INTERNAL_DO_SOURCE,
-      className: "PanelStoreDO",
-      objectKey: "workspace-op-validation",
-    };
-    const snapshot = { source: "panels/root/index.tsx", contextId: "ctx-root", options: {} };
-    await harness.callDurableObject(
-      ref,
-      "appendOp",
-      {
-        opId: "create-root",
-        type: "panel.create",
-        panelId: "root",
-        parentId: null,
-        positionId: "000001000000",
-        snapshot,
-        title: "Root",
+    // slotCreate enforces a foreign key into entities, so activate the panel
+    // entities first.
+    for (const key of ["entry-a", "entry-b"]) {
+      await harness.callDurableObject(ref, "entityActivate", {
+        kind: "panel",
+        source: { repoPath: "panels/example", effectiveVersion: "v1" },
+        contextId: "ctx-1",
+        key,
+      });
+    }
+    // Slots must be open for panelSearch to surface them.
+    await harness.callDurableObject(ref, "slotCreate", {
+      slotId: "slot-alpha",
+      parentSlotId: null,
+      positionId: "000001000000",
+      initialEntry: {
+        entryKey: "entry-a",
+        entityId: "panel:entry-a",
+        source: "panels/example",
+        contextId: "ctx-1",
       },
-      "actor-a"
-    );
-
-    await expect(
-      harness.callDurableObject(
-        ref,
-        "appendOps",
-        [
-          { opId: "rename-root", type: "panel.setTitle", panelId: "root", title: "Renamed" },
-          {
-            opId: "bad-history",
-            type: "panel.setSnapshot",
-            panelId: "root",
-            snapshot,
-            history: { entries: [], index: 0 },
-          },
-        ],
-        "actor-a"
-      )
-    ).resolves.toMatchObject({
-      acceptedOps: [],
-      rejectedOps: [{ opId: "bad-history", reason: "MALFORMED_HISTORY" }],
-      revision: 1,
+    });
+    await harness.callDurableObject(ref, "slotCreate", {
+      slotId: "slot-beta",
+      parentSlotId: null,
+      positionId: "000002000000",
+      initialEntry: {
+        entryKey: "entry-b",
+        entityId: "panel:entry-b",
+        source: "panels/example",
+        contextId: "ctx-1",
+      },
     });
 
-    await expect(harness.callDurableObject(ref, "getSnapshot")).resolves.toMatchObject({
-      revision: 1,
-      tree: [{ id: "root", title: "Root", history: { entries: [snapshot], index: 0 } }],
-    });
-  }, 30_000);
-
-  it("applies PanelStoreDO tombstone and restore rules", async () => {
-    const harness = createWorkerdHarness();
-    manager = harness.manager;
-    await manager.registerAllDOClasses([{ source: INTERNAL_DO_SOURCE, className: "PanelStoreDO" }]);
-
-    const ref = {
-      source: INTERNAL_DO_SOURCE,
-      className: "PanelStoreDO",
-      objectKey: "workspace-tombstones",
-    };
-    const snapshot = { source: "panels/search/index.tsx", contextId: "ctx", options: {} };
-    await harness.callDurableObject(
-      ref,
-      "appendOps",
-      [
-        {
-          opId: "create-root",
-          type: "panel.create",
-          panelId: "root",
-          parentId: null,
-          positionId: "000001000000",
-          snapshot,
-          title: "Root",
-        },
-        {
-          opId: "create-child",
-          type: "panel.create",
-          panelId: "child",
-          parentId: "root",
-          positionId: "000001000000",
-          snapshot,
-          title: "Child",
-        },
-      ],
-      "actor-a"
-    );
-    await expect(
-      harness.callDurableObject(
-        ref,
-        "appendOp",
-        { opId: "archive-root", type: "panel.archive", panelId: "root" },
-        "actor-a"
-      )
-    ).resolves.toMatchObject({ accepted: true });
-    await expect(
-      harness.callDurableObject(
-        ref,
-        "appendOp",
-        {
-          opId: "move-child-while-archived",
-          type: "panel.move",
-          panelId: "child",
-          parentId: null,
-          positionId: "000002000000",
-        },
-        "actor-b"
-      )
-    ).resolves.toMatchObject({ accepted: false, rejectedReason: "ARCHIVED" });
-    await expect(
-      harness.callDurableObject(
-        ref,
-        "appendOp",
-        { opId: "restore-child", type: "panel.restore", panelId: "child" },
-        "actor-b"
-      )
-    ).resolves.toMatchObject({ accepted: true });
-    await expect(harness.callDurableObject(ref, "getSnapshot")).resolves.toMatchObject({
-      tree: [{ id: "child", title: "Child" }],
-    });
+    const matches = (await harness.callDurableObject(ref, "panelSearch", "chat", 10)) as Array<{
+      id: string;
+      title: string;
+    }>;
+    expect(matches.map((m) => m.id)).toContain("slot-alpha");
+    expect(matches.find((m) => m.id === "slot-alpha")?.title).toBe("Alpha chat panel");
+    expect(matches.find((m) => m.id === "slot-beta")).toBeUndefined();
   }, 30_000);
 
   it("supports BrowserDataDO history FTS5 search in real workerd storage", async () => {

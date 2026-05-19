@@ -3,6 +3,7 @@ import type { RpcTransport } from "@natstack/rpc";
 import { initRuntime } from "./initRuntime.js";
 
 const g = globalThis as typeof globalThis & {
+  __natstackEntityId?: string;
   __natstackId?: string;
   __natstackContextId?: string;
   __natstackKind?: "panel" | "shell";
@@ -23,6 +24,7 @@ function createTransport(): RpcTransport {
 
 describe("initRuntime", () => {
   afterEach(() => {
+    delete g.__natstackEntityId;
     delete g.__natstackId;
     delete g.__natstackContextId;
     delete g.__natstackKind;
@@ -34,7 +36,7 @@ describe("initRuntime", () => {
   });
 
   it("uses the injected canonical panel id as the RPC self id", () => {
-    g.__natstackId = "panel:panel-1";
+    g.__natstackEntityId = "panel:panel-1";
     g.__natstackContextId = "ctx-1";
     g.__natstackKind = "panel";
     g.__natstackGatewayConfig = { serverUrl: "http://127.0.0.1:3000", token: "token" };
@@ -50,6 +52,7 @@ describe("initRuntime", () => {
       fs: {} as never,
     });
 
+    expect(config.entityId).toBe("panel:panel-1");
     expect(config.id).toBe("panel:panel-1");
     expect(runtime.rpc.selfId).toBe("panel:panel-1");
   });

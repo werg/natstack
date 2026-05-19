@@ -7,7 +7,7 @@ export const INTERNAL_DO_SOURCE = "natstack/internal";
 export const INTERNAL_DO_CLASSES = [
   "ScopeStoreDO",
   "WebhookStoreDO",
-  "PanelStoreDO",
+  "WorkspaceDO",
   "BrowserDataDO",
 ] as const;
 

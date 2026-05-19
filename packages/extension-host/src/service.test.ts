@@ -32,6 +32,17 @@ function panelCtx(callerId = "panel-1") {
   };
 }
 
+function doCtx(callerId = "do:workers/agent-worker:AiChatWorker:agent-1") {
+  return {
+    caller: createVerifiedCaller(callerId, "do", {
+      callerId,
+      callerKind: "do",
+      repoPath: "workers/agent-worker",
+      effectiveVersion: "ev-agent",
+    }),
+  };
+}
+
 function makeHost(overrides: {
   approvalDecision?: "once" | "session" | "version" | "repo" | "deny";
   activeEv?: string | null;
@@ -186,6 +197,23 @@ describe("ExtensionHost source push authorization", () => {
     })).resolves.toEqual({ allowed: true });
 
     expect(approvalQueue.request).not.toHaveBeenCalled();
+  });
+
+  it("allows DO callers to request extension source-push approval", async () => {
+    const { host, approvalQueue, extensionNode } = makeHost({ approvalDecision: "session" });
+
+    await expect(host.authorizeSourcePush({
+      caller: doCtx().caller,
+      repoPath: extensionNode.relativePath,
+      branch: "main",
+      commit: "def456",
+    })).resolves.toEqual({ allowed: true });
+
+    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
+      callerId: "do:workers/agent-worker:AiChatWorker:agent-1",
+      callerKind: "do",
+      repoPath: "workers/agent-worker",
+    }));
   });
 });
 
@@ -424,6 +452,30 @@ describe("ExtensionHost activation", () => {
       ["README.md"],
       expect.objectContaining({ extensionName: extensionNode.name }),
     );
+  });
+
+  it("prompts DO callers to install a pending workspace extension on first invoke", async () => {
+    const extensionTransport = { call: vi.fn(async () => "transport-result") };
+    const { host, approvalQueue, buildSystem, extensionNode } = makeHost({
+      extensionTransport,
+      installed: false,
+    });
+    vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
+    vi.spyOn(host.processes, "isRunning").mockReturnValue(true);
+
+    await host.ensureBuiltInExtensions([extensionNode.name]);
+    await expect(
+      host.invoke(doCtx(), extensionNode.name, "blame", ["README.md"]),
+    ).resolves.toBe("transport-result");
+
+    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "extension",
+      action: "install",
+      callerId: "do:workers/agent-worker:AiChatWorker:agent-1",
+      callerKind: "do",
+      repoPath: "workers/agent-worker",
+    }));
+    expect(buildSystem.getBuild).toHaveBeenCalledWith(extensionNode.name, "HEAD");
   });
 
   it("prompts to enable an installed disabled extension on first invoke", async () => {

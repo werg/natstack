@@ -43,53 +43,48 @@ Generated from `runtimeSurface.worker.ts`. Use `await help()` at runtime for the
 
 ## Userland Services
 
-When building a reusable service in `workspace/workers`, declare it in the
-worker package manifest with `natstack.services[]`. Other code should resolve
-the service by `name` or protocol through `workers.resolveService(...)`; do not
-hardcode `workers/foo`, DO class names, or `/_r/w/...` paths in callers.
+Worker package.json only carries `natstack.durable.classes` (workerd binding).
+Workspace-level singletons, services, and HTTP routes live in
+`workspace/meta/natstack.yml`. Resolve services by name/protocol through
+`workers.resolveService(...)`; do not hardcode `workers/foo`, DO class names,
+or `/_r/w/...` paths in callers.
 
-**Durable Object-backed service**:
+**Durable Object-backed service** — add to `workspace/meta/natstack.yml`:
 
-```json
-{
-  "natstack": {
-    "entry": "index.ts",
-    "durable": { "classes": [{ "className": "MyStore" }] },
-    "services": [
-      {
-        "name": "my-store",
-        "protocols": ["example.my-store.v1"],
-        "durableObject": { "className": "MyStore", "objectKey": "main" }
-      }
-    ]
-  }
-}
+```yaml
+singletonObjects:
+  - source: workers/my-store
+    className: MyStore
+    key: main
+
+services:
+  - source: workers/my-store
+    name: my-store
+    protocols: [example.my-store.v1]
+    durableObject: { className: MyStore }   # key joined from singletonObjects
 ```
 
 Resolve and call it:
 
 ```ts
-const svc = await workers.resolveService("example.my-store.v1", "tenant-1");
+const svc = await workers.resolveService("example.my-store.v1");
 if (svc.kind !== "durable-object") throw new Error("Expected DO service");
 await rpc.call(svc.targetId, "methodName", [arg]);
 ```
 
-**Stateless worker service**:
+**Stateless worker service** — add to `workspace/meta/natstack.yml`:
 
-```json
-{
-  "natstack": {
-    "entry": "index.ts",
-    "routes": [{ "path": "/api", "methods": ["POST"] }],
-    "services": [
-      {
-        "name": "my-api",
-        "protocols": ["example.my-api.v1"],
-        "worker": { "routePath": "/api" }
-      }
-    ]
-  }
-}
+```yaml
+routes:
+  - source: workers/my-api
+    path: /api
+    worker: true
+
+services:
+  - source: workers/my-api
+    name: my-api
+    protocols: [example.my-api.v1]
+    worker: { routePath: /api }
 ```
 
 Resolve and fetch it:
@@ -100,10 +95,10 @@ if (svc.kind !== "worker") throw new Error("Expected worker service");
 await gatewayFetch(`${svc.routeBasePath}/jobs`, { method: "POST", body: JSON.stringify(payload) });
 ```
 
-For stateless services, `worker.routePath` must match a regular
-`natstack.routes[]` entry in the same package. Stateless service routes are live
-only while the canonical worker instance is running. Use a DO-backed service for
-always-available persistence or singleton coordination.
+A `services[].durableObject` or `routes[].durableObject` referencing a DO
+class with no matching `singletonObjects` row is rejected at workspace-load
+time. Stateless service routes are live only while the canonical worker
+instance is running.
 
 ## Store
 

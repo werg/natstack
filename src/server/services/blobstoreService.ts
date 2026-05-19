@@ -17,7 +17,7 @@ const log = createDevLogger("BlobstoreService");
 
 const DIGEST_RE = /^[0-9a-f]{64}$/;
 const PREFIX_RE = /^[0-9a-f]{0,64}$/;
-const READ_POLICY: ServicePolicy = { allowed: ["panel", "worker", "shell", "server"] };
+const READ_POLICY: ServicePolicy = { allowed: ["panel", "worker", "do", "shell", "server"] };
 const ADMIN_POLICY: ServicePolicy = { allowed: ["shell", "server"] };
 
 const DigestSchema = z.string().regex(DIGEST_RE);

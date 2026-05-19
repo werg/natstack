@@ -49,7 +49,11 @@ export function invocationFromServiceContext(
       ...(ctx.connectionId ? { connectionId: ctx.connectionId } : {}),
     },
   };
-  if (ctx.caller.runtime.kind === "panel" || ctx.caller.runtime.kind === "worker") {
+  if (
+    ctx.caller.runtime.kind === "panel" ||
+    ctx.caller.runtime.kind === "worker" ||
+    ctx.caller.runtime.kind === "do"
+  ) {
     const identity = ctx.caller.code;
     if (identity && identity.callerKind === ctx.caller.runtime.kind) {
       invocation.userlandCaller = {

@@ -36,6 +36,7 @@ function createOrchestrator(registry: PanelRegistry, emit = vi.fn()) {
       options: {},
     })),
     notifyFocused: vi.fn(async () => {}),
+    getCurrentEntityId: vi.fn(async (panelId: string) => `panel:nav-${panelId}`),
   };
   const serverClient = {
     call: vi.fn(async (_service: string, method: string) => {

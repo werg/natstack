@@ -49,12 +49,32 @@ function normalizeArgs(args: unknown[], schema: z.ZodType): unknown[] {
   });
 }
 
-export type CallerKind = "panel" | "shell" | "server" | "worker" | "extension" | "harness";
+export type CallerKind =
+  | "panel"
+  /**
+   * In-process trusted dispatch from the Electron main process. Never appears
+   * on a WS connection. The WS-handshake invariant in `rpcServer.ts` rejects
+   * any token claiming this kind. WS-authenticated trusted clients use
+   * `"shell-remote"` instead.
+   */
+  | "shell"
+  /**
+   * WS-authenticated trusted client — Electron main child-spawned in
+   * standalone mode, or a paired remote device. Has the same policy reach as
+   * `"shell"` (see `checkServiceAccess`: any policy allowing `"shell"`
+   * implicitly allows `"shell-remote"`).
+   */
+  | "shell-remote"
+  | "server"
+  | "worker"
+  | "do"
+  | "extension"
+  | "harness";
 
 export interface VerifiedCodeIdentity {
-  /** Registered runtime/code principal, e.g. do-service:source:Class or a panel id. */
+  /** Concrete caller this source/build attribution was verified for. */
   callerId: string;
-  callerKind: "worker" | "panel";
+  callerKind: "worker" | "panel" | "do";
   /** Workspace source path that produced this runtime. */
   repoPath: string;
   /** Effective build/content version for policy and audit. */

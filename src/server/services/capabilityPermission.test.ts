@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { CapabilityGrantStore } from "./capabilityGrantStore.js";
-import { requestCapabilityPermission } from "./capabilityPermission.js";
+import { normalizeCallerKind, requestCapabilityPermission } from "./capabilityPermission.js";
 import type { ApprovalQueue } from "./approvalQueue.js";
 import { createVerifiedCaller } from "@natstack/shared/serviceDispatcher";
 
@@ -29,6 +29,7 @@ function createApprovalQueueMock(
     submitClientConfig: vi.fn(),
     submitCredentialInput: vi.fn(),
     listPending: vi.fn(() => []),
+    cancelForCaller: vi.fn(),
   };
 }
 
@@ -99,6 +100,21 @@ describe("capabilityPermission", () => {
     await requestCapabilityPermission(deps, request);
 
     expect(approvalQueue.request).toHaveBeenCalledTimes(1);
+  });
+
+  describe("normalizeCallerKind", () => {
+    it("accepts panel, worker, and do caller kinds", () => {
+      expect(normalizeCallerKind("panel")).toBe("panel");
+      expect(normalizeCallerKind("worker")).toBe("worker");
+      expect(normalizeCallerKind("do")).toBe("do");
+    });
+
+    it("rejects shell, server, extension, and harness caller kinds", () => {
+      expect(normalizeCallerKind("shell")).toBeNull();
+      expect(normalizeCallerKind("server")).toBeNull();
+      expect(normalizeCallerKind("extension")).toBeNull();
+      expect(normalizeCallerKind("harness")).toBeNull();
+    });
   });
 
   it("does not store allow-once grants", async () => {

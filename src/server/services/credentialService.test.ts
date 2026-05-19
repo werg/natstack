@@ -14,9 +14,11 @@ import { createCredentialService } from "./credentialService.js";
 import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
 import { CredentialSessionGrantStore } from "./credentialSessionGrants.js";
 
-function verifiedTestCaller(callerId: string, callerKind: "panel" | "worker" | "shell") {
+function verifiedTestCaller(callerId: string, callerKind: "panel" | "worker" | "do" | "shell") {
   if (callerKind !== "panel" && callerKind !== "worker") {
-    return createVerifiedCaller(callerId, callerKind);
+    if (callerKind !== "do") {
+      return createVerifiedCaller(callerId, callerKind);
+    }
   }
   const suffix = callerId.startsWith("panel-")
     ? callerId.slice("panel-".length)
@@ -38,7 +40,7 @@ function verifiedTestCaller(callerId: string, callerKind: "panel" | "worker" | "
   const effectiveVersion = suffix === "other" || suffix === "new-version" ? "hash-2" : "hash-1";
   return createVerifiedCaller(callerId, callerKind, {
     callerId,
-    callerKind,
+    callerKind: callerKind === "do" ? "do" : callerKind,
     repoPath,
     effectiveVersion,
   });
@@ -346,6 +348,58 @@ describe("credentialService", () => {
     expect(approvalQueue.request).not.toHaveBeenCalled();
   });
 
+  it("allows DO callers to request credential input approvals", async () => {
+    const store = new MemoryCredentialStore();
+    const approvalQueue = {
+      request: vi.fn(async () => "deny" as const),
+      requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
+      requestCredentialInput: vi.fn(async () => ({
+        decision: "submit" as const,
+        values: { token: "agent_secret" },
+      })),
+      resolve: vi.fn(),
+      submitClientConfig: vi.fn(),
+      submitCredentialInput: vi.fn(),
+      listPending: vi.fn(() => []),
+    };
+    const service = createCredentialService({
+      credentialStore: store as never,
+      approvalQueue: approvalQueue as never,
+      sessionGrantStore: new CredentialSessionGrantStore(),
+    });
+
+    await expect(
+      service.handler(
+        { caller: verifiedTestCaller("do:workers/agent-worker:AiChatWorker:agent-1", "do") },
+        "requestCredentialInput",
+        [
+          {
+            title: "Add model key",
+            credential: {
+              label: "Model API",
+              audience: [{ url: "https://api.example.test/", match: "origin" }],
+              injection: {
+                type: "header",
+                name: "Authorization",
+                valueTemplate: "Bearer {token}",
+              },
+              accountIdentity: { providerUserId: "agent-model" },
+            },
+            fields: [{ name: "token", label: "API key", type: "secret", required: true }],
+            material: { type: "bearer-token", tokenField: "token" },
+          },
+        ]
+      )
+    ).resolves.toMatchObject({ label: "Model API" });
+    expect(approvalQueue.requestCredentialInput).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callerId: "do:workers/agent-worker:AiChatWorker:agent-1",
+        callerKind: "do",
+        repoPath: "/owner",
+      })
+    );
+  });
+
   it("only accepts one required secret field for privileged credential input", async () => {
     const approvalQueue = {
       request: vi.fn(async () => "deny" as const),
@@ -461,12 +515,19 @@ describe("credentialService", () => {
 
     await expect(
       service.handler(
-        { caller: verifiedTestCaller("do:worker:first", "worker") },
+        { caller: verifiedTestCaller("do:workers/agent-worker:AiChatWorker:first", "do") },
         "resolveCredential",
         [{ url: "https://api.example.test/v1" }]
       )
     ).resolves.toMatchObject({ id: stored.id });
     expect(approvalQueue.request).toHaveBeenCalledTimes(1);
+    expect(approvalQueue.request).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        callerId: "do:workers/agent-worker:AiChatWorker:first",
+        callerKind: "do",
+        repoPath: "/owner",
+      })
+    );
 
     await service.handler(
       { caller: verifiedTestCaller("worker:new-version", "worker") },

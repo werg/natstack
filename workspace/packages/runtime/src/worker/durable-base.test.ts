@@ -21,7 +21,7 @@ describe("DurableObjectBase request parsing", () => {
         body: JSON.stringify({
           args: [["op-1"], "shell:owner"],
           __instanceToken: "token",
-          __instanceId: "do:internal/PanelStoreDO:test-key",
+          __instanceId: "do:internal/WorkspaceDO:test-key",
         }),
       })
     );

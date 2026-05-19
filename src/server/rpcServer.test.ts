@@ -5,8 +5,29 @@ import { RpcServer } from "./rpcServer.js";
 import { PanelRuntimeCoordinator } from "./panelRuntimeCoordinator.js";
 import type { WsClientState } from "./rpcServer.js";
 import { createVerifiedCaller, type ServiceDispatcher } from "@natstack/shared/serviceDispatcher";
-import { PrincipalRegistry } from "@natstack/shared/principalRegistry";
+import { EntityCache } from "@natstack/shared/runtime/entityCache";
+import type { EntityKind, EntityRecord } from "@natstack/shared/runtime/entitySpec";
 import { ConnectionGrantService } from "@natstack/shared/connectionGrants";
+
+function makeRecord(
+  id: string,
+  kind: EntityKind,
+  opts?: { contextId?: string; repoPath?: string; effectiveVersion?: string }
+): EntityRecord {
+  return {
+    id,
+    kind,
+    source: {
+      repoPath: opts?.repoPath ?? "",
+      effectiveVersion: opts?.effectiveVersion ?? "",
+    },
+    contextId: opts?.contextId ?? "",
+    key: id,
+    createdAt: Date.now(),
+    status: "active",
+    cleanupComplete: true,
+  };
+}
 
 type MockDispatcher = ServiceDispatcher & {
   dispatch: ReturnType<typeof vi.fn>;
@@ -56,10 +77,10 @@ function testServer(server: RpcServer): TestRpcServer {
 
 function createServer() {
   const tokenManager = new TokenManager();
-  const principalRegistry = new PrincipalRegistry();
-  principalRegistry.register({ id: "panel-a", kind: "panel" });
-  principalRegistry.register({ id: "panel-b", kind: "panel" });
-  const connectionGrants = new ConnectionGrantService({ registry: principalRegistry });
+  const entityCache = new EntityCache();
+  entityCache._onActivate(makeRecord("panel-a", "panel"));
+  entityCache._onActivate(makeRecord("panel-b", "panel"));
+  const connectionGrants = new ConnectionGrantService({ entityCache });
 
   const dispatcher = {
     dispatch: vi.fn(),
@@ -79,14 +100,14 @@ function createServer() {
 
   return {
     tokenManager,
-    principalRegistry,
+    entityCache,
     connectionGrants,
     runtimeCoordinator,
     grantPanel: (panelId: string) => connectionGrants.grant(panelId, "shell:test").token,
     server: new RpcServer({
       tokenManager,
       dispatcher,
-      principalRegistry,
+      entityCache,
       connectionGrants,
       runtimeCoordinator,
     }),
@@ -169,23 +190,20 @@ describe("RpcServer relay behavior", () => {
     );
   });
 
-  it("propagates caller fs context when relaying directly to a DO target", async () => {
+  it("throws DO_NOT_CREATED when relaying to a DO with no registered entity record", async () => {
     const tokenManager = new TokenManager();
     const dispatcher = {
       dispatch: vi.fn(),
       getPolicy: vi.fn(),
       getMethodPolicy: vi.fn(),
     } as unknown as MockDispatcher;
-    const principalRegistry = new PrincipalRegistry();
-    principalRegistry.register({ id: "panel-a", kind: "panel", context: { contextId: "ctx-1" } });
-    principalRegistry.register({ id: "do-service:workers/example:Store", kind: "do-service" });
-    const server = new RpcServer({ tokenManager, dispatcher, principalRegistry });
+    const entityCache = new EntityCache();
+    entityCache._onActivate(makeRecord("panel-a", "panel", { contextId: "ctx-1" }));
+    const server = new RpcServer({ tokenManager, dispatcher, entityCache });
 
     await expect(
       testServer(server).relayToDO("panel-a", "panel", "do:workers/example:Store:key", "ping", [])
-    ).rejects.toThrow("Cannot relay to DO");
-
-    expect(principalRegistry.resolveContext("do:workers/example:Store:key")).toBe("ctx-1");
+    ).rejects.toMatchObject({ code: "DO_NOT_CREATED" });
   });
 
   it("rejects distinct live panel runtime connections for the same caller", () => {
@@ -505,6 +523,46 @@ describe("RpcServer caller identity", () => {
     const raw = calls[calls.length - 1]![0] as string;
     return JSON.parse(raw) as { message: { result?: unknown; error?: string } };
   }
+
+  it("rejects WS authentication when the token resolves to a bare shell caller", () => {
+    const { server, tokenManager } = createServer();
+    const shellToken = tokenManager.createToken("electron-main", "shell");
+    const ws = createTestWs();
+
+    testServer(server).handleAuth(ws, shellToken, "conn-shell");
+
+    expect(ws.close).toHaveBeenCalledWith(4006, expect.stringContaining("shell"));
+    expect(testServer(server).connections.getCallerConnections("electron-main")).toHaveLength(0);
+  });
+
+  it("accepts WS authentication for shell-remote tokens and rebrands callerKind to shell", () => {
+    const { server, tokenManager } = createServer();
+    const remoteToken = tokenManager.createToken("electron-main", "shell-remote");
+    const ws = createTestWs();
+
+    testServer(server).handleAuth(ws, remoteToken, "conn-shell-remote");
+
+    expect(ws.close).not.toHaveBeenCalled();
+    const callers = testServer(server).connections.getCallerConnections("electron-main");
+    expect(callers).toHaveLength(1);
+    expect(callers[0]!.caller.runtime.kind).toBe("shell");
+  });
+
+  it("rejects WS authentication when a connection grant resolves to a bare shell principal", () => {
+    const { server, connectionGrants, entityCache } = createServer();
+    entityCache._onActivate(makeRecord("electron-main", "shell"));
+    const grant = connectionGrants.grant("electron-main", "shell:test").token;
+    const ws = createTestWs();
+
+    // kindForPrincipal sees kind:"shell" in the cache and reports
+    // kind:"shell-remote" so the WS path can accept the grant; the rebrand
+    // collapses it back to "shell" on the connection.
+    testServer(server).handleAuth(ws, grant, "conn-grant");
+    expect(ws.close).not.toHaveBeenCalled();
+    const callers = testServer(server).connections.getCallerConnections("electron-main");
+    expect(callers).toHaveLength(1);
+    expect(callers[0]!.caller.runtime.kind).toBe("shell");
+  });
 
   it("denies worker callers for shell-only methods", async () => {
     const { server } = createServer();

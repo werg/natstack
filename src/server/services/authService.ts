@@ -143,7 +143,10 @@ export function createAuthService(deps: {
         try {
           const body = RefreshShellBodySchema.parse(await readJson(req));
           const device = deps.deviceAuthStore.validateRefresh(body.deviceId, body.refreshToken);
-          const shellToken = deps.tokenManager.ensureToken(shellCallerId(body.deviceId), "shell");
+          const shellToken = deps.tokenManager.ensureToken(
+            shellCallerId(body.deviceId),
+            "shell-remote"
+          );
           sendJson(res, 200, {
             shellToken,
             callerId: shellCallerId(body.deviceId),
@@ -208,7 +211,10 @@ function responseForCredential(
   },
   credential: { deviceId: string; refreshToken: string; label: string; platform?: string }
 ): Record<string, unknown> {
-  const shellToken = deps.tokenManager.ensureToken(shellCallerId(credential.deviceId), "shell");
+  const shellToken = deps.tokenManager.ensureToken(
+    shellCallerId(credential.deviceId),
+    "shell-remote"
+  );
   return {
     ...credential,
     shellToken,

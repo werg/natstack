@@ -9,9 +9,7 @@
  * caller that has a real `RuntimeFs` from `@workspace/runtime` can
  * pass it directly because TypeScript checks structural assignability.
  *
- * Mirrors the shape in `workspace/packages/runtime/src/types.ts` after
- * the W1d extensions land (constants, mktemp, bindContext, refined
- * `readFile` return type).
+ * Mirrors the shape in `workspace/packages/runtime/src/types.ts`.
  */
 
 import type { Buffer } from "node:buffer";
@@ -53,7 +51,6 @@ export interface RuntimeFs {
     readonly W_OK: 2;
     readonly X_OK: 1;
   };
-  bindContext?(contextId: string): Promise<void>;
   mktemp(prefix?: string): Promise<string>;
   readFile(path: string, encoding?: BufferEncoding): Promise<string | Buffer>;
   writeFile(path: string, data: string | Uint8Array): Promise<void>;

@@ -17,7 +17,8 @@
 
 import * as path from "path";
 import * as fs from "fs";
-import { randomBytes } from "crypto";
+import { createHash, randomBytes } from "crypto";
+import { canonicalEntityId, type EntityRecord } from "@natstack/shared/runtime/entitySpec";
 import { getPublicUrl } from "./publicUrl.js";
 import { assertPresent, deleteDynamicProperty } from "../lintHelpers";
 
@@ -510,6 +511,13 @@ async function main() {
   const workspacePath = workspace.path;
   const workspaceConfig = workspace.config;
   const statePath = workspace.statePath;
+
+  // Parse workspace declarations (singletonObjects + services + routes).
+  // Validation (every DO-backed service/route has a matching singleton row)
+  // runs eagerly here — bad workspaces fail fast at startup with a clear msg.
+  const { buildWorkspaceDeclarations } =
+    await import("@natstack/shared/workspace/singletonRegistry");
+  const workspaceDecls = buildWorkspaceDeclarations(workspaceConfig);
   // ===========================================================================
   // App node_modules resolution (for @natstack/* platform packages)
   // ===========================================================================
@@ -524,13 +532,13 @@ async function main() {
   // ===========================================================================
 
   const tokenManager = new TokenManager();
-  const { PrincipalRegistry } = await import("@natstack/shared/principalRegistry");
+  const { EntityCache } = await import("@natstack/shared/runtime/entityCache");
   const { ConnectionGrantService } = await import("@natstack/shared/connectionGrants");
   const { resolveCodeIdentity } = await import("./services/principalIdentity.js");
-  const principalRegistry = new PrincipalRegistry();
-  principalRegistry.register({ id: "server", kind: "server" });
-  principalRegistry.register({ id: "electron-main", kind: "shell" });
-  const connectionGrants = new ConnectionGrantService({ registry: principalRegistry });
+  const entityCache = new EntityCache();
+  entityCache.registerBootstrap({ id: "server", kind: "server" });
+  entityCache.registerBootstrap({ id: "electron-main", kind: "shell" });
+  const connectionGrants = new ConnectionGrantService({ entityCache });
   const serverBootId = `boot_${randomBytes(18).toString("base64url")}`;
   const { DeviceAuthStore } = await import("./services/deviceAuthStore.js");
   const deviceAuthStore = new DeviceAuthStore(path.join(statePath, "auth", "devices.json"));
@@ -598,8 +606,7 @@ async function main() {
     reposPath: workspacePath,
     initPatterns: [...WORKSPACE_GIT_INIT_PATTERNS],
     devTargetDir,
-    getSourceForCaller: (callerId) =>
-      resolveCodeIdentity(principalRegistry, callerId)?.repoPath ?? null,
+    getSourceForCaller: (callerId) => resolveCodeIdentity(entityCache, callerId)?.repoPath ?? null,
     getAllowedOrigins: () => {
       const port = gatewayPortResolved ?? requestedGatewayPort ?? 0;
       const origins = new Set<string>();
@@ -1063,16 +1070,13 @@ async function main() {
       null;
     container.register({
       name: "scope",
-      dependencies: ["rpcServer"],
+      dependencies: ["doDispatch"],
       async start(resolve) {
-        const rpcServer = assertPresent(
-          resolve<{ server: import("./rpcServer.js").RpcServer }>("rpcServer")
+        const doDispatch = assertPresent(
+          resolve<import("./doDispatch.js").DODispatch>("doDispatch")
         );
         scopeDefinition = createScopeService({
-          rpc: {
-            call: (targetId, method, ...args) =>
-              rpcServer.server.callTarget(targetId, method, ...args),
-          },
+          doDispatch,
         });
       },
       getServiceDefinition() {
@@ -1083,26 +1087,104 @@ async function main() {
   }
 
   {
-    const { createWorkspaceSyncService } = await import("./services/workspaceSyncService.js");
-    let workspaceSyncDefinition:
+    const { createWorkspaceStateService } = await import("./services/workspaceStateService.js");
+    let workspaceStateDefinition:
       | import("@natstack/shared/serviceDefinition").ServiceDefinition
       | null = null;
     container.register({
-      name: "workspace-sync",
+      name: "workspace-state",
       dependencies: ["doDispatch"],
       async start(resolve) {
         const doDispatch = assertPresent(
           resolve<import("./doDispatch.js").DODispatch>("doDispatch")
         );
-        workspaceSyncDefinition = createWorkspaceSyncService({
+        workspaceStateDefinition = createWorkspaceStateService({
           doDispatch,
           workspaceId: workspace.config.id,
-          eventService,
         });
       },
       getServiceDefinition() {
-        if (!workspaceSyncDefinition) throw new Error("workspace-sync service not initialized");
-        return workspaceSyncDefinition;
+        if (!workspaceStateDefinition) {
+          throw new Error("workspace-state service not initialized");
+        }
+        return workspaceStateDefinition;
+      },
+    });
+  }
+
+  // ── runtime.* service ──
+  // runtime.createEntity / retireEntity is the only path that
+  // mints or retires entity rows. Cleanup hooks fire post-retire (see §10).
+  {
+    const { createRuntimeService } = await import("./services/runtimeService.js");
+    let runtimeDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null =
+      null;
+    container.register({
+      name: "runtime",
+      dependencies: ["doDispatch", "workerdManager", "buildSystem"],
+      async start(resolve) {
+        const doDispatch = assertPresent(
+          resolve<import("./doDispatch.js").DODispatch>("doDispatch")
+        );
+        const workerdManager = assertPresent(
+          resolve<import("./workerdManager.js").WorkerdManager>("workerdManager")
+        );
+        const buildSystem = assertPresent(
+          resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")
+        );
+        runtimeDefinition = createRuntimeService({
+          doDispatch,
+          workspaceId: workspace.config.id,
+          entityCache,
+          hooks: {
+            prepareDurableObject: (args) => workerdManager.ensureDurableObjectEntity(args),
+            prepareWorker: (args) => workerdManager.startWorker(args),
+            resolvePanelEffectiveVersion: async ({ source, ref }) => {
+              if (source.startsWith("browser:")) return "";
+              void ref;
+              return buildSystem.getEffectiveVersion(source) ?? "";
+            },
+            onRetire: async (record) => {
+              await egressProxy.dropCaller(record.id).catch(() => {});
+              approvalQueue.cancelForCaller(record.id);
+              credentialSessionGrantStore.dropForCaller(record.id);
+              try {
+                const fsServiceInst =
+                  container.get<import("@natstack/shared/fsService").FsService>("fsService");
+                fsServiceInst?.closeHandlesForCaller(record.id);
+              } catch {
+                // fsService not started yet at retire time — safe to skip
+              }
+              try {
+                const webhookHolder = container.get<{
+                  internal?: {
+                    revokeForCaller?: (callerId: string) => Promise<number>;
+                  };
+                }>("webhookIngress");
+                await webhookHolder?.internal?.revokeForCaller?.(record.id);
+              } catch {
+                // webhookIngress not registered (eg. tests) — safe to skip
+              }
+              tokenManager.revokeToken(record.id);
+              if (record.kind === "worker") {
+                await workerdManager.stopWorker(record.id).catch(() => {});
+              }
+              if (record.kind === "do") {
+                await workerdManager.destroyDOEntity(record.id).catch(() => {});
+              }
+            },
+          },
+          capability: {
+            approvalQueue,
+            grantStore: capabilityGrantStore,
+          },
+        });
+      },
+      getServiceDefinition() {
+        if (!runtimeDefinition) {
+          throw new Error("runtime service not initialized");
+        }
+        return runtimeDefinition;
       },
     });
   }
@@ -1204,7 +1286,7 @@ async function main() {
         eventService,
         egressProxy,
         fsService,
-        principalRegistry,
+        entityCache,
         connectionGrants,
         runtimeCoordinator: panelRuntimeCoordinator,
       });
@@ -1292,13 +1374,61 @@ async function main() {
     let workerServiceDef: import("@natstack/shared/serviceDefinition").ServiceDefinition;
     container.register({
       name: "workersRpc",
-      dependencies: ["buildSystem"],
+      dependencies: ["buildSystem", "workerdManager", "doDispatch"],
       async start(resolve) {
         const buildSystemInst = assertPresent(
           resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")
         );
+        const workerdManagerInst = assertPresent(
+          resolve<import("./workerdManager.js").WorkerdManager>("workerdManager")
+        );
+        const doDispatch = assertPresent(
+          resolve<import("./doDispatch.js").DODispatch>("doDispatch")
+        );
+        const { INTERNAL_DO_SOURCE } = await import("./internalDOs/internalDoLoader.js");
+        const workspaceDORef: import("./doDispatch.js").DORef = {
+          source: INTERNAL_DO_SOURCE,
+          className: "WorkspaceDO",
+          objectKey: workspace.config.id,
+        };
         workerServiceDef = createWorkerService({
           buildSystem: buildSystemInst,
+          workspaceDecls,
+          activateDurableObject: async ({ source, className, objectKey }) => {
+            const targetId = canonicalEntityId({
+              kind: "do",
+              source,
+              className,
+              key: objectKey,
+            });
+            if (entityCache.resolveActive(targetId)) return;
+            const existing = (await doDispatch.dispatch(
+              workspaceDORef,
+              "entityResolveActive",
+              targetId
+            )) as EntityRecord | null;
+            if (existing) {
+              entityCache._onActivate(existing);
+              return;
+            }
+            const contextId = createHash("sha256")
+              .update(`${workspace.config.id}\x00${source}\x00${className}\x00${objectKey}`)
+              .digest("hex");
+            const prepared = await workerdManagerInst.ensureDurableObjectEntity({
+              source,
+              className,
+              key: objectKey,
+              contextId,
+            });
+            const record = (await doDispatch.dispatch(workspaceDORef, "entityActivate", {
+              kind: "do",
+              source: { repoPath: source, effectiveVersion: prepared.effectiveVersion },
+              contextId,
+              className,
+              key: objectKey,
+            })) as import("@natstack/shared/runtime/entitySpec").EntityRecord;
+            entityCache._onActivate(record);
+          },
         });
       },
       getServiceDefinition() {
@@ -1318,7 +1448,7 @@ async function main() {
     container.register({
       name: "fsService",
       async start() {
-        return new FsService(contextFolderManager, principalRegistry);
+        return new FsService(contextFolderManager, entityCache);
       },
     });
   }
@@ -1356,19 +1486,10 @@ async function main() {
           workspacePath,
           statePath,
           routeRegistry,
-          getManifestRoutes: (source) => {
-            const node = buildSystemForWorkerd
-              ?.getGraph()
-              .allNodes()
-              .find((n) => n.relativePath === source);
-            const manifest = node?.manifest as
-              | import("@natstack/shared/types").PackageManifest
-              | undefined;
-            return manifest?.routes ?? [];
-          },
+          getManifestRoutes: (source) => workspaceDecls.routes.filter((r) => r.source === source),
+          singletonRegistry: workspaceDecls.singletons,
           getProxyPort: (caller) => egressProxy.startForCaller(caller),
           getWorkerdGatewayToken: () => workerdGatewayToken,
-          principalRegistry,
         });
         workerdManagerForGateway = workerdManagerInstance;
 
@@ -1499,7 +1620,7 @@ async function main() {
   const commonDeps = {
     container,
     dispatcher,
-    principalRegistry,
+    entityCache,
     connectionGrants,
     workspace,
     workspacePath,
@@ -1675,20 +1796,7 @@ async function main() {
   {
     const { createBlobstoreService } = await import("./services/blobstoreService.js");
     const { createAuthService } = await import("./services/authService.js");
-    const { createPrincipalsService } = await import("./services/principalsService.js");
     const { rpcServiceWithRoutes } = await import("./rpcServiceWithRoutes.js");
-    container.register(
-      rpcService(
-        createPrincipalsService({
-          registry: principalRegistry,
-          getEffectiveVersion: async (source: string) => {
-            const buildSystem =
-              container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");
-            return buildSystem?.getEffectiveVersion(source) ?? undefined;
-          },
-        })
-      )
-    );
     container.register(
       rpcServiceWithRoutes(
         createAuthService({
@@ -1732,7 +1840,7 @@ async function main() {
     workerdGatewayToken,
     getWorkerdDispatchSecret: () => workerdManagerForGateway?.getDispatchSecret() ?? null,
     tokenManager,
-    principalRegistry,
+    entityCache,
     routeRegistry,
     getPublicUrl: () => {
       try {
@@ -1864,6 +1972,123 @@ async function main() {
 
   dispatcher.markInitialized();
 
+  // ===========================================================================
+  // WorkspaceDO bootstrap reconciliation
+  // (see plan §6 singleton reconciliation, §9 restart revival, §11 GC safety)
+  // ===========================================================================
+  const doDispatchForBootstrap = container.get<import("./doDispatch.js").DODispatch>("doDispatch");
+  const workspaceDORefForBootstrap: import("./doDispatch.js").DORef = {
+    source: (await import("./internalDOs/internalDoLoader.js")).INTERNAL_DO_SOURCE,
+    className: "WorkspaceDO",
+    objectKey: workspace.config.id,
+  };
+  const dispatchWorkspaceDO = <T>(method: string, ...args: unknown[]) =>
+    doDispatchForBootstrap.dispatch(workspaceDORefForBootstrap, method, ...args) as Promise<T>;
+
+  // Steps 1-3 (hydrate, incomplete-cleanup reconcile, GC safety sweep) are
+  // factored into `runStartupReconciliation` so both the boot path and tests
+  // can call them.
+  const { runStartupReconciliation } = await import("./services/startupReconciliation.js");
+  const reconciliation = await runStartupReconciliation({
+    dispatchWorkspaceDO,
+    entityCache,
+    logger: { warn: (msg, ...args) => console.warn(msg, ...args) },
+  });
+  // Re-register bootstrap entries that don't have DO rows.
+  entityCache.registerBootstrap({ id: "server", kind: "server" });
+  entityCache.registerBootstrap({ id: "electron-main", kind: "shell" });
+  if (reconciliation.incompleteCleanupIds.length > 0) {
+    console.log(
+      `[Bootstrap] Reconciled ${reconciliation.incompleteCleanupIds.length} incomplete cleanup(s): ${reconciliation.incompleteCleanupIds.join(
+        ", "
+      )}`
+    );
+  }
+
+  // 4. Singleton reconciliation against natstack.yml.singletonObjects.
+  try {
+    const { createHash } = await import("node:crypto");
+    const { canonicalEntityId } = await import("@natstack/shared/runtime/entitySpec");
+    type EntityRecord = import("@natstack/shared/runtime/entitySpec").EntityRecord;
+    const declaredKeys = new Set<string>();
+    for (const decl of workspaceDecls.singletons.all()) {
+      const contextId =
+        decl.contextId ??
+        createHash("sha256")
+          .update(`${workspace.config.id}\x00${decl.source}\x00${decl.className}\x00${decl.key}`)
+          .digest("hex");
+      const targetId = canonicalEntityId({
+        kind: "do",
+        source: decl.source,
+        className: decl.className,
+        key: decl.key,
+      });
+      declaredKeys.add(targetId);
+      try {
+        const prepared = await workerdManager.ensureDurableObjectEntity({
+          source: decl.source,
+          className: decl.className,
+          key: decl.key,
+          contextId,
+        });
+        const record = await dispatchWorkspaceDO<EntityRecord>("entityActivate", {
+          kind: "do",
+          source: { repoPath: decl.source, effectiveVersion: prepared.effectiveVersion },
+          contextId,
+          className: decl.className,
+          key: decl.key,
+        });
+        entityCache._onActivate(record);
+      } catch (err) {
+        console.warn(
+          `[Bootstrap] Singleton activate failed for ${decl.source}:${decl.className}:${decl.key}:`,
+          err
+        );
+      }
+    }
+    void declaredKeys;
+  } catch (err) {
+    console.warn("[Bootstrap] Singleton reconciliation failed:", err);
+  }
+
+  // 5. Start cleanup reaper to retry partial-failed hooks.
+  const { createCleanupReaper } = await import("./services/cleanupReaper.js");
+  const cleanupReaper = createCleanupReaper({
+    doDispatch: doDispatchForBootstrap,
+    workspaceDORef: workspaceDORefForBootstrap,
+    onRetire: async (record) => {
+      await egressProxy.dropCaller(record.id).catch(() => {});
+      approvalQueue.cancelForCaller(record.id);
+      credentialSessionGrantStore.dropForCaller(record.id);
+      try {
+        const fsServiceInst =
+          container.get<import("@natstack/shared/fsService").FsService>("fsService");
+        fsServiceInst?.closeHandlesForCaller(record.id);
+      } catch {
+        // fsService gone at reaper time — safe to skip
+      }
+      try {
+        const webhookHolder = container.get<{
+          internal?: {
+            revokeForCaller?: (callerId: string) => Promise<number>;
+          };
+        }>("webhookIngress");
+        await webhookHolder?.internal?.revokeForCaller?.(record.id);
+      } catch {
+        // webhookIngress not present — skip
+      }
+      tokenManager.revokeToken(record.id);
+      if (record.kind === "worker") {
+        await workerdManager.stopWorker(record.id).catch(() => {});
+      }
+      if (record.kind === "do") {
+        await workerdManager.destroyDOEntity(record.id).catch(() => {});
+      }
+    },
+    logger: { warn: (msg, ...args) => console.warn(msg, ...args) },
+  });
+  cleanupReaper.start();
+
   const extensionHost =
     container.get<import("@natstack/extension-host").ExtensionHost>("extensionHost");
   await extensionHost.ensureBuiltInExtensions(requiredBuiltInExtensions);
@@ -1876,7 +2101,11 @@ async function main() {
   const workerdMgr = container.get<import("./workerdManager.js").WorkerdManager>("workerdManager");
 
   if (ipcChannel) {
-    const shellToken = tokenManager.ensureToken("electron-main", "shell");
+    // The in-process Electron main retains kind:"shell" for its synchronous
+    // service dispatch; for the WS connection it uses kind:"shell-remote",
+    // which the WS-handshake invariant in rpcServer accepts while rejecting
+    // bare kind:"shell".
+    const shellToken = tokenManager.ensureToken("electron-main", "shell-remote");
     ipcChannel.postMessage({
       type: "ready",
       workerdPort: workerdMgr?.getPort() ?? 0,
@@ -2114,6 +2343,8 @@ async function main() {
       console.warn("[Server] Shutdown timeout — forcing exit");
       process.exit(1);
     }, 5000);
+
+    cleanupReaper.stop();
 
     await container
       .stopAll()

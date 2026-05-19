@@ -37,7 +37,7 @@ export type GrantedDecision = "once" | "session" | "version" | "repo" | "deny";
 
 interface ApprovalQueueRequestBase {
   callerId: string;
-  callerKind: "panel" | "worker";
+  callerKind: "panel" | "worker" | "do";
   repoPath: string;
   effectiveVersion: string;
   signal?: AbortSignal;
@@ -221,6 +221,8 @@ export interface ApprovalQueue {
   submitClientConfig(approvalId: string, values: Record<string, string>): void;
   submitCredentialInput(approvalId: string, values: Record<string, string>): void;
   listPending(): PendingApproval[];
+  /** Cleanup hook: cancel any pending approvals associated with a caller id. */
+  cancelForCaller(callerId: string): void;
 }
 
 export interface ApprovalQueueWithListeners extends ApprovalQueue {
@@ -812,6 +814,43 @@ export function createApprovalQueue(deps: {
 
     listPending() {
       return Array.from(entriesById.values()).map((e) => e.approval);
+    },
+
+    cancelForCaller(callerId) {
+      // Best-effort: dismiss every pending approval attributed to this caller.
+      // Called by `runtime.retireEntity` after the durable retire commits.
+      const matching = Array.from(entriesById.values()).filter(
+        (entry) => entry.approval.callerId === callerId
+      );
+      for (const entry of matching) {
+        removeEntry(entry);
+        for (const waiter of entry.waiters.values()) {
+          if (waiter.signal && waiter.onAbort) {
+            waiter.signal.removeEventListener("abort", waiter.onAbort);
+          }
+          waiter.resolve("deny");
+        }
+        entry.waiters.clear();
+        for (const waiter of entry.fieldInputWaiters.values()) {
+          if (waiter.signal && waiter.onAbort) {
+            waiter.signal.removeEventListener("abort", waiter.onAbort);
+          }
+          waiter.resolve({ decision: "deny" });
+        }
+        entry.fieldInputWaiters.clear();
+        for (const waiter of entry.userlandWaiters.values()) {
+          if (waiter.signal && waiter.onAbort) {
+            waiter.signal.removeEventListener("abort", waiter.onAbort);
+          }
+          waiter.resolve({ kind: "dismissed" });
+        }
+        entry.userlandWaiters.clear();
+        for (const waiter of entry.deviceCodeWaiters.values()) {
+          waiter.cancel();
+        }
+        entry.deviceCodeWaiters.clear();
+      }
+      if (matching.length > 0) emitPendingChanged();
     },
   };
 }

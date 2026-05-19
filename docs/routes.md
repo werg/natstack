@@ -7,8 +7,8 @@ pages) publish one without opening its own port.
 
 The primitive has two sub-namespaces:
 
-- **`/_r/w/<source>/<path>`** — worker-owned routes declared in a package
-  manifest's `natstack.routes[]`.
+- **`/_r/w/<source>/<path>`** — worker-owned routes declared at the workspace
+  level in `workspace/meta/natstack.yml`'s top-level `routes:` section.
 - **`/_r/s/<serviceName>/<path>`** — server-side service routes, registered
   in-process by server-side service factories.
 
@@ -17,26 +17,29 @@ or an in-process handler) receives a URL whose path begins after it.
 
 ## Worker routes
 
-Declare routes on a package via its `package.json` manifest:
+Routes are declared at the workspace level in `workspace/meta/natstack.yml`,
+which has three top-level sections: `singletonObjects:`, `services:`, and
+`routes:`. The package's own `package.json` manifest only declares the
+worker's `durable.classes`; everything route- and service-shaped lives in
+`natstack.yml`.
 
-```jsonc
-{
-  "name": "@workspace/oauth-receiver",
-  "natstack": {
-    "routes": [
-      {
-        "path": "/callback",
-        "methods": ["GET"],
-        "durableObject": { "className": "OauthFlow", "objectKey": "singleton" }
-      },
-      {
-        "path": "/webhook/:id",
-        "methods": ["POST"]
-      }
-    ],
-    "durable": { "classes": [{ "className": "OauthFlow" }] }
-  }
-}
+```yaml
+# workspace/meta/natstack.yml
+singletonObjects:
+  - source: workers/oauth-receiver
+    className: OauthFlow
+    key: workspace-oauth
+
+routes:
+  - source: workers/oauth-receiver
+    path: /callback
+    methods: [GET]
+    durableObject:
+      className: OauthFlow
+  - source: workers/oauth-receiver
+    path: /webhook/:id
+    methods: [POST]
+    worker: true
 ```
 
 Each entry binds one of two targets:
@@ -44,9 +47,10 @@ Each entry binds one of two targets:
 ### DO-backed (`durableObject` set)
 
 The request is routed to `env[do_<source>_<class>].idFromName(objectKey).fetch()`
-in workerd, via the server-owned `/_w/` router. Default `objectKey` is `"singleton"` — all route hits for a
-package share one DO instance. Use a specific `objectKey` (or future-work:
-a `:param` lookup) to partition by tenant.
+in workerd, via the server-owned `/_w/` router. The `objectKey` comes from the
+matching `singletonObjects` row (joined by `(source, className)`). DO-backed
+routes therefore always require a singleton row — routes have no per-request
+factory hook for picking a dynamic key.
 
 **Use DO-backed routes when the endpoint is always-on** — webhooks from third
 parties, OAuth callbacks that must arrive during a login flow. DO routes survive
@@ -70,34 +74,40 @@ Regular-worker routes disappear when the canonical instance is destroyed.
 
 ## Userland Services
 
-Workers can also advertise higher-level services in `natstack.services[]`.
-This is the stable discovery layer for userland capabilities: panels, workers,
-and server services should resolve by service `name` or protocol instead of
-hardcoding worker source paths, DO class names, or route URLs.
+The workspace can also advertise higher-level services in the top-level
+`services:` section of `workspace/meta/natstack.yml`. This is the stable
+discovery layer for userland capabilities: panels, workers, and server
+services should resolve by service `name` or protocol instead of hardcoding
+worker source paths, DO class names, or route URLs.
 
 Services can be backed by a Durable Object or by a stateless worker route:
 
-```jsonc
-{
-  "natstack": {
-    "durable": { "classes": [{ "className": "ChannelDO" }] },
-    "routes": [
-      { "path": "/api", "methods": ["POST"] }
-    ],
-    "services": [
-      {
-        "name": "channel",
-        "protocols": ["natstack.channel.v1"],
-        "durableObject": { "className": "ChannelDO" }
-      },
-      {
-        "name": "stateless-api",
-        "protocols": ["example.stateless.v1"],
-        "worker": { "routePath": "/api" }
-      }
-    ]
-  }
-}
+```yaml
+# workspace/meta/natstack.yml
+singletonObjects:
+  # Only declare a row here if the service should resolve to a single,
+  # stable DO instance by default. Omit it to make the service a factory.
+
+services:
+  # Factory service: no singleton row → caller MUST pass objectKey.
+  - source: workers/pubsub-channel
+    name: channel
+    protocols: [natstack.channel.v1]
+    durableObject:
+      className: PubSubChannel
+
+  # Stateless worker-backed service.
+  - source: workers/stateless-api
+    name: stateless-api
+    protocols: [example.stateless.v1]
+    worker:
+      routePath: /api
+
+routes:
+  - source: workers/stateless-api
+    path: /api
+    methods: [POST]
+    worker: true
 ```
 
 Resolve services through the runtime:
@@ -110,11 +120,19 @@ const api = await workers.resolveService("example.stateless.v1");
 // { kind: "worker", routeBasePath: "/_r/w/workers/stateless-api/api" }
 ```
 
-For DO-backed services, `objectKey` is supplied at resolution time, otherwise
-the service's manifest default is used, and finally the service name. For
-stateless worker services, `worker.routePath` must match a regular
-`natstack.routes[]` entry in the same package. Stateless service routes inherit
-the regular-worker lifecycle: the canonical worker instance must exist for the
+DO-backed services come in two flavours:
+
+- **Singleton-backed** — a matching `singletonObjects` row exists. Callers
+  MAY omit `objectKey`; the row's `key` is used. Callers MAY still pass an
+  explicit `objectKey` to fan out to additional instances (e.g. forked
+  channels).
+- **Factory** — no matching `singletonObjects` row. Callers MUST pass an
+  explicit `objectKey`; resolving without one throws. There is no implicit
+  default key.
+
+For stateless worker services, `worker.routePath` must match a worker-backed
+`routes:` entry on the same `source`. Stateless service routes inherit the
+regular-worker lifecycle: the canonical worker instance must exist for the
 route to be live.
 
 ### Path patterns

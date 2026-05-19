@@ -1,0 +1,513 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { describe, expect, it, vi } from "vitest";
+
+import { createTestDO } from "@workspace/runtime/worker/test-utils";
+import { CapabilityGrantStore } from "./capabilityGrantStore.js";
+import { createRuntimeService } from "./runtimeService.js";
+import type { ApprovalQueue } from "./approvalQueue.js";
+import { EntityCache } from "@natstack/shared/runtime/entityCache";
+import {
+  canonicalEntityId,
+  type EntityRecord,
+  type RuntimeEntityCreateSpec,
+} from "@natstack/shared/runtime/entitySpec";
+import { createVerifiedCaller } from "@natstack/shared/serviceDispatcher";
+import type { DODispatch, DORef } from "../doDispatch.js";
+import { WorkspaceDO } from "../internalDOs/workspaceDO.js";
+import { WorkspaceDOTestable } from "../internalDOs/workspaceDO.testFixture.js";
+
+function tempStatePath(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "natstack-runtime-svc-"));
+}
+
+function approvalQueueMock(
+  decision: Awaited<ReturnType<ApprovalQueue["request"]>> = "session"
+): ApprovalQueue {
+  return {
+    request: vi.fn(async () => decision),
+    requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
+    requestCredentialInput: vi.fn(async () => ({ decision: "deny" as const })),
+    requestUserland: vi.fn(async () => ({ kind: "dismissed" as const })),
+    presentDeviceCode: vi.fn(() => ({
+      approvalId: "device-code-test",
+      cancelled: new AbortController().signal,
+      dispose: vi.fn(),
+    })),
+    resolve: vi.fn(),
+    resolveUserland: vi.fn(),
+    submitClientConfig: vi.fn(),
+    submitCredentialInput: vi.fn(),
+    listPending: vi.fn(() => []),
+    cancelForCaller: vi.fn(),
+  };
+}
+
+/** Wrap a WorkspaceDO instance into a DODispatch-compatible mock. */
+function makeDODispatch(instance: WorkspaceDO): {
+  dispatch: DODispatch;
+  spy: ReturnType<typeof vi.fn>;
+} {
+  const spy = vi.fn(async (_ref: DORef, method: string, ...args: unknown[]) => {
+    // Direct in-process invocation against the WorkspaceDO instance.
+    const fn = (instance as unknown as Record<string, unknown>)[method];
+    if (typeof fn !== "function") {
+      throw new Error(`WorkspaceDO has no method ${method}`);
+    }
+    return (fn as (...a: unknown[]) => unknown).apply(instance, args);
+  });
+  return {
+    spy,
+    dispatch: { dispatch: spy } as unknown as DODispatch,
+  };
+}
+
+interface BuildDepsOptions {
+  approvalDecision?: Awaited<ReturnType<ApprovalQueue["request"]>>;
+  prepareDurableObject?: NonNullable<
+    Parameters<typeof createRuntimeService>[0]["hooks"]
+  >["prepareDurableObject"];
+  prepareWorker?: NonNullable<Parameters<typeof createRuntimeService>[0]["hooks"]>["prepareWorker"];
+  onRetire?: NonNullable<Parameters<typeof createRuntimeService>[0]["hooks"]>["onRetire"];
+  resolvePanelEffectiveVersion?: NonNullable<
+    Parameters<typeof createRuntimeService>[0]["hooks"]
+  >["resolvePanelEffectiveVersion"];
+}
+
+async function buildDeps(opts: BuildDepsOptions = {}) {
+  const { instance } = await createTestDO(WorkspaceDOTestable);
+  const { dispatch, spy } = makeDODispatch(instance);
+  const entityCache = new EntityCache();
+  const approvalQueue = approvalQueueMock(opts.approvalDecision ?? "session");
+  const grantStore = new CapabilityGrantStore({ statePath: tempStatePath() });
+
+  const prepareDurableObject =
+    opts.prepareDurableObject ??
+    vi.fn(async (args: { className: string; key: string }) => ({
+      targetId: `target:${args.className}:${args.key}`,
+      effectiveVersion: "ev-do",
+    }));
+  const prepareWorker =
+    opts.prepareWorker ??
+    vi.fn(async (args: { source: string; key: string }) => ({
+      targetId: `target:worker:${args.source}:${args.key}`,
+      effectiveVersion: "ev-worker",
+    }));
+  const onRetire = opts.onRetire ?? vi.fn(async () => {});
+  const resolvePanelEffectiveVersion =
+    opts.resolvePanelEffectiveVersion ?? vi.fn(async () => "ev-panel");
+
+  const service = createRuntimeService({
+    doDispatch: dispatch,
+    workspaceId: "workspace-main",
+    hooks: {
+      prepareDurableObject,
+      prepareWorker,
+      resolvePanelEffectiveVersion,
+      onRetire,
+    },
+    capability: { approvalQueue, grantStore },
+    entityCache,
+  });
+
+  return {
+    instance,
+    service,
+    spy,
+    entityCache,
+    approvalQueue,
+    grantStore,
+    prepareDurableObject,
+    prepareWorker,
+    onRetire,
+    resolvePanelEffectiveVersion,
+  };
+}
+
+const panelCaller = (id = "panel:caller", _contextId = "ctx-caller") =>
+  createVerifiedCaller(id, "panel", {
+    callerId: id,
+    callerKind: "panel",
+    repoPath: "panels/caller",
+    effectiveVersion: "v1",
+  });
+
+const shellCaller = createVerifiedCaller("shell:main", "shell");
+const serverCaller = createVerifiedCaller("server:main", "server");
+
+const doCreateSpec = (
+  overrides: Partial<Extract<RuntimeEntityCreateSpec, { kind: "do" }>> = {}
+): RuntimeEntityCreateSpec => ({
+  kind: "do",
+  source: "workers/example",
+  className: "MyDO",
+  key: "k1",
+  ...overrides,
+});
+
+describe("runtimeService.createEntity (do kind)", () => {
+  it("does not commit an entity row when prepareDurableObject fails", async () => {
+    const prepareDurableObject = vi.fn(async () => {
+      throw new Error("prepare boom");
+    });
+    const { service, spy, instance } = await buildDeps({ prepareDurableObject });
+    await expect(
+      service.handler({ caller: serverCaller }, "createEntity", [
+        doCreateSpec({ contextId: "ctx-x" }),
+      ])
+    ).rejects.toThrow(/prepare boom/);
+    expect(spy.mock.calls.some((c) => c[1] === "entityActivate")).toBe(false);
+    const canonical = canonicalEntityId({
+      kind: "do",
+      source: "workers/example",
+      className: "MyDO",
+      key: "k1",
+    });
+    expect(instance.entityResolve(canonical)).toBeNull();
+  });
+
+  it("returns handle with id+targetId and updates the cache on the happy path", async () => {
+    const { service, entityCache, prepareDurableObject } = await buildDeps();
+    const handle = (await service.handler({ caller: serverCaller }, "createEntity", [
+      doCreateSpec({ contextId: "ctx-x" }),
+    ])) as { id: string; targetId: string; kind: string };
+    expect(handle.kind).toBe("do");
+    expect(handle.id).toBe(
+      canonicalEntityId({ kind: "do", source: "workers/example", className: "MyDO", key: "k1" })
+    );
+    expect(handle.targetId).toBe("target:MyDO:k1");
+    expect(entityCache.resolveActive(handle.id)).not.toBeNull();
+    expect(prepareDurableObject).toHaveBeenCalledTimes(1);
+  });
+
+  it("reactivates a retired row and re-runs prepareDurableObject", async () => {
+    const { service, instance, prepareDurableObject } = await buildDeps();
+    // First create — phase 1.
+    const handle = (await service.handler({ caller: serverCaller }, "createEntity", [
+      doCreateSpec({ contextId: "ctx-x" }),
+    ])) as { id: string };
+    // Retire it.
+    instance.entityRetire(handle.id);
+    expect(instance.entityResolve(handle.id)?.status).toBe("retired");
+
+    // Second create — should re-prepare and flip back to active.
+    const second = (await service.handler({ caller: serverCaller }, "createEntity", [
+      doCreateSpec({ contextId: "ctx-x" }),
+    ])) as { id: string };
+    expect(second.id).toBe(handle.id);
+    expect(instance.entityResolve(handle.id)?.status).toBe("active");
+    expect(prepareDurableObject).toHaveBeenCalledTimes(2);
+  });
+
+  it("reactivates a retired row without changing its effective version", async () => {
+    const prepareDurableObject = vi
+      .fn()
+      .mockResolvedValueOnce({ targetId: "target:MyDO:k1", effectiveVersion: "ev-do-v1" })
+      .mockResolvedValueOnce({ targetId: "target:MyDO:k1", effectiveVersion: "ev-do-v2" });
+    const { service, instance } = await buildDeps({ prepareDurableObject });
+
+    const handle = (await service.handler({ caller: serverCaller }, "createEntity", [
+      doCreateSpec({ contextId: "ctx-x" }),
+    ])) as { id: string };
+    instance.entityRetire(handle.id);
+
+    await service.handler({ caller: serverCaller }, "createEntity", [
+      doCreateSpec({ contextId: "ctx-x" }),
+    ]);
+
+    const reactivated = instance.entityResolve(handle.id);
+    expect(reactivated?.status).toBe("active");
+    expect(reactivated?.source.effectiveVersion).toBe("ev-do-v1");
+  });
+
+  it("reactivates a retired panel row without changing its effective version", async () => {
+    const resolvePanelEffectiveVersion = vi
+      .fn()
+      .mockResolvedValueOnce("ev-panel-v1")
+      .mockResolvedValueOnce("ev-panel-v2");
+    const { service, instance } = await buildDeps({ resolvePanelEffectiveVersion });
+    const spec: RuntimeEntityCreateSpec = {
+      kind: "panel",
+      source: "panels/example",
+      key: "nav-1",
+      contextId: "ctx-x",
+    };
+
+    const handle = (await service.handler({ caller: serverCaller }, "createEntity", [spec])) as {
+      id: string;
+    };
+    instance.entityRetire(handle.id);
+
+    await service.handler({ caller: serverCaller }, "createEntity", [spec]);
+
+    const reactivated = instance.entityResolve(handle.id);
+    expect(reactivated?.status).toBe("active");
+    expect(reactivated?.source.effectiveVersion).toBe("ev-panel-v1");
+  });
+});
+
+describe("runtimeService.createEntity context policy", () => {
+  it("mints a fresh UUID when contextId is omitted", async () => {
+    const { service } = await buildDeps();
+    const handle = (await service.handler({ caller: serverCaller }, "createEntity", [
+      doCreateSpec(),
+    ])) as EntityRecord;
+    expect(handle.contextId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("allows callers in their own context", async () => {
+    const { service, entityCache, approvalQueue } = await buildDeps();
+    const caller = panelCaller("panel:p1", "ctx-caller");
+    entityCache._onActivate({
+      id: caller.runtime.id,
+      kind: "panel",
+      source: { repoPath: "panels/caller", effectiveVersion: "v1" },
+      contextId: "ctx-caller",
+      key: "p1",
+      createdAt: 1,
+      status: "active",
+      cleanupComplete: true,
+    });
+    const handle = (await service.handler({ caller }, "createEntity", [
+      doCreateSpec({ contextId: "ctx-caller" }),
+    ])) as { contextId: string };
+    expect(handle.contextId).toBe("ctx-caller");
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+  });
+
+  it("bypasses approval for server callers in cross-context", async () => {
+    const { service, approvalQueue } = await buildDeps();
+    const handle = (await service.handler({ caller: serverCaller }, "createEntity", [
+      doCreateSpec({ contextId: "ctx-other" }),
+    ])) as { contextId: string };
+    expect(handle.contextId).toBe("ctx-other");
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+  });
+
+  it("bypasses approval for shell callers in cross-context", async () => {
+    const { service, approvalQueue } = await buildDeps();
+    const handle = (await service.handler({ caller: shellCaller }, "createEntity", [
+      doCreateSpec({ contextId: "ctx-other" }),
+    ])) as { contextId: string };
+    expect(handle.contextId).toBe("ctx-other");
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+  });
+
+  it("requests approval for panel callers in cross-context and grants when allowed", async () => {
+    const { service, approvalQueue, entityCache } = await buildDeps({
+      approvalDecision: "session",
+    });
+    const caller = panelCaller("panel:p2", "ctx-caller");
+    entityCache._onActivate({
+      id: caller.runtime.id,
+      kind: "panel",
+      source: { repoPath: "panels/caller", effectiveVersion: "v1" },
+      contextId: "ctx-caller",
+      key: "p2",
+      createdAt: 1,
+      status: "active",
+      cleanupComplete: true,
+    });
+
+    const handle = (await service.handler({ caller }, "createEntity", [
+      doCreateSpec({ contextId: "ctx-target" }),
+    ])) as { contextId: string };
+    expect(handle.contextId).toBe("ctx-target");
+    expect(approvalQueue.request).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects panel callers in cross-context when denied", async () => {
+    const { service, entityCache } = await buildDeps({ approvalDecision: "deny" });
+    const caller = panelCaller("panel:p3", "ctx-caller");
+    entityCache._onActivate({
+      id: caller.runtime.id,
+      kind: "panel",
+      source: { repoPath: "panels/caller", effectiveVersion: "v1" },
+      contextId: "ctx-caller",
+      key: "p3",
+      createdAt: 1,
+      status: "active",
+      cleanupComplete: true,
+    });
+    await expect(
+      service.handler({ caller }, "createEntity", [doCreateSpec({ contextId: "ctx-target" })])
+    ).rejects.toThrow(/denied/i);
+  });
+});
+
+describe("runtimeService.retireEntity", () => {
+  it("commits DO retire first, then fires onRetire hook", async () => {
+    const order: string[] = [];
+    const { service, instance } = await buildDeps({
+      onRetire: vi.fn(async () => {
+        order.push("hook");
+      }),
+    });
+    const handle = (await service.handler({ caller: serverCaller }, "createEntity", [
+      doCreateSpec({ contextId: "ctx-x" }),
+    ])) as { id: string };
+
+    // Wrap entityRetire so we observe ordering.
+    const originalRetire = instance.entityRetire.bind(instance);
+    (instance as unknown as { entityRetire: typeof instance.entityRetire }).entityRetire = (
+      id: string
+    ) => {
+      order.push("do-commit");
+      return originalRetire(id);
+    };
+
+    await service.handler({ caller: serverCaller }, "retireEntity", [{ id: handle.id }]);
+    expect(order).toEqual(["do-commit", "hook"]);
+    // cleanup_complete should be 1 on success.
+    const rec = instance.entityResolve(handle.id);
+    expect(rec?.cleanupComplete).toBe(true);
+  });
+
+  it("does not fire onRetire when DO retire returns null (no row)", async () => {
+    const onRetire = vi.fn(async () => {});
+    const { service } = await buildDeps({ onRetire });
+    await service.handler({ caller: serverCaller }, "retireEntity", [{ id: "panel:missing" }]);
+    expect(onRetire).not.toHaveBeenCalled();
+  });
+
+  it("leaves cleanup_complete=0 when the hook throws", async () => {
+    const onRetire = vi.fn(async () => {
+      throw new Error("hook fail");
+    });
+    const { service, instance, spy } = await buildDeps({ onRetire });
+    const handle = (await service.handler({ caller: serverCaller }, "createEntity", [
+      doCreateSpec({ contextId: "ctx-x" }),
+    ])) as { id: string };
+
+    await service.handler({ caller: serverCaller }, "retireEntity", [{ id: handle.id }]);
+    const rec = instance.entityResolve(handle.id);
+    expect(rec?.status).toBe("retired");
+    expect(rec?.cleanupComplete).toBe(false);
+    // entityCleanupComplete dispatch should NOT have been issued.
+    expect(spy.mock.calls.some((c) => c[1] === "entityCleanupComplete")).toBe(false);
+  });
+});
+
+describe("runtimeService singleton DO + cross-panel sharing", () => {
+  it("singleton precreation is idempotent and yields a stable own context across calls", async () => {
+    const { service, instance, prepareDurableObject } = await buildDeps();
+
+    // Bootstrap computes the singleton's contextId as a stable hash of
+    // (workspaceId, source, className, key). Mimic that.
+    const { createHash } = await import("node:crypto");
+    const singletonContextId = createHash("sha256")
+      .update("workspace-main\x00workers/gad\x00GadWorkspaceDO\x00workspace-gad")
+      .digest("hex");
+
+    const spec: RuntimeEntityCreateSpec = {
+      kind: "do",
+      source: "workers/gad",
+      className: "GadWorkspaceDO",
+      key: "workspace-gad",
+      contextId: singletonContextId,
+    };
+
+    const a = (await service.handler({ caller: serverCaller }, "createEntity", [spec])) as {
+      id: string;
+      contextId: string;
+    };
+    const b = (await service.handler({ caller: serverCaller }, "createEntity", [spec])) as {
+      id: string;
+      contextId: string;
+    };
+
+    expect(b.id).toBe(a.id);
+    expect(b.contextId).toBe(singletonContextId);
+    expect(a.contextId).toBe(singletonContextId);
+    expect(instance.entityResolve(a.id)?.status).toBe("active");
+    // No IDENTITY_COLLISION raised; same row twice.
+    expect(prepareDurableObject).toHaveBeenCalledTimes(2);
+  });
+
+  it("two panels in different contexts resolve the same singleton entity (shared targetId)", async () => {
+    const { service, entityCache } = await buildDeps();
+
+    // Two panels exist in different contexts.
+    const panelA = panelCaller("panel:a", "ctx-a");
+    const panelB = panelCaller("panel:b", "ctx-b");
+    for (const [id, ctx] of [
+      [panelA.runtime.id, "ctx-a"],
+      [panelB.runtime.id, "ctx-b"],
+    ] as const) {
+      entityCache._onActivate({
+        id,
+        kind: "panel",
+        source: { repoPath: "panels/caller", effectiveVersion: "v1" },
+        contextId: ctx,
+        key: id,
+        createdAt: 1,
+        status: "active",
+        cleanupComplete: true,
+      });
+    }
+
+    // The singleton is created by the server at bootstrap (in its own context).
+    const { createHash } = await import("node:crypto");
+    const singletonContextId = createHash("sha256")
+      .update("workspace-main\x00workers/gad\x00GadWorkspaceDO\x00workspace-gad")
+      .digest("hex");
+
+    const handle = (await service.handler({ caller: serverCaller }, "createEntity", [
+      {
+        kind: "do",
+        source: "workers/gad",
+        className: "GadWorkspaceDO",
+        key: "workspace-gad",
+        contextId: singletonContextId,
+      },
+    ])) as { id: string; targetId: string };
+
+    // Now both panels resolve the singleton by canonical id and get the same row.
+    const lookupA = entityCache.resolveActive(handle.id);
+    const lookupB = entityCache.resolveActive(handle.id);
+    expect(lookupA?.id).toBe(handle.id);
+    expect(lookupB?.id).toBe(handle.id);
+    expect(lookupA?.contextId).toBe(singletonContextId);
+    expect(lookupB?.contextId).toBe(singletonContextId);
+    // Same targetId regardless of which panel "asked" — singletons are shared.
+    expect(handle.targetId).toBe("target:GadWorkspaceDO:workspace-gad");
+  });
+
+  it("an agent DO created by a panel records the requested panel context", async () => {
+    const { service, entityCache, instance } = await buildDeps();
+
+    const panel = panelCaller("panel:host", "ctx-host");
+    entityCache._onActivate({
+      id: panel.runtime.id,
+      kind: "panel",
+      source: { repoPath: "panels/host", effectiveVersion: "v1" },
+      contextId: "ctx-host",
+      key: "host",
+      createdAt: 1,
+      status: "active",
+      cleanupComplete: true,
+    });
+    // Persist a host panel row.
+    instance.entityActivate({
+      kind: "panel",
+      source: { repoPath: "panels/host", effectiveVersion: "v1" },
+      contextId: "ctx-host",
+      key: "host",
+    });
+
+    // Panel creates an agent DO in its own context.
+    const agent = (await service.handler({ caller: panel }, "createEntity", [
+      {
+        kind: "do",
+        source: "workers/agent",
+        className: "AgentDO",
+        key: "agent-1",
+        contextId: "ctx-host",
+      },
+    ])) as { id: string; contextId: string };
+
+    expect(agent.contextId).toBe("ctx-host");
+    expect(instance.entityResolve(agent.id)?.contextId).toBe("ctx-host");
+  });
+});

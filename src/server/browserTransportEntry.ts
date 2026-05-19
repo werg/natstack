@@ -5,7 +5,7 @@
  * eliminating duplication between the Electron preload and browser-served panels.
  *
  * Expects these globals to be set before this script runs (by configLoader):
- * - globalThis.__natstackId (string) — panel ID (viewId)
+ * - globalThis.__natstackEntityId (string) — runtime entity ID
  * - globalThis.__natstackGatewayRpcWsUrl (string) — fully resolved gateway RPC WS URL
  * - globalThis.__natstackGatewayToken (string) — auth token for ws:auth
  *
@@ -22,9 +22,10 @@ import { createWsTransport, type TransportBridge } from "../preload/wsTransport.
 
 type BrowserTransportGlobals = typeof globalThis & {
   __natstackId: string;
+  __natstackEntityId?: string;
   __natstackGatewayToken: string;
   __natstackGatewayRpcWsUrl: string;
-  __natstackLeaseConnectionId?: string;
+  __natstackConnectionId?: string;
   __natstackClientLabel?: string;
   __natstackTransport?: TransportBridge;
   __natstackStateArgs?: unknown;
@@ -46,7 +47,7 @@ function isRuntimeEventMessage(message: unknown): message is RuntimeEventMessage
 }
 
 const globals = globalThis as BrowserTransportGlobals;
-const viewId: string = globals.__natstackId;
+const viewId: string = globals.__natstackEntityId ?? globals.__natstackId;
 const authToken: string = globals.__natstackGatewayToken;
 const wsUrl: string = globals.__natstackGatewayRpcWsUrl;
 
@@ -56,7 +57,7 @@ globals.__natstackTransport = createWsTransport({
   authToken,
   callerKind: "panel",
   wsUrl,
-  connectionId: globals.__natstackLeaseConnectionId,
+  connectionId: globals.__natstackConnectionId,
   clientLabel: globals.__natstackClientLabel,
 });
 

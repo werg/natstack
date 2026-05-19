@@ -900,6 +900,22 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     });
   const oauthTransactions = new Map<string, OAuthConnectionTransaction>();
 
+  type UserlandRuntimeContext = ServiceContext & {
+    caller: ServiceContext["caller"] & {
+      runtime: ServiceContext["caller"]["runtime"] & {
+        kind: "panel" | "worker" | "do";
+      };
+    };
+  };
+
+  function isUserlandRuntimeCaller(ctx: ServiceContext): ctx is UserlandRuntimeContext {
+    return (
+      ctx.caller.runtime.kind === "panel" ||
+      ctx.caller.runtime.kind === "worker" ||
+      ctx.caller.runtime.kind === "do"
+    );
+  }
+
   function resolveBrowserHandoffTarget(
     ctx: ServiceContext,
     handoffTarget?: { callerId: string; callerKind: "panel" | "shell" }
@@ -1087,10 +1103,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     params: RequestClientConfigParams
   ): Promise<ClientConfigStatus> {
     const request = params as ConfigureClientRequest;
-    if (
-      !approvalQueue ||
-      (ctx.caller.runtime.kind !== "panel" && ctx.caller.runtime.kind !== "worker")
-    ) {
+    if (!approvalQueue || !isUserlandRuntimeCaller(ctx)) {
       throw new Error("client config approval is unavailable");
     }
     const authorizeUrl = canonicalUrl(request.authorizeUrl);
@@ -1243,10 +1256,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     ) {
       throw new Error("Client config deletion is not authorized for this caller");
     }
-    if (
-      approvalQueue &&
-      (ctx.caller.runtime.kind === "panel" || ctx.caller.runtime.kind === "worker")
-    ) {
+    if (approvalQueue && isUserlandRuntimeCaller(ctx)) {
       const identity = resolveApprovalIdentity(ctx);
       const decision = await approvalQueue.request({
         kind: "capability",
@@ -1322,10 +1332,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     params: RequestCredentialInputParams
   ): Promise<StoredCredentialSummary> {
     const request = params as RequestCredentialInputRequest;
-    if (
-      !approvalQueue ||
-      (ctx.caller.runtime.kind !== "panel" && ctx.caller.runtime.kind !== "worker")
-    ) {
+    if (!approvalQueue || !isUserlandRuntimeCaller(ctx)) {
       throw new Error("Credential input approval is unavailable");
     }
     if (request.fields.length !== 1) {
@@ -1566,10 +1573,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     if (request.flow.type !== "api-key") {
       throw new OAuthConnectionError("unsupported_flow");
     }
-    if (
-      !approvalQueue ||
-      (ctx.caller.runtime.kind !== "panel" && ctx.caller.runtime.kind !== "worker")
-    ) {
+    if (!approvalQueue || !isUserlandRuntimeCaller(ctx)) {
       throw new Error("Credential input approval is unavailable");
     }
     for (const field of request.flow.fields) {
@@ -1657,10 +1661,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     if (request.credential.injection.type !== "aws-sigv4") {
       throw new OAuthConnectionError("unsupported_injection");
     }
-    if (
-      !approvalQueue ||
-      (ctx.caller.runtime.kind !== "panel" && ctx.caller.runtime.kind !== "worker")
-    ) {
+    if (!approvalQueue || !isUserlandRuntimeCaller(ctx)) {
       throw new Error("Credential input approval is unavailable");
     }
     const audience = normalizeUrlAudiences(request.credential.audience);
@@ -1788,10 +1789,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       privateKey = pair.privateKey;
       publicKey = openSshEd25519PublicKey(pair.publicKey);
     } else {
-      if (
-        !approvalQueue ||
-        (ctx.caller.runtime.kind !== "panel" && ctx.caller.runtime.kind !== "worker")
-      ) {
+      if (!approvalQueue || !isUserlandRuntimeCaller(ctx)) {
         throw new Error("Credential input approval is unavailable");
       }
       const result = await approvalQueue.requestCredentialInput({
@@ -2382,10 +2380,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     const presentation = approvalQueue?.presentDeviceCode({
       kind: "device-code",
       callerId: ctx.caller.runtime.id,
-      callerKind:
-        ctx.caller.runtime.kind === "panel" || ctx.caller.runtime.kind === "worker"
-          ? ctx.caller.runtime.kind
-          : "panel",
+      callerKind: isUserlandRuntimeCaller(ctx) ? ctx.caller.runtime.kind : "panel",
       repoPath: identity.repoPath,
       effectiveVersion: identity.effectiveVersion,
       credentialLabel: request.credential.label,
@@ -3706,10 +3701,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       replacementCredentialLabel?: string;
     }
   ): Promise<Exclude<GrantedDecision, "deny">> {
-    if (
-      !approvalQueue ||
-      (ctx.caller.runtime.kind !== "panel" && ctx.caller.runtime.kind !== "worker")
-    ) {
+    if (!approvalQueue || !isUserlandRuntimeCaller(ctx)) {
       return "session";
     }
     const oauthAuthorizeOrigin = params.metadata?.["oauthAuthorizeOrigin"];
@@ -3830,7 +3822,9 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     }
     if (
       !approvalQueue ||
-      (ctx.caller.runtime.kind !== "panel" && ctx.caller.runtime.kind !== "worker")
+      (ctx.caller.runtime.kind !== "panel" &&
+        ctx.caller.runtime.kind !== "worker" &&
+        ctx.caller.runtime.kind !== "do")
     ) {
       throw new Error("Credential caller is not granted");
     }
@@ -3985,7 +3979,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   const definition: ServiceDefinition = {
     name: "credentials",
     description: "URL-bound userland credential storage and egress",
-    policy: { allowed: ["shell", "panel", "server", "worker", "extension"] },
+    policy: { allowed: ["shell", "panel", "server", "worker", "do", "extension"] },
     methods: {
       storeCredential: { args: z.tuple([storeUrlBoundCredentialParamsSchema]) },
       connect: { args: z.tuple([connectCredentialParamsSchema]) },
