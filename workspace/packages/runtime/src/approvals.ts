@@ -2,7 +2,10 @@ import type { RpcCaller } from "@natstack/rpc";
 import type { UserlandApprovalChoice, UserlandApprovalGrant, UserlandApprovalRequest, } from "@natstack/shared/approvals";
 export type { UserlandApprovalChoice, UserlandApprovalGrant, UserlandApprovalOption, UserlandApprovalRequest, UserlandApprovalSubject, } from "@natstack/shared/approvals";
 /**
- * Request a user decision for a userland-defined subject.
+ * Consumer contract: call this at every privileged-action boundary. Do not
+ * cache the result. The host owns persistence, deduplication, scope, and
+ * revocation. If you think you need a local allowlist, you are about to
+ * introduce a bug.
  *
  * The host persists the user's choice keyed on `(callerId, subject.id)`.
  * Subsequent calls with the same `subject.id` return the prior choice without

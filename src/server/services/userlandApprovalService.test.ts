@@ -16,12 +16,12 @@ function createDeps() {
     kind: "choice",
     choice: "allow",
   }));
-  const lookup = vi.fn<(callerId: string, subjectId: string) => UserlandApprovalGrant | null>(
-    () => null
-  );
+  const lookup = vi.fn<
+    (callerId: string, subjectId: string, issuer?: unknown) => UserlandApprovalGrant | null
+  >(() => null);
   const record = vi.fn(async () => {});
   const revoke = vi.fn(async () => true);
-  const list = vi.fn<(callerId: string) => UserlandApprovalGrant[]>(() => []);
+  const list = vi.fn<(callerId: string, issuer?: unknown) => UserlandApprovalGrant[]>(() => []);
   const service = createUserlandApprovalService({
     approvalQueue: { requestUserland: queued } as Partial<ApprovalQueue> as ApprovalQueue,
     grantStore: { lookup, record, revoke, list },
@@ -45,6 +45,15 @@ const doCtx: ServiceContext = {
     effectiveVersion: "hash-1",
   }),
 };
+const extensionCtx: ServiceContext = {
+  caller: createVerifiedCaller("@workspace-extensions/shell", "extension"),
+  chainCaller: {
+    callerId: "panel:alpha",
+    callerKind: "panel",
+    repoPath: "panels/alpha",
+    effectiveVersion: "panel-hash",
+  },
+};
 const validRequest = {
   subject: { id: "team-x:foo", label: "Team X foo" },
   title: "Allow foo?",
@@ -60,7 +69,7 @@ describe("userlandApprovalService", () => {
     expect(ELECTRON_LOCAL_SERVICE_NAMES).not.toContain("userlandApproval");
   });
 
-  it("allows panels, workers, and DOs but rejects shell/server through policy", async () => {
+  it("allows panels, workers, DOs, and extensions but rejects shell/server through policy", async () => {
     const { service } = createDeps();
     const dispatcher = new ServiceDispatcher();
     dispatcher.registerService(service);
@@ -70,6 +79,9 @@ describe("userlandApprovalService", () => {
       []
     );
     await expect(dispatcher.dispatch(doCtx, "userlandApproval", "list", [])).resolves.toEqual([]);
+    await expect(
+      dispatcher.dispatch(extensionCtx, "userlandApproval", "list", [])
+    ).resolves.toEqual([]);
     await expect(
       dispatcher.dispatch(
         { caller: createVerifiedCaller("shell", "shell") },
@@ -164,7 +176,7 @@ describe("userlandApprovalService", () => {
       kind: "choice",
       choice: "allow",
     });
-    expect(revoke).toHaveBeenCalledWith("worker:alpha", "team-x:foo");
+    expect(revoke).toHaveBeenCalledWith("worker:alpha", "team-x:foo", undefined);
     expect(queued).toHaveBeenCalledTimes(1);
   });
 
@@ -199,7 +211,9 @@ describe("userlandApprovalService", () => {
     expect(record).toHaveBeenCalledWith(
       { callerId: "worker:alpha", callerKind: "worker" },
       validRequest.subject,
-      "allow"
+      "allow",
+      expect.any(Number),
+      undefined
     );
 
     record.mockClear();
@@ -234,9 +248,60 @@ describe("userlandApprovalService", () => {
     ]);
 
     await expect(service.handler(workerCtx, "revoke", ["team-x:foo"])).resolves.toBe(true);
-    expect(revoke).toHaveBeenCalledWith("worker:alpha", "team-x:foo");
+    expect(revoke).toHaveBeenCalledWith("worker:alpha", "team-x:foo", undefined);
     await expect(service.handler(workerCtx, "list", [])).resolves.toHaveLength(1);
-    expect(list).toHaveBeenCalledWith("worker:alpha");
+    expect(list).toHaveBeenCalledWith("worker:alpha", undefined);
+  });
+
+  it("returns uncallable for unattributed extension callers", async () => {
+    const { service, queued, list } = createDeps();
+    const unattributed: ServiceContext = {
+      caller: createVerifiedCaller("@workspace-extensions/shell", "extension"),
+    };
+
+    await expect(service.handler(unattributed, "request", [validRequest])).resolves.toEqual({
+      kind: "uncallable",
+      reason: "no-user-context",
+    });
+    expect(queued).not.toHaveBeenCalled();
+    await expect(service.handler(unattributed, "revoke", ["team-x:foo"])).resolves.toEqual({
+      kind: "uncallable",
+      reason: "no-user-context",
+    });
+    await expect(service.handler(unattributed, "list", [])).resolves.toEqual([]);
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it("scopes extension approvals by chain caller and extension issuer", async () => {
+    const { service, lookup, queued, record, revoke, list } = createDeps();
+    queued.mockResolvedValueOnce({ kind: "choice", choice: "allow" });
+
+    await expect(service.handler(extensionCtx, "request", [validRequest])).resolves.toEqual({
+      kind: "choice",
+      choice: "allow",
+    });
+    const issuer = { kind: "extension", id: "@workspace-extensions/shell" };
+    expect(lookup).toHaveBeenCalledWith("panel:alpha", "team-x:foo", issuer);
+    expect(queued).toHaveBeenCalledWith(
+      expect.objectContaining({
+        principal: extensionCtx.chainCaller,
+        issuer,
+        details: expect.arrayContaining([
+          { label: "Extension", value: "@workspace-extensions/shell" },
+        ]),
+      })
+    );
+    expect(record).toHaveBeenCalledWith(
+      { callerId: "panel:alpha", callerKind: "panel" },
+      validRequest.subject,
+      "allow",
+      expect.any(Number),
+      issuer
+    );
+    await service.handler(extensionCtx, "revoke", ["team-x:foo"]);
+    expect(revoke).toHaveBeenCalledWith("panel:alpha", "team-x:foo", issuer);
+    await service.handler(extensionCtx, "list", []);
+    expect(list).toHaveBeenCalledWith("panel:alpha", issuer);
   });
 
   it("throws ServiceError for unknown methods", async () => {

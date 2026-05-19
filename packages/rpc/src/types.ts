@@ -14,6 +14,12 @@ export interface RpcRequest {
   fromId: string;
   method: string;
   args: unknown[];
+  /**
+   * Set only by extension callers, echoing an opaque host-issued token from
+   * the inbound extension invocation frame. The server resolves attribution
+   * from its active-invocation table; callers never supply identity directly.
+   */
+  parentInvocationToken?: string;
 }
 
 /**
@@ -66,6 +72,8 @@ export interface RpcStreamRequest {
   fromId: string;
   method: string;
   args: unknown[];
+  /** See `RpcRequest.parentInvocationToken`. */
+  parentInvocationToken?: string;
 }
 
 /**

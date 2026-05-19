@@ -104,6 +104,7 @@ export const workerRuntimeSurface: RuntimeSurface = {
     ]),
     extensions: namespaceEntry([
       "use",
+      "streamCall",
       "on",
       "list",
       "install",
@@ -112,6 +113,7 @@ export const workerRuntimeSurface: RuntimeSurface = {
       "update",
       "reload",
     ]),
+    approvals: namespaceEntry(["request", "revoke", "list"]),
     notifications: namespaceEntry(["show", "dismiss"]),
     contextId: valueEntry(),
     gatewayConfig: valueEntry("Gateway base URL and bearer token for NatStack service routes."),

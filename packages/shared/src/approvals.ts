@@ -94,7 +94,7 @@ export interface UserlandApprovalSubject {
 
 /**
  * Who is asking the user. For direct panel/worker calls this equals the
- * principal; for extension-issued approvals (via `ctx.approvals.requestForCaller`),
+ * principal; for extension-issued approvals (via `ctx.approvals.request`),
  * this identifies the extension acting on behalf of the principal.
  */
 export interface UserlandApprovalIssuer {
@@ -324,6 +324,12 @@ export interface PendingDeviceCodeApproval extends PendingApprovalBase {
   oauthTokenOrigin: string;
 }
 
+/**
+ * Consumer contract: call this at every privileged-action boundary. Do not
+ * cache the result. The host owns persistence, deduplication, scope, and
+ * revocation. If you think you need a local allowlist, you are about to
+ * introduce a bug.
+ */
 export interface UserlandApprovalRequest {
   /** Optional issuer override. Direct panel/worker callers can omit (issuer = principal). */
   issuer?: UserlandApprovalIssuer;
@@ -340,7 +346,8 @@ export interface UserlandApprovalRequest {
 
 export type UserlandApprovalChoice =
   | { kind: "choice"; choice: string }
-  | { kind: "dismissed" };
+  | { kind: "dismissed" }
+  | { kind: "uncallable"; reason: "no-user-context" };
 
 export type PendingApproval =
   | PendingCredentialApproval

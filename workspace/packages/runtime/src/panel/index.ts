@@ -165,8 +165,16 @@ export type { Disposable, ExtensionSource, ExtensionsClient, InstallSpec, Regist
 export const extensions = helpfulNamespace("extensions", createExtensionsClient(rpc));
 // Userland consent approvals.
 import { listUserlandApprovals, requestUserlandApproval, revokeUserlandApproval, } from "../approvals.js";
+export const approvals = helpfulNamespace("approvals", {
+  request: requestUserlandApproval.bind(null, rpc),
+  revoke: revokeUserlandApproval.bind(null, rpc),
+  list: listUserlandApprovals.bind(null, rpc),
+});
+/** @deprecated Use `approvals.request(req)`. */
 export const requestApproval = requestUserlandApproval.bind(null, rpc);
+/** @deprecated Use `approvals.revoke(subjectId)`. */
 export const revokeApproval = revokeUserlandApproval.bind(null, rpc);
+/** @deprecated Use `approvals.list()`. */
 export const listApprovals = listUserlandApprovals.bind(null, rpc);
 // Shell notifications
 import { createNotificationClient } from "./notifications.js";

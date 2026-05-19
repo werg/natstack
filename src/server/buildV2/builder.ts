@@ -2031,8 +2031,14 @@ function createExtensionSmokeContext() {
     db: asyncNull,
     webhooks: asyncNull,
     approvals: {
-      async requestForCaller() {
+      async request() {
         return { kind: "dismissed" };
+      },
+      async revoke() {
+        return false;
+      },
+      async list() {
+        return [];
       },
     },
     notifications: asyncNull,

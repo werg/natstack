@@ -17,11 +17,7 @@ import { EXTENSION_RUNTIME_ABI_VERSION } from "@natstack/shared/extensionRuntime
 import type {
   PendingExtensionApproval,
   PendingExtensionApprovalAction,
-  UserlandApprovalChoice,
-  UserlandApprovalIssuer,
-  UserlandApprovalRequest,
 } from "@natstack/shared/approvals";
-import { userlandApprovalRequestSchema } from "@natstack/shared/approvals";
 import {
   ExtensionManifestError,
   readAndValidateExtensionManifest,
@@ -42,6 +38,7 @@ import {
 import type {
   ExtensionHealth,
   ExtensionInvocation,
+  ExtensionUserlandCaller,
   InstallSpec,
   RegistryEntry,
 } from "./types.js";
@@ -78,6 +75,7 @@ interface ExtensionBuildMetadataLike {
 
 interface ExtensionTransportLike {
   call(name: string, method: string, ...args: unknown[]): Promise<unknown>;
+  streamCallTarget?(name: string, method: string, ...args: unknown[]): Promise<Response>;
 }
 
 interface ApprovalQueueLike {
@@ -121,30 +119,10 @@ interface ApprovalQueueLike {
     capabilities?: string[];
     details?: PendingExtensionApproval["details"];
   })): Promise<"once" | "session" | "version" | "repo" | "deny">;
-  requestUserland(req: {
-    principal: {
-      callerId: string;
-      callerKind: "panel" | "worker" | "do";
-      repoPath: string;
-      effectiveVersion: string;
-    };
-    issuer?: UserlandApprovalIssuer;
-  } & UserlandApprovalRequest): Promise<UserlandApprovalChoice>;
 }
 
 interface NotificationServiceLike {
   show(notification: Omit<NotificationPayload, "id"> & { id?: string }): string;
-}
-
-interface UserlandApprovalGrantStoreLike {
-  lookup(callerId: string, subjectId: string, issuer?: UserlandApprovalIssuer): { choice: string } | null;
-  record(
-    principal: { callerId: string; callerKind: "panel" | "worker" | "do" },
-    subject: { id: string; label?: string },
-    choice: string,
-    now?: number,
-    issuer?: UserlandApprovalIssuer,
-  ): Promise<void>;
 }
 
 export interface ExtensionHostDeps {
@@ -155,7 +133,6 @@ export interface ExtensionHostDeps {
   tokenManager: TokenManager;
   eventService: EventService;
   approvalQueue: ApprovalQueueLike;
-  userlandApprovalGrantStore: UserlandApprovalGrantStoreLike;
   notificationService?: NotificationServiceLike;
   getGatewayUrl(): string;
   /**
@@ -173,6 +150,7 @@ export class ExtensionHost {
   private unitLogs = new Map<string, UnitLogRecord[]>();
   private fetchRequestBodies = new Map<string, FetchRequestBodyStream>();
   private invokeAvailability = new Map<string, Promise<RegistryEntry | null>>();
+  private activeInvocations = new Map<string, ExtensionInvocation>();
   private readonly sourcePushGrants: SourcePushGrantStore;
 
   constructor(private readonly deps: ExtensionHostDeps) {
@@ -332,6 +310,7 @@ export class ExtensionHost {
       policy: { allowed: ["panel", "worker", "do", "shell", "extension"] },
       methods: {
         invoke: { args: z.tuple([z.string(), z.string(), z.array(z.unknown())]) },
+        invokeStream: { args: z.tuple([z.string(), z.string(), z.array(z.unknown())]) },
         list: { args: z.tuple([]) },
         on: { args: z.tuple([z.string(), z.string()]) },
         ready: { args: z.tuple([z.object({ methods: z.array(z.string()), hasFetch: z.boolean() })]) },
@@ -340,7 +319,6 @@ export class ExtensionHost {
         fetchRequestBodyClose: { args: z.tuple([z.string()]) },
         health: { args: z.tuple([z.enum(["healthy", "degraded", "unhealthy"]), z.unknown().optional()]) },
         log: { args: z.tuple([z.enum(["debug", "info", "warn", "error"]), z.string(), z.record(z.unknown()).optional()]) },
-        approvalForCaller: { args: z.tuple([z.unknown(), z.unknown()]) },
         install: { args: z.tuple([installSpecSchema]) },
         uninstall: { args: z.tuple([z.string(), z.object({ purge: z.boolean().optional() }).optional()]) },
         setEnabled: { args: z.tuple([z.string(), z.boolean()]) },
@@ -355,6 +333,8 @@ export class ExtensionHost {
     switch (method) {
       case "invoke":
         return this.invoke(ctx, args[0] as string, args[1] as string, args[2] as unknown[]);
+      case "invokeStream":
+        return this.invokeStream(ctx, args[0] as string, args[1] as string, args[2] as unknown[]);
       case "list":
         return this.registry.list();
       case "on":
@@ -379,8 +359,6 @@ export class ExtensionHost {
           args[1] as string,
           args[2] as Record<string, unknown> | undefined,
         );
-      case "approvalForCaller":
-        return this.approvalForCallerFromExtension(ctx, args[0], args[1]);
       case "install":
         return this.install(ctx, args[0] as InstallSpec);
       case "uninstall":
@@ -401,12 +379,7 @@ export class ExtensionHost {
     if (!entry || !entry.enabled) {
       throw new ServiceError("extensions", "invoke", `Extension is not installed or enabled: ${name}`, "ENOEXT");
     }
-    const invocation: ExtensionInvocation = invocationFromServiceContext(
-      ctx,
-      entry.name,
-      method,
-      randomUUID(),
-    );
+    const invocation = this.createTrackedInvocation(ctx, entry.name, method);
     if (!this.processes.isRunning(entry.name)) {
       throw new ServiceError("extensions", "invoke", `Extension is not running: ${entry.name}`, "ENOEXT");
     }
@@ -447,7 +420,92 @@ export class ExtensionHost {
         "console",
       );
       throw wrapped;
+    } finally {
+      this.clearTrackedInvocation(invocation);
     }
+  }
+
+  async invokeStream(ctx: ServiceContext, name: string, method: string, args: unknown[]): Promise<Response> {
+    const entry = await this.ensureAvailableForInvoke(ctx, name);
+    if (!entry || !entry.enabled) {
+      throw new ServiceError("extensions", "invokeStream", `Extension is not installed or enabled: ${name}`, "ENOEXT");
+    }
+    if (!this.deps.extensionTransport.streamCallTarget) {
+      throw new ServiceError("extensions", "invokeStream", "Extension streaming transport is unavailable", "ENOTIMPL");
+    }
+    const invocation = this.createTrackedInvocation(ctx, entry.name, method);
+    if (!this.processes.isRunning(entry.name)) {
+      throw new ServiceError("extensions", "invokeStream", `Extension is not running: ${entry.name}`, "ENOEXT");
+    }
+    try {
+      const response = await this.deps.extensionTransport.streamCallTarget(
+        entry.name,
+        "extension.invokeStream",
+        method,
+        args,
+        invocation,
+      );
+      return this.responseWithInvocationCleanup(response, invocation);
+    } catch (err) {
+      this.clearTrackedInvocation(invocation);
+      throw err;
+    }
+  }
+
+  private responseWithInvocationCleanup(response: Response, invocation: ExtensionInvocation): Response {
+    if (!response.body) {
+      this.clearTrackedInvocation(invocation);
+      return response;
+    }
+    const cleanup = () => this.clearTrackedInvocation(invocation);
+    const reader = response.body.getReader();
+    const stream = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        const next = await reader.read();
+        if (next.done) {
+          cleanup();
+          controller.close();
+          return;
+        }
+        controller.enqueue(next.value);
+      },
+      async cancel(reason) {
+        cleanup();
+        await reader.cancel(reason);
+      },
+    });
+    return new Response(stream, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  }
+
+  resolveActiveInvocation(
+    extensionName: string,
+    invocationToken: string,
+  ): (ExtensionInvocation & { chainCaller?: ExtensionUserlandCaller }) | null {
+    return (this.activeInvocations.get(this.invocationKey(extensionName, invocationToken)) as
+      | (ExtensionInvocation & { chainCaller?: ExtensionUserlandCaller })
+      | undefined) ?? null;
+  }
+
+  private createTrackedInvocation(ctx: ServiceContext, extensionName: string, method: string): ExtensionInvocation {
+    const invocation = invocationFromServiceContext(ctx, extensionName, method, randomUUID());
+    const token = randomUUID();
+    invocation.invocationToken = token;
+    this.activeInvocations.set(this.invocationKey(extensionName, token), invocation);
+    return invocation;
+  }
+
+  private clearTrackedInvocation(invocation: ExtensionInvocation): void {
+    if (invocation.invocationToken) {
+      this.activeInvocations.delete(this.invocationKey(invocation.extensionName, invocation.invocationToken));
+    }
+  }
+
+  private invocationKey(extensionName: string, invocationToken: string): string {
+    return `${extensionName}\x00${invocationToken}`;
   }
 
   private async ensureAvailableForInvoke(
@@ -559,12 +617,7 @@ export class ExtensionHost {
     const ctx: ServiceContext = {
       caller,
     };
-    const invocation = invocationFromServiceContext(
-      ctx,
-      name,
-      method,
-      randomUUID(),
-    );
+    const invocation = this.createTrackedInvocation(ctx, name, method);
     const originalUrl = req.url ?? "/";
     const query = originalUrl.includes("?") ? `?${originalUrl.split("?").slice(1).join("?")}` : "";
     const forwardedUrl = `${this.deps.getGatewayUrl()}/_r/ext/${encodeURIComponent(name)}${remainderPath}${query}`;
@@ -590,6 +643,7 @@ export class ExtensionHost {
       res.writeHead(status, { "Content-Type": "text/plain" });
       res.end(err instanceof Error ? err.message : String(err));
     } finally {
+      this.clearTrackedInvocation(invocation);
       if (isStreamEnvelope(body)) {
         await this.closeFetchRequestBody(body.id);
       }
@@ -734,72 +788,6 @@ export class ExtensionHost {
     }
     this.recordExtensionLog(ctx.caller.runtime.id, level, message, fields, "ctx.log");
     return null;
-  }
-
-  private async approvalForCallerFromExtension(
-    ctx: ServiceContext,
-    invocationValue: unknown,
-    reqValue: unknown,
-  ): Promise<unknown> {
-    if (ctx.caller.runtime.kind !== "extension") {
-      throw new ServiceError("extensions", "approvalForCaller", "Only extensions can request caller approvals", "EACCES");
-    }
-    const invocation = invocationValue as ExtensionInvocation;
-    if (!invocation || invocation.extensionName !== ctx.caller.runtime.id) {
-      throw new ServiceError("extensions", "approvalForCaller", "Extension approval invocation mismatch", "EACCES");
-    }
-    // Enforce the same schema validation the direct panel/worker path applies
-    // in userlandApprovalService. Without this, an extension can inject
-    // control chars, oversized fields, or reserved option values into the
-    // shell's approval prompt.
-    let parsed: UserlandApprovalRequest;
-    try {
-      parsed = userlandApprovalRequestSchema.parse(reqValue) as UserlandApprovalRequest;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new ServiceError("extensions", "approvalForCaller", `Invalid approval request: ${message}`, "EINVAL");
-    }
-    return this.requestUserlandApprovalForCaller(invocation, parsed);
-  }
-
-  private async requestUserlandApprovalForCaller(
-    invocation: ExtensionInvocation,
-    reqValue: UserlandApprovalRequest,
-  ): Promise<unknown> {
-    if (!invocation.userlandCaller) {
-      throw Object.assign(new Error("No userland caller available"), { code: "ENOCALLER" });
-    }
-    const issuer: UserlandApprovalIssuer = {
-      kind: "extension",
-      id: invocation.extensionName,
-    };
-    const req = decorateExtensionUserlandApproval(invocation.extensionName, reqValue);
-    const grant = this.deps.userlandApprovalGrantStore.lookup(
-      invocation.userlandCaller.callerId,
-      req.subject.id,
-      issuer,
-    );
-    if (grant && req.options.some((option) => option.value === grant.choice)) {
-      return { kind: "choice", choice: grant.choice };
-    }
-    const result = await this.deps.approvalQueue.requestUserland({
-      principal: invocation.userlandCaller,
-      issuer,
-      ...req,
-    });
-    if (result.kind === "choice") {
-      await this.deps.userlandApprovalGrantStore.record(
-        {
-          callerId: invocation.userlandCaller.callerId,
-          callerKind: invocation.userlandCaller.callerKind,
-        },
-        req.subject,
-        result.choice,
-        Date.now(),
-        issuer,
-      );
-    }
-    return result;
   }
 
   async install(ctx: ServiceContext, spec: InstallSpec): Promise<void> {
@@ -1468,22 +1456,6 @@ function normalizeRepoPath(repoPath: string): string {
     .replace(/^\/+/, "")
     .replace(/\.git(\/.*)?$/, "")
     .replace(/\/+$/, "");
-}
-
-function decorateExtensionUserlandApproval(
-  extensionName: string,
-  req: UserlandApprovalRequest,
-): UserlandApprovalRequest {
-  // Subject id is left as-is — issuer namespacing now lives on the structured
-  // issuer field (carried through the approval queue and grant store). The
-  // "Extension" detail is still added as a UI affordance for the prompt.
-  return {
-    ...req,
-    details: [
-      { label: "Extension", value: extensionName },
-      ...(req.details ?? []),
-    ].slice(0, 8),
-  };
 }
 
 const EXTENSION_DEV_SESSION_TTL_MS = 4 * 60 * 60 * 1000;

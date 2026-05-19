@@ -84,13 +84,8 @@ function makeHost(overrides: {
   );
   const approvalQueue = {
     request: vi.fn(async () => overrides.approvalDecision ?? "once"),
-    requestUserland: vi.fn(async () => ({ kind: "choice" as const, choice: "allow" })),
   };
   const eventService = { emit: vi.fn(), getOrCreateSubscriber: vi.fn(), subscribe: vi.fn() };
-  const userlandApprovalGrantStore = {
-    lookup: vi.fn(() => null),
-    record: vi.fn(),
-  };
   const buildSystem = {
     getBuild: vi.fn(async () => ({
       bundlePath: path.join(statePath, "builds", "candidate-key", "bundle.js"),
@@ -132,7 +127,6 @@ function makeHost(overrides: {
     tokenManager: { ensureToken: vi.fn() } as any,
     eventService: eventService as any,
     approvalQueue,
-    userlandApprovalGrantStore,
     getGatewayUrl: () => "http://127.0.0.1:3000",
     extensionTransport: overrides.extensionTransport ?? {
       call: vi.fn(async () => {
@@ -157,7 +151,7 @@ function makeHost(overrides: {
       lastError: overrides.status === "error" ? "previous failure" : null,
     });
   }
-  return { host, approvalQueue, buildSystem, extensionNode, eventService, userlandApprovalGrantStore };
+  return { host, approvalQueue, buildSystem, extensionNode, eventService };
 }
 
 describe("ExtensionHost source push authorization", () => {
@@ -374,8 +368,19 @@ describe("ExtensionHost activation", () => {
   });
 
   it("invokes extension APIs over the connected WebSocket transport when available", async () => {
-    const extensionTransport = { call: vi.fn(async () => "transport-result") };
+    let hostRef: ExtensionHost;
+    const extensionTransport = {
+      call: vi.fn(async (name: string, _method: string, _apiMethod: string, _args: unknown[], invocation: { invocationToken?: string }) => {
+        expect(invocation.invocationToken).toEqual(expect.any(String));
+        expect(hostRef.resolveActiveInvocation(name, invocation.invocationToken!)).toEqual(expect.objectContaining({
+          extensionName: name,
+          method: "blame",
+        }));
+        return "transport-result";
+      }),
+    };
     const { host, extensionNode } = makeHost({ extensionTransport });
+    hostRef = host;
     vi.spyOn(host.processes, "isRunning").mockReturnValue(true);
 
     await expect(
@@ -390,8 +395,11 @@ describe("ExtensionHost activation", () => {
       expect.objectContaining({
         extensionName: extensionNode.name,
         method: "blame",
+        invocationToken: expect.any(String),
       }),
     );
+    const invocation = extensionTransport.call.mock.calls[0]![4] as { invocationToken: string };
+    expect(host.resolveActiveInvocation(extensionNode.name, invocation.invocationToken)).toBeNull();
   });
 
   it("records extension invocation failures with stack context", async () => {
@@ -709,27 +717,10 @@ describe("ExtensionHost activation", () => {
     );
   });
 
-  it("accepts extension event, health, log, and caller approval requests over RPC", async () => {
-    const { host, extensionNode, eventService, approvalQueue, userlandApprovalGrantStore } = makeHost();
+  it("accepts extension event, health, and log requests over RPC", async () => {
+    const { host, extensionNode, eventService } = makeHost();
     const service = host.createServiceDefinition();
     const extensionCtx = { caller: createVerifiedCaller(extensionNode.name, "extension") };
-    const invocation = {
-      requestId: "req-1",
-      extensionName: extensionNode.name,
-      method: "confirm",
-      caller: { callerId: "panel-1", callerKind: "panel" as const },
-      userlandCaller: {
-        callerId: "panel-1",
-        callerKind: "panel" as const,
-        repoPath: "panels/dev",
-        effectiveVersion: "panel-ev",
-      },
-    };
-    const req = {
-      subject: { id: "dangerous-action", label: "Dangerous action" },
-      title: "Allow action?",
-      options: [{ value: "allow", label: "Allow" }],
-    };
 
     const markReady = vi.spyOn(host.processes, "markReady");
 
@@ -737,9 +728,6 @@ describe("ExtensionHost activation", () => {
     await service.handler(extensionCtx as any, "emit", ["changed", { ok: true }]);
     await service.handler(extensionCtx as any, "health", ["degraded", { summary: "Waiting" }]);
     await service.handler(extensionCtx as any, "log", ["warn", "Something happened", { code: "TEST" }]);
-    await expect(
-      service.handler(extensionCtx as any, "approvalForCaller", [invocation, req]),
-    ).resolves.toEqual({ kind: "choice", choice: "allow" });
 
     expect(markReady).toHaveBeenCalledWith(extensionNode.name, {
       methods: ["confirm"],
@@ -765,12 +753,5 @@ describe("ExtensionHost activation", () => {
         fields: { code: "TEST" },
       }),
     );
-    expect(approvalQueue.requestUserland).toHaveBeenCalledWith(expect.objectContaining({
-      principal: invocation.userlandCaller,
-      subject: expect.objectContaining({
-        id: expect.stringContaining("dangerous-action"),
-      }),
-    }));
-    expect(userlandApprovalGrantStore.record).toHaveBeenCalled();
   });
 });

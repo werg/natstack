@@ -30,6 +30,13 @@ export interface ExtensionProcessState {
   rpcToken: string;
 }
 
+export interface ExtensionUserlandCaller {
+  callerId: string;
+  callerKind: "panel" | "worker" | "do";
+  repoPath: string;
+  effectiveVersion: string;
+}
+
 export function invocationFromServiceContext(
   ctx: ServiceContext,
   extensionName: string,
@@ -56,7 +63,7 @@ export function invocationFromServiceContext(
   ) {
     const identity = ctx.caller.code;
     if (identity && identity.callerKind === ctx.caller.runtime.kind) {
-      invocation.userlandCaller = {
+      (invocation as ExtensionInvocation & { chainCaller?: ExtensionUserlandCaller }).chainCaller = {
         callerId: identity.callerId,
         callerKind: identity.callerKind,
         repoPath: identity.repoPath,

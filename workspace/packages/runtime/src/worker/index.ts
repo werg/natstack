@@ -135,6 +135,11 @@ export interface WorkerRuntime {
   readonly webhooks: WebhookIngressClient;
   readonly notifications: NotificationClient;
   readonly extensions: ExtensionsClient;
+  readonly approvals: {
+    request(req: UserlandApprovalRequest): Promise<UserlandApprovalChoice>;
+    revoke(subjectId: string): Promise<boolean>;
+    list(): Promise<UserlandApprovalGrant[]>;
+  };
   readonly contextId: string;
   readonly gatewayConfig: { serverUrl: string; token: string };
   readonly gatewayFetch: GatewayFetch;
@@ -225,6 +230,11 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
   const webhooks = helpfulNamespace("webhooks", createWebhookIngressClient(rpc));
   const notifications = helpfulNamespace("notifications", createNotificationClient(rpc));
   const extensions = helpfulNamespace("extensions", createExtensionsClient(rpc));
+  const approvals = helpfulNamespace("approvals", {
+    request: (req: UserlandApprovalRequest) => requestUserlandApproval(rpc, req),
+    revoke: (subjectId: string) => revokeUserlandApproval(rpc, subjectId),
+    list: () => listUserlandApprovals(rpc),
+  });
   const gad = helpfulNamespace("gad", createGadClient(rpc));
 
   const parentId = (env.PARENT_ID as string) || null;
@@ -247,6 +257,7 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
     webhooks,
     notifications,
     extensions,
+    approvals,
     contextId: env.CONTEXT_ID,
     gatewayConfig,
     gatewayFetch,

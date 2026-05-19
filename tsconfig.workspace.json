@@ -106,6 +106,12 @@
       "@workspace-panels/chat": [
         "workspace/panels/chat/index.tsx"
       ],
+      "@workspace-panels/terminal": [
+        "workspace/panels/terminal/index.tsx"
+      ],
+      "@workspace-extensions/shell": [
+        "workspace/extensions/@workspace-extensions/shell/index.ts"
+      ],
       "@workspace-panels/email": [
         "workspace/panels/email/index.tsx"
       ],

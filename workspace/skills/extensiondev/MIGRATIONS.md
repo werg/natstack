@@ -49,7 +49,7 @@ The canary migrations all follow the same shape:
 ## What changes for callers
 
 - **API shape** stays the same. The codemod is a search-and-replace of the import + first call segment.
-- **Authorization** moves from `policy.allowed` on the service definition to the extension's own per-call decisions via `ctx.approvals.requestForCaller(...)`. If the old service had `policy.allowed: ["panel", "worker"]`, the new extension just doesn't check who's calling — it asks the caller via `requestForCaller` when an action warrants it.
+- **Authorization** moves from `policy.allowed` on the service definition to the extension's own per-call decisions via `ctx.approvals.request(...)`. If the old service had `policy.allowed: ["panel", "worker"]`, the new extension just doesn't check who's calling — it asks the caller via `ctx.approvals.request` when an action warrants it.
 - **First-call latency** picks up the install/approval round trip. After approval the extension stays running; subsequent calls are RPC-fast.
 - **Failure isolation** improves: if the extension crashes, the host respawns it (1/2/4/8/16s backoff). The old in-host service would have brought down the server.
 

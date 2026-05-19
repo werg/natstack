@@ -1289,6 +1289,8 @@ async function main() {
         entityCache,
         connectionGrants,
         runtimeCoordinator: panelRuntimeCoordinator,
+        resolveExtensionInvocation: (extensionName, invocationToken) =>
+          extensionHostForGateway?.resolveActiveInvocation(extensionName, invocationToken) ?? null,
       });
       server.initHandlers();
       rpcServerForGateway = server;
@@ -1337,7 +1339,6 @@ async function main() {
         tokenManager: tokenManagerInst,
         eventService,
         approvalQueue,
-        userlandApprovalGrantStore,
         notificationService: notificationResult.internal,
         getGatewayUrl: () => {
           if (!gatewayPortResolved) {
@@ -1351,6 +1352,11 @@ async function main() {
             const rpcServer = rpcServerForGateway;
             if (!rpcServer) throw new Error("RPC server is not initialized");
             return rpcServer.callTarget(name, method, ...args);
+          },
+          streamCallTarget(name, method, ...args) {
+            const rpcServer = rpcServerForGateway;
+            if (!rpcServer) throw new Error("RPC server is not initialized");
+            return rpcServer.streamCallTarget(name, method, ...args);
           },
         },
       });

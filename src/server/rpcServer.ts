@@ -352,6 +352,17 @@ export class RpcServer {
       fsService?: Pick<import("@natstack/shared/fsService").FsService, "closeHandlesForCaller">;
       entityCache?: EntityCache;
       connectionGrants?: ConnectionGrantService;
+      resolveExtensionInvocation?: (
+        extensionName: string,
+        invocationToken: string
+      ) => {
+        chainCaller?: {
+          callerId: string;
+          callerKind: "panel" | "worker" | "do";
+          repoPath: string;
+          effectiveVersion: string;
+        };
+      } | null;
       sessionInboxCapacity?: SessionRegistryOptions["inboxCapacity"];
       sessionTtlMs?: SessionRegistryOptions["ttlMs"];
       runtimeCoordinator?: PanelRuntimeCoordinator;
@@ -386,6 +397,28 @@ export class RpcServer {
       caller: this.verifiedCallerFor(callerId, callerKind),
       ...extras,
     };
+  }
+
+  private serviceContextForRpcMessage(
+    client: WsClientState,
+    message: Pick<RpcRequest | import("@natstack/rpc").RpcStreamRequest, "parentInvocationToken">
+  ): ServiceContext {
+    const ctx: ServiceContext = {
+      caller: client.caller,
+      connectionId: client.connectionId,
+      wsClient: client,
+    };
+    if (client.caller.runtime.kind !== "extension" || !message.parentInvocationToken) {
+      return ctx;
+    }
+    const invocation = this.deps.resolveExtensionInvocation?.(
+      client.caller.runtime.id,
+      message.parentInvocationToken
+    );
+    if (invocation?.chainCaller) {
+      ctx.chainCaller = invocation.chainCaller;
+    }
+    return ctx;
   }
 
   private connectionKey(callerId: string, connectionId: string): string {
@@ -829,11 +862,7 @@ export class RpcServer {
       return;
     }
 
-    const ctx: ServiceContext = {
-      caller: client.caller,
-      connectionId: client.connectionId,
-      wsClient: client,
-    };
+    const ctx = this.serviceContextForRpcMessage(client, request);
 
     const dispatcher = this.dispatcher;
 
@@ -1710,6 +1739,42 @@ export class RpcServer {
       }
     };
 
+    const parsed = parseServiceMethod(request.method);
+    if (parsed && request.method !== "credentials.proxyFetch") {
+      try {
+        checkServiceAccess(
+          parsed.service,
+          client.caller.runtime.kind,
+          this.dispatcher,
+          parsed.method
+        );
+        const ctx = this.serviceContextForRpcMessage(client, request);
+        const result = await this.dispatcher.dispatch(
+          ctx,
+          parsed.service,
+          parsed.method,
+          request.args
+        );
+        if (!(result instanceof Response)) {
+          emitFrame({
+            kind: "error",
+            status: 500,
+            message: `Streaming service ${request.method} did not return a Response`,
+          });
+          return;
+        }
+        await this.pipeResponseToWsFrames(result, emitFrame);
+      } catch (err) {
+        emitFrame({
+          kind: "error",
+          status: 502,
+          message: err instanceof Error ? err.message : String(err),
+          code: err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined,
+        });
+      }
+      return;
+    }
+
     // WS has no separate-status-code path — pre-flight failures
     // become ERROR frames just like in-flight failures. The client's
     // `streamCall` promise rejects with the error message either way.
@@ -1750,6 +1815,34 @@ export class RpcServer {
     } finally {
       this.wsStreamAborts.delete(streamKey);
     }
+  }
+
+  private async pipeResponseToWsFrames(
+    response: Response,
+    emitFrame: (frame: import("./services/egressProxy.js").StreamFrame) => void
+  ): Promise<void> {
+    emitFrame({
+      kind: "head",
+      status: response.status,
+      statusText: response.statusText,
+      headerPairs: Array.from(response.headers.entries()),
+      finalUrl: response.url,
+    });
+    let bytesIn = 0;
+    if (response.body) {
+      const reader = response.body.getReader();
+      try {
+        while (true) {
+          const next = await reader.read();
+          if (next.done) break;
+          bytesIn += next.value.byteLength;
+          emitFrame({ kind: "chunk", bytes: next.value });
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    }
+    emitFrame({ kind: "end", bytesIn });
   }
 
   // ===========================================================================
@@ -1796,6 +1889,18 @@ export class RpcServer {
 
   async callTarget<T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T> {
     return this.relayCall("main", "server", targetId, method, args) as Promise<T>;
+  }
+
+  async streamCallTarget(targetId: string, method: string, ...args: unknown[]): Promise<Response> {
+    const wsClient = this.pickRoutableTarget(targetId);
+    if (wsClient?.ws.readyState !== WebSocket.OPEN) {
+      throw createRelayError(`Target not reachable: ${targetId}`, "TARGET_NOT_REACHABLE");
+    }
+    const bridge = this.connections.getBridge(targetId, wsClient.connectionId);
+    if (!bridge) {
+      throw createRelayError(`Target bridge not reachable: ${targetId}`, "TARGET_NOT_REACHABLE");
+    }
+    return bridge.streamCall(targetId, method, args);
   }
 
   private async relayCall(

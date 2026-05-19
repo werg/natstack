@@ -4,6 +4,7 @@ import type {
   ApprovalPrincipal,
   UserlandApprovalChoice,
   UserlandApprovalGrant,
+  UserlandApprovalIssuer,
   UserlandApprovalRequest,
 } from "@natstack/shared/approvals";
 import {
@@ -21,7 +22,30 @@ export function createUserlandApprovalService(deps: {
   approvalQueue: ApprovalQueue;
   grantStore: Pick<UserlandApprovalGrantStore, "lookup" | "record" | "revoke" | "list">;
 }): ServiceDefinition {
-  async function resolvePrincipal(ctx: ServiceContext, method: string): Promise<ApprovalPrincipal> {
+  function extensionIssuer(ctx: ServiceContext): UserlandApprovalIssuer | undefined {
+    return ctx.caller.runtime.kind === "extension"
+      ? { kind: "extension", id: ctx.caller.runtime.id }
+      : undefined;
+  }
+
+  function decorateForIssuer(
+    req: UserlandApprovalRequest,
+    issuer: UserlandApprovalIssuer | undefined
+  ): UserlandApprovalRequest {
+    if (!issuer || issuer.kind !== "extension") return req;
+    return {
+      ...req,
+      details: [{ label: "Extension", value: issuer.id }, ...(req.details ?? [])].slice(0, 8),
+    };
+  }
+
+  async function resolvePrincipal(
+    ctx: ServiceContext,
+    method: string
+  ): Promise<ApprovalPrincipal | null> {
+    if (ctx.caller.runtime.kind === "extension") {
+      return ctx.chainCaller ?? null;
+    }
     if (
       ctx.caller.runtime.kind !== "panel" &&
       ctx.caller.runtime.kind !== "worker" &&
@@ -30,7 +54,7 @@ export function createUserlandApprovalService(deps: {
       throw new ServiceError(
         SERVICE_NAME,
         method,
-        "userlandApproval is only available to panels, workers, and DOs",
+        "userlandApproval is only available to panels, workers, DOs, and attributed extensions",
         "EACCES"
       );
     }
@@ -70,25 +94,30 @@ export function createUserlandApprovalService(deps: {
     // reserved-prefix invariants would not hold here.
     const req = userlandApprovalRequestSchema.parse(rawReq);
     const principal = await resolvePrincipal(ctx, "request");
-    const hit = deps.grantStore.lookup(principal.callerId, req.subject.id);
+    if (!principal) return { kind: "uncallable", reason: "no-user-context" };
+    const issuer = extensionIssuer(ctx);
+    const decoratedReq = decorateForIssuer(req, issuer);
+    const hit = deps.grantStore.lookup(principal.callerId, decoratedReq.subject.id, issuer);
     if (hit) {
-      if (req.options.some((option) => option.value === hit.choice)) {
+      if (decoratedReq.options.some((option) => option.value === hit.choice)) {
         return { kind: "choice", choice: hit.choice };
       }
       try {
-        await deps.grantStore.revoke(principal.callerId, req.subject.id);
+        await deps.grantStore.revoke(principal.callerId, decoratedReq.subject.id, issuer);
       } catch (err) {
         console.warn("[UserlandApprovalService] Failed to revoke stale approval grant:", err);
       }
     }
 
-    const result = await deps.approvalQueue.requestUserland({ principal, ...req });
+    const result = await deps.approvalQueue.requestUserland({ principal, issuer, ...decoratedReq });
     if (result.kind === "choice") {
       try {
         await deps.grantStore.record(
           { callerId: principal.callerId, callerKind: principal.callerKind },
-          req.subject,
-          result.choice
+          decoratedReq.subject,
+          result.choice,
+          Date.now(),
+          issuer
         );
       } catch (err) {
         console.warn("[UserlandApprovalService] Failed to persist approval grant:", err);
@@ -100,7 +129,7 @@ export function createUserlandApprovalService(deps: {
   return {
     name: SERVICE_NAME,
     description: "Userland-managed consent approvals",
-    policy: { allowed: ["panel", "worker", "do"] },
+    policy: { allowed: ["panel", "worker", "do", "extension"] },
     methods: {
       request: { args: z.tuple([userlandApprovalRequestSchema]) },
       revoke: { args: z.tuple([userlandApprovalSubjectIdSchema]) },
@@ -112,13 +141,18 @@ export function createUserlandApprovalService(deps: {
           return request(ctx, args[0] as UserlandApprovalRequest);
         case "revoke": {
           const principal = await resolvePrincipal(ctx, "revoke");
+          if (!principal) return { kind: "uncallable", reason: "no-user-context" };
           // Re-parse for transform application — see comment in `request`.
           const subjectId = userlandApprovalSubjectIdSchema.parse(args[0]);
-          return await deps.grantStore.revoke(principal.callerId, subjectId);
+          return await deps.grantStore.revoke(principal.callerId, subjectId, extensionIssuer(ctx));
         }
         case "list": {
           const principal = await resolvePrincipal(ctx, "list");
-          return deps.grantStore.list(principal.callerId) as UserlandApprovalGrant[];
+          if (!principal) return [];
+          return deps.grantStore.list(
+            principal.callerId,
+            extensionIssuer(ctx)
+          ) as UserlandApprovalGrant[];
         }
         default:
           throw new ServiceError(

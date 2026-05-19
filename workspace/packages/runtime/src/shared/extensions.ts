@@ -27,6 +27,9 @@ export function createExtensionsClient(rpc: ExtensionsRpc): ExtensionsClient {
                 },
             }) as T;
         },
+        streamCall(name: string, method: string, args: unknown[]) {
+            return rpc.streamCall("main", "extensions.invokeStream", [name, method, args]);
+        },
         on(name, event, cb) {
             const eventName = `extensions:${name}::${event}`;
             const unsubscribe = rpc.onEvent

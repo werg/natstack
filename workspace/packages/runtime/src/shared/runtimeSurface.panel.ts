@@ -159,6 +159,7 @@ export const panelRuntimeSurface: RuntimeSurface = {
     ]),
     extensions: namespaceEntry([
       "use",
+      "streamCall",
       "on",
       "list",
       "install",
@@ -167,6 +168,7 @@ export const panelRuntimeSurface: RuntimeSurface = {
       "update",
       "reload",
     ]),
+    approvals: namespaceEntry(["request", "revoke", "list"]),
     requestApproval: valueEntry(),
     revokeApproval: valueEntry(),
     listApprovals: valueEntry(),

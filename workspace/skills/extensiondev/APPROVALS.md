@@ -4,7 +4,7 @@ Extensions have two distinct trust boundaries:
 
 1. **Install / update / source-push** — the *elevated* approval. Granted once by the user at install time (and again on dependency updates or accepted source pushes). After install, the extension has full Node access. The host does not gate individual `ctx.fs` or `node:fs` calls — that would be theatre.
 
-2. **Per-call approvals** — the *userland* approval, raised by the extension via `ctx.approvals.requestForCaller(...)` against the original panel/worker that triggered the call. This is a **user-intent** mechanism, not a security boundary against the already-installed extension. Use it when the user should explicitly authorize an action the extension is about to take on their behalf.
+2. **Per-call approvals** — the *userland* approval, raised by the extension via `ctx.approvals.request(...)` against the original panel/worker that triggered the call. This is a **user-intent** mechanism, not a security boundary against the already-installed extension. Use it when the user should explicitly authorize an action the extension is about to take on their behalf.
 
 This doc is about the second.
 
@@ -22,20 +22,10 @@ interface ExtensionInvocation {
     callerKind: "panel" | "worker" | "shell" | "extension" | "http";
     connectionId?: string;
   };
-  // Only present when the immediate caller is a panel/worker. This is the
-  // principal `requestForCaller` asks. Extension-to-extension calls do NOT
-  // inherit upstream userland identity; if you need to ask, ask upstream
-  // before delegating.
-  userlandCaller?: {
-    callerId: string;
-    callerKind: "panel" | "worker";
-    repoPath: string;
-    effectiveVersion: string;
-  };
 }
 ```
 
-`userlandCaller` is what `requestForCaller` operates on. If you're called from another extension, `userlandCaller` is `undefined` and `requestForCaller` will throw `ENOCALLER`.
+The host tracks the original panel/worker in a server-side active-invocation table. Extension-to-extension calls do not inherit upstream attribution; if there is no panel/worker to ask, `ctx.approvals.request(...)` returns `{ kind: "uncallable", reason: "no-user-context" }`.
 
 ## Requesting per-call approval
 
@@ -43,19 +33,10 @@ interface ExtensionInvocation {
 export async function activate(ctx: ExtensionContext) {
   return {
     async deleteWorkspace(target: string) {
-      const inv = ctx.invocation.current();
-      if (!inv?.userlandCaller) {
-        // Called by another extension or by a non-userland caller — refuse
-        // rather than silently auto-allowing (the user has no chance to
-        // intervene). Upstream callers should have prompted.
-        const err = new Error("This extension only accepts requests from panels and workers");
-        (err as NodeJS.ErrnoException).code = "ENOCALLER";
-        throw err;
-      }
-      const decision = await ctx.approvals.requestForCaller({
+      const decision = await ctx.approvals.request({
         subject: { id: `hello:delete:${target}`, label: target },
         title: `Allow Hello to delete ${target}?`,
-        summary: `Requested by ${inv.userlandCaller.callerId}.`,
+        summary: "A caller asked this extension to delete a workspace.",
         warning: "This permanently removes the workspace and its contexts.",
         options: [
           { value: "allow", label: "Allow this once", tone: "primary" },
@@ -63,6 +44,11 @@ export async function activate(ctx: ExtensionContext) {
           { value: "deny", label: "Don't allow", tone: "danger" },
         ],
       });
+      if (decision.kind === "uncallable") {
+        const err = new Error("This extension only accepts requests from panels and workers");
+        (err as NodeJS.ErrnoException).code = "ENOCALLER";
+        throw err;
+      }
       if (decision.kind !== "choice" || !decision.choice.startsWith("allow")) {
         const err = new Error("Denied by user");
         (err as NodeJS.ErrnoException).code = "EACCES";
@@ -89,6 +75,7 @@ The returned `UserlandApprovalChoice` is either:
 ```ts
 { kind: "choice", choice: string }    // user picked one of your options
 { kind: "dismissed" }                  // user closed the prompt → treat as deny
+{ kind: "uncallable", reason: "no-user-context" } // no panel/worker caller to ask
 ```
 
 The `choice` string is whatever option `value` you defined. The host records it as a grant; subsequent same-subject requests skip the prompt.
@@ -105,7 +92,7 @@ The host doesn't impose a model — pick what matches the user's mental model of
 
 ## When *not* to prompt
 
-`requestForCaller` is for **user intent**, not access control. Don't use it as a fake security layer — the extension is already trusted to do whatever it wants via raw Node.
+`ctx.approvals.request` is for **user intent**, not access control. Don't use it as a fake security layer — the extension is already trusted to do whatever it wants via raw Node.
 
 Prompt when:
 - The action has user-visible side effects (deleting data, sending a message, spending credits).
@@ -115,7 +102,7 @@ Prompt when:
 Don't prompt when:
 - The call is read-only metadata that the user already authorized by calling the extension at all.
 - The work is internal bookkeeping (writing to `ctx.storage`, log records, health reports).
-- You're calling another extension that will do its own prompting (`extensions.use(...)` calls don't propagate `userlandCaller`).
+- You're calling another extension that will do its own prompting (`extensions.use(...)` calls do not propagate upstream attribution).
 
 ## Prompt copy
 
@@ -127,5 +114,5 @@ The prompt's **default action on dismissal is deny**. Don't write code that depe
 
 Grants persist in the userland-approval grant store across host restarts. Two ways to clear:
 
-- **Programmatically** from a panel/worker: `requestApproval`/`revokeApproval` from `@workspace/runtime`. The extension cannot revoke a grant it issued (asymmetric on purpose — only the principal can revoke).
+- **Programmatically** from a panel/worker or attributed extension: `runtime.approvals.revoke(subjectId)` / `ctx.approvals.revoke(subjectId)`.
 - **By disabling the extension**: `extensions.setEnabled(name, false)` doesn't clear grants by itself. `extensions.uninstall(name, { purge: true })` removes the storage scratch but not the grants. Grants are namespaced by `(principal, extension)`, so reinstalling the extension under the same name will see the same grants.

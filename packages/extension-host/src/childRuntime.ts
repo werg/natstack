@@ -10,6 +10,7 @@ import {
   type RpcBridge,
   type RpcMessage,
   type RpcTransport,
+  type StreamingMethodFrame,
 } from "@natstack/rpc";
 import type { WsClientMessage, WsServerMessage } from "@natstack/shared/ws/protocol";
 
@@ -151,6 +152,9 @@ function createExtensionsClient() {
         },
       }) as T;
     },
+    streamCall(name: string, method: string, args: unknown[]) {
+      return getRuntimeBridge().streamCall("main", "extensions.invokeStream", [name, method, args]);
+    },
     on(targetName: string, event: string, cb: (payload: unknown) => void) {
       const eventName = `extensions:${targetName}::${event}`;
       const channel = `event:${eventName}`;
@@ -183,10 +187,6 @@ function createExtensionsClient() {
     update: (name: string) => rpcCall("extensions.update", [name]),
     reload: (name: string) => rpcCall("extensions.reload", [name]),
   };
-}
-
-function requestHostApproval(invocation: ExtensionInvocation, req: UserlandApprovalRequest): Promise<unknown> {
-  return rpcCall("extensions.approvalForCaller", [invocation, req]);
 }
 
 function encodeBinary(data: Uint8Array): BinaryEnvelope {
@@ -362,6 +362,10 @@ function createContext() {
     rpc: {
       call: <T>(targetId: string, method: string, ...args: unknown[]) =>
         rpcCall<T>(method, args, targetId),
+      streamCall: (targetId: string, method: string, args: unknown[], options?: { signal?: AbortSignal }) =>
+        getRuntimeBridge().streamCall(targetId, method, args, options),
+      onEvent: (eventName: string, cb: (fromId: string, payload: unknown) => void) =>
+        getRuntimeBridge().onEvent(eventName, cb),
     },
     workers: {
       listServices: () => rpcCall("workers.listServices", []),
@@ -375,15 +379,11 @@ function createContext() {
     notifications: serviceProxy("notification"),
     extensions: createExtensionsClient(),
     approvals: {
-      async requestForCaller(req: UserlandApprovalRequest) {
-        const invocation = invocationStore.getStore();
-        if (!invocation?.userlandCaller) {
-          const err = new Error("No panel/worker caller is active for this extension invocation") as NodeJS.ErrnoException;
-          err.code = "ENOCALLER";
-          throw err;
-        }
-        return requestHostApproval(invocation, req);
+      async request(req: UserlandApprovalRequest) {
+        return rpcCall("userlandApproval.request", [req]);
       },
+      revoke: (subjectId: string) => rpcCall("userlandApproval.revoke", [subjectId]),
+      list: () => rpcCall("userlandApproval.list", []),
     },
     invocation: {
       current: () => invocationStore.getStore() ?? null,
@@ -471,7 +471,11 @@ async function connectRuntimeBridge(): Promise<RpcBridge> {
         if (ws.readyState !== WebSocket.OPEN) {
           throw new Error("Extension WebSocket RPC is not connected");
         }
-        ws.send(JSON.stringify({ type: "ws:rpc", message } satisfies WsClientMessage));
+        const invocationToken = invocationStore.getStore()?.invocationToken;
+        const stamped = invocationToken && (message.type === "request" || message.type === "stream-request")
+          ? { ...message, parentInvocationToken: invocationToken }
+          : message;
+        ws.send(JSON.stringify({ type: "ws:rpc", message: stamped } satisfies WsClientMessage));
       },
       onMessage(sourceId: string, handler: (message: RpcMessage) => void): () => void {
         return registry.onMessage(sourceId, handler);
@@ -598,6 +602,40 @@ async function closeResponseBodyStream(id: string): Promise<void> {
   }
 }
 
+async function streamResponse(
+  response: Response,
+  sink: (frame: StreamingMethodFrame) => Promise<void> | void,
+  abortSignal: AbortSignal,
+): Promise<void> {
+  await sink({
+    kind: "head",
+    status: response.status,
+    statusText: response.statusText,
+    headerPairs: Array.from(response.headers.entries()),
+    finalUrl: response.url,
+  });
+  let bytesIn = 0;
+  if (response.body) {
+    const reader = response.body.getReader();
+    const cancel = () => {
+      void reader.cancel().catch(() => {});
+    };
+    abortSignal.addEventListener("abort", cancel, { once: true });
+    try {
+      while (!abortSignal.aborted) {
+        const next = await reader.read();
+        if (next.done) break;
+        bytesIn += next.value.byteLength;
+        await sink({ kind: "chunk", bytes: next.value });
+      }
+    } finally {
+      abortSignal.removeEventListener("abort", cancel);
+      reader.releaseLock();
+    }
+  }
+  await sink({ kind: "end", bytesIn });
+}
+
 function settleWaitUntil(waitUntil: Promise<unknown>[]): void {
   if (waitUntil.length === 0) return;
   void Promise.allSettled(waitUntil).then((results) => {
@@ -653,6 +691,30 @@ async function main(): Promise<void> {
           caller: invocation.caller.callerId,
         });
       }
+    });
+  });
+
+  runtimeBridge.exposeStreamingMethod("extension.invokeStream", async (args, sink, abortSignal) => {
+    const [method, methodArgs, invocation] = args as [string, unknown[], ExtensionInvocation];
+    await invocationStore.run(invocation, async () => {
+      const fn = Object.prototype.hasOwnProperty.call(apiObject, method)
+        ? apiObject[method]
+        : undefined;
+      if (typeof fn !== "function") {
+        const err = new Error(`Extension method not found: ${method}`) as NodeJS.ErrnoException;
+        err.code = "ENOMETHOD";
+        throw err;
+      }
+      const result = await fn(...methodArgs);
+      if (result instanceof Response) {
+        await streamResponse(result, sink, abortSignal);
+        return;
+      }
+      if (result instanceof ReadableStream) {
+        await streamResponse(new Response(result), sink, abortSignal);
+        return;
+      }
+      throw new Error(`Extension method ${method} did not return a Response or ReadableStream`);
     });
   });
 

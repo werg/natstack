@@ -107,8 +107,16 @@ export class UserlandApprovalGrantStore {
     return removed;
   }
 
-  list(callerId: string): UserlandApprovalGrant[] {
-    return this.persistent.grants.filter((grant) => grant.principal.callerId === callerId);
+  list(callerId: string, issuer?: UserlandApprovalIssuer): UserlandApprovalGrant[] {
+    return this.persistent.grants.filter((grant) => {
+      if (grant.principal.callerId !== callerId) return false;
+      const grantIssuer = effectiveIssuer(grant);
+      if (issuer) return grantIssuer.kind === issuer.kind && grantIssuer.id === issuer.id;
+      return (
+        grantIssuer.kind === grant.principal.callerKind &&
+        grantIssuer.id === grant.principal.callerId
+      );
+    });
   }
 
   private load(): void {

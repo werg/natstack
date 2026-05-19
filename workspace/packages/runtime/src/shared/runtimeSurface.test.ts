@@ -90,6 +90,7 @@ describe("runtimeSurface manifests", () => {
       "git",
       "webhooks",
       "extensions",
+      "approvals",
       "notifications",
     ]));
   });
@@ -109,6 +110,7 @@ describe("runtimeSurface manifests", () => {
       "git",
       "webhooks",
       "extensions",
+      "approvals",
       "notifications",
       "gad",
     ]));

@@ -118,6 +118,12 @@ export interface WsClientInfo {
 export type ServiceContext = {
   /** Canonical verified identity. Boundary code constructs this once. */
   caller: VerifiedCaller;
+  /**
+   * Upstream userland caller for an extension-originated service call. Set
+   * only after the server validates an extension's opaque parent invocation
+   * token against the active invocation table.
+   */
+  chainCaller?: VerifiedCodeIdentity;
   /** WS transport instance ID when caller connected via WebSocket. */
   connectionId?: string;
   /** WS client state when caller connected via WebSocket */

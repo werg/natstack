@@ -33,7 +33,7 @@ export default {
 
 - **Request / Response** are standard Fetch API types. Pass `Response.json(...)`, `new Response(buffer, { status })`, etc.
 - **`ExtensionFetchContext`** is the same activated `ExtensionContext` plus a `waitUntil(promise)` method for fire-and-forget background work the host will keep alive after the response returns. It's not a per-request context — it's the same long-lived `ctx` your `activate()` saw.
-- **Caller identity** is in `ctx.invocation.current()`, same as for RPC. The `userlandCaller` is populated when the HTTP call originated from a panel/worker via their authenticated session.
+- **Caller identity** is in `ctx.invocation.current()`, same as for RPC. Per-call approvals derive the original panel/worker from the host's active invocation chain.
 - **Route prefix** is `/_r/ext/<encoded-name>/*`. The remainder is passed through. No custom top-level routes (`/webhooks/github`, `/api/...`) in v1 — those are deferred until the custom-route system lands.
 - **Auth** is the standard caller-token bearer flow. Unauthenticated requests get 401 from the gateway before they reach your handler.
 - **Body size** is capped at **32 MB** inbound; exceeding the cap returns 413. Streamed bodies count chunk-by-chunk.
@@ -88,4 +88,4 @@ const res = await gatewayFetch(`/_r/ext/${encodeURIComponent("@workspace-extensi
 console.log(await res.json());
 ```
 
-`gatewayFetch` is the bearer-authenticated fetch helper exported from `@workspace/runtime`. It signs the request with the caller's token so your extension sees a proper `userlandCaller`.
+`gatewayFetch` is the bearer-authenticated fetch helper exported from `@workspace/runtime`. It signs the request with the caller's token so your extension gets proper caller attribution.

@@ -4,6 +4,8 @@ export interface Disposable {
 
 export interface ExtensionInvocation {
   requestId: string;
+  /** Opaque host-issued token echoed by the runtime for attribution. */
+  invocationToken?: string;
   extensionName: string;
   method: string;
   caller: {
@@ -18,12 +20,6 @@ export interface ExtensionInvocation {
       | "http";
     connectionId?: string;
   };
-  userlandCaller?: {
-    callerId: string;
-    callerKind: "panel" | "worker" | "do";
-    repoPath: string;
-    effectiveVersion: string;
-  };
 }
 
 export interface UserlandApprovalRequest {
@@ -37,7 +33,8 @@ export interface UserlandApprovalRequest {
 
 export type UserlandApprovalChoice =
   | { kind: "choice"; choice: string }
-  | { kind: "dismissed" };
+  | { kind: "dismissed" }
+  | { kind: "uncallable"; reason: "no-user-context" };
 
 export interface ExtensionSource {
   kind: "internal-git";
@@ -67,6 +64,7 @@ export interface RegistryEntry {
 
 export interface ExtensionsClient {
   use<T extends object>(name: string): T;
+  streamCall(name: string, method: string, args: unknown[]): Promise<Response>;
   on(name: string, event: string, cb: (payload: unknown) => void): Disposable;
   list(): Promise<RegistryEntry[]>;
   install(spec: InstallSpec): Promise<void>;
@@ -166,6 +164,10 @@ export interface ExtensionWorkersLike {
 export interface ExtensionRpcLike {
   /** Call any unified RPC target, including `main`, `worker:*`, and `do:*`. */
   call<T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T>;
+  /** Open a streaming RPC call to any unified RPC target. */
+  streamCall(targetId: string, method: string, args: unknown[], options?: { signal?: AbortSignal }): Promise<Response>;
+  /** Subscribe to host-delivered events where supported by the runtime. */
+  onEvent(eventName: string, cb: (fromId: string, payload: unknown) => void): () => void;
 }
 
 export interface ExtensionContext {
@@ -186,7 +188,9 @@ export interface ExtensionContext {
   readonly credentials: ExtensionRpcSurface;
   readonly webhooks: ExtensionRpcSurface;
   readonly approvals: {
-    requestForCaller(req: UserlandApprovalRequest): Promise<UserlandApprovalChoice>;
+    request(req: UserlandApprovalRequest): Promise<UserlandApprovalChoice>;
+    revoke(subjectId: string): Promise<boolean>;
+    list(): Promise<unknown[]>;
   };
   readonly notifications: ExtensionNotificationsLike;
   readonly extensions: ExtensionsClient;

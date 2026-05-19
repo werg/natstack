@@ -20,7 +20,8 @@ Generated from `runtimeSurface.worker.ts`. Use `await help()` at runtime for the
 | `git` | namespace | `http`, `importProject`, `completeWorkspaceDependencies`, `setSharedRemote`, `removeSharedRemote`, `client` |  |
 | `gad` | namespace | `rawSql`, `query`, `status`, `ensureBlob`, `ensurePiBranch`, `getPiBranchHead`, `appendPiEntryBatch`, `appendGadEvents`, `listGadEvents`, `setBranchHead`, `getEntryById`, `getBranchPath`, `findEntries`, `materializePiMessages`, `listGadBranchToolCalls`, `forkPiBranch`, `listPiBranches`, `listGadBranchFiles`, `diffGadStates`, `readGadFileAtState`, `getGadToolProvenance`, `getGadStateProducer`, `blameGadFileSnippet`, `enqueueGadIndexJob`, `processGadIndexJobs`, `claimGadIndexJobs`, `completeGadIndexJob`, `failGadIndexJob`, `listGadIndexJobs`, `validateGadHashes`, `clearDirtyAfterValidation`, `checkGadIntegrity`, `replayGadEvents` |  |
 | `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
-| `extensions` | namespace | `use`, `on`, `list`, `install`, `uninstall`, `setEnabled`, `update`, `reload` |  |
+| `extensions` | namespace | `use`, `streamCall`, `on`, `list`, `install`, `uninstall`, `setEnabled`, `update`, `reload` |  |
+| `approvals` | namespace | `request`, `revoke`, `list` |  |
 | `notifications` | namespace | `show`, `dismiss` |  |
 | `contextId` | value |  |  |
 | `gatewayConfig` | value |  | Gateway base URL and bearer token for NatStack service routes. |
