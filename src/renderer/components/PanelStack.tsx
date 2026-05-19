@@ -858,6 +858,7 @@ export function PanelStack({
       <Flex gap="0" flexGrow="1" minHeight="0">
         {isTreeNavigation && (
           <Card
+            className="app-shell-panel-card"
             size="2"
             style={{
               width: `${sidebarWidth}px`,
@@ -909,6 +910,7 @@ export function PanelStack({
         <Flex direction="column" flexGrow="1" gap="0" minHeight="0">
           <SavePasswordBar visiblePanelId={visiblePanelId} />
           <Card
+            className="app-shell-panel-card"
             size="3"
             style={{
               flex: 1,

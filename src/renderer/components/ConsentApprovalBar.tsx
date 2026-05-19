@@ -139,14 +139,15 @@ export function ConsentApprovalBar() {
   const copy = getApprovalCopy(current, callerLabel);
   const isExtensionApproval = current.kind === "extension";
   const accent = isExtensionApproval ? "amber" : "sky";
+  const approvalTone = `var(--app-approval-${accent}`;
 
   return (
     <Box
       ref={barRef}
       style={{
-        backgroundColor: "var(--color-panel-solid)",
-        backgroundImage: `linear-gradient(var(--${accent}-a3), var(--${accent}-a3))`,
-        borderBottom: "1px solid var(--gray-a6)",
+        backgroundColor: `${approvalTone}-bg)`,
+        backgroundImage: `linear-gradient(90deg, ${approvalTone}-edge), transparent 55%)`,
+        borderBottom: `1px solid ${approvalTone}-border)`,
         boxShadow: [`inset 0 3px 0 0 var(--${accent}-9)`, "0 4px 12px -4px var(--black-a6)"].join(
           ", "
         ),

@@ -104,8 +104,8 @@ export function TitleBar({
           WebkitAppRegion: "drag",
           userSelect: "none",
           height: "32px",
-          backgroundColor: "var(--gray-2)",
-          borderBottom: "1px solid var(--gray-6)",
+          backgroundColor: "var(--app-chrome-bg)",
+          borderBottom: "1px solid var(--app-chrome-border)",
         } as CSSProperties
       }
     >

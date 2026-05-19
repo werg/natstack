@@ -40,9 +40,9 @@ const BUILD_INDICATOR_SIZE = 6;
 const AUTO_EXPAND_DELAY_MS = 600;
 
 const COLORS = {
-  selected: "var(--gray-a4)",
-  selectedHover: "var(--gray-a5)",
-  hover: "var(--gray-a3)",
+  selected: "var(--app-chrome-selected)",
+  selectedHover: "var(--app-chrome-selected-hover)",
+  hover: "var(--app-chrome-hover)",
   dropIndicator: "var(--accent-9)",
   connector: "var(--gray-a5)",
 } as const;
@@ -494,7 +494,7 @@ export function LazyPanelTreeSidebar({
         <Flex style={{ flex: 1 }} align="center" justify="center">
           <Text color="gray">No panels yet</Text>
         </Flex>
-        <Box p="2" style={{ borderTop: "1px solid var(--gray-6)" }}>
+        <Box p="2" style={{ borderTop: "1px solid var(--app-chrome-border)" }}>
           {activeWorkspaceName && (
             <Flex align="center" justify="between" mb="1">
               <Text size="1" color="gray" truncate style={{ flex: 1 }}>
@@ -594,7 +594,7 @@ export function LazyPanelTreeSidebar({
           })}
         </Box>
       </div>
-      <Box p="2" style={{ borderTop: "1px solid var(--gray-6)" }}>
+      <Box p="2" style={{ borderTop: "1px solid var(--app-chrome-border)" }}>
         {activeWorkspaceName && (
           <Flex align="center" justify="between" mb="1">
             <Text size="1" color="gray" truncate style={{ flex: 1 }}>
