@@ -16,6 +16,9 @@ import { isDev, assertHttpUrl } from "./utils.js";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("App");
+const APP_NAME = "NatStack";
+app.setName(APP_NAME);
+
 import { PanelRegistry } from "@natstack/shared/panelRegistry";
 import { PanelOrchestrator } from "./panelOrchestrator.js";
 import { PanelView } from "./panelView.js";
