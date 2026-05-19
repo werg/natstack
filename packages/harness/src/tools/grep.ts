@@ -57,8 +57,30 @@ try {
   RE2 = null;
 }
 
+type Re2FallbackRuntime = {
+  navigator?: { userAgent?: string };
+  process?: { versions?: { node?: string } };
+  WebSocketPair?: unknown;
+};
+
+export function shouldWarnRe2Fallback(runtime: Re2FallbackRuntime = globalThis): boolean {
+  const hasNodeVersion = typeof runtime.process?.versions?.node === "string";
+  if (!hasNodeVersion) return false;
+
+  const userAgent = runtime.navigator?.userAgent ?? "";
+  if (/\b(?:Cloudflare-Workers|workerd)\b/i.test(userAgent)) return false;
+
+  // workerd exposes Cloudflare Worker globals and cannot load native Node
+  // addons even with nodejs_compat enabled. In that runtime, the guarded V8
+  // fallback is expected rather than an operator-actionable install problem.
+  if (typeof runtime.WebSocketPair !== "undefined") return false;
+
+  return true;
+}
+
 function warnFallbackOnce(): void {
   if (re2WarningEmitted) return;
+  if (!shouldWarnRe2Fallback()) return;
   re2WarningEmitted = true;
   // eslint-disable-next-line no-console
   console.warn(

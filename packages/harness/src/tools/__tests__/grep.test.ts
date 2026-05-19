@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createGrepTool } from "../grep.js";
+import { createGrepTool, shouldWarnRe2Fallback } from "../grep.js";
 import { StubFs } from "./stub-fs.js";
 
 const CWD = "/work/ctx";
@@ -67,5 +67,29 @@ describe("createGrepTool", () => {
     await expect(
       tool.execute("call-1", { pattern: "x" }, ac.signal),
     ).rejects.toThrow(/abort/i);
+  });
+
+  it("does not warn about missing native RE2 in workerd-like runtimes", () => {
+    expect(
+      shouldWarnRe2Fallback({
+        process: { versions: { node: "22.0.0" } },
+        navigator: { userAgent: "Cloudflare-Workers" },
+      }),
+    ).toBe(false);
+    expect(
+      shouldWarnRe2Fallback({
+        process: { versions: { node: "22.0.0" } },
+        WebSocketPair: function WebSocketPair() {},
+      }),
+    ).toBe(false);
+  });
+
+  it("warns about missing native RE2 in regular Node runtimes", () => {
+    expect(
+      shouldWarnRe2Fallback({
+        process: { versions: { node: "22.0.0" } },
+        navigator: { userAgent: "Node.js/22" },
+      }),
+    ).toBe(true);
   });
 });
