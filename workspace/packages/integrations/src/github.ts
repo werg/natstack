@@ -2,7 +2,7 @@ import { githubCredential } from "./providers.js";
 import type {
   CredentialClient,
   UrlCredentialHandle,
-} from "../../runtime/src/shared/credentials.js";
+} from "@workspace/runtime/credentials";
 
 const GITHUB_API_BASE = "https://api.github.com";
 const GITHUB_ACCEPT_HEADER = "application/vnd.github+json";

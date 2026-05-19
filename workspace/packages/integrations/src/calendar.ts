@@ -3,7 +3,7 @@ import { googleWorkspaceCredential } from "./providers.js";
 import type {
   CredentialClient,
   UrlCredentialHandle,
-} from "../../runtime/src/shared/credentials.js";
+} from "@workspace/runtime/credentials";
 
 const GOOGLE_CALENDAR_BASE_URL = "https://www.googleapis.com/calendar/v3";
 const DEFAULT_PUSH_QUIET_WINDOW_MS = 5 * 60_000;

@@ -3,7 +3,7 @@ import { googleWorkspaceCredential } from "./providers.js"
 import type {
   CredentialClient,
   UrlCredentialHandle,
-} from "../../runtime/src/shared/credentials.js"
+} from "@workspace/runtime/credentials"
 
 const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 const DEFAULT_POLL_INTERVAL_MS = 60_000

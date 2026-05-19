@@ -3,7 +3,7 @@ import {
   type GitHubClient,
   type GitHubIssue as ApiGitHubIssue,
 } from "./github.js";
-import type { CredentialClient } from "../../runtime/src/shared/credentials.js";
+import type { CredentialClient } from "@workspace/runtime/credentials";
 
 export const manifest = {
   scopes: {

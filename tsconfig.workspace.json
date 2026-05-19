@@ -211,6 +211,9 @@
       "@workspace/runtime": [
         "workspace/packages/runtime/src/panel/index.ts"
       ],
+      "@workspace/runtime/credentials": [
+        "workspace/packages/runtime/src/shared/credentials.ts"
+      ],
       "@workspace/runtime/worker": [
         "workspace/packages/runtime/src/worker/index.ts"
       ],
