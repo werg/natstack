@@ -1247,7 +1247,7 @@ async function main() {
           call(name, method, ...args) {
             const rpcServer = rpcServerForGateway;
             if (!rpcServer) throw new Error("RPC server is not initialized");
-            return rpcServer.callTarget(name, method, args);
+            return rpcServer.callTarget(name, method, ...args);
           },
         },
       });
