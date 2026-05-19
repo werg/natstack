@@ -1961,7 +1961,11 @@ async function smokeTestExtensionBuild(
     );
     await execFileAsync(process.execPath, [smokeScript], {
       cwd: result.dir,
-      env: { ...process.env, NATSTACK_EXTENSION_SMOKE_BUNDLE: result.bundlePath },
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: "1",
+        NATSTACK_EXTENSION_SMOKE_BUNDLE: result.bundlePath,
+      },
       timeout: 15_000,
       maxBuffer: 1024 * 1024,
     });
