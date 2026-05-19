@@ -172,6 +172,21 @@ describe("createChannelToolsExtension", () => {
     expect(result.content[0]!.text).toBe(JSON.stringify({ ok: true }));
   });
 
+  it("does not force participant tools into sequential execution", async () => {
+    const factory = createChannelToolsExtension({
+      getRoster: () => [
+        { participantHandle: "user", name: "set_title", description: "", parameters: {} },
+      ],
+      callMethod: vi.fn().mockResolvedValue({ ok: true }),
+      builtinToolNames: BUILTIN,
+    });
+    const api = createMockApi();
+    factory(api as never);
+    await api.fire("session_start");
+
+    expect(api.getRegistered().get("set_title")).not.toHaveProperty("executionMode");
+  });
+
   it("execute() returns an error result if the tool is no longer in the roster", async () => {
     let roster: ChannelToolMethod[] = [
       { participantHandle: "sandbox", name: "eval", description: "", parameters: {} },

@@ -23,6 +23,7 @@ import { getExistingWorkspaceTemplateDir, getWorkspaceTemplateCandidates } from 
 import { WORKSPACE_GIT_INIT_PATTERNS, WORKSPACE_SOURCE_DIRS, WORKSPACE_STATE_DIRS } from "./sourceDirs.js";
 
 const WORKSPACE_CONFIG_FILE = "meta/natstack.yml";
+const WORKSPACE_TEMPLATE_SOURCE_FILE = "meta/.natstack-template-source.json";
 const CENTRAL_CONFIG_FILE = "config.yml";
 const SECRETS_FILE = ".secrets.yml";
 const ENV_FILE = ".env";
@@ -353,11 +354,14 @@ export function initWorkspace(
 
   // Resolve template source directory for template/fork
   let templateSrc: string | null = null;
+  let templateSourceKind: "template" | "fork" | null = null;
 
   if (opts?.templateDir) {
     templateSrc = opts.templateDir;
+    templateSourceKind = "template";
   } else if (opts?.forkFrom) {
     templateSrc = path.join(getWorkspaceDir(opts.forkFrom), "source");
+    templateSourceKind = "fork";
     if (!fs.existsSync(path.join(templateSrc, WORKSPACE_CONFIG_FILE))) {
       throw new Error(`Source workspace "${opts.forkFrom}" does not exist`);
     }
@@ -400,6 +404,10 @@ initPanels:
     fs.writeFileSync(configPath, configContent, "utf-8");
   }
 
+  if (templateSrc && templateSourceKind) {
+    writeTemplateSourceMarker(sourceRoot, templateSrc, templateSourceKind);
+  }
+
   // Initialize git repos for all source subdirectories (panels, packages, etc.)
   // so the build system can extract source and compute effective versions.
   initGitRepos(sourceRoot);
@@ -419,6 +427,34 @@ function copyDirRecursive(src: string, dest: string): void {
     } else if (entry.isFile()) {
       fs.copyFileSync(srcPath, destPath);
     }
+  }
+}
+
+function writeTemplateSourceMarker(
+  sourceRoot: string,
+  templateSrc: string,
+  kind: "template" | "fork",
+): void {
+  const markerPath = path.join(sourceRoot, WORKSPACE_TEMPLATE_SOURCE_FILE);
+  const marker = {
+    kind,
+    sourcePath: path.resolve(templateSrc),
+    copiedAt: new Date().toISOString(),
+    gitHead: readGitHead(templateSrc),
+  };
+  fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+  fs.writeFileSync(markerPath, `${JSON.stringify(marker, null, 2)}\n`, "utf-8");
+}
+
+function readGitHead(cwd: string): string | null {
+  try {
+    return execGitFileSync(["rev-parse", "--verify", "HEAD"], {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
   }
 }
 

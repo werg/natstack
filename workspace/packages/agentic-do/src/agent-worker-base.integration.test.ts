@@ -34,7 +34,7 @@ describe("AgentWorkerBase runner contract", () => {
 });
 
 describe("AgentWorkerBase dispatched method results", () => {
-  it("suspends the tool call until the canonical method-result event arrives", async () => {
+  it("waits for the canonical method-result event before completing the tool call", async () => {
     const { instance } = await createTestDO(TestAgentWorker, {
       __objectKey: "agent-test",
     });
@@ -46,6 +46,7 @@ describe("AgentWorkerBase dispatched method results", () => {
       subscriptions: {
         getParticipantId(channelId: string): string | null;
       };
+      runners: Map<string, { runner: { abort: ReturnType<typeof vi.fn> } }>;
       createChannelClient: ReturnType<typeof vi.fn>;
       handleIncomingChannelEvent(channelId: string, event: unknown): Promise<void>;
       invokeChannelMethod(
@@ -83,6 +84,8 @@ describe("AgentWorkerBase dispatched method results", () => {
         });
       }),
     });
+    const abort = vi.fn().mockResolvedValue(undefined);
+    worker.runners.set("chat-1", { runner: { abort } });
 
     const result = await worker.invokeChannelMethod(
       "chat-1",
@@ -96,6 +99,7 @@ describe("AgentWorkerBase dispatched method results", () => {
       content: [{ type: "text", text: "{\"ok\":true}" }],
       details: undefined,
     });
+    expect(abort).not.toHaveBeenCalled();
     expect(capturedCallId).toEqual(expect.any(String));
     expect(worker.dispatches.peek(capturedCallId)).toBeNull();
   });

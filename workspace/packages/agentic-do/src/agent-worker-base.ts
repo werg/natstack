@@ -1534,17 +1534,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     );
   }
 
-  private async abortAgentForReason(
-    channelId: string,
-    reason: AgentAbortReason,
-    detail?: string,
-  ): Promise<void> {
-    const runner = await this.getOrCreateRunner(channelId);
-    this.recordAbort(channelId, reason, detail);
-    await runner.abort();
-    this.dispatchers.get(channelId)?.markCurrentTurnAborted();
-  }
-
   private async recoverDispatchesForChannel(channelId: string): Promise<void> {
     if (this.recoveredChannels.has(channelId)) return;
     this.recoveredChannels.add(channelId);

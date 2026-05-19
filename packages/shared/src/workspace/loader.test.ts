@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { loadWorkspaceConfig } from "./loader.js";
+import { initWorkspace, loadWorkspaceConfig } from "./loader.js";
 
 const originalXdgConfigHome = process.env["XDG_CONFIG_HOME"];
 const tempRoots: string[] = [];
@@ -53,5 +53,39 @@ describe("loadWorkspaceConfig", () => {
     writeConfig(sourceRoot, "id: explicit\ninitPanels: []\n");
 
     expect(loadWorkspaceConfig(sourceRoot).id).toBe(workspaceRoot);
+  });
+});
+
+describe("initWorkspace", () => {
+  (process.platform === "linux" ? it : it.skip)("records template provenance for new managed workspaces", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-loader-"));
+    tempRoots.push(root);
+    process.env["XDG_CONFIG_HOME"] = path.join(root, "xdg");
+
+    const templateRoot = path.join(root, "workspace-template");
+    writeConfig(templateRoot, "initPanels: []\n");
+
+    initWorkspace("fresh-ws", { templateDir: templateRoot });
+
+    const markerPath = path.join(
+      process.env["XDG_CONFIG_HOME"],
+      "natstack",
+      "workspaces",
+      "fresh-ws",
+      "source",
+      "meta",
+      ".natstack-template-source.json",
+    );
+    const marker = JSON.parse(fs.readFileSync(markerPath, "utf-8")) as {
+      kind?: string;
+      sourcePath?: string;
+      copiedAt?: string;
+      gitHead?: unknown;
+    };
+
+    expect(marker.kind).toBe("template");
+    expect(marker.sourcePath).toBe(templateRoot);
+    expect(marker.copiedAt).toEqual(expect.any(String));
+    expect(marker.gitHead === null || typeof marker.gitHead === "string").toBe(true);
   });
 });

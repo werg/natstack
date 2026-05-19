@@ -568,6 +568,9 @@ export class PanelRegistry implements PanelRelationshipProvider {
    * (clears existing state). Used for cache refresh after mutations.
    */
   repopulate(rootPanels: Panel[], collapsedPanelIds?: string[]): void {
+    const previousPanels = this.panels;
+    this.preserveRuntimeState(rootPanels, previousPanels);
+
     this.panels.clear();
     this.rootPanels = rootPanels;
 
@@ -613,5 +616,30 @@ export class PanelRegistry implements PanelRelationshipProvider {
       ...panel,
       children: panel.children.map((child) => this.serializePanel(child)),
     };
+  }
+
+  private preserveRuntimeState(panels: Panel[], previousPanels: Map<string, Panel>): void {
+    for (const panel of panels) {
+      const previous = previousPanels.get(panel.id);
+      if (previous && this.canPreserveRuntimeState(previous, panel)) {
+        panel.artifacts = { ...(panel.artifacts ?? {}), ...(previous.artifacts ?? {}) };
+        if (previous.navigation) {
+          panel.navigation = previous.navigation;
+        }
+      }
+      this.preserveRuntimeState(panel.children, previousPanels);
+    }
+  }
+
+  private canPreserveRuntimeState(previous: Panel, next: Panel): boolean {
+    try {
+      const previousSnapshot = getCurrentSnapshot(previous);
+      const nextSnapshot = getCurrentSnapshot(next);
+      return previousSnapshot.source === nextSnapshot.source &&
+        previousSnapshot.contextId === nextSnapshot.contextId &&
+        previousSnapshot.options.ref === nextSnapshot.options.ref;
+    } catch {
+      return false;
+    }
   }
 }

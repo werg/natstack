@@ -86,6 +86,62 @@ describe("PanelRegistry", () => {
     });
   });
 
+  describe("repopulate", () => {
+    it("preserves runtime artifacts and navigation for unchanged panels", () => {
+      registry.addPanel(makePanel("root", {
+        artifacts: {
+          htmlPath: "http://localhost:1234/panels/chat/",
+          buildState: "ready",
+        },
+        navigation: {
+          url: "http://localhost:1234/panels/chat/",
+          isLoading: false,
+          canGoBack: true,
+        },
+      }), null, { addAsRoot: true });
+
+      registry.repopulate([
+        makePanel("root", {
+          title: "root from server",
+          artifacts: {},
+        }),
+      ]);
+
+      expect(registry.getPanel("root")?.artifacts).toEqual({
+        htmlPath: "http://localhost:1234/panels/chat/",
+        buildState: "ready",
+      });
+      expect(registry.getPanel("root")?.navigation).toEqual({
+        url: "http://localhost:1234/panels/chat/",
+        isLoading: false,
+        canGoBack: true,
+      });
+      expect(registry.getPanel("root")?.title).toBe("root from server");
+    });
+
+    it("does not preserve runtime artifacts when the panel source changes", () => {
+      registry.addPanel(makePanel("root", {
+        artifacts: {
+          htmlPath: "http://localhost:1234/panels/chat/",
+          buildState: "ready",
+        },
+      }), null, { addAsRoot: true });
+
+      registry.repopulate([
+        makePanel("root", {
+          snapshot: {
+            source: "panels/other",
+            contextId: "ctx-root",
+            options: {},
+          },
+          artifacts: {},
+        }),
+      ]);
+
+      expect(registry.getPanel("root")?.artifacts).toEqual({});
+    });
+  });
+
   // -------------------------------------------------------------------------
   // findParentId
   // -------------------------------------------------------------------------

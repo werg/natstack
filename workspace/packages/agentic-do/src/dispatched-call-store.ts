@@ -1,15 +1,15 @@
 /**
  * DispatchedCallStore — Durable breadcrumb index for dispatched interactive calls.
  *
- * Each row tracks a dispatched call while its Pi tool promise is suspended:
+ * Each row tracks an in-flight dispatch while its provider result is pending:
  * - interactive tool calls routed to channel participants
  * - ask_user
  * - ctx.ui.* prompts
  * - approval-gate prompts
  *
  * The row is a durable cancellation/diagnostic breadcrumb. Results are not
- * spliced back into a prior transcript; the live tool promise resolves from
- * the canonical method-result event and writes its normal toolResult message.
+ * spliced back into a prior transcript; live calls resolve from the canonical
+ * method-result event and write their normal toolResult message.
  */
 
 import type { SqlStorage } from "@workspace/runtime/worker";
