@@ -93,13 +93,14 @@ function createWsOptions(
   }
 
   if (tlsOpts.fingerprint) {
+    const expectedFingerprint = tlsOpts.fingerprint;
     wsOptions["rejectUnauthorized"] = false;
     wsOptions["checkServerIdentity"] = () => undefined;
     const url = new URL(wsUrl);
     const host = url.hostname;
     const port = parseInt(url.port, 10) || 443;
     wsOptions["createConnection"] = () =>
-      createPinnedTlsSocket({ host, port, expectedFingerprint: tlsOpts.fingerprint! });
+      createPinnedTlsSocket({ host, port, expectedFingerprint });
   }
 
   return wsOptions;
@@ -114,6 +115,7 @@ export async function createServerClient(
   const getWsUrl =
     options?.getWsUrl ?? (() => options?.wsUrl ?? `ws://127.0.0.1:${serverRpcPort}/rpc`);
   const shouldReconnect = options?.reconnect ?? !!(options?.wsUrl || options?.getWsUrl);
+  const refreshAuthToken = options?.refreshAuthToken;
 
   const transport = new BaseWsTransport({
     selfId: "admin",
@@ -127,9 +129,9 @@ export async function createServerClient(
     adapter: {
       now: () => Date.now(),
       getAuthToken: async () => activeAuthToken,
-      refreshAuthToken: options?.refreshAuthToken
+      refreshAuthToken: refreshAuthToken
         ? async () => {
-            activeAuthToken = await options.refreshAuthToken!();
+            activeAuthToken = await refreshAuthToken();
             return activeAuthToken;
           }
         : undefined,
