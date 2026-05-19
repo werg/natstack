@@ -44,6 +44,14 @@ const MAX_DEBUG_EVENTS = 500;
 /** Maximum method history entries before pruning. */
 const METHOD_HISTORY_MAX = 2000;
 const METHOD_HISTORY_PRUNE_TO = 1400;
+const DEFAULT_CHAT_TITLE_MAX_LENGTH = 64;
+
+export function titleFromFirstUserMessage(message: string): string | null {
+  const normalized = message.trim().replace(/\s+/g, " ");
+  if (!normalized) return null;
+  if (normalized.length <= DEFAULT_CHAT_TITLE_MAX_LENGTH) return normalized;
+  return `${normalized.slice(0, DEFAULT_CHAT_TITLE_MAX_LENGTH - 3).trimEnd()}...`;
+}
 
 // =============================================================================
 // Types
@@ -144,6 +152,8 @@ export function useChatCore({
   const participantsRef = useRef<Record<string, Participant<ChatParticipantMetadata>>>({});
   const allParticipantsRef = useRef<Record<string, Participant<ChatParticipantMetadata>>>({});
   const inputRef = useRef("");
+  const defaultTitleSetRef = useRef(Boolean(_channelConfig?.title));
+  const hasTranscriptMessagesRef = useRef(false);
 
   // Suppress disconnect detection until we see ourselves in the roster
   // (avoids spurious disconnects during initial handshake).
@@ -349,6 +359,12 @@ export function useChatCore({
     return [...channelMessages, ...pendingOptimistic, ...disconnectMessages];
   }, [channelMessages, optimisticMessages, disconnectMessages]);
 
+  useEffect(() => {
+    if (messages.length > 0) {
+      hasTranscriptMessagesRef.current = true;
+    }
+  }, [messages.length]);
+
   // --- Connect ---
   const connectToChannel = useCallback(
     async (options: { channelId: string; methods: Record<string, MethodDefinition>; channelConfig?: ChannelConfig; contextId?: string }): Promise<PubSubClient<ChatParticipantMetadata>> => {
@@ -369,9 +385,15 @@ export function useChatCore({
 
       // Channel title from config
       const initialTitle = newClient.channelConfig?.title;
-      if (initialTitle) document.title = initialTitle;
+      if (initialTitle) {
+        defaultTitleSetRef.current = true;
+        document.title = initialTitle;
+      }
       newClient.onConfigChange((cfg: ChannelConfig) => {
-        if (cfg.title) document.title = cfg.title;
+        if (cfg.title) {
+          defaultTitleSetRef.current = true;
+          document.title = cfg.title;
+        }
       });
 
       // Roster subscription
@@ -555,6 +577,16 @@ export function useChatCore({
       const { messageId } = await clientRef.current.send(text || "", {
         attachments: hasAttachments ? attachments : undefined,
       });
+      const hasPriorMessages =
+        hasTranscriptMessagesRef.current || ((clientRef.current.chatMessageCount ?? 0) > 0);
+      const defaultTitle = !defaultTitleSetRef.current && !hasPriorMessages
+        ? titleFromFirstUserMessage(text)
+        : null;
+      if (defaultTitle) {
+        defaultTitleSetRef.current = true;
+        document.title = defaultTitle;
+        void clientRef.current.updateChannelConfig({ title: defaultTitle }).catch(() => {});
+      }
       // Insert optimistic local message (include attachments for image-only sends)
       const selfId = selfIdRef.current ?? config.clientId;
       const optimisticAttachments = hasAttachments
