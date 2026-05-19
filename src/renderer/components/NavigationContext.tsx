@@ -28,6 +28,15 @@ interface NavigationContextValue {
 }
 
 const NavigationContext = createContext<NavigationContextValue | null>(null);
+const SMALL_WINDOW_QUERY = "(max-width: 767px)";
+
+export function getDefaultNavigationMode(): NavigationMode {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return "tree";
+  }
+
+  return window.matchMedia(SMALL_WINDOW_QUERY).matches ? "stack" : "tree";
+}
 
 export function useNavigation(): NavigationContextValue {
   const context = useContext(NavigationContext);
@@ -42,7 +51,7 @@ interface NavigationProviderProps {
 }
 
 export function NavigationProvider({ children }: NavigationProviderProps) {
-  const [mode, setMode] = useState<NavigationMode>("stack");
+  const [mode, setMode] = useState<NavigationMode>(() => getDefaultNavigationMode());
   const [addressBarVisible, setAddressBarVisible] = useState(() => {
     try {
       return localStorage.getItem("address-bar-visible") === "true";
