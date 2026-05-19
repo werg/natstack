@@ -847,9 +847,20 @@ export function injectHtmlTransforms(
   html: string,
   baseHref: string,
   hasCss: boolean,
-  externals?: Record<string, string>
+  externals?: Record<string, string>,
+  title?: string
 ): string {
   let result = html;
+  if (title !== undefined) {
+    const titleElement = `<title>${escapeHtml(title)}</title>`;
+    if (/<title\b[^>]*>[\s\S]*?<\/title>/i.test(result)) {
+      result = result.replace(/<title\b[^>]*>[\s\S]*?<\/title>/i, titleElement);
+    } else if (/<head\b[^>]*>/i.test(result)) {
+      result = result.replace(/(<head\b[^>]*>)/i, `$1\n  ${titleElement}`);
+    } else {
+      result = `${titleElement}\n${result}`;
+    }
+  }
   if (
     externals &&
     Object.keys(externals).length > 0 &&
@@ -903,7 +914,7 @@ function generatePanelHtml(
   // If template or panel provides HTML, use it with standard injections
   if (templateHtmlPath && fs.existsSync(templateHtmlPath)) {
     const html = fs.readFileSync(templateHtmlPath, "utf-8");
-    return injectHtmlTransforms(html, baseHref, options.hasCss, options.externals);
+    return injectHtmlTransforms(html, baseHref, options.hasCss, options.externals, title);
   }
 
   // Adapter-generated fallback HTML

@@ -147,9 +147,12 @@ describe("injectHtmlTransforms", () => {
     const html = injectHtmlTransforms(
       '<html><head><title>Panel</title></head><body><div id="root"></div><script src="bundle.js"></script></body></html>',
       "/panels/chat/",
-      true
+      true,
+      undefined,
+      "Agentic Chat"
     );
 
+    expect(html).toContain("<title>Agentic Chat</title>");
     expect(html).toContain('<link rel="stylesheet" href="./bundle.css" />');
     expect(html).toContain('<script src="/__loader.js"></script>');
   });
