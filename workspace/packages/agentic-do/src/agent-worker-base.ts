@@ -34,7 +34,11 @@
  *   typing indicator reflects `running || pending || pendingSteered > 0`.
  */
 
-import { DurableObjectBase, type DurableObjectContext, type DORef } from "@workspace/runtime/worker";
+import {
+  DurableObjectBase,
+  type DurableObjectContext,
+  type DORef,
+} from "@workspace/runtime/worker";
 import type {
   Attachment,
   ChannelEvent,
@@ -76,7 +80,8 @@ import {
 
 const SAFE_TOOL_NAMES_DEFAULT: ReadonlySet<string> = new Set(["read", "ls", "grep", "find"]);
 const URL_BOUND_MODEL_CREDENTIAL_SENTINEL = "natstack-url-bound-model-credential";
-const URL_BOUND_MODEL_CREDENTIAL_SENTINEL_CLAIM = "https://natstack.local/url-bound-model-credential";
+const URL_BOUND_MODEL_CREDENTIAL_SENTINEL_CLAIM =
+  "https://natstack.local/url-bound-model-credential";
 const IMAGE_SERVICE_EXTENSION = "@workspace-extensions/image-service";
 
 function gadBranchIdForChannel(channelId: string): string {
@@ -85,7 +90,9 @@ function gadBranchIdForChannel(channelId: string): string {
 
 function isExpectedTestServerFailure(error: unknown): boolean {
   const cause = (error as { cause?: unknown } | null)?.cause;
-  return String(error).includes("test-server.invalid") || String(cause).includes("test-server.invalid");
+  return (
+    String(error).includes("test-server.invalid") || String(cause).includes("test-server.invalid")
+  );
 }
 
 function isTranscriptShapeError(error: unknown): boolean {
@@ -227,10 +234,7 @@ export default function ModelCredentialRequiredCard({ props, chat }) {
 `.trim();
 
 function base64UrlJson(value: unknown): string {
-  return btoa(JSON.stringify(value))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
+  return btoa(JSON.stringify(value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 function isModelCredentialSentinel(value: string): boolean {
@@ -262,33 +266,31 @@ function credentialRequiredMessage(err: unknown): string | null {
 
 function shouldProxyUrlBoundModelFetch(url: URL, baseUrls: readonly string[]): boolean {
   if (url.protocol !== "https:" && url.protocol !== "http:") return false;
-  if (url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "::1") return false;
+  if (url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "::1")
+    return false;
   return baseUrls.some((baseUrl) => isUrlWithinBase(url, baseUrl));
 }
 
 function isModelCredentialOAuthConfig(value: unknown): value is ModelCredentialOAuthConfig {
   if (!value || typeof value !== "object") return false;
   const config = value as Record<string, unknown>;
-  return config["type"] === "oauth2-auth-code-pkce"
-    && typeof config["authorizeUrl"] === "string"
-    && typeof config["tokenUrl"] === "string"
-    && typeof config["clientId"] === "string"
-    && (
-      config["scopes"] === undefined ||
-      (Array.isArray(config["scopes"]) && config["scopes"].every((scope) => typeof scope === "string"))
-    )
-    && (
-      config["extraAuthorizeParams"] === undefined ||
-      (
-        !!config["extraAuthorizeParams"] &&
+  return (
+    config["type"] === "oauth2-auth-code-pkce" &&
+    typeof config["authorizeUrl"] === "string" &&
+    typeof config["tokenUrl"] === "string" &&
+    typeof config["clientId"] === "string" &&
+    (config["scopes"] === undefined ||
+      (Array.isArray(config["scopes"]) &&
+        config["scopes"].every((scope) => typeof scope === "string"))) &&
+    (config["extraAuthorizeParams"] === undefined ||
+      (!!config["extraAuthorizeParams"] &&
         typeof config["extraAuthorizeParams"] === "object" &&
-        Object.values(config["extraAuthorizeParams"]).every((param) => typeof param === "string")
-      )
-    )
-    && (
-      config["allowMissingExpiry"] === undefined ||
-      typeof config["allowMissingExpiry"] === "boolean"
-    );
+        Object.values(config["extraAuthorizeParams"]).every(
+          (param) => typeof param === "string"
+        ))) &&
+    (config["allowMissingExpiry"] === undefined ||
+      typeof config["allowMissingExpiry"] === "boolean")
+  );
 }
 
 function isModelCredentialRedirectConfig(value: unknown): value is ModelCredentialRedirectConfig {
@@ -343,9 +345,11 @@ function isCredentialRequiredAssistantMessage(message: AgentMessage | undefined)
   const candidate = message as
     | { role?: string; stopReason?: string; errorMessage?: string }
     | undefined;
-  return candidate?.role === "assistant" &&
+  return (
+    candidate?.role === "assistant" &&
     candidate.stopReason === "error" &&
-    !!credentialRequiredMessage(candidate.errorMessage ?? "");
+    !!credentialRequiredMessage(candidate.errorMessage ?? "")
+  );
 }
 
 function hasToolResultMessage(messages: AgentMessage[], toolCallId: string): boolean {
@@ -377,10 +381,7 @@ interface ModelCredentialInterruption {
   createdAt: number;
 }
 
-type AgentAbortReason =
-  | "channel-unsubscribe"
-  | "interrupt-all"
-  | "interrupt-channel";
+type AgentAbortReason = "channel-unsubscribe" | "interrupt-all" | "interrupt-channel";
 
 interface AgentAbortContext {
   reason: AgentAbortReason;
@@ -392,9 +393,11 @@ function abortedAgentEndMessage(event: RunnerEvent): string | null {
   if (event.type !== "agent_end") return null;
   const messages = (event as { messages?: unknown[] }).messages;
   if (!Array.isArray(messages) || messages.length === 0) return null;
-  const last = messages[messages.length - 1] as
-    | { role?: string; stopReason?: string; errorMessage?: string }
-    | null;
+  const last = messages[messages.length - 1] as {
+    role?: string;
+    stopReason?: string;
+    errorMessage?: string;
+  } | null;
   if (!last || last.role !== "assistant" || last.stopReason !== "aborted") return null;
   return last.errorMessage ?? "Turn aborted.";
 }
@@ -452,9 +455,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     const source = (this.env as Record<string, string>)["WORKER_SOURCE"];
     const className = (this.env as Record<string, string>)["WORKER_CLASS_NAME"];
     if (!source || !className) {
-      throw new Error(
-        "getOwnCanonicalId: WORKER_SOURCE / WORKER_CLASS_NAME env bindings missing",
-      );
+      throw new Error("getOwnCanonicalId: WORKER_SOURCE / WORKER_CLASS_NAME env bindings missing");
     }
     return `do:${source}:${className}:${this.objectKey}`;
   }
@@ -464,9 +465,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   private async resolveOwnContextId(): Promise<string> {
     if (this._ownContextId != null) return this._ownContextId;
     const canonicalId = this.getOwnCanonicalId();
-    const ctx = await this.rpc.call<string | null>("main", "runtime.resolveContext", [
-      canonicalId,
-    ]);
+    const ctx = await this.rpc.call<string | null>("main", "runtime.resolveContext", [canonicalId]);
     if (ctx == null || ctx === "") {
       throw new Error(`resolveOwnContextId: no runtime entity row for ${canonicalId}`);
     }
@@ -485,7 +484,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         targetId: string,
         method: string,
         args: unknown[],
-        options?: { signal?: AbortSignal },
+        options?: { signal?: AbortSignal }
       ): Promise<Response> => {
         return this.rpc.streamCall(targetId, method, args, options);
       },
@@ -496,7 +495,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.subscriptions = new SubscriptionManager(
       this.sql,
       (channelId) => new ChannelClient(lazyRpc, channelId),
-      this.identity,
+      this.identity
     );
     this.dispatches = new DispatchedCallStore(this.sql);
 
@@ -571,7 +570,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
    * PiRunner passes this directly to `pi-ai.getModel(provider, modelId)`.
    */
   protected getModel(): string {
-    throw new AgentWorkerError("invalid_state", "AgentWorkerBase subclasses must override getModel()");
+    throw new AgentWorkerError(
+      "invalid_state",
+      "AgentWorkerBase subclasses must override getModel()"
+    );
   }
 
   protected getThinkingLevel(): ThinkingLevel {
@@ -589,15 +591,17 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     return async () => {
       const modelBaseUrl = this.getModelBaseUrl();
       this.installUrlBoundModelFetchProxy(modelBaseUrl);
-      const credential = await this.rpc.call<ModelCredentialSummary | null>("main", "credentials.resolveCredential", [
-        { url: modelBaseUrl },
-      ]);
+      const credential = await this.rpc.call<ModelCredentialSummary | null>(
+        "main",
+        "credentials.resolveCredential",
+        [{ url: modelBaseUrl }]
+      );
       if (!credential) {
         await this.recordModelCredentialInterruption(channelId, providerId, modelBaseUrl);
         await this.emitModelCredentialRequiredCard(channelId, providerId, modelBaseUrl);
         throw new AgentWorkerError(
           "auth",
-          `No URL-bound model credential is configured for model provider: ${providerId}`,
+          `No URL-bound model credential is configured for model provider: ${providerId}`
         );
       }
       return this.createModelCredentialSentinel(providerId, credential);
@@ -610,18 +614,20 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   protected getModelCredentialTokenClaims(
     _providerId: string,
-    _credential: ModelCredentialSummary,
+    _credential: ModelCredentialSummary
   ): Record<string, unknown> {
     return {};
   }
 
   protected async handleModelCredentialMethodCall(
     methodName: string,
-    args: unknown,
+    args: unknown
   ): Promise<{ result: unknown; isError?: boolean } | null> {
     switch (methodName) {
       case "connectModelCredentialOAuth":
-        return { result: await this.connectModelCredentialOAuth(args as ConnectModelCredentialOAuthArgs) };
+        return {
+          result: await this.connectModelCredentialOAuth(args as ConnectModelCredentialOAuthArgs),
+        };
       default:
         return null;
     }
@@ -653,43 +659,42 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     return {
       flow,
       ...(isModelCredentialRedirectConfig(redirect) ? { redirect } : {}),
-      ...(isModelCredentialRedirectConfig(clientLoopbackRedirect) ? { clientLoopbackRedirect } : {}),
+      ...(isModelCredentialRedirectConfig(clientLoopbackRedirect)
+        ? { clientLoopbackRedirect }
+        : {}),
       ...(redirectPolicy === "loopback-required" ? { redirectPolicy } : {}),
-      credentialLabel: typeof credentialLabel === "string"
-        ? credentialLabel
-        : `Model credential: ${providerId}`,
-      accountIdentityJwtClaimRoot: typeof accountIdentityJwtClaimRoot === "string"
-        ? accountIdentityJwtClaimRoot
-        : "",
-      accountIdentityJwtClaimField: typeof accountIdentityJwtClaimField === "string"
-        ? accountIdentityJwtClaimField
-        : "",
+      credentialLabel:
+        typeof credentialLabel === "string" ? credentialLabel : `Model credential: ${providerId}`,
+      accountIdentityJwtClaimRoot:
+        typeof accountIdentityJwtClaimRoot === "string" ? accountIdentityJwtClaimRoot : "",
+      accountIdentityJwtClaimField:
+        typeof accountIdentityJwtClaimField === "string" ? accountIdentityJwtClaimField : "",
     };
   }
 
   private async connectModelCredentialOAuth(
-    args: ConnectModelCredentialOAuthArgs,
+    args: ConnectModelCredentialOAuthArgs
   ): Promise<ModelCredentialSummary> {
     if (typeof args?.providerId !== "string") {
       throw new Error("connectModelCredentialOAuth requires providerId");
     }
     const browserOpenMode = args.browserOpenMode === "external" ? "external" : "internal";
-    const browserHandoffCallerId = typeof args.browserHandoffCallerId === "string"
-      ? args.browserHandoffCallerId
-      : undefined;
-    const browserHandoffCallerKind = args.browserHandoffCallerKind === "shell"
-      ? "shell"
-      : "panel";
-    const browserHandoffPlatform = typeof args.browserHandoffPlatform === "string"
-      ? args.browserHandoffPlatform
-      : undefined;
+    const browserHandoffCallerId =
+      typeof args.browserHandoffCallerId === "string" ? args.browserHandoffCallerId : undefined;
+    const browserHandoffCallerKind = args.browserHandoffCallerKind === "shell" ? "shell" : "panel";
+    const browserHandoffPlatform =
+      typeof args.browserHandoffPlatform === "string" ? args.browserHandoffPlatform : undefined;
     const modelBaseUrl = this.getModelBaseUrl();
     const setup = this.getModelCredentialOAuthConfig(args.providerId);
-    const redirect = browserHandoffPlatform === "mobile" && setup.clientLoopbackRedirect
-      ? setup.clientLoopbackRedirect
-      : setup.redirect;
-    if (setup.redirectPolicy === "loopback-required"
-      && (!redirect || (redirect.type !== "loopback" && redirect.type !== "client-loopback"))) {
+    const redirect =
+      (browserOpenMode === "external" || browserHandoffPlatform === "mobile") &&
+      setup.clientLoopbackRedirect
+        ? setup.clientLoopbackRedirect
+        : setup.redirect;
+    if (
+      setup.redirectPolicy === "loopback-required" &&
+      (!redirect || (redirect.type !== "loopback" && redirect.type !== "client-loopback"))
+    ) {
       throw new Error(`Model provider ${args.providerId} requires a loopback OAuth redirect`);
     }
     const spec = {
@@ -715,24 +720,23 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       browser: browserOpenMode,
       ...(redirect ? { redirect } : {}),
     };
-    return this.rpc.call<ModelCredentialSummary>(
-      "main",
-      "credentials.connect",
-      [
-        browserHandoffCallerId
-          ? {
+    return this.rpc.call<ModelCredentialSummary>("main", "credentials.connect", [
+      browserHandoffCallerId
+        ? {
             spec,
             handoffTarget: {
               callerId: browserHandoffCallerId,
               callerKind: browserHandoffCallerKind,
             },
           }
-          : spec,
-      ],
-    );
+        : spec,
+    ]);
   }
 
-  private createModelCredentialSentinel(providerId: string, credential: ModelCredentialSummary): string {
+  private createModelCredentialSentinel(
+    providerId: string,
+    credential: ModelCredentialSummary
+  ): string {
     const providerClaims = this.getModelCredentialTokenClaims(providerId, credential);
     if (Object.keys(providerClaims).length === 0) {
       return URL_BOUND_MODEL_CREDENTIAL_SENTINEL;
@@ -767,10 +771,9 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       __natstackModelFetchProxyInstalled?: boolean;
       __natstackModelFetchProxyBaseUrls?: string[];
     };
-    globals.__natstackModelFetchProxyBaseUrls = Array.from(new Set([
-      ...(globals.__natstackModelFetchProxyBaseUrls ?? []),
-      modelBaseUrl,
-    ]));
+    globals.__natstackModelFetchProxyBaseUrls = Array.from(
+      new Set([...(globals.__natstackModelFetchProxyBaseUrls ?? []), modelBaseUrl])
+    );
     if (globals.__natstackModelFetchProxyInstalled) return;
 
     const originalFetch = globalThis.fetch.bind(globalThis);
@@ -785,8 +788,12 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       if (!hasSentinel) {
         return originalFetch(input, init);
       }
-      if (!shouldProxyUrlBoundModelFetch(targetUrl, globals.__natstackModelFetchProxyBaseUrls ?? [])) {
-        throw new Error(`Refusing to send URL-bound model credential to non-model URL: ${targetUrl.origin}`);
+      if (
+        !shouldProxyUrlBoundModelFetch(targetUrl, globals.__natstackModelFetchProxyBaseUrls ?? [])
+      ) {
+        throw new Error(
+          `Refusing to send URL-bound model credential to non-model URL: ${targetUrl.origin}`
+        );
       }
       headers.delete("authorization");
 
@@ -840,7 +847,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   protected buildTurnInput(event: ChannelEvent): TurnInput {
     const payload = event.payload as { content?: string; attachments?: Attachment[] };
-    return { content: payload.content ?? "", senderId: event.senderId, attachments: event.attachments };
+    return {
+      content: payload.content ?? "",
+      senderId: event.senderId,
+      attachments: event.attachments,
+    };
   }
 
   protected getParticipantInfo(_channelId: string, config?: unknown): ParticipantDescriptor {
@@ -860,9 +871,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   } {
     const config = this.subscriptions.getConfig(channelId);
     if (!config) return {};
-    const systemPrompt = typeof config["systemPrompt"] === "string"
-      ? config["systemPrompt"]
-      : undefined;
+    const systemPrompt =
+      typeof config["systemPrompt"] === "string" ? config["systemPrompt"] : undefined;
     const rawMode = config["systemPromptMode"];
     const systemPromptMode =
       rawMode === "append" || rawMode === "replace-natstack" || rawMode === "replace"
@@ -889,7 +899,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     const ownContextId = await this.resolveOwnContextId();
     if (opts.contextId !== ownContextId) {
       throw new Error(
-        `subscribeChannel denied: contextId ${opts.contextId} does not match DO context ${ownContextId}`,
+        `subscribeChannel denied: contextId ${opts.contextId} does not match DO context ${ownContextId}`
       );
     }
 
@@ -950,9 +960,13 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     // the runner.dispose above should have drained pi events already).
     const projector = this.projectors.get(channelId);
     if (projector) {
-      try { await projector.closeAll(); }
-      catch (err) {
-        console.warn(`[AgentWorkerBase] projector.closeAll on unsubscribe failed for ${channelId}:`, err);
+      try {
+        await projector.closeAll();
+      } catch (err) {
+        console.warn(
+          `[AgentWorkerBase] projector.closeAll on unsubscribe failed for ${channelId}:`,
+          err
+        );
       }
       this.projectors.delete(channelId);
     }
@@ -982,7 +996,9 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
       const attempts = this.failedEvents.get(eventId) ?? 0;
       if (attempts >= AgentWorkerBase.POISON_MAX_ATTEMPTS) {
-        console.error(`[AgentWorkerBase] Skipping poison event id=${eventId} after ${attempts} failed attempts`);
+        console.error(
+          `[AgentWorkerBase] Skipping poison event id=${eventId} after ${attempts} failed attempts`
+        );
         this.advanceDeliveryCursor(channelId, eventId);
         this.failedEvents.delete(eventId);
         return;
@@ -1000,9 +1016,15 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         const count = (this.failedEvents.get(eventId) ?? 0) + 1;
         this.failedEvents.set(eventId, count);
         if (count >= AgentWorkerBase.POISON_MAX_ATTEMPTS) {
-          console.error(`[AgentWorkerBase] Poison event id=${eventId} failed ${count} times, will skip on next delivery:`, err);
+          console.error(
+            `[AgentWorkerBase] Poison event id=${eventId} failed ${count} times, will skip on next delivery:`,
+            err
+          );
         } else {
-          console.warn(`[AgentWorkerBase] onChannelEvent failed for id=${eventId} (attempt ${count}/${AgentWorkerBase.POISON_MAX_ATTEMPTS}):`, err);
+          console.warn(
+            `[AgentWorkerBase] onChannelEvent failed for id=${eventId} (attempt ${count}/${AgentWorkerBase.POISON_MAX_ATTEMPTS}):`,
+            err
+          );
         }
       } else {
         console.error("[AgentWorkerBase] onChannelEvent failed for ephemeral event:", err);
@@ -1011,23 +1033,26 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   }
 
   private getDeliveryCursor(channelId: string): number {
-    const cursor = this.sql.exec(
-      `SELECT last_delivered_seq FROM delivery_cursor WHERE channel_id = ?`, channelId,
-    ).toArray();
+    const cursor = this.sql
+      .exec(`SELECT last_delivered_seq FROM delivery_cursor WHERE channel_id = ?`, channelId)
+      .toArray();
     return cursor.length > 0 ? (cursor[0]!["last_delivered_seq"] as number) : 0;
   }
 
   private advanceDeliveryCursor(channelId: string, seq: number): void {
     this.sql.exec(
       `INSERT OR REPLACE INTO delivery_cursor (channel_id, last_delivered_seq) VALUES (?, ?)`,
-      channelId, seq,
+      channelId,
+      seq
     );
   }
 
   private async repairGap(channelId: string, lastSeq: number, eventId: number): Promise<void> {
     const gap = eventId - lastSeq - 1;
     if (gap > 1000) {
-      console.error(`[AgentWorkerBase] Gap too large (${gap} events) in channel=${channelId}, skipping repair`);
+      console.error(
+        `[AgentWorkerBase] Gap too large (${gap} events) in channel=${channelId}, skipping repair`
+      );
       return;
     }
     try {
@@ -1047,34 +1072,46 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
             const count = (this.failedEvents.get(missedId) ?? 0) + 1;
             this.failedEvents.set(missedId, count);
             if (count >= AgentWorkerBase.POISON_MAX_ATTEMPTS) {
-              console.error(`[AgentWorkerBase] Poison event id=${missedId} in gap repair, skipping:`, missedErr);
+              console.error(
+                `[AgentWorkerBase] Poison event id=${missedId} in gap repair, skipping:`,
+                missedErr
+              );
               this.advanceDeliveryCursor(channelId, missedId);
             } else {
-              console.warn(`[AgentWorkerBase] Gap repair event id=${missedId} failed (attempt ${count}):`, missedErr);
+              console.warn(
+                `[AgentWorkerBase] Gap repair event id=${missedId} failed (attempt ${count}):`,
+                missedErr
+              );
             }
           }
         }
       }
     } catch (err) {
-      console.warn(`[AgentWorkerBase] Gap repair failed for channel=${channelId} gap=${lastSeq+1}..${eventId-1}:`, err);
+      console.warn(
+        `[AgentWorkerBase] Gap repair failed for channel=${channelId} gap=${lastSeq + 1}..${eventId - 1}:`,
+        err
+      );
     }
   }
 
   private async dispatchChannelEvent(
     channelId: string,
     event: ChannelEvent,
-    opts?: { mode?: "auto" | "sequential" },
+    opts?: { mode?: "auto" | "sequential" }
   ): Promise<void> {
     if (event.type === "config-update") {
       let newLevel: number | undefined;
       try {
-        const config = typeof event.payload === "object" && event.payload !== null
-          ? event.payload as Record<string, unknown>
-          : {};
+        const config =
+          typeof event.payload === "object" && event.payload !== null
+            ? (event.payload as Record<string, unknown>)
+            : {};
         if ("approvalLevel" in config) {
           newLevel = config["approvalLevel"] as number;
         }
-      } catch { /* ignore parse errors */ }
+      } catch {
+        /* ignore parse errors */
+      }
       if (newLevel !== undefined && (newLevel === 0 || newLevel === 1 || newLevel === 2)) {
         this.setApprovalLevel(channelId, newLevel);
       }
@@ -1103,7 +1140,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         await this.handleCompletedMethodResult(
           callId,
           payload["content"],
-          payload["isError"] === true,
+          payload["isError"] === true
         );
       }
       return;
@@ -1124,7 +1161,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     // own `Session<GadSessionMetadata>` backed by this adapter; the worker
     // no longer maintains a messageCache or intercepts gad RPCs.
     const gadSessionStorage = new GadSessionStorage({
-      rpc: { call: (target: string, method: string, args: unknown[]) => this.rpc.call(target, method, args) },
+      rpc: {
+        call: (target: string, method: string, args: unknown[]) =>
+          this.rpc.call(target, method, args),
+      },
       branchId: gadBranchIdForChannel(channelId),
       channelId,
       contextId: this.subscriptions.getContextId(channelId),
@@ -1150,7 +1190,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           target: string,
           method: string,
           args: unknown[],
-          options?: { signal?: AbortSignal },
+          options?: { signal?: AbortSignal }
         ): Promise<Response> => {
           return this.rpc.streamCall(target, method, args, options);
         },
@@ -1164,7 +1204,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         method: string,
         args: unknown,
         signal: AbortSignal | undefined,
-        onStreamUpdate?: (content: unknown) => void,
+        onStreamUpdate?: (content: unknown) => void
       ) =>
         this.invokeChannelMethod(
           channelId,
@@ -1173,14 +1213,13 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           method,
           args,
           signal,
-          onStreamUpdate,
+          onStreamUpdate
         ),
       askUserCallback: (
         toolCallId: string,
         params: AskUserParams,
-        signal: AbortSignal | undefined,
-      ) =>
-        this.askUser(channelId, toolCallId, params, signal),
+        signal: AbortSignal | undefined
+      ) => this.askUser(channelId, toolCallId, params, signal),
       model: this.getModel(),
       getApiKey: this.getApiKeyForChannel(channelId),
       hasCredentialForOrigin: async (originUrl: string) => {
@@ -1208,7 +1247,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           const c = await this.rpc.call<{ id: string } | null>(
             "main",
             "credentials.resolveCredential",
-            [{ url: probeUrl }],
+            [{ url: probeUrl }]
           );
           return c !== null;
         } catch {
@@ -1268,7 +1307,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       this.abortContexts.delete(channelId);
       console.log(
         `[AgentWorkerBase] Agent turn aborted on channel=${channelId}: ` +
-        `reason=${context?.reason ?? "unknown"}${context?.detail ? ` detail=${context.detail}` : ""}; ${msg}`,
+          `reason=${context?.reason ?? "unknown"}${context?.detail ? ` detail=${context.detail}` : ""}; ${msg}`
       );
     };
     runner.hooks.on("event", abortedTurnListener);
@@ -1288,10 +1327,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
    * thinking-level. The hook receives the current `TurnSnapshot` but the
    * default implementation only needs `channelId`. Subclasses may override.
    */
-  protected async prepareNextTurnHook(
-    channelId: string,
-    _snapshot: TurnSnapshot,
-  ): Promise<void> {
+  protected async prepareNextTurnHook(channelId: string, _snapshot: TurnSnapshot): Promise<void> {
     await this.refreshRoster(channelId);
     // Re-evaluating `getModel`/`getThinkingLevel` is implicit: the runner
     // picks up new values via the standard getters on its next prompt.
@@ -1369,19 +1405,19 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.transcriptPoisonNotified.add(channelId);
     const channel = this.createChannelClient(channelId);
     const messageId = crypto.randomUUID();
-    await channel.send(
-      participantId,
-      messageId,
-      `Transcript error: ${detail}`,
-      {
+    await channel
+      .send(participantId, messageId, `Transcript error: ${detail}`, {
         contentType: "error",
         persist: true,
         idempotencyKey: `transcript-shape-error:${channelId}`,
-      },
-    ).catch((err) => {
-      console.error(`[AgentWorkerBase] Failed to emit transcript-shape error for channel=${channelId}:`, err);
-      this.transcriptPoisonNotified.delete(channelId);
-    });
+      })
+      .catch((err) => {
+        console.error(
+          `[AgentWorkerBase] Failed to emit transcript-shape error for channel=${channelId}:`,
+          err
+        );
+        this.transcriptPoisonNotified.delete(channelId);
+      });
   }
 
   private async handleTranscriptShapeError(channelId: string, error: unknown): Promise<void> {
@@ -1391,8 +1427,14 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       this.transcriptPoisonedChannels.set(channelId, detail);
       console.error(`[AgentWorkerBase] Transcript shape error on channel=${channelId}: ${detail}`);
       this.dispatchers.get(channelId)?.reset();
-      this.abortContexts.set(channelId, { reason: "interrupt-channel", detail: "transcript-shape-error", at: Date.now() });
-      const runner = this.runners.get(channelId)?.runner as { abort?: () => Promise<unknown> } | undefined;
+      this.abortContexts.set(channelId, {
+        reason: "interrupt-channel",
+        detail: "transcript-shape-error",
+        at: Date.now(),
+      });
+      const runner = this.runners.get(channelId)?.runner as
+        | { abort?: () => Promise<unknown> }
+        | undefined;
       void runner?.abort?.();
     }
     await this.emitTranscriptShapeError(channelId, existing ?? detail);
@@ -1412,7 +1454,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     if (await this.failIfTranscriptPoisoned(channelId)) {
       throw new AgentWorkerError(
         "transcript_shape",
-        this.transcriptPoisonedChannels.get(channelId) ?? "transcript poisoned",
+        this.transcriptPoisonedChannels.get(channelId) ?? "transcript poisoned"
       );
     }
     const entry = this.runners.get(channelId);
@@ -1421,12 +1463,15 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       const runner = entry.runner;
       if (runner.session) {
         const ctx = await runner.session.buildContext();
-        return validateAgentMessages(ctx.messages ?? [], `session.buildContext channel=${channelId}`);
+        return validateAgentMessages(
+          ctx.messages ?? [],
+          `session.buildContext channel=${channelId}`
+        );
       }
       const snapshot = await runner.getStateSnapshot();
       return validateAgentMessages(
         snapshot.messages,
-        `runner.getStateSnapshot channel=${channelId}`,
+        `runner.getStateSnapshot channel=${channelId}`
       );
     } catch (err) {
       if (isTranscriptShapeError(err)) {
@@ -1453,10 +1498,12 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     // Idempotency: scan existing messages for the marker.
     const existing = await this.readRunnerMessages(channelId);
-    if (existing.some((message) => {
-      const details = (message as { details?: Record<string, unknown> }).details;
-      return details?.["__natstack_agent_context_key"] === eventKey;
-    })) {
+    if (
+      existing.some((message) => {
+        const details = (message as { details?: Record<string, unknown> }).details;
+        return details?.["__natstack_agent_context_key"] === eventKey;
+      })
+    ) {
       return;
     }
 
@@ -1481,7 +1528,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   private async recordModelCredentialInterruption(
     channelId: string,
     providerId: string,
-    modelBaseUrl: string,
+    modelBaseUrl: string
   ): Promise<void> {
     // Tolerate a missing runner (this method can be called before the
     // runner is constructed); pass count = 0 in that case.
@@ -1492,7 +1539,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         resumeCount = messages.length;
       } catch (err) {
         // If the read fails (e.g. transcript poisoned), fall back to 0.
-        console.warn(`[AgentWorkerBase] recordModelCredentialInterruption: readRunnerMessages failed:`, err);
+        console.warn(
+          `[AgentWorkerBase] recordModelCredentialInterruption: readRunnerMessages failed:`,
+          err
+        );
       }
     }
     this.sql.exec(
@@ -1503,22 +1553,24 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       providerId,
       modelBaseUrl,
       resumeCount,
-      Date.now(),
+      Date.now()
     );
   }
 
   private getModelCredentialInterruption(
     channelId: string,
     providerId: string,
-    modelBaseUrl?: string,
+    modelBaseUrl?: string
   ): ModelCredentialInterruption | null {
-    const rows = this.sql.exec(
-      `SELECT provider_id, model_base_url, resume_count, created_at
+    const rows = this.sql
+      .exec(
+        `SELECT provider_id, model_base_url, resume_count, created_at
        FROM model_credential_interruptions
        WHERE channel_id = ? AND provider_id = ?`,
-      channelId,
-      providerId,
-    ).toArray();
+        channelId,
+        providerId
+      )
+      .toArray();
     if (rows.length === 0) return null;
     const row = rows[0]!;
     const storedModelBaseUrl = row["model_base_url"] as string | null;
@@ -1537,7 +1589,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.sql.exec(
       `DELETE FROM model_credential_interruptions WHERE channel_id = ? AND provider_id = ?`,
       channelId,
-      providerId,
+      providerId
     );
   }
 
@@ -1553,7 +1605,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.abortContexts.set(channelId, { reason, detail, at: Date.now() });
     console.log(
       `[AgentWorkerBase] Agent abort requested on channel=${channelId}: ` +
-      `reason=${reason}${detail ? ` detail=${detail}` : ""}`,
+        `reason=${reason}${detail ? ` detail=${detail}` : ""}`
     );
   }
 
@@ -1568,7 +1620,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       await this.completeRecoveredMethodResult(
         breadcrumb,
         decodeBufferedDispatchResult(breadcrumb.pendingResultJson),
-        breadcrumb.pendingIsError ?? false,
+        breadcrumb.pendingIsError ?? false
       );
     }
   }
@@ -1585,7 +1637,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   protected getOrCreateDispatcher(
     channelId: string,
     runner: PiRunner,
-    projector: ContentBlockProjector,
+    projector: ContentBlockProjector
   ): TurnDispatcher {
     const existing = this.dispatchers.get(channelId);
     if (existing) return existing;
@@ -1604,10 +1656,12 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     if (!participantId) return;
     const channel = this.createChannelClient(channelId);
     void channel.setTypingState(participantId, busy).catch((err) => {
-      console.warn(`[AgentWorkerBase] setTypingState(${busy}) failed for channel=${channelId}:`, err);
+      console.warn(
+        `[AgentWorkerBase] setTypingState(${busy}) failed for channel=${channelId}:`,
+        err
+      );
     });
   }
-
 
   // ── Channel-tools extension wiring ──────────────────────────────────────
 
@@ -1654,7 +1708,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     method: string,
     args: unknown,
     signal: AbortSignal | undefined,
-    onStreamUpdate?: (content: unknown) => void,
+    onStreamUpdate?: (content: unknown) => void
   ): Promise<AgentToolResult<any>> {
     if (signal?.aborted) throw new Error("aborted");
     const channel = this.createChannelClient(channelId);
@@ -1700,7 +1754,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     channelId: string,
     toolCallId: string,
     params: AskUserParams,
-    signal: AbortSignal | undefined,
+    signal: AbortSignal | undefined
   ): Promise<string | AgentToolResult<any>> {
     if (signal?.aborted) throw new Error("aborted");
     const callerId = this.subscriptions.getParticipantId(channelId);
@@ -1750,7 +1804,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           toolCallId,
           "select",
           { title, options },
-          opts?.signal,
+          opts?.signal
         ) as Promise<string | undefined>,
       confirmForTool: async (toolCallId, title, message, opts, meta) =>
         this.dispatchUiPrompt(
@@ -1759,7 +1813,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           "confirm",
           { title, message },
           opts?.signal,
-          meta,
+          meta
         ) as Promise<boolean>,
       inputForTool: async (toolCallId, title, placeholder, opts) =>
         this.dispatchUiPrompt(
@@ -1767,7 +1821,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           toolCallId,
           "input",
           { title, placeholder },
-          opts?.signal,
+          opts?.signal
         ) as Promise<string | undefined>,
       editorForTool: async (toolCallId, title, prefill) =>
         this.dispatchUiPrompt(
@@ -1775,7 +1829,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           toolCallId,
           "editor",
           { title, prefill },
-          undefined,
+          undefined
         ) as Promise<string | undefined>,
       notify: (message, type) => {
         const participantId = this.subscriptions.getParticipantId(channelId);
@@ -1793,18 +1847,28 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         const participantId = this.subscriptions.getParticipantId(channelId);
         if (!participantId) return;
         const channel = this.createChannelClient(channelId);
-        void channel.sendEphemeralEvent(participantId, "natstack-ext-widget", { key, content, options });
+        void channel.sendEphemeralEvent(participantId, "natstack-ext-widget", {
+          key,
+          content,
+          options,
+        });
       },
       setWorkingMessage: (message) => {
         const participantId = this.subscriptions.getParticipantId(channelId);
         if (!participantId) return;
         const channel = this.createChannelClient(channelId);
-        void channel.sendEphemeralEvent(participantId, "natstack-ext-working", { message: message ?? null });
+        void channel.sendEphemeralEvent(participantId, "natstack-ext-working", {
+          message: message ?? null,
+        });
       },
     };
   }
 
-  private async emitModelCredentialRequiredCard(channelId: string, providerId: string, modelBaseUrl: string): Promise<void> {
+  private async emitModelCredentialRequiredCard(
+    channelId: string,
+    providerId: string,
+    modelBaseUrl: string
+  ): Promise<void> {
     const participantId = this.subscriptions.getParticipantId(channelId);
     if (!participantId) return;
     const key = `${channelId}::model-credential::${providerId}`;
@@ -1821,11 +1885,15 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         return t === "panel" || t === "client";
       });
       browserHandoffCallerId = panel?.participantId;
-      browserHandoffPlatform = typeof panel?.metadata["hostPlatform"] === "string"
-        ? panel.metadata["hostPlatform"] as string
-        : undefined;
+      browserHandoffPlatform =
+        typeof panel?.metadata["hostPlatform"] === "string"
+          ? (panel.metadata["hostPlatform"] as string)
+          : undefined;
     } catch (err) {
-      console.warn(`[AgentWorkerBase] Failed to resolve browser handoff panel for ${providerId}:`, err);
+      console.warn(
+        `[AgentWorkerBase] Failed to resolve browser handoff panel for ${providerId}:`,
+        err
+      );
     }
     const messageId = crypto.randomUUID();
     const content = JSON.stringify({
@@ -1847,7 +1915,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         persist: false,
       })
       .catch((err) => {
-        console.error(`[AgentWorkerBase] Failed to emit model credential card for ${providerId}:`, err);
+        console.error(
+          `[AgentWorkerBase] Failed to emit model credential card for ${providerId}:`,
+          err
+        );
         this.credentialPromptCardsEmitted.delete(key);
       });
   }
@@ -1855,7 +1926,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   private createMethodResultWaiter(
     channelId: string,
     callId: string,
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ): { promise: Promise<MethodResultCompletion>; cancel: (error?: unknown) => void } {
     let settled = false;
     let removeAbortListener: (() => void) | undefined;
@@ -1913,7 +1984,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     } catch (err) {
       console.warn(
         `[AgentWorkerBase] Failed to cancel channel method call: channel=${channelId} callId=${callId}`,
-        err,
+        err
       );
     }
   }
@@ -1921,7 +1992,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   private async handleCompletedMethodResult(
     callId: string,
     result: unknown,
-    isError: boolean,
+    isError: boolean
   ): Promise<void> {
     this.streamCallbacks.delete(callId);
     const breadcrumb = this.dispatches.peek(callId);
@@ -1932,7 +2003,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     }
     if (breadcrumb) {
       this.dispatches.bufferResult(callId, result, isError);
-      await this.completeRecoveredMethodResult(this.dispatches.peek(callId) ?? breadcrumb, result, isError);
+      await this.completeRecoveredMethodResult(
+        this.dispatches.peek(callId) ?? breadcrumb,
+        result,
+        isError
+      );
       return;
     }
   }
@@ -1940,7 +2015,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   private async completeRecoveredMethodResult(
     breadcrumb: DispatchedCall,
     result: unknown,
-    isError: boolean,
+    isError: boolean
   ): Promise<void> {
     let entry = this.runners.get(breadcrumb.channelId);
     if (!entry) {
@@ -1953,7 +2028,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     if (!entry) {
       throw new AgentWorkerError(
         "invalid_state",
-        `No runner for recovered dispatch channel ${breadcrumb.channelId}`,
+        `No runner for recovered dispatch channel ${breadcrumb.channelId}`
       );
     }
 
@@ -1985,7 +2060,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     kind: "select" | "confirm" | "input" | "editor",
     params: Record<string, unknown>,
     signal?: AbortSignal,
-    meta?: { toolName?: string; toolInput?: unknown; mode?: "approval" | "ui-prompt" },
+    meta?: { toolName?: string; toolInput?: unknown; mode?: "approval" | "ui-prompt" }
   ): Promise<unknown> {
     if (signal?.aborted) throw new Error("aborted");
     const callerId = this.subscriptions.getParticipantId(channelId);
@@ -2000,25 +2075,24 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     const callId = crypto.randomUUID();
     const waiter = this.createMethodResultWaiter(channelId, callId, signal);
-    const breadcrumbKind: DispatchedCallKind =
-      meta?.mode === "approval" ? "approval" : "ui-prompt";
+    const breadcrumbKind: DispatchedCallKind = meta?.mode === "approval" ? "approval" : "ui-prompt";
     this.dispatches.store({
       callId,
       channelId,
       kind: breadcrumbKind,
       toolCallId,
-      toolName: breadcrumbKind === "approval" ? meta?.toolName ?? null : null,
-      paramsJson:
-        breadcrumbKind === "approval"
-          ? JSON.stringify(meta?.toolInput ?? {})
-          : null,
+      toolName: breadcrumbKind === "approval" ? (meta?.toolName ?? null) : null,
+      paramsJson: breadcrumbKind === "approval" ? JSON.stringify(meta?.toolInput ?? {}) : null,
       targetParticipantId: panel.participantId,
       methodName: "ui_prompt",
       argsJson: JSON.stringify({ kind, ...params }),
     });
     this.dispatches.markDispatched(callId);
     try {
-      await channel.callMethod(callerId, panel.participantId, callId, "ui_prompt", { kind, ...params });
+      await channel.callMethod(callerId, panel.participantId, callId, "ui_prompt", {
+        kind,
+        ...params,
+      });
       const completion = await waiter.promise;
       if (completion.isError) {
         throw new Error(resultToAnswerText(completion.result));
@@ -2040,14 +2114,14 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   private async sendDispatchCancel(
     channelId: string,
     callId: string,
-    reason: "user-superseded" | "worker-restart" | "user-interrupted",
+    reason: "user-superseded" | "worker-restart" | "user-interrupted"
   ): Promise<void> {
     const participantId = this.subscriptions.getParticipantId(channelId);
     if (!participantId) return;
     await this.createChannelClient(channelId).sendEphemeralEvent(
       participantId,
       "natstack-dispatch-cancel",
-      { callId, reason },
+      { callId, reason }
     );
   }
 
@@ -2063,7 +2137,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       } catch (err) {
         console.warn(
           `[AgentWorkerBase] Failed to cancel dispatch ${breadcrumb.callId} on interrupt:`,
-          err,
+          err
         );
       } finally {
         this.dispatches.deleteOne(breadcrumb.callId);
@@ -2080,7 +2154,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   async onChannelEvent(
     channelId: string,
     event: ChannelEvent,
-    opts?: { mode?: "auto" | "sequential" },
+    opts?: { mode?: "auto" | "sequential" }
   ): Promise<void> {
     if (!this.shouldProcess(event)) return;
     await this.ensureChannelContext(channelId);
@@ -2097,7 +2171,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
    *  Best-effort: on failure, fall through to the original bytes. */
   private async resizeAttachments(
     channelId: string,
-    attachments: Attachment[] | undefined,
+    attachments: Attachment[] | undefined
   ): Promise<ImageContent[] | undefined> {
     if (!attachments || attachments.length === 0) return undefined;
     const images: ImageContent[] = [];
@@ -2109,11 +2183,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           data: Uint8Array;
           mimeType: string;
           wasResized: boolean;
-        }>(
-          "main",
-          "extensions.invoke",
-          [IMAGE_SERVICE_EXTENSION, "resize", [bytes, att.mimeType, { maxWidth: 2000, maxHeight: 2000 }]],
-        );
+        }>("main", "extensions.invoke", [
+          IMAGE_SERVICE_EXTENSION,
+          "resize",
+          [bytes, att.mimeType, { maxWidth: 2000, maxHeight: 2000 }],
+        ]);
         images.push({
           type: "image",
           mimeType: resized.mimeType,
@@ -2122,7 +2196,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       } catch (err) {
         console.warn(
           `[AgentWorkerBase] image-service.resize failed for channel=${channelId}; passing original:`,
-          err,
+          err
         );
         images.push({ type: "image", mimeType: att.mimeType, data: att.data });
       }
@@ -2132,23 +2206,34 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   // ── Method calls (subclass hook) ─────────────────────────────────────────
 
-  async onMethodCall(_channelId: string, _callId: string, _methodName: string, _args: unknown): Promise<{ result: unknown; isError?: boolean }> {
+  async onMethodCall(
+    _channelId: string,
+    _callId: string,
+    _methodName: string,
+    _args: unknown
+  ): Promise<{ result: unknown; isError?: boolean }> {
     return { result: { error: "not implemented" }, isError: true };
   }
 
   protected async resumeAfterModelCredentialConnected(
     channelId: string,
-    opts?: { providerId?: string; modelBaseUrl?: string },
+    opts?: { providerId?: string; modelBaseUrl?: string }
   ): Promise<boolean> {
     await this.ensureChannelContext(channelId);
     const entry = this.runners.get(channelId);
     if (!entry) {
-      console.warn(`[AgentWorkerBase] credential resume failed for channel=${channelId}: runner missing`);
+      console.warn(
+        `[AgentWorkerBase] credential resume failed for channel=${channelId}: runner missing`
+      );
       return false;
     }
 
     const providerId = opts?.providerId ?? this.getModelProviderId();
-    const interruption = this.getModelCredentialInterruption(channelId, providerId, opts?.modelBaseUrl);
+    const interruption = this.getModelCredentialInterruption(
+      channelId,
+      providerId,
+      opts?.modelBaseUrl
+    );
     const messages = await this.readRunnerMessages(channelId);
     const last = messages[messages.length - 1];
     let resumableMessages: AgentMessage[];
@@ -2159,9 +2244,9 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     } else {
       console.warn(
         `[AgentWorkerBase] credential resume failed for channel=${channelId}: ` +
-        `no resumable turn provider=${providerId} messages=${messages.length} ` +
-        `interruptionCount=${interruption?.resumeCount ?? "none"} lastRole=${String((last as { role?: unknown } | undefined)?.role ?? "none")} ` +
-        `lastStop=${String((last as { stopReason?: unknown } | undefined)?.stopReason ?? "none")}`,
+          `no resumable turn provider=${providerId} messages=${messages.length} ` +
+          `interruptionCount=${interruption?.resumeCount ?? "none"} lastRole=${String((last as { role?: unknown } | undefined)?.role ?? "none")} ` +
+          `lastStop=${String((last as { stopReason?: unknown } | undefined)?.stopReason ?? "none")}`
       );
       return false;
     }
@@ -2172,18 +2257,19 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     if (!resumeFrom || (resumeFrom.role !== "user" && resumeFrom.role !== "toolResult")) {
       console.warn(
         `[AgentWorkerBase] credential resume failed for channel=${channelId}: ` +
-        `resume cursor is ${String(resumeFrom?.role ?? "missing")}`,
+          `resume cursor is ${String(resumeFrom?.role ?? "missing")}`
       );
       return false;
     }
 
-    const messageEntries = (await entry.runner.session?.getEntries())
-      ?.filter((sessionEntry) => sessionEntry.type === "message");
+    const messageEntries = (await entry.runner.session?.getEntries())?.filter(
+      (sessionEntry) => sessionEntry.type === "message"
+    );
     const target = messageEntries?.[resumableMessages.length - 1];
     if (!target) {
       console.warn(
         `[AgentWorkerBase] credential resume failed for channel=${channelId}: ` +
-        `session entry missing for messageIndex=${resumableMessages.length - 1} entries=${messageEntries?.length ?? 0}`,
+          `session entry missing for messageIndex=${resumableMessages.length - 1} entries=${messageEntries?.length ?? 0}`
       );
       return false;
     }
@@ -2249,11 +2335,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     parentObjectKey: string,
     newChannelId: string,
     oldChannelId: string,
-    forkAtMessageIndex: number | null,
+    forkAtMessageIndex: number | null
   ): Promise<void> {
     this.sql.exec(
       `INSERT OR REPLACE INTO state (key, value) VALUES ('__objectKey', ?)`,
-      this.objectKey,
+      this.objectKey
     );
 
     this.setStateValue("forkedFrom", parentObjectKey);
@@ -2278,9 +2364,9 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     }
 
     // Resubscribe to the forked channel.
-    const subRow = this.sql.exec(
-      `SELECT context_id, config FROM subscriptions WHERE channel_id = ?`, oldChannelId,
-    ).toArray();
+    const subRow = this.sql
+      .exec(`SELECT context_id, config FROM subscriptions WHERE channel_id = ?`, oldChannelId)
+      .toArray();
     const contextId = subRow.length > 0 ? (subRow[0]!["context_id"] as string) : undefined;
     const configRaw = subRow.length > 0 ? (subRow[0]!["config"] as string | null) : null;
     const config = configRaw ? JSON.parse(configRaw) : undefined;
@@ -2306,7 +2392,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     _parentObjectKey: string,
     _newChannelId: string,
     _oldChannelId: string,
-    _forkAtMessageIndex: number | null,
+    _forkAtMessageIndex: number | null
   ): Promise<void> {
     // Default: no-op
   }
@@ -2314,7 +2400,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   private async forkPiBranchForClone(
     oldChannelId: string,
     newChannelId: string,
-    forkAtMessageIndex: number | null,
+    forkAtMessageIndex: number | null
   ): Promise<void> {
     try {
       await this.ensurePiBranch(oldChannelId);
@@ -2326,15 +2412,12 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       let entryId: string | null = null;
       if (forkAtMessageIndex != null) {
         const offset = Math.max(0, forkAtMessageIndex - 1);
-        const rows = await this.gad.call<Array<Record<string, unknown>>>(
-          "findEntries",
-          {
-            branchId: oldBranchId,
-            entryType: "message",
-            offset,
-            limit: 1,
-          },
-        );
+        const rows = await this.gad.call<Array<Record<string, unknown>>>("findEntries", {
+          branchId: oldBranchId,
+          entryType: "message",
+          offset,
+          limit: 1,
+        });
         const first = rows[0];
         if (first && typeof first["entryId"] === "string") {
           entryId = first["entryId"];
@@ -2391,16 +2474,21 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           const result = this.parseRequestBody(body);
           if (result.error) {
             return new Response(JSON.stringify({ error: result.error }), {
-              status: 400, headers: { "Content-Type": "application/json" },
+              status: 400,
+              headers: { "Content-Type": "application/json" },
             });
           }
           args = result.args;
         }
       }
       if (args.length < 2) {
-        return new Response(JSON.stringify({ error: "__event requires at least [event, payload]" }), {
-          status: 400, headers: { "Content-Type": "application/json" },
-        });
+        return new Response(
+          JSON.stringify({ error: "__event requires at least [event, payload]" }),
+          {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          }
+        );
       }
       const [event, payload, fromId] = args as [string, unknown, string | undefined];
       await this.rpc.handleIncomingPost({ type: "emit", event, payload, fromId: fromId ?? "" });
@@ -2417,7 +2505,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           const result = this.parseRequestBody(body);
           if (result.error) {
             return new Response(JSON.stringify({ error: result.error }), {
-              status: 400, headers: { "Content-Type": "application/json" },
+              status: 400,
+              headers: { "Content-Type": "application/json" },
             });
           }
           args = result.args;
@@ -2487,7 +2576,7 @@ function validateAgentMessages(messages: AgentMessage[], source: string): AgentM
       });
       throw new AgentWorkerError(
         "transcript_shape",
-        `Malformed agent transcript: toolResult at ${source}[${index}] is missing toolCallId`,
+        `Malformed agent transcript: toolResult at ${source}[${index}] is missing toolCallId`
       );
     }
   }
@@ -2523,10 +2612,7 @@ function decodeBufferedDispatchResult(encoded: string): unknown {
 function resultToAnswerText(result: unknown): string {
   if (result == null) return "";
   if (typeof result === "string") return result;
-  if (
-    typeof result === "object" &&
-    result !== null
-  ) {
+  if (typeof result === "object" && result !== null) {
     const error = (result as { error?: unknown }).error;
     if (typeof error === "string") return error;
     const message = (result as { message?: unknown }).message;

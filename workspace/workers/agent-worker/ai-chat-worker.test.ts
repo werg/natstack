@@ -78,33 +78,49 @@ describe("AiChatWorker model credential defaults", () => {
       browserHandoffCallerId: "panel-1",
       browserHandoffCallerKind: "panel",
     });
-    expect(worker.rpcCall).toHaveBeenCalledWith(
-      "main",
-      "credentials.connect",
-      [
-        expect.objectContaining({
-          spec: expect.objectContaining({
-            browser: "external",
-            flow: expect.objectContaining({
-              type: "oauth2-auth-code-pkce",
-            }),
-            credential: expect.objectContaining({
-              audience: [{ url: "https://chatgpt.com/backend-api", match: "path-prefix" }],
-            }),
-            redirect: {
-              type: "loopback",
-              host: "localhost",
-              port: 1455,
-              callbackPath: "/auth/callback",
-            },
+    expect(worker.rpcCall).toHaveBeenCalledWith("main", "credentials.connect", [
+      expect.objectContaining({
+        spec: expect.objectContaining({
+          browser: "external",
+          flow: expect.objectContaining({
+            type: "oauth2-auth-code-pkce",
           }),
-          handoffTarget: {
-            callerId: "panel-1",
-            callerKind: "panel",
+          credential: expect.objectContaining({
+            audience: [{ url: "https://chatgpt.com/backend-api", match: "path-prefix" }],
+          }),
+          redirect: {
+            type: "client-loopback",
+            host: "localhost",
+            port: 1455,
+            callbackPath: "/auth/callback",
           },
         }),
-      ],
-    );
+        handoffTarget: {
+          callerId: "panel-1",
+          callerKind: "panel",
+        },
+      }),
+    ]);
+
+    await worker.onMethodCall("ch-1", "call-internal", "connectModelCredentialOAuth", {
+      providerId: "openai-codex",
+      browserOpenMode: "internal",
+      browserHandoffCallerId: "panel-1",
+      browserHandoffCallerKind: "panel",
+    });
+    expect(worker.rpcCall).toHaveBeenLastCalledWith("main", "credentials.connect", [
+      expect.objectContaining({
+        spec: expect.objectContaining({
+          browser: "internal",
+          redirect: {
+            type: "loopback",
+            host: "localhost",
+            port: 1455,
+            callbackPath: "/auth/callback",
+          },
+        }),
+      }),
+    ]);
 
     await worker.onMethodCall("ch-1", "call-2", "connectModelCredentialOAuth", {
       providerId: "openai-codex",
@@ -113,21 +129,17 @@ describe("AiChatWorker model credential defaults", () => {
       browserHandoffCallerKind: "panel",
       browserHandoffPlatform: "mobile",
     });
-    expect(worker.rpcCall).toHaveBeenLastCalledWith(
-      "main",
-      "credentials.connect",
-      [
-        expect.objectContaining({
-          spec: expect.objectContaining({
-            redirect: {
-              type: "client-loopback",
-              host: "localhost",
-              port: 1455,
-              callbackPath: "/auth/callback",
-            },
-          }),
+    expect(worker.rpcCall).toHaveBeenLastCalledWith("main", "credentials.connect", [
+      expect.objectContaining({
+        spec: expect.objectContaining({
+          redirect: {
+            type: "client-loopback",
+            host: "localhost",
+            port: 1455,
+            callbackPath: "/auth/callback",
+          },
         }),
-      ],
-    );
+      }),
+    ]);
   });
 });
