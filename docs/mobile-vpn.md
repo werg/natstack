@@ -24,6 +24,10 @@ actually reachable, and use it as the QR target. The phone connects via
 same URL, and registering OAuth providers becomes a one-time copy-paste of
 `https://<host>.<tailnet>.ts.net/_r/s/credentials/oauth/callback`.
 
+The general `pnpm pair` command uses the same server and QR/deep-link flow for
+phones and laptops. Use `pnpm mobile:pair` when you specifically want the APK
+install and mobile-log reminder lines.
+
 First-time requirements:
 
 - **Tailscale Serve enabled on your tailnet.** Serve is a per-tailnet feature

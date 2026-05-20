@@ -7,12 +7,15 @@ A tree-based browser with hierarchical panel navigation built on Electron.
 NatStack is designed to be a lightweight, agentic code execution environment that blurs the line between "using" software and "building" it.
 
 ### 1. Generative UI
+
 We aim to enable **Generative UI**, where agents can modify, customize, and create user interfaces on the fly. The application is not a static artifact but a living medium that adapts to the user's needs through agentic intervention.
 
 ### 2. Ongoing Agentic Presence
+
 In traditional development, the "builder" (developer or agent) leaves once the app is shipped. In NatStack, the agent remains a first-class citizen of the runtime. The "code part" becomes fluid, allowing the AI to continuously maintain, extend, and recompose the application while it is being used.
 
 ### 3. Compositionality for AI
+
 We aim to bring the modularity and compositionality of software engineering to AI applications. By breaking down complex agentic workflows into discrete, composable "panels," we create a system where small, specialized agents can collaborate to achieve complex tasks.
 
 ---
@@ -20,12 +23,15 @@ We aim to bring the modularity and compositionality of software engineering to A
 ## Core Philosophy
 
 ### Code as the Agentic Primitive
+
 We believe that **file systems, files, and code execution** are the most robust primitives for agents. By allowing agents to operate within a standard coding environment (reading/writing files, executing scripts), we leverage their strong in-distribution training data (e.g., from GitHub).
 
 ### Git for State & Concurrency
+
 **Git** offers a powerful, distributed metaphor for managing state, history, and concurrency. NatStack uses git not just for version control, but as the fundamental synchronization mechanism for application state.
 
 ### Lightweight Sandboxing
+
 Full containerization (like Docker or heavy VMs) is often overkill for UI-focused agentic tasks. NatStack hits the "sweet spot" by using **sandboxed browser processes** backed by **server-side per-context folders**. This provides security and isolation without the overhead of a full OS.
 
 ---
@@ -35,25 +41,29 @@ Full containerization (like Docker or heavy VMs) is often overkill for UI-focuse
 NatStack is built as a hierarchical, tree-based browser where every "tab" is a self-contained application environment.
 
 ### 1. The Panel System (Electron + Webviews)
+
 - **Structure**: The UI is a tree of "panels." Each panel is an isolated Electron `WebContents` (webview).
 - **Hierarchy**: Panels can spawn child panels, creating a recursive interface that maps naturally to task decomposition.
 - **Isolation**: Each panel runs in its own process, ensuring that a crash or security issue in one mini-app does not compromise the host.
 
 ### 2. The File System (Server-Side Context Folders)
+
 - **Storage**: Each panel is backed by a persistent **per-context folder** on the server at `{workspace}/.contexts/{contextId}/`.
 - **Access**: Panel `fs` calls go through RPC to a sandboxed `FsService` that uses Node.js `fs/promises`, exposing a standard Node.js `fs` API.
 - **Result**: Agents running inside a panel perceive a standard Linux-like file system, and files are visible on disk for debugging and server-side tool access.
 
 ### 3. The Build System (On-the-Fly Compilation)
+
 - **Just-in-Time**: Panels are not pre-compiled binaries. They are source code directories.
 - **esbuild**: When a panel is loaded, the host process uses `esbuild` to compile the TypeScript/React source on the fly.
 - **Fluidity**: This allows an agent to edit the source code of a running panel, reload it, and immediately see the changes—enabling a tight "edit-run" loop for generative UI.
 
 ### 4. Agentic Runtime
+
 - **Injected Capabilities**: The runtime injects powerful capabilities directly into the panel's JavaScript environment, including:
-    - **LLM Access**: Streaming interfaces to models like Claude and GPT.
-    - **Git Operations**: `isomorphic-git` for cloning, pulling, and pushing state.
-    - **Panel Control**: APIs to spawn children, manage layout, and communicate with other panels.
+  - **LLM Access**: Streaming interfaces to models like Claude and GPT.
+  - **Git Operations**: `isomorphic-git` for cloning, pulling, and pushing state.
+  - **Panel Control**: APIs to spawn children, manage layout, and communicate with other panels.
 
 ---
 
@@ -168,15 +178,15 @@ natstack-server ready:
 
 ### CLI Flags
 
-| Flag | Description |
-|------|-------------|
-| `--workspace=PATH` | Path to the NatStack workspace directory (must contain `natstack.yml`) |
-| `--data-dir=PATH` | User data directory (build cache, EV state, database) |
-| `--app-root=PATH` | Application root (defaults to cwd) |
-| `--log-level=LEVEL` | Log level |
-| `--serve-panels` | Enable HTTP panel serving for browser access |
-| `--gateway-port=PORT` | Port for the gateway HTTP/WS ingress (default: random) |
-| `--panel-port=PORT` | Port for the panel HTTP server (default: random) |
+| Flag                  | Description                                                            |
+| --------------------- | ---------------------------------------------------------------------- |
+| `--workspace=PATH`    | Path to the NatStack workspace directory (must contain `natstack.yml`) |
+| `--data-dir=PATH`     | User data directory (build cache, EV state, database)                  |
+| `--app-root=PATH`     | Application root (defaults to cwd)                                     |
+| `--log-level=LEVEL`   | Log level                                                              |
+| `--serve-panels`      | Enable HTTP panel serving for browser access                           |
+| `--gateway-port=PORT` | Port for the gateway HTTP/WS ingress (default: random)                 |
+| `--panel-port=PORT`   | Port for the panel HTTP server (default: random)                       |
 
 ### Serving Panels to a Browser
 
@@ -212,14 +222,16 @@ start a stable QR-pairing server:
 ```bash
 pnpm mobile:install:internal --launch
 pnpm build
-pnpm mobile:pair:dev
+pnpm pair
 ```
 
 See [docs/mobile-vpn.md](docs/mobile-vpn.md) for host selection, workspace
 flags, dev-vs-persistent workspace mode, and reconnect behavior. Use
-`pnpm mobile:pair` when you want a persistent trusted server workspace.
+`pnpm mobile:pair` when you want mobile-specific install/log reminders, and
+click the printed `Pair URL` to connect a laptop without copying an admin token.
 
 Each panel gets:
+
 - **Injected globals** replacing Electron's preload/contextBridge
 - **A WebSocket transport** connecting to the RPC server (same protocol as
   the Electron preload)

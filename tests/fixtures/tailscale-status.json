@@ -1,0 +1,24 @@
+{
+  "Self": {
+    "DNSName": "laptop.tailnet.ts.net.",
+    "Online": true
+  },
+  "Peer": {
+    "peer-natstack": {
+      "DNSName": "natstack.tailnet.ts.net.",
+      "Online": true
+    },
+    "peer-plain": {
+      "DNSName": "plain.tailnet.ts.net.",
+      "Online": true
+    },
+    "peer-offline": {
+      "DNSName": "offline.tailnet.ts.net.",
+      "Online": false
+    },
+    "peer-hostname-only": {
+      "HostName": "hostname-only",
+      "Online": true
+    }
+  }
+}

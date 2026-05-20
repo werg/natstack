@@ -6,7 +6,8 @@
   "description": "A horizontally stacked panel app built with Electron and TypeScript",
   "main": "dist/main.cjs",
   "bin": {
-    "natstack-server": "dist/server.mjs"
+    "natstack-server": "dist/server.mjs",
+    "natstack-client": "dist/cli/client.mjs"
   },
   "scripts": {
     "prebuild": "node scripts/generate-channels.mjs && node scripts/generate-injected.mjs",
@@ -16,6 +17,7 @@
     "start": "node scripts/run-electron.mjs",
     "server": "node dist/server.mjs",
     "server:dev": "NODE_ENV=development node dist/server.mjs",
+    "pair": "node scripts/pair.mjs",
     "dev:mobile-server": "node scripts/dev-mobile-server.mjs",
     "mobile:pair": "node scripts/mobile-pair.mjs",
     "mobile:pair:dev": "node scripts/mobile-pair.mjs --dev",

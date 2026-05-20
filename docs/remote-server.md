@@ -77,24 +77,24 @@ natstack-server ready:
 
 ### 2. Server CLI flags
 
-| Flag | Env var | Description |
-|------|---------|-------------|
-| `--workspace <name>` | `NATSTACK_WORKSPACE` | Workspace name to resolve |
-| `--workspace-dir <path>` | `NATSTACK_WORKSPACE_DIR` | Explicit workspace directory |
-| `--app-root <path>` | `NATSTACK_APP_ROOT` | Application root (default: `cwd()`) |
-| `--host <hostname>` | `NATSTACK_HOST` | External hostname; also sets bind to `0.0.0.0` |
-| `--bind-host <addr>` | `NATSTACK_BIND_HOST` | Explicit bind address (overrides `--host` default) |
-| `--protocol <http\|https>` | `NATSTACK_PROTOCOL` | Protocol for panel-facing URLs |
-| `--tls-cert <path>` | — | TLS certificate file (PEM). Enables HTTPS with `--tls-key`. |
-| `--tls-key <path>` | — | TLS private key file (PEM). Required with `--tls-cert`. |
-| `--serve-panels` | — | Enable panel HTTP serving |
-| `--gateway-port <port>` | `NATSTACK_GATEWAY_PORT` | Port for the gateway HTTP/WS ingress (default: auto-assigned). Use a fixed value for phone/VPN pairing or firewall rules. |
-| `--panel-port <port>` | — | Port for panel HTTP (default: auto-assigned) |
-| `--init` | — | Auto-create workspace from template if it doesn't exist |
-| `--log-level <level>` | `NATSTACK_LOG_LEVEL` | Log verbosity |
-| `--print-credentials` | — | Print `NATSTACK_ADMIN_TOKEN=...` and `NATSTACK_PAIRING_CODE=...` for scripting |
-| `--public-url <url>` | `NATSTACK_PUBLIC_URL` | Externally-reachable base URL used to build OAuth redirect URIs, webhook advertisements, etc. Defaults to `${protocol}://${host}:${gatewayPort}` but should be set explicitly when a reverse proxy or DNS-facing hostname is in front. |
-| `--help` | — | Show usage and exit |
+| Flag                       | Env var                  | Description                                                                                                                                                                                                                            |
+| -------------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--workspace <name>`       | `NATSTACK_WORKSPACE`     | Workspace name to resolve                                                                                                                                                                                                              |
+| `--workspace-dir <path>`   | `NATSTACK_WORKSPACE_DIR` | Explicit workspace directory                                                                                                                                                                                                           |
+| `--app-root <path>`        | `NATSTACK_APP_ROOT`      | Application root (default: `cwd()`)                                                                                                                                                                                                    |
+| `--host <hostname>`        | `NATSTACK_HOST`          | External hostname; also sets bind to `0.0.0.0`                                                                                                                                                                                         |
+| `--bind-host <addr>`       | `NATSTACK_BIND_HOST`     | Explicit bind address (overrides `--host` default)                                                                                                                                                                                     |
+| `--protocol <http\|https>` | `NATSTACK_PROTOCOL`      | Protocol for panel-facing URLs                                                                                                                                                                                                         |
+| `--tls-cert <path>`        | —                        | TLS certificate file (PEM). Enables HTTPS with `--tls-key`.                                                                                                                                                                            |
+| `--tls-key <path>`         | —                        | TLS private key file (PEM). Required with `--tls-cert`.                                                                                                                                                                                |
+| `--serve-panels`           | —                        | Enable panel HTTP serving                                                                                                                                                                                                              |
+| `--gateway-port <port>`    | `NATSTACK_GATEWAY_PORT`  | Port for the gateway HTTP/WS ingress (default: auto-assigned). Use a fixed value for phone/VPN pairing or firewall rules.                                                                                                              |
+| `--panel-port <port>`      | —                        | Port for panel HTTP (default: auto-assigned)                                                                                                                                                                                           |
+| `--init`                   | —                        | Auto-create workspace from template if it doesn't exist                                                                                                                                                                                |
+| `--log-level <level>`      | `NATSTACK_LOG_LEVEL`     | Log verbosity                                                                                                                                                                                                                          |
+| `--print-credentials`      | —                        | Print `NATSTACK_ADMIN_TOKEN=...` and `NATSTACK_PAIRING_CODE=...` for scripting                                                                                                                                                         |
+| `--public-url <url>`       | `NATSTACK_PUBLIC_URL`    | Externally-reachable base URL used to build OAuth redirect URIs, webhook advertisements, etc. Defaults to `${protocol}://${host}:${gatewayPort}` but should be set explicitly when a reverse proxy or DNS-facing hostname is in front. |
+| `--help`                   | —                        | Show usage and exit                                                                                                                                                                                                                    |
 
 ### 3. Admin token persistence
 
@@ -162,17 +162,33 @@ non-loopback `http://` remotes are intentionally rejected by the client.
 
 ## Connecting the Electron App
 
-Credentials are resolved in this order on each launch; the first source that
-provides both URL and admin bootstrap credential wins. After first connect,
-Electron also stores a device refresh credential and uses that for reconnects.
+Run `pnpm pair` on the server. The readiness banner prints a pairing code and a
+`Pair URL:` deep link:
 
-| Source | Fields | Priority | Where it lives |
-|--------|--------|----------|----------------|
-| Environment | `NATSTACK_REMOTE_URL`, `NATSTACK_REMOTE_TOKEN`, optional `NATSTACK_REMOTE_DEVICE_ID` / `NATSTACK_REMOTE_REFRESH_TOKEN`, optional CA/fingerprint | 1 | — |
-| Credential store | URL, admin bootstrap credential, device refresh credential, optional CA/fingerprint, encrypted via Electron `safeStorage` | 2 | `~/.config/natstack/remote-credentials.json` (`0o600`) |
-| Config file | `remote.url`, `remote.token`, `remote.caPath`, `remote.fingerprint` | 3 | `~/.config/natstack/config.yml` |
+```text
+Pairing code: abc123...
+Pair URL:     natstack://connect?url=https%3A%2F%2Fhost.tailnet.ts.net&code=abc123...
+```
 
-### Option A: Environment variables (bootstrap)
+On the laptop, click the `Pair URL` or open Connection Settings and paste the
+code on the **Pair with code** tab. Electron exchanges the code for a durable
+device credential; the admin token does not need to leave the server.
+
+Admin-token bootstrap is still available for headless or scripted setups. On
+each launch, credentials resolve in this order:
+
+| Source           | Fields                                                                                                                                                   | Priority | Where it lives                                         |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------ |
+| Environment      | `NATSTACK_REMOTE_URL`, optional `NATSTACK_REMOTE_TOKEN`, optional `NATSTACK_REMOTE_DEVICE_ID` / `NATSTACK_REMOTE_REFRESH_TOKEN`, optional CA/fingerprint | 1        | —                                                      |
+| Credential store | URL, device refresh credential and/or admin bootstrap credential, optional CA/fingerprint, encrypted via Electron `safeStorage`                          | 2        | `~/.config/natstack/remote-credentials.json` (`0o600`) |
+| Config file      | `remote.url`, `remote.token`, `remote.caPath`, `remote.fingerprint`                                                                                      | 3        | `~/.config/natstack/config.yml`                        |
+
+### Option A: Pairing code (recommended)
+
+Use the default **Pair with code** tab. Paste the `Pair URL` or enter the URL
+and code shown by `pnpm pair`, then **Save & relaunch**.
+
+### Option B: Environment variables (advanced)
 
 ```bash
 export NATSTACK_REMOTE_URL="https://my-server.example.com:38291"
@@ -180,17 +196,16 @@ export NATSTACK_REMOTE_TOKEN="a1b2c3d4e5..."
 natstack
 ```
 
-Useful for the very first launch. Once connected you can switch to (B).
+You can also use device credentials without an admin token by setting
+`NATSTACK_REMOTE_DEVICE_ID` and `NATSTACK_REMOTE_REFRESH_TOKEN`.
 
-### Option B: In-app settings dialog (recommended)
+### Option C: Admin token tab (advanced)
 
-Click the connection badge in the title bar → **Remote server** → fill in URL,
-admin token, and (if using self-signed TLS) a CA path or fingerprint → **Save &
-relaunch**. The admin bootstrap credential and device refresh credential are
-encrypted via the OS keychain (`safeStorage`). Use the **Disconnect** button to
-wipe credentials and return to local mode.
+Click the connection badge in the title bar → **Remote server** → **Admin
+token**. Fill in URL, admin token, and optional CA path/fingerprint, then
+**Save & relaunch**. Use this only when pairing codes are not practical.
 
-### Option C: Config file
+### Option D: Config file
 
 Edit `~/.config/natstack/config.yml`:
 
@@ -198,8 +213,8 @@ Edit `~/.config/natstack/config.yml`:
 remote:
   url: https://my-server.example.com:38291
   token: a1b2c3d4e5...
-  caPath: /home/you/.config/natstack/server-ca.pem   # optional
-  fingerprint: "AB:CD:..."                            # optional, SHA-256 leaf cert
+  caPath: /home/you/.config/natstack/server-ca.pem # optional
+  fingerprint: "AB:CD:..." # optional, SHA-256 leaf cert
 ```
 
 ### TLS pinning for self-signed servers
@@ -216,7 +231,7 @@ a custom CA or a pinned fingerprint:
   leaf cert matches.
 
 Under the hood, fingerprint mode validates the peer cert during the TLS
-`secureConnect` handler *before* any application-layer byte (including the
+`secureConnect` handler _before_ any application-layer byte (including the
 HTTP upgrade line) is written to the socket. A mismatched peer never receives
 the admin token or any RPC framing.
 
@@ -256,13 +271,13 @@ Electron stores its own UI state (window position, session data, etc.) in `~/.co
 
 The standalone server runs a single-port gateway that multiplexes all traffic:
 
-| Path | Protocol | Handler |
-|------|----------|---------|
-| `/rpc` | WebSocket | RPC server (admin client, harness connections) |
-| `/rpc` | HTTP POST | RPC server (HTTP fallback) |
-| `/_git/*` | HTTP | Reverse proxy to git server |
-| `/_w/*` | HTTP/WS | Reverse proxy to workerd |
-| `/*` (everything else) | HTTP/WS | Panel HTTP server |
+| Path                   | Protocol  | Handler                                        |
+| ---------------------- | --------- | ---------------------------------------------- |
+| `/rpc`                 | WebSocket | RPC server (admin client, harness connections) |
+| `/rpc`                 | HTTP POST | RPC server (HTTP fallback)                     |
+| `/_git/*`              | HTTP      | Reverse proxy to git server                    |
+| `/_w/*`                | HTTP/WS   | Reverse proxy to workerd                       |
+| `/*` (everything else) | HTTP/WS   | Panel HTTP server                              |
 
 ## Connection Resilience
 
@@ -283,6 +298,7 @@ host, not on the remote server. Supporting browser import there requires a
 host-callback primitive over the trusted Electron bridge so the server can ask a
 specific host to read profile files and stream the results back for storage in
 `BrowserDataDO`.
+
 - **Status indicator** in the title bar shows connection state:
   - Green dot: connected
   - Yellow dot: reconnecting
@@ -295,6 +311,7 @@ In local mode, if the server child process crashes, the app relaunches automatic
 ## Connection Status in the UI
 
 When running in remote mode, the title bar displays a connection status indicator showing:
+
 - The remote server hostname
 - A colored dot indicating connection health (green/yellow/red)
 
@@ -312,7 +329,7 @@ the approved `external-open:open` event and opens the URL locally
 drives the OAuth state machine and persists the resulting tokens.
 
 **Callback reachability.** The OAuth provider redirects the user's browser
-back to a URL *on the server*. For mobile and remote-Electron clients, the
+back to a URL _on the server_. For mobile and remote-Electron clients, the
 server's loopback isn't reachable from the user's browser, so we redirect
 through a verified public URL instead. The system picks one of three paths
 in this order:
@@ -344,20 +361,21 @@ Helpers:
 
 - `--no-vpn-detect` skips the auto-detection step entirely.
 - The readiness banner prints the registration URL alongside `Public URL:`.
+
 ## Ops & resilience
 
 ### Backup
 
 The server machine owns all state. Back these up:
 
-| Path | What it holds |
-|---|---|
-| `~/.config/natstack/admin-token` | Stable admin token (restore = keep old clients connectable) |
-| `~/.config/natstack/config.yml` | Models / cache config |
-| `~/.config/natstack/.secrets.yml` | API keys |
-| `~/.config/natstack/oauth-tokens.json` | Provider OAuth credentials (user-resealable, but convenient) |
-| `~/.config/natstack/workspaces/<name>/source/` | Workspace content (panels, agents, configs) — git-repo'd, also push elsewhere |
-| `~/.config/natstack/workspaces/<name>/state/` | DO storage, panel persistence, build cache. The `.databases/workerd-do/` subdir is the critical piece — SQLite files per DO. |
+| Path                                           | What it holds                                                                                                                |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `~/.config/natstack/admin-token`               | Stable admin token (restore = keep old clients connectable)                                                                  |
+| `~/.config/natstack/config.yml`                | Models / cache config                                                                                                        |
+| `~/.config/natstack/.secrets.yml`              | API keys                                                                                                                     |
+| `~/.config/natstack/oauth-tokens.json`         | Provider OAuth credentials (user-resealable, but convenient)                                                                 |
+| `~/.config/natstack/workspaces/<name>/source/` | Workspace content (panels, agents, configs) — git-repo'd, also push elsewhere                                                |
+| `~/.config/natstack/workspaces/<name>/state/`  | DO storage, panel persistence, build cache. The `.databases/workerd-do/` subdir is the critical piece — SQLite files per DO. |
 
 Clients are disposable: their `remote-credentials.json` can be regenerated via
 the settings dialog.

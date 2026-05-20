@@ -11,7 +11,6 @@ const logOverride = {
   "suspicious-logical-operator": "silent",
 };
 
-
 // Plugin to mark node: prefixed imports as external (for browser platform builds)
 const nodeBuiltinsExternalPlugin = {
   name: "node-builtins-external",
@@ -30,12 +29,20 @@ const serverElectronConfig = {
   target: "node20",
   format: "cjs",
   outfile: "dist/server-electron.cjs",
-  external: ["electron", "esbuild", "@npmcli/arborist",
-             "@natstack/extension-host",
-             "node-git-server", "vitest", "vitest/node", "vite",
-             // Agent SDKs: must stay external — they use import.meta.url at module scope
-             // to locate config files, which breaks when bundled into CJS.
-             "@earendil-works/pi-agent-core", "@earendil-works/pi-ai"],
+  external: [
+    "electron",
+    "esbuild",
+    "@npmcli/arborist",
+    "@natstack/extension-host",
+    "node-git-server",
+    "vitest",
+    "vitest/node",
+    "vite",
+    // Agent SDKs: must stay external — they use import.meta.url at module scope
+    // to locate config files, which breaks when bundled into CJS.
+    "@earendil-works/pi-agent-core",
+    "@earendil-works/pi-ai",
+  ],
   sourcemap: isDev,
   minify: !isDev,
   logOverride,
@@ -107,12 +114,19 @@ const serverConfig = {
   target: "node20",
   format: "esm",
   outfile: "dist/server.mjs",
-  external: ["esbuild", "@npmcli/arborist",
-             "@natstack/extension-host",
-             "node-git-server", "vitest", "vitest/node", "vite",
-             // Agent SDKs: must stay external — they use import.meta.url at module scope
-             // to locate config files relative to their install path.
-             "@earendil-works/pi-agent-core", "@earendil-works/pi-ai"],
+  external: [
+    "esbuild",
+    "@npmcli/arborist",
+    "@natstack/extension-host",
+    "node-git-server",
+    "vitest",
+    "vitest/node",
+    "vite",
+    // Agent SDKs: must stay external — they use import.meta.url at module scope
+    // to locate config files relative to their install path.
+    "@earendil-works/pi-agent-core",
+    "@earendil-works/pi-ai",
+  ],
   plugins: [electronStubPlugin],
   sourcemap: isDev,
   minify: !isDev,
@@ -127,6 +141,18 @@ const __filename = __fileURLToPath(import.meta.url);
 const __dirname = __pathDirname(__filename);
 `.trim(),
   },
+};
+
+const clientConfig = {
+  entryPoints: ["src/cli/client.ts"],
+  bundle: true,
+  platform: "node",
+  target: "node20",
+  format: "esm",
+  outfile: "dist/cli/client.mjs",
+  sourcemap: isDev,
+  minify: !isDev,
+  logOverride,
 };
 
 const mainConfig = {
@@ -264,12 +290,44 @@ const rendererExternalsPlugin = {
   setup(build) {
     // Hardcoded set of Node builtin module names (covers all common ones)
     const builtins = new Set([
-      "assert", "buffer", "child_process", "cluster", "console", "constants",
-      "crypto", "dgram", "dns", "domain", "events", "fs", "fs/promises",
-      "http", "http2", "https", "module", "net", "os", "path", "perf_hooks",
-      "process", "punycode", "querystring", "readline", "repl", "stream",
-      "string_decoder", "sys", "timers", "tls", "tty", "url", "util", "v8",
-      "vm", "worker_threads", "zlib",
+      "assert",
+      "buffer",
+      "child_process",
+      "cluster",
+      "console",
+      "constants",
+      "crypto",
+      "dgram",
+      "dns",
+      "domain",
+      "events",
+      "fs",
+      "fs/promises",
+      "http",
+      "http2",
+      "https",
+      "module",
+      "net",
+      "os",
+      "path",
+      "perf_hooks",
+      "process",
+      "punycode",
+      "querystring",
+      "readline",
+      "repl",
+      "stream",
+      "string_decoder",
+      "sys",
+      "timers",
+      "tls",
+      "tty",
+      "url",
+      "util",
+      "v8",
+      "vm",
+      "worker_threads",
+      "zlib",
     ]);
 
     // Mark electron as external
@@ -352,8 +410,8 @@ function copyDirectoryRecursive(srcDir, destDir) {
 async function generateProtocolFiles() {
   console.log("Generating protocol files...");
   try {
-    execSync('node scripts/generate-channels.mjs', { stdio: 'inherit' });
-    execSync('node scripts/generate-injected.mjs', { stdio: 'inherit' });
+    execSync("node scripts/generate-channels.mjs", { stdio: "inherit" });
+    execSync("node scripts/generate-injected.mjs", { stdio: "inherit" });
     console.log("Protocol files generated successfully!");
   } catch (error) {
     console.error("Failed to generate protocol files:", error);
@@ -364,7 +422,7 @@ async function generateProtocolFiles() {
 async function buildPlaywrightCore() {
   console.log("Building @workspace/playwright-core (browser bundle)...");
   try {
-    execSync('pnpm --filter "@workspace/playwright-core" build', { stdio: 'inherit' });
+    execSync('pnpm --filter "@workspace/playwright-core" build', { stdio: "inherit" });
     console.log("@workspace/playwright-core built successfully!");
   } catch (error) {
     console.error("Failed to build @workspace/playwright-core:", error);
@@ -375,7 +433,7 @@ async function buildPlaywrightCore() {
 async function buildNatstackPackages() {
   console.log("Building @natstack/* infrastructure packages...");
   try {
-    execSync('pnpm --filter "@natstack/*" build', { stdio: 'inherit' });
+    execSync('pnpm --filter "@natstack/*" build', { stdio: "inherit" });
     console.log("@natstack/* packages built successfully!");
   } catch (error) {
     console.error("Failed to build @natstack/* packages:", error);
@@ -390,7 +448,9 @@ async function buildWorkspacePackages() {
     // Note: We intentionally do NOT use --parallel here because packages have
     // inter-dependencies (e.g., @workspace/ai depends on @workspace/runtime).
     // pnpm will automatically build in topological order (dependencies first).
-    execSync('pnpm --filter "!@workspace/playwright-core" --filter "@workspace/*" build', { stdio: 'inherit' });
+    execSync('pnpm --filter "!@workspace/playwright-core" --filter "@workspace/*" build', {
+      stdio: "inherit",
+    });
     console.log("@workspace/* packages built successfully!");
   } catch (error) {
     console.error("Failed to build @workspace/* packages:", error);
@@ -422,7 +482,9 @@ async function buildDependencyWorkers() {
     try {
       entryPath = req.resolve(entry.specifier);
     } catch {
-      console.warn(`[build] Could not resolve worker: ${entry.specifier} (declared by ${entry.declaredBy})`);
+      console.warn(
+        `[build] Could not resolve worker: ${entry.specifier} (declared by ${entry.declaredBy})`
+      );
       continue;
     }
 
@@ -521,11 +583,16 @@ async function build() {
       define: { ...(serverConfig.define ?? {}), ...internalDoBundleDefine },
     };
     // Clean stale renderer artifacts before ESM build (prevents accidental loading of old CJS bundle)
-    try { fs.unlinkSync("dist/renderer.js"); } catch {}
-    try { fs.unlinkSync("dist/renderer.css"); } catch {}
+    try {
+      fs.unlinkSync("dist/renderer.js");
+    } catch {}
+    try {
+      fs.unlinkSync("dist/renderer.css");
+    } catch {}
     await esbuild.build(rendererConfig);
     await esbuild.build(serverElectronWithBundle);
     await esbuild.build(serverWithBundle);
+    await esbuild.build(clientConfig);
     await buildDependencyWorkers();
 
     // ========================================================================
