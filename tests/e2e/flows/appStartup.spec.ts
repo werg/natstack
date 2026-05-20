@@ -5,7 +5,15 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { launchTestApp, waitForAppReady, getPanelTree, type TestApp } from "../../setup/electronSetup";
+import {
+  ELECTRON_DISPLAY_UNAVAILABLE_MESSAGE,
+  getPanelTree,
+  hasElectronDisplay,
+  launchTestApp,
+  type TestApp,
+} from "../../setup/electronSetup";
+
+test.skip(!hasElectronDisplay(), ELECTRON_DISPLAY_UNAVAILABLE_MESSAGE);
 
 test.describe("App Startup", () => {
   let testApp: TestApp;

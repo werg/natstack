@@ -28,6 +28,16 @@ export interface TestApp {
   cleanup: () => Promise<void>;
 }
 
+export const ELECTRON_DISPLAY_UNAVAILABLE_MESSAGE =
+  "Electron E2E tests require an X11 or Wayland display. Run them from a desktop session or under xvfb-run.";
+
+export function hasElectronDisplay(): boolean {
+  if (process.platform !== "linux") {
+    return true;
+  }
+  return Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+}
+
 export interface LaunchOptions {
   /** Use an existing managed workspace directory instead of creating a new one */
   workspace?: string;
@@ -47,7 +57,7 @@ interface ManagedWorkspaceInfo {
   env: Record<string, string>;
 }
 
-const SOURCE_DIRS = ["panels", "packages", "agents", "workers", "skills", "about"];
+const SOURCE_DIRS = ["meta", "panels", "packages", "agents", "workers", "skills", "about"];
 const STATE_DIRS = [".cache", ".databases", ".contexts"];
 
 function getTestEnv(testRoot: string): Record<string, string> {
@@ -81,13 +91,15 @@ function getWorkspaceInfo(workspaceDir: string): ManagedWorkspaceInfo {
 
   switch (process.platform) {
     case "win32":
-      testRoot = path.dirname(path.dirname(path.dirname(workspaceDir)));
+      testRoot = path.dirname(path.dirname(path.dirname(path.dirname(workspaceDir))));
       break;
     case "darwin":
-      testRoot = path.dirname(path.dirname(path.dirname(path.dirname(path.dirname(workspaceDir)))));
+      testRoot = path.dirname(
+        path.dirname(path.dirname(path.dirname(path.dirname(path.dirname(workspaceDir)))))
+      );
       break;
     default:
-      testRoot = path.dirname(path.dirname(path.dirname(workspaceDir)));
+      testRoot = path.dirname(path.dirname(path.dirname(path.dirname(workspaceDir))));
       break;
   }
 
@@ -132,8 +144,6 @@ export function createManagedTestWorkspace(projectRoot?: string): string {
       fs.mkdirSync(dest, { recursive: true });
     }
   }
-
-  // natstack.yml is already copied as part of the meta/ SOURCE_DIR above
 
   for (const dir of STATE_DIRS) {
     fs.mkdirSync(path.join(stateRoot, dir), { recursive: true });
@@ -181,8 +191,12 @@ export async function launchTestApp(options: LaunchOptions = {}): Promise<TestAp
   // Get the electron binary path
   const electronPath = require("electron") as string;
 
+  if (!hasElectronDisplay()) {
+    throw new Error(ELECTRON_DISPLAY_UNAVAILABLE_MESSAGE);
+  }
+
   // Build electron args - first arg is the app entry point
-  const args = [mainPath, `--workspace=${workspaceInfo.workspaceName}`];
+  const args = ["--no-sandbox", mainPath, `--workspace=${workspaceInfo.workspaceName}`];
   if (initialPanel) {
     args.push(`--panel=${initialPanel}`);
   }
@@ -197,6 +211,7 @@ export async function launchTestApp(options: LaunchOptions = {}): Promise<TestAp
       NATSTACK_TEST_MODE: "1",
       // Disable GPU acceleration for CI environments
       ELECTRON_DISABLE_GPU: "1",
+      ELECTRON_DISABLE_SANDBOX: "1",
       ...workspaceInfo.env,
       ...env,
     },
@@ -268,9 +283,7 @@ export async function waitForPanel(
   timeout = 10000
 ): Promise<void> {
   const selector =
-    typeof panelIdPattern === "string"
-      ? `[data-panel-id="${panelIdPattern}"]`
-      : `[data-panel-id]`;
+    typeof panelIdPattern === "string" ? `[data-panel-id="${panelIdPattern}"]` : `[data-panel-id]`;
 
   await window.waitForSelector(selector, { timeout });
 
@@ -386,10 +399,7 @@ export async function waitForAppReady(window: Page, timeout = 15000): Promise<vo
 /**
  * Take a screenshot of the current window for debugging.
  */
-export async function takeScreenshot(
-  window: Page,
-  name: string
-): Promise<Buffer> {
+export async function takeScreenshot(window: Page, name: string): Promise<Buffer> {
   const projectRoot = path.resolve(__dirname, "../..");
   const screenshotDir = path.join(projectRoot, "test-results", "screenshots");
   fs.mkdirSync(screenshotDir, { recursive: true });

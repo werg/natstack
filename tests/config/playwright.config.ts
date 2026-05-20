@@ -7,6 +7,7 @@ const __dirname = path.dirname(__filename);
 
 export default defineConfig({
   testDir: path.resolve(__dirname, "../e2e"),
+  testMatch: "**/*.spec.ts",
   fullyParallel: false, // Electron tests run serially
   workers: 1, // Single worker for Electron
   timeout: 60000, // Electron startup can be slow

@@ -7,16 +7,18 @@
 
 import { test, expect } from "@playwright/test";
 import {
-  launchTestApp,
-  getPanelTree,
+  ELECTRON_DISPLAY_UNAVAILABLE_MESSAGE,
   getFocusedPanelId,
-  createPanel,
-  closePanel,
+  getPanelTree,
+  hasElectronDisplay,
+  launchTestApp,
   isPanelLoaded,
   createManagedTestWorkspace,
   removeManagedTestWorkspace,
   type TestApp,
 } from "../../setup/electronSetup";
+
+test.skip(!hasElectronDisplay(), ELECTRON_DISPLAY_UNAVAILABLE_MESSAGE);
 
 test.describe("Panel Lifecycle", () => {
   let testApp: TestApp;
