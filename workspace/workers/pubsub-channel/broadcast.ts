@@ -61,13 +61,17 @@ export function cleanupDeliveryChain(participantId: string): void {
 export function queueDoEnvelope(
   deps: BroadcastDeps,
   participantId: string,
-  envelope: RpcChannelMessage
+  envelope: RpcChannelMessage,
+  onFatalDelivery?: (err: { code?: string }) => void,
 ): Promise<void> {
   const prev = deliveryChains.get(participantId) ?? Promise.resolve();
   const next: Promise<void> = prev.then(() =>
     deps.rpc.call(participantId, "onChannelEnvelope", [deps.objectKey, envelope])
       .then(() => {})
-      .catch(err => console.error(`[Channel] delivery failed for ${participantId}:`, err)),
+      .catch((err) => {
+        onFatalDelivery?.(err as { code?: string });
+        console.error(`[Channel] delivery failed for ${participantId}:`, err);
+      }),
   );
   deliveryChains.set(participantId, next);
   return next;
@@ -95,19 +99,24 @@ export function broadcast(
 
   for (const p of participants) {
     const pid = p["id"] as string;
+    const removeParticipantOnFatalDelivery = (err: { code?: string }) => {
+      const code = err?.code;
+      if (
+        code === "TARGET_NOT_REACHABLE" ||
+        code === "RECONNECT_GRACE_EXPIRED" ||
+        code === "DO_NOT_CREATED"
+      ) {
+        deps.sql.exec(`DELETE FROM participants WHERE id = ?`, pid);
+        cleanupDeliveryChain(pid);
+      }
+    };
     const data = pid === senderId && envelope.ref !== undefined
       ? { channelId: deps.objectKey, message: { ...msg, ref: envelope.ref } }
       : { channelId: deps.objectKey, message: msg };
 
     // Route through the per-subscriber emit chain so replay emits queued
     // during a concurrent subscribe stay ahead of live broadcasts.
-    void queueEmit(deps, pid, data, (err) => {
-      const code = err?.code;
-      if (code === "TARGET_NOT_REACHABLE" || code === "RECONNECT_GRACE_EXPIRED") {
-        deps.sql.exec(`DELETE FROM participants WHERE id = ?`, pid);
-        cleanupDeliveryChain(pid);
-      }
-    });
+    void queueEmit(deps, pid, data, removeParticipantOnFatalDelivery);
 
     // For DO participants, also deliver the structured envelope via RPC call.
     if (p["transport"] === "do") {
@@ -116,7 +125,8 @@ export function broadcast(
         pid,
         envelope.kind === "log"
           ? { kind: "log", phase: envelope.phase ?? "live", event }
-          : channelEventToRpcSignal(event)
+          : channelEventToRpcSignal(event),
+        removeParticipantOnFatalDelivery,
       );
     }
   }

@@ -12,6 +12,7 @@ import {
   getRecommendedChannelConfig,
   retireHeadlessAgent,
   subscribeHeadlessAgent,
+  unsubscribeHeadlessAgent,
 } from "./channel.js";
 
 function makeRpcCall(captured: {
@@ -189,5 +190,23 @@ describe("retireHeadlessAgent", () => {
     expect(rpcCall).toHaveBeenCalledWith("main", "runtime.retireEntity", [
       { id: "do:workers/agent-worker:AiChatWorker:obj-1" },
     ]);
+  });
+});
+
+describe("unsubscribeHeadlessAgent", () => {
+  it("asks the registered agent DO to leave the channel before retirement", async () => {
+    const rpcCall = vi.fn(async () => undefined);
+
+    await unsubscribeHeadlessAgent({
+      rpcCall,
+      targetId: "do:workers/agent-worker:AiChatWorker:obj-1",
+      channelId: "ch-1",
+    });
+
+    expect(rpcCall).toHaveBeenCalledWith(
+      "do:workers/agent-worker:AiChatWorker:obj-1",
+      "unsubscribeChannel",
+      ["ch-1"],
+    );
   });
 });

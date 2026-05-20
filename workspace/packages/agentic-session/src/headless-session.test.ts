@@ -48,6 +48,35 @@ describe("HeadlessSession", () => {
     }).not.toThrow();
   });
 
+  it("unsubscribes the agent DO before retiring its runtime entity", async () => {
+    const session = HeadlessSession.create({
+      config: createConfig(),
+    });
+    const calls: Array<{ target: string; method: string; args: unknown[] }> = [];
+    (session as any)._agentEntityId = "do:workers/agent-worker:AiChatWorker:obj-1";
+    (session as any)._agentTargetId = "do:workers/agent-worker:AiChatWorker:obj-1";
+    (session as any)._channelId = "ch-1";
+    (session as any)._agentRpcCall = vi.fn(async (target: string, method: string, args: unknown[]) => {
+      calls.push({ target, method, args });
+      return undefined;
+    });
+
+    await session.close();
+
+    expect(calls).toEqual([
+      {
+        target: "do:workers/agent-worker:AiChatWorker:obj-1",
+        method: "unsubscribeChannel",
+        args: ["ch-1"],
+      },
+      {
+        target: "main",
+        method: "runtime.retireEntity",
+        args: [{ id: "do:workers/agent-worker:AiChatWorker:obj-1" }],
+      },
+    ]);
+  });
+
   it("callMethod returns the provider payload and callMethodResult returns the full envelope", async () => {
     const session = HeadlessSession.create({
       config: createConfig(),

@@ -540,6 +540,25 @@ describe("ContentBlockProjector — agent_end auto-close", () => {
 
     const completes = sink.ops.filter((o) => o.kind === "complete");
     expect(completes.map((o) => o.msgId)).toContain("m1");
+    const update = sink.ops.find((o) => o.kind === "update") as ChannelOp & { kind: "update" };
+    expect(JSON.parse(update.content).execution.status).toBe("error");
+  });
+
+  it("terminalizes an in-flight toolCall on clean agent_end so the UI does not keep spinning", async () => {
+    const sink = makeSink();
+    const projector = new ContentBlockProjector(sink, makeAllocator());
+
+    await projector.handleEvent(
+      toolcallStart(0, { id: "tc", name: "eval", arguments: { code: "return 1;" } }),
+    );
+    // No tool_execution_end, but the turn itself completed cleanly.
+    await projector.handleEvent(agentEnd("stop"));
+
+    const update = sink.ops.find((o) => o.kind === "update") as ChannelOp & { kind: "update" };
+    const payload = JSON.parse(update.content);
+    expect(payload.execution.status).toBe("complete");
+    expect(payload.execution.isError).toBeUndefined();
+    expect(sink.ops).toContainEqual({ kind: "complete", msgId: "m1" });
   });
 
   it("does not emit duplicate completion on a clean agent_end after text_end", async () => {
@@ -635,8 +654,10 @@ describe("ContentBlockProjector", () => {
     await projector.closeAll();
 
     const kinds = sink.ops.map((o) => o.kind);
-    // 3 completes, one per open block.
+    // Text/thinking get completes. The tool call is first terminalized, then completed.
     expect(kinds.filter((k) => k === "complete")).toHaveLength(3);
+    const update = sink.ops.find((o) => o.kind === "update") as ChannelOp & { kind: "update" };
+    expect(JSON.parse(update.content).execution.status).toBe("error");
   });
 
   it("handleEvent's returned promise resolves only after all dispatched ops land", async () => {

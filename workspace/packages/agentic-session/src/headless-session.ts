@@ -55,6 +55,7 @@ import {
   getRecommendedChannelConfig,
   retireHeadlessAgent,
   subscribeHeadlessAgent,
+  unsubscribeHeadlessAgent,
 } from "./channel.js";
 
 // ===========================================================================
@@ -131,6 +132,7 @@ export class HeadlessSession {
   private _createdAt = Date.now();
   private _config: HeadlessSessionConfig;
   private _agentEntityId: string | null = null;
+  private _agentTargetId: string | null = null;
   private _agentRpcCall: HeadlessWithAgentConfig["rpcCall"] | null = null;
 
   // Channel message state (derived from persisted + live channel messages)
@@ -197,6 +199,7 @@ export class HeadlessSession {
       extraConfig: config.extraConfig,
     });
     session._agentEntityId = subscription.entityId;
+    session._agentTargetId = subscription.targetId;
     session._agentRpcCall = config.rpcCall;
 
     if (session._scopeManager) {
@@ -567,9 +570,15 @@ export class HeadlessSession {
 
   async close(): Promise<void> {
     const entityId = this._agentEntityId;
+    const targetId = this._agentTargetId;
+    const channelId = this._channelId;
     const rpcCall = this._agentRpcCall;
     this._agentEntityId = null;
+    this._agentTargetId = null;
     this._agentRpcCall = null;
+    if (targetId && channelId && rpcCall) {
+      await unsubscribeHeadlessAgent({ rpcCall, targetId, channelId }).catch(() => {});
+    }
     this.dispose();
     if (entityId && rpcCall) {
       await retireHeadlessAgent({ rpcCall, entityId }).catch(() => {});

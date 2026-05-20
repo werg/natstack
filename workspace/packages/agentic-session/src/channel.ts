@@ -98,3 +98,11 @@ export async function retireHeadlessAgent(opts: {
 }): Promise<void> {
   await opts.rpcCall("main", "runtime.retireEntity", [{ id: opts.entityId }]);
 }
+
+export async function unsubscribeHeadlessAgent(opts: {
+  rpcCall: (target: string, method: string, args: unknown[]) => Promise<unknown>;
+  targetId: string;
+  channelId: string;
+}): Promise<void> {
+  await opts.rpcCall(opts.targetId, "unsubscribeChannel", [opts.channelId]);
+}
