@@ -2,29 +2,21 @@
  * Method call routing for the PubSub Channel DO.
  *
  * Method calls are stored in `pending_calls` and delivered to the target
- * participant. Results are routed back to the caller. Calls have **no
- * wall-clock timeout** — agentic activities like long eval, remote builds,
- * LLM thinking, and user-input pauses can legitimately run for a long time
- * and a wall-clock kill converts legitimate work into hard failure.
+ * participant. Results are routed back to the caller. The channel does not
+ * impose an internal wall-clock timeout — agentic activities like long eval,
+ * remote builds, LLM thinking, and user-input pauses can legitimately run for
+ * a long time and a wall-clock kill converts legitimate work into hard failure.
  *
- * Pending calls are instead cancelled by **roster events**: when a target
- * participant leaves the channel (graceful unsubscribe, disconnect, or stale
- * eviction), `cancelCallsForTarget` is called from the leave handlers and
- * delivers a synthetic error to each affected caller via the normal result
- * path. This is the same mechanism the harness side uses to detect orphan
- * tool calls.
+ * Pending calls are cancelled by **roster events** when a target participant
+ * leaves, or by the channel DO's explicit timeout method when an external
+ * caller owns a deadline. Roster cancellation delivers a synthetic error to
+ * each affected caller via the normal result path.
  */
 
 import type { SqlStorage } from "@workspace/runtime/worker";
 
 /**
  * Store a pending method call and deliver to the target.
- *
- * The `expires_at` column is a vestigial NOT NULL field from when this DO had
- * a wall-clock timeout on pending calls. The alarm code that read it has been
- * removed; we insert `0` as a sentinel to keep the schema's NOT NULL
- * constraint satisfied without migrating existing DOs. Pre-existing rows with
- * real expires_at values are simply ignored at read time — nothing queries it.
  */
 export function storeCall(
   sql: SqlStorage,
@@ -35,8 +27,8 @@ export function storeCall(
   args: unknown,
 ): void {
   sql.exec(
-    `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, expires_at, created_at)
-     VALUES (?, ?, ?, ?, ?, 0, ?)`,
+    `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
     callId, callerId, targetId, method, JSON.stringify(args), Date.now(),
   );
 }
@@ -102,4 +94,3 @@ export function cancelCallsForTarget(
     callerId: r["caller_id"] as string,
   }));
 }
-

@@ -3,7 +3,7 @@
 //
 // Pi (`@earendil-works/pi-agent-core`) owns chat state. This package provides:
 // - Pi message/event type re-exports (single import surface for consumers)
-// - The ephemeral event envelope used by the channel snapshot stream
+// - The signal event envelope used by the channel snapshot stream
 // - The eval tool factory
 // - The sandbox config factory
 // - Connection management primitives
@@ -41,12 +41,12 @@ export type { BuildEvalToolOptions } from "./eval-tool.js";
 // --- SandboxConfig Factories ---
 export { createPanelSandboxConfig } from "./sandbox-factory.js";
 
-// --- Ephemeral Event Envelope (typed structured channel payloads) ---
-export { parseEphemeralEvent } from "./ephemeral-event-envelope.js";
+// --- Signal Event Envelope (typed structured channel payloads) ---
+export { parseSignalEvent } from "./signal-event-envelope.js";
 export type {
-  EphemeralEventEnvelope,
-  EphemeralMessageLike,
-} from "./ephemeral-event-envelope.js";
+  SignalEventEnvelope,
+  SignalMessageLike,
+} from "./signal-event-envelope.js";
 
 // --- Derived UI shapes (computed from Pi snapshots for component rendering) ---
 export type {

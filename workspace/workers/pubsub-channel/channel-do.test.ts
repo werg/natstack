@@ -130,16 +130,15 @@ describe("PubSubChannel", () => {
       );
     });
 
-    it("returns replay with REPLAY_LIMIT=50 and sets replayTruncated", async () => {
+    it("returns a root-window replay envelope", async () => {
       const { instance, sql } = await createTestDO(PubSubChannel, {
         __objectKey: "test-channel",
       });
 
-      // Insert 55 persisted messages
       for (let i = 1; i <= 55; i++) {
         sql.exec(
-          `INSERT INTO messages (message_id, type, content, sender_id, ts, persist)
-           VALUES (?, 'message', '{"content":"msg"}', 'sender', ?, 1)`,
+          `INSERT INTO messages (message_id, type, payload, sender_id, ts, is_root, root_kind)
+           VALUES (?, 'message', '{"id":"msg","content":"msg"}', 'sender', ?, 1, 'chat')`,
           `msg-${i}`,
           1000 + i
         );
@@ -150,11 +149,10 @@ describe("PubSubChannel", () => {
       });
 
       expect(result.ok).toBe(true);
-      expect(result.replay).toHaveLength(50);
-      expect(result.replayTruncated).toBe(true);
-      // Should be the 50 most recent (ids 6-55)
-      expect(result.replay![0]!.id).toBe(6);
-      expect(result.replay![49]!.id).toBe(55);
+      expect(result.envelope.logEvents).toHaveLength(50);
+      expect(result.envelope.ready.hasMoreBefore).toBe(true);
+      expect(result.envelope.logEvents[0]!.id).toBe(6);
+      expect(result.envelope.logEvents[49]!.id).toBe(55);
     });
 
     it("returns full replay without truncation when under limit", async () => {
@@ -164,8 +162,8 @@ describe("PubSubChannel", () => {
 
       for (let i = 1; i <= 10; i++) {
         sql.exec(
-          `INSERT INTO messages (message_id, type, content, sender_id, ts, persist)
-           VALUES (?, 'message', '{"content":"msg"}', 'sender', ?, 1)`,
+          `INSERT INTO messages (message_id, type, payload, sender_id, ts, is_root, root_kind)
+           VALUES (?, 'message', '{"id":"msg","content":"msg"}', 'sender', ?, 1, 'chat')`,
           `msg-${i}`,
           1000 + i
         );
@@ -175,8 +173,55 @@ describe("PubSubChannel", () => {
         replay: true,
       });
 
-      expect(result.replay).toHaveLength(10);
-      expect(result.replayTruncated).toBeFalsy();
+      expect(result.envelope.logEvents).toHaveLength(10);
+      expect(result.envelope.ready.hasMoreBefore).toBe(false);
+    });
+
+    it("honors replay=false with a ready-only envelope", async () => {
+      const { instance } = await createTestDO(PubSubChannel, {
+        __objectKey: "test-channel",
+      });
+
+      await instance.subscribe("panel:sender", {
+        contextId: "ctx-1",
+        callerKind: "panel",
+      });
+      await instance.send("panel:sender", "msg-1", "hello");
+
+      const result = await instance.subscribe("panel:live-only", {
+        contextId: "ctx-1",
+        callerKind: "panel",
+        replay: false,
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.envelope.logEvents).toEqual([]);
+      expect(result.envelope.snapshots).toEqual([]);
+      expect(result.envelope.ready.totalCount).toBeGreaterThan(0);
+    });
+
+    it("accepts custom durable publish events as system roots", async () => {
+      const { instance, sql } = await createTestDO(PubSubChannel, {
+        __objectKey: "test-channel",
+      });
+
+      await instance.subscribe("panel:sender", {
+        contextId: "ctx-1",
+        callerKind: "panel",
+      });
+      const result = await instance.publish("panel:sender", "agent-context", {
+        id: "ctx-event-1",
+        content: "context",
+      });
+
+      expect(result.id).toEqual(expect.any(Number));
+      const row = sql
+        .exec(`SELECT type, payload, is_root, root_kind FROM messages WHERE id = ?`, result.id)
+        .one();
+      expect(row["type"]).toBe("agent-context");
+      expect(row["is_root"]).toBe(1);
+      expect(row["root_kind"]).toBe("system");
+      expect(JSON.parse(row["payload"] as string)).toMatchObject({ id: "ctx-event-1" });
     });
 
     it("rejects a second participant claiming the same handle", async () => {
@@ -273,14 +318,13 @@ describe("PubSubChannel", () => {
         "session-old"
       );
       sql.exec(
-        `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
         "11111111-1111-4111-8111-111111111111",
         "do:workers/agent-worker:AiChatWorker:agent-1",
         "panel:panel-1",
         "feedback_custom",
         '{"code":"x"}',
-        0,
         Date.now()
       );
 
@@ -314,15 +358,15 @@ describe("PubSubChannel", () => {
         channelId: string;
       };
       expect(emitted.channelId).toBe("test-channel");
-      expect(emitted.message.kind).toBe("ephemeral");
+      expect(emitted.message.kind).toBe("signal");
       expect(emitted.message.payload.callId).toBe("11111111-1111-4111-8111-111111111111");
       expect(emitted.message.payload.methodName).toBe("feedback_custom");
       expect(emitted.message.payload.args).toEqual({ code: "x" });
       // The replaced-session leave presence event still fires.
       const leaveMessages = sql
-        .exec(`SELECT content FROM messages WHERE type = 'presence' ORDER BY id ASC`)
+        .exec(`SELECT payload FROM messages WHERE type = 'presence' ORDER BY id ASC`)
         .toArray()
-        .map((row) => JSON.parse(row["content"] as string));
+        .map((row) => JSON.parse(row["payload"] as string));
       expect(
         leaveMessages.some((msg) => msg.action === "leave" && msg.leaveReason === "replaced")
       ).toBe(true);
@@ -348,14 +392,13 @@ describe("PubSubChannel", () => {
         "session-same"
       );
       sql.exec(
-        `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
         "22222222-2222-4222-8222-222222222222",
         "caller-1",
         "panel:panel-1",
         "eval",
         "{}",
-        0,
         Date.now()
       );
 
@@ -380,9 +423,8 @@ describe("PubSubChannel", () => {
 
       // Insert a pending call
       sql.exec(
-        `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, expires_at, created_at)
-         VALUES ('call-1', 'caller-1', 'provider-1', 'doWork', '{}', ?, ?)`,
-        Date.now() + 60000,
+        `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, created_at)
+         VALUES ('call-1', 'caller-1', 'provider-1', 'doWork', '{}', ?)`,
         Date.now()
       );
 
@@ -412,14 +454,13 @@ describe("PubSubChannel", () => {
          VALUES ('do:workers/agent-worker:AiChatWorker:agent-1', '{}', 'do', 1000)`
       );
       sql.exec(
-        `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
         "55555555-5555-4555-8555-555555555555",
         "do:workers/agent-worker:AiChatWorker:agent-1",
         "panel:panel-1",
         "eval",
         "{}",
-        0,
         Date.now()
       );
       setRpcCaller(instance, "panel:panel-1", "panel");
@@ -432,23 +473,26 @@ describe("PubSubChannel", () => {
           content: { ok: true },
           complete: true,
           isError: false,
-        },
-        { persist: true }
+        }
       );
 
       expect(sql.exec(`SELECT call_id FROM pending_calls`).toArray()).toEqual([]);
       expect((instance as any)._rpc.call).toHaveBeenCalledWith(
         "do:workers/agent-worker:AiChatWorker:agent-1",
-        "onChannelEvent",
+        "onChannelEnvelope",
         [
           "test-channel",
           expect.objectContaining({
-            type: "method-result",
-            payload: expect.objectContaining({
-              callId: "55555555-5555-4555-8555-555555555555",
-              content: { ok: true },
-              complete: true,
-              isError: false,
+            kind: "log",
+            phase: "live",
+            event: expect.objectContaining({
+              type: "method-result",
+              payload: expect.objectContaining({
+                callId: "55555555-5555-4555-8555-555555555555",
+                content: { ok: true },
+                complete: true,
+                isError: false,
+              }),
             }),
           }),
         ],
@@ -459,17 +503,79 @@ describe("PubSubChannel", () => {
         expect.objectContaining({
           channelId: "test-channel",
           message: expect.objectContaining({
-            kind: "persisted",
-            type: "method-result",
-            payload: expect.objectContaining({
-              callId: "55555555-5555-4555-8555-555555555555",
-              content: { ok: true },
-              complete: true,
-              isError: false,
+            kind: "log",
+            phase: "live",
+            event: expect.objectContaining({
+              type: "method-result",
+              payload: expect.objectContaining({
+                callId: "55555555-5555-4555-8555-555555555555",
+                content: { ok: true },
+                complete: true,
+                isError: false,
+              }),
             }),
           }),
         })
       );
+    });
+
+    it("dedupes retried pending method-result publication by idempotency key", async () => {
+      const { instance, sql } = await createTestDO(PubSubChannel, {
+        __objectKey: "test-channel",
+      });
+      (instance as any)._rpc = {
+        emit: vi.fn().mockResolvedValue(undefined),
+        call: vi.fn().mockResolvedValue(undefined),
+      };
+      sql.exec(
+        `INSERT INTO participants (id, metadata, transport, connected_at)
+         VALUES ('panel:caller', '{}', 'rpc', 1000)`
+      );
+      sql.exec(
+        `INSERT INTO participants (id, metadata, transport, connected_at)
+         VALUES ('panel:provider', '{}', 'rpc', 1000)`
+      );
+      await instance.callMethod(
+        "panel:caller",
+        "panel:provider",
+        "77777777-7777-4777-8777-777777777777",
+        "doWork",
+        {}
+      );
+
+      const first = await instance.publish(
+        "panel:provider",
+        "method-result",
+        {
+          callId: "77777777-7777-4777-8777-777777777777",
+          content: { ok: true },
+          complete: true,
+          isError: false,
+        },
+        { idempotencyKey: "method-result:777" }
+      );
+      const second = await instance.publish(
+        "panel:provider",
+        "method-result",
+        {
+          callId: "77777777-7777-4777-8777-777777777777",
+          content: { ok: true },
+          complete: true,
+          isError: false,
+        },
+        { idempotencyKey: "method-result:777" }
+      );
+
+      expect(second.id).toBe(first.id);
+      expect(
+        sql
+          .exec(
+            `SELECT COUNT(*) as cnt FROM messages
+             WHERE type = 'method-result'
+               AND root_message_id = '77777777-7777-4777-8777-777777777777'`
+          )
+          .one()["cnt"]
+      ).toBe(1);
     });
 
     it("keeps participant-scoped methods restricted to the verified participant", async () => {
@@ -626,14 +732,13 @@ describe("PubSubChannel", () => {
         Date.now()
       );
       sql.exec(
-        `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
         "33333333-3333-4333-8333-333333333333",
         "do:workers/agent-worker:AiChatWorker:agent-1",
         "panel:panel-1",
         "eval",
         "{}",
-        0,
         Date.now()
       );
 
@@ -645,23 +750,26 @@ describe("PubSubChannel", () => {
           content: { ok: true },
           complete: true,
           isError: false,
-        },
-        { persist: true }
+        }
       );
 
       expect(sql.exec(`SELECT call_id FROM pending_calls`).toArray()).toEqual([]);
       expect(mockRpc.call).toHaveBeenCalledWith(
         "do:workers/agent-worker:AiChatWorker:agent-1",
-        "onChannelEvent",
+        "onChannelEnvelope",
         [
           "test-channel",
           expect.objectContaining({
-            type: "method-result",
-            payload: expect.objectContaining({
-              callId: "33333333-3333-4333-8333-333333333333",
-              content: { ok: true },
-              complete: true,
-              isError: false,
+            kind: "log",
+            phase: "live",
+            event: expect.objectContaining({
+              type: "method-result",
+              payload: expect.objectContaining({
+                callId: "33333333-3333-4333-8333-333333333333",
+                content: { ok: true },
+                complete: true,
+                isError: false,
+              }),
             }),
           }),
         ],
@@ -676,13 +784,16 @@ describe("PubSubChannel", () => {
           expect.objectContaining({
             channelId: "test-channel",
             message: expect.objectContaining({
-              kind: "persisted",
-              type: "method-result",
-              payload: expect.objectContaining({
-                callId: "33333333-3333-4333-8333-333333333333",
-                content: { ok: true },
-                complete: true,
-                isError: false,
+              kind: "log",
+              phase: "live",
+              event: expect.objectContaining({
+                type: "method-result",
+                payload: expect.objectContaining({
+                  callId: "33333333-3333-4333-8333-333333333333",
+                  content: { ok: true },
+                  complete: true,
+                  isError: false,
+                }),
               }),
             }),
           })
@@ -714,14 +825,13 @@ describe("PubSubChannel", () => {
         Date.now()
       );
       sql.exec(
-        `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
         "call-1",
         "do:workers/agent-worker:AiChatWorker:agent-1",
         "panel:panel-1",
         "eval",
         "{}",
-        Date.now() + 60_000,
         Date.now()
       );
 
@@ -733,22 +843,25 @@ describe("PubSubChannel", () => {
           content: { ok: true, result: 42 },
           complete: true,
           isError: false,
-        },
-        { persist: true }
+        }
       );
 
       expect(mockRpc.call).toHaveBeenCalledWith(
         "do:workers/agent-worker:AiChatWorker:agent-1",
-        "onChannelEvent",
+        "onChannelEnvelope",
         [
           "test-channel",
           expect.objectContaining({
-            type: "method-result",
-            payload: expect.objectContaining({
-              callId: "call-1",
-              content: { ok: true, result: 42 },
-              complete: true,
-              isError: false,
+            kind: "log",
+            phase: "live",
+            event: expect.objectContaining({
+              type: "method-result",
+              payload: expect.objectContaining({
+                callId: "call-1",
+                content: { ok: true, result: 42 },
+                complete: true,
+                isError: false,
+              }),
             }),
           }),
         ],
@@ -760,13 +873,16 @@ describe("PubSubChannel", () => {
         expect.objectContaining({
           channelId: "test-channel",
           message: expect.objectContaining({
-            kind: "persisted",
-            type: "method-result",
-            payload: expect.objectContaining({
-              callId: "call-1",
-              content: { ok: true, result: 42 },
-              complete: true,
-              isError: false,
+            kind: "log",
+            phase: "live",
+            event: expect.objectContaining({
+              type: "method-result",
+              payload: expect.objectContaining({
+                callId: "call-1",
+                content: { ok: true, result: 42 },
+                complete: true,
+                isError: false,
+              }),
             }),
           }),
         })
@@ -777,24 +893,27 @@ describe("PubSubChannel", () => {
         expect.objectContaining({
           channelId: "test-channel",
           message: expect.objectContaining({
-            kind: "persisted",
-            type: "method-result",
-            payload: expect.objectContaining({
-              callId: "call-1",
-              content: { ok: true, result: 42 },
-              complete: true,
-              isError: false,
+            kind: "log",
+            phase: "live",
+            event: expect.objectContaining({
+              type: "method-result",
+              payload: expect.objectContaining({
+                callId: "call-1",
+                content: { ok: true, result: 42 },
+                complete: true,
+                isError: false,
+              }),
             }),
           }),
         })
       );
 
       const persisted = sql
-        .exec(`SELECT type, sender_id, content FROM messages WHERE type = 'method-result'`)
+        .exec(`SELECT type, sender_id, payload FROM messages WHERE type = 'method-result'`)
         .toArray();
       expect(persisted).toHaveLength(1);
       expect(persisted[0]!["sender_id"]).toBe("do:workers/agent-worker:AiChatWorker:agent-1");
-      expect(JSON.parse(persisted[0]!["content"] as string)).toMatchObject({
+      expect(JSON.parse(persisted[0]!["payload"] as string)).toMatchObject({
         callId: "call-1",
         content: { ok: true, result: 42 },
         complete: true,
@@ -816,13 +935,13 @@ describe("PubSubChannel", () => {
 
       // Insert some messages to verify trim
       sql.exec(
-        `INSERT INTO messages (message_id, type, content, sender_id, ts, persist) VALUES ('m1', 'message', '{}', 's1', 1000, 1)`
+        `INSERT INTO messages (message_id, type, payload, sender_id, ts, is_root, root_kind) VALUES ('m1', 'message', '{"id":"m1"}', 's1', 1000, 1, 'chat')`
       );
       sql.exec(
-        `INSERT INTO messages (message_id, type, content, sender_id, ts, persist) VALUES ('m2', 'message', '{}', 's1', 2000, 1)`
+        `INSERT INTO messages (message_id, type, payload, sender_id, ts, is_root, root_kind) VALUES ('m2', 'message', '{"id":"m2"}', 's1', 2000, 1, 'chat')`
       );
       sql.exec(
-        `INSERT INTO messages (message_id, type, content, sender_id, ts, persist) VALUES ('m3', 'presence', '{}', 's1', 3000, 1)`
+        `INSERT INTO messages (message_id, type, payload, sender_id, ts, is_root, root_kind) VALUES ('m3', 'presence', '{}', 's1', 3000, 1, 'presence')`
       );
 
       // Insert a participant
@@ -858,16 +977,16 @@ describe("PubSubChannel", () => {
       // Insert messages with known IDs
       for (let i = 0; i < 5; i++) {
         sql.exec(
-          `INSERT INTO messages (message_id, type, content, sender_id, ts, persist)
-           VALUES (?, 'message', '{"content":"msg"}', 'sender', ?, 1)`,
+          `INSERT INTO messages (message_id, type, payload, sender_id, ts, is_root, root_kind)
+           VALUES (?, 'message', '{"id":"msg","content":"msg"}', 'sender', ?, 1, 'chat')`,
           `msg-${i}`,
           1000 + i * 1000
         );
       }
       // Insert a presence message (id will be 6)
       sql.exec(
-        `INSERT INTO messages (message_id, type, content, sender_id, ts, persist)
-         VALUES ('presence-1', 'presence', '{"action":"join"}', 'sender', 6000, 1)`
+        `INSERT INTO messages (message_id, type, payload, sender_id, ts, is_root, root_kind)
+         VALUES ('presence-1', 'presence', '{"action":"join"}', 'sender', 6000, 1, 'presence')`
       );
 
       await instance.postClone("parent", 3);
@@ -958,7 +1077,7 @@ describe("PubSubChannel", () => {
       // Verify NO presence row was persisted in messages (ephemeral broadcast only)
       const presenceRows = sql
         .exec(
-          `SELECT COUNT(*) as cnt FROM messages WHERE type = 'presence' AND content LIKE '%typing%'`
+          `SELECT COUNT(*) as cnt FROM messages WHERE type = 'presence' AND payload LIKE '%typing%'`
         )
         .one();
       expect(presenceRows["cnt"]).toBe(0);
@@ -989,22 +1108,23 @@ describe("PubSubChannel", () => {
       const m1 = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
       const m2 = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
       sql.exec(
-        `INSERT INTO messages (message_id, type, content, sender_id, ts, persist, content_type)
-         VALUES (?, 'message', ?, 'agent', ?, 1, NULL)`,
+        `INSERT INTO messages (message_id, type, payload, sender_id, ts, is_root, root_kind)
+         VALUES (?, 'message', ?, 'agent', ?, 1, 'chat')`,
         m1,
         JSON.stringify({ id: m1, content: "Hel" }),
         1000
       );
       sql.exec(
-        `INSERT INTO messages (message_id, type, content, sender_id, ts, persist)
-         VALUES (?, 'update-message', ?, 'agent', ?, 1)`,
-        m1,
+        `INSERT INTO messages (message_id, type, payload, sender_id, ts, is_root, root_message_id)
+         VALUES (?, 'update-message', ?, 'agent', ?, 0, ?)`,
+        `${m1}-u1`,
         JSON.stringify({ id: m1, content: "lo " }),
-        1001
+        1001,
+        m1
       );
       sql.exec(
-        `INSERT INTO messages (message_id, type, content, sender_id, ts, persist, content_type)
-         VALUES (?, 'message', ?, 'agent', ?, 1, 'toolCall')`,
+        `INSERT INTO messages (message_id, type, payload, sender_id, ts, is_root, root_kind)
+         VALUES (?, 'message', ?, 'agent', ?, 1, 'chat')`,
         m2,
         JSON.stringify({
           id: m2,
@@ -1014,18 +1134,20 @@ describe("PubSubChannel", () => {
         1002
       );
       sql.exec(
-        `INSERT INTO messages (message_id, type, content, sender_id, ts, persist)
-         VALUES (?, 'update-message', ?, 'agent', ?, 1)`,
-        m1,
+        `INSERT INTO messages (message_id, type, payload, sender_id, ts, is_root, root_message_id)
+         VALUES (?, 'update-message', ?, 'agent', ?, 0, ?)`,
+        `${m1}-u2`,
         JSON.stringify({ id: m1, content: "world", complete: true }),
-        1003
+        1003,
+        m1
       );
       sql.exec(
-        `INSERT INTO messages (message_id, type, content, sender_id, ts, persist)
-         VALUES (?, 'update-message', ?, 'agent', ?, 1)`,
-        m2,
+        `INSERT INTO messages (message_id, type, payload, sender_id, ts, is_root, root_message_id)
+         VALUES (?, 'update-message', ?, 'agent', ?, 0, ?)`,
+        `${m2}-u1`,
         JSON.stringify({ id: m2, complete: true }),
-        1004
+        1004,
+        m2
       );
 
       await instance.subscribe("panel:panel-1", {
@@ -1045,7 +1167,10 @@ describe("PubSubChannel", () => {
 
       // Panel-targeted emits for 'channel:message' only. Filter out non-panel.
       const panelEmits = emitted.filter((e) => e.subscriberId === "panel:panel-1");
-      const kinds = panelEmits.map((e) => e.message["type"] ?? e.message["kind"]);
+      const kinds = panelEmits.map((e) => {
+        const msg = e.message as { kind?: string; type?: string; event?: { type?: string } };
+        return msg.event?.type ?? msg.type ?? msg.kind;
+      });
 
       // Expect messages to land in id order (m1, update, m2, update, update)
       // followed by a ready event at the end.
@@ -1055,8 +1180,9 @@ describe("PubSubChannel", () => {
       // Wire format: top-level { type, payload: { id, ... } }.
       const firstIdx = (targetId: string, type: "message" | "update-message") =>
         panelEmits.findIndex((e) => {
-          if (e.message["type"] !== type) return false;
-          const payload = e.message["payload"] as { id?: string } | undefined;
+          const event = (e.message as { event?: { type?: string; payload?: unknown } }).event;
+          if (event?.type !== type) return false;
+          const payload = event.payload as { id?: string } | undefined;
           return payload?.id === targetId;
         });
       expect(firstIdx(m1, "message")).toBeGreaterThanOrEqual(0);
@@ -1065,6 +1191,223 @@ describe("PubSubChannel", () => {
       expect(firstIdx(m2, "message")).toBeGreaterThanOrEqual(0);
       expect(firstIdx(m2, "update-message")).toBeGreaterThanOrEqual(0);
       expect(firstIdx(m2, "message")).toBeLessThan(firstIdx(m2, "update-message"));
+    });
+  });
+
+  describe("plan smoke", () => {
+    it("keeps streamed transcript chains complete across reload, pagination, signals, method audit, and admin validation", async () => {
+      const { instance, sql } = await createTestDO(PubSubChannel, {
+        __objectKey: "test-channel",
+      });
+      const mockRpc = {
+        emit: vi.fn().mockResolvedValue(undefined),
+        call: vi.fn().mockResolvedValue(undefined),
+      };
+      (instance as any)._rpc = mockRpc;
+
+      await instance.subscribe("panel:user", {
+        contextId: "ctx-1",
+        name: "User",
+        type: "panel",
+        handle: "user",
+      });
+      await instance.subscribe("do:workers/agent-worker:AiChatWorker:agent-1", {
+        contextId: "ctx-1",
+        name: "Agent",
+        type: "agent",
+        handle: "ai-chat",
+      });
+
+      for (let i = 1; i <= 40; i++) {
+        await instance.send("panel:user", `user-${i}`, `turn ${i}`);
+      }
+
+      await instance.send("do:workers/agent-worker:AiChatWorker:agent-1", "older-stream", "old:");
+      for (let i = 0; i < 20; i++) {
+        await instance.update(
+          "do:workers/agent-worker:AiChatWorker:agent-1",
+          "older-stream",
+          `${i}|`
+        );
+      }
+      await instance.complete("do:workers/agent-worker:AiChatWorker:agent-1", "older-stream");
+
+      for (let i = 41; i <= 240; i++) {
+        await instance.send("panel:user", `user-${i}`, `turn ${i}`);
+      }
+
+      await instance.send("do:workers/agent-worker:AiChatWorker:agent-1", "agent-stream", "live:");
+      for (let i = 0; i < 75; i++) {
+        await instance.update(
+          "do:workers/agent-worker:AiChatWorker:agent-1",
+          "agent-stream",
+          `${i},`
+        );
+      }
+      await instance.complete("do:workers/agent-worker:AiChatWorker:agent-1", "agent-stream");
+
+      for (let i = 241; i <= 250; i++) {
+        await instance.send("panel:user", `user-${i}`, `turn ${i}`);
+      }
+
+      const countBeforeSignals = sql.exec(`SELECT COUNT(*) as cnt FROM messages`).one()["cnt"];
+      for (let i = 0; i < 100; i++) {
+        await instance.sendSignal("panel:user", `notice ${i}`, "client-notice");
+      }
+      const countAfterSignals = sql.exec(`SELECT COUNT(*) as cnt FROM messages`).one()["cnt"];
+      expect(countAfterSignals).toBe(countBeforeSignals);
+
+      const reload = await instance.subscribe("panel:reload", {
+        contextId: "ctx-1",
+        name: "Reloaded",
+        type: "panel",
+        handle: "reload",
+        replayMessageLimit: 50,
+      });
+      const reloadAgentRows = reload.envelope.logEvents.filter((event) => {
+        const payload = event.payload as { id?: string };
+        return payload?.id === "agent-stream";
+      });
+      expect(reloadAgentRows.map((event) => event.type)).toContain("message");
+      expect(reloadAgentRows.filter((event) => event.type === "update-message")).toHaveLength(76);
+      expect(
+        reloadAgentRows.some(
+          (event) =>
+            event.type === "update-message" &&
+            (event.payload as { complete?: boolean }).complete === true
+        )
+      ).toBe(true);
+      expect(reload.envelope.logEvents.some((event) => event.type === "method-call")).toBe(false);
+      expect(reload.envelope.logEvents.some((event) => event.type === "presence")).toBe(false);
+
+      const anchor = sql
+        .exec(`SELECT id FROM messages WHERE message_id = 'user-180'`)
+        .one()["id"] as number;
+      const olderPage = await instance.getChatReplayBefore(anchor, 150);
+      expect(olderPage.mode).toBe("before");
+      expect(olderPage.snapshots).toEqual([]);
+      const olderStreamRows = olderPage.logEvents.filter((event) => {
+        const payload = event.payload as { id?: string };
+        return payload?.id === "older-stream";
+      });
+      expect(olderStreamRows.map((event) => event.type)).toContain("message");
+      expect(olderStreamRows.filter((event) => event.type === "update-message")).toHaveLength(21);
+      expect(
+        olderStreamRows.some(
+          (event) =>
+            event.type === "update-message" &&
+            (event.payload as { complete?: boolean }).complete === true
+        )
+      ).toBe(true);
+      expect(olderPage.logEvents.some((event) => event.type === "method-call")).toBe(false);
+      expect(olderPage.logEvents.some((event) => event.type === "presence")).toBe(false);
+
+      await instance.callMethod(
+        "do:workers/agent-worker:AiChatWorker:agent-1",
+        "panel:user",
+        "99999999-9999-4999-8999-999999999999",
+        "feedback_custom",
+        { prompt: "ok?" }
+      );
+      await instance.publish("panel:user", "method-result", {
+        callId: "99999999-9999-4999-8999-999999999999",
+        content: { ok: true },
+        complete: true,
+        isError: false,
+      });
+      expect(sql.exec(`SELECT call_id FROM pending_calls`).toArray()).toEqual([]);
+      const methodRows = await instance.getReplayAfter(0);
+      const methodChain = methodRows.logEvents.filter((event) => {
+        const payload = event.payload as { callId?: string };
+        return (
+          event.messageId === "99999999-9999-4999-8999-999999999999" ||
+          payload?.callId === "99999999-9999-4999-8999-999999999999"
+        );
+      });
+      expect(methodChain.map((event) => event.type)).toEqual(["method-call", "method-result"]);
+
+      setRpcCaller(instance, "main", "server");
+      const validation = await instance.adminValidateLog();
+      expect(validation).toMatchObject({ ok: true, issues: [] });
+      const schema = await instance.adminInspectSchema();
+      expect(schema.invariants.every((invariant) => invariant.ok)).toBe(true);
+      const reconstructed = await instance.adminReconstructTranscript({ rootLimit: 20 });
+      const currentTurn = reconstructed.transcript.find(
+        (event) => event.type === "message" && event.id === "agent-stream"
+      );
+      expect(currentTurn).toMatchObject({
+        type: "message",
+        id: "agent-stream",
+        complete: true,
+        incomplete: false,
+      });
+      expect((currentTurn as { content?: string }).content).toContain("live:0,1,2,");
+    });
+  });
+
+  describe("admin inspection", () => {
+    it("reports the canonical message schema", async () => {
+      const { instance } = await createTestDO(PubSubChannel, {
+        __objectKey: "test-channel",
+      });
+      setRpcCaller(instance, "main", "server");
+
+      const schema = await instance.adminInspectSchema();
+      expect(schema.invariants.every((invariant) => invariant.ok)).toBe(true);
+      const messages = schema.tables.find((table) => table.table === "messages")!;
+      expect(messages.columns.map((column) => column["name"])).toEqual([
+        "id",
+        "message_id",
+        "type",
+        "payload",
+        "sender_id",
+        "sender_metadata",
+        "attachments",
+        "ts",
+        "is_root",
+        "root_message_id",
+        "root_kind",
+      ]);
+    });
+
+    it("flags duplicate and contradictory chat terminal rows", async () => {
+      const { instance, sql } = await createTestDO(PubSubChannel, {
+        __objectKey: "test-channel",
+      });
+      setRpcCaller(instance, "main", "server");
+
+      sql.exec(
+        `INSERT INTO messages (message_id, type, payload, sender_id, sender_metadata, ts, is_root, root_kind)
+         VALUES ('root-1', 'message', '{"id":"root-1","content":"hi"}', 'agent', '{"type":"agent"}', 1000, 1, 'chat')`
+      );
+      sql.exec(
+        `INSERT INTO messages (message_id, type, payload, sender_id, ts, is_root, root_message_id)
+         VALUES ('root-1-complete-1', 'update-message', '{"id":"root-1","complete":true}', 'agent', 1001, 0, 'root-1')`
+      );
+      sql.exec(
+        `INSERT INTO messages (message_id, type, payload, sender_id, ts, is_root, root_message_id)
+         VALUES ('root-1-error-1', 'error', '{"id":"root-1","error":"failed"}', 'agent', 1002, 0, 'root-1')`
+      );
+
+      const result = await instance.adminValidateLog();
+      expect(result.ok).toBe(false);
+      expect(result.issues.some((issue) => issue.code === "contradictory-terminal")).toBe(true);
+    });
+
+    it("flags assistant roots without terminal rows", async () => {
+      const { instance, sql } = await createTestDO(PubSubChannel, {
+        __objectKey: "test-channel",
+      });
+      setRpcCaller(instance, "main", "server");
+
+      sql.exec(
+        `INSERT INTO messages (message_id, type, payload, sender_id, sender_metadata, ts, is_root, root_kind)
+         VALUES ('root-1', 'message', '{"id":"root-1","content":"streaming"}', 'agent', '{"type":"agent"}', 1000, 1, 'chat')`
+      );
+
+      const result = await instance.adminValidateLog();
+      expect(result.ok).toBe(false);
+      expect(result.issues.some((issue) => issue.code === "missing-terminal")).toBe(true);
     });
   });
 });

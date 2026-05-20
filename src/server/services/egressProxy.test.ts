@@ -1082,7 +1082,7 @@ describe("EgressProxy", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps session grants in memory across callers with the same code version", async () => {
+  it("keys session grants to the concrete caller identity", async () => {
     const credential = createCredential({ grants: [] });
     const store = new MemoryCredentialStore(new Map([[credential.id!, credential]]));
     const approvalQueue = {
@@ -1114,7 +1114,7 @@ describe("EgressProxy", () => {
       method: "GET",
     });
 
-    expect(approvalQueue.request).toHaveBeenCalledTimes(1);
+    expect(approvalQueue.request).toHaveBeenCalledTimes(2);
     expect(store.loadUrlBound("cred-1")?.grants).toEqual([]);
   });
 

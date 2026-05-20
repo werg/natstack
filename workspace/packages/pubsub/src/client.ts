@@ -13,6 +13,7 @@ import type {
   Participant,
   Attachment,
   ChannelConfig,
+  ReplayEnvelope,
 } from "./types.js";
 import type {
   EventStreamItem,
@@ -33,7 +34,7 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
   /** Update this client's participant metadata (full replace, triggers roster broadcast). */
   updateMetadata(metadata: Partial<T>, options?: UpdateMetadataOptions): Promise<void>;
 
-  /** Set this client's typing state. Broadcasts ephemerally (not persisted to message history). */
+  /** Set this client's typing state. Broadcasts as a signal, outside durable message history. */
   setTyping(active: boolean): Promise<void>;
 
   /** Wait for the ready signal (replay complete). */
@@ -90,28 +91,11 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
   /** ID of the first chat message in the channel (for pagination boundary) */
   readonly firstChatMessageId: number | undefined;
 
-  /** Get older messages before a given ID (for pagination UI) */
-  getMessagesBefore(beforeId: number, limit?: number): Promise<{
-    messages: Array<{
-      id: number;
-      type: string;
-      payload: unknown;
-      senderId: string;
-      ts: number;
-      senderMetadata?: Record<string, unknown>;
-      attachments?: Attachment[];
-    }>;
-    trailingUpdates?: Array<{
-      id: number;
-      type: string;
-      payload: unknown;
-      senderId: string;
-      ts: number;
-      senderMetadata?: Record<string, unknown>;
-      attachments?: Attachment[];
-    }>;
-    hasMore: boolean;
-  }>;
+  /** Get older chat roots and their complete dependent chains before a root row ID. */
+  getChatReplayBefore(beforeRootId: number, rootLimit?: number): Promise<ReplayEnvelope>;
+
+  /** Get durable log rows after a sequence ID. */
+  getReplayAfter(sinceId: number): Promise<ReplayEnvelope>;
 
   /**
    * Async iterator for typed protocol events (IncomingEvent | AggregatedEvent).
@@ -120,7 +104,7 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
    * objects and optionally aggregates replay events into AggregatedEvent objects.
    *
    * @param options.includeReplay - Include replay events (default: false)
-   * @param options.includeEphemeral - Include ephemeral events (default: false)
+   * @param options.includeSignals - Include signal events (default: false)
    */
   events(options?: EventStreamOptions): AsyncIterableIterator<EventStreamItem>;
 
@@ -137,7 +121,6 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
     content: string,
     options?: {
       replyTo?: string;
-      persist?: boolean;
       attachments?: import("./types.js").AttachmentInput[];
       contentType?: string;
       at?: string[];
@@ -152,7 +135,7 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
   update(
     id: string,
     content: string,
-    options?: { complete?: boolean; persist?: boolean; attachments?: import("./types.js").AttachmentInput[]; contentType?: string }
+    options?: { complete?: boolean; attachments?: import("./types.js").AttachmentInput[]; contentType?: string }
   ): Promise<number | undefined>;
 
   /**

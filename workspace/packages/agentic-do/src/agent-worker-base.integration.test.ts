@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { vi } from "vitest";
 import { createTestDO } from "@workspace/runtime/worker/test-utils";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
 import { AgentWorkerBase } from "./agent-worker-base.js";
 import type { TurnDispatcherRunner } from "./turn-dispatcher.js";
@@ -55,16 +56,18 @@ describe("AgentWorkerBase dispatched method results", () => {
         participantHandle: string,
         method: string,
         args: unknown,
-        signal?: AbortSignal,
+        signal?: AbortSignal
       ): Promise<unknown>;
     };
 
     worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
     worker.createChannelClient = vi.fn().mockReturnValue({
-      getParticipants: vi.fn().mockResolvedValue([{
-        participantId: "panel:panel-1",
-        metadata: { handle: "user", type: "panel" },
-      }]),
+      getParticipants: vi.fn().mockResolvedValue([
+        {
+          participantId: "panel:panel-1",
+          metadata: { handle: "user", type: "panel" },
+        },
+      ]),
       callMethod: vi.fn(async (_callerId, _targetId, callId) => {
         capturedCallId = callId;
         expect(worker.dispatches.peek(callId)?.dispatchedAt).toEqual(expect.any(Number));
@@ -80,23 +83,18 @@ describe("AgentWorkerBase dispatched method results", () => {
           },
           senderId: "panel:panel-1",
           ts: Date.now(),
-          persist: true,
         });
       }),
     });
     const abort = vi.fn().mockResolvedValue(undefined);
     worker.runners.set("chat-1", { runner: { abort } });
 
-    const result = await worker.invokeChannelMethod(
-      "chat-1",
-      "tool-1",
-      "user",
-      "eval",
-      { code: "1 + 1" },
-    );
+    const result = await worker.invokeChannelMethod("chat-1", "tool-1", "user", "eval", {
+      code: "1 + 1",
+    });
 
     expect(result).toEqual({
-      content: [{ type: "text", text: "{\"ok\":true}" }],
+      content: [{ type: "text", text: '{"ok":true}' }],
       details: undefined,
     });
     expect(abort).not.toHaveBeenCalled();
@@ -129,16 +127,18 @@ describe("AgentWorkerBase dispatched method results", () => {
         participantHandle: string,
         method: string,
         args: unknown,
-        signal?: AbortSignal,
+        signal?: AbortSignal
       ): Promise<unknown>;
     };
 
     worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
     worker.createChannelClient = vi.fn().mockReturnValue({
-      getParticipants: vi.fn().mockResolvedValue([{
-        participantId: "panel:panel-1",
-        metadata: { handle: "user", type: "panel" },
-      }]),
+      getParticipants: vi.fn().mockResolvedValue([
+        {
+          participantId: "panel:panel-1",
+          metadata: { handle: "user", type: "panel" },
+        },
+      ]),
       callMethod: vi.fn(async (_callerId, _targetId, callId) => {
         capturedCallId = callId;
         resolveCallStarted();
@@ -152,7 +152,7 @@ describe("AgentWorkerBase dispatched method results", () => {
       "user",
       "eval",
       { code: "1 + 1" },
-      controller.signal,
+      controller.signal
     );
     await callStarted;
     controller.abort();
@@ -195,7 +195,11 @@ describe("AgentWorkerBase dispatched method results", () => {
       kind: "tool-call",
       toolCallId: "tool-1",
       toolName: "user.eval",
-      paramsJson: JSON.stringify({ participantHandle: "user", method: "eval", args: { code: "1 + 1" } }),
+      paramsJson: JSON.stringify({
+        participantHandle: "user",
+        method: "eval",
+        args: { code: "1 + 1" },
+      }),
       targetParticipantId: "panel:panel-1",
       methodName: "eval",
       argsJson: JSON.stringify({ code: "1 + 1" }),
@@ -211,14 +215,16 @@ describe("AgentWorkerBase dispatched method results", () => {
 
     await worker.handleCompletedMethodResult("call-recovered", { ok: true }, false);
 
-    expect(appendToolResult).toHaveBeenCalledWith(expect.objectContaining({
-      role: "toolResult",
-      toolCallId: "tool-1",
-      toolName: "user.eval",
-      content: [{ type: "text", text: "{\"ok\":true}" }],
-      details: undefined,
-      isError: false,
-    }));
+    expect(appendToolResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: "toolResult",
+        toolCallId: "tool-1",
+        toolName: "user.eval",
+        content: [{ type: "text", text: '{"ok":true}' }],
+        details: undefined,
+        isError: false,
+      })
+    );
     expect(worker.dispatches.peek("call-recovered")).toBeNull();
     expect(submitContinue).toHaveBeenCalledTimes(1);
   });
@@ -227,7 +233,8 @@ describe("AgentWorkerBase dispatched method results", () => {
     const { instance } = await createTestDO(TestAgentWorker, {
       __objectKey: "agent-test",
     });
-    const appendToolResult = vi.fn()
+    const appendToolResult = vi
+      .fn()
       .mockRejectedValueOnce(new Error("temporary append failure"))
       .mockResolvedValueOnce("entry-1");
     const submitContinue = vi.fn();
@@ -240,7 +247,9 @@ describe("AgentWorkerBase dispatched method results", () => {
           toolCallId: string;
           toolName?: string;
         }): void;
-        peek(callId: string): { pendingResultJson: string | null; pendingIsError: boolean | null } | null;
+        peek(
+          callId: string
+        ): { pendingResultJson: string | null; pendingIsError: boolean | null } | null;
       };
       runners: Map<string, unknown>;
       getOrCreateProjector: ReturnType<typeof vi.fn>;
@@ -266,7 +275,7 @@ describe("AgentWorkerBase dispatched method results", () => {
     worker.getOrCreateDispatcher = vi.fn().mockReturnValue({ submitContinue });
 
     await expect(
-      worker.handleCompletedMethodResult("call-buffered", { ok: true }, false),
+      worker.handleCompletedMethodResult("call-buffered", { ok: true }, false)
     ).rejects.toThrow("temporary append failure");
 
     expect(worker.dispatches.peek("call-buffered")).toMatchObject({
@@ -326,6 +335,92 @@ describe("AgentWorkerBase dispatched method results", () => {
 
     expect(appendToolResult).not.toHaveBeenCalled();
     expect(worker.dispatches.peek("call-duplicate")).toBeNull();
+    expect(submitContinue).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("AgentWorkerBase model credential resume", () => {
+  it("resumes from the saved interruption cursor after an assistant error is appended", async () => {
+    const { instance } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const userMessage = { role: "user", content: "hello", timestamp: 1 } as AgentMessage;
+    const assistantError = {
+      role: "assistant",
+      content: [],
+      timestamp: 2,
+      api: "openai",
+      provider: "test",
+      model: "model",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          total: 0,
+        },
+      },
+      stopReason: "error",
+      errorMessage: "model auth failed",
+    } as AgentMessage;
+    let transcript: AgentMessage[] = [userMessage];
+    const moveTo = vi.fn().mockResolvedValue(undefined);
+    const submitContinue = vi.fn();
+    const worker = instance as unknown as {
+      subscriptions: {
+        getParticipantId(channelId: string): string | null;
+      };
+      runners: Map<string, unknown>;
+      createChannelClient: ReturnType<typeof vi.fn>;
+      getOrCreateProjector: ReturnType<typeof vi.fn>;
+      getOrCreateDispatcher: ReturnType<typeof vi.fn>;
+      recordModelCredentialInterruption(
+        channelId: string,
+        providerId: string,
+        modelBaseUrl: string
+      ): Promise<void>;
+      resumeAfterModelCredentialConnected(
+        channelId: string,
+        opts?: { providerId?: string; modelBaseUrl?: string }
+      ): Promise<boolean>;
+    };
+
+    worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
+    worker.createChannelClient = vi.fn().mockReturnValue({
+      getParticipants: vi.fn().mockResolvedValue([]),
+    });
+    worker.runners.set("chat-1", {
+      runner: {
+        session: {
+          buildContext: vi.fn(async () => ({ messages: transcript })),
+          getEntries: vi.fn(async () => [
+            { id: "entry-user", type: "message" },
+            { id: "entry-assistant-error", type: "message" },
+          ]),
+          moveTo,
+        },
+      },
+    });
+    worker.getOrCreateProjector = vi.fn().mockReturnValue({});
+    worker.getOrCreateDispatcher = vi.fn().mockReturnValue({ submitContinue });
+
+    await worker.recordModelCredentialInterruption("chat-1", "test", "https://model.example/v1");
+    transcript = [userMessage, assistantError];
+
+    await expect(
+      worker.resumeAfterModelCredentialConnected("chat-1", {
+        providerId: "test",
+        modelBaseUrl: "https://model.example/v1",
+      })
+    ).resolves.toBe(true);
+
+    expect(moveTo).toHaveBeenCalledWith("entry-user");
     expect(submitContinue).toHaveBeenCalledTimes(1);
   });
 });

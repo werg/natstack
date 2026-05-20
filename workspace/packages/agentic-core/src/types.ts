@@ -49,7 +49,7 @@ export interface AgenticChatActions {
 
 /** Chat API exposed to sandboxed code (eval, inline_ui, action bars, feedback_custom) */
 export interface ChatSandboxValue {
-  publish: (eventType: string, payload: unknown, options?: { persist?: boolean }) => Promise<unknown>;
+  publish: (eventType: string, payload: unknown, options?: { idempotencyKey?: string }) => Promise<unknown>;
   /** Call a participant method and resolve to the provider's result payload. */
   callMethod: (participantId: string, method: string, args: unknown) => Promise<unknown>;
   /** Call a participant method and resolve to the full pubsub result envelope. */

@@ -9,9 +9,9 @@ permission system before they run.
 Host-owned credential and capability decisions share the same scope vocabulary:
 
 - `once`: allow this operation only, without storing a grant.
-- `session`: allow matching operations until the server process exits.
+- `session`: allow matching operations for the same concrete caller until the server process exits.
 - `version`: allow matching operations for the same source repo and effective version.
-- `repo`: allow matching operations for the same source repo.
+- `repo`: legacy persistent scope for the same source repo; accepted by the server for compatibility but not offered in current clients.
 
 The renderer is only a prompt surface. Pending prompts, session grants, and
 persistent grants are all held server-side.

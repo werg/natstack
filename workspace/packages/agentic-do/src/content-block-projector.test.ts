@@ -215,9 +215,10 @@ function toolExecUpdate(toolCallId: string, consoleLine: string): AgentEvent {
 function agentEnd(
   stopReason?: "stop" | "error" | "aborted" | "toolUse" | "length",
   errorMessage?: string,
+  content: unknown[] = [],
 ): AgentEvent {
   const messages = stopReason
-    ? [{ role: "assistant", content: [], stopReason, ...(errorMessage ? { errorMessage } : {}) }]
+    ? [{ role: "assistant", content, stopReason, ...(errorMessage ? { errorMessage } : {}) }]
     : [];
   return ev({ type: "agent_end", messages: messages as never });
 }
@@ -424,9 +425,9 @@ describe("piEventToChannelOps — parallel tool calls", () => {
 
 describe("piEventToChannelOps — agent_end", () => {
   // agent_end no longer emits any channel ops; typing lifecycle is owned by
-  // AgentWorkerBase's dispatch state machine (busy flag derived from
-  // running + queue depth). The projector only closes in-flight blocks on
-  // error/abort termination — covered in the stateful suite below.
+  // AgentWorkerBase's dispatch state machine (busy flag derived from running
+  // + queue depth). In-flight block closure is handled by the stateful
+  // projector because it depends on currently tracked block ids.
 
   it("emits no ops on a clean stop", () => {
     const ops = runTrace([agentEnd("stop")]);
@@ -483,7 +484,7 @@ describe("ContentBlockProjector — channel op failure surfacing", () => {
   });
 });
 
-describe("ContentBlockProjector — error/abort auto-close", () => {
+describe("ContentBlockProjector — agent_end auto-close", () => {
   it("auto-closes in-flight blocks on agent_end with stopReason=error", async () => {
     const sink = makeSink();
     const projector = new ContentBlockProjector(sink, makeAllocator());
@@ -541,7 +542,7 @@ describe("ContentBlockProjector — error/abort auto-close", () => {
     expect(completes.map((o) => o.msgId)).toContain("m1");
   });
 
-  it("does NOT auto-close on a clean agent_end (stopReason=stop)", async () => {
+  it("does not emit duplicate completion on a clean agent_end after text_end", async () => {
     const sink = makeSink();
     const projector = new ContentBlockProjector(sink, makeAllocator());
 
@@ -552,9 +553,53 @@ describe("ContentBlockProjector — error/abort auto-close", () => {
     sink.ops.length = 0;
     await projector.handleEvent(agentEnd("stop"));
 
-    // No ops: projector no longer emits typing, and a clean stop doesn't
-    // trigger the synthetic-complete sweep.
+    // No ops: the natural text_end already closed the only in-flight block.
     expect(sink.ops).toEqual([]);
+  });
+
+  it("auto-closes an in-flight text block on a clean agent_end", async () => {
+    const sink = makeSink();
+    const projector = new ContentBlockProjector(sink, makeAllocator());
+
+    await projector.handleEvent(textStart(0));
+    await projector.handleEvent(textDelta(0, "part"));
+    // No text_end — providers can still terminate the turn cleanly.
+    await projector.handleEvent(agentEnd("stop"));
+
+    const completes = sink.ops.filter((o) => o.kind === "complete");
+    expect(completes.map((o) => o.msgId)).toContain("m1");
+  });
+
+  it("flushes missing final text from the agent_end assistant snapshot before completing", async () => {
+    const sink = makeSink();
+    const projector = new ContentBlockProjector(sink, makeAllocator());
+
+    await projector.handleEvent(textStart(0));
+    await projector.handleEvent(textDelta(0, "almost "));
+    await projector.handleEvent(agentEnd("stop", undefined, [{ type: "text", text: "almost done" }]));
+
+    expect(sink.ops).toEqual([
+      { kind: "send", msgId: "m1", content: "", contentType: undefined },
+      { kind: "update", msgId: "m1", content: "almost " },
+      { kind: "update", msgId: "m1", content: "done" },
+      { kind: "complete", msgId: "m1" },
+    ]);
+  });
+
+  it("flushes missing final thinking from the agent_end assistant snapshot before completing", async () => {
+    const sink = makeSink();
+    const projector = new ContentBlockProjector(sink, makeAllocator());
+
+    await projector.handleEvent(thinkingStart(0));
+    await projector.handleEvent(thinkingDelta(0, "step "));
+    await projector.handleEvent(agentEnd("stop", undefined, [{ type: "thinking", text: "step two" }]));
+
+    expect(sink.ops).toEqual([
+      { kind: "send", msgId: "m1", content: "", contentType: "thinking" },
+      { kind: "update", msgId: "m1", content: "step ", append: true },
+      { kind: "update", msgId: "m1", content: "two", append: true },
+      { kind: "complete", msgId: "m1" },
+    ]);
   });
 });
 

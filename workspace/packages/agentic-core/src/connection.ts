@@ -119,7 +119,7 @@ export class ConnectionManager {
       const unsubs: Array<() => void> = [];
 
       // Set up unified event handling
-      const eventIterator = newClient.events({ includeReplay: true, includeEphemeral: true });
+      const eventIterator = newClient.events({ includeReplay: true, includeSignals: true });
       let eventLoopRunning = true;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let eventIteratorRef: AsyncIterableIterator<any> | null = eventIterator;

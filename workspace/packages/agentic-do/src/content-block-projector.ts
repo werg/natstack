@@ -52,14 +52,18 @@ interface ToolCallRecord {
 
 export interface ProjectorState {
   textMsgIdByIndex: ReadonlyMap<number, string>;
+  textContentByIndex: ReadonlyMap<number, string>;
   thinkingMsgIdByIndex: ReadonlyMap<number, string>;
+  thinkingContentByIndex: ReadonlyMap<number, string>;
   toolCalls: ReadonlyMap<string, ToolCallRecord>;
 }
 
 export function createInitialProjectorState(): ProjectorState {
   return {
     textMsgIdByIndex: new Map(),
+    textContentByIndex: new Map(),
     thinkingMsgIdByIndex: new Map(),
+    thinkingContentByIndex: new Map(),
     toolCalls: new Map(),
   };
 }
@@ -80,14 +84,16 @@ export function piEventToChannelOps(
     case "message_start": {
       const role = getRole(event.message);
       if (role !== "assistant") return { newState: state, ops: [] };
-      // Clear per-message index maps. Tool-call records persist across the
+      // Clear per-message index maps. Tool-call records survive across the
       // message boundary: execution events for these tool calls arrive
       // after `message_end`.
       return {
         newState: {
           ...state,
           textMsgIdByIndex: new Map(),
+          textContentByIndex: new Map(),
           thinkingMsgIdByIndex: new Map(),
+          thinkingContentByIndex: new Map(),
         },
         ops: [],
       };
@@ -102,14 +108,16 @@ export function piEventToChannelOps(
     case "message_end": {
       const role = getRole(event.message);
       if (role !== "assistant") return { newState: state, ops: [] };
-      // Per-message block maps are cleared; tool-call records persist because
+      // Per-message block maps are cleared; tool-call records survive because
       // their execution events arrive after message_end. Text/thinking blocks
       // are closed via their own *_end events — no work here.
       return {
         newState: {
           ...state,
           textMsgIdByIndex: new Map(),
+          textContentByIndex: new Map(),
           thinkingMsgIdByIndex: new Map(),
+          thinkingContentByIndex: new Map(),
         },
         ops: [],
       };
@@ -199,9 +207,9 @@ export function piEventToChannelOps(
       };
     }
 
-    // agent_end is handled by the worker's typing controller (busy-state
-    // machine), not the projector. The projector only closes in-flight
-    // blocks on error termination; see `handleEvent` below.
+    // agent_end is handled by the stateful projector below. The pure mapper
+    // does not emit ops because it cannot inspect in-flight block state after
+    // applying the current event.
     default:
       return { newState: state, ops: [] };
   }
@@ -230,6 +238,7 @@ function handleAssistantMessageEvent(
         newState: {
           ...state,
           textMsgIdByIndex: addToMap(state.textMsgIdByIndex, ci, msgId),
+          textContentByIndex: addToMap(state.textContentByIndex, ci, ""),
         },
         ops: [{ kind: "send", msgId, content: "" }],
       };
@@ -244,6 +253,7 @@ function handleAssistantMessageEvent(
           newState: {
             ...state,
             textMsgIdByIndex: addToMap(state.textMsgIdByIndex, ci, msgId),
+            textContentByIndex: addToMap(state.textContentByIndex, ci, ame.delta),
           },
           ops: [
             { kind: "send", msgId, content: "" },
@@ -251,8 +261,9 @@ function handleAssistantMessageEvent(
           ],
         };
       }
+      const nextContent = (state.textContentByIndex.get(ci) ?? "") + ame.delta;
       return {
-        newState: state,
+        newState: { ...state, textContentByIndex: addToMap(state.textContentByIndex, ci, nextContent) },
         ops: [{ kind: "update", msgId, content: ame.delta }],
       };
     }
@@ -261,7 +272,11 @@ function handleAssistantMessageEvent(
       const msgId = state.textMsgIdByIndex.get(ci);
       if (!msgId) return { newState: state, ops: [] };
       return {
-        newState: { ...state, textMsgIdByIndex: removeFromMap(state.textMsgIdByIndex, ci) },
+        newState: {
+          ...state,
+          textMsgIdByIndex: removeFromMap(state.textMsgIdByIndex, ci),
+          textContentByIndex: removeFromMap(state.textContentByIndex, ci),
+        },
         ops: [{ kind: "complete", msgId }],
       };
     }
@@ -272,6 +287,7 @@ function handleAssistantMessageEvent(
         newState: {
           ...state,
           thinkingMsgIdByIndex: addToMap(state.thinkingMsgIdByIndex, ci, msgId),
+          thinkingContentByIndex: addToMap(state.thinkingContentByIndex, ci, ""),
         },
         ops: [{ kind: "send", msgId, content: "", contentType: "thinking" }],
       };
@@ -285,6 +301,7 @@ function handleAssistantMessageEvent(
           newState: {
             ...state,
             thinkingMsgIdByIndex: addToMap(state.thinkingMsgIdByIndex, ci, msgId),
+            thinkingContentByIndex: addToMap(state.thinkingContentByIndex, ci, ame.delta),
           },
           ops: [
             { kind: "send", msgId, content: "", contentType: "thinking" },
@@ -292,8 +309,9 @@ function handleAssistantMessageEvent(
           ],
         };
       }
+      const nextContent = (state.thinkingContentByIndex.get(ci) ?? "") + ame.delta;
       return {
-        newState: state,
+        newState: { ...state, thinkingContentByIndex: addToMap(state.thinkingContentByIndex, ci, nextContent) },
         ops: [{ kind: "update", msgId, content: ame.delta, append: true }],
       };
     }
@@ -302,7 +320,11 @@ function handleAssistantMessageEvent(
       const msgId = state.thinkingMsgIdByIndex.get(ci);
       if (!msgId) return { newState: state, ops: [] };
       return {
-        newState: { ...state, thinkingMsgIdByIndex: removeFromMap(state.thinkingMsgIdByIndex, ci) },
+        newState: {
+          ...state,
+          thinkingMsgIdByIndex: removeFromMap(state.thinkingMsgIdByIndex, ci),
+          thinkingContentByIndex: removeFromMap(state.thinkingContentByIndex, ci),
+        },
         ops: [{ kind: "complete", msgId }],
       };
     }
@@ -409,6 +431,47 @@ function isCredentialRequiredTerminalError(message: string | null): boolean {
     /^No URL-bound model credential is configured for model provider: /.test(message);
 }
 
+function finalAssistantMessage(event: AgentEvent & { type: "agent_end" }): unknown {
+  const messages = (event as { messages?: unknown[] }).messages;
+  if (!Array.isArray(messages) || messages.length === 0) return null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i] as { role?: string } | null;
+    if (message?.role === "assistant") return message;
+  }
+  return null;
+}
+
+function contentBlocks(message: unknown): unknown[] {
+  const content = (message as { content?: unknown } | null)?.content;
+  return Array.isArray(content) ? content : [];
+}
+
+function blockString(block: unknown, keys: string[]): string | null {
+  if (!block || typeof block !== "object") return null;
+  const record = block as Record<string, unknown>;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string") return value;
+  }
+  return null;
+}
+
+function textBlockContent(message: unknown, index: number): string | null {
+  const block = contentBlocks(message)[index];
+  if (!block || typeof block !== "object") return null;
+  const type = (block as { type?: unknown }).type;
+  if (type !== "text") return null;
+  return blockString(block, ["text", "content"]);
+}
+
+function thinkingBlockContent(message: unknown, index: number): string | null {
+  const block = contentBlocks(message)[index];
+  if (!block || typeof block !== "object") return null;
+  const type = (block as { type?: unknown }).type;
+  if (type !== "thinking" && type !== "reasoning") return null;
+  return blockString(block, ["text", "content", "thinking", "reasoning"]);
+}
+
 function addToMap<K, V>(map: ReadonlyMap<K, V>, key: K, value: V): ReadonlyMap<K, V> {
   const next = new Map(map);
   next.set(key, value);
@@ -481,30 +544,65 @@ export class ContentBlockProjector {
    * Returns the promise chain so callers providing back-pressure (e.g.
    * pi-agent-core's awaited subscribe) can wait on all RPC calls to land.
    *
-   * On `agent_end` with an error/abort stopReason on the final assistant
-   * message, emits `complete` for every in-flight block so the client
-   * sees clean closure even though the natural `*_end` events never
-   * fired. (Mid-turn block events continue streaming normally; only the
-   * terminal event triggers the sweep.)
+   * On `agent_end`, emits `complete` for every in-flight block so replayed
+   * channel state is terminal even if the provider skipped or raced a natural
+   * `*_end` event. (Mid-turn block events continue streaming normally; only
+   * the terminal event triggers the sweep.)
    */
   handleEvent(event: RunnerEvent): Promise<void> {
     const { newState, ops } = piEventToChannelOps(event, this.state, this.allocMsgId);
     this.state = newState;
     for (const op of ops) this.dispatch(op);
-    if (event.type === "agent_end" && isTerminatedByError(event)) {
+    if (event.type === "agent_end") {
+      this.enqueueMissingFinalContent(event);
       const openMsgIds = this.collectOpenMsgIds();
-      if (openMsgIds.length === 0) {
+      if (openMsgIds.length > 0) {
+        this.enqueueCloseAll();
+      } else if (isTerminatedByError(event)) {
         const message = terminalErrorMessage(event);
         if (message && !isCredentialRequiredTerminalError(message)) {
           const msgId = this.allocMsgId();
           this.dispatch({ kind: "send", msgId, content: message });
           this.dispatch({ kind: "error", msgId, message, code: "agent_turn_failed" });
         }
-      } else {
-        this.enqueueCloseAll();
       }
     }
     return this.pendingOp;
+  }
+
+  private enqueueMissingFinalContent(event: RunnerEvent & { type: "agent_end" }): void {
+    const assistant = finalAssistantMessage(event);
+    if (!assistant) return;
+
+    for (const [index, msgId] of this.state.textMsgIdByIndex) {
+      const finalContent = textBlockContent(assistant, index);
+      if (finalContent === null) continue;
+      const persistedContent = this.state.textContentByIndex.get(index) ?? "";
+      if (finalContent.length <= persistedContent.length) continue;
+      if (!finalContent.startsWith(persistedContent)) continue;
+      const suffix = finalContent.slice(persistedContent.length);
+      if (suffix.length === 0) continue;
+      this.dispatch({ kind: "update", msgId, content: suffix });
+      this.state = {
+        ...this.state,
+        textContentByIndex: addToMap(this.state.textContentByIndex, index, finalContent),
+      };
+    }
+
+    for (const [index, msgId] of this.state.thinkingMsgIdByIndex) {
+      const finalContent = thinkingBlockContent(assistant, index);
+      if (finalContent === null) continue;
+      const persistedContent = this.state.thinkingContentByIndex.get(index) ?? "";
+      if (finalContent.length <= persistedContent.length) continue;
+      if (!finalContent.startsWith(persistedContent)) continue;
+      const suffix = finalContent.slice(persistedContent.length);
+      if (suffix.length === 0) continue;
+      this.dispatch({ kind: "update", msgId, content: suffix, append: true });
+      this.state = {
+        ...this.state,
+        thinkingContentByIndex: addToMap(this.state.thinkingContentByIndex, index, finalContent),
+      };
+    }
   }
 
   private enqueueCloseAll(): void {

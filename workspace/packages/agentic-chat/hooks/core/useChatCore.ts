@@ -258,7 +258,7 @@ export function useChatCore({
             });
           }
 
-          // --- Agent debug events (ephemeral) ---
+          // --- Agent debug signal events ---
           if (event.type === "agent-debug") {
             const payload = (event as { payload: AgentDebugPayload }).payload;
             const ts = (event as { ts: number }).ts ?? Date.now();
@@ -545,7 +545,7 @@ export function useChatCore({
     setMethodEntries(new Map());
   }, []);
 
-  // --- Typing indicators (ephemeral, roster-based) ---
+  // --- Typing indicators (signal, roster-based) ---
   const typingActiveRef = useRef(false);
 
   const stopTyping = useCallback(async () => {
@@ -620,9 +620,23 @@ export function useChatCore({
     const prompt = initialPromptCaptured.current;
     if (!prompt || !connected || !client || initialPromptSentRef.current) return;
     initialPromptSentRef.current = true;
-    inputRef.current = prompt;
-    sendMessage().catch((err) => console.warn("[Chat] Failed to send initial prompt:", err));
-  }, [connected, client, sendMessage]);
+    const hasPriorMessages =
+      hasTranscriptMessagesRef.current || ((client.chatMessageCount ?? 0) > 0);
+    if (hasPriorMessages) return;
+
+    const defaultTitle = !defaultTitleSetRef.current
+      ? titleFromFirstUserMessage(prompt)
+      : null;
+    if (defaultTitle) {
+      defaultTitleSetRef.current = true;
+      document.title = defaultTitle;
+      void client.updateChannelConfig({ title: defaultTitle }).catch(() => {});
+    }
+
+    client.send(prompt, {
+      idempotencyKey: `initial-prompt:${channelName}`,
+    }).catch((err) => console.warn("[Chat] Failed to send initial prompt:", err));
+  }, [connected, client, channelName]);
 
   // --- Load earlier messages (delegates to useChannelMessages pagination) ---
   const loadEarlierMessages = channelLoadEarlier;

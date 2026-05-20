@@ -109,11 +109,8 @@ type PendingAction =
 
 type ButtonVariant = "primary" | "surface" | "danger" | "outline";
 
-const GRANT_DECISIONS: Array<Exclude<ApprovalDecision, "deny" | "dismiss">> = [
-  "once",
+const SECONDARY_GRANT_DECISIONS: Array<Exclude<ApprovalDecision, "once" | "version" | "repo" | "deny" | "dismiss">> = [
   "session",
-  "version",
-  "repo",
 ];
 
 export function ApprovalSheet({
@@ -738,6 +735,7 @@ function ExtensionDetails({ approval }: { approval: PendingExtensionApproval }) 
   return (
     <>
       <DetailRow icon={Lock} label="Extension" value={approval.extensionName} code />
+      <DetailRow icon={Lock} label="Action" value={approval.action} code />
       <DetailRow
         icon={Globe}
         label="Source"
@@ -868,6 +866,16 @@ function StandardActions({
   onChoose: (decision: ApprovalDecision) => void;
 }) {
   const copy = getStandardActionCopy(approval);
+  if (approval.kind === "extension") {
+    return (
+      <View style={styles.actionGroups}>
+        <View style={styles.actionRow}>
+          <DecisionButton label={copy.once.label} description={copy.once.description} variant="primary" disabled={busy} loading={pendingAction === "once"} onPress={() => onChoose("once")} testID="approval-action-once" />
+          <DecisionButton label="Deny" description={copy.denyDescription} variant="danger" disabled={busy} loading={pendingAction === "deny"} icon={XCircle} onPress={() => onChoose("deny")} testID="approval-action-deny" />
+        </View>
+      </View>
+    );
+  }
   return (
     <View style={styles.actionGroups}>
       <View style={styles.actionRow}>
@@ -881,13 +889,13 @@ function StandardActions({
           testID="approval-action-once"
         />
         <DecisionButton
-          label={copy.session.label}
-          description={copy.session.description}
+          label={copy.version.label}
+          description={copy.version.description}
           variant="primary"
           disabled={busy}
-          loading={pendingAction === "session"}
-          onPress={() => onChoose("session")}
-          testID="approval-action-session"
+          loading={pendingAction === "version"}
+          onPress={() => onChoose("version")}
+          testID="approval-action-version"
         />
         <DecisionButton
           label="Deny"
@@ -901,7 +909,7 @@ function StandardActions({
         />
       </View>
       <View style={styles.actionRow}>
-        {GRANT_DECISIONS.slice(2).map((decision) => (
+        {SECONDARY_GRANT_DECISIONS.map((decision) => (
           <DecisionButton
             key={decision}
             label={copy[decision].label}

@@ -57,7 +57,16 @@ interface ManagedWorkspaceInfo {
   env: Record<string, string>;
 }
 
-const SOURCE_DIRS = ["meta", "panels", "packages", "agents", "workers", "skills", "about"];
+const SOURCE_DIRS = [
+  "meta",
+  "panels",
+  "packages",
+  "agents",
+  "workers",
+  "skills",
+  "about",
+  "extensions",
+];
 const STATE_DIRS = [".cache", ".databases", ".contexts"];
 
 function getTestEnv(testRoot: string): Record<string, string> {
@@ -172,7 +181,7 @@ export function removeManagedTestWorkspace(workspaceDir: string): void {
  * ```
  */
 export async function launchTestApp(options: LaunchOptions = {}): Promise<TestApp> {
-  const { workspace, initialPanel, devTools = false, env = {}, launchTimeout = 30000 } = options;
+  const { workspace, initialPanel, devTools = false, env = {}, launchTimeout = 120000 } = options;
 
   const projectRoot = path.resolve(__dirname, "../..");
   const workspacePath = workspace ?? createManagedTestWorkspace(projectRoot);
@@ -207,7 +216,7 @@ export async function launchTestApp(options: LaunchOptions = {}): Promise<TestAp
     args,
     env: {
       ...process.env,
-      NODE_ENV: "test",
+      NODE_ENV: "development",
       NATSTACK_TEST_MODE: "1",
       // Disable GPU acceleration for CI environments
       ELECTRON_DISABLE_GPU: "1",
@@ -219,7 +228,7 @@ export async function launchTestApp(options: LaunchOptions = {}): Promise<TestAp
   });
 
   // Get the first window
-  const window = await app.firstWindow();
+  const window = await app.firstWindow({ timeout: launchTimeout });
 
   // Wait for the app to initialize
   await window.waitForLoadState("domcontentloaded");

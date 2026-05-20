@@ -17,7 +17,11 @@ import type {
   Message,
   PubSubMessage,
   LeaveReason,
+  ReplayEnvelope,
+  ServerLogEvent,
+  BootstrapSnapshot,
 } from "./types.js";
+import type { RpcChannelMessage } from "./protocol-wire.js";
 import { PubSubError } from "./types.js";
 import type {
   IncomingEvent,
@@ -70,8 +74,10 @@ interface WireAttachment {
   type?: string;
 }
 
-interface ServerMessage {
-  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error" | "config-update" | "messages-before";
+interface ClientIngressMessage {
+  stream: "log" | "signal" | "control" | "error";
+  phase?: "replay" | "live";
+  controlType?: "ready";
   id?: number;
   type?: string;
   payload?: unknown;
@@ -86,37 +92,12 @@ interface ServerMessage {
   totalCount?: number;
   chatMessageCount?: number;
   firstChatMessageId?: number;
-  messages?: Array<{
-    id: number;
-    type: string;
-    payload: unknown;
-    senderId: string;
-    ts: number;
-    senderMetadata?: Record<string, unknown>;
-    attachments?: WireAttachment[];
-  }>;
-  hasMore?: boolean;
-  trailingUpdates?: Array<{
-    id: number;
-    type: string;
-    payload: unknown;
-    senderId: string;
-    ts: number;
-    senderMetadata?: Record<string, unknown>;
-    attachments?: WireAttachment[];
-  }>;
 }
 
 interface SubscribeResult {
   ok?: boolean;
-  initialReplay?: ServerMessage[];
-  ready?: {
-    contextId?: string;
-    channelConfig?: ChannelConfig;
-    totalCount: number;
-    chatMessageCount: number;
-    firstChatMessageId?: number;
-  };
+  channelConfig?: ChannelConfig;
+  envelope?: ReplayEnvelope;
 }
 
 interface ResolvedService {
@@ -134,6 +115,20 @@ function convertWireAttachments(wireAtts: WireAttachment[] | undefined): Attachm
     name: att.filename ?? att.name,
     size: att.size,
   }));
+}
+
+function eventToClientIngress(event: ServerLogEvent, phase: "replay" | "live"): ClientIngressMessage {
+  return {
+    stream: "log",
+    phase,
+    id: event.id,
+    type: event.type,
+    payload: event.payload,
+    senderId: event.senderId,
+    ts: event.ts,
+    senderMetadata: event.senderMetadata,
+    attachments: event.attachments as WireAttachment[] | undefined,
+  };
 }
 
 type PresenceAction = "join" | "leave" | "update";
@@ -223,6 +218,8 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
   let serverChatMessageCount: number | undefined;
   let serverFirstChatMessageId: number | undefined;
   let currentRoster: Record<string, Participant<T>> = {};
+  let streamedReplayLogEvents: ServerLogEvent[] = [];
+  let streamedReplaySnapshots: BootstrapSnapshot[] = [];
 
   // Ready promise
   let readyResolve: (() => void) | null = null;
@@ -264,7 +261,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
   let bufferingReplay = replayMode !== "skip";
   let pendingReplay: IncomingEvent[] = [];
   let aggregatedReplay: AggregatedEvent[] = [];
-  let initialReplayComplete = false;
+  let replayComplete = false;
   const streamReplayEvents: IncomingEvent[] = [];
   const replayMessageKeys = new Set<string>();
   const MAX_REPLAY_MESSAGE_KEYS = 2000;
@@ -326,7 +323,8 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       attachments: msgAttachments,
       senderId,
       ts,
-      kind,
+      delivery,
+      phase,
       id: pubsubId,
       senderMetadata,
     } = pubsubMsg;
@@ -337,7 +335,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       if (!parsed.success) return null;
       return {
         type: "message",
-        kind, senderId, ts,
+        delivery, phase, senderId, ts,
         attachments: msgAttachments,
         pubsubId,
         senderMetadata: normalizedSender,
@@ -355,7 +353,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       if (!parsed.success) return null;
       return {
         type: "update-message",
-        kind, senderId, ts,
+        delivery, phase, senderId, ts,
         attachments: msgAttachments,
         pubsubId,
         senderMetadata: normalizedSender,
@@ -372,7 +370,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       if (!parsed.success) return null;
       return {
         type: "error",
-        kind, senderId, ts,
+        delivery, phase, senderId, ts,
         attachments: msgAttachments,
         pubsubId,
         senderMetadata: normalizedSender,
@@ -387,7 +385,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       if (!parsed.success) return null;
       return {
         type: "method-call",
-        kind, senderId, ts,
+        delivery, phase, senderId, ts,
         pubsubId,
         senderMetadata: normalizedSender,
         callId: parsed.data.callId,
@@ -402,7 +400,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       if (!parsed.success) return null;
       return {
         type: "method-result",
-        kind, senderId, ts,
+        delivery, phase, senderId, ts,
         pubsubId,
         senderMetadata: normalizedSender,
         callId: parsed.data.callId,
@@ -420,7 +418,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       if (!parsed.success) return null;
       return {
         type: "execution-pause",
-        kind, senderId, ts,
+        delivery, phase, senderId, ts,
         pubsubId,
         senderMetadata: normalizedSender,
         messageId: parsed.data.messageId,
@@ -434,7 +432,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       if (!presencePayload.action || !presencePayload.metadata) return null;
       return {
         type: "presence",
-        kind, senderId, ts,
+        delivery, phase, senderId, ts,
         pubsubId,
         senderMetadata: normalizedSender,
         action: presencePayload.action,
@@ -446,7 +444,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     if (msgType === "agent-debug") {
       return {
         type: "agent-debug",
-        kind, senderId, ts,
+        delivery, phase, senderId, ts,
         pubsubId,
         senderMetadata: normalizedSender,
         payload,
@@ -456,8 +454,8 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     return null;
   }
 
-  function replayDedupeKey(msg: ServerMessage): string | null {
-    if (msg.kind !== "replay") return null;
+  function replayDedupeKey(msg: ClientIngressMessage): string | null {
+    if (msg.stream !== "log" || msg.phase !== "replay") return null;
     if (msg.id !== undefined) {
       return `${msg.id}:${msg.type ?? ""}:${msg.senderId ?? ""}`;
     }
@@ -467,7 +465,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     return null;
   }
 
-  function rememberReplayMessage(msg: ServerMessage): boolean {
+  function rememberReplayMessage(msg: ClientIngressMessage): boolean {
     const key = replayDedupeKey(msg);
     if (!key) return true;
     if (replayMessageKeys.has(key)) return false;
@@ -483,11 +481,12 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     return true;
   }
 
-  function handleServerMessage(msg: ServerMessage): void {
+  function handleServerMessage(msg: ClientIngressMessage): void {
     if (!rememberReplayMessage(msg)) return;
 
-    switch (msg.kind) {
-      case "ready": {
+    switch (msg.stream) {
+      case "control": {
+        if (msg.controlType !== "ready") break;
         if (typeof msg.contextId === "string") serverContextId = msg.contextId;
         if (msg.channelConfig) serverChannelConfig = msg.channelConfig;
         if (typeof msg.totalCount === "number") serverTotalCount = msg.totalCount;
@@ -498,14 +497,14 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
           serverFirstChatMessageId = undefined;
         }
 
-        if (initialReplayComplete) {
+        if (replayComplete) {
           break;
         }
 
         // Aggregate replay
         if (replayMode !== "skip") {
           const aggregated = aggregateReplayEvents(pendingReplay);
-          if (!initialReplayComplete) {
+          if (!replayComplete) {
             aggregatedReplay = aggregated;
           } else if (aggregated.length > 0) {
             aggregatedReplay = [...aggregatedReplay, ...aggregated];
@@ -513,7 +512,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
         }
         bufferingReplay = false;
         pendingReplay = [];
-        initialReplayComplete = true;
+        replayComplete = true;
 
         resolveReady();
         enqueueMessage({
@@ -526,31 +525,30 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
         break;
       }
 
-      case "config-update": {
-        if (msg.channelConfig) {
-          serverChannelConfig = msg.channelConfig;
-          for (const handler of configChangeHandlers) handler(msg.channelConfig);
-        }
-        break;
-      }
-
       case "error": {
         const errorMsg = msg.error || "unknown server error";
         const error = new PubSubError(errorMsg, "server");
-        if (!initialReplayComplete) rejectReady(error);
+        if (!replayComplete) rejectReady(error);
         handleError(error);
         break;
       }
 
-      case "replay":
-      case "persisted":
-      case "ephemeral": {
+      case "log":
+      case "signal": {
         if (msg.id !== undefined) {
           lastSeenId = msg.id;
           if (msg.id > 0) lastSeenSeq = msg.id;
         }
 
+        if (msg.stream === "log" && msg.phase === "replay" && replayMode === "skip") {
+          break;
+        }
+
         const isPresence = msg.type === "presence";
+        if (msg.type === "config-update" && msg.payload && typeof msg.payload === "object") {
+          serverChannelConfig = msg.payload as ChannelConfig;
+          for (const handler of configChangeHandlers) handler(serverChannelConfig);
+        }
 
         // Roster dedup
         if (isPresence && msg.id !== undefined) {
@@ -603,7 +601,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
         }
 
         // Handle method-cancel before normal event parsing (not a recognized event type)
-        if (msg.type === "method-cancel" && msg.kind !== "replay") {
+        if (msg.type === "method-cancel" && msg.phase !== "replay") {
           const cancelPayload = msg.payload as { callId?: string } | undefined;
           if (cancelPayload?.callId) {
             const controller = executingMethods.get(cancelPayload.callId);
@@ -617,7 +615,8 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
         // Build PubSubMessage for events infrastructure.
         // Convert wire-format attachments (base64) to client format (Uint8Array).
         const pubsubMsg: PubSubMessage = {
-          kind: msg.kind,
+          delivery: msg.stream,
+          phase: msg.phase,
           id: msg.id,
           type: msg.type!,
           payload: msg.payload,
@@ -630,7 +629,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
         const event = parseIncoming(pubsubMsg);
         if (event) {
           // Auto-execute method calls targeting this client
-          if (event.type === "method-call" && event.kind !== "replay") {
+          if (event.type === "method-call" && event.phase !== "replay") {
             handleMethodCallExec(event as IncomingMethodCallEvent)
               .catch((err) => console.error(`[RpcPubSubClient] Method execution failed:`, err));
           }
@@ -639,8 +638,8 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
           // resolved from the subscribe acknowledgment because the ready event
           // was not delivered, late replay events are surfaced directly instead
           // of being stranded in a replay buffer with no future ready boundary.
-          if (event.kind === "replay") {
-            if (initialReplayComplete) {
+          if (event.phase === "replay") {
+            if (replayComplete) {
               if (replayMode === "stream") streamReplayEvents.push(event);
               eventsFanout.emit(event);
             } else if (replayMode !== "skip") {
@@ -666,21 +665,43 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     }
   }
 
-  function applySubscribeAckFallback(result: SubscribeResult | undefined): void {
-    if (!result?.ready || !Array.isArray(result.initialReplay) || initialReplayComplete) {
-      return;
+  function applyRosterSnapshot(snapshot: BootstrapSnapshot): void {
+    if (snapshot.kind !== "roster-snapshot") return;
+    currentRoster = {};
+    for (const participant of snapshot.participants) {
+      currentRoster[participant.id] = { id: participant.id, metadata: participant.metadata as T };
     }
-    for (const replayMessage of result.initialReplay) {
-      handleServerMessage(replayMessage);
+    for (const handler of rosterHandlers) {
+      handler({ participants: currentRoster, ts: snapshot.ts });
+    }
+  }
+
+  function ingestReplayEnvelope(envelope: ReplayEnvelope, _source: "stream" | "ack"): void {
+    if (replayComplete) return;
+    if (replayMode !== "skip") {
+      for (const event of envelope.logEvents) {
+        handleServerMessage(eventToClientIngress(event, "replay"));
+      }
+      for (const snapshot of envelope.snapshots) {
+        applyRosterSnapshot(snapshot);
+      }
     }
     handleServerMessage({
-      kind: "ready",
-      contextId: result.ready.contextId,
-      channelConfig: result.ready.channelConfig,
-      totalCount: result.ready.totalCount,
-      chatMessageCount: result.ready.chatMessageCount,
-      firstChatMessageId: result.ready.firstChatMessageId,
+      stream: "control",
+      controlType: "ready",
+      contextId: envelope.ready.contextId,
+      channelConfig: envelope.ready.channelConfig,
+      totalCount: envelope.ready.totalCount,
+      chatMessageCount: envelope.ready.rootMessageCount,
+      firstChatMessageId: envelope.ready.firstRootMessageId,
     });
+    streamedReplayLogEvents = [];
+    streamedReplaySnapshots = [];
+  }
+
+  function applySubscribeAckFallback(result: SubscribeResult | undefined): void {
+    if (!result?.envelope || replayComplete) return;
+    ingestReplayEnvelope(result.envelope, "ack");
   }
 
   async function handleMethodCallExec(event: IncomingMethodCallEvent): Promise<void> {
@@ -694,7 +715,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
           content: { error: `Method "${event.methodName}" not registered on this client` },
           complete: true,
           isError: true,
-        }, { persist: true });
+        }, {});
       } catch { /* best effort */ }
       return;
     }
@@ -711,7 +732,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
           content,
           complete: false,
           isError: false,
-        }, { persist: true });
+        }, {});
       },
       streamWithAttachments: async (content: unknown, attachments: AttachmentInput[], streamOpts?: { contentType?: string }) => {
         await callChannel("publish", pid, "method-result", {
@@ -720,7 +741,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
           contentType: streamOpts?.contentType,
           complete: false,
           isError: false,
-        }, { persist: true, attachments: toStoredAttachments(attachments) });
+        }, { attachments: toStoredAttachments(attachments) });
       },
       resultWithAttachments: <R>(content: R, attachments: AttachmentInput[], resultOpts?: { contentType?: string }) => ({
         content,
@@ -733,7 +754,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
           complete: false,
           isError: false,
           progress: percent,
-        }, { persist: false });
+        }, {});
       },
     };
 
@@ -753,14 +774,14 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
           contentType: withAttachments.contentType,
           complete: true,
           isError: false,
-        }, { persist: true, attachments: toStoredAttachments(withAttachments.attachments) });
+        }, { attachments: toStoredAttachments(withAttachments.attachments) });
       } else {
         await callChannel("publish", pid, "method-result", {
           callId: event.callId,
           content: result,
           complete: true,
           isError: false,
-        }, { persist: true });
+        }, {});
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -769,7 +790,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
         content: { error: errorMsg },
         complete: true,
         isError: true,
-      }, { persist: true }).catch(e => console.error("[PubSub] Failed to publish auto-execution error:", e));
+      }, {}).catch(e => console.error("[PubSub] Failed to publish auto-execution error:", e));
     } finally {
       executingMethods.delete(event.callId);
     }
@@ -796,16 +817,69 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
   // Phase 2C: Gap detection state
   let lastSeenSeq: number | undefined = opts.sinceId;
   let repairingGap = false;
-  const gapBuffer: ServerMessage[] = [];
+  const gapBuffer: ClientIngressMessage[] = [];
   const MAX_GAP_SIZE = 500;
 
   // Register event listener for channel messages
   const removeEventListener = rpc.onEvent("channel:message", (_fromId: string, payload: unknown) => {
     if (closed) return;
-    const data = payload as { channelId?: string; message?: ServerMessage };
+    const data = payload as { channelId?: string; message?: RpcChannelMessage };
     if (data.channelId !== channel) return;
     if (data.message) {
-      const msg = data.message;
+      const raw = data.message;
+      if (raw.kind === "control" && raw.type === "ready" && raw.ready) {
+        if (!replayComplete) {
+          ingestReplayEnvelope({
+            mode: opts.sinceId && opts.sinceId > 0 ? "after" : "initial",
+            logEvents: streamedReplayLogEvents,
+            snapshots: streamedReplaySnapshots,
+            ready: raw.ready,
+          }, "stream");
+        } else {
+          handleServerMessage({
+            stream: "control",
+            controlType: "ready",
+            contextId: raw.ready.contextId,
+            channelConfig: raw.ready.channelConfig,
+            totalCount: raw.ready.totalCount,
+            chatMessageCount: raw.ready.rootMessageCount,
+            firstChatMessageId: raw.ready.firstRootMessageId,
+          });
+        }
+        return;
+      }
+      if (raw.kind === "control" && raw.type === "roster-snapshot") {
+        const snapshot: BootstrapSnapshot = {
+          kind: "roster-snapshot",
+          participants: raw.participants ?? [],
+          ts: raw.ts ?? Date.now(),
+        };
+        if (replayMode === "skip" && !replayComplete) return;
+        if (!replayComplete) {
+          streamedReplaySnapshots.push(snapshot);
+        } else {
+          applyRosterSnapshot(snapshot);
+        }
+        return;
+      }
+      if (raw.kind === "log" && raw.phase === "replay" && raw.event && !replayComplete) {
+        if (replayMode === "skip") return;
+        streamedReplayLogEvents.push(raw.event);
+        return;
+      }
+      const msg: ClientIngressMessage | null =
+        raw.kind === "log" && raw.event
+          ? eventToClientIngress(raw.event, raw.phase === "replay" ? "replay" : "live")
+          : raw.kind === "signal"
+            ? {
+                stream: "signal",
+                type: raw.type,
+                payload: raw.payload,
+                senderId: raw.senderId,
+                ts: raw.ts,
+              }
+            : null;
+      if (!msg) return;
 
       // Buffer events that arrive during gap repair — process them after the gap is filled
       if (repairingGap) {
@@ -819,24 +893,10 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
           const gap = msg.id - lastSeenSeq - 1;
           if (gap <= MAX_GAP_SIZE) {
             repairingGap = true;
-            callChannel<Array<{ id: number; type: string; payload: unknown; senderId: string; ts: number; senderMetadata?: Record<string, unknown>; attachments?: unknown[] }>>(
-              "getEventRange", lastSeenSeq, msg.id - 1,
-            ).then(events => {
-              if (events && Array.isArray(events)) {
-                for (const evt of events) {
-                  if (evt.id !== undefined && lastSeenSeq !== undefined && evt.id <= lastSeenSeq) continue;
-                  const replayMsg: ServerMessage = {
-                    kind: "persisted",
-                    id: evt.id,
-                    type: evt.type,
-                    payload: evt.payload,
-                    senderId: evt.senderId,
-                    ts: evt.ts,
-                    senderMetadata: evt.senderMetadata,
-                    attachments: evt.attachments as ServerMessage["attachments"],
-                  };
-                  handleServerMessage(replayMsg);
-                }
+            callChannel<ReplayEnvelope>("getReplayAfter", lastSeenSeq).then(envelope => {
+              for (const evt of envelope.logEvents) {
+                if (evt.id !== undefined && lastSeenSeq !== undefined && evt.id <= lastSeenSeq) continue;
+                handleServerMessage(eventToClientIngress(evt, "live"));
               }
             }).catch(err => {
               console.warn("[RpcPubSubClient] Gap repair failed:", err);
@@ -903,7 +963,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       replayMessageKeys.clear();
       pendingReplay = [];
       bufferingReplay = replayMode !== "skip";
-      initialReplayComplete = false;
+      replayComplete = false;
       // Re-subscribe with sinceId for catch-up replay
       const resubMeta = { ...subscribeMetadata, sinceId: lastSeenSeq, replay: true };
       const result = await callChannel<SubscribeResult | undefined>("subscribe", pid, resubMeta);
@@ -1003,7 +1063,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
   // ── Public API ──────────────────────────────────────────────────────────
 
   async function ready(signal?: AbortSignal): Promise<void> {
-    if (initialReplayComplete) return;
+    if (replayComplete) return;
     if (closed) throw new PubSubError("connection closed before ready", "connection");
     if (!signal) return readyPromise;
     if (signal.aborted) throw new PubSubError("ready aborted", "connection");
@@ -1030,10 +1090,9 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     publishOptions: PublishOptions = {},
   ): Promise<number | undefined> {
     if (closed) throw new PubSubError("not connected", "connection");
-    const { persist = true, attachments, idempotencyKey } = publishOptions;
+    const { attachments, idempotencyKey } = publishOptions;
 
     const result = await callChannel<{ id?: number }>("publish", pid, type, payload, {
-      persist,
       ref: undefined,
       senderMetadata: undefined,
       attachments: attachments ? toStoredAttachments(attachments) : undefined,
@@ -1065,7 +1124,6 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     content: string,
     sendOptions?: {
       replyTo?: string;
-      persist?: boolean;
       attachments?: AttachmentInput[];
       contentType?: string;
       at?: string[];
@@ -1081,7 +1139,6 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     if (sendOptions?.metadata) messagePayload["metadata"] = sendOptions.metadata;
 
     const pubsubId = await publish("message", messagePayload, {
-      persist: sendOptions?.persist ?? true,
       attachments: sendOptions?.attachments,
       idempotencyKey: sendOptions?.idempotencyKey,
     });
@@ -1091,25 +1148,24 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
   async function updateMessage(
     id: string,
     content: string,
-    updateOptions?: { complete?: boolean; persist?: boolean; attachments?: AttachmentInput[]; contentType?: string },
+    updateOptions?: { complete?: boolean; attachments?: AttachmentInput[]; contentType?: string },
   ): Promise<number | undefined> {
     const payload: Record<string, unknown> = { id, content };
     if (updateOptions?.complete !== undefined) payload["complete"] = updateOptions.complete;
     if (updateOptions?.contentType) payload["contentType"] = updateOptions.contentType;
     return await publish("update-message", payload, {
-      persist: updateOptions?.persist ?? true,
       attachments: updateOptions?.attachments,
     });
   }
 
   async function completeMessage(id: string, options?: { idempotencyKey?: string }): Promise<number | undefined> {
-    return await publish("update-message", { id, complete: true }, { persist: true, idempotencyKey: options?.idempotencyKey });
+    return await publish("update-message", { id, complete: true }, { idempotencyKey: options?.idempotencyKey });
   }
 
   async function errorMessage(id: string, errorMsg: string, code?: string): Promise<number | undefined> {
     const payload: Record<string, unknown> = { id, error: errorMsg };
     if (code) payload["code"] = code;
-    return await publish("error", payload, { persist: true });
+    return await publish("error", payload);
   }
 
   function callMethod(
@@ -1210,7 +1266,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
   function events(evtOptions?: EventStreamOptions): AsyncIterableIterator<EventStreamItem> {
     const source = eventsFanout.subscribe();
     const includeReplay = evtOptions?.includeReplay ?? false;
-    const includeEphemeral = evtOptions?.includeEphemeral ?? false;
+    const includeSignals = evtOptions?.includeSignals ?? false;
 
     function isIncomingEvent(event: EventStreamItem): event is IncomingEvent {
       return !("aggregated" in event);
@@ -1222,14 +1278,14 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
           replayMode === "stream" ? streamReplayEvents : aggregatedReplay;
         for (const item of replaySeed) {
           if (isIncomingEvent(item)) {
-            if (!includeEphemeral && item.kind === "ephemeral") continue;
+            if (!includeSignals && item.delivery === "signal") continue;
           }
           yield item;
         }
       }
 
       for await (const event of source) {
-        if (!includeEphemeral && event.kind === "ephemeral") continue;
+        if (!includeSignals && event.delivery === "signal") continue;
         yield event;
       }
     })();
@@ -1284,7 +1340,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     error: errorMessage,
     callMethod,
     get clientId() { return pid; },
-    get connected() { return !closed && initialReplayComplete; },
+    get connected() { return !closed && replayComplete; },
     get reconnecting() { return false; },
     get contextId() { return serverContextId; },
     get channelConfig() { return serverChannelConfig; },
@@ -1321,40 +1377,11 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     get totalMessageCount() { return serverTotalCount; },
     get chatMessageCount() { return serverChatMessageCount; },
     get firstChatMessageId() { return serverFirstChatMessageId; },
-    async getMessagesBefore(beforeId: number, limit = 100) {
-      const result = await callChannel<{
-        messages: Array<{
-          id: number;
-          type: string;
-          payload: unknown;
-          senderId: string;
-          ts: number;
-          senderMetadata?: Record<string, unknown>;
-          attachments?: WireAttachment[];
-        }>;
-        trailingUpdates?: Array<{
-          id: number;
-          type: string;
-          payload: unknown;
-          senderId: string;
-          ts: number;
-          senderMetadata?: Record<string, unknown>;
-          attachments?: WireAttachment[];
-        }>;
-        hasMore: boolean;
-      }>("getMessagesBefore", beforeId, limit);
-      // Convert wire-format attachments (base64) to client format (Uint8Array)
-      return {
-        messages: result.messages.map(m => ({
-          ...m,
-          attachments: convertWireAttachments(m.attachments),
-        })),
-        trailingUpdates: result.trailingUpdates?.map(m => ({
-          ...m,
-          attachments: convertWireAttachments(m.attachments),
-        })),
-        hasMore: result.hasMore,
-      };
+    async getChatReplayBefore(beforeRootId: number, rootLimit = 100) {
+      return callChannel<ReplayEnvelope>("getChatReplayBefore", beforeRootId, rootLimit);
+    },
+    async getReplayAfter(sinceId: number) {
+      return callChannel<ReplayEnvelope>("getReplayAfter", sinceId);
     },
   };
 }

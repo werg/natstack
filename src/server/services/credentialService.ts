@@ -3677,11 +3677,13 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   }
 
   function resolveApprovalIdentity(ctx: ServiceContext): {
+    callerId: string;
     repoPath: string;
     effectiveVersion: string;
   } {
     const identity = ctx.caller.code;
     return {
+      callerId: identity?.callerId ?? ctx.caller.runtime.id,
       repoPath: identity?.repoPath ?? ctx.caller.runtime.id,
       effectiveVersion: identity?.effectiveVersion ?? "unknown",
     };

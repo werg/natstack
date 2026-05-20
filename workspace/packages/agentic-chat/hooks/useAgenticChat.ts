@@ -121,7 +121,6 @@ export function useAgenticChat({ config, channelName, channelConfig, contextId, 
     // --- Build chat sandbox value (stale-ref safe — dereferences clientRef at call time) ---
     const chat: ChatSandboxValue = useMemo(() => ({
         publish: (eventType: string, payload: unknown, opts?: {
-            persist?: boolean;
             idempotencyKey?: string;
         }) => {
             // Auto-generate id for message payloads (required by PubSub protocol)
@@ -223,7 +222,6 @@ export function useAgenticChat({ config, channelName, channelConfig, contextId, 
             args,
             result,
         }, {
-            persist: true,
             idempotencyKey: payload.idempotencyKey ?? `agent-context:action-bar:${crypto.randomUUID()}`,
         });
     }, [core.clientRef]);
@@ -286,13 +284,13 @@ export function useAgenticChat({ config, channelName, channelConfig, contextId, 
         await publishActionBarContext("cleared", { ok: true, idempotencyKey });
     }, [onActionBarFileChange, publishActionBarContext]);
     const updateActionBarMaxHeight = useCallback((maxHeight: number, options?: {
-        persist?: boolean;
+        saveState?: boolean;
     }) => {
         setActionBarData((current) => {
             if (!current)
                 return current;
             const next = { ...current, maxHeight };
-            if (options?.persist !== false && current.source.type === "file") {
+            if (options?.saveState !== false && current.source.type === "file") {
                 void onActionBarFileChange?.({
                     path: current.source.path,
                     props: current.props,
@@ -462,7 +460,7 @@ export default function App({ props, chat }) {
                             const id = crypto.randomUUID();
                             const source = trimmedPath ? { type: "file" as const, path: trimmedPath } : { type: "code" as const, code: code! };
                             const data = JSON.stringify({ id, source, props });
-                            await client.publish("message", { id, content: data, contentType: "inline_ui" }, { persist: true, idempotencyKey: `inline_ui:${id}` });
+                            await client.publish("message", { id, content: data, contentType: "inline_ui" }, { idempotencyKey: `inline_ui:${id}` });
                             return { ok: true, id };
                         },
                     },
@@ -678,7 +676,7 @@ Use package imports available to inline_ui plus relative imports for local helpe
                         id: scopeMsgId,
                         content: `Scope refreshed (panel session restarted). ${parts.join(". ")}.${hint}`,
                         kind: "system",
-                    }, { persist: true, idempotencyKey: `scope_hydrate:${scopeMsgId}` });
+                    }, { idempotencyKey: `scope_hydrate:${scopeMsgId}` });
                 }
             }
             catch (err) {

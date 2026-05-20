@@ -312,21 +312,15 @@ function StandardApprovalActions({
       <DecisionButton
         label={copy.session.label}
         description={copy.session.description}
-        color="sky"
-        variant="solid"
+        variant="surface"
         onClick={() => decide("session")}
       />
       <DecisionButton
         label={copy.version.label}
         description={copy.version.description}
-        variant="surface"
+        color="sky"
+        variant="solid"
         onClick={() => decide("version")}
-      />
-      <DecisionButton
-        label={copy.repo.label}
-        description={copy.repo.description}
-        variant="surface"
-        onClick={() => decide("repo")}
       />
       <DecisionButton
         label="Deny"

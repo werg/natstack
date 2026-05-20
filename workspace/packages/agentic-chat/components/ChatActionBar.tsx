@@ -78,7 +78,7 @@ function ChatActionBarContent({ actionBar }: { actionBar: ActionBarState }) {
     if (!dragRef.current) return;
     const next = clampMaxHeight(dragRef.current.startHeight + event.clientY - dragRef.current.startY);
     dragRef.current.nextHeight = next;
-    onActionBarMaxHeightChange?.(next, { persist: false });
+    onActionBarMaxHeightChange?.(next, { saveState: false });
   }, [onActionBarMaxHeightChange]);
 
   const onResizePointerEnd = useCallback((event: PointerEvent<HTMLDivElement>) => {

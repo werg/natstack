@@ -254,7 +254,7 @@ export class HeadlessSession {
 
   private buildChatSandboxValue() {
     return {
-      publish: async (eventType: string, payload: unknown, options?: { persist?: boolean }) => {
+      publish: async (eventType: string, payload: unknown, options?: { idempotencyKey?: string }) => {
         if (!this._client) throw new Error("Not connected");
         return this._client.publish(eventType, payload, options);
       },
@@ -401,12 +401,12 @@ export class HeadlessSession {
   private async consumeChannelMessages(signal: AbortSignal): Promise<void> {
     if (!this._client) return;
     try {
-      for await (const event of this._client.events({ includeReplay: true, includeEphemeral: false })) {
+      for await (const event of this._client.events({ includeReplay: true, includeSignals: false })) {
         if (signal.aborted) break;
 
         const wire = event as unknown as {
           type?: string;
-          kind?: string;
+          phase?: "replay" | "live";
           id?: string;
           senderId?: string;
           content?: string;
@@ -417,7 +417,7 @@ export class HeadlessSession {
         };
 
         if (wire.type === "message" && wire.id) {
-          const isReplay = wire.kind === "replay";
+          const isReplay = wire.phase === "replay";
           const isFromClient =
             wire.senderMetadata?.type === "panel" || wire.senderMetadata?.type === "headless";
           const msg = createChatMessageFromWire(wire as WireNewMessage, {

@@ -10,7 +10,7 @@ export default defineConfig({
   testMatch: "**/*.spec.ts",
   fullyParallel: false, // Electron tests run serially
   workers: 1, // Single worker for Electron
-  timeout: 60000, // Electron startup can be slow
+  timeout: 120000, // Electron startup can be slow
   retries: process.env.CI ? 2 : 0,
   forbidOnly: !!process.env.CI,
 

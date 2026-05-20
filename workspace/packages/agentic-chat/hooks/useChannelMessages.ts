@@ -6,8 +6,8 @@
  * feedback_form, feedback_custom). This hook consumes them via `client.events()`
  * and builds the flat `ChatMessage[]` array for component rendering.
  *
- * Handles replay, live persisted messages, and live ephemeral transcript
- * messages. Ephemerality controls storage/replay; content type controls
+ * Handles replay, live log messages, and live signal transcript
+ * messages. Delivery controls storage/replay; content type controls
  * whether a message belongs in the transcript.
  *
  * Handles streaming:
@@ -18,7 +18,7 @@
  *
  * Supports pagination: caps visible messages at MAX_VISIBLE. When the user
  * scrolls up and requests earlier messages, fetches them via
- * `client.getMessagesBefore()` and prepends to the visible window.
+ * `client.getChatReplayBefore()` and prepends to the visible window.
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -49,7 +49,7 @@ export interface UseChannelMessagesResult {
 
 /**
  * Subscribe to a PubSubClient's event stream and build `ChatMessage[]` from
- * all persisted + replayed channel messages. Supports windowed pagination.
+ * all durable + replayed channel messages. Supports windowed pagination.
  */
 export function useChannelMessages<T extends ParticipantMetadata = ParticipantMetadata>(
   client: PubSubClient<T> | null,
@@ -63,9 +63,7 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
   const orderRef = useRef<string[]>([]);
   const cancelledRef = useRef(false);
   // Track the lowest pubsubId we've seen (for pagination anchor).
-  const lowestPubsubIdRef = useRef<number | null>(null);
-  // Track whether replay indicated there's more history.
-  const replayTrimmedRef = useRef(false);
+  const oldestRootIdRef = useRef<number | null>(null);
   const clientRef = useRef(client);
   clientRef.current = client;
 
@@ -101,17 +99,17 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
     const order: string[] = [];
     byIdRef.current = byId;
     orderRef.current = order;
-    lowestPubsubIdRef.current = null;
-    replayTrimmedRef.current = false;
+    oldestRootIdRef.current = null;
 
     const consume = async () => {
       try {
-        for await (const event of client.events({ includeReplay: true, includeEphemeral: true })) {
+        for await (const event of client.events({ includeReplay: true, includeSignals: true })) {
           if (cancelledRef.current) break;
 
           const wire = event as unknown as {
             type?: string;
-            kind?: string;
+            delivery?: "log" | "signal";
+            phase?: "replay" | "live";
             id?: string;
             messageId?: string;
             senderId?: string;
@@ -127,15 +125,17 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
           };
 
           if (wire.type === "message" && wire.id) {
-            const isReplay = wire.kind === "replay";
-            const isEphemeral = wire.kind === "ephemeral";
+            const isReplay = wire.phase === "replay";
+            const isSignal = wire.delivery === "signal";
             const isFromClient = isClientParticipantType(wire.senderMetadata?.type);
 
-            if (!isTranscriptWireMessage(wire)) continue;
+            if (!isTranscriptWireMessage(wire)) {
+              continue;
+            }
 
             const msg = createChatMessageFromWire(wire as WireNewMessage, {
               isReplay,
-              isFromClient: isFromClient || isEphemeral,
+              isFromClient: isFromClient || isSignal,
             });
 
             if (!byId.has(wire.id)) {
@@ -143,10 +143,10 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
             }
             byId.set(wire.id, msg);
 
-            // Track lowest pubsubId for pagination anchor.
+            // Track lowest chat-root pubsubId for pagination anchor.
             if (wire.pubsubId !== undefined) {
-              if (lowestPubsubIdRef.current === null || wire.pubsubId < lowestPubsubIdRef.current) {
-                lowestPubsubIdRef.current = wire.pubsubId;
+              if (oldestRootIdRef.current === null || wire.pubsubId < oldestRootIdRef.current) {
+                oldestRootIdRef.current = wire.pubsubId;
               }
             }
 
@@ -202,7 +202,7 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
   const loadEarlierMessages = useCallback(async () => {
     const c = clientRef.current;
     if (!c || loadingMore) return;
-    const anchor = lowestPubsubIdRef.current;
+    const anchor = oldestRootIdRef.current;
     if (anchor === null || anchor <= 1) {
       setHasMoreHistory(false);
       return;
@@ -210,70 +210,58 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
 
     setLoadingMore(true);
     try {
-      const result = await (c as unknown as {
-        getMessagesBefore: (beforeId: number, limit: number) => Promise<{
-          messages: Array<{ id: number; type: string; payload: unknown; senderId: string; ts: number; senderMetadata?: Record<string, unknown>; attachments?: Attachment[] }>;
-          trailingUpdates?: Array<{ id: number; type: string; payload: unknown; senderId: string; ts: number; attachments?: Attachment[] }>;
-          hasMore: boolean;
-        }>;
-      }).getMessagesBefore(anchor, PAGE_SIZE);
+      const result = await c.getChatReplayBefore(anchor, PAGE_SIZE);
 
-      setHasMoreHistory(result.hasMore);
+      setHasMoreHistory(Boolean(result.ready.hasMoreBefore));
 
       const byId = byIdRef.current;
       const order = orderRef.current;
 
-      // Parse older messages and prepend.
+      // Parse older complete chains and prepend only roots.
       const prepend: string[] = [];
-      for (const raw of result.messages) {
+      for (const raw of result.logEvents) {
         const payload = raw.payload as Record<string, unknown> | undefined;
-        if (raw.type !== "message" || !payload) continue;
+        if (!payload) continue;
         const msgId = (payload["id"] as string) ?? `pubsub-${raw.id}`;
-        if (byId.has(msgId)) continue; // dedup
 
-        let msg = createChatMessageFromWire({
-          type: "message",
-          id: msgId,
-          pubsubId: raw.id,
-          senderId: raw.senderId,
-          content: (payload["content"] as string) ?? "",
-          contentType: payload["contentType"] as string | undefined,
-          replyTo: payload["replyTo"] as string | undefined,
-          attachments: raw.attachments as Attachment[] | undefined,
-          senderMetadata: raw.senderMetadata as {
-            name?: string; type?: string; handle?: string;
-          } | undefined,
-        }, { isReplay: true });
-
-        // Apply trailing updates from the server (paginated view may split
-        // an initial message from its deltas across batches).
-        if (result.trailingUpdates) {
-          for (const upd of result.trailingUpdates) {
-            const updPayload = upd.payload as Record<string, unknown> | undefined;
-            if (!updPayload || (updPayload["id"] as string) !== msgId) continue;
-            if (upd.type === "error") {
-              msg = applyChatMessageError(msg, {
-                type: "error",
-                id: msgId,
-                error: updPayload["error"] as string | undefined,
-              });
-              continue;
-            }
-            msg = applyChatMessageUpdate(msg, {
+        if (raw.type === "message") {
+          if (byId.has(msgId)) continue;
+          const msg = createChatMessageFromWire({
+            type: "message",
+            id: msgId,
+            pubsubId: raw.id,
+            senderId: raw.senderId,
+            content: (payload["content"] as string) ?? "",
+            contentType: payload["contentType"] as string | undefined,
+            replyTo: payload["replyTo"] as string | undefined,
+            attachments: raw.attachments as Attachment[] | undefined,
+            senderMetadata: raw.senderMetadata as {
+              name?: string; type?: string; handle?: string;
+            } | undefined,
+          }, { isReplay: true });
+          byId.set(msgId, msg);
+          prepend.push(msgId);
+          if (raw.id < (oldestRootIdRef.current ?? Infinity)) oldestRootIdRef.current = raw.id;
+        } else if (raw.type === "error") {
+          const existing = byId.get(msgId);
+          if (existing) {
+            byId.set(msgId, applyChatMessageError(existing, {
+              type: "error",
+              id: msgId,
+              error: payload["error"] as string | undefined,
+            }));
+          }
+        } else if (raw.type === "update-message") {
+          const existing = byId.get(msgId);
+          if (existing) {
+            byId.set(msgId, applyChatMessageUpdate(existing, {
               type: "update-message",
               id: msgId,
-              content: updPayload["content"] as string | undefined,
-              append: updPayload["append"] as boolean | undefined,
-              complete: updPayload["complete"] as boolean | undefined,
-            });
+              content: payload["content"] as string | undefined,
+              append: payload["append"] as boolean | undefined,
+              complete: payload["complete"] as boolean | undefined,
+            }));
           }
-        }
-
-        byId.set(msgId, msg);
-        prepend.push(msgId);
-
-        if (raw.id < (lowestPubsubIdRef.current ?? Infinity)) {
-          lowestPubsubIdRef.current = raw.id;
         }
       }
 

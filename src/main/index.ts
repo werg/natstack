@@ -1500,7 +1500,9 @@ app.on("ready", async () => {
       "natstack:bridge.setStateArgs",
       async (event, updates: Record<string, unknown>) => {
         const callerId = resolveCallerId(event);
-        return shellCore?.panelManager.updateStateArgs(callerId, updates);
+        return panelOrchestrator
+          ? panelOrchestrator.handleSetStateArgs(callerId, updates)
+          : shellCore?.panelManager.updateStateArgs(callerId, updates);
       }
     );
     ipcMain.handle("natstack:getBootstrapConfig", async (event) => {

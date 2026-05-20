@@ -12,11 +12,10 @@ export type ApprovalDecisionId = (typeof APPROVAL_DECISIONS)[number];
 // the system prioritizes earlier actions in constrained notification layouts.
 export const NOTIFICATION_ACTION_IDS_STANDARD = [
   "once",
-  "session",
+  "version",
   "deny",
   "open",
-  "version",
-  "repo",
+  "session",
 ] as const;
 export const NOTIFICATION_ACTION_IDS_INPUT_REQUIRED = ["open"] as const;
 

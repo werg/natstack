@@ -99,7 +99,7 @@ describe("ApprovalSheet", () => {
     expect(getByText(title)).toBeTruthy();
   });
 
-  it.each(["once", "session", "version", "repo", "deny"] as const)(
+  it.each(["once", "session", "version", "deny"] as const)(
     "resolves standard decision %s",
     async (decision) => {
       const onResolve = jest.fn(async () => undefined);

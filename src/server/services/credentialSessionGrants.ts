@@ -60,6 +60,9 @@ function sessionGrantKey(
     ? [resource.bindingId, resource.resource, resource.action]
     : ["*", "*", "*"];
   if (scope.repoPath) {
+    if (scope.callerId) {
+      return JSON.stringify([credentialId, ...resourceParts, "caller", scope.callerId]);
+    }
     return JSON.stringify([
       credentialId,
       ...resourceParts,

@@ -52,7 +52,6 @@ const ACTION_TITLES: Record<string, string> = {
   deny: "Deny",
   open: "Open",
   version: "Trust Version",
-  repo: "Trust Repo",
 };
 
 function actionPayloadFor(approval: PendingApproval): Array<{ id: string; title: string }> {

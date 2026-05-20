@@ -5,6 +5,7 @@ import { writeJsonFileAtomic } from "./atomicFile.js";
 export type CapabilityGrantDecision = "session" | "version" | "repo";
 
 export interface CapabilityGrantIdentity {
+  callerId?: string;
   repoPath: string;
   effectiveVersion: string;
 }
@@ -111,7 +112,8 @@ function grantKey(
     scope,
     capability,
     resourceKey,
+    scope === "session" ? (identity.callerId ?? "") : "",
     identity.repoPath,
-    scope === "version" || scope === "session" ? identity.effectiveVersion : "",
+    scope === "version" ? identity.effectiveVersion : "",
   ].join("\x00");
 }

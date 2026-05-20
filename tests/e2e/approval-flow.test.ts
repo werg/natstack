@@ -122,11 +122,10 @@ describe("approval flow e2e", () => {
             approvalKind: "credential",
             actionsJson: JSON.stringify([
                 { id: "once", title: "Once" },
-                { id: "session", title: "Session" },
+                { id: "version", title: "Trust Version" },
                 { id: "deny", title: "Deny" },
                 { id: "open", title: "Open" },
-                { id: "version", title: "Trust Version" },
-                { id: "repo", title: "Trust Repo" },
+                { id: "session", title: "Session" },
             ]),
         });
         await harness.mobileTransport.call("main", RPC_METHODS.shellApproval.resolve, [approval!.approvalId, "once"]);

@@ -65,7 +65,6 @@ const ACTION_COPY: Record<NotificationActionId, string> = {
   deny: "Deny",
   open: "Open",
   version: "Trust Version",
-  repo: "Trust Repo",
 };
 
 export function getNotificationActionDefinitions(

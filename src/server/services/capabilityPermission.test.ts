@@ -102,6 +102,41 @@ describe("capabilityPermission", () => {
     expect(approvalQueue.request).toHaveBeenCalledTimes(1);
   });
 
+  it("keys session-scoped capability grants to the concrete caller identity", async () => {
+    const approvalQueue = createApprovalQueueMock("session");
+    const deps = {
+      approvalQueue,
+      grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
+    };
+    const baseRequest = {
+      capability: "example-capability",
+      resource: { type: "example", label: "Example", value: "stable-key" },
+      title: "Example action",
+      deniedReason: "Denied",
+    };
+
+    await requestCapabilityPermission(deps, {
+      ...baseRequest,
+      caller: createVerifiedCaller("panel:first", "panel", {
+        callerId: "panel:first",
+        callerKind: "panel",
+        repoPath: "panels/source",
+        effectiveVersion: "version-1",
+      }),
+    });
+    await requestCapabilityPermission(deps, {
+      ...baseRequest,
+      caller: createVerifiedCaller("panel:second", "panel", {
+        callerId: "panel:second",
+        callerKind: "panel",
+        repoPath: "panels/source",
+        effectiveVersion: "version-1",
+      }),
+    });
+
+    expect(approvalQueue.request).toHaveBeenCalledTimes(2);
+  });
+
   describe("normalizeCallerKind", () => {
     it("accepts panel, worker, and do caller kinds", () => {
       expect(normalizeCallerKind("panel")).toBe("panel");

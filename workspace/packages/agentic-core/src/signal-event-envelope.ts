@@ -1,34 +1,34 @@
 /**
- * EphemeralEventEnvelope — typed contract for structured ephemeral channel
+ * SignalEventEnvelope — typed contract for structured channel signal
  * payloads.
  *
- * The pubsub channel-do stores ephemeral messages as
+ * The pubsub channel DO sends signal messages as
  * `{ id, content: string, contentType?: string }`. We layer a typed
  * convention on top: certain `contentType` values mean "the content is JSON
- * encoding a typed payload". `parseEphemeralEvent` decodes the payload while
+ * encoding a typed payload". `parseSignalEvent` decodes the payload while
  * filtering on contentType.
  *
- * The matching writer is `ChannelClient.sendEphemeralEvent<T>` in
+ * The matching writer is `ChannelClient.sendSignalEvent<T>` in
  * `@workspace/agentic-do/src/channel-client.ts`.
  */
 
-export interface EphemeralEventEnvelope<T> {
+export interface SignalEventEnvelope<T> {
   contentType: string;
   payload: T;
 }
 
-/** A minimal ephemeral message shape — what useChannelEphemeralMessages returns. */
-export interface EphemeralMessageLike {
+/** A minimal signal message shape. */
+export interface SignalMessageLike {
   content: string;
   contentType?: string;
 }
 
 /**
- * Decode an ephemeral message into a typed payload, filtering by contentType.
+ * Decode a signal message into a typed payload, filtering by contentType.
  * Returns null if the contentType doesn't match or if the JSON is malformed.
  */
-export function parseEphemeralEvent<T>(
-  msg: EphemeralMessageLike,
+export function parseSignalEvent<T>(
+  msg: SignalMessageLike,
   expectedContentType: string,
 ): T | null {
   if (msg.contentType !== expectedContentType) return null;

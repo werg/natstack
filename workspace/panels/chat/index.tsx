@@ -319,18 +319,6 @@ export default function ChatPanel() {
     })();
   }, [stateArgs.channelName, resolvedContextId]);
 
-  // Clear initialPrompt from persisted stateArgs after local capture.
-  // AgenticChat may not mount until the channel bootstrap finishes, so the
-  // panel must retain the prompt locally instead of relying on child capture.
-  // Use null (not undefined) because undefined is dropped by JSON serialization.
-  const initialPromptCleared = useRef(false);
-  useEffect(() => {
-    if (stateArgs.initialPrompt && !initialPromptCleared.current) {
-      initialPromptCleared.current = true;
-      void setStateArgs({ initialPrompt: null });
-    }
-  }, [stateArgs.initialPrompt]);
-
   // Build ConnectionConfig from runtime
   const config: ConnectionConfig = {
     clientId: rpc.selfId,

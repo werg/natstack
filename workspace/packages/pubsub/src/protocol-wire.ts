@@ -3,75 +3,63 @@
  * (server) and the PubSub client. Single source of truth to prevent drift.
  */
 
-import type { Attachment } from "@natstack/harness";
-import type { ChannelConfig } from "./types.js";
+import type {
+  BootstrapSnapshot,
+  ParticipantSnapshot,
+  ReplayReady,
+  ServerLogEvent,
+} from "./types.js";
 
 // ── Event messages (channel events with transport metadata) ──────────────
 
-/** WS event message: ChannelEvent fields + transport metadata */
-export interface WsEventMessage {
-  kind: "replay" | "persisted" | "ephemeral";
-  id?: number;
-  type: string;
-  payload: unknown;
-  senderId: string;
-  ts: number;
-  senderMetadata?: Record<string, unknown>;
-  /** Sender ack correlation (WS-only, not present on replays) */
+export interface RpcLogMessage {
+  kind: "log";
+  phase: "replay" | "live";
+  event: ServerLogEvent;
   ref?: number;
-  /** Parsed attachments (from binary frame or inline) */
-  attachments?: Attachment[];
-  /** Binary frame attachment metadata (present only in binary frames) */
-  attachmentMeta?: Array<{ id: string; mimeType: string; name?: string; size: number }>;
 }
 
-// ── Control messages (lifecycle/RPC responses, not events) ───────────────
-
-export interface WsReadyMessage {
-  kind: "ready";
-  contextId?: string;
-  channelConfig?: ChannelConfig;
-  totalCount?: number;
-  chatMessageCount?: number;
-  firstChatMessageId?: number;
+export interface RpcRosterSnapshotMessage {
+  kind: "control";
+  type: "roster-snapshot";
+  participants: ParticipantSnapshot[];
+  ts: number;
 }
 
-export interface WsErrorMessage {
-  kind: "error";
+export interface RpcReadyMessage {
+  kind: "control";
+  type: "ready";
+  ready: ReplayReady;
+}
+
+export interface RpcErrorMessage {
+  kind: "control";
+  type: "error";
   error: string;
   ref?: number;
 }
 
-export interface WsConfigUpdateMessage {
-  kind: "config-update";
-  channelConfig: ChannelConfig;
-  ref?: number;
-}
-
-/** Row shape for messages-before pagination response */
-export interface WsMessageEntry {
-  id: number;
+export interface RpcSignalMessage {
+  kind: "signal";
   type: string;
   payload: unknown;
-  senderId: string;
+  senderId?: string;
   ts: number;
-  senderMetadata?: Record<string, unknown>;
-  attachments?: Attachment[];
-}
-
-export interface WsMessagesBeforeMessage {
-  kind: "messages-before";
-  messages?: WsMessageEntry[];
-  hasMore?: boolean;
-  trailingUpdates?: WsMessageEntry[];
   ref?: number;
 }
 
-export type WsControlMessage =
-  | WsReadyMessage
-  | WsErrorMessage
-  | WsConfigUpdateMessage
-  | WsMessagesBeforeMessage;
+export type RpcChannelMessage =
+  | RpcLogMessage
+  | RpcRosterSnapshotMessage
+  | RpcReadyMessage
+  | RpcErrorMessage
+  | RpcSignalMessage;
 
-/** Any WS message (event or control) */
-export type WsMessage = WsEventMessage | WsControlMessage;
+export function snapshotToRpcControl(snapshot: BootstrapSnapshot): RpcRosterSnapshotMessage {
+  return {
+    kind: "control",
+    type: "roster-snapshot",
+    participants: snapshot.participants,
+    ts: snapshot.ts,
+  };
+}
