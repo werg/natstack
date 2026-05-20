@@ -1,32 +1,26 @@
 import { extensions } from "@workspace/runtime";
-import type { ShellApi } from "./types.js";
+import { useEffect, useMemo } from "react";
+import { SessionStore, sessionIdsConnectKey, useAllSessions } from "./SessionStore.js";
+export { attachWithScrollback } from "./shellAttach.js";
+import type { SessionInfo, ShellApi } from "./types.js";
+
+const SHELL_EXTENSION = "@workspace-extensions/shell";
+const STREAMING_METHODS = new Set<string>([
+  "attach",
+  "watchSessionInfo",
+  "watchAllSessionInfo",
+]);
 
 export function useShellExtension(): ShellApi {
-  return extensions.use<ShellApi>("@workspace-extensions/shell");
+  return useMemo(
+    () => extensions.use<ShellApi>(SHELL_EXTENSION, { streamingMethods: STREAMING_METHODS }),
+    []
+  );
 }
 
-export async function attachWithScrollback(shell: ShellApi, sessionId: string): Promise<Response> {
-  const { text, cursor } = await shell.getScrollback(sessionId);
-  const live = await shell.attach(sessionId, { after: cursor });
-  if (!text) return live;
-  const liveReader = live.body?.getReader();
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(encoder.encode(text));
-    },
-    async pull(controller) {
-      if (!liveReader) {
-        controller.close();
-        return;
-      }
-      const next = await liveReader.read();
-      if (next.done) controller.close();
-      else controller.enqueue(next.value);
-    },
-    cancel() {
-      void liveReader?.cancel();
-    },
-  });
-  return new Response(stream, { headers: live.headers });
+export function useAllSessionInfo(shell: ShellApi, sessionIds: string[] = []): Record<string, SessionInfo> {
+  const store = useMemo(() => new SessionStore(), []);
+  const connectKey = sessionIdsConnectKey(sessionIds);
+  useEffect(() => store.connect(shell, connectKey ? connectKey.split("\0") : []), [connectKey, shell, store]);
+  return useAllSessions(store);
 }

@@ -253,6 +253,7 @@
     "node_modules",
     "**/dist",
     "**/node_modules",
+    "workspace/panels/terminal/vscode-upstream",
     "workspace/packages/playwright-*"
   ]
 }

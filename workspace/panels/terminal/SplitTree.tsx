@@ -1,17 +1,37 @@
-import { Grid } from "@radix-ui/themes";
 import { PaneView } from "./PaneView.js";
-import type { SessionInfo, ShellApi, SplitNode } from "./types.js";
+import { SplitPane } from "./SplitPane.js";
+import type { ParsedNotification } from "./notificationParser.js";
+import type { TerminalAppearance } from "./paneTheme.js";
+import type { NotificationSeverity, SessionInfo, ShellApi, SplitNode, TerminalNotification } from "./types.js";
 
 export function SplitTree(props: {
   node: SplitNode;
+  path?: Array<"a" | "b">;
   sessions: Record<string, SessionInfo>;
+  notifications: TerminalNotification[];
   focusedSessionId?: string;
   shell: ShellApi;
   fontSize: number;
+  fontFamily: string;
+  appearance: TerminalAppearance;
+  pasteMode: "path" | "dataUri" | "both";
+  imagePasteRelative: boolean;
+  resizeKey?: number;
   onFocus(sessionId: string): void;
   onClose(sessionId: string): void;
-  onNotification(sessionId: string, message: string): void;
+  onSplit(sessionId: string, direction: "row" | "column"): void;
+  onOpenPort(sessionId: string, port: number): void;
+  onOpenUrl(sessionId: string, url: string): void;
+  onClear(sessionId: string): void;
+  onDuplicate(sessionId: string): void;
+  onRestart(sessionId: string): void;
+  onRestartCommand(sessionId: string): void;
+  onFind(sessionId: string): void;
+  onZoom(sessionId: string): void;
+  onRatioChange(path: Array<"a" | "b">, ratio: number): void;
+  onNotification(sessionId: string, notification: ParsedNotification): void;
 }) {
+  const path = props.path ?? [];
   if (props.node.kind === "leaf") {
     const session = props.sessions[props.node.sessionId];
     if (!session) return null;
@@ -20,25 +40,47 @@ export function SplitTree(props: {
         shell={props.shell}
         session={session}
         fontSize={props.fontSize}
+        fontFamily={props.fontFamily}
+        appearance={props.appearance}
+        pasteMode={props.pasteMode}
+        imagePasteRelative={props.imagePasteRelative}
+        resizeKey={props.resizeKey}
         focused={props.focusedSessionId === session.sessionId}
+        severity={sessionSeverity(session.sessionId, props.notifications, session.alive)}
         onFocus={() => props.onFocus(session.sessionId)}
         onClose={() => props.onClose(session.sessionId)}
-        onNotification={(message) => props.onNotification(session.sessionId, message)}
+        onSplitRight={() => props.onSplit(session.sessionId, "row")}
+        onSplitDown={() => props.onSplit(session.sessionId, "column")}
+        onOpenPort={(port) => props.onOpenPort(session.sessionId, port)}
+        onOpenUrl={(url) => props.onOpenUrl(session.sessionId, url)}
+        onClear={() => props.onClear(session.sessionId)}
+        onDuplicate={() => props.onDuplicate(session.sessionId)}
+        onRestart={() => props.onRestart(session.sessionId)}
+        onRestartCommand={() => props.onRestartCommand(session.sessionId)}
+        onFind={() => props.onFind(session.sessionId)}
+        onZoom={() => props.onZoom(session.sessionId)}
+        onNotification={(notification) => props.onNotification(session.sessionId, notification)}
       />
     );
   }
   return (
-    <Grid
-      gap="2"
-      style={{
-        minHeight: 0,
-        height: "100%",
-        gridTemplateColumns: props.node.direction === "row" ? `${props.node.ratio}fr ${1 - props.node.ratio}fr` : undefined,
-        gridTemplateRows: props.node.direction === "column" ? `${props.node.ratio}fr ${1 - props.node.ratio}fr` : undefined,
-      }}
+    <SplitPane
+      direction={props.node.direction}
+      ratio={props.node.ratio}
+      onRatioChange={(ratio) => props.onRatioChange(path, ratio)}
     >
-      <SplitTree {...props} node={props.node.a} />
-      <SplitTree {...props} node={props.node.b} />
-    </Grid>
+      <SplitTree {...props} path={[...path, "a"]} node={props.node.a} />
+      <SplitTree {...props} path={[...path, "b"]} node={props.node.b} />
+    </SplitPane>
   );
+}
+
+function sessionSeverity(sessionId: string, notifications: TerminalNotification[], alive: boolean): NotificationSeverity {
+  if (!alive) return "failure";
+  const severities = notifications.filter((item) => item.sessionId === sessionId && !item.read).map((item) => item.severity);
+  if (severities.includes("failure")) return "failure";
+  if (severities.includes("approval")) return "approval";
+  if (severities.includes("waiting")) return "waiting";
+  if (severities.includes("done")) return "done";
+  return "info";
 }
