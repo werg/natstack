@@ -1,5 +1,16 @@
 import type { TestExecutionResult } from "../types.js";
 
+interface ToolCallPayloadLike {
+  id: string;
+  name: string;
+  arguments?: Record<string, unknown>;
+  execution?: {
+    status?: string;
+    result?: unknown;
+    isError?: boolean;
+  };
+}
+
 /**
  * Find the last complete agent message (not from self, not thinking).
  * The self-sent message has kind "message" + pending:true initially,
@@ -52,4 +63,34 @@ export function responseSucceeds(result: TestExecutionResult, expectedContent: s
   const hasContent = lower.includes(expectedContent.toLowerCase());
   if (!hasContent) return { passed: false, reason: `Expected "${expectedContent}" in response, got: ${msg.slice(0, 300)}` };
   return { passed: true };
+}
+
+export function getToolCalls(result: TestExecutionResult): ToolCallPayloadLike[] {
+  const calls: ToolCallPayloadLike[] = [];
+  for (const msg of result.messages) {
+    if (msg.contentType !== "toolCall") continue;
+    if (msg.toolCall) {
+      calls.push(msg.toolCall as ToolCallPayloadLike);
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(msg.content ?? "") as ToolCallPayloadLike;
+      if (parsed && typeof parsed.name === "string") calls.push(parsed);
+    } catch {
+      // Ignore malformed toolCall content; validation can fail on missing calls.
+    }
+  }
+  return calls;
+}
+
+export function completedToolNames(result: TestExecutionResult): Set<string> {
+  return new Set(
+    getToolCalls(result)
+      .filter((call) => call.execution?.status === "complete" && !call.execution?.isError)
+      .map((call) => call.name),
+  );
+}
+
+export function incompleteToolCalls(result: TestExecutionResult): ToolCallPayloadLike[] {
+  return getToolCalls(result).filter((call) => call.execution?.status !== "complete");
 }
