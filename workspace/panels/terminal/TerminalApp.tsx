@@ -628,7 +628,7 @@ export function TerminalApp() {
               }}
             />
           </Flex>
-        <Box p="2" style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+        <Box p="2" style={{ display: "flex", flex: 1, minWidth: 0, minHeight: 0, height: "100%", overflow: "hidden" }}>
           {activeTab && visibleTree ? (
             <SplitTree
               node={visibleTree}

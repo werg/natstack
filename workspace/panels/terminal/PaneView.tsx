@@ -439,7 +439,10 @@ export function PaneView(props: {
     <Flex
       direction="column"
       style={{
+        flex: 1,
+        height: "100%",
         minHeight: 0,
+        minWidth: 0,
         border: `1px solid ${paneBorderColor(props.severity, props.focused)}`,
         borderRadius: 6,
         overflow: "hidden",
@@ -497,7 +500,7 @@ export function PaneView(props: {
       />
       <div
         ref={hostRef}
-        style={{ flex: 1, minHeight: 220, background: "var(--gray-1)", position: "relative" }}
+        style={{ flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden", background: "var(--gray-1)", position: "relative" }}
       >
         <DropOverlay visible={dragDepth > 0} target=".snug/scratch/..." />
         {showJumpToBottom ? (
