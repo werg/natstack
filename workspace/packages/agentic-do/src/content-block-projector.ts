@@ -84,7 +84,7 @@ export function piEventToChannelOps(
     case "message_start": {
       const role = getRole(event.message);
       if (role !== "assistant") return { newState: state, ops: [] };
-      // Clear per-message index maps. Tool-call records persist across the
+      // Clear per-message index maps. Tool-call records survive across the
       // message boundary: execution events for these tool calls arrive
       // after `message_end`.
       return {
@@ -108,7 +108,7 @@ export function piEventToChannelOps(
     case "message_end": {
       const role = getRole(event.message);
       if (role !== "assistant") return { newState: state, ops: [] };
-      // Per-message block maps are cleared; tool-call records persist because
+      // Per-message block maps are cleared; tool-call records survive because
       // their execution events arrive after message_end. Text/thinking blocks
       // are closed via their own *_end events — no work here.
       return {

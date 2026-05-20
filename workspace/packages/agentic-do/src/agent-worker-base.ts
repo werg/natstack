@@ -6,7 +6,7 @@
  * the lifetime of the chat. The runner drives agent state (messages,
  * streaming, tool calls); durable transcript persistence lives in gad,
  * while this DO only keeps execution-local runner/cache state and forwards
- * runner events to the channel as ephemeral events.
+ * runner events to the channel as signals.
  *
  * Composes:
  * - `DOIdentity`: stable DO ref + workerd session id
@@ -28,7 +28,7 @@
  * - Tool-result images fold into the tool call's `execution.resultImages`
  *
  * Message dispatch flow (normal turn):
- *   onChannelEvent → refreshRoster → getOrCreateRunner → resizeAttachments
+ *   processChannelEvent → refreshRoster → getOrCreateRunner → resizeAttachments
  *     → TurnDispatcher.submit
  *   TurnDispatcher routes to prompt (idle) or steer (mid-run);
  *   typing indicator reflects `running || pending || pendingSteered > 0`.
@@ -431,6 +431,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   /** Dedup inline credential prompts per channel/provider while this DO is alive. */
   private credentialPromptCardsEmitted = new Set<string>();
+
+  /** Channels currently receiving replay envelopes. Replay dispatch stays
+   * sequential so recovered turns do not collapse into a single live steer. */
+  private channelsInReplay = new Set<string>();
 
   /** Channels with structurally invalid transcript state. Fail closed and
    *  surface one visible error instead of repeatedly reprocessing the same
@@ -918,20 +922,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       }
     }
 
-    if (result.replay) {
-      try {
-        for (const event of result.replay) {
-          // Sequential mode: missed messages run as independent turns rather
-          // than collapsing into a single steered run. Without this, the 2nd
-          // and later replay events would hit `running=true` (set by the 1st
-          // event's drainLoop pre-await) and route to steer.
-          await this.dispatchChannelEvent(opts.channelId, event, { mode: "sequential" });
-        }
-      } catch (err) {
-        console.warn(`[AgentWorkerBase] Replay processing stopped:`, err);
-      }
-    }
-
     return { ok: result.ok, participantId: result.participantId };
   }
 
@@ -980,7 +970,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   // ── Channel event pipeline (dedup → gap repair → dispatch) ──────────────
 
-  private async handleIncomingChannelEvent(channelId: string, event: ChannelEvent): Promise<void> {
+  private async handleIncomingChannelEvent(
+    channelId: string,
+    event: ChannelEvent,
+    opts?: { mode?: "auto" | "sequential" }
+  ): Promise<void> {
     const eventId = event.id;
 
     if (eventId !== undefined && eventId > 0) {
@@ -1005,7 +999,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     }
 
     try {
-      await this.dispatchChannelEvent(channelId, event);
+      await this.dispatchChannelEvent(channelId, event, opts);
       if (eventId !== undefined && eventId > 0) {
         this.advanceDeliveryCursor(channelId, eventId);
         this.failedEvents.delete(eventId);
@@ -1021,12 +1015,12 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           );
         } else {
           console.warn(
-            `[AgentWorkerBase] onChannelEvent failed for id=${eventId} (attempt ${count}/${AgentWorkerBase.POISON_MAX_ATTEMPTS}):`,
+            `[AgentWorkerBase] processChannelEvent failed for id=${eventId} (attempt ${count}/${AgentWorkerBase.POISON_MAX_ATTEMPTS}):`,
             err
           );
         }
       } else {
-        console.error("[AgentWorkerBase] onChannelEvent failed for ephemeral event:", err);
+        console.error("[AgentWorkerBase] processChannelEvent failed for signal event:", err);
       }
     }
   }
@@ -1056,8 +1050,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     }
     try {
       const channel = this.createChannelClient(channelId);
-      const missed = await channel.getEventRange(lastSeq, eventId - 1);
-      if (!missed || !Array.isArray(missed)) return;
+      const missedEnvelope = await channel.getReplayAfter(lastSeq);
+      const missed = missedEnvelope.logEvents
+        .filter((event) => event.id <= eventId - 1)
+        .map((event) => event as ChannelEvent);
 
       for (const missedEvent of missed) {
         try {
@@ -1145,7 +1141,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       return;
     }
 
-    await this.onChannelEvent(channelId, event, opts);
+    await this.processChannelEvent(channelId, event, opts);
   }
 
   // ── PiRunner lifecycle (one per channel, lazy) ──────────────────────────
@@ -1313,7 +1309,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     this.runners.set(channelId, { runner });
     // Dispatcher self-subscribes to runner events for absorption tracking
-    // and sweep. Created here so it exists before the first onChannelEvent
+    // and sweep. Created here so it exists before the first processChannelEvent
     // (which expects to hand messages to it).
     this.getOrCreateDispatcher(channelId, runner, projector);
     return runner;
@@ -1355,7 +1351,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         if (!participantId) return;
         const channel = this.createChannelClient(channelId);
         await channel.send(participantId, msgId, content, {
-          persist: true,
           contentType: opts?.contentType,
           attachments: opts?.attachments,
         });
@@ -1407,7 +1402,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     await channel
       .send(participantId, messageId, `Transcript error: ${detail}`, {
         contentType: "error",
-        persist: true,
         idempotencyKey: `transcript-shape-error:${channelId}`,
       })
       .catch((err) => {
@@ -1649,7 +1643,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     return dispatcher;
   }
 
-  /** Ephemeral setTypingState broadcast. Fire-and-forget; errors logged. */
+  /** Signal setTypingState broadcast. Fire-and-forget; errors logged. */
   private broadcastTyping(channelId: string, busy: boolean): void {
     const participantId = this.subscriptions.getParticipantId(channelId);
     if (!participantId) return;
@@ -1834,19 +1828,19 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         const participantId = this.subscriptions.getParticipantId(channelId);
         if (!participantId) return;
         const channel = this.createChannelClient(channelId);
-        void channel.sendEphemeral(participantId, message, `notify:${type ?? "info"}`);
+        void channel.sendSignal(participantId, message, `notify:${type ?? "info"}`);
       },
       setStatus: (key, text) => {
         const participantId = this.subscriptions.getParticipantId(channelId);
         if (!participantId) return;
         const channel = this.createChannelClient(channelId);
-        void channel.sendEphemeralEvent(participantId, "natstack-ext-status", { key, text });
+        void channel.sendSignalEvent(participantId, "natstack-ext-status", { key, text });
       },
       setWidget: (key, content, options) => {
         const participantId = this.subscriptions.getParticipantId(channelId);
         if (!participantId) return;
         const channel = this.createChannelClient(channelId);
-        void channel.sendEphemeralEvent(participantId, "natstack-ext-widget", {
+        void channel.sendSignalEvent(participantId, "natstack-ext-widget", {
           key,
           content,
           options,
@@ -1856,7 +1850,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         const participantId = this.subscriptions.getParticipantId(channelId);
         if (!participantId) return;
         const channel = this.createChannelClient(channelId);
-        void channel.sendEphemeralEvent(participantId, "natstack-ext-working", {
+        void channel.sendSignalEvent(participantId, "natstack-ext-working", {
           message: message ?? null,
         });
       },
@@ -1909,10 +1903,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       },
     });
     void channel
-      .send(participantId, messageId, content, {
-        contentType: "inline_ui",
-        persist: false,
-      })
+      .sendSignal(participantId, content, "inline_ui")
       .catch((err) => {
         console.error(
           `[AgentWorkerBase] Failed to emit model credential card for ${providerId}:`,
@@ -2117,7 +2108,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   ): Promise<void> {
     const participantId = this.subscriptions.getParticipantId(channelId);
     if (!participantId) return;
-    await this.createChannelClient(channelId).sendEphemeralEvent(
+    await this.createChannelClient(channelId).sendSignalEvent(
       participantId,
       "natstack-dispatch-cancel",
       { callId, reason }
@@ -2150,7 +2141,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   // covers the common case: incoming user messages are forwarded to Pi via the
   // per-channel runner. Pi handles the rest.
 
-  async onChannelEvent(
+  async processChannelEvent(
     channelId: string,
     event: ChannelEvent,
     opts?: { mode?: "auto" | "sequential" }
@@ -2164,6 +2155,42 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     const images = await this.resizeAttachments(channelId, input.attachments);
     const dispatcher = this.getOrCreateDispatcher(channelId, runner, projector);
     dispatcher.submit({ content: input.content, ...(images ? { images } : {}) }, opts);
+  }
+
+  async onChannelEnvelope(
+    channelId: string,
+    envelope: {
+      kind: "log" | "control" | "signal";
+      phase?: "replay" | "live";
+      event?: ChannelEvent;
+      type?: string;
+      payload?: unknown;
+      senderId?: string;
+      ts?: number;
+    }
+  ): Promise<void> {
+    if (envelope.kind === "control") {
+      if (envelope.type === "ready") this.channelsInReplay.delete(channelId);
+      return;
+    }
+    if (envelope.kind === "log" && envelope.event) {
+      if (envelope.phase === "replay") this.channelsInReplay.add(channelId);
+      const mode = envelope.phase === "replay" || this.channelsInReplay.has(channelId)
+        ? "sequential"
+        : "auto";
+      await this.handleIncomingChannelEvent(channelId, envelope.event, { mode });
+      return;
+    }
+    if (envelope.kind === "signal" && envelope.type) {
+      await this.handleIncomingChannelEvent(channelId, {
+        id: 0,
+        messageId: "",
+        type: envelope.type,
+        payload: envelope.payload,
+        senderId: envelope.senderId ?? "system",
+        ts: envelope.ts ?? Date.now(),
+      });
+    }
   }
 
   /** Resize user-pasted image attachments via the image service extension.
@@ -2331,7 +2358,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   /**
    * Called on the newly cloned agent DO after cloneDO copies parent's SQLite.
-   * Rewrites identity, clears ephemeral state, resubscribes to forked channel,
+   * Rewrites identity, clears signal-only state, resubscribes to forked channel,
    * and forks gad by moving only immutable head pointers.
    */
   async postClone(
@@ -2351,7 +2378,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     }
     this.setStateValue("forkSourceChannel", oldChannelId);
 
-    // Clear ephemeral state copied from parent.
+    // Clear signal-only state copied from parent.
     this.sql.exec(`DELETE FROM delivery_cursor`);
     this.sql.exec(`DELETE FROM dispatched_calls`);
 
@@ -2521,7 +2548,13 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       this._currentRpcCallerId = request.headers.get("X-Natstack-Rpc-Caller-Id");
       this._currentRpcCallerKind = request.headers.get("X-Natstack-Rpc-Caller-Kind");
       try {
-        if (method === "onChannelEvent" && args.length === 2) {
+        if (method === "onChannelEnvelope" && args.length === 2) {
+          await this.onChannelEnvelope(args[0] as string, args[1] as Parameters<this["onChannelEnvelope"]>[1]);
+          return new Response(JSON.stringify(null), {
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (method === "processChannelEvent" && args.length === 2) {
           await this.handleIncomingChannelEvent(args[0] as string, args[1] as ChannelEvent);
           return new Response(JSON.stringify(null), {
             headers: { "Content-Type": "application/json" },

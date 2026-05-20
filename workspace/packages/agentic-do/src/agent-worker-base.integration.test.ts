@@ -83,7 +83,6 @@ describe("AgentWorkerBase dispatched method results", () => {
           },
           senderId: "panel:panel-1",
           ts: Date.now(),
-          persist: true,
         });
       }),
     });

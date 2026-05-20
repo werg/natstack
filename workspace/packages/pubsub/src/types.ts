@@ -37,6 +37,53 @@ export interface Attachment extends AttachmentInput {
   id: string;
 }
 
+export type LogRootKind = "chat" | "method" | "presence" | "system";
+
+export interface ServerLogEvent<T = unknown> {
+  id: number;
+  messageId: string;
+  type: string;
+  payload: T;
+  senderId: string;
+  senderMetadata?: Record<string, unknown>;
+  contentType?: string;
+  ts: number;
+  attachments?: Array<{
+    id: string;
+    type?: string;
+    data: string;
+    mimeType: string;
+    filename?: string;
+    size: number;
+  }>;
+}
+
+export interface ParticipantSnapshot {
+  id: string;
+  metadata: Record<string, unknown>;
+}
+
+export type BootstrapSnapshot =
+  | { kind: "roster-snapshot"; participants: ParticipantSnapshot[]; ts: number };
+
+export interface ReplayReady {
+  contextId?: string;
+  channelConfig?: ChannelConfig;
+  totalCount: number;
+  rootMessageCount: number;
+  firstRootMessageId?: number;
+  replayFromId?: number;
+  replayToId?: number;
+  hasMoreBefore?: boolean;
+}
+
+export interface ReplayEnvelope {
+  mode: "initial" | "after" | "before";
+  logEvents: ServerLogEvent[];
+  snapshots: BootstrapSnapshot[];
+  ready: ReplayReady;
+}
+
 /**
  * Error codes for PubSub operations.
  */
@@ -60,9 +107,11 @@ export class PubSubError extends Error {
  * A message received from the PubSub server.
  */
 export interface PubSubMessage<T = unknown> {
-  /** Message kind: replay (historical), persisted (new + saved), or ephemeral (not saved) */
-  kind: "replay" | "persisted" | "ephemeral";
-  /** Message ID (only present for persisted/replay messages) */
+  /** Transport stream that produced the message. */
+  delivery: "log" | "signal";
+  /** Log phase, present only for durable log messages. */
+  phase?: "replay" | "live";
+  /** Message ID (only present for durable log messages) */
   id?: number;
   /** User-defined message type */
   type: string;
@@ -89,34 +138,6 @@ export interface ReadyMessage {
   chatMessageCount?: number;
   /** ID of the first chat message in the channel (for pagination boundary) */
   firstChatMessageId?: number;
-}
-
-/**
- * Response to get-messages-before request (for pagination).
- * Note: This is not part of the Message union type since it's returned
- * via getMessagesBefore() promise, not the messages() iterator.
- */
-export interface MessagesBeforeResponse {
-  kind: "messages-before";
-  messages: Array<{
-    id: number;
-    type: string;
-    payload: unknown;
-    senderId: string;
-    ts: number;
-    senderMetadata?: Record<string, unknown>;
-    attachments?: Attachment[];
-  }>;
-  trailingUpdates?: Array<{
-    id: number;
-    type: string;
-    payload: unknown;
-    senderId: string;
-    ts: number;
-    senderMetadata?: Record<string, unknown>;
-    attachments?: Attachment[];
-  }>;
-  hasMore: boolean;
 }
 
 export type Message<T = unknown> = PubSubMessage<T> | ReadyMessage;
@@ -179,8 +200,6 @@ export interface RosterUpdate<T extends ParticipantMetadata = ParticipantMetadat
  * Options for publishing a message.
  */
 export interface PublishOptions {
-  /** Whether to persist the message to SQLite. Default: true */
-  persist?: boolean;
   /** Binary attachments to send alongside JSON payload (server assigns IDs) */
   attachments?: AttachmentInput[];
   /** Caller-provided idempotency key for dedup on retry. Must be stable across retries. */
@@ -192,4 +211,3 @@ export interface PublishOptions {
  */
 export interface UpdateMetadataOptions {
 }
-

@@ -1,12 +1,12 @@
 /**
- * useChannelEphemeralMessages — React subscription to a channel's ephemeral
+ * useChannelSignalMessages — React subscription to a channel's signal
  * message stream, filtered by contentType.
  *
- * Used for ephemeral channel events (notifications, ext-status, ext-widget,
+ * Used for channel signal events (notifications, ext-status, ext-widget,
  * ext-working). The returned messages are an array with
- * `{ ts, content, contentType }` shape compatible with `parseEphemeralEvent`.
+ * `{ ts, content, contentType }` shape compatible with `parseSignalEvent`.
  *
- * Uses `client.events({ includeEphemeral: true })` instead of
+ * Uses `client.events({ includeSignals: true })` instead of
  * `client.messages()` because `messages()` is a single-consumer async
  * generator — multiple hooks calling it race on a shared queue and lose
  * messages. `events()` uses a fanout that supports multiple subscribers.
@@ -15,43 +15,43 @@
 import { useState, useEffect } from "react";
 import type { PubSubClient, ParticipantMetadata } from "@workspace/pubsub";
 
-export interface EphemeralWireMessage {
+export interface SignalWireMessage {
   ts: number;
   content: string;
   contentType?: string;
 }
 
 /**
- * Subscribe to a PubSubClient's event stream and collect every ephemeral
+ * Subscribe to a PubSubClient's event stream and collect every signal
  * event whose `contentType` matches `expectedContentType`.
  * Returns a growing array as new messages arrive.
  *
  * The hook keeps the last 200 matching messages to avoid unbounded growth.
  */
-export function useChannelEphemeralMessages<T extends ParticipantMetadata = ParticipantMetadata>(
+export function useChannelSignalMessages<T extends ParticipantMetadata = ParticipantMetadata>(
   client: PubSubClient<T> | null,
   expectedContentType: string,
-): ReadonlyArray<EphemeralWireMessage> {
-  const [messages, setMessages] = useState<EphemeralWireMessage[]>([]);
+): ReadonlyArray<SignalWireMessage> {
+  const [messages, setMessages] = useState<SignalWireMessage[]>([]);
 
   useEffect(() => {
     if (!client) return;
     let cancelled = false;
     const consume = async () => {
       try {
-        // Use events() with includeEphemeral so we get ephemerals via the
+        // Use events() with includeSignals so we get signals via the
         // fanout (supports multiple concurrent subscribers).
-        for await (const event of client.events({ includeEphemeral: true })) {
+        for await (const event of client.events({ includeSignals: true })) {
           if (cancelled) break;
           const wire = event as unknown as {
-            kind?: string;
+            delivery?: "log" | "signal";
             type?: string;
             payload?: { content?: string; contentType?: string };
             ts?: number;
             contentType?: string;
             content?: string;
           };
-          if (wire.kind !== "ephemeral") continue;
+          if (wire.delivery !== "signal") continue;
           // Pubsub wire shape: IncomingNewMessage has top-level
           // content/contentType; raw protocol may nest them in payload.
           const content =
@@ -69,7 +69,7 @@ export function useChannelEphemeralMessages<T extends ParticipantMetadata = Part
           });
         }
       } catch (err) {
-        if (!cancelled) console.error("[useChannelEphemeralMessages]", err);
+        if (!cancelled) console.error("[useChannelSignalMessages]", err);
       }
     };
     void consume();

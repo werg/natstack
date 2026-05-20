@@ -47,6 +47,56 @@ function createMockRpc() {
 
   function emit(msg: Record<string, unknown>) {
     if (!eventListener) throw new Error("No event listener registered");
+    if (msg["kind"] === "ready") {
+      eventListener("server", {
+        channelId: CHANNEL,
+        message: {
+          kind: "control",
+          type: "ready",
+          ready: {
+            contextId: msg["contextId"],
+            channelConfig: msg["channelConfig"],
+            totalCount: msg["totalCount"],
+            rootMessageCount: msg["chatMessageCount"],
+            firstRootMessageId: msg["firstChatMessageId"],
+          },
+        },
+      });
+      return;
+    }
+    if (msg["stream"] === "log") {
+      eventListener("server", {
+        channelId: CHANNEL,
+        message: {
+          kind: "log",
+          phase: msg["phase"] === "replay" ? "replay" : "live",
+          event: {
+            id: msg["id"],
+            messageId: `test-${msg["id"]}`,
+            type: msg["type"],
+            payload: msg["payload"],
+            senderId: msg["senderId"],
+            ts: msg["ts"],
+            senderMetadata: msg["senderMetadata"],
+            attachments: msg["attachments"],
+          },
+        },
+      });
+      return;
+    }
+    if (msg["stream"] === "signal") {
+      eventListener("server", {
+        channelId: CHANNEL,
+        message: {
+          kind: "signal",
+          type: msg["type"],
+          payload: msg["payload"],
+          senderId: msg["senderId"],
+          ts: msg["ts"],
+        },
+      });
+      return;
+    }
     eventListener("server", { channelId: CHANNEL, message: msg });
   }
 
@@ -65,7 +115,7 @@ async function emitReplayAndReady(
   // Emit presence join replay events for each participant
   for (const p of participants) {
     emit({
-      kind: "replay",
+      stream: "log", phase: "replay",
       id: 100 + participants.indexOf(p),
       type: "presence",
       payload: { action: "join", metadata: { name: p.name, type: p.type } },
@@ -77,7 +127,7 @@ async function emitReplayAndReady(
   // Emit message replay events
   for (const m of messages) {
     emit({
-      kind: "replay",
+      stream: "log", phase: "replay",
       id: m.id,
       type: "message",
       payload: { id: `msg-${m.id}`, content: m.content },
@@ -165,29 +215,33 @@ describe("connectViaRpc", () => {
         if (method === "subscribe") {
           return {
             ok: true,
-            initialReplay: [
-              {
-                kind: "replay",
+            envelope: {
+              mode: "initial",
+              logEvents: [
+                {
                 id: 101,
+                messageId: "presence-101",
                 type: "presence",
                 payload: { action: "join", metadata: { name: "Claude", type: "agent" } },
                 senderId: "agent-1",
                 ts: Date.now(),
               },
               {
-                kind: "replay",
                 id: 201,
+                messageId: "msg-201",
                 type: "message",
                 payload: { id: "00000000-0000-4000-8000-000000000201", content: "from replay" },
                 senderId: "agent-1",
                 ts: Date.now(),
               },
-            ],
-            ready: {
-              contextId: "ctx-from-subscribe",
-              channelConfig: { title: "Ack Channel" },
-              totalCount: 1,
-              chatMessageCount: 1,
+              ],
+              snapshots: [],
+              ready: {
+                contextId: "ctx-from-subscribe",
+                channelConfig: { title: "Ack Channel" },
+                totalCount: 1,
+                rootMessageCount: 1,
+              },
             },
           };
         }
@@ -208,7 +262,7 @@ describe("connectViaRpc", () => {
       expect(readyHandler).toHaveBeenCalledTimes(1);
 
       await expect(iter.next()).resolves.toMatchObject({
-        value: { kind: "replay", id: 201, type: "message" },
+        value: { delivery: "log", phase: "replay", id: 201, type: "message" },
       });
       await expect(iter.next()).resolves.toMatchObject({
         value: { kind: "ready", totalCount: 1, chatMessageCount: 1 },
@@ -217,7 +271,7 @@ describe("connectViaRpc", () => {
       // If the queued event delivery catches up after the ack fallback, replay
       // and ready are deduped rather than surfacing a second boundary.
       emit({
-        kind: "replay",
+        stream: "log", phase: "replay",
         id: 201,
         type: "message",
         payload: { id: "msg-201", content: "from replay" },
@@ -237,10 +291,66 @@ describe("connectViaRpc", () => {
       client.close();
     });
 
+    it("does not surface replay events when replayMode is skip", async () => {
+      mockRpc.call.mockImplementation(async (target: string, method: string) => {
+        if (target === "main" && method === "workers.resolveService") {
+          return { kind: "durable-object", targetId: DO_TARGET };
+        }
+        if (method === "subscribe") {
+          return {
+            ok: true,
+            envelope: {
+              mode: "initial",
+              logEvents: [
+                {
+                  id: 201,
+                  messageId: "msg-201",
+                  type: "message",
+                  payload: { id: "00000000-0000-4000-8000-000000000201", content: "from replay" },
+                  senderId: "agent-1",
+                  ts: Date.now(),
+                },
+              ],
+              snapshots: [
+                {
+                  kind: "roster-snapshot",
+                  participants: [{ id: "agent-1", metadata: { name: "Agent", type: "agent" } }],
+                  ts: Date.now(),
+                },
+              ],
+              ready: {
+                contextId: "ctx-skip",
+                totalCount: 1,
+                rootMessageCount: 1,
+              },
+            },
+          };
+        }
+        return undefined;
+      });
+
+      const client = connectViaRpc({
+        rpc: mockRpc as any,
+        channel: CHANNEL,
+        replayMode: "skip",
+      });
+      const iter = client.messages();
+
+      await client.ready();
+
+      expect(client.contextId).toBe("ctx-skip");
+      expect(client.roster).toEqual({});
+      await expect(iter.next()).resolves.toMatchObject({
+        value: { kind: "ready", totalCount: 1, chatMessageCount: 1 },
+      });
+
+      client.close();
+    });
+
     it("seeds late event subscribers with streamed replay after ready", async () => {
       const client = connectViaRpc({ rpc: mockRpc as any, channel: CHANNEL });
       emit({
-        kind: "replay",
+        stream: "log", phase: "replay",
         id: 201,
         type: "message",
         payload: { id: "00000000-0000-4000-8000-000000000201", content: "from replay" },
@@ -258,7 +368,8 @@ describe("connectViaRpc", () => {
       const iter = client.events({ includeReplay: true });
       await expect(iter.next()).resolves.toMatchObject({
         value: {
-          kind: "replay",
+          delivery: "log",
+          phase: "replay",
           type: "message",
           id: "00000000-0000-4000-8000-000000000201",
           content: "from replay",
@@ -317,7 +428,7 @@ describe("connectViaRpc", () => {
           SELF_ID,
           "message",
           { id: "m1", content: "hello" },
-          expect.objectContaining({ persist: true }),
+          expect.objectContaining({}),
         ],
       );
     });
@@ -331,7 +442,7 @@ describe("connectViaRpc", () => {
 
       // Simulate a persisted message arriving from the DO
       emit({
-        kind: "persisted",
+        stream: "log", phase: "live",
         id: 50,
         type: "message",
         payload: { id: "m2", content: "world" },
@@ -342,7 +453,8 @@ describe("connectViaRpc", () => {
       const first = await iter.next();
       expect(first.done).toBe(false);
       expect(first.value).toMatchObject({
-        kind: "persisted",
+        delivery: "log",
+        phase: "live",
         id: 50,
         type: "message",
         payload: { id: "m2", content: "world" },
@@ -378,7 +490,7 @@ describe("connectViaRpc", () => {
 
       // Simulate a method-call arriving from another participant
       emit({
-        kind: "persisted",
+        stream: "log", phase: "live",
         id: 200,
         type: "method-call",
         payload: {
@@ -578,7 +690,7 @@ describe("connectViaRpc", () => {
 
       // Trigger the method call
       emit({
-        kind: "persisted",
+        stream: "log", phase: "live",
         id: 300,
         type: "method-call",
         payload: {
@@ -600,7 +712,7 @@ describe("connectViaRpc", () => {
 
       // Send method-cancel
       emit({
-        kind: "persisted",
+        stream: "log", phase: "live",
         id: 301,
         type: "method-cancel",
         payload: { callId: CALL_ID_SLOW },

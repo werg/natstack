@@ -224,7 +224,7 @@ const channel = this.createChannelClient(channelId);
 | `channel.send(participantId, messageId, content, opts?)` | Send a new message |
 | `channel.update(participantId, messageId, content)` | Update a streaming message |
 | `channel.complete(participantId, messageId)` | Mark a message as complete |
-| `channel.sendEphemeral(participantId, content, contentType?)` | Send ephemeral event |
+| `channel.sendSignal(participantId, content, contentType?)` | Send signal event |
 | `channel.updateMetadata(participantId, metadata)` | Update channel metadata |
 | `channel.subscribe(participantId, metadata)` | Subscribe to channel |
 | `channel.unsubscribe(participantId)` | Unsubscribe from channel |
@@ -336,11 +336,11 @@ describe("MyWorker", () => {
     const event = {
       id: 1, messageId: "msg-1", type: "message",
       payload: { content: "Hello" }, senderId: "user-1",
-      senderType: "panel", ts: Date.now(), persist: true,
+      senderType: "panel", ts: Date.now(),
     };
 
-    // onChannelEvent returns void — side effects happen via direct calls to Channel DO and server
-    await instance.onChannelEvent("ch-1", event);
+    // processChannelEvent returns void — side effects happen via direct calls to Channel DO and server
+    await instance.processChannelEvent("ch-1", event);
   });
 });
 ```
@@ -382,7 +382,7 @@ and any subscription prompt override.
 
 ```
 User sends message
-  -> onChannelEvent(channelId, event)
+  -> onChannelEnvelope(channelId, { kind: "log", phase: "live", event })
     -> shouldProcess(event)?
        No  -> return
        Yes -> buildTurnInput(event)
@@ -523,13 +523,13 @@ export class CodeReviewWorker extends AgentWorkerBase {
     };
   }
 
-  // onChannelEvent is inherited from AgentWorkerBase — no override needed.
+  // onChannelEnvelope is inherited from AgentWorkerBase — no override needed.
   // The base class handles:
   //   shouldProcess → buildTurnInput → refreshRoster → getOrCreateRunner
   //   → setTyping(true) → runner.runTurn/steer
   //   → ContentBlockProjector (text / thinking / toolCall streams → cleanup)
   //
-  // Override onChannelEvent only when you need custom routing logic (e.g.,
+  // Override processChannelEvent only when you need custom routing logic (e.g.,
   // filtering messages by content like the shouldProcess override above).
 
   override async onMethodCall(

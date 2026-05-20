@@ -13,7 +13,8 @@ import type {
 function newMsg(overrides: Partial<IncomingNewMessage> = {}): IncomingNewMessage {
   return {
     type: "message",
-    kind: "replay",
+    delivery: "log",
+    phase: "replay",
     id: "msg-1",
     senderId: "user",
     ts: 1,
@@ -26,7 +27,8 @@ function newMsg(overrides: Partial<IncomingNewMessage> = {}): IncomingNewMessage
 function upd(overrides: Partial<IncomingUpdateMessage> = {}): IncomingUpdateMessage {
   return {
     type: "update-message",
-    kind: "replay",
+    delivery: "log",
+    phase: "replay",
     id: "msg-1",
     senderId: "user",
     ts: 2,

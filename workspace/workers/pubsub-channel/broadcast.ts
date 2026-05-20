@@ -2,16 +2,16 @@
  * Broadcast + delivery for the PubSub Channel DO.
  *
  * All participants (panels and DOs) receive events via RPC emit.
- * ChannelEvent is the single canonical format. channelEventToWsJson()
- * derives the wire encoding for RPC emit payloads.
- * DO participants additionally receive ChannelEvent via RPC call
- * for ordered delivery with promise chains.
+ * ChannelEvent is the worker-internal durable row format. RPC clients receive
+ * explicit log/control/signal envelopes; DO participants receive the same
+ * envelope shape over ordered RPC calls.
  */
 
 import type { SqlStorage } from "@workspace/runtime/worker";
 import type { RpcBridge } from "@natstack/rpc";
 import type { ChannelEvent } from "@natstack/harness/types";
-import type { BroadcastEnvelope, StoredAttachment, ChannelConfig } from "./types.js";
+import type { BroadcastEnvelope, StoredAttachment } from "./types.js";
+import type { RpcChannelMessage } from "@workspace/pubsub";
 
 export interface BroadcastDeps {
   sql: SqlStorage;
@@ -57,12 +57,27 @@ export function cleanupDeliveryChain(participantId: string): void {
   emitChains.delete(participantId);
 }
 
+/** Queue an ordered structured envelope delivery to a DO participant. */
+export function queueDoEnvelope(
+  deps: BroadcastDeps,
+  participantId: string,
+  envelope: RpcChannelMessage
+): Promise<void> {
+  const prev = deliveryChains.get(participantId) ?? Promise.resolve();
+  const next: Promise<void> = prev.then(() =>
+    deps.rpc.call(participantId, "onChannelEnvelope", [deps.objectKey, envelope])
+      .then(() => {})
+      .catch(err => console.error(`[Channel] delivery failed for ${participantId}:`, err)),
+  );
+  deliveryChains.set(participantId, next);
+  return next;
+}
+
 // ── Broadcast ────────────────────────────────────────────────────────────────
 
 /**
  * Broadcast a ChannelEvent to all participants via RPC.
- * RPC clients receive the event encoded via channelEventToWsJson().
- * DO clients additionally receive the ChannelEvent via ordered RPC call.
+ * RPC clients receive the same envelope shape as DO subscribers.
  */
 export function broadcast(
   deps: BroadcastDeps,
@@ -74,7 +89,9 @@ export function broadcast(
     `SELECT id, transport FROM participants`,
   ).toArray();
 
-  const msg = channelEventToWsJson(event, envelope.kind);
+  const msg = envelope.kind === "log"
+    ? channelEventToRpcLog(event, envelope.phase ?? "live", envelope.ref)
+    : channelEventToRpcSignal(event, envelope.ref);
 
   for (const p of participants) {
     const pid = p["id"] as string;
@@ -92,118 +109,17 @@ export function broadcast(
       }
     });
 
-    // For DO participants, also deliver the structured ChannelEvent via RPC call
-    // for ordered delivery (agent DOs process these via onChannelEvent)
+    // For DO participants, also deliver the structured envelope via RPC call.
     if (p["transport"] === "do") {
-      const prev = deliveryChains.get(pid) ?? Promise.resolve();
-      const next: Promise<void> = prev.then(() =>
-        deps.rpc.call(pid, "onChannelEvent", [deps.objectKey, event])
-          .then(() => {})
-          .catch(err => console.error(`[Channel] delivery failed for ${pid}:`, err)),
+      void queueDoEnvelope(
+        deps,
+        pid,
+        envelope.kind === "log"
+          ? { kind: "log", phase: envelope.phase ?? "live", event }
+          : channelEventToRpcSignal(event)
       );
-      deliveryChains.set(pid, next);
     }
   }
-}
-
-// ── Config update broadcast ──────────────────────────────────────────────────
-
-/**
- * Broadcast a config update to all participants.
- */
-export function broadcastConfigUpdate(
-  deps: BroadcastDeps,
-  config: Record<string, unknown>,
-  senderId?: string,
-  senderRef?: number,
-): void {
-  const msg = { kind: "config-update" as const, channelConfig: config as ChannelConfig };
-
-  const participants = deps.sql.exec(
-    `SELECT id, transport FROM participants`,
-  ).toArray();
-
-  for (const p of participants) {
-    const pid = p["id"] as string;
-
-    // Only include ref for the sender (ack token)
-    const outMsg = (pid === senderId && senderRef !== undefined)
-      ? { ...msg, ref: senderRef }
-      : msg;
-
-    deps.rpc.emit(pid, "channel:message", {
-      channelId: deps.objectKey,
-      message: outMsg,
-    }).catch(err => console.warn(`[Channel] emit failed:`, err));
-
-    // For DO participants, also deliver as a ChannelEvent for ordered processing
-    if (p["transport"] === "do") {
-      const event: ChannelEvent = {
-        id: 0,
-        messageId: "",
-        type: "config-update",
-        payload: config,
-        senderId: "",
-        ts: Date.now(),
-        persist: false,
-      };
-
-      const prev = deliveryChains.get(pid) ?? Promise.resolve();
-      const next: Promise<void> = prev.then(() =>
-        deps.rpc.call(pid, "onChannelEvent", [deps.objectKey, event])
-          .then(() => {})
-          .catch(err => console.error(`[Channel] config-update delivery failed for ${pid}:`, err)),
-      );
-      deliveryChains.set(pid, next);
-    }
-  }
-}
-
-// ── Ready message ────────────────────────────────────────────────────────────
-
-/**
- * Send a ready message to a single subscriber via RPC event.
- */
-export function sendReady(
-  deps: BroadcastDeps,
-  subscriberId: string,
-  sql: SqlStorage,
-  contextId: string | null,
-  channelConfig: Record<string, unknown> | null,
-): {
-  contextId?: string;
-  channelConfig?: Record<string, unknown>;
-  totalCount: number;
-  chatMessageCount: number;
-  firstChatMessageId?: number;
-} {
-  const totalRow = sql.exec(`SELECT COUNT(*) as cnt FROM messages`).toArray();
-  const totalCount = (totalRow[0]?.["cnt"] as number) ?? 0;
-
-  const chatRow = sql.exec(`SELECT COUNT(*) as cnt FROM messages WHERE type = 'message'`).toArray();
-  const chatMessageCount = (chatRow[0]?.["cnt"] as number) ?? 0;
-
-  const firstRow = sql.exec(`SELECT MIN(id) as mid FROM messages WHERE type = 'message'`).toArray();
-  const firstChatMessageId = (firstRow[0]?.["mid"] as number | null) ?? undefined;
-  const ready = {
-    contextId: contextId ?? undefined,
-    channelConfig: channelConfig ?? undefined,
-    totalCount,
-    chatMessageCount,
-    firstChatMessageId,
-  };
-
-  // Queued (not awaited) so the subscribe handler returns and unblocks the
-  // subscriber's RPC call reply; the same ready payload is also returned from
-  // subscribe as an acknowledgment fallback if event delivery is interrupted.
-  void queueEmit(deps, subscriberId, {
-    channelId: deps.objectKey,
-    message: {
-      kind: "ready",
-      ...ready,
-    },
-  });
-  return ready;
 }
 
 // ── ChannelEvent builders ────────────────────────────────────────────────────
@@ -216,15 +132,14 @@ export function buildChannelEvent(
   id: number,
   messageId: string,
   type: string,
-  content: string,
+  payloadJson: string,
   senderId: string,
   senderMetadata: Record<string, unknown> | undefined,
   ts: number,
-  persist: boolean,
   attachments?: Array<{ id: string; data: string; mimeType: string; name?: string; size: number }>,
 ): ChannelEvent {
   let parsedPayload: unknown;
-  try { parsedPayload = JSON.parse(content); } catch { parsedPayload = content; }
+  try { parsedPayload = JSON.parse(payloadJson); } catch { parsedPayload = payloadJson; }
 
   const payloadObj = parsedPayload && typeof parsedPayload === "object"
     ? parsedPayload as Record<string, unknown>
@@ -249,7 +164,6 @@ export function buildChannelEvent(
     senderMetadata,
     ...(contentType ? { contentType } : {}),
     ts,
-    persist,
     ...(mappedAttachments && mappedAttachments.length > 0 ? { attachments: mappedAttachments } : {}),
   };
 }
@@ -271,35 +185,39 @@ export function parseRowToChannelEvent(row: Record<string, unknown>): ChannelEve
     row["id"] as number,
     (row["message_id"] as string) ?? "",
     row["type"] as string,
-    row["content"] as string,
+    (row["payload"] ?? row["content"]) as string,
     row["sender_id"] as string,
     senderMetadata,
     row["ts"] as number,
-    true,
     attachments,
   );
 }
 
 // ── Wire encoding ────────────────────────────────────────────────────────────
 
-/**
- * Convert a ChannelEvent to the wire format for RPC emit / WS send.
- * This is the thin transport layer — the only place wire-specific encoding lives.
- */
-export function channelEventToWsJson(
+export function channelEventToRpcLog(
   event: ChannelEvent,
-  kind: "replay" | "persisted" | "ephemeral",
-  ref?: number,
-): Record<string, unknown> {
+  phase: "replay" | "live",
+  ref?: number
+): RpcChannelMessage {
   return {
-    kind,
-    id: event.id || undefined,
+    kind: "log",
+    phase,
+    event,
+    ...(ref !== undefined ? { ref } : {}),
+  };
+}
+
+export function channelEventToRpcSignal(
+  event: ChannelEvent,
+  ref?: number
+): RpcChannelMessage {
+  return {
+    kind: "signal",
     type: event.type,
     payload: event.payload,
     senderId: event.senderId,
     ts: event.ts,
-    senderMetadata: event.senderMetadata,
     ...(ref !== undefined ? { ref } : {}),
-    ...(event.attachments && event.attachments.length > 0 ? { attachments: event.attachments } : {}),
   };
 }

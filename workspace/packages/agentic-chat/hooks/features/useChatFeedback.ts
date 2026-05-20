@@ -11,7 +11,7 @@ import { useFeedbackManager, type FeedbackResult, type ActiveFeedbackTsx, type A
 import { compileComponent } from "@workspace/eval";
 import type { SandboxOptions } from "@workspace/eval";
 import type { FeedbackComponentProps } from "@workspace/tool-ui";
-import { parseEphemeralEvent, type ChatSandboxValue, type MethodHistoryEntry, } from "@workspace/agentic-core";
+import { parseSignalEvent, type ChatSandboxValue, type MethodHistoryEntry, } from "@workspace/agentic-core";
 interface UseChatFeedbackOptions {
     addMethodHistoryEntry: (entry: MethodHistoryEntry) => void;
     updateMethodHistoryEntry: (callId: string, updates: Partial<MethodHistoryEntry>) => void;
@@ -161,11 +161,11 @@ export function useChatFeedback({ addMethodHistoryEntry, updateMethodHistoryEntr
         let cancelled = false;
         const consume = async () => {
             try {
-                for await (const event of client.events({ includeEphemeral: true })) {
+                for await (const event of client.events({ includeSignals: true })) {
                     if (cancelled)
                         break;
                     const wire = event as {
-                        kind?: string;
+                        delivery?: "log" | "signal";
                         content?: string;
                         contentType?: string;
                         payload?: {
@@ -173,9 +173,9 @@ export function useChatFeedback({ addMethodHistoryEntry, updateMethodHistoryEntr
                             contentType?: string;
                         };
                     };
-                    if (wire.kind !== "ephemeral")
+                    if (wire.delivery !== "signal")
                         continue;
-                    const payload = parseEphemeralEvent<{
+                    const payload = parseSignalEvent<{
                         callId: string;
                     }>({
                         content: wire.content ?? wire.payload?.content ?? "",

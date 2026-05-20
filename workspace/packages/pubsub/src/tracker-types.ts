@@ -98,11 +98,11 @@ export interface ActionData {
  * This allows trackers to work with any AgenticClient implementation.
  */
 export interface TrackerClient {
-  send(content: string, options?: { replyTo?: string; contentType?: string; persist?: boolean }): Promise<{ messageId: string }>;
+  send(content: string, options?: { replyTo?: string; contentType?: string }): Promise<{ messageId: string }>;
   update(
     messageId: string,
     content: string,
-    options?: { complete?: boolean; persist?: boolean; contentType?: string }
+    options?: { complete?: boolean; contentType?: string }
   ): Promise<void | number | undefined>;
   complete(messageId: string): Promise<void | number | undefined>;
 }

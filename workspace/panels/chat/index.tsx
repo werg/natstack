@@ -191,21 +191,6 @@ export default function ChatPanel() {
   const bootstrapAttempted = useRef(false);
 
   useEffect(() => {
-    console.info("[ChatReloadDebug] panel stateArgs snapshot", {
-      channelName: stateArgs.channelName ?? null,
-      resolvedContextId,
-      stateArgKeys: Object.keys(stateArgs),
-      pendingAgents: stateArgs.pendingAgents?.map((agent) => ({
-        handle: agent.handle,
-        key: agent.key,
-        source: agent.source,
-        className: agent.className,
-      })),
-      hasActionBar: Boolean(stateArgs.actionBarFile),
-    });
-  }, [resolvedContextId, stateArgs]);
-
-  useEffect(() => {
     if (stateArgs.channelName || bootstrapAttempted.current || !resolvedContextId) return;
     bootstrapAttempted.current = true;
 
@@ -225,14 +210,6 @@ export default function ChatPanel() {
       source: workerSource,
       className,
     }];
-
-    console.info("[ChatReloadDebug] bootstrapping new chat channel", {
-      channelName,
-      resolvedContextId,
-      workerSource,
-      className,
-      baseHandle,
-    });
 
     void setStateArgs({ channelName, contextId: resolvedContextId, pendingAgents: pending });
 

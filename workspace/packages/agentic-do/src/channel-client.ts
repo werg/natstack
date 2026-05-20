@@ -4,8 +4,15 @@
  * All operations go through the RPC bridge, which routes to the
  * channel service DO via the server's userland service resolver.
  */
-import type { ChannelEvent, SendMessageOptions } from "@natstack/harness/types";
 import type { RpcCaller } from "@natstack/rpc";
+import type { ReplayEnvelope } from "@workspace/pubsub";
+interface ChannelSendOptions {
+    contentType?: string;
+    senderMetadata?: Record<string, unknown>;
+    replyTo?: string;
+    idempotencyKey?: string;
+    attachments?: Array<{ id?: string; data: string; mimeType: string; name?: string; size?: number }>;
+}
 const DEFAULT_CHANNEL_SERVICE_PROTOCOL = "natstack.channel.v1";
 interface ResolvedService {
     kind: "durable-object" | "worker";
@@ -28,7 +35,7 @@ export class ChannelClient {
     private async call<T = unknown>(method: string, ...args: unknown[]): Promise<T> {
         return this.rpc.call<T>(await this.target(), method, [...args]);
     }
-    async send(participantId: string, messageId: string, content: string, opts?: SendMessageOptions): Promise<void> {
+    async send(participantId: string, messageId: string, content: string, opts?: ChannelSendOptions): Promise<void> {
         await this.call("send", participantId, messageId, content, opts);
     }
     async update(participantId: string, messageId: string, content: string, idempotencyKey?: string, opts?: {
@@ -42,17 +49,17 @@ export class ChannelClient {
     async error(participantId: string, messageId: string, error: string, code?: string): Promise<void> {
         await this.call("error", participantId, messageId, error, code);
     }
-    async sendEphemeral(participantId: string, content: string, contentType?: string): Promise<void> {
-        await this.call("sendEphemeral", participantId, content, contentType);
+    async sendSignal(participantId: string, content: string, contentType?: string): Promise<void> {
+        await this.call("sendSignal", participantId, content, contentType);
     }
     /**
-     * Typed wrapper for ephemeral messages with structured (JSON) payloads.
+     * Typed wrapper for signal messages with structured (JSON) payloads.
      * The payload is JSON-serialized and routed through the same string-based
-     * sendEphemeral path. Receivers decode via
-     * `parseEphemeralEvent` from `@workspace/agentic-core`.
+     * sendSignal path. Receivers decode via
+     * `parseSignalEvent` from `@workspace/agentic-core`.
      */
-    async sendEphemeralEvent<T>(participantId: string, contentType: string, payload: T): Promise<void> {
-        await this.sendEphemeral(participantId, JSON.stringify(payload), contentType);
+    async sendSignalEvent<T>(participantId: string, contentType: string, payload: T): Promise<void> {
+        await this.sendSignal(participantId, JSON.stringify(payload), contentType);
     }
     async updateMetadata(participantId: string, metadata: Record<string, unknown>): Promise<void> {
         await this.call("updateMetadata", participantId, metadata);
@@ -63,14 +70,12 @@ export class ChannelClient {
     async subscribe(participantId: string, metadata: Record<string, unknown>): Promise<{
         ok: boolean;
         channelConfig?: Record<string, unknown>;
-        replay?: ChannelEvent[];
-        replayTruncated?: boolean;
+        envelope: ReplayEnvelope;
     }> {
         return this.call("subscribe", participantId, metadata) as Promise<{
             ok: boolean;
             channelConfig?: Record<string, unknown>;
-            replay?: ChannelEvent[];
-            replayTruncated?: boolean;
+            envelope: ReplayEnvelope;
         }>;
     }
     async unsubscribe(participantId: string): Promise<void> {
@@ -91,9 +96,8 @@ export class ChannelClient {
     async cancelCall(callId: string): Promise<void> {
         await this.call("cancelMethodCall", callId);
     }
-    /** Phase 2A: Fetch persisted events in a sequence range (for gap repair). */
-    async getEventRange(fromSeq: number, toSeq: number): Promise<ChannelEvent[]> {
-        return this.call("getEventRange", fromSeq, toSeq) as Promise<ChannelEvent[]>;
+    async getReplayAfter(sinceId: number): Promise<ReplayEnvelope> {
+        return this.call("getReplayAfter", sinceId) as Promise<ReplayEnvelope>;
     }
     async updateConfig(config: Record<string, unknown>): Promise<Record<string, unknown>> {
         return this.call("updateConfig", config) as Promise<Record<string, unknown>>;

@@ -139,7 +139,7 @@ export interface ChatContextValue {
   methodEntries: Map<string, MethodHistoryEntry>;
   inlineUiComponents: Map<string, InlineUiComponentEntry>;
   actionBar: ActionBarState | null;
-  onActionBarMaxHeightChange?: (maxHeight: number, options?: { persist?: boolean }) => void;
+  onActionBarMaxHeightChange?: (maxHeight: number, options?: { saveState?: boolean }) => void;
   hasMoreHistory: boolean;
   loadingMore: boolean;
 

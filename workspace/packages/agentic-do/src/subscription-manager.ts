@@ -6,7 +6,8 @@
  */
 
 import type { SqlStorage } from "@workspace/runtime/worker";
-import type { ChannelEvent, ParticipantDescriptor } from "@natstack/harness/types";
+import type { ParticipantDescriptor } from "@natstack/harness/types";
+import type { ReplayEnvelope } from "@workspace/pubsub";
 import { PARTICIPANT_SESSION_METADATA_KEY } from "@workspace/pubsub/internal-constants";
 import type { DOIdentity } from "./identity.js";
 import type { ChannelClient } from "./channel-client.js";
@@ -43,7 +44,7 @@ export class SubscriptionManager {
     descriptor: ParticipantDescriptor;
     /** Request replay of persisted messages sent before this subscriber joined. */
     replay?: boolean;
-  }): Promise<{ ok: boolean; participantId: string; channelConfig?: Record<string, unknown>; replay?: ChannelEvent[]; replayTruncated?: boolean }> {
+  }): Promise<{ ok: boolean; participantId: string; channelConfig?: Record<string, unknown>; envelope?: ReplayEnvelope }> {
     this.sql.exec(
       `INSERT OR REPLACE INTO subscriptions (channel_id, context_id, subscribed_at, config) VALUES (?, ?, ?, ?)`,
       opts.channelId, opts.contextId, Date.now(), opts.config ? JSON.stringify(opts.config) : null,
@@ -84,8 +85,7 @@ export class SubscriptionManager {
       ok: true,
       participantId,
       channelConfig: subResult?.channelConfig,
-      replay: subResult?.replay,
-      replayTruncated: subResult?.replayTruncated,
+      envelope: subResult?.envelope,
     };
   }
 

@@ -258,7 +258,7 @@ export function useChatCore({
             });
           }
 
-          // --- Agent debug events (ephemeral) ---
+          // --- Agent debug signal events ---
           if (event.type === "agent-debug") {
             const payload = (event as { payload: AgentDebugPayload }).payload;
             const ts = (event as { ts: number }).ts ?? Date.now();
@@ -545,7 +545,7 @@ export function useChatCore({
     setMethodEntries(new Map());
   }, []);
 
-  // --- Typing indicators (ephemeral, roster-based) ---
+  // --- Typing indicators (signal, roster-based) ---
   const typingActiveRef = useRef(false);
 
   const stopTyping = useCallback(async () => {

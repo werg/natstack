@@ -11,6 +11,7 @@
 /// <reference path="../workerd.d.ts" />
 import { DurableObjectBase, type DurableObjectContext } from "@workspace/runtime/worker";
 import type { ChannelEvent } from "@natstack/harness/types";
+import { aggregateReplayEvents } from "@workspace/pubsub";
 import { PARTICIPANT_SESSION_METADATA_KEY } from "@workspace/pubsub/internal-constants";
 import type {
   SendOpts,
@@ -21,16 +22,16 @@ import type {
 } from "./types.js";
 import {
   broadcast,
-  broadcastConfigUpdate,
-  sendReady,
   buildChannelEvent,
   parseRowToChannelEvent,
-  channelEventToWsJson,
+  channelEventToRpcSignal,
   queueEmit,
+  queueDoEnvelope,
   type BroadcastDeps,
   cleanupDeliveryChain,
 } from "./broadcast.js";
-import { getMessagesBefore } from "./replay.js";
+import { buildReplayEnvelope } from "./replay.js";
+import { classifyLogWrite } from "./log-classify.js";
 import {
   storeCall,
   consumeCall,
@@ -42,7 +43,7 @@ import {
 const PARTICIPANT_STALE_MS = 5 * 60 * 1000; // 5 minutes
 /** How often to check for stale participants. */
 const PARTICIPANT_CLEANUP_INTERVAL_MS = 60 * 1000; // 1 minute
-/** Maximum replay events returned to DO subscribers. */
+/** Default root-message replay window. */
 const REPLAY_LIMIT = 50;
 
 function parseDOParticipantId(
@@ -58,29 +59,50 @@ function parseDOParticipantId(
 }
 
 export class PubSubChannel extends DurableObjectBase {
-  static override schemaVersion = 3;
+  static override schemaVersion = 100;
 
   constructor(ctx: DurableObjectContext, env: unknown) {
     super(ctx, env);
     // Eager init — the DO must be ready before any message arrives.
     this.ensureReady();
+    try {
+      this.sql.exec(`PRAGMA foreign_keys = ON`);
+    } catch {
+      /* workerd may ignore pragmas */
+    }
   }
 
   protected createTables(): void {
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        message_id TEXT NOT NULL,
+        message_id TEXT NOT NULL UNIQUE,
         type TEXT NOT NULL,
-        content TEXT NOT NULL,
+        payload TEXT NOT NULL,
         sender_id TEXT NOT NULL,
-        ts INTEGER NOT NULL,
-        persist INTEGER NOT NULL DEFAULT 1,
-        content_type TEXT,
-        reply_to TEXT,
         sender_metadata TEXT,
-        attachments TEXT
+        attachments TEXT,
+        ts INTEGER NOT NULL,
+        is_root INTEGER NOT NULL,
+        root_message_id TEXT,
+        root_kind TEXT,
+        CHECK (
+          (is_root = 1 AND root_message_id IS NULL
+                       AND root_kind IS NOT NULL
+                       AND root_kind IN ('chat', 'method', 'presence', 'system')) OR
+          (is_root = 0 AND root_message_id IS NOT NULL
+                       AND root_kind IS NULL)
+        ),
+        FOREIGN KEY (root_message_id) REFERENCES messages(message_id)
       )
+    `);
+    this.sql.exec(`
+      CREATE INDEX IF NOT EXISTS idx_messages_root
+        ON messages(root_message_id) WHERE root_message_id IS NOT NULL
+    `);
+    this.sql.exec(`
+      CREATE INDEX IF NOT EXISTS idx_messages_root_chat
+        ON messages(id DESC) WHERE root_kind = 'chat' AND is_root = 1
     `);
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS participants (
@@ -88,7 +110,8 @@ export class PubSubChannel extends DurableObjectBase {
         metadata TEXT NOT NULL,
         transport TEXT NOT NULL,
         connected_at INTEGER NOT NULL,
-        session_id TEXT
+        session_id TEXT,
+        handle TEXT
       )
     `);
     this.sql.exec(`
@@ -98,7 +121,6 @@ export class PubSubChannel extends DurableObjectBase {
         target_id TEXT NOT NULL,
         method TEXT NOT NULL,
         args TEXT,
-        expires_at INTEGER NOT NULL,
         created_at INTEGER NOT NULL
       )
     `);
@@ -109,16 +131,16 @@ export class PubSubChannel extends DurableObjectBase {
         created_at INTEGER NOT NULL
       )
     `);
-    try {
-      this.sql.exec(`ALTER TABLE participants ADD COLUMN session_id TEXT`);
-    } catch {
-      /* already exists */
-    }
-    try {
-      this.sql.exec(`ALTER TABLE participants ADD COLUMN handle TEXT`);
-    } catch {
-      /* already exists */
-    }
+  }
+
+  protected override migrate(_fromVersion: number, _toVersion: number): void {
+    this.sql.exec(`DROP INDEX IF EXISTS idx_messages_root`);
+    this.sql.exec(`DROP INDEX IF EXISTS idx_messages_root_chat`);
+    this.sql.exec(`DROP TABLE IF EXISTS messages`);
+    this.sql.exec(`DROP TABLE IF EXISTS participants`);
+    this.sql.exec(`DROP TABLE IF EXISTS pending_calls`);
+    this.sql.exec(`DROP TABLE IF EXISTS dedup_keys`);
+    this.createTables();
   }
 
   // ── Broadcast deps ──────────────────────────────────────────────────────
@@ -142,6 +164,86 @@ export class PubSubChannel extends DurableObjectBase {
     } catch {
       return undefined;
     }
+  }
+
+  private appendLogEvent(
+    type: string,
+    payload: unknown,
+    senderId: string,
+    senderMetadata?: Record<string, unknown>,
+    opts?: {
+      messageId?: string;
+      attachments?: StoredAttachment[];
+    }
+  ): ChannelEvent {
+    const classification = classifyLogWrite(type, payload);
+    let payloadJson: string;
+    try {
+      payloadJson = JSON.stringify(payload);
+    } catch {
+      throw new Error("payload not serializable");
+    }
+    const messageId = opts?.messageId ?? crypto.randomUUID();
+    const ts = Date.now();
+    this.sql.exec(
+      `INSERT INTO messages (
+        message_id, type, payload, sender_id, sender_metadata, attachments, ts,
+        is_root, root_message_id, root_kind
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      messageId,
+      type,
+      payloadJson,
+      senderId,
+      senderMetadata ? JSON.stringify(senderMetadata) : null,
+      opts?.attachments ? JSON.stringify(opts.attachments) : null,
+      ts,
+      classification.isRoot ? 1 : 0,
+      classification.rootMessageId ?? null,
+      classification.rootKind ?? null
+    );
+    const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
+    return buildChannelEvent(
+      id,
+      messageId,
+      type,
+      payloadJson,
+      senderId,
+      senderMetadata,
+      ts,
+      opts?.attachments
+    );
+  }
+
+  private currentReplayContext(): { contextId?: string; channelConfig?: Record<string, unknown> } {
+    return {
+      contextId: this.getStateValue("contextId") ?? undefined,
+      channelConfig: this.getChannelConfig() ?? undefined,
+    };
+  }
+
+  private ensureMethodRoot(
+    callId: string,
+    callerId: string,
+    targetId?: string,
+    methodName?: string,
+    args?: unknown
+  ): void {
+    const existing = this.sql
+      .exec(`SELECT id FROM messages WHERE message_id = ?`, callId)
+      .toArray();
+    if (existing.length > 0) return;
+    this.appendLogEvent(
+      "method-call",
+      {
+        callId,
+        providerId: targetId ?? "unknown",
+        methodName: methodName ?? "unknown",
+        args,
+      },
+      callerId,
+      this.getSenderMetadata(callerId),
+      { messageId: callId }
+    );
   }
 
   // ── Channel initialization ──────────────────────────────────────────────
@@ -203,56 +305,39 @@ export class PubSubChannel extends DurableObjectBase {
     action: "join" | "leave" | "update",
     metadata: Record<string, unknown>,
     leaveReason?: "graceful" | "disconnect" | "replaced",
-    senderRef?: number,
-    persist = true
+    senderRef?: number
   ): void {
-    const ts = Date.now();
     const payload: PresencePayload = {
       action,
       metadata,
       ...(leaveReason ? { leaveReason } : {}),
     };
-    const payloadJson = JSON.stringify(payload);
-    const messageId = crypto.randomUUID();
 
-    if (persist) {
-      this.sql.exec(
-        `INSERT INTO messages (message_id, type, content, sender_id, ts, persist, sender_metadata)
-         VALUES (?, 'presence', ?, ?, ?, 1, ?)`,
-        messageId,
-        payloadJson,
-        senderId,
-        ts,
-        metadata ? JSON.stringify(metadata) : null
-      );
-      const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
-      const event = buildChannelEvent(
-        id,
-        messageId,
-        "presence",
-        payloadJson,
-        senderId,
-        metadata,
-        ts,
-        true
-      );
-      broadcast(this.broadcastDeps, event, { kind: "persisted", ref: senderRef }, senderId);
-    } else {
-      // Ephemeral: broadcast without persisting to messages table.
-      // id: 0 becomes undefined on the wire (channelEventToWsJson: `id: event.id || undefined`),
-      // which skips client-side roster dedup (gated on `msg.id !== undefined`).
-      const event = buildChannelEvent(
-        0,
-        messageId,
-        "presence",
-        payloadJson,
-        senderId,
-        metadata,
-        ts,
-        false
-      );
-      broadcast(this.broadcastDeps, event, { kind: "ephemeral" }, senderId);
-    }
+    const event = this.appendLogEvent("presence", payload, senderId, metadata);
+    broadcast(this.broadcastDeps, event, { kind: "log", phase: "live", ref: senderRef }, senderId);
+  }
+
+  private broadcastPresenceSignal(
+    senderId: string,
+    action: "join" | "leave" | "update",
+    metadata: Record<string, unknown>,
+    leaveReason?: "graceful" | "disconnect" | "replaced"
+  ): void {
+    const payload: PresencePayload = {
+      action,
+      metadata,
+      ...(leaveReason ? { leaveReason } : {}),
+    };
+    const event = buildChannelEvent(
+      0,
+      crypto.randomUUID(),
+      "presence",
+      JSON.stringify(payload),
+      senderId,
+      metadata,
+      Date.now()
+    );
+    broadcast(this.broadcastDeps, event, { kind: "signal" }, senderId);
   }
 
   // ── RPC-callable methods ──────────────────────────────────────────────
@@ -261,9 +346,8 @@ export class PubSubChannel extends DurableObjectBase {
    * Subscribe a participant to this channel.
    * Called by panels (via RPC through server relay) and DOs (via RPC call).
    *
-   * Two subscriber contracts:
-   * - Panel/RPC clients: expect streamed channel:message events for replay, then a ready event.
-   * - DO clients: use the returned replay array and process events via onChannelEvent.
+   * Subscribe inserts the participant first, then builds replay. This means an
+   * initial roster snapshot always contains the subscriber itself.
    */
   async subscribe(
     participantId: string,
@@ -377,7 +461,7 @@ export class PubSubChannel extends DurableObjectBase {
     }
 
     // Extract replay options before cleaning metadata
-    const wantsReplay = !!metadata["replay"];
+    const wantsReplay = metadata["replay"] !== false;
     const sinceId = metadata["sinceId"] as number | undefined;
     const replayMessageLimit = metadata["replayMessageLimit"] as number | undefined;
 
@@ -402,51 +486,20 @@ export class PubSubChannel extends DurableObjectBase {
       handle
     );
 
-    // Publish join presence
+    // Publish join presence before building replay so the initial roster snapshot includes self.
     this.publishPresenceEvent(participantId, "join", storedMetadata);
 
-    // Build replay for DO callers (returned in result)
-    let replay: ChannelEvent[] | undefined;
-    let replayTruncated: boolean | undefined;
-    if (wantsReplay) {
-      const replayRows = this.sql
-        .exec(
-          `SELECT id, message_id, type, content, sender_id, ts, sender_metadata, attachments
-         FROM messages WHERE type != 'presence' AND persist = 1 ORDER BY id DESC LIMIT ?`,
-          REPLAY_LIMIT + 1
-        )
-        .toArray();
+    const mode = wantsReplay && sinceId && sinceId > 0 ? "after" : "initial";
+    const envelope = buildReplayEnvelope(this.sql, {
+      mode,
+      sinceId: wantsReplay ? sinceId : undefined,
+      rootLimit: wantsReplay ? (replayMessageLimit ?? REPLAY_LIMIT) : 0,
+      includeRosterSnapshot: wantsReplay && mode === "initial",
+      ...this.currentReplayContext(),
+    });
+    this.queueReplayEnvelope(participantId, envelope, doRef != null);
 
-      replayTruncated = replayRows.length > REPLAY_LIMIT;
-      const rows = replayTruncated ? replayRows.slice(0, REPLAY_LIMIT) : replayRows;
-      rows.reverse(); // Back to chronological order
-
-      const events = rows.map(parseRowToChannelEvent);
-      if (events.length > 0) replay = events;
-    }
-
-    // Stream roster replay + message replay + ready to the subscriber.
-    // All three enqueue through the per-subscriber emit chain (not awaited
-    // inline — that would deadlock RPC backpressure, since the subscriber is
-    // typically parked on this very subscribe call's reply). FIFO order is
-    // enforced by `queueEmit`, so `update-message` always lands after its
-    // parent `message` and `ready` lands after the whole replay batch.
-    const rosterReplay = this.sendRosterReplay(participantId);
-    const messageReplay = this.sendMessageReplay(participantId, sinceId, replayMessageLimit);
-    // Re-emit any still-pending method-calls to the new session. Gated on
-    // session-replacement: a same-session resubscribe already has the
-    // handler in flight (or done), so redelivering would cause a second
-    // execution.
-    if (sessionReplaced) {
-      this.redeliverPendingCallsTo(participantId);
-    }
-    const ready = sendReady(
-      this.broadcastDeps,
-      participantId,
-      this.sql,
-      this.getStateValue("contextId"),
-      this.getChannelConfig()
-    );
+    if (sessionReplaced) this.redeliverPendingCallsTo(participantId);
 
     // Schedule stale participant cleanup for RPC participants
     if (transport !== "do") {
@@ -456,170 +509,57 @@ export class PubSubChannel extends DurableObjectBase {
     return {
       ok: true,
       channelConfig: this.getChannelConfig() ?? undefined,
-      initialReplay: [...rosterReplay, ...messageReplay],
-      ready,
-      replay,
-      replayTruncated,
+      envelope,
     };
   }
 
-  /**
-   * Send roster (presence) replay to a newly subscribed participant via RPC emit.
-   * After replaying persisted presence history, emits a snapshot of current
-   * participant metadata from the participants table. This ensures transient
-   * state (e.g. typing indicators) that was broadcast ephemerally is visible
-   * to reconnecting clients.
-   */
-  private sendRosterReplay(subscriberId: string): Array<Record<string, unknown>> {
-    const onFatal = (err: { code?: string }) => {
-      if (err?.code === "TARGET_NOT_REACHABLE" || err?.code === "RECONNECT_GRACE_EXPIRED") {
-        this.sql.exec(`DELETE FROM participants WHERE id = ?`, subscriberId);
-        cleanupDeliveryChain(subscriberId);
-      }
-    };
-    const replayMessages: Array<Record<string, unknown>> = [];
-
-    // 1. Replay persisted presence history (join/leave/update events).
-    const rows = this.sql
-      .exec(
-        `SELECT id, message_id, type, content, sender_id, ts, sender_metadata FROM messages WHERE type = 'presence' ORDER BY id ASC`
-      )
-      .toArray();
-
-    for (const row of rows) {
-      const event = parseRowToChannelEvent(row);
-      const msg = channelEventToWsJson(event, "replay");
-      replayMessages.push(msg);
-      void queueEmit(
-        this.broadcastDeps,
-        subscriberId,
-        {
-          channelId: this.objectKey,
-          message: msg,
-        },
-        onFatal
-      );
-    }
-
-    // 2. Emit current metadata snapshot from the participants table.
-    //    This overrides any stale metadata from replayed events with the
-    //    latest state (including ephemeral fields like `typing`).
-    const participants = this.sql.exec(`SELECT id, metadata FROM participants`).toArray();
-    const ts = Date.now();
-    for (const p of participants) {
-      const pid = p["id"] as string;
-      let metadata: Record<string, unknown>;
-      try {
-        metadata = JSON.parse(p["metadata"] as string);
-      } catch {
-        continue;
-      }
-      const payload: PresencePayload = { action: "update", metadata };
-      const event = buildChannelEvent(
-        0,
-        `snapshot_${pid}`,
-        "presence",
-        JSON.stringify(payload),
-        pid,
-        metadata,
-        ts,
-        false
-      );
-      const msg = channelEventToWsJson(event, "replay");
-      replayMessages.push(msg);
-      void queueEmit(this.broadcastDeps, subscriberId, {
-        channelId: this.objectKey,
-        message: msg,
-      });
-    }
-    return replayMessages;
-  }
-
-  /**
-   * Send message replay to a newly subscribed participant via RPC emit.
-   * Honors sinceId and replayMessageLimit for reconnect/history.
-   */
-  private sendMessageReplay(
+  private queueReplayEnvelope(
     subscriberId: string,
-    sinceId?: number,
-    replayMessageLimit?: number
-  ): Array<Record<string, unknown>> {
-    let rows: Record<string, unknown>[];
-
-    if (sinceId && sinceId > 0) {
-      rows = this.sql
-        .exec(
-          `SELECT id, message_id, type, content, sender_id, ts, sender_metadata, attachments
-         FROM messages WHERE id > ? AND type != 'presence' ORDER BY id ASC`,
-          sinceId
-        )
-        .toArray();
-    } else if (replayMessageLimit && replayMessageLimit > 0) {
-      // Anchored replay: find the Nth-from-last "message" type row
-      const anchorRows = this.sql
-        .exec(
-          `SELECT id FROM messages WHERE type = 'message' ORDER BY id DESC LIMIT 1 OFFSET ?`,
-          replayMessageLimit - 1
-        )
-        .toArray();
-
-      if (anchorRows.length > 0) {
-        const anchorId = anchorRows[0]!["id"] as number;
-        rows = this.sql
-          .exec(
-            `SELECT id, message_id, type, content, sender_id, ts, sender_metadata, attachments
-           FROM messages WHERE id > ? AND type != 'presence' ORDER BY id ASC`,
-            anchorId - 1
-          )
-          .toArray();
-      } else {
-        rows = this.sql
-          .exec(
-            `SELECT id, message_id, type, content, sender_id, ts, sender_metadata, attachments
-           FROM messages WHERE type != 'presence' ORDER BY id ASC`
-          )
-          .toArray();
-      }
-    } else {
-      return []; // No replay requested
-    }
-
-    console.log("[ChatReloadDebug] channel message replay query", {
-      channelId: this.objectKey,
-      subscriberId,
-      sinceId: sinceId ?? null,
-      replayMessageLimit: replayMessageLimit ?? null,
-      rowCount: rows.length,
-      rows: rows.slice(0, 20).map((row) => ({
-        id: row["id"],
-        type: row["type"],
-        senderId: row["sender_id"],
-        messageId: row["message_id"],
-      })),
-    });
-
+    envelope: ReturnType<typeof buildReplayEnvelope>,
+    deliverToDo: boolean
+  ): void {
     const onFatal = (err: { code?: string }) => {
       if (err?.code === "TARGET_NOT_REACHABLE" || err?.code === "RECONNECT_GRACE_EXPIRED") {
         this.sql.exec(`DELETE FROM participants WHERE id = ?`, subscriberId);
         cleanupDeliveryChain(subscriberId);
       }
     };
-    const replayMessages: Array<Record<string, unknown>> = [];
-    for (const row of rows) {
-      const event = parseRowToChannelEvent(row);
-      const msg = channelEventToWsJson(event, "replay");
-      replayMessages.push(msg);
+    for (const event of envelope.logEvents) {
       void queueEmit(
         this.broadcastDeps,
         subscriberId,
         {
           channelId: this.objectKey,
-          message: msg,
+          message: { kind: "log", phase: "replay", event },
         },
         onFatal
       );
+      if (deliverToDo) {
+        void queueDoEnvelope(this.broadcastDeps, subscriberId, { kind: "log", phase: "replay", event });
+      }
     }
-    return replayMessages;
+    for (const snapshot of envelope.snapshots) {
+      const message = {
+        kind: "control" as const,
+        type: "roster-snapshot" as const,
+        participants: snapshot.participants,
+        ts: snapshot.ts,
+      };
+      void queueEmit(this.broadcastDeps, subscriberId, { channelId: this.objectKey, message }, onFatal);
+      if (deliverToDo) {
+        void queueDoEnvelope(this.broadcastDeps, subscriberId, message);
+      }
+    }
+    const readyMessage = { kind: "control" as const, type: "ready" as const, ready: envelope.ready };
+    void queueEmit(
+      this.broadcastDeps,
+      subscriberId,
+      { channelId: this.objectKey, message: readyMessage },
+      onFatal
+    );
+    if (deliverToDo) {
+      void queueDoEnvelope(this.broadcastDeps, subscriberId, readyMessage);
+    }
   }
 
   /**
@@ -650,13 +590,12 @@ export class PubSubChannel extends DurableObjectBase {
   /**
    * Redeliver pending method-calls to a (re)subscribed participant.
    *
-   * Ephemeral method-call events are fired once from `callMethod` and are not
-   * replayed from the messages table. If the target's session was interrupted
-   * while the call was pending, the call would hang indefinitely — or, under
-   * the previous behavior, be failed on resubscribe. Instead, re-emit every
-   * still-pending call targeting this participant as an ephemeral method-call
-   * event, queued through the same per-subscriber FIFO as roster/message
-   * replay. Delivery is at-least-once over the call's lifetime: a handler may
+   * The canonical method-call root is durable. If the target's session was
+   * interrupted while the call was pending, the provider still needs an
+   * operational nudge after it re-subscribes. Re-emit every still-pending call
+   * targeting this participant as a signal, queued through the same
+   * per-subscriber FIFO as roster/message replay. Delivery is at-least-once
+   * over the call's lifetime: a handler may
    * run twice if it executed on the prior session but the result-publish was
    * interrupted. All in-tree methods (feedback_form, feedback_custom,
    * ui_prompt, tool_approval) are idempotent; custom methods with
@@ -703,9 +642,8 @@ export class PubSubChannel extends DurableObjectBase {
         senderId: callerId,
         senderMetadata,
         ts,
-        persist: false,
       };
-      const msg = channelEventToWsJson(event, "ephemeral");
+      const msg = channelEventToRpcSignal(event);
       void queueEmit(
         this.broadcastDeps,
         participantId,
@@ -784,8 +722,6 @@ export class PubSubChannel extends DurableObjectBase {
       }
     }
 
-    const ts = Date.now();
-    const persist = opts?.persist !== false;
     const contentType = opts?.contentType;
     const replyTo = opts?.replyTo;
 
@@ -800,64 +736,20 @@ export class PubSubChannel extends DurableObjectBase {
     if (replyTo) payload["replyTo"] = replyTo;
     const payloadJson = JSON.stringify(payload);
 
-    if (persist) {
+    const event = this.appendLogEvent("message", payload, participantId, senderMetadata, {
+      messageId,
+    });
+
+    if (idempotencyKey) {
       this.sql.exec(
-        `INSERT INTO messages (message_id, type, content, sender_id, ts, persist, content_type, reply_to, sender_metadata)
-         VALUES (?, 'message', ?, ?, ?, 1, ?, ?, ?)`,
-        messageId,
-        payloadJson,
-        participantId,
-        ts,
-        contentType ?? null,
-        replyTo ?? null,
-        senderMetadata ? JSON.stringify(senderMetadata) : null
+        `INSERT OR IGNORE INTO dedup_keys (key, result_id, created_at) VALUES (?, ?, ?)`,
+        idempotencyKey,
+        event.id,
+        Date.now()
       );
-      const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
-
-      if (idempotencyKey) {
-        this.sql.exec(
-          `INSERT OR IGNORE INTO dedup_keys (key, result_id, created_at) VALUES (?, ?, ?)`,
-          idempotencyKey,
-          id,
-          Date.now()
-        );
-        this.scheduleDedupCleanup();
-      }
-
-      const event = buildChannelEvent(
-        id,
-        messageId,
-        "message",
-        payloadJson,
-        participantId,
-        senderMetadata,
-        ts,
-        true
-      );
-      broadcast(this.broadcastDeps, event, { kind: "persisted" }, participantId);
-    } else {
-      if (idempotencyKey) {
-        this.sql.exec(
-          `INSERT OR IGNORE INTO dedup_keys (key, result_id, created_at) VALUES (?, ?, ?)`,
-          idempotencyKey,
-          null,
-          Date.now()
-        );
-        this.scheduleDedupCleanup();
-      }
-
-      const event = buildChannelEvent(
-        0,
-        messageId,
-        "message",
-        payloadJson,
-        participantId,
-        senderMetadata,
-        ts,
-        false
-      );
-      broadcast(this.broadcastDeps, event, { kind: "ephemeral" }, participantId);
+      this.scheduleDedupCleanup();
     }
+    broadcast(this.broadcastDeps, event, { kind: "log", phase: "live" }, participantId);
   }
 
   /**
@@ -869,7 +761,6 @@ export class PubSubChannel extends DurableObjectBase {
     type: string,
     payload: unknown,
     opts?: {
-      persist?: boolean;
       ref?: number;
       senderMetadata?: Record<string, unknown>;
       attachments?: StoredAttachment[];
@@ -877,10 +768,17 @@ export class PubSubChannel extends DurableObjectBase {
     }
   ): Promise<{ id?: number }> {
     this.assertParticipantCaller(participantId, "publish");
-    const ts = Date.now();
-    const persist = opts?.persist !== false;
     const ref = opts?.ref;
     const attachments = opts?.attachments;
+    const idempotencyKey = opts?.idempotencyKey;
+    if (idempotencyKey) {
+      const existing = this.sql
+        .exec(`SELECT result_id FROM dedup_keys WHERE key = ?`, idempotencyKey)
+        .toArray();
+      if (existing.length > 0) {
+        return { id: existing[0]!["result_id"] as number | undefined };
+      }
+    }
 
     // Intercept method-result only if there's a matching pending DO-initiated call
     // AND the result is complete (not a streaming partial like console chunks).
@@ -893,29 +791,20 @@ export class PubSubChannel extends DurableObjectBase {
           .exec(`SELECT call_id FROM pending_calls WHERE call_id = ?`, callId)
           .toArray();
         if (pending.length > 0) {
-          await this.handleMethodResult(callId, p["content"], !!p["isError"]);
-          return { id: undefined };
+          const resultId = await this.handleMethodResult(callId, p["content"], !!p["isError"]);
+          if (idempotencyKey && resultId !== undefined) {
+            this.sql.exec(
+              `INSERT OR IGNORE INTO dedup_keys (key, result_id, created_at) VALUES (?, ?, ?)`,
+              idempotencyKey,
+              resultId,
+              Date.now()
+            );
+            this.scheduleDedupCleanup();
+          }
+          return { id: resultId };
         }
         // No pending call — fall through to normal broadcast
       }
-    }
-
-    // Phase 0B: Idempotency check
-    const idempotencyKey = opts?.idempotencyKey;
-    if (idempotencyKey) {
-      const existing = this.sql
-        .exec(`SELECT result_id FROM dedup_keys WHERE key = ?`, idempotencyKey)
-        .toArray();
-      if (existing.length > 0) {
-        return { id: existing[0]!["result_id"] as number | undefined };
-      }
-    }
-
-    let payloadJson: string;
-    try {
-      payloadJson = JSON.stringify(payload);
-    } catch {
-      throw new Error("payload not serializable");
     }
 
     const senderMetadata = this.getSenderMetadata(participantId) ?? opts?.senderMetadata;
@@ -925,68 +814,23 @@ export class PubSubChannel extends DurableObjectBase {
       typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : null;
     const messageId = (payloadObj?.["id"] as string) ?? crypto.randomUUID();
 
-    if (persist) {
+    const event = this.appendLogEvent(type, payload, participantId, senderMetadata, {
+      messageId: type === "message" || type === "method-call" ? messageId : undefined,
+      attachments,
+    });
+
+    if (idempotencyKey) {
       this.sql.exec(
-        `INSERT INTO messages (message_id, type, content, sender_id, ts, persist, sender_metadata, attachments)
-         VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
-        messageId,
-        type,
-        payloadJson,
-        participantId,
-        ts,
-        senderMetadata ? JSON.stringify(senderMetadata) : null,
-        attachments ? JSON.stringify(attachments) : null
+        `INSERT OR IGNORE INTO dedup_keys (key, result_id, created_at) VALUES (?, ?, ?)`,
+        idempotencyKey,
+        event.id,
+        Date.now()
       );
-      const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
-
-      if (idempotencyKey) {
-        this.sql.exec(
-          `INSERT OR IGNORE INTO dedup_keys (key, result_id, created_at) VALUES (?, ?, ?)`,
-          idempotencyKey,
-          id,
-          Date.now()
-        );
-        this.scheduleDedupCleanup();
-      }
-
-      const event = buildChannelEvent(
-        id,
-        messageId,
-        type,
-        payloadJson,
-        participantId,
-        senderMetadata,
-        ts,
-        true,
-        attachments
-      );
-      broadcast(this.broadcastDeps, event, { kind: "persisted", ref }, participantId);
-      return { id };
-    } else {
-      if (idempotencyKey) {
-        this.sql.exec(
-          `INSERT OR IGNORE INTO dedup_keys (key, result_id, created_at) VALUES (?, ?, ?)`,
-          idempotencyKey,
-          null,
-          Date.now()
-        );
-        this.scheduleDedupCleanup();
-      }
-
-      const event = buildChannelEvent(
-        0,
-        messageId,
-        type,
-        payloadJson,
-        participantId,
-        senderMetadata,
-        ts,
-        false,
-        attachments
-      );
-      broadcast(this.broadcastDeps, event, { kind: "ephemeral", ref }, participantId);
-      return { id: undefined };
+      this.scheduleDedupCleanup();
     }
+
+    broadcast(this.broadcastDeps, event, { kind: "log", phase: "live", ref }, participantId);
+    return { id: event.id };
   }
 
   /**
@@ -1014,46 +858,23 @@ export class PubSubChannel extends DurableObjectBase {
       }
     }
 
-    const ts = Date.now();
-
     const senderMetadata = this.getSenderMetadata(participantId);
 
     const payload: Record<string, unknown> = { id: messageId, content };
     if (opts?.append) payload["append"] = true;
-    const payloadJson = JSON.stringify(payload);
-
-    this.sql.exec(
-      `INSERT INTO messages (message_id, type, content, sender_id, ts, persist, sender_metadata)
-       VALUES (?, 'update-message', ?, ?, ?, 1, ?)`,
-      messageId,
-      payloadJson,
-      participantId,
-      ts,
-      senderMetadata ? JSON.stringify(senderMetadata) : null
-    );
-    const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
+    const event = this.appendLogEvent("update-message", payload, participantId, senderMetadata);
 
     if (idempotencyKey) {
       this.sql.exec(
         `INSERT OR IGNORE INTO dedup_keys (key, result_id, created_at) VALUES (?, ?, ?)`,
         idempotencyKey,
-        id,
+        event.id,
         Date.now()
       );
       this.scheduleDedupCleanup();
     }
 
-    const event = buildChannelEvent(
-      id,
-      messageId,
-      "update-message",
-      payloadJson,
-      participantId,
-      senderMetadata,
-      ts,
-      true
-    );
-    broadcast(this.broadcastDeps, event, { kind: "persisted" }, participantId);
+    broadcast(this.broadcastDeps, event, { kind: "log", phase: "live" }, participantId);
   }
 
   /**
@@ -1071,46 +892,23 @@ export class PubSubChannel extends DurableObjectBase {
       }
     }
 
-    const ts = Date.now();
-
     const senderMetadata = this.getSenderMetadata(participantId);
 
     // complete uses type "update-message" with { id, complete: true } — matches PubSub server wire format
     const payload = { id: messageId, complete: true };
-    const payloadJson = JSON.stringify(payload);
-
-    this.sql.exec(
-      `INSERT INTO messages (message_id, type, content, sender_id, ts, persist, sender_metadata)
-       VALUES (?, 'update-message', ?, ?, ?, 1, ?)`,
-      messageId,
-      payloadJson,
-      participantId,
-      ts,
-      senderMetadata ? JSON.stringify(senderMetadata) : null
-    );
-    const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
+    const event = this.appendLogEvent("update-message", payload, participantId, senderMetadata);
 
     if (idempotencyKey) {
       this.sql.exec(
         `INSERT OR IGNORE INTO dedup_keys (key, result_id, created_at) VALUES (?, ?, ?)`,
         idempotencyKey,
-        id,
+        event.id,
         Date.now()
       );
       this.scheduleDedupCleanup();
     }
 
-    const event = buildChannelEvent(
-      id,
-      messageId,
-      "update-message",
-      payloadJson,
-      participantId,
-      senderMetadata,
-      ts,
-      true
-    );
-    broadcast(this.broadcastDeps, event, { kind: "persisted" }, participantId);
+    broadcast(this.broadcastDeps, event, { kind: "log", phase: "live" }, participantId);
   }
 
   /**
@@ -1127,58 +925,28 @@ export class PubSubChannel extends DurableObjectBase {
     code?: string
   ): Promise<void> {
     this.assertParticipantCaller(participantId, "error");
-    const ts = Date.now();
     const senderMetadata = this.getSenderMetadata(participantId);
     const payload: Record<string, unknown> = { id: messageId, error: errorMessage };
     if (code) payload["code"] = code;
-    const payloadJson = JSON.stringify(payload);
+    const event = this.appendLogEvent("error", payload, participantId, senderMetadata);
+    broadcast(this.broadcastDeps, event, { kind: "log", phase: "live" }, participantId);
+  }
 
-    this.sql.exec(
-      `INSERT INTO messages (message_id, type, content, sender_id, ts, persist, sender_metadata)
-       VALUES (?, 'error', ?, ?, ?, 1, ?)`,
-      messageId,
-      payloadJson,
-      participantId,
-      ts,
-      senderMetadata ? JSON.stringify(senderMetadata) : null
-    );
-    const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
-    const event = buildChannelEvent(
-      id,
-      messageId,
-      "error",
-      payloadJson,
-      participantId,
-      senderMetadata,
-      ts,
-      true
-    );
-    broadcast(this.broadcastDeps, event, { kind: "persisted" }, participantId);
+  async getReplayAfter(sinceId: number) {
+    return buildReplayEnvelope(this.sql, {
+      mode: "after",
+      sinceId,
+      ...this.currentReplayContext(),
+    });
   }
 
   /**
-   * Phase 2A: Return persisted events in a sequence range (for gap repair).
-   * Returns events where fromSeq < id <= toSeq, ordered ascending.
+   * Send a non-durable signal message (from a participant).
    */
-  async getEventRange(fromSeq: number, toSeq: number): Promise<ChannelEvent[]> {
-    const rows = this.sql
-      .exec(
-        `SELECT id, message_id, type, content, sender_id, ts, sender_metadata, attachments
-       FROM messages WHERE id > ? AND id <= ? AND persist = 1 ORDER BY id ASC`,
-        fromSeq,
-        toSeq
-      )
-      .toArray();
-    return rows.map(parseRowToChannelEvent);
-  }
-
-  /**
-   * Send an ephemeral message (from a participant).
-   */
-  async sendEphemeral(participantId: string, content: string, contentType?: string): Promise<void> {
-    this.assertParticipantCaller(participantId, "sendEphemeral");
+  async sendSignal(participantId: string, content: string, contentType?: string): Promise<void> {
+    this.assertParticipantCaller(participantId, "sendSignal");
     const ts = Date.now();
-    const messageId = `eph_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const messageId = `sig_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     const senderMetadata = this.getSenderMetadata(participantId);
 
@@ -1193,10 +961,9 @@ export class PubSubChannel extends DurableObjectBase {
       payloadJson,
       participantId,
       senderMetadata,
-      ts,
-      false
+      ts
     );
-    broadcast(this.broadcastDeps, event, { kind: "ephemeral" }, participantId);
+    broadcast(this.broadcastDeps, event, { kind: "signal" }, participantId);
   }
 
   /**
@@ -1229,8 +996,8 @@ export class PubSubChannel extends DurableObjectBase {
 
   /**
    * Set a participant's typing state. Updates the participants table (so
-   * reconnecting clients see current state) but broadcasts ephemerally
-   * (no row inserted into the messages table).
+   * reconnecting clients see current state) and broadcasts a signal without
+   * inserting a messages row.
    */
   async setTypingState(participantId: string, typing: boolean): Promise<void> {
     this.assertParticipantCaller(participantId, "setTypingState");
@@ -1253,7 +1020,7 @@ export class PubSubChannel extends DurableObjectBase {
       JSON.stringify(final),
       participantId
     );
-    this.publishPresenceEvent(participantId, "update", final, undefined, undefined, false);
+    this.broadcastPresenceSignal(participantId, "update", final);
   }
 
   /**
@@ -1299,37 +1066,364 @@ export class PubSubChannel extends DurableObjectBase {
   async updateConfig(config: Partial<ChannelConfig>): Promise<ChannelConfig> {
     const newConfig = { ...this.getChannelConfig(), ...config };
     this.setStateValue("config", JSON.stringify(newConfig));
-    broadcastConfigUpdate(this.broadcastDeps, newConfig);
+    const event = this.appendLogEvent("config-update", newConfig, "system");
+    broadcast(this.broadcastDeps, event, { kind: "log", phase: "live" }, "system");
     return newConfig;
   }
 
-  /**
-   * Get messages before a given ID (for pagination).
-   */
-  async getMessagesBefore(
-    beforeId: number,
-    limit?: number
-  ): Promise<{
-    messages: Array<{
-      id: number;
-      type: string;
-      payload: unknown;
-      senderId: string;
-      ts: number;
-      senderMetadata?: Record<string, unknown>;
-      attachments?: unknown[];
-    }>;
-    hasMore: boolean;
-    trailingUpdates: Array<{
-      id: number;
-      type: string;
-      payload: unknown;
-      senderId: string;
-      ts: number;
-      senderMetadata?: Record<string, unknown>;
-    }>;
-  }> {
-    return getMessagesBefore(this.sql, beforeId, limit ?? 100);
+  async getChatReplayBefore(beforeRootId: number, rootLimit?: number) {
+    return buildReplayEnvelope(this.sql, {
+      mode: "before",
+      beforeRootId,
+      rootLimit: rootLimit ?? 100,
+      ...this.currentReplayContext(),
+    });
+  }
+
+  async adminInspectSchema() {
+    this.assertAdminCaller("adminInspectSchema");
+    const tables = ["messages", "participants", "pending_calls", "dedup_keys"].map((table) => ({
+      table,
+      columns: this.sql.exec(`PRAGMA table_info(${table})`).toArray(),
+    }));
+    const indexes = ["messages", "participants", "pending_calls", "dedup_keys"].flatMap((table) => {
+      const list = this.sql.exec(`PRAGMA index_list(${table})`).toArray();
+      return list.map((idx) => ({
+        table,
+        ...idx,
+        columns: this.sql.exec(`PRAGMA index_info(${idx["name"] as string})`).toArray(),
+      }));
+    });
+    const messageColumns = new Set(
+      tables.find((entry) => entry.table === "messages")?.columns.map((col) => col["name"]) ?? []
+    );
+    const expected = [
+      "id",
+      "message_id",
+      "type",
+      "payload",
+      "sender_id",
+      "sender_metadata",
+      "attachments",
+      "ts",
+      "is_root",
+      "root_message_id",
+      "root_kind",
+    ];
+    const actualColumns =
+      tables.find((entry) => entry.table === "messages")?.columns.map((col) => col["name"]) ?? [];
+    const messageSql =
+      (this.sql
+        .exec(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'`)
+        .toArray()[0]?.["sql"] as string | undefined) ?? "";
+    const indexNames = new Set(
+      indexes
+        .filter((idx) => idx.table === "messages")
+        .map((idx) => (idx as Record<string, unknown>)["name"])
+    );
+    return {
+      tables,
+      indexes,
+      invariants: [
+        {
+          name: "messages-columns",
+          ok:
+            actualColumns.length === expected.length &&
+            expected.every((column) => messageColumns.has(column)) &&
+            !["content", `content_${"type"}`, `reply_${"to"}`, `per${"sist"}`].some((column) =>
+              messageColumns.has(column)
+            ),
+        },
+        {
+          name: "messages-check-constraint",
+          ok:
+            messageSql.includes("root_kind IN ('chat', 'method', 'presence', 'system')") &&
+            messageSql.includes("is_root = 1") &&
+            messageSql.includes("is_root = 0"),
+        },
+        {
+          name: "message-id-unique",
+          ok: messageSql.includes("message_id TEXT NOT NULL UNIQUE"),
+        },
+        {
+          name: "chat-root-index",
+          ok: indexNames.has("idx_messages_root_chat") && indexNames.has("idx_messages_root"),
+        },
+      ],
+    };
+  }
+
+  async adminInspectLog(opts: {
+    afterId?: number;
+    beforeId?: number;
+    limit?: number;
+    includePresence?: boolean;
+  } = {}) {
+    this.assertAdminCaller("adminInspectLog");
+    const clauses: string[] = [];
+    const args: unknown[] = [];
+    if (opts.afterId != null) {
+      clauses.push("id > ?");
+      args.push(opts.afterId);
+    }
+    if (opts.beforeId != null) {
+      clauses.push("id < ?");
+      args.push(opts.beforeId);
+    }
+    if (!opts.includePresence) clauses.push("type != 'presence'");
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+    const limit = Math.min(Math.max(opts.limit ?? 100, 1), 1000);
+    const rows = this.sql
+      .exec(
+        `SELECT id, message_id, type, payload, sender_id, sender_metadata, attachments, ts, is_root, root_message_id, root_kind
+         FROM messages ${where} ORDER BY id ASC LIMIT ?`,
+        ...args,
+        limit
+      )
+      .toArray();
+    const firstId = rows[0]?.["id"] as number | undefined;
+    const lastId = rows[rows.length - 1]?.["id"] as number | undefined;
+    return {
+      rows,
+      hasMoreBefore:
+        firstId != null &&
+        this.sql.exec(`SELECT id FROM messages WHERE id < ? LIMIT 1`, firstId).toArray().length > 0,
+      hasMoreAfter:
+        lastId != null &&
+        this.sql.exec(`SELECT id FROM messages WHERE id > ? LIMIT 1`, lastId).toArray().length > 0,
+    };
+  }
+
+  async adminInspectMessageChain(messageId: string) {
+    this.assertAdminCaller("adminInspectMessageChain");
+    return {
+      rows: this.sql
+        .exec(
+          `SELECT id, message_id, type, payload, sender_id, sender_metadata, attachments, ts, is_root, root_message_id, root_kind
+           FROM messages WHERE message_id = ? OR root_message_id = ? ORDER BY id ASC`,
+          messageId,
+          messageId
+        )
+        .toArray(),
+    };
+  }
+
+  async adminReconstructTranscript(opts: { rootLimit?: number; beforeRootId?: number } = {}) {
+    this.assertAdminCaller("adminReconstructTranscript");
+    const envelope =
+      opts.beforeRootId != null
+        ? await this.getChatReplayBefore(opts.beforeRootId, opts.rootLimit)
+        : buildReplayEnvelope(this.sql, {
+            mode: "initial",
+            rootLimit: opts.rootLimit ?? REPLAY_LIMIT,
+            ...this.currentReplayContext(),
+          });
+    const replayEvents: unknown[] = envelope.logEvents.flatMap((event): unknown[] => {
+      const payload = event.payload && typeof event.payload === "object"
+        ? (event.payload as Record<string, unknown>)
+        : {};
+      const base = {
+        delivery: "log" as const,
+        phase: "replay" as const,
+        pubsubId: event.id,
+        senderId: event.senderId,
+        ts: event.ts,
+        senderMetadata: event.senderMetadata,
+        attachments: event.attachments,
+      };
+      switch (event.type) {
+        case "message":
+          return [{
+            ...base,
+            type: "message" as const,
+            id: (payload["id"] as string | undefined) ?? event.messageId,
+            content: (payload["content"] as string | undefined) ?? "",
+            contentType: payload["contentType"] as string | undefined,
+            replyTo: payload["replyTo"] as string | undefined,
+            metadata: payload["metadata"] as Record<string, unknown> | undefined,
+          }];
+        case "update-message":
+          return [{
+            ...base,
+            type: "update-message" as const,
+            id: (payload["id"] as string | undefined) ?? event.messageId,
+            content: payload["content"] as string | undefined,
+            append: payload["append"] as boolean | undefined,
+            complete: payload["complete"] as boolean | undefined,
+            contentType: payload["contentType"] as string | undefined,
+          }];
+        case "error":
+          return [{
+            ...base,
+            type: "error" as const,
+            id: (payload["id"] as string | undefined) ?? event.messageId,
+            error: (payload["error"] as string | undefined) ?? "Unknown error",
+            code: payload["code"] as string | undefined,
+          }];
+        case "method-call":
+          return [{
+            ...base,
+            type: "method-call" as const,
+            callId: (payload["callId"] as string | undefined) ?? event.messageId,
+            providerId: payload["providerId"] as string | undefined,
+            methodName: payload["methodName"] as string | undefined,
+            args: payload["args"],
+          }];
+        case "method-result":
+          return [{
+            ...base,
+            type: "method-result" as const,
+            callId: (payload["callId"] as string | undefined) ?? event.messageId,
+            content: payload["content"],
+            complete: payload["complete"] as boolean | undefined,
+            isError: payload["isError"] as boolean | undefined,
+            progress: payload["progress"] as number | undefined,
+            contentType: payload["contentType"] as string | undefined,
+          }];
+        default:
+          return [];
+      }
+    });
+    return {
+      logEvents: envelope.logEvents,
+      transcript: aggregateReplayEvents(replayEvents as Parameters<typeof aggregateReplayEvents>[0]),
+      ready: envelope.ready,
+    };
+  }
+
+  async adminValidateLog(opts: { rootLimit?: number } = {}) {
+    this.assertAdminCaller("adminValidateLog");
+    const issues: Array<{ code: string; message: string; rowId?: number }> = [];
+    const schema = await this.adminInspectSchema();
+    for (const invariant of schema.invariants) {
+      if (!invariant.ok) issues.push({ code: "schema", message: `schema invariant failed: ${invariant.name}` });
+    }
+    const rows = this.sql
+      .exec(
+        `SELECT id, message_id, type, payload, sender_id, sender_metadata, is_root, root_message_id, root_kind
+         FROM messages ORDER BY id ASC LIMIT ?`,
+        Math.min(Math.max(opts.rootLimit ?? 10000, 1), 100000)
+      )
+      .toArray();
+    const roots = new Map<string, Record<string, unknown>>();
+    const parsedPayloads = new Map<number, Record<string, unknown>>();
+    const chatTerminals = new Map<string, Array<{ rowId: number; kind: "complete" | "error" }>>();
+    const methodTerminals = new Map<string, Array<{ rowId: number; kind: "result" | "cancel" | "timeout" | "error" }>>();
+    for (const row of rows) {
+      const rowId = row["id"] as number;
+      try {
+        const parsed = JSON.parse(row["payload"] as string);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          parsedPayloads.set(rowId, parsed as Record<string, unknown>);
+        }
+      } catch {
+        issues.push({ code: "payload-json", message: "payload is not valid JSON", rowId });
+      }
+      const isRoot = row["is_root"] === 1;
+      const rootKind = row["root_kind"] as string | null;
+      const rootMessageId = row["root_message_id"] as string | null;
+      if (isRoot) {
+        roots.set(row["message_id"] as string, row);
+        if (!["chat", "method", "presence", "system"].includes(rootKind ?? "")) {
+          issues.push({ code: "root-kind", message: "unknown root_kind", rowId });
+        }
+        if (rootMessageId != null) {
+          issues.push({ code: "root-target", message: "root row has root_message_id", rowId });
+        }
+      } else if (!rootMessageId || rootKind != null) {
+        issues.push({ code: "dependent-shape", message: "dependent row has invalid root fields", rowId });
+      }
+    }
+    for (const row of rows) {
+      if (row["is_root"] === 1) continue;
+      const root = roots.get(row["root_message_id"] as string);
+      if (!root) {
+        issues.push({ code: "orphan-dependent", message: "dependent root is missing", rowId: row["id"] as number });
+        continue;
+      }
+      const type = row["type"] as string;
+      const kind = root["root_kind"] as string;
+      const rowId = row["id"] as number;
+      const rootMessageId = row["root_message_id"] as string;
+      const payload = parsedPayloads.get(rowId);
+      if (["update-message", "error", "execution-pause"].includes(type) && kind !== "chat") {
+        issues.push({ code: "wrong-root-kind", message: `${type} targets ${kind} root`, rowId });
+      }
+      if (["method-result", "method-cancel", "method-timeout"].includes(type) && kind !== "method") {
+        issues.push({ code: "wrong-root-kind", message: `${type} targets ${kind} root`, rowId });
+      }
+      if (kind === "chat") {
+        if (type === "update-message" && payload?.["complete"] === true) {
+          const group = chatTerminals.get(rootMessageId) ?? [];
+          group.push({ rowId, kind: "complete" });
+          chatTerminals.set(rootMessageId, group);
+        } else if (type === "error") {
+          const group = chatTerminals.get(rootMessageId) ?? [];
+          group.push({ rowId, kind: "error" });
+          chatTerminals.set(rootMessageId, group);
+        }
+      }
+      if (kind === "method") {
+        if (type === "method-result" && payload?.["complete"] === true) {
+          const group = methodTerminals.get(rootMessageId) ?? [];
+          group.push({ rowId, kind: payload["isError"] === true ? "error" : "result" });
+          methodTerminals.set(rootMessageId, group);
+        } else if (type === "method-cancel" || type === "method-timeout") {
+          const group = methodTerminals.get(rootMessageId) ?? [];
+          group.push({ rowId, kind: type === "method-cancel" ? "cancel" : "timeout" });
+          methodTerminals.set(rootMessageId, group);
+        }
+      }
+    }
+    for (const [rootId, terminals] of chatTerminals) {
+      if (terminals.length > 1) {
+        const kinds = new Set(terminals.map((terminal) => terminal.kind));
+        issues.push({
+          code: kinds.size === 1 ? "duplicate-terminal" : "contradictory-terminal",
+          message: `chat root ${rootId} has ${terminals.length} terminal rows`,
+          rowId: terminals[1]?.rowId,
+        });
+      }
+    }
+    for (const [rootId, terminals] of methodTerminals) {
+      const terminalClasses = new Set(terminals.map((terminal) => terminal.kind));
+      if (terminals.length > 1) {
+        issues.push({
+          code: terminalClasses.size === 1 ? "duplicate-terminal" : "contradictory-terminal",
+          message: `method root ${rootId} has ${terminals.length} terminal rows`,
+          rowId: terminals[1]?.rowId,
+        });
+      }
+    }
+    for (const row of rows) {
+      if (row["is_root"] !== 1 || row["root_kind"] !== "chat") continue;
+      const metadataRaw = row["sender_metadata"] as string | null;
+      let senderType: string | undefined;
+      if (metadataRaw) {
+        try {
+          const metadata = JSON.parse(metadataRaw) as Record<string, unknown>;
+          senderType = metadata["type"] as string | undefined;
+        } catch {
+          /* ignore */
+        }
+      }
+      if (senderType === "agent" && !chatTerminals.has(row["message_id"] as string)) {
+        issues.push({
+          code: "missing-terminal",
+          message: "assistant chat root has no terminal update or error",
+          rowId: row["id"] as number,
+        });
+      }
+    }
+    return {
+      ok: issues.length === 0,
+      issues,
+      stats: {
+        rowCount: rows.length,
+        rootCount: rows.filter((row) => row["is_root"] === 1).length,
+        dependentCount: rows.filter((row) => row["is_root"] !== 1).length,
+      },
+    };
   }
 
   // ── Method calls ────────────────────────────────────────────────────────
@@ -1347,6 +1441,12 @@ export class PubSubChannel extends DurableObjectBase {
     this.assertParticipantCaller(callerPid, "callMethod");
     storeCall(this.sql, callId, callerPid, targetPid, method, args);
     this.scheduleNextAlarm();
+    const payload = { callId, providerId: targetPid, methodName: method, args };
+    const senderMetadata = this.getSenderMetadata(callerPid);
+    const callEvent = this.appendLogEvent("method-call", payload, callerPid, senderMetadata, {
+      messageId: callId,
+    });
+    broadcast(this.broadcastDeps, callEvent, { kind: "log", phase: "live" }, callerPid);
 
     // Deliver to target
     const target = this.sql
@@ -1392,51 +1492,29 @@ export class PubSubChannel extends DurableObjectBase {
         }
       }
     } else {
-      // RPC target — emit method-call as ephemeral channel message
-      const payload = { callId, providerId: targetPid, methodName: method, args };
-      const senderMetadata = this.getSenderMetadata(callerPid);
-      const ts = Date.now();
-      const event: ChannelEvent = {
-        id: 0,
-        messageId: "",
-        type: "method-call",
-        payload,
-        senderId: callerPid,
-        senderMetadata,
-        ts,
-        persist: false,
-      };
-      const msg = channelEventToWsJson(event, "ephemeral");
-      // Emit to all participants via RPC (the client filters by providerId === self)
-      const participants = this.sql.exec(`SELECT id FROM participants`).toArray();
-      const data = { channelId: this.objectKey, message: msg };
-      for (const p of participants) {
-        const pid = p["id"] as string;
-        this.rpc.emit(pid, "channel:message", data).catch((err) => {
-          const code = (err as { code?: string })?.code;
-          if (code === "TARGET_NOT_REACHABLE" || code === "RECONNECT_GRACE_EXPIRED") {
-            this.sql.exec(`DELETE FROM participants WHERE id = ?`, pid);
-            cleanupDeliveryChain(pid);
-          }
-        });
-      }
+      // RPC targets receive the durable method-call through the log broadcast above.
     }
   }
 
   /**
    * Handle a method result from a participant.
    */
-  async handleMethodResult(callId: string, content: unknown, isError: boolean): Promise<void> {
+  async handleMethodResult(
+    callId: string,
+    content: unknown,
+    isError: boolean
+  ): Promise<number | undefined> {
     const pending = consumeCall(this.sql, callId);
     if (!pending) {
       console.warn(
         `[Channel] Ignoring method-result without pending call: ` +
         `channel=${this.objectKey} callId=${callId} isError=${isError}`,
       );
-      return;
+      return undefined;
     }
-    await this.deliverCallResult(pending.callerId, callId, content, isError);
+    const resultId = await this.deliverCallResult(pending.callerId, callId, content, isError);
     this.scheduleNextAlarm();
+    return resultId;
   }
 
   /**
@@ -1452,11 +1530,14 @@ export class PubSubChannel extends DurableObjectBase {
     // Notify the provider so it can abort the executing method
     if (call.length > 0) {
       const providerId = call[0]!["target_id"] as string;
+      this.ensureMethodRoot(callId, "system", providerId);
+      const event = this.appendLogEvent("method-cancel", { callId }, "system");
+      broadcast(this.broadcastDeps, event, { kind: "log", phase: "live" }, "system");
       this.rpc
         .emit(providerId, "channel:message", {
           channelId: this.objectKey,
           message: {
-            kind: "ephemeral",
+            kind: "signal",
             type: "method-cancel",
             payload: { callId },
             senderId: "system",
@@ -1469,45 +1550,46 @@ export class PubSubChannel extends DurableObjectBase {
     }
   }
 
+  /**
+   * Mark a pending method call as timed out. The channel does not schedule
+   * wall-clock timeouts itself; callers that own a deadline can close the call
+   * through this durable terminal event.
+   */
+  async timeoutMethodCall(callId: string, reason?: string): Promise<void> {
+    const call = this.sql
+      .exec(`SELECT caller_id, target_id FROM pending_calls WHERE call_id = ?`, callId)
+      .toArray();
+    if (call.length === 0) return;
+    cancelCallDb(this.sql, callId);
+    this.scheduleNextAlarm();
+    const callerId = call[0]!["caller_id"] as string;
+    const targetId = call[0]!["target_id"] as string;
+    this.ensureMethodRoot(callId, callerId, targetId);
+    const payload: Record<string, unknown> = { callId };
+    if (reason) payload["reason"] = reason;
+    const event = this.appendLogEvent("method-timeout", payload, "system");
+    broadcast(this.broadcastDeps, event, { kind: "log", phase: "live" }, "system");
+  }
+
   private async deliverCallResult(
     callerId: string,
     callId: string,
     result: unknown,
     isError: boolean
-  ): Promise<void> {
+  ): Promise<number | undefined> {
     const caller = this.sql
       .exec(`SELECT id FROM participants WHERE id = ?`, callerId)
       .toArray();
 
-    if (caller.length === 0) return;
+    if (caller.length === 0) return undefined;
 
     // Persist and broadcast the result as the single canonical completion path.
     // DO and RPC participants both observe the same method-result event.
-    const ts = Date.now();
+    this.ensureMethodRoot(callId, callerId);
     const payload = { callId, content: result, complete: true, isError: isError ?? false };
-    const payloadJson = JSON.stringify(payload);
-    const messageId = crypto.randomUUID();
-
-    this.sql.exec(
-      `INSERT INTO messages (message_id, type, content, sender_id, ts, persist, sender_metadata)
-       VALUES (?, 'method-result', ?, ?, ?, 1, NULL)`,
-      messageId,
-      payloadJson,
-      callerId,
-      ts
-    );
-    const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
-
-    const event: ChannelEvent = {
-      id,
-      messageId,
-      type: "method-result",
-      payload,
-      senderId: callerId,
-      ts,
-      persist: true,
-    };
-    broadcast(this.broadcastDeps, event, { kind: "persisted" }, callerId);
+    const event = this.appendLogEvent("method-result", payload, callerId);
+    broadcast(this.broadcastDeps, event, { kind: "log", phase: "live" }, callerId);
+    return event.id;
   }
 
   /**
@@ -1515,9 +1597,10 @@ export class PubSubChannel extends DurableObjectBase {
    * alarm sources (dedup cleanup, participant cleanup) to avoid one source
    * overwriting another's sooner alarm.
    *
-   * Method calls intentionally have no wall-clock timeout — agentic activities
-   * can run for arbitrary lengths. Pending calls are cancelled by roster events
-   * (see cancelCallsForTarget) when a target participant leaves.
+   * Method calls do not have an internal wall-clock timeout — agentic
+   * activities can run for arbitrary lengths. Pending calls are cancelled by
+   * roster events (see cancelCallsForTarget) when a target participant leaves,
+   * or by timeoutMethodCall when an external caller owns a deadline.
    */
   private scheduleNextAlarm(): void {
     const now = Date.now();

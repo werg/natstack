@@ -37,14 +37,12 @@ export interface ChannelEvent {
   /** Content type from the payload (e.g., "typing" for typing indicators). */
   contentType?: string;
   ts: number;
-  persist: boolean;
   attachments?: Attachment[];
 }
 
 /** Options for sending a channel message through a Durable Object-backed service. */
 export interface SendMessageOptions {
   contentType?: string;
-  persist?: boolean;
   senderMetadata?: Record<string, unknown>;
   replyTo?: string;
   idempotencyKey?: string;

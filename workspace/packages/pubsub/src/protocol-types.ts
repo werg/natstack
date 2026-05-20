@@ -14,6 +14,7 @@ import type {
   Attachment,
   AttachmentInput,
   ChannelConfig,
+  ReplayEnvelope,
 } from "./types.js";
 import type { z } from "zod";
 
@@ -147,8 +148,10 @@ export interface IncomingExecutionPauseEvent {
   status: PauseStatus;
   /** Optional reason for the pause */
   reason?: string;
-  /** Message kind */
-  kind: "replay" | "persisted" | "ephemeral";
+  /** Transport stream that produced the event. */
+  delivery: "log" | "signal";
+  /** Log phase, present only for durable log events. */
+  phase?: "replay" | "live";
   /** ID of the sender */
   senderId: string;
   /** Timestamp in milliseconds */
@@ -235,8 +238,8 @@ export type AgentDebugPayload =
     };
 
 /**
- * An incoming agent debug event (ephemeral, not persisted).
- * Uses the message type system for filtering (like "error", "message", etc.)
+ * An incoming agent debug signal. Uses the message type system for filtering
+ * (like "error", "message", etc.)
  */
 export interface IncomingAgentDebugEvent extends IncomingBase {
   type: "agent-debug";
@@ -270,8 +273,10 @@ export interface EventFilterOptions {
  * Base properties shared by all incoming messages.
  */
 export interface IncomingBase {
-  /** Message kind: replay (historical), persisted (new + saved), or ephemeral */
-  kind: "replay" | "persisted" | "ephemeral";
+  /** Transport stream that produced the event. */
+  delivery: "log" | "signal";
+  /** Log phase, present only for durable log events. */
+  phase?: "replay" | "live";
   /** ID of the sender */
   senderId: string;
   /** Timestamp in milliseconds */
@@ -352,8 +357,10 @@ export type PresenceAction = "join" | "leave" | "update";
  * These events are persisted and replayed to reconstruct participant history.
  */
 export interface IncomingPresenceEvent {
-  /** Message kind */
-  kind: "replay" | "persisted" | "ephemeral";
+  /** Transport stream that produced the event. */
+  delivery: "log" | "signal";
+  /** Log phase, present only for durable log events. */
+  phase?: "replay" | "live";
   /** ID of the participant */
   senderId: string;
   /** Timestamp */
@@ -378,8 +385,10 @@ export interface IncomingPresenceEvent {
  * An incoming method call (for method providers).
  */
 export interface IncomingMethodCall {
-  /** Message kind */
-  kind: "replay" | "persisted" | "ephemeral";
+  /** Transport stream that produced the event. */
+  delivery: "log" | "signal";
+  /** Log phase, present only for durable log events. */
+  phase?: "replay" | "live";
   /** ID of the caller */
   senderId: string;
   /** Timestamp */
@@ -406,8 +415,10 @@ export interface IncomingMethodCall {
  * An incoming method result chunk.
  */
 export interface IncomingMethodResult {
-  /** Message kind */
-  kind: "replay" | "persisted" | "ephemeral";
+  /** Transport stream that produced the event. */
+  delivery: "log" | "signal";
+  /** Log phase, present only for durable log events. */
+  phase?: "replay" | "live";
   /** ID of the sender */
   senderId: string;
   /** Timestamp */
@@ -437,12 +448,12 @@ export interface IncomingMethodResult {
 }
 
 /**
- * Aggregated replay event base.
- * Aggregated events are always replays (historical messages collected during connect).
+ * Aggregated log replay event base.
+ * Aggregated events are collected from historical log rows during connect.
  */
 export interface AggregatedEventBase {
-  /** Aggregated events are always replays */
-  kind: "replay";
+  delivery: "log";
+  phase: "replay";
   /** Explicit discriminator -- distinguishes aggregated replay from raw IncomingEvent */
   aggregated: true;
   pubsubId: number;
@@ -679,7 +690,7 @@ export interface AgenticConnectOptions<T extends AgenticParticipantMetadata = Ag
    * Resume replay from a specific pubsub message ID (for checkpoint-based recovery).
    *
    * When provided (and replayMode !== "skip"), the server replays messages starting
-   * from this ID instead of from the beginning. This enables agents to persist their
+   * from this ID instead of from the beginning. This enables agents to store their
    * last processed pubsub ID and resume without full replay on restart.
    *
    * - undefined: Full replay from beginning (default for "collect"/"stream" modes)
@@ -705,7 +716,7 @@ export interface SendResult {
 
 export interface EventStreamOptions extends EventFilterOptions {
   includeReplay?: boolean;
-  includeEphemeral?: boolean;
+  includeSignals?: boolean;
 }
 
 export type EventStreamItem = IncomingEvent | AggregatedEvent;
@@ -758,7 +769,6 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
     content: string,
     options?: {
       replyTo?: string;
-      persist?: boolean;
       attachments?: AttachmentInput[];
       contentType?: string;
       /** IDs of intended recipients (omit for broadcast to all) */
@@ -771,7 +781,7 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
   update(
     id: string,
     content: string,
-    options?: { complete?: boolean; persist?: boolean; attachments?: AttachmentInput[]; contentType?: string }
+    options?: { complete?: boolean; attachments?: AttachmentInput[]; contentType?: string }
   ): Promise<number | undefined>;
 
   complete(id: string): Promise<number | undefined>;
@@ -816,30 +826,12 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
   // === Pagination ===
   /** Total message count (from server ready message, for pagination) */
   readonly totalMessageCount: number | undefined;
-  /** Count of type="message" events only (excludes protocol chatter), for accurate chat pagination */
+  /** Count of durable chat root messages, for accurate chat pagination */
   readonly chatMessageCount: number | undefined;
-  /** ID of the first chat message in the channel (for pagination boundary) */
+  /** Row ID of the first durable chat root in the channel (for pagination boundary) */
   readonly firstChatMessageId: number | undefined;
-  /** Get older messages before a given ID (for pagination UI) */
-  getMessagesBefore(beforeId: number, limit?: number): Promise<{
-    messages: Array<{
-      id: number;
-      type: string;
-      payload: unknown;
-      senderId: string;
-      ts: number;
-      senderMetadata?: Record<string, unknown>;
-      attachments?: Attachment[];
-    }>;
-    hasMore: boolean;
-  }>;
-
-  /** Get older messages before a given ID, aggregated (for chat pagination) */
-  getAggregatedMessagesBefore(beforeId: number, limit?: number): Promise<{
-    messages: AggregatedMessage[];
-    hasMore: boolean;
-    nextBeforeId?: number;
-  }>;
+  /** Get older chat roots and their complete dependent chains before a root row ID. */
+  getChatReplayBefore(beforeRootId: number, rootLimit?: number): Promise<ReplayEnvelope>;
 
   // === Lifecycle ===
   readonly connected: boolean;
@@ -860,7 +852,7 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
   publish(
     eventType: string,
     payload: unknown,
-    options?: { persist?: boolean }
+    options?: { idempotencyKey?: string }
   ): Promise<void>;
 
   sendMethodResult(
