@@ -1,8 +1,9 @@
 import { app, dialog } from "electron";
 import { z } from "zod";
 import * as fs from "fs";
+import * as os from "os";
 import * as tls from "tls";
-import { request as httpsRequest, type RequestOptions } from "https";
+import { request as httpsRequest, Agent as HttpsAgent, type RequestOptions } from "https";
 import { request as httpRequest } from "http";
 import { createHash } from "crypto";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
@@ -12,45 +13,49 @@ import {
   saveRemoteCredentials,
   clearRemoteCredentials,
 } from "../remoteCredentialStore.js";
-import { createServerClient } from "../serverClient.js";
+import { createServerClient, type ServerClient, type TlsPinningOptions } from "../serverClient.js";
+import { createPinnedHttpsAgent } from "../tlsPinning.js";
+import { discoverNatstackServers } from "@natstack/shared/tailscaleDiscovery";
+import { PAIRING_CODE_PATTERN, parseConnectServerUrl } from "@natstack/shared/connect";
 import { assertPresent } from "../../lintHelpers";
 
 export interface RemoteCredCurrent {
   configured: boolean;
   isActive: boolean;
+  bootstrap: "device" | "admin-token" | "hybrid" | "none";
   url?: string;
   caPath?: string;
   fingerprint?: string;
-  /** Redacted preview — the full token is never returned to the renderer. */
   tokenPreview?: string;
+  deviceId?: string;
 }
 
 export interface TestConnectionResult {
   ok: boolean;
-  /** Error category for UI rendering. Undefined on success. */
   error?: "invalid-url" | "unreachable" | "tls-mismatch" | "unauthorized" | "unknown";
-  /** Human-readable error detail. */
   message?: string;
-  /** Peer cert SHA-256 captured from the TLS handshake during the `/healthz`
-   *  probe, iff (a) URL is wss/https, and (b) the server is reachable. Used
-   *  for trust-on-first-use: the dialog displays this to the user for
-   *  confirmation when no fingerprint has been saved yet. */
   observedFingerprint?: string;
-  /** Server version from the `/healthz` body, when reachable. */
   serverVersion?: string;
+  serverId?: string;
+  workspaceId?: string;
+}
+
+export interface DeviceRecord {
+  deviceId: string;
+  label: string;
+  platform?: string;
+  createdAt: number;
+  lastUsedAt?: number;
+  revokedAt?: number;
 }
 
 const TEST_CONNECT_TIMEOUT_MS = 7_000;
 
-/** Compute SHA-256 fingerprint of a DER cert buffer as uppercase colon hex. */
 function sha256Fingerprint(der: Buffer): string {
   const hex = createHash("sha256").update(der).digest("hex").toUpperCase();
   return assertPresent(hex.match(/.{2}/g)).join(":");
 }
 
-/** TLS-connect to host:port and grab the peer leaf-cert fingerprint without
- *  CA validation. Used for "fetch fingerprint" UX and for trust-on-first-use
- *  inside `testConnection`. */
 async function probePeerFingerprint(host: string, port: number): Promise<string> {
   return new Promise((resolve, reject) => {
     const isIpLiteral = /^\d{1,3}(\.\d{1,3}){3}$|:/.test(host);
@@ -91,15 +96,13 @@ async function probePeerFingerprint(host: string, port: number): Promise<string>
   });
 }
 
-/** Issue a `GET /healthz` with the requested TLS options. Returns status,
- *  body (when available), and the peer fingerprint (when TLS). */
 async function healthProbe(
   parsed: URL,
-  tlsOpts: { caPath?: string; fingerprint?: string; allowUnpinned: boolean }
+  opts: { caPath?: string; mode: "ca-strict" | "tofu" }
 ): Promise<{ status: number; body: string; fingerprint?: string }> {
   const isTls = parsed.protocol === "https:";
   const port = parseInt(parsed.port, 10) || (isTls ? 443 : 80);
-  const opts: RequestOptions = {
+  const requestOptions: RequestOptions = {
     method: "GET",
     host: parsed.hostname,
     port,
@@ -110,21 +113,20 @@ async function healthProbe(
   let fingerprint: string | undefined;
 
   if (isTls) {
-    if (tlsOpts.caPath) {
-      (opts as RequestOptions & { ca?: Buffer }).ca = fs.readFileSync(tlsOpts.caPath);
-    } else if (tlsOpts.allowUnpinned) {
-      // Trust-on-first-use probe: no fingerprint known yet, so we bypass CA
-      // verification to get to `secureConnect` and grab the cert hash. The
-      // body is only consumed if the user subsequently confirms the hash.
-      (opts as RequestOptions & { rejectUnauthorized?: boolean }).rejectUnauthorized = false;
-      (opts as RequestOptions & { checkServerIdentity?: () => undefined }).checkServerIdentity =
-        () => undefined;
+    if (opts.caPath) {
+      (requestOptions as RequestOptions & { ca?: Buffer }).ca = fs.readFileSync(opts.caPath);
+    }
+    if (opts.mode === "tofu") {
+      (requestOptions as RequestOptions & { rejectUnauthorized?: boolean }).rejectUnauthorized =
+        false;
+      (
+        requestOptions as RequestOptions & { checkServerIdentity?: () => undefined }
+      ).checkServerIdentity = () => undefined;
     }
   }
 
   return new Promise((resolve, reject) => {
-    const req = (isTls ? httpsRequest : httpRequest)(opts, (res) => {
-      // Capture cert on TLS sockets BEFORE body is consumed.
+    const req = (isTls ? httpsRequest : httpRequest)(requestOptions, (res) => {
       if (isTls) {
         const sock = res.socket as tls.TLSSocket;
         const cert = sock.getPeerCertificate?.(false);
@@ -141,14 +143,150 @@ async function healthProbe(
       });
     });
     req.once("error", reject);
-    req.once("timeout", () => {
-      req.destroy(new Error("health probe timed out"));
-    });
+    req.once("timeout", () => req.destroy(new Error("health probe timed out")));
     req.end();
   });
 }
 
-export function createRemoteCredService(deps: { startupMode: StartupMode }): ServiceDefinition {
+export async function probeRemoteTrust(payload: {
+  url: string;
+  caPath?: string;
+  fingerprint?: string;
+}): Promise<TestConnectionResult> {
+  const parsedUrl = parseConnectServerUrl(payload.url);
+  if (parsedUrl.kind === "error") {
+    return { ok: false, error: "invalid-url", message: parsedUrl.reason };
+  }
+  const parsed = new URL(parsedUrl.url);
+  const isTls = parsed.protocol === "https:";
+
+  try {
+    const strict = await healthProbe(parsed, { caPath: payload.caPath, mode: "ca-strict" });
+    if (
+      isTls &&
+      payload.fingerprint &&
+      strict.fingerprint &&
+      strict.fingerprint !== payload.fingerprint
+    ) {
+      return {
+        ok: false,
+        error: "tls-mismatch",
+        message: `Fingerprint mismatch: expected ${payload.fingerprint}, got ${strict.fingerprint}`,
+        observedFingerprint: strict.fingerprint,
+      };
+    }
+    return healthProbeToResult(strict);
+  } catch (err) {
+    const msg = (err as Error).message ?? "unreachable";
+    const isCert = isTls && /certificate|TLS|unable to verify|self[- ]signed|cert/i.test(msg);
+    if (!isCert) {
+      return { ok: false, error: "unreachable", message: msg };
+    }
+    try {
+      const tofu = await healthProbe(parsed, { caPath: payload.caPath, mode: "tofu" });
+      if (payload.fingerprint) {
+        if (tofu.fingerprint === payload.fingerprint) return healthProbeToResult(tofu);
+        return {
+          ok: false,
+          error: "tls-mismatch",
+          message: `Fingerprint mismatch: expected ${payload.fingerprint}, got ${tofu.fingerprint ?? "unknown"}`,
+          observedFingerprint: tofu.fingerprint,
+        };
+      }
+      return {
+        ok: false,
+        error: "tls-mismatch",
+        message:
+          "No fingerprint configured — confirm the one returned in observedFingerprint before saving.",
+        observedFingerprint: tofu.fingerprint,
+      };
+    } catch (tofuErr) {
+      return {
+        ok: false,
+        error: "tls-mismatch",
+        message: (tofuErr as Error).message,
+      };
+    }
+  }
+}
+
+function healthProbeToResult(probe: { status: number; body: string; fingerprint?: string }) {
+  if (probe.status !== 200) {
+    return {
+      ok: false,
+      error: "unreachable" as const,
+      message: `/healthz returned ${probe.status}`,
+      observedFingerprint: probe.fingerprint,
+    };
+  }
+  let serverVersion: string | undefined;
+  let serverId: string | undefined;
+  let workspaceId: string | undefined;
+  try {
+    const body = JSON.parse(probe.body) as Record<string, unknown>;
+    if (typeof body["version"] === "string") serverVersion = body["version"];
+    if (typeof body["serverId"] === "string") serverId = body["serverId"];
+    if (typeof body["workspaceId"] === "string") workspaceId = body["workspaceId"];
+  } catch {
+    /* body not JSON — fine */
+  }
+  return {
+    ok: true,
+    observedFingerprint: probe.fingerprint,
+    serverVersion,
+    serverId,
+    workspaceId,
+  } satisfies TestConnectionResult;
+}
+
+async function postAuthJson(
+  remoteUrl: URL,
+  route: string,
+  bodyValue: unknown,
+  tlsOpts?: TlsPinningOptions
+): Promise<{ statusCode: number; statusMessage: string; body: string }> {
+  const requestUrl = new URL(route, remoteUrl);
+  const body = JSON.stringify(bodyValue);
+  const isHttps = requestUrl.protocol === "https:";
+  const agent =
+    isHttps && tlsOpts?.fingerprint
+      ? createPinnedHttpsAgent(tlsOpts.fingerprint)
+      : isHttps && tlsOpts?.caPath
+        ? new HttpsAgent({ ca: fs.readFileSync(tlsOpts.caPath) })
+        : undefined;
+
+  return new Promise((resolve, reject) => {
+    const req = (isHttps ? httpsRequest : httpRequest)(
+      requestUrl,
+      {
+        method: "POST",
+        agent,
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          resolve({
+            statusCode: res.statusCode ?? 0,
+            statusMessage: res.statusMessage ?? "",
+            body: Buffer.concat(chunks).toString("utf8"),
+          });
+        });
+      }
+    );
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
+export function createRemoteCredService(deps: {
+  startupMode: StartupMode;
+  getServerClient?: () => ServerClient | null;
+}): ServiceDefinition {
   return {
     name: "remoteCred",
     description: "Manage the Electron-side remote-server credential store",
@@ -175,8 +313,21 @@ export function createRemoteCredService(deps: { startupMode: StartupMode }): Ser
           }),
         ]),
       },
+      exchangePairingCode: {
+        args: z.tuple([
+          z.object({
+            url: z.string(),
+            code: z.string(),
+            caPath: z.string().optional(),
+            fingerprint: z.string().optional(),
+            label: z.string().optional(),
+          }),
+        ]),
+      },
+      discoverServers: { args: z.tuple([]) },
+      listDevices: { args: z.tuple([]) },
+      revokeDevice: { args: z.tuple([z.string()]) },
       fetchPeerFingerprint: { args: z.tuple([z.string()]) },
-      /** Native file-pick dialog for selecting a CA certificate PEM. */
       pickCaFile: { args: z.tuple([]) },
       clear: { args: z.tuple([]) },
       relaunch: { args: z.tuple([]) },
@@ -189,15 +340,23 @@ export function createRemoteCredService(deps: { startupMode: StartupMode }): Ser
             return {
               configured: false,
               isActive: deps.startupMode.kind === "remote",
+              bootstrap: "none",
             } satisfies RemoteCredCurrent;
           }
+          const adminToken =
+            creds.kind === "admin-token" || creds.kind === "hybrid" ? creds.adminToken : undefined;
           return {
             configured: true,
             isActive: deps.startupMode.kind === "remote",
+            bootstrap: creds.kind,
             url: creds.url,
             caPath: creds.caPath,
             fingerprint: creds.fingerprint,
-            tokenPreview: creds.token.slice(0, 4) + "…" + creds.token.slice(-4),
+            deviceId:
+              creds.kind === "device" || creds.kind === "hybrid" ? creds.deviceId : undefined,
+            tokenPreview: adminToken
+              ? adminToken.slice(0, 4) + "…" + adminToken.slice(-4)
+              : undefined,
           } satisfies RemoteCredCurrent;
         }
         case "save": {
@@ -207,18 +366,12 @@ export function createRemoteCredService(deps: { startupMode: StartupMode }): Ser
             caPath?: string;
             fingerprint?: string;
           };
-          let parsed: URL;
-          try {
-            parsed = new URL(payload.url);
-          } catch (err) {
-            throw new Error(`Invalid URL: ${(err as Error).message}`);
-          }
-          if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-            throw new Error("URL must be http(s)");
-          }
+          const parsed = parseConnectServerUrl(payload.url);
+          if (parsed.kind === "error") throw new Error(parsed.reason);
           saveRemoteCredentials({
-            url: payload.url,
-            token: payload.token,
+            kind: "admin-token",
+            url: parsed.url,
+            adminToken: payload.token,
             caPath: payload.caPath,
             fingerprint: payload.fingerprint,
           });
@@ -231,97 +384,17 @@ export function createRemoteCredService(deps: { startupMode: StartupMode }): Ser
             caPath?: string;
             fingerprint?: string;
           };
-          let parsed: URL;
-          try {
-            parsed = new URL(payload.url);
-          } catch (err) {
-            return {
-              ok: false,
-              error: "invalid-url",
-              message: (err as Error).message,
-            } satisfies TestConnectionResult;
-          }
-          if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-            return {
-              ok: false,
-              error: "invalid-url",
-              message: "URL must be http(s)",
-            } satisfies TestConnectionResult;
-          }
+          const trust = await probeRemoteTrust(payload);
+          if (!trust.ok) return trust;
+          const parsed = new URL(parseOkUrl(payload.url));
           const isTls = parsed.protocol === "https:";
-
-          // Step A — /healthz. Distinguishes "unreachable" / "tls-mismatch"
-          // / "reachable" cleanly. When no fingerprint is set, we still
-          // capture the peer fingerprint for trust-on-first-use.
-          let probe: Awaited<ReturnType<typeof healthProbe>>;
-          try {
-            probe = await healthProbe(parsed, {
-              caPath: payload.caPath,
-              fingerprint: payload.fingerprint,
-              allowUnpinned: !payload.fingerprint,
-            });
-          } catch (err) {
-            const msg = (err as Error).message ?? "unreachable";
-            // Heuristic: if the error mentions cert / TLS, it's TLS not net.
-            const isCert = /certificate|TLS|unable to verify|self[- ]signed/i.test(msg);
-            return {
-              ok: false,
-              error: isCert ? "tls-mismatch" : "unreachable",
-              message: msg,
-            } satisfies TestConnectionResult;
-          }
-
-          // If a fingerprint was provided, enforce it against the observed
-          // one — even if /healthz returned 200 (no pinning was done on the
-          // probe because we didn't pass the user's pin through).
-          if (
-            isTls &&
-            payload.fingerprint &&
-            probe.fingerprint &&
-            probe.fingerprint !== payload.fingerprint
-          ) {
-            return {
-              ok: false,
-              error: "tls-mismatch",
-              message: `Fingerprint mismatch: expected ${payload.fingerprint}, got ${probe.fingerprint}`,
-              observedFingerprint: probe.fingerprint,
-            } satisfies TestConnectionResult;
-          }
-
-          // If the probe succeeded but we don't have a stored fingerprint,
-          // surface the observed one so the UI can ask the user to trust it.
-          if (isTls && !payload.fingerprint && probe.fingerprint) {
-            return {
-              ok: false,
-              error: "tls-mismatch",
-              message:
-                "No fingerprint configured — confirm the one returned in observedFingerprint before saving.",
-              observedFingerprint: probe.fingerprint,
-            } satisfies TestConnectionResult;
-          }
-
-          if (probe.status !== 200) {
-            return {
-              ok: false,
-              error: "unreachable",
-              message: `/healthz returned ${probe.status}`,
-            } satisfies TestConnectionResult;
-          }
-
-          // Step B — throwaway auth attempt. The real test: do our URL +
-          // token actually authenticate, not just "is there an HTTP server
-          // there".
-          const wsProto = isTls ? "wss" : "ws";
           const gatewayPort = parseInt(parsed.port, 10) || (isTls ? 443 : 80);
-          const wsUrl = `${wsProto}://${parsed.hostname}:${gatewayPort}/rpc`;
+          const wsUrl = `${isTls ? "wss" : "ws"}://${parsed.hostname}:${gatewayPort}/rpc`;
           let client: Awaited<ReturnType<typeof createServerClient>> | null = null;
           try {
             client = await createServerClient(gatewayPort, payload.token, {
               wsUrl,
-              tls: {
-                caPath: payload.caPath,
-                fingerprint: payload.fingerprint ?? probe.fingerprint,
-              },
+              tls: { caPath: payload.caPath, fingerprint: payload.fingerprint },
               reconnect: false,
             });
           } catch (err) {
@@ -331,7 +404,7 @@ export function createRemoteCredService(deps: { startupMode: StartupMode }): Ser
               ok: false,
               error: isAuth ? "unauthorized" : "unknown",
               message: msg,
-              observedFingerprint: probe.fingerprint,
+              observedFingerprint: trust.observedFingerprint,
             } satisfies TestConnectionResult;
           } finally {
             try {
@@ -340,21 +413,100 @@ export function createRemoteCredService(deps: { startupMode: StartupMode }): Ser
               /* ignore */
             }
           }
-
-          // Extract server version from /healthz body when present.
-          let serverVersion: string | undefined;
-          try {
-            const parsedBody = JSON.parse(probe.body) as { version?: unknown };
-            if (typeof parsedBody.version === "string") serverVersion = parsedBody.version;
-          } catch {
-            /* body not JSON — fine */
+          return trust;
+        }
+        case "exchangePairingCode": {
+          const payload = args[0] as {
+            url: string;
+            code: string;
+            caPath?: string;
+            fingerprint?: string;
+            label?: string;
+          };
+          if (!PAIRING_CODE_PATTERN.test(payload.code)) {
+            return {
+              ok: false,
+              error: "invalid-url",
+              message: "Pairing code has an unexpected format",
+            } satisfies TestConnectionResult;
           }
-
-          return {
-            ok: true,
-            observedFingerprint: probe.fingerprint,
-            serverVersion,
-          } satisfies TestConnectionResult;
+          const trust = await probeRemoteTrust(payload);
+          if (!trust.ok) return trust;
+          const canonicalUrl = parseOkUrl(payload.url);
+          const response = await postAuthJson(
+            new URL(canonicalUrl),
+            "/_r/s/auth/complete-pairing",
+            {
+              code: payload.code,
+              label: payload.label?.trim() || `Electron on ${os.hostname()}`,
+              platform: "desktop",
+            },
+            { caPath: payload.caPath, fingerprint: payload.fingerprint }
+          );
+          const json = JSON.parse(response.body || "{}") as {
+            deviceId?: unknown;
+            refreshToken?: unknown;
+            error?: unknown;
+          };
+          if (
+            response.statusCode < 200 ||
+            response.statusCode >= 300 ||
+            typeof json.deviceId !== "string" ||
+            typeof json.refreshToken !== "string"
+          ) {
+            return {
+              ok: false,
+              error: response.statusCode === 401 ? "unauthorized" : "unknown",
+              message:
+                typeof json.error === "string"
+                  ? json.error
+                  : `Pairing failed (${response.statusCode}): ${response.statusMessage}`,
+            } satisfies TestConnectionResult;
+          }
+          saveRemoteCredentials({
+            kind: "device",
+            url: canonicalUrl,
+            deviceId: json.deviceId,
+            refreshToken: json.refreshToken,
+            caPath: payload.caPath,
+            fingerprint: payload.fingerprint,
+          });
+          app.relaunch();
+          app.exit(0);
+          return { ok: true };
+        }
+        case "discoverServers":
+          return discoverNatstackServers();
+        case "listDevices": {
+          if (deps.startupMode.kind !== "remote") return [];
+          const client = deps.getServerClient?.();
+          if (!client) return [];
+          const response = (await client.call("auth", "listDevices", [])) as {
+            devices?: DeviceRecord[];
+          };
+          return response.devices ?? [];
+        }
+        case "revokeDevice": {
+          const deviceId = args[0] as string;
+          if (deps.startupMode.kind !== "remote")
+            throw new Error("Not connected to a remote server");
+          const client = deps.getServerClient?.();
+          if (!client) throw new Error("Not connected to a server");
+          const response = (await client.call("auth", "revokeDevice", [deviceId])) as {
+            revoked: boolean;
+          };
+          const current = loadRemoteCredentials();
+          if (
+            response.revoked &&
+            current &&
+            (current.kind === "device" || current.kind === "hybrid") &&
+            current.deviceId === deviceId
+          ) {
+            clearRemoteCredentials();
+            app.relaunch();
+            app.exit(0);
+          }
+          return response;
         }
         case "fetchPeerFingerprint": {
           const urlStr = args[0] as string;
@@ -393,4 +545,10 @@ export function createRemoteCredService(deps: { startupMode: StartupMode }): Ser
       }
     },
   };
+}
+
+function parseOkUrl(raw: string): string {
+  const parsed = parseConnectServerUrl(raw);
+  if (parsed.kind === "error") throw new Error(parsed.reason);
+  return parsed.url;
 }

@@ -59,8 +59,9 @@ describe("remoteCredentialStore", () => {
 
   it("round-trips credentials through safeStorage", () => {
     storeMod.saveRemoteCredentials({
+      kind: "hybrid",
       url: "https://example:3000",
-      token: "secret-token",
+      adminToken: "secret-token",
       deviceId: "dev_123",
       refreshToken: "refresh-secret",
       caPath: "/ca.pem",
@@ -68,8 +69,9 @@ describe("remoteCredentialStore", () => {
     });
     const loaded = storeMod.loadRemoteCredentials();
     expect(loaded).toEqual({
+      kind: "hybrid",
       url: "https://example:3000",
-      token: "secret-token",
+      adminToken: "secret-token",
       deviceId: "dev_123",
       refreshToken: "refresh-secret",
       caPath: "/ca.pem",
@@ -77,22 +79,116 @@ describe("remoteCredentialStore", () => {
     });
   });
 
+  it.each([
+    {
+      name: "admin-token",
+      creds: {
+        kind: "admin-token" as const,
+        url: "https://admin.example",
+        adminToken: "admin-secret",
+      },
+    },
+    {
+      name: "device",
+      creds: {
+        kind: "device" as const,
+        url: "https://device.example",
+        deviceId: "dev_123",
+        refreshToken: "refresh-secret",
+      },
+    },
+    {
+      name: "hybrid",
+      creds: {
+        kind: "hybrid" as const,
+        url: "https://hybrid.example",
+        adminToken: "admin-secret",
+        deviceId: "dev_123",
+        refreshToken: "refresh-secret",
+      },
+    },
+  ])("round-trips v2 $name credentials", ({ creds }) => {
+    storeMod.saveRemoteCredentials(creds);
+    expect(storeMod.loadRemoteCredentials()).toEqual(creds);
+  });
+
+  it.each([
+    {
+      name: "admin-token-only",
+      raw: {
+        url: "https://old-admin.example",
+        token: legacyEncryptedValue("admin-secret"),
+        encrypted: true,
+      },
+      expected: {
+        kind: "admin-token",
+        url: "https://old-admin.example",
+        adminToken: "admin-secret",
+      },
+    },
+    {
+      name: "device-only",
+      raw: {
+        url: "https://old-device.example",
+        deviceId: "dev_old",
+        refreshToken: legacyEncryptedValue("refresh-secret"),
+        encrypted: true,
+      },
+      expected: {
+        kind: "device",
+        url: "https://old-device.example",
+        deviceId: "dev_old",
+        refreshToken: "refresh-secret",
+      },
+    },
+    {
+      name: "hybrid",
+      raw: {
+        url: "https://old-hybrid.example",
+        token: legacyEncryptedValue("admin-secret"),
+        deviceId: "dev_old",
+        refreshToken: legacyEncryptedValue("refresh-secret"),
+        encrypted: true,
+        caPath: "/ca.pem",
+        fingerprint: "AA:BB",
+      },
+      expected: {
+        kind: "hybrid",
+        url: "https://old-hybrid.example",
+        adminToken: "admin-secret",
+        deviceId: "dev_old",
+        refreshToken: "refresh-secret",
+        caPath: "/ca.pem",
+        fingerprint: "AA:BB",
+      },
+    },
+  ])("migrates v1 $name credentials on read", ({ raw, expected }) => {
+    writeRawStore(raw);
+    expect(storeMod.loadRemoteCredentials()).toEqual(expected);
+  });
+
+  it("returns null for corrupt v1 credentials", () => {
+    writeRawStore({ url: "https://old.example", encrypted: true });
+    expect(storeMod.loadRemoteCredentials()).toBeNull();
+  });
+
   it("falls back to plaintext storage when safeStorage is unavailable", () => {
     mockSafeStorage._available = false;
-    storeMod.saveRemoteCredentials({ url: "http://x:1", token: "plain" });
+    storeMod.saveRemoteCredentials({ kind: "admin-token", url: "http://x:1", adminToken: "plain" });
     const raw = fs.readFileSync(path.join(tmpDir, "remote-credentials.json"), "utf-8");
     const parsed = JSON.parse(raw);
-    expect(parsed.encrypted).toBe(false);
-    expect(parsed.token).toBe("plain");
+    expect(parsed.adminToken.encrypted).toBe(false);
+    expect(parsed.adminToken.value).toBe("plain");
 
     // Re-enable → refuses to decrypt a plaintext-marked token, but the
     // unencrypted branch handles it correctly.
     const loaded = storeMod.loadRemoteCredentials();
-    expect(loaded?.token).toBe("plain");
+    expect(loaded?.kind).toBe("admin-token");
+    expect(loaded?.kind === "admin-token" ? loaded.adminToken : undefined).toBe("plain");
   });
 
   it("returns null when safeStorage becomes unavailable mid-lifetime", () => {
-    storeMod.saveRemoteCredentials({ url: "https://x:1", token: "s" });
+    storeMod.saveRemoteCredentials({ kind: "admin-token", url: "https://x:1", adminToken: "s" });
     mockSafeStorage._available = false;
     const loaded = storeMod.loadRemoteCredentials();
     expect(loaded).toBeNull();
@@ -100,8 +196,17 @@ describe("remoteCredentialStore", () => {
 
   it("writes file mode 0o600", () => {
     if (process.platform === "win32") return; // no POSIX perms
-    storeMod.saveRemoteCredentials({ url: "https://x:1", token: "s" });
+    storeMod.saveRemoteCredentials({ kind: "admin-token", url: "https://x:1", adminToken: "s" });
     const stat = fs.statSync(path.join(tmpDir, "remote-credentials.json"));
+    expect(stat.mode & 0o777).toBe(0o600);
+  });
+
+  it("tightens an existing credential file back to mode 0o600", () => {
+    if (process.platform === "win32") return;
+    const p = path.join(tmpDir, "remote-credentials.json");
+    fs.writeFileSync(p, "{}", { mode: 0o644 });
+    storeMod.saveRemoteCredentials({ kind: "admin-token", url: "https://x:1", adminToken: "s" });
+    const stat = fs.statSync(p);
     expect(stat.mode & 0o777).toBe(0o600);
   });
 
@@ -110,13 +215,13 @@ describe("remoteCredentialStore", () => {
     // Nuke the dir that the beforeEach created, then save — this exercises
     // the ensureCentralConfigDir mkdir path.
     fs.rmSync(tmpDir, { recursive: true, force: true });
-    storeMod.saveRemoteCredentials({ url: "https://x:1", token: "s" });
+    storeMod.saveRemoteCredentials({ kind: "admin-token", url: "https://x:1", adminToken: "s" });
     const stat = fs.statSync(tmpDir);
     expect(stat.mode & 0o777).toBe(0o700);
   });
 
   it("clearRemoteCredentials removes the file", () => {
-    storeMod.saveRemoteCredentials({ url: "https://x:1", token: "s" });
+    storeMod.saveRemoteCredentials({ kind: "admin-token", url: "https://x:1", adminToken: "s" });
     storeMod.clearRemoteCredentials();
     expect(fs.existsSync(path.join(tmpDir, "remote-credentials.json"))).toBe(false);
   });
@@ -125,3 +230,14 @@ describe("remoteCredentialStore", () => {
     expect(storeMod.loadRemoteCredentials()).toBeNull();
   });
 });
+
+function legacyEncryptedValue(value: string): string {
+  return Buffer.from(value, "utf-8").toString("base64");
+}
+
+function writeRawStore(raw: unknown): void {
+  fs.mkdirSync(tmpDir, { recursive: true });
+  fs.writeFileSync(path.join(tmpDir, "remote-credentials.json"), JSON.stringify(raw), {
+    mode: 0o600,
+  });
+}

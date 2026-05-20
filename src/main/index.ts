@@ -14,10 +14,24 @@ process.env["ELECTRON_DISABLE_SECURITY_WARNINGS"] = "true";
 
 import { isDev, assertHttpUrl } from "./utils.js";
 import { createDevLogger } from "@natstack/dev-log";
+import {
+  enqueueFirstArgvLink,
+  getPendingConnectLink,
+  installEarlyOpenUrlBuffer,
+  onConnectLink,
+  registerProtocol,
+} from "./protocolHandler.js";
 
 const log = createDevLogger("App");
 const APP_NAME = "NatStack";
 app.setName(APP_NAME);
+if (!app.requestSingleInstanceLock()) {
+  app.exit(0);
+  process.exit(0);
+}
+registerProtocol();
+installEarlyOpenUrlBuffer();
+enqueueFirstArgvLink(process.argv);
 
 import { PanelRegistry } from "@natstack/shared/panelRegistry";
 import { PanelOrchestrator } from "./panelOrchestrator.js";
@@ -33,7 +47,12 @@ import {
 import { getAppRoot } from "./paths.js";
 import { loadCentralEnv, deleteWorkspaceDir } from "@natstack/shared/workspace/loader";
 import { CentralDataManager } from "@natstack/shared/centralData";
-import { resolveStartupMode, getRemoteUserDataDir, type StartupMode } from "./startupMode.js";
+import {
+  resolveStartupMode,
+  resolveLocalStartupMode,
+  getRemoteUserDataDir,
+  type StartupMode,
+} from "./startupMode.js";
 import { establishServerSession, type SessionConnection } from "./serverSession.js";
 import { handleExternalOpenPayload, type ExternalOpenPayload } from "./oauthLoopbackHandoff.js";
 import { CdpServer } from "./cdpServer.js";
@@ -120,6 +139,22 @@ if (startupMode.kind === "local") {
 }
 
 installRemoteTlsPinning(startupMode);
+
+function applyLocalStartupMode(reason: string): void {
+  const localMode = resolveLocalStartupMode(centralData);
+  startupMode = localMode;
+  workspaceId = localMode.workspaceId;
+  app.setPath("userData", path.join(localMode.wsDir, "state"));
+  log.warn(`[Workspace] Falling back to local mode: ${reason}`);
+}
+
+function shouldFallbackToLocalForRemoteCredential(error: unknown): boolean {
+  if (startupMode.kind !== "remote" || startupMode.bootstrap !== "device") {
+    return false;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return /Device credential expired or revoked|re-pair from the server/i.test(message);
+}
 
 let cdpServer: CdpServer | null = null;
 let panelRegistry: PanelRegistry | null = null;
@@ -757,6 +792,16 @@ function createWindow(): void {
 app.on("ready", async () => {
   performance.mark("startup:ready");
 
+  ipcMain.handle("natstack:drain-pair-link", () => getPendingConnectLink());
+  onConnectLink((link) => {
+    const wc = viewManager?.getShellWebContents();
+    if (wc && !wc.isDestroyed()) {
+      wc.send("natstack:incoming-pair-link", link);
+      mainWindow?.show();
+      mainWindow?.focus();
+    }
+  });
+
   // Default to browser CORS. For panel fetch/XHR responses, relax CORS only
   // after the trusted shell approval flow grants that panel access to the
   // target origin. Browser panels use a separate "persist:browser" partition
@@ -1020,41 +1065,59 @@ app.on("ready", async () => {
       remoteHost: startupMode.kind === "remote" ? startupMode.remoteUrl.hostname : undefined,
     });
 
-    // Phase 1: Establish server session (spawn or connect)
     let previousStatus: import("./serverClient.js").ConnectionStatus | null = null;
-    serverSession = await establishServerSession({
-      mode: startupMode,
-      centralData,
-      onServerEvent: handleServerEvent,
-      onIpcRequest: async (type, msg) => {
-        if (type === "credential-session-capture-request") {
-          return handleCredentialSessionCaptureRequest(msg);
-        }
-        return null;
-      },
-      onConnectionStatusChanged: (status) => {
-        eventService.emit("server-connection-changed", {
-          status,
-          isRemote: startupMode.kind === "remote",
-          remoteHost: startupMode.kind === "remote" ? startupMode.remoteUrl.hostname : undefined,
-        });
-        // On every transition into "connected" (including the very first one
-        // and any subsequent reconnect), replay shell subscriptions. The
-        // initial transition is a no-op because the shell hasn't subscribed
-        // to anything yet; subsequent reconnects actually matter because the
-        // server's EventService forgets subscriptions when the old WS closes.
-        if (status === "connected" && previousStatus !== "connected") {
-          void replayShellSubscriptionsToServer();
-        }
-        previousStatus = status;
-      },
-      onRecovery: (kind) => {
-        void recoverShellStateFromServer(kind).catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          log.warn(`[recovery] ${kind} failed: ${msg}`);
-        });
-      },
-    });
+    const establish = (mode: StartupMode) =>
+      establishServerSession({
+        mode,
+        centralData,
+        onServerEvent: handleServerEvent,
+        onIpcRequest: async (type, msg) => {
+          if (type === "credential-session-capture-request") {
+            return handleCredentialSessionCaptureRequest(msg);
+          }
+          return null;
+        },
+        onConnectionStatusChanged: (status) => {
+          eventService.emit("server-connection-changed", {
+            status,
+            isRemote: startupMode.kind === "remote",
+            remoteHost: startupMode.kind === "remote" ? startupMode.remoteUrl.hostname : undefined,
+          });
+          // On every transition into "connected" (including the very first one
+          // and any subsequent reconnect), replay shell subscriptions. The
+          // initial transition is a no-op because the shell hasn't subscribed
+          // to anything yet; subsequent reconnects actually matter because the
+          // server's EventService forgets subscriptions when the old WS closes.
+          if (status === "connected" && previousStatus !== "connected") {
+            void replayShellSubscriptionsToServer();
+          }
+          previousStatus = status;
+        },
+        onRecovery: (kind) => {
+          void recoverShellStateFromServer(kind).catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            log.warn(`[recovery] ${kind} failed: ${msg}`);
+          });
+        },
+      });
+
+    // Phase 1: Establish server session (spawn or connect)
+    try {
+      serverSession = await establish(startupMode);
+    } catch (error) {
+      if (!shouldFallbackToLocalForRemoteCredential(error)) {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      applyLocalStartupMode(message);
+      eventService.emit("server-connection-changed", {
+        status: "connecting",
+        isRemote: false,
+        remoteHost: undefined,
+      });
+      previousStatus = null;
+      serverSession = await establish(startupMode);
+    }
     serverClientRef = serverSession.serverClient;
     shellEventSubscriptions.add("external-open:open");
     shellEventSubscriptions.add("browser-panel:open");
@@ -1220,7 +1283,9 @@ app.on("ready", async () => {
     // ServerProcessManager.onRelaunch (wired in serverSession.ts).
     electronContainer.register(rpcService(createSettingsService({ serverClient: sc })));
     const { createRemoteCredService } = await import("./services/remoteCredService.js");
-    electronContainer.register(rpcService(createRemoteCredService({ startupMode })));
+    electronContainer.register(
+      rpcService(createRemoteCredService({ startupMode, getServerClient: () => serverClientRef }))
+    );
     electronContainer.register(rpcService(createAdblockService({ adBlockManager })));
     // Locally-hosted services
     electronContainer.register(

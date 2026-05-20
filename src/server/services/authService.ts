@@ -63,11 +63,29 @@ export function createAuthService(deps: {
     policy: { allowed: ["server", "shell"] },
     methods: {
       grantConnection: { args: z.tuple([z.string()]) },
+      listDevices: { args: z.tuple([]) },
+      revokeDevice: { args: z.tuple([z.string()]) },
     },
     handler: async (ctx, method, args) => {
-      if (method !== "grantConnection") throw new Error(`Unknown auth method: ${method}`);
-      if (!deps.connectionGrants) throw new Error("Connection grants are not configured");
-      return deps.connectionGrants.grant(args[0] as string, ctx.caller.runtime.id);
+      if (method === "grantConnection") {
+        if (!deps.connectionGrants) throw new Error("Connection grants are not configured");
+        return deps.connectionGrants.grant(args[0] as string, ctx.caller.runtime.id);
+      }
+      if (method === "listDevices") {
+        return {
+          serverId: deps.deviceAuthStore.getServerId(),
+          devices: deps.deviceAuthStore
+            .listDevices()
+            .map(({ refreshTokenHash: _secret, ...device }) => device),
+        };
+      }
+      if (method === "revokeDevice") {
+        const deviceId = args[0] as string;
+        const revoked = deps.deviceAuthStore.revokeDevice(deviceId);
+        deps.tokenManager.revokeToken(shellCallerId(deviceId));
+        return { revoked };
+      }
+      throw new Error(`Unknown auth method: ${method}`);
     },
   };
 

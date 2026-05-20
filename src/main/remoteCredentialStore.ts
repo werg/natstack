@@ -1,13 +1,8 @@
 /**
  * remoteCredentialStore — persist remote-server credentials via Electron safeStorage.
  *
- * The admin token is encrypted with the OS keychain (Keychain on macOS,
- * DPAPI on Windows, libsecret/kwallet on Linux). URL / CA path / fingerprint
- * are stored as plaintext JSON alongside the encrypted blob.
- *
- * Resolution order consumed by startupMode:
- *   1. NATSTACK_REMOTE_* env vars
- *   2. this store
+ * Secret fields are encrypted independently so the store can safely hold an
+ * admin token, a device refresh credential, or both.
  */
 
 import { safeStorage } from "electron";
@@ -21,105 +16,257 @@ const log = createDevLogger("RemoteCredStore");
 
 const STORE_FILENAME = "remote-credentials.json";
 
-interface StoredPlain {
-  url: string;
-  caPath?: string;
-  fingerprint?: string;
-  /** Base64 encoded ciphertext from safeStorage, or the raw admin token if safeStorage is unavailable. */
-  token: string;
-  /** Base64 encoded ciphertext from safeStorage, or the raw refresh token if safeStorage is unavailable. */
-  refreshToken?: string;
-  deviceId?: string;
-  /** Whether secret fields are encrypted (true) or stored plaintext (fallback only). */
+interface EncryptedField {
+  value: string;
   encrypted: boolean;
 }
 
-export interface RemoteCredentials {
-  url: string;
-  token: string;
-  deviceId?: string;
-  refreshToken?: string;
+type StoredV2 =
+  | {
+      schemaVersion: 2;
+      kind: "admin-token";
+      url: string;
+      caPath?: string;
+      fingerprint?: string;
+      adminToken: EncryptedField;
+    }
+  | {
+      schemaVersion: 2;
+      kind: "device";
+      url: string;
+      caPath?: string;
+      fingerprint?: string;
+      deviceId: string;
+      refreshToken: EncryptedField;
+    }
+  | {
+      schemaVersion: 2;
+      kind: "hybrid";
+      url: string;
+      caPath?: string;
+      fingerprint?: string;
+      adminToken: EncryptedField;
+      deviceId: string;
+      refreshToken: EncryptedField;
+    };
+
+interface StoredV1 {
+  url?: string;
   caPath?: string;
   fingerprint?: string;
+  token?: string;
+  refreshToken?: string;
+  deviceId?: string;
+  encrypted?: boolean;
 }
 
+export type LoadedCredentials =
+  | {
+      kind: "admin-token";
+      url: string;
+      adminToken: string;
+      caPath?: string;
+      fingerprint?: string;
+    }
+  | {
+      kind: "device";
+      url: string;
+      deviceId: string;
+      refreshToken: string;
+      caPath?: string;
+      fingerprint?: string;
+    }
+  | {
+      kind: "hybrid";
+      url: string;
+      adminToken: string;
+      deviceId: string;
+      refreshToken: string;
+      caPath?: string;
+      fingerprint?: string;
+    };
+
+export type RemoteCredentials = LoadedCredentials;
+
 function storePath(): string {
-  // Live in the central config dir (same place as oauth-tokens / secrets) so
-  // it is readable before Electron's userData path is finalized for the session.
   return path.join(getCentralConfigDirectory(), STORE_FILENAME);
 }
 
-export function loadRemoteCredentials(): RemoteCredentials | null {
+export function loadRemoteCredentials(): LoadedCredentials | null {
   const p = storePath();
   if (!fs.existsSync(p)) return null;
 
-  let stored: StoredPlain;
+  let raw: unknown;
   try {
-    stored = JSON.parse(fs.readFileSync(p, "utf-8")) as StoredPlain;
+    raw = JSON.parse(fs.readFileSync(p, "utf-8"));
   } catch (err) {
     log.warn(`Failed to parse ${p}: ${(err as Error).message}`);
     return null;
   }
 
-  let token = stored.token;
-  let refreshToken = stored.refreshToken;
-  if (stored.encrypted) {
-    if (!safeStorage.isEncryptionAvailable()) {
-      log.warn(`safeStorage unavailable — cannot decrypt token at ${p}`);
-      return null;
-    }
-    try {
-      token = safeStorage.decryptString(Buffer.from(stored.token, "base64"));
-      refreshToken = stored.refreshToken
-        ? safeStorage.decryptString(Buffer.from(stored.refreshToken, "base64"))
-        : undefined;
-    } catch (err) {
-      log.warn(`Failed to decrypt token: ${(err as Error).message}`);
-      return null;
-    }
+  const stored = raw as Partial<StoredV2> & StoredV1;
+  if (stored.schemaVersion === 2) {
+    return loadV2(stored as StoredV2, p);
   }
-
-  return {
-    url: stored.url,
-    token,
-    deviceId: stored.deviceId,
-    refreshToken,
-    caPath: stored.caPath,
-    fingerprint: stored.fingerprint,
-  };
+  return loadV1(stored, p);
 }
 
-export function saveRemoteCredentials(creds: RemoteCredentials): void {
+export function saveRemoteCredentials(creds: LoadedCredentials): void {
   const p = storePath();
   ensureCentralConfigDir();
 
-  const encrypted = safeStorage.isEncryptionAvailable();
-  const tokenField = encrypted
-    ? safeStorage.encryptString(creds.token).toString("base64")
-    : creds.token;
-  const refreshTokenField = creds.refreshToken
-    ? encrypted
-      ? safeStorage.encryptString(creds.refreshToken).toString("base64")
-      : creds.refreshToken
-    : undefined;
-
-  const payload: StoredPlain = {
+  const common = {
+    schemaVersion: 2 as const,
+    kind: creds.kind,
     url: creds.url,
-    token: tokenField,
-    deviceId: creds.deviceId,
-    refreshToken: refreshTokenField,
-    encrypted,
     caPath: creds.caPath,
     fingerprint: creds.fingerprint,
   };
+  let payload: StoredV2;
+  if (creds.kind === "admin-token") {
+    payload = {
+      ...common,
+      kind: "admin-token",
+      adminToken: encryptField(creds.adminToken),
+    };
+  } else if (creds.kind === "device") {
+    payload = {
+      ...common,
+      kind: "device",
+      deviceId: creds.deviceId,
+      refreshToken: encryptField(creds.refreshToken),
+    };
+  } else {
+    payload = {
+      ...common,
+      kind: "hybrid",
+      adminToken: encryptField(creds.adminToken),
+      deviceId: creds.deviceId,
+      refreshToken: encryptField(creds.refreshToken),
+    };
+  }
 
   fs.writeFileSync(p, JSON.stringify(payload, null, 2), { mode: 0o600 });
-  if (!encrypted) {
-    log.warn(`safeStorage unavailable — token written plaintext at ${p}`);
+  try {
+    fs.chmodSync(p, 0o600);
+  } catch (err) {
+    log.warn(`Failed to restrict permissions on ${p}: ${(err as Error).message}`);
   }
 }
 
 export function clearRemoteCredentials(): void {
   const p = storePath();
   if (fs.existsSync(p)) fs.unlinkSync(p);
+}
+
+function loadV2(stored: StoredV2, p: string): LoadedCredentials | null {
+  try {
+    if (stored.kind === "admin-token") {
+      const adminToken = decryptField(stored.adminToken, p);
+      if (!adminToken) return null;
+      return {
+        kind: "admin-token",
+        url: stored.url,
+        adminToken,
+        caPath: stored.caPath,
+        fingerprint: stored.fingerprint,
+      };
+    }
+    if (stored.kind === "device") {
+      const refreshToken = decryptField(stored.refreshToken, p);
+      if (!refreshToken || !stored.deviceId) return null;
+      return {
+        kind: "device",
+        url: stored.url,
+        deviceId: stored.deviceId,
+        refreshToken,
+        caPath: stored.caPath,
+        fingerprint: stored.fingerprint,
+      };
+    }
+    const adminToken = decryptField(stored.adminToken, p);
+    const refreshToken = decryptField(stored.refreshToken, p);
+    if (!adminToken || !refreshToken || !stored.deviceId) return null;
+    return {
+      kind: "hybrid",
+      url: stored.url,
+      adminToken,
+      deviceId: stored.deviceId,
+      refreshToken,
+      caPath: stored.caPath,
+      fingerprint: stored.fingerprint,
+    };
+  } catch (err) {
+    log.warn(`Failed to decrypt remote credentials: ${(err as Error).message}`);
+    return null;
+  }
+}
+
+function loadV1(stored: StoredV1, p: string): LoadedCredentials | null {
+  if (!stored.url) return null;
+  const adminToken = stored.token
+    ? decryptLegacyField(stored.token, stored.encrypted === true, p)
+    : undefined;
+  const refreshToken = stored.refreshToken
+    ? decryptLegacyField(stored.refreshToken, stored.encrypted === true, p)
+    : undefined;
+
+  if (adminToken && stored.deviceId && refreshToken) {
+    return {
+      kind: "hybrid",
+      url: stored.url,
+      adminToken,
+      deviceId: stored.deviceId,
+      refreshToken,
+      caPath: stored.caPath,
+      fingerprint: stored.fingerprint,
+    };
+  }
+  if (adminToken) {
+    return {
+      kind: "admin-token",
+      url: stored.url,
+      adminToken,
+      caPath: stored.caPath,
+      fingerprint: stored.fingerprint,
+    };
+  }
+  if (stored.deviceId && refreshToken) {
+    return {
+      kind: "device",
+      url: stored.url,
+      deviceId: stored.deviceId,
+      refreshToken,
+      caPath: stored.caPath,
+      fingerprint: stored.fingerprint,
+    };
+  }
+  return null;
+}
+
+function encryptField(value: string): EncryptedField {
+  const encrypted = safeStorage.isEncryptionAvailable();
+  if (!encrypted) {
+    log.warn(`safeStorage unavailable — secret written plaintext at ${storePath()}`);
+    return { value, encrypted: false };
+  }
+  return { value: safeStorage.encryptString(value).toString("base64"), encrypted: true };
+}
+
+function decryptField(field: EncryptedField, p: string): string | null {
+  if (!field.encrypted) return field.value;
+  if (!safeStorage.isEncryptionAvailable()) {
+    log.warn(`safeStorage unavailable — cannot decrypt secret at ${p}`);
+    return null;
+  }
+  return safeStorage.decryptString(Buffer.from(field.value, "base64"));
+}
+
+function decryptLegacyField(value: string, encrypted: boolean, p: string): string | undefined {
+  if (!encrypted) return value;
+  if (!safeStorage.isEncryptionAvailable()) {
+    log.warn(`safeStorage unavailable — cannot decrypt token at ${p}`);
+    return undefined;
+  }
+  return safeStorage.decryptString(Buffer.from(value, "base64"));
 }

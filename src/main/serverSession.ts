@@ -10,6 +10,7 @@ import { dialog, app } from "electron";
 import * as fs from "fs";
 import * as http from "http";
 import * as https from "https";
+import * as os from "os";
 import { createDevLogger } from "@natstack/dev-log";
 import { getAppRoot } from "./paths.js";
 import { ServerProcessManager, type ServerPorts } from "./serverProcessManager.js";
@@ -138,7 +139,7 @@ async function issueElectronDevice(
   const responseBody = await postAuthJson(
     remoteUrl,
     "/_r/s/auth/issue-device",
-    { label: "Electron remote", platform: "electron" },
+    { label: `Electron on ${os.hostname()}`, platform: "desktop" },
     adminToken,
     tls
   );
@@ -195,14 +196,27 @@ function persistRemoteShellCredential(
   credential: ShellCredentialResponse
 ): void {
   if (!credential.refreshToken) return;
-  saveRemoteCredentials({
-    url: mode.remoteUrl.href,
-    token: mode.adminToken,
-    deviceId: credential.deviceId,
-    refreshToken: credential.refreshToken,
-    caPath: mode.tls?.caPath,
-    fingerprint: mode.tls?.fingerprint,
-  });
+  if (mode.bootstrap === "device") {
+    saveRemoteCredentials({
+      kind: "device",
+      url: mode.remoteUrl.href,
+      deviceId: credential.deviceId,
+      refreshToken: credential.refreshToken,
+      caPath: mode.tls?.caPath,
+      fingerprint: mode.tls?.fingerprint,
+    });
+  } else if (mode.adminToken) {
+    saveRemoteCredentials({
+      kind: "hybrid",
+      url: mode.remoteUrl.href,
+      adminToken: mode.adminToken,
+      deviceId: credential.deviceId,
+      refreshToken: credential.refreshToken,
+      caPath: mode.tls?.caPath,
+      fingerprint: mode.tls?.fingerprint,
+    });
+    mode.bootstrap = "hybrid";
+  }
   mode.deviceId = credential.deviceId;
   mode.refreshToken = credential.refreshToken;
 }
@@ -219,10 +233,20 @@ async function acquireShellCredential(
         mode.tls
       );
     } catch (err) {
-      log.warn(`Stored device credential could not refresh shell token: ${(err as Error).message}`);
+      const message = (err as Error).message;
+      log.warn(`Stored device credential could not refresh shell token: ${message}`);
+      if (mode.bootstrap === "device") {
+        if (/Failed to refresh shell token \((401|403)\)/.test(message)) {
+          throw new Error("Device credential expired or revoked — re-pair from the server");
+        }
+        throw err;
+      }
     }
   }
 
+  if (!mode.adminToken) {
+    throw new Error("Remote admin token is unavailable — re-pair from the server");
+  }
   const credential = await issueElectronDevice(mode.remoteUrl, mode.adminToken, mode.tls);
   persistRemoteShellCredential(mode, credential);
   return credential;
@@ -253,7 +277,7 @@ export async function establishServerSession(args: {
 
   if (mode.kind === "remote") {
     // Remote mode: connect to existing server with automatic reconnection
-    const { remoteUrl, adminToken, tls } = mode;
+    const { remoteUrl, tls } = mode;
     externalHost = remoteUrl.hostname;
     protocol = remoteUrl.protocol === "https:" ? "https" : "http";
     const remotePort = parseInt(remoteUrl.port) || (protocol === "https" ? 443 : 80);
@@ -264,7 +288,7 @@ export async function establishServerSession(args: {
     ports = {
       workerdPort: remotePort,
       gatewayPort: remotePort,
-      adminToken,
+      adminToken: mode.adminToken ?? "",
       shellToken,
     };
 

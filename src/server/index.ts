@@ -19,6 +19,7 @@ import * as path from "path";
 import * as fs from "fs";
 import { createHash, randomBytes } from "crypto";
 import { canonicalEntityId, type EntityRecord } from "@natstack/shared/runtime/entitySpec";
+import { formatPairUrlLine } from "./pairingBanner.js";
 import { getPublicUrl } from "./publicUrl.js";
 import { assertPresent, deleteDynamicProperty } from "../lintHelpers";
 
@@ -1858,6 +1859,8 @@ async function main() {
     healthProvider: (detailed) => {
       const base: Record<string, unknown> = {
         ok: true,
+        product: "natstack",
+        discoveryVersion: 1,
         protocol: isTlsInitial ? "https" : "http",
         serverId: deviceAuthStore.getServerId(),
         serverBootId,
@@ -2142,6 +2145,11 @@ async function main() {
     const isTls = !!(hostConfig.tlsCert && hostConfig.tlsKey);
     const proto = isTls ? "https" : "http";
     const wsProto = isTls ? "wss" : "ws";
+    const explicitPublicUrl = args.publicUrl ?? process.env["NATSTACK_PUBLIC_URL"];
+    const pairingTargetUrl =
+      explicitPublicUrl ??
+      (publicUrlVerified ? detectedVpn?.url : undefined) ??
+      `${proto}://${hostConfig.externalHost}:${gatewayPort}`;
     console.log("natstack-server ready:");
     console.log(`  Workspace:   ${workspaceName}${workspaceIsEphemeral ? " (ephemeral dev)" : ""}`);
     console.log(`  Gateway:     ${proto}://${hostConfig.externalHost}:${gatewayPort}`);
@@ -2159,7 +2167,6 @@ async function main() {
       console.log(`  Persisted:   ${getAdminTokenPath()}`);
     }
     {
-      const explicitPublicUrl = args.publicUrl ?? process.env["NATSTACK_PUBLIC_URL"];
       const publicUrlForBanner = explicitPublicUrl ?? detectedVpn?.url;
       if (publicUrlForBanner) {
         const publicUrlLabel = explicitPublicUrl
@@ -2300,6 +2307,7 @@ async function main() {
     }
     if (startupPairingCode) {
       console.log(`  Pairing code: ${startupPairingCode}`);
+      console.log(formatPairUrlLine(pairingTargetUrl, startupPairingCode));
     }
 
     if (args.readyFile) {

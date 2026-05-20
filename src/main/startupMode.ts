@@ -7,12 +7,12 @@
 
 import * as path from "path";
 import * as fs from "fs";
-import { isIP } from "net";
 import { createDevLogger } from "@natstack/dev-log";
 import { isDev } from "./utils.js";
 import { getAppRoot, getCentralConfigDirectory } from "./paths.js";
 import { resolveWorkspaceName } from "@natstack/shared/workspace/loader";
 import { resolveLocalWorkspaceStartup } from "@natstack/shared/workspace/startup";
+import { isTrustedCleartextHost } from "@natstack/shared/connect";
 import type { CentralDataManager } from "@natstack/shared/centralData";
 import { loadRemoteCredentials } from "./remoteCredentialStore.js";
 import { assertPresent } from "../lintHelpers";
@@ -31,26 +31,14 @@ export type StartupMode =
   | {
       kind: "remote";
       remoteUrl: URL;
-      adminToken: string;
+      bootstrap: "admin-token" | "device" | "hybrid";
+      adminToken?: string;
       deviceId?: string;
       refreshToken?: string;
       tls?: RemoteTlsOptions;
     };
 
-function isLoopbackHostname(hostname: string): boolean {
-  if (hostname === "localhost") {
-    return true;
-  }
-
-  const normalized =
-    hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
-
-  if (normalized === "::1") {
-    return true;
-  }
-
-  return isIP(normalized) === 4 && normalized.startsWith("127.");
-}
+export type LocalStartupMode = Extract<StartupMode, { kind: "local" }>;
 
 export function isTrustworthyRemoteOrigin(remoteUrl: URL): boolean {
   if (remoteUrl.protocol === "https:") {
@@ -61,7 +49,7 @@ export function isTrustworthyRemoteOrigin(remoteUrl: URL): boolean {
     return false;
   }
 
-  return isLoopbackHostname(remoteUrl.hostname);
+  return isTrustedCleartextHost(remoteUrl.hostname);
 }
 
 /**
@@ -72,7 +60,8 @@ export function isTrustworthyRemoteOrigin(remoteUrl: URL): boolean {
  */
 export function parseRemoteStartupMode(): {
   remoteUrl: URL;
-  adminToken: string;
+  bootstrap: "admin-token" | "device" | "hybrid";
+  adminToken?: string;
   deviceId?: string;
   refreshToken?: string;
   tls?: RemoteTlsOptions;
@@ -81,11 +70,21 @@ export function parseRemoteStartupMode(): {
 
   // Resolution order: env var -> safeStorage-backed store.
   const rawUrl = process.env["NATSTACK_REMOTE_URL"] ?? stored?.url;
-  const adminToken = process.env["NATSTACK_REMOTE_TOKEN"] ?? stored?.token;
-  const deviceId = process.env["NATSTACK_REMOTE_DEVICE_ID"] ?? stored?.deviceId;
-  const refreshToken = process.env["NATSTACK_REMOTE_REFRESH_TOKEN"] ?? stored?.refreshToken;
+  const adminToken =
+    process.env["NATSTACK_REMOTE_TOKEN"] ??
+    (stored?.kind === "admin-token" || stored?.kind === "hybrid" ? stored.adminToken : undefined);
+  const deviceId =
+    process.env["NATSTACK_REMOTE_DEVICE_ID"] ??
+    (stored?.kind === "device" || stored?.kind === "hybrid" ? stored.deviceId : undefined);
+  const refreshToken =
+    process.env["NATSTACK_REMOTE_REFRESH_TOKEN"] ??
+    (stored?.kind === "device" || stored?.kind === "hybrid" ? stored.refreshToken : undefined);
 
-  if (!rawUrl || !adminToken) return null;
+  if (!rawUrl) return null;
+  const hasAdmin = !!adminToken;
+  const hasDevice = !!deviceId && !!refreshToken;
+  if (!hasAdmin && !hasDevice) return null;
+  const bootstrap = hasAdmin && hasDevice ? "hybrid" : hasAdmin ? "admin-token" : "device";
 
   let remoteUrl: URL;
   try {
@@ -102,8 +101,8 @@ export function parseRemoteStartupMode(): {
 
   if (!isTrustworthyRemoteOrigin(remoteUrl)) {
     throw new Error(
-      "Invalid NATSTACK_REMOTE_URL: remote panel mode requires HTTPS, or loopback HTTP " +
-        "(localhost, 127.0.0.1, ::1)"
+      "Invalid NATSTACK_REMOTE_URL: remote panel mode requires HTTPS, or trusted cleartext HTTP " +
+        "(loopback, private LAN, Tailscale, or local hostnames)"
     );
   }
 
@@ -112,7 +111,7 @@ export function parseRemoteStartupMode(): {
   const tls: RemoteTlsOptions | undefined =
     caPath || fingerprint ? { caPath, fingerprint: normalizeFingerprint(fingerprint) } : undefined;
 
-  return { remoteUrl, adminToken, deviceId, refreshToken, tls };
+  return { remoteUrl, bootstrap, adminToken, deviceId, refreshToken, tls };
 }
 
 /**
@@ -145,10 +144,11 @@ export function getRemoteUserDataDir(): string {
 export function resolveStartupMode(centralData: CentralDataManager): StartupMode {
   const remote = parseRemoteStartupMode();
   if (remote) {
-    log.info("[Workspace] Remote mode — workspace on server");
+    log.info(`[Workspace] Remote mode — workspace on server (${remote.bootstrap})`);
     return {
       kind: "remote",
       remoteUrl: remote.remoteUrl,
+      bootstrap: remote.bootstrap,
       adminToken: remote.adminToken,
       deviceId: remote.deviceId,
       refreshToken: remote.refreshToken,
@@ -156,6 +156,10 @@ export function resolveStartupMode(centralData: CentralDataManager): StartupMode
     };
   }
 
+  return resolveLocalStartupMode(centralData);
+}
+
+export function resolveLocalStartupMode(centralData: CentralDataManager): LocalStartupMode {
   // Local mode: resolve workspace from disk
   const wsName = resolveWorkspaceName();
   const appRoot = getAppRoot();
