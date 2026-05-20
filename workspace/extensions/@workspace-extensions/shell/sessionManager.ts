@@ -1,7 +1,8 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createRequire } from "node:module";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import type { OpenRequest, ScrollCursor, SessionInfo } from "./types.js";
+import nodePty from "node-pty";
+import { createDetectionState, scanChunk, type DetectionState } from "./portDetector.js";
+import type { OpenRequest, ScrollCursor, SessionInfo, SessionInfoEvent } from "./types.js";
 
 type PtyProcess = {
   pid: number;
@@ -20,6 +21,7 @@ interface Session {
   ownerKind: string;
   label: string;
   command: { argv: string[]; cwd: string };
+  gitBranch?: string;
   pid: number;
   cols: number;
   rows: number;
@@ -28,23 +30,45 @@ interface Session {
   alive: boolean;
   exit?: { code: number | null; signal?: string; at: number };
   pty?: PtyProcess;
-  child?: ChildProcessWithoutNullStreams;
   chunks: Array<{ start: number; end: number; bytes: Uint8Array }>;
   cursor: number;
+  scrollbackLimit: number;
+  bytesOut: number;
+  detection: DetectionState;
+  meta: Record<string, unknown>;
   listeners: Set<Listener>;
   exitWaiters: Array<(value: { exitCode: number | null; signal?: string }) => void>;
 }
 
-const SCROLLBACK_BYTES = 256 * 1024;
-
-function loadNodePty(): { spawn: (file: string, args: string[], opts: unknown) => PtyProcess } | null {
-  try {
-    const req = createRequire(import.meta.url);
-    return req("node-pty") as { spawn: (file: string, args: string[], opts: unknown) => PtyProcess };
-  } catch {
-    return null;
-  }
+export interface SessionManagerHooks {
+  onExit?(sessionId: string): void;
+  onDispose?(sessionId: string): void;
 }
+
+export interface SessionManagerOptions {
+  janitorIntervalMs?: number;
+  exitedSessionTtlMs?: number;
+  watchAllHeartbeatMs?: number;
+}
+
+const SCROLLBACK_BYTES = 256 * 1024;
+const MAX_SCROLLBACK_BYTES = 8 * 1024 * 1024;
+const META_BYTES = 16 * 1024;
+const EXITED_SESSION_TTL_MS = 60 * 60_000;
+const JANITOR_INTERVAL_MS = 30 * 60_000;
+const WATCH_ALL_HEARTBEAT_MS = 15_000;
+const CLEAR_SCREEN = new TextEncoder().encode("\x1b[2J\x1b[H");
+
+type Watcher = {
+  ownerCallerId: string;
+  controller: ReadableStreamDefaultController<Uint8Array>;
+  heartbeat?: ReturnType<typeof setTimeout>;
+};
+
+type PendingSnapshot = {
+  session: Session;
+  timer: ReturnType<typeof setTimeout>;
+};
 
 function cursorFrom(value: ScrollCursor | undefined): number | null {
   if (!value) return null;
@@ -54,7 +78,20 @@ function cursorFrom(value: ScrollCursor | undefined): number | null {
 
 export class SessionManager {
   private sessions = new Map<string, Session>();
-  private readonly pty = loadNodePty();
+  private allWatchers = new Set<Watcher>();
+  private lastSnapshotAt = new Map<string, number>();
+  private pendingSnapshots = new Map<string, PendingSnapshot>();
+  private readonly pty = nodePty as { spawn: (file: string, args: string[], opts: unknown) => PtyProcess };
+  private janitor: ReturnType<typeof setInterval>;
+  private exitedSessionTtlMs: number;
+  private watchAllHeartbeatMs: number;
+
+  constructor(private readonly hooks: SessionManagerHooks = {}, opts: SessionManagerOptions = {}) {
+    this.exitedSessionTtlMs = opts.exitedSessionTtlMs ?? EXITED_SESSION_TTL_MS;
+    this.watchAllHeartbeatMs = opts.watchAllHeartbeatMs ?? WATCH_ALL_HEARTBEAT_MS;
+    this.janitor = setInterval(() => this.sweepExitedSessions(), opts.janitorIntervalMs ?? JANITOR_INTERVAL_MS);
+    this.janitor.unref?.();
+  }
 
   get ptyAvailable(): boolean {
     return !!this.pty;
@@ -79,35 +116,28 @@ export class SessionManager {
       alive: true,
       chunks: [],
       cursor: 0,
+      scrollbackLimit: SCROLLBACK_BYTES,
+      bytesOut: 0,
+      detection: createDetectionState(),
+      meta: {},
       listeners: new Set(),
       exitWaiters: [],
     };
 
-    if (this.pty) {
-      const pty = this.pty.spawn(command, args, {
-        name: "xterm-256color",
-        cols: req.cols,
-        rows: req.rows,
-        cwd: req.cwd,
-        env: req.env,
-      });
-      session.pid = pty.pid;
-      session.pty = pty;
-      pty.onData((data) => this.record(session, Buffer.from(data)));
-      pty.onExit((event) => this.markExit(session, event.exitCode, event.signal ? `SIG${event.signal}` : undefined));
-    } else {
-      const child = spawn(command, args, {
-        cwd: req.cwd,
-        env: req.env,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      session.pid = child.pid ?? -1;
-      session.child = child;
-      child.stdout.on("data", (chunk: Buffer) => this.record(session, chunk));
-      child.stderr.on("data", (chunk: Buffer) => this.record(session, chunk));
-      child.on("close", (code, signal) => this.markExit(session, code, signal ?? undefined));
-    }
+    const pty = this.pty.spawn(command, args, {
+      name: "xterm-256color",
+      cols: req.cols,
+      rows: req.rows,
+      cwd: req.cwd,
+      env: req.env,
+    });
+    session.pid = pty.pid;
+    session.pty = pty;
+    pty.onData((data) => this.record(session, Buffer.from(data)));
+    pty.onExit((event) => this.markExit(session, event.exitCode, event.signal ? `SIG${event.signal}` : undefined));
     this.sessions.set(id, session);
+    this.emitToOwner(session.ownerCallerId, { type: "opened", sessionId: id, info: this.info(session) });
+    this.refreshGitBranch(session);
     return { sessionId: id };
   }
 
@@ -132,6 +162,7 @@ export class SessionManager {
       ownerCallerId: session.ownerCallerId,
       label: session.label,
       command: session.command,
+      ...(session.gitBranch ? { gitBranch: session.gitBranch } : {}),
       pid: session.pid,
       pgid: session.pid,
       cols: session.cols,
@@ -142,28 +173,79 @@ export class SessionManager {
       ...(session.exit ? { exit: session.exit } : {}),
       processTree: [],
       listeningPorts: [],
+      detectedPorts: session.detection.detectedPorts,
+      detectedUrls: session.detection.detectedUrls,
+      bytesOut: session.bytesOut,
+      meta: session.meta,
       detectedAgent: detectAgent(session.command.argv),
     };
   }
 
+  dispose(session: Session): void {
+    this.clearPendingSnapshot(session.id);
+    session.pty?.kill("SIGTERM");
+    for (const listener of session.listeners) listener(null);
+    session.listeners.clear();
+    for (const waiter of session.exitWaiters.splice(0)) {
+      waiter({ exitCode: session.exit?.code ?? null, signal: session.exit?.signal });
+    }
+    this.sessions.delete(session.id);
+    this.lastSnapshotAt.delete(session.id);
+    this.hooks.onDispose?.(session.id);
+    this.emitToOwner(session.ownerCallerId, { type: "disposed", sessionId: session.id });
+  }
+
+  ownerOf(sessionId: string): string | undefined {
+    return this.sessions.get(sessionId)?.ownerCallerId;
+  }
+
+  ownerFor(sessionId: string): { callerId: string; callerKind: string } | undefined {
+    const session = this.sessions.get(sessionId);
+    return session ? { callerId: session.ownerCallerId, callerKind: session.ownerKind } : undefined;
+  }
+
+  cwdOf(sessionId: string): string | undefined {
+    return this.sessions.get(sessionId)?.command.cwd;
+  }
+
+  setLabel(session: Session, label: string): void {
+    session.label = label.slice(0, 80);
+    this.emitSnapshot(session);
+  }
+
+  restart(session: Session, req: { env: NodeJS.ProcessEnv; cols?: number; rows?: number; command?: string; args?: string[] }): { sessionId: string } {
+    const [originalCommand, ...originalArgs] = session.command.argv;
+    const command = req.command ?? originalCommand;
+    const args = req.args ?? originalArgs;
+    return this.open({
+      command,
+      args,
+      cwd: session.command.cwd,
+      env: req.env,
+      cols: req.cols ?? session.cols,
+      rows: req.rows ?? session.rows,
+      label: session.label,
+    }, { callerId: session.ownerCallerId, callerKind: session.ownerKind });
+  }
+
   write(session: Session, data: string): void {
     session.pty?.write(data);
-    session.child?.stdin.write(data);
   }
 
   resize(session: Session, cols: number, rows: number): void {
     session.cols = cols;
     session.rows = rows;
     session.pty?.resize(cols, rows);
+    this.emitSnapshot(session);
   }
 
   kill(session: Session, signal: NodeJS.Signals = "SIGTERM"): void {
     session.pty?.kill(signal);
-    session.child?.kill(signal);
   }
 
-  getScrollback(session: Session, maxBytes = SCROLLBACK_BYTES): { text: string; cursor: ScrollCursor } {
-    const start = Math.max(0, session.cursor - maxBytes);
+  getScrollback(session: Session, maxBytes = session.scrollbackLimit): { text: string; cursor: ScrollCursor } {
+    const boundedMaxBytes = Math.min(MAX_SCROLLBACK_BYTES, Math.max(1024, maxBytes));
+    const start = Math.max(0, session.cursor - boundedMaxBytes);
     const parts = session.chunks
       .filter((chunk) => chunk.end > start)
       .map((chunk) => chunk.start < start ? chunk.bytes.subarray(start - chunk.start) : chunk.bytes);
@@ -171,6 +253,19 @@ export class SessionManager {
       text: Buffer.concat(parts.map((part) => Buffer.from(part))).toString("utf8"),
       cursor: String(session.cursor),
     };
+  }
+
+  setScrollbackLimit(session: Session, maxBytes: number): void {
+    session.scrollbackLimit = Math.min(MAX_SCROLLBACK_BYTES, Math.max(1024, Math.floor(maxBytes)));
+    this.trimScrollback(session);
+    this.emitSnapshot(session);
+  }
+
+  clearScrollback(session: Session): void {
+    session.chunks = [];
+    session.cursor = 0;
+    for (const listener of session.listeners) listener(CLEAR_SCREEN);
+    this.emitSnapshot(session);
   }
 
   attach(session: Session, opts?: { after?: ScrollCursor }): Response {
@@ -223,24 +318,195 @@ export class SessionManager {
     return new Response(stream, { headers: { "content-type": "application/x-ndjson" } });
   }
 
+  watchAllInfo(ownerCallerId: string): Response {
+    let watcher: Watcher | null = null;
+    const stream = new ReadableStream<Uint8Array>({
+      start: (controller) => {
+        watcher = {
+          ownerCallerId,
+          controller,
+        };
+        this.allWatchers.add(watcher);
+        this.sendToWatcher(watcher, { type: "snapshot-batch", sessions: this.list(ownerCallerId) });
+      },
+      cancel: () => {
+        if (!watcher) return;
+        if (watcher.heartbeat) clearTimeout(watcher.heartbeat);
+        this.allWatchers.delete(watcher);
+      },
+    });
+    return new Response(stream, { headers: { "content-type": "application/x-ndjson" } });
+  }
+
+  setMeta(session: Session, key: string, value: unknown): void {
+    const next = { ...session.meta, [key]: value };
+    this.assertMetaSize(next);
+    session.meta = next;
+    this.emitSnapshot(session);
+  }
+
+  getMeta(session: Session, key?: string): unknown {
+    return key ? session.meta[key] : session.meta;
+  }
+
+  deleteMeta(session: Session, key: string): void {
+    if (!(key in session.meta)) return;
+    const next = { ...session.meta };
+    delete next[key];
+    session.meta = next;
+    this.emitSnapshot(session);
+  }
+
+  setMetaById(sessionId: string, key: string, value: unknown): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw Object.assign(new Error("Unknown session"), { code: "ENOENT" });
+    this.setMeta(session, key, value);
+  }
+
+  getMetaById(sessionId: string, key?: string): unknown {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw Object.assign(new Error("Unknown session"), { code: "ENOENT" });
+    return this.getMeta(session, key);
+  }
+
+  deleteMetaById(sessionId: string, key: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw Object.assign(new Error("Unknown session"), { code: "ENOENT" });
+    this.deleteMeta(session, key);
+  }
+
+  setLabelById(sessionId: string, label: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw Object.assign(new Error("Unknown session"), { code: "ENOENT" });
+    this.setLabel(session, label);
+  }
+
+  writeById(sessionId: string, text: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw Object.assign(new Error("Unknown session"), { code: "ENOENT" });
+    this.write(session, text);
+  }
+
+  sweepExitedSessionsForTest(): void {
+    this.sweepExitedSessions();
+  }
+
+  private refreshGitBranch(session: Session): void {
+    void readGitBranch(session.command.cwd).then((branch) => {
+      if (!branch) return;
+      const current = this.sessions.get(session.id);
+      if (current !== session) return;
+      session.gitBranch = branch;
+      this.emitSnapshot(session);
+    });
+  }
+
   private record(session: Session, bytes: Uint8Array): void {
     const chunk = new Uint8Array(bytes);
     const start = session.cursor;
     session.cursor += chunk.byteLength;
+    session.bytesOut += chunk.byteLength;
     session.lastActivityAt = Date.now();
     session.chunks.push({ start, end: session.cursor, bytes: chunk });
-    while (session.chunks.length && session.chunks[0]!.end < session.cursor - SCROLLBACK_BYTES) {
-      session.chunks.shift();
-    }
+    this.trimScrollback(session);
+    scanChunk(session.detection, chunk);
     for (const listener of session.listeners) listener(chunk);
+    this.emitSnapshot(session);
   }
 
   private markExit(session: Session, code: number | null, signal?: string): void {
+    this.clearPendingSnapshot(session.id);
     session.alive = false;
     session.exit = { code, ...(signal ? { signal } : {}), at: Date.now() };
     for (const waiter of session.exitWaiters.splice(0)) waiter({ exitCode: code, signal });
     for (const listener of session.listeners) listener(null);
     session.listeners.clear();
+    this.hooks.onExit?.(session.id);
+    this.emitToOwner(session.ownerCallerId, { type: "exit", sessionId: session.id, exit: session.exit });
+    this.emitSnapshotNow(session);
+  }
+
+  private trimScrollback(session: Session): void {
+    const start = Math.max(0, session.cursor - session.scrollbackLimit);
+    while (session.chunks.length && session.chunks[0]!.end <= start) {
+      session.chunks.shift();
+    }
+    const first = session.chunks[0];
+    if (first && first.start < start) {
+      const offset = start - first.start;
+      session.chunks[0] = { start, end: first.end, bytes: first.bytes.subarray(offset) };
+    }
+  }
+
+  private emitSnapshot(session: Session): void {
+    const now = Date.now();
+    const last = this.lastSnapshotAt.get(session.id) ?? 0;
+    const elapsed = now - last;
+    if (elapsed >= 1000) {
+      this.emitSnapshotNow(session);
+      return;
+    }
+    if (this.pendingSnapshots.has(session.id)) return;
+    const timer = setTimeout(() => {
+      this.pendingSnapshots.delete(session.id);
+      if (this.sessions.has(session.id)) this.emitSnapshotNow(session);
+    }, 1000 - elapsed);
+    timer.unref?.();
+    this.pendingSnapshots.set(session.id, { session, timer });
+  }
+
+  private emitSnapshotNow(session: Session): void {
+    this.lastSnapshotAt.set(session.id, Date.now());
+    this.emitToOwner(session.ownerCallerId, { type: "snapshot", sessionId: session.id, info: this.info(session) });
+  }
+
+  private clearPendingSnapshot(sessionId: string): void {
+    const pending = this.pendingSnapshots.get(sessionId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingSnapshots.delete(sessionId);
+  }
+
+  private emitToOwner(ownerCallerId: string, event: SessionInfoEvent): void {
+    for (const watcher of this.allWatchers) {
+      if (watcher.ownerCallerId !== ownerCallerId) continue;
+      try {
+        this.sendToWatcher(watcher, event);
+      } catch {
+        if (watcher.heartbeat) clearTimeout(watcher.heartbeat);
+        this.allWatchers.delete(watcher);
+      }
+    }
+  }
+
+  private sendToWatcher(watcher: Watcher, event: SessionInfoEvent): void {
+    watcher.controller.enqueue(new TextEncoder().encode(`${JSON.stringify(event)}\n`));
+    if (watcher.heartbeat) clearTimeout(watcher.heartbeat);
+    watcher.heartbeat = setTimeout(() => {
+      try {
+        this.sendToWatcher(watcher, { type: "heartbeat", at: Date.now() });
+      } catch {
+        if (watcher.heartbeat) clearTimeout(watcher.heartbeat);
+        this.allWatchers.delete(watcher);
+      }
+    }, this.watchAllHeartbeatMs);
+    watcher.heartbeat.unref?.();
+  }
+
+  private sweepExitedSessions(): void {
+    const cutoff = Date.now() - this.exitedSessionTtlMs;
+    for (const session of this.sessions.values()) {
+      if (!session.alive && session.lastActivityAt < cutoff && session.listeners.size === 0) {
+        this.dispose(session);
+      }
+    }
+  }
+
+  private assertMetaSize(meta: Record<string, unknown>): void {
+    const bytes = Buffer.byteLength(JSON.stringify(meta), "utf8");
+    if (bytes > META_BYTES) {
+      throw Object.assign(new Error("Session metadata exceeds 16KB"), { code: "E2BIG" });
+    }
   }
 }
 
@@ -253,4 +519,38 @@ function detectAgent(argv: string[]): SessionInfo["detectedAgent"] {
   if (/\b(vitest|jest|pnpm test)\b/.test(joined)) return { kind: "test-runner", title: "Tests" };
   if (/\b(vite|next dev|tsx watch)\b/.test(joined)) return { kind: "dev-server", title: "Dev server" };
   return undefined;
+}
+
+function readGitBranch(cwd: string): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let stdout = "";
+    let child: ReturnType<typeof spawn> | undefined;
+    const finish = (branch?: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(branch);
+    };
+    const timer = setTimeout(() => {
+      child?.kill("SIGKILL");
+      finish();
+    }, 500);
+    try {
+      child = spawn("git", ["-C", cwd, "branch", "--show-current"], {
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      child.stdout?.on("data", (chunk: Buffer) => {
+        if (stdout.length < 1024) stdout += chunk.toString("utf8");
+      });
+      child.on("error", () => finish());
+      child.on("close", (code) => {
+        const branch = stdout.trim();
+        finish(code === 0 && branch ? branch.slice(0, 120) : undefined);
+      });
+    } catch {
+      // Branch context is a UI affordance only; session startup should not fail if git is unavailable.
+      finish();
+    }
+  });
 }

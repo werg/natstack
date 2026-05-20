@@ -34,6 +34,7 @@ export type * from "../core/types.js";
 export type { Runtime } from "../setup/createRuntime.js";
 export const entityId = config.entityId;
 export const id = config.entityId;
+export const slotId = config.slotId ?? config.entityId;
 const gatewayConfig = config.gatewayConfig;
 const gatewayFetch = createGatewayFetch(gatewayConfig);
 const gitConfig = config.gitConfig;

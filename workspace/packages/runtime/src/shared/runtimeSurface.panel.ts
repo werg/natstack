@@ -15,6 +15,7 @@ export const panelRuntimeSurface: RuntimeSurface = {
     getInstanceId: valueEntry(),
     id: valueEntry(),
     entityId: valueEntry("Panel entity id (panel:<historyEntryKey>) — same as `id`."),
+    slotId: valueEntry("Stable panel slot id for panel tree operations."),
     rpc: valueEntry(),
     parent: valueEntry(),
     getParent: valueEntry(),
@@ -159,6 +160,7 @@ export const panelRuntimeSurface: RuntimeSurface = {
     ]),
     extensions: namespaceEntry([
       "use",
+      "useWithStreams",
       "streamCall",
       "on",
       "list",

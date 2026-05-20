@@ -39,6 +39,7 @@ export interface SessionInfo {
   ownerCallerId: string;
   label: string;
   command: { argv: string[]; cwd: string };
+  gitBranch?: string;
   pid: number;
   pgid: number;
   cols: number;
@@ -49,5 +50,17 @@ export interface SessionInfo {
   exit?: { code: number | null; signal?: string; at: number };
   processTree: Array<{ pid: number; ppid: number; comm: string; args: string[] }>;
   listeningPorts: Array<{ proto: "tcp" | "tcp6" | "udp" | "udp6"; addr: string; port: number; pid: number }>;
+  detectedPorts: number[];
+  detectedUrls: string[];
+  bytesOut: number;
+  meta: Record<string, unknown>;
   detectedAgent?: { kind: "claude-code" | "codex" | "aider" | "opencode" | "test-runner" | "dev-server"; title?: string };
 }
+
+export type SessionInfoEvent =
+  | { type: "snapshot-batch"; sessions: SessionInfo[] }
+  | { type: "snapshot"; sessionId: string; info: SessionInfo }
+  | { type: "opened"; sessionId: string; info: SessionInfo }
+  | { type: "exit"; sessionId: string; exit: { code: number | null; signal?: string; at: number } }
+  | { type: "disposed"; sessionId: string }
+  | { type: "heartbeat"; at: number };

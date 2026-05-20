@@ -150,12 +150,10 @@ export function createHttpRpcBridge(config: HttpRpcBridgeConfig): RpcBridge & {
 
     /**
      * Streaming call over HTTP. Posts to `/rpc/stream` and returns the
-     * raw binary-framed response — `decodeFramedResponseToStreaming`
-     * (in `@natstack/shared/credentials/streamFraming`) decodes it
-     * into a `Response` with a real ReadableStream body. This is the
-     * only bridge that physically streams today; transport-based
-     * bridges (createRpcBridge) provide an API-compatible buffered
-     * wrapper.
+     * raw binary-framed response. The server accepts generic
+     * Response-returning service methods plus the credentials.proxyFetch
+     * fast path, and `decodeFramedResponseToStreaming` decodes the wire
+     * frames into a `Response` with a real ReadableStream body.
      */
     async streamCall(
       targetId: string,

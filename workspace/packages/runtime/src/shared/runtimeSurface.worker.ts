@@ -104,6 +104,7 @@ export const workerRuntimeSurface: RuntimeSurface = {
     ]),
     extensions: namespaceEntry([
       "use",
+      "useWithStreams",
       "streamCall",
       "on",
       "list",

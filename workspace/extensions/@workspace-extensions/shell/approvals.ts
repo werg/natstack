@@ -57,3 +57,20 @@ export function buildOpenApproval(req: {
     options,
   };
 }
+
+export function buildUrlOpenApproval(req: { url: string }): UserlandApprovalRequest {
+  const parsed = new URL(req.url);
+  return {
+    subject: {
+      id: `user.open-url.${digest([parsed.origin])}`,
+      label: parsed.origin,
+    },
+    title: "Open URL",
+    summary: req.url,
+    details: [
+      { label: "URL", value: req.url },
+      { label: "Origin", value: parsed.origin },
+    ],
+    options,
+  };
+}
