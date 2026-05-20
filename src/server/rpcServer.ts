@@ -357,6 +357,10 @@ export class RpcServer {
         extensionName: string,
         invocationToken: string
       ) => {
+        caller?: {
+          callerId: string;
+          callerKind: "panel" | "worker" | "do" | "shell" | "shell-remote" | "extension" | "http";
+        };
         chainCaller?: {
           callerId: string;
           callerKind: "panel" | "worker" | "do";
@@ -418,6 +422,21 @@ export class RpcServer {
     );
     if (invocation?.chainCaller) {
       ctx.chainCaller = invocation.chainCaller;
+    } else {
+      const caller = invocation?.caller;
+      if (
+        caller?.callerKind !== "panel" &&
+        caller?.callerKind !== "worker" &&
+        caller?.callerKind !== "do"
+      ) {
+        return ctx;
+      }
+      ctx.chainCaller = {
+        callerId: caller.callerId,
+        callerKind: caller.callerKind,
+        repoPath: "",
+        effectiveVersion: "",
+      };
     }
     return ctx;
   }

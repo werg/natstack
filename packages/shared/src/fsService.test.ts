@@ -172,13 +172,51 @@ describe("FsService", () => {
       const absolutePath = path.join(tmpRoot, "outside-context.txt");
       writeFileSync(absolutePath, "extension-visible");
 
-      await expect(
-        service.handleCall(ctx, "readFile", [absolutePath, "utf8"]),
-      ).resolves.toBe("extension-visible");
+      await expect(service.handleCall(ctx, "readFile", [absolutePath, "utf8"])).resolves.toBe(
+        "extension-visible"
+      );
       await service.handleCall(ctx, "writeFile", [absolutePath, "updated"]);
+      await expect(service.handleCall(ctx, "readFile", [absolutePath, "utf8"])).resolves.toBe(
+        "updated"
+      );
+    });
+
+    it("binds extension fs calls to the chained caller context when present", async () => {
+      const ctx = makeExtensionCtx("@workspace-extensions/file-tools");
+      ctx.chainCaller = {
+        callerId: "do:workers/agent-worker:AiChatWorker:agent-1",
+        callerKind: "do",
+        repoPath: "workers/agent-worker",
+        effectiveVersion: "ev-1",
+      };
+      registerContext(ctx.chainCaller.callerId, "do", "ctx-agent");
+      mkdirSync(path.join(tmpRoot, "ctx-agent", "skills", "system-testing"), { recursive: true });
+      writeFileSync(
+        path.join(tmpRoot, "ctx-agent", "skills", "system-testing", "SKILL.md"),
+        "skill"
+      );
+
       await expect(
-        service.handleCall(ctx, "readFile", [absolutePath, "utf8"]),
-      ).resolves.toBe("updated");
+        service.handleCall(ctx, "readFile", ["/skills/system-testing/SKILL.md", "utf8"])
+      ).resolves.toBe("skill");
+      await expect(
+        service.handleCall(ctx, "readFile", [path.join(tmpRoot, "outside-context.txt"), "utf8"])
+      ).rejects.toThrow(/ENOENT|no such file|Path traversal/i);
+    });
+
+    it("returns the physical context root from realpath for chained extension callers", async () => {
+      const ctx = makeExtensionCtx("@workspace-extensions/file-tools");
+      ctx.chainCaller = {
+        callerId: "do:workers/agent-worker:AiChatWorker:agent-2",
+        callerKind: "do",
+        repoPath: "workers/agent-worker",
+        effectiveVersion: "ev-1",
+      };
+      registerContext(ctx.chainCaller.callerId, "do", "ctx-realpath");
+
+      await expect(service.handleCall(ctx, "realpath", ["/"])).resolves.toBe(
+        path.join(tmpRoot, "ctx-realpath")
+      );
     });
   });
 

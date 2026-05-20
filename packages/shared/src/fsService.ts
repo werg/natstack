@@ -35,6 +35,7 @@ interface FsCallScope {
   root: string;
   panelId: string;
   unrestricted: boolean;
+  exposeHostPaths: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +149,7 @@ export class FsService {
 
   constructor(
     contextFolderManager: ContextFolderManager,
-    entityCache: EntityCache = new EntityCache(),
+    entityCache: EntityCache = new EntityCache()
   ) {
     this.contextFolderManager = contextFolderManager;
     this.entityCache = entityCache;
@@ -179,13 +180,12 @@ export class FsService {
 
   /**
    * Resolve the context root path for a service call.
-   * - panel callers: look up contextId from panelContextMap
+   * - panel/worker/DO/harness callers: look up contextId from EntityCache
+   * - extension callers inside an invocation: use the chained caller context
+   * - extension callers outside an invocation: unrestricted host fs
    * - server callers: contextId is the first arg (shifted from args array)
    */
-  private async resolveContextRoot(
-    ctx: ServiceContext,
-    args: unknown[],
-  ): Promise<FsCallScope> {
+  private async resolveContextRoot(ctx: ServiceContext, args: unknown[]): Promise<FsCallScope> {
     let contextId: string;
     let panelId: string;
 
@@ -202,10 +202,23 @@ export class FsService {
       }
       contextId = cid;
     } else if (ctx.caller.runtime.kind === "extension") {
+      if (ctx.chainCaller) {
+        panelId = `extension:${ctx.caller.runtime.id}:chain:${ctx.chainCaller.callerId}`;
+        const cid = this.entityCache.resolveContext(ctx.chainCaller.callerId);
+        if (!cid) {
+          throw new Error(
+            `No context registered for ${ctx.chainCaller.callerKind} ${ctx.chainCaller.callerId}`
+          );
+        }
+        contextId = cid;
+        const root = await this.contextFolderManager.ensureContextFolder(contextId);
+        return { root, panelId, unrestricted: false, exposeHostPaths: true };
+      }
       return {
         root: "",
         panelId: `extension:${ctx.caller.runtime.id}`,
         unrestricted: true,
+        exposeHostPaths: true,
       };
     } else {
       // Server-originated calls pass contextId as first arg
@@ -217,7 +230,7 @@ export class FsService {
     }
 
     const root = await this.contextFolderManager.ensureContextFolder(contextId);
-    return { root, panelId, unrestricted: false };
+    return { root, panelId, unrestricted: false, exposeHostPaths: false };
   }
 
   // =========================================================================
@@ -254,11 +267,7 @@ export class FsService {
   // Main dispatch handler
   // =========================================================================
 
-  async handleCall(
-    ctx: ServiceContext,
-    method: string,
-    rawArgs: unknown[],
-  ): Promise<unknown> {
+  async handleCall(ctx: ServiceContext, method: string, rawArgs: unknown[]): Promise<unknown> {
     // Clone args so shift() in resolveContextRoot doesn't mutate the original
     const args = [...rawArgs];
     const scope = await this.resolveContextRoot(ctx, args);
@@ -278,18 +287,14 @@ export class FsService {
 
       case "writeFile": {
         const p = await resolveFsPath(scope, args[0] as string);
-        const data = isBinaryEnvelope(args[1])
-          ? decodeBinary(args[1])
-          : (args[1] as string);
+        const data = isBinaryEnvelope(args[1]) ? decodeBinary(args[1]) : (args[1] as string);
         await fs.writeFile(p, data);
         return;
       }
 
       case "appendFile": {
         const p = await resolveFsPath(scope, args[0] as string);
-        const data = isBinaryEnvelope(args[1])
-          ? decodeBinary(args[1])
-          : (args[1] as string);
+        const data = isBinaryEnvelope(args[1]) ? decodeBinary(args[1]) : (args[1] as string);
         await fs.appendFile(p, data);
         return;
       }
@@ -377,7 +382,7 @@ export class FsService {
       case "realpath": {
         const p = await resolveFsPath(scope, args[0] as string);
         const real = await fs.realpath(p);
-        if (scope.unrestricted) return real;
+        if (scope.unrestricted || scope.exposeHostPaths) return real;
         // Return relative to root (panel sees paths relative to context root)
         if (!real.startsWith(root + path.sep) && real !== root) {
           throw new Error("Realpath escapes sandbox");
@@ -421,10 +426,11 @@ export class FsService {
         // Resolve the target relative to the link's parent directory
         const linkDir = path.dirname(linkPath);
         const resolvedTarget = path.resolve(linkDir, target);
-        if (!scope.unrestricted && (
+        if (
+          !scope.unrestricted &&
           !resolvedTarget.startsWith(root + path.sep) &&
           resolvedTarget !== root
-        )) {
+        ) {
           throw new Error("Symlink target escapes sandbox");
         }
         await fs.symlink(target, linkPath);
@@ -480,7 +486,7 @@ export class FsService {
         const data = isBinaryEnvelope(args[1])
           ? decodeBinary(args[1])
           : Buffer.from(args[1] as string);
-        const position = args[2] as number | null ?? null;
+        const position = (args[2] as number | null) ?? null;
         const result = await tracked.handle.write(data, 0, data.length, position);
         return { bytesWritten: result.bytesWritten };
       }
@@ -542,7 +548,7 @@ export function handleFsCall(
   fsService: FsService,
   ctx: ServiceContext,
   method: string,
-  args: unknown[],
+  args: unknown[]
 ): Promise<unknown> {
   return fsService.handleCall(ctx, method, args);
 }
