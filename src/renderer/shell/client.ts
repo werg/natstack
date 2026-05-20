@@ -11,8 +11,13 @@ type ShellTransportBridge = {
   send: (targetId: string, message: unknown) => Promise<void>;
   onMessage: (handler: (fromId: string, message: unknown) => void) => () => void;
 };
+type IncomingPairLinkBridge = {
+  getPending: () => Promise<{ url: string; code: string } | null>;
+  onLink: (handler: (link: { url: string; code: string }) => void) => () => void;
+};
 const g = globalThis as unknown as {
   __natstackTransport?: ShellTransportBridge;
+  __natstackIncomingPairLink?: IncomingPairLinkBridge;
 };
 if (!g.__natstackTransport) throw new Error("Shell transport not available");
 const transport: RpcTransport = {
@@ -254,6 +259,11 @@ export const nativeShellOverlay = {
     return bridge.onEvent(handler);
   },
 };
+export const incomingPairLink = {
+  getPending: () => g.__natstackIncomingPairLink?.getPending() ?? Promise.resolve(null),
+  onLink: (handler: (link: { url: string; code: string }) => void) =>
+    g.__natstackIncomingPairLink?.onLink(handler) ?? (() => {}),
+};
 // =============================================================================
 // Menu Service
 // =============================================================================
@@ -300,10 +310,12 @@ export const settings = {
 export interface RemoteCredCurrent {
   configured: boolean;
   isActive: boolean;
+  bootstrap: "device" | "admin-token" | "hybrid" | "none";
   url?: string;
   caPath?: string;
   fingerprint?: string;
   tokenPreview?: string;
+  deviceId?: string;
 }
 export interface RemoteCredSaveArgs {
   url: string;
@@ -318,6 +330,28 @@ export interface TestConnectionResult {
   observedFingerprint?: string;
   serverVersion?: string;
 }
+export interface ExchangePairingCodeArgs {
+  url: string;
+  code: string;
+  caPath?: string;
+  fingerprint?: string;
+  label?: string;
+}
+export interface DeviceRecord {
+  deviceId: string;
+  label: string;
+  platform?: string;
+  createdAt: number;
+  lastUsedAt?: number;
+  revokedAt?: number;
+}
+export interface DiscoveredServer {
+  url: string;
+  hostname: string;
+  serverId?: string;
+  workspaceId?: string;
+  discoveryVersion: number;
+}
 export const remoteCred = {
   getCurrent: () => rpc.call<RemoteCredCurrent>("main", "remoteCred.getCurrent", []),
   save: (args: RemoteCredSaveArgs) =>
@@ -326,6 +360,12 @@ export const remoteCred = {
     }>("main", "remoteCred.save", [args]),
   testConnection: (args: RemoteCredSaveArgs) =>
     rpc.call<TestConnectionResult>("main", "remoteCred.testConnection", [args]),
+  exchangePairingCode: (args: ExchangePairingCodeArgs) =>
+    rpc.call<TestConnectionResult>("main", "remoteCred.exchangePairingCode", [args]),
+  discoverServers: () => rpc.call<DiscoveredServer[]>("main", "remoteCred.discoverServers", []),
+  listDevices: () => rpc.call<DeviceRecord[]>("main", "remoteCred.listDevices", []),
+  revokeDevice: (deviceId: string) =>
+    rpc.call<{ revoked: boolean }>("main", "remoteCred.revokeDevice", [deviceId]),
   fetchPeerFingerprint: (url: string) =>
     rpc.call<string>("main", "remoteCred.fetchPeerFingerprint", [url]),
   pickCaFile: () => rpc.call<string | null>("main", "remoteCred.pickCaFile", []),
