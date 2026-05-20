@@ -843,8 +843,21 @@ export function PanelStack({
       );
     }
 
-    // Panel is ready - WebContentsView is managed by main process
-    return <Box style={{ flex: 1, position: "relative", height: "100%" }} />;
+    // Panel is ready - WebContentsView is managed by main process. If Electron
+    // routes a native click to this shell placeholder instead of the child view,
+    // forward it into the visible WebContentsView so embedded apps remain
+    // focusable.
+    return (
+      <Box
+        onPointerDown={(event) => {
+          void view.forwardMouseClick(visiblePanel.id, {
+            x: Math.round(event.clientX),
+            y: Math.round(event.clientY),
+          });
+        }}
+        style={{ flex: 1, position: "relative", height: "100%" }}
+      />
+    );
   };
 
   return (

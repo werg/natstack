@@ -12,6 +12,7 @@ import * as os from "os";
 import * as crypto from "crypto";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
+import { execFileSync } from "child_process";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -47,7 +48,16 @@ interface ManagedWorkspaceInfo {
   env: Record<string, string>;
 }
 
-const SOURCE_DIRS = ["panels", "packages", "agents", "workers", "skills", "about"];
+const SOURCE_DIRS = [
+  "meta",
+  "panels",
+  "packages",
+  "agents",
+  "workers",
+  "skills",
+  "extensions",
+  "about",
+];
 const STATE_DIRS = [".cache", ".databases", ".contexts"];
 
 function getTestEnv(testRoot: string): Record<string, string> {
@@ -81,13 +91,15 @@ function getWorkspaceInfo(workspaceDir: string): ManagedWorkspaceInfo {
 
   switch (process.platform) {
     case "win32":
-      testRoot = path.dirname(path.dirname(path.dirname(workspaceDir)));
+      testRoot = path.dirname(path.dirname(path.dirname(path.dirname(workspaceDir))));
       break;
     case "darwin":
-      testRoot = path.dirname(path.dirname(path.dirname(path.dirname(path.dirname(workspaceDir)))));
+      testRoot = path.dirname(
+        path.dirname(path.dirname(path.dirname(path.dirname(path.dirname(workspaceDir)))))
+      );
       break;
     default:
-      testRoot = path.dirname(path.dirname(path.dirname(workspaceDir)));
+      testRoot = path.dirname(path.dirname(path.dirname(path.dirname(workspaceDir))));
       break;
   }
 
@@ -204,7 +216,7 @@ export async function launchTestApp(options: LaunchOptions = {}): Promise<TestAp
   });
 
   // Get the first window
-  const window = await app.firstWindow();
+  const window = await app.firstWindow({ timeout: launchTimeout });
 
   // Wait for the app to initialize
   await window.waitForLoadState("domcontentloaded");
@@ -219,6 +231,8 @@ export async function launchTestApp(options: LaunchOptions = {}): Promise<TestAp
 
   // Cleanup function with timeout to prevent hanging
   const cleanup = async () => {
+    const appProcess = app.process();
+    const mainPid = appProcess.pid;
     // Use a timeout to prevent hanging on app.close()
     const closeWithTimeout = async (timeoutMs: number): Promise<void> => {
       return Promise.race([
@@ -234,14 +248,16 @@ export async function launchTestApp(options: LaunchOptions = {}): Promise<TestAp
       await closeWithTimeout(5000);
     } catch (error) {
       console.warn("[TestSetup] Graceful close failed, force killing:", error);
-      // Force kill the process if graceful close fails
+      // Force kill the whole process tree if graceful close fails. Killing only the Electron
+      // parent can orphan workerd/extension children under the user session.
       try {
-        const pid = await app.evaluate(() => process.pid);
-        process.kill(pid, "SIGKILL");
+        killProcessTree(mainPid, "SIGKILL");
       } catch {
         // Process may already be dead
       }
     }
+
+    cleanupKnownChildProcesses(mainPid);
 
     if (ownsWorkspace) {
       try {
@@ -253,6 +269,85 @@ export async function launchTestApp(options: LaunchOptions = {}): Promise<TestAp
   };
 
   return { app, window, workspacePath, cleanup };
+}
+
+function cleanupKnownChildProcesses(mainPid: number | undefined): void {
+  if (!mainPid) return;
+  if (process.platform === "win32") return;
+  const workerdConfigDir = `/tmp/natstack-workerd-${mainPid}/config.capnp`;
+  for (const pid of findPidsByCommand(workerdConfigDir)) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // already gone
+    }
+  }
+}
+
+function killProcessTree(pid: number | undefined, signal: NodeJS.Signals): void {
+  if (!pid) return;
+  if (process.platform === "win32") {
+    try {
+      execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
+    } catch {
+      // already gone
+    }
+    return;
+  }
+  for (const childPid of collectChildPids(pid)) {
+    try {
+      process.kill(childPid, signal);
+    } catch {
+      // already gone
+    }
+  }
+  try {
+    process.kill(pid, signal);
+  } catch {
+    // already gone
+  }
+}
+
+function collectChildPids(rootPid: number): number[] {
+  const result: number[] = [];
+  const stack = [rootPid];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    let stdout = "";
+    try {
+      stdout = execFileSync("ps", ["-o", "pid=", "--ppid", String(current)], {
+        encoding: "utf8",
+      });
+    } catch {
+      continue;
+    }
+    for (const token of stdout.trim().split(/\s+/)) {
+      if (!token) continue;
+      const childPid = Number(token);
+      if (!Number.isInteger(childPid) || childPid <= 0) continue;
+      result.unshift(childPid);
+      stack.push(childPid);
+    }
+  }
+  return result;
+}
+
+function findPidsByCommand(needle: string): number[] {
+  let stdout = "";
+  try {
+    stdout = execFileSync("ps", ["-eo", "pid=,args="], { encoding: "utf8" });
+  } catch {
+    return [];
+  }
+  const pids: number[] = [];
+  for (const line of stdout.split("\n")) {
+    if (!line.includes(needle)) continue;
+    const match = line.match(/^\s*(\d+)\s+/);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    if (Number.isInteger(pid) && pid > 0) pids.push(pid);
+  }
+  return pids;
 }
 
 /**
@@ -268,9 +363,7 @@ export async function waitForPanel(
   timeout = 10000
 ): Promise<void> {
   const selector =
-    typeof panelIdPattern === "string"
-      ? `[data-panel-id="${panelIdPattern}"]`
-      : `[data-panel-id]`;
+    typeof panelIdPattern === "string" ? `[data-panel-id="${panelIdPattern}"]` : `[data-panel-id]`;
 
   await window.waitForSelector(selector, { timeout });
 
@@ -313,6 +406,23 @@ export async function getFocusedPanelId(app: ElectronApplication): Promise<strin
 }
 
 /**
+ * Get the panel whose WebContents currently has Electron focus.
+ */
+export async function getFocusedPanelWebContentsId(
+  app: ElectronApplication
+): Promise<string | null> {
+  return app.evaluate(() => {
+    const testApi = (
+      globalThis as { __testApi?: { getFocusedPanelWebContentsId: () => string | null } }
+    ).__testApi;
+    if (!testApi) {
+      throw new Error("Test API not available. Make sure NATSTACK_TEST_MODE=1 is set.");
+    }
+    return testApi.getFocusedPanelWebContentsId();
+  });
+}
+
+/**
  * Create a panel via the TestApi.
  */
 export async function createPanel(
@@ -326,7 +436,7 @@ export async function createPanel(
   }
 ): Promise<{ id: string; type: string; title: string }> {
   return app.evaluate(
-    async ({ parentId, source, options }) => {
+    async (_electron, { parentId, source, options }) => {
       const testApi = (
         globalThis as {
           __testApi?: {
@@ -351,7 +461,7 @@ export async function createPanel(
  * Close a panel via the TestApi.
  */
 export async function closePanel(app: ElectronApplication, panelId: string): Promise<void> {
-  return app.evaluate(async (id) => {
+  return app.evaluate(async (_electron, id) => {
     const testApi = (globalThis as { __testApi?: { closePanel: (id: string) => Promise<void> } })
       .__testApi;
     if (!testApi) {
@@ -362,10 +472,24 @@ export async function closePanel(app: ElectronApplication, panelId: string): Pro
 }
 
 /**
+ * Reload a panel via the TestApi.
+ */
+export async function reloadPanel(app: ElectronApplication, panelId: string): Promise<void> {
+  return app.evaluate(async (_electron, id) => {
+    const testApi = (globalThis as { __testApi?: { reloadPanel: (id: string) => Promise<void> } })
+      .__testApi;
+    if (!testApi) {
+      throw new Error("Test API not available. Make sure NATSTACK_TEST_MODE=1 is set.");
+    }
+    return testApi.reloadPanel(id);
+  }, panelId);
+}
+
+/**
  * Check if a panel's view is loaded.
  */
 export async function isPanelLoaded(app: ElectronApplication, panelId: string): Promise<boolean> {
-  return app.evaluate((id) => {
+  return app.evaluate((_electron, id) => {
     const testApi = (globalThis as { __testApi?: { isPanelLoaded: (id: string) => boolean } })
       .__testApi;
     if (!testApi) {
@@ -373,6 +497,200 @@ export async function isPanelLoaded(app: ElectronApplication, panelId: string): 
     }
     return testApi.isPanelLoaded(id);
   }, panelId);
+}
+
+export async function getPanelText(app: ElectronApplication, panelId: string): Promise<string> {
+  return app.evaluate(async (_electron, id) => {
+    const testApi = (
+      globalThis as { __testApi?: { getPanelText: (id: string) => Promise<string> } }
+    ).__testApi;
+    if (!testApi) {
+      throw new Error("Test API not available. Make sure NATSTACK_TEST_MODE=1 is set.");
+    }
+    return testApi.getPanelText(id);
+  }, panelId);
+}
+
+export async function getPanelHtml(app: ElectronApplication, panelId: string): Promise<string> {
+  return app.evaluate(async (_electron, id) => {
+    const testApi = (
+      globalThis as { __testApi?: { getPanelHtml: (id: string) => Promise<string> } }
+    ).__testApi;
+    if (!testApi) {
+      throw new Error("Test API not available. Make sure NATSTACK_TEST_MODE=1 is set.");
+    }
+    return testApi.getPanelHtml(id);
+  }, panelId);
+}
+
+export type PanelDiagnostic = {
+  type: "console" | "did-fail-load" | "render-process-gone" | "unresponsive";
+  level?: string;
+  message: string;
+  timestamp: number;
+};
+
+export async function startPanelDiagnostics(
+  app: ElectronApplication,
+  panelId: string
+): Promise<void> {
+  return app.evaluate(async (_electron, id) => {
+    const testApi = (
+      globalThis as { __testApi?: { startPanelDiagnostics: (id: string) => Promise<void> } }
+    ).__testApi;
+    if (!testApi) {
+      throw new Error("Test API not available. Make sure NATSTACK_TEST_MODE=1 is set.");
+    }
+    return testApi.startPanelDiagnostics(id);
+  }, panelId);
+}
+
+export async function getPanelDiagnostics(
+  app: ElectronApplication,
+  panelId: string
+): Promise<PanelDiagnostic[]> {
+  return app.evaluate(async (_electron, id) => {
+    const testApi = (
+      globalThis as { __testApi?: { getPanelDiagnostics: (id: string) => PanelDiagnostic[] } }
+    ).__testApi;
+    if (!testApi) {
+      throw new Error("Test API not available. Make sure NATSTACK_TEST_MODE=1 is set.");
+    }
+    return testApi.getPanelDiagnostics(id);
+  }, panelId);
+}
+
+export async function clickPanelSelector(
+  app: ElectronApplication,
+  panelId: string,
+  selector: string
+): Promise<boolean> {
+  return app.evaluate(
+    async (_electron, args) => {
+      const testApi = (
+        globalThis as {
+          __testApi?: { clickPanelSelector: (id: string, selector: string) => Promise<boolean> };
+        }
+      ).__testApi;
+      if (!testApi) {
+        throw new Error("Test API not available. Make sure NATSTACK_TEST_MODE=1 is set.");
+      }
+      return testApi.clickPanelSelector(args.panelId, args.selector);
+    },
+    { panelId, selector }
+  );
+}
+
+export async function clickPanelText(
+  app: ElectronApplication,
+  panelId: string,
+  selector: string,
+  text: string
+): Promise<boolean> {
+  return app.evaluate(
+    async (_electron, args) => {
+      const testApi = (
+        globalThis as {
+          __testApi?: {
+            clickPanelText: (
+              id: string,
+              selector: string,
+              text: string
+            ) => Promise<boolean>;
+          };
+        }
+      ).__testApi;
+      if (!testApi) {
+        throw new Error("Test API not available. Make sure NATSTACK_TEST_MODE=1 is set.");
+      }
+      return testApi.clickPanelText(args.panelId, args.selector, args.text);
+    },
+    { panelId, selector, text }
+  );
+}
+
+export async function getPanelSelectorWindowPoint(
+  app: ElectronApplication,
+  panelId: string,
+  selector: string
+): Promise<{ x: number; y: number } | null> {
+  return app.evaluate(
+    async (_electron, args) => {
+      const testApi = (
+        globalThis as {
+          __testApi?: {
+            getPanelSelectorWindowPoint: (
+              id: string,
+              selector: string
+            ) => Promise<{ x: number; y: number } | null>;
+          };
+        }
+      ).__testApi;
+      if (!testApi) {
+        throw new Error("Test API not available. Make sure NATSTACK_TEST_MODE=1 is set.");
+      }
+      return testApi.getPanelSelectorWindowPoint(args.panelId, args.selector);
+    },
+    { panelId, selector }
+  );
+}
+
+export async function typePanelText(
+  app: ElectronApplication,
+  panelId: string,
+  text: string
+): Promise<void> {
+  return app.evaluate(
+    async (_electron, args) => {
+      const testApi = (
+        globalThis as {
+          __testApi?: { typePanelText: (id: string, text: string) => Promise<void> };
+        }
+      ).__testApi;
+      if (!testApi) {
+        throw new Error("Test API not available. Make sure NATSTACK_TEST_MODE=1 is set.");
+      }
+      return testApi.typePanelText(args.panelId, args.text);
+    },
+    { panelId, text }
+  );
+}
+
+export async function setElectronClipboardText(
+  app: ElectronApplication,
+  text: string
+): Promise<void> {
+  return app.evaluate(({ clipboard }, value) => {
+    clipboard.writeText(value);
+  }, text);
+}
+
+export async function getElectronClipboardText(app: ElectronApplication): Promise<string> {
+  return app.evaluate(({ clipboard }) => clipboard.readText());
+}
+
+export async function callTerminalPanel<T = unknown>(
+  app: ElectronApplication,
+  panelId: string,
+  method: string,
+  args?: unknown
+): Promise<T> {
+  return app.evaluate(
+    async (_electron, request) => {
+      const testApi = (
+        globalThis as {
+          __testApi?: {
+            callTerminalPanel: (id: string, method: string, args?: unknown) => Promise<unknown>;
+          };
+        }
+      ).__testApi;
+      if (!testApi) {
+        throw new Error("Test API not available. Make sure NATSTACK_TEST_MODE=1 is set.");
+      }
+      return testApi.callTerminalPanel(request.panelId, request.method, request.args) as Promise<T>;
+    },
+    { panelId, method, args }
+  );
 }
 
 /**
@@ -386,10 +704,7 @@ export async function waitForAppReady(window: Page, timeout = 15000): Promise<vo
 /**
  * Take a screenshot of the current window for debugging.
  */
-export async function takeScreenshot(
-  window: Page,
-  name: string
-): Promise<Buffer> {
+export async function takeScreenshot(window: Page, name: string): Promise<Buffer> {
   const projectRoot = path.resolve(__dirname, "../..");
   const screenshotDir = path.join(projectRoot, "test-results", "screenshots");
   fs.mkdirSync(screenshotDir, { recursive: true });

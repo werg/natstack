@@ -36,6 +36,9 @@ export function createViewService(deps: { getViewManager: () => ViewManager }): 
         ]),
       },
       setVisible: { args: z.tuple([z.string(), z.boolean()]) },
+      forwardMouseClick: {
+        args: z.tuple([z.string(), z.object({ x: z.number(), y: z.number() })]),
+      },
       setThemeCss: { args: z.tuple([z.string()]) },
       updateLayout: {
         args: z.tuple([
@@ -103,6 +106,13 @@ export function createViewService(deps: { getViewManager: () => ViewManager }): 
           assertOwnsOrShell(ctx.caller.runtime.id, viewId, "setVisible");
           vm.setViewVisible(viewId, visible);
           return;
+        }
+        case "forwardMouseClick": {
+          const [viewId, point] = args as [string, { x: number; y: number }];
+          if (ctx.caller.runtime.id !== "shell") {
+            throw new Error("view.forwardMouseClick: shell-only");
+          }
+          return vm.forwardMouseClick(viewId, point);
         }
         case "setThemeCss": {
           // Theme CSS is process-wide; restrict to shell only as defense in

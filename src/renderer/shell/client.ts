@@ -211,6 +211,8 @@ type NativeShellOverlayBridge = {
 export const view = {
   setVisible: (viewId: string, visible: boolean) =>
     rpc.call<undefined>("main", "view.setVisible", [viewId, visible]),
+  forwardMouseClick: (viewId: string, point: { x: number; y: number }) =>
+    rpc.call<boolean>("main", "view.forwardMouseClick", [viewId, point]),
   setThemeCss: (css: string) => rpc.call<undefined>("main", "view.setThemeCss", [css]),
   updateLayout: (layout: {
     titleBarHeight?: number;

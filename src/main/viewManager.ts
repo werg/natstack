@@ -25,6 +25,7 @@ import {
   type NativeImage,
   session,
   shell,
+  webContents as electronWebContents,
 } from "electron";
 
 import { createDevLogger } from "@natstack/dev-log";
@@ -199,6 +200,23 @@ export class ViewManager {
         const menu = Menu.buildFromTemplate(menuItems);
         menu.popup();
       }
+    });
+
+    this.shellView.webContents.on("before-input-event", (event, input) => {
+      const panelId = this.visiblePanelId;
+      if (!panelId || this.nativeShellOverlay.isVisible()) return;
+      const focused = electronWebContents.getFocusedWebContents();
+      if (focused && focused.id !== this.shellView.webContents.id) return;
+      const managed = this.views.get(panelId);
+      if (!managed || !managed.visible || managed.view.webContents.isDestroyed()) return;
+      managed.view.webContents.focus();
+      managed.view.webContents.sendInputEvent({
+        type: input.type,
+        keyCode: input.key,
+        modifiers: input.modifiers,
+        isAutoRepeat: input.isAutoRepeat,
+      } as Electron.KeyboardInputEvent);
+      event.preventDefault();
     });
 
     // Update shell and panel bounds when window resizes
@@ -480,6 +498,32 @@ export class ViewManager {
   }
 
   /**
+   * Forward a shell-layer click into an embedded view. This covers platforms
+   * where a WebContentsView paints above the shell but native hit-testing still
+   * leaves the shell WebContents as the click target.
+   */
+  forwardMouseClick(id: string, point: { x: number; y: number }): boolean {
+    const managed = this.views.get(id);
+    if (!managed || managed.view.webContents.isDestroyed()) return false;
+    const { bounds } = managed;
+    if (
+      point.x < bounds.x ||
+      point.y < bounds.y ||
+      point.x >= bounds.x + bounds.width ||
+      point.y >= bounds.y + bounds.height
+    ) {
+      return false;
+    }
+    const x = Math.round(point.x - bounds.x);
+    const y = Math.round(point.y - bounds.y);
+    const wc = managed.view.webContents;
+    wc.focus();
+    wc.sendInputEvent({ type: "mouseDown", x, y, button: "left", clickCount: 1 });
+    wc.sendInputEvent({ type: "mouseUp", x, y, button: "left", clickCount: 1 });
+    return true;
+  }
+
+  /**
    * Set visibility of a view.
    */
   setViewVisible(id: string, visible: boolean): void {
@@ -507,6 +551,7 @@ export class ViewManager {
       } else {
         managed.view.setVisible(true);
         this.bringToFront(id);
+        this.focusVisibleView(managed);
       }
     } else {
       managed.view.setVisible(visible);
@@ -542,7 +587,15 @@ export class ViewManager {
       managed.view.setVisible(true);
       managed.view.setBounds(managed.bounds);
       this.bringToFront(this.visiblePanelId);
+      this.focusVisibleView(managed);
     }
+  }
+
+  private focusVisibleView(managed: ManagedView): void {
+    if (this.nativeShellOverlay.isVisible()) return;
+    const wc = managed.view.webContents;
+    if (wc.isDestroyed()) return;
+    wc.focus();
   }
 
   showNativeShellOverlay(options: ShellOverlayOptions): void {
