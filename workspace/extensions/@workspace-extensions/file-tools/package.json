@@ -1,0 +1,18 @@
+{
+  "name": "@workspace-extensions/file-tools",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "displayName": "File Tools",
+    "entry": "index.ts",
+    "sourcemap": true,
+    "extension": {
+      "activationEvents": ["*"],
+      "dependencyMode": "external"
+    }
+  },
+  "dependencies": {
+    "@vscode/ripgrep": "^1.18.0"
+  }
+}

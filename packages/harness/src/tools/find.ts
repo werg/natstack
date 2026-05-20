@@ -3,14 +3,17 @@
  * `dist/core/tools/find.js`.
  *
  * Upstream uses `fd` via `child_process.spawnSync`, plus the `glob` package
- * for nested .gitignore discovery. workerd has neither, so we walk the tree
- * with `RuntimeFs` and apply our own glob → regex helper. Schema and details
- * shape match the upstream tool.
+ * for nested .gitignore discovery. workerd has neither, so active agent runs
+ * delegate to the Node-side `@workspace-extensions/file-tools` extension, which
+ * uses ripgrep's file listing. If the extension is unavailable, this file
+ * falls back to walking the tree with `RuntimeFs` and applying our own
+ * glob → regex helper.
  */
 
 import { Type, type Static } from "@sinclair/typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
+import type { RpcCaller } from "@natstack/rpc";
 import path from "node:path";
 import type { RuntimeFs, Dirent } from "./runtime-fs.js";
 import { resolveToCwd } from "./path-utils.js";
@@ -35,9 +38,20 @@ export type FindToolInput = Static<typeof findSchema>;
 export interface FindToolDetails {
   truncation?: TruncationResult;
   resultLimitReached?: number;
+  engine?: "ripgrep" | "runtime-fs";
+}
+
+interface FindToolResult {
+  content: (TextContent | ImageContent)[];
+  details: FindToolDetails | undefined;
+}
+
+export interface FindToolDeps {
+  rpc?: RpcCaller;
 }
 
 const DEFAULT_LIMIT = 1000;
+const FILE_TOOLS_EXTENSION = "@workspace-extensions/file-tools";
 
 const SKIP_DIRS = new Set([
   ".git",
@@ -53,6 +67,7 @@ const SKIP_DIRS = new Set([
 export function createFindTool(
   cwd: string,
   fs: RuntimeFs,
+  deps?: FindToolDeps,
 ): AgentTool<typeof findSchema, FindToolDetails | undefined> {
   return {
     name: "find",
@@ -66,6 +81,18 @@ export function createFindTool(
       }
       if (signal?.aborted) {
         throw new Error("Operation aborted");
+      }
+
+      if (deps?.rpc) {
+        try {
+          return await deps.rpc.call<FindToolResult>("main", "extensions.invoke", [
+            FILE_TOOLS_EXTENSION,
+            "find",
+            [{ pattern, path: searchDir, cwd, limit }],
+          ]);
+        } catch (err) {
+          if (!isFileToolsExtensionUnavailable(err)) throw err;
+        }
       }
 
       const searchPath = resolveToCwd(searchDir || ".", cwd);
@@ -134,7 +161,7 @@ export function createFindTool(
       const rawOutput = matches.join("\n");
       const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
       let resultOutput = truncation.content;
-      const details: FindToolDetails = {};
+      const details: FindToolDetails = { engine: "runtime-fs" };
       const notices: string[] = [];
 
       if (resultLimitReached) {
@@ -157,4 +184,13 @@ export function createFindTool(
       };
     },
   };
+}
+
+function isFileToolsExtensionUnavailable(err: unknown): boolean {
+  const code = typeof err === "object" && err !== null
+    ? (err as { code?: unknown }).code
+    : undefined;
+  if (code === "ENOEXT") return true;
+  const message = err instanceof Error ? err.message : String(err);
+  return /Extension @workspace-extensions\/file-tools(?:\.\w+)? invocation failed: Extension is not installed or enabled|Extension is not running/.test(message);
 }

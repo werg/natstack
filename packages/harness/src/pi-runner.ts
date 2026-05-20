@@ -225,11 +225,17 @@ export class PiRunner {
     ]);
 
     this.builtinTools = [
-      createReadTool(cwd, this.options.fs, { rpc: this.options.rpc }),
+      createReadTool(cwd, this.options.fs, {
+        rpc: this.options.rpc,
+      }),
       createEditTool(cwd, this.options.fs),
       createWriteTool(cwd, this.options.fs),
-      createGrepTool(cwd, this.options.fs),
-      createFindTool(cwd, this.options.fs),
+      createGrepTool(cwd, this.options.fs, {
+        rpc: this.options.rpc,
+      }),
+      createFindTool(cwd, this.options.fs, {
+        rpc: this.options.rpc,
+      }),
       createLsTool(cwd, this.options.fs),
     ] as AgentTool<any>[];
 

@@ -36,6 +36,7 @@ export interface ReadToolDetails {
         height: number;
     };
     wasResized?: boolean;
+    engine?: "node-file" | "runtime-fs";
 }
 interface ImageResizeResult {
     data: Uint8Array;
@@ -48,6 +49,7 @@ interface ImageResizeResult {
     dimensionNote?: string;
 }
 const IMAGE_SERVICE_EXTENSION = "@workspace-extensions/image-service";
+const FILE_TOOLS_EXTENSION = "@workspace-extensions/file-tools";
 export interface ReadToolDeps {
     /** RPC caller — needed for image resize. */
     rpc?: RpcCaller;
@@ -67,6 +69,18 @@ export function createReadTool(cwd: string, fs: RuntimeFs, deps?: ReadToolDeps):
                 throw new Error("Operation aborted");
             }
             const absolutePath = resolveReadPath(path, cwd);
+            if (deps?.rpc && !isLikelyImagePath(path)) {
+                try {
+                    return await deps.rpc.call<{ content: (TextContent | ImageContent)[]; details: ReadToolDetails }>("main", "extensions.invoke", [
+                        FILE_TOOLS_EXTENSION,
+                        "read",
+                        [{ path, cwd, offset, limit }],
+                    ]);
+                }
+                catch (err) {
+                    if (!isFileToolsExtensionFallback(err)) throw err;
+                }
+            }
             // Check that the file exists / is readable; preserve ENOENT semantics.
             try {
                 await fs.access(absolutePath, fs.constants.R_OK);
@@ -128,6 +142,18 @@ export function createReadTool(cwd: string, fs: RuntimeFs, deps?: ReadToolDeps):
             return formatTextResult(textContent, path, offset, limit);
         },
     };
+}
+function isLikelyImagePath(filePath: string): boolean {
+    return /\.(?:png|jpe?g|gif|webp)$/iu.test(filePath);
+}
+function isFileToolsExtensionFallback(err: unknown): boolean {
+    const code = typeof err === "object" && err !== null
+        ? (err as { code?: unknown }).code
+        : undefined;
+    if (code === "ENOEXT" || code === "EIMAGE") return true;
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("Image reads are handled by the image service path")) return true;
+    return /Extension @workspace-extensions\/file-tools(?:\.\w+)? invocation failed: Extension is not installed or enabled|Extension is not running/.test(message);
 }
 function formatTextResult(textContent: string, displayPath: string, offset: number | undefined, limit: number | undefined): {
     content: (TextContent | ImageContent)[];

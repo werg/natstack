@@ -3,10 +3,16 @@
  * `dist/core/tools/grep.js`.
  *
  * The upstream tool spawns ripgrep via `child_process.spawn`. workerd has
- * neither `child_process` nor any native binary, so we walk the directory
- * tree through `RuntimeFs` and apply the regex ourselves. The schema,
- * details type, and output formatting match the upstream tool so chat-UI
- * renderers don't have to special-case the workerd port.
+ * neither `child_process` nor any native binary, so active agent runs first
+ * delegate to the Node-side `@workspace-extensions/file-tools` extension. If
+ * that extension is unavailable, this file falls back to walking the
+ * directory tree through `RuntimeFs` and applying the regex itself. The
+ * schema, details type, and output formatting match the upstream tool so
+ * chat-UI renderers don't have to special-case either backend.
+ *
+ * Upstream reference: `@mariozechner/pi-coding-agent@0.67.x`
+ * `dist/core/tools/grep.js`; prebuilt tool exports were removed in Pi 0.68,
+ * and current `@earendil-works/pi-agent-core` does not ship this file tool.
  */
 
 import { Type, type Static } from "@sinclair/typebox";
@@ -14,6 +20,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
 import path from "node:path";
 import { Buffer } from "node:buffer";
+import type { RpcCaller } from "@natstack/rpc";
 import type { RuntimeFs, Dirent } from "./runtime-fs.js";
 import { resolveToCwd } from "./path-utils.js";
 import {
@@ -91,6 +98,15 @@ function warnFallbackOnce(): void {
   );
 }
 
+function isFileToolsExtensionUnavailable(err: unknown): boolean {
+  const code = typeof err === "object" && err !== null
+    ? (err as { code?: unknown }).code
+    : undefined;
+  if (code === "ENOEXT") return true;
+  const message = err instanceof Error ? err.message : String(err);
+  return /Extension @workspace-extensions\/file-tools(?:\.\w+)? invocation failed: Extension is not installed or enabled|Extension is not running/.test(message);
+}
+
 /** Exposed for `find.ts` so it can apply the same RE2 / fallback policy. */
 export function isRe2Available(): boolean {
   return RE2 !== null;
@@ -132,13 +148,30 @@ const grepSchema = Type.Object({
 
 export type GrepToolInput = Static<typeof grepSchema>;
 
+const FILE_TOOLS_EXTENSION = "@workspace-extensions/file-tools";
+
+interface GrepToolResult {
+  content: (TextContent | ImageContent)[];
+  details: GrepToolDetails | undefined;
+}
+
 export interface GrepToolDetails {
+  type?: "console";
+  content?: string;
   truncation?: TruncationResult;
   matchLimitReached?: number;
   linesTruncated?: boolean;
+  filesScanned?: number;
+  engine?: "ripgrep" | "runtime-fs";
+}
+
+export interface GrepToolDeps {
+  rpc?: RpcCaller;
 }
 
 const DEFAULT_LIMIT = 100;
+const READ_CONCURRENCY = 8;
+const PROGRESS_EVERY_FILES = 250;
 
 // Directories we never want to descend into. Mirrors fd/rg's defaults plus
 // the JS toolchain's heavy hitters; the workerd port has no .gitignore
@@ -157,6 +190,7 @@ const SKIP_DIRS = new Set([
 export function createGrepTool(
   cwd: string,
   fs: RuntimeFs,
+  deps?: GrepToolDeps,
 ): AgentTool<typeof grepSchema, GrepToolDetails | undefined> {
   return {
     name: "grep",
@@ -167,6 +201,7 @@ export function createGrepTool(
       _toolCallId,
       input,
       signal,
+      onUpdate,
     ) => {
       const { pattern, path: searchDir, glob, ignoreCase, literal, context, limit } = input;
       if (typeof pattern !== "string") {
@@ -174,6 +209,36 @@ export function createGrepTool(
       }
       if (signal?.aborted) {
         throw new Error("Operation aborted");
+      }
+
+      if (deps?.rpc) {
+        try {
+          return await deps.rpc.call<GrepToolResult>("main", "extensions.invoke", [
+            FILE_TOOLS_EXTENSION,
+            "grep",
+            [{
+              pattern,
+              path: searchDir,
+              cwd,
+              glob,
+              ignoreCase,
+              literal,
+              context,
+              limit,
+            }],
+          ]);
+        } catch (err) {
+          if (!isFileToolsExtensionUnavailable(err)) throw err;
+          if (onUpdate) {
+            onUpdate({
+              content: [],
+              details: {
+                type: "console",
+                content: "file-tools extension unavailable; falling back to RuntimeFs grep",
+              },
+            });
+          }
+        }
       }
 
       const searchPath = resolveToCwd(searchDir || ".", cwd);
@@ -192,22 +257,6 @@ export function createGrepTool(
       const regex = buildRegex(pattern, { literal: !!literal, ignoreCase: !!ignoreCase });
       const globRegex = glob ? globToRegex(glob) : null;
 
-      // Collect candidate files
-      const files: string[] = [];
-      if (isDirectory) {
-        await walk(fs, searchPath, files, signal);
-      } else {
-        files.push(searchPath);
-      }
-
-      // Filter by glob (relative to searchPath when walking a tree, basename otherwise).
-      const filtered = globRegex
-        ? files.filter((f) => {
-            const rel = isDirectory ? path.relative(searchPath, f) : path.basename(f);
-            return globRegex.test(rel.replace(/\\/g, "/"));
-          })
-        : files;
-
       const formatPath = (filePath: string): string => {
         if (isDirectory) {
           const relative = path.relative(searchPath, filePath);
@@ -218,55 +267,98 @@ export function createGrepTool(
         return path.basename(filePath);
       };
 
+      const shouldSearchFile = (filePath: string): boolean => {
+        if (!globRegex) return true;
+        const rel = isDirectory ? path.relative(searchPath, filePath) : path.basename(filePath);
+        return globRegex.test(rel.replace(/\\/g, "/"));
+      };
+
+      // Collect candidate files. Apply the glob during traversal so broad
+      // searches such as `glob: "**/*.ts"` do not carry every file in the
+      // workspace into the read phase.
+      const files: string[] = [];
+      if (isDirectory) {
+        await walk(fs, searchPath, files, signal, shouldSearchFile);
+      } else {
+        if (shouldSearchFile(searchPath)) files.push(searchPath);
+      }
+
       let matchCount = 0;
       let matchLimitReached = false;
       let linesTruncated = false;
+      let filesScanned = 0;
+      let nextProgressAt = PROGRESS_EVERY_FILES;
       const outputLines: string[] = [];
 
-      for (const filePath of filtered) {
+      const scanFile = async (filePath: string): Promise<string[][]> => {
         if (signal?.aborted) {
           throw new Error("Operation aborted");
-        }
-        if (matchCount >= effectiveLimit) {
-          matchLimitReached = true;
-          break;
         }
         let raw: string | Buffer;
         try {
           raw = await fs.readFile(filePath);
         } catch {
-          continue;
+          return [];
+        }
+        filesScanned++;
+        if (onUpdate && filesScanned >= nextProgressAt) {
+          onUpdate({
+            content: [],
+            details: {
+              type: "console",
+              content: `grep scanned ${filesScanned}/${files.length} candidate files...`,
+            },
+          });
+          nextProgressAt += PROGRESS_EVERY_FILES;
         }
         const text = typeof raw === "string" ? raw : Buffer.from(raw).toString("utf-8");
         const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
         const relativePath = formatPath(filePath);
+        const matches: string[][] = [];
         for (let i = 0; i < lines.length; i++) {
-          if (matchCount >= effectiveLimit) {
-            matchLimitReached = true;
-            break;
-          }
           // Reset regex state for each line (only relevant when /g is set
           // and the matcher is a V8 RegExp; RE2's `test` is stateless).
           if ("lastIndex" in regex) {
             (regex as { lastIndex: number }).lastIndex = 0;
           }
           if (regex.test(lines[i]!)) {
-            matchCount++;
             const lineNumber = i + 1;
             const start = contextValue > 0 ? Math.max(1, lineNumber - contextValue) : lineNumber;
             const end =
               contextValue > 0 ? Math.min(lines.length, lineNumber + contextValue) : lineNumber;
+            const matchLines: string[] = [];
             for (let cur = start; cur <= end; cur++) {
               const lineText = (lines[cur - 1] ?? "").replace(/\r/g, "");
               const { text: truncatedText, wasTruncated } = truncateLine(lineText);
               if (wasTruncated) linesTruncated = true;
               if (cur === lineNumber) {
-                outputLines.push(`${relativePath}:${cur}: ${truncatedText}`);
+                matchLines.push(`${relativePath}:${cur}: ${truncatedText}`);
               } else {
-                outputLines.push(`${relativePath}-${cur}- ${truncatedText}`);
+                matchLines.push(`${relativePath}-${cur}- ${truncatedText}`);
               }
             }
+            matches.push(matchLines);
           }
+        }
+        return matches;
+      };
+
+      for (let i = 0; i < files.length && !matchLimitReached; i += READ_CONCURRENCY) {
+        if (signal?.aborted) {
+          throw new Error("Operation aborted");
+        }
+        const batch = files.slice(i, i + READ_CONCURRENCY);
+        const batchResults = await Promise.all(batch.map((filePath) => scanFile(filePath)));
+        for (const matchesForFile of batchResults) {
+          for (const matchLines of matchesForFile) {
+            if (matchCount >= effectiveLimit) {
+              matchLimitReached = true;
+              break;
+            }
+            matchCount++;
+            outputLines.push(...matchLines);
+          }
+          if (matchLimitReached) break;
         }
       }
 
@@ -280,7 +372,7 @@ export function createGrepTool(
       const rawOutput = outputLines.join("\n");
       const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
       let output = truncation.content;
-      const details: GrepToolDetails = {};
+      const details: GrepToolDetails = { engine: "runtime-fs" };
       const notices: string[] = [];
 
       if (matchLimitReached) {
@@ -299,6 +391,7 @@ export function createGrepTool(
         );
         details.linesTruncated = true;
       }
+      details.filesScanned = filesScanned;
       if (notices.length > 0) {
         output += `\n\n[${notices.join(". ")}]`;
       }
@@ -421,6 +514,7 @@ async function walk(
   dir: string,
   out: string[],
   signal: AbortSignal | undefined,
+  shouldIncludeFile: (filePath: string) => boolean,
 ): Promise<void> {
   if (signal?.aborted) return;
   let entries: Dirent[];
@@ -434,8 +528,8 @@ async function walk(
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (SKIP_DIRS.has(entry.name)) continue;
-      await walk(fs, full, out, signal);
-    } else if (entry.isFile()) {
+      await walk(fs, full, out, signal, shouldIncludeFile);
+    } else if (entry.isFile() && shouldIncludeFile(full)) {
       out.push(full);
     }
   }

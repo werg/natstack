@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { createFindTool } from "../find.js";
 import { StubFs } from "./stub-fs.js";
 
@@ -44,5 +44,26 @@ describe("createFindTool", () => {
     await expect(
       tool.execute("call-1", { pattern: "*", path: "missing" }),
     ).rejects.toThrow(/not found/i);
+  });
+
+  it("delegates to the file-tools extension when context rpc is available", async () => {
+    const fs = new StubFs();
+    const rpc = {
+      call: vi.fn().mockResolvedValue({
+        content: [{ type: "text", text: "src/a.ts" }],
+        details: { engine: "ripgrep" },
+      }),
+      streamCall: vi.fn(async () => new Response()),
+    };
+    const tool = createFindTool(CWD, fs, { rpc });
+
+    const result = await tool.execute("call-1", { pattern: "**/*.ts", path: ".", limit: 10 });
+
+    expect((result.content[0] as { text: string }).text).toBe("src/a.ts");
+    expect(rpc.call).toHaveBeenCalledWith("main", "extensions.invoke", [
+      "@workspace-extensions/file-tools",
+      "find",
+      [{ pattern: "**/*.ts", path: ".", cwd: CWD, limit: 10 }],
+    ]);
   });
 });

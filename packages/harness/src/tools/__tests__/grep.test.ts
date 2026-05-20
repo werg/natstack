@@ -4,6 +4,15 @@ import { StubFs } from "./stub-fs.js";
 
 const CWD = "/work/ctx";
 
+class CountingFs extends StubFs {
+  readonly readPaths: string[] = [];
+
+  override async readFile(path: string, encoding?: BufferEncoding) {
+    this.readPaths.push(path);
+    return super.readFile(path, encoding);
+  }
+}
+
 describe("createGrepTool", () => {
   it("finds a literal pattern across multiple files", async () => {
     const fs = new StubFs({
@@ -50,6 +59,59 @@ describe("createGrepTool", () => {
     const text = (result.content[0] as { text: string }).text;
     expect(text).toContain("a.ts");
     expect(text).not.toContain("b.md");
+  });
+
+  it("does not read files excluded by glob", async () => {
+    const fs = new CountingFs({
+      files: {
+        [`${CWD}/a.ts`]: "match",
+        [`${CWD}/b.md`]: "match",
+      },
+    });
+    const tool = createGrepTool(CWD, fs);
+    await tool.execute("call-1", { pattern: "match", glob: "*.ts" });
+    expect(fs.readPaths).toEqual([`${CWD}/a.ts`]);
+  });
+
+  it("emits progress updates during large searches", async () => {
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 251; i++) {
+      files[`${CWD}/f${i}.ts`] = "nope";
+    }
+    const fs = new StubFs({ files });
+    const tool = createGrepTool(CWD, fs);
+    const updates: unknown[] = [];
+
+    await tool.execute(
+      "call-1",
+      { pattern: "missing", glob: "**/*.ts" },
+      undefined,
+      (update) => updates.push(update.details),
+    );
+
+    expect(updates).toContainEqual({
+      type: "console",
+      content: "grep scanned 250/251 candidate files...",
+    });
+  });
+
+  it("counts limit by matches, not context output lines", async () => {
+    const fs = new StubFs({
+      files: {
+        [`${CWD}/a.ts`]: "before\nmatch one\nafter\nmatch two\nend",
+      },
+    });
+    const tool = createGrepTool(CWD, fs);
+    const result = await tool.execute("call-1", {
+      pattern: "match",
+      context: 1,
+      limit: 1,
+    });
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("a.ts-1- before");
+    expect(text).toContain("a.ts:2: match one");
+    expect(text).toContain("a.ts-3- after");
+    expect(text).not.toContain("match two");
   });
 
   it("respects ignoreCase", async () => {

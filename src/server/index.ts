@@ -596,6 +596,7 @@ async function main() {
   let extensionHostForGateway: import("@natstack/extension-host").ExtensionHost | null = null;
   const requiredBuiltInExtensions = [
     "@workspace-extensions/image-service",
+    "@workspace-extensions/file-tools",
     "@workspace-extensions/typecheck-service",
     "@workspace-extensions/browser-data",
   ];

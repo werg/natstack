@@ -25,6 +25,65 @@ describe("createReadTool", () => {
     expect(text).not.toContain("line 5\n");
   });
 
+  it("delegates text reads to the file extension when context rpc is available", async () => {
+    const fs = new StubFs();
+    const rpc = {
+      call: vi.fn().mockResolvedValue({
+        content: [{ type: "text", text: "line 3\nline 4" }],
+        details: { path: "big.txt", engine: "node-file" },
+      }),
+      streamCall: vi.fn(async () => new Response()),
+    };
+    const tool = createReadTool(CWD, fs, { rpc });
+
+    const result = await tool.execute("call-1", { path: "big.txt", offset: 3, limit: 2 });
+
+    expect((result.content[0] as { text: string }).text).toBe("line 3\nline 4");
+    expect(rpc.call).toHaveBeenCalledWith("main", "extensions.invoke", [
+      "@workspace-extensions/file-tools",
+      "read",
+      [{ path: "big.txt", cwd: CWD, offset: 3, limit: 2 }],
+    ]);
+  });
+
+  it("keeps image reads on the image-service path", async () => {
+    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const fs = new StubFs({ files: { [`${CWD}/pic.png`]: pngBytes } });
+    const rpc = {
+      call: vi.fn().mockImplementation((_target: string, method: string, args: unknown[]) => {
+        const [extensionName, extensionMethod] = args;
+        expect(method).toBe("extensions.invoke");
+        expect(extensionName).toBe("@workspace-extensions/image-service");
+        if (extensionMethod === "detectMimeType") return Promise.resolve("image/png");
+        if (extensionMethod === "resize") {
+          return Promise.resolve({
+            data: pngBytes,
+            mimeType: "image/png",
+            width: 8,
+            height: 8,
+            originalWidth: 8,
+            originalHeight: 8,
+            wasResized: false,
+          });
+        }
+        return Promise.resolve(null);
+      }),
+      streamCall: vi.fn(async () => new Response()),
+    };
+    const tool = createReadTool(CWD, fs, { rpc });
+
+    const result = await tool.execute("call-1", { path: "pic.png" });
+
+    const last = result.content[result.content.length - 1] as { type: string; mimeType: string };
+    expect(last.type).toBe("image");
+    expect(last.mimeType).toBe("image/png");
+    expect(rpc.call).not.toHaveBeenCalledWith(
+      "main",
+      "extensions.invoke",
+      expect.arrayContaining(["@workspace-extensions/file-tools", "read"]),
+    );
+  });
+
   it("throws when file is missing", async () => {
     const fs = new StubFs();
     const tool = createReadTool(CWD, fs);
