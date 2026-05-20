@@ -10,7 +10,7 @@
  * Message flow:
  * - send(): serializes RpcMessage into a ws:rpc envelope and calls ws.send()
  * - deliver(): called by RpcServer when an incoming message from the client
- *   is identified as an RPC response or event (to a server-initiated call)
+ *   is identified as a response, event, or stream frame for a server-initiated call
  */
 
 import type { WebSocket } from "ws";
@@ -28,7 +28,7 @@ export interface WsServerTransportInternal extends RpcTransport {
   /**
    * Deliver an incoming RPC message from the client to this transport's
    * handler registry. Called by RpcServer when it determines a message
-   * is a response/event for a server-initiated call.
+   * belongs to a server-initiated call.
    */
   deliver(sourceId: string, message: RpcMessage): void;
 

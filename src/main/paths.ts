@@ -179,6 +179,14 @@ export function getAppRoot(): string {
   // Production
   try {
     const appPath = app.getAppPath();
+    const unpackagedRoot = path.dirname(appPath);
+    if (
+      path.basename(appPath) === "dist" &&
+      fs.existsSync(path.join(unpackagedRoot, "package.json"))
+    ) {
+      if (DEBUG) console.log("[paths] getAppRoot (unpackaged/electron):", unpackagedRoot);
+      return unpackagedRoot;
+    }
     if (DEBUG) console.log("[paths] getAppRoot (production/electron):", appPath);
     return appPath;
   } catch {
@@ -253,8 +261,11 @@ export function getPhysicalAppPath(relativePath: string): string {
  * development and packaged builds.
  */
 export function getServerProcessEntryPath(): string {
+  const root = getAppRoot();
+  const direct = path.join(root, "server-electron.cjs");
+  if (fs.existsSync(direct)) return direct;
   return isDev()
-    ? path.join(getAppRoot(), "dist", "server-electron.cjs")
+    ? path.join(root, "dist", "server-electron.cjs")
     : getPhysicalAppPath(path.join("dist", "server-electron.cjs"));
 }
 

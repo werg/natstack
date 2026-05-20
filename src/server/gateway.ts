@@ -284,8 +284,8 @@ export class Gateway {
       }
 
       // POST /rpc → RPC handler (in-process). `/rpc/stream` is the
-      // streaming proxy fetch variant — same handler dispatches both
-      // based on `req.url`.
+      // streaming RPC variant for Response-returning service methods,
+      // including the credentials.proxyFetch fast path.
       if ((url === "/rpc" || url === "/rpc/stream") && req.method === "POST" && rpcHandler) {
         return rpcHandler.handleGatewayHttpRequest(req, res);
       }

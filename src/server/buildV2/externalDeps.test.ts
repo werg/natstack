@@ -6,8 +6,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-vi.mock("@natstack/shared/envPaths", () => ({
+const { testExtDepsRoot } = vi.hoisted(() => ({
+  testExtDepsRoot: `/tmp/test-extdeps-${process.pid}`,
+}));
+
+vi.mock("@natstack/env-paths", () => ({
   getUserDataPath: vi.fn().mockReturnValue("/tmp/test-extdeps"),
+  getCentralDataPath: vi.fn().mockReturnValue(testExtDepsRoot),
 }));
 
 vi.mock("@natstack/shared/npmInstaller", () => ({
@@ -249,7 +254,7 @@ describe("collectTransitiveExternalDeps", () => {
 
 describe("ensureExternalDeps", () => {
   it("reinstalls a cache entry when the ready sentinel exists but node_modules is missing", async () => {
-    fs.rmSync("/tmp/test-extdeps", { recursive: true, force: true });
+    fs.rmSync(testExtDepsRoot, { recursive: true, force: true });
     const first = await ensureExternalDeps({ leftpad: "1.0.0" });
     expect(fs.existsSync(first)).toBe(true);
 

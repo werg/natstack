@@ -13,7 +13,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
-import { getUserDataPath } from "@natstack/env-paths";
+import { getCentralDataPath } from "@natstack/env-paths";
 import { runNpmInstall } from "@natstack/shared/npmInstaller";
 import type { PackageGraph, GraphNode } from "./packageGraph.js";
 import { assertPresent } from "../../lintHelpers";
@@ -197,11 +197,11 @@ function hashDeps(deps: Record<string, string>): string {
 }
 
 function getExternalDepsBaseDir(): string {
-  return path.join(getUserDataPath(), "external-deps");
+  return path.join(getCentralDataPath(), "external-deps");
 }
 
 function getExtensionRuntimeDepsBaseDir(): string {
-  return path.join(getUserDataPath(), "extension-runtime-deps");
+  return path.join(getCentralDataPath(), "extension-runtime-deps");
 }
 
 function isFileSystemErrorCode(error: unknown, codes: readonly string[]): boolean {

@@ -586,9 +586,9 @@ function createExtensionCjsShimPlugin(
         return {
           loader: "js",
           contents: [
-            "import { createRequire as __natstackCreateRequire } from 'node:module';",
-            "const require = __natstackCreateRequire(import.meta.url);",
-            `const mod = require(${JSON.stringify(name)});`,
+            "import { createRequire as __natstackCjsShimCreateRequire } from 'node:module';",
+            "const __natstackCjsShimRequire = __natstackCjsShimCreateRequire(import.meta.url);",
+            `const mod = __natstackCjsShimRequire(${JSON.stringify(name)});`,
             "export default mod;",
           ].join("\n"),
         };
