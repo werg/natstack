@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { describe, expect, it } from "vitest";
-import { DeviceAuthStore } from "./deviceAuthStore.js";
+import { DEFAULT_PAIRING_CODE_TTL_MS, DeviceAuthStore } from "./deviceAuthStore.js";
 
 function tempFile(): string {
   return path.join(
@@ -20,11 +20,13 @@ describe("DeviceAuthStore", () => {
     const store = new DeviceAuthStore(filePath, () => now);
 
     const code = store.createPairingCode();
+    expect(store.hasPendingPairingCode(code)).toBe(true);
     const credential = store.completePairing({
       code,
       label: "Phone",
       platform: "mobile",
     });
+    expect(store.hasPendingPairingCode(code)).toBe(false);
 
     expect(credential.deviceId).toMatch(/^dev_/);
     expect(credential.refreshToken).toBeTruthy();
@@ -62,5 +64,19 @@ describe("DeviceAuthStore", () => {
     expect(() => store.validateRefresh(credential.deviceId, credential.refreshToken)).toThrow(
       /not paired/i
     );
+  });
+
+  it("defaults pairing codes to a one hour lifetime", () => {
+    const filePath = tempFile();
+    let now = 1000;
+    const store = new DeviceAuthStore(filePath, () => now);
+
+    const code = store.createPairingCode();
+    now += DEFAULT_PAIRING_CODE_TTL_MS - 1;
+    expect(store.hasPendingPairingCode(code)).toBe(true);
+
+    now += 2;
+    expect(store.hasPendingPairingCode(code)).toBe(false);
+    expect(() => store.completePairing({ code })).toThrow(/invalid or expired/i);
   });
 });

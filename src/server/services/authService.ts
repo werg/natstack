@@ -4,7 +4,7 @@ import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { ServiceRouteDecl } from "../routeRegistry.js";
 import type { ServiceWithRoutes } from "../rpcServiceWithRoutes.js";
-import type { DeviceAuthStore } from "./deviceAuthStore.js";
+import { DEFAULT_PAIRING_CODE_TTL_MS, type DeviceAuthStore } from "./deviceAuthStore.js";
 import type { ConnectionGrantService } from "@natstack/shared/connectionGrants";
 
 const IssueDeviceBodySchema = z.object({
@@ -117,7 +117,7 @@ export function createAuthService(deps: {
       handler: async (req, res) => {
         try {
           const body = CreatePairingCodeBodySchema.parse(await readJson(req));
-          const expiresInMs = body.ttlMs ?? 10 * 60 * 1000;
+          const expiresInMs = body.ttlMs ?? DEFAULT_PAIRING_CODE_TTL_MS;
           const code = deps.deviceAuthStore.createPairingCode(expiresInMs);
           sendJson(res, 200, {
             code,

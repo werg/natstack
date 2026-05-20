@@ -25,6 +25,8 @@ interface PairingCodeRecord {
   createdAt: number;
 }
 
+export const DEFAULT_PAIRING_CODE_TTL_MS = 60 * 60 * 1000;
+
 export interface IssuedDeviceCredential {
   deviceId: string;
   refreshToken: string;
@@ -47,7 +49,7 @@ export class DeviceAuthStore {
     return this.state.serverId;
   }
 
-  createPairingCode(ttlMs = 10 * 60 * 1000): string {
+  createPairingCode(ttlMs = DEFAULT_PAIRING_CODE_TTL_MS): string {
     const code = randomBase64Url(24);
     const codeHash = hashSecret(code);
     this.pairingCodes.set(codeHash, {
@@ -56,6 +58,17 @@ export class DeviceAuthStore {
       expiresAt: this.now() + ttlMs,
     });
     return code;
+  }
+
+  hasPendingPairingCode(code: string): boolean {
+    const codeHash = hashSecret(code);
+    const record = this.pairingCodes.get(codeHash);
+    if (!record) return false;
+    if (record.expiresAt < this.now()) {
+      this.pairingCodes.delete(codeHash);
+      return false;
+    }
+    return true;
   }
 
   completePairing(input: {

@@ -548,9 +548,12 @@ async function main() {
   entityCache.registerBootstrap({ id: "electron-main", kind: "shell" });
   const connectionGrants = new ConnectionGrantService({ entityCache });
   const serverBootId = `boot_${randomBytes(18).toString("base64url")}`;
-  const { DeviceAuthStore } = await import("./services/deviceAuthStore.js");
+  const { DEFAULT_PAIRING_CODE_TTL_MS, DeviceAuthStore } =
+    await import("./services/deviceAuthStore.js");
   const deviceAuthStore = new DeviceAuthStore(path.join(statePath, "auth", "devices.json"));
-  const startupPairingCode = !ipcChannel ? deviceAuthStore.createPairingCode() : null;
+  const startupPairingCode = !ipcChannel
+    ? deviceAuthStore.createPairingCode(DEFAULT_PAIRING_CODE_TTL_MS)
+    : null;
 
   const workerdGatewayToken = randomBytes(32).toString("hex");
   const { CredentialStore } = await import("../../packages/shared/src/credentials/store.js");
@@ -2370,6 +2373,9 @@ async function main() {
     }
     if (startupPairingCode) {
       console.log(`  Pairing code: ${startupPairingCode}`);
+      console.log(
+        `  Pairing TTL:  ${Math.round(DEFAULT_PAIRING_CODE_TTL_MS / 60_000)} minutes (server exits if unused)`
+      );
       console.log(formatPairUrlLine(pairingTargetUrl, startupPairingCode));
     }
 
@@ -2410,6 +2416,7 @@ async function main() {
   // ===========================================================================
 
   let isShuttingDown = false;
+  let startupPairingExpiryTimer: NodeJS.Timeout | null = null;
 
   async function shutdown() {
     if (isShuttingDown) return;
@@ -2422,6 +2429,10 @@ async function main() {
     }, 5000);
 
     cleanupReaper.stop();
+    if (startupPairingExpiryTimer) {
+      clearTimeout(startupPairingExpiryTimer);
+      startupPairingExpiryTimer = null;
+    }
 
     await container
       .stopAll()
@@ -2449,6 +2460,18 @@ async function main() {
       if (record?.["type"] === "shutdown") void shutdown();
     });
   } else {
+    if (startupPairingCode) {
+      startupPairingExpiryTimer = setTimeout(() => {
+        if (!deviceAuthStore.hasPendingPairingCode(startupPairingCode)) return;
+        console.warn(
+          `[Server] Startup pairing code expired after ${Math.round(
+            DEFAULT_PAIRING_CODE_TTL_MS / 60_000
+          )} minutes without being used; shutting down. Restart the pair command to print a fresh code.`
+        );
+        void shutdown();
+      }, DEFAULT_PAIRING_CODE_TTL_MS);
+      startupPairingExpiryTimer.unref?.();
+    }
     process.on("SIGTERM", () => void shutdown());
     process.on("SIGINT", () => void shutdown());
   }

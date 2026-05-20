@@ -174,6 +174,10 @@ On the laptop, click the `Pair URL` or open Connection Settings and paste the
 code on the **Pair with code** tab. Electron exchanges the code for a durable
 device credential; the admin token does not need to leave the server.
 
+Pairing codes are single-use and valid for one hour. If the startup pairing
+code is not used within that hour, the standalone pairing server exits so the
+next run prints a fresh code instead of leaving an expired URL on screen.
+
 From a source checkout, the quickest laptop flow is:
 
 ```bash
