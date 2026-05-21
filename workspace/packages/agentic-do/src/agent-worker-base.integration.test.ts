@@ -27,6 +27,25 @@ class TestAgentWorker extends AgentWorkerBase {
   }
 }
 
+class CloneTestAgentWorker extends TestAgentWorker {
+  public subscribeCalls: Array<{
+    channelId: string;
+    contextId: string;
+    config?: unknown;
+    replay?: boolean;
+  }> = [];
+
+  override async subscribeChannel(opts: {
+    channelId: string;
+    contextId: string;
+    config?: unknown;
+    replay?: boolean;
+  }): Promise<{ ok: boolean; participantId: string }> {
+    this.subscribeCalls.push(opts);
+    return { ok: true, participantId: "do:workers/test-agent:TestAgentWorker:agent-fork" };
+  }
+}
+
 describe("AgentWorkerBase runner contract", () => {
   it("uses the clean AgentHarness-facing dispatcher surface", () => {
     const methods = [
@@ -90,6 +109,60 @@ describe("AgentWorkerBase typed transcript input", () => {
       { content: "Read the onboarding docs first" },
       undefined,
     );
+  });
+});
+
+describe("AgentWorkerBase fork subscription state", () => {
+  it("starts cloned agents after the fork point and subscribes without replay", async () => {
+    const { instance, sql } = await createTestDO(CloneTestAgentWorker, {
+      __objectKey: "agent-fork",
+      WORKER_SOURCE: "workers/test-agent",
+      WORKER_CLASS_NAME: "TestAgentWorker",
+    });
+    const gadCall = vi.fn().mockResolvedValue({
+      copied: 1,
+      headEventHash: "hash-fork",
+      headStateHash: "state-fork",
+      lineage: [],
+    });
+    (instance as unknown as { gad: { call: typeof gadCall } }).gad = { call: gadCall };
+
+    sql.exec(
+      `INSERT INTO subscriptions (channel_id, context_id, subscribed_at, config, participant_id)
+       VALUES (?, ?, ?, ?, ?)`,
+      "channel-parent",
+      "ctx-1",
+      Date.now(),
+      JSON.stringify({ approvalLevel: 2 }),
+      "do:workers/test-agent:TestAgentWorker:agent-parent",
+    );
+    sql.exec(
+      `INSERT INTO delivery_cursor (channel_id, last_delivered_seq) VALUES (?, ?)`,
+      "channel-parent",
+      10,
+    );
+
+    await instance.postClone("agent-parent", "channel-fork", "channel-parent", 42);
+
+    expect(gadCall).toHaveBeenCalledWith("forkTrajectoryBranch", expect.objectContaining({
+      fromTrajectoryId: "branch:channel:channel-parent",
+      fromBranchId: "branch:channel:channel-parent",
+      toTrajectoryId: "branch:channel:channel-fork",
+      toBranchId: "branch:channel:channel-fork",
+      throughPublishedChannelId: "channel-parent",
+      throughPublishedChannelSeq: 42,
+      toPublishedChannelId: "channel-fork",
+    }));
+    expect(instance.subscribeCalls).toEqual([
+      expect.objectContaining({
+        channelId: "channel-fork",
+        contextId: "ctx-1",
+        replay: false,
+      }),
+    ]);
+    expect(sql.exec(`SELECT * FROM delivery_cursor`).toArray()).toEqual([
+      { channel_id: "channel-fork", last_delivered_seq: 42 },
+    ]);
   });
 });
 

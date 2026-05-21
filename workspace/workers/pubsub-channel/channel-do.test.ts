@@ -172,16 +172,16 @@ describe("PubSubChannel", () => {
     await fork.instance.postClone("channel-parent", 3);
 
     const replay = await fork.instance.getReplayAfter(0);
-    expect(replay.logEvents.map((event) => event.id)).toEqual([1, 2, 3]);
+    expect(replay.logEvents.map((event) => event.id)).toEqual([2, 3]);
     const messages = replay.logEvents.filter((event) => event.type === AGENTIC_EVENT_PAYLOAD_KIND);
     expect(messages.map((event) => (event.payload as { causality: { messageId: string } }).causality.messageId)).toEqual([
       "msg-1",
       "msg-2",
     ]);
     expect(replay.ready).toMatchObject({
-      totalCount: 3,
-      envelopeCount: 3,
-      firstEnvelopeSeq: 1,
+      totalCount: 2,
+      envelopeCount: 2,
+      firstEnvelopeSeq: 2,
     });
 
     setRpcCaller(fork.instance, "panel:user", "panel");

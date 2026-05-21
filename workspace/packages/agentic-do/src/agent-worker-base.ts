@@ -2181,6 +2181,9 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     // Clear signal-only state copied from parent.
     this.sql.exec(`DELETE FROM delivery_cursor`);
+    if (forkAtMessageIndex != null) {
+      this.advanceDeliveryCursor(newChannelId, forkAtMessageIndex);
+    }
 
     await this.forkPiBranchForClone(oldChannelId, newChannelId, forkAtMessageIndex);
 
@@ -2211,7 +2214,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.runners.clear();
 
     if (contextId) {
-      await this.subscribeChannel({ channelId: newChannelId, contextId, config });
+      await this.subscribeChannel({ channelId: newChannelId, contextId, config, replay: false });
     }
 
     await this.onPostClone(parentObjectKey, newChannelId, oldChannelId, forkAtMessageIndex);

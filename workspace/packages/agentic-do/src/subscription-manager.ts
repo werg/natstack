@@ -69,8 +69,8 @@ export class SubscriptionManager {
     if (opts.descriptor.methods && opts.descriptor.methods.length > 0) {
       metadata["methods"] = opts.descriptor.methods;
     }
-    if (opts.replay) {
-      metadata["replay"] = true;
+    if (opts.replay !== undefined) {
+      metadata["replay"] = opts.replay;
     }
 
     const channel = this.channelFactory(opts.channelId);

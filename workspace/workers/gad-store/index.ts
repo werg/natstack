@@ -904,7 +904,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
     const sourceRows = this.sql
       .exec(
         `SELECT * FROM channel_envelopes
-         WHERE channel_id = ? AND (? IS NULL OR seq <= ?)
+         WHERE channel_id = ? AND (payload_kind IS NULL OR payload_kind != 'presence') AND (? IS NULL OR seq <= ?)
          ORDER BY seq ASC`,
         input.fromChannelId,
         input.throughSeq ?? null,

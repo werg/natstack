@@ -269,16 +269,38 @@ describe("GadWorkspaceDO trajectory persistence", () => {
 
   it("bounds replay-after windows and forks channel logs with preserved sequence lineage", async () => {
     const { call } = await createTestDO(GadWorkspaceDO);
-    for (const value of [1, 2, 3]) {
-      await call("appendChannelEnvelope", {
-        channelId: "channel-parent",
-        envelopeId: `env-${value}`,
-        from: { kind: "panel", id: "panel:user", participantId: "panel:user" },
-        payloadKind: "custom.kind",
-        payload: { value },
-        publishedAt: `2026-05-20T12:00:0${value}.000Z`,
-      });
-    }
+    await call("appendChannelEnvelope", {
+      channelId: "channel-parent",
+      envelopeId: "env-1",
+      from: { kind: "panel", id: "panel:user", participantId: "panel:user" },
+      payloadKind: "custom.kind",
+      payload: { value: 1 },
+      publishedAt: "2026-05-20T12:00:01.000Z",
+    });
+    await call("appendChannelEnvelope", {
+      channelId: "channel-parent",
+      envelopeId: "env-presence",
+      from: { kind: "panel", id: "panel:user", participantId: "panel:user" },
+      payloadKind: "presence",
+      payload: { action: "join" },
+      publishedAt: "2026-05-20T12:00:02.000Z",
+    });
+    await call("appendChannelEnvelope", {
+      channelId: "channel-parent",
+      envelopeId: "env-2",
+      from: { kind: "panel", id: "panel:user", participantId: "panel:user" },
+      payloadKind: "custom.kind",
+      payload: { value: 2 },
+      publishedAt: "2026-05-20T12:00:03.000Z",
+    });
+    await call("appendChannelEnvelope", {
+      channelId: "channel-parent",
+      envelopeId: "env-3",
+      from: { kind: "panel", id: "panel:user", participantId: "panel:user" },
+      payloadKind: "custom.kind",
+      payload: { value: 3 },
+      publishedAt: "2026-05-20T12:00:04.000Z",
+    });
 
     const limited = await call<any>("getChannelReplayWindow", {
       channelId: "channel-parent",
@@ -291,17 +313,18 @@ describe("GadWorkspaceDO trajectory persistence", () => {
     const result = await call<any>("forkChannelLog", {
       fromChannelId: "channel-parent",
       toChannelId: "channel-fork",
-      throughSeq: 2,
+      throughSeq: 3,
     });
     expect(result).toMatchObject({
       fromChannelId: "channel-parent",
       toChannelId: "channel-fork",
       copied: 2,
       firstSeq: 1,
-      lastSeq: 2,
+      lastSeq: 3,
     });
     expect(result.lineage).toHaveLength(2);
     expect(result.lineage[0]).toMatchObject({ sourceEnvelopeId: "env-1", sourceSeq: 1, forkSeq: 1 });
+    expect(result.lineage[1]).toMatchObject({ sourceEnvelopeId: "env-2", sourceSeq: 3, forkSeq: 3 });
     expect(result.lineage[0].forkEnvelopeId).not.toBe("env-1");
 
     const forked = await call<any[]>("listChannelEnvelopesAfter", {
@@ -311,9 +334,10 @@ describe("GadWorkspaceDO trajectory persistence", () => {
     });
     expect(forked.map((envelope) => [envelope.seq, envelope.payload.value])).toEqual([
       [1, 1],
-      [2, 2],
+      [3, 2],
     ]);
     expect(forked.map((envelope) => envelope.envelopeId)).not.toContain("env-1");
+    expect(forked.map((envelope) => envelope.payloadKind)).not.toContain("presence");
 
     await call("appendChannelEnvelope", {
       channelId: "channel-fork",
@@ -324,10 +348,10 @@ describe("GadWorkspaceDO trajectory persistence", () => {
     });
     const afterForkAppend = await call<any[]>("listChannelEnvelopesAfter", {
       channelId: "channel-fork",
-      seq: 2,
+      seq: 3,
       limit: 10,
     });
-    expect(afterForkAppend).toEqual([expect.objectContaining({ envelopeId: "env-fork-new", seq: 3 })]);
+    expect(afterForkAppend).toEqual([expect.objectContaining({ envelopeId: "env-fork-new", seq: 4 })]);
 
     const lineageRows = await call<{ rows: Array<Record<string, unknown>> }>(
       "query",
