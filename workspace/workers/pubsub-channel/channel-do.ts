@@ -5,13 +5,22 @@
  * interact via RPC calls. Broadcasting uses this.rpc.emit() to push events
  * to subscribers.
  *
- * State: messages, participants, pending_calls in local SQLite.
+ * State: participants, pending_calls, and connection dedup keys in local SQLite.
+ * Durable channel envelopes are delegated to GAD through ChannelLogStore.
  */
 
 /// <reference path="../workerd.d.ts" />
 import { DurableObjectBase, type DurableObjectContext } from "@workspace/runtime/worker";
 import type { ChannelEvent } from "@natstack/harness/types";
-import { aggregateReplayEvents } from "@workspace/pubsub";
+import type { BootstrapSnapshot, ParticipantSnapshot } from "@workspace/pubsub";
+import {
+  AGENTIC_EVENT_PAYLOAD_KIND,
+  AGENTIC_PROTOCOL_VERSION,
+  type AgenticEvent,
+  type InvocationId,
+  type ParticipantRef,
+  type TurnId,
+} from "@workspace/agentic-protocol";
 import { PARTICIPANT_SESSION_METADATA_KEY } from "@workspace/pubsub/internal-constants";
 import type {
   SendOpts,
@@ -23,27 +32,25 @@ import type {
 import {
   broadcast,
   buildChannelEvent,
-  parseRowToChannelEvent,
   channelEventToRpcSignal,
   queueEmit,
   queueDoEnvelope,
   type BroadcastDeps,
   cleanupDeliveryChain,
 } from "./broadcast.js";
-import { buildReplayEnvelope } from "./replay.js";
-import { classifyLogWrite } from "./log-classify.js";
+import { GadChannelLogStore, type ChannelLogStore } from "./channel-log-store.js";
 import {
   storeCall,
   consumeCall,
   cancelCall as cancelCallDb,
   cancelCallsForTarget,
-} from "./method-calls.js";
+} from "./invocation-calls.js";
 
 /** How long before an RPC participant is considered stale (no heartbeat). */
 const PARTICIPANT_STALE_MS = 5 * 60 * 1000; // 5 minutes
 /** How often to check for stale participants. */
 const PARTICIPANT_CLEANUP_INTERVAL_MS = 60 * 1000; // 1 minute
-/** Default root-message replay window. */
+/** Default channel-envelope replay window. */
 const REPLAY_LIMIT = 50;
 
 function parseDOParticipantId(
@@ -59,7 +66,8 @@ function parseDOParticipantId(
 }
 
 export class PubSubChannel extends DurableObjectBase {
-  static override schemaVersion = 100;
+  static override schemaVersion = 102;
+  private _channelLog: ChannelLogStore | null = null;
 
   constructor(ctx: DurableObjectContext, env: unknown) {
     super(ctx, env);
@@ -74,37 +82,6 @@ export class PubSubChannel extends DurableObjectBase {
 
   protected createTables(): void {
     this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        message_id TEXT NOT NULL UNIQUE,
-        type TEXT NOT NULL,
-        payload TEXT NOT NULL,
-        sender_id TEXT NOT NULL,
-        sender_metadata TEXT,
-        attachments TEXT,
-        ts INTEGER NOT NULL,
-        is_root INTEGER NOT NULL,
-        root_message_id TEXT,
-        root_kind TEXT,
-        CHECK (
-          (is_root = 1 AND root_message_id IS NULL
-                       AND root_kind IS NOT NULL
-                       AND root_kind IN ('chat', 'method', 'presence', 'system')) OR
-          (is_root = 0 AND root_message_id IS NOT NULL
-                       AND root_kind IS NULL)
-        ),
-        FOREIGN KEY (root_message_id) REFERENCES messages(message_id)
-      )
-    `);
-    this.sql.exec(`
-      CREATE INDEX IF NOT EXISTS idx_messages_root
-        ON messages(root_message_id) WHERE root_message_id IS NOT NULL
-    `);
-    this.sql.exec(`
-      CREATE INDEX IF NOT EXISTS idx_messages_root_chat
-        ON messages(id DESC) WHERE root_kind = 'chat' AND is_root = 1
-    `);
-    this.sql.exec(`
       CREATE TABLE IF NOT EXISTS participants (
         id TEXT PRIMARY KEY,
         metadata TEXT NOT NULL,
@@ -116,14 +93,23 @@ export class PubSubChannel extends DurableObjectBase {
     `);
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS pending_calls (
-        call_id TEXT PRIMARY KEY,
+        transport_call_id TEXT PRIMARY KEY,
+        invocation_id TEXT NOT NULL,
+        turn_id TEXT,
         caller_id TEXT NOT NULL,
         target_id TEXT NOT NULL,
         method TEXT NOT NULL,
         args TEXT,
-        created_at INTEGER NOT NULL
+        created_at INTEGER NOT NULL,
+        deadline_at INTEGER
       )
     `);
+    try {
+      this.sql.exec(`ALTER TABLE pending_calls ADD COLUMN deadline_at INTEGER`);
+    } catch {
+      // Existing databases may already have the column, and freshly-created
+      // databases get it from CREATE TABLE above.
+    }
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS dedup_keys (
         key TEXT PRIMARY KEY,
@@ -134,8 +120,10 @@ export class PubSubChannel extends DurableObjectBase {
   }
 
   protected override migrate(_fromVersion: number, _toVersion: number): void {
+    this.sql.exec(`DROP INDEX IF EXISTS idx_channel_envelopes_published_at`);
     this.sql.exec(`DROP INDEX IF EXISTS idx_messages_root`);
     this.sql.exec(`DROP INDEX IF EXISTS idx_messages_root_chat`);
+    this.sql.exec(`DROP TABLE IF EXISTS channel_envelopes`);
     this.sql.exec(`DROP TABLE IF EXISTS messages`);
     this.sql.exec(`DROP TABLE IF EXISTS participants`);
     this.sql.exec(`DROP TABLE IF EXISTS pending_calls`);
@@ -153,6 +141,17 @@ export class PubSubChannel extends DurableObjectBase {
     };
   }
 
+  private get channelLog(): ChannelLogStore {
+    this._channelLog ??= new GadChannelLogStore(
+      {
+        call: <T = unknown>(targetId: string, method: string, args: unknown[]) =>
+          this.rpc.call<T>(targetId, method, args),
+      },
+      this.objectKey,
+    );
+    return this._channelLog;
+  }
+
   /** Look up a participant's metadata from the participants table. */
   private getSenderMetadata(participantId: string): Record<string, unknown> | undefined {
     const row = this.sql
@@ -166,7 +165,127 @@ export class PubSubChannel extends DurableObjectBase {
     }
   }
 
-  private appendLogEvent(
+  private participantRef(participantId: string): ParticipantRef {
+    const metadata = this.getSenderMetadata(participantId) ?? {};
+    const type = typeof metadata["type"] === "string" ? metadata["type"] : undefined;
+    return {
+      kind: type === "agent" || type === "panel" || type === "user" || type === "system"
+        ? type
+        : participantId === "system" ? "system" : participantId.startsWith("panel:") ? "panel" : "external",
+      id: participantId,
+      participantId,
+      displayName: typeof metadata["name"] === "string" ? metadata["name"] : participantId,
+      metadata,
+    };
+  }
+
+  private invocationStartedPayload(
+    callerId: string,
+    targetId: string,
+    invocationId: string,
+    transportCallId: string,
+    turnId: string | undefined,
+    methodName: string,
+    args: unknown,
+  ): AgenticEvent {
+    return {
+      kind: "invocation.started",
+      actor: this.participantRef(callerId),
+      ...(turnId ? { turnId: turnId as TurnId } : {}),
+      causality: {
+        invocationId: invocationId as InvocationId,
+        transportCallId,
+      },
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        name: methodName,
+        invocationType: "panel",
+        request: args,
+        transport: {
+          kind: "channel",
+          channelId: this.objectKey as never,
+          target: this.participantRef(targetId),
+          transportCallId,
+        },
+        userVisible: false,
+      },
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  private invocationResultPayload(
+    callerId: string,
+    invocationId: string,
+    transportCallId: string | undefined,
+    turnId: string | undefined,
+    result: unknown,
+    isError: boolean,
+  ): AgenticEvent {
+    return {
+      kind: isError ? "invocation.failed" : "invocation.completed",
+      actor: this.participantRef(callerId),
+      ...(turnId ? { turnId: turnId as TurnId } : {}),
+      causality: {
+        invocationId: invocationId as InvocationId,
+        ...(transportCallId ? { transportCallId } : {}),
+      },
+      payload: isError
+        ? { protocol: AGENTIC_PROTOCOL_VERSION, reason: "method failed", error: result }
+        : { protocol: AGENTIC_PROTOCOL_VERSION, result },
+      createdAt: new Date().toISOString(),
+    } as AgenticEvent;
+  }
+
+  private invocationCancelledPayload(
+    actorId: string,
+    invocationId: string,
+    transportCallId: string | undefined,
+    turnId: string | undefined,
+    reason: string,
+  ): AgenticEvent {
+    return {
+      kind: "invocation.cancelled",
+      actor: this.participantRef(actorId),
+      ...(turnId ? { turnId: turnId as TurnId } : {}),
+      causality: {
+        invocationId: invocationId as InvocationId,
+        ...(transportCallId ? { transportCallId } : {}),
+      },
+      payload: { protocol: AGENTIC_PROTOCOL_VERSION, reason },
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  private invocationResultFromPublishedPayload(
+    type: string,
+    payload: unknown,
+  ): { transportCallId: string; invocationId: string; turnId?: string; content: unknown; isError: boolean; complete: boolean } | null {
+    if (type !== AGENTIC_EVENT_PAYLOAD_KIND || !payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+    const eventObj = payload as AgenticEvent;
+    if (!eventObj.kind.startsWith("invocation.")) return null;
+    const invocationId = eventObj.causality?.invocationId;
+    if (typeof invocationId !== "string" || invocationId.length === 0) return null;
+    const transportCallId = eventObj.causality?.transportCallId ?? invocationId;
+    const turnId = typeof eventObj.turnId === "string" ? eventObj.turnId : undefined;
+    if (eventObj.kind === "invocation.completed") {
+      const result = "result" in eventObj.payload ? eventObj.payload.result : undefined;
+      return { transportCallId, invocationId, turnId, content: result, isError: false, complete: true };
+    }
+    if (eventObj.kind === "invocation.failed" || eventObj.kind === "invocation.cancelled") {
+      const payloadObj = eventObj.payload as Record<string, unknown>;
+      return {
+        transportCallId,
+        invocationId,
+        turnId,
+        content: payloadObj["error"] ?? payloadObj["reason"] ?? "Invocation failed",
+        isError: true,
+        complete: true,
+      };
+    }
+    return { transportCallId, invocationId, turnId, content: eventObj.payload, isError: false, complete: false };
+  }
+
+  private async appendLogEvent(
     type: string,
     payload: unknown,
     senderId: string,
@@ -175,74 +294,68 @@ export class PubSubChannel extends DurableObjectBase {
       messageId?: string;
       attachments?: StoredAttachment[];
     }
-  ): ChannelEvent {
-    const classification = classifyLogWrite(type, payload);
-    let payloadJson: string;
-    try {
-      payloadJson = JSON.stringify(payload);
-    } catch {
-      throw new Error("payload not serializable");
-    }
-    const messageId = opts?.messageId ?? crypto.randomUUID();
-    const ts = Date.now();
-    this.sql.exec(
-      `INSERT INTO messages (
-        message_id, type, payload, sender_id, sender_metadata, attachments, ts,
-        is_root, root_message_id, root_kind
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      messageId,
+  ): Promise<ChannelEvent> {
+    return this.channelLog.append({
       type,
-      payloadJson,
-      senderId,
-      senderMetadata ? JSON.stringify(senderMetadata) : null,
-      opts?.attachments ? JSON.stringify(opts.attachments) : null,
-      ts,
-      classification.isRoot ? 1 : 0,
-      classification.rootMessageId ?? null,
-      classification.rootKind ?? null
-    );
-    const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
-    return buildChannelEvent(
-      id,
-      messageId,
-      type,
-      payloadJson,
+      payload,
       senderId,
       senderMetadata,
-      ts,
-      opts?.attachments
-    );
+      messageId: opts?.messageId,
+      attachments: opts?.attachments,
+    });
   }
 
-  private currentReplayContext(): { contextId?: string; channelConfig?: Record<string, unknown> } {
+  private currentReplayContext(): {
+    contextId?: string;
+    channelConfig?: Record<string, unknown>;
+    snapshots?: BootstrapSnapshot[];
+  } {
     return {
       contextId: this.getStateValue("contextId") ?? undefined,
       channelConfig: this.getChannelConfig() ?? undefined,
+      snapshots: [this.rosterSnapshot()],
     };
   }
 
-  private ensureMethodRoot(
-    callId: string,
+  private rosterSnapshot(): BootstrapSnapshot {
+    const participants: ParticipantSnapshot[] = [];
+    for (const row of this.sql.exec(`SELECT id, metadata FROM participants ORDER BY id ASC`).toArray()) {
+      try {
+        participants.push({
+          id: row["id"] as string,
+          metadata: JSON.parse(row["metadata"] as string),
+        });
+      } catch {
+        /* ignore corrupt participant metadata */
+      }
+    }
+    return { kind: "roster-snapshot", participants, ts: Date.now() };
+  }
+
+  private async ensureMethodRoot(
+    invocationId: string,
     callerId: string,
     targetId?: string,
+    transportCallId?: string,
+    turnId?: string,
     methodName?: string,
     args?: unknown
-  ): void {
-    const existing = this.sql
-      .exec(`SELECT id FROM messages WHERE message_id = ?`, callId)
-      .toArray();
-    if (existing.length > 0) return;
-    this.appendLogEvent(
-      "method-call",
-      {
-        callId,
-        providerId: targetId ?? "unknown",
-        methodName: methodName ?? "unknown",
+  ): Promise<void> {
+    if (await this.channelLog.hasEnvelope(invocationId)) return;
+    await this.appendLogEvent(
+      AGENTIC_EVENT_PAYLOAD_KIND,
+      this.invocationStartedPayload(
+        callerId,
+        targetId ?? "unknown",
+        invocationId,
+        transportCallId ?? invocationId,
+        turnId,
+        methodName ?? "unknown",
         args,
-      },
+      ),
       callerId,
       this.getSenderMetadata(callerId),
-      { messageId: callId }
+      { messageId: invocationId }
     );
   }
 
@@ -300,20 +413,20 @@ export class PubSubChannel extends DurableObjectBase {
 
   // ── Presence events ─────────────────────────────────────────────────────
 
-  private publishPresenceEvent(
+  private async publishPresenceEvent(
     senderId: string,
     action: "join" | "leave" | "update",
     metadata: Record<string, unknown>,
     leaveReason?: "graceful" | "disconnect" | "replaced",
     senderRef?: number
-  ): void {
+  ): Promise<void> {
     const payload: PresencePayload = {
       action,
       metadata,
       ...(leaveReason ? { leaveReason } : {}),
     };
 
-    const event = this.appendLogEvent("presence", payload, senderId, metadata);
+    const event = await this.appendLogEvent("presence", payload, senderId, metadata);
     broadcast(this.broadcastDeps, event, { kind: "log", phase: "live", ref: senderRef }, senderId);
   }
 
@@ -441,7 +554,7 @@ export class PubSubChannel extends DurableObjectBase {
         previousSessionId == null ||
         participantSessionId == null ||
         previousSessionId !== participantSessionId;
-      this.publishPresenceEvent(
+      await this.publishPresenceEvent(
         participantId,
         "leave",
         oldMetadata,
@@ -487,16 +600,15 @@ export class PubSubChannel extends DurableObjectBase {
     );
 
     // Publish join presence before building replay so the initial roster snapshot includes self.
-    this.publishPresenceEvent(participantId, "join", storedMetadata);
+    await this.publishPresenceEvent(participantId, "join", storedMetadata);
 
     const mode = wantsReplay && sinceId && sinceId > 0 ? "after" : "initial";
-    const envelope = buildReplayEnvelope(this.sql, {
-      mode,
-      sinceId: wantsReplay ? sinceId : undefined,
-      rootLimit: wantsReplay ? (replayMessageLimit ?? REPLAY_LIMIT) : 0,
-      includeRosterSnapshot: wantsReplay && mode === "initial",
-      ...this.currentReplayContext(),
-    });
+    const envelope = mode === "after"
+      ? await this.channelLog.replayAfter(sinceId!, this.currentReplayContext())
+      : await this.channelLog.replayInitial(
+          wantsReplay ? (replayMessageLimit ?? REPLAY_LIMIT) : 0,
+          this.currentReplayContext(),
+        );
     this.queueReplayEnvelope(participantId, envelope, doRef != null);
 
     if (sessionReplaced) this.redeliverPendingCallsTo(participantId);
@@ -515,7 +627,7 @@ export class PubSubChannel extends DurableObjectBase {
 
   private queueReplayEnvelope(
     subscriberId: string,
-    envelope: ReturnType<typeof buildReplayEnvelope>,
+    envelope: Awaited<ReturnType<ChannelLogStore["replayInitial"]>>,
     deliverToDo: boolean
   ): void {
     const onFatal = (err: { code?: string }) => {
@@ -584,13 +696,13 @@ export class PubSubChannel extends DurableObjectBase {
     this.sql.exec(`DELETE FROM participants WHERE id = ?`, participantId);
     cleanupDeliveryChain(participantId);
     await this.failPendingCallsTargeting(participantId, leaveReason);
-    this.publishPresenceEvent(participantId, "leave", metadata, leaveReason);
+    await this.publishPresenceEvent(participantId, "leave", metadata, leaveReason);
   }
 
   /**
-   * Redeliver pending method-calls to a (re)subscribed participant.
+   * Redeliver pending channel invocations to a (re)subscribed participant.
    *
-   * The canonical method-call root is durable. If the target's session was
+   * The canonical invocation start is durable. If the target's session was
    * interrupted while the call was pending, the provider still needs an
    * operational nudge after it re-subscribes. Re-emit every still-pending call
    * targeting this participant as a signal, queued through the same
@@ -604,7 +716,7 @@ export class PubSubChannel extends DurableObjectBase {
   private redeliverPendingCallsTo(participantId: string): void {
     const rows = this.sql
       .exec(
-        `SELECT call_id, caller_id, method, args FROM pending_calls WHERE target_id = ?`,
+        `SELECT transport_call_id, invocation_id, turn_id, caller_id, method, args FROM pending_calls WHERE target_id = ?`,
         participantId
       )
       .toArray();
@@ -618,7 +730,9 @@ export class PubSubChannel extends DurableObjectBase {
     };
 
     for (const row of rows) {
-      const callId = row["call_id"] as string;
+      const transportCallId = row["transport_call_id"] as string;
+      const invocationId = row["invocation_id"] as string;
+      const turnId = row["turn_id"] ? row["turn_id"] as string : undefined;
       const callerId = row["caller_id"] as string;
       const methodName = row["method"] as string;
       const argsRaw = row["args"] as string | null;
@@ -627,17 +741,17 @@ export class PubSubChannel extends DurableObjectBase {
         try {
           args = JSON.parse(argsRaw);
         } catch (err) {
-          console.warn(`[Channel] redeliver: failed to parse args for callId=${callId}:`, err);
+          console.warn(`[Channel] redeliver: failed to parse args for transportCallId=${transportCallId}:`, err);
           continue;
         }
       }
-      const payload = { callId, providerId: participantId, methodName, args };
+      const payload = this.invocationStartedPayload(callerId, participantId, invocationId, transportCallId, turnId, methodName, args);
       const senderMetadata = this.getSenderMetadata(callerId);
       const ts = Date.now();
       const event: ChannelEvent = {
         id: 0,
-        messageId: "",
-        type: "method-call",
+        messageId: invocationId,
+        type: AGENTIC_EVENT_PAYLOAD_KIND,
         payload,
         senderId: callerId,
         senderMetadata,
@@ -677,11 +791,11 @@ export class PubSubChannel extends DurableObjectBase {
         : reason === "disconnect"
           ? `Target ${targetId} disconnected from the channel before the call completed`
           : `Target ${targetId} was replaced by a new session before the call completed`;
-    for (const { callId, callerId } of cancelled) {
+    for (const { transportCallId, invocationId, turnId, callerId } of cancelled) {
       try {
-        await this.deliverCallResult(callerId, callId, { error: errorMessage }, true);
+        await this.deliverCallResult(callerId, invocationId, transportCallId, turnId, { error: errorMessage }, true);
       } catch (err) {
-        console.warn(`[Channel] failPendingCallsTargeting: deliver failed for ${callId}:`, err);
+        console.warn(`[Channel] failPendingCallsTargeting: deliver failed for ${transportCallId}:`, err);
       }
     }
     console.log(
@@ -736,7 +850,7 @@ export class PubSubChannel extends DurableObjectBase {
     if (replyTo) payload["replyTo"] = replyTo;
     const payloadJson = JSON.stringify(payload);
 
-    const event = this.appendLogEvent("message", payload, participantId, senderMetadata, {
+    const event = await this.appendLogEvent("message", payload, participantId, senderMetadata, {
       messageId,
     });
 
@@ -780,18 +894,20 @@ export class PubSubChannel extends DurableObjectBase {
       }
     }
 
-    // Intercept method-result only if there's a matching pending DO-initiated call
-    // AND the result is complete (not a streaming partial like console chunks).
-    if (type === "method-result" && payload && typeof payload === "object") {
-      const p = payload as Record<string, unknown>;
-      const callId = p["callId"] as string;
-      const isComplete = p["complete"] !== false;
-      if (callId && isComplete) {
+    // Intercept terminal invocation results only if there's a matching pending
+    // DO-initiated call. Streaming progress remains in the channel log.
+    const invocationResult = this.invocationResultFromPublishedPayload(type, payload);
+    if (invocationResult) {
+      if (invocationResult.complete) {
         const pending = this.sql
-          .exec(`SELECT call_id FROM pending_calls WHERE call_id = ?`, callId)
+          .exec(`SELECT transport_call_id FROM pending_calls WHERE transport_call_id = ?`, invocationResult.transportCallId)
           .toArray();
         if (pending.length > 0) {
-          const resultId = await this.handleMethodResult(callId, p["content"], !!p["isError"]);
+          const resultId = await this.handleMethodResult(
+            invocationResult.transportCallId,
+            invocationResult.content,
+            invocationResult.isError,
+          );
           if (idempotencyKey && resultId !== undefined) {
             this.sql.exec(
               `INSERT OR IGNORE INTO dedup_keys (key, result_id, created_at) VALUES (?, ?, ?)`,
@@ -803,8 +919,8 @@ export class PubSubChannel extends DurableObjectBase {
           }
           return { id: resultId };
         }
-        // No pending call — fall through to normal broadcast
       }
+      // No pending call, or a non-terminal chunk — fall through to normal broadcast.
     }
 
     const senderMetadata = this.getSenderMetadata(participantId) ?? opts?.senderMetadata;
@@ -814,8 +930,8 @@ export class PubSubChannel extends DurableObjectBase {
       typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : null;
     const messageId = (payloadObj?.["id"] as string) ?? crypto.randomUUID();
 
-    const event = this.appendLogEvent(type, payload, participantId, senderMetadata, {
-      messageId: type === "message" || type === "method-call" ? messageId : undefined,
+    const event = await this.appendLogEvent(type, payload, participantId, senderMetadata, {
+      messageId: type === "message" ? messageId : undefined,
       attachments,
     });
 
@@ -834,88 +950,27 @@ export class PubSubChannel extends DurableObjectBase {
   }
 
   /**
-   * Update an existing message (from a participant).
-   *
-   * `opts.append` forces append semantics on a typed (contentType-set)
-   * message. Untyped messages already append by default on the client;
-   * the flag is only meaningful for typed streams (e.g. thinking).
+   * Broadcast envelopes that were durably appended to GAD outside this DO.
+   * This keeps GAD as the provenance/channel-log backend while PubSub remains
+   * responsible for live fan-out to connected panels and agents.
    */
-  async update(
-    participantId: string,
-    messageId: string,
-    content: string,
-    idempotencyKey?: string,
-    opts?: { append?: boolean }
-  ): Promise<void> {
-    this.assertParticipantCaller(participantId, "update");
-    // Phase 0B: Idempotency check
-    if (idempotencyKey) {
-      const existing = this.sql
-        .exec(`SELECT result_id FROM dedup_keys WHERE key = ?`, idempotencyKey)
-        .toArray();
-      if (existing.length > 0) {
-        return;
-      }
+  async broadcastStoredEnvelopes(envelopeIds: string[]): Promise<{ broadcasted: number }> {
+    let broadcasted = 0;
+    for (const envelopeId of envelopeIds) {
+      if (typeof envelopeId !== "string" || envelopeId.length === 0) continue;
+      const event = await this.channelLog.getEventByEnvelopeId(envelopeId);
+      if (!event) continue;
+      broadcast(this.broadcastDeps, event, { kind: "log", phase: "live" }, event.senderId);
+      broadcasted += 1;
     }
-
-    const senderMetadata = this.getSenderMetadata(participantId);
-
-    const payload: Record<string, unknown> = { id: messageId, content };
-    if (opts?.append) payload["append"] = true;
-    const event = this.appendLogEvent("update-message", payload, participantId, senderMetadata);
-
-    if (idempotencyKey) {
-      this.sql.exec(
-        `INSERT OR IGNORE INTO dedup_keys (key, result_id, created_at) VALUES (?, ?, ?)`,
-        idempotencyKey,
-        event.id,
-        Date.now()
-      );
-      this.scheduleDedupCleanup();
-    }
-
-    broadcast(this.broadcastDeps, event, { kind: "log", phase: "live" }, participantId);
-  }
-
-  /**
-   * Complete (finalize) a message (from a participant).
-   */
-  async complete(participantId: string, messageId: string, idempotencyKey?: string): Promise<void> {
-    this.assertParticipantCaller(participantId, "complete");
-    // Phase 0B: Idempotency check
-    if (idempotencyKey) {
-      const existing = this.sql
-        .exec(`SELECT result_id FROM dedup_keys WHERE key = ?`, idempotencyKey)
-        .toArray();
-      if (existing.length > 0) {
-        return;
-      }
-    }
-
-    const senderMetadata = this.getSenderMetadata(participantId);
-
-    // complete uses type "update-message" with { id, complete: true } — matches PubSub server wire format
-    const payload = { id: messageId, complete: true };
-    const event = this.appendLogEvent("update-message", payload, participantId, senderMetadata);
-
-    if (idempotencyKey) {
-      this.sql.exec(
-        `INSERT OR IGNORE INTO dedup_keys (key, result_id, created_at) VALUES (?, ?, ?)`,
-        idempotencyKey,
-        event.id,
-        Date.now()
-      );
-      this.scheduleDedupCleanup();
-    }
-
-    broadcast(this.broadcastDeps, event, { kind: "log", phase: "live" }, participantId);
+    return { broadcasted };
   }
 
   /**
    * Mark a message as errored. Persists an `error` channel event with a
    * human-readable error string, which the client merge helper surfaces as
    * `ChatMessage.error` + `complete: true` in the chat UI. Used by the
-   * worker's ContentBlockProjector when a channel op fails so users see a
+   * channel operation callers when a send/update path fails so users see a
    * visible error instead of a silent empty message.
    */
   async error(
@@ -928,16 +983,12 @@ export class PubSubChannel extends DurableObjectBase {
     const senderMetadata = this.getSenderMetadata(participantId);
     const payload: Record<string, unknown> = { id: messageId, error: errorMessage };
     if (code) payload["code"] = code;
-    const event = this.appendLogEvent("error", payload, participantId, senderMetadata);
+    const event = await this.appendLogEvent("error", payload, participantId, senderMetadata);
     broadcast(this.broadcastDeps, event, { kind: "log", phase: "live" }, participantId);
   }
 
   async getReplayAfter(sinceId: number) {
-    return buildReplayEnvelope(this.sql, {
-      mode: "after",
-      sinceId,
-      ...this.currentReplayContext(),
-    });
+    return this.channelLog.replayAfter(sinceId, this.currentReplayContext());
   }
 
   /**
@@ -971,7 +1022,7 @@ export class PubSubChannel extends DurableObjectBase {
    */
   async updateMetadata(participantId: string, metadata: Record<string, unknown>): Promise<void> {
     this.assertParticipantCaller(participantId, "updateMetadata");
-    this.updateParticipantMetadata(participantId, metadata);
+    await this.updateParticipantMetadata(participantId, metadata);
   }
 
   async adminUpdateParticipantMetadata(
@@ -979,19 +1030,19 @@ export class PubSubChannel extends DurableObjectBase {
     metadata: Record<string, unknown>
   ): Promise<void> {
     this.assertAdminCaller("adminUpdateParticipantMetadata");
-    this.updateParticipantMetadata(participantId, metadata);
+    await this.updateParticipantMetadata(participantId, metadata);
   }
 
-  private updateParticipantMetadata(
+  private async updateParticipantMetadata(
     participantId: string,
     metadata: Record<string, unknown>
-  ): void {
+  ): Promise<void> {
     this.sql.exec(
       `UPDATE participants SET metadata = ? WHERE id = ?`,
       JSON.stringify(metadata),
       participantId
     );
-    this.publishPresenceEvent(participantId, "update", metadata);
+    await this.publishPresenceEvent(participantId, "update", metadata);
   }
 
   /**
@@ -1066,27 +1117,22 @@ export class PubSubChannel extends DurableObjectBase {
   async updateConfig(config: Partial<ChannelConfig>): Promise<ChannelConfig> {
     const newConfig = { ...this.getChannelConfig(), ...config };
     this.setStateValue("config", JSON.stringify(newConfig));
-    const event = this.appendLogEvent("config-update", newConfig, "system");
+    const event = await this.appendLogEvent("config-update", newConfig, "system");
     broadcast(this.broadcastDeps, event, { kind: "log", phase: "live" }, "system");
     return newConfig;
   }
 
-  async getChatReplayBefore(beforeRootId: number, rootLimit?: number) {
-    return buildReplayEnvelope(this.sql, {
-      mode: "before",
-      beforeRootId,
-      rootLimit: rootLimit ?? 100,
-      ...this.currentReplayContext(),
-    });
+  async getReplayBefore(beforeSeq: number, limit?: number) {
+    return this.channelLog.replayBefore(beforeSeq, limit ?? 100, this.currentReplayContext());
   }
 
   async adminInspectSchema() {
     this.assertAdminCaller("adminInspectSchema");
-    const tables = ["messages", "participants", "pending_calls", "dedup_keys"].map((table) => ({
+    const tables = ["participants", "pending_calls", "dedup_keys"].map((table) => ({
       table,
       columns: this.sql.exec(`PRAGMA table_info(${table})`).toArray(),
     }));
-    const indexes = ["messages", "participants", "pending_calls", "dedup_keys"].flatMap((table) => {
+    const indexes = ["participants", "pending_calls", "dedup_keys"].flatMap((table) => {
       const list = this.sql.exec(`PRAGMA index_list(${table})`).toArray();
       return list.map((idx) => ({
         table,
@@ -1094,60 +1140,16 @@ export class PubSubChannel extends DurableObjectBase {
         columns: this.sql.exec(`PRAGMA index_info(${idx["name"] as string})`).toArray(),
       }));
     });
-    const messageColumns = new Set(
-      tables.find((entry) => entry.table === "messages")?.columns.map((col) => col["name"]) ?? []
-    );
-    const expected = [
-      "id",
-      "message_id",
-      "type",
-      "payload",
-      "sender_id",
-      "sender_metadata",
-      "attachments",
-      "ts",
-      "is_root",
-      "root_message_id",
-      "root_kind",
-    ];
-    const actualColumns =
-      tables.find((entry) => entry.table === "messages")?.columns.map((col) => col["name"]) ?? [];
-    const messageSql =
-      (this.sql
-        .exec(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'`)
-        .toArray()[0]?.["sql"] as string | undefined) ?? "";
-    const indexNames = new Set(
-      indexes
-        .filter((idx) => idx.table === "messages")
-        .map((idx) => (idx as Record<string, unknown>)["name"])
-    );
+    const localEnvelopeTables = this.sql
+      .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'channel_envelopes'`)
+      .toArray();
     return {
       tables,
       indexes,
       invariants: [
         {
-          name: "messages-columns",
-          ok:
-            actualColumns.length === expected.length &&
-            expected.every((column) => messageColumns.has(column)) &&
-            !["content", `content_${"type"}`, `reply_${"to"}`, `per${"sist"}`].some((column) =>
-              messageColumns.has(column)
-            ),
-        },
-        {
-          name: "messages-check-constraint",
-          ok:
-            messageSql.includes("root_kind IN ('chat', 'method', 'presence', 'system')") &&
-            messageSql.includes("is_root = 1") &&
-            messageSql.includes("is_root = 0"),
-        },
-        {
-          name: "message-id-unique",
-          ok: messageSql.includes("message_id TEXT NOT NULL UNIQUE"),
-        },
-        {
-          name: "chat-root-index",
-          ok: indexNames.has("idx_messages_root_chat") && indexNames.has("idx_messages_root"),
+          name: "durable-log-delegated-to-gad",
+          ok: localEnvelopeTables.length === 0,
         },
       ],
     };
@@ -1160,133 +1162,31 @@ export class PubSubChannel extends DurableObjectBase {
     includePresence?: boolean;
   } = {}) {
     this.assertAdminCaller("adminInspectLog");
-    const clauses: string[] = [];
-    const args: unknown[] = [];
-    if (opts.afterId != null) {
-      clauses.push("id > ?");
-      args.push(opts.afterId);
-    }
-    if (opts.beforeId != null) {
-      clauses.push("id < ?");
-      args.push(opts.beforeId);
-    }
-    if (!opts.includePresence) clauses.push("type != 'presence'");
-    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
-    const limit = Math.min(Math.max(opts.limit ?? 100, 1), 1000);
-    const rows = this.sql
-      .exec(
-        `SELECT id, message_id, type, payload, sender_id, sender_metadata, attachments, ts, is_root, root_message_id, root_kind
-         FROM messages ${where} ORDER BY id ASC LIMIT ?`,
-        ...args,
-        limit
-      )
-      .toArray();
-    const firstId = rows[0]?.["id"] as number | undefined;
-    const lastId = rows[rows.length - 1]?.["id"] as number | undefined;
+    const rows = await this.channelLog.inspectRows(opts);
+    const firstId = rows[0]?.["seq"] as number | undefined;
+    const lastId = rows[rows.length - 1]?.["seq"] as number | undefined;
+    const before = firstId != null ? await this.channelLog.replayBefore(firstId, 1, this.currentReplayContext()) : null;
+    const after = lastId != null ? await this.channelLog.replayAfter(lastId, this.currentReplayContext()) : null;
     return {
       rows,
-      hasMoreBefore:
-        firstId != null &&
-        this.sql.exec(`SELECT id FROM messages WHERE id < ? LIMIT 1`, firstId).toArray().length > 0,
-      hasMoreAfter:
-        lastId != null &&
-        this.sql.exec(`SELECT id FROM messages WHERE id > ? LIMIT 1`, lastId).toArray().length > 0,
+      hasMoreBefore: (before?.logEvents.length ?? 0) > 0,
+      hasMoreAfter: (after?.logEvents.length ?? 0) > 0,
     };
   }
 
-  async adminInspectMessageChain(messageId: string) {
+  async adminInspectEnvelope(envelopeId: string) {
     this.assertAdminCaller("adminInspectMessageChain");
-    return {
-      rows: this.sql
-        .exec(
-          `SELECT id, message_id, type, payload, sender_id, sender_metadata, attachments, ts, is_root, root_message_id, root_kind
-           FROM messages WHERE message_id = ? OR root_message_id = ? ORDER BY id ASC`,
-          messageId,
-          messageId
-        )
-        .toArray(),
-    };
+    return { rows: await this.channelLog.inspectEnvelope(envelopeId) };
   }
 
-  async adminReconstructTranscript(opts: { rootLimit?: number; beforeRootId?: number } = {}) {
+  async adminReconstructTranscript(opts: { rootLimit?: number; beforeSeq?: number } = {}) {
     this.assertAdminCaller("adminReconstructTranscript");
     const envelope =
-      opts.beforeRootId != null
-        ? await this.getChatReplayBefore(opts.beforeRootId, opts.rootLimit)
-        : buildReplayEnvelope(this.sql, {
-            mode: "initial",
-            rootLimit: opts.rootLimit ?? REPLAY_LIMIT,
-            ...this.currentReplayContext(),
-          });
-    const replayEvents: unknown[] = envelope.logEvents.flatMap((event): unknown[] => {
-      const payload = event.payload && typeof event.payload === "object"
-        ? (event.payload as Record<string, unknown>)
-        : {};
-      const base = {
-        delivery: "log" as const,
-        phase: "replay" as const,
-        pubsubId: event.id,
-        senderId: event.senderId,
-        ts: event.ts,
-        senderMetadata: event.senderMetadata,
-        attachments: event.attachments,
-      };
-      switch (event.type) {
-        case "message":
-          return [{
-            ...base,
-            type: "message" as const,
-            id: (payload["id"] as string | undefined) ?? event.messageId,
-            content: (payload["content"] as string | undefined) ?? "",
-            contentType: payload["contentType"] as string | undefined,
-            replyTo: payload["replyTo"] as string | undefined,
-            metadata: payload["metadata"] as Record<string, unknown> | undefined,
-          }];
-        case "update-message":
-          return [{
-            ...base,
-            type: "update-message" as const,
-            id: (payload["id"] as string | undefined) ?? event.messageId,
-            content: payload["content"] as string | undefined,
-            append: payload["append"] as boolean | undefined,
-            complete: payload["complete"] as boolean | undefined,
-            contentType: payload["contentType"] as string | undefined,
-          }];
-        case "error":
-          return [{
-            ...base,
-            type: "error" as const,
-            id: (payload["id"] as string | undefined) ?? event.messageId,
-            error: (payload["error"] as string | undefined) ?? "Unknown error",
-            code: payload["code"] as string | undefined,
-          }];
-        case "method-call":
-          return [{
-            ...base,
-            type: "method-call" as const,
-            callId: (payload["callId"] as string | undefined) ?? event.messageId,
-            providerId: payload["providerId"] as string | undefined,
-            methodName: payload["methodName"] as string | undefined,
-            args: payload["args"],
-          }];
-        case "method-result":
-          return [{
-            ...base,
-            type: "method-result" as const,
-            callId: (payload["callId"] as string | undefined) ?? event.messageId,
-            content: payload["content"],
-            complete: payload["complete"] as boolean | undefined,
-            isError: payload["isError"] as boolean | undefined,
-            progress: payload["progress"] as number | undefined,
-            contentType: payload["contentType"] as string | undefined,
-          }];
-        default:
-          return [];
-      }
-    });
+      opts.beforeSeq != null
+        ? await this.getReplayBefore(opts.beforeSeq, opts.rootLimit)
+        : await this.channelLog.replayInitial(opts.rootLimit ?? REPLAY_LIMIT, this.currentReplayContext());
     return {
       logEvents: envelope.logEvents,
-      transcript: aggregateReplayEvents(replayEvents as Parameters<typeof aggregateReplayEvents>[0]),
       ready: envelope.ready,
     };
   }
@@ -1298,121 +1198,18 @@ export class PubSubChannel extends DurableObjectBase {
     for (const invariant of schema.invariants) {
       if (!invariant.ok) issues.push({ code: "schema", message: `schema invariant failed: ${invariant.name}` });
     }
-    const rows = this.sql
-      .exec(
-        `SELECT id, message_id, type, payload, sender_id, sender_metadata, is_root, root_message_id, root_kind
-         FROM messages ORDER BY id ASC LIMIT ?`,
-        Math.min(Math.max(opts.rootLimit ?? 10000, 1), 100000)
-      )
-      .toArray();
-    const roots = new Map<string, Record<string, unknown>>();
-    const parsedPayloads = new Map<number, Record<string, unknown>>();
-    const chatTerminals = new Map<string, Array<{ rowId: number; kind: "complete" | "error" }>>();
-    const methodTerminals = new Map<string, Array<{ rowId: number; kind: "result" | "cancel" | "timeout" | "error" }>>();
+    const rows = await this.channelLog.inspectRows({ limit: Math.min(Math.max(opts.rootLimit ?? 10000, 1), 100000) });
     for (const row of rows) {
-      const rowId = row["id"] as number;
+      const rowId = row["seq"] as number;
       try {
         const parsed = JSON.parse(row["payload"] as string);
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-          parsedPayloads.set(rowId, parsed as Record<string, unknown>);
+        if (row["payload_kind"] === AGENTIC_EVENT_PAYLOAD_KIND) {
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            issues.push({ code: "agentic-envelope", message: "agentic envelope payload is invalid", rowId });
+          }
         }
       } catch {
         issues.push({ code: "payload-json", message: "payload is not valid JSON", rowId });
-      }
-      const isRoot = row["is_root"] === 1;
-      const rootKind = row["root_kind"] as string | null;
-      const rootMessageId = row["root_message_id"] as string | null;
-      if (isRoot) {
-        roots.set(row["message_id"] as string, row);
-        if (!["chat", "method", "presence", "system"].includes(rootKind ?? "")) {
-          issues.push({ code: "root-kind", message: "unknown root_kind", rowId });
-        }
-        if (rootMessageId != null) {
-          issues.push({ code: "root-target", message: "root row has root_message_id", rowId });
-        }
-      } else if (!rootMessageId || rootKind != null) {
-        issues.push({ code: "dependent-shape", message: "dependent row has invalid root fields", rowId });
-      }
-    }
-    for (const row of rows) {
-      if (row["is_root"] === 1) continue;
-      const root = roots.get(row["root_message_id"] as string);
-      if (!root) {
-        issues.push({ code: "orphan-dependent", message: "dependent root is missing", rowId: row["id"] as number });
-        continue;
-      }
-      const type = row["type"] as string;
-      const kind = root["root_kind"] as string;
-      const rowId = row["id"] as number;
-      const rootMessageId = row["root_message_id"] as string;
-      const payload = parsedPayloads.get(rowId);
-      if (["update-message", "error", "execution-pause"].includes(type) && kind !== "chat") {
-        issues.push({ code: "wrong-root-kind", message: `${type} targets ${kind} root`, rowId });
-      }
-      if (["method-result", "method-cancel", "method-timeout"].includes(type) && kind !== "method") {
-        issues.push({ code: "wrong-root-kind", message: `${type} targets ${kind} root`, rowId });
-      }
-      if (kind === "chat") {
-        if (type === "update-message" && payload?.["complete"] === true) {
-          const group = chatTerminals.get(rootMessageId) ?? [];
-          group.push({ rowId, kind: "complete" });
-          chatTerminals.set(rootMessageId, group);
-        } else if (type === "error") {
-          const group = chatTerminals.get(rootMessageId) ?? [];
-          group.push({ rowId, kind: "error" });
-          chatTerminals.set(rootMessageId, group);
-        }
-      }
-      if (kind === "method") {
-        if (type === "method-result" && payload?.["complete"] === true) {
-          const group = methodTerminals.get(rootMessageId) ?? [];
-          group.push({ rowId, kind: payload["isError"] === true ? "error" : "result" });
-          methodTerminals.set(rootMessageId, group);
-        } else if (type === "method-cancel" || type === "method-timeout") {
-          const group = methodTerminals.get(rootMessageId) ?? [];
-          group.push({ rowId, kind: type === "method-cancel" ? "cancel" : "timeout" });
-          methodTerminals.set(rootMessageId, group);
-        }
-      }
-    }
-    for (const [rootId, terminals] of chatTerminals) {
-      if (terminals.length > 1) {
-        const kinds = new Set(terminals.map((terminal) => terminal.kind));
-        issues.push({
-          code: kinds.size === 1 ? "duplicate-terminal" : "contradictory-terminal",
-          message: `chat root ${rootId} has ${terminals.length} terminal rows`,
-          rowId: terminals[1]?.rowId,
-        });
-      }
-    }
-    for (const [rootId, terminals] of methodTerminals) {
-      const terminalClasses = new Set(terminals.map((terminal) => terminal.kind));
-      if (terminals.length > 1) {
-        issues.push({
-          code: terminalClasses.size === 1 ? "duplicate-terminal" : "contradictory-terminal",
-          message: `method root ${rootId} has ${terminals.length} terminal rows`,
-          rowId: terminals[1]?.rowId,
-        });
-      }
-    }
-    for (const row of rows) {
-      if (row["is_root"] !== 1 || row["root_kind"] !== "chat") continue;
-      const metadataRaw = row["sender_metadata"] as string | null;
-      let senderType: string | undefined;
-      if (metadataRaw) {
-        try {
-          const metadata = JSON.parse(metadataRaw) as Record<string, unknown>;
-          senderType = metadata["type"] as string | undefined;
-        } catch {
-          /* ignore */
-        }
-      }
-      if (senderType === "agent" && !chatTerminals.has(row["message_id"] as string)) {
-        issues.push({
-          code: "missing-terminal",
-          message: "assistant chat root has no terminal update or error",
-          rowId: row["id"] as number,
-        });
       }
     }
     return {
@@ -1420,8 +1217,6 @@ export class PubSubChannel extends DurableObjectBase {
       issues,
       stats: {
         rowCount: rows.length,
-        rootCount: rows.filter((row) => row["is_root"] === 1).length,
-        dependentCount: rows.filter((row) => row["is_root"] !== 1).length,
       },
     };
   }
@@ -1436,15 +1231,20 @@ export class PubSubChannel extends DurableObjectBase {
     targetPid: string,
     callId: string,
     method: string,
-    args: unknown
+    args: unknown,
+    opts?: { invocationId?: string; transportCallId?: string; turnId?: string; timeoutMs?: number }
   ): Promise<void> {
     this.assertParticipantCaller(callerPid, "callMethod");
-    storeCall(this.sql, callId, callerPid, targetPid, method, args);
+    const transportCallId = opts?.transportCallId ?? callId;
+    const invocationId = opts?.invocationId ?? callId;
+    const turnId = opts?.turnId;
+    const deadlineAt = opts?.timeoutMs && opts.timeoutMs > 0 ? Date.now() + opts.timeoutMs : undefined;
+    storeCall(this.sql, transportCallId, invocationId, turnId, callerPid, targetPid, method, args, deadlineAt);
     this.scheduleNextAlarm();
-    const payload = { callId, providerId: targetPid, methodName: method, args };
+    const payload = this.invocationStartedPayload(callerPid, targetPid, invocationId, transportCallId, turnId, method, args);
     const senderMetadata = this.getSenderMetadata(callerPid);
-    const callEvent = this.appendLogEvent("method-call", payload, callerPid, senderMetadata, {
-      messageId: callId,
+    const callEvent = await this.appendLogEvent(AGENTIC_EVENT_PAYLOAD_KIND, payload, callerPid, senderMetadata, {
+      messageId: invocationId,
     });
     broadcast(this.broadcastDeps, callEvent, { kind: "log", phase: "live" }, callerPid);
 
@@ -1455,10 +1255,12 @@ export class PubSubChannel extends DurableObjectBase {
 
     if (target.length === 0) {
       // Target not found — deliver error to caller
-      this.sql.exec(`DELETE FROM pending_calls WHERE call_id = ?`, callId);
+      this.sql.exec(`DELETE FROM pending_calls WHERE transport_call_id = ?`, transportCallId);
       await this.deliverCallResult(
         callerPid,
-        callId,
+        invocationId,
+        transportCallId,
+        turnId,
         { error: `Target ${targetPid} not found` },
         true
       );
@@ -1472,47 +1274,56 @@ export class PubSubChannel extends DurableObjectBase {
         const result = await this.rpc.call(
           targetPid,
           "onMethodCall",
-          [this.objectKey, callId, method, args]
+          [this.objectKey, transportCallId, method, args, { invocationId, turnId }]
         );
         // Method returned a result — deliver to caller
-        const pending = consumeCall(this.sql, callId);
+        const pending = consumeCall(this.sql, transportCallId);
         if (pending) {
           const res = result as { result: unknown; isError?: boolean };
-          await this.deliverCallResult(callerPid, callId, res.result, !!res.isError);
+          await this.deliverCallResult(callerPid, pending.invocationId, pending.transportCallId, pending.turnId, res.result, !!res.isError);
         }
       } catch (err) {
-        const pending = consumeCall(this.sql, callId);
+        const pending = consumeCall(this.sql, transportCallId);
         if (pending) {
           await this.deliverCallResult(
             callerPid,
-            callId,
+            pending.invocationId,
+            pending.transportCallId,
+            pending.turnId,
             err instanceof Error ? err.message : String(err),
             true
           );
         }
       }
     } else {
-      // RPC targets receive the durable method-call through the log broadcast above.
+      // RPC targets receive the durable invocation start through the log broadcast above.
     }
   }
 
   /**
-   * Handle a method result from a participant.
+   * Handle an invocation result from a participant.
    */
   async handleMethodResult(
-    callId: string,
+    transportCallId: string,
     content: unknown,
     isError: boolean
   ): Promise<number | undefined> {
-    const pending = consumeCall(this.sql, callId);
+    const pending = consumeCall(this.sql, transportCallId);
     if (!pending) {
       console.warn(
-        `[Channel] Ignoring method-result without pending call: ` +
-        `channel=${this.objectKey} callId=${callId} isError=${isError}`,
+        `[Channel] Ignoring invocation result without pending call: ` +
+        `channel=${this.objectKey} transportCallId=${transportCallId} isError=${isError}`,
       );
       return undefined;
     }
-    const resultId = await this.deliverCallResult(pending.callerId, callId, content, isError);
+    const resultId = await this.deliverCallResult(
+      pending.callerId,
+      pending.invocationId,
+      pending.transportCallId,
+      pending.turnId,
+      content,
+      isError,
+    );
     this.scheduleNextAlarm();
     return resultId;
   }
@@ -1521,32 +1332,30 @@ export class PubSubChannel extends DurableObjectBase {
    * Cancel a pending method call.
    */
   async cancelMethodCall(callId: string): Promise<void> {
-    // Look up the provider before deleting the call
-    const call = this.sql
-      .exec(`SELECT target_id FROM pending_calls WHERE call_id = ?`, callId)
-      .toArray();
-    cancelCallDb(this.sql, callId);
+    const cancelled = cancelCallDb(this.sql, callId);
     this.scheduleNextAlarm();
     // Notify the provider so it can abort the executing method
-    if (call.length > 0) {
-      const providerId = call[0]!["target_id"] as string;
-      this.ensureMethodRoot(callId, "system", providerId);
-      const event = this.appendLogEvent("method-cancel", { callId }, "system");
+    if (cancelled) {
+      const providerId = cancelled.targetId;
+      await this.ensureMethodRoot(
+        cancelled.invocationId,
+        cancelled.callerId,
+        providerId,
+        cancelled.transportCallId,
+        cancelled.turnId,
+      );
+      const event = await this.appendLogEvent(
+        AGENTIC_EVENT_PAYLOAD_KIND,
+        this.invocationCancelledPayload(
+          "system",
+          cancelled.invocationId,
+          cancelled.transportCallId,
+          cancelled.turnId,
+          "cancelled",
+        ),
+        "system"
+      );
       broadcast(this.broadcastDeps, event, { kind: "log", phase: "live" }, "system");
-      this.rpc
-        .emit(providerId, "channel:message", {
-          channelId: this.objectKey,
-          message: {
-            kind: "signal",
-            type: "method-cancel",
-            payload: { callId },
-            senderId: "system",
-            ts: Date.now(),
-          },
-        })
-        .catch((err) => {
-          console.warn("[Channel] cancel emit failed:", err);
-        });
     }
   }
 
@@ -1556,24 +1365,35 @@ export class PubSubChannel extends DurableObjectBase {
    * through this durable terminal event.
    */
   async timeoutMethodCall(callId: string, reason?: string): Promise<void> {
-    const call = this.sql
-      .exec(`SELECT caller_id, target_id FROM pending_calls WHERE call_id = ?`, callId)
-      .toArray();
-    if (call.length === 0) return;
-    cancelCallDb(this.sql, callId);
+    const cancelled = cancelCallDb(this.sql, callId);
+    if (!cancelled) return;
     this.scheduleNextAlarm();
-    const callerId = call[0]!["caller_id"] as string;
-    const targetId = call[0]!["target_id"] as string;
-    this.ensureMethodRoot(callId, callerId, targetId);
-    const payload: Record<string, unknown> = { callId };
-    if (reason) payload["reason"] = reason;
-    const event = this.appendLogEvent("method-timeout", payload, "system");
+    await this.ensureMethodRoot(
+      cancelled.invocationId,
+      cancelled.callerId,
+      cancelled.targetId,
+      cancelled.transportCallId,
+      cancelled.turnId,
+    );
+    const event = await this.appendLogEvent(
+      AGENTIC_EVENT_PAYLOAD_KIND,
+      this.invocationCancelledPayload(
+        "system",
+        cancelled.invocationId,
+        cancelled.transportCallId,
+        cancelled.turnId,
+        reason ?? "timed out",
+      ),
+      "system"
+    );
     broadcast(this.broadcastDeps, event, { kind: "log", phase: "live" }, "system");
   }
 
   private async deliverCallResult(
     callerId: string,
-    callId: string,
+    invocationId: string,
+    transportCallId: string | undefined,
+    turnId: string | undefined,
     result: unknown,
     isError: boolean
   ): Promise<number | undefined> {
@@ -1583,11 +1403,10 @@ export class PubSubChannel extends DurableObjectBase {
 
     if (caller.length === 0) return undefined;
 
-    // Persist and broadcast the result as the single canonical completion path.
-    // DO and RPC participants both observe the same method-result event.
-    this.ensureMethodRoot(callId, callerId);
-    const payload = { callId, content: result, complete: true, isError: isError ?? false };
-    const event = this.appendLogEvent("method-result", payload, callerId);
+    // Persist and broadcast the result as the single canonical invocation completion path.
+    await this.ensureMethodRoot(invocationId, callerId, undefined, transportCallId, turnId);
+    const payload = this.invocationResultPayload(callerId, invocationId, transportCallId, turnId, result, isError ?? false);
+    const event = await this.appendLogEvent(AGENTIC_EVENT_PAYLOAD_KIND, payload, callerId);
     broadcast(this.broadcastDeps, event, { kind: "log", phase: "live" }, callerId);
     return event.id;
   }
@@ -1619,6 +1438,13 @@ export class PubSubChannel extends DurableObjectBase {
       .toArray();
     if ((rpcCount[0]?.["cnt"] as number) > 0) {
       nextMs = Math.min(nextMs, PARTICIPANT_CLEANUP_INTERVAL_MS);
+    }
+
+    const nextDeadline = this.sql
+      .exec(`SELECT MIN(deadline_at) AS deadline FROM pending_calls WHERE deadline_at IS NOT NULL`)
+      .toArray()[0]?.["deadline"];
+    if (typeof nextDeadline === "number") {
+      nextMs = Math.min(nextMs, Math.max(nextDeadline - now, 100));
     }
 
     if (nextMs < Infinity) {
@@ -1653,8 +1479,20 @@ export class PubSubChannel extends DurableObjectBase {
       this.setStateValue("dedup_cleanup_at", String(Date.now() + 5 * 60 * 1000));
     }
 
+    await this.timeoutExpiredPendingCalls();
+
     // Unified reschedule — computes minimum next alarm across all sources
     this.scheduleNextAlarm();
+  }
+
+  private async timeoutExpiredPendingCalls(): Promise<void> {
+    const now = Date.now();
+    const rows = this.sql
+      .exec(`SELECT transport_call_id FROM pending_calls WHERE deadline_at IS NOT NULL AND deadline_at <= ?`, now)
+      .toArray();
+    for (const row of rows) {
+      await this.timeoutMethodCall(row["transport_call_id"] as string, "Channel method deadline expired");
+    }
   }
 
   private async evictStaleParticipants(): Promise<void> {
@@ -1677,7 +1515,7 @@ export class PubSubChannel extends DurableObjectBase {
       this.sql.exec(`DELETE FROM participants WHERE id = ?`, pid);
       cleanupDeliveryChain(pid);
       await this.failPendingCallsTargeting(pid, "disconnect");
-      this.publishPresenceEvent(pid, "leave", metadata, "disconnect");
+      await this.publishPresenceEvent(pid, "leave", metadata, "disconnect");
     }
 
     if (stale.length > 0) {
@@ -1696,7 +1534,7 @@ export class PubSubChannel extends DurableObjectBase {
 
   /**
    * Called after cloneDO() copies the parent's SQLite.
-   * Trims post-fork messages, clears roster and pending calls.
+   * Trims post-fork envelopes, clears roster and pending calls.
    */
   async postClone(parentChannelId: string, forkPointId: number): Promise<void> {
     // Fix identity: cloneDO copies parent's __objectKey; overwrite with our actual key
@@ -1709,10 +1547,6 @@ export class PubSubChannel extends DurableObjectBase {
     // and fetch() always overwrites identity from headers.
     this.setStateValue("forkedFrom", parentChannelId);
     this.setStateValue("forkPointId", String(forkPointId));
-    // Delete messages after fork point
-    this.sql.exec(`DELETE FROM messages WHERE id > ?`, forkPointId);
-    // Delete inherited presence messages (parent joins/leaves don't replay on fork)
-    this.sql.exec(`DELETE FROM messages WHERE type = 'presence'`);
     // Clear roster
     this.sql.exec(`DELETE FROM participants`);
     // Clear pending calls
@@ -1724,12 +1558,12 @@ export class PubSubChannel extends DurableObjectBase {
   // ── State introspection ─────────────────────────────────────────────────
 
   override async getState(): Promise<Record<string, unknown>> {
-    const messages = this.sql.exec(`SELECT COUNT(*) as cnt FROM messages`).toArray();
+    const replay = await this.channelLog.replayInitial(1, this.currentReplayContext());
     const participants = this.sql.exec(`SELECT * FROM participants`).toArray();
     const pendingCalls = this.sql.exec(`SELECT * FROM pending_calls`).toArray();
     const state = this.sql.exec(`SELECT * FROM state`).toArray();
     return {
-      messageCount: messages[0]?.["cnt"] ?? 0,
+      envelopeCount: replay.ready.envelopeCount,
       participants,
       pendingCalls,
       state,

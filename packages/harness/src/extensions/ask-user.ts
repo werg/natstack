@@ -27,6 +27,7 @@ export interface AskUserDeps {
     toolCallId: string,
     params: AskUserParams,
     signal: AbortSignal | undefined,
+    turnId?: string,
   ) => Promise<AgentToolResult<any> | string>;
 }
 

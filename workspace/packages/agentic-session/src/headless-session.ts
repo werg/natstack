@@ -9,12 +9,12 @@
  * Panel-local action bars are not channel messages, so headless sessions do
  * not expose them.
  *
- * Public API mirrors the legacy SessionManager-based wrapper:
+ * Public API:
  *   - `HeadlessSession.create()` — wire up a session, no agent yet
  *   - `HeadlessSession.createWithAgent()` — full setup: subscribe DO + connect
  *   - `send(text, opts)` — publish a user message
  *   - `waitForAgentMessage()` / `waitForIdle()` / `sendAndWait()` — test helpers
- *   - `messages`, `methodEntries`, `participants`, `connected`, `status` — getters
+ *   - `messages`, `participants`, `connected`, `status` — getters
  *   - `snapshot()` — diagnostic snapshot
  *   - `dispose()` / `close()` — teardown
  */
@@ -23,18 +23,12 @@ import {
   ConnectionManager,
   buildEvalTool,
   isAgentParticipantType,
-  createChatMessageFromWire,
-  applyChatMessageUpdate,
-  applyChatMessageError,
+  chatMessagesFromChannelView,
   type ConnectionConfig,
   type ChatParticipantMetadata,
   type ChatMessage,
-  type MethodHistoryEntry,
   type SandboxConfig,
   type DirtyRepoDetails,
-  type WireNewMessage,
-  type WireUpdateMessage,
-  type WireErrorMessage,
   unwrapChatMethodResult,
   type ChatMethodResult,
 } from "@workspace/agentic-core";
@@ -45,10 +39,16 @@ import type {
   MethodDefinition,
   AttachmentInput,
   AgentDebugPayload,
-  Attachment,
   IncomingEvent,
-  IncomingMethodResultEvent,
 } from "@workspace/pubsub";
+import {
+  AGENTIC_EVENT_PAYLOAD_KIND,
+  createInitialChannelViewState,
+  reduceChannelView,
+  type AgenticEvent,
+  type ChannelEnvelope,
+  type ChannelViewState,
+} from "@workspace/agentic-protocol";
 import { z } from "zod";
 import { ScopeManager, RpcScopePersistence } from "@workspace/eval";
 import {
@@ -64,17 +64,14 @@ import {
 
 export interface SessionSnapshot {
   messages: readonly ChatMessage[];
-  methodHistory: Array<{
-    callId: string;
-    method: string;
+  invocations: Array<{
+    id: string;
+    name: string;
     status: string;
     args?: unknown;
     result?: unknown;
     consoleOutput?: string;
     error?: string;
-    duration?: number;
-    providerId?: string;
-    callerId?: string;
   }>;
   debugEvents: readonly (AgentDebugPayload & { ts: number })[];
   participants: Record<string, { name: string; type: string; handle: string; connected: boolean }>;
@@ -138,9 +135,9 @@ export class HeadlessSession {
   // Channel message state (derived from persisted + live channel messages)
   private _chatMessages = new Map<string, ChatMessage>();
   private _chatMessageOrder: string[] = [];
+  private _channelView: ChannelViewState = createInitialChannelViewState();
   private _hasIncomplete = false;
   private _participants: Record<string, Participant<ChatParticipantMetadata>> = {};
-  private _methodHistory = new Map<string, MethodHistoryEntry>();
   private _debugEvents: Array<AgentDebugPayload & { ts: number }> = [];
   private _dirtyRepoWarnings = new Map<string, DirtyRepoDetails>();
   private _disposed = false;
@@ -148,7 +145,6 @@ export class HeadlessSession {
 
   // Listeners
   private _messageListeners = new Set<MessageListener>();
-  private _methodHistoryListeners = new Set<() => void>();
 
   private constructor(config: HeadlessSessionConfig, channelId?: string) {
     this._config = config;
@@ -174,6 +170,38 @@ export class HeadlessSession {
         onEvent: (event) => this.handleEvent(event),
       },
     });
+  }
+
+  private pubsubAgenticEventToEnvelope(wire: {
+    pubsubId?: number;
+    senderId?: string;
+    senderMetadata?: { name?: string; type?: string; handle?: string };
+    ts?: number;
+    payload: AgenticEvent;
+  }): ChannelEnvelope<AgenticEvent> {
+    const participantId = wire.senderId ?? wire.payload.actor.id;
+    const metadata = wire.senderMetadata;
+    return {
+      envelopeId: `pubsub:${wire.pubsubId ?? crypto.randomUUID()}` as never,
+      channelId: (this._channelId ?? "headless") as never,
+      seq: wire.pubsubId ?? 0,
+      from: {
+        kind: this.participantKind(metadata?.type),
+        id: participantId,
+        displayName: metadata?.name,
+        participantId,
+        metadata,
+      },
+      payload: wire.payload,
+      payloadKind: AGENTIC_EVENT_PAYLOAD_KIND,
+      publishedAt: new Date(wire.ts ?? Date.now()).toISOString(),
+    };
+  }
+
+  private participantKind(type: string | undefined): "user" | "agent" | "panel" | "external" {
+    if (type === "agent" || type === "headless") return "agent";
+    if (type === "panel" || type === "client") return "panel";
+    return "external";
   }
 
   /** Create a HeadlessSession with the given config (no agent yet). */
@@ -284,70 +312,10 @@ export class HeadlessSession {
   }
 
   // ===========================================================================
-  // Event tracking (method history + debug events)
+  // Event tracking (debug events)
   // ===========================================================================
 
   private handleEvent(event: IncomingEvent): void {
-    if (event.type === "method-call") {
-      const e = event as IncomingEvent & {
-        callId: string; methodName: string; senderId: string;
-        providerId?: string; args?: unknown; ts: number;
-      };
-      if (!this._methodHistory.has(e.callId)) {
-        this._methodHistory.set(e.callId, {
-          callId: e.callId,
-          methodName: e.methodName,
-          args: e.args,
-          status: "pending",
-          startedAt: e.ts ?? Date.now(),
-          providerId: e.providerId,
-          callerId: e.senderId,
-        });
-        this.notifyMethodHistoryListeners();
-      }
-    }
-
-    if (event.type === "method-result") {
-      const e = event as IncomingMethodResultEvent;
-      const existing = this._methodHistory.get(e.callId);
-      if (existing) {
-        if (e.complete) {
-          if (e.isError) {
-            const errorMessage = typeof e.content === "string"
-              ? e.content
-              : Array.isArray(e.content)
-                ? (e.content as Array<{ text?: string }>).map((c) => c.text ?? "").join("")
-                : String(e.content ?? "Unknown error");
-            this._methodHistory.set(e.callId, {
-              ...existing, status: "error", error: errorMessage, completedAt: Date.now(),
-            });
-          } else {
-            this._methodHistory.set(e.callId, {
-              ...existing, status: "success", result: e.content, completedAt: Date.now(),
-            });
-          }
-        } else if ((e as { progress?: number }).progress !== undefined) {
-          this._methodHistory.set(e.callId, {
-            ...existing, progress: (e as { progress?: number }).progress,
-          });
-        }
-        // Capture streamed console output
-        if (e.contentType === "application/json" && !e.complete) {
-          try {
-            const parsed = typeof e.content === "string" ? JSON.parse(e.content) : e.content;
-            if (parsed && typeof parsed === "object" && (parsed as { type?: string }).type === "console") {
-              const prev = existing.consoleOutput ?? "";
-              this._methodHistory.set(e.callId, {
-                ...this._methodHistory.get(e.callId)!,
-                consoleOutput: prev + ((parsed as { content?: string }).content ?? ""),
-              });
-            }
-          } catch { /* not JSON, ignore */ }
-        }
-        this.notifyMethodHistoryListeners();
-      }
-    }
-
     if (event.type === "agent-debug") {
       const payload = (event as IncomingEvent & { payload: AgentDebugPayload }).payload;
       const ts = (event as IncomingEvent & { ts: number }).ts ?? Date.now();
@@ -360,12 +328,6 @@ export class HeadlessSession {
           this._dirtyRepoWarnings.set(payload.handle, details);
         }
       }
-    }
-  }
-
-  private notifyMethodHistoryListeners(): void {
-    for (const listener of this._methodHistoryListeners) {
-      try { listener(); } catch { /* best-effort */ }
     }
   }
 
@@ -414,75 +376,29 @@ export class HeadlessSession {
 
         const wire = event as unknown as {
           type?: string;
-          phase?: "replay" | "live";
-          id?: string;
+          pubsubId?: number;
           senderId?: string;
-          content?: string;
-          contentType?: string;
-          complete?: boolean;
-          attachments?: Attachment[];
           senderMetadata?: { name?: string; type?: string; handle?: string };
+          ts?: number;
+          payload?: AgenticEvent;
         };
 
-        if (wire.type === "message" && wire.id) {
-          const isReplay = wire.phase === "replay";
-          const isFromClient =
-            wire.senderMetadata?.type === "panel" || wire.senderMetadata?.type === "headless";
-          const msg = createChatMessageFromWire(wire as WireNewMessage, {
-            isReplay,
-            isFromClient,
-          });
-          if (!this._chatMessages.has(wire.id)) {
-            this._chatMessageOrder.push(wire.id);
+        if (wire.type === AGENTIC_EVENT_PAYLOAD_KIND && wire.payload) {
+          this._channelView = reduceChannelView(this._channelView, this.pubsubAgenticEventToEnvelope({
+            pubsubId: wire.pubsubId,
+            senderId: wire.senderId,
+            senderMetadata: wire.senderMetadata,
+            ts: wire.ts,
+            payload: wire.payload,
+          }));
+          this._chatMessages.clear();
+          this._chatMessageOrder = [];
+          for (const msg of chatMessagesFromChannelView(this._channelView)) {
+            this._chatMessages.set(msg.id, msg);
+            this._chatMessageOrder.push(msg.id);
           }
-          this._chatMessages.set(wire.id, msg);
           this.recomputeHasIncomplete();
           this.notifyListeners();
-        } else if (wire.type === "update-message" && wire.id) {
-          const existing = this._chatMessages.get(wire.id);
-          if (existing) {
-            this._chatMessages.set(
-              wire.id,
-              applyChatMessageUpdate(existing, wire as WireUpdateMessage),
-            );
-            this.recomputeHasIncomplete();
-            this.notifyListeners();
-          }
-        } else if (wire.type === "error" && wire.id) {
-          const existing = this._chatMessages.get(wire.id);
-          if (existing) {
-            this._chatMessages.set(
-              wire.id,
-              applyChatMessageError(existing, wire as WireErrorMessage),
-            );
-            this.recomputeHasIncomplete();
-            this.notifyListeners();
-          }
-        } else if (wire.type === "execution-pause") {
-          const targetId = (wire as { messageId?: string }).messageId ?? wire.id;
-          if (targetId) {
-            const existing = this._chatMessages.get(targetId);
-            if (existing && !existing.complete) {
-              this._chatMessages.set(targetId, { ...existing, complete: true });
-              this.recomputeHasIncomplete();
-              this.notifyListeners();
-            }
-          } else {
-            // Close *every* non-complete message — at any moment the projector
-            // may have multiple open channel messages (text + toolCall + thinking).
-            let changed = false;
-            for (const id of this._chatMessageOrder) {
-              const msg = this._chatMessages.get(id);
-              if (msg && !msg.complete) {
-                this._chatMessages.set(id, { ...msg, complete: true });
-                changed = true;
-              }
-            }
-            if (changed) {
-              this.recomputeHasIncomplete();
-              this.notifyListeners();
-            }
-          }
         }
       }
     } catch (err) {
@@ -565,7 +481,6 @@ export class HeadlessSession {
     this._disposed = true;
     this.disconnect();
     this._messageListeners.clear();
-    this._methodHistoryListeners.clear();
   }
 
   async close(): Promise<void> {
@@ -603,14 +518,6 @@ export class HeadlessSession {
 
   get allParticipants(): Readonly<Record<string, Participant<ChatParticipantMetadata>>> {
     return this._participants;
-  }
-
-  get methodEntries(): ReadonlyMap<string, MethodHistoryEntry> {
-    return this._methodHistory;
-  }
-
-  get methodHistory(): ReadonlyMap<string, MethodHistoryEntry> {
-    return this._methodHistory;
   }
 
   get connected(): boolean {
@@ -660,21 +567,22 @@ export class HeadlessSession {
         connected: true,
       };
     }
-    const methodHistory = [...this._methodHistory.values()].map((e) => ({
-      callId: e.callId,
-      method: e.methodName,
-      status: e.status,
-      args: e.args,
-      result: e.result,
-      consoleOutput: e.consoleOutput,
-      error: e.error,
-      duration: e.completedAt ? e.completedAt - e.startedAt : undefined,
-      providerId: e.providerId,
-      callerId: e.callerId,
-    }));
+    const invocations = this.messages
+      .filter((message) => message.invocation)
+      .map((message) => ({
+        id: message.invocation!.id,
+        name: message.invocation!.name,
+        status: message.invocation!.execution.status,
+        args: message.invocation!.arguments,
+        result: message.invocation!.execution.result,
+        consoleOutput: message.invocation!.execution.consoleOutput,
+        error: message.invocation!.execution.isError
+          ? String(message.invocation!.execution.result ?? message.invocation!.execution.description ?? "Invocation failed")
+          : undefined,
+      }));
     return {
       messages: this.messages,
-      methodHistory,
+      invocations,
       debugEvents: this._debugEvents,
       participants,
       connected: this._connection.connected,
@@ -693,7 +601,7 @@ export class HeadlessSession {
   /**
    * Wait for a message from an agent (any non-self participant).
    */
-  waitForAgentMessage(): Promise<ChatMessage> {
+  waitForAgentMessage(opts?: { timeoutMs?: number; signal?: AbortSignal }): Promise<ChatMessage> {
     const isAgentMessage = (msg: ChatMessage): boolean =>
       msg.senderId !== this._clientId &&
       msg.kind === "message" &&
@@ -701,16 +609,34 @@ export class HeadlessSession {
       !msg.pending &&
       msg.contentType !== "thinking" &&
       msg.contentType !== "typing" &&
-      msg.contentType !== "toolCall";
+      msg.contentType !== "invocation";
 
     const baselineMessages = this.messages;
     const alreadyPresent = [...baselineMessages].reverse().find(isAgentMessage);
     const baselineCount = baselineMessages.length;
 
-    return new Promise<ChatMessage>((resolve) => {
+    return new Promise<ChatMessage>((resolve, reject) => {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
       const cleanup = () => {
+        if (timeout !== undefined) clearTimeout(timeout);
+        opts?.signal?.removeEventListener("abort", onAbort);
         this._messageListeners.delete(listener);
       };
+      const onAbort = () => {
+        cleanup();
+        reject(new Error("waitForAgentMessage aborted"));
+      };
+      if (opts?.signal?.aborted) {
+        onAbort();
+        return;
+      }
+      opts?.signal?.addEventListener("abort", onAbort, { once: true });
+      if (opts?.timeoutMs !== undefined) {
+        timeout = setTimeout(() => {
+          cleanup();
+          reject(new Error(`Timed out waiting for agent message after ${opts.timeoutMs}ms`));
+        }, opts.timeoutMs);
+      }
 
       const listener: MessageListener = () => {
         const current = this.messages;
@@ -731,7 +657,7 @@ export class HeadlessSession {
   /**
    * Wait for the agent to become idle (no new messages for `debounce` ms).
    */
-  waitForIdle(opts?: { debounce?: number }): Promise<ChatMessage> {
+  waitForIdle(opts?: { debounce?: number; timeoutMs?: number; signal?: AbortSignal }): Promise<ChatMessage> {
     const debounceMs = opts?.debounce ?? 3_000;
 
     const isAgentMessage = (msg: ChatMessage): boolean =>
@@ -741,20 +667,38 @@ export class HeadlessSession {
       !msg.pending &&
       msg.contentType !== "thinking" &&
       msg.contentType !== "typing" &&
-      msg.contentType !== "toolCall";
+      msg.contentType !== "invocation";
 
     const baselineMessages = this.messages;
     const alreadyPresent = [...baselineMessages].reverse().find(isAgentMessage);
     const baselineCount = baselineMessages.length;
 
-    return new Promise<ChatMessage>((resolve) => {
+    return new Promise<ChatMessage>((resolve, reject) => {
       let lastMatch: ChatMessage | undefined;
       let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
 
       const cleanup = () => {
         if (debounceTimer !== undefined) clearTimeout(debounceTimer);
+        if (timeout !== undefined) clearTimeout(timeout);
+        opts?.signal?.removeEventListener("abort", onAbort);
         this._messageListeners.delete(listener);
       };
+      const onAbort = () => {
+        cleanup();
+        reject(new Error("waitForIdle aborted"));
+      };
+      if (opts?.signal?.aborted) {
+        onAbort();
+        return;
+      }
+      opts?.signal?.addEventListener("abort", onAbort, { once: true });
+      if (opts?.timeoutMs !== undefined) {
+        timeout = setTimeout(() => {
+          cleanup();
+          reject(new Error(`Timed out waiting for idle after ${opts.timeoutMs}ms`));
+        }, opts.timeoutMs);
+      }
 
       const scheduleResolve = () => {
         if (!lastMatch) return;
@@ -786,8 +730,9 @@ export class HeadlessSession {
     });
   }
 
-  async sendAndWait(text: string, opts?: { debounce?: number }): Promise<ChatMessage> {
+  async sendAndWait(text: string, opts?: { debounce?: number; timeoutMs?: number; signal?: AbortSignal }): Promise<ChatMessage> {
+    const wait = this.waitForIdle(opts);
     await this.send(text);
-    return this.waitForIdle(opts);
+    return wait;
   }
 }

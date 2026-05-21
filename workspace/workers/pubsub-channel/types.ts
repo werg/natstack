@@ -3,7 +3,7 @@
  */
 
 import type { ChannelEvent, SendMessageOptions } from "@natstack/harness/types";
-import type { ReplayEnvelope } from "@workspace/pubsub";
+import type { ChannelReplayEnvelope } from "@workspace/pubsub";
 
 /** Options for sending a message via the channel DO. */
 export interface SendOpts {
@@ -17,7 +17,7 @@ export interface SendOpts {
 export interface SubscribeResult {
   ok: boolean;
   channelConfig?: Record<string, unknown>;
-  envelope: ReplayEnvelope;
+  envelope: ChannelReplayEnvelope;
 }
 
 /** Participant info stored in the participants table. */

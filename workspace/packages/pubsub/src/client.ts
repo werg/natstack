@@ -5,7 +5,6 @@
  */
 
 import type {
-  Message,
   PublishOptions,
   UpdateMetadataOptions,
   RosterUpdate,
@@ -13,7 +12,7 @@ import type {
   Participant,
   Attachment,
   ChannelConfig,
-  ReplayEnvelope,
+  ChannelReplayEnvelope,
 } from "./types.js";
 import type {
   EventStreamItem,
@@ -25,9 +24,6 @@ import type {
  * PubSub client interface.
  */
 export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadata> {
-  /** Async iterator for incoming messages */
-  messages(): AsyncIterableIterator<Message>;
-
   /** Publish a message to the channel. Returns the message ID for persisted messages. */
   publish<P>(type: string, payload: P, options?: PublishOptions): Promise<number | undefined>;
 
@@ -85,23 +81,27 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
   /** Total message count (from server ready message, for pagination) */
   readonly totalMessageCount: number | undefined;
 
-  /** Count of type="message" events only (excludes protocol chatter), for accurate chat pagination */
-  readonly chatMessageCount: number | undefined;
+  /** Count of replayable channel envelopes. */
+  readonly envelopeCount: number | undefined;
 
-  /** ID of the first chat message in the channel (for pagination boundary) */
-  readonly firstChatMessageId: number | undefined;
+  /** First replayable channel-envelope sequence. */
+  readonly firstEnvelopeSeq: number | undefined;
 
-  /** Get older chat roots and their complete dependent chains before a root row ID. */
-  getChatReplayBefore(beforeRootId: number, rootLimit?: number): Promise<ReplayEnvelope>;
+  /** Whether the server reported older envelopes before the initial replay window. */
+  readonly hasMoreBefore: boolean | undefined;
+
+  /** Get older channel envelopes before a sequence. */
+  getReplayBefore(beforeSeq: number, limit?: number): Promise<ChannelReplayEnvelope>;
 
   /** Get durable log rows after a sequence ID. */
-  getReplayAfter(sinceId: number): Promise<ReplayEnvelope>;
+  getReplayAfter(sinceId: number): Promise<ChannelReplayEnvelope>;
 
   /**
-   * Async iterator for typed protocol events (IncomingEvent | AggregatedEvent).
+   * Async iterator for typed protocol events.
    *
-   * Higher-level than messages() — parses PubSubMessages into typed IncomingEvent
-   * objects and optionally aggregates replay events into AggregatedEvent objects.
+   * Parses channel envelopes into raw typed IncomingEvent objects. Replay and
+   * live events use the same event shape so transcript consumers can reduce a
+   * single stream.
    *
    * @param options.includeReplay - Include replay events (default: false)
    * @param options.includeSignals - Include signal events (default: false)
@@ -113,8 +113,11 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
   /** This client's participant ID */
   readonly clientId: string | undefined;
 
+  /** Channel identifier this client is connected to. */
+  readonly channelId: string;
+
   /**
-   * Send a new chat message. Convenience wrapper around publish("message", ...).
+   * Send a new chat message as an agentic trajectory event.
    * Returns the message UUID and server-assigned pubsub ID.
    */
   send(
@@ -130,32 +133,18 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
   ): Promise<{ messageId: string; pubsubId: number | undefined }>;
 
   /**
-   * Update an existing message (for streaming). Convenience wrapper around publish("update-message", ...).
-   */
-  update(
-    id: string,
-    content: string,
-    options?: { complete?: boolean; attachments?: import("./types.js").AttachmentInput[]; contentType?: string }
-  ): Promise<number | undefined>;
-
-  /**
-   * Mark a message as complete. Convenience wrapper around publish("update-message", { id, complete: true }).
-   */
-  complete(id: string, options?: { idempotencyKey?: string }): Promise<number | undefined>;
-
-  /**
    * Publish an error for a message. Convenience wrapper around publish("error", ...).
    */
   error(id: string, error: string, code?: string): Promise<number | undefined>;
 
   /**
-   * Call a method on a remote provider. Publishes a method-call message and
-   * tracks the result via method-result messages.
+   * Call a method on a remote provider. Publishes a invocation-call message and
+   * tracks the result via invocation-result messages.
    */
   callMethod(
     providerId: string,
     methodName: string,
     args?: unknown,
-    options?: { signal?: AbortSignal }
+    options?: { signal?: AbortSignal; invocationId?: string; transportCallId?: string; turnId?: string }
   ): MethodCallHandle;
 }

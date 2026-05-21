@@ -70,14 +70,14 @@ export interface ReplayReady {
   contextId?: string;
   channelConfig?: ChannelConfig;
   totalCount: number;
-  rootMessageCount: number;
-  firstRootMessageId?: number;
+  envelopeCount: number;
+  firstEnvelopeSeq?: number;
   replayFromId?: number;
   replayToId?: number;
   hasMoreBefore?: boolean;
 }
 
-export interface ReplayEnvelope {
+export interface ChannelReplayEnvelope {
   mode: "initial" | "after" | "before";
   logEvents: ServerLogEvent[];
   snapshots: BootstrapSnapshot[];
@@ -134,10 +134,12 @@ export interface ReadyMessage {
   kind: "ready";
   /** Total message count for pagination */
   totalCount?: number;
-  /** Count of type="message" events only, for accurate chat pagination */
-  chatMessageCount?: number;
-  /** ID of the first chat message in the channel (for pagination boundary) */
-  firstChatMessageId?: number;
+  /** Count of replayable channel envelopes. */
+  envelopeCount?: number;
+  /** First replayable channel-envelope sequence. */
+  firstEnvelopeSeq?: number;
+  /** Whether older envelopes exist before the replayed window. */
+  hasMoreBefore?: boolean;
 }
 
 export type Message<T = unknown> = PubSubMessage<T> | ReadyMessage;

@@ -50,10 +50,10 @@ function App() {
   const stateArgs = useStateArgs<StateArgs>();
   const [branches, setBranches] = useState<Row[]>([]);
   const [selectedBranchId, setSelectedBranchId] = useState<string | null>(stateArgs.branchId ?? null);
-  const [entries, setEntries] = useState<Row[]>([]);
   const [events, setEvents] = useState<Row[]>([]);
+  const [envelopes, setEnvelopes] = useState<Row[]>([]);
   const [files, setFiles] = useState<Row[]>([]);
-  const [toolCalls, setToolCalls] = useState<Row[]>([]);
+  const [invocations, setInvocations] = useState<Row[]>([]);
   const [status, setStatus] = useState<Row[]>([]);
   const [integrity, setIntegrity] = useState<Row[]>([]);
   const [operationStatus, setOperationStatus] = useState<string>("");
@@ -68,28 +68,28 @@ function App() {
     try {
       const [nextStatus, nextBranches] = await Promise.all([
         gad.status(),
-        gad.listPiBranches(),
+        gad.query("SELECT * FROM trajectory_branches ORDER BY updated_at DESC"),
       ]);
       setStatus(nextStatus as unknown as Row[]);
-      setBranches(nextBranches);
-      const branchId = (selectedBranchId ?? asText(nextBranches[0]?.["branch_id"])) || null;
+      setBranches(nextBranches.rows);
+      const branchId = (selectedBranchId ?? asText(nextBranches.rows[0]?.["branch_id"])) || null;
       setSelectedBranchId(branchId);
       if (branchId) {
-        const [nextEntries, nextEvents, nextFiles, nextToolCalls] = await Promise.all([
-          gad.getBranchPath({ branchId, raw: true }),
-          gad.listGadEvents({ limit: 200 }),
+        const [nextEvents, nextFiles, nextInvocations, nextEnvelopes] = await Promise.all([
+          gad.listTrajectoryEvents({ branchId, limit: 200 }),
           gad.listGadBranchFiles({ branchId }),
-          gad.listGadBranchToolCalls({ branchId }),
+          gad.query("SELECT * FROM trajectory_invocations WHERE branch_id = ? ORDER BY updated_at DESC", [branchId]),
+          gad.query("SELECT * FROM channel_envelopes ORDER BY channel_id, seq LIMIT 200"),
         ]);
-        setEntries(nextEntries as unknown as Row[]);
-        setEvents(nextEvents);
+        setEvents(nextEvents as unknown as Row[]);
         setFiles(nextFiles);
-        setToolCalls(nextToolCalls);
+        setInvocations(nextInvocations.rows);
+        setEnvelopes(nextEnvelopes.rows);
       } else {
-        setEntries([]);
         setEvents([]);
         setFiles([]);
-        setToolCalls([]);
+        setInvocations([]);
+        setEnvelopes([]);
       }
     } finally {
       setLoading(false);
@@ -121,7 +121,7 @@ function App() {
   async function replayEvents() {
     setLoading(true);
     try {
-      const result = await gad.replayGadEvents({});
+      const result = await gad.rebuildTrajectoryProjections({});
       setOperationStatus(`Replayed ${result.replayed} event(s)`);
       await refresh();
       await checkIntegrity();
@@ -137,10 +137,10 @@ function App() {
   useEffect(() => {
     if (!selectedBranchId) return;
     void Promise.all([
-      gad.getBranchPath({ branchId: selectedBranchId, raw: true }).then((rows) => setEntries(rows as unknown as Row[])),
-      gad.listGadEvents({ limit: 200 }).then(setEvents),
+      gad.listTrajectoryEvents({ branchId: selectedBranchId, limit: 200 }).then((rows) => setEvents(rows as unknown as Row[])),
       gad.listGadBranchFiles({ branchId: selectedBranchId }).then(setFiles),
-      gad.listGadBranchToolCalls({ branchId: selectedBranchId }).then(setToolCalls),
+      gad.query("SELECT * FROM trajectory_invocations WHERE branch_id = ? ORDER BY updated_at DESC", [selectedBranchId]).then((result) => setInvocations(result.rows)),
+      gad.query("SELECT * FROM channel_envelopes ORDER BY channel_id, seq LIMIT 200").then((result) => setEnvelopes(result.rows)),
     ]);
   }, [selectedBranchId]);
 
@@ -193,29 +193,29 @@ function App() {
             <Tabs.Root defaultValue="files" style={{ minWidth: 0 }}>
               <Tabs.List>
                 <Tabs.Trigger value="branches">Branches</Tabs.Trigger>
-                <Tabs.Trigger value="entries">Pi Entries</Tabs.Trigger>
-                <Tabs.Trigger value="events">GAD Events</Tabs.Trigger>
+                <Tabs.Trigger value="events">Trajectory Events</Tabs.Trigger>
+                <Tabs.Trigger value="envelopes">Channel Envelopes</Tabs.Trigger>
                 <Tabs.Trigger value="files">Files</Tabs.Trigger>
-                <Tabs.Trigger value="tool-calls">Tool Calls</Tabs.Trigger>
+                <Tabs.Trigger value="invocations">Invocations</Tabs.Trigger>
                 <Tabs.Trigger value="integrity">Integrity</Tabs.Trigger>
                 <Tabs.Trigger value="status">Status</Tabs.Trigger>
               </Tabs.List>
               <Box pt="3" style={{ height: "calc(100vh - 130px)" }}>
                 <ScrollArea type="auto" scrollbars="both" style={{ height: "100%" }}>
                   <Tabs.Content value="branches">
-                    <DataTable rows={branches} columns={["branch_id", "forked_from_branch_id", "head_entry_id", "head_entry_hash", "head_state_hash", "updated_at"]} />
-                  </Tabs.Content>
-                  <Tabs.Content value="entries">
-                    <DataTable rows={entries} columns={["entryId", "parentEntryId", "entryType", "entryHash", "preStateHash", "postStateHash", "createdAt"]} />
+                    <DataTable rows={branches} columns={["trajectory_id", "branch_id", "head_event_id", "head_event_hash", "head_state_hash", "updated_at"]} />
                   </Tabs.Content>
                   <Tabs.Content value="events">
-                    <DataTable rows={events} columns={["event_seq", "event_id", "event_hash", "prev_event_hash", "kind", "anchor_kind", "anchor_id", "created_at"]} />
+                    <DataTable rows={events} columns={["seq", "eventId", "eventHash", "prevEventHash", "kind", "turnId", "createdAt"]} />
+                  </Tabs.Content>
+                  <Tabs.Content value="envelopes">
+                    <DataTable rows={envelopes} columns={["channel_id", "seq", "envelope_id", "payload_kind", "published_at"]} />
                   </Tabs.Content>
                   <Tabs.Content value="files">
-                    <DataTable rows={files} columns={["path", "content_hash", "mode", "created_at"]} />
+                    <DataTable rows={files} columns={["path", "content_hash", "mode", "file_version_id"]} />
                   </Tabs.Content>
-                  <Tabs.Content value="tool-calls">
-                    <DataTable rows={toolCalls} columns={["tool_call_id", "assistant_entry_id", "block_id", "tool_name", "created_at"]} />
+                  <Tabs.Content value="invocations">
+                    <DataTable rows={invocations} columns={["invocation_id", "kind", "status", "started_event_id", "completed_event_id", "updated_at"]} />
                   </Tabs.Content>
                   <Tabs.Content value="integrity">
                     <DataTable rows={integrity} columns={["type", "message", "entryId", "eventId", "stateHash", "manifestRootHash"]} />

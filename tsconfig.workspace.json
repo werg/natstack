@@ -169,6 +169,12 @@
       "@workspace/agentic-do": [
         "workspace/packages/agentic-do/src/index.ts"
       ],
+      "@workspace/agentic-protocol": [
+        "workspace/packages/agentic-protocol/src/index.ts"
+      ],
+      "@workspace/agentic-protocol/handlers": [
+        "workspace/packages/agentic-protocol/src/handlers.ts"
+      ],
       "@workspace/core": [
         "workspace/packages/core/src/index.ts"
       ],
@@ -201,6 +207,9 @@
       ],
       "@workspace/panel-browser": [
         "workspace/packages/panel-browser/src/index.ts"
+      ],
+      "@workspace/pi-adapter": [
+        "workspace/packages/pi-adapter/src/index.ts"
       ],
       "@workspace/pubsub": [
         "workspace/packages/pubsub/src/index.ts"

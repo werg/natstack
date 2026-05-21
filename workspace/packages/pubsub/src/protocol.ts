@@ -33,14 +33,23 @@ export const ErrorMessageSchema = z.object({
 });
 
 export const MethodCallSchema = z.object({
-  callId: z.string().uuid(),
+  /** Canonical user-visible invocation id. */
+  invocationId: z.string().min(1),
+  /** Transport dispatch id used for cancellation/result routing. */
+  transportCallId: z.string().uuid(),
+  /** Client-facing handle id; currently mirrors `transportCallId`. */
+  callId: z.string().uuid().optional(),
+  turnId: z.string().optional(),
   methodName: z.string().min(1),
   providerId: z.string().min(1),
   args: z.unknown(),
 });
 
 export const MethodResultSchema = z.object({
-  callId: z.string().uuid(),
+  invocationId: z.string().min(1).optional(),
+  transportCallId: z.string().uuid(),
+  callId: z.string().uuid().optional(),
+  turnId: z.string().optional(),
   content: z.unknown().optional(),
   contentType: z.string().optional(),
   complete: z.boolean().optional(),
@@ -49,7 +58,8 @@ export const MethodResultSchema = z.object({
 });
 
 export const MethodCancelSchema = z.object({
-  callId: z.string().uuid(),
+  transportCallId: z.string().uuid(),
+  callId: z.string().uuid().optional(),
 });
 
 export const ExecutionPauseSchema = z.object({

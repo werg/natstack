@@ -5,10 +5,25 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
 import { AgentWorkerBase } from "./agent-worker-base.js";
 import type { TurnDispatcherRunner } from "./turn-dispatcher.js";
+import type { PiRunner } from "@natstack/harness";
+import { AGENTIC_EVENT_PAYLOAD_KIND } from "@workspace/agentic-protocol";
 
 class TestAgentWorker extends AgentWorkerBase {
   protected override getModel(): string {
     return "test:model";
+  }
+
+  protected override async refreshRoster(_channelId: string): Promise<void> {
+    // Integration tests that need roster behavior stub createChannelClient directly.
+  }
+
+  protected override async getOrCreateRunner(channelId: string): Promise<PiRunner> {
+    const runners = (this as unknown as { runners: Map<string, { runner: PiRunner }> }).runners;
+    const existing = runners.get(channelId)?.runner;
+    if (existing) return existing;
+    const runner = {} as PiRunner;
+    runners.set(channelId, { runner });
+    return runner;
   }
 }
 
@@ -34,22 +49,63 @@ describe("AgentWorkerBase runner contract", () => {
   });
 });
 
+describe("AgentWorkerBase typed transcript input", () => {
+  it("submits panel-authored message.completed events to the runner", async () => {
+    const { instance } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const submit = vi.fn();
+    const worker = instance as unknown as {
+      subscriptions: {
+        getParticipantId(channelId: string): string | null;
+      };
+      getOrCreateDispatcher: ReturnType<typeof vi.fn>;
+      processChannelEvent(channelId: string, event: unknown): Promise<void>;
+    };
+
+    worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
+    worker.getOrCreateDispatcher = vi.fn().mockReturnValue({ submit });
+
+    await worker.processChannelEvent("chat-1", {
+      id: 1,
+      messageId: "env-1",
+      type: AGENTIC_EVENT_PAYLOAD_KIND,
+      senderId: "panel:panel-1",
+      senderMetadata: { name: "User", type: "panel", handle: "user" },
+      payload: {
+        kind: "message.completed",
+        actor: { kind: "panel", id: "panel:panel-1" },
+        causality: { messageId: "initial-prompt" },
+        payload: {
+          protocol: "agentic.trajectory.v1",
+          role: "user",
+          content: "Read the onboarding docs first",
+        },
+        createdAt: "2026-05-21T08:00:00.000Z",
+      },
+      ts: Date.now(),
+    });
+
+    expect(submit).toHaveBeenCalledWith(
+      { content: "Read the onboarding docs first" },
+      undefined,
+    );
+  });
+});
+
 describe("AgentWorkerBase dispatched method results", () => {
-  it("waits for the canonical method-result event before completing the tool call", async () => {
+  it("waits for the canonical invocation completion before completing the tool call", async () => {
     const { instance } = await createTestDO(TestAgentWorker, {
       __objectKey: "agent-test",
     });
     let capturedCallId = "";
+    let capturedOpts: { invocationId?: string; transportCallId?: string; turnId?: string } | undefined;
     const worker = instance as unknown as {
-      dispatches: {
-        peek(callId: string): { dispatchedAt: number | null } | null;
-      };
       subscriptions: {
         getParticipantId(channelId: string): string | null;
       };
       runners: Map<string, { runner: { abort: ReturnType<typeof vi.fn> } }>;
       createChannelClient: ReturnType<typeof vi.fn>;
-      getOrCreateProjector: ReturnType<typeof vi.fn>;
       handleIncomingChannelEvent(channelId: string, event: unknown): Promise<void>;
       invokeChannelMethod(
         channelId: string,
@@ -57,13 +113,13 @@ describe("AgentWorkerBase dispatched method results", () => {
         participantHandle: string,
         method: string,
         args: unknown,
-        signal?: AbortSignal
+        signal?: AbortSignal,
+        onStreamUpdate?: (content: unknown) => void,
+        turnId?: string
       ): Promise<unknown>;
     };
 
     worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
-    const completeToolCall = vi.fn().mockResolvedValue(true);
-    worker.getOrCreateProjector = vi.fn().mockReturnValue({ completeToolCall });
     worker.createChannelClient = vi.fn().mockReturnValue({
       getParticipants: vi.fn().mockResolvedValue([
         {
@@ -71,18 +127,19 @@ describe("AgentWorkerBase dispatched method results", () => {
           metadata: { handle: "user", type: "panel" },
         },
       ]),
-      callMethod: vi.fn(async (_callerId, _targetId, callId) => {
+      callMethod: vi.fn(async (_callerId, _targetId, callId, _method, _args, opts) => {
         capturedCallId = callId;
-        expect(worker.dispatches.peek(callId)?.dispatchedAt).toEqual(expect.any(Number));
+        capturedOpts = opts;
         await worker.handleIncomingChannelEvent("chat-1", {
           id: 1,
           messageId: "result-1",
-          type: "method-result",
+          type: AGENTIC_EVENT_PAYLOAD_KIND,
           payload: {
-            callId,
-            content: { ok: true },
-            complete: true,
-            isError: false,
+            kind: "invocation.completed",
+            actor: { kind: "panel", id: "panel:panel-1" },
+            causality: { invocationId: opts.invocationId, transportCallId: opts.transportCallId },
+            payload: { protocol: "agentic.trajectory.v1", result: { ok: true } },
+            createdAt: new Date().toISOString(),
           },
           senderId: "panel:panel-1",
           ts: Date.now(),
@@ -92,9 +149,16 @@ describe("AgentWorkerBase dispatched method results", () => {
     const abort = vi.fn().mockResolvedValue(undefined);
     worker.runners.set("chat-1", { runner: { abort } });
 
-    const result = await worker.invokeChannelMethod("chat-1", "tool-1", "user", "eval", {
-      code: "1 + 1",
-    });
+    const result = await worker.invokeChannelMethod(
+      "chat-1",
+      "tool-1",
+      "user",
+      "eval",
+      { code: "1 + 1" },
+      undefined,
+      undefined,
+      "turn-1",
+    );
 
     expect(result).toEqual({
       content: [{ type: "text", text: '{"ok":true}' }],
@@ -102,8 +166,13 @@ describe("AgentWorkerBase dispatched method results", () => {
     });
     expect(abort).not.toHaveBeenCalled();
     expect(capturedCallId).toEqual(expect.any(String));
-    expect(worker.dispatches.peek(capturedCallId)).toBeNull();
-    expect(completeToolCall).toHaveBeenCalledWith("tool-1", { ok: true }, false);
+    expect(capturedCallId).not.toBe("tool-1");
+    expect(capturedOpts).toEqual({
+      invocationId: "tool-1",
+      transportCallId: capturedCallId,
+      turnId: "turn-1",
+      timeoutMs: 600000,
+    });
   });
 
   it("cancels the channel pending call when an in-flight method call aborts", async () => {
@@ -118,9 +187,6 @@ describe("AgentWorkerBase dispatched method results", () => {
       resolveCallStarted = resolve;
     });
     const worker = instance as unknown as {
-      dispatches: {
-        peek(callId: string): unknown | null;
-      };
       subscriptions: {
         getParticipantId(channelId: string): string | null;
       };
@@ -163,183 +229,6 @@ describe("AgentWorkerBase dispatched method results", () => {
 
     await expect(pending).rejects.toThrow("Request was aborted");
     expect(cancelCall).toHaveBeenCalledWith(capturedCallId);
-    expect(worker.dispatches.peek(capturedCallId)).toBeNull();
-  });
-
-  it("persists recovered method results and resumes the runner when no live waiter exists", async () => {
-    const { instance } = await createTestDO(TestAgentWorker, {
-      __objectKey: "agent-test",
-    });
-    const appendToolResult = vi.fn().mockResolvedValue("entry-1");
-    const submitContinue = vi.fn();
-    const worker = instance as unknown as {
-      dispatches: {
-        store(input: {
-          callId: string;
-          channelId: string;
-          kind: "tool-call";
-          toolCallId: string;
-          toolName?: string;
-          paramsJson?: string;
-          targetParticipantId?: string;
-          methodName?: string;
-          argsJson?: string;
-        }): void;
-        peek(callId: string): unknown | null;
-      };
-      runners: Map<string, unknown>;
-      getOrCreateProjector: ReturnType<typeof vi.fn>;
-      getOrCreateDispatcher: ReturnType<typeof vi.fn>;
-      handleCompletedMethodResult(callId: string, result: unknown, isError: boolean): Promise<void>;
-    };
-
-    worker.dispatches.store({
-      callId: "call-recovered",
-      channelId: "chat-1",
-      kind: "tool-call",
-      toolCallId: "tool-1",
-      toolName: "user.eval",
-      paramsJson: JSON.stringify({
-        participantHandle: "user",
-        method: "eval",
-        args: { code: "1 + 1" },
-      }),
-      targetParticipantId: "panel:panel-1",
-      methodName: "eval",
-      argsJson: JSON.stringify({ code: "1 + 1" }),
-    });
-    worker.runners.set("chat-1", {
-      runner: {
-        appendToolResult,
-        getStateSnapshot: vi.fn().mockResolvedValue({ messages: [] }),
-      },
-    });
-    worker.getOrCreateProjector = vi.fn().mockReturnValue({});
-    worker.getOrCreateDispatcher = vi.fn().mockReturnValue({ submitContinue });
-
-    await worker.handleCompletedMethodResult("call-recovered", { ok: true }, false);
-
-    expect(appendToolResult).toHaveBeenCalledWith(
-      expect.objectContaining({
-        role: "toolResult",
-        toolCallId: "tool-1",
-        toolName: "user.eval",
-        content: [{ type: "text", text: '{"ok":true}' }],
-        details: undefined,
-        isError: false,
-      })
-    );
-    expect(worker.dispatches.peek("call-recovered")).toBeNull();
-    expect(submitContinue).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps a buffered recovered result when transcript append fails and drains it later", async () => {
-    const { instance } = await createTestDO(TestAgentWorker, {
-      __objectKey: "agent-test",
-    });
-    const appendToolResult = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("temporary append failure"))
-      .mockResolvedValueOnce("entry-1");
-    const submitContinue = vi.fn();
-    const worker = instance as unknown as {
-      dispatches: {
-        store(input: {
-          callId: string;
-          channelId: string;
-          kind: "tool-call";
-          toolCallId: string;
-          toolName?: string;
-        }): void;
-        peek(
-          callId: string
-        ): { pendingResultJson: string | null; pendingIsError: boolean | null } | null;
-      };
-      runners: Map<string, unknown>;
-      getOrCreateProjector: ReturnType<typeof vi.fn>;
-      getOrCreateDispatcher: ReturnType<typeof vi.fn>;
-      handleCompletedMethodResult(callId: string, result: unknown, isError: boolean): Promise<void>;
-      drainBufferedRecoveredResults(channelId: string): Promise<void>;
-    };
-
-    worker.dispatches.store({
-      callId: "call-buffered",
-      channelId: "chat-1",
-      kind: "tool-call",
-      toolCallId: "tool-1",
-      toolName: "user.eval",
-    });
-    worker.runners.set("chat-1", {
-      runner: {
-        appendToolResult,
-        getStateSnapshot: vi.fn().mockResolvedValue({ messages: [] }),
-      },
-    });
-    worker.getOrCreateProjector = vi.fn().mockReturnValue({});
-    worker.getOrCreateDispatcher = vi.fn().mockReturnValue({ submitContinue });
-
-    await expect(
-      worker.handleCompletedMethodResult("call-buffered", { ok: true }, false)
-    ).rejects.toThrow("temporary append failure");
-
-    expect(worker.dispatches.peek("call-buffered")).toMatchObject({
-      pendingResultJson: JSON.stringify({ value: { ok: true } }),
-      pendingIsError: false,
-    });
-
-    await worker.drainBufferedRecoveredResults("chat-1");
-
-    expect(appendToolResult).toHaveBeenCalledTimes(2);
-    expect(worker.dispatches.peek("call-buffered")).toBeNull();
-    expect(submitContinue).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not duplicate a recovered result that is already in the runner transcript", async () => {
-    const { instance } = await createTestDO(TestAgentWorker, {
-      __objectKey: "agent-test",
-    });
-    const appendToolResult = vi.fn().mockResolvedValue("entry-1");
-    const submitContinue = vi.fn();
-    const worker = instance as unknown as {
-      dispatches: {
-        store(input: {
-          callId: string;
-          channelId: string;
-          kind: "tool-call";
-          toolCallId: string;
-          toolName?: string;
-        }): void;
-        peek(callId: string): unknown | null;
-      };
-      runners: Map<string, unknown>;
-      getOrCreateProjector: ReturnType<typeof vi.fn>;
-      getOrCreateDispatcher: ReturnType<typeof vi.fn>;
-      handleCompletedMethodResult(callId: string, result: unknown, isError: boolean): Promise<void>;
-    };
-
-    worker.dispatches.store({
-      callId: "call-duplicate",
-      channelId: "chat-1",
-      kind: "tool-call",
-      toolCallId: "tool-1",
-      toolName: "user.eval",
-    });
-    worker.runners.set("chat-1", {
-      runner: {
-        appendToolResult,
-        getStateSnapshot: vi.fn().mockResolvedValue({
-          messages: [{ role: "toolResult", toolCallId: "tool-1", content: [] }],
-        }),
-      },
-    });
-    worker.getOrCreateProjector = vi.fn().mockReturnValue({});
-    worker.getOrCreateDispatcher = vi.fn().mockReturnValue({ submitContinue });
-
-    await worker.handleCompletedMethodResult("call-duplicate", { ok: true }, false);
-
-    expect(appendToolResult).not.toHaveBeenCalled();
-    expect(worker.dispatches.peek("call-duplicate")).toBeNull();
-    expect(submitContinue).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -382,7 +271,6 @@ describe("AgentWorkerBase model credential resume", () => {
       };
       runners: Map<string, unknown>;
       createChannelClient: ReturnType<typeof vi.fn>;
-      getOrCreateProjector: ReturnType<typeof vi.fn>;
       getOrCreateDispatcher: ReturnType<typeof vi.fn>;
       recordModelCredentialInterruption(
         channelId: string,
@@ -411,7 +299,6 @@ describe("AgentWorkerBase model credential resume", () => {
         },
       },
     });
-    worker.getOrCreateProjector = vi.fn().mockReturnValue({});
     worker.getOrCreateDispatcher = vi.fn().mockReturnValue({ submitContinue });
 
     await worker.recordModelCredentialInterruption("chat-1", "test", "https://model.example/v1");

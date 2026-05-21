@@ -12,6 +12,7 @@
     }
   },
   "dependencies": {
+    "@workspace/agentic-protocol": "workspace:*",
     "@workspace/runtime": "workspace:*"
   }
 }

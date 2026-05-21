@@ -37,17 +37,6 @@ export type { CompactionTriggerOptions } from "./compaction-trigger.js";
 export { AgentWorkerError } from "./errors.js";
 export type { AgentWorkerErrorCode } from "./errors.js";
 
-// Gad session storage adapter (Phase 1) — the worker constructs one per
-// PiRunner and hands it in via `PiRunnerOptions.gadSessionStorage`.
-export {
-  GadSessionStorage,
-  TranscriptShapeError,
-} from "./gad-session-storage.js";
-export type {
-  GadSessionMetadata,
-  GadSessionStorageOptions,
-  GadRpcCaller,
-} from "./gad-session-storage.js";
 export {
   NATSTACK_BASE_SYSTEM_PROMPT,
   composeSystemPrompt,

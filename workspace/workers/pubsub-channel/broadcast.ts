@@ -10,7 +10,7 @@
 import type { SqlStorage } from "@workspace/runtime/worker";
 import type { RpcBridge } from "@natstack/rpc";
 import type { ChannelEvent } from "@natstack/harness/types";
-import type { BroadcastEnvelope, StoredAttachment } from "./types.js";
+import type { BroadcastEnvelope } from "./types.js";
 import type { RpcChannelMessage } from "@workspace/pubsub";
 
 export interface BroadcastDeps {
@@ -176,31 +176,6 @@ export function buildChannelEvent(
     ts,
     ...(mappedAttachments && mappedAttachments.length > 0 ? { attachments: mappedAttachments } : {}),
   };
-}
-
-/**
- * Parse a SQL message row into a ChannelEvent.
- * Shared by replay, subscribe, and pagination.
- */
-export function parseRowToChannelEvent(row: Record<string, unknown>): ChannelEvent {
-  let senderMetadata: Record<string, unknown> | undefined;
-  if (row["sender_metadata"]) {
-    try { senderMetadata = JSON.parse(row["sender_metadata"] as string); } catch { /* skip */ }
-  }
-  let attachments: StoredAttachment[] | undefined;
-  if (row["attachments"]) {
-    try { attachments = JSON.parse(row["attachments"] as string); } catch { /* skip */ }
-  }
-  return buildChannelEvent(
-    row["id"] as number,
-    (row["message_id"] as string) ?? "",
-    row["type"] as string,
-    (row["payload"] ?? row["content"]) as string,
-    row["sender_id"] as string,
-    senderMetadata,
-    row["ts"] as number,
-    attachments,
-  );
 }
 
 // ── Wire encoding ────────────────────────────────────────────────────────────

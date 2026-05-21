@@ -11,21 +11,13 @@
  * Composes:
  * - `DOIdentity`: stable DO ref + workerd session id
  * - `SubscriptionManager`: channel membership + replay state
- * - `DispatchedCallStore`: durable breadcrumb index for interactive dispatches
- *   that must survive DO hibernation
  * - `ChannelClient`: typed wrapper around channel DO RPC
  * - `TurnDispatcher` (one per channel): queues user messages, chooses
  *   runTurn vs steer, self-heals pi-core's steering-queue exit race,
  *   drives the typing indicator from real busy state
- * - `ContentBlockProjector` (one per channel): maps Pi content events
- *   onto channel messages
  *
- * Publishes Pi events as real channel messages via `ContentBlockProjector`
- * (one channel message per Pi content block):
- * - Text blocks stream via send → delta updates → complete
- * - Thinking blocks stream via send → delta updates (append flag) → complete
- * - Tool calls publish as contentType "toolCall" (ToolCallPayload snapshot)
- * - Tool-result images fold into the tool call's `execution.resultImages`
+ * `PiRunner` writes canonical trajectory events and publishes opaque
+ * `agentic.trajectory.v1/event` envelopes for channel consumers.
  *
  * Message dispatch flow (normal turn):
  *   processChannelEvent → refreshRoster → getOrCreateRunner → resizeAttachments
@@ -47,6 +39,7 @@ import type {
   UnsubscribeResult,
 } from "@natstack/harness/types";
 import { isClientParticipantType } from "@workspace/pubsub";
+import { AGENTIC_EVENT_PAYLOAD_KIND } from "@workspace/agentic-protocol";
 import {
   PiRunner,
   type ChannelToolMethod,
@@ -55,23 +48,16 @@ import {
   type ApprovalLevel,
   type ThinkingLevel,
   type SystemPromptMode,
-  GadSessionStorage,
   AgentWorkerError,
   type RunnerEvent,
   type TurnSnapshot,
 } from "@natstack/harness";
-import type { AgentEvent, AgentMessage, AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { getModel as getPiModel, type ImageContent } from "@earendil-works/pi-ai";
 
 import { DOIdentity } from "./identity.js";
 import { SubscriptionManager } from "./subscription-manager.js";
-import {
-  DispatchedCallStore,
-  type DispatchedCall,
-  type DispatchedCallKind,
-} from "./dispatched-call-store.js";
 import { ChannelClient } from "./channel-client.js";
-import { ContentBlockProjector, type ProjectorSink } from "./content-block-projector.js";
 import { TurnDispatcher } from "./turn-dispatcher.js";
 import {
   createGadServiceClient,
@@ -96,9 +82,6 @@ function isExpectedTestServerFailure(error: unknown): boolean {
 }
 
 function isTranscriptShapeError(error: unknown): boolean {
-  // Trigger now flows through the adapter's TranscriptShapeError. Fall back
-  // to the legacy string sniff for any code path that still raises a bare
-  // Error with the historical message ("Malformed agent transcript: ...").
   if (error instanceof Error && error.name === "TranscriptShapeError") return true;
   return /\bMalformed (?:agent|GAD) (?:append|transcript)\b/.test(String(error));
 }
@@ -352,13 +335,6 @@ function isCredentialRequiredAssistantMessage(message: AgentMessage | undefined)
   );
 }
 
-function hasToolResultMessage(messages: AgentMessage[], toolCallId: string): boolean {
-  return messages.some((message) => {
-    const candidate = message as { role?: string; toolCallId?: unknown };
-    return candidate.role === "toolResult" && candidate.toolCallId === toolCallId;
-  });
-}
-
 interface RunnerEntry {
   runner: PiRunner;
 }
@@ -370,9 +346,12 @@ interface MethodResultCompletion {
 
 interface MethodResultWaiter {
   channelId: string;
+  invocationId: string;
   resolve: (completion: MethodResultCompletion) => void;
   reject: (error: unknown) => void;
 }
+
+const DEFAULT_CHANNEL_METHOD_TIMEOUT_MS = 10 * 60 * 1000;
 
 interface ModelCredentialInterruption {
   providerId: string;
@@ -407,7 +386,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   protected identity: DOIdentity;
   protected subscriptions: SubscriptionManager;
-  protected dispatches: DispatchedCallStore;
 
   /** One PiRunner per channel — created lazily on first user message. */
   private runners = new Map<string, RunnerEntry>();
@@ -419,12 +397,12 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   /** Last explicit user stop per channel. Suppresses late dispatch continuations. */
   private lastUserInterruptAt = new Map<string, number>();
 
-  /** Streaming callbacks keyed by method callId. When a method-result event
-   *  arrives with complete:false, the callback is invoked with the content.
+  /** Streaming callbacks keyed by invocation id. When an invocation output
+   *  arrives before completion, the callback is invoked with the content.
    *  This bridges ctx.stream() from method providers to Pi's onUpdate. */
   private streamCallbacks = new Map<string, (content: unknown) => void>();
 
-  /** Awaiters for canonical method-result completions. Channel methods are
+  /** Awaiters for canonical invocation completions. Channel methods are
    *  first-class tool suspension points: the Pi tool promise stays pending
    *  until the channel broadcasts the completed result. */
   private methodResultWaiters = new Map<string, MethodResultWaiter>();
@@ -445,7 +423,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   /** Phase 0D: Transient poison message tracker. Resets on hibernation. */
   private failedEvents = new Map<number, number>();
   private static readonly POISON_MAX_ATTEMPTS = 3;
-  private recoveredChannels = new Set<string>();
   private gad: DurableObjectServiceClient;
 
   /** Cached contextId for this DO instance — fetched via `runtime.resolveContext`
@@ -501,20 +478,13 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       (channelId) => new ChannelClient(lazyRpc, channelId),
       this.identity
     );
-    this.dispatches = new DispatchedCallStore(this.sql);
-
     this.ensureReady();
-    this.dispatches.clearResolvingTokens();
     this.identity.restore();
   }
 
   protected createTables(): void {
     this.identity.createTables();
     this.subscriptions.createTables();
-    this.dispatches.createTables();
-    this.sql.exec(`DROP TABLE IF EXISTS pending_calls`);
-    this.sql.exec(`DROP TABLE IF EXISTS pi_messages`);
-    this.sql.exec(`DROP TABLE IF EXISTS pi_sessions`);
     // Delivery cursor for event dedup + gap repair.
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS delivery_cursor (
@@ -842,19 +812,78 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   }
 
   protected shouldProcess(event: ChannelEvent): boolean {
-    if (event.type !== "message") return false;
-    if (event.contentType) return false;
+    if (event.type !== "message" && event.type !== AGENTIC_EVENT_PAYLOAD_KIND) return false;
+    if (event.type === "message" && event.contentType) return false;
     const senderType = event.senderMetadata?.["type"] as string | undefined;
     if (!isClientParticipantType(senderType)) return false;
+    if (event.type === AGENTIC_EVENT_PAYLOAD_KIND) {
+      const agentic = this.agenticEventFromChannelEvent(event);
+      return agentic?.kind === "message.completed";
+    }
     return true;
   }
 
   protected buildTurnInput(event: ChannelEvent): TurnInput {
+    const agentic = event.type === AGENTIC_EVENT_PAYLOAD_KIND ? this.agenticEventFromChannelEvent(event) : null;
+    if (agentic?.kind === "message.completed") {
+      const payload = agentic.payload as { content?: unknown };
+      return {
+        content: typeof payload.content === "string" ? payload.content : "",
+        senderId: event.senderId,
+        attachments: event.attachments,
+      };
+    }
     const payload = event.payload as { content?: string; attachments?: Attachment[] };
     return {
       content: payload.content ?? "",
       senderId: event.senderId,
       attachments: event.attachments,
+    };
+  }
+
+  private agenticEventFromChannelEvent(event: ChannelEvent): {
+    kind?: string;
+    causality?: { invocationId?: string; transportCallId?: string };
+    payload?: unknown;
+  } | null {
+    if (event.type !== AGENTIC_EVENT_PAYLOAD_KIND) return null;
+    return event.payload && typeof event.payload === "object"
+      ? event.payload as { kind?: string; causality?: { invocationId?: string; transportCallId?: string }; payload?: unknown }
+      : null;
+  }
+
+  private channelInvocationResult(event: ChannelEvent): {
+    callId: string;
+    content: unknown;
+    complete: boolean;
+    isError: boolean;
+  } | null {
+    if (event.type !== AGENTIC_EVENT_PAYLOAD_KIND) return null;
+    const agentic = this.agenticEventFromChannelEvent(event);
+    if (!agentic?.kind?.startsWith("invocation.") || agentic.kind === "invocation.started") {
+      return null;
+    }
+    const callId = agentic.causality?.transportCallId ?? agentic.causality?.invocationId;
+    if (!callId) return null;
+    const payload = agentic.payload && typeof agentic.payload === "object"
+      ? agentic.payload as Record<string, unknown>
+      : {};
+    if (agentic.kind === "invocation.completed") {
+      return { callId, content: payload["result"], complete: true, isError: false };
+    }
+    if (agentic.kind === "invocation.failed" || agentic.kind === "invocation.cancelled") {
+      return {
+        callId,
+        content: payload["error"] ?? payload["reason"] ?? "Invocation failed",
+        complete: true,
+        isError: true,
+      };
+    }
+    return {
+      callId,
+      content: payload["output"] ?? payload["data"] ?? payload["message"],
+      complete: false,
+      isError: false,
     };
   }
 
@@ -945,23 +974,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       this.runners.delete(channelId);
     }
 
-    // Clean up per-channel projector state. closeAll before deletion so any
-    // still-open channel messages receive their final `complete` (defensive —
-    // the runner.dispose above should have drained pi events already).
-    const projector = this.projectors.get(channelId);
-    if (projector) {
-      try {
-        await projector.closeAll();
-      } catch (err) {
-        console.warn(
-          `[AgentWorkerBase] projector.closeAll on unsubscribe failed for ${channelId}:`,
-          err
-        );
-      }
-      this.projectors.delete(channelId);
-    }
-
-    this.dispatches.deleteForChannel(channelId);
+    this.rejectMethodWaitersForChannel(channelId, "Channel was unsubscribed");
     this.subscriptions.deleteSubscription(channelId);
     this.transcriptPoisonedChannels.delete(channelId);
     this.transcriptPoisonNotified.delete(channelId);
@@ -1116,27 +1129,16 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     if (await this.failIfTranscriptPoisoned(channelId)) return;
 
-    if (event.type === "agent-context") {
-      await this.appendAgentContext(channelId, event);
-      return;
-    }
-
-    // Intercept streaming method-result events (complete: false) and forward
-    // to the registered stream callback. This bridges ctx.stream() from method
-    // providers through to Pi's tool_execution_update event system.
-    if (event.type === "method-result") {
-      const payload = event.payload as Record<string, unknown> | undefined;
-      const callId = payload?.["callId"] as string | undefined;
-      if (payload?.["complete"] === false) {
-        if (callId) {
-          const cb = this.streamCallbacks.get(callId);
-          if (cb) cb(payload["content"]);
-        }
-      } else if (payload?.["complete"] === true && callId) {
+    const invocationResult = this.channelInvocationResult(event);
+    if (invocationResult) {
+      if (!invocationResult.complete) {
+        const cb = this.streamCallbacks.get(invocationResult.callId);
+        if (cb) cb(invocationResult.content);
+      } else {
         await this.handleCompletedMethodResult(
-          callId,
-          payload["content"],
-          payload["isError"] === true
+          invocationResult.callId,
+          invocationResult.content,
+          invocationResult.isError
         );
       }
       return;
@@ -1151,32 +1153,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     const existing = this.runners.get(channelId);
     if (existing) return existing.runner;
 
-    await this.ensurePiBranch(channelId);
-
-    // Build the GadSessionStorage adapter (Phase 1). The runner owns its
-    // own `Session<GadSessionMetadata>` backed by this adapter; the worker
-    // no longer maintains a messageCache or intercepts gad RPCs.
-    const gadSessionStorage = new GadSessionStorage({
-      rpc: {
-        call: (target: string, method: string, args: unknown[]) =>
-          this.rpc.call(target, method, args),
-      },
-      branchId: gadBranchIdForChannel(channelId),
-      channelId,
-      contextId: this.subscriptions.getContextId(channelId),
-      onTranscriptShapeError: (err) => {
-        // Best-effort, fire-and-forget; the adapter re-throws, the caller
-        // surfaces the error to its own catch path. We surface the visible
-        // card here so the user sees it once.
-        void this.handleTranscriptShapeError(channelId, err);
-      },
-    });
-
-    // Build options as a strongly-typed legacy PiRunnerOptions object,
-    // then add the new Phase-1 fields (`gadSessionStorage`,
-    // `onPrepareNextTurn`) via a single cast at construction. This keeps
-    // every callback parameter typed while letting us pass new options
-    // before the PiRunner type definition is updated upstream.
+    // Build options as a strongly-typed PiRunnerOptions object. The runner is
+    // responsible for materializing Pi session state from trajectory events.
     const runnerOptions = {
       rpc: {
         call: <T = unknown>(target: string, method: string, args: unknown[]): Promise<T> => {
@@ -1200,7 +1178,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         method: string,
         args: unknown,
         signal: AbortSignal | undefined,
-        onStreamUpdate?: (content: unknown) => void
+        onStreamUpdate?: (content: unknown) => void,
+        turnId?: string
       ) =>
         this.invokeChannelMethod(
           channelId,
@@ -1209,13 +1188,15 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           method,
           args,
           signal,
-          onStreamUpdate
+          onStreamUpdate,
+          turnId
         ),
       askUserCallback: (
         toolCallId: string,
         params: AskUserParams,
-        signal: AbortSignal | undefined
-      ) => this.askUser(channelId, toolCallId, params, signal),
+        signal: AbortSignal | undefined,
+        turnId?: string
+      ) => this.askUser(channelId, toolCallId, params, signal, turnId),
       model: this.getModel(),
       getApiKey: this.getApiKeyForChannel(channelId),
       hasCredentialForOrigin: async (originUrl: string) => {
@@ -1259,6 +1240,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       thinkingLevel: this.getThinkingLevel(),
       ...this.getRunnerPromptConfig(channelId),
       approvalLevel: this.getApprovalLevel(channelId),
+      agentActor: this.agentActorForChannel(channelId),
       gad: {
         branchId: gadBranchIdForChannel(channelId),
         channelId,
@@ -1271,12 +1253,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     };
     const runner = new PiRunner({
       ...runnerOptions,
-      // Phase 1: hand the runner its session storage adapter. The new
-      // PiRunner uses `sessionStorage` (typed `GadSessionStorage`).
-      sessionStorage: gadSessionStorage,
-      // Phase 4: the only async-between-turns seam. The runner invokes
-      // this between turns; the worker refreshes the roster and
-      // re-evaluates model / thinking-level then.
       onPrepareNextTurn: async (snapshot) => {
         await this.prepareNextTurnHook(channelId, snapshot);
       },
@@ -1284,18 +1260,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     await runner.init();
 
-    const projector = this.getOrCreateProjector(channelId);
-    runner.subscribe((event) => {
-      return projector.handleEvent(event);
-    });
-
-    // Phase 7: register the only remaining piece of the legacy terminal-error
-    // subscriber — the aborted-turn logging branch (NatStack-specific). The
-    // upstream lifecycle now emits a normal `message_*` sequence for error
-    // terminations, so the projector handles those via the standard
-    // message-event path.
-    //
-    // Register on the typed `hooks` bus (post-Phase 6).
     const abortedTurnListener = (event: RunnerEvent) => {
       const msg = abortedAgentEndMessage(event);
       if (!msg) return;
@@ -1312,8 +1276,27 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     // Dispatcher self-subscribes to runner events for absorption tracking
     // and sweep. Created here so it exists before the first processChannelEvent
     // (which expects to hand messages to it).
-    this.getOrCreateDispatcher(channelId, runner, projector);
+    this.getOrCreateDispatcher(channelId, runner);
     return runner;
+  }
+
+  private agentActorForChannel(channelId: string) {
+    const participantId = this.subscriptions.getParticipantId(channelId);
+    const descriptor = this.getParticipantInfo(channelId, this.subscriptions.getConfig(channelId));
+    return {
+      kind: "agent" as const,
+      id: participantId ?? descriptor.handle ?? "agent",
+      displayName: descriptor.name ?? descriptor.handle ?? "AI Agent",
+      metadata: {
+        handle: descriptor.handle,
+        workerRef: this.identity.refOrNull,
+      },
+      ...(participantId ? { participantId } : {}),
+    };
+  }
+
+  private currentTurnIdForChannel(channelId: string): string | undefined {
+    return this.runners.get(channelId)?.runner.getCurrentTurnId() ?? undefined;
   }
 
   /**
@@ -1330,62 +1313,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     // Subclasses that cache may override this hook to invalidate.
     void this.getModel();
     void this.getThinkingLevel();
-  }
-
-  // ── Per-channel projector (Pi events → channel messages) ───────────────
-
-  /** One projector per channel, created lazily when the runner is wired up. */
-  protected projectors = new Map<string, ContentBlockProjector>();
-
-  protected getOrCreateProjector(channelId: string): ContentBlockProjector {
-    const existing = this.projectors.get(channelId);
-    if (existing) return existing;
-    const projector = new ContentBlockProjector(this.createProjectorSink(channelId));
-    this.projectors.set(channelId, projector);
-    return projector;
-  }
-
-  private createProjectorSink(channelId: string): ProjectorSink {
-    return {
-      send: async (msgId, content, opts) => {
-        const participantId = this.subscriptions.getParticipantId(channelId);
-        if (!participantId) return;
-        const channel = this.createChannelClient(channelId);
-        await channel.send(participantId, msgId, content, {
-          contentType: opts?.contentType,
-          attachments: opts?.attachments,
-        });
-      },
-      update: async (msgId, content, opts) => {
-        const participantId = this.subscriptions.getParticipantId(channelId);
-        if (!participantId) return;
-        const channel = this.createChannelClient(channelId);
-        await channel.update(participantId, msgId, content, undefined, opts);
-      },
-      complete: async (msgId) => {
-        const participantId = this.subscriptions.getParticipantId(channelId);
-        if (!participantId) return;
-        const channel = this.createChannelClient(channelId);
-        await channel.complete(participantId, msgId);
-      },
-      error: async (msgId, message, code) => {
-        const participantId = this.subscriptions.getParticipantId(channelId);
-        if (!participantId) return;
-        const channel = this.createChannelClient(channelId);
-        await channel.error(participantId, msgId, message, code);
-      },
-    };
-  }
-
-  private async ensurePiBranch(channelId: string): Promise<void> {
-    await this.gad.call("ensurePiBranch", {
-      branchId: gadBranchIdForChannel(channelId),
-      channelId,
-      metadata: {
-        workerRef: this.identity.refOrNull,
-        contextId: this.subscriptions.getContextId(channelId),
-      },
-    });
   }
 
   private transcriptShapeErrorMessage(error: unknown): string {
@@ -1477,48 +1404,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     return [];
   }
 
-  private async appendAgentContext(channelId: string, event: ChannelEvent): Promise<void> {
-    const senderType = event.senderMetadata?.["type"] as string | undefined;
-    if (!isClientParticipantType(senderType)) return;
-
-    const payload = event.payload as Record<string, unknown> | undefined;
-    const content = typeof payload?.["content"] === "string" ? payload["content"] : undefined;
-    if (!content) return;
-
-    // Ensure the runner exists so its `Session` is the source of truth.
-    const runner = await this.getOrCreateRunner(channelId);
-
-    const eventKey = event.id > 0 ? `event:${event.id}` : `message:${event.messageId}`;
-
-    // Idempotency: scan existing messages for the marker.
-    const existing = await this.readRunnerMessages(channelId);
-    if (
-      existing.some((message) => {
-        const details = (message as { details?: Record<string, unknown> }).details;
-        return details?.["__natstack_agent_context_key"] === eventKey;
-      })
-    ) {
-      return;
-    }
-
-    const details: Record<string, unknown> = {
-      __natstack_agent_context: true,
-      __natstack_agent_context_key: eventKey,
-      kind: payload?.["kind"],
-      senderId: event.senderId,
-    };
-
-    const timestamp = event.ts ?? Date.now();
-    const newUserMessage = {
-      role: "user",
-      content,
-      timestamp,
-      details,
-    } as AgentMessage;
-
-    await runner.appendUserMessage(newUserMessage);
-  }
-
   private async recordModelCredentialInterruption(
     channelId: string,
     providerId: string,
@@ -1588,11 +1473,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   }
 
   private async ensureChannelContext(channelId: string): Promise<void> {
-    await this.recoverDispatchesForChannel(channelId);
     await this.refreshRoster(channelId);
     await this.getOrCreateRunner(channelId);
-    this.getOrCreateProjector(channelId);
-    await this.drainBufferedRecoveredResults(channelId);
   }
 
   private recordAbort(channelId: string, reason: AgentAbortReason, detail?: string): void {
@@ -1601,22 +1483,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       `[AgentWorkerBase] Agent abort requested on channel=${channelId}: ` +
         `reason=${reason}${detail ? ` detail=${detail}` : ""}`
     );
-  }
-
-  private async recoverDispatchesForChannel(channelId: string): Promise<void> {
-    if (this.recoveredChannels.has(channelId)) return;
-    this.recoveredChannels.add(channelId);
-  }
-
-  private async drainBufferedRecoveredResults(channelId: string): Promise<void> {
-    for (const breadcrumb of this.dispatches.listForChannel(channelId)) {
-      if (!breadcrumb.pendingResultJson) continue;
-      await this.completeRecoveredMethodResult(
-        breadcrumb,
-        decodeBufferedDispatchResult(breadcrumb.pendingResultJson),
-        breadcrumb.pendingIsError ?? false
-      );
-    }
   }
 
   // ── Dispatch + typing (delegated to TurnDispatcher) ─────────────────────
@@ -1628,16 +1494,12 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   protected dispatchers = new Map<string, TurnDispatcher>();
 
-  protected getOrCreateDispatcher(
-    channelId: string,
-    runner: PiRunner,
-    projector: ContentBlockProjector
-  ): TurnDispatcher {
+  protected getOrCreateDispatcher(channelId: string, runner: PiRunner): TurnDispatcher {
     const existing = this.dispatchers.get(channelId);
     if (existing) return existing;
     const dispatcher = new TurnDispatcher({
       runner,
-      projector,
+      projector: { closeAll: async () => undefined },
       notifyTyping: (busy) => this.broadcastTyping(channelId, busy),
     });
     this.dispatchers.set(channelId, dispatcher);
@@ -1702,7 +1564,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     method: string,
     args: unknown,
     signal: AbortSignal | undefined,
-    onStreamUpdate?: (content: unknown) => void
+    onStreamUpdate?: (content: unknown) => void,
+    turnId?: string
   ): Promise<AgentToolResult<any>> {
     if (signal?.aborted) throw new Error("aborted");
     const channel = this.createChannelClient(channelId);
@@ -1714,33 +1577,26 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     const callerId = this.subscriptions.getParticipantId(channelId);
     if (!callerId) throw new Error(`Not subscribed to channel ${channelId}`);
 
-    const callId = crypto.randomUUID();
-    const waiter = this.createMethodResultWaiter(channelId, callId, signal);
-    if (onStreamUpdate) this.streamCallbacks.set(callId, onStreamUpdate);
-    this.dispatches.store({
-      callId,
-      channelId,
-      kind: "tool-call",
-      toolCallId,
-      toolName: `${participantHandle}.${method}`,
-      paramsJson: JSON.stringify({ participantHandle, method, args }),
-      targetParticipantId: target.participantId,
-      methodName: method,
-      argsJson: JSON.stringify(args ?? {}),
-    });
-    this.dispatches.markDispatched(callId);
+    const invocationId = toolCallId;
+    const transportCallId = crypto.randomUUID();
+    const waiter = this.createMethodResultWaiter(channelId, transportCallId, invocationId, signal);
+    if (onStreamUpdate) this.streamCallbacks.set(transportCallId, onStreamUpdate);
     try {
-      await channel.callMethod(callerId, target.participantId, callId, method, args);
+      await channel.callMethod(callerId, target.participantId, transportCallId, method, args, {
+        invocationId,
+        transportCallId,
+        timeoutMs: DEFAULT_CHANNEL_METHOD_TIMEOUT_MS,
+        ...(turnId ? { turnId } : {}),
+      });
       const completion = await waiter.promise;
       if (completion.isError) return methodErrorResult(completion.result);
       return toAgentToolResult(completion.result);
     } catch (err) {
       waiter.cancel(err);
-      await this.cancelChannelMethodCall(channelId, callId);
+      await this.cancelChannelMethodCall(channelId, transportCallId);
       throw err;
     } finally {
-      this.streamCallbacks.delete(callId);
-      this.dispatches.deleteOne(callId);
+      this.streamCallbacks.delete(transportCallId);
     }
   }
 
@@ -1748,7 +1604,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     channelId: string,
     toolCallId: string,
     params: AskUserParams,
-    signal: AbortSignal | undefined
+    signal: AbortSignal | undefined,
+    turnId?: string
   ): Promise<string | AgentToolResult<any>> {
     if (signal?.aborted) throw new Error("aborted");
     const callerId = this.subscriptions.getParticipantId(channelId);
@@ -1764,29 +1621,25 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       throw new Error(`No panel participant in channel ${channelId} to ask`);
     }
 
-    const callId = crypto.randomUUID();
-    const waiter = this.createMethodResultWaiter(channelId, callId, signal);
-    this.dispatches.store({
-      callId,
-      channelId,
-      kind: "ask-user",
-      toolCallId,
-      targetParticipantId: panel.participantId,
-      methodName: "feedback_form",
-      argsJson: JSON.stringify(params),
-    });
-    this.dispatches.markDispatched(callId);
+    const invocationId = toolCallId || crypto.randomUUID();
+    const transportCallId = crypto.randomUUID();
+    const waiter = this.createMethodResultWaiter(channelId, transportCallId, invocationId, signal);
     try {
-      await channel.callMethod(callerId, panel.participantId, callId, "feedback_form", params);
+      await channel.callMethod(callerId, panel.participantId, transportCallId, "feedback_form", params, {
+        invocationId,
+        transportCallId,
+        timeoutMs: DEFAULT_CHANNEL_METHOD_TIMEOUT_MS,
+        ...(turnId ? { turnId } : {}),
+      });
       const completion = await waiter.promise;
       if (completion.isError) return methodErrorResult(completion.result);
       return resultToAnswerText(completion.result);
     } catch (err) {
       waiter.cancel(err);
-      await this.cancelChannelMethodCall(channelId, callId);
+      await this.cancelChannelMethodCall(channelId, transportCallId);
       throw err;
     } finally {
-      this.dispatches.deleteOne(callId);
+      this.streamCallbacks.delete(transportCallId);
     }
   }
 
@@ -1917,11 +1770,14 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   private createMethodResultWaiter(
     channelId: string,
     callId: string,
+    invocationId: string,
     signal?: AbortSignal
   ): { promise: Promise<MethodResultCompletion>; cancel: (error?: unknown) => void } {
     let settled = false;
     let removeAbortListener: (() => void) | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     const cleanup = () => {
+      if (timeout !== undefined) clearTimeout(timeout);
       this.methodResultWaiters.delete(callId);
       removeAbortListener?.();
       removeAbortListener = undefined;
@@ -1940,7 +1796,19 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         cleanup();
         reject(error);
       };
-      this.methodResultWaiters.set(callId, { channelId, resolve: complete, reject: fail });
+      this.methodResultWaiters.set(callId, { channelId, invocationId, resolve: complete, reject: fail });
+      timeout = setTimeout(() => {
+        const error = new Error(`Channel method call timed out after ${DEFAULT_CHANNEL_METHOD_TIMEOUT_MS}ms`);
+        fail(error);
+        void this.createChannelClient(channelId)
+          .timeoutCall(callId, error.message)
+          .catch((err) => {
+            console.warn(
+              `[AgentWorkerBase] Failed to mark channel method timeout: channel=${channelId} callId=${callId}`,
+              err,
+            );
+          });
+      }, DEFAULT_CHANNEL_METHOD_TIMEOUT_MS);
       if (signal) {
         const onAbort = () => fail(new Error("Request was aborted"));
         if (signal.aborted) {
@@ -1986,69 +1854,9 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     isError: boolean
   ): Promise<void> {
     this.streamCallbacks.delete(callId);
-    const breadcrumb = this.dispatches.peek(callId);
     const waiter = this.methodResultWaiters.get(callId);
     if (waiter) {
-      if (breadcrumb?.kind === "tool-call") {
-        await this.getOrCreateProjector(waiter.channelId).completeToolCall(
-          breadcrumb.toolCallId,
-          result,
-          isError
-        );
-      }
       waiter.resolve({ result, isError });
-      return;
-    }
-    if (breadcrumb) {
-      this.dispatches.bufferResult(callId, result, isError);
-      await this.completeRecoveredMethodResult(
-        this.dispatches.peek(callId) ?? breadcrumb,
-        result,
-        isError
-      );
-      return;
-    }
-  }
-
-  private async completeRecoveredMethodResult(
-    breadcrumb: DispatchedCall,
-    result: unknown,
-    isError: boolean
-  ): Promise<void> {
-    let entry = this.runners.get(breadcrumb.channelId);
-    if (!entry) {
-      await this.ensureChannelContext(breadcrumb.channelId);
-      const current = this.dispatches.peek(breadcrumb.callId);
-      if (!current) return;
-      breadcrumb = current;
-      entry = this.runners.get(breadcrumb.channelId);
-    }
-    if (!entry) {
-      throw new AgentWorkerError(
-        "invalid_state",
-        `No runner for recovered dispatch channel ${breadcrumb.channelId}`
-      );
-    }
-
-    const messages = await this.readRunnerMessages(breadcrumb.channelId);
-    if (!hasToolResultMessage(messages, breadcrumb.toolCallId)) {
-      const toolResult = isError ? methodErrorResult(result) : toAgentToolResult(result);
-      await entry.runner.appendToolResult({
-        role: "toolResult",
-        toolCallId: breadcrumb.toolCallId,
-        toolName: breadcrumb.toolName ?? breadcrumb.methodName ?? "unknown",
-        content: toolResult.content,
-        details: toolResult.details,
-        isError: isError || (toolResult as { isError?: boolean }).isError === true,
-        timestamp: Date.now(),
-      } as AgentMessage);
-    }
-
-    this.dispatches.deleteOne(breadcrumb.callId);
-    if (this.dispatches.listForChannel(breadcrumb.channelId).length === 0) {
-      const projector = this.getOrCreateProjector(breadcrumb.channelId);
-      const dispatcher = this.getOrCreateDispatcher(breadcrumb.channelId, entry.runner, projector);
-      dispatcher.submitContinue();
     }
   }
 
@@ -2071,25 +1879,18 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     });
     if (!panel) throw new Error(`No panel participant in channel ${channelId}`);
 
-    const callId = crypto.randomUUID();
-    const waiter = this.createMethodResultWaiter(channelId, callId, signal);
-    const breadcrumbKind: DispatchedCallKind = meta?.mode === "approval" ? "approval" : "ui-prompt";
-    this.dispatches.store({
-      callId,
-      channelId,
-      kind: breadcrumbKind,
-      toolCallId,
-      toolName: breadcrumbKind === "approval" ? (meta?.toolName ?? null) : null,
-      paramsJson: breadcrumbKind === "approval" ? JSON.stringify(meta?.toolInput ?? {}) : null,
-      targetParticipantId: panel.participantId,
-      methodName: "ui_prompt",
-      argsJson: JSON.stringify({ kind, ...params }),
-    });
-    this.dispatches.markDispatched(callId);
+    const invocationId = toolCallId || crypto.randomUUID();
+    const transportCallId = crypto.randomUUID();
+    const waiter = this.createMethodResultWaiter(channelId, transportCallId, invocationId, signal);
     try {
-      await channel.callMethod(callerId, panel.participantId, callId, "ui_prompt", {
+      await channel.callMethod(callerId, panel.participantId, transportCallId, "ui_prompt", {
         kind,
         ...params,
+      }, {
+        invocationId,
+        transportCallId,
+        timeoutMs: DEFAULT_CHANNEL_METHOD_TIMEOUT_MS,
+        ...(this.currentTurnIdForChannel(channelId) ? { turnId: this.currentTurnIdForChannel(channelId) } : {}),
       });
       const completion = await waiter.promise;
       if (completion.isError) {
@@ -2102,10 +1903,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         : JSON.stringify(completion.result);
     } catch (err) {
       waiter.cancel(err);
-      await this.cancelChannelMethodCall(channelId, callId);
+      await this.cancelChannelMethodCall(channelId, transportCallId);
       throw err;
     } finally {
-      this.dispatches.deleteOne(callId);
+      this.streamCallbacks.delete(transportCallId);
     }
   }
 
@@ -2124,21 +1925,21 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   }
 
   private async notifyDispatchesInterrupted(channelId: string): Promise<void> {
-    const pending = this.dispatches.listForChannel(channelId);
+    const pendingCalls = [...this.methodResultWaiters.entries()]
+      .filter(([, waiter]) => waiter.channelId === channelId)
+      .map(([callId, waiter]) => ({ callId, invocationId: waiter.invocationId }));
     this.rejectMethodWaitersForChannel(channelId, "Request was aborted");
-    if (pending.length === 0) return;
-
-    for (const breadcrumb of pending) {
+    const runner = this.runners.get(channelId)?.runner;
+    for (const { callId, invocationId } of pendingCalls) {
       try {
-        await this.cancelChannelMethodCall(channelId, breadcrumb.callId);
-        await this.sendDispatchCancel(channelId, breadcrumb.callId, "user-interrupted");
+        runner?.forgetOpenInvocation(invocationId);
+        await this.cancelChannelMethodCall(channelId, callId);
+        await this.sendDispatchCancel(channelId, callId, "user-interrupted");
       } catch (err) {
         console.warn(
-          `[AgentWorkerBase] Failed to cancel dispatch ${breadcrumb.callId} on interrupt:`,
+          `[AgentWorkerBase] Failed to cancel dispatch ${callId} on interrupt:`,
           err
         );
-      } finally {
-        this.dispatches.deleteOne(breadcrumb.callId);
       }
     }
   }
@@ -2158,10 +1959,9 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     await this.ensureChannelContext(channelId);
 
     const runner = this.runners.get(channelId)!.runner;
-    const projector = this.getOrCreateProjector(channelId);
     const input = this.buildTurnInput(event);
     const images = await this.resizeAttachments(channelId, input.attachments);
-    const dispatcher = this.getOrCreateDispatcher(channelId, runner, projector);
+    const dispatcher = this.getOrCreateDispatcher(channelId, runner);
     dispatcher.submit({ content: input.content, ...(images ? { images } : {}) }, opts);
   }
 
@@ -2242,9 +2042,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   async onMethodCall(
     _channelId: string,
-    _callId: string,
+    _transportCallId: string,
     _methodName: string,
-    _args: unknown
+    _args: unknown,
+    _metadata?: { invocationId?: string; turnId?: string }
   ): Promise<{ result: unknown; isError?: boolean }> {
     return { result: { error: "not implemented" }, isError: true };
   }
@@ -2314,8 +2115,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     await entry.runner.session?.moveTo(target.id);
     this.clearModelCredentialInterruption(channelId, providerId);
     this.credentialPromptCardsEmitted.delete(`${channelId}::model-credential::${providerId}`);
-    const projector = this.getOrCreateProjector(channelId);
-    const dispatcher = this.getOrCreateDispatcher(channelId, entry.runner, projector);
+    const dispatcher = this.getOrCreateDispatcher(channelId, entry.runner);
     dispatcher.submitContinue();
     return true;
   }
@@ -2323,8 +2123,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   /** Interrupt the in-flight Pi turn for every active channel runner. */
   protected async interruptAllRunners(): Promise<void> {
     for (const [channelId, entry] of this.runners.entries()) {
-      const projector = this.projectors.get(channelId);
-      if (projector) await projector.closeAll();
       this.dispatchers.get(channelId)?.reset();
       this.lastUserInterruptAt.set(channelId, Date.now());
       await this.notifyDispatchesInterrupted(channelId);
@@ -2337,11 +2135,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   protected async interruptRunner(channelId: string): Promise<void> {
     const entry = this.runners.get(channelId);
     if (entry) {
-      // Close every in-flight channel message (text/thinking/toolCall) before
-      // tearing down the runner, so the client sees clean completion events
-      // even though the *_end Pi events won't fire post-abort.
-      const projector = this.projectors.get(channelId);
-      if (projector) await projector.closeAll();
       // Drop any pending/steered messages — interrupt means the user wants
       // everything stopped, not just the current turn. Dispatcher's reset()
       // also clears pi-core's steering queue.
@@ -2388,7 +2181,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     // Clear signal-only state copied from parent.
     this.sql.exec(`DELETE FROM delivery_cursor`);
-    this.sql.exec(`DELETE FROM dispatched_calls`);
 
     await this.forkPiBranchForClone(oldChannelId, newChannelId, forkAtMessageIndex);
 
@@ -2417,7 +2209,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     for (const dispatcher of this.dispatchers.values()) dispatcher.dispose();
     this.dispatchers.clear();
     this.runners.clear();
-    this.projectors.clear();
 
     if (contextId) {
       await this.subscribeChannel({ channelId: newChannelId, contextId, config });
@@ -2435,47 +2226,20 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     // Default: no-op
   }
 
+  protected async onForkRequested(
+    _oldChannelId: string,
+    _newChannelId: string,
+    _forkAtMessageIndex: number | null
+  ): Promise<void> {
+    // Trajectory branch forking is handled by the trajectory append layer.
+  }
+
   private async forkPiBranchForClone(
     oldChannelId: string,
     newChannelId: string,
     forkAtMessageIndex: number | null
   ): Promise<void> {
-    try {
-      await this.ensurePiBranch(oldChannelId);
-      const oldBranchId = gadBranchIdForChannel(oldChannelId);
-      const newBranchId = gadBranchIdForChannel(newChannelId);
-
-      // Fork-point resolution uses canonical Pi entries, addressed by
-      // logical chain position within visible message entries.
-      let entryId: string | null = null;
-      if (forkAtMessageIndex != null) {
-        const offset = Math.max(0, forkAtMessageIndex - 1);
-        const rows = await this.gad.call<Array<Record<string, unknown>>>("findEntries", {
-          branchId: oldBranchId,
-          entryType: "message",
-          offset,
-          limit: 1,
-        });
-        const first = rows[0];
-        if (first && typeof first["entryId"] === "string") {
-          entryId = first["entryId"];
-        } else if (first && typeof first["entry_id"] === "string") {
-          // Defensive: tolerate either snake_case or camelCase from the
-          // backing RPC during transition.
-          entryId = first["entry_id"] as string;
-        }
-      }
-
-      await this.gad.call("forkPiBranch", {
-        sourceBranchId: oldBranchId,
-        newBranchId,
-        entryId,
-        channelId: newChannelId,
-      });
-    } catch (err) {
-      console.warn(`[AgentWorkerBase] gad fork failed:`, err);
-      await this.ensurePiBranch(newChannelId);
-    }
+    await this.onForkRequested(oldChannelId, newChannelId, forkAtMessageIndex);
   }
 
   // ── Fetch override ───────────────────────────────────────────────────────
@@ -2596,9 +2360,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   override async getState(): Promise<Record<string, unknown>> {
     const subscriptions = this.sql.exec(`SELECT * FROM subscriptions`).toArray();
-    const dispatchedCalls = this.sql.exec(`SELECT * FROM dispatched_calls`).toArray();
     const deliveryCursors = this.sql.exec(`SELECT * FROM delivery_cursor`).toArray();
-    return { subscriptions, dispatchedCalls, deliveryCursors };
+    return { subscriptions, deliveryCursors };
   }
 
   // Reference SAFE_TOOL_NAMES_DEFAULT to suppress unused-import warnings;
@@ -2647,10 +2410,6 @@ function toAgentToolResult(result: unknown): AgentToolResult<any> {
     content: [{ type: "text", text: resultToAnswerText(result) }],
     details: undefined,
   };
-}
-
-function decodeBufferedDispatchResult(encoded: string): unknown {
-  return (JSON.parse(encoded) as { value?: unknown }).value;
 }
 
 function resultToAnswerText(result: unknown): string {

@@ -136,10 +136,10 @@ export function createChannelToolsExtension(
                 isError: true,
               };
             }
-            // Bridge Pi's onUpdate callback to the method streaming system.
-            // When the method provider calls ctx.stream(), the channel broadcasts
-            // a method-result event; the agent-worker intercepts it and invokes
-            // this callback, which causes Pi to emit tool_execution_update.
+            // Bridge Pi's onUpdate callback to the channel invocation stream.
+            // Provider progress arrives as typed invocation events; the agent
+            // worker invokes this callback, which causes Pi to emit
+            // tool_execution_update.
             const streamCb: StreamUpdateCallback | undefined = onUpdate
               ? (content) => onUpdate({
                   content: [],

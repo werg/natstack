@@ -27,6 +27,7 @@
     "@natstack/harness": "workspace:*",
     "@natstack/rpc": "workspace:*",
     "@natstack/types": "workspace:*",
+    "@workspace/agentic-protocol": "workspace:*",
     "buffer": "^6.0.3",
     "zod": "^3.24.0"
   },

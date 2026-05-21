@@ -103,6 +103,7 @@
     "@workspace/core": "workspace:*",
     "@workspace/eval": "workspace:*",
     "@workspace/git-ui": "workspace:*",
+    "@workspace/pi-adapter": "workspace:*",
     "@workspace/react": "workspace:*",
     "@workspace/runtime": "workspace:*",
     "@workspace/tool-ui": "workspace:*",

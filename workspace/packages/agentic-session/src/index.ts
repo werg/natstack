@@ -26,8 +26,6 @@ export type {
   ChatParticipantMetadata,
   ConnectionConfig,
   SandboxConfig,
-  MethodHistoryEntry,
-  MethodCallStatus,
   AgentMessage,
   ChatMethodResult,
 } from "@workspace/agentic-core";

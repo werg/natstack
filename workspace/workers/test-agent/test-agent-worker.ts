@@ -1,5 +1,13 @@
 import { AgentWorkerBase } from "@workspace/agentic-do";
-import type { ParticipantDescriptor } from "@natstack/harness/types";
+import type { ChannelEvent, ParticipantDescriptor } from "@natstack/harness/types";
+import {
+  AGENTIC_PROTOCOL_VERSION,
+  type AgenticEvent,
+} from "@workspace/agentic-protocol";
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
  * TestAgentWorker — Minimal agent DO for testing the Pi runtime pipeline.
@@ -17,13 +25,108 @@ export class TestAgentWorker extends AgentWorkerBase {
     return "anthropic:claude-sonnet-4-20250514";
   }
 
-  protected override getParticipantInfo(): ParticipantDescriptor {
+  protected override getParticipantInfo(_channelId: string, config?: unknown): ParticipantDescriptor {
+    const cfg = config && typeof config === "object" ? config as Record<string, unknown> : {};
+    const handle = typeof cfg["handle"] === "string" ? cfg["handle"] : "test-agent";
     return {
-      handle: "test-agent",
-      name: "Test Agent",
+      handle,
+      name: typeof cfg["name"] === "string" ? cfg["name"] : "Test Agent",
       type: "agent",
       metadata: {},
       methods: [],
     };
+  }
+
+  override async processChannelEvent(channelId: string, event: ChannelEvent): Promise<void> {
+    const config = this.subscriptions.getConfig(channelId);
+    if (!config || config["deterministicResponse"] !== true) {
+      await super.processChannelEvent(channelId, event);
+      return;
+    }
+    if (!this.shouldProcess(event)) return;
+
+    const participantId = this.subscriptions.getParticipantId(channelId);
+    if (!participantId) throw new Error(`Not subscribed to channel ${channelId}`);
+
+    const input = this.buildTurnInput(event);
+    const channel = this.createChannelClient(channelId);
+    const now = new Date().toISOString();
+    const actor = {
+      kind: "agent" as const,
+      id: participantId,
+      displayName: "Test Agent",
+      metadata: { handle: config["handle"] ?? "test-agent" },
+    };
+    const invocationId = `deterministic-eval-${event.messageId || Date.now()}`;
+    const messageId = `deterministic-message-${event.messageId || Date.now()}`;
+    const code = typeof config["code"] === "string"
+      ? config["code"]
+      : `return ${JSON.stringify(input.content)}`;
+    const responseText = typeof config["responseText"] === "string"
+      ? config["responseText"]
+      : `Deterministic response to: ${input.content}`;
+    const delayMs = typeof config["delayMs"] === "number" ? config["delayMs"] : 250;
+
+    const publish = async (agenticEvent: AgenticEvent, key: string) => {
+      await channel.publishAgenticEvent(participantId, agenticEvent, {
+        idempotencyKey: `test-agent:${channelId}:${event.messageId}:${key}`,
+      });
+    };
+
+    await publish({
+      kind: "invocation.started",
+      actor,
+      causality: { invocationId: invocationId as never },
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        name: "eval",
+        request: { code },
+        userVisible: true,
+      },
+      createdAt: now,
+    }, "invocation-started");
+
+    await delay(delayMs);
+
+    await publish({
+      kind: "invocation.output",
+      actor,
+      causality: { invocationId: invocationId as never },
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        output: "deterministic eval output",
+      },
+      createdAt: new Date().toISOString(),
+    }, "invocation-output");
+
+    await delay(delayMs);
+
+    await publish({
+      kind: "invocation.completed",
+      actor,
+      causality: { invocationId: invocationId as never },
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        result: {
+          toolCallId: invocationId,
+          toolName: "eval",
+          details: { input: { code } },
+          content: [{ type: "text", text: "deterministic eval result" }],
+        },
+      },
+      createdAt: new Date().toISOString(),
+    }, "invocation-completed");
+
+    await publish({
+      kind: "message.completed",
+      actor,
+      causality: { messageId: messageId as never },
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        role: "assistant",
+        content: responseText,
+      },
+      createdAt: new Date().toISOString(),
+    }, "message-completed");
   }
 }

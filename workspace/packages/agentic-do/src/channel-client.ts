@@ -5,7 +5,11 @@
  * channel service DO via the server's userland service resolver.
  */
 import type { RpcCaller } from "@natstack/rpc";
-import type { ReplayEnvelope } from "@workspace/pubsub";
+import type { ChannelReplayEnvelope } from "@workspace/pubsub";
+import {
+    AGENTIC_EVENT_PAYLOAD_KIND,
+    type AgenticEvent,
+} from "@workspace/agentic-protocol";
 interface ChannelSendOptions {
     contentType?: string;
     senderMetadata?: Record<string, unknown>;
@@ -37,6 +41,12 @@ export class ChannelClient {
     }
     async send(participantId: string, messageId: string, content: string, opts?: ChannelSendOptions): Promise<void> {
         await this.call("send", participantId, messageId, content, opts);
+    }
+    async publishAgenticEvent(participantId: string, event: AgenticEvent, opts?: {
+        idempotencyKey?: string;
+        senderMetadata?: Record<string, unknown>;
+    }): Promise<{ id?: number }> {
+        return this.call("publish", participantId, AGENTIC_EVENT_PAYLOAD_KIND, event, opts);
     }
     async update(participantId: string, messageId: string, content: string, idempotencyKey?: string, opts?: {
         append?: boolean;
@@ -70,12 +80,12 @@ export class ChannelClient {
     async subscribe(participantId: string, metadata: Record<string, unknown>): Promise<{
         ok: boolean;
         channelConfig?: Record<string, unknown>;
-        envelope: ReplayEnvelope;
+        envelope: ChannelReplayEnvelope;
     }> {
         return this.call("subscribe", participantId, metadata) as Promise<{
             ok: boolean;
             channelConfig?: Record<string, unknown>;
-            envelope: ReplayEnvelope;
+            envelope: ChannelReplayEnvelope;
         }>;
     }
     async unsubscribe(participantId: string): Promise<void> {
@@ -90,14 +100,24 @@ export class ChannelClient {
             metadata: Record<string, unknown>;
         }>>;
     }
-    async callMethod(callerPid: string, targetPid: string, callId: string, method: string, args: unknown): Promise<void> {
-        await this.call("callMethod", callerPid, targetPid, callId, method, args);
+    async callMethod(
+        callerPid: string,
+        targetPid: string,
+        callId: string,
+        method: string,
+        args: unknown,
+        opts?: { invocationId?: string; transportCallId?: string; turnId?: string; timeoutMs?: number }
+    ): Promise<void> {
+        await this.call("callMethod", callerPid, targetPid, callId, method, args, opts);
     }
     async cancelCall(callId: string): Promise<void> {
         await this.call("cancelMethodCall", callId);
     }
-    async getReplayAfter(sinceId: number): Promise<ReplayEnvelope> {
-        return this.call("getReplayAfter", sinceId) as Promise<ReplayEnvelope>;
+    async timeoutCall(callId: string, reason?: string): Promise<void> {
+        await this.call("timeoutMethodCall", callId, reason);
+    }
+    async getReplayAfter(sinceId: number): Promise<ChannelReplayEnvelope> {
+        return this.call("getReplayAfter", sinceId) as Promise<ChannelReplayEnvelope>;
     }
     async updateConfig(config: Record<string, unknown>): Promise<Record<string, unknown>> {
         return this.call("updateConfig", config) as Promise<Record<string, unknown>>;

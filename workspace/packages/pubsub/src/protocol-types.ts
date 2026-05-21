@@ -2,7 +2,7 @@
  * Agentic messaging protocol types.
  *
  * Core types for the agentic messaging protocol including participants,
- * messages, events, methods, and aggregation.
+ * messages, events, and methods.
  */
 
 import type {
@@ -14,8 +14,9 @@ import type {
   Attachment,
   AttachmentInput,
   ChannelConfig,
-  ReplayEnvelope,
+  ChannelReplayEnvelope,
 } from "./types.js";
+import { AGENTIC_EVENT_PAYLOAD_KIND, type AgenticEvent } from "@workspace/agentic-protocol";
 import type { z } from "zod";
 
 export interface AgentBuildError {
@@ -134,64 +135,38 @@ export class ValidationError extends Error {
  */
 export type IncomingMessage =
   | IncomingNewMessage
-  | IncomingUpdateMessage
   | IncomingErrorMessage;
 
 /**
- * Execution pause event with discriminant type field.
- */
-export interface IncomingExecutionPauseEvent {
-  type: "execution-pause";
-  /** Message ID being paused */
-  messageId: string;
-  /** Current pause status */
-  status: PauseStatus;
-  /** Optional reason for the pause */
-  reason?: string;
-  /** Transport stream that produced the event. */
-  delivery: "log" | "signal";
-  /** Log phase, present only for durable log events. */
-  phase?: "replay" | "live";
-  /** ID of the sender */
-  senderId: string;
-  /** Timestamp in milliseconds */
-  ts: number;
-  /** Server-assigned ID for checkpointing */
-  pubsubId?: number;
-  /** Sender metadata snapshot (if available) */
-  senderMetadata?: {
-    name?: string;
-    type?: string;
-    handle?: string;
-  };
-}
-
-/**
- * Union type for all incoming event types (messages, method calls, method results, presence).
+ * Union type for all incoming event types.
  * Use the `type` field to discriminate between event types.
  */
 export type IncomingEvent =
   | IncomingNewMessage
-  | IncomingUpdateMessage
   | IncomingErrorMessage
-  | IncomingMethodCallEvent
-  | IncomingMethodResultEvent
+  | IncomingInvocationCallEvent
+  | IncomingInvocationResultEvent
   | IncomingPresenceEventWithType
-  | IncomingExecutionPauseEvent
+  | IncomingAgenticEvent
   | IncomingAgentDebugEvent;
 
-/**
- * Method call event with discriminant type field.
- */
-export interface IncomingMethodCallEvent extends IncomingMethodCall {
-  type: "method-call";
+export interface IncomingAgenticEvent extends IncomingBase {
+  type: typeof AGENTIC_EVENT_PAYLOAD_KIND;
+  payload: AgenticEvent;
 }
 
 /**
- * Method result event with discriminant type field.
+ * Invocation start event derived from a typed agentic envelope.
  */
-export interface IncomingMethodResultEvent extends IncomingMethodResult {
-  type: "method-result";
+export interface IncomingInvocationCallEvent extends IncomingInvocationCall {
+  type: "invocation-call";
+}
+
+/**
+ * Invocation result/progress event derived from a typed agentic envelope.
+ */
+export interface IncomingInvocationResultEvent extends IncomingInvocationResult {
+  type: "invocation-result";
 }
 
 /**
@@ -253,7 +228,7 @@ export interface EventFilterOptions {
   /**
    * Only yield message events where `at` includes this client's ID, or `at` is undefined (broadcast).
    * When false/undefined, all events are yielded regardless of `at`.
-   * Note: Non-message events (method-call, method-result, presence) are always yielded.
+   * Note: Non-message events are always yielded.
    */
   targetedOnly?: boolean;
   /**
@@ -313,28 +288,6 @@ export interface IncomingNewMessage extends IncomingBase {
 }
 
 /**
- * An update to an existing message (for streaming).
- */
-export interface IncomingUpdateMessage extends IncomingBase {
-  type: "update-message";
-  /** ID of the message being updated */
-  id: string;
-  /** Content to append (if any) */
-  content?: string;
-  /**
-   * When true, content appends regardless of the initial message's contentType.
-   * Without this flag, typed messages (contentType set) replace on update;
-   * untyped messages always append. Used by thinking streaming, which carries
-   * `contentType: "thinking"` yet streams deltas.
-   */
-  append?: boolean;
-  /** Whether the message is now complete */
-  complete?: boolean;
-  /** MIME type for attachment */
-  contentType?: string;
-}
-
-/**
  * An error marker for a message.
  */
 export interface IncomingErrorMessage extends IncomingBase {
@@ -382,9 +335,9 @@ export interface IncomingPresenceEvent {
 }
 
 /**
- * An incoming method call (for method providers).
+ * An incoming invocation call (for providers).
  */
-export interface IncomingMethodCall {
+export interface IncomingInvocationCall {
   /** Transport stream that produced the event. */
   delivery: "log" | "signal";
   /** Log phase, present only for durable log events. */
@@ -403,6 +356,12 @@ export interface IncomingMethodCall {
   };
   /** Unique call ID for correlation */
   callId: string;
+  /** Canonical invocation ID for transcript/provenance correlation */
+  invocationId: string;
+  /** Transport-level dispatch ID for routing/abort correlation */
+  transportCallId: string;
+  /** Owning turn ID, when this invocation belongs to an agent turn */
+  turnId?: string;
   /** Name of the method being called */
   methodName: string;
   /** Target provider ID (this client) */
@@ -412,9 +371,9 @@ export interface IncomingMethodCall {
 }
 
 /**
- * An incoming method result chunk.
+ * An incoming invocation result chunk.
  */
-export interface IncomingMethodResult {
+export interface IncomingInvocationResult {
   /** Transport stream that produced the event. */
   delivery: "log" | "signal";
   /** Log phase, present only for durable log events. */
@@ -433,6 +392,10 @@ export interface IncomingMethodResult {
   };
   /** Call ID for correlation */
   callId: string;
+  /** Canonical invocation ID for transcript/provenance correlation */
+  invocationId?: string;
+  /** Transport-level dispatch ID for routing/abort correlation */
+  transportCallId?: string;
   /** Result content */
   content?: unknown;
   /** MIME type for content (e.g., "application/json") */
@@ -445,79 +408,6 @@ export interface IncomingMethodResult {
   progress?: number;
   /** Binary attachments (optional) */
   attachments?: Attachment[];
-}
-
-/**
- * Aggregated log replay event base.
- * Aggregated events are collected from historical log rows during connect.
- */
-export interface AggregatedEventBase {
-  delivery: "log";
-  phase: "replay";
-  /** Explicit discriminator -- distinguishes aggregated replay from raw IncomingEvent */
-  aggregated: true;
-  pubsubId: number;
-  senderId: string;
-  senderName?: string;
-  senderType?: string;
-  senderHandle?: string;
-  ts: number;
-}
-
-export interface AggregatedMessage extends AggregatedEventBase {
-  type: "message";
-  id: string;
-  content: string;
-  complete: boolean;
-  incomplete: boolean;
-  replyTo?: string;
-  /** Content type (e.g., for thinking, action, typing messages) */
-  contentType?: string;
-  /** Arbitrary metadata (e.g., SDK session/message UUIDs for recovery) */
-  metadata?: Record<string, unknown>;
-  /** Error state from IncomingErrorMessage (implies completion) */
-  error?: string;
-}
-
-export interface AggregatedMethodCall extends AggregatedEventBase {
-  type: "method-call";
-  callId: string;
-  methodName: string;
-  providerId: string;
-  providerName?: string;
-  args: unknown;
-}
-
-export interface AggregatedMethodResult extends AggregatedEventBase {
-  type: "method-result";
-  callId: string;
-  methodName?: string;
-  status: "success" | "error" | "incomplete";
-  content?: unknown;
-  errorMessage?: string;
-}
-
-export type AggregatedEvent = AggregatedMessage | AggregatedMethodCall | AggregatedMethodResult;
-
-/** Type guard to distinguish AggregatedEvent from raw IncomingEvent in EventStreamItem */
-export function isAggregatedEvent(event: EventStreamItem): event is AggregatedEvent {
-  return "aggregated" in event && (event as AggregatedEventBase).aggregated === true;
-}
-
-export interface FormatOptions {
-  maxChars?: number;
-  format?: "yaml" | "markdown";
-  includeMethodArgs?: boolean;
-  includeMethodResults?: boolean;
-  maxMethodResultChars?: number;
-}
-
-export interface MissedContext {
-  count: number;
-  formatted: string;
-  lastPubsubId: number;
-  wasElided: boolean;
-  events: AggregatedEvent[];
 }
 
 /**
@@ -551,6 +441,10 @@ export interface MethodResultChunk extends MethodResultValue {
 export interface MethodCallHandle {
   /** Unique call ID */
   readonly callId: string;
+  /** Canonical invocation ID used by transcript/provenance reducers */
+  readonly invocationId: string;
+  /** Transport-level dispatch ID used by the channel router */
+  readonly transportCallId: string;
   /** Promise that resolves with the final result */
   readonly result: Promise<MethodResultValue>;
   /** Async iterator for streaming chunks */
@@ -593,6 +487,10 @@ export interface DiscoveredMethod {
 export interface MethodExecutionContext {
   /** Unique call ID */
   callId: string;
+  /** Canonical invocation ID used by transcript/provenance reducers */
+  invocationId: string;
+  /** Transport-level dispatch ID used by the channel router */
+  transportCallId: string;
   /** Caller's client ID */
   callerId: string;
   /** Abort signal (aborted when caller cancels) */
@@ -719,12 +617,7 @@ export interface EventStreamOptions extends EventFilterOptions {
   includeSignals?: boolean;
 }
 
-export type EventStreamItem = IncomingEvent | AggregatedEvent;
-
-export interface ConversationMessage {
-  role: "user" | "assistant";
-  content: string;
-}
+export type EventStreamItem = IncomingEvent;
 
 /**
  * Agentic messaging client.
@@ -749,13 +642,6 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
   readonly sdkSessionId: string | undefined;
   readonly status: "active" | "interrupted" | undefined;
 
-  // === Replay ===
-  readonly missedMessages: AggregatedEvent[];
-  formatMissedContext(options?: FormatOptions): MissedContext;
-  getMissedByType<K extends AggregatedEvent["type"]>(
-    type: K
-  ): Extract<AggregatedEvent, { type: K }>[];
-
   // === Events ===
   events(options?: EventStreamOptions): AsyncIterableIterator<EventStreamItem>;
 
@@ -778,20 +664,7 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
     }
   ): Promise<SendResult>;
 
-  update(
-    id: string,
-    content: string,
-    options?: { complete?: boolean; attachments?: AttachmentInput[]; contentType?: string }
-  ): Promise<number | undefined>;
-
-  complete(id: string): Promise<number | undefined>;
-
   error(id: string, error: string, code?: string): Promise<number | undefined>;
-
-  // === Conversation History (derived from pubsub replay) ===
-  getConversationHistory(): ConversationMessage[];
-  /** Get messages with full metadata for session recovery correlation */
-  getMessagesWithMetadata(): AggregatedMessage[];
 
   // === Settings Persistence ===
   updateSettings(settings: Record<string, unknown>): Promise<void>;
@@ -804,7 +677,7 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
     providerId: string,
     methodName: string,
     args: unknown,
-    options?: { signal?: AbortSignal; validateArgs?: z.ZodTypeAny }
+    options?: { signal?: AbortSignal; validateArgs?: z.ZodTypeAny; invocationId?: string; transportCallId?: string; turnId?: string; timeoutMs?: number }
   ): MethodCallHandle;
 
   // === Roster ===
@@ -826,12 +699,14 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
   // === Pagination ===
   /** Total message count (from server ready message, for pagination) */
   readonly totalMessageCount: number | undefined;
-  /** Count of durable chat root messages, for accurate chat pagination */
-  readonly chatMessageCount: number | undefined;
-  /** Row ID of the first durable chat root in the channel (for pagination boundary) */
-  readonly firstChatMessageId: number | undefined;
-  /** Get older chat roots and their complete dependent chains before a root row ID. */
-  getChatReplayBefore(beforeRootId: number, rootLimit?: number): Promise<ReplayEnvelope>;
+  /** Count of replayable channel envelopes. */
+  readonly envelopeCount: number | undefined;
+  /** Sequence of the first replayable channel envelope. */
+  readonly firstEnvelopeSeq: number | undefined;
+  /** Whether the server reported older envelopes before the initial replay window. */
+  readonly hasMoreBefore: boolean | undefined;
+  /** Get older channel envelopes before a sequence. */
+  getReplayBefore(beforeSeq: number, limit?: number): Promise<ChannelReplayEnvelope>;
 
   // === Lifecycle ===
   readonly connected: boolean;

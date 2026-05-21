@@ -30,9 +30,12 @@
     "dev": "tsc --project tsconfig.build.json --watch"
   },
   "dependencies": {
+    "@earendil-works/pi-ai": "^0.74.1",
     "@mozilla/readability": "^0.6.0",
     "@natstack/rpc": "workspace:*",
     "@natstack/shared": "workspace:*",
+    "@workspace/agentic-protocol": "workspace:*",
+    "@workspace/pi-adapter": "workspace:*",
     "linkedom": "^0.18.5",
     "unpdf": "^1.6.2",
     "ws": "^8.18.0",
@@ -40,6 +43,11 @@
   },
   "optionalDependencies": {
     "re2": "1.24.0"
+  },
+  "overrides": {
+    "@anthropic-ai/sdk": "0.97.1",
+    "@aws-sdk/client-bedrock-runtime": "3.1039.0",
+    "@mistralai/mistralai": "2.2.1"
   },
   "//": "re2 pinned to exact version to match patches/re2@1.24.0.patch",
   "devDependencies": {

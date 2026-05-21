@@ -1,7 +1,7 @@
 /**
  * `@workspace/pubsub` — stateful pub/sub channels with structured
- * method calls, participant presence, missed-context replay, and
- * chat-shaped binary attachments. For point-to-point fetch-shaped
+ * method calls, participant presence, replay, and chat-shaped binary
+ * attachments. For point-to-point fetch-shaped
  * RPC (with streaming bodies) use `@natstack/rpc` instead. See
  * `docs/architecture/rpc-and-services.md` for the boundary.
  *
@@ -39,12 +39,9 @@ export * from "./content-types.js";
 // Wire protocol types (shared with channel DO server)
 export * from "./protocol-wire.js";
 
-// Protocol types (agentic messaging types, events, aggregation)
+// Protocol types (agentic messaging types and events)
 export * from "./protocol-types.js";
 export * from "./internal-constants.js";
-
-// Event stream types (re-exports from protocol-types for discoverability)
-export * from "./event-types.js";
 
 // Tracker types and interfaces
 export * from "./tracker-types.js";
@@ -63,16 +60,6 @@ export * from "./tool-approval.js";
 
 // Context window usage types
 export * from "./context-tracker.js";
-
-// Missed context formatting
-export {
-  formatMissedContext,
-  DEFAULT_MISSED_CONTEXT_MAX_CHARS,
-  DEFAULT_METHOD_RESULT_MAX_CHARS,
-} from "./missed-context.js";
-
-// Replay event aggregation
-export { aggregateReplayEvents } from "./aggregation.js";
 
 // Action descriptions
 export { getDetailedActionDescription } from "./action-descriptions.js";

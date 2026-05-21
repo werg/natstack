@@ -262,6 +262,9 @@ importers:
       '@workspace/git-ui':
         specifier: workspace:*
         version: link:workspace/packages/git-ui
+      '@workspace/pi-adapter':
+        specifier: workspace:*
+        version: link:workspace/packages/pi-adapter
       '@workspace/react':
         specifier: workspace:*
         version: link:workspace/packages/react
@@ -573,6 +576,9 @@ importers:
 
   packages/harness:
     dependencies:
+      '@earendil-works/pi-ai':
+        specifier: ^0.74.1
+        version: 0.74.1(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
       '@mozilla/readability':
         specifier: ^0.6.0
         version: 0.6.0
@@ -582,6 +588,12 @@ importers:
       '@natstack/shared':
         specifier: workspace:*
         version: link:../shared
+      '@workspace/agentic-protocol':
+        specifier: workspace:*
+        version: link:../../workspace/packages/agentic-protocol
+      '@workspace/pi-adapter':
+        specifier: workspace:*
+        version: link:../../workspace/packages/pi-adapter
       linkedom:
         specifier: ^0.18.5
         version: 0.18.12
@@ -723,6 +735,9 @@ importers:
       '@workspace/agentic-core':
         specifier: workspace:*
         version: link:../agentic-core
+      '@workspace/agentic-protocol':
+        specifier: workspace:*
+        version: link:../agentic-protocol
       '@workspace/eval':
         specifier: workspace:*
         version: link:../eval
@@ -765,6 +780,9 @@ importers:
 
   workspace/packages/agentic-core:
     dependencies:
+      '@workspace/agentic-protocol':
+        specifier: workspace:*
+        version: link:../agentic-protocol
       '@workspace/eval':
         specifier: workspace:*
         version: link:../eval
@@ -774,18 +792,37 @@ importers:
 
   workspace/packages/agentic-do:
     dependencies:
+      '@earendil-works/pi-ai':
+        specifier: ^0.74.1
+        version: 0.74.1(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
       '@natstack/harness':
         specifier: workspace:*
         version: link:../../../packages/harness
       '@natstack/shared':
         specifier: workspace:*
         version: link:../../../packages/shared
+      '@workspace/agentic-protocol':
+        specifier: workspace:*
+        version: link:../agentic-protocol
       '@workspace/pubsub':
         specifier: workspace:*
         version: link:../pubsub
       '@workspace/runtime':
         specifier: workspace:*
         version: link:../runtime
+
+  workspace/packages/agentic-protocol:
+    dependencies:
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+    devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.12)(@types/node@24.10.9)(jsdom@29.0.1)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.2)
 
   workspace/packages/agentic-session:
     dependencies:
@@ -908,6 +945,22 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  workspace/packages/pi-adapter:
+    dependencies:
+      '@earendil-works/pi-agent-core':
+        specifier: ^0.74.1
+        version: 0.74.1(patch_hash=32f33e2e043e208959b8a7d924f485846688677ad58695d584ab8f2802c7e5d7)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
+      '@workspace/agentic-protocol':
+        specifier: workspace:*
+        version: link:../agentic-protocol
+    devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.12)(@types/node@24.10.9)(jsdom@29.0.1)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.2)
+
   workspace/packages/playwright-client:
     dependencies:
       '@workspace/playwright-core':
@@ -958,6 +1011,9 @@ importers:
       '@natstack/types':
         specifier: workspace:*
         version: link:../../../packages/types
+      '@workspace/agentic-protocol':
+        specifier: workspace:*
+        version: link:../agentic-protocol
       zod:
         specifier: ^3.24.1
         version: 3.25.76
@@ -1032,6 +1088,9 @@ importers:
       '@natstack/types':
         specifier: workspace:*
         version: link:../../../packages/types
+      '@workspace/agentic-protocol':
+        specifier: workspace:*
+        version: link:../agentic-protocol
       buffer:
         specifier: ^6.0.3
         version: 6.0.3
@@ -1230,6 +1289,9 @@ importers:
 
   workspace/workers/gad-store:
     dependencies:
+      '@workspace/agentic-protocol':
+        specifier: workspace:*
+        version: link:../../packages/agentic-protocol
       '@workspace/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
@@ -1245,6 +1307,9 @@ importers:
       '@natstack/harness':
         specifier: workspace:*
         version: link:../../../packages/harness
+      '@workspace/agentic-protocol':
+        specifier: workspace:*
+        version: link:../../packages/agentic-protocol
       '@workspace/pubsub':
         specifier: workspace:*
         version: link:../../packages/pubsub
@@ -1262,6 +1327,9 @@ importers:
       '@workspace/agentic-do':
         specifier: workspace:*
         version: link:../../packages/agentic-do
+      '@workspace/agentic-protocol':
+        specifier: workspace:*
+        version: link:../../packages/agentic-protocol
       '@workspace/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
@@ -15118,9 +15186,7 @@ snapshots:
       metro-runtime: 0.82.5
     transitivePeerDependencies:
       - '@babel/core'
-      - bufferutil
       - supports-color
-      - utf-8-validate
 
   '@react-native/normalize-colors@0.79.7': {}
 

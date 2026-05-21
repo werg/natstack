@@ -1,192 +1,466 @@
 import { describe, expect, it } from "vitest";
 import { createTestDO } from "@workspace/runtime/worker/test-utils";
+import {
+  AGENTIC_EVENT_PAYLOAD_KIND,
+  AGENTIC_PROTOCOL_VERSION,
+  type AgenticEvent,
+} from "@workspace/agentic-protocol";
 import { GadWorkspaceDO } from "./index.js";
 
-let counter = 0;
-function id(prefix: string): string {
-  counter += 1;
-  return `${prefix}-${counter}`;
+const owner = { kind: "agent" as const, id: "agent-1" };
+
+function event<K extends AgenticEvent["kind"]>(
+  kind: K,
+  patch: Omit<AgenticEvent<K>, "kind" | "actor" | "createdAt"> & { createdAt?: string },
+): AgenticEvent<K> {
+  return {
+    kind,
+    actor: owner,
+    createdAt: patch.createdAt ?? "2026-05-20T12:00:00.000Z",
+    ...patch,
+  } as AgenticEvent<K>;
 }
 
-describe("GadWorkspaceDO clean Pi/GAD persistence", () => {
-  it("stores Pi entries, blocks, and tool-call projections without legacy tables", async () => {
+describe("GadWorkspaceDO trajectory persistence", () => {
+  it("creates only canonical trajectory/channel tables, not Pi/session dispatch tables", async () => {
     const { call } = await createTestDO(GadWorkspaceDO);
-    const head = await call<any>("ensurePiBranch", { branchId: "main", channelId: "ch-1" });
-    expect(head.headEntryId).toBeNull();
-
-    const user = id("user");
-    const assistant = id("assistant");
-    const result = await call<any>("appendPiEntryBatch", {
-      branchId: "main",
-      expectedHeadEntryHash: head.headEntryHash,
-      expectedStateHash: head.headStateHash,
-      items: [
-        {
-          entryId: user,
-          parentEntryId: null,
-          entryType: "message",
-          payload: { message: { role: "user", content: "read it", timestamp: 1 } },
-        },
-        {
-          entryId: assistant,
-          parentEntryId: user,
-          entryType: "message",
-          payload: {
-            message: {
-              role: "assistant",
-              content: [
-                { type: "text", text: "ok" },
-                { type: "toolCall", id: "tc-1", name: "read", input: { path: "README.md" } },
-              ],
-              timestamp: 2,
-            },
-          },
-        },
-      ],
-    });
-
-    expect(result.headEntryId).toBe(assistant);
-    expect(result.headEntryHash).toMatch(/^pi-entry-v1:/);
-
-    const context = await call<{ messages: Array<Record<string, unknown>> }>(
-      "materializePiMessages",
-      {
-        branchId: "main",
-      }
-    );
-    expect(context.messages.map((msg) => msg["role"])).toEqual(["user", "assistant"]);
-
-    const blocks = await call<{ rows: Array<Record<string, unknown>> }>(
-      "query",
-      "SELECT block_type, text, tool_call_id, tool_name FROM pi_message_blocks ORDER BY message_entry_id, block_index",
-      []
-    );
-    expect(blocks.rows).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ block_type: "text", text: "read it" }),
-        expect.objectContaining({
-          block_type: "toolCall",
-          tool_call_id: "tc-1",
-          tool_name: "read",
-        }),
-      ])
-    );
-
     const tables = await call<{ rows: Array<{ name: string }> }>(
       "query",
       "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
-      []
+      [],
     );
-    expect(tables.rows.map((row) => row.name)).not.toEqual(
+    expect(tables.rows.map((row) => row.name)).toEqual(
       expect.arrayContaining([
-        "gad_trajectory_items",
-        "gad_branches",
-        "gad_state_roots",
-        "gad_payloads",
-      ])
+        "trajectory_events",
+        "trajectory_branches",
+        "trajectory_messages",
+        "trajectory_invocations",
+        "channel_envelopes",
+        "gad_worktree_states",
+        "gad_claims",
+      ]),
     );
+    const allowedPrefixes = ["trajectory_", "channel_", "gad_"];
+    const allowedExact = new Set(["blobs", "state"]);
+    expect(
+      tables.rows
+        .map((row) => row.name)
+        .filter((name) => allowedPrefixes.every((prefix) => !name.startsWith(prefix)))
+        .filter((name) => !allowedExact.has(name)),
+    ).toEqual([]);
   });
 
-  it("keeps GAD sidecars out of Pi context and records a Merkle event chain", async () => {
+  it("atomically appends trajectory events and strips storage fields from published channel payloads", async () => {
     const { call } = await createTestDO(GadWorkspaceDO);
-    await call("ensurePiBranch", { branchId: "main" });
-    await call("appendPiEntryBatch", {
+    const result = await call<any>("appendTrajectoryBatch", {
+      trajectoryId: "traj-1",
       branchId: "main",
-      items: [
-        {
-          entryId: id("msg"),
-          parentEntryId: null,
-          entryType: "message",
-          payload: { message: { role: "user", content: "hello", timestamp: 1 } },
-        },
-      ],
-    });
-
-    await call("appendGadEvents", {
+      owner,
       events: [
         {
-          eventId: id("event"),
-          kind: "system_event",
-          anchorKind: "system",
-          anchorId: "test",
-          payload: { kind: "audit", note: "not model visible" },
-        },
-        {
-          eventId: id("event"),
-          kind: "claim_recorded",
-          anchorKind: "entry",
-          anchorId: "msg",
-          payload: { text: "hello was said", confidence: 0.9 },
+          eventId: "event-message-1",
+          event: event("message.completed", {
+            turnId: "turn-1" as never,
+            causality: { messageId: "msg-1" as never },
+            payload: {
+              protocol: AGENTIC_PROTOCOL_VERSION,
+              role: "assistant",
+              content: "hello from trajectory",
+            },
+          }),
+          publish: { channelIds: ["channel-1"] },
         },
       ],
     });
 
-    const context = await call<{ messages: Array<Record<string, unknown>> }>(
-      "materializePiMessages",
-      {
+    expect(result.events).toHaveLength(2);
+    expect(result.events[1]).toMatchObject({
+      kind: "external.envelope_published",
+      prevEventHash: result.events[0].eventHash,
+    });
+    expect(result.headEventId).toBe(result.events[1].eventId);
+    expect(result.headEventHash).toBe(result.events[1].eventHash);
+    expect(result.published).toEqual([
+      expect.objectContaining({ eventId: "event-message-1", channelId: "channel-1" }),
+    ]);
+
+    const events = await call<any[]>("listTrajectoryEvents", {
+      trajectoryId: "traj-1",
+      branchId: "main",
+    });
+    expect(events.map((row) => row.kind)).toEqual([
+      "message.completed",
+      "external.envelope_published",
+    ]);
+    expect(events[0]).toMatchObject({
+      eventId: "event-message-1",
+      seq: 0,
+      prevEventHash: "0000000000000000000000000000000000000000000000000000000000000000",
+    });
+
+    const envelopes = await call<any[]>("listChannelEnvelopes", {
+      channelId: "channel-1",
+      payloadKind: AGENTIC_EVENT_PAYLOAD_KIND,
+    });
+    expect(envelopes).toHaveLength(1);
+    expect(envelopes[0]).toMatchObject({
+      seq: 1,
+      payloadKind: AGENTIC_EVENT_PAYLOAD_KIND,
+      payload: {
+        kind: "message.completed",
+        causality: { messageId: "msg-1" },
+      },
+    });
+    expect(envelopes[0].payload.eventId).toBeUndefined();
+    expect(envelopes[0].payload.branchId).toBeUndefined();
+
+    const lineage = await call<any>("getTrajectoryForEnvelope", {
+      envelopeId: result.published[0].envelopeId,
+    });
+    expect(lineage).toMatchObject({
+      publication: {
+        eventId: "event-message-1",
+        trajectoryId: "traj-1",
         branchId: "main",
-      }
-    );
-    expect(context.messages).toHaveLength(1);
+        channelId: "channel-1",
+        channelSeq: 1,
+        envelopeId: result.published[0].envelopeId,
+      },
+      envelope: {
+        seq: 1,
+        payloadKind: AGENTIC_EVENT_PAYLOAD_KIND,
+      },
+      trajectoryEvent: {
+        eventId: "event-message-1",
+        kind: "message.completed",
+        branchId: "main",
+      },
+    });
 
-    const events = await call<Array<Record<string, unknown>>>("listGadEvents", {});
-    expect(events).toHaveLength(2);
-    expect(events[0]?.["event_hash"]).toMatch(/^gad-event-v1:/);
-    expect(events[1]?.["prev_event_hash"]).toBe(events[0]?.["event_hash"]);
+    const turnPublications = await call<any[]>("listPublishedEnvelopesForTrajectory", {
+      branchId: "main",
+      turnId: "turn-1",
+    });
+    expect(turnPublications).toHaveLength(1);
+    expect(turnPublications[0]).toMatchObject({
+      publication: {
+        eventId: "event-message-1",
+        channelId: "channel-1",
+        channelSeq: 1,
+      },
+      trajectoryEvent: {
+        causality: { messageId: "msg-1" },
+      },
+    });
 
-    const claims = await call<{ rows: Array<Record<string, unknown>> }>(
+    const envelopesForTrajectory = await call<any[]>("getEnvelopesForTrajectory", {
+      branchId: "main",
+      eventId: "event-message-1",
+    });
+    expect(envelopesForTrajectory).toHaveLength(1);
+
+    const artifacts = await call<any[]>("getPublishedArtifactsForTurn", {
+      turnId: "turn-1",
+    });
+    expect(artifacts).toEqual([
+      expect.objectContaining({
+        lineage: expect.objectContaining({
+          publication: expect.objectContaining({ eventId: "event-message-1" }),
+        }),
+      }),
+    ]);
+
+    const privateLineage = await call<any>("getPrivateLineageForPublishedEnvelope", {
+      envelopeId: result.published[0].envelopeId,
+    });
+    expect(privateLineage.branchEvents.map((row: any) => row.eventId)).toEqual(["event-message-1"]);
+
+    const projection = await call<{ rows: Array<Record<string, unknown>> }>(
       "query",
-      "SELECT text, status FROM gad_claims",
-      []
+      "SELECT message_id, body_assembled, status FROM trajectory_messages",
+      [],
     );
-    expect(claims.rows).toEqual([
-      expect.objectContaining({ text: "hello was said", status: "active" }),
+    expect(projection.rows).toEqual([
+      expect.objectContaining({
+        message_id: "msg-1",
+        body_assembled: "hello from trajectory",
+        status: "completed",
+      }),
     ]);
   });
 
-  it("records file mutations as events, states, transitions, diff, read, and blame data", async () => {
+  it("indexes transport call ids on projected invocations for channel/trajectory joins", async () => {
     const { call } = await createTestDO(GadWorkspaceDO);
-    await call("appendGadEvents", {
+    await call("appendTrajectoryBatch", {
+      trajectoryId: "traj-1",
+      branchId: "main",
+      owner,
       events: [
         {
-          eventId: "plan-1",
-          kind: "file_mutation_planned",
-          anchorKind: "tool_call",
-          anchorId: "tc-write",
-          payload: {
-            mutationId: "mut-1",
-            toolCallId: "tc-write",
-            path: "src/index.ts",
-            operation: "write",
-            plannedTool: "write",
-            plannedParams: { path: "src/index.ts" },
-          },
+          eventId: "event-invocation-1",
+          event: event("invocation.started", {
+            turnId: "turn-1" as never,
+            causality: {
+              invocationId: "tool-1" as never,
+              transportCallId: "transport-1",
+            },
+            payload: {
+              protocol: AGENTIC_PROTOCOL_VERSION,
+              name: "eval",
+              request: { code: "1 + 1" },
+            },
+          }),
+        },
+      ],
+    });
+
+    const projected = await call<{ rows: Array<Record<string, unknown>> }>(
+      "query",
+      "SELECT invocation_id, transport_call_id FROM trajectory_invocations WHERE branch_id = ?",
+      ["main"],
+    );
+    expect(projected.rows).toEqual([
+      { invocation_id: "tool-1", transport_call_id: "transport-1" },
+    ]);
+  });
+
+  it("stores generic opaque channel envelopes and exposes replay windows", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    await call("appendChannelEnvelope", {
+      channelId: "channel-1",
+      envelopeId: "env-1",
+      from: { kind: "panel", id: "panel:user", participantId: "panel:user" },
+      payloadKind: "custom.kind",
+      payload: { value: 1 },
+      metadata: { name: "User" },
+      attachments: [{ id: "att-1", mimeType: "text/plain", data: "aGVsbG8=", size: 5 }],
+      publishedAt: "2026-05-20T12:00:00.000Z",
+    });
+    await call("appendChannelEnvelope", {
+      channelId: "channel-1",
+      envelopeId: "env-2",
+      from: { kind: "agent", id: "agent:one", participantId: "agent:one" },
+      payloadKind: "custom.kind",
+      payload: { value: 2 },
+      publishedAt: "2026-05-20T12:00:01.000Z",
+    });
+
+    expect(await call<any[]>("listChannelEnvelopesAfter", { channelId: "channel-1", seq: 1 })).toEqual([
+      expect.objectContaining({ envelopeId: "env-2", seq: 2, payload: { value: 2 } }),
+    ]);
+    expect(await call<any[]>("listChannelEnvelopesBefore", { channelId: "channel-1", seq: 2, limit: 1 })).toEqual([
+      expect.objectContaining({
+        envelopeId: "env-1",
+        seq: 1,
+        payloadKind: "custom.kind",
+        metadata: { name: "User" },
+      }),
+    ]);
+    const initial = await call<any>("getInitialChannelWindow", { channelId: "channel-1", limit: 1 });
+    expect(initial).toMatchObject({
+      totalCount: 2,
+      replayFromId: 2,
+      replayToId: 2,
+      hasMoreBefore: true,
+      envelopes: [expect.objectContaining({ envelopeId: "env-2" })],
+    });
+  });
+
+  it("keeps side trajectory events private while joining a published summary back to downstream consumers", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    await call("appendTrajectoryBatch", {
+      trajectoryId: "traj-main",
+      branchId: "side-task",
+      owner,
+      events: [
+        {
+          eventId: "side-private-observation",
+          event: event("system.event", {
+            turnId: "turn-side" as never,
+            payload: {
+              protocol: AGENTIC_PROTOCOL_VERSION,
+              kind: "side-search-result",
+              details: { privateFinding: "keep this out of PubSub" },
+            },
+          }),
         },
         {
-          eventId: "obs-1",
-          kind: "file_mutation_observed",
-          anchorKind: "tool_call",
-          anchorId: "tc-write",
-          payload: {
-            mutationId: "mut-1",
-            toolCallId: "tc-write",
-            path: "src/index.ts",
-            operation: "write",
-            inputStateHash:
-              "state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7",
-            afterHash: "blob:v1",
-            outcome: "ok",
-            hunks: [
-              {
-                oldStartLine: 4,
-                oldLineCount: 2,
-                newStartLine: 4,
-                newLineCount: 3,
-                oldTextHash: "blob:old-lines",
-                newTextHash: "blob:new-lines",
-              },
-            ],
+          eventId: "side-summary",
+          event: event("message.completed", {
+            turnId: "turn-side" as never,
+            causality: { messageId: "side-summary-message" as never },
+            payload: {
+              protocol: AGENTIC_PROTOCOL_VERSION,
+              role: "assistant",
+              content: "Side task summary for the main session",
+            },
+          }),
+          publish: { channelIds: ["main-channel"] },
+        },
+      ],
+    });
+
+    const sideEnvelopes = await call<any[]>("getEnvelopesForTrajectory", {
+      branchId: "side-task",
+    });
+    expect(sideEnvelopes).toHaveLength(1);
+    expect(sideEnvelopes[0]).toMatchObject({
+      publication: {
+        eventId: "side-summary",
+        branchId: "side-task",
+        channelId: "main-channel",
+      },
+      envelope: {
+        payload: {
+          kind: "message.completed",
+          payload: { content: "Side task summary for the main session" },
+        },
+      },
+    });
+
+    const publishedEnvelopeId = sideEnvelopes[0].publication.envelopeId;
+    const publicChannel = await call<any[]>("listChannelEnvelopes", {
+      channelId: "main-channel",
+    });
+    expect(publicChannel.map((envelope) => envelope.payload.payload.content)).toEqual([
+      "Side task summary for the main session",
+    ]);
+    expect(JSON.stringify(publicChannel)).not.toContain("keep this out of PubSub");
+
+    const privateLineage = await call<any>("getPrivateLineageForPublishedEnvelope", {
+      envelopeId: publishedEnvelopeId,
+    });
+    expect(privateLineage.branchEvents.map((row: any) => row.eventId)).toEqual([
+      "side-private-observation",
+      "side-summary",
+    ]);
+    expect(JSON.stringify(privateLineage.branchEvents)).toContain("keep this out of PubSub");
+
+    await call("appendTrajectoryBatch", {
+      trajectoryId: "traj-main",
+      branchId: "main",
+      owner,
+      events: [
+        {
+          eventId: "main-consumes-side-summary",
+          event: event("knowledge.claim_recorded", {
+            turnId: "turn-main" as never,
+            causality: { parentEventId: "side-summary" as never },
+            payload: {
+              protocol: AGENTIC_PROTOCOL_VERSION,
+              claimId: "claim-consumed-side-summary",
+              subject: "main-session",
+              predicate: "consumed-published-envelope",
+              object: publishedEnvelopeId,
+            },
+          }),
+        },
+      ],
+    });
+
+    const consumers = await call<any[]>("getDownstreamConsumers", {
+      envelopeId: publishedEnvelopeId,
+    });
+    expect(consumers.map((row) => row.eventId)).toEqual(["main-consumes-side-summary"]);
+    expect(consumers[0]).toMatchObject({
+      branchId: "main",
+      payload: {
+        object: publishedEnvelopeId,
+      },
+    });
+  });
+
+  it("enforces terminal invocation idempotency at append time", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    await call("appendTrajectoryBatch", {
+      trajectoryId: "traj-1",
+      branchId: "main",
+      owner,
+      events: [
+        {
+          eventId: "event-inv-start",
+          event: event("invocation.started", {
+            turnId: "turn-1" as never,
+            causality: { invocationId: "inv-1" as never },
+            payload: { protocol: AGENTIC_PROTOCOL_VERSION, name: "read_file" },
+          }),
+        },
+        {
+          eventId: "event-inv-complete",
+          event: event("invocation.completed", {
+            turnId: "turn-1" as never,
+            causality: { invocationId: "inv-1" as never },
+            payload: { protocol: AGENTIC_PROTOCOL_VERSION, result: "ok" },
+          }),
+        },
+      ],
+    });
+
+    await expect(
+      call("appendTrajectoryBatch", {
+        trajectoryId: "traj-1",
+        branchId: "main",
+        owner,
+        events: [
+          {
+            eventId: "event-inv-failed",
+            event: event("invocation.failed", {
+              turnId: "turn-1" as never,
+              causality: { invocationId: "inv-1" as never },
+              payload: { protocol: AGENTIC_PROTOCOL_VERSION, reason: "too late" },
+            }),
           },
+        ],
+      }),
+    ).rejects.toThrow(/duplicate terminal invocation/u);
+  });
+
+  it("projects file intent/apply events into content-addressed state provenance", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    const appendResult = await call<Record<string, unknown>>("appendTrajectoryBatch", {
+      trajectoryId: "traj-1",
+      branchId: "main",
+      owner,
+      events: [
+        {
+          eventId: "intent-1",
+          event: event("state.file_mutation_intended", {
+            causality: { invocationId: "inv-write" as never },
+            payload: {
+              protocol: AGENTIC_PROTOCOL_VERSION,
+              mutationId: "mut-1",
+              path: "src/index.ts",
+              operation: "write",
+              inputStateHash:
+                "state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7" as never,
+              rationale: "write planned",
+            },
+          }),
+        },
+        {
+          eventId: "apply-1",
+          event: event("state.file_mutation_applied", {
+            causality: { invocationId: "inv-write" as never },
+            payload: {
+              protocol: AGENTIC_PROTOCOL_VERSION,
+              mutationId: "mut-1",
+              path: "src/index.ts",
+              operation: "write",
+              inputStateHash:
+                "state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7" as never,
+              afterHash: "blob:v1",
+              hunks: [
+                {
+                  oldStartLine: 4,
+                  oldLineCount: 2,
+                  newStartLine: 4,
+                  newLineCount: 3,
+                  oldTextHash: "blob:old-lines",
+                  newTextHash: "blob:new-lines",
+                },
+              ],
+            } as never,
+          }),
         },
       ],
     });
@@ -194,15 +468,20 @@ describe("GadWorkspaceDO clean Pi/GAD persistence", () => {
     const mutation = await call<{ rows: Array<Record<string, unknown>> }>(
       "query",
       "SELECT output_state_hash FROM gad_file_mutations WHERE mutation_id = ?",
-      ["mut-1"]
+      ["mut-1"],
     );
     const outputStateHash = String(mutation.rows[0]?.["output_state_hash"]);
-    expect(outputStateHash).toMatch(/^state:[0-9a-f]{64}$/);
+    expect(outputStateHash).toMatch(/^state:/);
+    expect(appendResult["headStateHash"]).toBe(outputStateHash);
 
-    const producer = await call<Record<string, unknown>>("getGadStateProducer", {
+    const producer = await call<Record<string, unknown> | null>("getGadStateProducer", {
       stateHash: outputStateHash,
     });
-    expect(producer).toMatchObject({ event_id: "obs-1", produced_by_tool_call_id: "tc-write" });
+    expect(producer).toMatchObject({
+      event_id: "apply-1",
+      invocation_id: "inv-write",
+      produced_by_mutation_id: "mut-1",
+    });
 
     const file = await call<Record<string, unknown> | null>("readGadFileAtState", {
       stateHash: outputStateHash,
@@ -226,7 +505,6 @@ describe("GadWorkspaceDO clean Pi/GAD persistence", () => {
     });
     expect(blame[0]).toMatchObject({
       mutation_id: "mut-1",
-      tool_call_id: "tc-write",
       old_start_line: 4,
       old_line_count: 2,
       new_start_line: 4,
@@ -234,388 +512,117 @@ describe("GadWorkspaceDO clean Pi/GAD persistence", () => {
       old_text_hash: "blob:old-lines",
       new_text_hash: "blob:new-lines",
     });
-
-    await call("ensurePiBranch", { branchId: "main" });
-    const appended = await call<any>("appendPiEntryBatch", {
-      branchId: "main",
-      expectedStateHash: "state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7",
-      items: [
-        {
-          entryId: "after-mutation",
-          parentEntryId: null,
-          entryType: "message",
-          preStateHash: "state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7",
-          postStateHash: outputStateHash,
-          payload: { message: { role: "assistant", content: "changed", timestamp: 3 } },
-        },
-      ],
-    });
-    expect(appended.headStateHash).toBe(outputStateHash);
-
-    const integrity = await call<{ ok: boolean; errors: Array<Record<string, unknown>> }>(
-      "checkGadIntegrity",
-      {}
-    );
-    expect(integrity).toEqual({ ok: true, errors: [] });
-
-    const replay = await call<{ replayed: number }>("replayGadEvents", {});
-    expect(replay.replayed).toBe(2);
-    const replayIntegrity = await call<{ ok: boolean; errors: Array<Record<string, unknown>> }>(
-      "checkGadIntegrity",
-      {}
-    );
-    expect(replayIntegrity).toEqual({ ok: true, errors: [] });
   });
 
-  it("reports direct corruption across Pi entries, event chains, manifests, and transitions", async () => {
-    const { call, sql } = await createTestDO(GadWorkspaceDO);
-    await call("ensurePiBranch", { branchId: "main" });
-    await call("appendPiEntryBatch", {
+  it("rebuilds projections from trajectory_events", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    await call("appendTrajectoryBatch", {
+      trajectoryId: "traj-1",
       branchId: "main",
-      items: [
-        {
-          entryId: "msg-1",
-          parentEntryId: null,
-          entryType: "message",
-          payload: { message: { role: "user", content: "hello", timestamp: 1 } },
-        },
-      ],
-    });
-    await call("appendGadEvents", {
+      owner,
       events: [
         {
-          eventId: "obs-corrupt",
-          kind: "file_mutation_observed",
-          payload: {
-            mutationId: "mut-corrupt",
-            path: "a/b.txt",
-            operation: "write",
-            inputStateHash:
-              "state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7",
-            afterHash: "blob:content",
-            outcome: "ok",
-          },
+          eventId: "msg-start",
+          event: event("message.started", {
+            turnId: "turn-1" as never,
+            causality: { messageId: "msg-1" as never },
+            payload: { protocol: AGENTIC_PROTOCOL_VERSION, role: "assistant", content: "" },
+          }),
+        },
+        {
+          eventId: "msg-delta",
+          event: event("message.delta", {
+            turnId: "turn-1" as never,
+            causality: { messageId: "msg-1" as never },
+            payload: { protocol: AGENTIC_PROTOCOL_VERSION, delta: "hello" },
+          }),
         },
       ],
     });
 
-    sql.exec(
-      "UPDATE pi_session_entries SET raw_entry_json = ? WHERE entry_id = ?",
-      JSON.stringify({
-        entryId: "msg-1",
-        parentEntryId: null,
-        entryType: "message",
-        actor: null,
-        payload: { message: { role: "user", content: "tampered", timestamp: 1 } },
-        metadata: null,
+    const replay = await call<{ replayed: number }>("rebuildTrajectoryProjections", {});
+    expect(replay.replayed).toBe(2);
+    const messages = await call<{ rows: Array<Record<string, unknown>> }>(
+      "query",
+      "SELECT message_id, body_assembled, status FROM trajectory_messages",
+      [],
+    );
+    expect(messages.rows).toEqual([
+      expect.objectContaining({ message_id: "msg-1", body_assembled: "hello", status: "streaming" }),
+    ]);
+  });
+
+  it("projects replayable knowledge events", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    await call("appendTrajectoryBatch", {
+      trajectoryId: "traj-1",
+      branchId: "main",
+      owner,
+      events: [
+        {
+          eventId: "claim-1-event",
+          event: event("knowledge.claim_recorded", {
+            payload: {
+              protocol: AGENTIC_PROTOCOL_VERSION,
+              claimId: "claim-1",
+              subject: "system",
+              predicate: "uses",
+              object: "trajectory_events",
+            },
+          }),
+        },
+      ],
+    });
+    const claims = await call<{ rows: Array<Record<string, unknown>> }>(
+      "query",
+      "SELECT claim_id, subject, predicate, object, status FROM gad_claims",
+      [],
+    );
+    expect(claims.rows).toEqual([
+      expect.objectContaining({
+        claim_id: "claim-1",
+        subject: "system",
+        predicate: "uses",
+        object: "trajectory_events",
+        status: "active",
       }),
-      "msg-1"
-    );
+    ]);
+  });
+
+  it("detects trajectory hash and state projection corruption", async () => {
+    const { call, sql } = await createTestDO(GadWorkspaceDO);
+    await call("appendTrajectoryBatch", {
+      trajectoryId: "traj-1",
+      branchId: "main",
+      owner,
+      events: [
+        {
+          eventId: "msg-1",
+          event: event("message.completed", {
+            turnId: "turn-1" as never,
+            causality: { messageId: "msg-1" as never },
+            payload: { protocol: AGENTIC_PROTOCOL_VERSION, role: "assistant", content: "hello" },
+          }),
+        },
+      ],
+    });
+
+    sql.exec("UPDATE trajectory_events SET payload_json = ? WHERE event_id = ?", "{}", "msg-1");
     sql.exec(
-      "UPDATE gad_events SET prev_event_hash = ? WHERE event_id = ?",
-      "gad-event-v1:bad",
-      "obs-corrupt"
-    );
-    sql.exec("UPDATE gad_manifest_entries SET name = ? WHERE name = ?", "renamed.txt", "b.txt");
-    sql.exec(
-      "UPDATE gad_state_transitions SET output_state_hash = ? WHERE event_id = ?",
-      "state:missing",
-      "obs-corrupt"
+      "INSERT INTO gad_state_transitions (event_id, input_state_hash, output_state_hash, created_at) VALUES (?, ?, ?, ?)",
+      "missing-event",
+      "state:missing-input",
+      "state:missing-output",
+      "2026-05-20T12:00:00.000Z",
     );
 
     const integrity = await call<{ ok: boolean; errors: Array<Record<string, unknown>> }>(
       "checkGadIntegrity",
-      {}
+      {},
     );
     expect(integrity.ok).toBe(false);
     expect(integrity.errors.map((error) => error["type"])).toEqual(
-      expect.arrayContaining(["pi-entry", "gad-event", "manifest", "state-transition"])
-    );
-  });
-
-  it("enforces dispatch and approval lifecycles", async () => {
-    const { call } = await createTestDO(GadWorkspaceDO);
-    await expect(
-      call("appendGadEvents", {
-        events: [
-          {
-            eventId: "dispatch-resolve-missing",
-            kind: "dispatch_resolved",
-            payload: { dispatchCallId: "missing", resultEntryId: "entry" },
-          },
-        ],
-      })
-    ).rejects.toThrow(/unknown dispatch/u);
-
-    await call("appendGadEvents", {
-      events: [
-        {
-          eventId: "dispatch-pending",
-          kind: "dispatch_pending",
-          payload: { dispatchCallId: "dispatch-1", toolCallId: "tc-1", methodName: "tool.run" },
-        },
-        {
-          eventId: "dispatch-resolved",
-          kind: "dispatch_resolved",
-          payload: { dispatchCallId: "dispatch-1", resultEntryId: "entry-1" },
-        },
-      ],
-    });
-    await call("appendGadEvents", {
-      events: [
-        {
-          eventId: "dispatch-resolved-again",
-          kind: "dispatch_resolved",
-          payload: { dispatchCallId: "dispatch-1", resultEntryId: "entry-1" },
-        },
-      ],
-    });
-    const provenance = await call<Record<string, unknown> | null>("getGadToolProvenance", {
-      toolCallId: "tc-1",
-    });
-    const dispatch = provenance?.["dispatch"] as Record<string, unknown> | undefined;
-    expect(dispatch?.["status"]).toBe("resolved");
-    expect(dispatch?.["result_entry_id"]).toBe("entry-1");
-    await expect(
-      call("appendGadEvents", {
-        events: [
-          {
-            eventId: "dispatch-resolved-conflict",
-            kind: "dispatch_resolved",
-            payload: { dispatchCallId: "dispatch-1", resultEntryId: "entry-2" },
-          },
-        ],
-      })
-    ).rejects.toThrow(/from status resolved/u);
-    await expect(
-      call("appendGadEvents", {
-        events: [
-          {
-            eventId: "dispatch-abandoned-conflict",
-            kind: "dispatch_abandoned",
-            payload: { dispatchCallId: "dispatch-1", abandonedReason: "superseded" },
-          },
-        ],
-      })
-    ).rejects.toThrow(/from status resolved/u);
-
-    await call("appendGadEvents", {
-      events: [
-        {
-          eventId: "dispatch-pending-abandon",
-          kind: "dispatch_pending",
-          payload: {
-            dispatchCallId: "dispatch-abandon",
-            toolCallId: "tc-abandon",
-            methodName: "tool.wait",
-          },
-        },
-        {
-          eventId: "dispatch-abandoned",
-          kind: "dispatch_abandoned",
-          payload: { dispatchCallId: "dispatch-abandon", abandonedReason: "user-superseded" },
-        },
-      ],
-    });
-    await call("appendGadEvents", {
-      events: [
-        {
-          eventId: "dispatch-abandoned-again",
-          kind: "dispatch_abandoned",
-          payload: { dispatchCallId: "dispatch-abandon", abandonedReason: "user-superseded" },
-        },
-      ],
-    });
-    await expect(
-      call("appendGadEvents", {
-        events: [
-          {
-            eventId: "dispatch-abandoned-conflicting-reason",
-            kind: "dispatch_abandoned",
-            payload: { dispatchCallId: "dispatch-abandon", abandonedReason: "different" },
-          },
-        ],
-      })
-    ).rejects.toThrow(/from status abandoned/u);
-
-    await expect(
-      call("appendGadEvents", {
-        events: [
-          {
-            eventId: "approval-resolve-missing",
-            kind: "approval_resolved",
-            payload: { approvalId: "missing", decision: "allow" },
-          },
-        ],
-      })
-    ).rejects.toThrow(/unknown approval/u);
-
-    await call("appendGadEvents", {
-      events: [
-        {
-          eventId: "approval-requested",
-          kind: "approval_requested",
-          payload: { approvalId: "approval-1", toolCallId: "tc-1", requestedByEntryId: "entry-1" },
-        },
-        {
-          eventId: "approval-resolved",
-          kind: "approval_resolved",
-          payload: { approvalId: "approval-1", decision: "allow", resolvedBy: "user" },
-        },
-      ],
-    });
-    await call("appendGadEvents", {
-      events: [
-        {
-          eventId: "approval-resolved-again",
-          kind: "approval_resolved",
-          payload: { approvalId: "approval-1", decision: "allow", resolvedBy: "user" },
-        },
-      ],
-    });
-    await expect(
-      call("appendGadEvents", {
-        events: [
-          {
-            eventId: "approval-resolved-conflict",
-            kind: "approval_resolved",
-            payload: { approvalId: "approval-1", decision: "deny", resolvedBy: "user" },
-          },
-        ],
-      })
-    ).rejects.toThrow(/more than once/u);
-  });
-
-  it("appends GAD event batches atomically and treats identical retries as idempotent", async () => {
-    const { call } = await createTestDO(GadWorkspaceDO);
-    const badBatch = {
-      events: [
-        {
-          eventId: "atomic-system",
-          kind: "system_event",
-          payload: { kind: "audit" },
-        },
-        {
-          eventId: "atomic-resolve-missing",
-          kind: "dispatch_resolved",
-          payload: { dispatchCallId: "missing", resultEntryId: "entry" },
-        },
-      ],
-    };
-    await expect(call("appendGadEvents", badBatch)).rejects.toThrow(/unknown dispatch/u);
-    expect(await call<Array<Record<string, unknown>>>("listGadEvents", {})).toHaveLength(0);
-
-    const goodBatch = {
-      events: [
-        {
-          eventId: "idempotent-pending",
-          kind: "dispatch_pending",
-          payload: { dispatchCallId: "dispatch-idempotent", toolCallId: "dispatch-idempotent" },
-        },
-        {
-          eventId: "idempotent-resolved",
-          kind: "dispatch_resolved",
-          payload: { dispatchCallId: "dispatch-idempotent", resultEntryId: "entry" },
-        },
-      ],
-    };
-    await call("appendGadEvents", goodBatch);
-    await call("appendGadEvents", goodBatch);
-    const events = await call<Array<Record<string, unknown>>>("listGadEvents", {});
-    expect(events.map((event) => event["event_id"])).toEqual([
-      "idempotent-pending",
-      "idempotent-resolved",
-    ]);
-
-    await expect(
-      call("appendGadEvents", {
-        events: [
-          {
-            eventId: "idempotent-resolved",
-            kind: "dispatch_resolved",
-            payload: { dispatchCallId: "dispatch-idempotent", resultEntryId: "different-entry" },
-          },
-        ],
-      })
-    ).rejects.toThrow(/id collision/u);
-  });
-
-  it("tracks index jobs through claim, retry, failure, requeue, and completion", async () => {
-    const { call } = await createTestDO(GadWorkspaceDO);
-    const created = await call<{ id: number }>("enqueueGadIndexJob", {
-      sourceHash: "claim:1",
-      sourceKind: "claim",
-      jobKind: "embed",
-    });
-
-    const claimed = await call<Array<Record<string, unknown>>>("claimGadIndexJobs", { limit: 1 });
-    expect(claimed).toHaveLength(1);
-    expect(claimed[0]).toMatchObject({ id: created.id, status: "running", attempts: 1 });
-
-    const retry = await call<Record<string, unknown>>("failGadIndexJob", {
-      id: created.id,
-      error: "rate limited",
-      retry: true,
-    });
-    expect(retry).toMatchObject({ status: "retry", error: "rate limited" });
-
-    const retried = await call<Array<Record<string, unknown>>>("claimGadIndexJobs", { limit: 1 });
-    expect(retried[0]).toMatchObject({ id: created.id, status: "running", attempts: 2 });
-
-    const failed = await call<Record<string, unknown>>("failGadIndexJob", {
-      id: created.id,
-      error: "bad source",
-    });
-    expect(failed).toMatchObject({ status: "failed", error: "bad source" });
-
-    await call("enqueueGadIndexJob", {
-      sourceHash: "claim:1",
-      sourceKind: "claim",
-      jobKind: "embed",
-    });
-    const requeued = await call<Array<Record<string, unknown>>>("listGadIndexJobs", {
-      status: "queued",
-    });
-    expect(requeued).toEqual([expect.objectContaining({ id: created.id, error: null })]);
-
-    const reclaimed = await call<Array<Record<string, unknown>>>("claimGadIndexJobs", { limit: 1 });
-    const complete = await call<Record<string, unknown>>("completeGadIndexJob", {
-      id: Number(reclaimed[0]?.["id"]),
-    });
-    expect(complete).toMatchObject({ id: created.id, status: "complete", error: null });
-  });
-
-  it("forks Pi branches by entry or raw worktree state", async () => {
-    const { call } = await createTestDO(GadWorkspaceDO);
-    await call("ensurePiBranch", { branchId: "main" });
-    const first = id("entry");
-    await call("appendPiEntryBatch", {
-      branchId: "main",
-      items: [
-        {
-          entryId: first,
-          parentEntryId: null,
-          entryType: "message",
-          payload: { message: { role: "user", content: "base", timestamp: 1 } },
-        },
-      ],
-    });
-
-    const conversationFork = await call<any>("forkPiBranch", {
-      sourceBranchId: "main",
-      newBranchId: "fork-entry",
-      entryId: first,
-    });
-    expect(conversationFork.headEntryId).toBe(first);
-
-    const worldFork = await call<any>("forkPiBranch", {
-      sourceBranchId: "main",
-      newBranchId: "fork-state",
-      stateHash: "state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7",
-    });
-    expect(worldFork.headEntryId).toBeNull();
-    expect(worldFork.headStateHash).toBe(
-      "state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7"
+      expect.arrayContaining(["trajectory-event", "state-transition"]),
     );
   });
 });

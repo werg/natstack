@@ -8,9 +8,16 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@earendil-works/pi-ai": "^0.74.1",
     "@workspace/runtime": "workspace:*",
+    "@workspace/agentic-protocol": "workspace:*",
     "@natstack/harness": "workspace:*",
     "@workspace/pubsub": "workspace:*",
     "@natstack/shared": "workspace:*"
+  },
+  "overrides": {
+    "@anthropic-ai/sdk": "0.97.1",
+    "@aws-sdk/client-bedrock-runtime": "3.1039.0",
+    "@mistralai/mistralai": "2.2.1"
   }
 }
