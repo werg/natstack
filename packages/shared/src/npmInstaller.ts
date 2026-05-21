@@ -38,7 +38,6 @@ export function runNpmInstall(
   const args = [
     npmCli,
     "install",
-    "--prefer-offline",
     "--no-audit",
     "--no-fund",
     "--legacy-peer-deps",

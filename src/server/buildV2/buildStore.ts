@@ -42,6 +42,7 @@ export interface BuildMetadata {
   extensionRuntimeAbi?: string | null;
   extensionDependencyMode?: "auto" | "bundle" | "external";
   extensionExternalDeps?: Record<string, string>;
+  extensionDependencyOverrides?: Record<string, string>;
   extensionClassifiedDeps?: Array<{
     name: string;
     version: string;

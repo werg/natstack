@@ -28,6 +28,8 @@ export interface GraphNode {
   kind: "package" | "panel" | "worker" | "extension" | "template";
   /** All dependencies from package.json (name → version) */
   dependencies: Record<string, string>;
+  /** Simple package-manager overrides from package.json overrides / pnpm.overrides. */
+  dependencyOverrides: Record<string, string>;
   /** Resolved internal dependency names */
   internalDeps: string[];
   /** Internal dependency ref spec (branch/ref/commit) keyed by dep name */
@@ -212,8 +214,26 @@ interface PackageJson {
   peerDependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   natstack?: PackageManifest;
+  overrides?: unknown;
+  pnpm?: { overrides?: unknown };
   exports?: Record<string, unknown>;
   main?: string;
+}
+
+function normalizeSimpleOverrides(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result: Record<string, string> = {};
+  for (const [name, version] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof version === "string") result[name] = version;
+  }
+  return result;
+}
+
+function packageManagerOverrides(pkg: PackageJson): Record<string, string> {
+  return {
+    ...normalizeSimpleOverrides(pkg.overrides),
+    ...normalizeSimpleOverrides(pkg.pnpm?.overrides),
+  };
 }
 
 function readPackageJson(dir: string): PackageJson | null {
@@ -255,6 +275,7 @@ function scanDirectory(dir: string, workspaceRoot: string, kind: GraphNode["kind
       name: pkg.name,
       kind,
       dependencies: allDeps,
+      dependencyOverrides: packageManagerOverrides(pkg),
       internalDeps,
       internalDepRefs,
       manifest: pkg.natstack ?? {},
@@ -304,6 +325,7 @@ function scanExtensions(dir: string, workspaceRoot: string): GraphNode[] {
         name: pkg.name,
         kind: "extension",
         dependencies: allDeps,
+        dependencyOverrides: packageManagerOverrides(pkg),
         internalDeps,
         internalDepRefs,
         manifest: pkg.natstack ?? {},
@@ -347,6 +369,7 @@ function scanTemplates(dir: string, workspaceRoot: string): GraphNode[] {
       name: `template:${entry.name}`,
       kind: "template",
       dependencies: {},
+      dependencyOverrides: {},
       internalDeps: [],
       internalDepRefs: {},
       manifest: { framework: config.framework },

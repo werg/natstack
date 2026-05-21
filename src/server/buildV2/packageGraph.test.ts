@@ -20,6 +20,7 @@ function makeNode(
     name,
     kind: "package",
     dependencies: {},
+    dependencyOverrides: {},
     internalDeps,
     internalDepRefs: {},
     manifest: {},

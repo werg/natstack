@@ -117,10 +117,18 @@ describe("generateWorkerEntry", () => {
     expect(exportStarIdx).toBeGreaterThan(exposeIdx);
   });
 
-  it("re-exports default and named exports so workerd sees the user module shape", () => {
+  it("re-exports named exports and forwards default when present", () => {
     const code = generateWorkerEntry("/tmp/_expose.js", "/src/index.ts");
     expect(code).toContain('export * from "/src/index.ts"');
-    expect(code).toContain('export { default } from "/src/index.ts"');
+    expect(code).toContain('import * as __natstackWorkerEntry from "/src/index.ts"');
+    expect(code).toContain('Reflect.get(__natstackWorkerEntry, "default")');
+    expect(code).toContain("export default __natstackDefaultExport");
+  });
+
+  it("synthesizes a default fetch handler for DO-only modules", () => {
+    const code = generateWorkerEntry("/tmp/_expose.js", "/src/index.ts");
+    expect(code).toContain('hasOwnProperty.call(__natstackWorkerEntry, "default")');
+    expect(code).toContain("NatStack worker module has no default fetch handler.");
   });
 
   it("JSON-quotes paths to handle special characters", () => {

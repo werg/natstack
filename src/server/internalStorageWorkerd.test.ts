@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import * as esbuild from "esbuild";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
@@ -8,6 +8,15 @@ import { TokenManager } from "../../packages/shared/src/tokenManager.js";
 import { INTERNAL_DO_SOURCE } from "./internalDOs/internalDoLoader.js";
 import { postToDurableObject, type DORef } from "./workerdRpcRelay.js";
 import { WorkerdManager, type WorkerdManagerDeps } from "./workerdManager.js";
+
+const workspaceAliasPlugin: esbuild.Plugin = {
+  name: "workspace-alias",
+  setup(build) {
+    build.onResolve({ filter: /^@workspace\/agentic-protocol$/ }, () => ({
+      path: resolve("workspace/packages/agentic-protocol/src/index.ts"),
+    }));
+  },
+};
 
 beforeAll(async () => {
   mkdirSync("dist", { recursive: true });
@@ -228,6 +237,7 @@ describe("internal storage DOs under workerd", () => {
           write: false,
           conditions: ["worker", "browser"],
           external: ["node:*", "electron"],
+          plugins: [workspaceAliasPlugin],
           logLevel: "silent",
         });
         return {
@@ -246,62 +256,58 @@ describe("internal storage DOs under workerd", () => {
       className: "GadWorkspaceDO",
       objectKey: "workspace-gad",
     };
-    const head = (await harness.callDurableObject(ref, "ensurePiBranch", {
-      branchId: "branch-live",
-      channelId: "channel-live",
-      metadata: { contextId: "context-live" },
-    })) as { branchId: string; headEntryHash: string | null; headStateHash: string };
     const userMessageId = "01900000-0000-7000-8000-000000000001";
-    await harness.callDurableObject(ref, "appendPiEntryBatch", {
-      branchId: head.branchId,
-      expectedHeadEntryHash: head.headEntryHash,
-      expectedStateHash: head.headStateHash,
-      items: [
-        {
-          entryId: userMessageId,
-          parentEntryId: null,
-          entryType: "message",
-          actor: "user",
-          payload: {
-            message: {
-              role: "user",
-              content: [{ type: "text", text: "write the file" }],
-              timestamp: 1,
-            },
-          },
-        },
-      ],
-    });
-    await harness.callDurableObject(ref, "appendGadEvents", {
+    await harness.callDurableObject(ref, "appendTrajectoryBatch", {
+      trajectoryId: "trajectory-live",
+      branchId: "branch-live",
+      owner: { kind: "agent", id: "test" },
       events: [
         {
+          eventId: userMessageId,
+          event: {
+            kind: "message.completed",
+            actor: { kind: "user", id: "user" },
+            causality: { messageId: userMessageId },
+            payload: {
+              protocol: "agentic.trajectory.v1",
+              role: "user",
+              content: "write the file",
+              blocks: [{ type: "text", content: "write the file" }],
+            },
+            createdAt: new Date(1).toISOString(),
+          },
+        },
+        {
           eventId: "01900000-0000-7000-8000-000000000002",
-          kind: "file_mutation_planned",
-          anchorKind: "tool_call",
-          anchorId: "tool-live",
-          payload: {
-            mutationId: "mutation-live",
-            toolCallId: "tool-live",
-            path: "src/live.ts",
-            operation: "write",
-            plannedTool: "write",
-            beforeHash: null,
-            beforeSize: null,
-            plannedParams: { path: "src/live.ts" },
+          event: {
+            kind: "state.file_mutation_intended",
+            actor: { kind: "agent", id: "pi" },
+            causality: { invocationId: "tool-live", modelToolCallId: "tool-live" },
+            payload: {
+              protocol: "agentic.trajectory.v1",
+              mutationId: "mutation-live",
+              path: "src/live.ts",
+              operation: "write",
+              metadata: { plannedParams: { path: "src/live.ts" } },
+            },
+            createdAt: new Date(2).toISOString(),
           },
         },
         {
           eventId: "01900000-0000-7000-8000-000000000003",
-          kind: "file_mutation_observed",
-          anchorKind: "tool_call",
-          anchorId: "tool-live",
-          payload: {
-            mutationId: "mutation-live",
-            toolCallId: "tool-live",
-            path: "src/live.ts",
-            afterHash: "d".repeat(64),
-            afterSize: 12,
-            outcome: "ok",
+          event: {
+            kind: "state.file_mutation_applied",
+            actor: { kind: "agent", id: "pi" },
+            causality: { invocationId: "tool-live", modelToolCallId: "tool-live" },
+            payload: {
+              protocol: "agentic.trajectory.v1",
+              mutationId: "mutation-live",
+              path: "src/live.ts",
+              afterHash: "d".repeat(64),
+              size: 12,
+              summary: "ok",
+            },
+            createdAt: new Date(3).toISOString(),
           },
         },
       ],
@@ -310,9 +316,9 @@ describe("internal storage DOs under workerd", () => {
       metric: string;
       value: number;
     }>;
-    expect(status.find((row) => row.metric === "Pi branches")?.value).toBe(1);
-    expect(status.find((row) => row.metric === "Pi entries")?.value).toBe(1);
-    expect(status.find((row) => row.metric === "GAD events")?.value).toBe(2);
+    expect(status.find((row) => row.metric === "Trajectory branches")?.value).toBe(1);
+    expect(status.find((row) => row.metric === "Trajectory events")?.value).toBe(3);
+    expect(status.find((row) => row.metric === "File mutations")?.value).toBe(1);
   }, 30_000);
 
   it("records BrowserDataDO history visits and title updates without double-counting", async () => {

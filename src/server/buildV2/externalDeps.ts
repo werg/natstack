@@ -81,11 +81,67 @@ export function collectTransitiveExternalDeps(
   return externals;
 }
 
+export function collectTransitiveDependencyOverrides(
+  unit: GraphNode,
+  graph: PackageGraph,
+  workspaceRoot?: string,
+  packageRoots: string[] = []
+): Record<string, string> {
+  const overrides: Record<string, string> = {};
+  const visited = new Set<string>();
+  const visitedPackageJson = new Set<string>();
+
+  function record(source: Record<string, string>) {
+    Object.assign(overrides, source);
+  }
+
+  function walkDeps(dependencies: Record<string, string>, options: { walkWorkspaceDeps: boolean }) {
+    for (const [name, version] of Object.entries(dependencies)) {
+      if (graph.isInternal(name)) {
+        const dep = graph.tryGet(name);
+        if (dep) walkNode(dep);
+        continue;
+      }
+      if (version.startsWith("workspace:") && options.walkWorkspaceDeps) {
+        const pkg = workspaceRoot
+          ? readWorkspacePackageJson(workspaceRoot, name, packageRoots)
+          : null;
+        if (pkg) walkPackageJson(pkg.path, pkg.dependencies, pkg.dependencyOverrides);
+      }
+    }
+  }
+
+  function walkPackageJson(
+    packageJsonPath: string,
+    dependencies: Record<string, string>,
+    dependencyOverrides: Record<string, string>
+  ) {
+    if (visitedPackageJson.has(packageJsonPath)) return;
+    visitedPackageJson.add(packageJsonPath);
+    record(dependencyOverrides);
+    walkDeps(dependencies, { walkWorkspaceDeps: false });
+  }
+
+  function walkNode(node: GraphNode) {
+    if (visited.has(node.name)) return;
+    visited.add(node.name);
+    record(node.dependencyOverrides);
+    walkDeps(node.dependencies, { walkWorkspaceDeps: true });
+  }
+
+  walkNode(unit);
+  return overrides;
+}
+
 function readWorkspacePackageJson(
   workspaceRoot: string,
   packageName: string,
   packageRoots: string[] = []
-): { path: string; dependencies: Record<string, string> } | null {
+): {
+  path: string;
+  dependencies: Record<string, string>;
+  dependencyOverrides: Record<string, string>;
+} | null {
   for (const pkgJsonPath of workspacePackageJsonCandidates(
     workspaceRoot,
     packageName,
@@ -97,11 +153,14 @@ function readWorkspacePackageJson(
         name?: string;
         dependencies?: Record<string, string>;
         peerDependencies?: Record<string, string>;
+        overrides?: unknown;
+        pnpm?: { overrides?: unknown };
       };
       if (pkg.name !== packageName) continue;
       return {
         path: pkgJsonPath,
         dependencies: { ...pkg.peerDependencies, ...pkg.dependencies },
+        dependencyOverrides: normalizeSimpleOverrides(pkg.overrides, pkg.pnpm?.overrides),
       };
     } catch {
       continue;
@@ -119,11 +178,14 @@ function readWorkspacePackageJson(
           name?: string;
           dependencies?: Record<string, string>;
           peerDependencies?: Record<string, string>;
+          overrides?: unknown;
+          pnpm?: { overrides?: unknown };
         };
         if (pkg.name !== packageName) continue;
         return {
           path: pkgJsonPath,
           dependencies: { ...pkg.peerDependencies, ...pkg.dependencies },
+          dependencyOverrides: normalizeSimpleOverrides(pkg.overrides, pkg.pnpm?.overrides),
         };
       } catch {
         continue;
@@ -131,6 +193,17 @@ function readWorkspacePackageJson(
     }
   }
   return null;
+}
+
+function normalizeSimpleOverrides(...values: unknown[]): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const value of values) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    for (const [name, version] of Object.entries(value as Record<string, unknown>)) {
+      if (typeof version === "string") result[name] = version;
+    }
+  }
+  return result;
 }
 
 function workspacePackageJsonCandidates(
@@ -189,11 +262,29 @@ function compareVersions(a: string, b: string): number {
 // Cached Installation
 // ---------------------------------------------------------------------------
 
-function hashDeps(deps: Record<string, string>): string {
+function hashDeps(deps: Record<string, string>, overrides: Record<string, string> = {}): string {
   const entries = Object.entries(deps).sort(([a], [b]) => a.localeCompare(b));
+  const overrideEntries = Object.entries(overrides).sort(([a], [b]) => a.localeCompare(b));
   const hash = crypto.createHash("sha256");
-  hash.update(JSON.stringify(entries));
+  hash.update(JSON.stringify({ deps: entries, overrides: overrideEntries }));
   return hash.digest("hex").slice(0, 16);
+}
+
+function readWorkspaceNpmOverrides(): Record<string, string> {
+  const pkgPath = path.join(process.cwd(), "package.json");
+  if (!fs.existsSync(pkgPath)) return {};
+
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as {
+      overrides?: unknown;
+      pnpm?: { overrides?: unknown };
+    };
+    return {
+      ...normalizeSimpleOverrides(pkg.overrides, pkg.pnpm?.overrides),
+    };
+  } catch {
+    return {};
+  }
 }
 
 function getExternalDepsBaseDir(): string {
@@ -210,53 +301,7 @@ function isFileSystemErrorCode(error: unknown, codes: readonly string[]): boolea
   return typeof code === "string" && codes.includes(code);
 }
 
-function warnCleanupFailure(pathName: string, error: unknown): void {
-  console.warn(
-    `[externalDeps] Failed to remove ${pathName}: ${error instanceof Error ? error.message : String(error)}`
-  );
-}
-
-/**
- * Get or install external dependencies. Returns the path to the
- * node_modules directory.
- */
-export async function ensureExternalDeps(deps: Record<string, string>): Promise<string> {
-  return ensureDepsInstalled(deps, {
-    baseDir: getExternalDepsBaseDir(),
-    key: hashDeps(deps),
-    ignoreScripts: true,
-  });
-}
-
-export async function ensureExtensionRuntimeDeps(
-  deps: Record<string, string>
-): Promise<{ key: string | null; nodeModulesDir: string }> {
-  if (Object.keys(deps).length === 0) {
-    return { key: null, nodeModulesDir: "" };
-  }
-  const key = [
-    hashDeps(deps),
-    process.platform,
-    process.arch,
-    `abi${process.versions.modules ?? "unknown"}`,
-  ].join("-");
-  const nodeModulesDir = await ensureDepsInstalled(deps, {
-    baseDir: getExtensionRuntimeDepsBaseDir(),
-    key,
-    ignoreScripts: false,
-  });
-  return { key, nodeModulesDir };
-}
-
-async function ensureDepsInstalled(
-  deps: Record<string, string>,
-  options: { baseDir: string; key: string; ignoreScripts: boolean }
-): Promise<string> {
-  if (Object.keys(deps).length === 0) {
-    // No external deps — return a dummy path
-    return "";
-  }
-
+function validateNpmSpecMap(kind: string, specs: Record<string, string>): void {
   // Reject any version specifier that npm would interpret as a non-registry
   // source (file:, git+ssh://, https://, github:, npm:, local paths). Panel
   // / worker manifests can pass arbitrary `version` strings here through
@@ -267,19 +312,102 @@ async function ensureDepsInstalled(
   // TODO: route legitimate non-registry installs through a separate,
   // shell-only API rather than relaxing this regex.
   const NPM_DEP_VERSION_RE = /^(\^|~|>=|<=|=|>|<)?\d+\.\d+\.\d+(-[\w.+-]+)?(\+[\w.+-]+)?$/;
-  for (const [name, version] of Object.entries(deps)) {
+  for (const [name, version] of Object.entries(specs)) {
     if (typeof version !== "string" || version.length === 0 || version.length > 64) {
-      throw new Error(`Invalid npm version for ${name}: ${version}`);
+      throw new Error(`Invalid npm ${kind} version for ${name}: ${version}`);
     }
     if (version === "latest" || version === "*") continue;
     if (version.startsWith("workspace:")) continue;
     if (!NPM_DEP_VERSION_RE.test(version)) {
       throw new Error(
-        `Refusing non-registry npm specifier for ${name}: "${version}". ` +
+        `Refusing non-registry npm ${kind} specifier for ${name}: "${version}". ` +
           `Only strict semver, "latest", or "*" allowed.`
       );
     }
   }
+}
+
+function applyDirectDependencyOverrides(
+  deps: Record<string, string>,
+  overrides: Record<string, string> = {}
+): { dependencies: Record<string, string>; overrides: Record<string, string> } {
+  const dependencies = { ...deps };
+  const transitiveOverrides: Record<string, string> = {};
+
+  for (const [name, version] of Object.entries(overrides)) {
+    if (Object.prototype.hasOwnProperty.call(dependencies, name)) {
+      dependencies[name] = version;
+    } else {
+      transitiveOverrides[name] = version;
+    }
+  }
+
+  return { dependencies, overrides: transitiveOverrides };
+}
+
+function warnCleanupFailure(pathName: string, error: unknown): void {
+  console.warn(
+    `[externalDeps] Failed to remove ${pathName}: ${error instanceof Error ? error.message : String(error)}`
+  );
+}
+
+/**
+ * Get or install external dependencies. Returns the path to the
+ * node_modules directory.
+ */
+export async function ensureExternalDeps(
+  deps: Record<string, string>,
+  dependencyOverrides: Record<string, string> = {}
+): Promise<string> {
+  const overrides = { ...readWorkspaceNpmOverrides(), ...dependencyOverrides };
+  return ensureDepsInstalled(deps, {
+    baseDir: getExternalDepsBaseDir(),
+    key: hashDeps(deps, overrides),
+    ignoreScripts: true,
+    overrides,
+  });
+}
+
+export async function ensureExtensionRuntimeDeps(
+  deps: Record<string, string>,
+  dependencyOverrides: Record<string, string> = {}
+): Promise<{ key: string | null; nodeModulesDir: string }> {
+  if (Object.keys(deps).length === 0) {
+    return { key: null, nodeModulesDir: "" };
+  }
+  const overrides = { ...readWorkspaceNpmOverrides(), ...dependencyOverrides };
+  const key = [
+    hashDeps(deps, overrides),
+    process.platform,
+    process.arch,
+    `abi${process.versions.modules ?? "unknown"}`,
+  ].join("-");
+  const nodeModulesDir = await ensureDepsInstalled(deps, {
+    baseDir: getExtensionRuntimeDepsBaseDir(),
+    key,
+    ignoreScripts: false,
+    overrides,
+  });
+  return { key, nodeModulesDir };
+}
+
+async function ensureDepsInstalled(
+  deps: Record<string, string>,
+  options: {
+    baseDir: string;
+    key: string;
+    ignoreScripts: boolean;
+    overrides?: Record<string, string>;
+  }
+): Promise<string> {
+  if (Object.keys(deps).length === 0) {
+    // No external deps — return a dummy path
+    return "";
+  }
+
+  const installPlan = applyDirectDependencyOverrides(deps, options.overrides);
+  validateNpmSpecMap("dependency", installPlan.dependencies);
+  validateNpmSpecMap("override", installPlan.overrides);
 
   const cacheDir = path.join(options.baseDir, options.key);
   const sentinelPath = path.join(cacheDir, ".ready");
@@ -309,7 +437,8 @@ async function ensureDepsInstalled(
     name: "external-deps-install",
     version: "0.0.0",
     private: true,
-    dependencies: deps,
+    dependencies: installPlan.dependencies,
+    ...(Object.keys(installPlan.overrides).length > 0 ? { overrides: installPlan.overrides } : {}),
   };
   fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify(pkgJson, null, 2));
 

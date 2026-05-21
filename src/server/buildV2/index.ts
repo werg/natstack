@@ -45,7 +45,11 @@ import {
   type ExtensionDependencyDiagnostics,
 } from "./builder.js";
 import { PushTrigger } from "./pushTrigger.js";
-import { collectTransitiveExternalDeps, ensureExternalDeps } from "./externalDeps.js";
+import {
+  collectTransitiveDependencyOverrides,
+  collectTransitiveExternalDeps,
+  ensureExternalDeps,
+} from "./externalDeps.js";
 import type { GitServer } from "@natstack/git-server";
 import { EXTENSION_RUNTIME_ABI_VERSION } from "@natstack/shared/extensionRuntimeAbi";
 import { assertPresent } from "../../lintHelpers";
@@ -389,7 +393,13 @@ export async function initBuildSystemV2(
         workspaceRoot,
         appNodeModuleRoots
       );
-      const nodeModulesDir = await ensureExternalDeps(externalDeps);
+      const dependencyOverrides = collectTransitiveDependencyOverrides(
+        node,
+        currentGraph,
+        workspaceRoot,
+        appNodeModuleRoots
+      );
+      const nodeModulesDir = await ensureExternalDeps(externalDeps, dependencyOverrides);
       const nodePaths = [...(nodeModulesDir ? [nodeModulesDir] : []), ...appNodeModuleRoots];
       const dependencyDiagnostics = analyzeExtensionDependencies(
         externalDeps,

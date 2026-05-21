@@ -22,7 +22,12 @@ vi.mock("@natstack/shared/npmInstaller", () => ({
 }));
 
 import { PackageGraph, type GraphNode } from "./packageGraph.js";
-import { collectTransitiveExternalDeps, ensureExternalDeps } from "./externalDeps.js";
+import {
+  collectTransitiveDependencyOverrides,
+  collectTransitiveExternalDeps,
+  ensureExternalDeps,
+} from "./externalDeps.js";
+import { runNpmInstall } from "@natstack/shared/npmInstaller";
 
 /** Helper: create a minimal GraphNode. */
 function makeNode(
@@ -36,6 +41,7 @@ function makeNode(
     name,
     kind: "package",
     dependencies,
+    dependencyOverrides: {},
     internalDeps,
     internalDepRefs: {},
     manifest: {},
@@ -250,9 +256,52 @@ describe("collectTransitiveExternalDeps", () => {
     expect(deps).toHaveProperty("react", "^18.0.0");
     expect(deps).toHaveProperty("axios", "^1.0.0");
   });
+
+  it("collects dependency overrides from transitive userland packages", () => {
+    const graph = new PackageGraph();
+    const shared = makeNode("@workspace/shared", { "left-pad": "^1.3.0" });
+    shared.dependencyOverrides = { "left-pad": "1.3.0" };
+    const panel = makeNode("@workspace/panel", { "@workspace/shared": "workspace:*" }, [
+      "@workspace/shared",
+    ]);
+    panel.dependencyOverrides = { react: "19.0.0" };
+
+    graph.addNode(shared);
+    graph.addNode(panel);
+
+    const overrides = collectTransitiveDependencyOverrides(panel, graph);
+
+    expect(overrides).toEqual({
+      react: "19.0.0",
+      "left-pad": "1.3.0",
+    });
+  });
 });
 
 describe("ensureExternalDeps", () => {
+  it("writes npm overrides into generated external-deps package.json", async () => {
+    vi.mocked(runNpmInstall).mockClear();
+    fs.rmSync(testExtDepsRoot, { recursive: true, force: true });
+
+    const nodeModulesDir = await ensureExternalDeps(
+      { "@earendil-works/pi-ai": "0.74.1", react: "^19.0.0" },
+      { "@anthropic-ai/sdk": "0.97.1", react: "19.0.0" }
+    );
+
+    expect(runNpmInstall).toHaveBeenCalledTimes(1);
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(path.dirname(nodeModulesDir), "package.json"), "utf-8")
+    ) as {
+      dependencies: Record<string, string>;
+      overrides?: Record<string, string>;
+    };
+    expect(pkg.dependencies["react"]).toBe("19.0.0");
+    expect(pkg.overrides).toMatchObject({
+      "@anthropic-ai/sdk": "0.97.1",
+    });
+    expect(pkg.overrides).not.toHaveProperty("react");
+  });
+
   it("reinstalls a cache entry when the ready sentinel exists but node_modules is missing", async () => {
     fs.rmSync(testExtDepsRoot, { recursive: true, force: true });
     const first = await ensureExternalDeps({ leftpad: "1.0.0" });

@@ -29,6 +29,7 @@ import * as buildStore from "./buildStore.js";
 import type { BuildArtifacts, BuildMetadata, BuildResult } from "./buildStore.js";
 import { computeBuildKey } from "./effectiveVersion.js";
 import {
+  collectTransitiveDependencyOverrides,
   collectTransitiveExternalDeps,
   ensureExternalDeps,
   ensureExtensionRuntimeDeps,
@@ -1051,14 +1052,18 @@ function generatePanelEntry(
  * before any user code runs) and then re-exports everything from the user
  * entry to preserve the workerd module shape.
  *
- * `export *` covers named exports (including DO classes); `export { default }`
- * covers the default fetch handler. Together they reproduce the original
- * module's public surface for workerd, with the bootstrap as a side effect.
+ * `export *` covers named exports (including DO classes). A namespace import
+ * lets us forward the default fetch handler when present without making it a
+ * hard requirement for DO-only modules.
  */
 export function generateWorkerEntry(exposeEntryFile: string, entryFile: string): string {
   return `import ${JSON.stringify(exposeEntryFile)};
+import * as __natstackWorkerEntry from ${JSON.stringify(entryFile)};
 export * from ${JSON.stringify(entryFile)};
-export { default } from ${JSON.stringify(entryFile)};
+const __natstackDefaultExport = Object.prototype.hasOwnProperty.call(__natstackWorkerEntry, "default")
+  ? Reflect.get(__natstackWorkerEntry, "default")
+  : { fetch() { return new Response("NatStack worker module has no default fetch handler."); } };
+export default __natstackDefaultExport;
 `;
 }
 
@@ -1215,6 +1220,7 @@ interface BuildEnv {
   nodePaths: string[];
   nodeModulesDir: string | null;
   externalDeps: Record<string, string>;
+  dependencyOverrides: Record<string, string>;
   resolveDir: string;
   cleanup: () => void;
 }
@@ -1238,7 +1244,13 @@ async function prepareBuildEnv(
   const entryFile = resolveEntryPoint(node, sourcePath);
 
   const externalDeps = collectTransitiveExternalDeps(node, graph, workspaceRoot, _appNodeModules);
-  const nodeModulesDir = await ensureExternalDeps(externalDeps);
+  const dependencyOverrides = collectTransitiveDependencyOverrides(
+    node,
+    graph,
+    workspaceRoot,
+    _appNodeModules
+  );
+  const nodeModulesDir = await ensureExternalDeps(externalDeps, dependencyOverrides);
   const nodePaths = nodeModulesDir ? [nodeModulesDir] : [];
 
   // App's node_modules for @natstack/* packages (workspace:* deps).
@@ -1256,6 +1268,7 @@ async function prepareBuildEnv(
     nodePaths,
     nodeModulesDir,
     externalDeps,
+    dependencyOverrides,
     resolveDir,
     cleanup: () => {
       try {
@@ -1895,7 +1908,10 @@ async function buildExtension(
       tsconfigRaw: { compilerOptions: {} },
     });
 
-    const runtimeDeps = await ensureExtensionRuntimeDeps(runtimeExternalDeps);
+    const runtimeDeps = await ensureExtensionRuntimeDeps(
+      runtimeExternalDeps,
+      env.dependencyOverrides
+    );
     if (runtimeDeps.nodeModulesDir) {
       linkExtensionRuntimeDeps(outdir, runtimeDeps.nodeModulesDir, node.name);
     }
@@ -1914,6 +1930,7 @@ async function buildExtension(
         extensionRuntimeAbi: EXTENSION_RUNTIME_ABI_VERSION,
         extensionDependencyMode: dependencyMode,
         extensionExternalDeps: runtimeExternalDeps,
+        extensionDependencyOverrides: env.dependencyOverrides,
         extensionClassifiedDeps: classifiedDeps,
         builtAt: new Date().toISOString(),
       },
@@ -1929,6 +1946,7 @@ async function buildExtension(
       extensionRuntimeAbi: EXTENSION_RUNTIME_ABI_VERSION,
       extensionDependencyMode: dependencyMode,
       extensionExternalDeps: runtimeExternalDeps,
+      extensionDependencyOverrides: env.dependencyOverrides,
       extensionClassifiedDeps: classifiedDeps,
       extensionSmokeTest: { mode: "child-process", passed: true },
     });
@@ -2095,7 +2113,10 @@ async function refreshCachedExtensionRuntimeDeps(result: BuildResult): Promise<v
   if (Object.keys(deps).length === 0) return;
   if (extensionRuntimeDepsResolvable(result.bundlePath, Object.keys(deps))) return;
 
-  const runtimeDeps = await ensureExtensionRuntimeDeps(deps);
+  const runtimeDeps = await ensureExtensionRuntimeDeps(
+    deps,
+    result.metadata.extensionDependencyOverrides ?? {}
+  );
   if (runtimeDeps.nodeModulesDir) {
     linkExtensionRuntimeDeps(result.dir, runtimeDeps.nodeModulesDir, result.metadata.name);
   }
