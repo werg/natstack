@@ -494,6 +494,46 @@ describe("PanelManager", () => {
     ]);
   });
 
+  it("persists prepend root insertion order across restart", async () => {
+    const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-panel-manager-"));
+    tempDirs.push(workspacePath);
+
+    for (const name of ["first-root", "second-root"]) {
+      const panelDir = path.join(workspacePath, "panels", name);
+      fs.mkdirSync(panelDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(panelDir, "package.json"),
+        JSON.stringify({ name, natstack: { title: `${name} Panel` } })
+      );
+    }
+
+    const liveRegistry = new PanelRegistry({});
+    const { deps } = makeManagerDeps(workspacePath);
+    const liveManager = new PanelManager({ registry: liveRegistry, ...deps });
+
+    const first = await liveManager.create("panels/first-root", {
+      isRoot: true,
+      addAsRoot: true,
+    });
+    const second = await liveManager.create("panels/second-root", {
+      isRoot: true,
+      addAsRoot: true,
+    });
+    expect(liveRegistry.getRootPanels().map((panel) => panel.id)).toEqual([
+      second.panelId,
+      first.panelId,
+    ]);
+
+    const restoredRegistry = new PanelRegistry({});
+    const restoredManager = new PanelManager({ registry: restoredRegistry, ...deps });
+    await restoredManager.syncSnapshot();
+
+    expect(restoredRegistry.getRootPanels().map((panel) => panel.id)).toEqual([
+      second.panelId,
+      first.panelId,
+    ]);
+  });
+
   it("persists focused panel and cached titles in local view state", async () => {
     const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-panel-manager-"));
     tempDirs.push(workspacePath);

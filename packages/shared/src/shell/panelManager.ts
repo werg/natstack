@@ -220,10 +220,7 @@ export class PanelManager {
     const contextId = opts?.contextId ?? generateContextId(slotId);
     const historyEntryKey = mintHistoryEntryKey();
     const stateArgsPayload = validatedStateArgs ?? {};
-    const positionId = this.rankForPosition(
-      opts?.parentId ?? null,
-      opts?.addAsRoot ? this.registry.getRootPanels().length : 0
-    );
+    const positionId = this.rankForPosition(opts?.parentId ?? null, 0);
 
     const snapshot = createSnapshot(
       relativePath,
@@ -308,10 +305,7 @@ export class PanelManager {
     const contextId = generateContextId(slotId);
     const historyEntryKey = mintHistoryEntryKey();
     const browserSource = `browser:${url}`;
-    const positionId = this.rankForPosition(
-      parentId,
-      opts?.addAsRoot ? this.registry.getRootPanels().length : 0
-    );
+    const positionId = this.rankForPosition(parentId, 0);
 
     const snapshot = createSnapshot(browserSource, contextId, {});
 
