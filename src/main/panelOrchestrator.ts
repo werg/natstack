@@ -8,11 +8,19 @@
 
 import { createDevLogger } from "@natstack/dev-log";
 import { randomUUID } from "crypto";
-import type { PanelSnapshot } from "@natstack/shared/types";
+import type {
+  PanelFocusResult,
+  PanelRecoverySnapshot,
+  PanelSnapshot,
+} from "@natstack/shared/types";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import type { EventService } from "@natstack/shared/eventsService";
 import type { ServerClient } from "./serverClient.js";
 import type { PanelManager } from "@natstack/shared/shell/panelManager";
+import type {
+  PanelRuntimeLeaseChangedEvent,
+  RuntimeLeaseSnapshot,
+} from "@natstack/shared/panel/panelLease";
 import type {
   BridgePanelLifecycle,
   PanelViewLike,
@@ -20,6 +28,7 @@ import type {
   PanelCreateOptions,
 } from "@natstack/shared/panelInterfaces";
 import type { WorkspaceConfig } from "@natstack/shared/workspace/types";
+import type { PanelRestorePolicy } from "@natstack/shared/workspace/types";
 import { buildPanelUrl } from "@natstack/shared/panelFactory";
 import {
   getCurrentSnapshot,
@@ -62,9 +71,12 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
   private runtimeClientRegistered = false;
   private readonly runtimeConnectionBySlot = new Map<string, string>();
   private readonly stateArgsUpdateQueues = new Map<string, Promise<unknown>>();
+  private viewRevision = 0;
+  private readonly restorePolicy: PanelRestorePolicy;
 
   constructor(deps: PanelOrchestratorDeps) {
     this.deps = deps;
+    this.restorePolicy = deps.workspaceConfig?.panelRestorePolicy ?? "focused";
   }
 
   // Convenience accessors
@@ -138,7 +150,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     const panel = this.registry.getPanel(panelId);
     if (!panel) throw new Error(`Panel not found after navigation: ${panelId}`);
     await this.loadSnapshotIntoView(panelId, getCurrentSnapshot(panel));
-    this.focusPanel(panelId);
+    await this.focusPanel(panelId);
     return { id: result.panelId, title: result.title };
   }
 
@@ -149,7 +161,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     const panel = await this.shellCore.navigateHistory(panelId, delta);
     if (!panel) return null;
     await this.loadSnapshotIntoView(panelId, getCurrentSnapshot(panel));
-    this.focusPanel(panelId);
+    await this.focusPanel(panelId);
     return { id: panel.id, title: panel.title };
   }
 
@@ -272,7 +284,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
 
     // Destroy views and remove from in-memory tree
     for (const id of closedIds) {
-      this.unloadPanelResources(id);
+      this.releaseLocalPanelRuntime(id, "close");
       this.registry.removePanel(id);
     }
 
@@ -316,8 +328,9 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
       const view = this.getPanelView();
       if (view?.createViewForBrowser) {
         await view.createViewForBrowser(panelId, url, getPanelContextId(panel));
+        this.bumpViewRevision();
       }
-      this.registry.updateArtifacts(panelId, { buildState: "ready" });
+      this.registry.updateArtifacts(panelId, { buildState: "ready", htmlPath: url });
       this.registry.notifyPanelTreeUpdate();
       return;
     }
@@ -334,6 +347,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     const view = this.getPanelView();
     if (panelUrl && view) {
       await view.createViewForPanel(panelId, panelUrl, getPanelContextId(panel));
+      this.bumpViewRevision();
     }
   }
 
@@ -348,7 +362,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
       if (buildState === "ready" || buildState === "error") {
         if (getPanelSource(panel).startsWith("browser:")) continue;
         this.panelHttpServer?.invalidateBuild(getPanelSource(panel));
-        this.unloadPanelResources(entry.panelId);
+        this.releaseLocalPanelRuntime(entry.panelId, "invalidate");
         this.registry.updateArtifacts(entry.panelId, {
           buildState: "pending",
           buildProgress: "Build cache cleared - will rebuild when focused",
@@ -367,6 +381,36 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
 
   async retryBuild(panelId: string): Promise<void> {
     await this.rebuildUnloadedPanel(panelId);
+  }
+
+  applyBuildComplete(source: string, error?: string): void {
+    for (const entry of this.registry.listPanels()) {
+      const panel = this.registry.getPanel(entry.panelId);
+      if (!panel || getPanelSource(panel) !== source) continue;
+      const viewUrl = this.hasPanelView(entry.panelId)
+        ? (this.getPanelUrl(entry.panelId) ?? undefined)
+        : undefined;
+      if (error) {
+        this.registry.updateArtifacts(entry.panelId, {
+          ...panel.artifacts,
+          htmlPath: viewUrl,
+          buildState: "error",
+          buildRevision: this.getBuildRevision(source),
+          error,
+          buildProgress: error,
+        });
+      } else {
+        this.registry.updateArtifacts(entry.panelId, {
+          ...panel.artifacts,
+          htmlPath: viewUrl,
+          buildState: "ready",
+          buildRevision: this.getBuildRevision(source),
+          buildProgress: undefined,
+          error: undefined,
+        });
+      }
+    }
+    this.registry.notifyPanelTreeUpdate();
   }
 
   async initializeGitRepo(panelId: string): Promise<void> {
@@ -437,26 +481,100 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
   // Focus
   // =========================================================================
 
-  focusPanel(targetPanelId: string): void {
+  async focusPanel(
+    targetPanelId: string,
+    opts: { loadIfNeeded?: boolean } = {}
+  ): Promise<PanelFocusResult> {
     const panel = this.registry.getPanel(targetPanelId);
     if (!panel) {
       log.warn(`Cannot focus panel - not found: ${targetPanelId}`);
-      return;
+      return {
+        panelId: targetPanelId,
+        status: "missing",
+        focused: false,
+        loaded: false,
+        message: `Panel not found: ${targetPanelId}`,
+      };
     }
 
     this.registry.updateSelectedPath(targetPanelId);
     this.registry.notifyPanelTreeUpdate();
 
     // Persist to server
-    void this.shellCore.notifyFocused(targetPanelId).catch(() => {});
+    await this.shellCore.notifyFocused(targetPanelId).catch(() => {});
 
     const view = this.getPanelView();
     if (view?.hasView(targetPanelId)) {
       view.setViewVisible?.(targetPanelId, true);
+      this.bumpViewRevision();
       this.sendPanelEvent(targetPanelId, { type: "focus" });
+      this.eventService.emit("navigate-to-panel", { panelId: targetPanelId });
+      return {
+        panelId: targetPanelId,
+        status: "loaded",
+        focused: true,
+        loaded: true,
+      };
+    }
+
+    if (panel.artifacts.buildState === "error") {
+      this.eventService.emit("navigate-to-panel", { panelId: targetPanelId });
+      return {
+        panelId: targetPanelId,
+        status: "build_failed",
+        focused: true,
+        loaded: false,
+        message: panel.artifacts.error ?? panel.artifacts.buildProgress ?? "Panel build failed",
+      };
+    }
+
+    if (opts.loadIfNeeded) {
+      try {
+        await this.loadPanelIntoView(targetPanelId);
+        const nextView = this.getPanelView();
+        if (nextView?.hasView(targetPanelId)) {
+          nextView.setViewVisible?.(targetPanelId, true);
+          this.bumpViewRevision();
+          this.sendPanelEvent(targetPanelId, { type: "focus" });
+          this.eventService.emit("navigate-to-panel", { panelId: targetPanelId });
+          return {
+            panelId: targetPanelId,
+            status: "loaded",
+            focused: true,
+            loaded: true,
+          };
+        }
+        this.eventService.emit("navigate-to-panel", { panelId: targetPanelId });
+        return {
+          panelId: targetPanelId,
+          status: "view_creation_failed",
+          focused: true,
+          loaded: false,
+          message: "Panel view was not created",
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const lease = this.registry.getRuntimeLease(targetPanelId);
+        const isLeaseFailure = /running on|leased by/i.test(message);
+        this.eventService.emit("navigate-to-panel", { panelId: targetPanelId });
+        return {
+          panelId: targetPanelId,
+          status: isLeaseFailure ? "leased_elsewhere" : "view_creation_failed",
+          focused: true,
+          loaded: false,
+          message,
+          holderLabel: lease?.holderLabel,
+        };
+      }
     }
 
     this.eventService.emit("navigate-to-panel", { panelId: targetPanelId });
+    return {
+      panelId: targetPanelId,
+      status: "focused",
+      focused: true,
+      loaded: false,
+    };
   }
 
   // =========================================================================
@@ -465,6 +583,13 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
 
   async initializePanelTree(): Promise<void> {
     await this.shellCore.loadTree();
+    await this.syncRuntimeLeaseSnapshot().catch((error: unknown) => {
+      log.warn(
+        `[initializePanelTree] Failed to sync runtime leases: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    });
 
     const roots = this.registry.getRootPanels();
     if (roots.length > 0) {
@@ -484,6 +609,12 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
         }
       }
       this.registry.notifyPanelTreeUpdate();
+      if (this.restorePolicy === "focused") {
+        const focusedPanelId = this.registry.getFocusedPanelId() ?? roots[0]?.id;
+        if (focusedPanelId) {
+          await this.focusPanel(focusedPanelId, { loadIfNeeded: true });
+        }
+      }
     } else {
       const entries = this.workspaceConfig?.initPanels;
       log.info(
@@ -501,8 +632,8 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
         }
       }
       const newRoots = this.registry.getRootPanels();
-      if (newRoots.length > 0) {
-        this.focusPanel(assertPresent(newRoots[0]).id);
+      if (newRoots.length > 0 && this.restorePolicy === "focused") {
+        await this.focusPanel(assertPresent(newRoots[0]).id, { loadIfNeeded: true });
       }
       this.registry.notifyPanelTreeUpdate();
     }
@@ -542,21 +673,96 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
   // Panel operations
   // =========================================================================
 
-  async unloadPanel(panelId: string): Promise<void> {
+  async unloadPanel(
+    panelId: string,
+    transition: "unload" | "lease-transfer" = "unload"
+  ): Promise<void> {
     const panel = this.registry.getPanel(panelId);
     if (!panel) throw new Error(`Panel not found: ${panelId}`);
 
-    this.unloadPanelTree(panelId);
+    this.unloadPanelTree(panelId, transition);
     this.registry.notifyPanelTreeUpdate();
+  }
+
+  private async unloadPanelIfPresent(
+    panelId: string,
+    transition: "unload" | "lease-transfer"
+  ): Promise<void> {
+    if (!this.registry.getPanel(panelId)) return;
+    await this.unloadPanel(panelId, transition);
   }
 
   getRuntimeClientSessionId(): string {
     return this.runtimeClientSessionId;
   }
 
+  getFocusedPanelId(): string | null {
+    return this.registry.getFocusedPanelId();
+  }
+
   async takeOverPanel(panelId: string): Promise<void> {
     await this.loadPanelIntoView(panelId, "takeOver");
-    this.focusPanel(panelId);
+    await this.focusPanel(panelId);
+  }
+
+  async syncRuntimeLeaseSnapshot(): Promise<void> {
+    const snapshot = (await this.serverClient.call(
+      "panelRuntime",
+      "getSnapshot",
+      []
+    )) as RuntimeLeaseSnapshot;
+    this.registry.applyRuntimeLeaseSnapshot(snapshot);
+  }
+
+  async recoverShellSnapshot(
+    opts: { loadFocusedView?: boolean } = {}
+  ): Promise<PanelRecoverySnapshot> {
+    const { collapsedIds } = await this.shellCore.loadTree();
+    await this.syncRuntimeLeaseSnapshot();
+
+    const currentFocusedPanelId = this.registry.getFocusedPanelId();
+    const roots = this.registry.getRootPanels();
+    const focusedPanelId =
+      currentFocusedPanelId && this.registry.getPanel(currentFocusedPanelId)
+        ? currentFocusedPanelId
+        : (roots[0]?.id ?? null);
+    const shouldLoadFocusedView =
+      opts.loadFocusedView ?? (this.restorePolicy === "focused" && Boolean(focusedPanelId));
+    const focus = focusedPanelId
+      ? await this.focusPanel(focusedPanelId, { loadIfNeeded: shouldLoadFocusedView })
+      : undefined;
+
+    const treeSnapshot = this.registry.getPanelTreeSnapshot();
+    this.eventService.emit("panel:snapshot", {
+      revision: treeSnapshot.revision,
+      viewRevision: this.viewRevision,
+      rootPanels: treeSnapshot.rootPanels,
+      collapsedIds,
+      focusedPanelId,
+      focus,
+    });
+    return {
+      revision: treeSnapshot.revision,
+      viewRevision: this.viewRevision,
+      rootPanels: treeSnapshot.rootPanels,
+      collapsedIds,
+      focusedPanelId,
+      focus,
+    };
+  }
+
+  async applyRuntimeLeaseChanged(event: PanelRuntimeLeaseChangedEvent): Promise<void> {
+    const slotId = event.slotId;
+    if (!slotId) return;
+    this.registry.applyRuntimeLeaseChanged(event);
+    this.eventService.emit("panel:runtimeLeaseChanged", event);
+    if (event.next && event.next.clientSessionId !== this.runtimeClientSessionId) {
+      await this.unloadPanelIfPresent(slotId, "lease-transfer");
+      return;
+    }
+    if (!event.next && event.previous?.clientSessionId === this.runtimeClientSessionId) {
+      await this.unloadPanelIfPresent(slotId, "lease-transfer");
+    }
   }
 
   // =========================================================================
@@ -618,6 +824,10 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     return this.getPanelUrlForId(panelId);
   }
 
+  hasPanelView(panelId: string): boolean {
+    return this.getPanelView()?.hasView(panelId) ?? false;
+  }
+
   private getPanelUrlForId(panelId: string): string | null {
     const panel = this.registry.getPanel(panelId);
     if (!panel) return null;
@@ -656,14 +866,16 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     if (opts.browserUrl) {
       if (view?.createViewForBrowser) {
         await view.createViewForBrowser(result.panelId, opts.browserUrl, assertPresent(contextId));
+        this.bumpViewRevision();
       }
       this.registry.updateArtifacts(result.panelId, {
         htmlPath: opts.browserUrl,
         buildState: "ready",
+        buildRevision: undefined,
       });
       this.registry.notifyPanelTreeUpdate();
       if (opts.focus) {
-        this.focusPanel(result.panelId);
+        await this.focusPanel(result.panelId);
       }
       return;
     }
@@ -671,6 +883,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     const panelUrl = await this.buildPanelLoadUrl(result.panelId);
     if (panelUrl && view) {
       await view.createViewForPanel(result.panelId, panelUrl, assertPresent(contextId));
+      this.bumpViewRevision();
     }
 
     const ref =
@@ -680,11 +893,12 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     this.registry.updateArtifacts(result.panelId, {
       htmlPath: panelUrl ?? undefined,
       buildState: buildCached ? "ready" : "building",
+      buildRevision: source ? this.getBuildRevision(source, ref) : undefined,
       buildProgress: buildCached ? undefined : "Waiting for build...",
     });
     this.registry.notifyPanelTreeUpdate();
     if (opts.focus) {
-      this.focusPanel(result.panelId);
+      await this.focusPanel(result.panelId);
     }
   }
 
@@ -731,12 +945,14 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
 
     if (view.hasView(panelId)) {
       view.destroyView(panelId);
+      this.bumpViewRevision();
     }
 
     if (snapshot.source.startsWith("browser:")) {
       const url = snapshot.source.slice("browser:".length);
       if (view.createViewForBrowser) {
         await view.createViewForBrowser(panelId, url, snapshot.contextId);
+        this.bumpViewRevision();
       }
       this.registry.updateArtifacts(panelId, { buildState: "ready", htmlPath: url });
       this.registry.notifyPanelTreeUpdate();
@@ -754,11 +970,13 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
       protocol: this.deps.protocol,
     });
     await view.createViewForPanel(panelId, panelUrl, snapshot.contextId);
+    this.bumpViewRevision();
     this.registry.updateArtifacts(panelId, {
       htmlPath: panelUrl,
       buildState: this.panelHttpServer?.hasBuild(snapshot.source, snapshot.options.ref)
         ? "ready"
         : "building",
+      buildRevision: this.getBuildRevision(snapshot.source, snapshot.options.ref),
       buildProgress: this.panelHttpServer?.hasBuild(snapshot.source, snapshot.options.ref)
         ? undefined
         : "Waiting for build...",
@@ -792,6 +1010,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     const result = (await this.serverClient.call("panelRuntime", leaseMode, [
       runtimeEntityId,
       {
+        slotId: panelId,
         clientSessionId: this.runtimeClientSessionId,
         connectionId,
       },
@@ -805,30 +1024,47 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     return connectionId;
   }
 
-  private unloadPanelResources(panelId: string): void {
+  private getBuildRevision(source: string, ref?: string): number | undefined {
+    return this.panelHttpServer?.getBuildRevision?.(source, ref);
+  }
+
+  private releaseLocalPanelRuntime(
+    panelId: string,
+    _transition: "close" | "invalidate" | "lease-transfer" | "unload"
+  ): void {
     this.runtimeConnectionBySlot.delete(panelId);
     // Close open file handles (skip for browser panels)
     // Note: FS handles are managed server-side, but local cleanup still needed
 
     // CDP cleanup
     this.cdpServer?.cleanupPanelAccess(panelId);
+    this.cdpServer?.unregisterBrowser?.(panelId);
 
     // Destroy view
     const view = this.getPanelView();
     if (view?.hasView(panelId)) {
       view.destroyView(panelId);
+      this.bumpViewRevision();
     }
   }
 
-  private unloadPanelTree(panelId: string): void {
+  private bumpViewRevision(): number {
+    this.viewRevision += 1;
+    return this.viewRevision;
+  }
+
+  private unloadPanelTree(
+    panelId: string,
+    transition: "lease-transfer" | "unload" = "unload"
+  ): void {
     const panel = this.registry.getPanel(panelId);
     if (!panel) return;
 
     for (const child of panel.children) {
-      this.unloadPanelTree(child.id);
+      this.unloadPanelTree(child.id, transition);
     }
 
-    this.unloadPanelResources(panelId);
+    this.releaseLocalPanelRuntime(panelId, transition);
 
     const hasBuildArtifacts = Boolean(panel.artifacts?.htmlPath || panel.artifacts?.bundlePath);
     if (panel.artifacts?.buildState === "pending" && !hasBuildArtifacts) return;

@@ -85,6 +85,10 @@ export function createElectronShellCore(deps: {
       markPanelActive: (panelId) => call<undefined>("presence", "markPanelActive", [panelId]),
     },
     viewState: createElectronLocalViewStateStore(deps.statePath),
+    metadataResolver: {
+      getPanelMetadata: (source) =>
+        call<{ title?: string } | null>("build", "getPanelMetadata", [source]),
+    },
     workspacePath: deps.workspacePath,
     allowMissingManifests: deps.allowMissingManifests,
     searchIndex,

@@ -431,6 +431,7 @@ export async function establishServerSession(args: {
   const gatewayPort = ports.gatewayPort;
   const panelHttpServer: PanelHttpServerLike = {
     hasBuild: () => false,
+    getBuildRevision: () => undefined,
     invalidateBuild: () => {},
     getPort: () => gatewayPort,
   };

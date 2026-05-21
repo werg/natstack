@@ -7,6 +7,7 @@ import type { ViewManager } from "../viewManager.js";
 import type {
   BranchInfo,
   CommitInfo,
+  PanelFocusResult,
   ThemeAppearance,
   WorkspaceNode,
 } from "@natstack/shared/types";
@@ -137,6 +138,8 @@ export function createPanelShellService(deps: {
     methods: {
       loadTree: { args: z.tuple([]) },
       getTree: { args: z.tuple([]) },
+      getTreeSnapshot: { args: z.tuple([]) },
+      getFocusedPanelId: { args: z.tuple([]) },
       notifyFocused: { args: z.tuple([z.string()]) },
       updateTheme: { args: z.tuple([z.unknown()]) },
       openDevTools: { args: z.tuple([z.string()]) },
@@ -254,25 +257,28 @@ export function createPanelShellService(deps: {
         case "getTree":
           return registry.getSerializablePanelTree();
 
+        case "getTreeSnapshot":
+          return registry.getPanelTreeSnapshot();
+
+        case "getFocusedPanelId":
+          return lifecycle.getFocusedPanelId();
+
         case "notifyFocused": {
           const panelId = args[0] as string;
           if (!registry.getPanel(panelId)) {
             log.verbose(` Ignoring focus notification for missing panel: ${panelId}`);
-            return;
+            return {
+              panelId,
+              status: "missing",
+              focused: false,
+              loaded: false,
+              message: `Panel not found: ${panelId}`,
+            } satisfies PanelFocusResult;
           }
 
-          try {
-            // Orchestrator handles: registry.updateSelectedPath, server persist,
-            // sendPanelEvent(focus), navigate-to-panel event
-            lifecycle.focusPanel(panelId);
-            vm.refreshVisiblePanel();
-            void lifecycle
-              .rebuildUnloadedPanel(panelId)
-              .catch((err: unknown) => console.warn(`[Panel] Rebuild failed for ${panelId}:`, err));
-          } catch (error) {
-            console.error(`[Panel] Failed to focus panel ${panelId}:`, error);
-          }
-          return;
+          const result = await lifecycle.focusPanel(panelId, { loadIfNeeded: true });
+          vm.refreshVisiblePanel();
+          return result;
         }
 
         case "updateTheme": {

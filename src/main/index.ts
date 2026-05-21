@@ -54,11 +54,10 @@ import {
   type StartupMode,
 } from "./startupMode.js";
 import { establishServerSession, type SessionConnection } from "./serverSession.js";
-import { handleExternalOpenPayload, type ExternalOpenPayload } from "./oauthLoopbackHandoff.js";
 import { CdpServer } from "./cdpServer.js";
 import { EventService } from "@natstack/shared/eventsService";
-import { isValidEventName, type EventName } from "@natstack/shared/events";
-import type { PanelRuntimeLeaseChangedEvent } from "@natstack/shared/panel/panelLease";
+import type { EventName } from "@natstack/shared/events";
+import { createServerEventBridge } from "./serverEventBridge.js";
 import { installPinnedTlsForAllPartitions } from "./tlsPinning.js";
 import { BROWSER_SESSION_PARTITION } from "@natstack/shared/panelInterfaces";
 
@@ -80,7 +79,6 @@ import { setupTestApi } from "./testApi.js";
 import { AdBlockManager } from "./adblock/index.js";
 import { startMemoryMonitor, setMemoryMonitorViewManager } from "./memoryMonitor.js";
 // ServerProcessManager and createServerClient are now used by serverSession.ts
-import { getPanelSource } from "@natstack/shared/panelTypes";
 import { assertPresent } from "../lintHelpers";
 
 // =============================================================================
@@ -962,94 +960,22 @@ app.on("ready", async () => {
   };
   const recoverShellStateFromServer = async (_kind: "resubscribe" | "cold-recover") => {
     await replayShellSubscriptionsToServer();
-    const manager = shellCore?.panelManager;
-    if (!manager) return;
-    await manager.syncSnapshot();
+    if (!panelOrchestrator) return;
+    await panelOrchestrator
+      .recoverShellSnapshot({ loadFocusedView: false })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.warn(`[recovery] shell snapshot failed: ${msg}`);
+      });
   };
 
-  // Bridge server→main events. Two distinct sources arrive through this
-  // callback (serverClient.onEvent), and both need handling:
-  //
-  //   1. `build:complete` — broadcast manually via rpcServer.broadcastToControlPlane
-  //      (no "event:" prefix). Has a panel-registry side effect.
-  //
-  //   2. Anything the server's EventService emits. WsSubscriber.send prefixes
-  //      those with "event:" (e.g. "event:notification:show"). Nothing in
-  //      main reads them directly — we re-emit them on main's local
-  //      EventService so local subscribers (shell IpcSubscriber, etc.) see
-  //      them uniformly alongside main-originated events.
-  function handleServerEvent(event: string, payload: unknown) {
-    if (event === "build:complete" && panelRegistry && panelOrchestrator) {
-      const { source, error } = payload as { source: string; error?: string };
-      const allPanels = panelRegistry.listPanels();
-      for (const entry of allPanels) {
-        const panel = panelRegistry.getPanel(entry.panelId);
-        if (panel && getPanelSource(panel) === source) {
-          if (error) {
-            panelRegistry.updateArtifacts(entry.panelId, {
-              buildState: "error",
-              error,
-              buildProgress: error,
-            });
-          } else {
-            panelRegistry.updateArtifacts(entry.panelId, {
-              htmlPath: panelOrchestrator.getPanelUrl(entry.panelId) ?? undefined,
-              buildState: "ready",
-            });
-          }
-        }
-      }
-      panelRegistry.notifyPanelTreeUpdate();
-      return;
-    }
-
-    if (event.startsWith("event:")) {
-      const bareEvent = event.slice("event:".length);
-      if (bareEvent === "external-open:open") {
-        void handleExternalOpenPayload(payload as ExternalOpenPayload, {
-          openExternal: (url) => shell.openExternal(url),
-          forwardOAuthCallback: (request) =>
-            assertPresent(serverClientRef).call("credentials", "forwardOAuthCallback", [request]),
-        }).catch((err: unknown) => {
-          log.warn(
-            `[externalOpen] OAuth browser handoff failed: ${err instanceof Error ? err.message : String(err)}`
-          );
-        });
-      }
-      if (bareEvent === "browser-panel:open") {
-        const { url, parentPanelId } = payload as { url?: string; parentPanelId?: string };
-        if (typeof url === "string" && typeof parentPanelId === "string") {
-          void panelOrchestrator
-            ?.createBrowserPanel(parentPanelId, url, { focus: true })
-            .catch((err: unknown) => {
-              log.warn(
-                `[browserPanel] createBrowserPanel failed: ${err instanceof Error ? err.message : String(err)}`
-              );
-            });
-        }
-      }
-      if (bareEvent === "panel:runtimeLeaseChanged" && panelRegistry) {
-        const leaseEvent = payload as PanelRuntimeLeaseChangedEvent;
-        panelRegistry.applyRuntimeLeaseChanged(leaseEvent);
-        const localSessionId = panelOrchestrator?.getRuntimeClientSessionId();
-        if (
-          localSessionId &&
-          leaseEvent.next &&
-          leaseEvent.next.clientSessionId !== localSessionId
-        ) {
-          void panelOrchestrator?.unloadPanel(leaseEvent.panelId).catch((err: unknown) => {
-            log.warn(
-              `[panelRuntime] failed to unload stolen panel ${leaseEvent.panelId}: ${err instanceof Error ? err.message : String(err)}`
-            );
-          });
-        }
-        panelRegistry.notifyPanelTreeUpdate();
-      }
-      if (isValidEventName(bareEvent)) {
-        (eventService.emit as (e: EventName, d: unknown) => void)(bareEvent, payload);
-      }
-    }
-  }
+  const handleServerEvent = createServerEventBridge({
+    eventService,
+    getPanelOrchestrator: () => panelOrchestrator,
+    getServerClient: () => serverClientRef,
+    openExternal: (url) => shell.openExternal(url),
+    warn: (message) => log.warn(message),
+  });
 
   try {
     performance.mark("startup:server-spawn-begin");
@@ -1153,7 +1079,7 @@ app.on("ready", async () => {
 
     // Create PanelRegistry (pure in-memory — server owns persistence)
     panelRegistry = new PanelRegistry({
-      onTreeUpdated: (tree) => eventService.emit("panel-tree-updated", tree),
+      onTreeUpdated: (snapshot) => eventService.emit("panel-tree-updated", snapshot),
     });
 
     const { createElectronShellCore } = await import("./shellCore/createElectronShellCore.js");

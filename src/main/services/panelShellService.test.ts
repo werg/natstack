@@ -6,15 +6,18 @@ import { createPanelShellService } from "./panelShellService.js";
 const shellCtx: ServiceContext = { caller: createVerifiedCaller("shell", "shell") };
 
 function createServiceHarness(panelExists: boolean) {
-  const focusPanel = vi.fn();
-  const rebuildUnloadedPanel = vi.fn(async () => {});
+  const focusPanel = vi.fn(async (panelId: string) => ({
+    panelId,
+    status: "loaded",
+    focused: true,
+    loaded: true,
+  }));
   const refreshVisiblePanel = vi.fn();
   const getPanel = vi.fn(() => (panelExists ? { id: "panel-1" } : undefined));
 
   const service = createPanelShellService({
     panelOrchestrator: {
       focusPanel,
-      rebuildUnloadedPanel,
       getCollapsedIds: vi.fn(async () => []),
     } as never,
     panelRegistry: {
@@ -28,29 +31,27 @@ function createServiceHarness(panelExists: boolean) {
       }) as never,
   });
 
-  return { service, focusPanel, rebuildUnloadedPanel, refreshVisiblePanel, getPanel };
+  return { service, focusPanel, refreshVisiblePanel, getPanel };
 }
 
 describe("PanelShellService", () => {
   it("ignores focus notifications for missing panels", async () => {
-    const { service, focusPanel, rebuildUnloadedPanel, refreshVisiblePanel } =
-      createServiceHarness(false);
+    const { service, focusPanel, refreshVisiblePanel } = createServiceHarness(false);
 
-    await service.handler(shellCtx, "notifyFocused", ["missing-panel"]);
+    const result = await service.handler(shellCtx, "notifyFocused", ["missing-panel"]);
 
     expect(focusPanel).not.toHaveBeenCalled();
     expect(refreshVisiblePanel).not.toHaveBeenCalled();
-    expect(rebuildUnloadedPanel).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: "missing", focused: false, loaded: false });
   });
 
-  it("focuses and rebuilds existing panels", async () => {
-    const { service, focusPanel, rebuildUnloadedPanel, refreshVisiblePanel } =
-      createServiceHarness(true);
+  it("focuses and loads existing panels with a structured result", async () => {
+    const { service, focusPanel, refreshVisiblePanel } = createServiceHarness(true);
 
-    await service.handler(shellCtx, "notifyFocused", ["panel-1"]);
+    const result = await service.handler(shellCtx, "notifyFocused", ["panel-1"]);
 
-    expect(focusPanel).toHaveBeenCalledWith("panel-1");
+    expect(focusPanel).toHaveBeenCalledWith("panel-1", { loadIfNeeded: true });
     expect(refreshVisiblePanel).toHaveBeenCalled();
-    expect(rebuildUnloadedPanel).toHaveBeenCalledWith("panel-1");
+    expect(result).toMatchObject({ status: "loaded", focused: true, loaded: true });
   });
 });
