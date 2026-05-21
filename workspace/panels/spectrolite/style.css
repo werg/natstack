@@ -1,0 +1,35 @@
+.spectrolite-mdx {
+  background: var(--color-background);
+}
+
+.spectrolite-content {
+  font-size: var(--font-size-3);
+  line-height: var(--line-height-3);
+  padding: var(--space-4);
+  outline: none;
+  min-height: 100%;
+}
+
+.spectrolite-content--dark {
+  color: var(--gray-12);
+}
+
+/* MDXEditor wraps its own root; let it fill the pane */
+.spectrolite-mdx .mdxeditor {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.spectrolite-mdx .mdxeditor-root-contenteditable {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.spectrolite-mdx .mdxeditor-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  border-bottom: 1px solid var(--gray-5);
+}

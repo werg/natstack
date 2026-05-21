@@ -1,0 +1,170 @@
+/**
+ * Channel + agent bootstrap helpers for the Spectrolite panel.
+ *
+ * Mirrors `workspace/panels/chat/bootstrap.ts` and the bootstrap fragments
+ * inside `panels/chat/index.tsx`. The DO subscription pattern is identical;
+ * only the system prompt and channel-name prefix differ.
+ */
+
+import { rpc } from "@workspace/runtime";
+
+const CHANNEL_SERVICE_PROTOCOL = "natstack.channel.v1";
+
+export interface PendingAgentRecord {
+  agentId: string;
+  handle: string;
+  key: string;
+  source: string;
+  className: string;
+}
+
+export function resolveContextId(
+  fromStateArgs: string | undefined,
+  fromRuntime: string | undefined,
+): string | undefined {
+  const id = fromStateArgs ?? fromRuntime;
+  if (typeof id !== "string") return undefined;
+  const trimmed = id.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+export function appendPendingAgent(
+  existing: PendingAgentRecord[] | undefined,
+  agent: PendingAgentRecord,
+): PendingAgentRecord[] {
+  return [...(existing ?? []), agent];
+}
+
+export function newChannelName(): string {
+  return `kb-${crypto.randomUUID().slice(0, 8)}`;
+}
+
+export function newAgentKey(handle: string): string {
+  return `${handle}-${crypto.randomUUID().slice(0, 8)}`;
+}
+
+export interface CreateAndSubscribeArgs {
+  source: string;
+  className: string;
+  key: string;
+  channelId: string;
+  channelContextId: string;
+  config?: Record<string, unknown>;
+  replay?: boolean;
+}
+
+export async function createAndSubscribeAgent(args: CreateAndSubscribeArgs): Promise<{ ok: boolean; participantId?: string }> {
+  if (!args.channelContextId) {
+    throw new Error("Cannot subscribe an agent DO without a context ID");
+  }
+  const handle = await rpc.call<{ targetId: string }>(
+    "main",
+    "runtime.createEntity",
+    [{
+      kind: "do",
+      source: args.source,
+      className: args.className,
+      key: args.key,
+      contextId: args.channelContextId,
+    }],
+  );
+  return rpc.call<{ ok: boolean; participantId?: string }>(
+    handle.targetId,
+    "subscribeChannel",
+    [{
+      channelId: args.channelId,
+      contextId: args.channelContextId,
+      config: args.config,
+      replay: args.replay,
+    }],
+  );
+}
+
+interface ChannelParticipant {
+  participantId: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface ChannelDORef {
+  source: string;
+  className: string;
+  objectKey: string;
+}
+
+function parseDoTargetId(participantId: string): ChannelDORef | null {
+  if (!participantId.startsWith("do:")) return null;
+  const body = participantId.slice(3);
+  const slashIdx = body.indexOf("/");
+  const colonAfterSlash = slashIdx >= 0 ? body.indexOf(":", slashIdx) : -1;
+  if (colonAfterSlash === -1) return null;
+  const source = body.slice(0, colonAfterSlash);
+  const rest = body.slice(colonAfterSlash + 1);
+  const nextColon = rest.indexOf(":");
+  if (nextColon === -1) return null;
+  return {
+    source,
+    className: rest.slice(0, nextColon),
+    objectKey: rest.slice(nextColon + 1),
+  };
+}
+
+export async function getChannelDOParticipants(channelId: string): Promise<ChannelDORef[]> {
+  const channelService = await rpc.call<{ kind: string; targetId?: string }>(
+    "main",
+    "workers.resolveService",
+    [CHANNEL_SERVICE_PROTOCOL, channelId],
+  );
+  if (channelService.kind !== "durable-object" || !channelService.targetId) {
+    throw new Error("Channel service must resolve to a Durable Object service");
+  }
+  const participants = await rpc.call<ChannelParticipant[]>(
+    channelService.targetId,
+    "getParticipants",
+    [],
+  );
+  return participants.map((p) => parseDoTargetId(p.participantId)).filter((p): p is ChannelDORef => p !== null);
+}
+
+export async function unsubscribeDOFromChannel(
+  source: string,
+  className: string,
+  objectKey: string,
+  channelId: string,
+): Promise<void> {
+  const target = await rpc.call<{ targetId: string }>(
+    "main",
+    "workers.resolveDurableObject",
+    [source, className, objectKey],
+  );
+  await rpc.call(target.targetId, "unsubscribeChannel", [channelId]);
+}
+
+export interface WorkerSourceEntry {
+  name: string;
+  source: string;
+  title?: string;
+  classes: Array<{ className: string }>;
+}
+
+export interface AvailableAgent {
+  id: string;
+  name: string;
+  proposedHandle: string;
+  className: string;
+}
+
+export async function listAvailableAgents(): Promise<AvailableAgent[]> {
+  const sources = await rpc.call<WorkerSourceEntry[]>("main", "workers.listSources", []);
+  const out: AvailableAgent[] = [];
+  for (const source of sources) {
+    for (const cls of source.classes) {
+      out.push({
+        id: source.source,
+        name: source.title ?? source.name,
+        proposedHandle: source.name.split("-")[0] ?? source.name,
+        className: cls.className,
+      });
+    }
+  }
+  return out;
+}
