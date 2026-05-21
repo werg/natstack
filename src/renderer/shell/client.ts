@@ -41,6 +41,8 @@ import type {
   ThemeAppearance,
   Panel,
   PanelContextMenuAction,
+  PanelFocusResult,
+  PanelTreeSnapshot,
   WorkspaceEntry,
   SettingsData,
   MovePanelRequest,
@@ -70,7 +72,10 @@ export const app = {
 // =============================================================================
 export const panel = {
   getTree: () => rpc.call<Panel[]>("main", "panel.getTree", []),
-  notifyFocused: (panelId: string) => rpc.call<undefined>("main", "panel.notifyFocused", [panelId]),
+  getTreeSnapshot: () => rpc.call<PanelTreeSnapshot>("main", "panel.getTreeSnapshot", []),
+  getFocusedPanelId: () => rpc.call<string | null>("main", "panel.getFocusedPanelId", []),
+  notifyFocused: (panelId: string) =>
+    rpc.call<PanelFocusResult>("main", "panel.notifyFocused", [panelId]),
   updateTheme: (theme: ThemeAppearance) =>
     rpc.call<undefined>("main", "panel.updateTheme", [theme]),
   openDevTools: (panelId: string) => rpc.call<undefined>("main", "panel.openDevTools", [panelId]),

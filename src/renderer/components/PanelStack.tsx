@@ -88,6 +88,19 @@ function captureHostThemeCss(): string {
   return `${cssVariables}\n${baseline}`;
 }
 
+interface PanelTreeNode {
+  id: string;
+  children?: PanelTreeNode[];
+}
+
+function panelTreeContainsId(panels: PanelTreeNode[], id: string): boolean {
+  for (const panel of panels) {
+    if (panel.id === id) return true;
+    if (panel.children && panelTreeContainsId(panel.children, id)) return true;
+  }
+  return false;
+}
+
 export function PanelStack({
   onTitleChange,
   onChromeStateChange,
@@ -136,9 +149,28 @@ export function PanelStack({
 
   // Initial panel selection - set visible panel when root panels load
   useEffect(() => {
-    if (!visiblePanelId && rootPanels.length > 0) {
-      setVisiblePanelId(assertPresent(rootPanels[0]).id);
+    if (visiblePanelId || rootPanels.length === 0) {
+      return;
     }
+    let cancelled = false;
+    void panelService
+      .getFocusedPanelId()
+      .then((focusedPanelId) => {
+        if (cancelled) return;
+        const restoredPanelId =
+          focusedPanelId && panelTreeContainsId(rootPanels, focusedPanelId) ? focusedPanelId : null;
+        setVisiblePanelId(
+          (currentId) => currentId ?? restoredPanelId ?? assertPresent(rootPanels[0]).id
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setVisiblePanelId((currentId) => currentId ?? assertPresent(rootPanels[0]).id);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [rootPanels, visiblePanelId]);
 
   // Handle panel deletion - fall back to first root if current panel is gone
@@ -232,7 +264,7 @@ export function PanelStack({
     "panel:runtimeLeaseChanged",
     useCallback(
       (event: PanelRuntimeLeaseChangedEvent) => {
-        if (event.panelId === visiblePanelId) {
+        if (event.slotId === visiblePanelId) {
           setVisibleRuntimeLease(event.next);
         }
       },
@@ -405,9 +437,16 @@ export function PanelStack({
       return;
     }
 
-    void panelService.notifyFocused(panelId).catch((error) => {
-      console.error("Failed to notify panel focus", error);
-    });
+    void panelService
+      .notifyFocused(panelId)
+      .then((result) => {
+        if (result.status === "leased_elsewhere" || result.status === "view_creation_failed") {
+          console.warn("Panel focus did not load a view", result);
+        }
+      })
+      .catch((error) => {
+        console.error("Failed to notify panel focus", error);
+      });
   }, [visiblePanel?.id]);
 
   const previousVisiblePanelId = useRef<string | null>(null);
@@ -808,7 +847,7 @@ export function PanelStack({
           </Text>
           <Button
             onClick={() => {
-              void panelService.takeOver(visibleRuntimeLease.panelId).catch((error) => {
+              void panelService.takeOver(visibleRuntimeLease.slotId).catch((error) => {
                 console.error("Failed to take over panel", error);
               });
             }}

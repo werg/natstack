@@ -20,8 +20,16 @@ export async function materializeMobilePanel(opts: {
   panel: Panel;
   hostConfig: HostConfig;
   getPanelInit(panelId: string): Promise<unknown>;
-  acquireLease(panelId: string, opts: { connectionId: string }): Promise<{ acquired: boolean; lease?: { holderLabel: string } }>;
-  takeOverLease(panelId: string, opts: { connectionId: string }): Promise<{ acquired: boolean; lease?: { holderLabel: string } }>;
+  acquireLease(
+    panelId: string,
+    runtimeEntityId: string,
+    opts: { connectionId: string }
+  ): Promise<{ acquired: boolean; lease?: { holderLabel: string } }>;
+  takeOverLease(
+    panelId: string,
+    runtimeEntityId: string,
+    opts: { connectionId: string }
+  ): Promise<{ acquired: boolean; lease?: { holderLabel: string } }>;
   leaseMode: "acquire" | "takeOver";
 }): Promise<MobileMaterializedPanel> {
   const snapshot = getCurrentSnapshot(opts.panel);
@@ -37,19 +45,31 @@ export async function materializeMobilePanel(opts: {
 
   const leaseConnectionId = `mobile-${opts.panelId}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const leaseClient = opts.leaseMode === "takeOver" ? opts.takeOverLease : opts.acquireLease;
-  const lease = await leaseClient(opts.panelId, {
+  const panelInit = await opts.getPanelInit(opts.panelId);
+  const runtimeEntityId =
+    panelInit &&
+    typeof panelInit === "object" &&
+    typeof (panelInit as { entityId?: unknown }).entityId === "string"
+      ? (panelInit as { entityId: string }).entityId
+      : null;
+  if (!runtimeEntityId) {
+    throw new Error(`Panel ${opts.panelId} did not provide a runtime entity id`);
+  }
+  const lease = await leaseClient(opts.panelId, runtimeEntityId, {
     connectionId: leaseConnectionId,
   });
   if (!lease.acquired) {
-    throw new Error(`Panel ${opts.panelId} is running on ${lease.lease?.holderLabel ?? "another client"}`);
+    throw new Error(
+      `Panel ${opts.panelId} is running on ${lease.lease?.holderLabel ?? "another client"}`
+    );
   }
-  const panelInit = await opts.getPanelInit(opts.panelId);
   return {
     panelId: opts.panelId,
     url: buildPanelUrl(snapshot.source, snapshot.contextId, opts.hostConfig),
     managed: true,
-    panelInit: panelInit && typeof panelInit === "object"
-      ? { ...(panelInit as Record<string, unknown>), leaseConnectionId, clientLabel: "Mobile" }
-      : panelInit,
+    panelInit:
+      panelInit && typeof panelInit === "object"
+        ? { ...(panelInit as Record<string, unknown>), leaseConnectionId, clientLabel: "Mobile" }
+        : panelInit,
   };
 }

@@ -1,5 +1,6 @@
 import { PanelRegistry } from "@natstack/shared/panelRegistry";
 import { PanelManager } from "@natstack/shared/shell/panelManager";
+import type { Panel, PanelTreeSnapshot } from "@natstack/shared/types";
 import type {
   RuntimeClient,
   SlotCreateInput,
@@ -26,9 +27,11 @@ export function createMobileShellCore(deps: {
   workspaceId: string;
   serverUrl: string;
   transport: MobileTransport;
-  onTreeUpdated?: (tree: import("@natstack/shared/types").Panel[]) => void;
+  onTreeUpdated?: (tree: Panel[]) => void;
 }) {
-  const registry = new PanelRegistry({ onTreeUpdated: deps.onTreeUpdated });
+  const registry = new PanelRegistry({
+    onTreeUpdated: (snapshot: PanelTreeSnapshot) => deps.onTreeUpdated?.(snapshot.rootPanels),
+  });
   const host = parseHostConfig(deps.serverUrl);
   const hostWithPort = `${host.host}${host.port ? `:${host.port}` : ""}`;
 
@@ -87,6 +90,10 @@ export function createMobileShellCore(deps: {
       markPanelActive: (panelId) => callVoid("presence.markPanelActive", [panelId]),
     },
     viewState: createMobileLocalViewStateStore(deps.workspaceId),
+    metadataResolver: {
+      getPanelMetadata: (source) =>
+        call<{ title?: string } | null>("build.getPanelMetadata", [source]),
+    },
     workspacePath: "",
     allowMissingManifests: true,
     serverInfo: {

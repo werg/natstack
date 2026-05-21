@@ -371,8 +371,9 @@ export function MainScreen() {
           panel,
           hostConfig,
           getPanelInit: (id) => shellClient.panels.getPanelInit(id),
-          acquireLease: (id, opts) => shellClient.panels.acquireLease(id, opts),
-          takeOverLease: (id, opts) => shellClient.panels.takeOverLease(id, opts),
+          acquireLease: (id, entityId, opts) => shellClient.panels.acquireLease(id, entityId, opts),
+          takeOverLease: (id, entityId, opts) =>
+            shellClient.panels.takeOverLease(id, entityId, opts),
           leaseMode: "acquire",
         });
         if (hostConfig.protocol === "http") {
@@ -410,8 +411,8 @@ export function MainScreen() {
       panel: activePanel,
       hostConfig,
       getPanelInit: (id) => shellClient.panels.getPanelInit(id),
-      acquireLease: (id, opts) => shellClient.panels.acquireLease(id, opts),
-      takeOverLease: (id, opts) => shellClient.panels.takeOverLease(id, opts),
+      acquireLease: (id, entityId, opts) => shellClient.panels.acquireLease(id, entityId, opts),
+      takeOverLease: (id, entityId, opts) => shellClient.panels.takeOverLease(id, entityId, opts),
       leaseMode: "takeOver",
     })
       .then((materialized) => {

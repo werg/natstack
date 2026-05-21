@@ -22,6 +22,7 @@ import {
 } from "react";
 import { useShellEvent } from "../useShellEvent.js";
 import { panel as panelService } from "../client.js";
+import { coercePanelTreeUpdate } from "./panelTreeRevision.js";
 import type {
   Panel,
   PanelSummary,
@@ -29,6 +30,7 @@ import type {
   DescendantSiblingGroup,
   PanelNavigationState,
   PanelArtifacts,
+  PanelTreeSnapshot,
 } from "@natstack/shared/types";
 import { getPanelContextId, getPanelSource } from "@natstack/shared/panel/accessors";
 import { assertPresent } from "../../../lintHelpers";
@@ -392,17 +394,31 @@ export function PanelTreeProvider({ children }: PanelTreeProviderProps) {
   const [initialized, setInitialized] = useState(false);
   // Track if we've received a real-time event (always newer than getTree result)
   const receivedEventRef = useRef(false);
+  const latestRevisionRef = useRef<number>(0);
+
+  const applyTreeSnapshot = useCallback((snapshot: PanelTreeSnapshot): boolean => {
+    if (snapshot.revision < latestRevisionRef.current) {
+      return false;
+    }
+    latestRevisionRef.current = snapshot.revision;
+    setTree(snapshot.rootPanels);
+    setInitialized(true);
+    return true;
+  }, []);
 
   // Handle panel tree updates from main process
-  const handleTreeUpdate = useCallback((data: unknown) => {
-    if (!Array.isArray(data)) {
-      console.error("[PanelTreeContext] Invalid tree data received:", data);
-      return;
-    }
-    receivedEventRef.current = true;
-    setTree(data as Panel[]);
-    setInitialized(true);
-  }, []);
+  const handleTreeUpdate = useCallback(
+    (data: unknown) => {
+      const snapshot = coercePanelTreeUpdate(data, latestRevisionRef.current);
+      if (!snapshot) {
+        console.error("[PanelTreeContext] Invalid tree data received:", data);
+        return;
+      }
+      receivedEventRef.current = true;
+      applyTreeSnapshot(snapshot);
+    },
+    [applyTreeSnapshot]
+  );
 
   // Subscribe to panel-tree-updated events
   useShellEvent("panel-tree-updated", handleTreeUpdate);
@@ -415,11 +431,10 @@ export function PanelTreeProvider({ children }: PanelTreeProviderProps) {
     let mounted = true;
 
     panelService
-      .getTree()
+      .getTreeSnapshot()
       .then((initialTree) => {
         if (mounted && !receivedEventRef.current) {
-          setTree(initialTree);
-          setInitialized(true);
+          applyTreeSnapshot(initialTree);
         }
       })
       .catch((error) => {
