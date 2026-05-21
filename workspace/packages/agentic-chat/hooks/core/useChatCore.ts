@@ -4,12 +4,11 @@
  * The agent worker publishes Pi events as real channel messages. This hook:
  * - Owns the PubSubClient connection lifecycle
  * - Subscribes to ALL channel messages (persisted + replay) via useChannelMessages
- * - Builds a flat `ChatMessage[]` from channel messages
- * - Dispatches protocol events (method calls, debug, roster) from ConnectionManager
- * - Tracks method history with console/progress streaming
+ * - Builds a flat `ChatMessage[]` from typed agentic events
+ * - Dispatches non-transcript protocol events (debug, roster) from ConnectionManager
  * - Tracks participants (current + historical) and generates disconnect notifications
  *
- * Messages stream via the PubSub send → update → complete protocol.
+ * Transcript UX streams via PubSub agentic events → reducer → view model.
  */
 
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
@@ -19,17 +18,16 @@ import type {
   AttachmentInput,
   Participant,
   AgentDebugPayload,
-  IncomingMethodResult,
   IncomingEvent,
   MethodDefinition,
 } from "@workspace/pubsub";
 import { isAgentParticipantType } from "@workspace/pubsub";
 import {
   ConnectionManager,
+  type ActionBarPayload,
   type ConnectionConfig,
   type ChatParticipantMetadata,
   type ChatMessage,
-  type MethodHistoryEntry,
   type PendingAgent,
   type DirtyRepoDetails,
   type DisconnectedAgentInfo,
@@ -41,9 +39,6 @@ import { useChannelMessages } from "../useChannelMessages.js";
 /** Maximum debug events to retain (ring buffer). */
 const MAX_DEBUG_EVENTS = 500;
 
-/** Maximum method history entries before pruning. */
-const METHOD_HISTORY_MAX = 2000;
-const METHOD_HISTORY_PRUNE_TO = 1400;
 const DEFAULT_CHAT_TITLE_MAX_LENGTH = 64;
 
 export function titleFromFirstUserMessage(message: string): string | null {
@@ -51,6 +46,20 @@ export function titleFromFirstUserMessage(message: string): string | null {
   if (!normalized) return null;
   if (normalized.length <= DEFAULT_CHAT_TITLE_MAX_LENGTH) return normalized;
   return `${normalized.slice(0, DEFAULT_CHAT_TITLE_MAX_LENGTH - 3).trimEnd()}...`;
+}
+
+export function shouldAutoSendInitialPrompt({
+  prompt,
+  connected,
+  alreadySent,
+  hasPriorMessages,
+}: {
+  prompt: string | undefined;
+  connected: boolean;
+  alreadySent: boolean;
+  hasPriorMessages: boolean;
+}): boolean {
+  return Boolean(prompt && connected && !alreadySent && !hasPriorMessages);
 }
 
 // =============================================================================
@@ -97,13 +106,7 @@ export interface ChatCoreState {
   hasMoreHistory: boolean;
   loadingMore: boolean;
   loadEarlierMessages: () => Promise<void>;
-
-  // Method history
-  methodEntries: Map<string, MethodHistoryEntry>;
-  addMethodHistoryEntry: (entry: MethodHistoryEntry) => void;
-  updateMethodHistoryEntry: (callId: string, updates: Partial<MethodHistoryEntry>) => void;
-  handleMethodResult: (result: IncomingMethodResult) => void;
-  clearMethodHistory: () => void;
+  canonicalActionBar: ActionBarPayload | null;
 
   // Actions
   sendMessage: (attachments?: AttachmentInput[]) => Promise<void>;
@@ -180,84 +183,6 @@ export function useChatCore({
           setConnectionError({ message: err.message, at: Date.now() });
         },
         onEvent: (event: IncomingEvent) => {
-          // --- Method call tracking ---
-          if (event.type === "method-call") {
-            const e = event as { callId: string; methodName: string; senderId: string; providerId?: string; args?: unknown; ts: number };
-            // Look up method description from roster's advertised methods.
-            let description: string | undefined;
-            const provider = allParticipantsRef.current[e.providerId ?? e.senderId];
-            if (provider?.metadata) {
-              const methods = (provider.metadata as Record<string, unknown>)["methods"];
-              if (Array.isArray(methods)) {
-                const m = methods.find((m: unknown) => (m as { name?: string })?.name === e.methodName);
-                if (m) description = (m as { description?: string }).description;
-              }
-            }
-            const isLocal = (e.providerId ?? e.senderId) === selfIdRef.current;
-            setMethodEntries((prev) => {
-              const next = new Map(prev);
-              next.set(e.callId, {
-                callId: e.callId,
-                methodName: e.methodName,
-                description,
-                args: e.args,
-                status: "pending",
-                startedAt: e.ts,
-                providerId: e.providerId ?? e.senderId,
-                callerId: e.senderId,
-                handledLocally: isLocal,
-              });
-              // Auto-prune if over limit
-              if (next.size > METHOD_HISTORY_MAX) {
-                const entries = [...next.entries()];
-                const completed = entries.filter(([, v]) => v.status !== "pending");
-                if (completed.length > 0) {
-                  const toRemove = completed.slice(0, next.size - METHOD_HISTORY_PRUNE_TO);
-                  for (const [k] of toRemove) next.delete(k);
-                }
-              }
-              return next;
-            });
-          }
-
-          // --- Method result tracking (with console/progress streaming) ---
-          if (event.type === "method-result") {
-            const e = event as IncomingMethodResult;
-            setMethodEntries((prev) => {
-              const existing = prev.get(e.callId);
-              if (!existing) return prev;
-              const next = new Map(prev);
-
-              // Progress update
-              if ((e as { progress?: number }).progress !== undefined) {
-                next.set(e.callId, { ...existing, progress: (e as { progress?: number }).progress });
-              }
-
-              // Console chunk (type: "console" content)
-              const content = e.content as Record<string, unknown> | undefined;
-              const isConsoleChunk = !!content && content["type"] === "console" && typeof content["content"] === "string";
-              if (isConsoleChunk) {
-                const line = content["content"] as string;
-                const consoleOutput = existing.consoleOutput ? `${existing.consoleOutput}\n${line}` : line;
-                next.set(e.callId, { ...existing, consoleOutput });
-                return next;
-              }
-
-              // Final completion
-              if (e.complete) {
-                if (e.isError) {
-                  let errorMessage = "Method execution failed";
-                  if (typeof e.content === "string") errorMessage = e.content;
-                  else if (content && typeof content["error"] === "string") errorMessage = content["error"] as string;
-                  next.set(e.callId, { ...existing, status: "error", error: errorMessage, completedAt: Date.now() });
-                } else {
-                  next.set(e.callId, { ...existing, status: "success", result: e.content, completedAt: Date.now() });
-                }
-              }
-              return next;
-            });
-          }
-
           // --- Agent debug signal events ---
           if (event.type === "agent-debug") {
             const payload = (event as { payload: AgentDebugPayload }).payload;
@@ -317,7 +242,6 @@ export function useChatCore({
   const dismissConnectionError = useCallback(() => setConnectionError(null), []);
   const [selfId, setSelfId] = useState<string | null>(null);
   const [participants, setParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
-  const [methodEntries, setMethodEntries] = useState<Map<string, MethodHistoryEntry>>(new Map());
   const [debugEvents, setDebugEvents] = useState<Array<AgentDebugPayload & { ts: number }>>([]);
   const [dirtyRepoWarnings, setDirtyRepoWarnings] = useState<Map<string, DirtyRepoDetails>>(new Map());
   const [pendingAgents, setPendingAgents] = useState<Map<string, PendingAgent>>(new Map());
@@ -341,23 +265,20 @@ export function useChatCore({
   // --- Channel messages subscription ---
   const {
     messages: channelMessages,
+    actionBar: channelActionBar,
     hasMoreHistory: channelHasMore,
     loadingMore: channelLoadingMore,
     loadEarlierMessages: channelLoadEarlier,
+    backfillAfterLocalPublish,
   } = useChannelMessages(client);
-
-  // --- Optimistic local messages (shown immediately on send, reconciled on server echo) ---
-  const [optimisticMessages, setOptimisticMessages] = useState<ChatMessage[]>([]);
 
   // --- Disconnect system messages (injected from roster changes) ---
   const [disconnectMessages, setDisconnectMessages] = useState<ChatMessage[]>([]);
 
-  // Merge: channel messages + optimistic (filtered to remove echoed ones) + disconnect system messages.
+  // Merge channel-derived transcript messages with local non-transcript system notices.
   const messages = useMemo(() => {
-    const channelIds = new Set(channelMessages.map((m) => m.id));
-    const pendingOptimistic = optimisticMessages.filter((m) => !channelIds.has(m.id));
-    return [...channelMessages, ...pendingOptimistic, ...disconnectMessages];
-  }, [channelMessages, optimisticMessages, disconnectMessages]);
+    return [...channelMessages, ...disconnectMessages];
+  }, [channelMessages, disconnectMessages]);
 
   useEffect(() => {
     if (messages.length > 0) {
@@ -506,45 +427,6 @@ export function useChatCore({
     };
   }, [connection]);
 
-  // --- Method history ---
-  const addMethodHistoryEntry = useCallback((entry: MethodHistoryEntry) => {
-    setMethodEntries((prev) => {
-      const next = new Map(prev);
-      next.set(entry.callId, entry);
-      return next;
-    });
-  }, []);
-
-  const updateMethodHistoryEntry = useCallback((callId: string, updates: Partial<MethodHistoryEntry>) => {
-    setMethodEntries((prev) => {
-      const next = new Map(prev);
-      const existing = next.get(callId);
-      if (existing) next.set(callId, { ...existing, ...updates });
-      return next;
-    });
-  }, []);
-
-  const handleMethodResult = useCallback((result: IncomingMethodResult) => {
-    setMethodEntries((prev) => {
-      const next = new Map(prev);
-      const existing = next.get(result.callId);
-      if (existing) {
-        next.set(result.callId, {
-          ...existing,
-          status: result.isError ? "error" : "success",
-          result: result.content,
-          error: result.isError ? String(result.content ?? "") : undefined,
-          completedAt: Date.now(),
-        });
-      }
-      return next;
-    });
-  }, []);
-
-  const clearMethodHistory = useCallback(() => {
-    setMethodEntries(new Map());
-  }, []);
-
   // --- Typing indicators (signal, roster-based) ---
   const typingActiveRef = useRef(false);
 
@@ -563,7 +445,7 @@ export function useChatCore({
     void stopTyping().catch(() => {});
   }, [stopTyping]);
 
-  // --- Send message (with optimistic local rendering) ---
+  // --- Send message ---
   const sendMessage = useCallback(async (attachments?: AttachmentInput[]): Promise<void> => {
     const currentInput = inputRef.current;
     const hasText = currentInput.trim().length > 0;
@@ -574,12 +456,12 @@ export function useChatCore({
     inputRef.current = "";
     void stopTyping().catch(() => {});
     try {
-      const { messageId } = await clientRef.current.send(text || "", {
+      const hadPriorTranscriptMessages = hasTranscriptMessagesRef.current;
+      const { pubsubId } = await clientRef.current.send(text || "", {
         attachments: hasAttachments ? attachments : undefined,
       });
-      const hasPriorMessages =
-        hasTranscriptMessagesRef.current || ((clientRef.current.chatMessageCount ?? 0) > 0);
-      const defaultTitle = !defaultTitleSetRef.current && !hasPriorMessages
+      await backfillAfterLocalPublish(pubsubId);
+      const defaultTitle = !defaultTitleSetRef.current && !hadPriorTranscriptMessages
         ? titleFromFirstUserMessage(text)
         : null;
       if (defaultTitle) {
@@ -587,42 +469,29 @@ export function useChatCore({
         document.title = defaultTitle;
         void clientRef.current.updateChannelConfig({ title: defaultTitle }).catch(() => {});
       }
-      // Insert optimistic local message (include attachments for image-only sends)
-      const selfId = selfIdRef.current ?? config.clientId;
-      const optimisticAttachments = hasAttachments
-        ? attachments!.map((a) => ({ id: crypto.randomUUID(), ...a }))
-        : undefined;
-      setOptimisticMessages((prev) => {
-        if (prev.some((m) => m.id === messageId)) return prev;
-        return [...prev, {
-          id: messageId,
-          senderId: selfId,
-          content: text,
-          kind: "message",
-          complete: true,
-          pending: true,
-          attachments: optimisticAttachments as ChatMessage["attachments"],
-          senderMetadata: { name: metadata.name, type: metadata.type, handle: metadata.handle },
-        }];
-      });
     } catch (err) {
       setInput(text);
       inputRef.current = text;
       console.error("[Chat] Send failed, draft restored:", err);
       throw err;
     }
-  }, [config.clientId, metadata, stopTyping]);
+  }, [backfillAfterLocalPublish, stopTyping]);
 
   // --- Auto-send initial prompt once connected ---
-  const initialPromptCaptured = useRef(initialPrompt);
   const initialPromptSentRef = useRef(false);
   useEffect(() => {
-    const prompt = initialPromptCaptured.current;
-    if (!prompt || !connected || !client || initialPromptSentRef.current) return;
+    if (!client) return;
+    const hasPriorMessages = hasTranscriptMessagesRef.current;
+    const prompt = initialPrompt;
+    if (!prompt || !shouldAutoSendInitialPrompt({
+      prompt,
+      connected,
+      alreadySent: initialPromptSentRef.current,
+      hasPriorMessages,
+    })) {
+      return;
+    }
     initialPromptSentRef.current = true;
-    const hasPriorMessages =
-      hasTranscriptMessagesRef.current || ((client.chatMessageCount ?? 0) > 0);
-    if (hasPriorMessages) return;
 
     const defaultTitle = !defaultTitleSetRef.current
       ? titleFromFirstUserMessage(prompt)
@@ -635,8 +504,10 @@ export function useChatCore({
 
     client.send(prompt, {
       idempotencyKey: `initial-prompt:${channelName}`,
-    }).catch((err) => console.warn("[Chat] Failed to send initial prompt:", err));
-  }, [connected, client, channelName]);
+    })
+      .then(({ pubsubId }) => backfillAfterLocalPublish(pubsubId))
+      .catch((err) => console.warn("[Chat] Failed to send initial prompt:", err));
+  }, [backfillAfterLocalPublish, connected, client, channelName, initialPrompt]);
 
   // --- Load earlier messages (delegates to useChannelMessages pagination) ---
   const loadEarlierMessages = channelLoadEarlier;
@@ -746,11 +617,7 @@ export function useChatCore({
     hasMoreHistory: channelHasMore,
     loadingMore: channelLoadingMore,
     loadEarlierMessages,
-    methodEntries,
-    addMethodHistoryEntry,
-    updateMethodHistoryEntry,
-    handleMethodResult,
-    clearMethodHistory,
+    canonicalActionBar: channelActionBar,
     sendMessage,
     handleInterruptAgent,
     handleCallMethod,

@@ -4,9 +4,10 @@
  * Composes useChatCore + feature hooks (pending agents, feedback, tools,
  * debug, inline UI) into the full ChatContextValue.
  *
- * Roster tracking, pending agents, debug events, and dirty repo
- * warnings are now handled by SessionManager via useChatCore — the feature
- * hooks are retained as stubs for backward compatibility only.
+ * Roster tracking, pending agents, debug events, dirty repo warnings, and
+ * transcript projection are owned by useChatCore. Feature hooks here handle
+ * the remaining domain UX: feedback, tools, inline UI, action bars, and debug
+ * presentation.
  *
  * For minimal chat (no tools, no feedback, no debug), use useChatCore directly.
  */
@@ -16,6 +17,13 @@ import type { ChannelConfig, MethodDefinition, MethodExecutionContext } from "@w
 import { executeSandbox, ScopeManager, RpcScopePersistence } from "@workspace/eval";
 import type { SandboxOptions, SandboxResult, HydrateResult } from "@workspace/eval";
 import type { ActiveFeedbackSchema, FeedbackResult } from "@workspace/tool-ui";
+import {
+    AGENTIC_EVENT_PAYLOAD_KIND,
+    AGENTIC_PROTOCOL_VERSION,
+    type ActorKind,
+    type AgenticEvent,
+    type SandboxSourcePayload,
+} from "@workspace/agentic-protocol";
 import { useChatCore } from "./core/useChatCore";
 import { useChatFeedback } from "./features/useChatFeedback";
 import { useChatTools } from "./features/useChatTools";
@@ -39,6 +47,58 @@ function actionBarLoadKey(path: string, props: Record<string, unknown> | undefin
         propsKey = "[unserializable-props]";
     }
     return `${path}\n${propsKey}\n${maxHeight ?? ""}`;
+}
+
+function actorKindFromMetadata(type: string | undefined): ActorKind {
+    if (type === "agent" || type === "system" || type === "panel" || type === "external") return type;
+    return "user";
+}
+
+function actorForClient(clientId: string | undefined, metadata: ChatParticipantMetadata) {
+    const id = clientId ?? metadata.handle ?? "panel";
+    return {
+        kind: actorKindFromMetadata(metadata.type),
+        id,
+        displayName: metadata.name ?? id,
+        metadata: { ...metadata },
+    };
+}
+
+function parseInlineUiPayload(content: string): {
+    id: string;
+    source: SandboxSourcePayload;
+    imports?: Record<string, string>;
+    props?: Record<string, unknown>;
+} | null {
+    try {
+        const parsed = JSON.parse(content) as Record<string, unknown>;
+        const source = parsed["source"];
+        if (typeof parsed["id"] !== "string" || !source || typeof source !== "object") return null;
+        const sourceRecord = source as Record<string, unknown>;
+        const normalizedSource =
+            sourceRecord["type"] === "file" && typeof sourceRecord["path"] === "string"
+                ? { type: "file" as const, path: sourceRecord["path"] }
+                : sourceRecord["type"] === "code" && typeof sourceRecord["code"] === "string"
+                    ? { type: "code" as const, code: sourceRecord["code"] }
+                    : null;
+        if (!normalizedSource) return null;
+        const result: {
+            id: string;
+            source: SandboxSourcePayload;
+            imports?: Record<string, string>;
+            props?: Record<string, unknown>;
+        } = { id: parsed["id"], source: normalizedSource };
+        if (parsed["imports"] && typeof parsed["imports"] === "object" && !Array.isArray(parsed["imports"])) {
+            result.imports = parsed["imports"] as Record<string, string>;
+        }
+        if (parsed["props"] && typeof parsed["props"] === "object" && !Array.isArray(parsed["props"])) {
+            result.props = parsed["props"] as Record<string, unknown>;
+        }
+        return result;
+    }
+    catch {
+        return null;
+    }
 }
 export interface UseAgenticChatOptions {
     config: ConnectionConfig;
@@ -112,6 +172,17 @@ export function useAgenticChat({ config, channelName, channelConfig, contextId, 
         theme,
         initialPrompt,
     });
+    const publishTypedAgenticEvent = useCallback(async (
+        event: AgenticEvent,
+        options?: { idempotencyKey?: string },
+    ): Promise<number | undefined> => {
+        const client = core.clientRef.current;
+        if (!client)
+            return undefined;
+        return client.publish(AGENTIC_EVENT_PAYLOAD_KIND, event, {
+            idempotencyKey: options?.idempotencyKey ?? crypto.randomUUID(),
+        });
+    }, [core.clientRef]);
     // --- Mirror session-owned pending agents when provided ---
     useEffect(() => {
         if (pendingAgentInfos === undefined)
@@ -123,6 +194,36 @@ export function useAgenticChat({ config, channelName, channelConfig, contextId, 
         publish: (eventType: string, payload: unknown, opts?: {
             idempotencyKey?: string;
         }) => {
+            if (eventType === "message" && typeof payload === "object" && payload !== null) {
+                const record = payload as Record<string, unknown>;
+                const content = record["content"];
+                if (typeof content === "string") {
+                    if (record["contentType"] === "inline_ui") {
+                        const data = parseInlineUiPayload(content);
+                        if (data) {
+                            const eventPayload: AgenticEvent<"ui.inline_rendered">["payload"] = {
+                                protocol: AGENTIC_PROTOCOL_VERSION,
+                                uiType: "inline",
+                                id: data.id,
+                                source: data.source,
+                            };
+                            if (data.imports !== undefined) eventPayload.imports = data.imports;
+                            if (data.props !== undefined) eventPayload.props = data.props;
+                            return publishTypedAgenticEvent({
+                                kind: "ui.inline_rendered",
+                                actor: actorForClient(core.clientRef.current!.clientId, metadata),
+                                payload: eventPayload,
+                                createdAt: new Date().toISOString(),
+                            }, { idempotencyKey: opts?.idempotencyKey ?? `ui:inline:${data.id}` }) as Promise<unknown>;
+                        }
+                    }
+                    return core.clientRef.current!.send(content, {
+                        contentType: typeof record["contentType"] === "string" ? record["contentType"] : undefined,
+                        metadata: typeof record["kind"] === "string" ? { kind: record["kind"] } : undefined,
+                        idempotencyKey: opts?.idempotencyKey ?? crypto.randomUUID(),
+                    }).then((result) => result.pubsubId) as Promise<unknown>;
+                }
+            }
             // Auto-generate id for message payloads (required by PubSub protocol)
             if (eventType === "message" && typeof payload === "object" && payload !== null && !("id" in payload)) {
                 (payload as Record<string, unknown>)["id"] = crypto.randomUUID();
@@ -148,7 +249,7 @@ export function useAgenticChat({ config, channelName, channelConfig, contextId, 
         contextId: contextId ?? "",
         channelId: channelName,
         rpc: sandbox.rpc,
-    }), [contextId, channelName, sandbox.rpc]);
+    }), [contextId, channelName, sandbox.rpc, core.clientRef, metadata, publishTypedAgenticEvent]);
     // --- Bound executeSandbox with loadImport wired + scope enter/exit ---
     const boundExecuteSandbox = useCallback(async (code: string, opts: SandboxOptions = {}): Promise<SandboxResult> => {
         const mgr = scopeManagerRef.current;
@@ -171,8 +272,6 @@ export function useAgenticChat({ config, channelName, channelConfig, contextId, 
     const loadSourceFile = useCallback((path: string) => (sandboxRef.current.rpc.call("main", "fs.readFile", [path, "utf8"]) as Promise<string>), []);
     const loadImport = useCallback<NonNullable<SandboxOptions["loadImport"]>>((specifier, ref, externals) => (sandboxRef.current.loadImport(specifier, ref, externals)), []);
     const feedback = useChatFeedback({
-        addMethodHistoryEntry: core.addMethodHistoryEntry,
-        updateMethodHistoryEntry: core.updateMethodHistoryEntry,
         chat,
         loadImport,
         clientRef: core.clientRef,
@@ -194,8 +293,26 @@ export function useAgenticChat({ config, channelName, channelConfig, contextId, 
     const [actionBarData, setActionBarData] = useState<ActionBarData | null>(null);
     const actionBar = useActionBar({ data: actionBarData, loadSourceFile, loadImport });
     const lastLoadedActionBarKeyRef = useRef<string | null>(null);
+    useEffect(() => {
+        const canonical = core.canonicalActionBar;
+        if (!canonical?.source)
+            return;
+        const next: ActionBarData = {
+            id: canonical.id ?? "canonical-action-bar",
+            source: canonical.source,
+        };
+        if (canonical.imports !== undefined) next.imports = canonical.imports;
+        if (canonical.props !== undefined) next.props = canonical.props;
+        if (canonical.maxHeight !== undefined) next.maxHeight = canonical.maxHeight;
+        setActionBarData(next);
+        if (canonical.source.type === "file") {
+            lastLoadedActionBarKeyRef.current = actionBarLoadKey(canonical.source.path, canonical.props, canonical.maxHeight);
+        }
+    }, [core.canonicalActionBar]);
     const publishActionBarContext = useCallback(async (action: "loaded" | "cleared", payload: {
+        id?: string;
         path?: string;
+        imports?: Record<string, string>;
         props?: Record<string, unknown>;
         maxHeight?: number;
         ok: boolean;
@@ -205,26 +322,28 @@ export function useAgenticChat({ config, channelName, channelConfig, contextId, 
         const client = core.clientRef.current;
         if (!client)
             return;
-        const args = payload.path
-            ? { path: payload.path, props: payload.props, maxHeight: payload.maxHeight }
-            : { clear: true };
-        const result = payload.ok
-            ? { ok: true, panelLocal: true, action }
-            : { ok: false, panelLocal: true, action, error: payload.error };
-        const content = `Panel-local tool context: load_action_bar(${JSON.stringify(args)}) -> ` +
-            `${JSON.stringify(result)}. This action bar belongs to this chat panel's filesystem context. ` +
-            `Use load_action_bar to replace or clear it for this panel.`;
-        await client.publish("agent-context", {
-            id: crypto.randomUUID(),
-            kind: "action_bar",
-            content,
-            action,
-            args,
-            result,
+        const eventPayload: AgenticEvent<"ui.action_bar.updated">["payload"] = {
+            protocol: AGENTIC_PROTOCOL_VERSION,
+            uiType: "action_bar",
+            cleared: action === "cleared",
+            result: payload.ok
+                ? { ok: true }
+                : { ok: false, error: payload.error },
+        };
+        if (payload.id !== undefined) eventPayload.id = payload.id;
+        if (payload.path !== undefined) eventPayload.source = { type: "file", path: payload.path };
+        if (payload.imports !== undefined) eventPayload.imports = payload.imports;
+        if (payload.props !== undefined) eventPayload.props = payload.props;
+        if (payload.maxHeight !== undefined) eventPayload.maxHeight = payload.maxHeight;
+        await publishTypedAgenticEvent({
+            kind: "ui.action_bar.updated",
+            actor: actorForClient(client.clientId, metadata),
+            payload: eventPayload,
+            createdAt: new Date().toISOString(),
         }, {
-            idempotencyKey: payload.idempotencyKey ?? `agent-context:action-bar:${crypto.randomUUID()}`,
+            idempotencyKey: payload.idempotencyKey ?? `ui:action-bar:${crypto.randomUUID()}`,
         });
-    }, [core.clientRef]);
+    }, [core.clientRef, metadata, publishTypedAgenticEvent]);
     const loadActionBarFromFile = useCallback(async ({ path, props, maxHeight, imports, persistStateArgs = true, idempotencyKey, }: {
         path: string;
         props?: Record<string, unknown>;
@@ -251,7 +370,9 @@ export function useAgenticChat({ config, channelName, channelConfig, contextId, 
                 await onActionBarFileChange?.({ path: trimmedPath, props, maxHeight });
             }
             await publishActionBarContext("loaded", {
+                id,
                 path: trimmedPath,
+                imports,
                 props,
                 maxHeight,
                 ok: true,
@@ -263,6 +384,7 @@ export function useAgenticChat({ config, channelName, channelConfig, contextId, 
             const error = err instanceof Error ? err.message : String(err);
             await publishActionBarContext("loaded", {
                 path: trimmedPath,
+                imports,
                 props,
                 maxHeight,
                 ok: false,
@@ -311,7 +433,7 @@ export function useAgenticChat({ config, channelName, channelConfig, contextId, 
             props: initialActionBarProps,
             maxHeight: initialActionBarMaxHeight,
             persistStateArgs: false,
-            idempotencyKey: `agent-context:initial-action-bar:${channelName}:${loadKey}`,
+            idempotencyKey: `ui:initial-action-bar:${channelName}:${loadKey}`,
         });
     }, [
         channelName,
@@ -459,8 +581,20 @@ export default function App({ props, chat }) {
                                 return { ok: false, error: "Not connected" };
                             const id = crypto.randomUUID();
                             const source = trimmedPath ? { type: "file" as const, path: trimmedPath } : { type: "code" as const, code: code! };
-                            const data = JSON.stringify({ id, source, props });
-                            await client.publish("message", { id, content: data, contentType: "inline_ui" }, { idempotencyKey: `inline_ui:${id}` });
+                            const eventPayload: AgenticEvent<"ui.inline_rendered">["payload"] = {
+                                protocol: AGENTIC_PROTOCOL_VERSION,
+                                uiType: "inline",
+                                id,
+                                source,
+                            };
+                            if (imports !== undefined) eventPayload.imports = imports;
+                            if (props !== undefined) eventPayload.props = props;
+                            await publishTypedAgenticEvent({
+                                kind: "ui.inline_rendered",
+                                actor: actorForClient(client.clientId, metadata),
+                                payload: eventPayload,
+                                createdAt: new Date().toISOString(),
+                            }, { idempotencyKey: `ui:inline:${id}` });
                             return { ok: true, id };
                         },
                     },
@@ -589,18 +723,7 @@ Use package imports available to inline_ui plus relative imports for local helpe
                                     },
                                 ];
                             }
-                            // Track in method history (best-effort, for observability).
-                            const coreRef = core;
-                            coreRef.addMethodHistoryEntry({
-                                callId: ctx.callId,
-                                methodName: "ui_prompt",
-                                description: `Extension UI prompt (${kind})`,
-                                args,
-                                status: "pending",
-                                startedAt: Date.now(),
-                                callerId: ctx.callerId,
-                                handledLocally: true,
-                            });
+                            void ctx;
                             const fb = feedbackRef.current;
                             return new Promise<string | boolean | undefined>((resolve) => {
                                 let settled = false;
@@ -609,11 +732,7 @@ Use package imports available to inline_ui plus relative imports for local helpe
                                         return;
                                     settled = true;
                                     fb.removeFeedback(ctx.callId);
-                                    coreRef.updateMethodHistoryEntry(ctx.callId, {
-                                        status: "success",
-                                        result: historyResult,
-                                        completedAt: Date.now(),
-                                    });
+                                    void historyResult;
                                     resolve(value);
                                 };
                                 const entry: ActiveFeedbackSchema = {
@@ -672,10 +791,21 @@ Use package imports available to inline_ui plus relative imports for local helpe
                     const hasDegradation = hr.partial.length > 0 || hr.lost.length > 0;
                     const hint = hasDegradation ? " Functions and class instances don't survive reload — re-create them with eval if needed." : "";
                     const scopeMsgId = crypto.randomUUID();
-                    core.clientRef.current!.publish("message", {
-                        id: scopeMsgId,
-                        content: `Scope refreshed (panel session restarted). ${parts.join(". ")}.${hint}`,
-                        kind: "system",
+                    const client = core.clientRef.current!;
+                    await publishTypedAgenticEvent({
+                        kind: "message.completed",
+                        actor: {
+                            kind: "system",
+                            id: client.clientId ?? "system",
+                            displayName: "System",
+                        },
+                        causality: { messageId: scopeMsgId as never },
+                        payload: {
+                            protocol: AGENTIC_PROTOCOL_VERSION,
+                            role: "system",
+                            content: `Scope refreshed (panel session restarted). ${parts.join(". ")}.${hint}`,
+                        },
+                        createdAt: new Date().toISOString(),
                     }, { idempotencyKey: `scope_hydrate:${scopeMsgId}` });
                 }
             }
@@ -696,6 +826,8 @@ Use package imports available to inline_ui plus relative imports for local helpe
         core.clientRef,
         clearActionBar,
         loadActionBarFromFile,
+        metadata,
+        publishTypedAgenticEvent,
     ]);
     // --- Wrap platform actions ---
     const handleAddAgent = useCallback(async (agentId?: string) => {
@@ -709,7 +841,7 @@ Use package imports available to inline_ui plus relative imports for local helpe
             return;
         await actions.onRemoveAgent(channelName, handle);
     }, [channelName, actions]);
-    const sessionEnabled = true; // Always persistent — messages stored in PubSub messageStore
+    const sessionEnabled = true; // Always persistent: transcript state is projected from the durable PubSub log.
     const onAddAgent = actions?.onAddAgent ? handleAddAgent : undefined;
     const availableAgents = actions?.availableAgents;
     const onRemoveAgent = actions?.onRemoveAgent ? handleRemoveAgent : undefined;
@@ -728,7 +860,6 @@ Use package imports available to inline_ui plus relative imports for local helpe
         scopes: scopesApi,
         scopeManager: scopeManagerRef.current,
         messages: core.messages,
-        methodEntries: core.methodEntries,
         inlineUiComponents: inlineUi.inlineUiComponents,
         actionBar: actionBar.actionBar,
         onActionBarMaxHeightChange: updateActionBarMaxHeight,
@@ -759,7 +890,7 @@ Use package imports available to inline_ui plus relative imports for local helpe
     }), [
         core.connected, core.status, core.connectionError, core.dismissConnectionError,
         channelName, sessionEnabled, chat,
-        core.messages, core.methodEntries, inlineUi.inlineUiComponents, actionBar.actionBar, updateActionBarMaxHeight, core.hasMoreHistory, core.loadingMore,
+        core.messages, inlineUi.inlineUiComponents, actionBar.actionBar, updateActionBarMaxHeight, core.hasMoreHistory, core.loadingMore,
         core.participants, core.allParticipants,
         core.debugEvents, debug.debugConsoleAgent, core.dirtyRepoWarnings, core.pendingAgents,
         feedback.activeFeedbacks, theme,

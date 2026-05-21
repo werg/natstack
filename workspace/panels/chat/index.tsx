@@ -118,6 +118,8 @@ interface ChatStateArgs {
   systemPrompt?: string;
   /** How systemPrompt interacts with NatStack base, workspace prompt, and skills */
   systemPromptMode?: "append" | "replace-natstack" | "replace";
+  /** Extra subscription config for custom/test agents */
+  agentConfig?: Record<string, unknown>;
   /** Context-relative TSX file to load into the panel-local action bar */
   actionBarFile?: string | null;
   /** Props for actionBarFile */
@@ -213,7 +215,10 @@ export default function ChatPanel() {
 
     void setStateArgs({ channelName, contextId: resolvedContextId, pendingAgents: pending });
 
-    const subscribeConfig: Record<string, unknown> = { handle: baseHandle };
+    const subscribeConfig: Record<string, unknown> = {
+      ...(stateArgs.agentConfig ?? {}),
+      handle: baseHandle,
+    };
     if (stateArgs.systemPrompt) subscribeConfig["systemPrompt"] = stateArgs.systemPrompt;
     if (stateArgs.systemPromptMode) subscribeConfig["systemPromptMode"] = stateArgs.systemPromptMode;
     createAndSubscribeAgent({
@@ -234,6 +239,7 @@ export default function ChatPanel() {
     resolvedContextId,
     stateArgs.agentClass,
     stateArgs.agentSource,
+    stateArgs.agentConfig,
     stateArgs.channelName,
     stateArgs.systemPrompt,
     stateArgs.systemPromptMode,
@@ -296,7 +302,10 @@ export default function ChatPanel() {
         }
 
         for (const agent of pendingList) {
-          const subscribeConfig: Record<string, unknown> = { handle: agent.handle };
+          const subscribeConfig: Record<string, unknown> = {
+            ...(stateArgs.agentConfig ?? {}),
+            handle: agent.handle,
+          };
           if (stateArgs.systemPrompt) subscribeConfig["systemPrompt"] = stateArgs.systemPrompt;
           if (stateArgs.systemPromptMode) subscribeConfig["systemPromptMode"] = stateArgs.systemPromptMode;
           try {
@@ -317,7 +326,7 @@ export default function ChatPanel() {
         console.warn(`[ChatPanel] Rehydration agent check failed:`, err);
       }
     })();
-  }, [stateArgs.channelName, resolvedContextId]);
+  }, [stateArgs.channelName, resolvedContextId, stateArgs.agentConfig]);
 
   // Build ConnectionConfig from runtime
   const config: ConnectionConfig = {

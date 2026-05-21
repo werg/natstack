@@ -33,6 +33,11 @@ External extensions clone into the same tree at install time. There is no per-us
   },
   "dependencies": {
     "@workspace/runtime": "workspace:*"
+  },
+  "pnpm": {
+    "overrides": {
+      "problem-dependency": "1.2.3"
+    }
   }
 }
 ```
@@ -48,6 +53,17 @@ External extensions clone into the same tree at install time. There is no per-us
 | `natstack.sourcemap` | Must be `true` in v1 (inline maps; the build refuses to disable them). |
 | `natstack.extension` | Block presence marks the unit as an extension. Must be the only kind-block (no `natstack.worker` or `natstack.panel` alongside it). |
 | `natstack.extension.activationEvents` | Only `["*"]` is accepted in v1 (eager activation). Other values fail validation. |
+
+### Dependency overrides
+
+Extensions may declare package-local dependency pins with top-level `overrides`
+in their `package.json`. BuildV2 forwards simple string overrides from the
+extension and its transitive workspace packages into generated external-deps and
+extension-runtime dependency installs. Use this for broken transitive npm
+versions, missing registry versions, or urgent security pins.
+
+Overrides are part of the runtime dependency cache key, so changing one creates
+a fresh install.
 
 ### Optional fields
 

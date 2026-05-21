@@ -5,6 +5,7 @@ export interface ChatStateArgs {
   pendingAgents?: Array<{ agentId: string; handle: string }>;
   agentSource?: string;
   agentClass?: string;
+  agentConfig?: Record<string, unknown>;
   initialPrompt?: string;
   systemPrompt?: string;
   systemPromptMode?: "append" | "replace-natstack" | "replace";

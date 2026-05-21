@@ -1,5 +1,5 @@
 import React, { useCallback } from "react";
-import { Box, Card, Flex, IconButton, Text } from "@radix-ui/themes";
+import { Badge, Box, Card, Code, Flex, IconButton, Text } from "@radix-ui/themes";
 import { CopyIcon, CheckIcon } from "@radix-ui/react-icons";
 import { CONTENT_TYPE_INLINE_UI, isClientParticipantType } from "@workspace/pubsub";
 import { TypingIndicator } from "./TypingIndicator";
@@ -66,7 +66,7 @@ export const MessageCard = React.memo(function MessageCard({
 
   // Handle inline_ui messages
   if (msg.contentType === CONTENT_TYPE_INLINE_UI) {
-    const data = parseInlineUiData(msg.content);
+    const data = msg.inlineUi ?? parseInlineUiData(msg.content);
     if (data) {
       const compiled = inlineUiComponents?.get(data.id);
       return (
@@ -96,6 +96,46 @@ export const MessageCard = React.memo(function MessageCard({
           onFocusPanel={onFocusPanel}
           onReloadPanel={onReloadPanel}
         />
+      </Box>
+    );
+  }
+
+  if (msg.contentType === "approval" && msg.approval) {
+    const approval = msg.approval;
+    const color = approval.status === "granted"
+      ? "green"
+      : approval.status === "denied"
+        ? "red"
+        : "amber";
+    const title = approval.status === "granted"
+      ? "Approved"
+      : approval.status === "denied"
+        ? "Denied"
+        : "Approval requested";
+    return (
+      <Box
+        key={key}
+        className="message-row message-row-agent"
+      >
+        <Card className="message-card">
+          <Flex direction="column" gap="2">
+            <Flex align="center" gap="2" wrap="wrap">
+              <Badge color={color} size="1" variant="soft">
+                {title}
+              </Badge>
+            </Flex>
+            {approval.question && (
+              <Text size="2" style={{ whiteSpace: "pre-wrap" }}>
+                {approval.question}
+              </Text>
+            )}
+            {approval.reason && (
+              <Text size="1" color={color} style={{ whiteSpace: "pre-wrap" }}>
+                {approval.reason}
+              </Text>
+            )}
+          </Flex>
+        </Card>
       </Box>
     );
   }

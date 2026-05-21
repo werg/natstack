@@ -18,7 +18,7 @@ Generated from `runtimeSurface.worker.ts`. Use `await help()` at runtime for the
 | `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `delete`, `setInitPanels`, `setConfigField`, `switchTo`, `units` |  |
 | `credentials` | namespace | `store`, `connect`, `configureClient`, `requestCredentialInput`, `getClientConfigStatus`, `deleteClientConfig`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl`, `gitHttp` |  |
 | `git` | namespace | `http`, `importProject`, `completeWorkspaceDependencies`, `setSharedRemote`, `removeSharedRemote`, `client` |  |
-| `gad` | namespace | `rawSql`, `query`, `status`, `ensureBlob`, `ensurePiBranch`, `getPiBranchHead`, `appendPiEntryBatch`, `appendGadEvents`, `listGadEvents`, `setBranchHead`, `getEntryById`, `getBranchPath`, `findEntries`, `materializePiMessages`, `listGadBranchToolCalls`, `forkPiBranch`, `listPiBranches`, `listGadBranchFiles`, `diffGadStates`, `readGadFileAtState`, `getGadToolProvenance`, `getGadStateProducer`, `blameGadFileSnippet`, `enqueueGadIndexJob`, `processGadIndexJobs`, `claimGadIndexJobs`, `completeGadIndexJob`, `failGadIndexJob`, `listGadIndexJobs`, `validateGadHashes`, `clearDirtyAfterValidation`, `checkGadIntegrity`, `replayGadEvents` |  |
+| `gad` | namespace | `rawSql`, `query`, `status`, `ensureBlob`, `getTrajectoryBranchHead`, `appendTrajectoryBatch`, `listTrajectoryEvents`, `appendChannelEnvelope`, `getChannelEnvelope`, `getTrajectoryForEnvelope`, `listPublishedEnvelopesForTrajectory`, `getEnvelopesForTrajectory`, `getPublishedArtifactsForTurn`, `getPrivateLineageForPublishedEnvelope`, `getDownstreamConsumers`, `getChannelReplayWindow`, `listChannelEnvelopesAfter`, `listChannelEnvelopesBefore`, `getInitialChannelWindow`, `listChannelEnvelopes`, `listGadBranchFiles`, `diffGadStates`, `readGadFileAtState`, `getGadStateProducer`, `blameGadFileSnippet`, `validateGadHashes`, `clearDirtyAfterValidation`, `checkGadIntegrity`, `rebuildTrajectoryProjections` |  |
 | `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
 | `extensions` | namespace | `use`, `useWithStreams`, `streamCall`, `on`, `list`, `install`, `uninstall`, `setEnabled`, `update`, `reload` |  |
 | `approvals` | namespace | `request`, `revoke`, `list` |  |
@@ -48,6 +48,12 @@ Workspace-level singletons, services, and HTTP routes live in
 `workspace/meta/natstack.yml`. Resolve services by name/protocol through
 `workers.resolveService(...)`; do not hardcode `workers/foo`, DO class names,
 or `/_r/w/...` paths in callers.
+
+Worker packages may declare simple string overrides in top-level `overrides`.
+BuildV2 forwards those overrides, plus overrides from transitive workspace
+packages, into generated external-deps installs. Prefer package-local overrides
+for broken or missing transitive npm versions; changing an override invalidates
+the dependency cache.
 
 **Durable Object-backed service** — add to `workspace/meta/natstack.yml`:
 

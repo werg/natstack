@@ -6,7 +6,6 @@ import { InlineGroup, type InlineItem } from "./InlineGroup";
 import { NewContentIndicator } from "./NewContentIndicator";
 import { MessageCard } from "./MessageCard";
 import type { ChatMessage, ChatParticipantMetadata, InlineUiComponentEntry } from "../types";
-import type { ToolCallPayload } from "@workspace/agentic-core";
 import type { MdxActionHandlers } from "./markdownComponents";
 
 // Grouped item types produced by the grouping logic
@@ -16,35 +15,43 @@ type GroupedItem =
 
 // --- Grouping helper functions (module-level for reuse by fast paths) ---
 
-type InlineItemType = "thinking" | "toolCall";
+type InlineItemType = "thinking" | "invocation" | "typing";
 
 function getInlineItemType(msg: ChatMessage): InlineItemType | null {
   if (msg.contentType === "thinking") return "thinking";
-  if (msg.contentType === "toolCall") return "toolCall";
+  if (msg.contentType === "invocation") return "invocation";
+  if (msg.contentType === "typing") return "typing";
   return null;
 }
 
-const FALLBACK_TOOLCALL_PAYLOAD: ToolCallPayload = {
-  id: "",
-  name: "tool",
-  arguments: {},
-  execution: { status: "pending", description: "" },
-};
+function isTypingMessage(msg: ChatMessage): boolean {
+  return msg.contentType === "typing";
+}
 
 /** Transform an inline group's messages into InlineItem[] */
 function buildInlineItems(
   items: Array<{ msg: ChatMessage; index: number }>,
 ): InlineItem[] {
-  return items.map(({ msg }) => {
-    if (msg.contentType === "toolCall") {
-      // `msg.toolCall` is populated by the shared merge helper. Fall back
-      // only if the payload failed to parse — the pill should still render.
-      const payload = msg.toolCall ?? FALLBACK_TOOLCALL_PAYLOAD;
+  return items.flatMap(({ msg }) => {
+    if (msg.contentType === "invocation") {
+      if (!msg.invocation) return [];
       return {
-        type: "toolCall" as const,
+        type: "invocation" as const,
         id: msg.id,
-        toolCall: payload,
+        invocation: msg.invocation,
         complete: msg.complete ?? false,
+      };
+    }
+    if (msg.contentType === "typing") {
+      return {
+        type: "typing" as const,
+        id: msg.id,
+        data: {
+          senderId: msg.senderId,
+          senderName: msg.senderMetadata?.name,
+          senderType: msg.senderMetadata?.type,
+        },
+        senderId: msg.senderId,
       };
     }
     return {
@@ -56,6 +63,21 @@ function buildInlineItems(
   });
 }
 
+function pushInlineGroup(
+  result: GroupedItem[],
+  items: Array<{ msg: ChatMessage; index: number }>,
+): void {
+  if (items.length === 0) return;
+  const inlineItems = buildInlineItems(items);
+  if (inlineItems.length === 0) return;
+  result.push({
+    type: "inline-group",
+    items,
+    inlineItems,
+    key: `inline-group-${items[0]!.msg.id || items[0]!.index}`,
+  });
+}
+
 /** Full grouping computation — scans all messages from scratch */
 function fullGroupComputation(
   messages: ChatMessage[],
@@ -64,18 +86,22 @@ function fullGroupComputation(
   let currentInlineGroup: Array<{ msg: ChatMessage; index: number }> = [];
 
   messages.forEach((msg, index) => {
+    if (isTypingMessage(msg)) {
+      if (currentInlineGroup.length > 0) {
+        pushInlineGroup(result, currentInlineGroup);
+        currentInlineGroup = [];
+      }
+      pushInlineGroup(result, [{ msg, index }]);
+      return;
+    }
+
     const inlineType = getInlineItemType(msg);
 
     if (inlineType !== null) {
       currentInlineGroup.push({ msg, index });
     } else {
       if (currentInlineGroup.length > 0) {
-        result.push({
-          type: "inline-group",
-          items: currentInlineGroup,
-          inlineItems: buildInlineItems(currentInlineGroup),
-          key: `inline-group-${currentInlineGroup[0]!.msg.id || currentInlineGroup[0]!.index}`,
-        });
+        pushInlineGroup(result, currentInlineGroup);
         currentInlineGroup = [];
       }
       result.push({ type: "message", msg, index });
@@ -83,22 +109,16 @@ function fullGroupComputation(
   });
 
   if (currentInlineGroup.length > 0) {
-    result.push({
-      type: "inline-group",
-      items: currentInlineGroup,
-      inlineItems: buildInlineItems(currentInlineGroup),
-      key: `inline-group-${currentInlineGroup[0]!.msg.id || currentInlineGroup[0]!.index}`,
-    });
+    pushInlineGroup(result, currentInlineGroup);
   }
 
   return result;
 }
 
 /**
- * Build typing indicator items from the current roster.
- * Participants with `metadata.typing === true` are shown as typing.
- * When a participant leaves the channel, they disappear from the roster
- * and the typing indicator is automatically gone — no cleanup needed.
+ * Roster fallback for participants that expose ephemeral typing metadata.
+ * Durable `turn.opened` / `turn.closed` events are projected into
+ * `contentType: "typing"` messages and take precedence for agent turns.
  */
 function buildActiveTypingItems(
   participants: Record<string, Participant<ChatParticipantMetadata>>,
@@ -359,12 +379,17 @@ export const MessageList = React.memo(function MessageList({
             const result = cache.result.slice();
             const updatedItems = lastItem.items.slice();
             updatedItems[updatedItems.length - 1] = { msg: lastMsg, index: messages.length - 1 };
-            result[result.length - 1] = {
-              type: "inline-group",
-              items: updatedItems,
-              inlineItems: buildInlineItems(updatedItems),
-              key: lastItem.key,
-            };
+            const inlineItems = buildInlineItems(updatedItems);
+            if (inlineItems.length > 0) {
+              result[result.length - 1] = {
+                type: "inline-group",
+                items: updatedItems,
+                inlineItems,
+                key: lastItem.key,
+              };
+            } else {
+              result.pop();
+            }
             prevGroupCacheRef.current = { messages, result };
             return result;
           }
@@ -384,7 +409,7 @@ export const MessageList = React.memo(function MessageList({
         // Process only the new messages, potentially merging with the tail group
         let tailInlineGroup: Array<{ msg: ChatMessage; index: number }> | null = null;
         const lastCached = result[result.length - 1];
-        if (lastCached?.type === "inline-group") {
+        if (lastCached?.type === "inline-group" && !lastCached.items.some(({ msg }) => isTypingMessage(msg))) {
           // Pop the last inline group — new messages might extend it
           tailInlineGroup = lastCached.items.slice();
           result.pop();
@@ -392,7 +417,14 @@ export const MessageList = React.memo(function MessageList({
 
         for (let i = cache.messages.length; i < messages.length; i++) {
           const msg = messages[i]!;
-          if (msg.contentType === "typing") continue;
+          if (isTypingMessage(msg)) {
+            if (tailInlineGroup && tailInlineGroup.length > 0) {
+              pushInlineGroup(result, tailInlineGroup);
+              tailInlineGroup = null;
+            }
+            pushInlineGroup(result, [{ msg, index: i }]);
+            continue;
+          }
 
           const inlineType = getInlineItemType(msg);
           if (inlineType !== null) {
@@ -400,12 +432,7 @@ export const MessageList = React.memo(function MessageList({
             tailInlineGroup.push({ msg, index: i });
           } else {
             if (tailInlineGroup && tailInlineGroup.length > 0) {
-              result.push({
-                type: "inline-group",
-                items: tailInlineGroup,
-                inlineItems: buildInlineItems(tailInlineGroup),
-                key: `inline-group-${tailInlineGroup[0]!.msg.id || tailInlineGroup[0]!.index}`,
-              });
+              pushInlineGroup(result, tailInlineGroup);
               tailInlineGroup = null;
             }
             result.push({ type: "message", msg, index: i });
@@ -413,12 +440,7 @@ export const MessageList = React.memo(function MessageList({
         }
 
         if (tailInlineGroup && tailInlineGroup.length > 0) {
-          result.push({
-            type: "inline-group",
-            items: tailInlineGroup,
-            inlineItems: buildInlineItems(tailInlineGroup),
-            key: `inline-group-${tailInlineGroup[0]!.msg.id || tailInlineGroup[0]!.index}`,
-          });
+          pushInlineGroup(result, tailInlineGroup);
         }
 
         prevGroupCacheRef.current = { messages, result };
@@ -432,7 +454,11 @@ export const MessageList = React.memo(function MessageList({
     return result;
   }, [messages]);
 
-  const activeTypingItems = useMemo(() => buildActiveTypingItems(participants, selfId), [participants, selfId]);
+  const hasDurableTypingMessages = messages.some((msg) => msg.contentType === "typing");
+  const activeTypingItems = useMemo(
+    () => hasDurableTypingMessages ? [] : buildActiveTypingItems(participants, selfId),
+    [participants, selfId, hasDurableTypingMessages],
+  );
 
   // Refs for stable renderItem callback — avoids recreating the closure on every
   // groupedItems / copiedMessageId change, which would force every visible

@@ -13,7 +13,7 @@ import type { MethodDefinition } from "@workspace/pubsub";
 import type { RecoveryCoordinator } from "@natstack/shared/shell/recoveryCoordinator";
 import type { ScopesApi } from "@workspace/eval";
 import type { SandboxOptions, SandboxResult } from "@workspace/eval";
-import type { ChatMethodResult } from "./method-result.js";
+import type { ChatMethodResult } from "./invocation-result.js";
 
 // The canonical participant metadata shape lives in @workspace/pubsub so that
 // lower-level packages (like @workspace/agentic-do, which can't depend on
@@ -52,7 +52,7 @@ export interface ChatSandboxValue {
   publish: (eventType: string, payload: unknown, options?: { idempotencyKey?: string }) => Promise<unknown>;
   /** Call a participant method and resolve to the provider's result payload. */
   callMethod: (participantId: string, method: string, args: unknown) => Promise<unknown>;
-  /** Call a participant method and resolve to the full pubsub result envelope. */
+  /** Call a participant method and resolve to the full invocation result envelope. */
   callMethodResult: (participantId: string, method: string, args: unknown) => Promise<ChatMethodResult>;
   contextId: string;
   channelId: string | null;

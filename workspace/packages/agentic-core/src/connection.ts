@@ -5,12 +5,11 @@
  * Manages connect/disconnect, event loop, roster, reconnect.
  */
 
-import { connectViaRpc, isAggregatedEvent } from "@workspace/pubsub";
+import { connectViaRpc } from "@workspace/pubsub";
 import type {
   PubSubClient,
   RosterUpdate,
   IncomingEvent,
-  AggregatedEvent,
   MethodDefinition,
   ChannelConfig,
 } from "@workspace/pubsub";
@@ -20,7 +19,6 @@ export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "er
 
 export interface ConnectionCallbacks {
   onEvent?: (event: IncomingEvent) => void;
-  onAggregatedEvent?: (event: AggregatedEvent) => void;
   onRoster?: (roster: RosterUpdate<ChatParticipantMetadata>) => void;
   onError?: (error: Error) => void;
   onReconnect?: () => void;
@@ -129,11 +127,7 @@ export class ConnectionManager {
           for await (const event of eventIterator) {
             if (!eventLoopRunning) break;
             try {
-              if (isAggregatedEvent(event)) {
-                this.callbacks.onAggregatedEvent?.(event);
-              } else {
-                this.callbacks.onEvent?.(event as IncomingEvent);
-              }
+              this.callbacks.onEvent?.(event as IncomingEvent);
             } catch (callbackError) {
               console.error("[ConnectionManager] Event callback error:", callbackError);
             }

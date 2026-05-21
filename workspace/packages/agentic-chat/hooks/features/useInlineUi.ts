@@ -30,7 +30,7 @@ export function useInlineUi({ messages, loadSourceFile, loadImport }: UseInlineU
     const compileInlineUiMessages = async () => {
       for (const msg of messages) {
         if (msg.contentType !== CONTENT_TYPE_INLINE_UI) continue;
-        const data = parseInlineUiData(msg.content);
+        const data = msg.inlineUi ?? parseInlineUiData(msg.content);
         if (!data) continue;
         if (inlineUiComponents.has(data.id)) continue;
 
@@ -82,7 +82,7 @@ export function useInlineUi({ messages, loadSourceFile, loadImport }: UseInlineU
     const referencedUiIds = new Set<string>();
     for (const msg of messages) {
       if (msg.contentType === CONTENT_TYPE_INLINE_UI) {
-        const data = parseInlineUiData(msg.content);
+        const data = msg.inlineUi ?? parseInlineUiData(msg.content);
         if (data) referencedUiIds.add(data.id);
       }
     }

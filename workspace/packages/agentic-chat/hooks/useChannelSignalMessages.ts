@@ -6,10 +6,8 @@
  * ext-working). The returned messages are an array with
  * `{ ts, content, contentType }` shape compatible with `parseSignalEvent`.
  *
- * Uses `client.events({ includeSignals: true })` instead of
- * `client.messages()` because `messages()` is a single-consumer async
- * generator — multiple hooks calling it race on a shared queue and lose
- * messages. `events()` uses a fanout that supports multiple subscribers.
+ * Uses `client.events({ includeSignals: true })`, which fans out to multiple
+ * subscribers without sharing iterator state.
  */
 
 import { useState, useEffect } from "react";

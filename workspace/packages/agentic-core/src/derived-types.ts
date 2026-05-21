@@ -10,29 +10,36 @@
  */
 
 import type { Attachment } from "@workspace/pubsub";
-import type { ToolCallPayload } from "./tool-call-payload.js";
+import type { InvocationCardPayload } from "./invocation-card-payload.js";
 
-// ===========================================================================
-// Method history (still tracked from channel method-call/result events)
-// ===========================================================================
+export type SandboxSource =
+  | { type: "code"; code: string }
+  | { type: "file"; path: string };
 
-export type MethodCallStatus = "pending" | "success" | "error";
+export interface InlineUiCardPayload {
+  id: string;
+  source: SandboxSource;
+  imports?: Record<string, string>;
+  props?: Record<string, unknown>;
+}
 
-export interface MethodHistoryEntry {
-  callId: string;
-  methodName: string;
-  description?: string;
-  args: unknown;
-  status: MethodCallStatus;
-  consoleOutput?: string;
-  result?: unknown;
-  error?: string;
-  startedAt: number;
-  completedAt?: number;
-  providerId?: string;
-  callerId?: string;
-  handledLocally?: boolean;
-  progress?: number;
+export interface ActionBarPayload {
+  id?: string;
+  source?: SandboxSource;
+  imports?: Record<string, string>;
+  props?: Record<string, unknown>;
+  maxHeight?: number;
+  cleared?: boolean;
+  result?: { ok: boolean; error?: string };
+}
+
+export interface ApprovalCardPayload {
+  id: string;
+  invocationId?: string;
+  question?: string;
+  status: "requested" | "granted" | "denied";
+  granted?: boolean;
+  reason?: string;
 }
 
 // ===========================================================================
@@ -75,9 +82,7 @@ export interface DirtyRepoDetails {
 
 /**
  * Derived shape consumed by chat UI components. Computed by `useChatCore`
- * from a Pi `AgentMessage[]` snapshot. Each Pi message becomes one or more
- * ChatMessages depending on its content array (one for text, one for each
- * tool call/result, etc.).
+ * from channel envelopes and local UI events.
  */
 export interface ChatMessage {
   id: string;
@@ -90,14 +95,15 @@ export interface ChatMessage {
   replyTo?: string;
   error?: string;
   pending?: boolean;
-  method?: MethodHistoryEntry;
   attachments?: Attachment[];
   senderMetadata?: { name?: string; type?: string; handle?: string };
   disconnectedAgent?: DisconnectedAgentInfo;
   /**
-   * Parsed structured payload for channel messages with `contentType === "toolCall"`.
+   * Parsed structured payload for derived invocation-card messages.
    * Populated by the shared channel-chat-merge helper; UI components read it
    * directly instead of re-parsing `content`.
    */
-  toolCall?: ToolCallPayload;
+  invocation?: InvocationCardPayload;
+  inlineUi?: InlineUiCardPayload;
+  approval?: ApprovalCardPayload;
 }

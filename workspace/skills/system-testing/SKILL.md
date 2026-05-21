@@ -73,16 +73,15 @@ for (const m of fail.execution.messages) {
 }
 ```
 
-### Method history (every tool call + result)
+### Invocation cards (every tool call + result)
 
 See exactly what the test agent tried — eval calls, their code, return values, errors, timing:
 
 ```typescript
 if (fail.execution.snapshot) {
-  for (const mh of fail.execution.snapshot.methodHistory) {
-    const dur = mh.duration ? `${mh.duration}ms` : "pending";
-    console.log(`  [${mh.status}] ${mh.method} (${dur})`);
-    if (mh.error) console.log(`    Error: ${mh.error}`);
+  for (const inv of fail.execution.snapshot.invocations) {
+    console.log(`  [${inv.status}] ${inv.name}`);
+    if (inv.error) console.log(`    Error: ${inv.error}`);
   }
 }
 ```
@@ -146,7 +145,7 @@ Each test case:
 1. Spawns a fresh headless session (new channel + new AiChatWorker DO)
 2. Sends a natural-language prompt telling the test agent what to do
 3. Waits for the agent to become idle (debounce-based turn completion)
-4. Captures a full snapshot: messages, method history, debug events, participants
+4. Captures a full snapshot: messages, invocation diagnostics, debug events, participants
 5. Validates programmatically and returns structured results
 6. Closes the session
 

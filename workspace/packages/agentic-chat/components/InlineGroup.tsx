@@ -1,6 +1,6 @@
 import React, { useCallback, useState } from "react";
 import { Box, Flex } from "@radix-ui/themes";
-import type { ToolCallPayload } from "@workspace/agentic-core";
+import type { InvocationCardPayload } from "@workspace/agentic-core";
 import { ThinkingPill, ExpandedThinking } from "./ThinkingMessage";
 import { ActionPill, ExpandedAction } from "./ActionMessage";
 import { TypingPill } from "./TypingMessage";
@@ -10,7 +10,7 @@ const PREVIEW_MAX_LENGTH = 50;
 
 export type InlineItem =
   | { type: "thinking"; id: string; content: string; complete: boolean }
-  | { type: "toolCall"; id: string; toolCall: ToolCallPayload; complete: boolean }
+  | { type: "invocation"; id: string; invocation: InvocationCardPayload; complete: boolean }
   | { type: "typing"; id: string; data: TypingIndicatorData; senderId: string };
 
 interface InlineGroupProps {
@@ -64,12 +64,12 @@ export const InlineGroup = React.memo(function InlineGroup({ items, onInterrupt 
                   />
                 );
               }
-              case "toolCall":
+              case "invocation":
                 return (
                   <ActionPill
                     key={itemId}
                     id={itemId}
-                    payload={item.toolCall}
+                    payload={item.invocation}
                     onExpand={handleExpand}
                   />
                 );
@@ -95,9 +95,9 @@ export const InlineGroup = React.memo(function InlineGroup({ items, onInterrupt 
                 onCollapse={handleCollapse}
               />
             )}
-            {expandedItem.type === "toolCall" && (
+            {expandedItem.type === "invocation" && (
               <ExpandedAction
-                payload={expandedItem.toolCall}
+                payload={expandedItem.invocation}
                 onCollapse={handleCollapse}
               />
             )}

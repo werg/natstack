@@ -27,6 +27,11 @@ bare package imports from the nearest `package.json` when possible. Use
 `imports` for explicit package versions. Package-local aliases from
 `package.json` `imports` and simple `tsconfig.json` paths are supported.
 
+Inline UI is persisted as a typed `ui.inline_rendered` event in the PubSub
+channel log. Do not emulate it with `chat.publish("message", { contentType:
+"inline_ui" })`; use the `inline_ui` tool so the transcript, replay, and agent
+state all see the same canonical event.
+
 ## Component Rules
 
 - Components must `export default`.

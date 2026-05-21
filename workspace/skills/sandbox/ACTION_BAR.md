@@ -5,10 +5,11 @@ the current chat panel, above chat history and below the chat header. It is
 best for small workflow controls, current status, pinned next actions, and
 short-lived command palettes.
 
-`load_action_bar` is panel-local. It does not write a visible chat message and
-does not affect other chat panels connected to the same channel. Other panels
-may have different filesystem contexts, so always treat the loaded action bar
-as belonging only to the panel that exposes the tool.
+`load_action_bar` is panel-local. It does not write a visible chat message, but
+it does publish a typed durable UI event so the transcript system and agent can
+observe that an action bar was loaded or cleared. Other panels may have
+different filesystem contexts, so always treat the rendered action bar as
+belonging only to the panel that exposes the tool.
 
 ## File Format
 
@@ -65,6 +66,7 @@ Chat panels can be opened with an initial action bar via state args:
 }
 ```
 
-When a panel loads or clears an action bar, it records a hidden panel-local
-context note so the agent knows the action bar exists and can naturally replace
-or clear it later. This note is not rendered in chat history.
+When a panel loads or clears an action bar, the host records a typed
+`ui.action_bar.updated` event in the PubSub channel log. The event is not a chat
+bubble, but it is part of the canonical transcript data used by the panel and
+agent. Do not create separate hidden context notes for action bars.

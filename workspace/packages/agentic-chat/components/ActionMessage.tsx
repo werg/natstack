@@ -1,7 +1,7 @@
 import React, { useMemo } from "react";
 import { Badge, Box, Code, Flex, Spinner, Text } from "@radix-ui/themes";
 import { prettifyToolName } from "@workspace/pubsub";
-import type { ToolCallPayload } from "@workspace/agentic-core";
+import type { InvocationCardPayload } from "@workspace/agentic-core";
 import { ExpandableChevron } from "./shared/Chevron";
 import { CollapsibleSection } from "./shared/CollapsibleSection";
 import { JsonValue } from "./shared/JsonValue";
@@ -14,18 +14,22 @@ const STATUS_DOT_COLOR = {
   pending: "var(--gray-8)",
   complete: "var(--green-9)",
   error: "var(--red-9)",
+  cancelled: "var(--amber-9)",
+  abandoned: "var(--amber-9)",
 } as const;
 
-type StatusKey = "pending" | "complete" | "error";
+type StatusKey = "pending" | "complete" | "error" | "cancelled" | "abandoned";
 
-function getStatusKey(payload: ToolCallPayload): StatusKey {
+function getStatusKey(payload: InvocationCardPayload): StatusKey {
   const status = payload.execution.status;
   if (status === "pending") return "pending";
+  if (status === "cancelled") return "cancelled";
+  if (status === "abandoned") return "abandoned";
   return payload.execution.isError || status === "error" ? "error" : "complete";
 }
 
 function getStatusColor(sk: StatusKey): "red" | "amber" | "green" {
-  return sk === "error" ? "red" : sk === "pending" ? "amber" : "green";
+  return sk === "error" ? "red" : sk === "pending" || sk === "cancelled" || sk === "abandoned" ? "amber" : "green";
 }
 
 function StatusDot({ statusKey }: { statusKey: StatusKey }) {
@@ -50,7 +54,7 @@ export const ActionPill = React.memo(function ActionPill({
   onExpand,
 }: {
   id: string;
-  payload: ToolCallPayload;
+  payload: InvocationCardPayload;
   onExpand: (id: string) => void;
 }) {
   const statusKey = getStatusKey(payload);
@@ -61,10 +65,15 @@ export const ActionPill = React.memo(function ActionPill({
     () => formatArgsSummary(payload.arguments, 50),
     [payload.arguments],
   );
+  const displayName = useMemo(() => prettifyToolName(payload.name), [payload.name]);
 
   return (
     <Flex
       className="inline-action-pill"
+      data-testid="invocation-pill"
+      data-invocation-name={payload.name}
+      data-invocation-status={statusKey}
+      title={payload.name}
       align="center"
       gap="1"
       onClick={() => onExpand(id)}
@@ -80,7 +89,7 @@ export const ActionPill = React.memo(function ActionPill({
     >
       {isPending ? <Spinner size="1" /> : <StatusDot statusKey={statusKey} />}
       <Text className="inline-pill-label" size="1" color={color} weight="medium">
-        {prettifyToolName(payload.name)}
+        {displayName}
       </Text>
       {argsSummary && (
         <Text className="inline-pill-summary" size="1" color="gray" style={{
@@ -106,7 +115,7 @@ export const ExpandedAction = React.memo(function ExpandedAction({
   payload,
   onCollapse,
 }: {
-  payload: ToolCallPayload;
+  payload: InvocationCardPayload;
   onCollapse: () => void;
 }) {
   const statusKey = getStatusKey(payload);
@@ -118,6 +127,7 @@ export const ExpandedAction = React.memo(function ExpandedAction({
     () => formatArgsSummary(payload.arguments, 80),
     [payload.arguments],
   );
+  const displayName = useMemo(() => prettifyToolName(payload.name), [payload.name]);
 
   const exec = payload.execution;
   const hasArgs = Object.keys(payload.arguments).length > 0;
@@ -143,10 +153,10 @@ export const ExpandedAction = React.memo(function ExpandedAction({
         </Text>
         <StatusDot statusKey={statusKey} />
         <Text size="1" color={color} weight="medium">
-          {prettifyToolName(payload.name)}
+          {displayName}
         </Text>
         <Badge color={color} size="1" variant="soft">
-          {isError ? "error" : exec.status}
+          {exec.status}
         </Badge>
       </Flex>
 

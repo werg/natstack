@@ -1,39 +1,26 @@
 /**
  * useChannelMessages — React subscription to transcript channel messages.
  *
- * Replaces the Pi-snapshot-derived message path. The agent worker publishes
- * Pi events as real channel messages (text, thinking, action, image, inline_ui,
- * feedback_form, feedback_custom). This hook consumes them via `client.events()`
- * and builds the flat `ChatMessage[]` array for component rendering.
- *
- * Handles replay, live log messages, and live signal transcript
- * messages. Delivery controls storage/replay; content type controls
- * whether a message belongs in the transcript.
- *
- * Handles streaming:
- * - `type: "message"` → create a new ChatMessage
- * - `type: "update-message"` → update content / mark complete
- * - `type: "error"` → mark message as errored + complete
- * - `type: "execution-pause"` → mark streaming message as complete
- *
- * Supports pagination: caps visible messages at MAX_VISIBLE. When the user
- * scrolls up and requests earlier messages, fetches them via
- * `client.getChatReplayBefore()` and prepends to the visible window.
+ * Consumes canonical agentic trajectory events from opaque channel envelopes
+ * and reduces them into the flat ChatMessage[] array used by the transcript UI.
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { PubSubClient, ParticipantMetadata, Attachment } from "@workspace/pubsub";
-import { isClientParticipantType } from "@workspace/pubsub";
+import type { PubSubClient, ParticipantMetadata } from "@workspace/pubsub";
 import {
+  actionBarPayloadFromChannelView,
+  type ActionBarPayload,
   type ChatMessage,
-  createChatMessageFromWire,
-  applyChatMessageUpdate,
-  applyChatMessageError,
-  type WireNewMessage,
-  type WireUpdateMessage,
-  type WireErrorMessage,
+  chatMessagesFromChannelView,
 } from "@workspace/agentic-core";
-import { isTranscriptWireMessage } from "./transcriptRouting";
+import {
+  AGENTIC_EVENT_PAYLOAD_KIND,
+  createInitialChannelViewState,
+  reduceChannelView,
+  type AgenticEvent,
+  type ChannelEnvelope,
+  type ChannelViewState,
+} from "@workspace/agentic-protocol";
 
 /** Maximum messages in the visible window. New messages push oldest out. */
 const MAX_VISIBLE = 500;
@@ -42,9 +29,11 @@ const PAGE_SIZE = 100;
 
 export interface UseChannelMessagesResult {
   messages: ChatMessage[];
+  actionBar: ActionBarPayload | null;
   hasMoreHistory: boolean;
   loadingMore: boolean;
   loadEarlierMessages: () => Promise<void>;
+  backfillAfterLocalPublish: (pubsubId: number | undefined) => Promise<void>;
 }
 
 /**
@@ -55,6 +44,7 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
   client: PubSubClient<T> | null,
 ): UseChannelMessagesResult {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [actionBar, setActionBar] = useState<ActionBarPayload | null>(null);
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
 
@@ -65,6 +55,9 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
   // Track the lowest pubsubId we've seen (for pagination anchor).
   const oldestRootIdRef = useRef<number | null>(null);
   const clientRef = useRef(client);
+  const channelStateRef = useRef<ChannelViewState>(createInitialChannelViewState());
+  const agenticMessageIdsRef = useRef(new Set<string>());
+  const newestSeqRef = useRef<number | null>(null);
   clientRef.current = client;
 
   /**
@@ -90,7 +83,25 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
       setHasMoreHistory(true);
     }
     setMessages(order.map((id) => byId.get(id)!));
+    setActionBar(actionBarPayloadFromChannelView(channelStateRef.current));
   }, []);
+
+  const rebuildFromChannelState = useCallback((trimTail = false) => {
+    const byId = byIdRef.current;
+    const order = orderRef.current;
+    for (const id of agenticMessageIdsRef.current) {
+      byId.delete(id);
+      const index = order.indexOf(id);
+      if (index >= 0) order.splice(index, 1);
+    }
+    agenticMessageIdsRef.current.clear();
+    for (const msg of chatMessagesFromChannelView(channelStateRef.current)) {
+      if (!byId.has(msg.id)) order.push(msg.id);
+      byId.set(msg.id, msg);
+      agenticMessageIdsRef.current.add(msg.id);
+    }
+    flush(trimTail);
+  }, [flush]);
 
   useEffect(() => {
     if (!client) return;
@@ -100,6 +111,10 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
     byIdRef.current = byId;
     orderRef.current = order;
     oldestRootIdRef.current = null;
+    newestSeqRef.current = null;
+    channelStateRef.current = createInitialChannelViewState();
+    agenticMessageIdsRef.current = new Set();
+    setHasMoreHistory(Boolean(client.hasMoreBefore));
 
     const consume = async () => {
       try {
@@ -110,82 +125,31 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
             type?: string;
             delivery?: "log" | "signal";
             phase?: "replay" | "live";
-            id?: string;
-            messageId?: string;
             senderId?: string;
-            content?: string;
-            contentType?: string;
-            replyTo?: string;
-            complete?: boolean;
-            error?: string;
             pubsubId?: number;
-            status?: unknown;
-            attachments?: Attachment[];
             senderMetadata?: { name?: string; type?: string; handle?: string };
+            ts?: number;
+            payload?: AgenticEvent;
           };
 
-          if (wire.type === "message" && wire.id) {
-            const isReplay = wire.phase === "replay";
-            const isSignal = wire.delivery === "signal";
-            const isFromClient = isClientParticipantType(wire.senderMetadata?.type);
-
-            if (!isTranscriptWireMessage(wire)) {
-              continue;
-            }
-
-            const msg = createChatMessageFromWire(wire as WireNewMessage, {
-              isReplay,
-              isFromClient: isFromClient || isSignal,
+          if (wire.type === AGENTIC_EVENT_PAYLOAD_KIND && wire.payload) {
+            const envelope = pubsubAgenticEventToEnvelope(client.channelId, {
+              pubsubId: wire.pubsubId,
+              senderId: wire.senderId,
+              ts: wire.ts,
+              senderMetadata: wire.senderMetadata,
+              payload: wire.payload,
             });
-
-            if (!byId.has(wire.id)) {
-              order.push(wire.id);
-            }
-            byId.set(wire.id, msg);
-
-            // Track lowest chat-root pubsubId for pagination anchor.
+            channelStateRef.current = reduceChannelView(channelStateRef.current, envelope);
             if (wire.pubsubId !== undefined) {
               if (oldestRootIdRef.current === null || wire.pubsubId < oldestRootIdRef.current) {
                 oldestRootIdRef.current = wire.pubsubId;
               }
-            }
-
-            flush();
-          } else if (wire.type === "update-message" && wire.id) {
-            const existing = byId.get(wire.id);
-            if (existing) {
-              byId.set(wire.id, applyChatMessageUpdate(existing, wire as WireUpdateMessage));
-              flush();
-            }
-          } else if (wire.type === "error" && wire.id) {
-            const existing = byId.get(wire.id);
-            if (existing) {
-              byId.set(wire.id, applyChatMessageError(existing, wire as WireErrorMessage));
-              flush();
-            }
-          } else if (wire.type === "execution-pause") {
-            const targetId = wire.messageId ?? wire.id;
-            if (targetId) {
-              const existing = byId.get(targetId);
-              if (existing && !existing.complete) {
-                byId.set(targetId, { ...existing, complete: true });
-                flush();
+              if (newestSeqRef.current === null || wire.pubsubId > newestSeqRef.current) {
+                newestSeqRef.current = wire.pubsubId;
               }
-            } else {
-              // Close *every* non-complete message. At any moment during a
-              // turn the projector may have multiple open channel messages
-              // simultaneously (active text + in-progress toolCall + thinking),
-              // so the sweep cannot stop at the first match.
-              let changed = false;
-              for (const id of order) {
-                const msg = byId.get(id);
-                if (msg && !msg.complete) {
-                  byId.set(id, { ...msg, complete: true });
-                  changed = true;
-                }
-              }
-              if (changed) flush();
             }
+            rebuildFromChannelState();
           }
         }
       } catch (err) {
@@ -196,7 +160,7 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
     return () => {
       cancelledRef.current = true;
     };
-  }, [client, flush]);
+  }, [client, rebuildFromChannelState]);
 
   // --- Pagination: load earlier messages ---
   const loadEarlierMessages = useCallback(async () => {
@@ -210,71 +174,98 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
 
     setLoadingMore(true);
     try {
-      const result = await c.getChatReplayBefore(anchor, PAGE_SIZE);
+      const result = await c.getReplayBefore(anchor, PAGE_SIZE);
 
       setHasMoreHistory(Boolean(result.ready.hasMoreBefore));
 
-      const byId = byIdRef.current;
-      const order = orderRef.current;
-
-      // Parse older complete chains and prepend only roots.
-      const prepend: string[] = [];
       for (const raw of result.logEvents) {
         const payload = raw.payload as Record<string, unknown> | undefined;
         if (!payload) continue;
-        const msgId = (payload["id"] as string) ?? `pubsub-${raw.id}`;
 
-        if (raw.type === "message") {
-          if (byId.has(msgId)) continue;
-          const msg = createChatMessageFromWire({
-            type: "message",
-            id: msgId,
+        if (raw.type === AGENTIC_EVENT_PAYLOAD_KIND && payload) {
+          const envelope = pubsubAgenticEventToEnvelope(c.channelId, {
             pubsubId: raw.id,
             senderId: raw.senderId,
-            content: (payload["content"] as string) ?? "",
-            contentType: payload["contentType"] as string | undefined,
-            replyTo: payload["replyTo"] as string | undefined,
-            attachments: raw.attachments as Attachment[] | undefined,
-            senderMetadata: raw.senderMetadata as {
-              name?: string; type?: string; handle?: string;
-            } | undefined,
-          }, { isReplay: true });
-          byId.set(msgId, msg);
-          prepend.push(msgId);
+            ts: raw.ts,
+            senderMetadata: raw.senderMetadata as { name?: string; type?: string; handle?: string } | undefined,
+            payload: payload as unknown as AgenticEvent,
+          });
+          channelStateRef.current = reduceChannelView(channelStateRef.current, envelope);
           if (raw.id < (oldestRootIdRef.current ?? Infinity)) oldestRootIdRef.current = raw.id;
-        } else if (raw.type === "error") {
-          const existing = byId.get(msgId);
-          if (existing) {
-            byId.set(msgId, applyChatMessageError(existing, {
-              type: "error",
-              id: msgId,
-              error: payload["error"] as string | undefined,
-            }));
-          }
-        } else if (raw.type === "update-message") {
-          const existing = byId.get(msgId);
-          if (existing) {
-            byId.set(msgId, applyChatMessageUpdate(existing, {
-              type: "update-message",
-              id: msgId,
-              content: payload["content"] as string | undefined,
-              append: payload["append"] as boolean | undefined,
-              complete: payload["complete"] as boolean | undefined,
-            }));
-          }
+          if (newestSeqRef.current === null || raw.id > newestSeqRef.current) newestSeqRef.current = raw.id;
         }
       }
 
-      if (prepend.length > 0) {
-        orderRef.current = [...prepend, ...order];
-        flush(true); // trimTail: keep older messages, trim newest if over limit
-      }
+      rebuildFromChannelState(true);
     } catch (err) {
       console.error("[useChannelMessages] loadEarlierMessages failed:", err);
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingMore, flush]);
+  }, [loadingMore, rebuildFromChannelState]);
 
-  return { messages, hasMoreHistory, loadingMore, loadEarlierMessages };
+  const backfillAfterLocalPublish = useCallback(async (pubsubId: number | undefined) => {
+    const c = clientRef.current;
+    if (!c || pubsubId === undefined) return;
+    const cursor = newestSeqRef.current ?? 0;
+    if (cursor >= pubsubId) return;
+    try {
+      const result = await c.getReplayAfter(cursor);
+      for (const raw of result.logEvents) {
+        const payload = raw.payload as Record<string, unknown> | undefined;
+        if (raw.type !== AGENTIC_EVENT_PAYLOAD_KIND || !payload) continue;
+        const envelope = pubsubAgenticEventToEnvelope(c.channelId, {
+          pubsubId: raw.id,
+          senderId: raw.senderId,
+          ts: raw.ts,
+          senderMetadata: raw.senderMetadata as { name?: string; type?: string; handle?: string } | undefined,
+          payload: payload as unknown as AgenticEvent,
+        });
+        channelStateRef.current = reduceChannelView(channelStateRef.current, envelope);
+        if (raw.id < (oldestRootIdRef.current ?? Infinity)) oldestRootIdRef.current = raw.id;
+        if (newestSeqRef.current === null || raw.id > newestSeqRef.current) newestSeqRef.current = raw.id;
+      }
+      rebuildFromChannelState();
+    } catch (err) {
+      console.error("[useChannelMessages] backfillAfterLocalPublish failed:", err);
+    }
+  }, [rebuildFromChannelState]);
+
+  return { messages, actionBar, hasMoreHistory, loadingMore, loadEarlierMessages, backfillAfterLocalPublish };
+}
+
+function pubsubAgenticEventToEnvelope(
+  channelId: string,
+  wire: {
+    pubsubId?: number;
+    senderId?: string;
+    ts?: number;
+    senderMetadata?: { name?: string; type?: string; handle?: string };
+    payload: AgenticEvent;
+  },
+): ChannelEnvelope<AgenticEvent> {
+  const participantId = wire.senderId ?? wire.payload.actor.id;
+  const metadata = wire.senderMetadata;
+  return {
+    envelopeId: `pubsub:${wire.pubsubId ?? crypto.randomUUID()}` as never,
+    channelId: channelId as never,
+    seq: wire.pubsubId ?? 0,
+    from: {
+      kind: participantKind(metadata?.type),
+      id: participantId,
+      displayName: metadata?.name,
+      participantId,
+      metadata,
+    },
+    payload: wire.payload,
+    payloadKind: AGENTIC_EVENT_PAYLOAD_KIND,
+    publishedAt: new Date(wire.ts ?? Date.now()).toISOString(),
+  };
+}
+
+function participantKind(type: string | undefined): "user" | "agent" | "panel" | "external" {
+  if (type === "agent") return "agent";
+  if (type === "panel" || type === "client") return "panel";
+  if (type === "headless") return "user";
+  return "external";
 }

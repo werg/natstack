@@ -16,12 +16,10 @@ export type {
 export type { AgentMessage, AgentEvent } from "@workspace/agentic-core";
 
 // ===========================================================================
-// Re-export derived UI types from agentic-core (ChatMessage, MethodHistoryEntry, …)
+// Re-export derived UI types from agentic-core (ChatMessage, pending agent state, …)
 // ===========================================================================
 export type {
   ChatMessage,
-  MethodHistoryEntry,
-  MethodCallStatus,
   PendingAgent,
   PendingAgentStatus,
   DisconnectedAgentInfo,
@@ -43,7 +41,6 @@ import type {
 import type {
   ChatMessage,
   PendingAgent,
-  MethodHistoryEntry,
   DirtyRepoDetails,
 } from "@workspace/agentic-core";
 
@@ -136,7 +133,6 @@ export interface ChatContextValue {
 
   // Messages
   messages: ChatMessage[];
-  methodEntries: Map<string, MethodHistoryEntry>;
   inlineUiComponents: Map<string, InlineUiComponentEntry>;
   actionBar: ActionBarState | null;
   onActionBarMaxHeightChange?: (maxHeight: number, options?: { saveState?: boolean }) => void;

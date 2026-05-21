@@ -3,28 +3,21 @@
 ## Layer Diagram
 
 ```
-@workspace/agentic-core          ← all business logic, no React
-  SessionManager class
-  - connection lifecycle (connect, event loop, reconnect, roster)
-  - message state (messageWindowReducer, pagination, auto-trim)
-  - method history tracking (with auto-pruning)
-  - event dispatch routing (middleware pipeline)
-  - roster tracking (disconnect detection, typing cleanup, expected stops)
-  - pending agent completion waits
-  - typed event emitter for state changes
-  - scope management (scopeDirty events, persist lifecycle)
+@workspace/agentic-core          ← shared business logic, no React
+  - typed agentic event → ChannelViewState reducer
+  - ChannelViewState → ChatMessage / InvocationCard / ApprovalCard / InlineUiCard selectors
+  - connection primitives and sandbox factories
   - types: ChatMessage, ChatParticipantMetadata, ConnectionConfig, etc.
-  - SandboxConfig factory: createPanelSandboxConfig
 
 @workspace/agentic-chat          ← thin React adapter
-  useChatCore() creates SessionManager internally
-  - subscribes to events → pipes into useState
+  useChatCore() owns the PubSubClient lifecycle
+  - useChannelMessages() subscribes with replay and live events
   - adds React-only concerns: input state, pending images,
     document.title, inline UI/action-bar compilation, tool approval UI
   useAgenticChat() composes useChatCore + feature hooks
 
 @workspace/agentic-session       ← thin headless convenience
-  HeadlessSession = SessionManager + headless defaults
+  HeadlessSession = PubSub connection + the same typed reducer/selector path
   - full-auto channel config (approval level 2)
   - automatic ScopeManager creation when sandbox provided
   - default eval + set_title method registration on the client
@@ -37,48 +30,64 @@
 ## What Lives Where
 
 **agentic-core** (no React, no tool-ui, no browser APIs):
-- `SessionManager` — the single source of truth for session state
 - `ConnectionManager` — PubSub connection lifecycle
-- `MessageState` — message window with reducer, pagination, auto-trim
-- `MethodHistoryTracker` — method call lifecycle with pruning
-- `dispatchAgenticEvent` — event router with middleware
+- `useChannelMessages` / `HeadlessSession` — reduce typed PubSub channel events
+  into the same channel view model
 - `TypedEmitter` — lightweight typed event emitter
-- `messageWindowReducer` — pure reducer (also used by React adapter)
-- Headless-safe types: `ChatMessage`, `ChatParticipantMetadata`, `ConnectionConfig`, `SandboxConfig`, `ToolProviderDeps`, `MethodHistoryEntry`, etc.
+- `chatMessagesFromChannelView` — single selector that projects messages,
+  invocation cards, inline UI, and related transcript models
+- Headless-safe types: `ChatMessage`, `ChatParticipantMetadata`, `ConnectionConfig`, `SandboxConfig`, `ToolProviderDeps`, etc.
 - `createPanelSandboxConfig(rpc)` — panel SandboxConfig factory
 
 **agentic-session** (no React, no browser APIs):
-- `HeadlessSession` — SessionManager + headless defaults
+- `HeadlessSession` — headless PubSub client + typed channel reducer
 - `getRecommendedChannelConfig()` — full-auto approval channel config
 - `subscribeHeadlessAgent()` — subscribe a DO agent to a channel with full-auto approval
 - `createRpcSandboxConfig(rpc)` — sandbox factory for any non-panel context with an RPC bridge
 
 **agentic-chat** (React adapter):
-- `useChatCore()` — creates SessionManager, subscribes to events, returns React state
+- `useChatCore()` — owns the PubSub client, subscribes to the typed channel log, returns React state
 - `useAgenticChat()` — composes useChatCore + feedback/tools/debug/inlineUi hooks
 - UI-only types: `ChatContextValue`, `ChatInputContextValue`, `InlineUiComponentEntry`
 - UI-only hooks: `useChatFeedback`, `useChatTools`, `useChatDebug`, `useInlineUi`
 
-## SessionManager Event Flow
+## Transcript Event Flow
 
 ```
-PubSub Server
+Producer
+  ↓ send()/publish()
+PubSub channel log
   ↓ WebSocket
 ConnectionManager
-  ↓ onEvent / onAggregatedEvent / onRoster / onReconnect
-SessionManager
-  ├─ dispatchAgenticEvent → MessageState, MethodHistoryTracker
-  ├─ handleRoster → participants, disconnect messages, typing cleanup
-  ├─ handleReconnect → clear historical participants
-  └─ emits typed events:
-      messagesChanged, participantsChanged, allParticipantsChanged,
-      methodHistoryChanged, connectionChanged, pendingAgentsChanged,
-      debugEvent, dirtyRepoWarning, scopeDirty, error
-            ↓
-React adapter (useChatCore) subscribes → useState
-            ↓
+  ↓ events(includeReplay)
+Typed Agentic Event Reducer
+  ↓ ChannelViewState
+chatMessagesFromChannelView / actionBarPayloadFromChannelView
+  ↓
+React adapter (useChatCore/useAgenticChat)
+  ↓
 React components re-render
 ```
+
+The transcript source is the PubSub channel log. Initial prompts, user messages,
+agent responses, invocation updates, approvals, inline UI, and action bars all
+enter the UI through typed channel events and the same reducer/selector path.
+Do not add hidden transcript side channels or merge legacy method history into
+React state.
+
+GAD stores private branchable provenance separately from transmitted channel
+history. When a trajectory event is published to a channel, GAD records a
+`trajectory_channel_publications` row so tools can join:
+
+```
+trajectory_events.event_id
+  → trajectory_channel_publications.envelope_id
+  → channel_envelopes.envelope_id
+```
+
+Use that join for audits, side-task forks, and “what did the user actually see?”
+queries. Keep roster/debug streams separate unless they are rendered in the
+transcript UX.
 
 ## Teardown Contract
 

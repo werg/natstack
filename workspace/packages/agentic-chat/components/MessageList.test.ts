@@ -3,6 +3,7 @@
 import React from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
+import type { InlineItem } from "./InlineGroup.js";
 
 const hookState = vi.hoisted(() => {
   const scrollElement = {
@@ -82,14 +83,14 @@ describe("MessageList typing indicators (roster-based)", () => {
     expect(screen.queryByText("User typing")).toBeNull();
   });
 
-  it("renders toolCall beads in inline groups", () => {
+  it("renders invocation beads in inline groups", () => {
     render(React.createElement(MessageList, {
       messages: [
         makeMessage({
           id: "action-1",
-          contentType: "toolCall",
+          contentType: "invocation",
           content: "",
-          toolCall: {
+          invocation: {
             id: "tool-1",
             name: "Read",
             arguments: { file_path: "src/app.ts" },
@@ -99,9 +100,9 @@ describe("MessageList typing indicators (roster-based)", () => {
         }),
         makeMessage({
           id: "action-2",
-          contentType: "toolCall",
+          contentType: "invocation",
           content: "",
-          toolCall: {
+          invocation: {
             id: "tool-2",
             name: "Edit",
             arguments: { file_path: "src/config.ts" },
@@ -117,6 +118,90 @@ describe("MessageList typing indicators (roster-based)", () => {
 
     expect(screen.getByText("Read src/app.ts")).toBeTruthy();
     expect(screen.getByText("Edit src/config.ts")).toBeTruthy();
+  });
+
+  it("renders durable typing indicators in their own inline row", () => {
+    render(React.createElement(MessageList, {
+      messages: [
+        makeMessage({
+          id: "action-1",
+          contentType: "invocation",
+          content: "",
+          invocation: {
+            id: "tool-1",
+            name: "Read",
+            arguments: { file_path: "src/app.ts" },
+            execution: { status: "pending", description: "Read src/app.ts" },
+          },
+          complete: false,
+        }),
+        makeMessage({
+          id: "typing-1",
+          contentType: "typing",
+          senderMetadata: { name: "Agent One", type: "agent", handle: "agent-1" },
+          complete: false,
+        }),
+      ],
+      participants: {},
+      selfId: "user-1",
+      allParticipants: {},
+      renderInlineGroup: (items: InlineItem[]) => React.createElement(
+        "div",
+        { "data-testid": "inline-group" },
+        items.map((item) => item.type).join(","),
+      ),
+    } as never));
+
+    expect(screen.getAllByTestId("inline-group").map((node) => node.textContent)).toEqual([
+      "invocation",
+      "typing",
+    ]);
+  });
+
+  it("does not synthesize generic invocation UI for malformed invocation messages", () => {
+    render(React.createElement(MessageList, {
+      messages: [
+        makeMessage({
+          id: "action-without-payload",
+          contentType: "invocation",
+          content: "",
+          complete: false,
+        }),
+      ],
+      participants: {},
+      selfId: "user-1",
+      allParticipants: {},
+    } as never));
+
+    expect(screen.queryByText("Invocation")).toBeNull();
+    expect(screen.queryByText("Tool")).toBeNull();
+    expect(document.body.querySelector('[data-testid="invocation-pill"]')).toBeNull();
+  });
+
+  it("renders durable approval cards", () => {
+    render(React.createElement(MessageList, {
+      messages: [
+        makeMessage({
+          id: "approval-1",
+          contentType: "approval",
+          content: "",
+          approval: {
+            id: "approval-1",
+            invocationId: "call-1",
+            question: "Allow tool call?",
+            status: "requested",
+          },
+          complete: false,
+        }),
+      ],
+      participants: {},
+      selfId: "user-1",
+      allParticipants: {},
+    } as never));
+
+    expect(screen.getByText("Approval requested")).toBeTruthy();
+    expect(screen.getByText("Allow tool call?")).toBeTruthy();
+    expect(screen.queryByText("call-1")).toBeNull();
   });
 
   it("wires MDX ActionButton to publish a follow-up message", async () => {

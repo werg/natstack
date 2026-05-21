@@ -15,9 +15,18 @@ NatStack panels are TypeScript apps running in isolated webviews.
   "dependencies": {
     "@workspace/runtime": "workspace:*",
     "@workspace/react": "workspace:*"
+  },
+  "pnpm": {
+    "overrides": {
+      "problem-dependency": "1.2.3"
+    }
   }
 }
 ```
+
+Package-level top-level `overrides` are supported for simple string pins.
+BuildV2 forwards them into generated external-deps installs for the panel and
+its transitive workspace packages.
 
 ### Fields
 

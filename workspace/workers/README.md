@@ -7,6 +7,18 @@ in-process inside each agent worker DO — there is no harness child process
 layer. See `docs/pi-architecture.md` for the full architectural picture and
 `docs/agentic-architecture.md` for the higher-level overview.
 
+Transcript-visible chat state flows through PubSub channel events:
+
+```
+Producer -> PubSub channel log -> typed agentic event reducer -> UI view model
+```
+
+GAD stores private trajectory provenance and can back PubSub channel persistence,
+but channel history and trajectory history remain distinct. When a trajectory
+event is published, GAD records a `trajectory_channel_publications` join so
+audits can connect the branchable agent context to the envelope users or other
+agents actually received.
+
 ## 1. Quick Start
 
 ### Directory Structure
@@ -34,11 +46,33 @@ workspace/workers/my-agent/
     "@workspace/runtime": "workspace:*",
     "@workspace/agentic-do": "workspace:*",
     "@natstack/harness": "workspace:*"
+  },
+  "pnpm": {
+    "overrides": {
+      "problem-dependency": "1.2.3"
+    }
   }
 }
 ```
 
 The `durable.classes` array declares which exported classes are DurableObjects. The `className` must match the exported class name exactly.
+
+### Dependency Overrides
+
+Workers can use top-level `overrides` in their `package.json`. BuildV2 forwards
+simple string overrides from the worker and its transitive workspace packages
+into the generated external-deps npm install. This is the supported way to
+repair a transitive package that points at a missing, broken, or patched npm
+version.
+
+Overrides are included in the external-deps cache key, so changing one triggers
+a fresh install.
+
+### PubSub Persistence Backend
+
+`PubSubChannel` writes durable transcript envelopes through a `ChannelLogStore`.
+The implementation delegates durable channel-envelope storage to GAD while
+keeping the same PubSub fan-out/replay API and the same UI reducer path.
 
 ### Userland Services
 
@@ -228,25 +262,18 @@ const channel = this.createChannelClient(channelId);
 | `channel.updateMetadata(participantId, metadata)` | Update channel metadata |
 | `channel.subscribe(participantId, metadata)` | Subscribe to channel |
 | `channel.unsubscribe(participantId)` | Unsubscribe from channel |
-| `channel.callMethod(callerPid, targetPid, callId, method, args)` | Async method call |
+| `channel.callMethod(callerPid, targetPid, transportCallId, method, args, { invocationId?, turnId? })` | Async method call; `transportCallId` routes/cancels the dispatch, `invocationId` is the transcript/provenance id |
 | `channel.getParticipants()` | Get channel roster |
 
-## 4. Pi Event Forwarding
+## 4. Trajectory Event Publishing
 
-The worker base subscribes to the in-process Pi `Agent`'s event stream and routes events through a `ContentBlockProjector`, which emits one channel message per Pi content block. The mapping:
-
-| Pi Event | Channel Message |
-|----------|----------------|
-| `message_update` / `text_start` | `channel.send()` a new streaming text message |
-| `message_update` / `text_delta` | `channel.update()` appending the delta |
-| `message_update` / `text_end` | `channel.complete()` the text message |
-| `message_update` / `thinking_*` | `contentType: "thinking"` message streamed via `{ append: true }` updates |
-| `message_update` / `toolcall_start` | `contentType: "toolCall"` message carrying a `ToolCallPayload` snapshot |
-| `tool_execution_update` (console) | `channel.update()` with updated payload (status `"pending"`) |
-| `tool_execution_end` | `channel.update()` with final payload (status `"complete"` or `"error"`; any result images fold into `execution.resultImages`) then `channel.complete()` |
-| `agent_end` | Complete typing indicator |
-
-Typing is a roster-metadata state (`participant.metadata.typing`), toggled before `runTurn` and on `agent_end`. On abort/error, the projector's `closeAll()` emits `channel.complete` for every in-flight block so clients see clean closure.
+The worker base owns runner lifecycle and dispatch cancellation. `PiRunner`
+writes canonical `AgenticEvent` records to gad and publishes opaque
+`agentic.trajectory.v1/event` channel envelopes. Chat clients build their
+visible transcript by subscribing to those envelopes and reducing them locally.
+Visible typing is derived from durable `turn.opened` / `turn.closed` events;
+roster typing metadata is only a secondary ephemeral signal for participants
+that do not own durable agent turns.
 
 ## 5. ParticipantDescriptor
 
@@ -276,8 +303,6 @@ The base class creates these tables on initialization:
 |-------|---------|
 | `state` | Key-value store (schema version, custom state) |
 | `subscriptions` | Channel subscriptions with config + participant ID |
-| `pi_sessions` | Per-channel Pi message persistence (`messages_blob` JSON) |
-| `pending_calls` | Continuation state for async method calls (survives hibernation) |
 | `delivery_cursor` | Last-processed event ID per channel (dedup + gap detection) |
 
 ### Helper Methods
@@ -348,7 +373,7 @@ describe("MyWorker", () => {
 The `sql` object exposes `exec(query, ...bindings)` for direct database inspection:
 
 ```typescript
-const rows = sql.exec(`SELECT * FROM pi_sessions`).toArray();
+const rows = sql.exec(`SELECT * FROM subscriptions`).toArray();
 expect(rows).toHaveLength(1);
 ```
 
@@ -388,31 +413,19 @@ User sends message
        Yes -> buildTurnInput(event)
               -> refreshRoster(channelId)
               -> getOrCreateRunner(channelId) [lazy init: loads resources, creates Agent]
-              -> sendTypingIndicator(channelId)  [instant "Agent typing" feedback]
+              -> PiRunner publishes turn.opened/turn.closed [durable typing state]
               -> runner.runTurn(content, images) or runner.steer(content, images)
 ```
 
-Pi Agent events flow through `ContentBlockProjector` (one channel message per Pi content block):
+Pi events flow through the trajectory store:
 
 ```
 Agent emits event
-  -> projector.handleEvent(event)
-    -> text_start / text_delta / text_end:
-         channel.send → update (deltas) → complete
-    -> thinking_start / thinking_delta / thinking_end:
-         channel.send(contentType:"thinking") → update(append:true) → complete
-    -> toolcall_start:
-         channel.send(contentType:"toolCall") with ToolCallPayload snapshot
-    -> toolcall_end:
-         channel.update() with finalized args
-    -> tool_execution_update (console):
-         channel.update() with payload (consoleOutput appended)
-    -> tool_execution_end:
-         channel.update() with status:"complete"|"error", result, resultImages
-         channel.complete()
-    -> agent_end:
-         setTyping(false)
-  -> projector.closeAll()  (on abort/error — completes every in-flight block)
+  -> PiRunner maps it to AgenticEvent
+  -> gad.appendTrajectoryBatch(... publish.channelIds for transcript-visible events)
+  -> GAD channel_envelopes payloadKind "agentic.trajectory.v1/event"
+  -> trajectory_channel_publications joins the trajectory event to the envelope
+  -> clients reduce channel envelopes into chat state
 ```
 
 ## 11. Fork Support
@@ -429,7 +442,7 @@ Called on the **newly cloned** DO after `cloneDO()` copies the parent's SQLite. 
 
 1. Fixes `__objectKey` and restores identity
 2. Records fork metadata in state KV
-3. Migrates the parent's `pi_sessions` row from oldChannelId → newChannelId (messages blob is truncated at the fork point)
+3. Forks the channel trajectory branch for the cloned channel
 4. Renames `approvalLevel:{oldChannel}` → `approvalLevel:{newChannel}`
 5. Deletes old subscription, clears ephemeral state, resubscribes to forked channel
 6. Calls `onPostClone()` subclass hook
@@ -527,7 +540,7 @@ export class CodeReviewWorker extends AgentWorkerBase {
   // The base class handles:
   //   shouldProcess → buildTurnInput → refreshRoster → getOrCreateRunner
   //   → setTyping(true) → runner.runTurn/steer
-  //   → ContentBlockProjector (text / thinking / toolCall streams → cleanup)
+  //   → PiRunner trajectory append + channel envelope publication
   //
   // Override processChannelEvent only when you need custom routing logic (e.g.,
   // filtering messages by content like the shouldProcess override above).

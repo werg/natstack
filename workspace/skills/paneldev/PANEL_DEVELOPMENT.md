@@ -19,9 +19,26 @@ export default function MyApp() {
   "dependencies": {
     "@workspace/runtime": "workspace:*",
     "@workspace/react": "workspace:*"
+  },
+  "pnpm": {
+    "overrides": {
+      "problem-dependency": "1.2.3"
+    }
   }
 }
 ```
+
+### Dependency Overrides
+
+Panels may declare package-local dependency pins with top-level `overrides` in
+their `package.json`. BuildV2 copies simple string overrides from the panel and
+its transitive workspace packages into the generated external-deps install
+package. Use this when a transitive npm dependency publishes a bad, missing, or
+security-patched version.
+
+Keep overrides narrow and package-local when possible. They participate in the
+external-deps cache key, so changing an override forces a fresh dependency
+install.
 
 ---
 
@@ -277,8 +294,8 @@ const client = connectViaRpc({
 await client.ready();
 await client.publish("chat", { text: "Hello!" });
 
-for await (const msg of client.messages()) {
-  console.log(msg.type, msg.payload);
+for await (const event of client.events({ includeReplay: true, includeSignals: true })) {
+  console.log(event.type, event);
 }
 ```
 

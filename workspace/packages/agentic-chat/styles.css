@@ -403,6 +403,7 @@
   max-inline-size: min(100%, 34rem);
   display: inline-flex !important;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .inline-status-pill {
@@ -412,17 +413,27 @@
 }
 
 .inline-pill-label {
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-inline-size: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.inline-action-pill .inline-pill-label {
+  flex: 0 1 auto;
+  min-inline-size: min-content;
+  max-inline-size: 100%;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .inline-pill-summary,
 .inline-pill-description {
   display: block;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-inline-size: 0;
   max-inline-size: 100%;
   overflow: hidden;

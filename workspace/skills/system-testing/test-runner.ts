@@ -9,6 +9,7 @@ export class TestRunner {
     private opts?: {
       onTestStart?: (test: TestCase) => void;
       onTestEnd?: (test: TestCase, result: TestResult, execution: TestExecutionResult) => void;
+      testTimeoutMs?: number;
     }
   ) {
     if (!runner) {
@@ -63,7 +64,11 @@ export class TestRunner {
     try {
       session = await this.runner.spawn();
 
-      await session.sendAndWait(test.prompt);
+      await this.withTimeout(
+        session.sendAndWait(test.prompt),
+        this.opts?.testTimeoutMs ?? 120_000,
+        `Timed out waiting for agent to finish test "${test.name}"`,
+      );
 
       const messages = [...session.messages] as ChatMessage[];
       const snapshot = session.snapshot();
@@ -88,6 +93,20 @@ export class TestRunner {
       };
     } finally {
       try { await session?.close(); } catch { /* best-effort cleanup */ }
+    }
+  }
+
+  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 }

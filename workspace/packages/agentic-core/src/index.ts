@@ -51,35 +51,30 @@ export type {
 // --- Derived UI shapes (computed from Pi snapshots for component rendering) ---
 export type {
   ChatMessage,
-  MethodHistoryEntry,
-  MethodCallStatus,
   PendingAgent,
   PendingAgentStatus,
   DisconnectedAgentInfo,
   DirtyRepoDetails,
+  InlineUiCardPayload,
+  ActionBarPayload,
+  ApprovalCardPayload,
 } from "./derived-types.js";
 
-// --- Tool call payload (structured content for contentType "toolCall") ---
-export type { ToolCallPayload, ToolExecutionState } from "./tool-call-payload.js";
-export { parseToolCallPayload } from "./tool-call-payload.js";
+// --- Invocation card payload (derived UI shape for invocation events) ---
+export type { InvocationCardPayload, ToolExecutionState } from "./invocation-card-payload.js";
+export { parseInvocationCardPayload } from "./invocation-card-payload.js";
 
 // --- Shared wire-event → ChatMessage merge helpers ---
 export {
-  createChatMessageFromWire,
-  applyChatMessageUpdate,
-  applyChatMessageError,
-} from "./channel-chat-merge.js";
-export type {
-  WireNewMessage,
-  WireUpdateMessage,
-  WireErrorMessage,
+  actionBarPayloadFromChannelView,
+  chatMessagesFromChannelView,
 } from "./channel-chat-merge.js";
 
-// --- Method call result helpers ---
+// --- Invocation result helpers ---
 export {
   isChatMethodResult,
   unwrapChatMethodResult,
-} from "./method-result.js";
-export type { ChatMethodResult } from "./method-result.js";
+} from "./invocation-result.js";
+export type { ChatMethodResult } from "./invocation-result.js";
 
 // --- Pi snapshot → ChatMessage[] deriver (removed: channel messages replace snapshots) ---

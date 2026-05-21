@@ -48,7 +48,6 @@ interface SessionManagerConfig {
 | `messages` | `readonly ChatMessage[]` |
 | `participants` | `Record<string, Participant<ChatParticipantMetadata>>` |
 | `allParticipants` | Same, including historical (disconnected) participants |
-| `methodHistory` | `ReadonlyMap<string, MethodHistoryEntry>` |
 | `connected` | `boolean` |
 | `status` | `string` |
 | `channelId` | `string \| null` |
@@ -63,20 +62,9 @@ interface SessionManagerConfig {
 | `dirtyRepoWarnings` | `ReadonlyMap<string, DirtyRepoDetails>` |
 | `pendingAgents` | `ReadonlyMap<string, PendingAgent>` |
 
-### Mutation API (for adapter layers)
-
-| Method | Description |
-|--------|-------------|
-| `updateMessages(updater)` | Update messages with `(prev) => next` function |
-| `dispatchMessageAction(action)` | Dispatch raw message window action |
-| `addMethodHistoryEntry(entry)` | Add a method history entry |
-| `updateMethodHistoryEntry(callId, updates)` | Update an existing entry |
-| `handleMethodResult(result)` | Process a method result |
-| `clearMethodHistory()` | Clear all method history |
-| `addPendingAgent(handle, agentId)` | Track a pending agent |
-| `dismissDirtyRepoWarning(handle)` | Remove a dirty repo warning |
-| `setScopeManager(mgr)` | Set/replace scope manager (for deferred init) |
-| `buildChatSandboxValue()` | Build a ChatSandboxValue for tool providers |
+Invocation/tool-call diagnostics are exposed through `messages`: entries with
+`contentType: "invocation"` have a parsed `message.invocation` payload with
+name, arguments, progress/output, result, and error state.
 
 ### Events
 
@@ -87,7 +75,6 @@ Subscribe with `manager.on(event, handler)` — returns an unsubscribe function.
 | `messagesChanged` | `(messages: readonly ChatMessage[])` |
 | `participantsChanged` | `(participants: Record<string, Participant>)` |
 | `allParticipantsChanged` | `(participants: Record<string, Participant>)` |
-| `methodHistoryChanged` | `(entries: ReadonlyMap<string, MethodHistoryEntry>)` |
 | `connectionChanged` | `(connected: boolean, status: string)` |
 | `pendingAgentsChanged` | `(agents: ReadonlyMap<string, PendingAgent>)` |
 | `debugEvent` | `(event: AgentDebugPayload & { ts: number })` |

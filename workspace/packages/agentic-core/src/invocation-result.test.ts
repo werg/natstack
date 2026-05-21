@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { isChatMethodResult, unwrapChatMethodResult } from "./method-result.js";
+import { isChatMethodResult, unwrapChatMethodResult } from "./invocation-result.js";
 
 describe("chat method results", () => {
-  it("unwraps the pubsub method-result envelope to the provider payload", () => {
+  it("unwraps the pubsub invocation result envelope to the provider payload", () => {
     const result = {
       content: { resumed: true },
       contentType: "application/json",
@@ -20,7 +20,7 @@ describe("chat method results", () => {
     expect(unwrapChatMethodResult(result)).toEqual({ content: "provider payload" });
   });
 
-  it("does not treat arbitrary values as method-result envelopes", () => {
+  it("does not treat arbitrary values as invocation result envelopes", () => {
     expect(isChatMethodResult(null)).toBe(false);
     expect(isChatMethodResult({ resumed: true })).toBe(false);
   });

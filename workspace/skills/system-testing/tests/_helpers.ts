@@ -1,6 +1,6 @@
 import type { TestExecutionResult } from "../types.js";
 
-interface ToolCallPayloadLike {
+interface InvocationCardPayloadLike {
   id: string;
   name: string;
   arguments?: Record<string, unknown>;
@@ -28,7 +28,7 @@ export function findLastAgentMessage(result: TestExecutionResult): string {
       m.kind === "message" &&
       m.complete &&
       m.contentType !== "thinking" &&
-      m.contentType !== "toolCall" &&
+      m.contentType !== "invocation" &&
       !m.pending
     ) {
       return m.content ?? "";
@@ -46,7 +46,7 @@ export function hasAgentResponse(result: TestExecutionResult): boolean {
     m.complete &&
     m.contentType !== "thinking" &&
     m.contentType !== "typing" &&
-    m.contentType !== "toolCall"
+    m.contentType !== "invocation"
   );
 }
 
@@ -65,19 +65,19 @@ export function responseSucceeds(result: TestExecutionResult, expectedContent: s
   return { passed: true };
 }
 
-export function getToolCalls(result: TestExecutionResult): ToolCallPayloadLike[] {
-  const calls: ToolCallPayloadLike[] = [];
+export function getToolCalls(result: TestExecutionResult): InvocationCardPayloadLike[] {
+  const calls: InvocationCardPayloadLike[] = [];
   for (const msg of result.messages) {
-    if (msg.contentType !== "toolCall") continue;
-    if (msg.toolCall) {
-      calls.push(msg.toolCall as ToolCallPayloadLike);
+    if (msg.contentType !== "invocation") continue;
+    if (msg.invocation) {
+      calls.push(msg.invocation as InvocationCardPayloadLike);
       continue;
     }
     try {
-      const parsed = JSON.parse(msg.content ?? "") as ToolCallPayloadLike;
+      const parsed = JSON.parse(msg.content ?? "") as InvocationCardPayloadLike;
       if (parsed && typeof parsed.name === "string") calls.push(parsed);
     } catch {
-      // Ignore malformed toolCall content; validation can fail on missing calls.
+      // Ignore malformed invocation content; validation can fail on missing calls.
     }
   }
   return calls;
@@ -91,6 +91,6 @@ export function completedToolNames(result: TestExecutionResult): Set<string> {
   );
 }
 
-export function incompleteToolCalls(result: TestExecutionResult): ToolCallPayloadLike[] {
+export function incompleteToolCalls(result: TestExecutionResult): InvocationCardPayloadLike[] {
   return getToolCalls(result).filter((call) => call.execution?.status !== "complete");
 }

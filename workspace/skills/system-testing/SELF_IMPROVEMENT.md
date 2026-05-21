@@ -65,14 +65,13 @@ for (const r of scope.results.results.filter(r => !r.result.passed)) {
     if (m.error) console.log(`    ERROR: ${m.error}`);
   }
 
-  // 2. Method history — every tool call, args, return value, errors
+  // 2. Invocation cards — every tool call, args, return value, errors
   const snap = r.execution.snapshot;
-  if (snap?.methodHistory.length) {
-    console.log(`\n--- Method History (${snap.methodHistory.length} calls) ---`);
-    for (const mh of snap.methodHistory) {
-      const dur = mh.duration ? `${mh.duration}ms` : "pending";
-      console.log(`  [${mh.status}] ${mh.method} (${dur})`);
-      if (mh.error) console.log(`    Error: ${mh.error}`);
+  if (snap?.invocations.length) {
+    console.log(`\n--- Invocations (${snap.invocations.length} calls) ---`);
+    for (const inv of snap.invocations) {
+      console.log(`  [${inv.status}] ${inv.name}`);
+      if (inv.error) console.log(`    Error: ${inv.error}`);
     }
   }
 

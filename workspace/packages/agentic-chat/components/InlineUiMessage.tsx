@@ -198,13 +198,6 @@ export function parseInlineUiData(content: string): InlineUiData | null {
       }
     }
 
-    // Backward compatibility for older persisted inline UI payloads.
-    if (typeof record["code"] === "string") {
-      return { id: record["id"], source: { type: "code", code: record["code"] }, props };
-    }
-    if (typeof record["path"] === "string") {
-      return { id: record["id"], source: { type: "file", path: record["path"] }, props };
-    }
     return null;
   } catch {
     return null;

@@ -92,6 +92,11 @@ See [EVAL.md](EVAL.md) for details. On-demand imports are not available in inlin
 See [MDX.md](MDX.md) for rich normal chat messages and `ActionButton`.
 See [INTERACTION_PATTERNS.md](INTERACTION_PATTERNS.md) for when to use inline UI vs eval for side-effect actions. In short: if an action involves choices or could fail, prefer rendering an inline UI that lets the user trigger it and reports results back via `chat.publish`. Use [ACTION_BAR.md](ACTION_BAR.md) when small controls or status should stay pinned above chat history for the current panel. For setup workflows with links, use the [INLINE_UI.md](INLINE_UI.md) link/checklist patterns and offer both internal browser-panel opens and approval-gated `openExternal` system-browser opens.
 
+Transcript-visible behavior is driven by typed PubSub events. Normal user-side
+messages should go through `chat.publish("message", { content })`; rendered UI
+should go through `inline_ui`, `load_action_bar`, `feedback_form`, or
+`feedback_custom` rather than hand-written raw channel records.
+
 ## Critical Rules
 
 1. **Static imports only** — `import { rpc } from "@workspace/runtime"` (NOT `await import(...)`). File-loaded relative imports must also be static/literal.

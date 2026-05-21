@@ -18,7 +18,7 @@ export interface TestExecutionResult {
   duration: number;
   /** Transport/session-level error (if the session itself failed) */
   error?: string;
-  /** Full diagnostic snapshot from the session (method history, debug events, participants) */
+  /** Full diagnostic snapshot from the session (invocations, debug events, participants) */
   snapshot?: SessionSnapshot;
 }
 
