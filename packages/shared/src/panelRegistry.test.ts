@@ -63,9 +63,8 @@ describe("PanelRegistry", () => {
       registry.addPanel(p2, null, { addAsRoot: true });
 
       expect(registry.getRootPanels().length).toBe(2);
-      // Most recent is prepended
-      expect(registry.getRootPanels()[0]!.id).toBe("root-2");
-      expect(registry.getRootPanels()[1]!.id).toBe("root-1");
+      expect(registry.getRootPanels()[0]!.id).toBe("root-1");
+      expect(registry.getRootPanels()[1]!.id).toBe("root-2");
     });
 
     it("adds a child panel under a parent", () => {

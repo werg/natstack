@@ -622,7 +622,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
         JSON.stringify(entries)
       );
       if (entries && entries.length > 0) {
-        for (const entry of [...entries].reverse()) {
+        for (const entry of entries) {
           try {
             log.info(`[initializePanelTree] Creating init panel: ${entry.source}`);
             await this.createInitPanel(entry.source, entry.stateArgs);

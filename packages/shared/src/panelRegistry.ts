@@ -244,7 +244,7 @@ export class PanelRegistry implements PanelRelationshipProvider {
    *
    * @param panel - The panel to add
    * @param parentId - Parent panel ID, or null for root placement
-   * @param opts.addAsRoot - If true and parentId is null, prepend to rootPanels
+   * @param opts.addAsRoot - If true and parentId is null, append to rootPanels
    *   without clearing the existing tree. When false (default) and parentId is
    *   null, the tree is replaced with this single panel.
    */
@@ -255,11 +255,11 @@ export class PanelRegistry implements PanelRelationshipProvider {
       if (!parent) {
         throw new Error(`Parent panel not found: ${parentId}`);
       }
-      parent.children.unshift(panel);
+      parent.children.push(panel);
       parent.selectedChildId = panel.id;
       this.panels.set(panel.id, panel);
     } else if (opts?.addAsRoot) {
-      this.rootPanels.unshift(panel);
+      this.rootPanels.push(panel);
       this.panels.set(panel.id, panel);
     } else {
       // Replace tree with single root

@@ -437,8 +437,8 @@ describe("PanelManager", () => {
     const second = await manager.create("panels/second", { parentId: root.panelId });
 
     expect(registry.getPanel(root.panelId)?.children.map((c) => c.id)).toEqual([
-      second.panelId,
       first.panelId,
+      second.panelId,
     ]);
 
     await manager.notifyFocused(first.panelId);
@@ -494,7 +494,7 @@ describe("PanelManager", () => {
     ]);
   });
 
-  it("persists prepend root insertion order across restart", async () => {
+  it("persists append root insertion order across restart", async () => {
     const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-panel-manager-"));
     tempDirs.push(workspacePath);
 
@@ -520,8 +520,8 @@ describe("PanelManager", () => {
       addAsRoot: true,
     });
     expect(liveRegistry.getRootPanels().map((panel) => panel.id)).toEqual([
-      second.panelId,
       first.panelId,
+      second.panelId,
     ]);
 
     const restoredRegistry = new PanelRegistry({});
@@ -529,8 +529,8 @@ describe("PanelManager", () => {
     await restoredManager.syncSnapshot();
 
     expect(restoredRegistry.getRootPanels().map((panel) => panel.id)).toEqual([
-      second.panelId,
       first.panelId,
+      second.panelId,
     ]);
   });
 

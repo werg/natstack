@@ -220,7 +220,7 @@ export class PanelManager {
     const contextId = opts?.contextId ?? generateContextId(slotId);
     const historyEntryKey = mintHistoryEntryKey();
     const stateArgsPayload = validatedStateArgs ?? {};
-    const positionId = this.rankForPosition(opts?.parentId ?? null, 0);
+    const positionId = this.rankForAppend(opts?.parentId ?? null);
 
     const snapshot = createSnapshot(
       relativePath,
@@ -305,7 +305,7 @@ export class PanelManager {
     const contextId = generateContextId(slotId);
     const historyEntryKey = mintHistoryEntryKey();
     const browserSource = `browser:${url}`;
-    const positionId = this.rankForPosition(parentId, 0);
+    const positionId = this.rankForAppend(parentId);
 
     const snapshot = createSnapshot(browserSource, contextId, {});
 
@@ -1162,6 +1162,13 @@ export class PanelManager {
     const clamped = Math.max(0, Math.min(targetPosition, filtered.length));
     if (filtered.length === 0) return firstRank();
     return rankBetween(filtered[clamped - 1]?.positionId, filtered[clamped]?.positionId);
+  }
+
+  private rankForAppend(parentId: string | null): string {
+    const siblings = parentId
+      ? (this.registry.getPanel(parentId)?.children ?? [])
+      : this.registry.getRootPanels();
+    return this.rankForPosition(parentId, siblings.length);
   }
 
   private findParentIdInRegistry(slotId: string): string | null {

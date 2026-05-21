@@ -80,7 +80,7 @@ class MobilePanels {
     await this.syncRuntimeLeases();
     if (tree.rootPanels.length > 0) return;
     const entries = workspaceConfig?.initPanels ?? [];
-    for (const entry of [...entries].reverse()) {
+    for (const entry of entries) {
       await this.panelManager.create(entry.source, {
         isRoot: true,
         addAsRoot: true,
