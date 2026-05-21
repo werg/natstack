@@ -71,8 +71,13 @@ export default function LiveJsx() {
 `;
 }
 
-export function LiveJsxEditor(props: JsxEditorProps) {
-  const { mdastNode, descriptor } = props;
+export interface LiveJsxEditorOwnProps {
+  /** Frontmatter-declared dependencies, merged into compileComponent imports. */
+  dependencies?: Record<string, string>;
+}
+
+export function LiveJsxEditor(props: JsxEditorProps & LiveJsxEditorOwnProps) {
+  const { mdastNode, descriptor, dependencies } = props;
   const tagName = (mdastNode as unknown as MdastJsxLike).name ?? descriptor.name ?? "Fragment";
   const source = useMemo(() => nodeToMdxSource(mdastNode), [mdastNode]);
   const wrapped = useMemo(() => wrapForSandbox(source), [source]);
@@ -92,6 +97,7 @@ export function LiveJsxEditor(props: JsxEditorProps) {
     void compileComponent(wrapped, {
       loadImport: sandbox.loadImport,
       sourcePath: `workspace/panels/spectrolite/inline-jsx-${tagName === "*" ? "wild" : tagName}.tsx`,
+      imports: dependencies && Object.keys(dependencies).length > 0 ? dependencies : undefined,
     }).then((result) => {
       if (cancelled) return;
       if (result.success && result.Component) {
@@ -101,7 +107,7 @@ export function LiveJsxEditor(props: JsxEditorProps) {
       }
     });
     return () => { cancelled = true; };
-  }, [wrapped, tagName, source]);
+  }, [wrapped, tagName, source, dependencies]);
 
   if (error) {
     return (

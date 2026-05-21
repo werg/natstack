@@ -30,6 +30,15 @@ import { CheckCircledIcon, FilePlusIcon, LightningBoltIcon } from "@radix-ui/rea
 import { connectViaRpc, type PubSubClient } from "@workspace/pubsub";
 import { rpc, recoveryCoordinator, useStateArgs, setStateArgs } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
+import {
+  buildEvalTool,
+  createPanelSandboxConfig,
+  unwrapChatMethodResult,
+  type ChatMethodResult,
+  type ChatSandboxValue,
+  type SandboxConfig,
+} from "@workspace/agentic-core";
+import { executeSandbox, RpcScopePersistence, ScopeManager, type SandboxOptions, type SandboxResult } from "@workspace/eval";
 import type { AvailableAgent } from "../bootstrap";
 import { listAvailableAgents } from "../bootstrap";
 import { FileTree } from "./FileTree";
@@ -45,6 +54,8 @@ import { createBufferEntry, hasUnflushedChanges, type FileBufferEntry } from "..
 import { KB_USER_EDIT_TYPE, registerSpectroliteMessageTypes } from "../messages/register";
 import { WikilinkContext } from "../mdx/components";
 import { resolveWikilinkTarget, wikilinksFromJsx } from "../mdx/wikilink";
+import { parseFrontmatter, diffDependencies } from "../mdx/frontmatter";
+import { prefetchDependencies } from "../mdx/depPrefetch";
 
 export interface WorkspaceProps {
   channelName: string;
@@ -72,6 +83,7 @@ const SAMPLE_DOC_NAME = "Welcome.mdx";
 
 const SAMPLE_DOC = `---
 title: Welcome to Spectrolite
+dependencies: {}
 ---
 
 # Welcome to Spectrolite
@@ -95,19 +107,23 @@ This is an **MDX** knowledge base backed by a git repo. Try the following:
   </Callout.Text>
 </Callout>
 
+## Declaring dependencies
+
+Add npm or workspace packages to this file via the YAML frontmatter:
+
+\`\`\`yaml
+dependencies:
+  "date-fns": "npm:^2.30.0"
+  lodash: "npm:^4.17.21"
+  "@workspace/agentic-chat": latest
+\`\`\`
+
+The panel prefetches them into the sandbox module map. The resident agent's
+\`eval\` tool picks them up automatically, and you can use them in inline
+JSX blocks in this doc without redeclaring imports.
+
 Delete this file or replace its contents when you're ready.
 `;
-
-const FRONTMATTER_TITLE_RE = /^---\s*\n([\s\S]*?)\n---\s*\n/;
-const TITLE_LINE_RE = /^title:\s*(?:"([^"]+)"|'([^']+)'|(.+))$/m;
-
-function readFrontmatterTitle(markdown: string): string | null {
-  const m = FRONTMATTER_TITLE_RE.exec(markdown);
-  if (!m) return null;
-  const titleMatch = TITLE_LINE_RE.exec(m[1] ?? "");
-  if (!titleMatch) return null;
-  return (titleMatch[1] ?? titleMatch[2] ?? titleMatch[3] ?? "").trim() || null;
-}
 
 function pathToTitle(relPath: string): string {
   const name = relPath.split("/").pop() ?? relPath;
@@ -149,13 +165,92 @@ export function Workspace({
   const pathsRef = useRef(workspacePaths);
   pathsRef.current = workspacePaths;
 
+  // Sandbox config + scope manager — same primitives the chat panel uses
+  // for its eval tool. Recreated whenever the channel name changes so the
+  // scope is per-session.
+  const sandbox: SandboxConfig = useMemo(() => createPanelSandboxConfig(rpc), []);
+  const scopeManager = useMemo(() => new ScopeManager({
+    channelId: channelName,
+    panelId: PANEL_METADATA.handle,
+    persistence: new RpcScopePersistence(rpc as unknown as { call(targetId: string, method: string, ...args: unknown[]): Promise<unknown> }),
+  }), [channelName]);
+  useEffect(() => () => { scopeManager.dispose?.(); }, [scopeManager]);
+
+  // Frontmatter-declared dependencies merged across all open buffers. When
+  // a buffer's frontmatter changes we diff and prefetch the new entries
+  // through the panel sandbox so they're in the module map for inline JSX,
+  // Preview-mode compilation, and the agent's eval tool calls.
+  const [activeDeps, setActiveDeps] = useState<Record<string, string>>({});
+  const lastDepsRef = useRef<Record<string, string>>({});
+
   // Tick every 5s so "flushed Ns ago" stays fresh
   useEffect(() => {
     const t = setInterval(() => setNowTick(Date.now()), 5_000);
     return () => clearInterval(t);
   }, []);
 
-  // Connect to the channel
+  // We need a stable handle to the live client for the eval tool's
+  // ChatSandboxValue (the tool definition is captured once at connect-time,
+  // but the agent may invoke it across reconnections).
+  const clientRef = useRef<PubSubClient | null>(null);
+
+  // Build the ChatSandboxValue lazily — `eval` code can do channel work,
+  // call other participants' methods, and read contextId/channelId.
+  const chatSandboxValue: ChatSandboxValue = useMemo(() => ({
+    publish: async (eventType, payload, options) =>
+      clientRef.current ? clientRef.current.publish(eventType, payload, options) : undefined,
+    send: async (content, options) =>
+      clientRef.current ? clientRef.current.send(content, options) : undefined,
+    callMethod: async (pid, method, callArgs) => {
+      const c = clientRef.current;
+      if (!c) throw new Error("Channel client not ready");
+      const handle = c.callMethod(pid, method, callArgs);
+      const result = await (handle as unknown as { result: Promise<ChatMethodResult> }).result;
+      return unwrapChatMethodResult(result);
+    },
+    callMethodResult: async (pid, method, callArgs) => {
+      const c = clientRef.current;
+      if (!c) throw new Error("Channel client not ready");
+      const handle = c.callMethod(pid, method, callArgs);
+      return (handle as unknown as { result: Promise<ChatMethodResult> }).result;
+    },
+    contextId: channelContextId,
+    channelId: channelName,
+    rpc: sandbox.rpc,
+  }), [channelContextId, channelName, sandbox]);
+
+  // Wrap executeSandbox with scope lifecycle hooks so REPL state persists
+  // across eval calls — same idiom as agentic-chat's useAgenticChat.
+  // Also merges the active doc's frontmatter dependencies into the
+  // per-call imports so the agent doesn't need to redeclare them.
+  const wrappedExecuteSandbox = useMemo(() => {
+    return async (code: string, opts: SandboxOptions = {}): Promise<SandboxResult> => {
+      scopeManager.enterEval();
+      try {
+        const mergedImports = { ...lastDepsRef.current, ...(opts.imports ?? {}) };
+        return await executeSandbox(code, {
+          ...opts,
+          imports: Object.keys(mergedImports).length > 0 ? mergedImports : opts.imports,
+        });
+      } finally {
+        await scopeManager.exitEval();
+      }
+    };
+  }, [scopeManager]);
+
+  const evalTool = useMemo(() => buildEvalTool({
+    sandbox,
+    rpc: sandbox.rpc,
+    runtimeTarget: "panel",
+    scopeManager,
+    executeSandbox: wrappedExecuteSandbox,
+    getChatSandboxValue: () => chatSandboxValue,
+    getScope: () => scopeManager.current,
+  }), [sandbox, scopeManager, wrappedExecuteSandbox, chatSandboxValue]);
+
+  // Connect to the channel — advertise the `eval` method so the resident
+  // agent can call it like any other participant method. Same shape as the
+  // chat panel's ToolProvider.eval.
   useEffect(() => {
     let cancelled = false;
     const c = connectViaRpc({
@@ -163,17 +258,20 @@ export function Workspace({
       channel: channelName,
       contextId: channelContextId,
       metadata: PANEL_METADATA,
+      methods: { eval: evalTool },
       recoveryCoordinator,
     });
+    clientRef.current = c;
     void c.ready().then(() => registerSpectroliteMessageTypes(c)).catch((err) => {
       console.warn("[Spectrolite] message type registration failed:", err);
     });
     if (!cancelled) setClient(c);
     return () => {
       cancelled = true;
+      clientRef.current = null;
       c.close();
     };
-  }, [channelName, channelContextId]);
+  }, [channelName, channelContextId, evalTool]);
 
   useEffect(() => {
     if (!client) return;
@@ -197,6 +295,31 @@ export function Workspace({
       void setStateArgs({ openPath: activePath });
     }
   }, [activePath, stateArgs.openPath]);
+
+  // Parse the active doc's frontmatter and trigger a dep prefetch when it
+  // changes. `activeDeps` feeds the eval tool's `imports` merge AND the
+  // inline JSX / preview compilers via the same dep map.
+  useEffect(() => {
+    const buffer = activePath ? buffers[activePath] : undefined;
+    if (!buffer) {
+      setActiveDeps({});
+      lastDepsRef.current = {};
+      return;
+    }
+    const fm = parseFrontmatter(buffer.currentMdx);
+    const next = fm.dependencies;
+    const before = lastDepsRef.current;
+    const { added, changed, removed } = diffDependencies(before, next);
+    if (Object.keys(added).length === 0 && Object.keys(changed).length === 0 && removed.length === 0) {
+      return;
+    }
+    lastDepsRef.current = next;
+    setActiveDeps(next);
+    const toFetch = { ...added, ...changed };
+    if (Object.keys(toFetch).length > 0) {
+      void prefetchDependencies(sandbox, toFetch, (line) => { console.info(line); });
+    }
+  }, [activePath, buffers, sandbox]);
 
   // Flush: write buffer to disk, compute diff vs lastFlushedMdx, publish
   // kb.user_edit, then if @-mentions resolved send a parallel chat message
@@ -319,7 +442,9 @@ export function Workspace({
 
   const activeBuffer = activePath ? buffers[activePath] : undefined;
   const activeDirty = activeBuffer ? hasUnflushedChanges(activeBuffer) : false;
-  const activeTitle = activeBuffer ? (readFrontmatterTitle(activeBuffer.currentMdx) ?? (activePath ? pathToTitle(activePath) : null)) : null;
+  const activeTitle = activeBuffer
+    ? (parseFrontmatter(activeBuffer.currentMdx).title ?? (activePath ? pathToTitle(activePath) : null))
+    : null;
   const activeLastFlushed = activePath ? lastFlushedAt[activePath] : undefined;
 
   const mentionCandidates: MentionCandidate[] = useMemo(() => roster.map((a) => ({ handle: a.handle })), [roster]);
@@ -409,6 +534,7 @@ export function Workspace({
                   onFlushClick={handleFlushClick}
                   hasUnflushedChanges={activeDirty}
                   mentionCandidates={mentionCandidates}
+                  dependencies={activeDeps}
                 />
               ) : workspacePaths.length === 0 ? (
                 <EmptyState onCreateWelcomeDoc={handleCreateWelcomeDoc} agentHandle={roster[0]?.handle ?? primaryAgentHandle} />

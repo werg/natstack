@@ -74,6 +74,8 @@ export interface DocumentEditorProps {
   hasUnflushedChanges: boolean;
   /** Mention candidates from the channel roster. */
   mentionCandidates: MentionCandidate[];
+  /** Frontmatter-declared dependencies; passed to inline JSX + preview compile. */
+  dependencies: Record<string, string>;
 }
 
 const POLL_MS = 600;
@@ -87,6 +89,7 @@ export function DocumentEditor({
   onFlushClick,
   hasUnflushedChanges,
   mentionCandidates,
+  dependencies,
 }: DocumentEditorProps) {
   const [markdown, setMarkdown] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -166,8 +169,12 @@ export function DocumentEditor({
   }, [mode, contentEditableEl]);
 
   const descriptors = useMemo(() => {
-    return knownJsxDescriptors().map((d) => ({ ...d, Editor: LiveJsxEditor }));
-  }, []);
+    // Bind the current dependency map into the Editor so live-compiled JSX
+    // can resolve frontmatter-declared packages.
+    const EditorWithDeps = (jsxProps: Parameters<typeof LiveJsxEditor>[0]) =>
+      <LiveJsxEditor {...jsxProps} dependencies={dependencies} />;
+    return knownJsxDescriptors().map((d) => ({ ...d, Editor: EditorWithDeps }));
+  }, [dependencies]);
 
   const plugins = useMemo(() => [
     headingsPlugin(),
@@ -279,7 +286,7 @@ export function DocumentEditor({
             />
           </Box>
         ) : (
-          <PreviewPane markdown={markdown} />
+          <PreviewPane markdown={markdown} dependencies={dependencies} />
         )}
       </Box>
     </Flex>

@@ -17,7 +17,7 @@
  * editor's mode switcher.
  */
 
-import { useEffect, useMemo, useState, type ComponentType } from "react";
+import { createContext, useContext, useEffect, useMemo, useState, type ComponentType } from "react";
 import { Box, Card, Code, Flex, Text } from "@radix-ui/themes";
 import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
 import * as runtime from "react/jsx-runtime";
@@ -36,7 +36,19 @@ interface EvalProps {
 
 const sandbox = createPanelSandboxConfig(rpc);
 
+/**
+ * Context for frontmatter-declared dependencies. `<runtime.Eval>` reads
+ * from here and merges with its own per-call `imports` prop so doc-level
+ * deps don't have to be redeclared inside every Eval block.
+ */
+const DepsContext = createContext<Record<string, string>>({});
+
 function LiveEval({ code, imports }: EvalProps) {
+  const docDeps = useContext(DepsContext);
+  const mergedImports = useMemo(() => {
+    const merged = { ...docDeps, ...(imports ?? {}) };
+    return Object.keys(merged).length > 0 ? merged : undefined;
+  }, [docDeps, imports]);
   const [Component, setComponent] = useState<ComponentType | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -45,7 +57,7 @@ function LiveEval({ code, imports }: EvalProps) {
     setError(null);
     setComponent(null);
     const opts: SandboxOptions = {
-      imports,
+      imports: mergedImports,
       loadImport: sandbox.loadImport,
     };
     void compileComponent(code, opts as Parameters<typeof compileComponent>[1]).then((result) => {
@@ -57,7 +69,7 @@ function LiveEval({ code, imports }: EvalProps) {
       }
     });
     return () => { cancelled = true; };
-  }, [code, imports]);
+  }, [code, mergedImports]);
 
   if (error) {
     return (
@@ -98,7 +110,8 @@ async function compileMdxDoc(content: string): Promise<ComponentType | null> {
   return Component as ComponentType;
 }
 
-export function PreviewPane({ markdown }: { markdown: string }) {
+export function PreviewPane({ markdown, dependencies }: { markdown: string; dependencies?: Record<string, string> }) {
+  const depsValue = dependencies ?? {};
   const [Component, setComponent] = useState<ComponentType | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -130,8 +143,10 @@ export function PreviewPane({ markdown }: { markdown: string }) {
     return <Box p="3"><Text size="2" color="gray">Compiling preview…</Text></Box>;
   }
   return (
-    <Box p="3" className="message-prose" style={{ overflowY: "auto", height: "100%" }}>
-      <Component />
-    </Box>
+    <DepsContext.Provider value={depsValue}>
+      <Box p="3" className="message-prose" style={{ overflowY: "auto", height: "100%" }}>
+        <Component />
+      </Box>
+    </DepsContext.Provider>
   );
 }
