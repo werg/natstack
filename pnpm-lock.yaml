@@ -1319,6 +1319,27 @@ importers:
 
   workspace/workers/sample-do: {}
 
+  workspace/workers/silent-agent-worker:
+    dependencies:
+      '@natstack/harness':
+        specifier: workspace:*
+        version: link:../../../packages/harness
+      '@workspace-workers/agent-worker':
+        specifier: workspace:*
+        version: link:../agent-worker
+      '@workspace/agentic-do':
+        specifier: workspace:*
+        version: link:../../packages/agentic-do
+      '@workspace/pubsub':
+        specifier: workspace:*
+        version: link:../../packages/pubsub
+      '@workspace/runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
+      zod:
+        specifier: ^3.24.0
+        version: 3.25.76
+
   workspace/workers/test-agent:
     dependencies:
       '@natstack/harness':
@@ -15186,7 +15207,9 @@ snapshots:
       metro-runtime: 0.82.5
     transitivePeerDependencies:
       - '@babel/core'
+      - bufferutil
       - supports-color
+      - utf-8-validate
 
   '@react-native/normalize-colors@0.79.7': {}
 
