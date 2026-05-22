@@ -22,7 +22,16 @@ export interface ParsedFrontmatter {
   raw: string | null;
 }
 
-const EMPTY: ParsedFrontmatter = { title: null, dependencies: {}, raw: null };
+/**
+ * Returns a fresh empty ParsedFrontmatter on every call. We intentionally
+ * do NOT cache a singleton — callers commonly read `dependencies` and pass
+ * it to downstream consumers that may mutate or merge into it, so handing
+ * out a shared mutable object would let one caller poison every other
+ * caller's result.
+ */
+function emptyParsed(): ParsedFrontmatter {
+  return { title: null, dependencies: {}, raw: null };
+}
 
 function stripQuotes(value: string): string {
   const trimmed = value.trim();
@@ -34,7 +43,7 @@ function stripQuotes(value: string): string {
 
 export function parseFrontmatter(markdown: string): ParsedFrontmatter {
   const m = FRONTMATTER_RE.exec(markdown);
-  if (!m) return EMPTY;
+  if (!m) return emptyParsed();
   const raw = m[1] ?? "";
   const lines = raw.split("\n");
 

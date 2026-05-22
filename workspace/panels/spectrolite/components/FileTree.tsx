@@ -8,9 +8,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { promises as fs } from "fs";
-import { Box, Button, Code, Flex, ScrollArea, Text, TextField } from "@radix-ui/themes";
-import { FileTextIcon, PlusIcon, ReloadIcon } from "@radix-ui/react-icons";
+import { Box, Button, Callout, Code, Flex, ScrollArea, Text, TextField } from "@radix-ui/themes";
+import { FileTextIcon, PlusIcon, ReloadIcon, ExclamationTriangleIcon } from "@radix-ui/react-icons";
 import { listMdxPaths } from "../state/workspacePaths";
+import { joinSafe, parentDir } from "../state/safePath";
 
 export interface FileTreeProps {
   root: string;
@@ -25,6 +26,7 @@ export function FileTree({ root, activePath, onOpen, refreshNonce, onPathsRefres
   const [files, setFiles] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [newName, setNewName] = useState("");
+  const [createError, setCreateError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -42,16 +44,50 @@ export function FileTree({ root, activePath, onOpen, refreshNonce, onPathsRefres
   const handleCreate = useCallback(async () => {
     const trimmed = newName.trim();
     if (!trimmed) return;
+    setCreateError(null);
     const relPath = trimmed.endsWith(".mdx") ? trimmed : `${trimmed}.mdx`;
-    const full = `${root}/${relPath}`;
-    const lastSlash = full.lastIndexOf("/");
-    if (lastSlash > 0) {
-      await fs.mkdir(full.slice(0, lastSlash), { recursive: true });
+    // Reject `../` traversal and absolute paths that would escape root.
+    const full = joinSafe(root, relPath);
+    if (!full) {
+      setCreateError(`"${relPath}" escapes the workspace root`);
+      return;
+    }
+    // Refuse to clobber an existing file.
+    try {
+      await fs.stat(full);
+      setCreateError(`"${relPath}" already exists`);
+      return;
+    } catch {
+      // ENOENT → safe to create
+    }
+    const parent = parentDir(full);
+    if (parent) {
+      try { await fs.mkdir(parent, { recursive: true }); } catch (err) {
+        console.warn("[Spectrolite] mkdir failed:", err);
+      }
     }
     try {
-      await fs.writeFile(full, `# ${trimmed.replace(/\.mdx$/, "")}\n\n`);
+      // Try exclusive create first; fall back to writeFile if the runtime
+      // fs RPC doesn't support flags (its writeFile is the only
+      // guaranteed-portable method, but we've already stat-checked above).
+      const fsWithFlags = fs as unknown as { writeFile(p: string, data: string, opts?: { flag?: string }): Promise<void> };
+      try {
+        await fsWithFlags.writeFile(full, `# ${trimmed.replace(/\.mdx$/, "")}\n\n`, { flag: "wx" });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/eexist/i.test(msg)) {
+          setCreateError(`"${relPath}" already exists`);
+          return;
+        }
+        // Older fs implementations may not support flag option — fall back
+        // to plain write after the stat check we did above. The window
+        // for a race here is the stat→write gap; users see "already
+        // exists" via the path-tree refresh after.
+        await fs.writeFile(full, `# ${trimmed.replace(/\.mdx$/, "")}\n\n`);
+      }
     } catch (err) {
       console.warn("[Spectrolite] Failed to create file:", err);
+      setCreateError(err instanceof Error ? err.message : String(err));
       return;
     }
     setNewName("");
@@ -72,7 +108,7 @@ export function FileTree({ root, activePath, onOpen, refreshNonce, onPathsRefres
           size="1"
           placeholder="new-note.mdx"
           value={newName}
-          onChange={(e) => setNewName(e.target.value)}
+          onChange={(e) => { setNewName(e.target.value); if (createError) setCreateError(null); }}
           onKeyDown={(e) => { if (e.key === "Enter") void handleCreate(); }}
           style={{ flex: 1 }}
         />
@@ -80,6 +116,12 @@ export function FileTree({ root, activePath, onOpen, refreshNonce, onPathsRefres
           <PlusIcon />
         </Button>
       </Flex>
+      {createError ? (
+        <Callout.Root size="1" color="red">
+          <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
+          <Callout.Text size="1">{createError}</Callout.Text>
+        </Callout.Root>
+      ) : null}
       <Box style={{ flex: 1, minHeight: 0 }}>
         <ScrollArea>
           {loading ? (

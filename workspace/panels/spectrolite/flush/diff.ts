@@ -26,7 +26,10 @@ export function extractMentionsFromDiff(unifiedDiff: string, knownHandles: Itera
   const set = new Set(knownHandles);
   const found = new Set<string>();
   for (const line of unifiedDiff.split("\n")) {
-    if (!line.startsWith("+") || line.startsWith("+++")) continue;
+    // Diff header lines are "+++ " or "--- " (with a trailing space). A
+    // real content line like "+++Hello" is added content and must not be
+    // skipped.
+    if (!line.startsWith("+") || line.startsWith("+++ ")) continue;
     const body = line.slice(1);
     for (const match of body.matchAll(MENTION_RE)) {
       const handle = match[1];
@@ -50,8 +53,11 @@ export function buildFlushPayload({ path, before, after, knownHandles }: BuildFl
   let added = 0;
   let removed = 0;
   for (const line of unifiedDiff.split("\n")) {
-    if (line.startsWith("+") && !line.startsWith("+++")) added += 1;
-    else if (line.startsWith("-") && !line.startsWith("---")) removed += 1;
+    // "+++ " / "--- " (with a trailing space) are file headers; raw
+    // content lines starting with the same characters but with no trailing
+    // space are real additions/removals.
+    if (line.startsWith("+") && !line.startsWith("+++ ")) added += 1;
+    else if (line.startsWith("-") && !line.startsWith("--- ")) removed += 1;
   }
   return {
     path,

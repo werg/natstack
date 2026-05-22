@@ -44,21 +44,31 @@ function splitByCodeBlocks(markdown: string): Array<{ code: boolean; text: strin
     buf = [];
   };
   for (const line of lines) {
-    const fenceMatch = /^(\s*)(```+|~~~+)/.exec(line);
-    if (fenceMatch) {
-      if (!inFence) {
+    if (!inFence) {
+      const fenceMatch = /^\s{0,3}(```+|~~~+)/.exec(line);
+      if (fenceMatch) {
         flush(false);
         inFence = true;
-        fenceMarker = fenceMatch[2]!;
+        fenceMarker = fenceMatch[1]!;
         buf.push(line);
-      } else if (line.includes(fenceMarker)) {
-        buf.push(line);
-        flush(true);
-        inFence = false;
-        fenceMarker = "";
-      } else {
-        buf.push(line);
+        continue;
       }
+      buf.push(line);
+      continue;
+    }
+    // In-fence: a closing fence is CommonMark-compliant only if it's
+    // up-to-three-space-indented, a run of the same marker character at
+    // least as long as the opener, and followed by whitespace only. The
+    // previous `line.includes(fenceMarker)` would falsely close on any
+    // line containing the marker as a substring (e.g. a JS string with
+    // backticks inside).
+    const marker = fenceMarker[0]!;
+    const closeRe = new RegExp(`^\\s{0,3}${marker === "`" ? "`" : "~"}{${fenceMarker.length},}\\s*$`);
+    if (closeRe.test(line)) {
+      buf.push(line);
+      flush(true);
+      inFence = false;
+      fenceMarker = "";
     } else {
       buf.push(line);
     }
@@ -101,8 +111,18 @@ export function wikilinksFromJsx(markdown: string): string {
   });
 }
 
+/**
+ * Escape a string for inclusion as a double-quoted JSX attribute value.
+ * Ampersand MUST be escaped first to avoid double-escaping the other
+ * substitutions. We escape `<` and `>` too even though they're technically
+ * legal inside attribute values, because MDX's JSX parser is strict.
+ */
 function escapeAttr(value: string): string {
-  return value.replace(/"/g, "&quot;");
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 /**

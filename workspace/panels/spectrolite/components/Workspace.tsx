@@ -56,6 +56,7 @@ import { WikilinkContext } from "../mdx/components";
 import { resolveWikilinkTarget, wikilinksFromJsx } from "../mdx/wikilink";
 import { parseFrontmatter, diffDependencies } from "../mdx/frontmatter";
 import { prefetchDependencies } from "../mdx/depPrefetch";
+import { joinSafe, parentDir } from "../state/safePath";
 
 export interface WorkspaceProps {
   channelName: string;
@@ -345,14 +346,20 @@ export function Workspace({
     const beforeOnDisk = wikilinksFromJsx(before);
     const afterOnDisk = wikilinksFromJsx(after);
     const payload = buildFlushPayload({ path: relPath, before: beforeOnDisk, after: afterOnDisk, knownHandles });
-    if (!payload) return;
+    const flushedAt = payload?.at ?? Date.now();
 
+    // We've successfully written to disk; mark the buffer flushed *even
+    // when the on-disk forms compare equal* (payload === null). Otherwise
+    // hasUnflushedChanges would stay true forever and we'd re-flush this
+    // same null-diff on every quiescence.
     setBuffers((prev) => {
       const cur = prev[relPath];
       if (!cur) return prev;
       return { ...prev, [relPath]: { ...cur, savedMdx: after, lastFlushedMdx: after } };
     });
-    setLastFlushedAt((prev) => ({ ...prev, [relPath]: payload.at }));
+    setLastFlushedAt((prev) => ({ ...prev, [relPath]: flushedAt }));
+
+    if (!payload) return;
 
     try {
       await c.publishCustomMessage({
@@ -421,17 +428,37 @@ export function Workspace({
     flushController.flushNow(relPath);
   }, [flushController]);
 
-  // Create-on-click for unresolved wikilinks: create a stub MDX file at the
-  // repo root, refresh the path index, and open the new file.
+  // Create-on-click for unresolved wikilinks. Resolves the path safely
+  // (rejects `../` escapes), refuses to clobber existing files, then
+  // refreshes the path index so backlinks pick up the new file.
   const createFileAt = useCallback(async (relPath: string, initialContent: string): Promise<string | null> => {
     const finalPath = relPath.endsWith(".mdx") ? relPath : `${relPath}.mdx`;
-    const full = `${repoRoot}/${finalPath}`;
-    const lastSlash = full.lastIndexOf("/");
-    if (lastSlash > 0) {
-      try { await fs.mkdir(full.slice(0, lastSlash), { recursive: true }); } catch { /* ignore */ }
+    const full = joinSafe(repoRoot, finalPath);
+    if (!full) {
+      console.warn(`[Spectrolite] create rejected — "${finalPath}" escapes workspace root`);
+      return null;
+    }
+    // Refuse to overwrite. If the file already exists, just open it.
+    try {
+      await fs.stat(full);
+      // Exists — return the path so the caller opens it.
+      return finalPath;
+    } catch {
+      // ENOENT — safe to create.
+    }
+    const parent = parentDir(full);
+    if (parent) {
+      try { await fs.mkdir(parent, { recursive: true }); } catch { /* ignore */ }
     }
     try {
-      await fs.writeFile(full, initialContent);
+      const fsWithFlags = fs as unknown as { writeFile(p: string, data: string, opts?: { flag?: string }): Promise<void> };
+      try {
+        await fsWithFlags.writeFile(full, initialContent, { flag: "wx" });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/eexist/i.test(msg)) return finalPath;
+        await fs.writeFile(full, initialContent);
+      }
       setRefreshNonce((n) => n + 1);
       return finalPath;
     } catch (err) {

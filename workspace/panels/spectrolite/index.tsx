@@ -179,15 +179,26 @@ export default function SpectrolitePanel() {
   }, [resolvedContextId, bootstrapChannel, repoRoot]);
 
   const handleRemoveAgent = useCallback(async (handle: string) => {
-    const channelName = (getStateArgs<SpectroliteStateArgs>().channelName) ?? bootstrapChannel;
+    const args = getStateArgs<SpectroliteStateArgs>();
+    const channelName = args.channelName ?? bootstrapChannel;
     if (!channelName) return;
     const workers = await getChannelDOParticipants(channelName);
-    const match = workers.find((w) => w.objectKey.startsWith(handle));
+    // Look up the persisted record for this handle to get the EXACT
+    // objectKey we minted on subscribe; prefix-matching by handle is
+    // unsafe when handles share prefixes (e.g. "scribe" vs "scribe-x").
+    const pendingRecord = (args.pendingAgents ?? []).find((a) => a.handle === handle);
+    const match = pendingRecord
+      ? workers.find((w) => w.objectKey === pendingRecord.key)
+      : null;
     if (match) {
       await unsubscribeDOFromChannel(match.source, match.className, match.objectKey, channelName);
-    } else if (workers.length === 1) {
+    } else if (!pendingRecord && workers.length === 1) {
+      // Legacy fallback only when we have no persisted record — and only
+      // if there's a single worker, so we can't pick wrong.
       const w = workers[0]!;
       await unsubscribeDOFromChannel(w.source, w.className, w.objectKey, channelName);
+    } else if (!match) {
+      console.warn(`[Spectrolite] no DO worker matches handle "${handle}" (key=${pendingRecord?.key ?? "?"})`);
     }
     const cur = getStateArgs<SpectroliteStateArgs>();
     await setStateArgs({

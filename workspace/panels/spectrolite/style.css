@@ -6,8 +6,27 @@
   font-size: var(--font-size-3);
   line-height: var(--line-height-3);
   padding: var(--space-4);
-  outline: none;
   min-height: 100%;
+}
+
+/* Hide the focus ring only for mouse users; keyboard users (focus-visible)
+   still see a high-contrast outline so they can locate the editor. */
+.spectrolite-content:focus {
+  outline: none;
+}
+.spectrolite-content:focus-visible {
+  outline: 2px solid var(--accent-9);
+  outline-offset: -2px;
+  border-radius: var(--radius-2);
+}
+
+/* Channel drawer toggle keyboard focus */
+.spectrolite-drawer-toggle:focus {
+  outline: none;
+}
+.spectrolite-drawer-toggle:focus-visible {
+  outline: 2px solid var(--accent-9);
+  outline-offset: -2px;
 }
 
 .spectrolite-content--dark {

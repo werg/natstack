@@ -63,6 +63,7 @@ import { MentionAutocomplete, type MentionCandidate } from "./MentionAutocomplet
 import { knownJsxDescriptors } from "../mdx/runtime";
 import { LiveJsxEditor } from "../mdx/LiveJsxEditor";
 import { wikilinksFromJsx, wikilinksToJsx } from "../mdx/wikilink";
+import { joinSafe, parentDir } from "../state/safePath";
 
 export interface DocumentEditorProps {
   repoRoot: string;
@@ -100,28 +101,42 @@ export function DocumentEditor({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [contentEditableEl, setContentEditableEl] = useState<HTMLElement | null>(null);
 
-  const fullPath = `${repoRoot}/${relPath}`;
+  // Resolved + traversal-checked. Defensive even though the panel's fs is
+  // RPC-scoped to the context root.
+  const fullPath = useMemo(() => joinSafe(repoRoot, relPath), [repoRoot, relPath]);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
+  const loadFromDisk = useCallback(async (signal?: { cancelled: boolean }) => {
+    if (!fullPath) {
+      setError(`Refusing to open "${relPath}" — path escapes the workspace root.`);
+      return;
+    }
+    try {
+      const raw = await fs.readFile(fullPath, "utf-8");
+      if (signal?.cancelled) return;
+      const transformed = wikilinksToJsx(raw);
+      lastDiskRef.current = raw;
+      setMarkdown(transformed);
       setError(null);
-      try {
-        const raw = await fs.readFile(fullPath, "utf-8");
-        if (cancelled) return;
-        const transformed = wikilinksToJsx(raw);
-        lastDiskRef.current = raw;
-        setMarkdown(transformed);
-        onReload(relPath, transformed);
-      } catch (err) {
-        if (cancelled) return;
-        setError(`Failed to read ${relPath}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    })();
-    return () => { cancelled = true; };
+      editorRef.current?.setMarkdown(transformed);
+      onReload(relPath, transformed);
+    } catch (err) {
+      if (signal?.cancelled) return;
+      setError(`Failed to read ${relPath}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }, [fullPath, relPath, onReload]);
 
+  // Read on open + when the path changes
   useEffect(() => {
+    const signal = { cancelled: false };
+    void loadFromDisk(signal);
+    return () => { signal.cancelled = true; };
+  }, [loadFromDisk]);
+
+  // Poll for external (agent) file writes. On detected change, reload AND
+  // clear any stale error state (the previous read may have failed because
+  // the file didn't exist yet).
+  useEffect(() => {
+    if (!fullPath) return;
     const handle = setInterval(async () => {
       if (inFlightWriteRef.current) return;
       try {
@@ -134,6 +149,7 @@ export function DocumentEditor({
         }
         const transformed = wikilinksToJsx(raw);
         setMarkdown(transformed);
+        setError(null);
         editorRef.current?.setMarkdown(transformed);
         onReload(relPath, transformed);
       } catch {
@@ -235,7 +251,14 @@ export function DocumentEditor({
     return (
       <Flex direction="column" gap="2" p="3">
         <Text color="red" size="2">{error}</Text>
-        <Button size="1" variant="soft" onClick={() => { lastDiskRef.current = null; }}>
+        <Button
+          size="1"
+          variant="soft"
+          onClick={() => {
+            lastDiskRef.current = null;
+            void loadFromDisk();
+          }}
+        >
           <ReloadIcon /> Retry
         </Button>
       </Flex>
@@ -297,12 +320,17 @@ export function DocumentEditor({
  * Write the in-memory buffer to disk. Called by the flush pipeline.
  * Applies the inverse wikilink transformation (`<WikiLink>` → `[[Page]]`)
  * so the on-disk format stays Obsidian-compatible.
+ *
+ * Refuses to write paths that escape `repoRoot` via `../`.
  */
 export async function writeBufferToDisk(repoRoot: string, relPath: string, content: string): Promise<void> {
-  const full = `${repoRoot}/${relPath}`;
-  const lastSlash = full.lastIndexOf("/");
-  if (lastSlash > 0) {
-    await fs.mkdir(full.slice(0, lastSlash), { recursive: true });
+  const full = joinSafe(repoRoot, relPath);
+  if (!full) {
+    throw new Error(`Refusing to write "${relPath}" — path escapes the workspace root.`);
+  }
+  const parent = parentDir(full);
+  if (parent) {
+    await fs.mkdir(parent, { recursive: true });
   }
   await fs.writeFile(full, wikilinksFromJsx(content));
 }

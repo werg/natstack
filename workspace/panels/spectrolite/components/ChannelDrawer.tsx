@@ -44,6 +44,9 @@ export function ChannelDrawer({ client, onSend, onUseAsCommitMessage }: ChannelD
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    // Reset on client swap so messages from a previous channel don't
+    // persist across reconnects / context switches.
+    setMessages([]);
     if (!client) return;
     let cancelled = false;
     (async () => {
@@ -135,8 +138,23 @@ export function ChannelDrawer({ client, onSend, onUseAsCommitMessage }: ChannelD
         gap="2"
         px="3"
         py="1"
-        style={{ cursor: "pointer", borderBottom: open ? "1px solid var(--gray-5)" : "none" }}
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        aria-controls="spectrolite-channel-drawer-body"
         onClick={() => setOpen((v) => !v)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setOpen((v) => !v);
+          }
+        }}
+        style={{
+          cursor: "pointer",
+          borderBottom: open ? "1px solid var(--gray-5)" : "none",
+          outline: "none",
+        }}
+        className="spectrolite-drawer-toggle"
       >
         <Flex align="center" gap="2">
           {open ? <ChevronDownIcon /> : <ChevronUpIcon />}
@@ -147,7 +165,7 @@ export function ChannelDrawer({ client, onSend, onUseAsCommitMessage }: ChannelD
         </Flex>
       </Flex>
       {open ? (
-        <Flex direction="column" gap="2" p="2" style={{ maxHeight: "30vh" }}>
+        <Flex id="spectrolite-channel-drawer-body" direction="column" gap="2" p="2" style={{ maxHeight: "30vh" }}>
           <Box ref={scrollRef} style={{ maxHeight: "20vh", overflowY: "auto" }}>
             <ScrollArea>
               <Flex direction="column" gap="1">
