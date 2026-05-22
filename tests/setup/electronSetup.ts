@@ -446,6 +446,7 @@ export async function createPanel(
     name?: string;
     env?: Record<string, string>;
     focus?: boolean;
+    stateArgs?: Record<string, unknown>;
   }
 ): Promise<{ id: string; type: string; title: string }> {
   return app.evaluate(
@@ -543,6 +544,27 @@ export type PanelDiagnostic = {
   timestamp: number;
 };
 
+export interface PanelLayoutAudit {
+  viewport: { width: number; height: number };
+  document: { scrollWidth: number; scrollHeight: number };
+  horizontalOverflow: Array<{
+    tag: string;
+    className: string;
+    text: string;
+    left: number;
+    right: number;
+    width: number;
+  }>;
+  verticalOverflow: Array<{
+    tag: string;
+    className: string;
+    text: string;
+    top: number;
+    bottom: number;
+    height: number;
+  }>;
+}
+
 export async function startPanelDiagnostics(
   app: ElectronApplication,
   panelId: string
@@ -570,6 +592,23 @@ export async function getPanelDiagnostics(
       throw new Error("Test API not available. Make sure NATSTACK_TEST_MODE=1 is set.");
     }
     return testApi.getPanelDiagnostics(id);
+  }, panelId);
+}
+
+export async function getPanelLayoutAudit(
+  app: ElectronApplication,
+  panelId: string
+): Promise<PanelLayoutAudit> {
+  return app.evaluate(async (_electron, id) => {
+    const testApi = (
+      globalThis as {
+        __testApi?: { getPanelLayoutAudit: (id: string) => Promise<PanelLayoutAudit> };
+      }
+    ).__testApi;
+    if (!testApi) {
+      throw new Error("Test API not available. Make sure NATSTACK_TEST_MODE=1 is set.");
+    }
+    return testApi.getPanelLayoutAudit(id);
   }, panelId);
 }
 
@@ -605,11 +644,7 @@ export async function clickPanelText(
       const testApi = (
         globalThis as {
           __testApi?: {
-            clickPanelText: (
-              id: string,
-              selector: string,
-              text: string
-            ) => Promise<boolean>;
+            clickPanelText: (id: string, selector: string, text: string) => Promise<boolean>;
           };
         }
       ).__testApi;

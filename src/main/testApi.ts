@@ -18,6 +18,27 @@ export type PanelDiagnostic = {
   timestamp: number;
 };
 
+export interface PanelLayoutAudit {
+  viewport: { width: number; height: number };
+  document: { scrollWidth: number; scrollHeight: number };
+  horizontalOverflow: Array<{
+    tag: string;
+    className: string;
+    text: string;
+    left: number;
+    right: number;
+    width: number;
+  }>;
+  verticalOverflow: Array<{
+    tag: string;
+    className: string;
+    text: string;
+    top: number;
+    bottom: number;
+    height: number;
+  }>;
+}
+
 export interface TestApi {
   /** Get the full panel tree as a flat array */
   getPanelTree(): Panel[];
@@ -42,6 +63,7 @@ export interface TestApi {
       name?: string;
       env?: Record<string, string>;
       focus?: boolean;
+      stateArgs?: Record<string, unknown>;
     }
   ): Promise<{ id: string; title: string }>;
 
@@ -65,6 +87,9 @@ export interface TestApi {
 
   /** Read collected panel WebContents diagnostics */
   getPanelDiagnostics(panelId: string): PanelDiagnostic[];
+
+  /** Return viewport and visible overflow diagnostics from a panel WebContents */
+  getPanelLayoutAudit(panelId: string): Promise<PanelLayoutAudit>;
 
   /** Click an element inside a panel's WebContents */
   clickPanelSelector(panelId: string, selector: string): Promise<boolean>;
@@ -163,7 +188,8 @@ export function setupTestApi(
     },
 
     async createPanel(parentId, source, options) {
-      return panelOrchestrator.createPanel(parentId, source, options ?? {});
+      const { stateArgs, ...createOptions } = options ?? {};
+      return panelOrchestrator.createPanel(parentId, source, createOptions, stateArgs);
     },
 
     async closePanel(id) {
@@ -274,6 +300,60 @@ export function setupTestApi(
 
     getPanelDiagnostics(panelId): PanelDiagnostic[] {
       return [...(panelDiagnostics.get(panelId)?.records ?? [])];
+    },
+
+    async getPanelLayoutAudit(panelId): Promise<PanelLayoutAudit> {
+      if (!panelView) throw new Error("PanelView not available");
+      const wc = panelView.getWebContents(panelId);
+      if (!wc || wc.isDestroyed()) throw new Error(`Panel WebContents not available: ${panelId}`);
+      return wc.executeJavaScript(
+        `
+          (() => {
+            const viewport = { width: window.innerWidth, height: window.innerHeight };
+            const documentSize = {
+              scrollWidth: document.documentElement.scrollWidth,
+              scrollHeight: document.documentElement.scrollHeight,
+            };
+            const describe = (node, rect) => ({
+              tag: node.tagName.toLowerCase(),
+              className: typeof node.className === "string" ? node.className : "",
+              text: (node.innerText || node.textContent || "").trim().replace(/\\s+/g, " ").slice(0, 80),
+              left: Math.round(rect.left),
+              right: Math.round(rect.right),
+              top: Math.round(rect.top),
+              bottom: Math.round(rect.bottom),
+              width: Math.round(rect.width),
+              height: Math.round(rect.height),
+            });
+            const horizontalOverflow = [];
+            const verticalOverflow = [];
+            for (const node of document.body.querySelectorAll("*")) {
+              if (!(node instanceof HTMLElement)) continue;
+              const style = window.getComputedStyle(node);
+              if (style.display === "none" || style.visibility === "hidden") continue;
+              const rect = node.getBoundingClientRect();
+              if (rect.width <= 0 || rect.height <= 0) continue;
+              if (rect.right > viewport.width + 2 || rect.left < -2) {
+                horizontalOverflow.push(describe(node, rect));
+              }
+              const isPositioned = style.position !== "static" && style.position !== "relative";
+              if (
+                isPositioned &&
+                (rect.bottom > viewport.height + 2 || rect.top < -2)
+              ) {
+                verticalOverflow.push(describe(node, rect));
+              }
+            }
+            return {
+              viewport,
+              document: documentSize,
+              horizontalOverflow: horizontalOverflow.slice(0, 20),
+              verticalOverflow: verticalOverflow.slice(0, 20),
+            };
+          })()
+        `,
+        true
+      ) as Promise<PanelLayoutAudit>;
     },
 
     async clickPanelSelector(panelId, selector): Promise<boolean> {
