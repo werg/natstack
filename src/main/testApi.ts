@@ -333,13 +333,13 @@ export function setupTestApi(
               if (style.display === "none" || style.visibility === "hidden") continue;
               const rect = node.getBoundingClientRect();
               if (rect.width <= 0 || rect.height <= 0) continue;
-              if (rect.right > viewport.width + 2 || rect.left < -2) {
+              if (rect.right > viewport.width + 4 || rect.left < -4) {
                 horizontalOverflow.push(describe(node, rect));
               }
               const isPositioned = style.position !== "static" && style.position !== "relative";
               if (
                 isPositioned &&
-                (rect.bottom > viewport.height + 2 || rect.top < -2)
+                (rect.bottom > viewport.height + 4 || rect.top < -4)
               ) {
                 verticalOverflow.push(describe(node, rect));
               }

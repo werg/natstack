@@ -394,14 +394,16 @@ export async function waitForPanel(
  */
 export async function getPanelTree(
   app: ElectronApplication
-): Promise<Array<{ id: string; title: string; children: unknown[] }>> {
+): Promise<Array<{ id: string; title: string; children: unknown[]; snapshot?: { source?: string } }>> {
   return app.evaluate(() => {
     const testApi = (globalThis as { __testApi?: { getPanelTree: () => unknown[] } }).__testApi;
     if (!testApi) {
       throw new Error("Test API not available. Make sure NATSTACK_TEST_MODE=1 is set.");
     }
     return testApi.getPanelTree();
-  }) as Promise<Array<{ id: string; title: string; children: unknown[] }>>;
+  }) as Promise<
+    Array<{ id: string; title: string; children: unknown[]; snapshot?: { source?: string } }>
+  >;
 }
 
 /**
