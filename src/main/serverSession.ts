@@ -6,7 +6,7 @@
  * with everything needed to continue startup.
  */
 
-import { dialog, app } from "electron";
+import { app } from "electron";
 import * as fs from "fs";
 import * as http from "http";
 import * as https from "https";
@@ -318,9 +318,8 @@ export async function establishServerSession(args: {
       onRecovery: args.onRecovery,
       onDisconnect: () => {
         // Called only after all reconnection attempts are exhausted
-        dialog.showErrorBox(
-          "Remote Server Disconnected",
-          "The connection to the remote NatStack server was lost and could not be re-established after multiple attempts. The app will now exit."
+        console.error(
+          "[App] Remote server disconnected: connection was lost and could not be re-established after multiple attempts. Exiting."
         );
         app.exit(1);
       },
@@ -339,9 +338,8 @@ export async function establishServerSession(args: {
       isEphemeral: mode.isEphemeral,
       onCrash: (code) => {
         console.error(`[App] Server process crashed with code ${code}`);
-        dialog.showErrorBox(
-          "Server Process Crashed",
-          "The NatStack server process exited repeatedly and could not be recovered. The app will now restart."
+        console.error(
+          "[App] Server process exited repeatedly and could not be recovered. Relaunching."
         );
         app.relaunch();
         app.exit(1);

@@ -24,6 +24,29 @@ import {
 
 const log = createDevLogger("App");
 const APP_NAME = "NatStack";
+
+function formatUnknownError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.stack ?? error.message;
+  }
+  return String(error);
+}
+
+function logSuppressedErrorDialog(title: string, content: string): void {
+  console.error(`[App] Suppressed error dialog: ${title}\n${content}`);
+}
+
+// Electron's default main-process exception handling can show a blocking
+// "A JavaScript Error Occurred in the main process" alert. NatStack should log
+// these errors instead of interrupting the user with generic native dialogs.
+process.on("uncaughtException", (error) => {
+  console.error("[App] Uncaught exception in main process:", formatUnknownError(error));
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[App] Unhandled rejection in main process:", formatUnknownError(reason));
+});
+dialog.showErrorBox = logSuppressedErrorDialog;
+
 app.setName(APP_NAME);
 if (!app.requestSingleInstanceLock()) {
   app.exit(0);
@@ -1601,7 +1624,7 @@ app.on("ready", async () => {
     }
     await Promise.all(cleanupPromises);
 
-    dialog.showErrorBox("Startup Failed", error instanceof Error ? error.message : String(error));
+    console.error("[App] Startup failed; exiting:", formatUnknownError(error));
     app.exit(1);
   }
 });
