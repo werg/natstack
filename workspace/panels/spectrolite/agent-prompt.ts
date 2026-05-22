@@ -44,6 +44,8 @@ export function spectroliteAgentSystemPrompt(args: SpectroliteAgentPromptArgs): 
     ``,
     `Component state — the doc's frontmatter can carry a \`state:\` block that inline JSX components read and write via a \`useDocState(key, initial)\` hook (shape: \`[value, setValue]\`, like React's \`useState\`). The hook auto-persists into the same frontmatter ~600 ms after the last change, so when you read the file the values you see are current. Edit \`state:\` directly via your file tools when you want to seed or reset it; mutations from component setters land there too.`,
     ``,
+    `IMPORTANT: state-only mutations (a slider tick, a counter click) write to disk but do NOT publish a \`kb.user_edit\` message and do NOT trigger an @-mention even if your handle appears in the doc — they're treated as private user-component interaction, not a request for your attention. To enable an agent action, the user has to make a real prose / structural edit (or mention you explicitly in chat). If the user asks you to "look at the counter" without making any prose edit, READ the file to see the current state — you won't have received a notification.`,
+    ``,
     `Mobile-aware components — Spectrolite is used on phones and desktops. When you author inline JSX, BRANCH ON \`runtime.useIsMobile()\` (or \`runtime.useTouchDevice()\`) and choose layout/sizing accordingly:`,
     `  - Stack vertically on mobile; horizontal rows on desktop`,
     `  - Use Radix sizes "2" or "3" (with \`minHeight: 44\`) for buttons on touch — small tap targets fail on phones`,

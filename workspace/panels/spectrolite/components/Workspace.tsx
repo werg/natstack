@@ -61,7 +61,7 @@ import { createBufferEntry, hasUnflushedChanges, type FileBufferEntry } from "..
 import { KB_USER_EDIT_TYPE, registerSpectroliteMessageTypes } from "../messages/register";
 import { WikilinkContext } from "../mdx/components";
 import { resolveWikilinkTarget, wikilinksFromJsx } from "../mdx/wikilink";
-import { parseFrontmatter, diffDependencies } from "../mdx/frontmatter";
+import { parseFrontmatter, diffDependencies, isStateOnlyChange } from "../mdx/frontmatter";
 import { prefetchDependencies } from "../mdx/depPrefetch";
 import { joinSafe, parentDir } from "../state/safePath";
 
@@ -394,6 +394,15 @@ export function Workspace({
     setLastFlushedAt((prev) => ({ ...prev, [relPath]: flushedAt }));
 
     if (!payload || !c) return;
+
+    // Suppress the channel notification when this flush is just
+    // component state churn — sliders, toggles, counters. Disk write
+    // already happened (above), so the agent sees current state when
+    // it reads the file. We just don't want to spam the channel with
+    // a kb.user_edit + @-mention every time the user clicks a button.
+    // Prose edits, dependency changes, or any non-`state:` frontmatter
+    // edit still publishes as before.
+    if (isStateOnlyChange(beforeOnDisk, afterOnDisk)) return;
 
     try {
       await c.publishCustomMessage({

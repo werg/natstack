@@ -132,6 +132,58 @@ export function diffDependencies(
   return { added, changed, removed };
 }
 
+/**
+ * Returns true iff the only difference between two markdown documents
+ * is the value of the frontmatter `state:` key — i.e. the prose body
+ * is byte-identical AND every frontmatter field except `state` is
+ * structurally equal.
+ *
+ * Used by the flush pipeline to decide whether a particular flush is
+ * "just component state mutating" (skip the kb.user_edit publish — the
+ * agent doesn't want a notification every time the user nudges a
+ * slider) versus a real prose / frontmatter / dependency edit (publish
+ * as usual).
+ */
+export function isStateOnlyChange(before: string, after: string): boolean {
+  if (before === after) return true;
+  // Body comparison — split off the `---…---` header and compare the
+  // rest byte-for-byte.
+  if (bodyOf(before) !== bodyOf(after)) return false;
+  const fmBefore = frontmatterMinusState(before);
+  const fmAfter = frontmatterMinusState(after);
+  return stableStringify(fmBefore) === stableStringify(fmAfter);
+}
+
+function bodyOf(markdown: string): string {
+  const m = FRONTMATTER_RE.exec(markdown);
+  return m ? markdown.slice(m[0].length) : markdown;
+}
+
+function frontmatterMinusState(markdown: string): unknown {
+  const m = FRONTMATTER_RE.exec(markdown);
+  if (!m) return null;
+  try {
+    const parsed = YAML.parse(m[1] ?? "");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return parsed ?? null;
+    const rest: Record<string, unknown> = { ...(parsed as Record<string, unknown>) };
+    delete rest["state"];
+    return rest;
+  } catch {
+    return null;
+  }
+}
+
+/** Object-key-sorted JSON serialization, so map ordering doesn't
+ *  produce false-positive diffs on logically equal frontmatters. */
+function stableStringify(value: unknown): string {
+  if (value === null || value === undefined) return JSON.stringify(value);
+  if (typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return "[" + value.map(stableStringify).join(",") + "]";
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return "{" + keys.map((k) => JSON.stringify(k) + ":" + stableStringify(obj[k])).join(",") + "}";
+}
+
 /** Shallow-equal compare two state maps. */
 export function statesEqual(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
   const ak = Object.keys(a);
