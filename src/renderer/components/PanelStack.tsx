@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { Box, Button, Card, Flex, Heading, Spinner, Text } from "@radix-ui/themes";
+import { Cross2Icon } from "@radix-ui/react-icons";
+import { Box, Button, Card, Flex, Heading, IconButton, Spinner, Text } from "@radix-ui/themes";
+import { useIsMobile } from "@workspace/react/responsive";
 
 import type { LazyTitleNavigationData, LazyStatusNavigationData } from "./navigationTypes";
 import type { PanelContextMenuAction } from "@natstack/shared/types";
@@ -112,6 +114,7 @@ export function PanelStack({
 }: PanelStackProps) {
   const {
     mode: navigationMode,
+    setMode,
     setLazyTitleNavigation,
     setLazyStatusNavigation,
     registerNavigateToId,
@@ -124,8 +127,12 @@ export function PanelStack({
   const [sidebarWidth, setSidebarWidth] = useState<number>(260);
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const [isResizeHover, setIsResizeHover] = useState(false);
+  const [viewportWidth, setViewportWidth] = useState(() =>
+    typeof window === "undefined" ? 1024 : window.innerWidth
+  );
   const containerRef = useRef<HTMLDivElement | null>(null);
   const resizePointerIdRef = useRef<number | null>(null);
+  const isMobile = useIsMobile();
 
   // Lazy data hooks
   const { panels: rootPanels, loading: rootLoading } = useRootPanels();
@@ -383,6 +390,17 @@ export function PanelStack({
     await panelService.archive(panelId);
   }, []);
 
+  useEffect(() => {
+    if (!isMobile) {
+      return;
+    }
+
+    const updateViewportWidth = () => setViewportWidth(window.innerWidth);
+    updateViewportWidth();
+    window.addEventListener("resize", updateViewportWidth);
+    return () => window.removeEventListener("resize", updateViewportWidth);
+  }, [isMobile]);
+
   const startSidebarResize = (event: React.PointerEvent) => {
     event.preventDefault();
     resizePointerIdRef.current = event.pointerId;
@@ -480,15 +498,17 @@ export function PanelStack({
   }, [visiblePanel?.id, visiblePanel?.artifacts?.htmlPath, visiblePanel?.artifacts?.buildState]);
 
   // Notify main process of layout changes (sidebar visibility and width)
+  const mobileSidebarWidth = Math.max(0, Math.min(360, viewportWidth - 48));
+  const effectiveSidebarWidth = isMobile ? mobileSidebarWidth : sidebarWidth;
   const sidebarVisible = navigationMode === "tree";
   useEffect(() => {
     void view
       .updateLayout({
         sidebarVisible,
-        sidebarWidth,
+        sidebarWidth: effectiveSidebarWidth,
       })
       .catch((err: unknown) => console.warn("[PanelStack] Layout update failed:", err));
-  }, [sidebarVisible, sidebarWidth]);
+  }, [effectiveSidebarWidth, sidebarVisible]);
 
   // Send theme CSS to main process for injection into views
   useEffect(() => {
@@ -805,6 +825,18 @@ export function PanelStack({
   }, [onChromeStateChange, visiblePanel]);
 
   const isTreeNavigation = navigationMode === "tree";
+  const closeMobileTree = useCallback(() => {
+    if (isMobile) {
+      setMode("stack");
+    }
+  }, [isMobile, setMode]);
+  const navigateFromTree = useCallback(
+    (panelId: string) => {
+      navigateToPanelId(panelId);
+      closeMobileTree();
+    },
+    [closeMobileTree, navigateToPanelId]
+  );
 
   // Show loading state while initializing
   if (rootLoading && rootPanels.length === 0) {
@@ -920,28 +952,43 @@ export function PanelStack({
             className="app-shell-panel-card"
             size="2"
             style={{
-              width: `${sidebarWidth}px`,
-              minWidth: "200px",
+              width: `${effectiveSidebarWidth}px`,
+              minWidth: isMobile ? `${effectiveSidebarWidth}px` : "200px",
               flexShrink: 0,
               alignSelf: "stretch",
               overflow: "hidden",
               display: "flex",
               flexDirection: "column",
+              borderRadius: isMobile ? 0 : undefined,
+              borderTop: isMobile ? 0 : undefined,
+              borderBottom: isMobile ? 0 : undefined,
             }}
           >
             <Flex direction="column" gap="2" style={{ flex: 1, minHeight: 0 }}>
               <Flex align="center" justify="between" px="1" pt="1">
                 <Heading size="2" weight="medium">
-                  Panel tree
+                  {isMobile ? "Panels" : "Panel tree"}
                 </Heading>
-                <Text size="1" color="gray">
-                  {rootPanels.length} root{rootPanels.length === 1 ? "" : "s"}
-                </Text>
+                <Flex align="center" gap="2">
+                  <Text size="1" color="gray">
+                    {rootPanels.length} root{rootPanels.length === 1 ? "" : "s"}
+                  </Text>
+                  {isMobile && (
+                    <IconButton
+                      size="1"
+                      variant="ghost"
+                      aria-label="Close panel tree"
+                      onClick={closeMobileTree}
+                    >
+                      <Cross2Icon />
+                    </IconButton>
+                  )}
+                </Flex>
               </Flex>
               <LazyPanelTreeSidebar
                 selectedId={visiblePanelId}
                 ancestorIds={ancestorIds}
-                onSelect={navigateToPanelId}
+                onSelect={navigateFromTree}
                 onPanelAction={handlePanelAction}
                 onArchive={handleArchive}
               />
@@ -949,7 +996,7 @@ export function PanelStack({
           </Card>
         )}
 
-        {isTreeNavigation && (
+        {isTreeNavigation && !isMobile && (
           <Box
             onPointerDown={startSidebarResize}
             onPointerEnter={() => setIsResizeHover(true)}
