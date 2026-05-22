@@ -57,7 +57,7 @@ Markdown links are clickable in NatStack panels.
 - HTTPS links open browser panels.
 - Workspace panel navigation should use `buildPanelLink` from
   `@workspace/runtime` inside panel code.
-- Workflow UI should offer both `createBrowserPanel(url, { focus: true })` and
+- Workflow UI should offer both `openPanel(url, { focus: true })` and
   approval-gated `openExternal(url)` when the user may need their normal browser
   profile.
 - OAuth authorize URLs should use

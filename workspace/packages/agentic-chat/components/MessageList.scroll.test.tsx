@@ -7,6 +7,21 @@ import type { ChatMessage } from "../types";
 
 const hookState = vi.hoisted(() => {
   const scrollListeners = new Set<() => void>();
+  let layoutItems: Array<{
+    id: string;
+    top: number;
+    height: number;
+  }> = [];
+  const makeLayoutElement = (item: { id: string; top: number; height: number }) => ({
+    getAttribute(name: string) {
+      return name === "data-scroll-anchor-id" ? item.id : null;
+    },
+    offsetTop: item.top,
+    offsetHeight: item.height,
+    getBoundingClientRect() {
+      return { top: item.top, bottom: item.top + item.height, height: item.height };
+    },
+  });
   const scrollElement = {
     scrollTop: 0,
     scrollHeight: 0,
@@ -18,7 +33,14 @@ const hookState = vi.hoisted(() => {
       if (event === "scroll") scrollListeners.delete(listener);
     },
   };
-  const contentElement = {};
+  const contentElement = {
+    querySelectorAll() {
+      return layoutItems.map(makeLayoutElement);
+    },
+    getBoundingClientRect() {
+      return { top: 0, bottom: 0, height: 0 };
+    },
+  };
   const scrollRef = Object.assign((_node: unknown) => {}, { current: scrollElement });
   const contentRef = Object.assign((_node: unknown) => {}, { current: contentElement });
   return {
@@ -29,10 +51,13 @@ const hookState = vi.hoisted(() => {
     scrollListeners,
     scrollRef,
     scrollToBottom: vi.fn(() => true),
+    setLayoutItems(nextItems: typeof layoutItems) {
+      layoutItems = nextItems;
+    },
   };
 });
 
-vi.mock("use-stick-to-bottom", () => ({
+vi.mock("../hooks/useStickToBottom.js", () => ({
   useStickToBottom: () => ({
     scrollRef: hookState.scrollRef,
     contentRef: hookState.contentRef,
@@ -62,6 +87,7 @@ describe("MessageList scroll behavior", () => {
     hookState.scrollElement.clientHeight = 0;
     hookState.scrollListeners.clear();
     hookState.scrollToBottom.mockClear();
+    hookState.setLayoutItems([]);
   });
 
   it("does not re-trigger history loading on message append while already near the top", async () => {
@@ -151,6 +177,138 @@ describe("MessageList scroll behavior", () => {
     fireEvent.click(screen.getByText("New messages"));
 
     expect(hookState.scrollToBottom).toHaveBeenCalledWith({ animation: "instant" });
+    expect(screen.queryByText("New messages")).toBeNull();
+  });
+
+  it("does not show the new content indicator for appended messages while pinned at bottom", () => {
+    hookState.isAtBottom = true;
+
+    const { rerender } = render(
+      <MessageList
+        messages={[makeMessage("m1")]}
+        participants={{}}
+        selfId={null}
+        allParticipants={{}}
+      />,
+    );
+
+    rerender(
+      <MessageList
+        messages={[makeMessage("m1"), makeMessage("m2")]}
+        participants={{}}
+        selfId={null}
+        allParticipants={{}}
+      />,
+    );
+
+    expect(screen.queryByText("New messages")).toBeNull();
+  });
+
+  it("shows the new content indicator when an item below the viewport updates", () => {
+    hookState.isAtBottom = false;
+    hookState.scrollElement.scrollTop = 0;
+    hookState.scrollElement.clientHeight = 100;
+    hookState.scrollElement.scrollHeight = 300;
+    hookState.setLayoutItems([
+      { id: "m1", top: 0, height: 100 },
+      { id: "m2", top: 150, height: 100 },
+    ]);
+
+    const { rerender } = render(
+      <MessageList
+        messages={[makeMessage("m1"), makeMessage("m2")]}
+        participants={{}}
+        selfId={null}
+        allParticipants={{}}
+      />,
+    );
+
+    rerender(
+      <MessageList
+        messages={[makeMessage("m1"), makeMessage("m2", { content: "updated below" })]}
+        participants={{}}
+        selfId={null}
+        allParticipants={{}}
+      />,
+    );
+
+    expect(screen.getByText("New messages")).toBeTruthy();
+  });
+
+  it("preserves the anchored item when an earlier message expands", () => {
+    hookState.isAtBottom = false;
+    hookState.scrollElement.scrollTop = 150;
+    hookState.scrollElement.scrollHeight = 300;
+    hookState.setLayoutItems([
+      { id: "m1", top: 0, height: 100 },
+      { id: "m2", top: 100, height: 100 },
+      { id: "m3", top: 200, height: 100 },
+    ]);
+
+    const { rerender } = render(
+      <MessageList
+        messages={[makeMessage("m1"), makeMessage("m2"), makeMessage("m3")]}
+        participants={{}}
+        selfId={null}
+        allParticipants={{}}
+      />,
+    );
+
+    hookState.scrollElement.scrollHeight = 350;
+    hookState.setLayoutItems([
+      { id: "m1", top: 0, height: 150 },
+      { id: "m2", top: 150, height: 100 },
+      { id: "m3", top: 250, height: 100 },
+    ]);
+
+    rerender(
+      <MessageList
+        messages={[makeMessage("m1", { content: "expanded" }), makeMessage("m2"), makeMessage("m3")]}
+        participants={{}}
+        selfId={null}
+        allParticipants={{}}
+      />,
+    );
+
+    expect(hookState.scrollElement.scrollTop).toBe(200);
+    expect(screen.queryByText("New messages")).toBeNull();
+  });
+
+  it("preserves the anchored item when sort order changes", () => {
+    hookState.isAtBottom = false;
+    hookState.scrollElement.scrollTop = 150;
+    hookState.scrollElement.scrollHeight = 300;
+    hookState.setLayoutItems([
+      { id: "m1", top: 0, height: 100 },
+      { id: "m2", top: 100, height: 100 },
+      { id: "m3", top: 200, height: 100 },
+    ]);
+
+    const { rerender } = render(
+      <MessageList
+        messages={[makeMessage("m1"), makeMessage("m2"), makeMessage("m3")]}
+        participants={{}}
+        selfId={null}
+        allParticipants={{}}
+      />,
+    );
+
+    hookState.setLayoutItems([
+      { id: "m1", top: 0, height: 100 },
+      { id: "m3", top: 100, height: 100 },
+      { id: "m2", top: 200, height: 100 },
+    ]);
+
+    rerender(
+      <MessageList
+        messages={[makeMessage("m1"), makeMessage("m3"), makeMessage("m2")]}
+        participants={{}}
+        selfId={null}
+        allParticipants={{}}
+      />,
+    );
+
+    expect(hookState.scrollElement.scrollTop).toBe(250);
     expect(screen.queryByText("New messages")).toBeNull();
   });
 });

@@ -56,10 +56,14 @@ export function DeleteConfirmDialog({
 
   return (
     <AlertDialog.Root open={open} onOpenChange={onOpenChange}>
-      <AlertDialog.Content maxWidth="450px">
-        <AlertDialog.Title>
-          Delete {isDirectory ? "Directory" : "File"}
-        </AlertDialog.Title>
+      <AlertDialog.Content
+        style={{
+          width: "min(450px, calc(100vw - 24px))",
+          maxHeight: "calc(100dvh - 24px)",
+          overflow: "auto",
+        }}
+      >
+        <AlertDialog.Title>Delete {isDirectory ? "Directory" : "File"}</AlertDialog.Title>
         <AlertDialog.Description size="2">
           <Text>
             Are you sure you want to delete <Code>{fileName}</Code>?
@@ -71,9 +75,7 @@ export function DeleteConfirmDialog({
             <Callout.Icon>
               <ExclamationTriangleIcon />
             </Callout.Icon>
-            <Callout.Text>
-              This will delete the directory and all its contents.
-            </Callout.Text>
+            <Callout.Text>This will delete the directory and all its contents.</Callout.Text>
           </Callout.Root>
         )}
 
@@ -83,7 +85,7 @@ export function DeleteConfirmDialog({
           </Text>
         )}
 
-        <Flex gap="3" mt="4" justify="end">
+        <Flex gap="3" mt="4" justify="end" wrap="wrap">
           <AlertDialog.Cancel>
             <Button variant="soft" color="gray" disabled={loading}>
               Cancel

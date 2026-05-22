@@ -12,26 +12,27 @@ import type {
   RuntimeEntityCreateSpec,
   RuntimeEntityHandle,
 } from "../runtime/entitySpec.js";
+import type { PanelEntityId, PanelSlotId } from "../panel/ids.js";
 
 export interface SlotHistoryEntryInput {
   entryKey: string;
-  entityId: string;
+  entityId: PanelEntityId;
   source: string;
   contextId: string;
   stateArgs?: unknown;
 }
 
 export interface SlotCreateInput {
-  slotId: string;
-  parentSlotId: string | null;
+  slotId: PanelSlotId;
+  parentSlotId: PanelSlotId | null;
   positionId: string;
   initialEntry?: SlotHistoryEntryInput;
 }
 
 export interface SlotRow {
-  slot_id: string;
-  parent_slot_id: string | null;
-  current_entity_id: string | null;
+  slot_id: PanelSlotId;
+  parent_slot_id: PanelSlotId | null;
+  current_entity_id: PanelEntityId | null;
   current_entry_key: string | null;
   position_id: string;
   created_at: number;
@@ -39,10 +40,10 @@ export interface SlotRow {
 }
 
 export interface SlotHistoryRow {
-  slot_id: string;
+  slot_id: PanelSlotId;
   cursor: number;
   entry_key: string;
-  entity_id: string;
+  entity_id: PanelEntityId;
   source: string;
   context_id: string;
   state_args: string | null;
@@ -57,27 +58,27 @@ export interface SlotHistoryRow {
  */
 export interface WorkspaceStateClient {
   listSlots(): Promise<SlotRow[]>;
-  getSlot(slotId: string): Promise<SlotRow | null>;
-  getSlotHistory(slotId: string): Promise<SlotHistoryRow[]>;
+  getSlot(slotId: PanelSlotId): Promise<SlotRow | null>;
+  getSlotHistory(slotId: PanelSlotId): Promise<SlotHistoryRow[]>;
   resolveActiveEntity(id: string): Promise<EntityRecord | null>;
 
   createSlot(input: SlotCreateInput): Promise<void>;
-  appendSlotHistory(slotId: string, entry: SlotHistoryEntryInput): Promise<number>;
-  setSlotCurrent(slotId: string, entryKey: string): Promise<void>;
-  updateCurrentStateArgs(slotId: string, stateArgs: unknown): Promise<void>;
+  appendSlotHistory(slotId: PanelSlotId, entry: SlotHistoryEntryInput): Promise<number>;
+  setSlotCurrent(slotId: PanelSlotId, entryKey: string): Promise<void>;
+  updateCurrentStateArgs(slotId: PanelSlotId, stateArgs: unknown): Promise<void>;
   replaceSlotHistory(
-    slotId: string,
+    slotId: PanelSlotId,
     entries: SlotHistoryEntryInput[],
     cursor: number
   ): Promise<void>;
-  setSlotParent(slotId: string, parentSlotId: string | null): Promise<void>;
-  setSlotPosition(slotId: string, positionId: string): Promise<void>;
+  setSlotParent(slotId: PanelSlotId, parentSlotId: PanelSlotId | null): Promise<void>;
+  setSlotPosition(slotId: PanelSlotId, positionId: string): Promise<void>;
   moveSlot(
-    slotId: string,
-    parentSlotId: string | null,
-    positionId: string,
+    slotId: PanelSlotId,
+    parentSlotId: PanelSlotId | null,
+    positionId: string
   ): Promise<void>;
-  closeSlot(slotId: string): Promise<void>;
+  closeSlot(slotId: PanelSlotId): Promise<void>;
 }
 
 /**

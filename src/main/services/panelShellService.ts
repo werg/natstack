@@ -461,7 +461,7 @@ export function createPanelShellService(deps: {
         case "createBrowser": {
           const url = args[0] as string;
           const opts = args[1] as { name?: string; focus?: boolean } | undefined;
-          return lifecycle.createBrowserPanel("shell", url, {
+          return lifecycle.createBrowserUrlPanel("shell", url, {
             ...opts,
             focus: opts?.focus ?? true,
           });
@@ -471,7 +471,7 @@ export function createPanelShellService(deps: {
           const parentId = args[0] as string;
           const url = args[1] as string;
           const opts = args[2] as { name?: string; focus?: boolean } | undefined;
-          return lifecycle.createBrowserPanel(parentId, url, {
+          return lifecycle.createBrowserUrlPanel(parentId, url, {
             ...opts,
             focus: opts?.focus ?? true,
           });

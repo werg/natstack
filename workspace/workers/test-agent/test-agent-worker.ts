@@ -21,8 +21,8 @@ export class TestAgentWorker extends AgentWorkerBase {
   static override schemaVersion = 5;
 
   /** Anthropic sonnet — smaller surface for unit tests than OpenAI Codex. */
-  protected override getModel(): string {
-    return "anthropic:claude-sonnet-4-20250514";
+  protected override getDefaultModel(): string {
+    return "anthropic:claude-sonnet-4-6";
   }
 
   protected override getParticipantInfo(_channelId: string, config?: unknown): ParticipantDescriptor {

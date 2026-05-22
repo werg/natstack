@@ -205,6 +205,16 @@ export function useAgenticChat({ config, channelName, channelConfig, contextId, 
                 idempotencyKey: opts?.idempotencyKey ?? crypto.randomUUID(),
             }) as Promise<unknown>;
         },
+        publishCustomMessage: (input, opts) => {
+            return core.clientRef.current!.publishCustomMessage(input, {
+                idempotencyKey: opts?.idempotencyKey ?? crypto.randomUUID(),
+            });
+        },
+        updateCustomMessage: (messageId, update, opts) => {
+            return core.clientRef.current!.updateCustomMessage(messageId, update, {
+                idempotencyKey: opts?.idempotencyKey ?? crypto.randomUUID(),
+            });
+        },
         callMethod: async (pid: string, method: string, callArgs: unknown) => {
             const handle = core.clientRef.current!.callMethod(pid, method, callArgs);
             const result = await (handle as {
@@ -215,6 +225,35 @@ export function useAgenticChat({ config, channelName, channelConfig, contextId, 
         callMethodResult: async (pid: string, method: string, callArgs: unknown) => {
             const handle = core.clientRef.current!.callMethod(pid, method, callArgs);
             return (handle as {
+                result: Promise<ChatMethodResult>;
+            }).result;
+        },
+        participantByHandle: (rawHandle: string) => {
+            const handle = rawHandle.startsWith("@") ? rawHandle.slice(1) : rawHandle;
+            const roster = core.clientRef.current?.roster ?? {};
+            return Object.values(roster).find((participant) => {
+                const metadataHandle = participant.metadata?.handle;
+                return typeof metadataHandle === "string" && metadataHandle === handle;
+            }) ?? null;
+        },
+        callMethodByHandle: async (rawHandle: string, method: string, callArgs: unknown) => {
+            const handle = rawHandle.startsWith("@") ? rawHandle.slice(1) : rawHandle;
+            const roster = core.clientRef.current?.roster ?? {};
+            const participant = Object.values(roster).find((item) => item.metadata?.handle === handle);
+            if (!participant) throw new Error(`No participant with handle @${handle}`);
+            const methodHandle = core.clientRef.current!.callMethod(participant.id, method, callArgs);
+            const result = await (methodHandle as {
+                result: Promise<ChatMethodResult>;
+            }).result;
+            return unwrapChatMethodResult(result);
+        },
+        callMethodResultByHandle: async (rawHandle: string, method: string, callArgs: unknown) => {
+            const handle = rawHandle.startsWith("@") ? rawHandle.slice(1) : rawHandle;
+            const roster = core.clientRef.current?.roster ?? {};
+            const participant = Object.values(roster).find((item) => item.metadata?.handle === handle);
+            if (!participant) throw new Error(`No participant with handle @${handle}`);
+            const methodHandle = core.clientRef.current!.callMethod(participant.id, method, callArgs);
+            return (methodHandle as {
                 result: Promise<ChatMethodResult>;
             }).result;
         },

@@ -10,7 +10,7 @@
  *   import { rpc } from "@workspace/runtime";
  *   const browserData = createBrowserDataApi(rpc);
  *
- * Note: `createBrowserPanel` (for opening external URL panels with CDP access)
+ * Note: `openPanel(url)` (for opening external URL panels with CDP access)
  * is available from `@workspace/runtime`, not this package.
  */
 import type { RpcBridge } from "@natstack/rpc";

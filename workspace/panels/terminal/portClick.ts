@@ -1,4 +1,4 @@
-import { createBrowserPanel, notifications, openExternal, openPanel } from "@workspace/runtime";
+import { notifications, openExternal, openPanel } from "@workspace/runtime";
 import { normalizeLocalhostUrl } from "./urlUtils.js";
 
 export async function openPort(port: number, urls: string[] = []): Promise<void> {
@@ -7,12 +7,6 @@ export async function openPort(port: number, urls: string[] = []): Promise<void>
 }
 
 export async function openUrl(url: string): Promise<void> {
-  try {
-    await createBrowserPanel(url, { focus: true });
-    return;
-  } catch {
-    // Fall through to the generic opener.
-  }
   try {
     await openPanel(url, { focus: true });
     return;

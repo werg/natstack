@@ -1,7 +1,8 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo, useLayoutEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Box, Button, Flex, ScrollArea, Text } from "@radix-ui/themes";
 import type { Participant } from "@workspace/pubsub";
-import { useStickToBottom } from "use-stick-to-bottom";
+import { useStickToBottom } from "../hooks/useStickToBottom.js";
+import { useScrollAnchor, type ScrollAnchorItem } from "../hooks/useScrollAnchor.js";
 import { InlineGroup, type InlineItem } from "./InlineGroup";
 import { NewContentIndicator } from "./NewContentIndicator";
 import { MessageCard } from "./MessageCard";
@@ -27,6 +28,33 @@ function getInlineItemType(msg: ChatMessage): InlineItemType | null {
 
 function isTypingMessage(msg: ChatMessage): boolean {
   return msg.contentType === "typing";
+}
+
+function messageSignature(msg: ChatMessage): string {
+  const customUpdatedAt = msg.custom
+    ? JSON.stringify([msg.custom.initialState ?? null, msg.custom.lastSeq, msg.custom.updates])
+    : "";
+  return [
+    msg.contentType ?? "",
+    msg.kind ?? "",
+    msg.content,
+    msg.complete ? "1" : "0",
+    msg.pending ? "1" : "0",
+    msg.error ?? "",
+    customUpdatedAt,
+  ].join("\u001f");
+}
+
+function groupedItemAnchorId(item: GroupedItem): string {
+  if (item.type === "inline-group") return item.key;
+  return item.msg.id;
+}
+
+function groupedItemSignature(item: GroupedItem): string {
+  if (item.type === "inline-group") {
+    return item.items.map(({ msg }) => `${msg.id}:${messageSignature(msg)}`).join("\u001e");
+  }
+  return messageSignature(item.msg);
 }
 
 /** Transform an inline group's messages into InlineItem[] */
@@ -231,12 +259,6 @@ export const MessageList = React.memo(function MessageList({
     resize: "instant",
   });
 
-  // Refs for message window tracking
-  const lastMessageCountRef = useRef(0);
-  const lastFirstMessageIdRef = useRef<string | null>(null);
-  const lastScrollTopRef = useRef(0);
-  const lastScrollHeightRef = useRef(0);
-
   // Refs for auto-load on scroll to top (keeps handleScroll stable)
   const hasMoreHistoryRef = useRef(hasMoreHistory);
   const loadingMoreRef = useRef(loadingMore);
@@ -248,8 +270,6 @@ export const MessageList = React.memo(function MessageList({
   const handleViewportScroll = useCallback(() => {
     const viewport = scrollRef.current;
     if (!viewport) return;
-    lastScrollTopRef.current = viewport.scrollTop;
-    lastScrollHeightRef.current = viewport.scrollHeight;
     if (viewport.scrollTop < 200 && hasMoreHistoryRef.current && !loadingMoreRef.current) {
       onLoadEarlierMessagesRef.current?.();
     }
@@ -266,39 +286,6 @@ export const MessageList = React.memo(function MessageList({
     handleViewportScroll();
     return () => viewport.removeEventListener("scroll", handleViewportScroll);
   }, [handleViewportScroll, scrollRef]);
-
-  useLayoutEffect(() => {
-    const viewport = scrollRef.current;
-    const prevCount = lastMessageCountRef.current;
-    const nextCount = messages.length;
-    const prevFirstId = lastFirstMessageIdRef.current;
-    const nextFirstId = messages[0]?.id ?? null;
-    const countDelta = nextCount - prevCount;
-    const isPrepend =
-      countDelta > 0 && prevFirstId !== null && nextFirstId !== prevFirstId;
-
-    if (viewport && prevCount > 0 && !isAtBottom && isPrepend) {
-      const scrollHeightDelta = viewport.scrollHeight - lastScrollHeightRef.current;
-      if (scrollHeightDelta !== 0) {
-        viewport.scrollTop = lastScrollTopRef.current + scrollHeightDelta;
-      }
-    }
-
-    if (prevCount > 0) {
-      if (isAtBottom) {
-        setShowNewContent(false);
-      } else if (countDelta > 0 && !isPrepend) {
-        setShowNewContent(true);
-      }
-    }
-
-    if (viewport) {
-      lastScrollTopRef.current = viewport.scrollTop;
-      lastScrollHeightRef.current = viewport.scrollHeight;
-    }
-    lastMessageCountRef.current = nextCount;
-    lastFirstMessageIdRef.current = nextFirstId;
-  }, [isAtBottom, messages]);
 
   useEffect(() => {
     if (isAtBottom) {
@@ -472,6 +459,22 @@ export const MessageList = React.memo(function MessageList({
     prevGroupCacheRef.current = { messages, result };
     return result;
   }, [messages]);
+  const scrollAnchorItems = useMemo<ScrollAnchorItem[]>(
+    () => groupedItems.map((item) => ({
+      id: groupedItemAnchorId(item),
+      signature: groupedItemSignature(item),
+    })),
+    [groupedItems],
+  );
+
+  useScrollAnchor({
+    scrollRef,
+    contentRef,
+    items: scrollAnchorItems,
+    isAtBottom,
+    onNewContent: () => setShowNewContent(true),
+  });
+
   const messagesById = useMemo(() => {
     const byId = new Map<string, ChatMessage>();
     for (const message of messages) byId.set(message.id, message);
@@ -599,6 +602,7 @@ export const MessageList = React.memo(function MessageList({
               {groupedItems.map((item, index) => (
                 <div
                   className="message-item"
+                  data-scroll-anchor-id={groupedItemAnchorId(item)}
                   key={item.type === "inline-group" ? item.key : (item.msg.id || `msg-${index}`)}
                 >
                   {renderItem(index)}

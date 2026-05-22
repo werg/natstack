@@ -118,6 +118,9 @@
       "@workspace-skills/google-workspace": [
         "workspace/skills/google-workspace/index.ts"
       ],
+      "@workspace-skills/gmail": [
+        "workspace/skills/gmail/index.ts"
+      ],
       "@workspace-skills/github": [
         "workspace/skills/github/index.ts"
       ],
@@ -199,11 +202,17 @@
       "@workspace/integrations/calendar": [
         "workspace/packages/integrations/src/calendar.ts"
       ],
-      "@workspace/integrations/gmail": [
-        "workspace/packages/integrations/src/gmail.ts"
-      ],
       "@workspace/integrations/providers": [
         "workspace/packages/integrations/src/providers.ts"
+      ],
+      "@workspace/gmail": [
+        "workspace/packages/gmail/src/index.ts"
+      ],
+      "@workspace/gmail/gmail-client": [
+        "workspace/packages/gmail/src/gmail-client.ts"
+      ],
+      "@workspace/gmail/renderers/gmail-thread.reducer": [
+        "workspace/packages/gmail/src/renderers/gmail-thread.reducer.ts"
       ],
       "@workspace/panel-browser": [
         "workspace/packages/panel-browser/src/index.ts"

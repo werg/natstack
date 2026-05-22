@@ -23,7 +23,7 @@ const hookState = vi.hoisted(() => {
   };
 });
 
-vi.mock("use-stick-to-bottom", () => ({
+vi.mock("../hooks/useStickToBottom.js", () => ({
   useStickToBottom: () => ({
     scrollRef: hookState.scrollRef,
     contentRef: hookState.contentRef,

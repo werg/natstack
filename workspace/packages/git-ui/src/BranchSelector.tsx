@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertDialog, Box, Button, DropdownMenu, Flex, Select, Spinner, Text } from "@radix-ui/themes";
+import {
+  AlertDialog,
+  Box,
+  Button,
+  DropdownMenu,
+  Flex,
+  Select,
+  Spinner,
+  Text,
+} from "@radix-ui/themes";
 import { ChevronDownIcon, PlusIcon, TrashIcon, CheckIcon } from "@radix-ui/react-icons";
 import { useGitBranches } from "./hooks/useGitBranches";
 import type { BranchInfo } from "@natstack/git";
@@ -10,7 +19,15 @@ interface BranchSelectorProps {
 }
 
 export function BranchSelector({ currentBranch }: BranchSelectorProps) {
-  const { branches, remoteBranches, currentBranch: activeBranch, loading, createBranch, deleteBranch, checkoutBranch } = useGitBranches();
+  const {
+    branches,
+    remoteBranches,
+    currentBranch: activeBranch,
+    loading,
+    createBranch,
+    deleteBranch,
+    checkoutBranch,
+  } = useGitBranches();
   const [showCreate, setShowCreate] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
@@ -95,9 +112,7 @@ export function BranchSelector({ currentBranch }: BranchSelectorProps) {
                   onSelect={() => handleBranchSelect(branch, false)}
                 >
                   <Flex align="center" gap="2" width="100%">
-                    <Box width="16px">
-                      {branch.name === branchValue && <CheckIcon />}
-                    </Box>
+                    <Box width="16px">{branch.name === branchValue && <CheckIcon />}</Box>
                     {branch.name}
                   </Flex>
                 </DropdownMenu.Item>
@@ -111,9 +126,7 @@ export function BranchSelector({ currentBranch }: BranchSelectorProps) {
               <DropdownMenu.Separator />
               <DropdownMenu.Label>Remote</DropdownMenu.Label>
               {remoteBranches.map((branch) => {
-                const displayName = branch.remote
-                  ? `${branch.remote}/${branch.name}`
-                  : branch.name;
+                const displayName = branch.remote ? `${branch.remote}/${branch.name}` : branch.name;
                 return (
                   <DropdownMenu.Item
                     key={displayName}
@@ -159,14 +172,24 @@ export function BranchSelector({ currentBranch }: BranchSelectorProps) {
       />
 
       <AlertDialog.Root open={showDelete} onOpenChange={setShowDelete}>
-        <AlertDialog.Content maxWidth="420px">
+        <AlertDialog.Content
+          style={{
+            width: "min(420px, calc(100vw - 24px))",
+            maxHeight: "calc(100dvh - 24px)",
+            overflow: "auto",
+          }}
+        >
           <AlertDialog.Title>Delete Branch</AlertDialog.Title>
           <AlertDialog.Description size="2">
             <Text>Select a branch to delete. This cannot be undone.</Text>
           </AlertDialog.Description>
 
           <Flex direction="column" gap="3" mt="3">
-            <Select.Root value={deleteTarget ?? ""} onValueChange={setDeleteTarget} disabled={deleting}>
+            <Select.Root
+              value={deleteTarget ?? ""}
+              onValueChange={setDeleteTarget}
+              disabled={deleting}
+            >
               <Select.Trigger placeholder="Select branch" />
               <Select.Content>
                 {deleteOptions.map((branch) => (
@@ -177,11 +200,13 @@ export function BranchSelector({ currentBranch }: BranchSelectorProps) {
               </Select.Content>
             </Select.Root>
             {deleteError && (
-              <Text size="1" color="red">{deleteError}</Text>
+              <Text size="1" color="red">
+                {deleteError}
+              </Text>
             )}
           </Flex>
 
-          <Flex gap="3" mt="4" justify="end">
+          <Flex gap="3" mt="4" justify="end" wrap="wrap">
             <AlertDialog.Cancel>
               <Button variant="soft" color="gray">
                 Cancel

@@ -82,7 +82,7 @@ running in the user's existing browser session.
 The extension supports creating new tabs on behalf of the server:
 
 - **`open-tab`**: Creates a new tab, attaches the debugger, and registers it with
-  the CDP bridge for automation. Used by `createBrowserPanel()` in headless mode.
+  the CDP bridge for automation. Used by URL panel handles in headless mode.
 - **`open-external`**: Creates a new tab without CDP tracking (system browser
   equivalent in headless mode). Used by `openExternal()`.
 

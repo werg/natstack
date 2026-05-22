@@ -39,8 +39,8 @@ const gatewayConfig = config.gatewayConfig;
 const gatewayFetch = createGatewayFetch(gatewayConfig);
 const gitConfig = config.gitConfig;
 const env = config.env;
-const { parentId: runtimeParentId, rpc, parent, getParent, getParentWithContract, onConnectionError, getInfo, closeSelf, focusPanel, getWorkspaceTree, listBranches, listCommits, getTheme, onThemeChange, onFocus, exposeMethod, contextId, } = runtime;
-export { rpc, parent, getParent, getParentWithContract, onConnectionError, getInfo, closeSelf, focusPanel, getWorkspaceTree, listBranches, listCommits, getTheme, onThemeChange, onFocus, exposeMethod, contextId, recoveryCoordinator, runtimeParentId as parentId, };
+const { parentId: runtimeParentId, rpc, parent, getParent, getParentWithContract, onConnectionError, getInfo, focusPanel, getWorkspaceTree, listBranches, listCommits, getTheme, onThemeChange, onFocus, exposeMethod, contextId, } = runtime;
+export { rpc, parent, getParent, getParentWithContract, onConnectionError, getInfo, focusPanel, getWorkspaceTree, listBranches, listCommits, getTheme, onThemeChange, onFocus, exposeMethod, contextId, recoveryCoordinator, runtimeParentId as parentId, };
 const { workers } = runtime;
 const helpfulWorkers = helpfulNamespace("workers", workers);
 export { fs, gatewayConfig, gatewayFetch, gitConfig, env, helpfulWorkers as workers };
@@ -51,12 +51,15 @@ export const gad = helpfulNamespace("gad", createGadClient(rpc));
 // Path utilities for cross-platform path handling
 export { normalizePath, getFileName, resolvePath } from "../shared/pathUtils.js";
 // State args API for panel state management
-export { getStateArgs, useStateArgs, setStateArgs } from "./stateArgs.js";
-// Browser panel API (external URL panels with CDP access)
-import { _initBrowserBridge, openPanel as _openPanel } from "./browser.js";
-_initBrowserBridge(rpc);
-export { createBrowserPanel, openExternal, onChildCreated, getBrowserHandle, openPanel } from "./browser.js";
-export type { BrowserHandle } from "./browser.js";
+export { getStateArgs, useStateArgs, setStateArgs, setStateArgsForPanel } from "./stateArgs.js";
+// Panel handle API
+import { _initPanelHandleBridge, openPanel as _openPanel } from "./handle.js";
+_initPanelHandleBridge(rpc);
+export { openExternal, onChildCreated, openPanel, listPanels, getPanelHandle } from "./handle.js";
+export type { PanelHandle } from "./handle.js";
+export { agentApi } from "./agentApi.js";
+export { Journal, withJournal, currentJournal } from "./journal.js";
+export type { PanelJournalEntry } from "./journal.js";
 // Ad blocking programmatic interface
 import { createAdBlockApi } from "./adblock.js";
 export type { AdBlockStats, AdBlockApi } from "./adblock.js";

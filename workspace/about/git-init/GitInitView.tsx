@@ -10,6 +10,7 @@ import { useMemo, useCallback, useState, useEffect } from "react";
 import { Flex, Button, Tooltip, Callout, Text, Code, Card } from "@radix-ui/themes";
 import { ExclamationTriangleIcon, CheckCircledIcon } from "@radix-ui/react-icons";
 import { GitStatusView, useGitStatus, type GitNotification } from "@workspace/git-ui";
+import { useIsMobile } from "@workspace/react/responsive";
 import type { GitClient } from "@natstack/git";
 import type { ThemeAppearance } from "@workspace/runtime";
 import { createServiceGitClient, createServiceFs } from "@workspace/about-shared/serviceAdapters";
@@ -24,16 +25,14 @@ export interface GitInitViewProps {
 }
 
 export function GitInitView({ repoPath, onContinueBuild, onNotify, theme }: GitInitViewProps) {
+  const isMobile = useIsMobile();
   const [isInitialized, setIsInitialized] = useState(false);
   const [isInitializing, setIsInitializing] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
   const [isContinuing, setIsContinuing] = useState(false);
 
   // Service-backed GitClient and fs (routed through main process RPC)
-  const gitClient = useMemo(
-    () => createServiceGitClient() as unknown as GitClient,
-    []
-  );
+  const gitClient = useMemo(() => createServiceGitClient() as unknown as GitClient, []);
   const serviceFs = useMemo(() => createServiceFs(repoPath), [repoPath]);
 
   // Use git status hook to track if repo is clean after initialization
@@ -90,12 +89,14 @@ export function GitInitView({ repoPath, onContinueBuild, onNotify, theme }: GitI
   return (
     <Flex direction="column" style={{ height: "100%", minHeight: 0 }}>
       {/* Header with status and action button */}
-      <Flex align="center" justify="between" gap="3" p="2">
-        <Callout.Root
-          color={isInitialized ? "green" : "orange"}
-          size="1"
-          style={{ flex: 1 }}
-        >
+      <Flex
+        align={isMobile ? "stretch" : "center"}
+        justify="between"
+        direction={isMobile ? "column" : "row"}
+        gap="3"
+        p="2"
+      >
+        <Callout.Root color={isInitialized ? "green" : "orange"} size="1" style={{ flex: 1 }}>
           <Callout.Icon>
             {isInitialized ? <CheckCircledIcon /> : <ExclamationTriangleIcon />}
           </Callout.Icon>
@@ -112,8 +113,8 @@ export function GitInitView({ repoPath, onContinueBuild, onNotify, theme }: GitI
               !initialized
                 ? "Loading git status..."
                 : isClean
-                ? "Proceed with build"
-                : `Commit or discard all changes first (${stagedFiles.length} staged, ${unstagedFiles.length} unstaged)`
+                  ? "Proceed with build"
+                  : `Commit or discard all changes first (${stagedFiles.length} staged, ${unstagedFiles.length} unstaged)`
             }
           >
             <Button
@@ -132,7 +133,7 @@ export function GitInitView({ repoPath, onContinueBuild, onNotify, theme }: GitI
       </Flex>
 
       {/* Main content area */}
-      <Flex direction="column" style={{ flex: 1, minHeight: 0 }} p="3" gap="3">
+      <Flex direction="column" style={{ flex: 1, minHeight: 0 }} p={isMobile ? "2" : "3"} gap="3">
         {!isInitialized ? (
           // Show initialization instructions
           <Card>
@@ -141,8 +142,8 @@ export function GitInitView({ repoPath, onContinueBuild, onNotify, theme }: GitI
                 Why is this required?
               </Text>
               <Text size="2">
-                Natstack requires each panel folder to be the root of its own git repository
-                (not just a subfolder within a larger repo) to ensure:
+                Natstack requires each panel folder to be the root of its own git repository (not
+                just a subfolder within a larger repo) to ensure:
               </Text>
               <Flex direction="column" gap="2" ml="3">
                 <Text size="2">- Version control and change tracking per panel</Text>

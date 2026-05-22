@@ -9,7 +9,7 @@ const runtimeMock = vi.hoisted(() => ({
     fetch: vi.fn(),
     gitHttp: vi.fn(),
   },
-  createBrowserPanel: vi.fn(),
+  openPanel: vi.fn(),
   openExternal: vi.fn(),
 }));
 
@@ -247,7 +247,7 @@ describe("github skill facade", () => {
   it("can open the fine-grained token page internally", async () => {
     await openGitHubTokenSettings({ browser: "internal" });
 
-    const [opened, options] = runtimeMock.createBrowserPanel.mock.calls[0]!;
+    const [opened, options] = runtimeMock.openPanel.mock.calls[0]!;
     expect(new URL(opened).origin + new URL(opened).pathname).toBe("https://github.com/settings/personal-access-tokens/new");
     expect(options).toEqual({ focus: true, name: "GitHub settings" });
     expect(runtimeMock.openExternal).not.toHaveBeenCalled();

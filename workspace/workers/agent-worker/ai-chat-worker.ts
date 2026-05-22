@@ -1,14 +1,21 @@
 import { AgentWorkerBase, type ModelCredentialSetupProps, type ModelCredentialSummary } from "@workspace/agentic-do";
+import type { ApprovalLevel, ThinkingLevel } from "@natstack/harness";
 import type { ParticipantDescriptor } from "@natstack/harness/types";
-
-const OPENAI_CODEX_ACCOUNT_CLAIM = "https://api.openai.com/auth";
+import {
+  DEFAULT_APPROVAL_LEVEL,
+  DEFAULT_MODEL,
+  DEFAULT_RESPOND_POLICY,
+  DEFAULT_THINKING_LEVEL,
+  OPENAI_CODEX_ACCOUNT_CLAIM,
+  PROVIDER_CREDENTIAL_SETUPS,
+} from "./agent-config.js";
 
 type ChatAgentConfig = {
   handle?: string;
   name?: string;
   systemPrompt?: string;
   systemPromptMode?: "replace" | "append";
-  respondPolicy?: "all" | "mentioned" | "from-participants";
+  respondPolicy?: "all" | "mentioned" | "mentioned-strict" | "from-participants";
   respondFrom?: string[];
 };
 
@@ -35,44 +42,24 @@ export class AiChatWorker extends AgentWorkerBase {
 
   /** Default to OpenAI Codex / gpt-5.5. The worker owns provider-specific
    *  credential setup; host egress injects the resulting URL-bound credential. */
-  protected override getModel(): string {
-    return "openai-codex:gpt-5.5";
+  protected override getDefaultModel(): string {
+    return DEFAULT_MODEL;
+  }
+
+  protected override getDefaultThinkingLevel(): ThinkingLevel {
+    return DEFAULT_THINKING_LEVEL;
+  }
+
+  protected override getDefaultApprovalLevel(): ApprovalLevel {
+    return DEFAULT_APPROVAL_LEVEL;
+  }
+
+  protected override getDefaultRespondPolicy(): "all" | "mentioned" | "mentioned-strict" | "from-participants" {
+    return DEFAULT_RESPOND_POLICY;
   }
 
   protected override getModelCredentialSetupProps(providerId: string): ModelCredentialSetupProps | null {
-    if (providerId !== "openai-codex") {
-      return null;
-    }
-    return {
-      credentialLabel: "ChatGPT Codex model credential",
-      accountIdentityJwtClaimRoot: OPENAI_CODEX_ACCOUNT_CLAIM,
-      accountIdentityJwtClaimField: "chatgpt_account_id",
-      redirectPolicy: "loopback-required",
-      redirect: {
-        type: "loopback",
-        host: "localhost",
-        port: 1455,
-        callbackPath: "/auth/callback",
-      },
-      clientLoopbackRedirect: {
-        type: "client-loopback",
-        host: "localhost",
-        port: 1455,
-        callbackPath: "/auth/callback",
-      },
-      flow: {
-        type: "oauth2-auth-code-pkce",
-        authorizeUrl: "https://auth.openai.com/oauth/authorize",
-        tokenUrl: "https://auth.openai.com/oauth/token",
-        clientId: "app_EMoamEEZ73f0CkXaXp7hrann",
-        scopes: ["openid", "profile", "email", "offline_access"],
-        extraAuthorizeParams: {
-          id_token_add_organizations: "true",
-          codex_cli_simplified_flow: "true",
-          originator: "codex_cli_rs",
-        },
-      },
-    };
+    return PROVIDER_CREDENTIAL_SETUPS[providerId] ?? null;
   }
 
   protected override getModelCredentialTokenClaims(
@@ -102,18 +89,14 @@ export class AiChatWorker extends AgentWorkerBase {
         { name: "pause", description: "Pause the current AI turn" },
         { name: "resume", description: "Resume after pause" },
         { name: "credentialConnected", description: "Resume after model credential connection" },
+        { name: "connectModelCredential", description: "Connect a model credential for the current provider" },
+        { name: "connectModelCredentialOAuth", description: "Connect a model credential for the current provider" },
+        { name: "setThinkingLevel", description: "Set live effort level: minimal, low, medium, or high" },
+        { name: "setApprovalLevel", description: "Set live approval level: 0=manual, 1=auto-safe, 2=full-auto" },
+        { name: "setRespondPolicy", description: "Set live chattiness policy and optional participant allow-list" },
+        { name: "getAgentSettings", description: "Read effective model, effort, approval, and chattiness settings" },
       ],
     };
-  }
-
-  protected override getRespondPolicy(channelId: string): "all" | "mentioned" | "from-participants" {
-    const policy = asChatAgentConfig(this.subscriptions.getConfig(channelId)).respondPolicy;
-    return policy === "mentioned" || policy === "from-participants" ? policy : "all";
-  }
-
-  protected override getRespondFrom(channelId: string): string[] {
-    const respondFrom = asChatAgentConfig(this.subscriptions.getConfig(channelId)).respondFrom;
-    return Array.isArray(respondFrom) ? respondFrom.filter((id): id is string => typeof id === "string") : [];
   }
 
   override async onMethodCall(
@@ -122,7 +105,7 @@ export class AiChatWorker extends AgentWorkerBase {
     methodName: string,
     _args: unknown,
   ): Promise<{ result: unknown; isError?: boolean }> {
-    const modelCredentialResult = await this.handleModelCredentialMethodCall(methodName, _args);
+    const modelCredentialResult = await this.handleModelCredentialMethodCall(channelId, methodName, _args);
     if (modelCredentialResult) return modelCredentialResult;
 
     switch (methodName) {
@@ -141,6 +124,36 @@ export class AiChatWorker extends AgentWorkerBase {
             ),
           },
         };
+      case "setThinkingLevel": {
+        const level = (_args as { level?: unknown } | null)?.level;
+        if (level !== "minimal" && level !== "low" && level !== "medium" && level !== "high") {
+          return { result: { error: "setThinkingLevel requires level: minimal, low, medium, or high" }, isError: true };
+        }
+        this.setThinkingLevel(channelId, level);
+        return { result: this.getAgentSettings(channelId) };
+      }
+      case "setApprovalLevel": {
+        const level = (_args as { level?: unknown } | null)?.level;
+        if (level !== 0 && level !== 1 && level !== 2) {
+          return { result: { error: "setApprovalLevel requires level: 0, 1, or 2" }, isError: true };
+        }
+        this.setApprovalLevel(channelId, level);
+        return { result: this.getAgentSettings(channelId) };
+      }
+      case "setRespondPolicy": {
+        const args = _args as { policy?: unknown; from?: unknown } | null;
+        const policy = args?.policy;
+        if (policy !== "all" && policy !== "mentioned" && policy !== "mentioned-strict" && policy !== "from-participants") {
+          return { result: { error: "setRespondPolicy requires policy: all, mentioned, mentioned-strict, or from-participants" }, isError: true };
+        }
+        const from = Array.isArray(args?.from)
+          ? args.from.filter((id): id is string => typeof id === "string")
+          : undefined;
+        this.setRespondPolicy(channelId, policy, from);
+        return { result: this.getAgentSettings(channelId) };
+      }
+      case "getAgentSettings":
+        return { result: this.getAgentSettings(channelId) };
       default:
         return { result: { error: `unknown method: ${methodName}` }, isError: true };
     }

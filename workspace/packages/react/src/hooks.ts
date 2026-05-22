@@ -16,8 +16,8 @@ import type { ParentHandle, ThemeAppearance } from "@workspace/runtime";
  * ```tsx
  * function MyPanel() {
  *   const panel = usePanel();
- *   const handleClose = () => panel.closeSelf();
- *   return <button onClick={handleClose}>Close</button>;
+ *   const handleFocus = (panelId: string) => panel.focusPanel(panelId);
+ *   return <button onClick={() => handleFocus(panel.id)}>Focus</button>;
  * }
  * ```
  */

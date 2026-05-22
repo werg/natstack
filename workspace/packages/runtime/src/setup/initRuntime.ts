@@ -48,6 +48,7 @@ export function initRuntime(options: InitRuntimeOptions): InitRuntimeResult {
     slotId: config.slotId,
     contextId: config.contextId,
     parentId: config.parentId,
+    parentEntityId: config.parentEntityId,
     initialTheme: config.initialTheme,
     fs: options.fs,
     setupGlobals: options.setupGlobals,

@@ -30,15 +30,31 @@ import type {
 import type { WorkspaceConfig } from "@natstack/shared/workspace/types";
 import type { PanelRestorePolicy } from "@natstack/shared/workspace/types";
 import { buildPanelUrl } from "@natstack/shared/panelFactory";
+import { asPanelSlotId } from "@natstack/shared/panel/ids";
 import {
   getCurrentSnapshot,
   getPanelSource,
   getPanelContextId,
   getPanelRef,
+  getPanelStateArgs,
 } from "@natstack/shared/panel/accessors";
 import { assertPresent } from "../lintHelpers";
 
 const log = createDevLogger("PanelOrchestrator");
+
+export interface RuntimePanelCreateResult {
+  id: string;
+  kind: "workspace" | "browser";
+  title: string;
+}
+
+interface PendingAgentCall {
+  panelId: string;
+  webContentsId: number;
+  resolve(value: unknown): void;
+  reject(error: Error): void;
+  timer: ReturnType<typeof setTimeout>;
+}
 
 export interface PanelOrchestratorDeps {
   registry: PanelRegistry;
@@ -50,6 +66,7 @@ export interface PanelOrchestratorDeps {
   cdpServer: {
     cleanupPanelAccess(panelId: string): void;
     unregisterBrowser?(panelId: string): void;
+    getAccessibilityTree?(panelId: string): Promise<unknown[]>;
   };
   panelHttpServer: PanelHttpServerLike;
   externalHost: string;
@@ -71,6 +88,9 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
   private runtimeClientRegistered = false;
   private readonly runtimeConnectionBySlot = new Map<string, string>();
   private readonly stateArgsUpdateQueues = new Map<string, Promise<unknown>>();
+  private readonly pendingAgentCalls = new Map<number, PendingAgentCall>();
+  private readonly stateArgsPushUnsubs = new Map<string, () => void>();
+  private nextAgentRequestId = 1;
   private viewRevision = 0;
   private readonly restorePolicy: PanelRestorePolicy;
 
@@ -122,7 +142,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     if (!caller) throw new Error(`Caller panel not found: ${callerId}`);
 
     const result = await this.shellCore.create(source, {
-      parentId: callerId,
+      parentId: asPanelSlotId(callerId),
       ...options,
       stateArgs,
     });
@@ -146,7 +166,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
       stateArgs?: Record<string, unknown>;
     }
   ): Promise<{ id: string; title: string }> {
-    const result = await this.shellCore.navigate(panelId, source, options);
+    const result = await this.shellCore.navigate(asPanelSlotId(panelId), source, options);
     const panel = this.registry.getPanel(panelId);
     if (!panel) throw new Error(`Panel not found after navigation: ${panelId}`);
     await this.loadSnapshotIntoView(panelId, getCurrentSnapshot(panel));
@@ -158,7 +178,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     panelId: string,
     delta: -1 | 1
   ): Promise<{ id: string; title: string } | null> {
-    const panel = await this.shellCore.navigateHistory(panelId, delta);
+    const panel = await this.shellCore.navigateHistory(asPanelSlotId(panelId), delta);
     if (!panel) return null;
     await this.loadSnapshotIntoView(panelId, getCurrentSnapshot(panel));
     await this.focusPanel(panelId);
@@ -198,7 +218,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
       await this.attachCreatedPanel({ panelId: result.id, title: result.title }, { focus: true });
       return result;
     } catch (error) {
-      await this.shellCore.close(result.id).catch(() => {});
+      await this.shellCore.close(asPanelSlotId(result.id)).catch(() => {});
       throw error;
     }
   }
@@ -221,7 +241,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     }
   }
 
-  async createBrowserPanel(
+  async createBrowserUrlPanel(
     callerId: string,
     url: string,
     options?: { name?: string; focus?: boolean }
@@ -232,7 +252,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     }
 
     const callerPanel = this.registry.getPanel(callerId);
-    const parentId = callerPanel ? callerId : null;
+    const parentId = callerPanel ? asPanelSlotId(callerId) : null;
     let createdPanelId: string | null = null;
 
     try {
@@ -245,10 +265,30 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
       return { id: result.panelId, title: result.title };
     } catch (err) {
       if (createdPanelId) {
-        await this.shellCore.close(createdPanelId).catch(() => {});
+        await this.shellCore.close(asPanelSlotId(createdPanelId)).catch(() => {});
       }
       throw err;
     }
+  }
+
+  async createRuntimePanel(
+    callerId: string,
+    source: string,
+    options?: PanelCreateOptions & {
+      name?: string;
+      focus?: boolean;
+      stateArgs?: Record<string, unknown>;
+    }
+  ): Promise<RuntimePanelCreateResult> {
+    if (/^https?:\/\//i.test(source)) {
+      const result = await this.createBrowserUrlPanel(callerId, source, {
+        name: options?.name,
+        focus: options?.focus,
+      });
+      return { ...result, kind: "browser" };
+    }
+    const result = await this.createPanel(callerId, source, options, options?.stateArgs);
+    return { ...result, kind: "workspace" };
   }
 
   // =========================================================================
@@ -280,10 +320,13 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     }
 
     // Server handles recursive close + resource cleanup
-    const { closedIds } = await this.shellCore.close(panelId);
+    const { closedIds } = await this.shellCore.close(asPanelSlotId(panelId));
 
     // Destroy views and remove from in-memory tree
     for (const id of closedIds) {
+      this.rejectAgentCallsForPanel(id, new Error("panel-closed"));
+      this.stateArgsPushUnsubs.get(id)?.();
+      this.stateArgsPushUnsubs.delete(id);
       this.releaseLocalPanelRuntime(id, "close");
       this.registry.removePanel(id);
     }
@@ -293,19 +336,12 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     }
   }
 
-  async closeChild(callerId: string, childId: string): Promise<void> {
-    const parentId = this.registry.findParentId(childId);
-    if (parentId !== callerId) {
-      throw new Error(`Panel ${callerId} is not the parent of ${childId}`);
-    }
-    await this.closePanel(childId);
-  }
-
   // =========================================================================
   // Build lifecycle
   // =========================================================================
 
   async reloadPanel(panelId: string): Promise<void> {
+    this.rejectAgentCallsForPanel(panelId, new Error("target-reloading"));
     const view = this.getPanelView();
     if (view?.hasView(panelId)) {
       view.reloadView(panelId);
@@ -320,7 +356,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     if (panel.artifacts?.buildState !== "pending") return;
 
     // Re-registers the panel principal and issues a fresh connection grant.
-    await this.shellCore.getPanelInit(panelId);
+    await this.shellCore.getPanelInit(asPanelSlotId(panelId));
 
     // Browser panels: skip build
     if (getPanelSource(panel).startsWith("browser:")) {
@@ -422,7 +458,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
   // =========================================================================
 
   async getBootstrapConfig(callerId: string): Promise<unknown> {
-    const config = await this.shellCore.getPanelInit(callerId);
+    const config = await this.shellCore.getPanelInit(asPanelSlotId(callerId));
     const connectionId = this.runtimeConnectionBySlot.get(callerId);
     if (!connectionId || !config || typeof config !== "object") return config;
     return {
@@ -437,11 +473,12 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
   // =========================================================================
 
   async handleSetStateArgs(panelId: string, updates: Record<string, unknown>): Promise<unknown> {
+    this.ensureStateArgsPush(panelId);
     const previous = this.stateArgsUpdateQueues.get(panelId) ?? Promise.resolve();
     const next = previous
       .catch(() => undefined)
       .then(async () => {
-        const validated = await this.shellCore.updateStateArgs(panelId, updates);
+        const validated = await this.shellCore.updateStateArgs(asPanelSlotId(panelId), updates);
         this.registry.updateStateArgs(panelId, validated as Record<string, unknown>);
         return validated;
       });
@@ -455,13 +492,112 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     }
   }
 
+  getStateArgs(panelId: string): Record<string, unknown> {
+    const panel = this.registry.getPanel(panelId);
+    if (!panel) throw new Error(`Panel not found: ${panelId}`);
+    return (getPanelStateArgs(panel) ?? {}) as Record<string, unknown>;
+  }
+
+  listRuntimePanels(parentId?: string | null) {
+    return parentId ? this.registry.getChildren(parentId) : this.registry.listPanels();
+  }
+
+  async snapshot(panelId: string): Promise<unknown> {
+    await this.ensurePanelLoadedForAgent(panelId);
+    if (!this.cdpServer.getAccessibilityTree) {
+      return this.callAgent(panelId, "_agent.snapshot", []);
+    }
+    const nodes = await this.cdpServer.getAccessibilityTree(panelId);
+    return {
+      kind: "ax",
+      text: summarizeAxNodes(nodes),
+      structure: nodes,
+    };
+  }
+
+  async callAgent(
+    panelId: string,
+    method: string,
+    args: unknown[] = [],
+    options?: { timeoutMs?: number }
+  ): Promise<unknown> {
+    const wc = (await this.ensurePanelLoadedForAgent(panelId)) as
+      | { id?: number; isDestroyed?: () => boolean; send(channel: string, payload: unknown): void }
+      | null
+      | undefined;
+    if (!wc || wc.isDestroyed?.()) {
+      throw new Error(`target-not-loaded: ${panelId}`);
+    }
+    if (typeof wc.id !== "number") {
+      throw new Error(`target-not-loaded: ${panelId}`);
+    }
+    const webContentsId = wc.id;
+    const requestId = this.nextAgentRequestId++;
+    const timeoutMs = options?.timeoutMs ?? 5000;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingAgentCalls.delete(requestId);
+        reject(new Error(`AgentCallTimeoutError: ${method} timed out for ${panelId}`));
+        try {
+          wc.send("natstack:panel.callAgent.request", { type: "cancel", requestId });
+        } catch {
+          // Ignore best-effort cancel failures.
+        }
+      }, timeoutMs);
+      this.pendingAgentCalls.set(requestId, { panelId, webContentsId, resolve, reject, timer });
+      wc.send("natstack:panel.callAgent.request", { requestId, method, args });
+    });
+  }
+
+  resolveAgentCallResponse(
+    requestId: number,
+    senderWebContentsId: number,
+    response: { ok: boolean; value?: unknown; error?: { code?: string; message?: string } }
+  ): void {
+    const pending = this.pendingAgentCalls.get(requestId);
+    if (!pending) return;
+    if (pending.webContentsId !== senderWebContentsId) return;
+    clearTimeout(pending.timer);
+    this.pendingAgentCalls.delete(requestId);
+    if (response.ok) {
+      pending.resolve(response.value);
+    } else {
+      pending.reject(new Error(response.error?.message ?? response.error?.code ?? "panel-error"));
+    }
+  }
+
+  private rejectAgentCallsForPanel(panelId: string, error: Error): void {
+    for (const [requestId, pending] of this.pendingAgentCalls) {
+      if (pending.panelId !== panelId) continue;
+      clearTimeout(pending.timer);
+      this.pendingAgentCalls.delete(requestId);
+      pending.reject(error);
+    }
+  }
+
+  private async ensurePanelLoadedForAgent(panelId: string): Promise<unknown | null> {
+    const panel = this.registry.getPanel(panelId);
+    if (!panel) throw new Error(`Panel not found: ${panelId}`);
+    const view = this.getPanelView();
+    let wc = view?.getWebContents(panelId) as { isDestroyed?: () => boolean } | null | undefined;
+    if (wc && !wc.isDestroyed?.()) return wc;
+
+    await this.loadPanelIntoView(panelId);
+    wc = this.getPanelView()?.getWebContents(panelId) as
+      | { isDestroyed?: () => boolean }
+      | null
+      | undefined;
+    if (wc && !wc.isDestroyed?.()) return wc;
+    throw new Error(`target-not-loaded: ${panelId}`);
+  }
+
   async replaceCurrentSnapshot(
     panelId: string,
     contextId: string,
     source?: string,
     stateArgs?: Record<string, unknown>
   ): Promise<void> {
-    await this.shellCore.replaceCurrentSnapshot(panelId, {
+    await this.shellCore.replaceCurrentSnapshot(asPanelSlotId(panelId), {
       contextId,
       ...(source !== undefined && { source }),
       ...(stateArgs !== undefined && { stateArgs }),
@@ -469,7 +605,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
   }
 
   async updatePanelTitle(panelId: string, title: string): Promise<void> {
-    await this.shellCore.updateTitle(panelId, title);
+    await this.shellCore.updateTitle(asPanelSlotId(panelId), title);
   }
 
   /** Generic server RPC call — exposes server access without leaking serverClient reference. */
@@ -501,7 +637,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     this.registry.notifyPanelTreeUpdate();
 
     // Persist to server
-    await this.shellCore.notifyFocused(targetPanelId).catch(() => {});
+    await this.shellCore.notifyFocused(asPanelSlotId(targetPanelId)).catch(() => {});
 
     const view = this.getPanelView();
     if (view?.hasView(targetPanelId)) {
@@ -797,11 +933,15 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     newParentId: string | null,
     targetPosition: number
   ): Promise<void> {
-    await this.shellCore.movePanel(panelId, newParentId, targetPosition);
+    await this.shellCore.movePanel(
+      asPanelSlotId(panelId),
+      newParentId ? asPanelSlotId(newParentId) : null,
+      targetPosition
+    );
   }
 
   async setCollapsed(panelId: string, collapsed: boolean): Promise<void> {
-    await this.shellCore.setCollapsed(panelId, collapsed);
+    await this.shellCore.setCollapsed(asPanelSlotId(panelId), collapsed);
   }
 
   async expandIds(panelIds: string[]): Promise<void> {
@@ -813,7 +953,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
   }
 
   persistFocusedPath(panelId: string): void {
-    void this.shellCore.notifyFocused(panelId).catch(() => {});
+    void this.shellCore.notifyFocused(asPanelSlotId(panelId)).catch(() => {});
   }
 
   // =========================================================================
@@ -858,6 +998,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     },
     opts: { focus?: boolean; browserUrl?: string } = {}
   ): Promise<void> {
+    this.ensureStateArgsPush(result.panelId);
     const panel = this.registry.getPanel(result.panelId);
     const contextId = result.contextId ?? (panel ? getPanelContextId(panel) : undefined);
     const source = result.source ?? (panel ? getPanelSource(panel) : undefined);
@@ -900,6 +1041,16 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     if (opts.focus) {
       await this.focusPanel(result.panelId);
     }
+  }
+
+  private ensureStateArgsPush(panelId: string): void {
+    if (this.stateArgsPushUnsubs.has(panelId)) return;
+    this.stateArgsPushUnsubs.set(
+      panelId,
+      this.shellCore.onStateArgsChanged(asPanelSlotId(panelId), (stateArgs) => {
+        this.deps.sendPanelEvent(panelId, "runtime:stateArgsChanged", stateArgs);
+      })
+    );
   }
 
   private async loadPanelIntoView(
@@ -1005,7 +1156,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     leaseMode: "acquire" | "takeOver"
   ): Promise<string> {
     await this.ensureRuntimeClientRegistered();
-    const runtimeEntityId = await this.shellCore.getCurrentEntityId(panelId);
+    const runtimeEntityId = await this.shellCore.getCurrentEntityId(asPanelSlotId(panelId));
     const connectionId = `desktop-${panelId}-${randomUUID()}`;
     const result = (await this.serverClient.call("panelRuntime", leaseMode, [
       runtimeEntityId,
@@ -1074,4 +1225,21 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
       buildProgress: "Panel unloaded - will rebuild when focused",
     });
   }
+}
+
+function summarizeAxNodes(nodes: unknown[]): string {
+  const labels: string[] = [];
+  for (const node of nodes.slice(0, 200)) {
+    const record = node as {
+      role?: { value?: unknown };
+      name?: { value?: unknown };
+      value?: { value?: unknown };
+    };
+    const role = typeof record.role?.value === "string" ? record.role.value : "";
+    const name = typeof record.name?.value === "string" ? record.name.value : "";
+    const value = typeof record.value?.value === "string" ? record.value.value : "";
+    const line = [role, name || value].filter(Boolean).join(": ");
+    if (line) labels.push(line);
+  }
+  return labels.join("\n");
 }

@@ -359,11 +359,11 @@ Any panel can pop the native file/folder picker at any time and return the resul
 
 ---
 
-### [HIGH-5] Panels' `createBrowserPanel` / `createPanel` with no URL scheme restriction beyond http(s), and panel source is used to build panel URLs without scheme filtering
+### [HIGH-5] Panels' URL-panel creation / `createPanel` with no URL scheme restriction beyond http(s), and panel source is used to build panel URLs without scheme filtering
 
 **File:** `src/main/panelOrchestrator.ts:214-216`, `src/main/index.ts:746-753`
 
-`createBrowserPanel` enforces `/^https?:\/\//i.test(url)` — good. But panel creation via `createPanel(callerId, source, options, stateArgs)` does not restrict `source`. A malicious panel can pass a crafted `source` that, when combined server-side with `buildPanelUrl`, could try to escape the gateway URL. Impact depends on server-side `buildPanelUrl` and the panel HTTP gateway's routing — not reviewed in full here. At minimum, validate that `source` is a plain `namespace/name` string matching a simple regex.
+URL-panel creation enforces `/^https?:\/\//i.test(url)` — good. But panel creation via `createPanel(callerId, source, options, stateArgs)` does not restrict `source`. A malicious panel can pass a crafted `source` that, when combined server-side with `buildPanelUrl`, could try to escape the gateway URL. Impact depends on server-side `buildPanelUrl` and the panel HTTP gateway's routing — not reviewed in full here. At minimum, validate that `source` is a plain `namespace/name` string matching a simple regex.
 
 **Remediation:**
 
@@ -454,7 +454,7 @@ const willNavigateHandler = (event: Electron.Event, url: string) => {
   if (!isManagedHost(url, this.externalHost)) {
     if (/^https?:\/\//i.test(url)) {
       event.preventDefault();
-      void this.panelOrchestrator.createBrowserPanel(parentId, url, { focus: true })
+      void this.panelOrchestrator.openUrlPanel(parentId, url, { focus: true })
       ...
     }
     return;  // ← non-http/https managed-external URL is NOT prevented
@@ -471,7 +471,7 @@ If the navigation target is not the managed host AND not http(s), the handler re
 if (!isManagedHost(url, this.externalHost)) {
   if (/^https?:\/\//i.test(url)) {
     event.preventDefault();
-    void this.panelOrchestrator.createBrowserPanel(...);
+    void this.panelOrchestrator.openUrlPanel(...);
   } else {
     event.preventDefault(); // reject non-http(s) schemes entirely
   }
@@ -594,7 +594,7 @@ With `contextIsolation: false`, `globalThis` is shared with the page. Any shell-
 6. **Add ownership checks to every IPC handler that mutates a view or web contents by id.** Handlers should accept an explicit `callerId` and compare it to the resource owner. Reuse `CdpServer.canAccessBrowser`-style ancestor checks across the main process.
 7. **Install `setPermissionRequestHandler` / `setPermissionCheckHandler` on every session at ready.** Default-deny high-sensitivity permissions.
 8. **Harden the autofill IPC channels** with sender validation; require `event.sender.id === overlayView.webContents.id` for overlay select/dismiss.
-9. **Reject non-http(s) schemes** in `will-navigate` and in `view.browserNavigate`, not just in `createBrowserPanel`.
+9. **Reject non-http(s) schemes** in `will-navigate` and in `view.browserNavigate`, not just during URL-panel creation.
 10. **Fix TLS pinning scope.** Apply the pinned verify proc only to the default (shell) session; install a different (or none) verify proc for `persist:browser`.
 11. **Remove `innerHTML` in `src/renderer/index.tsx`.** Use React to render the error state.
 12. **Add a security CI check.** ESLint rule `electron/no-node-integration` (via `eslint-plugin-electron`) and a static scan that any `policy.allowed.includes("panel")` service method is flagged for manual review.

@@ -79,7 +79,7 @@ import {
   GlobeIcon,
   OpenInNewWindowIcon,
 } from "@radix-ui/react-icons";
-import { createBrowserPanel, openExternal } from "@workspace/runtime";
+import { openPanel, openExternal } from "@workspace/runtime";
 
 const requiredSteps = [
   {
@@ -149,7 +149,7 @@ export default function GoogleWorkspaceSetup({ onSubmit, onCancel }) {
   const allDone = completed === requiredSteps.length;
 
   const openInside = async (href) => {
-    await createBrowserPanel(href, { focus: true, name: "Google Cloud Console" });
+    await openPanel(href, { focus: true, name: "Google Cloud Console" });
   };
 
   const openOutside = async (href) => {

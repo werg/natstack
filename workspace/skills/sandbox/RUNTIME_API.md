@@ -26,7 +26,6 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `getParentWithContract` | value |  |  |
 | `onConnectionError` | value |  |  |
 | `getInfo` | value |  |  |
-| `closeSelf` | value |  |  |
 | `focusPanel` | value |  |  |
 | `getWorkspaceTree` | value |  |  |
 | `listBranches` | value |  |  |
@@ -53,11 +52,16 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `getStateArgs` | value |  |  |
 | `useStateArgs` | value |  |  |
 | `setStateArgs` | value |  |  |
-| `createBrowserPanel` | value |  |  |
+| `setStateArgsForPanel` | value |  |  |
 | `openExternal` | value |  |  |
 | `onChildCreated` | value |  |  |
-| `getBrowserHandle` | value |  |  |
 | `openPanel` | value |  |  |
+| `listPanels` | value |  |  |
+| `getPanelHandle` | value |  |  |
+| `agentApi` | value |  |  |
+| `Journal` | value |  |  |
+| `withJournal` | value |  |  |
+| `currentJournal` | value |  |  |
 | `adblock` | namespace | `getStats`, `isActive`, `getStatsForPanel`, `isEnabledForPanel`, `setEnabledForPanel`, `resetStatsForPanel`, `getPanelUrl`, `addToWhitelist`, `removeFromWhitelist` |  |
 | `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `delete`, `setInitPanels`, `setConfigField`, `switchTo`, `openPanel`, `units` |  |
 | `credentials` | namespace | `store`, `connect`, `configureClient`, `requestCredentialInput`, `getClientConfigStatus`, `deleteClientConfig`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl`, `gitHttp` |  |

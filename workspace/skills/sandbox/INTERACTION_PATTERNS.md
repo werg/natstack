@@ -34,7 +34,7 @@ Use direct link buttons in the UI:
 ```tsx
 import { Button, Flex, Text } from "@radix-ui/themes";
 import { GlobeIcon, OpenInNewWindowIcon } from "@radix-ui/react-icons";
-import { createBrowserPanel, openExternal } from "@workspace/runtime";
+import { openPanel, openExternal } from "@workspace/runtime";
 
 export default function SetupStep({ onSubmit }) {
   const url = "https://console.cloud.google.com/apis/credentials";
@@ -42,7 +42,7 @@ export default function SetupStep({ onSubmit }) {
     <Flex direction="column" gap="3" p="2">
       <Text size="2" weight="bold">Open the credentials page</Text>
       <Flex gap="2">
-        <Button size="1" variant="soft" onClick={() => createBrowserPanel(url, { focus: true })}>
+        <Button size="1" variant="soft" onClick={() => openPanel(url, { focus: true })}>
           <GlobeIcon /> Internal
         </Button>
         <Button size="1" variant="soft" onClick={() => openExternal(url)}>
@@ -81,7 +81,7 @@ inspectable results that belong in the transcript.
 
 ## Browser Opens
 
-- Internal browser panels: `createBrowserPanel(url, { focus: true })`
+- Internal browser panels: `openPanel(url, { focus: true })`
 - System browser: `openExternal(url)`
 - OAuth authorize URLs: `openExternal(url, { expectedRedirectUri })`
 

@@ -70,6 +70,8 @@ export interface SandboxResult {
   exports?: Record<string, unknown>;
   /** Error message (if failed) */
   error?: string;
+  /** Agent-facing panel operation summary, when panel runtime journaling was active. */
+  panelJournalFooter?: string;
 }
 
 export interface CompileResult<T> {
@@ -374,35 +376,51 @@ export async function executeSandbox(
       tracking.enter(trackingContext);
     }
 
-    const wrapped = wrapForTopLevelAwait(transformed.code);
-    let result: ReturnType<typeof execute>;
-    try {
-      result = execute(wrapped, {
-        console: capture.proxy,
-        bindings,
-      });
-    } finally {
-      tracking?.exit();
-    }
+    const runtimeModule = transformed.requires.includes("@workspace/runtime")
+      ? tryRequireRuntimeModule(requireFn)
+      : null;
+    const journal = createRuntimeJournal(runtimeModule);
+    const runUserCode = async () => {
+      const wrapped = wrapForTopLevelAwait(transformed.code);
+      let result: ReturnType<typeof execute>;
+      try {
+        result = execute(wrapped, {
+          console: capture.proxy,
+          bindings,
+        });
+      } finally {
+        tracking?.exit();
+      }
 
-    // Wait for async operations and promised return values without imposing a
-    // wall-clock limit. Agentic eval work should finish by completion, error,
-    // or explicit user interruption, not a hidden timeout.
-    if (tracking && trackingContext) {
-      await tracking.waitAll(trackingContext);
-    }
+      // Wait for async operations and promised return values without imposing a
+      // wall-clock limit. Agentic eval work should finish by completion, error,
+      // or explicit user interruption, not a hidden timeout.
+      if (tracking && trackingContext) {
+        await tracking.waitAll(trackingContext);
+      }
 
-    let returnValue = result.returnValue;
-    if (isPromise(returnValue)) {
-      returnValue = await returnValue;
-    }
+      let returnValue = result.returnValue;
+      if (isPromise(returnValue)) {
+        returnValue = await returnValue;
+      }
+      return {
+        safeReturnValue: safeSerialize(returnValue ?? result.exports["default"]),
+        exports: result.exports,
+      };
+    };
 
-    const safeReturnValue = safeSerialize(returnValue ?? result.exports["default"]);
+    const execution = journal
+      ? await runtimeModule.withJournal(journal, runUserCode)
+      : await runUserCode();
+    const panelJournalFooter = journal
+      ? await renderPanelJournalFooter(runtimeModule, journal).catch(() => undefined)
+      : undefined;
     return {
       success: true,
       consoleOutput: formatConsoleOutput(capture.getEntries()),
-      returnValue: safeReturnValue,
-      exports: result.exports,
+      returnValue: execution.safeReturnValue,
+      exports: execution.exports,
+      panelJournalFooter,
     };
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
@@ -421,6 +439,65 @@ export async function executeSandbox(
       tracking.stop(trackingContext);
     }
   }
+}
+
+function tryRequireRuntimeModule(requireFn: (id: string) => unknown): any | null {
+  try {
+    return requireFn("@workspace/runtime") as any;
+  } catch {
+    return null;
+  }
+}
+
+function createRuntimeJournal(runtimeModule: any): any | null {
+  if (typeof runtimeModule?.Journal !== "function" || typeof runtimeModule?.withJournal !== "function") {
+    return null;
+  }
+  return new runtimeModule.Journal();
+}
+
+async function renderPanelJournalFooter(runtimeModule: any, journal: any): Promise<string | undefined> {
+  const entries = Array.isArray(journal?.entries) ? journal.entries : [];
+  if (entries.length === 0) return undefined;
+  const operations = entries.map((entry: any) => {
+    switch (entry.type) {
+      case "open":
+        return `opened ${entry.source} -> #${entry.id}`;
+      case "reload":
+        return `reloaded #${entry.id}`;
+      case "close":
+        return `closed #${entry.id}`;
+      case "stateArgs.set":
+        return `set stateArgs on #${entry.id}`;
+      default:
+        return String(entry.type ?? "panel operation");
+    }
+  });
+  const tree = typeof runtimeModule?.listPanels === "function"
+    ? formatPanelTree(await runtimeModule.listPanels())
+    : [];
+  return [
+    "[panel] Operations:",
+    ...operations.map((line: string) => `- ${line}`),
+    ...(tree.length ? ["[panel] Tree:", ...tree] : []),
+  ].join("\n");
+}
+
+function formatPanelTree(handles: any[]): string[] {
+  const byParent = new Map<string | null, any[]>();
+  for (const handle of handles) {
+    const parentId = typeof handle?.parentId === "string" ? handle.parentId : null;
+    const list = byParent.get(parentId) ?? [];
+    list.push(handle);
+    byParent.set(parentId, list);
+  }
+  const lines: string[] = [];
+  const visit = (handle: any, depth: number) => {
+    lines.push(`${"  ".repeat(depth)}- #${handle.id} ${handle.kind ?? "panel"} ${handle.source ?? ""}`.trimEnd());
+    for (const child of byParent.get(handle.id) ?? []) visit(child, depth + 1);
+  };
+  for (const root of byParent.get(null) ?? handles) visit(root, 0);
+  return lines;
 }
 
 // =============================================================================

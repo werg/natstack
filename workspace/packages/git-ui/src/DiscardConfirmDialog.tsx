@@ -1,4 +1,4 @@
-import { AlertDialog, Button, Flex, Text, Code, Box } from "@radix-ui/themes";
+import { AlertDialog, Button, Flex, Code, Box } from "@radix-ui/themes";
 
 export interface DiscardConfirmDialogProps {
   open: boolean;
@@ -20,11 +20,16 @@ export function DiscardConfirmDialog({
 }: DiscardConfirmDialogProps) {
   return (
     <AlertDialog.Root open={open} onOpenChange={onOpenChange}>
-      <AlertDialog.Content maxWidth="500px">
+      <AlertDialog.Content
+        style={{
+          width: "min(500px, calc(100vw - 24px))",
+          maxHeight: "calc(100dvh - 24px)",
+          overflow: "auto",
+        }}
+      >
         <AlertDialog.Title>Discard Changes</AlertDialog.Title>
         <AlertDialog.Description size="2">
-          Are you sure you want to discard all changes to this file?
-          This action cannot be undone.
+          Are you sure you want to discard all changes to this file? This action cannot be undone.
         </AlertDialog.Description>
         <Box mt="2">
           <Code size="2" style={{ wordBreak: "break-all" }}>
@@ -32,7 +37,7 @@ export function DiscardConfirmDialog({
           </Code>
         </Box>
 
-        <Flex gap="3" mt="4" justify="end">
+        <Flex gap="3" mt="4" justify="end" wrap="wrap">
           <AlertDialog.Cancel>
             <Button variant="soft" color="gray" disabled={loading}>
               Cancel

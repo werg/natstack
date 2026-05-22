@@ -46,6 +46,7 @@ The chat panel hosts an AI agent that can:
 - **Read/write files** in the workspace
 - **Build and launch panels** on demand
 - **Connect API provider integrations** — Gmail, GitHub, Slack, and other OAuth/credential-backed services
+- **Tune its own model defaults** — the host chat agent's provider, effort, approval, and chattiness are configurable
 - **Import browser data** — cookies, passwords, bookmarks, history
 - **Automate browsers** via Playwright (CDP)
 - **Query databases**, call AI models, manage workers

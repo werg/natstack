@@ -18,14 +18,18 @@ import {
   ScrollArea,
 } from "@radix-ui/themes";
 import { getWorkspaceTree, buildPanelLink, onFocus } from "@workspace/runtime";
-import { usePanelTheme } from "@workspace/react";
+import { useIsMobile, usePanelTheme } from "@workspace/react";
 import type { WorkspaceTree, WorkspaceNode } from "@workspace/runtime";
 
 /** Flatten a workspace tree into a list of visible launchable panels. */
 function collectPanels(nodes: WorkspaceNode[]): WorkspaceNode[] {
   const result: WorkspaceNode[] = [];
   for (const node of nodes) {
-    if (node.launchable && !node.launchable.hidden && (node.path.startsWith("panels/") || node.path.startsWith("about/")))
+    if (
+      node.launchable &&
+      !node.launchable.hidden &&
+      (node.path.startsWith("panels/") || node.path.startsWith("about/"))
+    )
       result.push(node);
     result.push(...collectPanels(node.children));
   }
@@ -33,6 +37,7 @@ function collectPanels(nodes: WorkspaceNode[]): WorkspaceNode[] {
 }
 
 function NewPanelPage() {
+  const isMobile = useIsMobile();
   const [tree, setTree] = useState<WorkspaceTree | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -68,8 +73,10 @@ function NewPanelPage() {
 
   if (loading) {
     return (
-      <Box p="4" style={{ maxWidth: "700px", margin: "0 auto" }}>
-        <Heading size="7" mb="4">New Panel</Heading>
+      <Box p={isMobile ? "3" : "4"} style={{ maxWidth: "700px", margin: "0 auto" }}>
+        <Heading size={isMobile ? "5" : "7"} mb="4">
+          New Panel
+        </Heading>
         <Text color="gray">Loading...</Text>
       </Box>
     );
@@ -77,8 +84,10 @@ function NewPanelPage() {
 
   if (error) {
     return (
-      <Box p="4" style={{ maxWidth: "700px", margin: "0 auto" }}>
-        <Heading size="7" mb="4">New Panel</Heading>
+      <Box p={isMobile ? "3" : "4"} style={{ maxWidth: "700px", margin: "0 auto" }}>
+        <Heading size={isMobile ? "5" : "7"} mb="4">
+          New Panel
+        </Heading>
         <Card>
           <Text color="red">Error: {error}</Text>
         </Card>
@@ -89,15 +98,19 @@ function NewPanelPage() {
   const panels = tree ? collectPanels(tree.children) : [];
 
   return (
-    <Box p="4" style={{ maxWidth: "700px", margin: "0 auto" }}>
-      <Heading size="7" mb="4">New Panel</Heading>
+    <Box p={isMobile ? "3" : "4"} style={{ maxWidth: "700px", margin: "0 auto" }}>
+      <Heading size={isMobile ? "5" : "7"} mb="4">
+        New Panel
+      </Heading>
 
-      <ScrollArea style={{ height: "calc(100dvh - 100px)" }}>
+      <ScrollArea style={{ height: isMobile ? "calc(100dvh - 76px)" : "calc(100dvh - 100px)" }}>
         <Flex direction="column" gap="4">
           {/* Chat prompt input */}
           <Card>
-            <Heading size="3" mb="2">New Chat</Heading>
-            <Flex gap="2">
+            <Heading size="3" mb="2">
+              New Chat
+            </Heading>
+            <Flex gap="2" direction={isMobile ? "column" : "row"}>
               <TextField.Root
                 style={{ flex: 1 }}
                 placeholder="Start a chat with a prompt..."
@@ -122,9 +135,18 @@ function NewPanelPage() {
                   onClick={() => handleLaunch(node)}
                   onKeyDown={(e) => e.key === "Enter" && handleLaunch(node)}
                 >
-                  <Flex align="center" justify="between">
-                    <Text weight="medium">{node.launchable?.title ?? node.name}</Text>
-                    <Text size="1" color="gray">{node.path}</Text>
+                  <Flex
+                    align={isMobile ? "start" : "center"}
+                    justify="between"
+                    direction={isMobile ? "column" : "row"}
+                    gap="1"
+                  >
+                    <Text weight="medium" style={{ minWidth: 0 }}>
+                      {node.launchable?.title ?? node.name}
+                    </Text>
+                    <Text size="1" color="gray" style={{ wordBreak: "break-all" }}>
+                      {node.path}
+                    </Text>
                   </Flex>
                 </Card>
               ))}

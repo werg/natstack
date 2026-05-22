@@ -5,7 +5,7 @@
 import { createRoot } from "react-dom/client";
 import "@radix-ui/themes/styles.css";
 import { Theme, Card, Flex, Heading, Text, Box, Link, ScrollArea } from "@radix-ui/themes";
-import { usePanelTheme } from "@workspace/react";
+import { useIsMobile, usePanelTheme } from "@workspace/react";
 
 interface HelpSection {
   title: string;
@@ -49,20 +49,25 @@ const helpSections: HelpSection[] = [
 ];
 
 function HelpPage() {
+  const isMobile = useIsMobile();
   return (
-    <Box p="4" style={{ maxWidth: "800px", margin: "0 auto" }}>
-      <Heading size="7" mb="4">Help & Documentation</Heading>
+    <Box p={isMobile ? "3" : "4"} style={{ maxWidth: "800px", margin: "0 auto" }}>
+      <Heading size={isMobile ? "5" : "7"} mb="4">
+        Help & Documentation
+      </Heading>
 
-      <ScrollArea style={{ height: "calc(100dvh - 100px)" }}>
+      <ScrollArea style={{ height: isMobile ? "calc(100dvh - 76px)" : "calc(100dvh - 100px)" }}>
         <Flex direction="column" gap="4">
           {helpSections.map((section) => (
             <Card key={section.title}>
-              <Heading size="4" mb="2">{section.title}</Heading>
+              <Heading size="4" mb="2">
+                {section.title}
+              </Heading>
               <Text size="2" color="gray" style={{ lineHeight: 1.6 }}>
                 {section.content}
               </Text>
               {section.links && (
-                <Flex gap="3" mt="3">
+                <Flex gap="3" mt="3" wrap="wrap">
                   {section.links.map((link) => (
                     <Link key={link.label} href={link.url} target="_blank" size="2">
                       {link.label}
@@ -74,7 +79,9 @@ function HelpPage() {
           ))}
 
           <Card>
-            <Heading size="4" mb="2">Need More Help?</Heading>
+            <Heading size="4" mb="2">
+              Need More Help?
+            </Heading>
             <Flex direction="column" gap="2">
               <Text size="2" color="gray">
                 Check the keyboard shortcuts (Cmd/Ctrl+/) for quick reference.

@@ -1,9 +1,18 @@
 import { Badge, ContextMenu, Dialog, Flex, Kbd, Text, TextField } from "@radix-ui/themes";
 import { LightningBoltIcon } from "@radix-ui/react-icons";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { commandTargetForEnter, hasCommandTargetModifier, type CommandRunTarget } from "./commandLauncherModel.js";
+import { useIsMobile, useViewportHeight } from "@workspace/react/responsive";
+import {
+  commandTargetForEnter,
+  hasCommandTargetModifier,
+  type CommandRunTarget,
+} from "./commandLauncherModel.js";
 import { loadCommandSuggestions, type CommandSuggestion } from "./commandSources.js";
-import { buildCommandRows, offsetForSuggestion, visibleCommandRows } from "./commandVirtualization.js";
+import {
+  buildCommandRows,
+  offsetForSuggestion,
+  visibleCommandRows,
+} from "./commandVirtualization.js";
 import type { SavedLayout } from "./types.js";
 
 export function CommandLauncher(props: {
@@ -23,16 +32,23 @@ export function CommandLauncher(props: {
   const [suggestions, setSuggestions] = useState<CommandSuggestion[]>([]);
   const [scrollTop, setScrollTop] = useState(0);
   const listRef = useRef<HTMLDivElement | null>(null);
-  const viewportHeight = 352;
+  const isMobile = useIsMobile();
+  const windowHeight = useViewportHeight();
+  const viewportHeight = isMobile ? Math.min(352, Math.floor(windowHeight * 0.58)) : 352;
   const commandRows = useMemo(() => buildCommandRows(suggestions), [suggestions]);
   const visibleRows = useMemo(
     () => visibleCommandRows(commandRows.rows, scrollTop, viewportHeight),
-    [commandRows.rows, scrollTop],
+    [commandRows.rows, scrollTop]
   );
 
   useEffect(() => {
     if (!props.open) return;
-    void loadCommandSuggestions({ query, cwd: props.cwd, history: props.history, layouts: props.layouts }).then((items) => {
+    void loadCommandSuggestions({
+      query,
+      cwd: props.cwd,
+      history: props.history,
+      layouts: props.layouts,
+    }).then((items) => {
       setSuggestions(items);
       setSelected(0);
       setScrollTop(0);
@@ -45,7 +61,8 @@ export function CommandLauncher(props: {
     if (!list || !offset) return;
     const visibleBottom = list.scrollTop + list.clientHeight;
     if (offset.top < list.scrollTop) list.scrollTo({ top: offset.top });
-    else if (offset.top + offset.height > visibleBottom) list.scrollTo({ top: offset.top + offset.height - list.clientHeight });
+    else if (offset.top + offset.height > visibleBottom)
+      list.scrollTo({ top: offset.top + offset.height - list.clientHeight });
   }, [commandRows.rows, selected]);
 
   async function accept(suggestion: CommandSuggestion, target: CommandRunTarget) {
@@ -58,7 +75,10 @@ export function CommandLauncher(props: {
 
   return (
     <Dialog.Root open={props.open} onOpenChange={props.onOpenChange}>
-      <Dialog.Content maxWidth="640px" style={{ marginTop: "12vh", padding: 0, overflow: "hidden" }}>
+      <Dialog.Content
+        maxWidth={isMobile ? "calc(100vw - 24px)" : "640px"}
+        style={{ marginTop: isMobile ? "4dvh" : "12vh", padding: 0, overflow: "hidden" }}
+      >
         <TextField.Root
           size="3"
           value={query}
@@ -75,7 +95,8 @@ export function CommandLauncher(props: {
               setSelected((value) => Math.max(0, value - 1));
             } else if (event.key === "Enter" && suggestions[selected]) {
               event.preventDefault();
-              const suggestion = suggestions[selected]!;
+              const suggestion = suggestions[selected];
+              if (!suggestion) return;
               const target = hasCommandTargetModifier(event)
                 ? commandTargetForEnter(event)
                 : suggestionDefaultTarget(suggestion);
@@ -83,43 +104,70 @@ export function CommandLauncher(props: {
             }
           }}
         >
-          <TextField.Slot><LightningBoltIcon /></TextField.Slot>
+          <TextField.Slot>
+            <LightningBoltIcon />
+          </TextField.Slot>
         </TextField.Root>
         <div
           ref={listRef}
           onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
-          style={{ height: "22rem", overflow: "auto", borderTop: "1px solid var(--gray-5)", borderBottom: "1px solid var(--gray-5)" }}
+          style={{
+            height: viewportHeight,
+            overflow: "auto",
+            borderTop: "1px solid var(--gray-5)",
+            borderBottom: "1px solid var(--gray-5)",
+          }}
         >
           {suggestions.length === 0 ? (
             <Flex align="center" justify="center" minHeight="6rem">
-              <Text size="2" color="gray">No commands found</Text>
+              <Text size="2" color="gray">
+                No commands found
+              </Text>
             </Flex>
           ) : (
             <div style={{ height: commandRows.totalHeight, position: "relative" }}>
-              {visibleRows.map((row) => row.type === "section" ? (
-                <SectionHeader key={row.key} kind={row.kind} top={row.top} height={row.height} />
-              ) : (
-                <SuggestionRow
-                  key={row.key}
-                  suggestion={row.suggestion}
-                  selected={row.index === selected}
-                  top={row.top}
-                  height={row.height}
-                  onMouseEnter={() => setSelected(row.index)}
-                  onAccept={() => void accept(row.suggestion, suggestionDefaultTarget(row.suggestion))}
-                  onAcceptTarget={(target) => void accept(row.suggestion, target)}
-                  onRenameLayout={() => row.suggestion.kind === "layout" && props.onRenameLayout(row.suggestion.layoutId)}
-                  onDeleteLayout={() => row.suggestion.kind === "layout" && props.onDeleteLayout(row.suggestion.layoutId)}
-                />
-              ))}
+              {visibleRows.map((row) =>
+                row.type === "section" ? (
+                  <SectionHeader key={row.key} kind={row.kind} top={row.top} height={row.height} />
+                ) : (
+                  <SuggestionRow
+                    key={row.key}
+                    suggestion={row.suggestion}
+                    selected={row.index === selected}
+                    top={row.top}
+                    height={row.height}
+                    onMouseEnter={() => setSelected(row.index)}
+                    onAccept={() =>
+                      void accept(row.suggestion, suggestionDefaultTarget(row.suggestion))
+                    }
+                    onAcceptTarget={(target) => void accept(row.suggestion, target)}
+                    onRenameLayout={() =>
+                      row.suggestion.kind === "layout" &&
+                      props.onRenameLayout(row.suggestion.layoutId)
+                    }
+                    onDeleteLayout={() =>
+                      row.suggestion.kind === "layout" &&
+                      props.onDeleteLayout(row.suggestion.layoutId)
+                    }
+                  />
+                )
+              )}
             </div>
           )}
         </div>
-        <Flex align="center" gap="3" px="3" py="2">
-          <Text size="1" color="gray"><Kbd>Enter</Kbd> split right</Text>
-          <Text size="1" color="gray"><Kbd>Shift Enter</Kbd> new tab</Text>
-          <Text size="1" color="gray"><Kbd>Ctrl/Cmd Enter</Kbd> split right</Text>
-          <Text size="1" color="gray"><Kbd>Ctrl/Cmd Shift Enter</Kbd> split down</Text>
+        <Flex align="center" gap="3" px="3" py="2" wrap="wrap">
+          <Text size="1" color="gray">
+            <Kbd>Enter</Kbd> split right
+          </Text>
+          <Text size="1" color="gray">
+            <Kbd>Shift Enter</Kbd> new tab
+          </Text>
+          <Text size="1" color="gray">
+            <Kbd>Ctrl/Cmd Enter</Kbd> split right
+          </Text>
+          <Text size="1" color="gray">
+            <Kbd>Ctrl/Cmd Shift Enter</Kbd> split down
+          </Text>
         </Flex>
       </Dialog.Content>
     </Dialog.Root>
@@ -127,7 +175,9 @@ export function CommandLauncher(props: {
 }
 
 function suggestionDefaultTarget(suggestion: CommandSuggestion): CommandRunTarget {
-  return "defaultTarget" in suggestion && suggestion.defaultTarget ? suggestion.defaultTarget : "splitRight";
+  return "defaultTarget" in suggestion && suggestion.defaultTarget
+    ? suggestion.defaultTarget
+    : "splitRight";
 }
 
 function SuggestionRow(props: {
@@ -174,17 +224,33 @@ function SuggestionRow(props: {
           textAlign: "left",
         }}
       >
-        <Text size="1" color="gray" style={{ width: "4.5rem", textTransform: "uppercase" }}>{props.suggestion.kind}</Text>
+        <Text size="1" color="gray" style={{ width: "4.5rem", textTransform: "uppercase" }}>
+          {props.suggestion.kind}
+        </Text>
         <Flex direction="column" minWidth="0" style={{ flex: 1 }}>
-          <Text size="2" weight="medium" truncate>{props.suggestion.label}</Text>
-          {props.suggestion.subtitle ? <Text size="1" color="gray" truncate>{props.suggestion.subtitle}</Text> : null}
+          <Text size="2" weight="medium" truncate>
+            {props.suggestion.label}
+          </Text>
+          {props.suggestion.subtitle ? (
+            <Text size="1" color="gray" truncate>
+              {props.suggestion.subtitle}
+            </Text>
+          ) : null}
         </Flex>
       </button>
       {canChooseRunTarget(props.suggestion) && props.selected ? (
         <Flex gap="1" flexShrink="0">
           <TargetChip label="Here" color="gray" onClick={() => props.onAcceptTarget("here")} />
-          <TargetChip label="Right" color="blue" onClick={() => props.onAcceptTarget("splitRight")} />
-          <TargetChip label="Down" color="amber" onClick={() => props.onAcceptTarget("splitDown")} />
+          <TargetChip
+            label="Right"
+            color="blue"
+            onClick={() => props.onAcceptTarget("splitRight")}
+          />
+          <TargetChip
+            label="Down"
+            color="amber"
+            onClick={() => props.onAcceptTarget("splitDown")}
+          />
           <TargetChip label="Tab" color="green" onClick={() => props.onAcceptTarget("tab")} />
         </Flex>
       ) : (
@@ -203,12 +269,12 @@ function SuggestionRow(props: {
   if (props.suggestion.kind !== "layout") return row;
   return (
     <ContextMenu.Root>
-      <ContextMenu.Trigger>
-        {row}
-      </ContextMenu.Trigger>
+      <ContextMenu.Trigger>{row}</ContextMenu.Trigger>
       <ContextMenu.Content>
         <ContextMenu.Item onSelect={props.onRenameLayout}>Rename layout...</ContextMenu.Item>
-        <ContextMenu.Item color="red" onSelect={props.onDeleteLayout}>Delete layout</ContextMenu.Item>
+        <ContextMenu.Item color="red" onSelect={props.onDeleteLayout}>
+          Delete layout
+        </ContextMenu.Item>
       </ContextMenu.Content>
     </ContextMenu.Root>
   );
@@ -227,7 +293,9 @@ function TargetChip(props: {
       }}
       style={{ border: 0, padding: 0, background: "transparent" }}
     >
-      <Badge size="1" variant="soft" color={props.color}>{props.label}</Badge>
+      <Badge size="1" variant="soft" color={props.color}>
+        {props.label}
+      </Badge>
     </button>
   );
 }

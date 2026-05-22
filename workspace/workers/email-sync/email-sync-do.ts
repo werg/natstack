@@ -14,7 +14,7 @@
  */
 import { DurableObjectBase } from "@workspace/runtime/worker";
 import type { DurableObjectContext } from "@workspace/runtime/worker";
-import { createGmailClient, type GmailClient } from "@workspace/integrations/gmail";
+import { createGmailClient, type GmailClient } from "@workspace/gmail";
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------

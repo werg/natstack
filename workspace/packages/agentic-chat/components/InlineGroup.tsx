@@ -93,6 +93,7 @@ export const InlineGroup = React.memo(function InlineGroup({
                     id={itemId}
                     payload={item.payload}
                     entry={messageTypeComponents?.get(item.payload.typeId)}
+                    expanded={false}
                     chat={chat}
                     scope={scope}
                     scopes={scopes}
@@ -131,6 +132,7 @@ export const InlineGroup = React.memo(function InlineGroup({
               <ExpandedCustom
                 payload={expandedItem.payload}
                 entry={messageTypeComponents?.get(expandedItem.payload.typeId)}
+                expanded={true}
                 chat={chat}
                 scope={scope}
                 scopes={scopes}

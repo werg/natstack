@@ -7,7 +7,7 @@ function createHarness() {
   const panelOrchestrator = {
     applyBuildComplete: vi.fn(),
     applyRuntimeLeaseChanged: vi.fn(async () => {}),
-    createBrowserPanel: vi.fn(async () => ({ id: "browser", title: "Browser" })),
+    createBrowserUrlPanel: vi.fn(async () => ({ id: "browser", title: "Browser" })),
   };
   const serverClient = {
     call: vi.fn(async () => undefined),
@@ -73,7 +73,7 @@ describe("createServerEventBridge", () => {
     });
     await Promise.resolve();
 
-    expect(panelOrchestrator.createBrowserPanel).toHaveBeenCalledWith(
+    expect(panelOrchestrator.createBrowserUrlPanel).toHaveBeenCalledWith(
       "slot-a",
       "https://example.com/",
       { focus: true }

@@ -42,11 +42,7 @@ export function CreateBranchDialog({
       label: branch.remote ? `${branch.remote}/${branch.name}` : branch.name,
     }));
 
-    return [
-      { value: "HEAD", label: "HEAD" },
-      ...local,
-      ...remote,
-    ];
+    return [{ value: "HEAD", label: "HEAD" }, ...local, ...remote];
   }, [branches, remoteBranches]);
 
   const handleSubmit = async () => {
@@ -62,7 +58,13 @@ export function CreateBranchDialog({
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      <Dialog.Content maxWidth="480px">
+      <Dialog.Content
+        style={{
+          width: "min(480px, calc(100vw - 24px))",
+          maxHeight: "calc(100dvh - 24px)",
+          overflow: "auto",
+        }}
+      >
         <Dialog.Title>Create Branch</Dialog.Title>
         <Dialog.Description size="2">
           <Text>Create a new branch and optionally switch to it.</Text>
@@ -70,7 +72,9 @@ export function CreateBranchDialog({
 
         <Flex direction="column" gap="3" mt="3">
           <Box>
-            <Text size="1" color="gray">Branch name</Text>
+            <Text size="1" color="gray">
+              Branch name
+            </Text>
             <TextField.Root
               size="2"
               placeholder="feature/my-branch"
@@ -80,7 +84,9 @@ export function CreateBranchDialog({
           </Box>
 
           <Box>
-            <Text size="1" color="gray">Start point</Text>
+            <Text size="1" color="gray">
+              Start point
+            </Text>
             <Select.Root value={startPoint} onValueChange={setStartPoint}>
               <Select.Trigger />
               <Select.Content>
@@ -99,7 +105,7 @@ export function CreateBranchDialog({
           </Flex>
         </Flex>
 
-        <Flex gap="3" mt="4" justify="end">
+        <Flex gap="3" mt="4" justify="end" wrap="wrap">
           <Dialog.Close>
             <Button variant="soft" color="gray" disabled={submitting}>
               Cancel

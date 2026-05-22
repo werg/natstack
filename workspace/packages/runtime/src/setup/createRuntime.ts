@@ -17,16 +17,19 @@ import type { GatewayConfig } from "../shared/globals.js";
 import { createParentHandle, createParentHandleFromContract } from "../shared/handles.js";
 import type { ParentHandle, ParentHandleFromContract } from "../core/index.js";
 import type { RuntimeFs, ThemeAppearance } from "../types.js";
-import { _initStateArgsBridge } from "../panel/stateArgs.js";
+import { _applyStateArgsFromHost, _initStateArgsRuntime } from "../panel/stateArgs.js";
+import { registerAgentApi } from "../panel/agentApi.js";
+import type { PanelEntityId, PanelSlotId } from "@natstack/shared/panel/ids";
 
 export interface RuntimeDeps {
-  selfId: string;
+  selfId: PanelEntityId;
   createTransport: () => RpcTransport;
-  entityId: string;
-  id?: string;
-  slotId?: string;
+  entityId: PanelEntityId;
+  id?: PanelEntityId;
+  slotId?: PanelSlotId;
   contextId: string;
-  parentId: string | null;
+  parentId: PanelSlotId | null;
+  parentEntityId?: PanelEntityId | null;
   initialTheme: ThemeAppearance;
   fs: RuntimeFs;
   setupGlobals?: () => void;
@@ -36,41 +39,46 @@ export interface RuntimeDeps {
 
 export function createRuntime(deps: RuntimeDeps) {
   const entityId = deps.entityId;
+  const slotId = deps.slotId ?? (entityId as unknown as PanelSlotId);
+  const parentRuntimeId = deps.parentEntityId ?? deps.parentId;
   const base = createBaseRuntime({ ...deps, id: entityId });
   const shell = (globalThis as any).__natstackShell ?? (globalThis as any).__natstackElectron;
 
-  // Initialize the stateArgs bridge for setStateArgs() function
-  _initStateArgsBridge((updates) => {
-    if (typeof shell?.setStateArgs === "function") {
-      return shell.setStateArgs(updates) as Promise<Record<string, unknown>>;
-    }
-    return base.rpc.call<Record<string, unknown>>(
-      "main",
-      "panel.updateStateArgs",
-      [entityId, updates],
-    );
-  });
+  _initStateArgsRuntime(slotId, (service, method, args) => base.rpc.call(service, method, args));
+  registerAgentApi(shell);
+  if (typeof shell?.addEventListener === "function") {
+    shell.addEventListener((event: string, payload: unknown) => {
+      if (event === "runtime:stateArgsChanged") {
+        _applyStateArgsFromHost((payload ?? {}) as Record<string, unknown>);
+      }
+    });
+  }
 
-  const parentHandleOrNull = deps.parentId ? createParentHandle({ rpc: base.rpc, parentId: deps.parentId }) : null;
+  const parentHandleOrNull = parentRuntimeId
+    ? createParentHandle({ rpc: base.rpc, parentId: parentRuntimeId })
+    : null;
   const parent: ParentHandle = parentHandleOrNull ?? noopParent;
 
   const getParent = <
     T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
     E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
-    EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
+    EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap,
   >(): ParentHandle<T, E, EmitE> | null => {
     return parentHandleOrNull as ParentHandle<T, E, EmitE> | null;
   };
 
-  const getParentWithContract = <C extends PanelContract>(contract: C): ParentHandleFromContract<C> | null => {
+  const getParentWithContract = <C extends PanelContract>(
+    contract: C
+  ): ParentHandleFromContract<C> | null => {
     return createParentHandleFromContract(getParent(), contract);
   };
 
   return {
     id: base.id,
     entityId: base.id,
-    slotId: deps.slotId ?? base.id,
+    slotId,
     parentId: deps.parentId,
+    parentEntityId: deps.parentEntityId ?? null,
 
     rpc: base.rpc,
     fs: base.fs,
@@ -83,7 +91,6 @@ export function createRuntime(deps: RuntimeDeps) {
     onConnectionError: base.onConnectionError,
 
     getInfo: () => shell.getInfo() as Promise<EndpointInfo>,
-    closeSelf: () => shell.closeSelf(),
     focusPanel: (panelId: string) => shell.focusPanel(panelId),
     getWorkspaceTree: base.getWorkspaceTree,
     listBranches: base.listBranches,

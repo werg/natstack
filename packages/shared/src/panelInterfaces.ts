@@ -26,12 +26,11 @@ export interface BridgePanelLifecycle {
   getInfo(panelId: string): unknown;
   focusPanel?(panelId: string): void;
   getBootstrapConfig?(callerId: string): Promise<unknown> | unknown;
-  createBrowserPanel?(
+  createBrowserUrlPanel?(
     callerId: string,
     url: string,
     options?: { name?: string; focus?: boolean }
   ): Promise<{ id: string; title: string }>;
-  closeChild?(callerId: string, childId: string): Promise<void>;
 }
 
 /**

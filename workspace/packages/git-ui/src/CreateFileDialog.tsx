@@ -47,7 +47,12 @@ export function CreateFileDialog({
     }
 
     // Validate against control characters and null bytes
-    if (/[\x00-\x1f\x7f]/.test(trimmedName)) {
+    if (
+      [...trimmedName].some((ch) => {
+        const code = ch.codePointAt(0);
+        return code !== undefined && (code <= 0x1f || code === 0x7f);
+      })
+    ) {
       setError("Invalid name - control characters not allowed");
       return;
     }
@@ -59,7 +64,11 @@ export function CreateFileDialog({
     // Final validation: ensure the path doesn't try to escape
     // Normalize and check for parent directory references
     const normalizedPath = fullPath.replace(/\\/g, "/");
-    if (normalizedPath.includes("/../") || normalizedPath.startsWith("../") || normalizedPath.endsWith("/..")) {
+    if (
+      normalizedPath.includes("/../") ||
+      normalizedPath.startsWith("../") ||
+      normalizedPath.endsWith("/..")
+    ) {
       setError("Invalid path - directory traversal not allowed");
       return;
     }
@@ -84,10 +93,14 @@ export function CreateFileDialog({
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      <Dialog.Content maxWidth="400px">
-        <Dialog.Title>
-          Create {isDirectory ? "Directory" : "File"}
-        </Dialog.Title>
+      <Dialog.Content
+        style={{
+          width: "min(400px, calc(100vw - 24px))",
+          maxHeight: "calc(100dvh - 24px)",
+          overflow: "auto",
+        }}
+      >
+        <Dialog.Title>Create {isDirectory ? "Directory" : "File"}</Dialog.Title>
         <Dialog.Description size="2" color="gray">
           {parentPath ? `In: ${parentPath}/` : "At repository root"}
         </Dialog.Description>
@@ -116,7 +129,7 @@ export function CreateFileDialog({
           )}
         </Flex>
 
-        <Flex gap="3" mt="4" justify="end">
+        <Flex gap="3" mt="4" justify="end" wrap="wrap">
           <Dialog.Close>
             <Button variant="soft" color="gray" disabled={loading}>
               Cancel

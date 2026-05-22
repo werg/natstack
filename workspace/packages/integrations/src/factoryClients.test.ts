@@ -1,7 +1,7 @@
 import type { RpcCaller } from "@natstack/rpc";
 import { createCredentialClient, type StoredCredentialSummary } from "@workspace/runtime/credentials";
 import { createGitHubClient } from "./github.js";
-import { createGmailClient } from "./gmail.js";
+import { createGmailClient } from "@workspace/gmail";
 import { createCalendarClient } from "./calendar.js";
 
 /**

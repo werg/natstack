@@ -1,4 +1,4 @@
-import { createBrowserPanel, credentials, openExternal } from "@workspace/runtime";
+import { credentials, openExternal, openPanel } from "@workspace/runtime";
 import type { RequestCredentialInputRequest, StoredCredentialSummary } from "@workspace/runtime";
 
 const GITHUB_PROVIDER_ID = "github";
@@ -372,7 +372,7 @@ function buildStatus(input: {
 export async function openGitHubTokenSettings(opts: OpenGitHubTokenSettingsOptions = {}): Promise<void> {
   const url = buildGitHubTokenSettingsUrl(opts);
   if (opts.browser === "internal") {
-    await createBrowserPanel(url, { focus: true, name: "GitHub settings" });
+    await openPanel(url, { focus: true, name: "GitHub settings" });
     return;
   }
   await openExternal(url);

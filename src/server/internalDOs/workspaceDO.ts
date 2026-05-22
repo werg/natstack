@@ -532,7 +532,10 @@ export class WorkspaceDO extends DurableObjectBase {
       this.sql.exec(`DELETE FROM slot_history WHERE slot_id = ?`, slotId);
       const now = Date.now();
       for (let i = 0; i < entries.length; i++) {
-        this.appendHistoryRow(slotId, i, entries[i]!, now);
+        const entry = entries[i];
+        if (entry) {
+          this.appendHistoryRow(slotId, i, entry, now);
+        }
       }
       const current = entries[cursor];
       if (current) {

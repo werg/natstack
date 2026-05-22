@@ -2,20 +2,19 @@ import type { ComponentType } from "react";
 import { compileModule, type CompileComponentOptions } from "@workspace/eval";
 
 export interface CustomMessageComponentProps {
+  messageId: string;
+  typeId: string;
   state: unknown;
+  expanded: boolean;
+  displayMode: "inline" | "row";
   chat: Record<string, unknown>;
   scope: Record<string, unknown>;
   scopes: Record<string, unknown>;
 }
 
-export interface CustomMessagePillProps extends CustomMessageComponentProps {
-  typeId: string;
-}
-
 export interface MessageTypeModule {
   default?: ComponentType<CustomMessageComponentProps>;
   reduce?: (state: unknown, update: unknown) => unknown;
-  Pill?: ComponentType<CustomMessagePillProps>;
   schema?: unknown;
   [key: string]: unknown;
 }

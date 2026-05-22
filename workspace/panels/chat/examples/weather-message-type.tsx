@@ -12,16 +12,16 @@ export function reduce(state: WeatherState, update: WeatherUpdate): WeatherState
   return { ...state, ...update };
 }
 
-export function Pill({ state }: { state: WeatherState }) {
-  return (
-    <Flex align="center" gap="1">
-      <Text size="1" weight="medium">{state.city}</Text>
-      <Text size="1" color="gray">{state.tempF}F</Text>
-    </Flex>
-  );
-}
+export default function WeatherMessage({ state, expanded }: { state: WeatherState; expanded: boolean }) {
+  if (!expanded) {
+    return (
+      <Flex align="center" gap="1">
+        <Text size="1" weight="medium">{state.city}</Text>
+        <Text size="1" color="gray">{state.tempF}F</Text>
+      </Flex>
+    );
+  }
 
-export default function WeatherMessage({ state }: { state: WeatherState }) {
   return (
     <Card>
       <Flex direction="column" gap="2">

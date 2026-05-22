@@ -9,7 +9,13 @@ export interface AuthErrorDialogProps {
 export function AuthErrorDialog({ open, onOpenChange, message }: AuthErrorDialogProps) {
   return (
     <AlertDialog.Root open={open} onOpenChange={onOpenChange}>
-      <AlertDialog.Content maxWidth="420px">
+      <AlertDialog.Content
+        style={{
+          width: "min(420px, calc(100vw - 24px))",
+          maxHeight: "calc(100dvh - 24px)",
+          overflow: "auto",
+        }}
+      >
         <AlertDialog.Title>Authentication Required</AlertDialog.Title>
         <AlertDialog.Description size="2">
           <Text>{message ?? "Your credentials were rejected. Please sign in again."}</Text>

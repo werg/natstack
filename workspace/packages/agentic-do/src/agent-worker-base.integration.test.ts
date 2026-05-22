@@ -4,12 +4,14 @@ import { createTestDO } from "@workspace/runtime/worker/test-utils";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
 import { AgentWorkerBase } from "./agent-worker-base.js";
+import type { RespondPolicy, CustomMessageReducer } from "./trajectory-vessel-base.js";
 import type { TurnDispatcherRunner } from "./turn-dispatcher.js";
+import type { ChannelEvent } from "@natstack/harness/types";
 import type { PiRunner } from "@natstack/harness";
 import { AGENTIC_EVENT_PAYLOAD_KIND } from "@workspace/agentic-protocol";
 
 class TestAgentWorker extends AgentWorkerBase {
-  protected override getModel(): string {
+  protected override getDefaultModel(): string {
     return "test:model";
   }
 
@@ -24,6 +26,10 @@ class TestAgentWorker extends AgentWorkerBase {
     const runner = {} as PiRunner;
     runners.set(channelId, { runner });
     return runner;
+  }
+
+  public testShouldProcess(event: ChannelEvent): boolean {
+    return this.shouldProcess(event);
   }
 }
 
@@ -43,6 +49,35 @@ class CloneTestAgentWorker extends TestAgentWorker {
   }): Promise<{ ok: boolean; participantId: string }> {
     this.subscribeCalls.push(opts);
     return { ok: true, participantId: "do:workers/test-agent:TestAgentWorker:agent-fork" };
+  }
+}
+
+class StrictMentionTestAgentWorker extends TestAgentWorker {
+  protected override getRespondPolicy(_channelId: string): RespondPolicy {
+    return "mentioned-strict";
+  }
+
+  public testShouldRespond(channelId: string, event: ChannelEvent) {
+    return this.shouldRespond(channelId, event);
+  }
+}
+
+class MentionedTestAgentWorker extends TestAgentWorker {
+  protected override getRespondPolicy(_channelId: string): RespondPolicy {
+    return "mentioned";
+  }
+
+  public testShouldRespond(channelId: string, event: ChannelEvent) {
+    return this.shouldRespond(channelId, event);
+  }
+}
+
+class CustomMessageIndexTestAgentWorker extends TestAgentWorker {
+  public testIndexOwnCustomMessages(
+    channelId: string,
+    reducerLookup?: (typeId: string) => CustomMessageReducer | undefined | null
+  ) {
+    return this.indexOwnCustomMessages(channelId, reducerLookup);
   }
 }
 
@@ -109,6 +144,223 @@ describe("AgentWorkerBase typed transcript input", () => {
       { content: "Read the onboarding docs first" },
       undefined,
     );
+  });
+});
+
+describe("TrajectoryVesselBase respond policy", () => {
+  it("mentioned-strict does not use the 1:1 fallback", async () => {
+    const { instance } = await createTestDO(StrictMentionTestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const worker = instance as unknown as {
+      subscriptions: {
+        getParticipantId(channelId: string): string | null;
+      };
+      cachedParticipants: Map<string, Array<{ participantId: string }>>;
+      testShouldRespond(channelId: string, event: unknown): Promise<boolean>;
+    };
+
+    worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
+    worker.cachedParticipants.set("chat-1", [
+      { participantId: "panel:panel-1" },
+      { participantId: "do:agent" },
+    ]);
+
+    await expect(worker.testShouldRespond("chat-1", {
+      id: 1,
+      messageId: "msg-1",
+      type: AGENTIC_EVENT_PAYLOAD_KIND,
+      senderId: "panel:panel-1",
+      payload: {
+        kind: "message.completed",
+        payload: { protocol: "agentic.trajectory.v1", content: "hello" },
+      },
+      ts: Date.now(),
+    })).resolves.toBe(false);
+
+    await expect(worker.testShouldRespond("chat-1", {
+      id: 2,
+      messageId: "msg-2",
+      type: AGENTIC_EVENT_PAYLOAD_KIND,
+      senderId: "panel:panel-1",
+      payload: {
+        kind: "message.completed",
+        payload: {
+          protocol: "agentic.trajectory.v1",
+          content: "@gmail hello",
+          mentions: ["do:agent"],
+        },
+      },
+      ts: Date.now(),
+    })).resolves.toBe(true);
+  });
+
+  it("covers multi-agent gating for custom updates and mention combinations", async () => {
+    const { instance: chatInstance } = await createTestDO(MentionedTestAgentWorker, {
+      __objectKey: "chat-agent",
+    });
+    const { instance: gmailInstance } = await createTestDO(StrictMentionTestAgentWorker, {
+      __objectKey: "gmail-agent",
+    });
+    const chat = chatInstance as unknown as {
+      subscriptions: { getParticipantId(channelId: string): string | null };
+      cachedParticipants: Map<string, Array<{ participantId: string }>>;
+      testShouldProcess(event: ChannelEvent): boolean;
+      testShouldRespond(channelId: string, event: ChannelEvent): Promise<boolean>;
+    };
+    const gmail = gmailInstance as unknown as {
+      subscriptions: { getParticipantId(channelId: string): string | null };
+      cachedParticipants: Map<string, Array<{ participantId: string }>>;
+      testShouldProcess(event: ChannelEvent): boolean;
+      testShouldRespond(channelId: string, event: ChannelEvent): Promise<boolean>;
+    };
+    chat.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:chat");
+    gmail.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:gmail");
+    const participants = [
+      { participantId: "panel:user" },
+      { participantId: "do:chat" },
+      { participantId: "do:gmail" },
+    ];
+    chat.cachedParticipants.set("chat-1", participants);
+    gmail.cachedParticipants.set("chat-1", participants);
+
+    const customUpdate = {
+      id: 1,
+      messageId: "custom-update",
+      type: AGENTIC_EVENT_PAYLOAD_KIND,
+      senderId: "do:gmail",
+      senderMetadata: { type: "agent", handle: "gmail" },
+      payload: {
+        kind: "custom.updated",
+        payload: { protocol: "agentic.trajectory.v1", messageId: "gmail-thread", update: {} },
+      },
+      ts: Date.now(),
+    } satisfies ChannelEvent;
+    expect(chat.testShouldProcess(customUpdate)).toBe(false);
+    expect(gmail.testShouldProcess(customUpdate)).toBe(false);
+
+    const userMessage = (mentions?: string[]) => ({
+      id: 2,
+      messageId: crypto.randomUUID(),
+      type: AGENTIC_EVENT_PAYLOAD_KIND,
+      senderId: "panel:user",
+      senderMetadata: { type: "panel", handle: "user" },
+      payload: {
+        kind: "message.completed",
+        payload: {
+          protocol: "agentic.trajectory.v1",
+          content: "hello",
+          mentions,
+        },
+      },
+      ts: Date.now(),
+    }) satisfies ChannelEvent;
+
+    await expect(chat.testShouldRespond("chat-1", userMessage())).resolves.toBe(false);
+    await expect(gmail.testShouldRespond("chat-1", userMessage())).resolves.toBe(false);
+    await expect(chat.testShouldRespond("chat-1", userMessage(["do:chat"]))).resolves.toBe(true);
+    await expect(gmail.testShouldRespond("chat-1", userMessage(["do:chat"]))).resolves.toBe(false);
+    await expect(chat.testShouldRespond("chat-1", userMessage(["do:gmail"]))).resolves.toBe(false);
+    await expect(gmail.testShouldRespond("chat-1", userMessage(["do:gmail"]))).resolves.toBe(true);
+    await expect(chat.testShouldRespond("chat-1", userMessage(["do:chat", "do:gmail"]))).resolves.toBe(true);
+    await expect(gmail.testShouldRespond("chat-1", userMessage(["do:chat", "do:gmail"]))).resolves.toBe(true);
+  });
+});
+
+describe("TrajectoryVesselBase custom message recovery", () => {
+  it("indexes own custom messages across paginated channel replay and folds reducers", async () => {
+    const { instance } = await createTestDO(CustomMessageIndexTestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const worker = instance as unknown as {
+      subscriptions: {
+        getParticipantId(channelId: string): string | null;
+      };
+      createChannelClient: ReturnType<typeof vi.fn>;
+      testIndexOwnCustomMessages(
+        channelId: string,
+        reducerLookup?: (typeId: string) => CustomMessageReducer | undefined | null
+      ): Promise<Map<string, Map<string, unknown>>>;
+    };
+
+    worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
+
+    const events = [
+      {
+        id: 1,
+        messageId: "start-1",
+        type: AGENTIC_EVENT_PAYLOAD_KIND,
+        senderId: "do:agent",
+        payload: {
+          kind: "custom.started",
+          actor: { kind: "agent", id: "do:agent" },
+          payload: {
+            protocol: "agentic.trajectory.v1",
+            messageId: "custom-1",
+            typeId: "gmail.thread",
+            initialState: { count: 0 },
+          },
+          createdAt: new Date().toISOString(),
+        },
+        ts: Date.now(),
+      },
+      {
+        id: 2,
+        messageId: "other-start",
+        type: AGENTIC_EVENT_PAYLOAD_KIND,
+        senderId: "panel:panel-1",
+        payload: {
+          kind: "custom.started",
+          actor: { kind: "panel", id: "panel:panel-1" },
+          payload: {
+            protocol: "agentic.trajectory.v1",
+            messageId: "custom-other",
+            typeId: "gmail.thread",
+            initialState: { count: 100 },
+          },
+          createdAt: new Date().toISOString(),
+        },
+        ts: Date.now(),
+      },
+      ...Array.from({ length: 501 }, (_, index) => ({
+        id: index + 3,
+        messageId: `update-${index + 1}`,
+        type: AGENTIC_EVENT_PAYLOAD_KIND,
+        senderId: "do:agent",
+        payload: {
+          kind: "custom.updated",
+          actor: { kind: "agent", id: "do:agent" },
+          payload: {
+            protocol: "agentic.trajectory.v1",
+            messageId: "custom-1",
+            update: { delta: 1 },
+          },
+          createdAt: new Date().toISOString(),
+        },
+        ts: Date.now(),
+      })),
+    ];
+
+    worker.createChannelClient = vi.fn().mockReturnValue({
+      getReplayAfter: vi.fn(async (cursor: number) => ({
+        mode: "after",
+        logEvents: events.filter((event) => event.id > cursor).slice(0, 500),
+        snapshots: [],
+        ready: { totalCount: events.length, envelopeCount: events.length },
+      })),
+    });
+
+    const result = await worker.testIndexOwnCustomMessages("chat-1", (typeId) => {
+      if (typeId !== "gmail.thread") return undefined;
+      return (state, update) => ({
+        count:
+          ((state as { count?: number } | undefined)?.count ?? 0) +
+          ((update as { delta?: number } | undefined)?.delta ?? 0),
+      });
+    });
+
+    expect(result.get("gmail.thread")?.get("custom-1")).toEqual({ count: 501 });
+    expect(result.get("gmail.thread")?.has("custom-other")).toBe(false);
   });
 });
 

@@ -9,6 +9,7 @@ import * as path from "path";
 import type { Panel, PanelArtifacts } from "./types.js";
 import { createSnapshot } from "./panel/accessors.js";
 import { normalizeRelativePanelPath } from "./pathUtils.js";
+import type { PanelEntityId, PanelSlotId } from "./panel/ids.js";
 
 // =============================================================================
 // Types
@@ -27,11 +28,12 @@ export interface PanelCreateResult {
 }
 
 export interface BuildBootstrapConfigOpts {
-  entityId: string;
-  slotId: string;
+  entityId: PanelEntityId;
+  slotId: PanelSlotId;
   contextId: string;
   source: string;
-  parentId: string | null;
+  parentId: PanelSlotId | null;
+  parentEntityId?: PanelEntityId | null;
   theme: "light" | "dark";
   gatewayConfig: { serverUrl: string; token: string };
   env?: Record<string, string>;
@@ -68,7 +70,7 @@ export interface BuildPanelEnvOpts {
  */
 export function resolveSource(
   source: string,
-  panelsRoot: string,
+  panelsRoot: string
 ): { relativePath: string; absolutePath: string } {
   return normalizeRelativePanelPath(source, panelsRoot);
 }
@@ -88,6 +90,7 @@ export function buildBootstrapConfig(opts: BuildBootstrapConfigOpts): unknown {
     slotId: opts.slotId,
     contextId: opts.contextId,
     parentId: opts.parentId,
+    parentEntityId: opts.parentEntityId ?? null,
     theme: opts.theme,
     sourceRepo: opts.source,
     gatewayConfig: opts.gatewayConfig,
@@ -134,9 +137,18 @@ export function buildPanelEnv(opts: BuildPanelEnvOpts): Record<string, string> {
   // Pass critical environment variables that Node.js APIs depend on
   const criticalEnv: Record<string, string> = {};
   for (const key of [
-    "HOME", "USER", "PATH", "TMPDIR", "TEMP", "TMP", "SHELL",
-    "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
-    "XDG_STATE_HOME", "XDG_RUNTIME_DIR",
+    "HOME",
+    "USER",
+    "PATH",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "SHELL",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+    "XDG_RUNTIME_DIR",
   ]) {
     if (process.env[key]) {
       criticalEnv[key] = process.env[key]!;
@@ -155,17 +167,14 @@ export function buildPanelEnv(opts: BuildPanelEnvOpts): Record<string, string> {
  * Convert a server PanelCreateResult DTO into a full Panel object
  * for the in-memory registry.
  */
-export function buildPanelFromResult(
-  result: PanelCreateResult,
-  parentId: string | null,
-): Panel {
+export function buildPanelFromResult(result: PanelCreateResult, parentId: string | null): Panel {
   const isBrowser = result.source.startsWith("browser:");
 
   const initialSnapshot = createSnapshot(
     result.source,
     result.contextId,
     result.options,
-    result.stateArgs,
+    result.stateArgs
   );
 
   if (result.autoArchiveWhenEmpty) {

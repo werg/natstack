@@ -2,6 +2,7 @@ import { Badge, Button, Flex, Text } from "@radix-ui/themes";
 import { ChevronDownIcon, ChevronRightIcon } from "@radix-ui/react-icons";
 import { useState } from "react";
 import type { CSSProperties } from "react";
+import { useIsMobile } from "@workspace/react/responsive";
 import type { SessionInfo, TerminalNotification, TerminalState } from "./types.js";
 
 export function NotificationCenter(props: {
@@ -15,16 +16,34 @@ export function NotificationCenter(props: {
   onMarkAllRead(): void;
   onClearAll(): void;
 }) {
+  const isMobile = useIsMobile();
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
   const [expandedItems, setExpandedItems] = useState<Set<string>>(() => new Set());
   const model = buildNotificationCenterModel(props.notifications, props.filter, props.sessions);
   return (
-    <Flex direction="column" width="20rem" p="3" gap="3" style={{ borderLeft: "1px solid var(--gray-5)", background: "var(--gray-1)" }}>
+    <Flex
+      direction="column"
+      width={isMobile ? "100%" : "20rem"}
+      p="3"
+      gap="3"
+      style={{
+        borderLeft: "1px solid var(--gray-5)",
+        background: "var(--gray-1)",
+        boxSizing: "border-box",
+        maxWidth: "100%",
+      }}
+    >
       <Flex align="center" justify="between">
-        <Text weight="medium" size="2">Notifications</Text>
+        <Text weight="medium" size="2">
+          Notifications
+        </Text>
         <Flex gap="1">
-          <Button size="1" variant="soft" onClick={props.onMarkAllRead}>Mark read</Button>
-          <Button size="1" variant="ghost" onClick={props.onClearAll}>Clear</Button>
+          <Button size="1" variant="soft" onClick={props.onMarkAllRead}>
+            Mark read
+          </Button>
+          <Button size="1" variant="ghost" onClick={props.onClearAll}>
+            Clear
+          </Button>
         </Flex>
       </Flex>
       <Flex gap="1" wrap="wrap">
@@ -37,7 +56,15 @@ export function NotificationCenter(props: {
             <Badge
               size="1"
               variant={model.filter === item ? "solid" : "soft"}
-              color={item === "failure" ? "red" : item === "approval" ? "amber" : item === "done" ? "green" : "gray"}
+              color={
+                item === "failure"
+                  ? "red"
+                  : item === "approval"
+                    ? "amber"
+                    : item === "done"
+                      ? "green"
+                      : "gray"
+              }
             >
               {item}
             </Badge>
@@ -45,7 +72,11 @@ export function NotificationCenter(props: {
         ))}
       </Flex>
       <Flex direction="column" gap="3" style={{ overflow: "auto", minHeight: 0 }}>
-        {model.notifications.length === 0 ? <Text size="2" color="gray">No notifications</Text> : null}
+        {model.notifications.length === 0 ? (
+          <Text size="2" color="gray">
+            No notifications
+          </Text>
+        ) : null}
         {model.groups.map((group) => (
           <Flex key={group.sessionId} direction="column" gap="1">
             <button
@@ -65,77 +96,115 @@ export function NotificationCenter(props: {
               }}
             >
               <Flex align="center" gap="1">
-                {collapsedGroups.has(group.sessionId) ? <ChevronRightIcon width="12" height="12" /> : <ChevronDownIcon width="12" height="12" />}
-                <Text size="1" color="gray" style={{ textTransform: "uppercase" }}>{group.label}</Text>
+                {collapsedGroups.has(group.sessionId) ? (
+                  <ChevronRightIcon width="12" height="12" />
+                ) : (
+                  <ChevronDownIcon width="12" height="12" />
+                )}
+                <Text size="1" color="gray" style={{ textTransform: "uppercase" }}>
+                  {group.label}
+                </Text>
               </Flex>
-              <Badge size="1" variant="soft" color={groupBadgeColor(group.items)}>{group.items.length}</Badge>
+              <Badge size="1" variant="soft" color={groupBadgeColor(group.items)}>
+                {group.items.length}
+              </Badge>
             </button>
-            {collapsedGroups.has(group.sessionId) ? null : group.items.map((item) => {
-              const expanded = expandedItems.has(item.notifId);
-              const presentation = notificationItemPresentation(item);
-              return (
-              <div
-                className="terminal-notification-item"
-                key={item.notifId}
-                style={{
-                  border: 0,
-                  borderLeft: `4px solid ${severityColor(item.severity)}`,
-                  borderRadius: "var(--radius-2)",
-                  padding: "var(--space-2)",
-                  textAlign: "left",
-                  background: !item.canJump ? "var(--gray-2)" : item.read ? "var(--gray-2)" : "var(--accent-3)",
-                  opacity: item.canJump ? 1 : 0.72,
-                  color: "var(--gray-12)",
-                  cursor: "default",
-                }}
-              >
-                <Flex align="center" justify="between" gap="2">
-                  <Text size="1" color="gray">{new Date(item.timestamp).toLocaleTimeString()} · {group.label}</Text>
-                  <Flex align="center" gap="1">
-                    {!item.canJump ? <Badge size="1" variant="soft" color="gray">session ended</Badge> : null}
-                    <Badge size="1" variant="soft" color={badgeColor(item.severity)}>{item.severity}</Badge>
-                  </Flex>
-                </Flex>
-                {item.title ? <Text size="2" weight="medium">{item.title}</Text> : null}
-                <Text size="2" style={expanded ? presentation.expandedBodyStyle : presentation.collapsedBodyStyle}>{item.message}</Text>
-                <Flex className="terminal-notification-actions" gap="2" mt="2">
-                  {item.canJump ? (
-                    <Button
-                      size="1"
-                      variant="ghost"
-                      onClick={() => props.onJump(item.sessionId)}
+            {collapsedGroups.has(group.sessionId)
+              ? null
+              : group.items.map((item) => {
+                  const expanded = expandedItems.has(item.notifId);
+                  const presentation = notificationItemPresentation(item);
+                  return (
+                    <div
+                      className="terminal-notification-item"
+                      key={item.notifId}
+                      style={{
+                        border: 0,
+                        borderLeft: `4px solid ${severityColor(item.severity)}`,
+                        borderRadius: "var(--radius-2)",
+                        padding: "var(--space-2)",
+                        textAlign: "left",
+                        background: !item.canJump
+                          ? "var(--gray-2)"
+                          : item.read
+                            ? "var(--gray-2)"
+                            : "var(--accent-3)",
+                        opacity: item.canJump ? 1 : 0.72,
+                        color: "var(--gray-12)",
+                        cursor: "default",
+                      }}
                     >
-                      Jump
-                    </Button>
-                  ) : null}
-                  {presentation.canExpand ? (
-                    <Button
-                      size="1"
-                      variant="ghost"
-                      onClick={() => setExpandedItems((prev) => toggleSet(prev, item.notifId))}
-                    >
-                      {expanded ? "Show less" : "Show more"}
-                    </Button>
-                  ) : null}
-                  {!item.read ? (
-                    <Button
-                      size="1"
-                      variant="ghost"
-                      onClick={() => props.onMarkRead(item.notifId)}
-                    >
-                      Mark read
-                    </Button>
-                  ) : null}
-                  <Button
-                    size="1"
-                    variant="ghost"
-                    onClick={() => props.onDismiss(item.notifId)}
-                  >
-                    Dismiss
-                  </Button>
-                </Flex>
-              </div>
-            );})}
+                      <Flex align="center" justify="between" gap="2">
+                        <Text size="1" color="gray">
+                          {new Date(item.timestamp).toLocaleTimeString()} · {group.label}
+                        </Text>
+                        <Flex align="center" gap="1">
+                          {!item.canJump ? (
+                            <Badge size="1" variant="soft" color="gray">
+                              session ended
+                            </Badge>
+                          ) : null}
+                          <Badge size="1" variant="soft" color={badgeColor(item.severity)}>
+                            {item.severity}
+                          </Badge>
+                        </Flex>
+                      </Flex>
+                      {item.title ? (
+                        <Text size="2" weight="medium">
+                          {item.title}
+                        </Text>
+                      ) : null}
+                      <Text
+                        size="2"
+                        style={
+                          expanded
+                            ? presentation.expandedBodyStyle
+                            : presentation.collapsedBodyStyle
+                        }
+                      >
+                        {item.message}
+                      </Text>
+                      <Flex className="terminal-notification-actions" gap="2" mt="2">
+                        {item.canJump ? (
+                          <Button
+                            size="1"
+                            variant="ghost"
+                            onClick={() => props.onJump(item.sessionId)}
+                          >
+                            Jump
+                          </Button>
+                        ) : null}
+                        {presentation.canExpand ? (
+                          <Button
+                            size="1"
+                            variant="ghost"
+                            onClick={() =>
+                              setExpandedItems((prev) => toggleSet(prev, item.notifId))
+                            }
+                          >
+                            {expanded ? "Show less" : "Show more"}
+                          </Button>
+                        ) : null}
+                        {!item.read ? (
+                          <Button
+                            size="1"
+                            variant="ghost"
+                            onClick={() => props.onMarkRead(item.notifId)}
+                          >
+                            Mark read
+                          </Button>
+                        ) : null}
+                        <Button
+                          size="1"
+                          variant="ghost"
+                          onClick={() => props.onDismiss(item.notifId)}
+                        >
+                          Dismiss
+                        </Button>
+                      </Flex>
+                    </div>
+                  );
+                })}
           </Flex>
         ))}
       </Flex>
@@ -147,6 +216,12 @@ export function NotificationCenter(props: {
         .terminal-notification-item:hover .terminal-notification-actions,
         .terminal-notification-item:focus-within .terminal-notification-actions {
           opacity: 1;
+        }
+        @media (pointer: coarse), (max-width: 767px) {
+          .terminal-notification-actions {
+            opacity: 1;
+            flex-wrap: wrap;
+          }
         }
       `}</style>
     </Flex>
@@ -197,12 +272,17 @@ export function notificationItemPresentation(item: Pick<TerminalNotification, "m
 export function buildNotificationCenterModel(
   notifications: TerminalNotification[],
   filter: TerminalState["notificationFilter"],
-  sessions: Record<string, SessionInfo> = {},
-): { filter: NonNullable<TerminalState["notificationFilter"]>; notifications: NotificationCenterItem[]; groups: NotificationCenterGroup[] } {
+  sessions: Record<string, SessionInfo> = {}
+): {
+  filter: NonNullable<TerminalState["notificationFilter"]>;
+  notifications: NotificationCenterItem[];
+  groups: NotificationCenterGroup[];
+} {
   const effectiveFilter = filter ?? "all";
-  const visible = effectiveFilter === "all"
-    ? notifications
-    : notifications.filter((item) => item.severity === effectiveFilter);
+  const visible =
+    effectiveFilter === "all"
+      ? notifications
+      : notifications.filter((item) => item.severity === effectiveFilter);
   const items = visible
     .map((item) => ({
       ...item,
@@ -213,15 +293,19 @@ export function buildNotificationCenterModel(
   return {
     filter: effectiveFilter,
     notifications: items,
-    groups: Object.entries(grouped).map(([sessionId, items]) => ({
-      sessionId,
-      label: sessions[sessionId]?.label || `Session ${sessionId.slice(0, 8)}`,
-      items,
-    })).sort((a, b) => (b.items[0]?.timestamp ?? 0) - (a.items[0]?.timestamp ?? 0)),
+    groups: Object.entries(grouped)
+      .map(([sessionId, items]) => ({
+        sessionId,
+        label: sessions[sessionId]?.label || `Session ${sessionId.slice(0, 8)}`,
+        items,
+      }))
+      .sort((a, b) => (b.items[0]?.timestamp ?? 0) - (a.items[0]?.timestamp ?? 0)),
   };
 }
 
-function groupBadgeColor(items: NotificationCenterItem[]): "gray" | "green" | "blue" | "amber" | "red" {
+function groupBadgeColor(
+  items: NotificationCenterItem[]
+): "gray" | "green" | "blue" | "amber" | "red" {
   if (items.some((item) => item.severity === "failure")) return "red";
   if (items.some((item) => item.severity === "approval")) return "amber";
   if (items.some((item) => item.severity === "waiting")) return "blue";
@@ -229,7 +313,9 @@ function groupBadgeColor(items: NotificationCenterItem[]): "gray" | "green" | "b
   return "gray";
 }
 
-function groupBySession(notifications: NotificationCenterItem[]): Record<string, NotificationCenterItem[]> {
+function groupBySession(
+  notifications: NotificationCenterItem[]
+): Record<string, NotificationCenterItem[]> {
   return notifications.reduce<Record<string, NotificationCenterItem[]>>((groups, item) => {
     (groups[item.sessionId] ??= []).push(item);
     return groups;
@@ -244,7 +330,9 @@ function severityColor(severity: TerminalNotification["severity"]): string {
   return "var(--gray-9)";
 }
 
-function badgeColor(severity: TerminalNotification["severity"]): "gray" | "green" | "blue" | "amber" | "red" {
+function badgeColor(
+  severity: TerminalNotification["severity"]
+): "gray" | "green" | "blue" | "amber" | "red" {
   if (severity === "failure") return "red";
   if (severity === "approval") return "amber";
   if (severity === "waiting") return "blue";

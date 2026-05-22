@@ -5,6 +5,7 @@
  */
 
 import type { GitConfig } from "../core/index.js";
+import type { PanelEntityId, PanelSlotId } from "@natstack/shared/panel/ids";
 
 export interface GatewayConfig {
   serverUrl: string;
@@ -27,6 +28,8 @@ declare global {
   var __natstackKind: "panel" | "shell" | undefined;
   /** Parent panel ID if this is a child panel/worker */
   var __natstackParentId: string | null | undefined;
+  /** Runtime entity ID for the parent panel, used for child-to-parent RPC. */
+  var __natstackParentEntityId: string | null | undefined;
   /** Initial theme appearance */
   var __natstackInitialTheme: "light" | "dark" | undefined;
   /** Single gateway configuration for HTTP, RPC-derived clients, and git */
@@ -38,12 +41,13 @@ declare global {
 }
 
 export interface InjectedConfig {
-  entityId: string;
-  id: string;
-  slotId?: string;
+  entityId: PanelEntityId;
+  id: PanelEntityId;
+  slotId?: PanelSlotId;
   contextId: string;
   kind: "panel" | "shell";
-  parentId: string | null;
+  parentId: PanelSlotId | null;
+  parentEntityId: PanelEntityId | null;
   initialTheme: "light" | "dark";
   gatewayConfig: GatewayConfig;
   gitConfig: GitConfig | null;
@@ -59,6 +63,7 @@ const g = globalThis as unknown as {
   __natstackContextId?: string;
   __natstackKind?: "panel" | "shell";
   __natstackParentId?: string | null;
+  __natstackParentEntityId?: string | null;
   __natstackInitialTheme?: "light" | "dark";
   __natstackGatewayConfig?: GatewayConfig;
   __natstackSourceRepo?: string;
@@ -95,14 +100,18 @@ export function getInjectedConfig(): InjectedConfig {
   };
 
   return {
-    entityId,
-    id: entityId,
-    slotId: g.__natstackSlotId,
+    entityId: entityId as PanelEntityId,
+    id: entityId as PanelEntityId,
+    slotId: g.__natstackSlotId as PanelSlotId | undefined,
     contextId: g.__natstackContextId ?? "",
     kind: g.__natstackKind ?? "panel",
     parentId:
       typeof g.__natstackParentId === "string" && g.__natstackParentId.length > 0
-        ? g.__natstackParentId
+        ? (g.__natstackParentId as PanelSlotId)
+        : null,
+    parentEntityId:
+      typeof g.__natstackParentEntityId === "string" && g.__natstackParentEntityId.length > 0
+        ? (g.__natstackParentEntityId as PanelEntityId)
         : null,
     initialTheme: g.__natstackInitialTheme === "dark" ? "dark" : "light",
     gatewayConfig: g.__natstackGatewayConfig,

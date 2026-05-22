@@ -6,10 +6,10 @@
  * Draggable top edge for manual resizing when needed.
  */
 
-import { Box, Button, Card, Flex, ScrollArea, Text } from "@radix-ui/themes";
+import { Box, Button, Card, Flex, Text } from "@radix-ui/themes";
 import { Cross2Icon, DragHandleHorizontalIcon } from "@radix-ui/react-icons";
 import { type ReactNode, useState, useCallback, useRef, useEffect } from "react";
-import { useViewportHeight } from "@workspace/react";
+import { useViewportHeight } from "@workspace/react/responsive";
 import { EventErrorBoundary } from "./EventErrorBoundary";
 
 export interface FeedbackContainerProps {
@@ -61,7 +61,10 @@ export function FeedbackContainer({
 
     const handlePointerMove = (e: PointerEvent) => {
       const deltaY = dragStartY.current - e.clientY;
-      const newHeight = Math.min(maxHeightRef.current, Math.max(minHeight, dragStartHeight.current + deltaY));
+      const newHeight = Math.min(
+        maxHeightRef.current,
+        Math.max(minHeight, dragStartHeight.current + deltaY)
+      );
       setManualHeight(newHeight);
     };
 
@@ -86,9 +89,7 @@ export function FeedbackContainer({
         display: "flex",
         flexDirection: "column",
         // Content-fit by default; manual override when user drags
-        ...(manualHeight != null
-          ? { height: manualHeight, minHeight }
-          : { maxHeight }),
+        ...(manualHeight != null ? { height: manualHeight, minHeight } : { maxHeight }),
         flexShrink: 0,
         overflow: "hidden",
       }}
@@ -121,7 +122,9 @@ export function FeedbackContainer({
         flexShrink="0"
         style={{ borderBottom: "1px solid var(--gray-5)" }}
       >
-        <Text size="2" weight="bold">{title}</Text>
+        <Text size="2" weight="bold">
+          {title}
+        </Text>
         <Button variant="ghost" size="1" onClick={onDismiss} style={{ cursor: "pointer" }}>
           <Cross2Icon />
         </Button>

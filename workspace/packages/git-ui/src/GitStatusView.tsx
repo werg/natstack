@@ -165,13 +165,17 @@ export function GitStatusView({
 
   // File creation/deletion dialog state
   const [createFileParent, setCreateFileParent] = useState<string | null | undefined>(undefined);
-  const [deleteTarget, setDeleteTarget] = useState<{ path: string; isDirectory: boolean } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ path: string; isDirectory: boolean } | null>(
+    null
+  );
   const createFile = useSetAtom(createFileAtom);
   const deletePath = useSetAtom(deletePathAtom);
 
   // File selection state for FileOverview -> Accordion coordination
   const [overviewSelectedFile, setOverviewSelectedFile] = useState<string | null>(null);
-  const [overviewSelectedSection, setOverviewSelectedSection] = useState<"staged" | "unstaged">("unstaged");
+  const [overviewSelectedSection, setOverviewSelectedSection] = useState<"staged" | "unstaged">(
+    "unstaged"
+  );
   const [accordionValue, setAccordionValue] = useState<string[]>([]);
 
   // Header minimization state
@@ -189,7 +193,10 @@ export function GitStatusView({
       setOverviewSelectedSection(section);
       // Keep keyboard focus in sync with overview selection.
       const files = section === "staged" ? stagedFiles : unstagedFiles;
-      const index = Math.max(0, files.findIndex((file) => file.path === path));
+      const index = Math.max(
+        0,
+        files.findIndex((file) => file.path === path)
+      );
       setFocusedSection(section);
       setFocusedIndex(index);
       // Expand the relevant accordion section
@@ -223,15 +230,9 @@ export function GitStatusView({
   const fetchDiff = useSetAtom(fetchDiffAtom);
 
   // Event handlers for keyboard navigation
-  const handleStageFile = useCallback(
-    (path: string) => void stageFile(path),
-    [stageFile]
-  );
+  const handleStageFile = useCallback((path: string) => void stageFile(path), [stageFile]);
 
-  const handleUnstageFile = useCallback(
-    (path: string) => void unstageFile(path),
-    [unstageFile]
-  );
+  const handleUnstageFile = useCallback((path: string) => void unstageFile(path), [unstageFile]);
 
   const handleFocusCommit = useCallback(() => {
     commitInputRef.current?.focus();
@@ -396,9 +397,8 @@ export function GitStatusView({
       .catch(() => setDropStashIndex(null));
   }, [dropStashIndex, dropStash, setDropStashIndex]);
 
-  const dropTarget = dropStashIndex !== null
-    ? stashes.find((s) => s.index === dropStashIndex) ?? null
-    : null;
+  const dropTarget =
+    dropStashIndex !== null ? (stashes.find((s) => s.index === dropStashIndex) ?? null) : null;
 
   // Loading state
   if (loading && !branch) {
@@ -483,142 +483,142 @@ export function GitStatusView({
       <Box ref={scrollRef} flexGrow="1" minHeight="0" overflow="hidden">
         <ScrollArea>
           <Box px="1" pb="1">
-          <Accordion.Root
-            type="multiple"
-            value={accordionValue}
-            onValueChange={setAccordionValue}
-          >
-            {/* Changes - always visible for file browsing/editing */}
-            <AccordionItem value="unstaged">
-              <AccordionTrigger
-                action={
-                  unstagedFiles.length > 0 ? (
-                    <Flex gap="2">
-                      <Button
-                        size="1"
-                        variant="soft"
-                        color="red"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setShowDiscardAllConfirm(true);
-                        }}
-                        disabled={actionLoading}
-                      >
-                        Discard All
-                      </Button>
-                      <Button
-                        size="1"
-                        variant="soft"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void handleStageAll();
-                        }}
-                        disabled={actionLoading}
-                      >
-                        Stage All
-                      </Button>
-                    </Flex>
-                  ) : undefined
-                }
-              >
-                Changes{unstagedFiles.length > 0 ? ` (${unstagedFiles.length})` : ""}
-              </AccordionTrigger>
-              <AccordionContent>
-                <DiffBlock
-                  files={changesTreeFiles}
-                  getDiff={getWorkingDiff}
-                  editable
-                  onStageFile={handleStageFile}
-                  onStageHunks={handleStageHunks}
-                  onDiscardFile={(path) => setDiscardPath(path)}
-                  onSaveEdit={saveFile}
-                  onCopyPath={handleCopyPath}
-                  partiallyStagedFiles={partiallyStagedFiles}
-                  theme={theme}
-                  diffType="working"
-                  showDiffControls={false}
-                  diffViewOptions={diffViewOptions}
-                  onCreateFile={(parentPath) => setCreateFileParent(parentPath)}
-                  onDeleteFile={(path, isDir) => setDeleteTarget({ path, isDirectory: isDir })}
-                />
-              </AccordionContent>
-            </AccordionItem>
-
-            {/* Staged Changes - only show if there are staged files */}
-            {stagedFiles.length > 0 && (
-              <AccordionItem value="staged">
+            <Accordion.Root
+              type="multiple"
+              value={accordionValue}
+              onValueChange={setAccordionValue}
+            >
+              {/* Changes - always visible for file browsing/editing */}
+              <AccordionItem value="unstaged">
                 <AccordionTrigger
                   action={
-                    <Button
-                      size="1"
-                      variant="soft"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowUnstageConfirm(true);
-                      }}
-                      disabled={actionLoading}
-                    >
-                      Unstage All
-                    </Button>
+                    unstagedFiles.length > 0 ? (
+                      <Flex gap="2">
+                        <Button
+                          size="1"
+                          variant="soft"
+                          color="red"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setShowDiscardAllConfirm(true);
+                          }}
+                          disabled={actionLoading}
+                        >
+                          Discard All
+                        </Button>
+                        <Button
+                          size="1"
+                          variant="soft"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleStageAll();
+                          }}
+                          disabled={actionLoading}
+                        >
+                          Stage All
+                        </Button>
+                      </Flex>
+                    ) : undefined
                   }
                 >
-                  Staged ({stagedFiles.length})
+                  Changes{unstagedFiles.length > 0 ? ` (${unstagedFiles.length})` : ""}
                 </AccordionTrigger>
                 <AccordionContent>
                   <DiffBlock
-                    files={stagedFiles}
-                    getDiff={getStagedDiff}
-                    onUnstageFile={handleUnstageFile}
-                    onUnstageHunks={handleUnstageHunks}
+                    files={changesTreeFiles}
+                    getDiff={getWorkingDiff}
+                    editable
+                    onStageFile={handleStageFile}
+                    onStageHunks={handleStageHunks}
+                    onDiscardFile={(path) => setDiscardPath(path)}
+                    onSaveEdit={saveFile}
                     onCopyPath={handleCopyPath}
                     partiallyStagedFiles={partiallyStagedFiles}
                     theme={theme}
-                    diffType="staged"
+                    diffType="working"
+                    showDiffControls={false}
+                    diffViewOptions={diffViewOptions}
+                    onCreateFile={(parentPath) => setCreateFileParent(parentPath)}
+                    onDeleteFile={(path, isDir) => setDeleteTarget({ path, isDirectory: isDir })}
+                  />
+                </AccordionContent>
+              </AccordionItem>
+
+              {/* Staged Changes - only show if there are staged files */}
+              {stagedFiles.length > 0 && (
+                <AccordionItem value="staged">
+                  <AccordionTrigger
+                    action={
+                      <Button
+                        size="1"
+                        variant="soft"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowUnstageConfirm(true);
+                        }}
+                        disabled={actionLoading}
+                      >
+                        Unstage All
+                      </Button>
+                    }
+                  >
+                    Staged ({stagedFiles.length})
+                  </AccordionTrigger>
+                  <AccordionContent>
+                    <DiffBlock
+                      files={stagedFiles}
+                      getDiff={getStagedDiff}
+                      onUnstageFile={handleUnstageFile}
+                      onUnstageHunks={handleUnstageHunks}
+                      onCopyPath={handleCopyPath}
+                      partiallyStagedFiles={partiallyStagedFiles}
+                      theme={theme}
+                      diffType="staged"
+                      showDiffControls={false}
+                      diffViewOptions={diffViewOptions}
+                    />
+                  </AccordionContent>
+                </AccordionItem>
+              )}
+
+              {/* Stashes - show if there are stashes OR changes that could be stashed */}
+              {(stashes.length > 0 || hasChanges) && (
+                <AccordionItem value="stashes">
+                  <AccordionTrigger>Stashes ({stashes.length})</AccordionTrigger>
+                  <AccordionContent>
+                    <StashSection />
+                  </AccordionContent>
+                </AccordionItem>
+              )}
+
+              {/* Conflicts - only show if there are conflicts */}
+              {conflicts.length > 0 && (
+                <AccordionItem value="conflicts">
+                  <AccordionTrigger>Conflicts ({conflicts.length})</AccordionTrigger>
+                  <AccordionContent>
+                    <ConflictResolutionView theme={theme} />
+                  </AccordionContent>
+                </AccordionItem>
+              )}
+
+              {/* History - always show */}
+              <AccordionItem value="history">
+                <AccordionTrigger>Recent Commits</AccordionTrigger>
+                <AccordionContent>
+                  <CommitHistory
+                    commits={commits}
+                    loading={historyLoading}
+                    hasMore={hasMore}
+                    onLoadMore={() => loadMore()}
+                    getCommitFiles={getCommitFiles}
+                    getCommitDiff={getCommitDiff}
+                    theme={theme}
                     showDiffControls={false}
                     diffViewOptions={diffViewOptions}
                   />
                 </AccordionContent>
               </AccordionItem>
-            )}
-
-            {/* Stashes - show if there are stashes OR changes that could be stashed */}
-            {(stashes.length > 0 || hasChanges) && (
-              <AccordionItem value="stashes">
-                <AccordionTrigger>Stashes ({stashes.length})</AccordionTrigger>
-                <AccordionContent>
-                  <StashSection />
-                </AccordionContent>
-              </AccordionItem>
-            )}
-
-            {/* Conflicts - only show if there are conflicts */}
-            {conflicts.length > 0 && (
-              <AccordionItem value="conflicts">
-                <AccordionTrigger>Conflicts ({conflicts.length})</AccordionTrigger>
-                <AccordionContent>
-                  <ConflictResolutionView theme={theme} />
-                </AccordionContent>
-              </AccordionItem>
-            )}
-
-            {/* History - always show */}
-            <AccordionItem value="history">
-              <AccordionTrigger>Recent Commits</AccordionTrigger>
-              <AccordionContent>
-                <CommitHistory
-                  commits={commits}
-                  loading={historyLoading}
-                  hasMore={hasMore}
-                  onLoadMore={() => loadMore()}
-                  getCommitFiles={getCommitFiles}
-                  getCommitDiff={getCommitDiff}
-                  theme={theme}
-                  showDiffControls={false}
-                  diffViewOptions={diffViewOptions}
-                />
-              </AccordionContent>
-            </AccordionItem>
-          </Accordion.Root>
+            </Accordion.Root>
           </Box>
         </ScrollArea>
       </Box>
@@ -633,15 +633,21 @@ export function GitStatusView({
       />
 
       <AlertDialog.Root open={showDiscardAllConfirm} onOpenChange={setShowDiscardAllConfirm}>
-        <AlertDialog.Content maxWidth="500px">
+        <AlertDialog.Content
+          style={{
+            width: "min(500px, calc(100vw - 24px))",
+            maxHeight: "calc(100dvh - 24px)",
+            overflow: "auto",
+          }}
+        >
           <AlertDialog.Title>Discard All Changes</AlertDialog.Title>
           <AlertDialog.Description size="2">
             {(() => {
               const modifiedCount = unstagedFiles.filter(
-                f => f.status === "modified" || f.status === "deleted" || f.status === "renamed"
+                (f) => f.status === "modified" || f.status === "deleted" || f.status === "renamed"
               ).length;
               const untrackedCount = unstagedFiles.filter(
-                f => f.status === "added" && !f.staged
+                (f) => f.status === "added" && !f.staged
               ).length;
 
               return (
@@ -649,23 +655,27 @@ export function GitStatusView({
                   <Text>Are you sure you want to discard all unstaged changes?</Text>
                   {modifiedCount > 0 && (
                     <Box mt="2">
-                      • Revert <Text weight="bold">{modifiedCount}</Text> modified file{modifiedCount !== 1 ? 's' : ''} to their last committed state
+                      • Revert <Text weight="bold">{modifiedCount}</Text> modified file
+                      {modifiedCount !== 1 ? "s" : ""} to their last committed state
                     </Box>
                   )}
                   {untrackedCount > 0 && (
                     <Box mt="2">
-                      • Delete <Text weight="bold">{untrackedCount}</Text> untracked file{untrackedCount !== 1 ? 's' : ''} from your workspace
+                      • Delete <Text weight="bold">{untrackedCount}</Text> untracked file
+                      {untrackedCount !== 1 ? "s" : ""} from your workspace
                     </Box>
                   )}
                   <Box mt="3">
-                    <Text weight="bold" color="red">This action cannot be undone.</Text>
+                    <Text weight="bold" color="red">
+                      This action cannot be undone.
+                    </Text>
                   </Box>
                 </Box>
               );
             })()}
           </AlertDialog.Description>
 
-          <Flex gap="3" mt="4" justify="end">
+          <Flex gap="3" mt="4" justify="end" wrap="wrap">
             <AlertDialog.Cancel>
               <Button variant="soft" color="gray" disabled={actionLoading}>
                 Cancel
@@ -742,16 +752,18 @@ function AccordionItem({ value, children }: { value: string; children: React.Rea
   );
 }
 
-function AccordionTrigger({ children, action }: { children: React.ReactNode; action?: React.ReactNode }) {
+function AccordionTrigger({
+  children,
+  action,
+}: {
+  children: React.ReactNode;
+  action?: React.ReactNode;
+}) {
   return (
     <Accordion.Header style={{ margin: 6 }}>
       <Flex align="center" justify="between" p="1" gap="2">
         <Accordion.Trigger asChild>
-          <Button
-            variant="ghost"
-            size="1"
-            className="accordion-trigger"
-          >
+          <Button variant="ghost" size="1" className="accordion-trigger">
             <ChevronDownIcon
               aria-hidden
               style={{ transition: "transform 150ms ease-out" }}

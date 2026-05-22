@@ -1,6 +1,21 @@
 import { useState, useMemo, useCallback, useRef, type RefObject } from "react";
-import { Box, Button, Callout, Card, Flex, IconButton, Text, TextArea, Badge, ScrollArea, Separator, Tooltip, Kbd } from "@radix-ui/themes";
+import {
+  Box,
+  Button,
+  Callout,
+  Card,
+  Flex,
+  IconButton,
+  Text,
+  TextArea,
+  Badge,
+  ScrollArea,
+  Separator,
+  Tooltip,
+  Kbd,
+} from "@radix-ui/themes";
 import * as Collapsible from "@radix-ui/react-collapsible";
+import { useIsMobile } from "@workspace/react/responsive";
 import {
   ChevronRightIcon,
   ChevronDownIcon,
@@ -110,11 +125,7 @@ function OverviewTreeNode({
   if (node.isDirectory) {
     return (
       <Collapsible.Root open={expanded} onOpenChange={setExpanded}>
-        <Flex
-          align="center"
-          minHeight="22px"
-          style={{ paddingLeft: depth * 12 }}
-        >
+        <Flex align="center" minHeight="22px" style={{ paddingLeft: depth * 12 }}>
           <Collapsible.Trigger asChild>
             <Flex align="center" gap="1" flexGrow="1" style={{ cursor: "pointer" }}>
               {expanded ? (
@@ -170,14 +181,7 @@ function OverviewTreeNode({
         onAction(node.path);
       }}
     >
-      <Flex
-        align="center"
-        gap="1"
-        flexGrow="1"
-        py="1"
-        px="1"
-        onClick={() => onSelect(node.path)}
-      >
+      <Flex align="center" gap="1" flexGrow="1" py="1" px="1" onClick={() => onSelect(node.path)}>
         <Box flexGrow="1" minWidth="0">
           <Text size="1" truncate>
             {node.name}
@@ -229,9 +233,7 @@ function OverviewTree({
           {section === "staged" ? <CheckCircledIcon /> : <InfoCircledIcon />}
         </Callout.Icon>
         <Callout.Text>
-          {section === "staged"
-            ? "No staged changes. Use + to stage files."
-            : "Working tree clean"}
+          {section === "staged" ? "No staged changes. Use + to stage files." : "Working tree clean"}
         </Callout.Text>
       </Callout.Root>
     );
@@ -279,6 +281,7 @@ export function FileOverview({
   gitClient,
   dir,
 }: FileOverviewProps) {
+  const isMobile = useIsMobile();
   // Support both controlled and uncontrolled commit message
   const [uncontrolledMessage, setUncontrolledMessage] = useState("");
   const isControlled = controlledMessage !== undefined;
@@ -316,9 +319,10 @@ export function FileOverview({
 
       // Get all files that will be staged (current staged + unstaged that were just staged)
       // Dedupe by path since partially-staged files appear in both lists
-      const filesToDiff = unstagedFiles.length > 0
-        ? [...new Map([...stagedFiles, ...unstagedFiles].map(f => [f.path, f])).values()]
-        : stagedFiles;
+      const filesToDiff =
+        unstagedFiles.length > 0
+          ? [...new Map([...stagedFiles, ...unstagedFiles].map((f) => [f.path, f])).values()]
+          : stagedFiles;
 
       if (filesToDiff.length === 0) {
         setCommitError("No changes to generate commit message for");
@@ -334,7 +338,9 @@ export function FileOverview({
             // Format diff for AI consumption
             diffParts.push(`--- ${file.path} (${file.status})`);
             for (const hunk of fileDiff.hunks) {
-              diffParts.push(`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`);
+              diffParts.push(
+                `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`
+              );
               for (const line of hunk.lines) {
                 const prefix = line.type === "add" ? "+" : line.type === "delete" ? "-" : " ";
                 diffParts.push(`${prefix}${line.content}`);
@@ -431,7 +437,10 @@ export function FileOverview({
       if (!data) return;
 
       try {
-        const { path, section } = JSON.parse(data) as { path: string; section: "staged" | "unstaged" };
+        const { path, section } = JSON.parse(data) as {
+          path: string;
+          section: "staged" | "unstaged";
+        };
         // Only act if dropping in a different panel
         if (section !== targetPanel) {
           if (targetPanel === "staged") {
@@ -451,190 +460,203 @@ export function FileOverview({
     <Flex direction="column" flexShrink="0">
       <Flex direction="column" gap="2" px="2" pt="2" pb="2">
         {/* Commit Row */}
-      <Flex align="stretch" gap="2">
-        <TextArea
-          ref={setTextareaRef}
-          size="2"
-          placeholder="Commit message..."
-          value={commitMessage}
-          onChange={(e) => setCommitMessage(e.target.value)}
-          onKeyDown={handleCommitKeyDown}
-          disabled={commitLoading}
-          style={{
-            flex: 1,
-            minHeight: 60,
-            maxHeight: 200,
-            resize: "none",
-            fieldSizing: "content",
-          }}
-        />
-        <Flex direction="column" gap="2" flexShrink="0">
-          {onGenerateCommitMessage && (
-            <Tooltip content="Stage all changes and generate commit message with AI">
+        <Flex align="stretch" direction={isMobile ? "column" : "row"} gap="2">
+          <TextArea
+            ref={setTextareaRef}
+            size="2"
+            placeholder="Commit message..."
+            value={commitMessage}
+            onChange={(e) => setCommitMessage(e.target.value)}
+            onKeyDown={handleCommitKeyDown}
+            disabled={commitLoading}
+            style={{
+              flex: 1,
+              minHeight: isMobile ? 72 : 60,
+              maxHeight: isMobile ? 140 : 200,
+              resize: "none",
+              fieldSizing: "content",
+            }}
+          />
+          <Flex direction={isMobile ? "row" : "column"} gap="2" flexShrink="0" wrap="wrap">
+            {onGenerateCommitMessage && (
+              <Tooltip content="Stage all changes and generate commit message with AI">
+                <Button
+                  size="2"
+                  variant="soft"
+                  onClick={() => void handleAiCommit()}
+                  disabled={
+                    aiGenerating ||
+                    actionLoading ||
+                    (stagedFiles.length === 0 && unstagedFiles.length === 0)
+                  }
+                  loading={aiGenerating}
+                  style={{ flex: isMobile ? 1 : undefined }}
+                >
+                  <MagicWandIcon />
+                  AI
+                </Button>
+              </Tooltip>
+            )}
+            <Tooltip
+              content={
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  Commit changes <Kbd size="1">⌘</Kbd>
+                  <Kbd size="1">↵</Kbd>
+                </span>
+              }
+            >
               <Button
                 size="2"
-                variant="soft"
-                onClick={() => void handleAiCommit()}
-                disabled={aiGenerating || actionLoading || (stagedFiles.length === 0 && unstagedFiles.length === 0)}
-                loading={aiGenerating}
+                onClick={() => void handleCommit()}
+                disabled={!hasStaged || !commitMessage.trim() || commitLoading}
+                loading={commitLoading}
+                style={{ flex: isMobile ? 1 : undefined }}
               >
-                <MagicWandIcon />
-                AI
+                Commit
               </Button>
             </Tooltip>
-          )}
-          <Tooltip content={<span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>Commit changes <Kbd size="1">⌘</Kbd><Kbd size="1">↵</Kbd></span>}>
-            <Button
-              size="2"
-              onClick={() => void handleCommit()}
-              disabled={!hasStaged || !commitMessage.trim() || commitLoading}
-              loading={commitLoading}
-            >
-              Commit
-            </Button>
-          </Tooltip>
+          </Flex>
         </Flex>
-      </Flex>
-      {commitError && (
-        <Text size="1" color="red">
-          {commitError}
-        </Text>
-      )}
-      {!commitMessage.trim() && hasStaged && (
-        <Text size="1" color="amber">
-          Enter a commit message
-        </Text>
-      )}
+        {commitError && (
+          <Text size="1" color="red">
+            {commitError}
+          </Text>
+        )}
+        {!commitMessage.trim() && hasStaged && (
+          <Text size="1" color="amber">
+            Enter a commit message
+          </Text>
+        )}
 
-      {/* Side-by-side file panels (responsive: stacks on narrow viewports) */}
-      <Box
-        className="file-overview-panels"
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: "var(--space-2)",
-          minHeight: 120,
-          maxHeight: 300,
-        }}
-      >
-        {/* Changes Panel */}
-        <Card
-          size="1"
-          onDragOver={(e) => handleDragOver(e, "unstaged")}
-          onDragLeave={handleDragLeave}
-          onDrop={(e) => handleDrop(e, "unstaged")}
+        <Box
+          className="file-overview-panels"
           style={{
-            display: "flex",
-            flexDirection: "column",
-            overflow: "hidden",
+            display: "grid",
+            gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr",
+            gap: "var(--space-2)",
             minHeight: 120,
-            maxHeight: 300,
-            outline: dragOverPanel === "unstaged" ? "2px dashed var(--accent-9)" : undefined,
-            background: dragOverPanel === "unstaged" ? "var(--accent-a2)" : undefined,
-            transition: "outline 0.15s, background 0.15s",
+            maxHeight: isMobile ? 440 : 300,
           }}
         >
-          <Flex align="center" justify="between" px="2" py="1">
-            <Flex align="center" gap="2">
-              <Text size="1" weight="medium">
-                Changes
-              </Text>
-              <Badge size="1" variant="soft" color="gray">
-                {unstagedFiles.length}
-              </Badge>
-            </Flex>
-            {unstagedFiles.length > 0 && (
-              <Tooltip content={<span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>Stage all files <Kbd>s</Kbd></span>}>
-                <Button
-                  size="1"
-                  variant="ghost"
-                  onClick={onStageAll}
-                  disabled={actionLoading}
+          <Card
+            size="1"
+            onDragOver={(e) => handleDragOver(e, "unstaged")}
+            onDragLeave={handleDragLeave}
+            onDrop={(e) => handleDrop(e, "unstaged")}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+              minHeight: 120,
+              maxHeight: isMobile ? 210 : 300,
+              outline: dragOverPanel === "unstaged" ? "2px dashed var(--accent-9)" : undefined,
+              background: dragOverPanel === "unstaged" ? "var(--accent-a2)" : undefined,
+              transition: "outline 0.15s, background 0.15s",
+            }}
+          >
+            <Flex align="center" justify="between" px="2" py="1">
+              <Flex align="center" gap="2">
+                <Text size="1" weight="medium">
+                  Changes
+                </Text>
+                <Badge size="1" variant="soft" color="gray">
+                  {unstagedFiles.length}
+                </Badge>
+              </Flex>
+              {unstagedFiles.length > 0 && (
+                <Tooltip
+                  content={
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                      Stage all files <Kbd>s</Kbd>
+                    </span>
+                  }
                 >
-                  <DoubleArrowRightIcon />
-                  Stage All
-                </Button>
-              </Tooltip>
-            )}
-          </Flex>
-          <Separator size="4" />
-          <Box flexGrow="1" minHeight="0" overflow="hidden">
-            <ScrollArea style={{ height: "100%" }}>
-              <Box p="1">
-                <OverviewTree
-                  files={unstagedFiles}
-                  selectedFile={selectedSection === "unstaged" ? selectedFile ?? null : null}
-                  onSelect={handleUnstagedSelect}
-                  onAction={onStageFile}
-                  actionIcon="plus"
-                  partiallyStagedFiles={partiallyStagedFiles}
-                  actionLoading={actionLoading}
-                  section="unstaged"
-                />
-              </Box>
-            </ScrollArea>
-          </Box>
-        </Card>
+                  <Button size="1" variant="ghost" onClick={onStageAll} disabled={actionLoading}>
+                    <DoubleArrowRightIcon />
+                    Stage All
+                  </Button>
+                </Tooltip>
+              )}
+            </Flex>
+            <Separator size="4" />
+            <Box flexGrow="1" minHeight="0" overflow="hidden">
+              <ScrollArea style={{ height: "100%" }}>
+                <Box p="1">
+                  <OverviewTree
+                    files={unstagedFiles}
+                    selectedFile={selectedSection === "unstaged" ? (selectedFile ?? null) : null}
+                    onSelect={handleUnstagedSelect}
+                    onAction={onStageFile}
+                    actionIcon="plus"
+                    partiallyStagedFiles={partiallyStagedFiles}
+                    actionLoading={actionLoading}
+                    section="unstaged"
+                  />
+                </Box>
+              </ScrollArea>
+            </Box>
+          </Card>
 
-        {/* Staged Panel */}
-        <Card
-          size="1"
-          onDragOver={(e) => handleDragOver(e, "staged")}
-          onDragLeave={handleDragLeave}
-          onDrop={(e) => handleDrop(e, "staged")}
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            overflow: "hidden",
-            minHeight: 120,
-            maxHeight: 300,
-            outline: dragOverPanel === "staged" ? "2px dashed var(--accent-9)" : undefined,
-            background: dragOverPanel === "staged" ? "var(--accent-a2)" : undefined,
-            transition: "outline 0.15s, background 0.15s",
-          }}
-        >
-          <Flex align="center" justify="between" px="2" py="1">
-            <Flex align="center" gap="2">
-              <Text size="1" weight="medium">
-                Staged
-              </Text>
-              <Badge size="1" variant="soft" color={stagedFiles.length > 0 ? "green" : "gray"}>
-                {stagedFiles.length}
-              </Badge>
-            </Flex>
-            {stagedFiles.length > 0 && (
-              <Tooltip content={<span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>Unstage all files <Kbd>u</Kbd></span>}>
-                <Button
-                  size="1"
-                  variant="ghost"
-                  onClick={onUnstageAll}
-                  disabled={actionLoading}
+          {/* Staged Panel */}
+          <Card
+            size="1"
+            onDragOver={(e) => handleDragOver(e, "staged")}
+            onDragLeave={handleDragLeave}
+            onDrop={(e) => handleDrop(e, "staged")}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+              minHeight: 120,
+              maxHeight: isMobile ? 210 : 300,
+              outline: dragOverPanel === "staged" ? "2px dashed var(--accent-9)" : undefined,
+              background: dragOverPanel === "staged" ? "var(--accent-a2)" : undefined,
+              transition: "outline 0.15s, background 0.15s",
+            }}
+          >
+            <Flex align="center" justify="between" px="2" py="1">
+              <Flex align="center" gap="2">
+                <Text size="1" weight="medium">
+                  Staged
+                </Text>
+                <Badge size="1" variant="soft" color={stagedFiles.length > 0 ? "green" : "gray"}>
+                  {stagedFiles.length}
+                </Badge>
+              </Flex>
+              {stagedFiles.length > 0 && (
+                <Tooltip
+                  content={
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                      Unstage all files <Kbd>u</Kbd>
+                    </span>
+                  }
                 >
-                  <DoubleArrowLeftIcon />
-                  Unstage All
-                </Button>
-              </Tooltip>
-            )}
-          </Flex>
-          <Separator size="4" />
-          <Box flexGrow="1" minHeight="0" overflow="hidden">
-            <ScrollArea style={{ height: "100%" }}>
-              <Box p="1">
-                <OverviewTree
-                  files={stagedFiles}
-                  selectedFile={selectedSection === "staged" ? selectedFile ?? null : null}
-                  onSelect={handleStagedSelect}
-                  onAction={onUnstageFile}
-                  actionIcon="minus"
-                  partiallyStagedFiles={partiallyStagedFiles}
-                  actionLoading={actionLoading}
-                  section="staged"
-                />
-              </Box>
-            </ScrollArea>
-          </Box>
-        </Card>
-      </Box>
+                  <Button size="1" variant="ghost" onClick={onUnstageAll} disabled={actionLoading}>
+                    <DoubleArrowLeftIcon />
+                    Unstage All
+                  </Button>
+                </Tooltip>
+              )}
+            </Flex>
+            <Separator size="4" />
+            <Box flexGrow="1" minHeight="0" overflow="hidden">
+              <ScrollArea style={{ height: "100%" }}>
+                <Box p="1">
+                  <OverviewTree
+                    files={stagedFiles}
+                    selectedFile={selectedSection === "staged" ? (selectedFile ?? null) : null}
+                    onSelect={handleStagedSelect}
+                    onAction={onUnstageFile}
+                    actionIcon="minus"
+                    partiallyStagedFiles={partiallyStagedFiles}
+                    actionLoading={actionLoading}
+                    section="staged"
+                  />
+                </Box>
+              </ScrollArea>
+            </Box>
+          </Card>
+        </Box>
       </Flex>
 
       {/* Separator below file overview - outside padded area for flush alignment */}

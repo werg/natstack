@@ -1,5 +1,9 @@
 import { hasRecentPushDelivery } from "./pushState.js";
-import { googleWorkspaceCredential } from "./providers.js";
+import {
+  createGoogleApiFetcher,
+  createGoogleWorkspaceCredentialHandle,
+  GoogleApiError,
+} from "./google-shared.js";
 import type {
   CredentialClient,
   UrlCredentialHandle,
@@ -97,21 +101,7 @@ export interface StartPollingOptions {
   onError?: (error: Error) => void | Promise<void>;
 }
 
-class GoogleCalendarApiError extends Error {
-  status: number;
-
-  statusText: string;
-
-  body: string;
-
-  constructor(status: number, statusText: string, body: string) {
-    super(`Google Calendar API ${status} ${statusText}: ${body}`);
-    this.name = "GoogleCalendarApiError";
-    this.status = status;
-    this.statusText = statusText;
-    this.body = body;
-  }
-}
+class GoogleCalendarApiError extends GoogleApiError {}
 
 function encodePathSegment(value: string): string {
   return encodeURIComponent(value);
@@ -176,36 +166,21 @@ export interface CalendarClient {
  * The credential handle is resolved on first use and memoized.
  */
 export function createCalendarClient(credentials: CredentialClient): CalendarClient {
-  let handlePromise: Promise<UrlCredentialHandle> | null = null;
-  const handle = (): Promise<UrlCredentialHandle> => {
-    if (!handlePromise) {
-      const p = credentials.forAudience({
-        ...googleWorkspaceCredential,
-        label: googleWorkspaceCredential.displayName,
-      });
-      // Cache success only; let the user retry after registering
-      // a credential mid-session.
-      p.catch(() => {
-        if (handlePromise === p) handlePromise = null;
-      });
-      handlePromise = p;
+  const handle = createGoogleWorkspaceCredentialHandle(credentials);
+  const sharedApiFetch = createGoogleApiFetcher({
+    baseUrl: GOOGLE_CALENDAR_BASE_URL,
+    serviceName: "Google Calendar",
+    handle,
+  });
+  const apiFetch = async <T>(path: string, init?: RequestInit): Promise<T> => {
+    try {
+      return await sharedApiFetch<T>(path, init);
+    } catch (err) {
+      if (err instanceof GoogleApiError) {
+        throw new GoogleCalendarApiError("Google Calendar", err.status, err.statusText, err.body);
+      }
+      throw err;
     }
-    return handlePromise;
-  };
-
-  const apiFetch = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
-    const auth = await handle();
-    const headers = new Headers(init.headers);
-    headers.set("Accept", "application/json");
-    if (init.body && !headers.has("Content-Type")) {
-      headers.set("Content-Type", "application/json");
-    }
-    const response = await auth.fetch(`${GOOGLE_CALENDAR_BASE_URL}${path}`, { ...init, headers });
-    if (!response.ok) {
-      throw new GoogleCalendarApiError(response.status, response.statusText, await response.text());
-    }
-    if (response.status === 204) return undefined as T;
-    return (await response.json()) as T;
   };
 
   const listCalendars = async (): Promise<CalendarListEntry[]> => {

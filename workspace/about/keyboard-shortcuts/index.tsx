@@ -5,7 +5,7 @@
 import { createRoot } from "react-dom/client";
 import "@radix-ui/themes/styles.css";
 import { Theme, Card, Flex, Heading, Text, Box, Table, Kbd, ScrollArea } from "@radix-ui/themes";
-import { usePanelTheme } from "@workspace/react";
+import { useIsMobile, usePanelTheme } from "@workspace/react";
 
 interface ShortcutGroup {
   title: string;
@@ -65,33 +65,40 @@ const shortcutGroups: ShortcutGroup[] = [
 ];
 
 function KeyboardShortcutsPage() {
+  const isMobile = useIsMobile();
   return (
-    <Box p="4" style={{ maxWidth: "700px", margin: "0 auto" }}>
-      <Heading size="7" mb="4">Keyboard Shortcuts</Heading>
+    <Box p={isMobile ? "3" : "4"} style={{ maxWidth: "700px", margin: "0 auto" }}>
+      <Heading size={isMobile ? "5" : "7"} mb="4">
+        Keyboard Shortcuts
+      </Heading>
 
-      <ScrollArea style={{ height: "calc(100dvh - 100px)" }}>
+      <ScrollArea style={{ height: isMobile ? "calc(100dvh - 76px)" : "calc(100dvh - 100px)" }}>
         <Flex direction="column" gap="4">
           {shortcutGroups.map((group) => (
             <Card key={group.title}>
-              <Heading size="4" mb="3">{group.title}</Heading>
-              <Table.Root>
+              <Heading size="4" mb="3">
+                {group.title}
+              </Heading>
+              <Table.Root style={{ width: "100%", tableLayout: isMobile ? "fixed" : undefined }}>
                 <Table.Body>
                   {group.shortcuts.map((shortcut, index) => (
                     <Table.Row key={index}>
-                      <Table.Cell style={{ width: "200px" }}>
-                        <Flex gap="1">
+                      <Table.Cell style={{ width: isMobile ? "44%" : "200px" }}>
+                        <Flex gap="1" wrap="wrap">
                           {shortcut.keys.map((key, keyIndex) => (
                             <span key={keyIndex}>
                               <Kbd>{key}</Kbd>
                               {keyIndex < shortcut.keys.length - 1 && (
-                                <Text size="1" color="gray" mx="1">+</Text>
+                                <Text size="1" color="gray" mx="1">
+                                  +
+                                </Text>
                               )}
                             </span>
                           ))}
                         </Flex>
                       </Table.Cell>
                       <Table.Cell>
-                        <Text>{shortcut.description}</Text>
+                        <Text style={{ overflowWrap: "anywhere" }}>{shortcut.description}</Text>
                       </Table.Cell>
                     </Table.Row>
                   ))}

@@ -1328,7 +1328,6 @@ async function main() {
       await instance?.server?.stop();
     },
   });
-
   {
     const { createPanelRuntimeService } = await import("./services/panelRuntimeService.js");
     let panelRuntimeDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition;

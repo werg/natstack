@@ -8,6 +8,7 @@
  * because no panel is connected to advertise them.
  */
 
+import type { AgentSubscriptionConfig } from "@workspace/agentic-core";
 import type { ChannelConfig } from "@workspace/pubsub";
 
 /** Recommended channel config for headless sessions: full-auto approval (level 2). */
@@ -35,7 +36,7 @@ export interface SubscribeHeadlessAgentOptions {
    * `thinkingLevel`, `approvalLevel`, `systemPrompt`, and
    * `systemPromptMode`.
    */
-  extraConfig?: Record<string, unknown>;
+  extraConfig?: AgentSubscriptionConfig;
 }
 
 export interface HeadlessAgentSubscription {
@@ -58,7 +59,7 @@ export async function subscribeHeadlessAgent(
 ): Promise<HeadlessAgentSubscription> {
   const channelConfig = getRecommendedChannelConfig();
 
-  const subscriptionConfig: Record<string, unknown> = {
+  const subscriptionConfig: AgentSubscriptionConfig = {
     ...channelConfig,
     ...opts.extraConfig,
   };

@@ -6,6 +6,7 @@
  */
 
 import type { SqlStorage } from "@workspace/runtime/worker";
+import type { AgentSubscriptionConfig } from "@workspace/agentic-core";
 import type { ParticipantDescriptor } from "@natstack/harness/types";
 import type { ChannelReplayEnvelope } from "@workspace/pubsub";
 import { PARTICIPANT_SESSION_METADATA_KEY } from "@workspace/pubsub/internal-constants";
@@ -113,12 +114,13 @@ export class SubscriptionManager {
     return row[0]!["context_id"] as string;
   }
 
-  getConfig(channelId: string): Record<string, unknown> | null {
+  getConfig(channelId: string): AgentSubscriptionConfig | null {
     const row = this.sql.exec(
       `SELECT config FROM subscriptions WHERE channel_id = ?`, channelId,
     ).toArray();
     if (row.length === 0 || !row[0]!["config"]) return null;
-    return JSON.parse(row[0]!["config"] as string);
+    const parsed = JSON.parse(row[0]!["config"] as string);
+    return parsed && typeof parsed === "object" ? parsed as AgentSubscriptionConfig : null;
   }
 
   /** Delete subscription record only (no channel call). Used during unsubscribeChannel cleanup. */

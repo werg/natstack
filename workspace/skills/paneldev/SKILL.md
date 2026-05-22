@@ -11,13 +11,12 @@ Documentation for developing NatStack panels.
 
 | Document | Content |
 |----------|---------|
-| [PANEL_DEVELOPMENT.md](PANEL_DEVELOPMENT.md) | Hooks, fs, templates, userland approval prompts |
-| [PANEL_SYSTEM.md](PANEL_SYSTEM.md) | API reference |
+| [WORKFLOW.md](WORKFLOW.md) | Canonical agent workflow: scaffold, open, inspect, edit, push, reload, close |
+| [PANEL_API.md](PANEL_API.md) | Runtime panel API reference |
 | [WORKERS.md](WORKERS.md) | Workers & Durable Objects: AgentWorkerBase (@workspace/agentic-do), DurableObjectBase, PiRunner, approval continuations, runtime approval prompts |
 | [RPC.md](RPC.md) | Typed parent-child contracts |
 | [BROWSER.md](BROWSER.md) | Browser automation (Playwright/CDP) |
 | [TOOLS.md](TOOLS.md) | Agent tools reference |
-| [WORKFLOW.md](WORKFLOW.md) | Development workflow |
 | [create-project.ts](create-project.ts) | Project scaffolding and git helpers (importable via eval `imports` parameter) |
 
 ## Interaction Patterns
@@ -51,7 +50,7 @@ eval({ code: `
   import { commitAndPush } from "@workspace-skills/paneldev";
   import { openPanel } from "@workspace/runtime";
   await commitAndPush("panels/my-app", "Initial launch");
-  await openPanel("panels/my-app");
+  scope.myApp = await openPanel("panels/my-app");
 `
 })
 ```
@@ -62,7 +61,7 @@ eval({ code: `
 |------|-----|
 | Create project | `eval` — `import { createProject } from "@workspace-skills/paneldev"` then `createProject({ projectType, name, title })` |
 | Commit & push | `eval` — `import { commitAndPush } from "@workspace-skills/paneldev"` then `commitAndPush("panels/my-app", "message")` |
-| Launch panel | `eval` — `commitAndPush(...)` + `openPanel(source)` |
+| Launch panel | `eval` — `commitAndPush(...)` + `scope.handle = await openPanel(source)` |
 | Launch worker | `eval` — `workers.create({ source: "workers/my-worker", contextId })` |
 | Read a file | `Read({ file_path: "panels/my-app/index.tsx" })` |
 | Edit a file | `Edit({ file_path: "panels/my-app/index.tsx", old_string: "...", new_string: "..." })` |
@@ -77,6 +76,6 @@ eval({ code: `
 
 ## Environment Compatibility
 
-- Panel lifecycle operations (`openPanel`, `createBrowserPanel`, `focusPanel`, panel reload) require **panel context**.
+- Panel lifecycle operations (`openPanel`, `listPanels`, `focusPanel`, handle reload/close) require **panel context**.
 - Project scaffolding (`createProject`), git operations (`commitAndPush`), and typecheck work in **headless** sessions via eval + RPC.
 - `test.run` is restricted to server-origin callers; panel-side eval cannot run tests directly.

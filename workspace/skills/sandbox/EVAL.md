@@ -310,7 +310,7 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { openPanel, createBrowserPanel } from "@workspace/runtime";
+  import { openPanel } from "@workspace/runtime";
 
   // Open a URL in a browser panel
   await openPanel("https://example.com");
@@ -318,9 +318,9 @@ eval({ code: `
   // Open a workspace panel
   await openPanel("panels/chat", { stateArgs: { topic: "hello" } });
 
-  // Use createBrowserPanel when you need page automation
-  const handle = await createBrowserPanel("https://example.com");
-  const page = await handle.page();
+  // Use openPanel when you need page automation
+  const handle = await openPanel("https://example.com");
+  const page = await handle.browser.page();
   console.log(await page.title());
 ` })
 ```

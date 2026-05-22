@@ -13,13 +13,42 @@ The `chat` object enables sandbox code (eval) and components (inline_ui, load_ac
 ```typescript
 interface ChatSandboxValue {
   /** Publish an event to the channel */
-  publish(eventType: string, payload: unknown, options?: { persist?: boolean }): Promise<unknown>;
+  publish(eventType: string, payload: unknown, options?: { idempotencyKey?: string }): Promise<unknown>;
+
+  /** Send a visible user-authored message to the channel */
+  send(content: string, options?: { idempotencyKey?: string }): Promise<unknown>;
+
+  /** Publish a custom-message instance for a registered message type */
+  publishCustomMessage(
+    input: { typeId: string; initialState?: unknown; displayMode?: "inline" | "row" },
+    options?: { idempotencyKey?: string }
+  ): Promise<{ messageId: string; pubsubId: number | undefined }>;
+
+  /** Publish a custom-message update */
+  updateCustomMessage(
+    messageId: string,
+    update: unknown,
+    options?: { idempotencyKey?: string }
+  ): Promise<number | undefined>;
 
   /** Call a method on a channel participant */
   callMethod(participantId: string, method: string, args: unknown): Promise<unknown>;
 
   /** Call a method and return the full transport result envelope */
   callMethodResult(participantId: string, method: string, args: unknown): Promise<{
+    content: unknown;
+    attachments?: unknown[];
+    contentType?: string;
+  }>;
+
+  /** Resolve a participant by handle, accepting "gmail" or "@gmail" */
+  participantByHandle(handle: string): { id: string; metadata: Record<string, unknown> } | null;
+
+  /** Call by participant handle and return the provider payload */
+  callMethodByHandle(handle: string, method: string, args: unknown): Promise<unknown>;
+
+  /** Call by participant handle and return the full invocation envelope */
+  callMethodResultByHandle(handle: string, method: string, args: unknown): Promise<{
     content: unknown;
     attachments?: unknown[];
     contentType?: string;
@@ -79,6 +108,19 @@ const result = await chat.callMethod("agent-participant-id", "someMethod", { arg
 
 This is useful for inline UI components that need to trigger agent-side behavior directly.
 
+## chat.callMethodByHandle
+
+Resolve a channel participant by its advertised handle and call a method. Pass
+either `"gmail"` or `"@gmail"`; both forms work.
+
+```typescript
+const result = await chat.callMethodByHandle("gmail", "checkNow", {});
+```
+
+`chat.callMethodByHandle()` resolves to the provider payload. Use
+`chat.callMethodResultByHandle()` only when you need the full invocation result
+envelope.
+
 ## chat.callMethodResult
 
 Call a registered method and receive the full invocation result envelope.
@@ -88,6 +130,22 @@ For normal method calls, prefer `chat.callMethod()`.
 ```typescript
 const result = await chat.callMethodResult("agent-participant-id", "someMethod", {});
 console.log(result.content, result.contentType, result.attachments);
+```
+
+## chat.publishCustomMessage / chat.updateCustomMessage
+
+Publish or update an instance of a previously registered custom message type.
+These helpers create the correct `custom.started` / `custom.updated` events and
+return the generated `messageId` for later updates.
+
+```typescript
+const { messageId } = await chat.publishCustomMessage({
+  typeId: "gmail.compose",
+  initialState: { to: "a@example.com", subject: "Hello" },
+  displayMode: "row",
+});
+
+await chat.updateCustomMessage(messageId, { status: "sent" });
 ```
 
 ## chat.rpc

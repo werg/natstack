@@ -22,12 +22,22 @@ export function wrapChatForErrorReporting(
 ): ChatSandboxValue {
   return {
     ...chat,
+    send: (...args: Parameters<ChatSandboxValue["send"]>) =>
+      trackPromise(chat.send(...args), onError),
     publish: (...args: Parameters<ChatSandboxValue["publish"]>) =>
       trackPromise(chat.publish(...args), onError),
+    publishCustomMessage: (...args: Parameters<ChatSandboxValue["publishCustomMessage"]>) =>
+      trackPromise(chat.publishCustomMessage(...args), onError),
+    updateCustomMessage: (...args: Parameters<ChatSandboxValue["updateCustomMessage"]>) =>
+      trackPromise(chat.updateCustomMessage(...args), onError),
     callMethod: (...args: Parameters<ChatSandboxValue["callMethod"]>) =>
       trackPromise(chat.callMethod(...args), onError),
     callMethodResult: (...args: Parameters<ChatSandboxValue["callMethodResult"]>) =>
       trackPromise(chat.callMethodResult(...args), onError),
+    callMethodByHandle: (...args: Parameters<ChatSandboxValue["callMethodByHandle"]>) =>
+      trackPromise(chat.callMethodByHandle(...args), onError),
+    callMethodResultByHandle: (...args: Parameters<ChatSandboxValue["callMethodResultByHandle"]>) =>
+      trackPromise(chat.callMethodResultByHandle(...args), onError),
     rpc: {
       call: (...args: Parameters<ChatSandboxValue["rpc"]["call"]>) =>
         trackPromise(chat.rpc.call(...args), onError),

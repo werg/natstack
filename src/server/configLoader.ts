@@ -103,6 +103,7 @@ export const CONFIG_LOADER_JS = `(async () => {
   Object.assign(globalThis, {
     __natstackContextId: cfg.contextId,
     __natstackParentId: cfg.parentId,
+    __natstackParentEntityId: cfg.parentEntityId,
     __natstackInitialTheme: cfg.theme,
     __natstackGatewayConfig: gatewayConfig,
     __natstackSourceRepo: cfg.sourceRepo,

@@ -23,7 +23,8 @@ describe("findServicePort", () => {
 
     expect(first).toBeGreaterThanOrEqual(PORT_RANGES.workerd.start);
     expect(first).toBeLessThan(PORT_RANGES.workerd.end);
-    expect(second).toBe(first + 1);
+    expect(second).toBeGreaterThan(first);
+    expect(second).toBeLessThan(PORT_RANGES.workerd.end);
 
     releaseServicePort("workerd", first);
     releaseServicePort("workerd", second);

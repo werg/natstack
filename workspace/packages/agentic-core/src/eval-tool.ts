@@ -141,6 +141,9 @@ Use \`path\` instead of \`code\` to run a context-relative TypeScript/TSX file. 
                     }
                     parts.push({ type: "text", text: `[eval] Return value:\n${formatted}` });
                 }
+                if (result.panelJournalFooter) {
+                    parts.push({ type: "text", text: result.panelJournalFooter });
+                }
                 if (parts.length === 0) {
                     parts.push({ type: "text", text: "[eval] (no output)" });
                 }

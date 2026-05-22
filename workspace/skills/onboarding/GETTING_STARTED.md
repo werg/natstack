@@ -95,7 +95,8 @@ above the chat history before the first agent reply:
 - **Google Workspace** — set up Google provider integration
 - **GitHub** — set up GitHub provider integration
 - **Slack** — set up Slack provider integration
-- **Model key** — set up a model or API key provider
+- **Model key** — set up a model or API key provider credential
+- **Agent defaults** — change the default model, swap providers, or tune effort/approval/chattiness; load the `agent-tuning` skill
 - **Web search upgrade** — register a Tavily / Brave / Exa key so `web_search` graduates from DuckDuckGo (optional; see `web-research` skill)
 - **Custom API** — set up a custom OAuth or API provider
 - **Browser import** — import cookies, bookmarks, passwords, or local browser state
@@ -198,6 +199,13 @@ Same shape for `requestBraveApiKey()` and `requestExaApiKey()`. Provider
 preference is fixed: **Tavily > Brave > Exa > DuckDuckGo**; the first one
 with a stored credential wins.
 
+## Step 3.5: Tune The Agent
+
+Cold-start choices live in `workers/agent-worker/agent-config.ts`: edit and
+reload or resubscribe to change the default model/provider. Session knobs
+(effort, approval, chattiness) are agent method calls that can change during a
+conversation. Use the `agent-tuning` skill for either path.
+
 ## Step 4: Import Browser Data
 
 If the user wants to bring in their existing browser data (cookies for authentication, bookmarks, passwords), use the **browser-import** skill.
@@ -281,8 +289,8 @@ eval({ code: `
 
 Use the **paneldev** skill to scaffold and launch a panel. See the `paneldev` skill for the full workflow:
 - [WORKFLOW.md](../paneldev/WORKFLOW.md) — step-by-step development process
-- [PANEL_DEVELOPMENT.md](../paneldev/PANEL_DEVELOPMENT.md) — hooks, filesystem, templates
-- [PANEL_SYSTEM.md](../paneldev/PANEL_SYSTEM.md) — API reference
+- [WORKFLOW.md](../paneldev/WORKFLOW.md) — agent panel workflow
+- [PANEL_API.md](../paneldev/PANEL_API.md) — runtime panel API reference
 
 Quick version:
 

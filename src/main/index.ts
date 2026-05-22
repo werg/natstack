@@ -24,6 +24,29 @@ import {
 
 const log = createDevLogger("App");
 const APP_NAME = "NatStack";
+
+function formatUnknownError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.stack ?? error.message;
+  }
+  return String(error);
+}
+
+function logSuppressedErrorDialog(title: string, content: string): void {
+  console.error(`[App] Suppressed error dialog: ${title}\n${content}`);
+}
+
+// Electron's default main-process exception handling can show a blocking
+// "A JavaScript Error Occurred in the main process" alert. NatStack should log
+// these errors instead of interrupting the user with generic native dialogs.
+process.on("uncaughtException", (error) => {
+  console.error("[App] Uncaught exception in main process:", formatUnknownError(error));
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[App] Unhandled rejection in main process:", formatUnknownError(reason));
+});
+dialog.showErrorBox = logSuppressedErrorDialog;
+
 app.setName(APP_NAME);
 if (!app.requestSingleInstanceLock()) {
   app.exit(0);
@@ -34,6 +57,7 @@ installEarlyOpenUrlBuffer();
 enqueueFirstArgvLink(process.argv);
 
 import { PanelRegistry } from "@natstack/shared/panelRegistry";
+import { asPanelSlotId } from "@natstack/shared/panel/ids";
 import { PanelOrchestrator } from "./panelOrchestrator.js";
 import { PanelView } from "./panelView.js";
 import { BrowserHistoryRecorder } from "./browserHistoryRecorder.js";
@@ -502,7 +526,7 @@ async function handleCredentialSessionCaptureRequest(
       return { error: "internal browser is unavailable" };
     }
 
-    const panel = await panelOrchestrator.createBrowserPanel("shell", signInUrl.href, {
+    const panel = await panelOrchestrator.createBrowserUrlPanel("shell", signInUrl.href, {
       name: "Credential sign-in",
       focus: true,
     });
@@ -1400,27 +1424,29 @@ app.on("ready", async () => {
     });
 
     // Panel lifecycle
-    ipcMain.handle("natstack:closeSelf", async (event) => {
-      const callerId = resolveCallerId(event);
-      return assertPresent(panelOrchestrator).closePanel(callerId);
-    });
-    ipcMain.handle("natstack:closeChild", async (event, childId: string) => {
-      const callerId = resolveCallerId(event);
-      return assertPresent(panelOrchestrator).closeChild(callerId, childId);
+    ipcMain.handle("natstack:panel.close", async (_event, panelId: string) => {
+      return assertPresent(panelOrchestrator).closePanel(panelId);
     });
     ipcMain.handle("natstack:focusPanel", async (_event, panelId: string) => {
       assertPresent(panelOrchestrator).focusPanel(panelId);
     });
     ipcMain.handle(
-      "natstack:createBrowserPanel",
-      async (event, url: string, opts?: { name?: string; focus?: boolean }) => {
+      "natstack:panel.create",
+      async (
+        event,
+        source: string,
+        opts?: { name?: string; focus?: boolean; stateArgs?: Record<string, unknown> }
+      ) => {
         const callerId = resolveCallerId(event);
-        return assertPresent(panelOrchestrator).createBrowserPanel(callerId, url, opts);
+        return assertPresent(panelOrchestrator).createRuntimePanel(callerId, source, opts);
       }
     );
+    ipcMain.handle("natstack:panel.list", async (_event, parentId?: string | null) => {
+      return assertPresent(panelOrchestrator).listRuntimePanels(parentId);
+    });
     ipcMain.handle("natstack:bridge.getInfo", async (event) => {
       const callerId = resolveCallerId(event);
-      return shellCore?.panelManager.getInfo(callerId);
+      return shellCore?.panelManager.getInfo(asPanelSlotId(callerId));
     });
     ipcMain.handle(
       "natstack:bridge.setStateArgs",
@@ -1428,7 +1454,44 @@ app.on("ready", async () => {
         const callerId = resolveCallerId(event);
         return panelOrchestrator
           ? panelOrchestrator.handleSetStateArgs(callerId, updates)
-          : shellCore?.panelManager.updateStateArgs(callerId, updates);
+          : shellCore?.panelManager.updateStateArgs(asPanelSlotId(callerId), updates);
+      }
+    );
+    ipcMain.handle("natstack:panel.getStateArgs", async (_event, panelId: string) => {
+      return assertPresent(panelOrchestrator).getStateArgs(panelId);
+    });
+    ipcMain.handle(
+      "natstack:panel.setStateArgs",
+      async (_event, panelId: string, updates: Record<string, unknown>) => {
+        return assertPresent(panelOrchestrator).handleSetStateArgs(panelId, updates);
+      }
+    );
+    ipcMain.handle("natstack:panel.reload", async (_event, panelId: string) => {
+      return assertPresent(panelOrchestrator).reloadPanel(panelId);
+    });
+    ipcMain.handle("natstack:panel.snapshot", async (_event, panelId: string) => {
+      return assertPresent(panelOrchestrator).snapshot(panelId);
+    });
+    ipcMain.handle(
+      "natstack:panel.callAgent",
+      async (
+        _event,
+        panelId: string,
+        method: string,
+        args?: unknown[],
+        options?: { timeoutMs?: number }
+      ) => {
+        return assertPresent(panelOrchestrator).callAgent(panelId, method, args ?? [], options);
+      }
+    );
+    ipcMain.on(
+      "natstack:panel.callAgent.response",
+      (
+        _event,
+        requestId: number,
+        response: { ok: boolean; value?: unknown; error?: { code?: string; message?: string } }
+      ) => {
+        panelOrchestrator?.resolveAgentCallResponse(requestId, _event.sender.id, response);
       }
     );
     ipcMain.handle("natstack:getBootstrapConfig", async (event) => {
@@ -1601,7 +1664,7 @@ app.on("ready", async () => {
     }
     await Promise.all(cleanupPromises);
 
-    dialog.showErrorBox("Startup Failed", error instanceof Error ? error.message : String(error));
+    console.error("[App] Startup failed; exiting:", formatUnknownError(error));
     app.exit(1);
   }
 });
@@ -1649,7 +1712,7 @@ app.on("will-quit", (event) => {
 
       const cleanupThenClose = (async () => {
         if (panelRegistry && shellCore) {
-          const livePanelIds = panelRegistry.listPanels().map((p) => p.panelId);
+          const livePanelIds = panelRegistry.listPanels().map((p) => asPanelSlotId(p.panelId));
           await shellCore.panelManager
             .shutdownCleanup(livePanelIds)
             .catch((e: unknown) => console.error("[App] Failed to run shutdown cleanup:", e));
@@ -1706,7 +1769,7 @@ app.on("activate", () => {
   }
   const focusedPanelId = panelRegistry?.getFocusedPanelId();
   if (focusedPanelId) {
-    void shellCore?.panelManager.notifyFocused(focusedPanelId).catch(() => {});
+    void shellCore?.panelManager.notifyFocused(asPanelSlotId(focusedPanelId)).catch(() => {});
   }
 });
 

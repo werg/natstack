@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.74.1",
+    "@workspace/agentic-core": "workspace:*",
     "@workspace/runtime": "workspace:*",
     "@workspace/agentic-protocol": "workspace:*",
     "@natstack/harness": "workspace:*",

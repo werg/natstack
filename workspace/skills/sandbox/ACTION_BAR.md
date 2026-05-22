@@ -22,6 +22,20 @@ export default function ActionBar({ props = {}, chat, scope, scopes }) {
 }
 ```
 
+Action bars can call agent methods by handle without first resolving a
+participant id:
+
+```tsx
+await chat.callMethodByHandle("gmail", "checkNow", {});
+const compose = await chat.callMethodByHandle("@gmail", "compose", {
+  to: "a@example.com",
+});
+```
+
+`chat.callMethodByHandle()` returns the provider payload directly.
+`chat.callMethodResultByHandle()` returns the full invocation envelope when
+metadata such as attachments or content type is needed.
+
 Available imports are the same as `inline_ui`: `react`, `@radix-ui/themes`,
 `@radix-ui/react-icons`, and preloaded workspace/runtime modules already
 available in the panel. Static relative imports from the action-bar file are

@@ -1,9 +1,25 @@
 import type { PanelManager } from "@natstack/shared/shell/panelManager";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
+import { getCurrentSnapshot } from "@natstack/shared/panel/accessors";
 import type { MobileTransport } from "./mobileTransport";
+import { Platform } from "react-native";
+
 export interface BridgeAdapterCallbacks {
     navigateToPanel(panelId: string): void;
 }
+
+export interface MobilePanelRuntimeHost {
+    ensureLoaded(panelId: string): Promise<void>;
+    snapshot(panelId: string): Promise<unknown>;
+    callAgent(panelId: string, method: string, args: unknown[]): Promise<unknown>;
+    navigate(panelId: string, url: string): Promise<void>;
+    goBack(panelId: string): Promise<void>;
+    goForward(panelId: string): Promise<void>;
+    reload(panelId: string): Promise<void>;
+    stop(panelId: string): Promise<void>;
+    getCdpEndpoint(panelId: string): Promise<{ wsEndpoint: string; token?: string }>;
+}
+
 function chooseNextPanel(registry: PanelRegistry, closingPanelId: string): string | null {
     const parentId = registry.findParentId(closingPanelId);
     const parent = parentId ? registry.getPanel(parentId) : null;
@@ -21,7 +37,15 @@ export function createBridgeAdapter(deps: {
     transport: MobileTransport;
     callbacks: BridgeAdapterCallbacks;
 }) {
+    let runtimeHost: MobilePanelRuntimeHost | null = null;
+    const requireRuntimeHost = () => {
+        if (!runtimeHost) throw new Error("Mobile panel runtime host is not attached");
+        return runtimeHost;
+    };
     return {
+        setRuntimeHost(host: MobilePanelRuntimeHost | null): void {
+            runtimeHost = host;
+        },
         async handle(panelId: string, method: string, args: unknown[]): Promise<unknown> {
             switch (method) {
                 case "getPanelInit":
@@ -30,17 +54,29 @@ export function createBridgeAdapter(deps: {
                     return deps.panelManager.getInfo(panelId);
                 case "setStateArgs":
                     return deps.panelManager.updateStateArgs(panelId, (args[0] ?? {}) as Record<string, unknown>);
-                case "closeSelf": {
-                    const nextPanelId = chooseNextPanel(deps.registry, panelId);
-                    await deps.panelManager.close(panelId);
+                case "panel.close": {
+                    const targetId = args[0] as string;
+                    const nextPanelId = chooseNextPanel(deps.registry, targetId);
+                    await deps.panelManager.close(targetId);
                     if (nextPanelId)
                         deps.callbacks.navigateToPanel(nextPanelId);
                     return;
                 }
-                case "closeChild": {
-                    const childId = args[0] as string;
-                    await deps.panelManager.closeChild(panelId, childId);
-                    return;
+                case "panel.reload":
+                    return requireRuntimeHost().reload(args[0] as string);
+                case "panel.getStateArgs": {
+                    const targetId = args[0] as string;
+                    const panel = deps.registry.getPanel(targetId);
+                    return panel ? (getCurrentSnapshot(panel).stateArgs ?? {}) : {};
+                }
+                case "panel.setStateArgs": {
+                    const targetId = args[0] as string;
+                    const updates = (args[1] ?? {}) as Record<string, unknown>;
+                    return deps.panelManager.updateStateArgs(targetId, updates);
+                }
+                case "panel.list": {
+                    const parentId = args[0] as string | null | undefined;
+                    return parentId ? deps.registry.getChildren(parentId) : deps.registry.listPanels();
                 }
                 case "focusPanel": {
                     const targetId = args[0] as string;
@@ -48,20 +84,36 @@ export function createBridgeAdapter(deps: {
                     deps.callbacks.navigateToPanel(targetId);
                     return;
                 }
-                case "createBrowserPanel": {
-                    const [url, options] = args as [
+                case "panel.create": {
+                    const [source, options] = args as [
                         string,
                         {
                             name?: string;
                             focus?: boolean;
+                            stateArgs?: Record<string, unknown>;
                         }?
                     ];
-                    const created = await deps.panelManager.createBrowser(panelId, url, { name: options?.name });
+                    const isBrowser = /^https?:\/\//i.test(source);
+                    const created = isBrowser
+                        ? await deps.panelManager.createBrowser(panelId, source, { name: options?.name })
+                        : await deps.panelManager.create(source, {
+                            parentId: panelId,
+                            name: options?.name,
+                            stateArgs: options?.stateArgs,
+                        });
                     if (options?.focus !== false) {
                         deps.callbacks.navigateToPanel(created.panelId);
                     }
-                    return { id: created.panelId, title: created.title };
+                    return { id: created.panelId, title: created.title, kind: isBrowser ? "browser" : "workspace" };
                 }
+                case "panel.snapshot":
+                    return requireRuntimeHost().snapshot(args[0] as string);
+                case "panel.callAgent":
+                    return requireRuntimeHost().callAgent(
+                        args[0] as string,
+                        args[1] as string,
+                        (args[2] ?? []) as unknown[],
+                    );
                 case "openExternal": {
                     const [url, options] = args as [
                         string,
@@ -76,13 +128,19 @@ export function createBridgeAdapter(deps: {
                     return;
                 }
                 case "getCdpEndpoint":
-                    throw new Error("CDP is not available on mobile");
+                    if (Platform.OS === "android")
+                        return requireRuntimeHost().getCdpEndpoint(args[0] as string);
+                    throw new Error("CDP is not available on iOS WebView");
                 case "navigate":
+                    return requireRuntimeHost().navigate(args[0] as string, args[1] as string);
                 case "goBack":
+                    return requireRuntimeHost().goBack(args[0] as string);
                 case "goForward":
+                    return requireRuntimeHost().goForward(args[0] as string);
                 case "reload":
+                    return requireRuntimeHost().reload(args[0] as string);
                 case "stop":
-                    throw new Error(`Browser automation method "${method}" is not available on mobile`);
+                    return requireRuntimeHost().stop(args[0] as string);
                 case "openDevtools":
                     return;
                 case "openFolderDialog":

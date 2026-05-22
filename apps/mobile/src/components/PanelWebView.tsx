@@ -36,6 +36,9 @@ export interface PanelNavigationEvent {
 export interface PanelWebViewHandle {
   injectTheme: (mode: "light" | "dark") => void;
   dispatchHostEvent: (event: string, payload: unknown) => void;
+  callAgent: (method: string, args?: unknown[]) => Promise<unknown>;
+  snapshot: () => Promise<unknown>;
+  navigate: (url: string) => void;
   goBack: () => void;
   goForward: () => void;
   reload: () => void;
@@ -113,6 +116,7 @@ function buildBridgeBootstrapScript(panelInit: unknown, enableDebug: boolean): s
       ${RANDOM_UUID_POLYFILL_SCRIPT}
       const panelInit = ${serializeForInjection(panelInit)};
       const pending = new Map();
+      const agentHandlers = new Map();
       const listeners = new Map();
       let nextListenerId = 1;
       const enableDebug = ${enableDebug ? "true" : "false"};
@@ -250,6 +254,76 @@ function buildBridgeBootstrapScript(panelInit: unknown, enableDebug: boolean): s
         }
       }
 
+      function visibleText() {
+        return (document.body && document.body.innerText ? document.body.innerText : "")
+          .replace(/\\n{3,}/g, "\\n\\n")
+          .trim();
+      }
+
+      function describeElement(element, depth) {
+        const children = Array.prototype.slice.call(element.children || [], 0, 50)
+          .map(function (child) { return describeElement(child, depth + 1); });
+        return {
+          tag: String(element.tagName || "").toLowerCase(),
+          role: element.getAttribute ? element.getAttribute("role") || undefined : undefined,
+          label: element.getAttribute ? element.getAttribute("aria-label") || undefined : undefined,
+          text: children.length === 0 ? String(element.textContent || "").trim().slice(0, 160) : undefined,
+          children,
+          depth,
+        };
+      }
+
+      function callFallbackAgent(method, args) {
+        if (method === "_agent.snapshot") {
+          return {
+            kind: "synth",
+            text: visibleText(),
+            structure: document.body ? describeElement(document.body, 0) : null,
+          };
+        }
+        if (method === "_agent.tree") {
+          return document.body ? describeElement(document.body, 0) : null;
+        }
+        if (method === "_agent.routes") {
+          return {
+            href: location.href,
+            pathname: location.pathname,
+            search: location.search,
+            hash: location.hash,
+          };
+        }
+        if (method === "_agent.state") return {};
+        if (method === "_agent.setMode") {
+          const mode = args && args[0] === "fixture" ? "fixture" : "live";
+          globalThis.__natstackAgentMode = mode;
+          globalThis.dispatchEvent(new CustomEvent("natstack:agentModeChanged", { detail: mode }));
+          return { mode };
+        }
+        throw new Error("No mobile agent handler registered for " + method);
+      }
+
+      async function invokeAgent(requestId, method, args) {
+        try {
+          const handler = agentHandlers.get(method);
+          const result = handler
+            ? await handler.apply(null, Array.isArray(args) ? args : [])
+            : await callFallbackAgent(method, Array.isArray(args) ? args : []);
+          window.ReactNativeWebView.postMessage(JSON.stringify({
+            __natstackAgentResponse: true,
+            id: requestId,
+            ok: true,
+            result,
+          }));
+        } catch (error) {
+          window.ReactNativeWebView.postMessage(JSON.stringify({
+            __natstackAgentResponse: true,
+            id: requestId,
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+          }));
+        }
+      }
+
       function callHost(method, args) {
         return new Promise(function(resolve, reject) {
           const id = "bridge-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
@@ -275,11 +349,22 @@ function buildBridgeBootstrapScript(panelInit: unknown, enableDebug: boolean): s
         getPanelInit: () => Promise.resolve(panelInit),
         getBootstrapConfig: () => Promise.resolve(panelInit),
         getInfo: () => callHost("getInfo", []),
-        setStateArgs: (updates) => callHost("setStateArgs", [updates]),
-        closeSelf: () => callHost("closeSelf", []),
-        closeChild: (childId) => callHost("closeChild", [childId]),
         focusPanel: (panelId) => callHost("focusPanel", [panelId]),
-        createBrowserPanel: (url, opts) => callHost("createBrowserPanel", [url, opts]),
+        panel: {
+          create: (source, opts) => callHost("panel.create", [source, opts]),
+          list: (parentId) => callHost("panel.list", [parentId]),
+          close: (id) => callHost("panel.close", [id]),
+          reload: (id) => callHost("panel.reload", [id]),
+          getStateArgs: (id) => callHost("panel.getStateArgs", [id]),
+          setStateArgs: (id, updates) => callHost("panel.setStateArgs", [id, updates]),
+          snapshot: (id) => callHost("panel.snapshot", [id]),
+          callAgent: (id, method, args, opts) => callHost("panel.callAgent", [id, method, args, opts]),
+          registerAgentHandler: (method, handler) => {
+            if (typeof method !== "string" || typeof handler !== "function") return () => undefined;
+            agentHandlers.set(method, handler);
+            return () => agentHandlers.delete(method);
+          },
+        },
         openDevtools: () => callHost("openDevtools", []),
         openFolderDialog: (opts) => callHost("openFolderDialog", [opts]),
         openExternal: (url, opts) => callHost("openExternal", [url, opts]),
@@ -302,6 +387,7 @@ function buildBridgeBootstrapScript(panelInit: unknown, enableDebug: boolean): s
       globalThis.__natstackMobileHost = {
         resolvePending,
         dispatchEventToListeners,
+        invokeAgent,
       };
       globalThis.__natstackShell = shell;
       globalThis.__natstackElectron = shell;
@@ -338,12 +424,16 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
     // managed panel page on our shell host. A redirect inside the same
     // WebView (e.g. via `handleShouldStartLoad` chaining or a meta-refresh)
     // would otherwise let an attacker-controlled origin invoke privileged
-    // bridge methods (createBrowserPanel, openExternal, auth.startOAuthLogin,
+    // bridge methods (panel.create, openExternal, auth.startOAuthLogin,
     // etc.). Initialised to the configured panel URL.
     const currentUrlRef = useRef<string>(url);
     const loadStartedAtRef = useRef<number>(Date.now());
     const lastLoadProgressAtRef = useRef<number>(Date.now());
     const lastLoadProgressRef = useRef(0);
+    const pendingAgentCallsRef = useRef(new Map<
+      string,
+      { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
+    >());
 
     const logDiagnostic = useCallback((message: string, extra?: unknown) => {
       if (!diagnosticsEnabled) return;
@@ -361,19 +451,46 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
       );
     }, [managed]);
 
+    const callAgent = useCallback((method: string, args: unknown[] = []) => {
+      if (!managed) {
+        return Promise.reject(new Error(`Panel ${panelId} does not expose the NatStack mobile agent bridge`));
+      }
+      const requestId = `agent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      return new Promise<unknown>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pendingAgentCallsRef.current.delete(requestId);
+          reject(new Error(`Timed out waiting for mobile agent response from ${panelId}`));
+        }, 10_000);
+        pendingAgentCallsRef.current.set(requestId, { resolve, reject, timer });
+        webViewRef.current?.injectJavaScript(
+          `window.__natstackMobileHost&&window.__natstackMobileHost.invokeAgent(${JSON.stringify(requestId)}, ${JSON.stringify(method)}, ${serializeForInjection(args)}); true;`,
+        );
+      });
+    }, [managed, panelId]);
+
     useImperativeHandle(ref, () => ({
       injectTheme: (mode: "light" | "dark") => {
         dispatchHostEvent("runtime:theme", { theme: mode });
       },
       dispatchHostEvent,
+      callAgent,
+      snapshot: () => callAgent("_agent.snapshot", []),
+      navigate: (nextUrl: string) => {
+        webViewRef.current?.injectJavaScript(`location.assign(${JSON.stringify(nextUrl)}); true;`);
+      },
       goBack: () => webViewRef.current?.goBack(),
       goForward: () => webViewRef.current?.goForward(),
       reload: () => webViewRef.current?.reload(),
       stop: () => webViewRef.current?.stopLoading(),
-    }), [dispatchHostEvent]);
+    }), [callAgent, dispatchHostEvent]);
 
     useEffect(() => {
       return () => {
+        for (const pending of pendingAgentCallsRef.current.values()) {
+          clearTimeout(pending.timer);
+          pending.reject(new Error(`Panel ${panelId} unmounted before mobile agent response`));
+        }
+        pendingAgentCallsRef.current.clear();
         onUnmount?.(panelId);
       };
     }, [panelId, onUnmount]);
@@ -453,7 +570,7 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
         }
 
         if (managed && /^https?:\/\//i.test(requestUrl)) {
-          void onBridgeCall?.(panelId, "createBrowserPanel", [requestUrl, { focus: true }]);
+          void onBridgeCall?.(panelId, "panel.create", [requestUrl, { focus: true }]);
           return false;
         }
 
@@ -483,7 +600,7 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
     const handleMessage = useCallback(async (event: WebViewMessageEvent) => {
       if (!managed) return;
 
-      // Origin check: bridge calls (createBrowserPanel, openExternal,
+      // Origin check: bridge calls (panel.create, openExternal,
       // auth.startOAuthLogin, setStateArgs, ...) are only accepted when the
       // WebView is currently displaying a page on the managed shell host.
       // If the page redirected itself to an attacker origin, drop the
@@ -504,15 +621,29 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
           __natstackBridge?: boolean;
           __natstackDebug?: boolean;
           __natstackDomSnapshot?: boolean;
+          __natstackAgentResponse?: boolean;
           __natstackTitle?: boolean;
           id?: string;
           method?: string;
           args?: unknown[];
+          ok?: boolean;
+          result?: unknown;
+          error?: string;
           level?: "log" | "info" | "warn" | "error";
           text?: string;
           childCount?: number;
           title?: string;
         };
+        if (message.__natstackAgentResponse) {
+          if (!message.id) return;
+          const pending = pendingAgentCallsRef.current.get(message.id);
+          if (!pending) return;
+          pendingAgentCallsRef.current.delete(message.id);
+          clearTimeout(pending.timer);
+          if (message.ok) pending.resolve(message.result);
+          else pending.reject(new Error(message.error || "Mobile agent call failed"));
+          return;
+        }
         if (message.__natstackDebug) {
           if (!diagnosticsEnabled && !__DEV__) return;
           const level = message.level ?? "log";
@@ -714,7 +845,7 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
             const { targetUrl } = syntheticEvent.nativeEvent;
             if (emitManagedNavigation(targetUrl)) return;
             if (managed && /^https?:\/\//i.test(targetUrl)) {
-              void onBridgeCall?.(panelId, "createBrowserPanel", [targetUrl, { focus: true }]);
+              void onBridgeCall?.(panelId, "panel.create", [targetUrl, { focus: true }]);
               return;
             }
             if (/^https?:\/\//i.test(targetUrl)) {
@@ -722,6 +853,7 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
             }
           }}
           javaScriptEnabled
+          webviewDebuggingEnabled={Platform.OS === "android"}
           domStorageEnabled
           mixedContentMode="never"
           allowsInlineMediaPlayback

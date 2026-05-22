@@ -116,7 +116,7 @@ PAT; the helper delegates that to the privileged shell prompt.
 For every GitHub settings link, offer both:
 
 - **Internal** opens a NatStack browser panel with
-  `createBrowserPanel(url, { focus: true })`. Prefer this when the user wants
+  `openPanel(url, { focus: true })`. Prefer this when the user wants
   to keep setup inside the workspace or may want the agent to inspect page
   state.
 - **External** opens the system browser through approval-gated

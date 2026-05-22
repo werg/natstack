@@ -19,7 +19,13 @@ export function StashDropConfirmDialog({
 }: StashDropConfirmDialogProps) {
   return (
     <AlertDialog.Root open={open} onOpenChange={onOpenChange}>
-      <AlertDialog.Content maxWidth="450px">
+      <AlertDialog.Content
+        style={{
+          width: "min(450px, calc(100vw - 24px))",
+          maxHeight: "calc(100dvh - 24px)",
+          overflow: "auto",
+        }}
+      >
         <AlertDialog.Title>Drop Stash</AlertDialog.Title>
         <AlertDialog.Description size="2">
           <Text>
@@ -36,7 +42,7 @@ export function StashDropConfirmDialog({
           ) : null}
         </AlertDialog.Description>
 
-        <Flex gap="3" mt="4" justify="end">
+        <Flex gap="3" mt="4" justify="end" wrap="wrap">
           <AlertDialog.Cancel>
             <Button variant="soft" color="gray" disabled={loading}>
               Cancel

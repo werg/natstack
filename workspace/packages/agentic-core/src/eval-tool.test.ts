@@ -16,8 +16,13 @@ function createEvalTool() {
     getChatSandboxValue: () => ({
       publish: async () => ({}),
       send: async () => ({}),
+      publishCustomMessage: async () => ({ messageId: "custom-1", pubsubId: 1 }),
+      updateCustomMessage: async () => 2,
       callMethod: async () => ({}),
       callMethodResult: async () => ({ content: {} }),
+      participantByHandle: () => null,
+      callMethodByHandle: async () => ({}),
+      callMethodResultByHandle: async () => ({ content: {} }),
       contextId: "ctx-test",
       channelId: "channel-test",
       rpc: { call: async () => ({}) },

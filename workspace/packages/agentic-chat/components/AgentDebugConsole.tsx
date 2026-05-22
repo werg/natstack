@@ -28,7 +28,8 @@ function DebugEventLine({ event }: { event: AgentDebugPayload & { ts: number } }
     const reasonText = event.reason ? ` (${event.reason})` : "";
     return (
       <Text as="div" size="1" color={color} style={{ fontFamily: "monospace" }}>
-        [{time}] {event.event.toUpperCase()}{reasonText}
+        [{time}] {event.event.toUpperCase()}
+        {reasonText}
       </Text>
     );
   }
@@ -36,7 +37,12 @@ function DebugEventLine({ event }: { event: AgentDebugPayload & { ts: number } }
   if (event.debugType === "spawn-error") {
     const errorText = event.error ?? event.buildError?.message ?? "Unknown error";
     return (
-      <Text as="div" size="1" color="red" style={{ fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+      <Text
+        as="div"
+        size="1"
+        color="red"
+        style={{ fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+      >
         [{time}] SPAWN ERROR: {errorText}
       </Text>
     );
@@ -109,14 +115,26 @@ export function AgentDebugConsole({
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      <Dialog.Content style={{ maxWidth: 700, maxHeight: "80dvh" }}>
+      <Dialog.Content
+        style={{
+          width: "min(700px, calc(100vw - 24px))",
+          maxHeight: "min(80dvh, 720px)",
+          overflow: "hidden",
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
         <Dialog.Title>Debug Console: @{agentHandle}</Dialog.Title>
         <Dialog.Description size="2" color="gray" mb="3">
           Agent logs, stdout/stderr output, and lifecycle events
         </Dialog.Description>
 
         <ScrollArea
-          style={{ height: 400, background: "var(--gray-2)", borderRadius: "var(--radius-2)" }}
+          style={{
+            height: "min(400px, 55dvh)",
+            background: "var(--gray-2)",
+            borderRadius: "var(--radius-2)",
+          }}
         >
           <Box p="2">
             {agentEvents.length === 0 ? (
@@ -124,9 +142,7 @@ export function AgentDebugConsole({
                 No debug output yet
               </Text>
             ) : (
-              agentEvents.map((event, i) => (
-                <DebugEventLine key={i} event={event} />
-              ))
+              agentEvents.map((event, i) => <DebugEventLine key={i} event={event} />)
             )}
             <div ref={bottomRef} />
           </Box>

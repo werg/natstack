@@ -100,6 +100,11 @@ export class CdpServer {
   private debuggerAttached = new Map<string, boolean>();
   // browserId -> debugger attach in progress (prevents race condition)
   private debuggerAttaching = new Map<string, Promise<void>>();
+  // browserId -> ordered debugger command tail. Electron exposes one debugger
+  // session per webContents, so all CDP commands for a target must be
+  // serialized regardless of whether they came from Playwright traffic,
+  // screenshots, or host-side snapshots.
+  private debuggerCommandQueues = new Map<string, Promise<unknown>>();
 
   private viewManager: ViewManager | null = null;
 
@@ -173,7 +178,9 @@ export class CdpServer {
     }
 
     // Detach debugger if attached
-    this.debuggerAttached.delete(browserId);
+    this.detachDebuggerIfIdle(browserId, this.getBrowserWebContents(browserId));
+    this.debuggerAttaching.delete(browserId);
+    this.debuggerCommandQueues.delete(browserId);
 
     log.verbose(` Unregistered browser ${browserId}`);
   }
@@ -247,6 +254,26 @@ export class CdpServer {
       return null;
     }
     return this.viewManager.getWebContents(browserId);
+  }
+
+  async getAccessibilityTree(panelId: string): Promise<unknown[]> {
+    const contents = this.getBrowserWebContents(panelId);
+    if (!contents || contents.isDestroyed()) {
+      throw new Error(`Panel webContents not found: ${panelId}`);
+    }
+    await this.ensureDebuggerAttached(panelId, contents);
+    try {
+      const result = (await this.sendDebuggerCommand(
+        panelId,
+        contents,
+        "Accessibility.getFullAXTree"
+      )) as {
+        nodes?: unknown[];
+      };
+      return result.nodes ?? [];
+    } finally {
+      this.detachDebuggerIfIdle(panelId, contents);
+    }
   }
 
   /**
@@ -334,7 +361,8 @@ export class CdpServer {
 
         // Intercept Page.captureScreenshot - temporarily show hidden views for capture
         if (msg.method === "Page.captureScreenshot") {
-          const capture = () => contents.debugger.sendCommand(msg.method, msg.params, sessionId);
+          const capture = () =>
+            this.sendDebuggerCommand(browserId, contents, msg.method, msg.params, sessionId);
           if (this.viewManager) {
             const vm = this.viewManager;
             // withViewVisible returns null if view not found, so fallback to direct capture
@@ -345,7 +373,13 @@ export class CdpServer {
         } else {
           // Forward other CDP commands directly
           // Pass sessionId to support flattened CDP sessions (iframes, targets, etc.)
-          result = await contents.debugger.sendCommand(msg.method, msg.params, sessionId);
+          result = await this.sendDebuggerCommand(
+            browserId,
+            contents,
+            msg.method,
+            msg.params,
+            sessionId
+          );
         }
 
         // Include sessionId in response so client can route to correct session
@@ -469,6 +503,50 @@ export class CdpServer {
     await attachPromise;
   }
 
+  private sendDebuggerCommand(
+    browserId: string,
+    contents: Electron.WebContents,
+    method: string,
+    params?: Record<string, unknown>,
+    sessionId?: string
+  ): Promise<unknown> {
+    const previous = this.debuggerCommandQueues.get(browserId) ?? Promise.resolve();
+    const run = previous
+      .catch(() => undefined)
+      .then(() => {
+        if (contents.isDestroyed()) {
+          throw new Error(`Browser webContents destroyed: ${browserId}`);
+        }
+        return contents.debugger.sendCommand(method, params, sessionId);
+      });
+    const tail = run.finally(() => {
+      if (this.debuggerCommandQueues.get(browserId) === tail) {
+        this.debuggerCommandQueues.delete(browserId);
+      }
+    });
+    this.debuggerCommandQueues.set(browserId, tail);
+    return run;
+  }
+
+  private detachDebuggerIfIdle(
+    browserId: string,
+    contents: Electron.WebContents | null | undefined
+  ): void {
+    if (!this.debuggerAttached.get(browserId)) return;
+    if (this.activeConnections.get(browserId)?.size) return;
+    try {
+      if (contents && !contents.isDestroyed()) {
+        contents.debugger.detach();
+      }
+    } catch {
+      // Already detached.
+    } finally {
+      this.debuggerAttached.delete(browserId);
+      this.debuggerAttaching.delete(browserId);
+      this.debuggerCommandQueues.delete(browserId);
+    }
+  }
+
   async stop(): Promise<void> {
     // Close all active connections
     for (const [browserId, connections] of this.activeConnections) {
@@ -495,6 +573,8 @@ export class CdpServer {
       }
     }
     this.debuggerAttached.clear();
+    this.debuggerAttaching.clear();
+    this.debuggerCommandQueues.clear();
 
     if (this.wss) {
       this.wss.close();

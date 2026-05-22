@@ -9,7 +9,12 @@
  * `AgentMessage` is re-exported from `index.ts` for downstream consumers.
  */
 
-import type { MethodDefinition } from "@workspace/pubsub";
+import type {
+  ChatParticipantMetadata,
+  CustomMessageDisplayMode,
+  MethodDefinition,
+  Participant,
+} from "@workspace/pubsub";
 import type { RecoveryCoordinator } from "@natstack/shared/shell/recoveryCoordinator";
 import type { ScopesApi } from "@workspace/eval";
 import type { SandboxOptions, SandboxResult } from "@workspace/eval";
@@ -51,10 +56,25 @@ export interface AgenticChatActions {
 export interface ChatSandboxValue {
   publish: (eventType: string, payload: unknown, options?: { idempotencyKey?: string }) => Promise<unknown>;
   send: (content: string, options?: { idempotencyKey?: string }) => Promise<unknown>;
+  publishCustomMessage: (
+    input: { typeId: string; initialState?: unknown; displayMode?: CustomMessageDisplayMode },
+    options?: { idempotencyKey?: string }
+  ) => Promise<{ messageId: string; pubsubId: number | undefined }>;
+  updateCustomMessage: (
+    messageId: string,
+    update: unknown,
+    options?: { idempotencyKey?: string }
+  ) => Promise<number | undefined>;
   /** Call a participant method and resolve to the provider's result payload. */
   callMethod: (participantId: string, method: string, args: unknown) => Promise<unknown>;
   /** Call a participant method and resolve to the full invocation result envelope. */
   callMethodResult: (participantId: string, method: string, args: unknown) => Promise<ChatMethodResult>;
+  /** Resolve a participant by handle, accepting either "handle" or "@handle". */
+  participantByHandle: (handle: string) => Participant<ChatParticipantMetadata> | null;
+  /** Call a participant method by handle and resolve to the provider's result payload. */
+  callMethodByHandle: (handle: string, method: string, args: unknown) => Promise<unknown>;
+  /** Call a participant method by handle and resolve to the full invocation result envelope. */
+  callMethodResultByHandle: (handle: string, method: string, args: unknown) => Promise<ChatMethodResult>;
   contextId: string;
   channelId: string | null;
   rpc: { call: (target: string, method: string, args: unknown[]) => Promise<unknown> };

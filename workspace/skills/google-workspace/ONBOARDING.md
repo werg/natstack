@@ -62,7 +62,7 @@ Do not say that Google verification is required for local development. It is
 not required while under Google's unverified-app user cap. Do say that users may
 see Google's unverified-app warning and can continue through **Advanced**.
 
-Use `createBrowserPanel(url, { focus: true })` for **Internal** link buttons
+Use `openPanel(url, { focus: true })` for **Internal** link buttons
 and `openExternal(url)` for **External** link buttons. If opening an OAuth
 authorize URL, pass `{ expectedRedirectUri }` to `openExternal` so the host
 validates the callback binding.
@@ -97,6 +97,9 @@ return verification;
 If verification fails, consult [TROUBLESHOOTING.md](TROUBLESHOOTING.md). Do not
 continue onboarding until the live API call is valid.
 
+If the user is configuring Gmail, continue with
+`workspace/skills/gmail/ONBOARDING.md` once verification succeeds.
+
 ## Completion Criteria
 
 Onboarding is complete only when:
@@ -105,3 +108,7 @@ Onboarding is complete only when:
 - At least one `google-workspace` connection exists.
 - `verifyGoogleConnection(connectionId)` returns `{ valid: true }`.
 - The user understands the app should remain published to Production.
+
+For Gmail-specific onboarding, the next completion gate is the Gmail skill:
+custom message renderers registered, action bar loaded, and a `gmail` agent
+participant present in the channel.

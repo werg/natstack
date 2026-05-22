@@ -1,0 +1,29 @@
+{
+  "name": "@workspace-workers/gmail-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "entry": "index.ts",
+    "durable": {
+      "classes": [{ "className": "GmailAgentWorker" }]
+    },
+    "exposeModules": [
+      "@earendil-works/pi-ai",
+      "@workspace/runtime",
+      "@workspace/pubsub",
+      "@workspace/gmail",
+      "zod"
+    ]
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "^0.74.1",
+    "@workspace/runtime": "workspace:*",
+    "@workspace/agentic-do": "workspace:*",
+    "@workspace/agentic-protocol": "workspace:*",
+    "@workspace/gmail": "workspace:*",
+    "@workspace/pubsub": "workspace:*",
+    "@natstack/harness": "workspace:*",
+    "zod": "^3.24.0"
+  }
+}

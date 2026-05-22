@@ -55,6 +55,7 @@ function createOrchestrator(
         : {};
       return { ...current, ...updates };
     }),
+    onStateArgsChanged: vi.fn(() => () => {}),
     notifyFocused: vi.fn(async () => {}),
     getCurrentEntityId: vi.fn(async (panelId: string) => `panel:nav-${panelId}`),
     loadTree: vi.fn(async () => ({

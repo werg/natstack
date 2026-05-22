@@ -15,7 +15,7 @@ UI with deep links instead of writing a long plain-text checklist.
 1. Prefer a `feedback_custom` workflow UI for setup flows with multiple steps.
 2. Put provider-console links directly beside the step that uses them.
 3. Offer both **Internal** and **External** opens when a URL is useful:
-   - Internal: `createBrowserPanel(url, { focus: true })`
+   - Internal: `openPanel(url, { focus: true })`
    - External: `openExternal(url)`
 4. Use `openExternal(authorizeUrl, { expectedRedirectUri })` for OAuth
    authorize URLs so the host validates the callback binding.
@@ -195,7 +195,7 @@ workspace repo is missing.
 import { useState } from "react";
 import { Button, Checkbox, Flex, Text } from "@radix-ui/themes";
 import { GlobeIcon, OpenInNewWindowIcon } from "@radix-ui/react-icons";
-import { createBrowserPanel, openExternal } from "@workspace/runtime";
+import { openPanel, openExternal } from "@workspace/runtime";
 
 export default function ProviderSetup({ onSubmit, onCancel }) {
   const [done, setDone] = useState(false);
@@ -210,7 +210,7 @@ export default function ProviderSetup({ onSubmit, onCancel }) {
           <Text size="2">Create an OAuth app and copy the client ID into NatStack.</Text>
         </Flex>
         <Flex gap="2">
-          <Button size="1" variant="soft" onClick={() => createBrowserPanel(consoleUrl, { focus: true })}>
+          <Button size="1" variant="soft" onClick={() => openPanel(consoleUrl, { focus: true })}>
             <GlobeIcon /> Internal
           </Button>
           <Button size="1" variant="soft" onClick={() => openExternal(consoleUrl)}>

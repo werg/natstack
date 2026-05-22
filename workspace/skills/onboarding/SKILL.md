@@ -23,6 +23,7 @@ Guide new users through understanding NatStack and getting their workspace set u
 |-------|-------------|
 | `browser-import` | Importing cookies, passwords, bookmarks, history from existing browsers |
 | `api-integrations` | Connecting third-party APIs (Gmail, GitHub, Slack, etc.) via OAuth |
+| `agent-tuning` | Changing the default model/provider; tuning effort, approval, chattiness for a running chat agent |
 | `web-research` | Optional Tavily / Brave / Exa API key setup so `web_search` upgrades past DuckDuckGo |
 | `sandbox` | Learning the eval tool, inline UI, runtime APIs |
 | `paneldev` | Building and launching panels, workers, full development workflow |

@@ -6,6 +6,7 @@ import { PanelRegistry } from "../panelRegistry.js";
 import { getCurrentSnapshot } from "../panel/accessors.js";
 import { PanelManager } from "./panelManager.js";
 import { canonicalEntityId } from "../runtime/entitySpec.js";
+import type { PanelEntityId, PanelSlotId } from "../panel/ids.js";
 import type { RuntimeEntityCreateSpec, RuntimeEntityHandle } from "../runtime/entitySpec.js";
 import type {
   RuntimeClient,
@@ -23,17 +24,17 @@ import type {
  */
 function createWorkspaceMemory() {
   interface MemSlot {
-    slot_id: string;
-    parent_slot_id: string | null;
+    slot_id: PanelSlotId;
+    parent_slot_id: PanelSlotId | null;
     position_id: string;
     created_at: number;
     closed_at: number | null;
-    current_entity_id: string | null;
+    current_entity_id: PanelEntityId | null;
     current_entry_key: string | null;
   }
   interface MemHistoryEntry {
     entry_key: string;
-    entity_id: string;
+    entity_id: PanelEntityId;
     source: string;
     context_id: string;
     state_args: string | null;
@@ -48,8 +49,8 @@ function createWorkspaceMemory() {
     key: string;
   }
 
-  const slots = new Map<string, MemSlot>();
-  const history = new Map<string, MemHistoryEntry[]>();
+  const slots = new Map<PanelSlotId, MemSlot>();
+  const history = new Map<PanelSlotId, MemHistoryEntry[]>();
   const entities = new Map<string, MemEntity>();
 
   const retired: string[] = [];
@@ -244,7 +245,7 @@ function makeManagerDeps(workspacePath: string) {
       runtime: mem.runtime,
       workspacePath,
       serverInfo: { gatewayConfig: { serverUrl: "http://127.0.0.1:42773" } },
-      grantConnection: vi.fn(async (panelId: string) => ({ token: `rpc-${panelId}` })),
+      grantConnection: vi.fn(async (panelId: PanelEntityId) => ({ token: `rpc-${panelId}` })),
     } as const,
   };
 }
@@ -315,8 +316,12 @@ describe("PanelManager", () => {
     });
     expect(init.stateArgs).toEqual({ greeting: "hello" });
 
+    const onStateArgsChanged = vi.fn();
+    const unsubscribe = manager.onStateArgsChanged(created.panelId, onStateArgsChanged);
+
     const nextStateArgs = await manager.updateStateArgs(created.panelId, { greeting: "updated" });
     expect(nextStateArgs).toEqual({ greeting: "updated" });
+    expect(onStateArgsChanged).toHaveBeenCalledWith({ greeting: "updated" });
     expect(mem.state.entities.size).toBe(1);
     expect(mem.state.slots.get(created.panelId)?.current_entity_id).toBe(currentEntityId);
     expect(mem.state.history.get(created.panelId)?.[0]?.state_args).toBe(
@@ -328,9 +333,14 @@ describe("PanelManager", () => {
 
     const clearedStateArgs = await manager.updateStateArgs(created.panelId, { greeting: null });
     expect(clearedStateArgs).toEqual({});
+    expect(onStateArgsChanged).toHaveBeenCalledWith({});
     expect(mem.state.entities.size).toBe(1);
     expect(mem.state.slots.get(created.panelId)?.current_entity_id).toBe(currentEntityId);
     expect(getCurrentSnapshot(registry.getPanel(created.panelId)!).stateArgs).toEqual({});
+
+    unsubscribe();
+    await manager.updateStateArgs(created.panelId, { greeting: "ignored" });
+    expect(onStateArgsChanged).toHaveBeenCalledTimes(2);
 
     await manager.close(created.panelId);
     expect(registry.getPanel(created.panelId)).toBeUndefined();
@@ -371,6 +381,33 @@ describe("PanelManager", () => {
       serverUrl: "https://natstack.example.com",
       token: `rpc-${currentEntityId}`,
     });
+  });
+
+  it("includes both parent slot and parent entity ids in child bootstrap config", async () => {
+    const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-panel-manager-"));
+    tempDirs.push(workspacePath);
+
+    for (const name of ["root", "child"]) {
+      const panelDir = path.join(workspacePath, "panels", name);
+      fs.mkdirSync(panelDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(panelDir, "package.json"),
+        JSON.stringify({ name, natstack: { title: `${name} Panel` } })
+      );
+    }
+
+    const { mem, deps } = makeManagerDeps(workspacePath);
+    const manager = new PanelManager({ registry: new PanelRegistry({}), ...deps });
+
+    const root = await manager.create("panels/root", { isRoot: true, addAsRoot: true });
+    const child = await manager.create("panels/child", { parentId: root.panelId });
+    const init = (await manager.getPanelInit(child.panelId)) as {
+      parentId: string | null;
+      parentEntityId: string | null;
+    };
+
+    expect(init.parentId).toBe(root.panelId);
+    expect(init.parentEntityId).toBe(mem.state.slots.get(root.panelId)?.current_entity_id);
   });
 
   it("pushes navigation into history and traverses it via back/forward", async () => {

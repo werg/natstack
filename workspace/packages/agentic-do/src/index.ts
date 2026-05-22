@@ -8,6 +8,8 @@
 
 export { AgentWorkerBase } from "./agent-worker-base.js";
 export type { ModelCredentialSetupProps, ModelCredentialSummary } from "./agent-worker-base.js";
+export { TrajectoryVesselBase } from "./trajectory-vessel-base.js";
+export type { CustomMessageReducer, RespondPolicy } from "./trajectory-vessel-base.js";
 export { DOIdentity } from "./identity.js";
 export { SubscriptionManager } from "./subscription-manager.js";
 export { ChannelClient } from "./channel-client.js";

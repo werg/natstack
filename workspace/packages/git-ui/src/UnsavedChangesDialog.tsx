@@ -18,13 +18,19 @@ export function UnsavedChangesDialog({
 }: UnsavedChangesDialogProps) {
   return (
     <AlertDialog.Root open={open} onOpenChange={onOpenChange}>
-      <AlertDialog.Content maxWidth="450px">
+      <AlertDialog.Content
+        style={{
+          width: "min(450px, calc(100vw - 24px))",
+          maxHeight: "calc(100dvh - 24px)",
+          overflow: "auto",
+        }}
+      >
         <AlertDialog.Title>Unsaved Changes</AlertDialog.Title>
         <AlertDialog.Description size="2">
           <Text>You have unsaved changes. What would you like to do?</Text>
         </AlertDialog.Description>
 
-        <Flex gap="3" mt="4" justify="end">
+        <Flex gap="3" mt="4" justify="end" wrap="wrap">
           <AlertDialog.Cancel>
             <Button variant="soft" color="gray">
               Keep Editing

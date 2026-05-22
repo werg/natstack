@@ -41,6 +41,7 @@ export interface PanelListItem {
   panelId: string;
   title: string;
   source: string;
+  kind: "workspace" | "browser";
   parentId: string | null;
   contextId: string;
 }
@@ -163,7 +164,24 @@ export class PanelRegistry implements PanelRelationshipProvider {
       panelId: panel.id,
       title: panel.title,
       source: getPanelSource(panel),
+      kind: getPanelSource(panel).startsWith("browser:") ? "browser" : "workspace",
       parentId: this.findParentId(panel.id),
+      contextId: getPanelContextId(panel),
+    }));
+  }
+
+  /**
+   * List direct children for a panel with the same shape as listPanels().
+   */
+  getChildren(parentId: string): PanelListItem[] {
+    const parent = this.panels.get(parentId);
+    if (!parent) return [];
+    return parent.children.map((panel) => ({
+      panelId: panel.id,
+      title: panel.title,
+      source: getPanelSource(panel),
+      kind: getPanelSource(panel).startsWith("browser:") ? "browser" : "workspace",
+      parentId,
       contextId: getPanelContextId(panel),
     }));
   }

@@ -43,7 +43,7 @@ interface PanelOrchestratorLike {
     options?: { name?: string; contextId?: string; focus?: boolean; env?: Record<string, string> },
     stateArgs?: Record<string, unknown>
   ): Promise<{ id: string; title: string }>;
-  createBrowserPanel(
+  createBrowserUrlPanel(
     callerId: string,
     url: string,
     options?: { name?: string; focus?: boolean }
@@ -440,7 +440,7 @@ export class PanelView implements PanelViewLike {
       }
       if (/^https?:\/\//i.test(url)) {
         void this.panelOrchestrator
-          .createBrowserPanel(panelId, url, { focus: true })
+          .createBrowserUrlPanel(panelId, url, { focus: true })
           .then(({ id }) => {
             this.sendPanelEvent?.(panelId, "runtime:child-created", { childId: id, url });
           })
@@ -455,7 +455,7 @@ export class PanelView implements PanelViewLike {
         if (/^https?:\/\//i.test(url)) {
           event.preventDefault();
           void this.panelOrchestrator
-            .createBrowserPanel(panelId, url, { focus: true })
+            .createBrowserUrlPanel(panelId, url, { focus: true })
             .then(({ id }) => {
               this.sendPanelEvent?.(panelId, "runtime:child-created", { childId: id, url });
             })

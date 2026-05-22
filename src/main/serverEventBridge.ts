@@ -63,10 +63,10 @@ export function createServerEventBridge(deps: ServerEventBridgeDeps) {
       const { url, parentPanelId } = payload as { url?: unknown; parentPanelId?: unknown };
       if (typeof url === "string" && typeof parentPanelId === "string") {
         void panelOrchestrator
-          ?.createBrowserPanel(parentPanelId, url, { focus: true })
+          ?.createBrowserUrlPanel(parentPanelId, url, { focus: true })
           .catch((err: unknown) => {
             deps.warn(
-              `[browserPanel] createBrowserPanel failed: ${
+              `[browserPanel] createBrowserUrlPanel failed: ${
                 err instanceof Error ? err.message : String(err)
               }`
             );

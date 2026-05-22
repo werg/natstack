@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { applyStateArgsSnapshot } from "@natstack/shared/panel/applyStateArgsSnapshot";
+import type { PanelSlotId } from "@natstack/shared/panel/ids";
 
 // Global injected by preload via --natstack-state-args command line arg
 declare global {
@@ -8,18 +9,19 @@ declare global {
   }
 }
 
-// Internal bridge function set up by runtime initialization
-// This allows setStateArgs to call main process without direct dependency on runtime
-let _setStateArgsBridge: ((updates: Record<string, unknown>) => Promise<Record<string, unknown>>) | null = null;
+let selfSlotId: PanelSlotId | null = null;
+let rpcCall: (<T>(service: string, method: string, args: unknown[]) => Promise<T>) | null = null;
 
-/**
- * Internal: Set up the bridge for setStateArgs.
- * Called by createRuntime during initialization.
- */
-export function _initStateArgsBridge(
-  bridge: (updates: Record<string, unknown>) => Promise<Record<string, unknown>>
+function getShell() {
+  return (globalThis as any).__natstackShell ?? (globalThis as any).__natstackElectron;
+}
+
+export function _initStateArgsRuntime(
+  slotId: PanelSlotId,
+  call: <T>(service: string, method: string, args: unknown[]) => Promise<T>
 ): void {
-  _setStateArgsBridge = bridge;
+  selfSlotId = slotId;
+  rpcCall = call;
 }
 
 /**
@@ -59,9 +61,43 @@ export function useStateArgs<T = Record<string, unknown>>(): T {
  * 5. Updates the local runtime snapshot and triggers useStateArgs re-render
  */
 export async function setStateArgs(updates: Record<string, unknown>): Promise<void> {
-  if (!_setStateArgsBridge) {
+  if (!selfSlotId) {
     throw new Error("setStateArgs called before runtime initialization");
   }
-  const nextStateArgs = await _setStateArgsBridge(updates);
+  const shell = getShell();
+  if (shell?.setStateArgs) {
+    await shell.setStateArgs(updates);
+    return;
+  }
+  await setStateArgsForPanel(selfSlotId, updates);
+}
+
+export async function setStateArgsForPanel(
+  panelId: string,
+  updates: Record<string, unknown>
+): Promise<void> {
+  await setStateArgsForPanelRaw(panelId, updates);
+}
+
+async function setStateArgsForPanelRaw(
+  panelId: string,
+  updates: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const shell = getShell();
+  if (shell?.panel?.setStateArgs) {
+    return shell.panel.setStateArgs(panelId, updates) as Promise<Record<string, unknown>>;
+  }
+  throw new Error("setStateArgs requires a host shell bridge");
+}
+
+export async function getStateArgsForPanel<T = Record<string, unknown>>(
+  panelId: string
+): Promise<T> {
+  const shell = getShell();
+  if (shell?.panel?.getStateArgs) return shell.panel.getStateArgs(panelId) as Promise<T>;
+  throw new Error("getStateArgsForPanel requires a host shell bridge");
+}
+
+export function _applyStateArgsFromHost(nextStateArgs: Record<string, unknown>): void {
   applyStateArgsSnapshot(nextStateArgs);
 }

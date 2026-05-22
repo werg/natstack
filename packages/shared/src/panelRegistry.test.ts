@@ -84,6 +84,36 @@ describe("PanelRegistry", () => {
     });
   });
 
+  describe("listPanels/getChildren", () => {
+    it("includes kind and hydrates direct children", () => {
+      const root = makePanel("root");
+      const child = makePanel("child", {
+        snapshot: {
+          source: "browser:https://example.com",
+          contextId: "ctx-child",
+          options: {},
+        },
+      });
+      registry.addPanel(root, null, { addAsRoot: true });
+      registry.addPanel(child, "root");
+
+      expect(registry.listPanels()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ panelId: "root", kind: "workspace", parentId: null }),
+          expect.objectContaining({ panelId: "child", kind: "browser", parentId: "root" }),
+        ])
+      );
+      expect(registry.getChildren("root")).toEqual([
+        expect.objectContaining({
+          panelId: "child",
+          source: "browser:https://example.com",
+          kind: "browser",
+          parentId: "root",
+        }),
+      ]);
+    });
+  });
+
   describe("repopulate", () => {
     it("preserves runtime artifacts and navigation for unchanged panels", () => {
       registry.addPanel(

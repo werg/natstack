@@ -6,7 +6,6 @@
   "description": "High-level API clients for OAuth-protected services (Gmail, Calendar, etc.). Designed for agent eval use.",
   "exports": {
     ".": "./src/index.ts",
-    "./gmail": "./src/gmail.ts",
     "./calendar": "./src/calendar.ts",
     "./github": "./src/github.ts",
     "./providers": "./src/providers.ts",

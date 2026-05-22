@@ -9,6 +9,7 @@ import { useMemo, useCallback, useState, useEffect, useRef } from "react";
 import { Flex, Button, Tooltip, Callout } from "@radix-ui/themes";
 import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
 import { GitStatusView, useGitStatus, type GitNotification } from "@workspace/git-ui";
+import { useIsMobile } from "@workspace/react/responsive";
 import type { GitClient } from "@natstack/git";
 import type { ThemeAppearance } from "@workspace/runtime";
 import { createServiceGitClient, createServiceFs } from "@workspace/about-shared/serviceAdapters";
@@ -23,11 +24,9 @@ export interface DirtyRepoViewProps {
 }
 
 export function DirtyRepoView({ repoPath, onRetryBuild, onNotify, theme }: DirtyRepoViewProps) {
+  const isMobile = useIsMobile();
   // Service-backed GitClient and fs (routed through main process RPC)
-  const gitClient = useMemo(
-    () => createServiceGitClient() as unknown as GitClient,
-    []
-  );
+  const gitClient = useMemo(() => createServiceGitClient() as unknown as GitClient, []);
   const serviceFs = useMemo(() => createServiceFs(repoPath), [repoPath]);
   const [isRetrying, setIsRetrying] = useState(false);
   const hasAutoRetried = useRef(false);
@@ -72,9 +71,12 @@ export function DirtyRepoView({ repoPath, onRetryBuild, onNotify, theme }: Dirty
   }, [isClean, loading]);
 
   // Forward notifications to parent if handler provided, otherwise silently ignore
-  const handleNotify = useCallback((notification: GitNotification) => {
-    onNotify?.(notification);
-  }, [onNotify]);
+  const handleNotify = useCallback(
+    (notification: GitNotification) => {
+      onNotify?.(notification);
+    },
+    [onNotify]
+  );
 
   // AI-driven commit message generation was removed in the Phase 8 migration
   // to the chat agent path. The chat agent now owns all AI surfaces.
@@ -82,22 +84,26 @@ export function DirtyRepoView({ repoPath, onRetryBuild, onNotify, theme }: Dirty
   return (
     <Flex direction="column" style={{ height: "100%", minHeight: 0 }}>
       {/* Build-specific header with Continue button */}
-      <Flex align="center" justify="between" gap="3" p="2">
+      <Flex
+        align={isMobile ? "stretch" : "center"}
+        justify="between"
+        direction={isMobile ? "column" : "row"}
+        gap="3"
+        p="2"
+      >
         <Callout.Root color="orange" size="1" style={{ flex: 1 }}>
           <Callout.Icon>
             <ExclamationTriangleIcon />
           </Callout.Icon>
-          <Callout.Text>
-            Uncommitted changes must be resolved before building
-          </Callout.Text>
+          <Callout.Text>Uncommitted changes must be resolved before building</Callout.Text>
         </Callout.Root>
         <Tooltip
           content={
             !initialized
               ? "Loading git status..."
               : isClean
-              ? "Proceed with build"
-              : `Commit or discard all changes first (${stagedFiles.length} staged, ${unstagedFiles.length} unstaged)`
+                ? "Proceed with build"
+                : `Commit or discard all changes first (${stagedFiles.length} staged, ${unstagedFiles.length} unstaged)`
           }
         >
           <Button
