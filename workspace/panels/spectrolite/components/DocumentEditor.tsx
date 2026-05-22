@@ -32,8 +32,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { promises as fs } from "fs";
-import { Box, Button, Flex, SegmentedControl, Text } from "@radix-ui/themes";
-import { LightningBoltIcon, ReloadIcon, EyeOpenIcon, Pencil1Icon } from "@radix-ui/react-icons";
+import { Box, Button, Flex, Text } from "@radix-ui/themes";
+import { LightningBoltIcon, ReloadIcon } from "@radix-ui/react-icons";
 import {
   MDXEditor,
   type MDXEditorMethods,
@@ -58,13 +58,14 @@ import {
   BlockTypeSelect,
 } from "@mdxeditor/editor";
 import "@mdxeditor/editor/style.css";
-import { PreviewPane } from "./PreviewPane";
 import { MentionAutocomplete, type MentionCandidate } from "./MentionAutocomplete";
 import { knownJsxDescriptors } from "../mdx/runtime";
 import { LiveJsxEditor } from "../mdx/LiveJsxEditor";
 import { wikilinksFromJsx, wikilinksToJsx } from "../mdx/wikilink";
 import { DocStateContext, type DocStateContextValue, useDocState } from "../mdx/docState";
 import { parseFrontmatter, replaceFrontmatterState } from "../mdx/frontmatter";
+import { compileDocModule, exportNamesFromSource, type CompiledDocModule } from "../mdx/docModule";
+import { DepsContext, runtimeNamespace } from "../mdx/runtimeNamespace";
 import { joinSafe, parentDir } from "../state/safePath";
 
 export interface DocumentEditorProps {
@@ -90,6 +91,12 @@ const POLL_MS = 600;
  * frame.
  */
 const DOC_STATE_MERGE_MS = 600;
+/**
+ * Debounce window for the whole-doc compile. Recomputed only often
+ * enough to feel responsive (~half a second after the user pauses);
+ * coalesces sustained typing into one compile.
+ */
+const DOC_MODULE_COMPILE_MS = 500;
 
 export function DocumentEditor({
   repoRoot,
@@ -104,12 +111,21 @@ export function DocumentEditor({
 }: DocumentEditorProps) {
   const [markdown, setMarkdown] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [mode, setMode] = useState<"edit" | "preview">("edit");
   const editorRef = useRef<MDXEditorMethods | null>(null);
   const lastDiskRef = useRef<string | null>(null);
   const inFlightWriteRef = useRef(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [contentEditableEl, setContentEditableEl] = useState<HTMLElement | null>(null);
+
+  // Doc-level compile output. `exportNames` is the list of export
+  // identifiers visible to inline JSX nodes (so they can use `<Counter />`
+  // when the same doc defines `export const Counter = …`). `version` is
+  // bumped after each successful compile so LiveJsxEditor instances
+  // recompile and pick up updated export bodies.
+  const [docExportNames, setDocExportNames] = useState<ReadonlyArray<string>>([]);
+  const [docExportsVersion, setDocExportsVersion] = useState(0);
+  const [docCompileError, setDocCompileError] = useState<string | null>(null);
+  const docCompileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // In-memory state map mirrors the doc's frontmatter `state:` block.
   // Mutations from `useDocState` setters land here immediately so that
@@ -198,9 +214,69 @@ export function DocumentEditor({
     return () => clearInterval(handle);
   }, [fullPath, relPath, hasUnflushedChanges, onReload]);
 
+  // Whole-doc compile pipeline. Each meaningful markdown change kicks a
+  // debounced re-compile. We keep last-good export bodies installed on
+  // globalThis even when the current source has a syntax error so
+  // existing inline JSX nodes don't briefly lose their components while
+  // the user is mid-typing a new export.
+  const recompileDoc = useCallback(async (mdxSource: string) => {
+    let module: CompiledDocModule | null;
+    try {
+      module = await compileDocModule(mdxSource);
+    } catch {
+      module = null;
+    }
+    if (!module) {
+      setDocCompileError("Doc compile failed (existing components keep last-known render).");
+      return;
+    }
+    setDocCompileError(null);
+    const g = globalThis as Record<string, unknown>;
+    g["__spectroliteDocExports__"] = module.exports;
+    setDocExportNames((prev) => {
+      const next = [...module.exportNames];
+      const prevKey = prev.join(",");
+      const nextKey = next.join(",");
+      return prevKey === nextKey ? prev : next;
+    });
+    setDocExportsVersion((v) => v + 1);
+  }, []);
+
+  const scheduleDocCompile = useCallback((mdxSource: string) => {
+    if (docCompileTimerRef.current) clearTimeout(docCompileTimerRef.current);
+    // Fast path: docs with no `export` declarations can't bring new
+    // names into scope, so skip the compile entirely.
+    if (!/(^|\n)\s*export\s/.test(mdxSource)) {
+      if (docExportNames.length > 0) {
+        (globalThis as Record<string, unknown>)["__spectroliteDocExports__"] = {};
+        setDocExportNames([]);
+        setDocExportsVersion((v) => v + 1);
+        setDocCompileError(null);
+      }
+      return;
+    }
+    docCompileTimerRef.current = setTimeout(() => {
+      docCompileTimerRef.current = null;
+      void recompileDoc(mdxSource);
+    }, DOC_MODULE_COMPILE_MS);
+  }, [docExportNames.length, recompileDoc]);
+
+  // Initial compile on file open + on disk reload (markdown changes
+  // through state, regardless of source).
+  useEffect(() => {
+    if (markdown === null) return;
+    scheduleDocCompile(markdown);
+  }, [markdown, scheduleDocCompile]);
+
+  // Drop the doc-compile timer on unmount.
+  useEffect(() => () => {
+    if (docCompileTimerRef.current) clearTimeout(docCompileTimerRef.current);
+  }, []);
+
   const handleChange = useCallback((next: string) => {
     onChange(relPath, next);
-  }, [onChange, relPath]);
+    scheduleDocCompile(next);
+  }, [onChange, relPath, scheduleDocCompile]);
 
   const flushNow = useCallback(() => {
     onFlushClick(relPath);
@@ -266,23 +342,24 @@ export function DocumentEditor({
     setState: handleDocStateChange,
   }), [docState, handleDocStateChange]);
 
-  // Expose useDocState to sandbox-compiled JSX (LiveJsxEditor wrapper and
-  // PreviewPane's evaluated MDX) via a globalThis backdoor. The sandbox
-  // can't `import` a panel-local module, so we publish the hook
-  // alongside the panel's other globals. The hook itself uses React
-  // context, so it picks up the active <DocStateContext.Provider> that
-  // we render below.
+  // Expose useDocState + the runtime namespace to sandbox-compiled JSX
+  // (LiveJsxEditor wrapper and runtime.Eval blocks) via globalThis
+  // backdoors. The sandbox can't `import` panel-local modules, so we
+  // publish the hooks/components alongside the panel's other globals.
+  // The hooks use React context, so they pick up the active providers
+  // that we render below.
   useEffect(() => {
-    (globalThis as Record<string, unknown>)["__spectroliteUseDocState__"] = useDocState;
+    const g = globalThis as Record<string, unknown>;
+    g["__spectroliteUseDocState__"] = useDocState;
+    g["__spectroliteRuntime__"] = runtimeNamespace;
   }, []);
+
+  // (Whole-doc compile pipeline lives above, near the top of the
+  // component, so handleChange and other hooks can reference it.)
 
   // Locate the contenteditable root for the mention autocomplete keylistener
   useEffect(() => {
     if (!containerRef.current) return;
-    if (mode !== "edit") {
-      setContentEditableEl(null);
-      return;
-    }
     const find = () => {
       const el = containerRef.current?.querySelector<HTMLElement>("[contenteditable=\"true\"]");
       if (el && el !== contentEditableEl) setContentEditableEl(el);
@@ -291,15 +368,22 @@ export function DocumentEditor({
     const observer = new MutationObserver(find);
     observer.observe(containerRef.current, { childList: true, subtree: true });
     return () => observer.disconnect();
-  }, [mode, contentEditableEl]);
+  }, [contentEditableEl]);
 
   const descriptors = useMemo(() => {
-    // Bind the current dependency map into the Editor so live-compiled JSX
-    // can resolve frontmatter-declared packages.
+    // Bind the current dependency map + doc exports into each per-node
+    // Editor so live-compiled JSX can resolve frontmatter-declared
+    // packages AND references like `<Counter />` where Counter is an
+    // `export const Counter = …` declared earlier in the same doc.
     const EditorWithDeps = (jsxProps: Parameters<typeof LiveJsxEditor>[0]) =>
-      <LiveJsxEditor {...jsxProps} dependencies={dependencies} />;
+      <LiveJsxEditor
+        {...jsxProps}
+        dependencies={dependencies}
+        docExportNames={docExportNames}
+        docExportsVersion={docExportsVersion}
+      />;
     return knownJsxDescriptors().map((d) => ({ ...d, Editor: EditorWithDeps }));
-  }, [dependencies]);
+  }, [dependencies, docExportNames, docExportsVersion]);
 
   const plugins = useMemo(() => [
     headingsPlugin(),
@@ -384,26 +468,14 @@ export function DocumentEditor({
 
   return (
     <DocStateContext.Provider value={docStateContextValue}>
-      <Flex direction="column" className={`spectrolite-mdx ${theme === "dark" ? "dark-theme" : ""}`} style={{ height: "100%" }}>
-        <Flex
-          align="center"
-          justify="end"
-          gap="2"
-          px="2"
-          py="1"
-          style={{ borderBottom: "1px solid var(--gray-5)", flexShrink: 0 }}
-        >
-          <SegmentedControl.Root size="1" value={mode} onValueChange={(v) => setMode(v as "edit" | "preview")}>
-            <SegmentedControl.Item value="edit">
-              <Flex align="center" gap="1"><Pencil1Icon /> Edit</Flex>
-            </SegmentedControl.Item>
-            <SegmentedControl.Item value="preview">
-              <Flex align="center" gap="1"><EyeOpenIcon /> Preview</Flex>
-            </SegmentedControl.Item>
-          </SegmentedControl.Root>
-        </Flex>
-        <Box ref={containerRef} style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative" }}>
-          {mode === "edit" ? (
+      <DepsContext.Provider value={dependencies}>
+        <Flex direction="column" className={`spectrolite-mdx ${theme === "dark" ? "dark-theme" : ""}`} style={{ height: "100%" }}>
+          {docCompileError ? (
+            <Flex align="center" gap="2" px="2" py="1" style={{ background: "var(--amber-3)", borderBottom: "1px solid var(--amber-6)", flexShrink: 0 }}>
+              <Text size="1" color="amber">{docCompileError}</Text>
+            </Flex>
+          ) : null}
+          <Box ref={containerRef} style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative" }}>
             <Box style={{ height: "100%", overflow: "auto" }}>
               <MDXEditor
                 ref={editorRef}
@@ -418,11 +490,9 @@ export function DocumentEditor({
                 onAccept={handleMentionAccept}
               />
             </Box>
-          ) : (
-            <PreviewPane markdown={markdown} dependencies={dependencies} />
-          )}
-        </Box>
-      </Flex>
+          </Box>
+        </Flex>
+      </DepsContext.Provider>
     </DocStateContext.Provider>
   );
 }

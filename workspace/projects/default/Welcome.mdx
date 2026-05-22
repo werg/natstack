@@ -13,8 +13,10 @@ ready to edit out of the box.
 
 ## What you can do
 
-1. **Edit prose** in this rich-text view; switch to **Preview** (top-right of
-   the editor) to render the full MDX with components.
+1. **Edit prose** in this rich-text view — formatting renders inline,
+   JSX components render live, and `[[wikilinks]]` resolve as you type.
+   Use the **diff/source toggle** in the toolbar when you want to drop
+   into raw MDX.
 2. **@-mention the resident agent** by typing `@` — it stays quiet by
    default and only speaks when it has something to say. Mention it in a
    sentence describing what you want changed, then click **Flush** (or
@@ -50,7 +52,7 @@ export const Greeter = () => {
 <Greeter />
 ```
 
-Switch to **Preview** mode to try it. The current value lives in this
+The button renders live in the editor. The current value lives in this
 doc's frontmatter under `state.greetingClicks`.
 
 ## Declaring dependencies

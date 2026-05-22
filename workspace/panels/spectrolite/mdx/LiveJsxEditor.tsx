@@ -12,11 +12,23 @@
  * Works for the wildcard `name: "*"` descriptor too: we read the actual
  * tag name from `mdastNode.name` rather than `descriptor.name`.
  *
- * The compiled module imports every Radix/component from
- * `@workspace/agentic-chat` so all of the panel's MDX surface is available
- * unconditionally. `WikiLink` is provided as a local shim (clickable
- * navigation is handled by Preview mode, which uses the real WikiLink
- * component with its context).
+ * Doc-level exports + the `runtime` namespace are pulled in via
+ * globalThis backdoors set by `DocumentEditor`:
+ *
+ *   - `globalThis.__spectroliteUseDocState__` — useDocState hook
+ *   - `globalThis.__spectroliteRuntime__`     — `runtime.Eval`, etc.
+ *   - `globalThis.__spectroliteDocExports__`  — named exports from the
+ *      whole-doc compile, so `<Counter />` (defined as
+ *      `export const Counter = …` elsewhere in the same doc) resolves.
+ *
+ * The per-node compile depends on:
+ *   - the serialized JSX source for this node
+ *   - the list of currently-known doc export NAMES (so the wrapper
+ *     destructures the right identifiers — body changes don't require
+ *     recompiling the wrapper string but do require re-rendering)
+ *   - the `docExportsVersion` counter from `DocumentEditor`, bumped
+ *     after each successful doc compile so the rendered `<Component/>`
+ *     picks up updated export bodies via React reference identity.
  *
  * On compile failure we surface a small error card pointing the user to
  * the diff/source toggle so they can edit the JSX by hand.
@@ -46,7 +58,19 @@ interface MdastJsxLike {
   name?: string | null;
 }
 
-function wrapForSandbox(source: string): string {
+/**
+ * Build the wrapper source. `docExportNames` is the list of currently-
+ * known doc-level exports; we destructure them from the panel's
+ * globalThis stash so references like `<Counter />` resolve. Names
+ * collide with built-in imports are filtered out so users can't shadow
+ * the agentic-chat surface (e.g. `<Card>`).
+ */
+function wrapForSandbox(source: string, docExportNames: ReadonlyArray<string>): string {
+  const builtinSet = new Set(importedNames);
+  const destructured = docExportNames.filter((n) => !builtinSet.has(n) && /^[A-Za-z_$][\w$]*$/.test(n));
+  const destructureLine = destructured.length > 0
+    ? `const { ${destructured.join(", ")} } = (globalThis.__spectroliteDocExports__ ?? {});`
+    : "";
   return `
 import * as React from "react";
 import { ${importList} } from "@workspace/agentic-chat";
@@ -63,15 +87,23 @@ function WikiLink({ target, children }) {
   );
 }
 
-// Spectrolite publishes \`useDocState\` on globalThis (see
-// DocumentEditor.tsx) so the sandbox-compiled component can persist
-// state into the active doc's frontmatter without an import we can't
-// resolve. Falls back to plain React.useState if the panel hasn't
-// mounted (e.g. server-side preview).
+// useDocState — Spectrolite publishes the hook on globalThis (see
+// DocumentEditor) so sandboxed components can persist state into the
+// doc's frontmatter without an import the sandbox can't resolve.
 const useDocState = (globalThis.__spectroliteUseDocState__) ||
   function useDocStateFallback(_key, initial) {
     return React.useState(initial);
   };
+
+// runtime — the panel's MDX runtime namespace (Eval, useDocState…),
+// shared with the whole-doc compile so <runtime.Eval/> works the same
+// way in both Edit and (former) Preview surfaces.
+const runtime = globalThis.__spectroliteRuntime__ || { useDocState };
+
+// Doc-level exports: destructured by name so a node like <Counter/>
+// (where Counter is an export const declared elsewhere in the same
+// doc) resolves. Updated by DocumentEditor on every doc-compile.
+${destructureLine}
 
 export default function LiveJsx() {
   return (<>
@@ -84,13 +116,22 @@ export default function LiveJsx() {
 export interface LiveJsxEditorOwnProps {
   /** Frontmatter-declared dependencies, merged into compileComponent imports. */
   dependencies?: Record<string, string>;
+  /** Names of doc-level exports currently in scope. */
+  docExportNames?: ReadonlyArray<string>;
+  /** Bumped by DocumentEditor whenever the doc compile succeeds so we
+   *  recompile this node and pick up updated export bodies. */
+  docExportsVersion?: number;
 }
 
 export function LiveJsxEditor(props: JsxEditorProps & LiveJsxEditorOwnProps) {
-  const { mdastNode, descriptor, dependencies } = props;
+  const { mdastNode, descriptor, dependencies, docExportNames, docExportsVersion } = props;
   const tagName = (mdastNode as unknown as MdastJsxLike).name ?? descriptor.name ?? "Fragment";
   const source = useMemo(() => nodeToMdxSource(mdastNode), [mdastNode]);
-  const wrapped = useMemo(() => wrapForSandbox(source), [source]);
+  const namesKey = useMemo(() => (docExportNames ?? []).join(","), [docExportNames]);
+  const wrapped = useMemo(
+    () => wrapForSandbox(source, docExportNames ?? []),
+    [source, namesKey],
+  );
   const [Component, setComponent] = useState<ComponentType | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -99,9 +140,6 @@ export function LiveJsxEditor(props: JsxEditorProps & LiveJsxEditorOwnProps) {
     setError(null);
     setComponent(null);
     if (!source.trim()) {
-      // Empty serialization — nothing to render. This happens e.g. when
-      // MDXEditor first inserts an empty JSX node before the user adds
-      // attributes.
       return () => { cancelled = true; };
     }
     void compileComponent(wrapped, {
@@ -117,7 +155,7 @@ export function LiveJsxEditor(props: JsxEditorProps & LiveJsxEditorOwnProps) {
       }
     });
     return () => { cancelled = true; };
-  }, [wrapped, tagName, source, dependencies]);
+  }, [wrapped, tagName, source, dependencies, docExportsVersion]);
 
   if (error) {
     return (
@@ -147,10 +185,9 @@ export function LiveJsxEditor(props: JsxEditorProps & LiveJsxEditorOwnProps) {
 
   return (
     <Box
+      className="spectrolite-jsx-block"
       style={{
         position: "relative",
-        outline: "1px dashed var(--gray-5)",
-        outlineOffset: 4,
         borderRadius: "var(--radius-2)",
       }}
     >
