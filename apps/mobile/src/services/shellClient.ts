@@ -20,7 +20,7 @@ import {
   type PanelAddressOptions,
   type PanelRepoState,
 } from "@natstack/shared/panelChrome";
-import { createBridgeAdapter } from "./bridgeAdapter";
+import { createBridgeAdapter, type MobilePanelRuntimeHost } from "./bridgeAdapter";
 import { MobileTransport, type ConnectionStatus } from "./mobileTransport";
 import { createMobileShellCore } from "../shellCore/createMobileShellCore";
 import type { Credentials } from "./auth";
@@ -170,7 +170,7 @@ class MobilePanels {
     }
     return { id: result.panelId, title: result.title };
   }
-  async createBrowserPanel(
+  async createBrowserUrlPanel(
     parentId: string | null,
     url: string,
     options?: {
@@ -358,6 +358,9 @@ class MobilePanels {
   applyRuntimeLeaseEvent(event: PanelRuntimeLeaseChangedEvent): void {
     this.registry.applyRuntimeLeaseChanged(event);
     this.deps.onTreeUpdated?.(this.getTree());
+  }
+  setRuntimeHost(host: MobilePanelRuntimeHost | null): void {
+    this.bridgeAdapterInstance?.setRuntimeHost(host);
   }
   async syncRuntimeLeases(): Promise<void> {
     const snapshot = await this.deps.transport.call<RuntimeLeaseSnapshot>(

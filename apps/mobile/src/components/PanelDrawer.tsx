@@ -142,7 +142,7 @@ export function PanelDrawer({ onSelectPanel }: PanelDrawerProps) {
       }
       case "duplicate":
         if (isBrowserPanelSource(snapshot.source)) {
-          void shellClient.panels.createBrowserPanel(null, snapshot.source.slice("browser:".length), { focus: true })
+          void shellClient.panels.createBrowserUrlPanel(null, snapshot.source.slice("browser:".length), { focus: true })
             .then((result) => onSelectPanel(result.id));
         } else {
           void shellClient.panels.createRootPanel(snapshot.source)

@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback, useMemo, useRef, useState } from "react";
+import React, { useEffect, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -35,6 +35,8 @@ import {
 import { parseHostConfig, getExternalHost } from "../services/panelUrls";
 import { materializeMobilePanel } from "../services/panelMaterializer";
 import { handleExternalOpen, type ExternalOpenPayload } from "../services/oauthLoopback";
+import type { MobilePanelRuntimeHost } from "../services/bridgeAdapter";
+import { getAndroidWebViewCdpEndpoint } from "../services/androidWebViewCdp";
 import {
   buildPanelChromeState,
   buildAddressAutocompleteItems,
@@ -438,6 +440,69 @@ export function MainScreen() {
         setLoadingPanelId((current) => (current === activePanelId ? null : current));
       });
   }, [activePanel, activePanelId, hostConfig, pushToast, shellClient]);
+  const waitForWebViewHandle = useCallback(
+    async (panelId: string): Promise<PanelWebViewHandle> => {
+      const existing = webViewRefsMap.current.get(panelId);
+      if (existing) return existing;
+      activatePanel(panelId);
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < 10_000) {
+        const handle = webViewRefsMap.current.get(panelId);
+        if (handle) return handle;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      throw new Error(`Panel ${panelId} is not loaded in a mobile WebView`);
+    },
+    [activatePanel]
+  );
+  const mobileRuntimeHost = useMemo<MobilePanelRuntimeHost>(
+    () => ({
+      ensureLoaded: async (panelId) => {
+        await waitForWebViewHandle(panelId);
+      },
+      snapshot: async (panelId) => {
+        const handle = await waitForWebViewHandle(panelId);
+        return handle.snapshot();
+      },
+      callAgent: async (panelId, method, args) => {
+        const handle = await waitForWebViewHandle(panelId);
+        return handle.callAgent(method, args);
+      },
+      navigate: async (panelId, nextUrl) => {
+        const handle = await waitForWebViewHandle(panelId);
+        handle.navigate(nextUrl);
+      },
+      goBack: async (panelId) => {
+        const handle = await waitForWebViewHandle(panelId);
+        handle.goBack();
+      },
+      goForward: async (panelId) => {
+        const handle = await waitForWebViewHandle(panelId);
+        handle.goForward();
+      },
+      reload: async (panelId) => {
+        const handle = await waitForWebViewHandle(panelId);
+        handle.reload();
+      },
+      stop: async (panelId) => {
+        const handle = await waitForWebViewHandle(panelId);
+        handle.stop();
+      },
+      getCdpEndpoint: async (panelId) => {
+        await waitForWebViewHandle(panelId);
+        const entry = webViewStackRef.current.find((item) => item.panelId === panelId);
+        const nav = webViewNavigation[panelId];
+        return getAndroidWebViewCdpEndpoint(
+          [nav?.url, entry?.url].filter((value): value is string => Boolean(value))
+        );
+      },
+    }),
+    [waitForWebViewHandle, webViewNavigation]
+  );
+  useLayoutEffect(() => {
+    shellClient?.panels.setRuntimeHost(mobileRuntimeHost);
+    return () => shellClient?.panels.setRuntimeHost(null);
+  }, [mobileRuntimeHost, shellClient]);
   useEffect(() => {
     if (!shellClient) return;
     refreshTree();
@@ -699,7 +764,7 @@ export function MainScreen() {
                 : snapshot.source.slice("browser:".length);
             if (url)
               void shellClient.panels
-                .createBrowserPanel(null, url, { focus: true })
+                .createBrowserUrlPanel(null, url, { focus: true })
                 .then((result) => activatePanel(result.id));
           } else {
             void shellClient.panels
@@ -791,7 +856,7 @@ export function MainScreen() {
           void Linking.openURL(action.url);
         } else if (mode === "child") {
           void shellClient.panels
-            .createBrowserPanel(activePanelId, action.url, { focus: true })
+            .createBrowserUrlPanel(activePanelId, action.url, { focus: true })
             .catch((error: unknown) =>
               pushToast({
                 title: "Navigation failed",
@@ -801,7 +866,7 @@ export function MainScreen() {
             );
         } else if (mode === "root") {
           void shellClient.panels
-            .createBrowserPanel(null, action.url, { focus: true })
+            .createBrowserUrlPanel(null, action.url, { focus: true })
             .then((result) => activatePanel(result.id))
             .catch((error: unknown) =>
               pushToast({
@@ -827,7 +892,7 @@ export function MainScreen() {
             }));
           } else {
             void shellClient.panels
-              .createBrowserPanel(activePanelId, action.url, { focus: true })
+              .createBrowserUrlPanel(activePanelId, action.url, { focus: true })
               .catch((error: unknown) =>
                 pushToast({
                   title: "Navigation failed",
@@ -864,7 +929,7 @@ export function MainScreen() {
           }
         }
         void shellClient.panels
-          .createBrowserPanel(mode === "child" ? activePanelId : null, url, { focus: true })
+          .createBrowserUrlPanel(mode === "child" ? activePanelId : null, url, { focus: true })
           .then((result) => activatePanel(result.id))
           .catch((error: unknown) =>
             pushToast({

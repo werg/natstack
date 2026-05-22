@@ -20,6 +20,23 @@ Provision Firebase before testing notification actions:
 Full architecture, security notes, decision semantics, and native test steps
 are in [docs/approvals.md](../../docs/approvals.md).
 
+## Panel Automation
+
+Mobile panels use the WebView bridge for supported automation. Workspace panel
+handles can call `snapshot()`, `tree()`, `state()`, `routes()`, and `setMode()`;
+the mobile host loads the target WebView when needed and dispatches to the
+panel's registered `_agent.*` handlers. Browser panel handles support direct
+host navigation methods such as `navigate()`, `goBack()`, `goForward()`,
+`reload()`, and `stop()`.
+
+Android WebView debugging is enabled by default when the WebView implementation
+supports it, so attached development tools can inspect WebView targets through
+the platform's Android-only debugging backend. NatStack also ships an
+Android-only in-app CDP proxy: `handle.browser.page()` starts a loopback
+TCP proxy to `webview_devtools_remote_<pid>`, discovers the matching `/json`
+target, and connects Playwright to the returned WebSocket URL. iOS `WKWebView`
+does not provide CDP, so browser-page automation remains unavailable there.
+
 ## Local Checks
 
 ```bash
