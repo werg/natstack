@@ -63,4 +63,53 @@ describe("createPanelTransport", () => {
 
     expect(handler).toHaveBeenCalledWith(message);
   });
+
+  it("sends panel event subscriptions over the WS transport", async () => {
+    const send = vi.fn(async () => {});
+    const serviceCall = vi.fn(async () => {});
+    g.__natstackTransport = {
+      send,
+      onMessage: vi.fn(() => vi.fn()),
+      onRecovery: vi.fn(() => vi.fn()),
+    };
+    g.__natstackShell = { serviceCall };
+    const transport = createPanelTransport();
+    const message: RpcMessage = {
+      type: "request",
+      fromId: "panel:panel-1",
+      requestId: "req-1",
+      method: "events.subscribe",
+      args: ["notification:action"],
+    };
+
+    await transport.send("main", message);
+
+    expect(send).toHaveBeenCalledWith("main", message);
+    expect(serviceCall).not.toHaveBeenCalled();
+  });
+
+  it("continues routing other Electron-local panel services through serviceCall", async () => {
+    const send = vi.fn(async () => {});
+    const serviceCall = vi.fn(async () => "ok");
+    g.__natstackTransport = {
+      send,
+      onMessage: vi.fn(() => vi.fn()),
+      onRecovery: vi.fn(() => vi.fn()),
+    };
+    g.__natstackShell = { serviceCall };
+    const transport = createPanelTransport();
+    const message: RpcMessage = {
+      type: "request",
+      fromId: "panel:panel-1",
+      requestId: "req-2",
+      method: "panel.list",
+      args: [null],
+    };
+
+    await transport.send("main", message);
+    await Promise.resolve();
+
+    expect(serviceCall).toHaveBeenCalledWith("panel.list", null);
+    expect(send).not.toHaveBeenCalled();
+  });
 });

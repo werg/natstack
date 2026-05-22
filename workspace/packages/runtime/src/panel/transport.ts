@@ -24,8 +24,14 @@ function getTransportBridge(): NatstackTransportBridge {
   return bridge;
 }
 
-/** Services that live in Electron main. Everything else defaults to the server. */
-const electronLocalServices: ReadonlySet<string> = new Set(ELECTRON_LOCAL_SERVICE_NAMES);
+/**
+ * Services that panels should call through Electron main. `events` is local
+ * for the shell, but panel event subscriptions must stay on the panel WS
+ * connection so EventService has a delivery session for that caller.
+ */
+const electronLocalServices: ReadonlySet<string> = new Set(
+  ELECTRON_LOCAL_SERVICE_NAMES.filter((service) => service !== "events")
+);
 
 /**
  * Resolve the Electron shell bridge's serviceCall method, if available.
