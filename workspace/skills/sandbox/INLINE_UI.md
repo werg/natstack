@@ -40,7 +40,7 @@ state all see the same canonical event.
   feedback components.
 - Use Radix primitives from `@radix-ui/themes` and icons from
   `@radix-ui/react-icons`.
-- Use `createBrowserPanel(url, { focus: true })` for internal browser-panel
+- Use `openPanel(url, { focus: true })` for internal browser-panel
   deep links.
 - Use `openExternal(url)` for system-browser links. This is approval-gated.
 - OAuth authorize URLs should use `openExternal(url, { expectedRedirectUri })`.
@@ -50,7 +50,7 @@ state all see the same canonical event.
 ```tsx
 import { Button, Flex, Text } from "@radix-ui/themes";
 import { GlobeIcon, OpenInNewWindowIcon } from "@radix-ui/react-icons";
-import { createBrowserPanel, openExternal } from "@workspace/runtime";
+import { openPanel, openExternal } from "@workspace/runtime";
 
 export default function LinkActions({ props = {} }) {
   const url = props.url ?? "https://console.cloud.google.com/apis/credentials";
@@ -59,7 +59,7 @@ export default function LinkActions({ props = {} }) {
     <Flex align="center" justify="between" gap="3" p="2" wrap="wrap">
       <Text size="2" weight="medium">{props.label ?? "Open setup page"}</Text>
       <Flex gap="2">
-        <Button size="1" variant="soft" onClick={() => createBrowserPanel(url, { focus: true })}>
+        <Button size="1" variant="soft" onClick={() => openPanel(url, { focus: true })}>
           <GlobeIcon /> Internal
         </Button>
         <Button size="1" variant="soft" onClick={() => openExternal(url)}>
@@ -81,7 +81,7 @@ below it.
 import { useState } from "react";
 import { Badge, Box, Button, Checkbox, Flex, Text } from "@radix-ui/themes";
 import { GlobeIcon, OpenInNewWindowIcon } from "@radix-ui/react-icons";
-import { createBrowserPanel, openExternal } from "@workspace/runtime";
+import { openPanel, openExternal } from "@workspace/runtime";
 
 const steps = [
   ["project", "Create project", "https://console.cloud.google.com/projectcreate"],
@@ -106,7 +106,7 @@ export default function SetupChecklist() {
               <Text size="2">{label}</Text>
             </Flex>
             <Flex gap="2">
-              <Button size="1" variant="soft" onClick={() => createBrowserPanel(url, { focus: true })}>
+              <Button size="1" variant="soft" onClick={() => openPanel(url, { focus: true })}>
                 <GlobeIcon /> Internal
               </Button>
               <Button size="1" variant="soft" onClick={() => openExternal(url)}>

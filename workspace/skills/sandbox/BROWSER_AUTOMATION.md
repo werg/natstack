@@ -9,9 +9,9 @@ The primary pattern: open a browser panel once, store the handle in `scope`, and
 ```
 // Call 1: Open browser panel once, store in scope
 eval({ code: `
-  import { createBrowserPanel } from "@workspace/runtime";
-  scope.browser = await createBrowserPanel("https://example.com");
-  scope.page = await scope.browser.page();
+  import { openPanel } from "@workspace/runtime";
+  scope.browser = await openPanel("https://example.com");
+  scope.page = await scope.browser.browser.page();
   console.log("Opened:", await scope.page.title());
 `
 })
@@ -37,8 +37,8 @@ eval({ code: `
 ```
 
 Two lines to get started:
-1. `scope.browser = await createBrowserPanel(url)` — opens a browser panel, stores handle in scope
-2. `scope.page = await scope.browser.page()` — connects Playwright via CDP, stores page in scope
+1. `scope.browser = await openPanel(url)` — opens a browser panel, stores handle in scope
+2. `scope.page = await scope.browser.browser.page()` — connects Playwright via CDP, stores page in scope
 
 All subsequent eval calls reuse `scope.page` directly — no re-creation needed.
 
@@ -48,9 +48,9 @@ On panel reload, `scope.browser.id` survives serialization (it's a string) even 
 
 ```
 eval({ code: `
-  import { getBrowserHandle } from "@workspace/runtime";
-  scope.browser = getBrowserHandle(scope.browser.id);  // id survived serialization
-  scope.page = await scope.browser.page();
+  import { getPanelHandle } from "@workspace/runtime";
+  scope.browser = getPanelHandle(scope.browser.id);  // id survived serialization
+  scope.page = await scope.browser.browser.page();
   console.log("Reconnected:", await scope.page.title());
 `
 })
@@ -61,8 +61,8 @@ No need for a separate `scope.browserId` — per-property serialization means `s
 ## Page API Reference
 
 ```typescript
-scope.browser = await createBrowserPanel("https://example.com");
-scope.page = await scope.browser.page();
+scope.browser = await openPanel("https://example.com");
+scope.page = await scope.browser.browser.page();
 ```
 
 ### Navigation
@@ -136,17 +136,17 @@ await scope.page.close()      // close the page
 await scope.browser.close()   // close the browser panel
 ```
 
-### BrowserHandle Methods
+### PanelHandle Methods
 
 The handle also has direct navigation methods (no Playwright needed):
 
 | Method | Description |
 |--------|-------------|
-| `handle.page()` | Connect Playwright, return page |
-| `handle.navigate(url)` | Load a URL |
-| `handle.goBack()` | Navigate back |
+| `handle.browser.page()` | Connect Playwright, return page |
+| `handle.browser.navigate(url)` | Load a URL |
+| `handle.browser.goBack()` | Navigate back |
 | `handle.goForward()` | Navigate forward |
-| `handle.reload()` | Reload page |
+| `handle.browser.reload()` | Reload page |
 | `handle.stop()` | Stop loading |
 | `handle.close()` | Close browser panel |
 
@@ -157,9 +157,9 @@ The handle also has direct navigation methods (no Playwright needed):
 ```
 // Step 1: Open and navigate
 eval({ code: `
-  import { createBrowserPanel } from "@workspace/runtime";
-  scope.browser = await createBrowserPanel("https://news.ycombinator.com");
-  scope.page = await scope.browser.page();
+  import { openPanel } from "@workspace/runtime";
+  scope.browser = await openPanel("https://news.ycombinator.com");
+  scope.page = await scope.browser.browser.page();
   console.log("Opened HN");
 `
 })
@@ -189,9 +189,9 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { createBrowserPanel } from "@workspace/runtime";
-  scope.browser = await createBrowserPanel("https://example.com/login");
-  scope.page = await scope.browser.page();
+  import { openPanel } from "@workspace/runtime";
+  scope.browser = await openPanel("https://example.com/login");
+  scope.page = await scope.browser.browser.page();
 `
 })
 
@@ -218,7 +218,7 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { createBrowserPanel } from "@workspace/runtime";
+  import { openPanel } from "@workspace/runtime";
   import { browserData } from "@workspace/panel-browser";
 
   // Step 1: Import cookies from Chrome
@@ -234,8 +234,8 @@ eval({ code: `
   }
 
   // Step 2: Open browser — now has imported cookies
-  scope.browser = await createBrowserPanel("https://github.com");
-  scope.page = await scope.browser.page();
+  scope.browser = await openPanel("https://github.com");
+  scope.page = await scope.browser.browser.page();
 
   const title = await scope.page.title();
   console.log("Page title:", title);
@@ -258,7 +258,7 @@ inline_ui({
   code: `
 import { useState, useRef } from "react";
 import { Button, Flex, Text, TextField, Box, Badge } from "@radix-ui/themes";
-import { createBrowserPanel } from "@workspace/runtime";
+import { openPanel } from "@workspace/runtime";
 
 export default function BrowserController({ props, chat }) {
   const [url, setUrl] = useState(props.startUrl || "https://example.com");
@@ -269,9 +269,9 @@ export default function BrowserController({ props, chat }) {
 
   const handleConnect = async () => {
     setStatus("connecting...");
-    const handle = await createBrowserPanel(url);
+    const handle = await openPanel(url);
     handleRef.current = handle;
-    const page = await handle.page();
+    const page = await handle.browser.page();
     pageRef.current = page;
     setStatus("connected");
     setPageTitle(await page.title());

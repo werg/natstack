@@ -281,8 +281,8 @@ eval({ code: `
 
 Use the **paneldev** skill to scaffold and launch a panel. See the `paneldev` skill for the full workflow:
 - [WORKFLOW.md](../paneldev/WORKFLOW.md) — step-by-step development process
-- [PANEL_DEVELOPMENT.md](../paneldev/PANEL_DEVELOPMENT.md) — hooks, filesystem, templates
-- [PANEL_SYSTEM.md](../paneldev/PANEL_SYSTEM.md) — API reference
+- [WORKFLOW.md](../paneldev/WORKFLOW.md) — agent panel workflow
+- [PANEL_API.md](../paneldev/PANEL_API.md) — runtime panel API reference
 
 Quick version:
 

@@ -42,7 +42,7 @@ Gmail, Calendar, and Drive expire after 7 days.
 
 Deep-link every Google Console step where possible. Offer both:
 
-- **Internal**: `createBrowserPanel(url, { focus: true })`
+- **Internal**: `openPanel(url, { focus: true })`
 - **External**: `openExternal(url)` through the approval-gated browser-open API
 
 Read [SETUP.md](SETUP.md) for the full guided setup and

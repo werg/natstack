@@ -184,11 +184,11 @@ fetch through a real browser panel instead:
 
 ```
 eval({ code: `
-  import { createBrowserPanel } from "@workspace/runtime";
+  import { openPanel } from "@workspace/runtime";
   import { htmlToReadableMarkdown } from "@natstack/harness/web-extract";
 
-  const browser = await createBrowserPanel("https://example.com/article");
-  const page = await browser.page();
+  const browser = await openPanel("https://example.com/article");
+  const page = await browser.browser.page();
   await page.waitForLoadState("networkidle");
   const html = await page.content();
   const { title, markdown } = htmlToReadableMarkdown(html, page.url());

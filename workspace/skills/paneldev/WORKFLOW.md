@@ -1,122 +1,78 @@
-# Agent Development Workflow
+# Agent Panel Workflow
 
-## Overview
+Use one runtime concept: `PanelHandle`. `openPanel(source, options)` opens both workspace panels and URLs and returns a handle. `listPanels()` rediscovers existing handles. Keep the handle and reload it after code changes.
 
-Your working directory is the **context folder** — an isolated copy of the workspace. All paths are relative to this root. **Never use absolute paths or Bash for file/git operations.**
+## Loop
 
-Runtime operations (project creation, git, typecheck, tests, launching) are done via **eval** with `@workspace/runtime`. Use **static imports**.
+1. Scaffold with eval:
 
----
-
-## Step-by-Step
-
-### 1. Create
-
-Scaffold a new project via eval with the `imports` parameter. This writes template files, initializes git, and pushes directly to the internal git server:
-
-```
-eval({ code: `
-  import { createProject } from "@workspace-skills/paneldev";
-  await createProject({ projectType: "panel", name: "my-app", title: "My App" });
-`
-})
+```ts
+import { createProject } from "@workspace-skills/paneldev";
+await createProject({ projectType: "panel", name: "my-app", title: "My App" });
 ```
 
-After creation, the files are available in your working directory at `panels/my-app/`.
+2. Edit files with filesystem tools, not eval.
 
-### 2. Develop
+3. Commit, push, and open once:
 
-Read existing code, then edit or write changes using the **filesystem tools** (Read, Edit, Write — NOT eval):
+```ts
+import { commitAndPush } from "@workspace-skills/paneldev";
+import { openPanel } from "@workspace/runtime";
 
-```
-Read({ file_path: "panels/my-app/index.tsx" })
-
-Edit({
-  file_path: "panels/my-app/index.tsx",
-  old_string: "const [value, setValue] = useState('')",
-  new_string: "const [value, setValue] = useState('initial')"
-})
+await commitAndPush("panels/my-app", "Initial launch");
+scope.myApp = await openPanel("panels/my-app", { focus: true });
+await scope.myApp.snapshot();
 ```
 
-### 3. Verify (optional)
+4. Iterate by reloading the same handle:
 
-Type-check and run tests via eval:
+```ts
+import { commitAndPush } from "@workspace-skills/paneldev";
 
-```
-eval({ code: `
-  import { extensions } from "@workspace/runtime";
-  const typecheck = extensions.use("@workspace-extensions/typecheck-service");
-  const result = await typecheck.check("panels/my-app");
-  console.log(result);
-`
-})
-
-// Note: test.run is restricted to server-only callers; panel-side invocation
-// returns EACCES. Use typecheck.check (above) to verify types from a panel.
-// To run tests, ask a server-side agent or trigger from the NatStack shell.
+await commitAndPush("panels/my-app", "Fix layout");
+await scope.myApp.reload();
+await scope.myApp.snapshot();
 ```
 
-### 4. Launch
+5. Tune running state without reopening:
 
-Commit, push, and open as a child panel (build happens on-demand):
-
-```
-eval({ code: `
-  import { commitAndPush } from "@workspace-skills/paneldev";
-  import { openPanel } from "@workspace/runtime";
-  await commitAndPush("panels/my-app", "Initial launch");
-  await openPanel("panels/my-app");
-`
-})
+```ts
+await scope.myApp.stateArgs.set({ theme: "dark", mode: "fixture" });
+await scope.myApp.setMode("fixture");
 ```
 
-### 5. Iterate
+## Managing Child Panels
 
-Edit files with Edit/Write tools, then commit+push and re-open (rebuild happens on-demand):
+Use `listPanels()` from agent eval to see the current tree. Use `handle.children()` to hydrate a fresh child list from a known handle. Close stale children with `handle.close()`.
 
+```ts
+import { listPanels } from "@workspace/runtime";
+
+const roots = await listPanels();
+for (const panel of roots) {
+  console.log(panel.id, panel.kind, panel.source);
+}
+
+const children = await scope.myApp.children();
+await children[0]?.close();
 ```
-eval({ code: `
-  import { commitAndPush } from "@workspace-skills/paneldev";
-  import { openPanel } from "@workspace/runtime";
-  await commitAndPush("panels/my-app", "Update");
-  await openPanel("panels/my-app");
-`
-})
+
+Do not open duplicate panels while iterating. If the source is already open, reuse the existing handle and call `reload()`.
+
+## Browser Panels
+
+URLs also use `openPanel`:
+
+```ts
+import { openPanel } from "@workspace/runtime";
+
+const browser = await openPanel("https://example.com", { focus: true });
+const page = await browser.browser.page();
+await page.title();
 ```
 
----
+Browser automation lives under `handle.browser`. Workspace handles expose the same property, but browser methods throw with a clear error unless `handle.kind === "browser"`.
 
-## Common Patterns
+## Verification
 
-### New Panel
-
-1. `eval` — `import { createProject } from "@workspace-skills/paneldev"` then call `createProject({ ... })`
-   - `createProject()` accepts an optional `template` parameter (e.g., `template: "svelte"`) to scaffold with a non-default workspace template. When omitted, the default React+Radix template is used.
-2. Edit the generated `index.tsx` using Edit/Write tools
-3. Launch via eval (`commitAndPush(...)` + `openPanel(...)`)
-
-### Iterating on Code
-
-1. Edit files with `Edit` / `Write`
-2. Launch via eval (`commitAndPush(...)` + `openPanel(...)`)
-3. Read the error or inspect the panel
-4. Edit again, rebuild again
-
-### Bug Fix
-
-1. Search for the issue: `Grep({ pattern: "error", path: "panels/..." })`
-2. Fix with `Edit`
-3. Rebuild via eval
-
----
-
-## Tips
-
-1. **Read before editing** — Understand the code
-2. **Use filesystem tools for file edits** — Read, Edit, Write (not eval)
-3. **Use eval only for runtime operations** — git, typecheck, tests, launching
-4. **Use static imports in eval** — `import { rpc } from "@workspace/runtime"`, NOT `await import(...)`
-5. **Relative paths only** — All paths are relative to your working directory
-7. **Check types early** — Catch errors before launching
-8. **Read build errors** — If launch fails, the error tells you what to fix
-9. **Use openPanel for launching** — `openPanel(source)` handles both workspace panels and URLs
+Use `handle.snapshot()` for an agent-readable view of the running panel. Use `handle.tree()`, `handle.state()`, and `handle.routes()` for deeper workspace-panel inspection. Use typecheck before launch when the change is more than a small text edit.

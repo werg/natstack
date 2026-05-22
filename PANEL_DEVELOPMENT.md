@@ -290,19 +290,19 @@ const workspace = env["NATSTACK_WORKSPACE"] || "/workspace";
 
 ## Browser Automation
 
-Create browser panels that load external URLs and control them via Playwright/CDP. Works in both Electron and headless modes.
+Open URL panels and control them via the typed panel handle. Browser automation is a host feature: it is available in Electron, and on Android when the in-app WebView CDP backend can attach to the target WebView.
 
-#### Typed API (recommended for automation)
+#### Typed API
 
 ```typescript
-import { createBrowserPanel, openExternal } from "@workspace/runtime";
+import { openPanel, openExternal } from "@workspace/runtime";
 import { chromium } from "playwright-core";
 
-// 1. Create a browser panel — returns a BrowserHandle
-const handle = await createBrowserPanel("https://example.com", { focus: true });
+// 1. Open a URL panel, which returns a PanelHandle
+const handle = await openPanel("https://example.com", { focus: true });
 
 // 2. Get CDP endpoint and connect Playwright
-const cdpUrl = await handle.getCdpEndpoint();
+const cdpUrl = await handle.browser.getCdpEndpoint();
 const browser = await chromium.connectOverCDP(cdpUrl);
 const page = browser.contexts()[0].pages()[0];
 
@@ -311,10 +311,10 @@ await page.fill("input[name=query]", "NatStack");
 await page.click(".search-button");
 const text = await page.textContent(".results .first");
 
-// 4. Navigate via handle
-await handle.navigate("https://other.com");
-await handle.goBack();
-await handle.reload();
+// 4. Navigate via browser controls
+await handle.browser.navigate("https://other.com");
+await handle.browser.goBack();
+await handle.browser.reload();
 
 // 5. Close when done
 await handle.close();
@@ -328,25 +328,25 @@ await openExternal("https://docs.example.com");
 In Electron mode, `window.open("https://...")` also creates browser panels. Discover the child ID via event:
 
 ```typescript
-import { onChildCreated, getBrowserHandle } from "@workspace/runtime";
+import { getPanelHandle, onChildCreated } from "@workspace/runtime";
 
 onChildCreated(({ childId, url }) => {
-  const handle = getBrowserHandle(childId);
-  // Now use handle.getCdpEndpoint(), handle.navigate(), etc.
+  const handle = getPanelHandle(childId);
+  // Now use handle.browser.getCdpEndpoint(), handle.browser.navigate(), etc.
 });
 window.open("https://example.com");
 ```
 
-#### BrowserHandle methods
+#### PanelHandle browser methods
 
 | Method | Description |
 |--------|-------------|
-| `getCdpEndpoint()` | Get CDP WebSocket URL for Playwright |
-| `navigate(url)` | Load a URL |
-| `goBack()` | Navigate back |
-| `goForward()` | Navigate forward |
-| `reload()` | Reload page |
-| `stop()` | Stop loading |
+| `browser.getCdpEndpoint()` | Get CDP WebSocket URL for Playwright |
+| `browser.navigate(url)` | Load a URL |
+| `browser.goBack()` | Navigate back |
+| `browser.goForward()` | Navigate forward |
+| `browser.reload()` | Reload page |
+| `browser.stop()` | Stop loading |
 | `close()` | Close browser panel |
 
 **Security:** Panels can only control browser panels they own.

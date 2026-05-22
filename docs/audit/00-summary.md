@@ -270,7 +270,7 @@ Outside the runtime trust model:
   Android manifest [08-H-1].
 - **`PanelWebView.tsx.handleMessage` has no origin check** — any page a
   WebView navigates to can call the host bridge
-  (`createBrowserPanel`, `openExternal`, `auth.startOAuthLogin`) [08-H-3].
+  (`openPanel` URL panels, `openExternal`, `auth.startOAuthLogin`) [08-H-3].
 - **`softprops/action-gh-release@v2`** floating major tag in the release
   workflow, where the Android keystore password is also present →
   action-takeover signing-key exfil path [08-H-8]. The keystore password
@@ -334,7 +334,7 @@ Outside the runtime trust model:
 | 43 | `openExternal` / `openFolderDialog` reachable by panels | 01 | High |
 | 44 | Autofill overlay IPC accepts any sender | 01 | High |
 | 45 | TLS pinning only on default session, not panel/browser partitions | 01 | High |
-| 46 | `createBrowserPanel` accepts arbitrary schemes beyond http(s) | 01 | High |
+| 46 | URL-panel creation accepts arbitrary schemes beyond http(s) | 01 | High |
 | 47 | OAuth via `natstack://` custom scheme — no app-identity binding | 08 | High |
 | 48 | Mobile `PanelWebView.handleMessage` no origin check | 08 | High |
 | 49 | Mobile shell token keychain missing `WhenUnlockedThisDeviceOnly` | 08 | High |

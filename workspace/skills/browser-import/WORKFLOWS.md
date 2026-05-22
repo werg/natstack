@@ -50,11 +50,11 @@ Cookies were auto-synced during import — just open a browser panel and check.
 
 ```
 eval({ code: `
-  import { createBrowserPanel } from "@workspace/runtime";
+  import { openPanel } from "@workspace/runtime";
 
   // Open target site — imported cookies are already in the browser session
-  const handle = await createBrowserPanel("https://github.com");
-  const page = await handle.page();
+  const handle = await openPanel("https://github.com");
+  const page = await handle.browser.page();
 
   const title = await page.title();
   console.log("Page title:", title);

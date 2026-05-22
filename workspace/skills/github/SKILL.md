@@ -49,7 +49,7 @@ do not avoid broad user authorization concerns.
    - **Broad**: high-trust access; pair with All repositories or classic `repo`.
 4. Open the chosen GitHub token page and offer both browser options:
    - Internal: `openGitHubTokenSettings({ tokenKind, accessLevel, browser: "internal" })` or
-     `createBrowserPanel(url, { focus: true })`.
+     `openPanel(url, { focus: true })`.
    - External: `openGitHubTokenSettings({ tokenKind, accessLevel, browser: "external" })` or
      `openExternal(url)`.
 5. Call `requestGitHubTokenCredential()` so the shell-owned approval UI collects

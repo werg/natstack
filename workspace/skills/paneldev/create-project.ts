@@ -131,10 +131,24 @@ export async function createProject(
         files["index.ts"] = `export { default } from "./App.svelte";\n`;
         files["App.svelte"] = `<script>
   import { theme } from "@workspace/svelte";
+  import { onMount } from "svelte";
+
+  let mode = window.__natstackAgentMode ?? "live";
+  const data = {
+    fixture: "${title} fixture data",
+    live: "${title} live data",
+  };
+
+  onMount(() => {
+    const handler = (event) => { mode = event.detail; };
+    window.addEventListener("natstack:agentModeChanged", handler);
+    return () => window.removeEventListener("natstack:agentModeChanged", handler);
+  });
 </script>
 
 <div class="container" class:dark={$theme === "dark"}>
   <h1>${title}</h1>
+  <p>{data[mode]}</p>
 </div>
 
 <style>
@@ -162,18 +176,52 @@ export async function createProject(
             "@radix-ui/themes": "^3.2.1",
           },
         }, null, 2);
-        files["index.tsx"] = `import { usePanelTheme } from "@workspace/react";
+        files["index.tsx"] = `import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { usePanelTheme } from "@workspace/react";
 import { Flex, Text, Theme } from "@radix-ui/themes";
+
+type DataMode = "fixture" | "live";
+const DataModeContext = createContext<{ mode: DataMode; message: string }>({
+  mode: "live",
+  message: "${title} live data",
+});
+
+function DataModeProvider({ children }: { children: ReactNode }) {
+  const [mode, setMode] = useState<DataMode>(() =>
+    (window as Window & { __natstackAgentMode?: DataMode }).__natstackAgentMode ?? "live"
+  );
+  useEffect(() => {
+    const handler = (event: Event) => setMode((event as CustomEvent<DataMode>).detail);
+    window.addEventListener("natstack:agentModeChanged", handler);
+    return () => window.removeEventListener("natstack:agentModeChanged", handler);
+  }, []);
+  const value = useMemo(() => ({
+    mode,
+    message: mode === "fixture" ? "${title} fixture data" : "${title} live data",
+  }), [mode]);
+  return <DataModeContext.Provider value={value}>{children}</DataModeContext.Provider>;
+}
 
 export default function ${toPascalCase(name)}() {
   const theme = usePanelTheme();
+  const content = <${toPascalCase(name)}Content />;
 
   return (
     <Theme appearance={theme}>
+      <DataModeProvider>
+        {content}
+      </DataModeProvider>
+    </Theme>
+  );
+}
+
+function ${toPascalCase(name)}Content() {
+  const data = useContext(DataModeContext);
+  return (
       <Flex direction="column" align="center" justify="center" style={{ height: "100vh" }}>
         <Text size="5">${title}</Text>
+        <Text size="2" color="gray">{data.message}</Text>
       </Flex>
-    </Theme>
   );
 }
 `;

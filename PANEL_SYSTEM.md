@@ -85,7 +85,6 @@ import {
   env,                   // Environment variables (Record<string, string>)
 
   // Lifecycle
-  closeSelf,             // Close this panel
   focusPanel,            // Focus an existing panel by ID (does NOT open new panels)
   getInfo,               // Get panel info
   getTheme,              // Get current theme
@@ -119,12 +118,12 @@ import {
   buildPanelLink,        // Build URL for panel navigation (low-level — prefer openPanel)
 
   // Browser panels
-  createBrowserPanel,    // Create browser panel → BrowserHandle (use when you need CDP/automation)
+  getPanelHandle,        // Get a typed PanelHandle for an existing panel
+  listPanels,            // List panels this panel can access
   openExternal,          // Open URL in system browser
   onChildCreated,        // Subscribe to child-created events (window.open flow)
-  getBrowserHandle,      // Get BrowserHandle for existing browser panel
 } from "@workspace/runtime";
-export type { BrowserHandle } from "@workspace/runtime";
+export type { PanelHandle } from "@workspace/runtime";
 ```
 
 ## Navigation

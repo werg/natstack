@@ -13,7 +13,7 @@ import { useState, useEffect } from "react";
 import { Button, Flex, Text, Box, TextField, Badge, Spinner } from "@radix-ui/themes";
 import { BookmarkIcon, MagnifyingGlassIcon, ChevronRightIcon } from "@radix-ui/react-icons";
 import { browserData } from "@workspace/panel-browser";
-import { createBrowserPanel } from "@workspace/runtime";
+import { openPanel } from "@workspace/runtime";
 
 export default function BookmarkBrowser({ props, chat }) {
   const [bookmarks, setBookmarks] = useState([]);
@@ -34,7 +34,7 @@ export default function BookmarkBrowser({ props, chat }) {
   };
 
   const handleOpen = (url) => {
-    createBrowserPanel(url, { focus: true });
+    openPanel(url, { focus: true });
   };
 
   // Separate folders from bookmarks

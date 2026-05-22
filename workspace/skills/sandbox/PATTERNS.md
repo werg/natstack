@@ -394,11 +394,11 @@ export default function SqlRunner({ props, chat }) {
 
 ```
 eval({ code: `
-  import { createBrowserPanel } from "@workspace/runtime";
+  import { openPanel } from "@workspace/runtime";
   import { browserData } from "@workspace/panel-browser";
 
   // Open the site in a browser panel
-  const handle = await createBrowserPanel("https://github.com");
+  const handle = await openPanel("https://github.com");
   console.log("Opened browser panel");
 
   // Import cookies from Chrome for that domain
