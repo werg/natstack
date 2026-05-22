@@ -73,7 +73,6 @@ export {
 } from "./custom-message-types.js";
 export type {
   CustomMessageComponentProps,
-  CustomMessagePillProps,
   MessageTypeModule,
 } from "./custom-message-types.js";
 

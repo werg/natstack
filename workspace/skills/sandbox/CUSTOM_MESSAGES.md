@@ -28,8 +28,7 @@ The compiled module may export:
 
 | Export | Purpose |
 |--------|---------|
-| `default` | Required. React component receiving `{ state, chat, scope, scopes }`. Rendered in the message card. |
-| `Pill` | Optional. Compact React component for inline display. Receives `{ typeId, state, chat, scope, scopes }`. |
+| `default` | Required. React component receiving `{ typeId, state, expanded, displayMode, chat, scope, scopes }`. Render compact inline content when `expanded` is false and the full view when `expanded` is true. |
 | `reduce` | Optional. `(state, update) => nextState`. Folds `custom.updated` payloads. Default: last update replaces state. |
 | `schema` | Optional. Reserved for validation metadata. |
 
@@ -37,8 +36,8 @@ The compiled module may export:
 
 | Mode | Rendering |
 |------|-----------|
-| `"inline"` | Bead inside the sender's message group. Click to expand the full card. Uses `Pill` if exported. |
-| `"row"` | Full chat row, like a normal message. Card renders the `default` component. |
+| `"inline"` | Bead inside the sender's message group with `expanded: false`. Click to expand the full card with `expanded: true`. |
+| `"row"` | Full chat row, like a normal message. Card renders the component with `expanded: true`. |
 
 `displayMode` on the registration is the default. Each instance can override
 via `displayMode` on `publishCustomMessage` / `custom.started`.
@@ -85,7 +84,7 @@ const weather = await client.getMessageType("weather");
 ```
 
 See the working example in:
-- `workspace/panels/chat/examples/weather-message-type.tsx` — the renderer (default, `Pill`, `reduce`).
+- `workspace/panels/chat/examples/weather-message-type.tsx` — the renderer (default, `reduce`).
 - `workspace/panels/chat/examples/weather-message-demo.ts` — registers + publishes + updates.
 
 ## From sandbox code (eval / inline_ui / feedback_custom)
@@ -171,16 +170,16 @@ export function reduce(state: WeatherState, update: WeatherUpdate): WeatherState
   return { ...state, ...update };
 }
 
-export function Pill({ state }: { state: WeatherState }) {
-  return (
-    <Flex align="center" gap="1">
-      <Text size="1" weight="medium">{state.city}</Text>
-      <Text size="1" color="gray">{state.tempF}F</Text>
-    </Flex>
-  );
-}
+export default function WeatherMessage({ state, expanded }: { state: WeatherState; expanded: boolean }) {
+  if (!expanded) {
+    return (
+      <Flex align="center" gap="1">
+        <Text size="1" weight="medium">{state.city}</Text>
+        <Text size="1" color="gray">{state.tempF}F</Text>
+      </Flex>
+    );
+  }
 
-export default function WeatherMessage({ state }: { state: WeatherState }) {
   return (
     <Card>
       <Flex direction="column" gap="2">
@@ -198,6 +197,12 @@ export default function WeatherMessage({ state }: { state: WeatherState }) {
 Rules:
 
 - `export default` is required. Without it the card renders an error.
+- Inline messages should render pill-sized content when `expanded` is false.
+  The host owns expansion state and swaps the same message into an expanded
+  card when selected.
+- Collapsed inline messages are a click/keyboard-to-expand surface. Interactive
+  controls inside collapsed content may bubble and expand the message; call
+  `event.stopPropagation()` in those controls if they need independent behavior.
 - The component must be pure with respect to `state` — updates re-render via
   the reducer fold. Don't keep authoritative state in component-local refs;
   publish a `custom.updated` event instead.
