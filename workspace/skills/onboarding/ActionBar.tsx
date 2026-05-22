@@ -16,6 +16,7 @@ const actionGroups = [
       { label: "GitHub", message: "Set up GitHub provider integration" },
       { label: "Slack", message: "Set up Slack provider integration" },
       { label: "Model/API key", message: "Set up a model or API key provider" },
+      { label: "Agent defaults", message: "I want to change the agent's default model or tune its behavior" },
       { label: "Custom API", message: "Set up a custom OAuth or API provider" },
     ],
   },

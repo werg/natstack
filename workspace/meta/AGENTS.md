@@ -36,6 +36,7 @@ Before using eval, read the **sandbox** skill — it has the complete API refere
 - **paneldev** — building panels, workers, Durable Objects; exports `createProject`, `commitAndPush`
 - **browser-import** — importing cookies, passwords, bookmarks, history from installed browsers
 - **api-integrations** — connecting to OAuth APIs (Gmail, GitHub, Slack, Notion, Linear)
+- **agent-tuning** — changing the host chat agent's model/provider defaults and live effort, approval, and chattiness
 - **onboarding** — first-time setup, workspace configuration, NatStack overview
 - **system-testing** — headless test runner; exports `HeadlessRunner`, `TestRunner`, test suites
 - **web-research** — searching the open web and reading pages with `web_search`, `web_fetch`, `web_read`

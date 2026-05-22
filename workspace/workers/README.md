@@ -144,14 +144,15 @@ The entry point must:
 
 `AgentWorkerBase` provides hooks you can override to customize Pi behavior:
 
-### getModel(): string
+### getDefaultModel(): string
 
-Returns the model id in `provider:model` format. `AgentWorkerBase` requires
-subclasses to override this hook. The default chat worker uses
+Returns the default model id in `provider:model` format. `AgentWorkerBase`
+requires subclasses to override this hook. Subscription config can still
+override the effective model per channel. The default chat worker uses
 `"openai-codex:gpt-5.5"`.
 
 ```typescript
-protected getModel(): string {
+protected getDefaultModel(): string {
   return 'openai-codex:gpt-5.5';
 }
 ```
@@ -160,13 +161,14 @@ The format is parsed by `resolveModelToPi` in `packages/shared/src/ai/`.
 Pi-AI's built-in providers (anthropic, openai, google, etc.) work
 out-of-the-box; custom providers can be registered via `models.json`.
 
-### getThinkingLevel(): ThinkingLevel
+### getDefaultThinkingLevel(): ThinkingLevel
 
-Returns the Pi thinking level. Default: `"medium"`. Allowed:
-`"off" | "minimal" | "low" | "medium" | "high" | "xhigh"`.
+Returns the default Pi thinking level. Default: `"medium"`. Allowed:
+`"minimal" | "low" | "medium" | "high"`. Live state and subscription config
+override this per channel.
 
 ```typescript
-protected getThinkingLevel() {
+protected getDefaultThinkingLevel() {
   return 'high';
 }
 ```
@@ -189,8 +191,7 @@ The default reads from a per-channel `state` table key
 The final prompt is composed at `PiRunner` init from the NatStack base prompt,
 `workspace/meta/AGENTS.md`, the generated skill index, and optional
 subscription config (`systemPrompt` / `systemPromptMode`). Model/runtime
-customization is via `getModel()` / `getThinkingLevel()` /
-`getApprovalLevel()` hooks.
+customization is via effective getters plus the `getDefault...()` hooks.
 
 ### shouldProcess(event: ChannelEvent): boolean
 
@@ -513,8 +514,8 @@ export class CodeReviewWorker extends AgentWorkerBase {
   static override schemaVersion = 3;
 
   // The system prompt is composed from NatStack base + workspace/meta/AGENTS.md.
-  // Override getModel() to select a specific model for code review:
-  protected override getModel(): string {
+  // Override getDefaultModel() to select a specific model for code review:
+  protected override getDefaultModel(): string {
     return "openai-codex:gpt-5.5";
   }
 

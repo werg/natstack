@@ -310,13 +310,13 @@ import type { ParticipantDescriptor } from "@natstack/harness";
 export class ${className} extends AgentWorkerBase {
   static override schemaVersion = 1;
 
-  // --- Hook: model id (provider:model format) ---
-  // protected override getModel(): string {
+  // --- Hook: default model id (provider:model format) ---
+  // protected override getDefaultModel(): string {
   //   return "openai-codex:gpt-5.5";
   // }
 
-  // --- Hook: thinking level ---
-  // protected override getThinkingLevel() {
+  // --- Hook: default thinking level ---
+  // protected override getDefaultThinkingLevel() {
   //   return "medium" as const;
   // }
 
