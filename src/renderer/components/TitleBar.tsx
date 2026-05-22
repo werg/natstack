@@ -24,7 +24,7 @@ import {
   type MouseEvent,
   type RefObject,
 } from "react";
-import { useTouchDevice } from "@workspace/react/responsive";
+import { useIsMobile, useTouchDevice } from "@workspace/react/responsive";
 
 import { useNavigation } from "./NavigationContext";
 import type { ChromeCommand } from "./PanelStack";
@@ -85,6 +85,7 @@ export function TitleBar({
     lazyStatusNavigation: statusNavigation,
   } = useNavigation();
   const [connectionSettingsOpen, setConnectionSettingsOpen] = useState(false);
+  const isMobile = useIsMobile();
 
   const handleNavigationToggle = () => {
     const nextMode: NavigationMode = navigationMode === "stack" ? "tree" : "stack";
@@ -95,6 +96,106 @@ export function TitleBar({
     const rect = e.currentTarget.getBoundingClientRect();
     void menu.showHamburger(getWindowPositionFromRect(rect));
   };
+
+  if (isMobile) {
+    return (
+      <Box
+        style={
+          {
+            appRegion: "drag",
+            WebkitAppRegion: "drag",
+            userSelect: "none",
+            backgroundColor: "var(--app-chrome-bg)",
+            borderBottom: "1px solid var(--app-chrome-border)",
+          } as CSSProperties
+        }
+      >
+        <Flex align="center" justify="between" height="44px" px="2" gap="2">
+          <Flex
+            align="center"
+            gap="1"
+            style={{ appRegion: "no-drag", WebkitAppRegion: "no-drag" } as CSSProperties}
+          >
+            <IconButton variant="ghost" size="2" onClick={handleHamburgerClick} aria-label="Menu">
+              <HamburgerMenuIcon />
+            </IconButton>
+
+            <Tooltip content={navigationMode === "tree" ? "Close panel tree" : "Open panel tree"}>
+              <IconButton
+                variant="ghost"
+                size="2"
+                onClick={handleNavigationToggle}
+                aria-label={navigationMode === "tree" ? "Close panel tree" : "Open panel tree"}
+              >
+                {navigationMode === "tree" ? <BoxIcon /> : <ViewVerticalIcon />}
+              </IconButton>
+            </Tooltip>
+          </Flex>
+
+          <Text
+            size="2"
+            weight="medium"
+            truncate
+            style={{ flex: 1, minWidth: 0, textAlign: "center" }}
+          >
+            {title}
+          </Text>
+
+          <Flex
+            align="center"
+            gap="1"
+            style={{ appRegion: "no-drag", WebkitAppRegion: "no-drag" } as CSSProperties}
+          >
+            <Tooltip content={addressBarVisible ? "Hide address bar" : "Show address bar"}>
+              <IconButton
+                variant="ghost"
+                size="2"
+                onClick={() => setAddressBarVisible(!addressBarVisible)}
+                aria-label={addressBarVisible ? "Hide address bar" : "Show address bar"}
+              >
+                <Text size="1" weight="bold">
+                  URL
+                </Text>
+              </IconButton>
+            </Tooltip>
+            <Tooltip content="New panel">
+              <IconButton
+                variant="ghost"
+                size="2"
+                onClick={async () => {
+                  const result = await panel.createAboutPanel("new");
+                  window.dispatchEvent(
+                    new CustomEvent("shell-panel-created", {
+                      detail: { panelId: result.id },
+                    })
+                  );
+                }}
+                aria-label="New panel"
+              >
+                <PlusIcon />
+              </IconButton>
+            </Tooltip>
+            <ConnectionStatusBadge onOpenSettings={() => setConnectionSettingsOpen(true)} />
+          </Flex>
+        </Flex>
+
+        {addressBarVisible && (
+          <Box
+            px="2"
+            pb="2"
+            style={{ appRegion: "no-drag", WebkitAppRegion: "no-drag" } as CSSProperties}
+          >
+            <AddressBar chromeState={chromeState} onChromeCommand={onChromeCommand} />
+          </Box>
+        )}
+
+        <ConnectionSettingsDialog
+          open={connectionSettingsOpen}
+          onOpenChange={setConnectionSettingsOpen}
+        />
+      </Box>
+    );
+  }
 
   return (
     <Box
@@ -256,6 +357,7 @@ function BrowserAddressBar({
   chromeState?: PanelChromeState | null;
   onChromeCommand?: (command: ChromeCommand) => void;
 }) {
+  const isMobile = useIsMobile();
   const [value, setValue] = useState(chromeState?.editableAddress ?? "");
   const [addressOptions, setAddressOptions] = useState<BrowserAddressOptions | null>(null);
   const [focused, setFocused] = useState(false);
@@ -312,14 +414,16 @@ function BrowserAddressBar({
       if (!target) return;
       const rect = target.getBoundingClientRect();
       const rowCount = Math.min(Math.max(autocompleteItems.length, 1), 8);
+      const maxOverlayWidth =
+        typeof window === "undefined" ? rect.width : Math.max(240, window.innerWidth - 16);
       setOverlayBounds({
         x: Math.round(rect.left),
         y: Math.round(rect.bottom + 4),
-        width: Math.max(360, rect.width),
+        width: Math.min(maxOverlayWidth, Math.max(isMobile ? 240 : 360, rect.width)),
         height: Math.max(52, Math.min(360, 28 + rowCount * 42)),
       });
     },
-    [autocompleteItems.length]
+    [autocompleteItems.length, isMobile]
   );
 
   const submitValue = useCallback(
@@ -389,17 +493,19 @@ function BrowserAddressBar({
           <ArrowLeftIcon />
         </IconButton>
       </Tooltip>
-      <Tooltip content="Forward">
-        <IconButton
-          size="1"
-          variant="ghost"
-          disabled={!chromeState?.canGoForward}
-          onClick={() => onChromeCommand?.({ type: "forward" })}
-          aria-label="Forward"
-        >
-          <ArrowRightIcon />
-        </IconButton>
-      </Tooltip>
+      {!isMobile && (
+        <Tooltip content="Forward">
+          <IconButton
+            size="1"
+            variant="ghost"
+            disabled={!chromeState?.canGoForward}
+            onClick={() => onChromeCommand?.({ type: "forward" })}
+            aria-label="Forward"
+          >
+            <ArrowRightIcon />
+          </IconButton>
+        </Tooltip>
+      )}
       <Tooltip content={chromeState?.isLoading ? "Stop" : "Reload"}>
         <IconButton
           size="1"
@@ -443,7 +549,7 @@ function BrowserAddressBar({
           }
         }}
         aria-label="Address"
-        style={{ flex: 1, minWidth: 80 }}
+        style={{ flex: 1, minWidth: 0 }}
       />
     </Flex>
   );
@@ -461,6 +567,7 @@ function PanelAddressBar({
   chromeState: PanelChromeState;
   onChromeCommand?: (command: ChromeCommand) => void;
 }) {
+  const isMobile = useIsMobile();
   const pathInputRef = useRef<HTMLInputElement | null>(null);
   const branchButtonRef = useRef<HTMLButtonElement | null>(null);
   const commitButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -533,7 +640,12 @@ function PanelAddressBar({
     (kind: PanelAddressOverlayState["kind"], target: HTMLElement | null) => {
       if (!target) return;
       const rect = target.getBoundingClientRect();
-      const width = kind === "commit" ? Math.max(420, rect.width) : Math.max(320, rect.width);
+      const preferredWidth =
+        kind === "commit"
+          ? Math.max(isMobile ? 280 : 420, rect.width)
+          : Math.max(isMobile ? 260 : 320, rect.width);
+      const maxOverlayWidth =
+        typeof window === "undefined" ? preferredWidth : Math.max(240, window.innerWidth - 16);
       const rowCount =
         kind === "path"
           ? Math.min(addressOptions?.suggestions.length ?? 0, 8)
@@ -546,7 +658,7 @@ function PanelAddressBar({
         bounds: {
           x: Math.round(rect.left),
           y: Math.round(rect.bottom + 4),
-          width,
+          width: Math.min(maxOverlayWidth, preferredWidth),
           height,
         },
       });
@@ -555,6 +667,7 @@ function PanelAddressBar({
       addressOptions?.branches.length,
       addressOptions?.commits.length,
       addressOptions?.suggestions.length,
+      isMobile,
     ]
   );
 
@@ -619,7 +732,15 @@ function PanelAddressBar({
     <Flex
       align="center"
       gap="1"
-      style={{ appRegion: "no-drag", WebkitAppRegion: "no-drag", minWidth: 0 } as CSSProperties}
+      style={
+        {
+          appRegion: "no-drag",
+          WebkitAppRegion: "no-drag",
+          minWidth: 0,
+          flexWrap: isMobile ? "wrap" : "nowrap",
+          rowGap: 4,
+        } as CSSProperties
+      }
     >
       <Tooltip content="Back">
         <IconButton
@@ -632,17 +753,19 @@ function PanelAddressBar({
           <ArrowLeftIcon />
         </IconButton>
       </Tooltip>
-      <Tooltip content="Forward">
-        <IconButton
-          size="1"
-          variant="ghost"
-          disabled={!chromeState.canGoForward}
-          onClick={() => onChromeCommand?.({ type: "forward" })}
-          aria-label="Forward"
-        >
-          <ArrowRightIcon />
-        </IconButton>
-      </Tooltip>
+      {!isMobile && (
+        <Tooltip content="Forward">
+          <IconButton
+            size="1"
+            variant="ghost"
+            disabled={!chromeState.canGoForward}
+            onClick={() => onChromeCommand?.({ type: "forward" })}
+            aria-label="Forward"
+          >
+            <ArrowRightIcon />
+          </IconButton>
+        </Tooltip>
+      )}
       <Tooltip content={chromeState.isLoading ? "Stop" : "Reload"}>
         <IconButton
           size="1"
@@ -658,10 +781,10 @@ function PanelAddressBar({
 
       <Box
         style={{
-          flex: "0 1 auto",
+          flex: isMobile ? "1 1 180px" : "0 1 auto",
           width: pathInputWidth,
-          minWidth: 120,
-          maxWidth: "min(100%, 52vw)",
+          minWidth: isMobile ? 0 : 120,
+          maxWidth: isMobile ? "100%" : "min(100%, 52vw)",
           position: "relative",
         }}
       >
@@ -700,6 +823,7 @@ function PanelAddressBar({
         label={branchValue}
         disabled={!addressOptions?.branches.length}
         title="Branch"
+        compact={isMobile}
         onClick={() => openOverlay("branch", branchButtonRef.current)}
       />
       <PanelAddressButton
@@ -707,6 +831,7 @@ function PanelAddressBar({
         label={commitShort}
         disabled={!addressOptions?.commits.length}
         title="Commit"
+        compact={isMobile}
         onClick={() => openOverlay("commit", commitButtonRef.current)}
       />
       {dirty && (
@@ -722,12 +847,14 @@ const PanelAddressButton = ({
   label,
   title,
   disabled,
+  compact,
   onClick,
   buttonRef,
 }: {
   label: string;
   title: string;
   disabled?: boolean;
+  compact?: boolean;
   onClick: () => void;
   buttonRef: RefObject<HTMLButtonElement | null>;
 }) => (
@@ -739,8 +866,8 @@ const PanelAddressButton = ({
     onClick={onClick}
     style={{
       height: 22,
-      maxWidth: 140,
-      minWidth: 62,
+      maxWidth: compact ? 96 : 140,
+      minWidth: compact ? 54 : 62,
       flexShrink: 0,
       border: "1px solid var(--gray-6)",
       borderRadius: 4,
