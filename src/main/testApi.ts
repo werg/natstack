@@ -72,6 +72,9 @@ export interface TestApi {
   /** Click an element matching selector and visible text inside a panel's WebContents */
   clickPanelText(panelId: string, selector: string, text: string): Promise<boolean>;
 
+  /** Execute JavaScript inside a panel's WebContents. Test mode only. */
+  executePanelScript<T = unknown>(panelId: string, script: string): Promise<T>;
+
   /** Get an element center inside a panel translated to main-window coordinates */
   getPanelSelectorWindowPoint(
     panelId: string,
@@ -317,6 +320,13 @@ export function setupTestApi(
         `,
         true
       ) as Promise<boolean>;
+    },
+
+    async executePanelScript<T = unknown>(panelId: string, script: string): Promise<T> {
+      if (!panelView) throw new Error("PanelView not available");
+      const wc = panelView.getWebContents(panelId);
+      if (!wc || wc.isDestroyed()) throw new Error(`Panel WebContents not available: ${panelId}`);
+      return wc.executeJavaScript(script, true) as Promise<T>;
     },
 
     async getPanelSelectorWindowPoint(panelId, selector): Promise<{ x: number; y: number } | null> {

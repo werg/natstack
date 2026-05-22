@@ -67,6 +67,7 @@ const SOURCE_DIRS = [
   "skills",
   "extensions",
   "about",
+  "projects",
 ];
 const STATE_DIRS = [".cache", ".databases", ".contexts"];
 
@@ -619,6 +620,29 @@ export async function clickPanelText(
       return testApi.clickPanelText(args.panelId, args.selector, args.text);
     },
     { panelId, selector, text }
+  );
+}
+
+export async function executePanelScript<T = unknown>(
+  app: ElectronApplication,
+  panelId: string,
+  script: string
+): Promise<T> {
+  return app.evaluate(
+    async (_electron, args) => {
+      const testApi = (
+        globalThis as {
+          __testApi?: {
+            executePanelScript: <T = unknown>(id: string, script: string) => Promise<T>;
+          };
+        }
+      ).__testApi;
+      if (!testApi) {
+        throw new Error("Test API not available. Make sure NATSTACK_TEST_MODE=1 is set.");
+      }
+      return testApi.executePanelScript<T>(args.panelId, args.script);
+    },
+    { panelId, script }
   );
 }
 
