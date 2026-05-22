@@ -15,7 +15,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { FsService } from "./fsService.js";
@@ -166,6 +166,76 @@ describe("FsService", () => {
     });
   });
 
+  describe("shared git object store", () => {
+    it("allows reads through context .git/objects symlinks", async () => {
+      const ctx = makeWorkerCtx("do:src:class:key");
+      registerContext(ctx.caller.runtime.id, "do", "ctx-git-read");
+      setupSharedGitObjects("ctx-git-read", {
+        "ab/cdef1234567890abcdef1234567890abcdef12": "object",
+      });
+
+      await expect(
+        service.handleCall(
+          ctx,
+          "readFile",
+          ["/repo/.git/objects/ab/cdef1234567890abcdef1234567890abcdef12", "utf8"]
+        )
+      ).resolves.toBe("object");
+    });
+
+    it("allows creating new loose objects without overwriting existing shared objects", async () => {
+      const ctx = makeWorkerCtx("do:src:class:key");
+      registerContext(ctx.caller.runtime.id, "do", "ctx-git-write");
+      const sharedObjects = setupSharedGitObjects("ctx-git-write", {
+        "ab/cdef1234567890abcdef1234567890abcdef12": "existing",
+      });
+
+      await service.handleCall(ctx, "mkdir", ["/repo/.git/objects/cd", { recursive: true }]);
+      await service.handleCall(
+        ctx,
+        "writeFile",
+        ["/repo/.git/objects/cd/ef1234567890abcdef1234567890abcdef1234", "new"]
+      );
+      expect(
+        existsSync(path.join(sharedObjects, "cd", "ef1234567890abcdef1234567890abcdef1234"))
+      ).toBe(true);
+
+      await expect(
+        service.handleCall(
+          ctx,
+          "writeFile",
+          ["/repo/.git/objects/ab/cdef1234567890abcdef1234567890abcdef12", "overwrite"]
+        )
+      ).rejects.toMatchObject({ code: "EEXIST" });
+      expect(
+        await service.handleCall(
+          ctx,
+          "readFile",
+          ["/repo/.git/objects/ab/cdef1234567890abcdef1234567890abcdef12", "utf8"]
+        )
+      ).toBe("existing");
+    });
+
+    it("rejects non-object writes and destructive operations through shared git objects", async () => {
+      const ctx = makeWorkerCtx("do:src:class:key");
+      registerContext(ctx.caller.runtime.id, "do", "ctx-git-deny");
+      setupSharedGitObjects("ctx-git-deny", {
+        "ab/cdef1234567890abcdef1234567890abcdef12": "existing",
+      });
+
+      await expect(
+        service.handleCall(ctx, "writeFile", ["/repo/.git/objects/not-a-loose-object", "bad"])
+      ).rejects.toThrow(/loose object/i);
+      await expect(
+        service.handleCall(
+          ctx,
+          "unlink",
+          ["/repo/.git/objects/ab/cdef1234567890abcdef1234567890abcdef12"]
+        )
+      ).rejects.toThrow(/Symlink escapes sandbox/i);
+    });
+  });
+
   describe("extension callers", () => {
     it("resolve fs paths as unrestricted host paths without a bound context", async () => {
       const ctx = makeExtensionCtx("@workspace-extensions/fs-test");
@@ -232,5 +302,20 @@ describe("FsService", () => {
       cleanupComplete: true,
     };
     entityCache._onActivate(record);
+  }
+
+  function setupSharedGitObjects(contextId: string, objects: Record<string, string>): string {
+    const contextRoot = path.join(tmpRoot, contextId);
+    const repoGit = path.join(contextRoot, "repo", ".git");
+    const sharedObjects = path.join(tmpRoot, `shared-objects-${contextId}`);
+    mkdirSync(repoGit, { recursive: true });
+    mkdirSync(sharedObjects, { recursive: true });
+    for (const [objectPath, content] of Object.entries(objects)) {
+      const fullPath = path.join(sharedObjects, objectPath);
+      mkdirSync(path.dirname(fullPath), { recursive: true });
+      writeFileSync(fullPath, content);
+    }
+    symlinkSync(path.relative(repoGit, sharedObjects), path.join(repoGit, "objects"), "dir");
+    return sharedObjects;
   }
 });
