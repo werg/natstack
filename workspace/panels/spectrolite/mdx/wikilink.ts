@@ -24,7 +24,7 @@
 const WIKILINK_RE = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
 const WIKILINK_JSX_RE_SELF = /<WikiLink\s+target=("([^"]+)"|'([^']+)')\s*\/>/g;
 const WIKILINK_JSX_RE_WITH_TEXT = /<WikiLink\s+target=("([^"]+)"|'([^']+)')\s*>([\s\S]*?)<\/WikiLink>/g;
-const FRONTMATTER_RE = /^(---\s*\n[\s\S]*?\n---\s*\n)/;
+const FRONTMATTER_RE = /^(---\s*\r?\n[\s\S]*?\r?\n---\s*\r?\n)/;
 
 /** Strip the YAML frontmatter (if any) off the front of the doc and
  *  return [frontmatter, body]. Wikilink transforms should NEVER touch
@@ -103,7 +103,7 @@ export function wikilinksToJsx(markdown: string): string {
     segment.replace(WIKILINK_RE, (_match, target: string, alias: string | undefined) => {
       const t = target.trim();
       if (!alias) return `<WikiLink target="${escapeAttr(t)}" />`;
-      return `<WikiLink target="${escapeAttr(t)}">${alias.trim()}</WikiLink>`;
+      return `<WikiLink target="${escapeAttr(t)}">${escapeText(alias.trim())}</WikiLink>`;
     }),
   );
   return frontmatter + transformed;
@@ -118,7 +118,7 @@ export function wikilinksFromJsx(markdown: string): string {
   const transformed = transformOutsideCode(body, (segment) => {
     let out = segment.replace(WIKILINK_JSX_RE_WITH_TEXT, (_match, _full, dq, sq, text: string) => {
       const target = unescapeAttr((dq ?? sq ?? "").trim());
-      const inner = text.trim();
+      const inner = unescapeText(text.trim());
       if (!inner || inner === target) return `[[${target}]]`;
       return `[[${target}|${inner}]]`;
     });
@@ -162,6 +162,21 @@ function unescapeAttr(value: string): string {
     .replace(/&gt;/g, ">")
     .replace(/&lt;/g, "<")
     .replace(/&amp;/g, "&");
+}
+
+function escapeText(value: string): string {
+  return escapeAttr(value)
+    .replace(/{/g, "&#123;")
+    .replace(/}/g, "&#125;");
+}
+
+function unescapeText(value: string): string {
+  const decodedBraces = value
+    .replace(/&#123;/g, "{")
+    .replace(/&#125;/g, "}")
+    .replace(/&amp;#123;/g, "&#123;")
+    .replace(/&amp;#125;/g, "&#125;");
+  return unescapeAttr(decodedBraces);
 }
 
 /**

@@ -115,4 +115,34 @@ describe("ContextFolderManager", () => {
       dirty: false,
     });
   });
+
+  it("skips transient git lock files when copying context git state", async () => {
+    const root = makeTempRoot();
+    const sourcePath = path.join(root, "source");
+    const contextsRoot = path.join(root, "contexts");
+    const repoRel = "projects/default";
+    const repoPath = path.join(sourcePath, repoRel);
+
+    mkdirSync(repoPath, { recursive: true });
+    writeFileSync(path.join(repoPath, "Welcome.mdx"), "# Welcome\n");
+    initGitRepo(repoPath);
+    git(repoPath, ["config", "user.name", "Test"]);
+    git(repoPath, ["config", "user.email", "test@natstack.local"]);
+    git(repoPath, ["add", "Welcome.mdx"]);
+    git(repoPath, ["commit", "-m", "Initial commit"]);
+    writeFileSync(path.join(repoPath, ".git", "index.lock"), "");
+    writeFileSync(path.join(repoPath, ".git", "refs", "heads", "main.lock"), "");
+
+    const manager = new ContextFolderManager({
+      sourcePath,
+      contextsRoot,
+      getWorkspaceTree: async () => ({ children: [makeNode(repoRel)] }),
+    });
+
+    const contextPath = await manager.ensureContextFolder("ctx-test");
+    const contextRepoPath = path.join(contextPath, repoRel);
+
+    await expect(fs.stat(path.join(contextRepoPath, ".git", "index.lock"))).rejects.toThrow();
+    await expect(fs.stat(path.join(contextRepoPath, ".git", "refs", "heads", "main.lock"))).rejects.toThrow();
+  });
 });

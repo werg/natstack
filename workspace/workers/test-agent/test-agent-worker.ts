@@ -1,5 +1,6 @@
 import { AgentWorkerBase } from "@workspace/agentic-do";
 import type { ChannelEvent, ParticipantDescriptor } from "@natstack/harness/types";
+import path from "node:path";
 import {
   AGENTIC_PROTOCOL_VERSION,
   type AgenticEvent,
@@ -134,13 +135,16 @@ export class TestAgentWorker extends AgentWorkerBase {
   private async maybeWriteVaultSwitchMarker(config: Record<string, unknown>, content: string): Promise<void> {
     if (config["writeVaultSwitchMarker"] !== true) return;
     const current = /Current vault:\s*`([^`]+)`/.exec(content)?.[1];
-    if (!current || !current.startsWith("/projects/")) return;
+    if (!current) return;
+    const currentDir = path.posix.normalize(current.replace(/\\/g, "/")).replace(/\/+$/, "");
+    if (!currentDir.startsWith("/projects/")) return;
     const markerPath = typeof config["markerPath"] === "string"
       ? config["markerPath"]
       : "AgentProof.mdx";
     const normalizedMarker = markerPath.replace(/^\/+/, "");
     if (normalizedMarker.includes("..")) return;
-    const fullPath = `${current.replace(/\/+$/, "")}/${normalizedMarker}`;
+    const fullPath = path.posix.normalize(path.posix.join(currentDir, normalizedMarker));
+    if (!fullPath.startsWith(`${currentDir}/`)) return;
     const title = normalizedMarker.replace(/\.mdx$/, "");
     await this.fs.writeFile(
       fullPath,

@@ -184,7 +184,7 @@ export default function SpectrolitePanel() {
               key: agent.key,
               channelId: channelName,
               channelContextId: resolvedContextId,
-              config: buildAgentConfig({ handle: agent.handle, repoRoot }),
+              config: buildAddedAgentConfig({ handle: agent.handle, repoRoot, className: agent.className }),
               replay: true,
             });
           } catch (err) {

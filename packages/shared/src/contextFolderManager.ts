@@ -58,8 +58,13 @@ async function setupContextGit(srcGit: string, destGit: string): Promise<void> {
     const srcPath = path.join(srcGit, entry.name);
     const destPath = path.join(destGit, entry.name);
 
+    if (entry.name.endsWith(".lock")) continue;
+
     if (entry.isDirectory()) {
-      await fs.cp(srcPath, destPath, { recursive: true });
+      await fs.cp(srcPath, destPath, {
+        recursive: true,
+        filter: (childSrc) => !path.basename(childSrc).endsWith(".lock"),
+      });
     } else {
       await fs.copyFile(srcPath, destPath);
     }

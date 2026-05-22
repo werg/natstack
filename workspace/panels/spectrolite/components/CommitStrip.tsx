@@ -49,6 +49,10 @@ function makeClient(): GitClient {
   });
 }
 
+function commitSubject(message: string): string {
+  return message.split("\n", 1)[0]?.trim() ?? "";
+}
+
 export function CommitStrip({ repoRoot, client, refreshNonce = 0, primaryAgentHandle, onCommitted, message, onMessageChange }: CommitStripProps) {
   const isMobile = useIsMobile();
   const [status, setStatus] = useState<DirtyStatus>({ dirty: [], branch: undefined });
@@ -96,7 +100,7 @@ export function CommitStrip({ repoRoot, client, refreshNonce = 0, primaryAgentHa
   }, [client, primaryAgentHandle, repoRoot, status.dirty]);
 
   const handleCommit = useCallback(async () => {
-    const subject = message.split("\n", 1)[0]?.trim();
+    const subject = commitSubject(message);
     if (!subject) return;
     setCommitting(true);
     setCommitError(null);
@@ -128,6 +132,8 @@ export function CommitStrip({ repoRoot, client, refreshNonce = 0, primaryAgentHa
       setCommitting(false);
     }
   }, [client, message, repoRoot, status.dirty, onCommitted]);
+
+  const subject = commitSubject(message);
 
   // Compact horizontal strip on desktop; stacked form on mobile so the
   // message field gets its full width and the buttons are touch-sized.
@@ -164,7 +170,7 @@ export function CommitStrip({ repoRoot, client, refreshNonce = 0, primaryAgentHa
           <Button
             size="3"
             variant="solid"
-            disabled={!message.trim() || committing || status.dirty.length === 0}
+            disabled={!subject || committing || status.dirty.length === 0}
             onClick={() => void handleCommit()}
             data-testid="spectrolite-commit-button"
             style={{ flex: 1, minHeight: 44 }}
@@ -204,7 +210,7 @@ export function CommitStrip({ repoRoot, client, refreshNonce = 0, primaryAgentHa
           style={{ flex: 1 }}
           aria-label="Commit message"
         />
-        <Button size="1" variant="soft" disabled={!message.trim() || committing || status.dirty.length === 0} onClick={() => void handleCommit()} data-testid="spectrolite-commit-button">
+        <Button size="1" variant="soft" disabled={!subject || committing || status.dirty.length === 0} onClick={() => void handleCommit()} data-testid="spectrolite-commit-button">
           <CommitIcon /> Commit
         </Button>
       </Flex>

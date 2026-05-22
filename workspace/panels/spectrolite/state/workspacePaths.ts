@@ -15,7 +15,11 @@ export interface ListMdxPathsOptions {
 export async function listMdxPaths(root: string, options: ListMdxPathsOptions = {}): Promise<string[]> {
   let pending = [root];
   const out: string[] = [];
-  const concurrency = Math.max(1, Math.floor(options.concurrency ?? DEFAULT_WALK_CONCURRENCY));
+  const requestedConcurrency = options.concurrency;
+  const normalizedConcurrency = typeof requestedConcurrency === "number" && Number.isFinite(requestedConcurrency)
+    ? Math.floor(requestedConcurrency)
+    : DEFAULT_WALK_CONCURRENCY;
+  const concurrency = Math.max(1, normalizedConcurrency);
 
   async function scan(dir: string): Promise<string[]> {
     let entries: { name: string; isDirectory: () => boolean }[] = [];

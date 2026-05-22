@@ -31,9 +31,34 @@ describe("wikilink transforms", () => {
     expect(jsx).toContain('<WikiLink target="Real Link" />');
   });
 
+  it("does not transform CRLF frontmatter", () => {
+    const source = "---\r\ntitle: \"[[Literal Title]]\"\r\n---\r\n\r\n[[Real Link]]";
+    const jsx = wikilinksToJsx(source);
+
+    expect(jsx).toContain('title: "[[Literal Title]]"');
+    expect(jsx).toContain('<WikiLink target="Real Link" />');
+    expect(wikilinksFromJsx(jsx)).toBe(source);
+  });
+
   it("preserves escaped target text across a write", () => {
     const source = "[[A & B < C > D \"quoted\"]]";
     expect(wikilinksFromJsx(wikilinksToJsx(source))).toBe(source);
+  });
+
+  it("preserves escaped alias text across a write", () => {
+    const source = "[[Target|A & B < C {value}]]";
+    const jsx = wikilinksToJsx(source);
+
+    expect(jsx).toContain("A &amp; B &lt; C &#123;value&#125;");
+    expect(wikilinksFromJsx(jsx)).toBe(source);
+  });
+
+  it("preserves literal numeric brace entities in alias text", () => {
+    const source = "[[Target|&#123;value&#125;]]";
+    const jsx = wikilinksToJsx(source);
+
+    expect(jsx).toContain("&amp;#123;value&amp;#125;");
+    expect(wikilinksFromJsx(jsx)).toBe(source);
   });
 });
 

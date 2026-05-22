@@ -156,10 +156,14 @@ export function DocumentEditor({
   // Conflict banner: set when the agent writes the file while the user
   // has unflushed in-buffer changes. The user picks which side wins.
   const [diskConflict, setDiskConflict] = useState<{ disk: string } | null>(null);
+  const diskConflictRef = useRef(diskConflict);
+  diskConflictRef.current = diskConflict;
   // Set when the file no longer exists on disk (deleted out from
   // under us). Editor keeps the in-memory buffer; user can choose to
   // recreate or discard.
   const [fileMissing, setFileMissing] = useState(false);
+  const fileMissingRef = useRef(fileMissing);
+  fileMissingRef.current = fileMissing;
 
   // Resolved + traversal-checked. Defensive even though the panel's fs is
   // RPC-scoped to the context root.
@@ -458,6 +462,7 @@ export function DocumentEditor({
       clearTimeout(mergeTimerRef.current);
       mergeTimerRef.current = null;
     }
+    if (diskConflictRef.current || fileMissingRef.current) return;
     const editor = editorRef.current;
     if (!editor) return;
     const current = editor.getMarkdown();

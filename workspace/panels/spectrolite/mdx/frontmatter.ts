@@ -21,6 +21,7 @@
 import * as YAML from "yaml";
 
 const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*\n?/;
+const PARSE_FAILED = Symbol("frontmatter-parse-failed");
 
 export interface ParsedFrontmatter {
   title: string | null;
@@ -151,6 +152,7 @@ export function isStateOnlyChange(before: string, after: string): boolean {
   if (bodyOf(before) !== bodyOf(after)) return false;
   const fmBefore = frontmatterMinusState(before);
   const fmAfter = frontmatterMinusState(after);
+  if (fmBefore === PARSE_FAILED || fmAfter === PARSE_FAILED) return false;
   return stableStringify(fmBefore) === stableStringify(fmAfter);
 }
 
@@ -169,7 +171,7 @@ function frontmatterMinusState(markdown: string): unknown {
     delete rest["state"];
     return rest;
   } catch {
-    return null;
+    return PARSE_FAILED;
   }
 }
 

@@ -57,6 +57,12 @@ describe("frontmatter comparisons", () => {
     expect(isStateOnlyChange("---\nstate:\n  x: 1\n---\n\nA", "---\nstate:\n  x: 2\n---\n\nB")).toBe(false);
   });
 
+  it("does not treat malformed frontmatter changes as state-only", () => {
+    const before = "---\ntitle: [bad\nstate:\n  x: 1\n---\n\nBody";
+    const after = "---\ntitle: [bad\nstate:\n  x: 2\n---\n\nBody";
+    expect(isStateOnlyChange(before, after)).toBe(false);
+  });
+
   it("diffs dependency maps", () => {
     expect(diffDependencies({ a: "1", b: "1" }, { b: "2", c: "1" })).toEqual({
       added: { c: "1" },

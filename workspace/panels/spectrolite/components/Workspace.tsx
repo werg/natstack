@@ -34,6 +34,7 @@ import {
   buildEvalTool,
   createPanelSandboxConfig,
   unwrapChatMethodResult,
+  type ChatParticipantMetadata,
   type ChatMethodResult,
   type ChatSandboxValue,
   type SandboxConfig,
@@ -176,7 +177,7 @@ export function Workspace({
   const theme = usePanelTheme();
   const isMobile = useIsMobile();
   const stateArgs = useStateArgs<SpectroliteStateArgs>();
-  const [client, setClient] = useState<PubSubClient | null>(null);
+  const [client, setClient] = useState<PubSubClient<ChatParticipantMetadata> | null>(null);
   const [activePath, setActivePath] = useState<string | null>(stateArgs.openPath ?? null);
   const [buffers, setBuffers] = useState<Record<string, FileBufferEntry>>({});
   const [availableAgents, setAvailableAgents] = useState<AvailableAgent[]>([]);
@@ -320,7 +321,7 @@ export function Workspace({
   // We need a stable handle to the live client for the eval tool's
   // ChatSandboxValue (the tool definition is captured once at connect-time,
   // but the agent may invoke it across reconnections).
-  const clientRef = useRef<PubSubClient | null>(null);
+  const clientRef = useRef<PubSubClient<ChatParticipantMetadata> | null>(null);
 
   // Build the ChatSandboxValue lazily — `eval` code can do channel work,
   // call other participants' methods, and read contextId/channelId.
@@ -329,6 +330,16 @@ export function Workspace({
       clientRef.current ? clientRef.current.publish(eventType, payload, options) : undefined,
     send: async (content, options) =>
       clientRef.current ? clientRef.current.send(content, options) : undefined,
+    publishCustomMessage: async (input, options) => {
+      const c = clientRef.current;
+      if (!c) throw new Error("Channel client not ready");
+      return c.publishCustomMessage(input, options);
+    },
+    updateCustomMessage: async (messageId, update, options) => {
+      const c = clientRef.current;
+      if (!c) throw new Error("Channel client not ready");
+      return c.updateCustomMessage(messageId, update, options);
+    },
     callMethod: async (pid, method, callArgs) => {
       const c = clientRef.current;
       if (!c) throw new Error("Channel client not ready");
@@ -341,6 +352,30 @@ export function Workspace({
       if (!c) throw new Error("Channel client not ready");
       const handle = c.callMethod(pid, method, callArgs);
       return (handle as unknown as { result: Promise<ChatMethodResult> }).result;
+    },
+    participantByHandle: (rawHandle) => {
+      const handle = rawHandle.startsWith("@") ? rawHandle.slice(1) : rawHandle;
+      const roster = clientRef.current?.roster ?? {};
+      return Object.values(roster).find((participant) => participant.metadata?.["handle"] === handle) ?? null;
+    },
+    callMethodByHandle: async (rawHandle, method, callArgs) => {
+      const c = clientRef.current;
+      if (!c) throw new Error("Channel client not ready");
+      const handle = rawHandle.startsWith("@") ? rawHandle.slice(1) : rawHandle;
+      const participant = Object.values(c.roster ?? {}).find((item) => item.metadata?.["handle"] === handle);
+      if (!participant) throw new Error(`No participant with handle @${handle}`);
+      const methodHandle = c.callMethod(participant.id, method, callArgs);
+      const result = await (methodHandle as unknown as { result: Promise<ChatMethodResult> }).result;
+      return unwrapChatMethodResult(result);
+    },
+    callMethodResultByHandle: async (rawHandle, method, callArgs) => {
+      const c = clientRef.current;
+      if (!c) throw new Error("Channel client not ready");
+      const handle = rawHandle.startsWith("@") ? rawHandle.slice(1) : rawHandle;
+      const participant = Object.values(c.roster ?? {}).find((item) => item.metadata?.["handle"] === handle);
+      if (!participant) throw new Error(`No participant with handle @${handle}`);
+      const methodHandle = c.callMethod(participant.id, method, callArgs);
+      return (methodHandle as unknown as { result: Promise<ChatMethodResult> }).result;
     },
     contextId: channelContextId,
     channelId: channelName,
@@ -381,7 +416,7 @@ export function Workspace({
   // chat panel's ToolProvider.eval.
   useEffect(() => {
     let cancelled = false;
-    const c = connectViaRpc({
+    const c = connectViaRpc<ChatParticipantMetadata>({
       rpc,
       channel: channelName,
       contextId: channelContextId,
@@ -722,6 +757,15 @@ export function Workspace({
     ? (parseFrontmatter(activeBuffer.currentMdx).title ?? (activePath ? pathToTitle(activePath) : null))
     : null;
   const activeLastFlushed = activePath ? lastFlushedAt[activePath] : undefined;
+
+  useEffect(() => {
+    setOptimisticallyRemovedAgents((prev) => {
+      if (prev.size === 0) return prev;
+      const liveHandles = new Set(roster.map((agent) => agent.handle));
+      const next = new Set([...prev].filter((handle) => liveHandles.has(handle)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [roster]);
 
   const visibleRoster = useMemo(
     () => roster.filter((agent) => !optimisticallyRemovedAgents.has(agent.handle)),

@@ -34,4 +34,12 @@ describe("listMdxPaths", () => {
     expect(paths[0]).toBe("area-0/notes/Doc-0.mdx");
     expect(paths).toContain("area-39/notes/Doc-39.mdx");
   });
+
+  it("falls back to default concurrency for invalid values", async () => {
+    const root = await mkdtemp(join(tmpdir(), "spectrolite-paths-invalid-concurrency-"));
+    await mkdir(join(root, "notes"), { recursive: true });
+    await writeFile(join(root, "notes", "A.mdx"), "# A");
+
+    await expect(listMdxPaths(root, { concurrency: Number.NaN })).resolves.toEqual(["notes/A.mdx"]);
+  });
 });

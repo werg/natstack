@@ -292,10 +292,12 @@ async function clickBranch(app: TestApp, panelId: string, branch: string): Promi
       const target = ${JSON.stringify(branch)};
       const marker = document.querySelector('[data-branch-name="' + target + '"]');
       const node = marker instanceof HTMLElement
-        ? marker.closest('[role="menuitem"], [data-radix-collection-item]')
+        ? marker.closest('[role="menuitem"], [data-radix-collection-item]') ?? marker
         : null;
       if (!(node instanceof HTMLElement)) return false;
-      node.click();
+      node.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, buttons: 1 }));
+      node.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+      node.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       return true;
     })()
   `);
@@ -837,7 +839,19 @@ test.describe("Spectrolite", () => {
     await closeTopDialog(testApp, panelId);
 
     await setCommitMessage(testApp, panelId, "E2E commit");
-    expect(await clickPanelSelector(testApp.app, panelId, '[data-testid="spectrolite-commit-button"]')).toBe(true);
+    await expect.poll(() => executePanelScript<boolean>(testApp!.app, panelId, `
+      (() => {
+        const input = document.querySelector('[aria-label="Commit message"]');
+        const button = document.querySelector('[data-testid="spectrolite-commit-button"]');
+        return input instanceof HTMLTextAreaElement
+          && input.value.startsWith("E2E commit")
+          && button instanceof HTMLButtonElement
+          && !button.disabled;
+      })()
+    `), {
+      timeout: 10000,
+    }).toBe(true);
+    expect(await clickPanelElement(testApp, panelId, '[data-testid="spectrolite-commit-button"]')).toBe(true);
 
     await expect.poll(() => getPanelText(testApp!.app, panelId), {
       timeout: 60000,
@@ -871,7 +885,12 @@ test.describe("Spectrolite", () => {
     await expect.poll(() => getPanelHtml(testApp!.app, panelId), {
       timeout: 60000,
     }).toContain('data-testid="spectrolite-source-recovery"');
-    await expect.poll(() => getPanelText(testApp!.app, panelId), {
+    await expect.poll(() => executePanelScript<string>(testApp!.app, panelId, `
+      (() => {
+        const input = document.querySelector('[data-testid="spectrolite-source-recovery-editor"] textarea, textarea[data-testid="spectrolite-source-recovery-editor"]');
+        return input instanceof HTMLTextAreaElement ? input.value : "";
+      })()
+    `), {
       timeout: 60000,
     }).toContain("<BrokenWidget");
     const fixedBroken = await executePanelScript<boolean>(testApp.app, panelId, `

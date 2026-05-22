@@ -83,7 +83,20 @@ export function BranchPicker({ repoRoot, refreshNonce = 0 }: BranchPickerProps) 
         setError("Commit or discard changes before switching branches.");
         return;
       }
-      await git.checkout(repoRoot, name, { force: true });
+      const forceCheckoutIfClean = async (checkoutErr?: unknown) => {
+        const refreshedStatus = await git.status(repoRoot);
+        const refreshedDirtyFiles = (refreshedStatus.files ?? [])
+          .filter((file) => file.status !== "unmodified" && file.status !== "ignored");
+        if (refreshedDirtyFiles.length > 0) throw checkoutErr ?? new Error("Commit or discard changes before switching branches.");
+        await git.checkout(repoRoot, name, { force: true });
+      };
+      try {
+        await git.checkout(repoRoot, name);
+        const nextStatus = await git.status(repoRoot);
+        if (nextStatus.branch !== name) await forceCheckoutIfClean();
+      } catch (checkoutErr) {
+        await forceCheckoutIfClean(checkoutErr);
+      }
       // Refresh by re-running the effect.
       setBranches((prev) => prev.map((b) => ({ ...b, current: b.name === name })));
     } catch (err) {
@@ -115,7 +128,13 @@ export function BranchPicker({ repoRoot, refreshNonce = 0 }: BranchPickerProps) 
               onSelect={() => void handleCheckout(b.name)}
               data-testid={`spectrolite-branch-${b.name}`}
             >
-              <Flex align="center" gap="2" style={{ minWidth: 140 }} data-testid={`spectrolite-branch-${b.name}`} data-branch-name={b.name}>
+              <Flex
+                align="center"
+                gap="2"
+                style={{ minWidth: 140 }}
+                data-testid={`spectrolite-branch-${b.name}`}
+                data-branch-name={b.name}
+              >
                 {b.current ? <CheckIcon /> : <span style={{ width: 16, display: "inline-block" }} />}
                 {b.name}
               </Flex>
