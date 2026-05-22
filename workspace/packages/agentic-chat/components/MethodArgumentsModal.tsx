@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import { Button, Dialog, Flex, Text } from "@radix-ui/themes";
+import { Button, Dialog, Flex } from "@radix-ui/themes";
 import type { MethodAdvertisement } from "@workspace/pubsub";
 import { JsonSchemaForm, validateSchemaForm } from "./JsonSchemaForm";
 
@@ -51,10 +51,14 @@ export function MethodArgumentsModal({
 
   return (
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
-      <Dialog.Content style={{ maxWidth: 480 }}>
-        <Dialog.Title>
-          {method.name}
-        </Dialog.Title>
+      <Dialog.Content
+        style={{
+          width: "min(480px, calc(100vw - 24px))",
+          maxHeight: "min(85dvh, 640px)",
+          overflow: "auto",
+        }}
+      >
+        <Dialog.Title>{method.name}</Dialog.Title>
         <Dialog.Description size="2" color="gray" mb="4">
           {method.description ?? `Call method on ${providerName}`}
         </Dialog.Description>
@@ -72,9 +76,7 @@ export function MethodArgumentsModal({
               Cancel
             </Button>
           </Dialog.Close>
-          <Button onClick={handleSubmit}>
-            Call Method
-          </Button>
+          <Button onClick={handleSubmit}>Call Method</Button>
         </Flex>
       </Dialog.Content>
     </Dialog.Root>

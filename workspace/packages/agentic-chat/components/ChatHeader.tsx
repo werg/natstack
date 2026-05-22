@@ -3,7 +3,7 @@ import { Badge, Button, Card, DropdownMenu, Flex, IconButton, Text } from "@radi
 import { PlusIcon } from "@radix-ui/react-icons";
 import type { Participant } from "@workspace/pubsub";
 import type { ToolApprovalProps } from "@workspace/tool-ui";
-import { useIsMobile } from "@workspace/react";
+import { useIsMobile } from "@workspace/react/responsive";
 import { useChatContext } from "../context/ChatContext";
 import type { ChatParticipantMetadata, PendingAgent } from "../types";
 import { ParticipantBadgeMenu } from "./ParticipantBadgeMenu";
@@ -58,7 +58,8 @@ export function ChatHeader() {
     const pIds = new Set(Object.keys(participants));
     const found = new Set<string>();
     for (let i = messages.length - 1; i >= 0 && found.size < pIds.size; i--) {
-      const msg = messages[i]!;
+      const msg = messages[i];
+      if (!msg) continue;
       if (msg.kind !== "message" || !pIds.has(msg.senderId) || found.has(msg.senderId)) continue;
       statusMap.set(msg.senderId, !msg.complete && !msg.error);
       found.add(msg.senderId);
@@ -110,7 +111,10 @@ interface ChatHeaderInnerProps {
   isMobile: boolean;
 }
 
-function chatHeaderInnerPropsEqual(prev: ChatHeaderInnerProps, next: ChatHeaderInnerProps): boolean {
+function chatHeaderInnerPropsEqual(
+  prev: ChatHeaderInnerProps,
+  next: ChatHeaderInnerProps
+): boolean {
   return (
     prev.channelId === next.channelId &&
     prev.connected === next.connected &&
@@ -146,7 +150,12 @@ const ChatHeaderInner = React.memo(function ChatHeaderInner({
   isMobile,
 }: ChatHeaderInnerProps) {
   return (
-    <Card className="chat-surface-card chat-header-card" size="1" variant="surface" style={{ flexShrink: 0 }}>
+    <Card
+      className="chat-surface-card chat-header-card"
+      size="1"
+      variant="surface"
+      style={{ flexShrink: 0 }}
+    >
       <Flex justify="between" align="center" wrap="wrap" gap="2" style={{ minWidth: 0 }}>
         <Flex gap="2" align="center" wrap="wrap" style={{ minWidth: 0, flex: "1 1 240px" }}>
           <Text size="5" weight="bold" style={{ minWidth: 0 }}>
@@ -163,7 +172,14 @@ const ChatHeaderInner = React.memo(function ChatHeaderInner({
           >
             {channelId}
           </Badge>
-          <Badge color={sessionEnabled ? "blue" : "orange"} title={sessionEnabled ? "Session persistence enabled - messages are saved and can be replayed" : "Ephemeral session - messages are not persisted"}>
+          <Badge
+            color={sessionEnabled ? "blue" : "orange"}
+            title={
+              sessionEnabled
+                ? "Session persistence enabled - messages are saved and can be replayed"
+                : "Ephemeral session - messages are not persisted"
+            }
+          >
             {sessionEnabled ? "Session" : "Ephemeral"}
           </Badge>
         </Flex>
@@ -184,30 +200,35 @@ const ChatHeaderInner = React.memo(function ChatHeaderInner({
             );
           })}
           {/* Pending/failed agents not yet in roster */}
-          {pendingAgents && Array.from(pendingAgents.entries())
-            .filter(([handle, _info]) => {
-              // Hide pending badge if a participant with this handle already joined.
-              return !Object.values(participants ?? {}).some(
-                (p) => (p?.metadata?.handle as string | undefined) === handle,
-              );
-            })
-            .map(([handle, info]) => (
-              <PendingAgentBadge
-                key={`pending-${handle}`}
-                handle={handle}
-                agentId={info.agentId}
-                status={info.status}
-                error={info.error}
-                onOpenDebugConsole={onDebugConsoleChange ?? undefined}
-              />
-            ))}
+          {pendingAgents &&
+            Array.from(pendingAgents.entries())
+              .filter(([handle, _info]) => {
+                // Hide pending badge if a participant with this handle already joined.
+                return !Object.values(participants ?? {}).some(
+                  (p) => (p?.metadata?.handle as string | undefined) === handle
+                );
+              })
+              .map(([handle, info]) => (
+                <PendingAgentBadge
+                  key={`pending-${handle}`}
+                  handle={handle}
+                  agentId={info.agentId}
+                  status={info.status}
+                  error={info.error}
+                  onOpenDebugConsole={onDebugConsoleChange ?? undefined}
+                />
+              ))}
           {onAddAgent && availableAgents && availableAgents.length > 0 ? (
             <DropdownMenu.Root>
               <DropdownMenu.Trigger>
                 {isMobile ? (
-                  <IconButton variant="soft" size="1" aria-label="Add Agent"><PlusIcon /></IconButton>
+                  <IconButton variant="soft" size="1" aria-label="Add Agent">
+                    <PlusIcon />
+                  </IconButton>
                 ) : (
-                  <Button variant="soft" size="1">Add Agent</Button>
+                  <Button variant="soft" size="1">
+                    Add Agent
+                  </Button>
                 )}
               </DropdownMenu.Trigger>
               <DropdownMenu.Content>
@@ -220,7 +241,12 @@ const ChatHeaderInner = React.memo(function ChatHeaderInner({
             </DropdownMenu.Root>
           ) : onAddAgent ? (
             isMobile ? (
-              <IconButton variant="soft" size="1" onClick={() => onAddAgent()} aria-label="Add Agent">
+              <IconButton
+                variant="soft"
+                size="1"
+                onClick={() => onAddAgent()}
+                aria-label="Add Agent"
+              >
                 <PlusIcon />
               </IconButton>
             ) : (
