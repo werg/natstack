@@ -143,6 +143,16 @@ export interface AvailableAgent {
   className: string;
 }
 
+function proposedHandleFromName(name: string): string {
+  const packageName = name.split("/").pop() ?? name;
+  const handle = packageName
+    .replace(/-worker$/i, "")
+    .replace(/-agent$/i, "")
+    .replace(/[^a-z0-9_-]+/gi, "-")
+    .replace(/^-+|-+$/g, "");
+  return handle || "agent";
+}
+
 export async function listAvailableAgents(): Promise<AvailableAgent[]> {
   const sources = await rpc.call<WorkerSourceEntry[]>("main", "workers.listSources", []);
   const out: AvailableAgent[] = [];
@@ -151,7 +161,7 @@ export async function listAvailableAgents(): Promise<AvailableAgent[]> {
       out.push({
         id: source.source,
         name: source.title ?? source.name,
-        proposedHandle: source.name.split("-")[0] ?? source.name,
+        proposedHandle: proposedHandleFromName(source.name),
         className: cls.className,
       });
     }

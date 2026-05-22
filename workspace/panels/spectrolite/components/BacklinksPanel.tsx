@@ -3,10 +3,10 @@
  * pointing at the active file.
  *
  * Computed on demand by grepping each `.mdx` for the active file's
- * basename (without `.mdx`) inside `[[…]]` brackets. v1 caches per
- * (activePath, refreshKey) — invalidate by bumping `refreshKey` after
- * flush or commit. For workspaces of a few hundred files this is fine
- * without a real index.
+ * basename (without `.mdx`) inside `[[…]]` brackets. Scans are bounded
+ * and concurrent so large vaults do not serialize thousands of file
+ * reads onto the UI update path. v1 caches per (activePath, refreshKey)
+ * — invalidate by bumping `refreshKey` after flush or commit.
  */
 
 import { useEffect, useState } from "react";
@@ -33,36 +33,55 @@ interface Backlink {
   snippet: string;
 }
 
+const DEFAULT_BACKLINK_CONCURRENCY = 24;
+
+export interface FindBacklinksOptions {
+  concurrency?: number;
+}
+
 function basenameNoExt(path: string): string {
   const name = path.split("/").pop() ?? path;
   return name.replace(/\.mdx$/, "");
 }
 
-async function findBacklinks(
+export async function findBacklinks(
   root: string,
   activePath: string,
   candidatePaths: string[],
+  options: FindBacklinksOptions = {},
 ): Promise<Backlink[]> {
   const targetName = basenameNoExt(activePath);
   const fullTarget = activePath.replace(/\.mdx$/, "");
-  const out: Backlink[] = [];
+  const concurrency = Math.max(1, Math.floor(options.concurrency ?? DEFAULT_BACKLINK_CONCURRENCY));
+  const candidates = candidatePaths.filter((path) => path !== activePath);
 
-  for (const path of candidatePaths) {
-    if (path === activePath) continue;
+  async function scan(path: string): Promise<Backlink | null> {
     let content: string;
     try {
       content = await fs.readFile(`${root}/${path}`, "utf-8");
     } catch {
-      continue;
+      return null;
+    }
+    if (!content.includes("[[") || (!content.includes(targetName) && !content.includes(fullTarget))) {
+      return null;
     }
     const targets = extractWikilinks(content);
     const hit = targets.some((t) => {
       const trimmed = t.endsWith(".mdx") ? t.slice(0, -4) : t;
       return trimmed === targetName || trimmed === fullTarget || trimmed.endsWith(`/${targetName}`);
     });
-    if (!hit) continue;
+    if (!hit) return null;
     const lineMatch = content.split("\n").find((line) => line.includes("[[") && (line.includes(targetName) || line.includes(fullTarget)));
-    out.push({ fromPath: path, snippet: lineMatch?.trim().slice(0, 120) ?? "" });
+    return { fromPath: path, snippet: lineMatch?.trim().slice(0, 120) ?? "" };
+  }
+
+  const out: Backlink[] = [];
+  for (let i = 0; i < candidates.length; i += concurrency) {
+    const batch = candidates.slice(i, i + concurrency);
+    const results = await Promise.all(batch.map(scan));
+    for (const backlink of results) {
+      if (backlink) out.push(backlink);
+    }
   }
   return out;
 }
@@ -88,7 +107,7 @@ export function BacklinksPanel({ root, activePath, paths, refreshKey, onOpen }: 
   if (!activePath) return null;
 
   return (
-    <Flex direction="column" gap="1" p="2" style={{ borderTop: "1px solid var(--gray-5)" }}>
+    <Flex direction="column" gap="1" p="2" style={{ borderTop: "1px solid var(--gray-5)" }} data-testid="spectrolite-backlinks">
       <Flex align="center" gap="1">
         <Link2Icon />
         <Text size="1" weight="medium" color="gray">BACKLINKS</Text>
@@ -104,7 +123,7 @@ export function BacklinksPanel({ root, activePath, paths, refreshKey, onOpen }: 
             <Flex direction="column" gap="1">
               {backlinks.map((bl) => (
                 <Box key={bl.fromPath}>
-                  <Link size="1" onClick={(e) => { e.preventDefault(); onOpen(bl.fromPath); }} href="#">
+                  <Link size="1" onClick={(e) => { e.preventDefault(); onOpen(bl.fromPath); }} href="#" data-testid={`spectrolite-backlink-${bl.fromPath}`}>
                     <Code variant="ghost" size="1">{bl.fromPath}</Code>
                   </Link>
                   {bl.snippet ? (

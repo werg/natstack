@@ -98,6 +98,11 @@ const DOC_STATE_MERGE_MS = 600;
  */
 const DOC_MODULE_COMPILE_MS = 500;
 
+function isMissingFileError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /enoent/i.test(msg) || /no such file/i.test(msg);
+}
+
 export function DocumentEditor({
   repoRoot,
   relPath,
@@ -176,6 +181,13 @@ export function DocumentEditor({
       onReload(relPath, transformed);
     } catch (err) {
       if (signal?.cancelled) return;
+      if (isMissingFileError(err)) {
+        lastDiskRef.current = null;
+        setError(null);
+        setFileMissing(true);
+        setMarkdown((prev) => prev ?? "");
+        return;
+      }
       setError(`Failed to read ${relPath}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }, [fullPath, relPath, onReload]);
@@ -185,6 +197,11 @@ export function DocumentEditor({
   // resolve in the new doc's inline JSX before our compile catches up.
   useEffect(() => {
     (globalThis as Record<string, unknown>)["__spectroliteDocExports__"] = {};
+    setMarkdown(null);
+    setError(null);
+    setDiskConflict(null);
+    setFileMissing(false);
+    lastDiskRef.current = null;
     const signal = { cancelled: false };
     void loadFromDisk(signal);
     return () => { signal.cancelled = true; };
@@ -232,8 +249,7 @@ export function DocumentEditor({
         // ENOENT means the file disappeared — likely deleted by the
         // agent or out-of-band. Surface a banner; the in-memory buffer
         // is the user's only copy now.
-        const msg = err instanceof Error ? err.message : String(err);
-        if (/enoent/i.test(msg) || /no such file/i.test(msg)) {
+        if (isMissingFileError(err)) {
           if (!fileMissing) setFileMissing(true);
         }
         /* ignore other transient read errors */
@@ -266,6 +282,22 @@ export function DocumentEditor({
     editorRef.current?.setMarkdown(merged);
     onReload(relPath, merged);
   }, [diskConflict, onReload, relPath]);
+
+  const recreateMissingFile = useCallback(async () => {
+    if (!fullPath || markdown === null) return;
+    try {
+      const parent = parentDir(fullPath);
+      if (parent) await fs.mkdir(parent, { recursive: true });
+      const onDisk = wikilinksFromJsx(markdown);
+      await fs.writeFile(fullPath, onDisk);
+      lastDiskRef.current = onDisk;
+      setFileMissing(false);
+      setError(null);
+      onReload(relPath, markdown);
+    } catch (err) {
+      setError(`Failed to recreate ${relPath}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [fullPath, markdown, onReload, relPath]);
 
   // Whole-doc compile pipeline. Each meaningful markdown change kicks a
   // debounced re-compile. We keep last-good export bodies installed on
@@ -398,11 +430,27 @@ export function DocumentEditor({
     }, DOC_STATE_MERGE_MS);
   }, [scheduleDocCompile]);
 
-  // Drop the pending merge timer on unmount so we don't fire after the
-  // editor ref is null.
+  const flushPendingDocStateMerge = useCallback(() => {
+    if (mergeTimerRef.current) {
+      clearTimeout(mergeTimerRef.current);
+      mergeTimerRef.current = null;
+    }
+    const editor = editorRef.current;
+    if (!editor) return;
+    const current = editor.getMarkdown();
+    const newMdx = replaceFrontmatterState(current, docStateRef.current);
+    if (newMdx === current) return;
+    onChangeRef.current(relPathRef.current, newMdx);
+    void writeBufferToDisk(repoRoot, relPathRef.current, newMdx).catch((err) => {
+      console.warn(`[Spectrolite] state merge write failed for ${relPathRef.current}:`, err);
+    });
+  }, [repoRoot]);
+
+  // Merge pending component state before unmount/path changes so a quick
+  // vault switch or panel close does not discard the latest state update.
   useEffect(() => () => {
-    if (mergeTimerRef.current) clearTimeout(mergeTimerRef.current);
-  }, []);
+    flushPendingDocStateMerge();
+  }, [flushPendingDocStateMerge]);
 
   const docStateContextValue: DocStateContextValue = useMemo(() => ({
     state: docState,
@@ -541,7 +589,7 @@ export function DocumentEditor({
       <DepsContext.Provider value={dependencies}>
         <Flex direction="column" className={`spectrolite-mdx ${theme === "dark" ? "dark-theme" : ""}`} style={{ height: "100%" }}>
           {diskConflict ? (
-            <Callout.Root color="amber" size="1" style={{ borderRadius: 0, borderLeft: 0, borderRight: 0 }}>
+            <Callout.Root color="amber" size="1" style={{ borderRadius: 0, borderLeft: 0, borderRight: 0 }} data-testid="spectrolite-disk-conflict">
               <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
               <Callout.Text size="2">
                 This file was changed on disk while you have unflushed edits.
@@ -557,19 +605,24 @@ export function DocumentEditor({
             </Callout.Root>
           ) : null}
           {fileMissing ? (
-            <Callout.Root color="red" size="1" style={{ borderRadius: 0, borderLeft: 0, borderRight: 0 }}>
+            <Callout.Root color="red" size="1" style={{ borderRadius: 0, borderLeft: 0, borderRight: 0 }} data-testid="spectrolite-file-missing">
               <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
               <Callout.Text size="2">
-                This file no longer exists on disk. Your in-memory buffer is the only copy. Flush to recreate, or pick another file.
+                This file no longer exists on disk. Your in-memory buffer is the only copy. Recreate it, or pick another file.
               </Callout.Text>
+              <Flex gap="2" mt="2">
+                <Button size="2" variant="solid" color="red" onClick={() => void recreateMissingFile()}>
+                  Recreate file
+                </Button>
+              </Flex>
             </Callout.Root>
           ) : null}
           {docCompileError ? (
-            <Flex align="center" gap="2" px="2" py="1" style={{ background: "var(--amber-3)", borderBottom: "1px solid var(--amber-6)", flexShrink: 0 }}>
+            <Flex align="center" gap="2" px="2" py="1" style={{ background: "var(--amber-3)", borderBottom: "1px solid var(--amber-6)", flexShrink: 0 }} data-testid="spectrolite-doc-compile-error">
               <Text size="1" color="amber">{docCompileError}</Text>
             </Flex>
           ) : null}
-          <Box ref={containerRef} style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative" }}>
+          <Box ref={containerRef} data-testid="spectrolite-editor" style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative" }}>
             <Box style={{ height: "100%", overflow: "auto" }}>
               <MDXEditor
                 ref={editorRef}

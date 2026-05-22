@@ -18,6 +18,7 @@ import { ChevronRightIcon } from "@radix-ui/react-icons";
 import { BottomSheet } from "./BottomSheet";
 import { BranchPicker } from "../BranchPicker";
 import { AgentRoster, type RosterAgent } from "../AgentRoster";
+import type { AgentVaultNotice } from "../Workspace";
 import type { AvailableAgent } from "../../bootstrap";
 
 export interface WorkspaceSettingsSheetProps {
@@ -30,6 +31,7 @@ export interface WorkspaceSettingsSheetProps {
   availableAgents: AvailableAgent[];
   onAddAgent: (agentId: string) => void | Promise<void>;
   onRemoveAgent: (handle: string) => void | Promise<void>;
+  agentVaultNotice?: AgentVaultNotice | null;
 }
 
 export function WorkspaceSettingsSheet({
@@ -42,6 +44,7 @@ export function WorkspaceSettingsSheet({
   availableAgents,
   onAddAgent,
   onRemoveAgent,
+  agentVaultNotice,
 }: WorkspaceSettingsSheetProps) {
   return (
     <BottomSheet open={open} onOpenChange={onOpenChange} title="Workspace">
@@ -71,6 +74,19 @@ export function WorkspaceSettingsSheet({
         <Separator size="4" />
 
         <Section title={`Agents (${roster.length})`}>
+          {agentVaultNotice ? (
+            <Text
+              size="1"
+              color={agentVaultNotice.state === "failed" ? "red" : agentVaultNotice.state === "pending" ? "amber" : "gray"}
+              data-testid="spectrolite-agent-vault-status"
+            >
+              {agentVaultNotice.state === "pending"
+                ? `Updating agents for ${agentVaultNotice.repoRoot.replace(/^\//, "")}`
+                : agentVaultNotice.state === "failed"
+                  ? `Agent vault update failed for ${agentVaultNotice.repoRoot.replace(/^\//, "")}`
+                  : `Agents using ${agentVaultNotice.repoRoot.replace(/^\//, "")}`}
+            </Text>
+          ) : null}
           <AgentRoster
             agents={roster}
             availableAgents={availableAgents}

@@ -66,6 +66,7 @@ export class TestAgentWorker extends AgentWorkerBase {
       ? config["responseText"]
       : `Deterministic response to: ${input.content}`;
     const delayMs = typeof config["delayMs"] === "number" ? config["delayMs"] : 250;
+    await this.maybeWriteVaultSwitchMarker(config, input.content);
 
     const publish = async (agenticEvent: AgenticEvent, key: string) => {
       await channel.publishAgenticEvent(participantId, agenticEvent, {
@@ -128,5 +129,31 @@ export class TestAgentWorker extends AgentWorkerBase {
       },
       createdAt: new Date().toISOString(),
     }, "message-completed");
+  }
+
+  private async maybeWriteVaultSwitchMarker(config: Record<string, unknown>, content: string): Promise<void> {
+    if (config["writeVaultSwitchMarker"] !== true) return;
+    const current = /Current vault:\s*`([^`]+)`/.exec(content)?.[1];
+    if (!current || !current.startsWith("/projects/")) return;
+    const markerPath = typeof config["markerPath"] === "string"
+      ? config["markerPath"]
+      : "AgentProof.mdx";
+    const normalizedMarker = markerPath.replace(/^\/+/, "");
+    if (normalizedMarker.includes("..")) return;
+    const fullPath = `${current.replace(/\/+$/, "")}/${normalizedMarker}`;
+    const title = normalizedMarker.replace(/\.mdx$/, "");
+    await this.fs.writeFile(
+      fullPath,
+      [
+        "---",
+        `title: ${title}`,
+        "---",
+        "",
+        `# ${title}`,
+        "",
+        `Deterministic agent wrote this in ${current}.`,
+        "",
+      ].join("\n"),
+    );
   }
 }

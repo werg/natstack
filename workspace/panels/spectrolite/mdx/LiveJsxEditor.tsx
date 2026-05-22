@@ -34,7 +34,7 @@
  * the diff/source toggle so they can edit the JSX by hand.
  */
 
-import { useEffect, useMemo, useState, type ComponentType } from "react";
+import { Component as ReactComponent, useEffect, useMemo, useState, type ComponentType, type ReactNode } from "react";
 import type { JsxEditorProps } from "@mdxeditor/editor";
 import { Box, Card, Code, Flex, Text } from "@radix-ui/themes";
 import { ExclamationTriangleIcon, Pencil1Icon } from "@radix-ui/react-icons";
@@ -189,21 +189,7 @@ export function LiveJsxEditor(props: JsxEditorProps & LiveJsxEditorOwnProps) {
   }, [wrapped, tagName, source, dependencies, docExportsVersion]);
 
   if (error) {
-    return (
-      <Card>
-        <Flex direction="column" gap="1">
-          <Flex align="center" gap="1">
-            <ExclamationTriangleIcon color="red" />
-            <Text size="1" color="red" weight="medium">&lt;{tagName}&gt;</Text>
-            <Text size="1" color="gray">— preview failed</Text>
-          </Flex>
-          <Code size="1" style={{ whiteSpace: "pre-wrap" }}>{error}</Code>
-          <Text size="1" color="gray">
-            <Pencil1Icon /> Use the diff/source toggle to edit the JSX by hand.
-          </Text>
-        </Flex>
-      </Card>
-    );
+    return <LiveJsxErrorCard tagName={tagName} error={error} />;
   }
 
   if (!Component) {
@@ -222,7 +208,51 @@ export function LiveJsxEditor(props: JsxEditorProps & LiveJsxEditorOwnProps) {
         borderRadius: "var(--radius-2)",
       }}
     >
-      <Component />
+      <LiveJsxRuntimeBoundary tagName={tagName}>
+        <Component />
+      </LiveJsxRuntimeBoundary>
     </Box>
   );
+}
+
+function LiveJsxErrorCard({ tagName, error }: { tagName: string; error: string }) {
+  return (
+    <Card data-testid="spectrolite-live-jsx-error">
+      <Flex direction="column" gap="1">
+        <Flex align="center" gap="1">
+          <ExclamationTriangleIcon color="red" />
+          <Text size="1" color="red" weight="medium">&lt;{tagName}&gt;</Text>
+          <Text size="1" color="gray">— preview failed</Text>
+        </Flex>
+        <Code size="1" style={{ whiteSpace: "pre-wrap" }}>{error}</Code>
+        <Text size="1" color="gray">
+          <Pencil1Icon /> Use the diff/source toggle to edit the JSX by hand.
+        </Text>
+      </Flex>
+    </Card>
+  );
+}
+
+class LiveJsxRuntimeBoundary extends ReactComponent<
+  { tagName: string; children: ReactNode },
+  { error: string | null }
+> {
+  state: { error: string | null } = { error: null };
+
+  static getDerivedStateFromError(error: unknown): { error: string } {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+
+  override componentDidUpdate(prevProps: { tagName: string; children: ReactNode }): void {
+    if (prevProps.children !== this.props.children && this.state.error) {
+      this.setState({ error: null });
+    }
+  }
+
+  override render() {
+    if (this.state.error) {
+      return <LiveJsxErrorCard tagName={this.props.tagName} error={this.state.error} />;
+    }
+    return this.props.children;
+  }
 }

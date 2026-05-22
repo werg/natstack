@@ -59,6 +59,7 @@ import { createFlushController } from "../flush/flush-controller";
 import { buildFlushPayload } from "../flush/diff";
 import { createBufferEntry, hasUnflushedChanges, type FileBufferEntry } from "../state/fileBuffer";
 import { KB_USER_EDIT_TYPE, registerSpectroliteMessageTypes } from "../messages/register";
+import { buildMentionDeliveryMessage } from "../messages/mention-delivery";
 import { WikilinkContext } from "../mdx/components";
 import { resolveWikilinkTarget, wikilinksFromJsx } from "../mdx/wikilink";
 import { parseFrontmatter, diffDependencies, isStateOnlyChange } from "../mdx/frontmatter";
@@ -91,6 +92,15 @@ interface SpectroliteStateArgs {
   contextId?: string;
   pendingAgents?: Array<{ handle: string }>;
 }
+
+export type AgentVaultNotice =
+  | { state: "current"; repoRoot: string; handles: string[]; at: number }
+  | { state: "pending"; repoRoot: string; handles: string[] }
+  | { state: "failed"; repoRoot: string; handles: string[]; error: string };
+
+type MentionDeliveryNotice =
+  | { state: "sent"; path: string; handles: string[]; at: number }
+  | { state: "failed"; path: string; handles: string[]; error: string };
 
 const SAMPLE_DOC_NAME = "Welcome.mdx";
 
@@ -170,11 +180,14 @@ export function Workspace({
   const [buffers, setBuffers] = useState<Record<string, FileBufferEntry>>({});
   const [availableAgents, setAvailableAgents] = useState<AvailableAgent[]>([]);
   const [roster, setRoster] = useState<RosterAgent[]>([]);
+  const [optimisticallyRemovedAgents, setOptimisticallyRemovedAgents] = useState<Set<string>>(() => new Set());
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [workspacePaths, setWorkspacePaths] = useState<string[]>([]);
   const [commitMessage, setCommitMessage] = useState("");
   const [lastFlushedAt, setLastFlushedAt] = useState<Record<string, number>>({});
   const [nowTick, setNowTick] = useState(() => Date.now());
+  const [agentVaultNotice, setAgentVaultNotice] = useState<AgentVaultNotice | null>(null);
+  const [mentionDeliveryNotice, setMentionDeliveryNotice] = useState<MentionDeliveryNotice | null>(null);
   const [drawerOpenSignal, setDrawerOpenSignal] = useState(0);
   const requestDrawerOpen = useCallback(() => setDrawerOpenSignal((n) => n + 1), []);
 
@@ -194,6 +207,58 @@ export function Workspace({
   buffersRef.current = buffers;
   const pathsRef = useRef(workspacePaths);
   pathsRef.current = workspacePaths;
+  const repoRootRef = useRef(repoRoot);
+  repoRootRef.current = repoRoot;
+  const renderedVaultRef = useRef(repoRoot);
+
+  useEffect(() => {
+    const g = globalThis as Record<string, unknown>;
+    // E2E-only panel hook. Tests must call the installer explicitly, and
+    // every file operation is scoped through joinSafe() to the active vault.
+    g["__spectroliteInstallE2E__"] = () => {
+      g["__spectroliteE2E__"] = {
+        writeFile: async (relPath: string, content: string) => {
+          const root = repoRootRef.current;
+          if (!root) throw new Error("No Spectrolite vault is selected");
+          const full = joinSafe(root, relPath);
+          if (!full) throw new Error(`Refusing to write "${relPath}" outside the active vault`);
+          const parent = parentDir(full);
+          if (parent) await fs.mkdir(parent, { recursive: true });
+          await fs.writeFile(full, content);
+        },
+        readFile: async (relPath: string) => {
+          const root = repoRootRef.current;
+          if (!root) throw new Error("No Spectrolite vault is selected");
+          const full = joinSafe(root, relPath);
+          if (!full) throw new Error(`Refusing to read "${relPath}" outside the active vault`);
+          return fs.readFile(full, "utf-8");
+        },
+        unlink: async (relPath: string) => {
+          const root = repoRootRef.current;
+          if (!root) throw new Error("No Spectrolite vault is selected");
+          const full = joinSafe(root, relPath);
+          if (!full) throw new Error(`Refusing to delete "${relPath}" outside the active vault`);
+          await fs.unlink(full);
+        },
+      };
+      return true;
+    };
+    return () => {
+      if (g["__spectroliteInstallE2E__"]) delete g["__spectroliteInstallE2E__"];
+      if (g["__spectroliteE2E__"]) delete g["__spectroliteE2E__"];
+    };
+  }, []);
+
+  useEffect(() => {
+    if (renderedVaultRef.current === repoRoot) return;
+    renderedVaultRef.current = repoRoot;
+    setActivePath(stateArgs.openPath ?? null);
+    setBuffers({});
+    setLastFlushedAt({});
+    setWorkspacePaths([]);
+    setActiveDeps({});
+    lastDepsRef.current = {};
+  }, [repoRoot, stateArgs.openPath]);
 
   // Sandbox config + scope manager — same primitives the chat panel uses
   // for its eval tool. Recreated whenever the channel name changes so the
@@ -318,6 +383,66 @@ export function Workspace({
     return unsubscribe;
   }, [client]);
 
+  const lastSelectedVaultRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!repoRoot) return;
+    const previous = lastSelectedVaultRef.current;
+    if (previous === repoRoot) return;
+    if (!previous) {
+      lastSelectedVaultRef.current = repoRoot;
+      if (roster.length > 0) {
+        setAgentVaultNotice({
+          state: "current",
+          repoRoot,
+          handles: roster.map((agent) => agent.handle),
+          at: Date.now(),
+        });
+      }
+      return;
+    }
+    if (!client) return;
+    const handles = roster.length > 0
+      ? roster.map((agent) => agent.handle)
+      : (primaryAgentHandle ? [primaryAgentHandle] : []);
+    if (handles.length === 0) return;
+    const mentions = [...new Set(handles)];
+    setAgentVaultNotice({ state: "pending", repoRoot, handles: mentions });
+    const mentionText = mentions.map((handle) => `@${handle}`).join(" ");
+    const message = [
+      `${mentionText} System update: the user switched Spectrolite vaults.`,
+      `Previous vault: \`${previous}\``,
+      `Current vault: \`${repoRoot}\``,
+      `Use the current vault as the workspace root for future file reads, edits, and git commands.`,
+    ].join("\n");
+    lastSelectedVaultRef.current = repoRoot;
+    void client.send(message, { mentions })
+      .then(() => {
+        setAgentVaultNotice({ state: "current", repoRoot, handles: mentions, at: Date.now() });
+      })
+      .catch((err) => {
+        console.warn("[Spectrolite] vault-switch update failed:", err);
+        setAgentVaultNotice({
+          state: "failed",
+          repoRoot,
+          handles: mentions,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+  }, [client, primaryAgentHandle, repoRoot, roster]);
+
+  useEffect(() => {
+    if (!repoRoot || roster.length === 0) return;
+    setAgentVaultNotice((prev) => {
+      if (prev?.repoRoot === repoRoot && prev.state !== "failed") return prev;
+      return {
+        state: "current",
+        repoRoot,
+        handles: roster.map((agent) => agent.handle),
+        at: Date.now(),
+      };
+    });
+  }, [repoRoot, roster]);
+
   useEffect(() => { void listAvailableAgents().then(setAvailableAgents).catch(() => {}); }, []);
 
   useEffect(() => {
@@ -392,6 +517,7 @@ export function Workspace({
       return { ...prev, [relPath]: { ...cur, savedMdx: after, lastFlushedMdx: after } };
     });
     setLastFlushedAt((prev) => ({ ...prev, [relPath]: flushedAt }));
+    setRefreshNonce((n) => n + 1);
 
     if (!payload || !c) return;
 
@@ -425,24 +551,65 @@ export function Workspace({
     // Mentioned-agent fast path: send a normal chat message with the diff
     // inlined so the agent's mention-respond policy fires AND it has full
     // context without having to re-read the file.
-    if (payload.mentions.length > 0) {
+    const mentionMessage = buildMentionDeliveryMessage({
+      path: relPath,
+      mentions: payload.mentions,
+      unifiedDiff: payload.unifiedDiff,
+    });
+    if (mentionMessage) {
       try {
-        const handles = payload.mentions.map((h) => `@${h}`).join(" ");
-        const message = [
-          `${handles} I just edited \`${relPath}\`. Diff:`,
-          "```diff",
-          payload.unifiedDiff,
-          "```",
-        ].join("\n");
-        await c.send(message, { mentions: payload.mentions });
+        await c.send(mentionMessage.content, { mentions: mentionMessage.mentions });
+        setMentionDeliveryNotice({ state: "sent", path: relPath, handles: mentionMessage.mentions, at: Date.now() });
       } catch (err) {
         console.warn("[Spectrolite] mention send failed:", err);
+        setMentionDeliveryNotice({
+          state: "failed",
+          path: relPath,
+          handles: mentionMessage.mentions,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
   }, [client, repoRoot, channelContextId]);
 
   const flushController = useMemo(() => createFlushController({ onFlush: flush }), [flush]);
-  useEffect(() => () => flushController.dispose(), [flushController]);
+
+  const flushDirtyBuffers = useCallback(async () => {
+    const dirtyPaths = Object.values(buffersRef.current)
+      .filter(hasUnflushedChanges)
+      .map((entry) => entry.path);
+    for (const path of dirtyPaths) {
+      await flush(path);
+    }
+  }, [flush]);
+
+  const writeDirtyBuffersToDisk = useCallback(async (root: string | null) => {
+    if (!root) return;
+    const dirtyEntries = Object.values(buffersRef.current).filter(hasUnflushedChanges);
+    await Promise.all(dirtyEntries.map(async (entry) => {
+      try {
+        await writeBufferToDisk(root, entry.path, entry.currentMdx);
+      } catch (err) {
+        console.warn(`[Spectrolite] teardown write failed for ${entry.path}:`, err);
+      }
+    }));
+  }, []);
+
+  useEffect(() => {
+    const rootForThisController = repoRoot;
+    return () => {
+      flushController.flushPending();
+      flushController.dispose();
+      void writeDirtyBuffersToDisk(rootForThisController);
+    };
+  }, [flushController, repoRoot, writeDirtyBuffersToDisk]);
+
+  const handleSwitchVaultWithFlush = useCallback(() => {
+    void (async () => {
+      await flushDirtyBuffers();
+      onSwitchVault();
+    })();
+  }, [flushDirtyBuffers, onSwitchVault]);
 
   const handleEditorChange = useCallback((relPath: string, next: string) => {
     setBuffers((prev) => {
@@ -523,7 +690,26 @@ export function Workspace({
     : null;
   const activeLastFlushed = activePath ? lastFlushedAt[activePath] : undefined;
 
-  const mentionCandidates: MentionCandidate[] = useMemo(() => roster.map((a) => ({ handle: a.handle })), [roster]);
+  const visibleRoster = useMemo(
+    () => roster.filter((agent) => !optimisticallyRemovedAgents.has(agent.handle)),
+    [optimisticallyRemovedAgents, roster]
+  );
+
+  const handleRemoveVisibleAgent = useCallback(async (handle: string) => {
+    setOptimisticallyRemovedAgents((prev) => new Set(prev).add(handle));
+    try {
+      await onRemoveAgent(handle);
+    } catch (err) {
+      setOptimisticallyRemovedAgents((prev) => {
+        const next = new Set(prev);
+        next.delete(handle);
+        return next;
+      });
+      throw err;
+    }
+  }, [onRemoveAgent]);
+
+  const mentionCandidates: MentionCandidate[] = useMemo(() => visibleRoster.map((a) => ({ handle: a.handle })), [visibleRoster]);
 
   // Wikilink context — resolves [[Page]] to a path, opens it, OR creates
   // a stub when no match exists (Obsidian-style click-to-create).
@@ -546,9 +732,9 @@ export function Workspace({
     if (created) setActivePath(created);
   }, [createFileAt]);
 
-  // No vault selected yet — show the picker. Channel + agent are already
-  // connected (so the user can chat about which vault to open), but we
-  // don't render the editor surface until the user has picked.
+  // No vault selected yet — show the picker. The channel is connected, but
+  // the default agent is deliberately delayed until the user picks a vault
+  // so its prompt never points at a placeholder workspace root.
   if (!repoRoot) {
     return (
       <Theme appearance={theme} radius="medium" style={{ height: "100dvh" }}>
@@ -563,11 +749,13 @@ export function Workspace({
           >
             <Heading size="3">Spectrolite</Heading>
             <AgentRoster
-              agents={roster}
+              agents={visibleRoster}
               availableAgents={availableAgents}
               onAdd={async (id) => { await onAddAgent(id); }}
-              onRemove={async (handle) => { await onRemoveAgent(handle); }}
+              onRemove={handleRemoveVisibleAgent}
             />
+            <AgentVaultStatus notice={agentVaultNotice} />
+            <MentionDeliveryStatus notice={mentionDeliveryNotice} />
           </Flex>
           <Box style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
             <VaultPicker
@@ -642,6 +830,7 @@ export function Workspace({
             <Box style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
               {activePath ? (
                 <DocumentEditor
+                  key={activePath}
                   repoRoot={repoRoot}
                   relPath={activePath}
                   theme={theme}
@@ -675,6 +864,7 @@ export function Workspace({
               px="2"
               py="2"
               style={{ borderTop: "1px solid var(--gray-5)", flexShrink: 0 }}
+              data-testid="spectrolite-mobile-actions"
             >
               <MobileCommitButton
                 repoRoot={repoRoot}
@@ -727,6 +917,7 @@ export function Workspace({
               <CommitStrip
                 repoRoot={repoRoot}
                 client={client}
+                refreshNonce={refreshNonce}
                 primaryAgentHandle={primaryAgentHandle ?? roster[0]?.handle}
                 onCommitted={(sha) => {
                   setRefreshNonce((n) => n + 1);
@@ -743,11 +934,12 @@ export function Workspace({
               onOpenChange={setSettingsSheetOpen}
               repoRoot={repoRoot}
               refreshNonce={refreshNonce}
-              onSwitchVault={onSwitchVault}
-              roster={roster}
+              onSwitchVault={handleSwitchVaultWithFlush}
+              roster={visibleRoster}
               availableAgents={availableAgents}
               onAddAgent={onAddAgent}
-              onRemoveAgent={onRemoveAgent}
+              onRemoveAgent={handleRemoveVisibleAgent}
+              agentVaultNotice={agentVaultNotice}
             />
           </Flex>
         </WikilinkContext.Provider>
@@ -773,8 +965,9 @@ export function Workspace({
                 size="1"
                 variant="ghost"
                 color="gray"
-                onClick={onSwitchVault}
+                onClick={handleSwitchVaultWithFlush}
                 title="Switch to a different vault"
+                data-testid="spectrolite-switch-vault"
               >
                 {repoRoot.replace(/^\//, "")}
               </Button>
@@ -793,11 +986,13 @@ export function Workspace({
               ) : null}
             </Flex>
             <AgentRoster
-              agents={roster}
+              agents={visibleRoster}
               availableAgents={availableAgents}
               onAdd={async (id) => { await onAddAgent(id); }}
-              onRemove={async (handle) => { await onRemoveAgent(handle); }}
+              onRemove={handleRemoveVisibleAgent}
             />
+            <AgentVaultStatus notice={agentVaultNotice} compact />
+            <MentionDeliveryStatus notice={mentionDeliveryNotice} compact />
           </Flex>
           <Flex style={{ flex: 1, minHeight: 0 }}>
             <Flex direction="column" style={{ width: 260, borderRight: "1px solid var(--gray-5)", flexShrink: 0 }}>
@@ -821,6 +1016,7 @@ export function Workspace({
             <Box style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
               {activePath ? (
                 <DocumentEditor
+                  key={activePath}
                   repoRoot={repoRoot}
                   relPath={activePath}
                   theme={theme}
@@ -845,6 +1041,7 @@ export function Workspace({
           <CommitStrip
             repoRoot={repoRoot}
             client={client}
+            refreshNonce={refreshNonce}
             primaryAgentHandle={primaryAgentHandle ?? roster[0]?.handle}
             onCommitted={() => setRefreshNonce((n) => n + 1)}
             message={commitMessage}
@@ -880,5 +1077,46 @@ function EmptyVault({ onCreateWelcomeDoc }: { onCreateWelcomeDoc: () => void }) 
         </Button>
       </Flex>
     </Flex>
+  );
+}
+
+function AgentVaultStatus({ notice, compact = false }: { notice: AgentVaultNotice | null; compact?: boolean }) {
+  if (!notice) return null;
+  const vault = notice.repoRoot.replace(/^\//, "");
+  const handles = notice.handles.map((handle) => `@${handle}`).join(", ");
+  const label = notice.state === "pending"
+    ? `Updating agents for ${vault}`
+    : notice.state === "failed"
+      ? `Agent vault update failed for ${vault}`
+      : `Agents using ${vault}`;
+  return (
+    <Text
+      size="1"
+      color={notice.state === "failed" ? "red" : notice.state === "pending" ? "amber" : "gray"}
+      title={notice.state === "failed" ? notice.error : handles ? `${handles} notified` : undefined}
+      truncate={compact}
+      data-testid="spectrolite-agent-vault-status"
+    >
+      {label}
+    </Text>
+  );
+}
+
+function MentionDeliveryStatus({ notice, compact = false }: { notice: MentionDeliveryNotice | null; compact?: boolean }) {
+  if (!notice) return null;
+  const handles = notice.handles.map((handle) => `@${handle}`).join(", ");
+  const label = notice.state === "failed"
+    ? `Agent mention failed for ${notice.path}`
+    : `Sent ${handles} edit for ${notice.path}`;
+  return (
+    <Text
+      size="1"
+      color={notice.state === "failed" ? "red" : "gray"}
+      title={notice.state === "failed" ? notice.error : `Delivered to ${handles}`}
+      truncate={compact}
+      data-testid="spectrolite-mention-delivery-status"
+    >
+      {label}
+    </Text>
   );
 }

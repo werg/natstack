@@ -64,6 +64,21 @@ function buildAgentConfig(opts: { handle: string; repoRoot: string | null }): Re
   };
 }
 
+function buildAddedAgentConfig(opts: { handle: string; repoRoot: string | null; className: string }): Record<string, unknown> {
+  const base = buildAgentConfig({ handle: opts.handle, repoRoot: opts.repoRoot });
+  if (opts.className === "TestAgentWorker") {
+    return {
+      ...base,
+      deterministicResponse: true,
+      writeVaultSwitchMarker: true,
+      markerPath: "AgentProof.mdx",
+      responseText: `Deterministic Spectrolite test agent @${opts.handle} handled the update.`,
+      delayMs: 10,
+    };
+  }
+  return base;
+}
+
 export default function SpectrolitePanel() {
   const theme = usePanelTheme();
   const stateArgs = useStateArgs<SpectroliteStateArgs>();
@@ -85,28 +100,45 @@ export default function SpectrolitePanel() {
   const [bootstrapChannel, setBootstrapChannel] = useState<string | null>(null);
   const [bootstrapPending, setBootstrapPending] = useState<PendingAgentRecord[] | null>(null);
   const bootstrapAttempted = useRef(false);
+  const defaultAgentAttempted = useRef(false);
 
-  // Auto-bootstrap on first mount when no channel exists
+  // Auto-bootstrap the channel on first mount. The default agent is
+  // deliberately delayed until a vault is selected so its system prompt
+  // contains a real workspace root instead of a placeholder.
   useEffect(() => {
     if (stateArgs.channelName || bootstrapAttempted.current || !resolvedContextId) return;
     bootstrapAttempted.current = true;
 
     const channelName = newChannelName();
+
+    void setStateArgs({
+      channelName,
+      contextId: resolvedContextId,
+      repoRoot,
+    });
+
+    setBootstrapChannel(channelName);
+  }, [resolvedContextId, stateArgs.channelName, repoRoot]);
+
+  // Create the default resident agent only after the user has picked a
+  // vault. Additional manually-added agents still go through handleAddAgent.
+  useEffect(() => {
+    const channelName = stateArgs.channelName ?? bootstrapChannel;
+    const pending = stateArgs.pendingAgents ?? bootstrapPending ?? [];
+    if (!repoRoot || !resolvedContextId || !channelName) return;
+    if (pending.length > 0 || defaultAgentAttempted.current) return;
+    defaultAgentAttempted.current = true;
+
     const agentKey = newAgentKey(DEFAULT_HANDLE);
-    const pending: PendingAgentRecord[] = [{
+    const defaultAgent: PendingAgentRecord = {
       agentId: DEFAULT_CLASS_NAME,
       handle: DEFAULT_HANDLE,
       key: agentKey,
       source: DEFAULT_WORKER_SOURCE,
       className: DEFAULT_CLASS_NAME,
-    }];
-
-    void setStateArgs({
-      channelName,
-      contextId: resolvedContextId,
-      pendingAgents: pending,
-      repoRoot,
-    });
+    };
+    setBootstrapPending([defaultAgent]);
+    void setStateArgs({ pendingAgents: [defaultAgent] });
 
     createAndSubscribeAgent({
       source: DEFAULT_WORKER_SOURCE,
@@ -117,12 +149,17 @@ export default function SpectrolitePanel() {
       config: buildAgentConfig({ handle: DEFAULT_HANDLE, repoRoot }),
       replay: true,
     }).catch((err: unknown) => {
+      defaultAgentAttempted.current = false;
+      setBootstrapPending(null);
+      const cur = getStateArgs<SpectroliteStateArgs>();
+      if ((cur.pendingAgents ?? []).some((agent) => agent.key === agentKey)) {
+        void setStateArgs({
+          pendingAgents: (cur.pendingAgents ?? []).filter((agent) => agent.key !== agentKey),
+        });
+      }
       console.warn("[Spectrolite] failed to subscribe default agent:", err);
     });
-
-    setBootstrapChannel(channelName);
-    setBootstrapPending(pending);
-  }, [resolvedContextId, stateArgs.channelName, repoRoot]);
+  }, [bootstrapChannel, bootstrapPending, resolvedContextId, repoRoot, stateArgs.channelName, stateArgs.pendingAgents]);
 
   // Rehydration: if channelName persists but no DO participants are subscribed
   // (host restart), re-create each persisted agent with the same stable key.
@@ -130,19 +167,15 @@ export default function SpectrolitePanel() {
   useEffect(() => {
     if (rehydrated.current || bootstrapAttempted.current) return;
     if (!stateArgs.channelName || !resolvedContextId) return;
+    if (!repoRoot) return;
     rehydrated.current = true;
     const channelName = stateArgs.channelName;
     void (async () => {
       try {
         const dos = await getChannelDOParticipants(channelName);
         if (dos.length > 0) return;
-        const list = stateArgs.pendingAgents ?? [{
-          agentId: DEFAULT_CLASS_NAME,
-          handle: DEFAULT_HANDLE,
-          key: newAgentKey(DEFAULT_HANDLE),
-          source: DEFAULT_WORKER_SOURCE,
-          className: DEFAULT_CLASS_NAME,
-        }];
+        const list = stateArgs.pendingAgents ?? [];
+        if (list.length === 0) return;
         for (const agent of list) {
           try {
             await createAndSubscribeAgent({
@@ -179,7 +212,7 @@ export default function SpectrolitePanel() {
       key,
       channelId: channelName,
       channelContextId: resolvedContextId,
-      config: buildAgentConfig({ handle, repoRoot }),
+      config: buildAddedAgentConfig({ handle, repoRoot, className: agent.className }),
     });
     const cur = getStateArgs<SpectroliteStateArgs>();
     await setStateArgs({

@@ -11,6 +11,7 @@ const QUIESCENCE_MS = 1500;
 export interface FlushController {
   noteChange(path: string): void;
   flushNow(path: string): void;
+  flushPending(): void;
   dispose(): void;
 }
 
@@ -53,6 +54,9 @@ export function createFlushController(opts: FlushControllerOptions): FlushContro
     },
     flushNow(path: string) {
       fire(path);
+    },
+    flushPending() {
+      for (const path of [...timers.keys()]) fire(path);
     },
     dispose() {
       disposed = true;

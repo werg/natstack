@@ -13,18 +13,21 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { promises as fs } from "fs";
-import { Button, Code, Flex, Text, TextArea } from "@radix-ui/themes";
+import { Button, Callout, Code, Flex, Text, TextArea } from "@radix-ui/themes";
 import { CommitIcon, MagicWandIcon } from "@radix-ui/react-icons";
 import { GitClient, type FsPromisesLike } from "@natstack/git";
 import { gitConfig, contextId as runtimeContextId } from "@workspace/runtime";
 import { useIsMobile } from "@workspace/react";
 import type { PubSubClient } from "@workspace/pubsub";
 import { KB_COMMIT_TYPE } from "../messages/register";
+import { formatGitError } from "../state/gitErrors";
 
 export interface CommitStripProps {
   repoRoot: string;
   /** PubSub client for publishing kb.commit + sending suggestion prompts. */
   client: PubSubClient | null;
+  /** Bumped when editor flushes or external workspace state changes. */
+  refreshNonce?: number;
   /** Handle of the resident agent we ask for a commit message. */
   primaryAgentHandle?: string;
   /** Bumped after every successful commit so consumers can refresh status. */
@@ -46,10 +49,12 @@ function makeClient(): GitClient {
   });
 }
 
-export function CommitStrip({ repoRoot, client, primaryAgentHandle, onCommitted, message, onMessageChange }: CommitStripProps) {
+export function CommitStrip({ repoRoot, client, refreshNonce = 0, primaryAgentHandle, onCommitted, message, onMessageChange }: CommitStripProps) {
   const isMobile = useIsMobile();
   const [status, setStatus] = useState<DirtyStatus>({ dirty: [], branch: undefined });
   const [committing, setCommitting] = useState(false);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [commitError, setCommitError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
@@ -63,12 +68,16 @@ export function CommitStrip({ repoRoot, client, primaryAgentHandle, onCommitted,
           .filter((f) => f.status !== "unmodified" && f.status !== "ignored")
           .map((f) => f.path);
         setStatus({ dirty: dirtyFiles, branch: s.branch ?? undefined });
+        setStatusError(null);
       } catch (err) {
-        if (!cancelled) console.debug("[Spectrolite] git status failed:", err);
+        if (!cancelled) {
+          console.debug("[Spectrolite] git status failed:", err);
+          setStatusError(formatGitError("status", err));
+        }
       }
     })();
     return () => { cancelled = true; };
-  }, [repoRoot, nonce]);
+  }, [repoRoot, nonce, refreshNonce]);
 
   const handleSuggest = useCallback(async () => {
     if (!client) return;
@@ -90,6 +99,7 @@ export function CommitStrip({ repoRoot, client, primaryAgentHandle, onCommitted,
     const subject = message.split("\n", 1)[0]?.trim();
     if (!subject) return;
     setCommitting(true);
+    setCommitError(null);
     try {
       const git = makeClient();
       await git.addAll(repoRoot);
@@ -113,6 +123,7 @@ export function CommitStrip({ repoRoot, client, primaryAgentHandle, onCommitted,
       onCommitted?.(shaStr);
     } catch (err) {
       console.warn("[Spectrolite] commit failed:", err);
+      setCommitError(formatGitError("commit", err));
     } finally {
       setCommitting(false);
     }
@@ -123,9 +134,11 @@ export function CommitStrip({ repoRoot, client, primaryAgentHandle, onCommitted,
   if (isMobile) {
     return (
       <Flex direction="column" gap="3">
+        {statusError ? <InlineGitError kind="status" message={`Git status failed: ${statusError}`} /> : null}
+        {commitError ? <InlineGitError kind="commit" message={`Commit failed: ${commitError}`} /> : null}
         <Flex align="center" gap="2" wrap="wrap">
           <Code size="2" variant="ghost">{status.branch ?? "(no branch)"}</Code>
-          <Text size="2" color={status.dirty.length > 0 ? "amber" : "gray"}>
+          <Text size="2" color={status.dirty.length > 0 ? "amber" : "gray"} data-testid="spectrolite-dirty-count">
             {status.dirty.length} dirty file{status.dirty.length === 1 ? "" : "s"}
           </Text>
         </Flex>
@@ -135,6 +148,7 @@ export function CommitStrip({ repoRoot, client, primaryAgentHandle, onCommitted,
           value={message}
           onChange={(e) => onMessageChange(e.target.value)}
           rows={4}
+          aria-label="Commit message"
         />
         <Flex gap="2" wrap="wrap">
           <Button
@@ -152,6 +166,7 @@ export function CommitStrip({ repoRoot, client, primaryAgentHandle, onCommitted,
             variant="solid"
             disabled={!message.trim() || committing || status.dirty.length === 0}
             onClick={() => void handleCommit()}
+            data-testid="spectrolite-commit-button"
             style={{ flex: 1, minHeight: 44 }}
           >
             <CommitIcon /> Commit
@@ -163,31 +178,44 @@ export function CommitStrip({ repoRoot, client, primaryAgentHandle, onCommitted,
 
   return (
     <Flex
-      align="center"
-      gap="2"
+      direction="column"
+      gap="1"
       px="3"
       py="1"
       style={{ borderTop: "1px solid var(--gray-5)", background: "var(--color-panel)" }}
     >
-      <Code size="1" variant="ghost">{status.branch ?? "(no branch)"}</Code>
-      <Text size="1" color="gray">·</Text>
-      <Text size="1" color={status.dirty.length > 0 ? "amber" : "gray"}>
-        {status.dirty.length} dirty
-      </Text>
-      <Button size="1" variant="ghost" color="gray" onClick={() => void handleSuggest()} disabled={!client || status.dirty.length === 0}>
-        <MagicWandIcon /> Suggest message
-      </Button>
-      <TextArea
-        size="1"
-        placeholder="commit subject — newline + body optional"
-        value={message}
-        onChange={(e) => onMessageChange(e.target.value)}
-        rows={1}
-        style={{ flex: 1 }}
-      />
-      <Button size="1" variant="soft" disabled={!message.trim() || committing || status.dirty.length === 0} onClick={() => void handleCommit()}>
-        <CommitIcon /> Commit
-      </Button>
+      {statusError ? <InlineGitError kind="status" message={`Git status failed: ${statusError}`} /> : null}
+      {commitError ? <InlineGitError kind="commit" message={`Commit failed: ${commitError}`} /> : null}
+      <Flex align="center" gap="2">
+        <Code size="1" variant="ghost">{status.branch ?? "(no branch)"}</Code>
+        <Text size="1" color="gray">·</Text>
+        <Text size="1" color={status.dirty.length > 0 ? "amber" : "gray"} data-testid="spectrolite-dirty-count">
+          {status.dirty.length} dirty
+        </Text>
+        <Button size="1" variant="ghost" color="gray" onClick={() => void handleSuggest()} disabled={!client || status.dirty.length === 0}>
+          <MagicWandIcon /> Suggest message
+        </Button>
+        <TextArea
+          size="1"
+          placeholder="commit subject — newline + body optional"
+          value={message}
+          onChange={(e) => onMessageChange(e.target.value)}
+          rows={1}
+          style={{ flex: 1 }}
+          aria-label="Commit message"
+        />
+        <Button size="1" variant="soft" disabled={!message.trim() || committing || status.dirty.length === 0} onClick={() => void handleCommit()} data-testid="spectrolite-commit-button">
+          <CommitIcon /> Commit
+        </Button>
+      </Flex>
     </Flex>
+  );
+}
+
+function InlineGitError({ kind, message }: { kind: string; message: string }) {
+  return (
+    <Callout.Root size="1" color="red" variant="soft" data-testid={`spectrolite-${kind}-error`}>
+      <Callout.Text size="1">{message}</Callout.Text>
+    </Callout.Root>
   );
 }

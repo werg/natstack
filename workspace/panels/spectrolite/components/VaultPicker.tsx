@@ -156,6 +156,7 @@ export function VaultPicker({ agentHandle, onSelect }: VaultPickerProps) {
                     variant="ghost"
                     color="gray"
                     onClick={() => onSelect(v.contextPath)}
+                    data-testid={`spectrolite-vault-${v.name}`}
                     style={{ justifyContent: "flex-start", minHeight: isMobile ? 56 : undefined }}
                   >
                     <FileTextIcon />
