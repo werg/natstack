@@ -23,10 +23,15 @@ export function NotificationCenter(props: {
   return (
     <Flex
       direction="column"
-      width={isMobile ? "min(100vw, 24rem)" : "20rem"}
+      width={isMobile ? "100%" : "20rem"}
       p="3"
       gap="3"
-      style={{ borderLeft: "1px solid var(--gray-5)", background: "var(--gray-1)" }}
+      style={{
+        borderLeft: "1px solid var(--gray-5)",
+        background: "var(--gray-1)",
+        boxSizing: "border-box",
+        maxWidth: "100%",
+      }}
     >
       <Flex align="center" justify="between">
         <Text weight="medium" size="2">

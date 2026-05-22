@@ -79,12 +79,12 @@ function KeyboardShortcutsPage() {
               <Heading size="4" mb="3">
                 {group.title}
               </Heading>
-              <Table.Root style={{ minWidth: isMobile ? 520 : undefined }}>
+              <Table.Root style={{ width: "100%", tableLayout: isMobile ? "fixed" : undefined }}>
                 <Table.Body>
                   {group.shortcuts.map((shortcut, index) => (
                     <Table.Row key={index}>
-                      <Table.Cell style={{ width: "200px" }}>
-                        <Flex gap="1">
+                      <Table.Cell style={{ width: isMobile ? "44%" : "200px" }}>
+                        <Flex gap="1" wrap="wrap">
                           {shortcut.keys.map((key, keyIndex) => (
                             <span key={keyIndex}>
                               <Kbd>{key}</Kbd>
@@ -98,7 +98,7 @@ function KeyboardShortcutsPage() {
                         </Flex>
                       </Table.Cell>
                       <Table.Cell>
-                        <Text>{shortcut.description}</Text>
+                        <Text style={{ overflowWrap: "anywhere" }}>{shortcut.description}</Text>
                       </Table.Cell>
                     </Table.Row>
                   ))}

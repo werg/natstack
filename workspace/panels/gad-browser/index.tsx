@@ -272,10 +272,19 @@ function App() {
               defaultValue="files"
               style={{ minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}
             >
-              <Tabs.List style={{ overflowX: "auto", flexWrap: "nowrap" }}>
+              <Tabs.List
+                style={{
+                  overflowX: isMobile ? "hidden" : "auto",
+                  flexWrap: isMobile ? "wrap" : "nowrap",
+                }}
+              >
                 <Tabs.Trigger value="branches">Branches</Tabs.Trigger>
-                <Tabs.Trigger value="events">Trajectory Events</Tabs.Trigger>
-                <Tabs.Trigger value="envelopes">Channel Envelopes</Tabs.Trigger>
+                <Tabs.Trigger value="events">
+                  {isMobile ? "Events" : "Trajectory Events"}
+                </Tabs.Trigger>
+                <Tabs.Trigger value="envelopes">
+                  {isMobile ? "Envelopes" : "Channel Envelopes"}
+                </Tabs.Trigger>
                 <Tabs.Trigger value="files">Files</Tabs.Trigger>
                 <Tabs.Trigger value="invocations">Invocations</Tabs.Trigger>
                 <Tabs.Trigger value="integrity">Integrity</Tabs.Trigger>

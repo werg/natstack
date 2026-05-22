@@ -35,6 +35,7 @@ export function ChatInput() {
   const isMobile = useIsMobile();
   const isTouch = useTouchDevice();
   const viewportHeight = useViewportHeight();
+  const iconButtonSize: "2" | "3" = isMobile ? "2" : isTouch ? "3" : "2";
 
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -312,7 +313,7 @@ export function ChatInput() {
           <Flex direction="column" gap="1">
             <IconButton
               variant="ghost"
-              size={isTouch ? "3" : "2"}
+              size={iconButtonSize}
               onClick={toggleImageInput}
               disabled={!connected}
               color={pendingImages.length > 0 ? "blue" : "gray"}
@@ -323,7 +324,7 @@ export function ChatInput() {
             <IconButton
               onClick={handleSendClick}
               disabled={!connected || (!input.trim() && pendingImages.length === 0)}
-              size={isTouch ? "3" : "2"}
+              size={iconButtonSize}
               variant="soft"
             >
               <PaperPlaneIcon />
