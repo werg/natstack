@@ -3,10 +3,10 @@
  *
  * Each context gets a folder at `{contextsRoot}/{contextId}/` that starts as
  * a copy of all workspace git repos from the source tree. Working tree files
- * and mutable git state (HEAD, index, refs, config) are copied per-context,
- * while the immutable object store (.git/objects/) is symlinked to share storage.
- * Panel fs calls are routed to these folders via RPC, making files visible on
- * disk and accessible to server-side tools and agents.
+ * and git state are copied per-context so panel-side git clients can read a
+ * normal repository through the runtime filesystem. Panel fs calls are routed
+ * to these folders via RPC, making files visible on disk and accessible to
+ * server-side tools and agents.
  */
 
 import * as fs from "fs/promises";
@@ -21,13 +21,6 @@ const log = createDevLogger("ContextFolderManager");
 
 /** Directories to skip when copying working tree files. */
 const SKIP_DIRS = new Set([".git", "node_modules", ".cache", ".databases"]);
-
-/**
- * Mutable git entries to copy into context .git/ (everything else is symlinked).
- * These are the files/dirs that change per-working-tree: staging area, branch
- * pointers, reflogs, config, and local excludes.
- */
-const GIT_MUTABLE = new Set(["HEAD", "index", "refs", "logs", "config", "packed-refs", "COMMIT_EDITMSG", "info"]);
 
 /**
  * Validate that a context ID is safe for per-context folder names.
@@ -50,9 +43,12 @@ function copyFilter(src: string): boolean {
 }
 
 /**
- * Create a context-local .git directory that shares the immutable object store
- * with the source repo via symlink, while copying mutable state (HEAD, index,
- * refs, config, etc.) so each context can commit independently.
+ * Create a context-local .git directory by copying the source repo's git state.
+ *
+ * This intentionally avoids symlinking .git/objects. Panel-side git operations
+ * go through the runtime filesystem adapter, which does not reliably expose
+ * symlink metadata to isomorphic-git. A normal copied object store is larger,
+ * but it keeps status/commit operations correct and context-local.
  */
 async function setupContextGit(srcGit: string, destGit: string): Promise<void> {
   await fs.mkdir(destGit, { recursive: true });
@@ -62,25 +58,15 @@ async function setupContextGit(srcGit: string, destGit: string): Promise<void> {
     const srcPath = path.join(srcGit, entry.name);
     const destPath = path.join(destGit, entry.name);
 
-    if (GIT_MUTABLE.has(entry.name)) {
-      // Copy mutable state — each context needs its own
-      if (entry.isDirectory()) {
-        await fs.cp(srcPath, destPath, { recursive: true });
-      } else {
-        await fs.copyFile(srcPath, destPath);
-      }
+    if (entry.isDirectory()) {
+      await fs.cp(srcPath, destPath, { recursive: true });
     } else {
-      // Symlink immutable content (objects/, hooks/, description, etc.)
-      const relTarget = path.relative(destGit, srcPath);
-      await fs.symlink(relTarget, destPath);
+      await fs.copyFile(srcPath, destPath);
     }
   }
 
-  // Integrity check: verify the objects/ symlink resolves and that HEAD
-  // points to a reachable object. If the object store is stale (e.g. the
-  // source repo was GC'd or repacked since the symlink was created) the
-  // context repo will fail on any git operation. Detect this early so the
-  // caller can warn or recover.
+  // Integrity check: verify the objects/ store is readable and that HEAD
+  // points to a reachable object.
   try {
     const objectsPath = path.join(destGit, "objects");
     const resolved = await fs.realpath(objectsPath);

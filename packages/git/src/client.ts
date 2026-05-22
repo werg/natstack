@@ -1186,11 +1186,12 @@ export class GitClient {
   /**
    * Checkout a ref (branch, tag, or commit)
    */
-  async checkout(dir: string, ref: string): Promise<void> {
+  async checkout(dir: string, ref: string, options: { force?: boolean } = {}): Promise<void> {
     await git.checkout({
       fs: this.fs,
       dir,
       ref,
+      force: options.force,
     });
   }
 

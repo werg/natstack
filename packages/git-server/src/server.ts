@@ -443,8 +443,16 @@ export class GitServer {
     try {
       if (fs.readdirSync(dirPath).length === 0) return;
 
-      // Initialize git repo
-      spawnGitSync(["init"], { cwd: dirPath, stdio: "ignore" });
+      // Initialize git repo. Pin the initial branch to `main` so workspace
+      // repos behave consistently across machines with different git defaults.
+      try {
+        spawnGitSync(["init", "-b", "main"], { cwd: dirPath, stdio: "ignore" });
+      } catch {
+        // Older git versions do not support `git init -b`. Fall back to
+        // plain init, then create/switch the branch before the first commit.
+        spawnGitSync(["init"], { cwd: dirPath, stdio: "ignore" });
+        spawnGitSync(["checkout", "-B", "main"], { cwd: dirPath, stdio: "ignore" });
+      }
 
       // Configure user for this repo (required for commits)
       spawnGitSync(["config", "user.email", "natstack@local"], {
@@ -597,10 +605,10 @@ export class GitServer {
 
     const branches: BranchInfo[] = [];
 
-    for (const line of stdout.trim().split("\n")) {
+    for (const line of stdout.trimEnd().split("\n")) {
       if (!line) continue;
-      const current = line.startsWith("*");
-      const name = line.slice(2).trim();
+      const current = line[0] === "*";
+      const name = line.slice(1).trim();
       if (name) {
         branches.push({ name, current });
       }
