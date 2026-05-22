@@ -94,17 +94,19 @@ export function wikilinksToJsx(markdown: string): string {
   );
 }
 
-/** Transform on write: `<WikiLink ...>` → `[[X]]` / `[[X|Y]]`, but only outside code blocks. */
+/** Transform on write: `<WikiLink ...>` → `[[X]]` / `[[X|Y]]`, but only outside code blocks.
+ *  Decodes the HTML entity escapes that `wikilinksToJsx` introduced so
+ *  the target text round-trips verbatim across flushes. */
 export function wikilinksFromJsx(markdown: string): string {
   return transformOutsideCode(markdown, (segment) => {
     let out = segment.replace(WIKILINK_JSX_RE_WITH_TEXT, (_match, _full, dq, sq, text: string) => {
-      const target = (dq ?? sq ?? "").trim();
+      const target = unescapeAttr((dq ?? sq ?? "").trim());
       const inner = text.trim();
       if (!inner || inner === target) return `[[${target}]]`;
       return `[[${target}|${inner}]]`;
     });
     out = out.replace(WIKILINK_JSX_RE_SELF, (_match, _full, dq, sq) => {
-      const target = (dq ?? sq ?? "").trim();
+      const target = unescapeAttr((dq ?? sq ?? "").trim());
       return `[[${target}]]`;
     });
     return out;
@@ -116,6 +118,12 @@ export function wikilinksFromJsx(markdown: string): string {
  * Ampersand MUST be escaped first to avoid double-escaping the other
  * substitutions. We escape `<` and `>` too even though they're technically
  * legal inside attribute values, because MDX's JSX parser is strict.
+ *
+ * Counterpart `unescapeAttr` reverses these substitutions. Both are used
+ * together so the JSX round-trip `[[X]]` → `<WikiLink target="X" />` →
+ * `[[X]]` preserves the original target text. Without the inverse decode,
+ * `[[Foo & Bar]]` would persist to disk as `[[Foo &amp; Bar]]` after one
+ * flush and accumulate more escapes on each subsequent round-trip.
  */
 function escapeAttr(value: string): string {
   return value
@@ -123,6 +131,19 @@ function escapeAttr(value: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function unescapeAttr(value: string): string {
+  // Reverse order: decode numeric-style entities last so we don't
+  // re-collapse legitimate `&amp;` sequences. We only decode the four
+  // entities `escapeAttr` produces; arbitrary HTML entities are left
+  // alone (they're unusual inside wikilink targets and a user-typed
+  // `&amp;` in `[[]]` syntax should round-trip as written).
+  return value
+    .replace(/&quot;/g, "\"")
+    .replace(/&gt;/g, ">")
+    .replace(/&lt;/g, "<")
+    .replace(/&amp;/g, "&");
 }
 
 /**
@@ -138,7 +159,10 @@ export function resolveWikilinkTarget(target: string, allPaths: string[]): strin
   return matches[0]!;
 }
 
-/** Find every wikilink target in a markdown document (post-JSX or raw), skipping code blocks. */
+/** Find every wikilink target in a markdown document (post-JSX or raw), skipping code blocks.
+ *  Returns targets in the user-facing (decoded) form, so comparison against
+ *  the active file's basename works regardless of which form the document
+ *  currently holds. */
 export function extractWikilinks(markdown: string): string[] {
   const out = new Set<string>();
   for (const seg of splitByCodeBlocks(markdown)) {
@@ -147,10 +171,10 @@ export function extractWikilinks(markdown: string): string[] {
       out.add(m[1]!.trim());
     }
     for (const m of seg.text.matchAll(WIKILINK_JSX_RE_SELF)) {
-      out.add((m[2] ?? m[3] ?? "").trim());
+      out.add(unescapeAttr((m[2] ?? m[3] ?? "").trim()));
     }
     for (const m of seg.text.matchAll(WIKILINK_JSX_RE_WITH_TEXT)) {
-      out.add((m[2] ?? m[3] ?? "").trim());
+      out.add(unescapeAttr((m[2] ?? m[3] ?? "").trim()));
     }
   }
   return [...out];

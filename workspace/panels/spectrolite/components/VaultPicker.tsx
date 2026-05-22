@@ -80,18 +80,30 @@ export function VaultPicker({ agentHandle, onSelect }: VaultPickerProps) {
     setCreating(true);
     try {
       const dir = vaultContextPath(trimmed);
-      // mkdir in the context fs; this makes it visible to the panel.
+      // mkdir is idempotent — if a concurrent creator beat us we'd see
+      // the existence at the writeFile step instead.
       await fs.mkdir(dir, { recursive: true });
       const git = gitClient();
       if (!git) {
-        // No git server available — write the file directly and skip
-        // init/push. The user gets a working vault but no version control
-        // until they restart the workspace (which will git-init projects/*).
-        await fs.writeFile(`${dir}/Welcome.mdx`, WELCOME_BODY);
+        // No git server available — write the starter file with exclusive
+        // create so a concurrent vault creation can't clobber it. The
+        // user gets a working vault but no version control until they
+        // restart the workspace (which will git-init projects/*).
+        const fsWithFlags = fs as unknown as { writeFile(p: string, data: string, opts?: { flag?: string }): Promise<void> };
+        try {
+          await fsWithFlags.writeFile(`${dir}/Welcome.mdx`, WELCOME_BODY, { flag: "wx" });
+        } catch (writeErr) {
+          const msg = writeErr instanceof Error ? writeErr.message : String(writeErr);
+          if (!/eexist/i.test(msg)) throw writeErr;
+          // EEXIST: a concurrent creator already produced Welcome.mdx.
+          // Preserve their content and just open the vault.
+        }
       } else {
         // initAndPush handles init + initial commit + push back to the
         // workspace's projects/<name> repo. The remote URL "projects/<name>"
-        // is resolved by the git client against gitConfig.serverUrl.
+        // is resolved by the git client against gitConfig.serverUrl. If
+        // the repo or file already exists, git init is idempotent and
+        // the commit step skips when there are no changes.
         await initAndPush(git, fs as unknown as FsPromisesLike, {
           dir,
           remote: `projects/${trimmed}`,

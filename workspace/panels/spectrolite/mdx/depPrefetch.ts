@@ -21,10 +21,25 @@
 import { executeSandbox } from "@workspace/eval";
 import type { SandboxConfig } from "@workspace/agentic-core";
 
-const inFlight = new Map<string, Promise<void>>();
+// In-flight dedupe is scoped per sandbox via a WeakMap on the SandboxConfig
+// identity. Within one panel realm the SandboxConfig is typically a
+// useMemo'd singleton, so this works exactly like a module-level Map; but
+// if a future caller swaps the sandbox (e.g. on a credential change),
+// the new sandbox gets its own dedupe cache so we don't skip a prefetch
+// just because the OLD sandbox already saw the same fingerprint.
+const inFlightBySandbox = new WeakMap<SandboxConfig, Map<string, Promise<void>>>();
 
 function fingerprint(deps: Record<string, string>): string {
   return Object.entries(deps).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}@${v}`).join(",");
+}
+
+function inFlightFor(sandbox: SandboxConfig): Map<string, Promise<void>> {
+  let m = inFlightBySandbox.get(sandbox);
+  if (!m) {
+    m = new Map();
+    inFlightBySandbox.set(sandbox, m);
+  }
+  return m;
 }
 
 export async function prefetchDependencies(
@@ -33,6 +48,7 @@ export async function prefetchDependencies(
   onLog?: (line: string) => void,
 ): Promise<void> {
   if (Object.keys(deps).length === 0) return;
+  const inFlight = inFlightFor(sandbox);
   const key = fingerprint(deps);
   const existing = inFlight.get(key);
   if (existing) return existing;

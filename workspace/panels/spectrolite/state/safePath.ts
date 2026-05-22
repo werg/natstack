@@ -16,18 +16,24 @@ function normalize(p: string): string {
   return p.replace(/\\/g, "/").replace(/\/+/g, "/");
 }
 
-function resolveSegments(segments: string[]): string[] {
+/** Discriminated return: either a resolved list of segments, or an
+ *  `escape: true` marker. We use a struct rather than a magic string
+ *  sentinel because a user-supplied path segment could legitimately be
+ *  named "__ESCAPE__" (or any other in-band marker we might pick). */
+type ResolveResult = { escape: true } | { escape: false; segments: string[] };
+
+function resolveSegments(segments: string[]): ResolveResult {
   const out: string[] = [];
   for (const seg of segments) {
     if (!seg || seg === ".") continue;
     if (seg === "..") {
-      if (out.length === 0) return ["__ESCAPE__"];
+      if (out.length === 0) return { escape: true };
       out.pop();
       continue;
     }
     out.push(seg);
   }
-  return out;
+  return { escape: false, segments: out };
 }
 
 /**
@@ -41,13 +47,13 @@ export function joinSafe(root: string, rel: string): string | null {
   if (normalizedRel.startsWith("/")) {
     // Absolute paths must be inside the root.
     if (!normalizedRel.startsWith(`${normalizedRoot}/`) && normalizedRel !== normalizedRoot) return null;
-    const subsegments = resolveSegments(normalizedRel.slice(normalizedRoot.length + 1).split("/"));
-    if (subsegments[0] === "__ESCAPE__") return null;
-    return subsegments.length === 0 ? normalizedRoot : `${normalizedRoot}/${subsegments.join("/")}`;
+    const result = resolveSegments(normalizedRel.slice(normalizedRoot.length + 1).split("/"));
+    if (result.escape) return null;
+    return result.segments.length === 0 ? normalizedRoot : `${normalizedRoot}/${result.segments.join("/")}`;
   }
-  const segments = resolveSegments(normalizedRel.split("/"));
-  if (segments[0] === "__ESCAPE__") return null;
-  return segments.length === 0 ? normalizedRoot : `${normalizedRoot}/${segments.join("/")}`;
+  const result = resolveSegments(normalizedRel.split("/"));
+  if (result.escape) return null;
+  return result.segments.length === 0 ? normalizedRoot : `${normalizedRoot}/${result.segments.join("/")}`;
 }
 
 /**

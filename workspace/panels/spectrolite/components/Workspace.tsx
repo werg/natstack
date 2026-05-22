@@ -464,13 +464,18 @@ export function Workspace({
       try { await fs.mkdir(parent, { recursive: true }); } catch { /* ignore */ }
     }
     try {
+      // Exclusive-create. If the file appeared between our stat() above
+      // and now (race), `wx` fails with EEXIST and we just open the
+      // existing file. We do NOT silently fall back to plain writeFile
+      // on other errors — that would risk clobbering a file that exists
+      // but couldn't be stat'd (permissions, transient I/O).
       const fsWithFlags = fs as unknown as { writeFile(p: string, data: string, opts?: { flag?: string }): Promise<void> };
       try {
         await fsWithFlags.writeFile(full, initialContent, { flag: "wx" });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (/eexist/i.test(msg)) return finalPath;
-        await fs.writeFile(full, initialContent);
+        throw err;
       }
       setRefreshNonce((n) => n + 1);
       return finalPath;

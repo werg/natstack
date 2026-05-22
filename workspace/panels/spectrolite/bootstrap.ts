@@ -7,6 +7,7 @@
  */
 
 import { rpc } from "@workspace/runtime";
+import { parseDoTargetId } from "@workspace/runtime/workerd-client";
 
 const CHANNEL_SERVICE_PROTOCOL = "natstack.channel.v1";
 
@@ -91,23 +92,6 @@ export interface ChannelDORef {
   objectKey: string;
 }
 
-function parseDoTargetId(participantId: string): ChannelDORef | null {
-  if (!participantId.startsWith("do:")) return null;
-  const body = participantId.slice(3);
-  const slashIdx = body.indexOf("/");
-  const colonAfterSlash = slashIdx >= 0 ? body.indexOf(":", slashIdx) : -1;
-  if (colonAfterSlash === -1) return null;
-  const source = body.slice(0, colonAfterSlash);
-  const rest = body.slice(colonAfterSlash + 1);
-  const nextColon = rest.indexOf(":");
-  if (nextColon === -1) return null;
-  return {
-    source,
-    className: rest.slice(0, nextColon),
-    objectKey: rest.slice(nextColon + 1),
-  };
-}
-
 export async function getChannelDOParticipants(channelId: string): Promise<ChannelDORef[]> {
   const channelService = await rpc.call<{ kind: string; targetId?: string }>(
     "main",
@@ -122,7 +106,13 @@ export async function getChannelDOParticipants(channelId: string): Promise<Chann
     "getParticipants",
     [],
   );
-  return participants.map((p) => parseDoTargetId(p.participantId)).filter((p): p is ChannelDORef => p !== null);
+  // Delegate to the canonical parser in `@workspace/runtime/workerd-client`
+  // rather than maintaining a local copy. If upstream evolves the
+  // do-target format (e.g. to handle no-slash sources), Spectrolite
+  // benefits automatically.
+  return participants
+    .map((p) => parseDoTargetId(p.participantId))
+    .filter((p): p is ChannelDORef => p !== null);
 }
 
 export async function unsubscribeDOFromChannel(

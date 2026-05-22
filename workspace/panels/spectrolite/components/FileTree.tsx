@@ -67,27 +67,22 @@ export function FileTree({ root, activePath, onOpen, refreshNonce, onPathsRefres
       }
     }
     try {
-      // Try exclusive create first; fall back to writeFile if the runtime
-      // fs RPC doesn't support flags (its writeFile is the only
-      // guaranteed-portable method, but we've already stat-checked above).
+      // Exclusive-create: fail rather than clobber. We do NOT fall back to
+      // a plain writeFile on non-EEXIST errors — an unknown failure
+      // (EACCES, ENOSPC, etc.) shouldn't be silently downgraded to an
+      // overwrite that could destroy a concurrently-created file. The
+      // earlier stat() narrows the typical case; the `wx` flag closes
+      // the residual race.
       const fsWithFlags = fs as unknown as { writeFile(p: string, data: string, opts?: { flag?: string }): Promise<void> };
-      try {
-        await fsWithFlags.writeFile(full, `# ${trimmed.replace(/\.mdx$/, "")}\n\n`, { flag: "wx" });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (/eexist/i.test(msg)) {
-          setCreateError(`"${relPath}" already exists`);
-          return;
-        }
-        // Older fs implementations may not support flag option — fall back
-        // to plain write after the stat check we did above. The window
-        // for a race here is the stat→write gap; users see "already
-        // exists" via the path-tree refresh after.
-        await fs.writeFile(full, `# ${trimmed.replace(/\.mdx$/, "")}\n\n`);
-      }
+      await fsWithFlags.writeFile(full, `# ${trimmed.replace(/\.mdx$/, "")}\n\n`, { flag: "wx" });
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/eexist/i.test(msg)) {
+        setCreateError(`"${relPath}" already exists`);
+        return;
+      }
       console.warn("[Spectrolite] Failed to create file:", err);
-      setCreateError(err instanceof Error ? err.message : String(err));
+      setCreateError(msg);
       return;
     }
     setNewName("");
