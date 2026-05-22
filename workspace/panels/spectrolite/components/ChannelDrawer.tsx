@@ -7,6 +7,13 @@
  * this drawer is the escape hatch for free-form chat and for receiving
  * agent replies to prompts like "suggest a commit message".
  *
+ * Unread tracking: the drawer remembers `lastReadAt` (initialised to mount
+ * time so the replay backlog isn't counted) and bumps it whenever the
+ * drawer opens. Agent messages newer than `lastReadAt` are surfaced as a
+ * coloured unread badge on the toggle when the drawer is closed —
+ * persistent, low-cost, and not space-consuming. The shell-level toast
+ * notifier handles the "user is in another window" case separately.
+ *
  * When an agent message is displayed, a "Use as commit msg" action is
  * surfaced if the parent provided `onUseAsCommitMessage` — closing the
  * commit-suggestion loop without copy-paste.
@@ -14,7 +21,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PubSubClient } from "@workspace/pubsub";
-import { Box, Button, Card, Flex, ScrollArea, Text, TextArea } from "@radix-ui/themes";
+import { Badge, Box, Button, Card, Flex, ScrollArea, Text, TextArea } from "@radix-ui/themes";
 import { ChevronUpIcon, ChevronDownIcon, PaperPlaneIcon, CommitIcon } from "@radix-ui/react-icons";
 
 interface DrawerMessage {
@@ -43,7 +50,14 @@ export function ChannelDrawer({ client, onSend, onUseAsCommitMessage, openSignal
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [messages, setMessages] = useState<DrawerMessage[]>([]);
+  // Initialise to mount time so replay backlog isn't counted as unread.
+  const [lastReadAt, setLastReadAt] = useState(() => Date.now());
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Opening the drawer marks everything currently visible as read.
+  useEffect(() => {
+    if (open) setLastReadAt(Date.now());
+  }, [open]);
 
   useEffect(() => {
     // Reset on client swap so messages from a previous channel don't
@@ -104,6 +118,12 @@ export function ChannelDrawer({ client, onSend, onUseAsCommitMessage, openSignal
     }
     return null;
   }, [recent]);
+
+  // Unread = agent (non-panel) messages newer than lastReadAt.
+  const unreadCount = useMemo(() => {
+    if (open) return 0;
+    return recent.filter((m) => m.ts > lastReadAt && m.senderType && m.senderType !== "panel").length;
+  }, [recent, lastReadAt, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -168,7 +188,12 @@ export function ChannelDrawer({ client, onSend, onUseAsCommitMessage, openSignal
         <Flex align="center" gap="2">
           {open ? <ChevronDownIcon /> : <ChevronUpIcon />}
           <Text size="1" color="gray" weight="medium">Channel</Text>
-          {!open && recent.length > 0 ? (
+          {!open && unreadCount > 0 ? (
+            <Badge color="amber" variant="soft" size="1">
+              {unreadCount} new
+            </Badge>
+          ) : null}
+          {!open && unreadCount === 0 && recent.length > 0 ? (
             <Text size="1" color="gray">· {recent.length} messages</Text>
           ) : null}
         </Flex>

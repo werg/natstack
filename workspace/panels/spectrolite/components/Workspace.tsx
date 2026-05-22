@@ -544,7 +544,11 @@ export function Workspace({
             onUseAsCommitMessage={setCommitMessage}
             openSignal={drawerOpenSignal}
           />
-          <AgentMessageNotifier client={client} onOpenDrawer={requestDrawerOpen} />
+          <AgentMessageNotifier
+            client={client}
+            onOpenDrawer={requestDrawerOpen}
+            selfHandle={PANEL_METADATA.handle}
+          />
         </Flex>
       </Theme>
     );
@@ -650,7 +654,11 @@ export function Workspace({
             onUseAsCommitMessage={setCommitMessage}
             openSignal={drawerOpenSignal}
           />
-          <AgentMessageNotifier client={client} onOpenDrawer={requestDrawerOpen} />
+          <AgentMessageNotifier
+            client={client}
+            onOpenDrawer={requestDrawerOpen}
+            selfHandle={PANEL_METADATA.handle}
+          />
         </Flex>
       </WikilinkContext.Provider>
     </Theme>
