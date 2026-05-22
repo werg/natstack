@@ -13,10 +13,11 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { promises as fs } from "fs";
-import { Button, Code, Flex, Text, TextField } from "@radix-ui/themes";
+import { Button, Code, Flex, Text, TextArea } from "@radix-ui/themes";
 import { CommitIcon, MagicWandIcon } from "@radix-ui/react-icons";
 import { GitClient, type FsPromisesLike } from "@natstack/git";
 import { gitConfig, contextId as runtimeContextId } from "@workspace/runtime";
+import { useIsMobile } from "@workspace/react";
 import type { PubSubClient } from "@workspace/pubsub";
 import { KB_COMMIT_TYPE } from "../messages/register";
 
@@ -46,6 +47,7 @@ function makeClient(): GitClient {
 }
 
 export function CommitStrip({ repoRoot, client, primaryAgentHandle, onCommitted, message, onMessageChange }: CommitStripProps) {
+  const isMobile = useIsMobile();
   const [status, setStatus] = useState<DirtyStatus>({ dirty: [], branch: undefined });
   const [committing, setCommitting] = useState(false);
   const [nonce, setNonce] = useState(0);
@@ -116,6 +118,49 @@ export function CommitStrip({ repoRoot, client, primaryAgentHandle, onCommitted,
     }
   }, [client, message, repoRoot, status.dirty, onCommitted]);
 
+  // Compact horizontal strip on desktop; stacked form on mobile so the
+  // message field gets its full width and the buttons are touch-sized.
+  if (isMobile) {
+    return (
+      <Flex direction="column" gap="3">
+        <Flex align="center" gap="2" wrap="wrap">
+          <Code size="2" variant="ghost">{status.branch ?? "(no branch)"}</Code>
+          <Text size="2" color={status.dirty.length > 0 ? "amber" : "gray"}>
+            {status.dirty.length} dirty file{status.dirty.length === 1 ? "" : "s"}
+          </Text>
+        </Flex>
+        <TextArea
+          size="3"
+          placeholder="commit subject — blank line + body optional"
+          value={message}
+          onChange={(e) => onMessageChange(e.target.value)}
+          rows={4}
+        />
+        <Flex gap="2" wrap="wrap">
+          <Button
+            size="3"
+            variant="soft"
+            color="gray"
+            onClick={() => void handleSuggest()}
+            disabled={!client || status.dirty.length === 0}
+            style={{ flex: 1, minHeight: 44 }}
+          >
+            <MagicWandIcon /> Suggest message
+          </Button>
+          <Button
+            size="3"
+            variant="solid"
+            disabled={!message.trim() || committing || status.dirty.length === 0}
+            onClick={() => void handleCommit()}
+            style={{ flex: 1, minHeight: 44 }}
+          >
+            <CommitIcon /> Commit
+          </Button>
+        </Flex>
+      </Flex>
+    );
+  }
+
   return (
     <Flex
       align="center"
@@ -132,11 +177,12 @@ export function CommitStrip({ repoRoot, client, primaryAgentHandle, onCommitted,
       <Button size="1" variant="ghost" color="gray" onClick={() => void handleSuggest()} disabled={!client || status.dirty.length === 0}>
         <MagicWandIcon /> Suggest message
       </Button>
-      <TextField.Root
+      <TextArea
         size="1"
         placeholder="commit subject — newline + body optional"
         value={message}
         onChange={(e) => onMessageChange(e.target.value)}
+        rows={1}
         style={{ flex: 1 }}
       />
       <Button size="1" variant="soft" disabled={!message.trim() || committing || status.dirty.length === 0} onClick={() => void handleCommit()}>

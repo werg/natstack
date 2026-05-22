@@ -91,7 +91,7 @@ export function FileTree({ root, activePath, onOpen, refreshNonce, onPathsRefres
   }, [newName, root, refresh, onOpen]);
 
   return (
-    <Flex direction="column" gap="2" style={{ height: "100%", padding: "var(--space-2)" }}>
+    <Flex direction="column" gap="2" className="spectrolite-file-tree" style={{ height: "100%", padding: "var(--space-2)" }}>
       <Flex align="center" justify="between" gap="2">
         <Text size="1" weight="medium" color="gray">FILES</Text>
         <Button size="1" variant="ghost" color="gray" onClick={() => void refresh()} aria-label="Refresh">

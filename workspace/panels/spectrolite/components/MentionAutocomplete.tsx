@@ -234,8 +234,18 @@ export function MentionAutocomplete({ container, candidates, onAccept }: Mention
 
   if (!open || filtered.length === 0 || !caretRect) return null;
 
-  const top = caretRect.bottom + 4;
-  const left = caretRect.left;
+  // Position below the caret by default; flip above if there isn't room
+  // (mobile virtual keyboard takes the bottom half of the viewport). Clamp
+  // horizontally so the popover never crosses the viewport edge.
+  const popoverWidth = 280;
+  const popoverHeight = Math.min(filtered.length * 36 + 16, 280);
+  const visualVh = (typeof window !== "undefined" ? window.visualViewport?.height : null) ?? window.innerHeight;
+  const flipAbove = caretRect.bottom + popoverHeight + 12 > visualVh;
+  const top = flipAbove
+    ? Math.max(8, caretRect.top - popoverHeight - 4)
+    : caretRect.bottom + 4;
+  const rawLeft = caretRect.left;
+  const left = Math.max(8, Math.min(rawLeft, window.innerWidth - popoverWidth - 8));
   return (
     <Box
       style={{
@@ -245,6 +255,7 @@ export function MentionAutocomplete({ container, candidates, onAccept }: Mention
         zIndex: 9999,
         minWidth: 220,
         maxWidth: 320,
+        width: popoverWidth,
         pointerEvents: "auto",
       }}
     >

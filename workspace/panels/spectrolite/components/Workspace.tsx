@@ -25,11 +25,11 @@
 
 import { promises as fs } from "fs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Box, Button, Flex, Heading, Text, Theme } from "@radix-ui/themes";
-import { CheckCircledIcon, FilePlusIcon, LightningBoltIcon } from "@radix-ui/react-icons";
+import { Box, Button, DropdownMenu, Flex, Heading, IconButton, Text, Theme } from "@radix-ui/themes";
+import { CheckCircledIcon, DotsHorizontalIcon, FilePlusIcon, HamburgerMenuIcon, LightningBoltIcon } from "@radix-ui/react-icons";
 import { connectViaRpc, type PubSubClient } from "@workspace/pubsub";
 import { rpc, recoveryCoordinator, useStateArgs, setStateArgs } from "@workspace/runtime";
-import { usePanelTheme } from "@workspace/react";
+import { useIsMobile, usePanelTheme } from "@workspace/react";
 import {
   buildEvalTool,
   createPanelSandboxConfig,
@@ -50,6 +50,9 @@ import { AgentMessageNotifier } from "./AgentMessageNotifier";
 import { BacklinksPanel } from "./BacklinksPanel";
 import { BranchPicker } from "./BranchPicker";
 import { VaultPicker } from "./VaultPicker";
+import { MobileSidebar } from "./mobile/MobileSidebar";
+import { BottomSheet } from "./mobile/BottomSheet";
+import { MobileCommitButton } from "./mobile/MobileCommitButton";
 import type { MentionCandidate } from "./MentionAutocomplete";
 import { createFlushController } from "../flush/flush-controller";
 import { buildFlushPayload } from "../flush/diff";
@@ -159,6 +162,7 @@ export function Workspace({
   onSwitchVault,
 }: WorkspaceProps) {
   const theme = usePanelTheme();
+  const isMobile = useIsMobile();
   const stateArgs = useStateArgs<SpectroliteStateArgs>();
   const [client, setClient] = useState<PubSubClient | null>(null);
   const [activePath, setActivePath] = useState<string | null>(stateArgs.openPath ?? null);
@@ -172,6 +176,17 @@ export function Workspace({
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [drawerOpenSignal, setDrawerOpenSignal] = useState(0);
   const requestDrawerOpen = useCallback(() => setDrawerOpenSignal((n) => n + 1), []);
+
+  // Mobile UI state: slide-in sidebar (file tree) + commit bottom sheet.
+  // Closing the sidebar when a file is picked is the natural "I'm done
+  // browsing, take me to the doc" handoff.
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [commitSheetOpen, setCommitSheetOpen] = useState(false);
+  const closeMobileSidebar = useCallback(() => setMobileSidebarOpen(false), []);
+  const handleOpenInSidebar = useCallback((path: string) => {
+    setActivePath(path);
+    setMobileSidebarOpen(false);
+  }, []);
 
   const buffersRef = useRef(buffers);
   buffersRef.current = buffers;
@@ -555,6 +570,182 @@ export function Workspace({
             selfHandle={PANEL_METADATA.handle}
           />
         </Flex>
+      </Theme>
+    );
+  }
+
+  if (isMobile) {
+    return (
+      <Theme appearance={theme} radius="medium" style={{ height: "100dvh" }}>
+        <WikilinkContext.Provider value={wikilinkContext}>
+          <Flex direction="column" style={{ height: "100%", minHeight: 0 }}>
+            {/* Mobile header — hamburger + active doc title + overflow. */}
+            <Flex
+              align="center"
+              gap="2"
+              px="2"
+              py="2"
+              style={{ borderBottom: "1px solid var(--gray-5)", flexShrink: 0, minHeight: 48 }}
+            >
+              <IconButton
+                size="3"
+                variant="ghost"
+                color="gray"
+                aria-label="Open files"
+                onClick={() => setMobileSidebarOpen(true)}
+              >
+                <HamburgerMenuIcon />
+              </IconButton>
+              <Box style={{ flex: 1, minWidth: 0 }}>
+                <Text size="2" weight="medium" truncate as="div">
+                  {activeTitle ?? "Spectrolite"}
+                </Text>
+                {activeDirty ? (
+                  <Flex align="center" gap="1">
+                    <LightningBoltIcon color="orange" width="12" height="12" />
+                    <Text size="1" color="amber">unflushed</Text>
+                  </Flex>
+                ) : activeLastFlushed ? (
+                  <Text size="1" color="gray">flushed {formatTimeAgo(activeLastFlushed, nowTick)}</Text>
+                ) : (
+                  <Text size="1" color="gray" truncate as="div">{repoRoot.replace(/^\//, "")}</Text>
+                )}
+              </Box>
+              <DropdownMenu.Root>
+                <DropdownMenu.Trigger>
+                  <IconButton size="3" variant="ghost" color="gray" aria-label="Workspace settings">
+                    <DotsHorizontalIcon />
+                  </IconButton>
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Content>
+                  <DropdownMenu.Item onSelect={onSwitchVault}>Switch vault…</DropdownMenu.Item>
+                  <DropdownMenu.Sub>
+                    <DropdownMenu.SubTrigger>Branch</DropdownMenu.SubTrigger>
+                    <DropdownMenu.SubContent>
+                      <DropdownMenu.Item asChild>
+                        <Box p="2"><BranchPicker repoRoot={repoRoot} refreshNonce={refreshNonce} /></Box>
+                      </DropdownMenu.Item>
+                    </DropdownMenu.SubContent>
+                  </DropdownMenu.Sub>
+                  <DropdownMenu.Sub>
+                    <DropdownMenu.SubTrigger>Agents ({roster.length})</DropdownMenu.SubTrigger>
+                    <DropdownMenu.SubContent>
+                      <DropdownMenu.Item asChild>
+                        <Box p="2">
+                          <AgentRoster
+                            agents={roster}
+                            availableAgents={availableAgents}
+                            onAdd={async (id) => { await onAddAgent(id); }}
+                            onRemove={async (handle) => { await onRemoveAgent(handle); }}
+                          />
+                        </Box>
+                      </DropdownMenu.Item>
+                    </DropdownMenu.SubContent>
+                  </DropdownMenu.Sub>
+                </DropdownMenu.Content>
+              </DropdownMenu.Root>
+            </Flex>
+
+            {/* Editor — full width. */}
+            <Box style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
+              {activePath ? (
+                <DocumentEditor
+                  repoRoot={repoRoot}
+                  relPath={activePath}
+                  theme={theme}
+                  onChange={handleEditorChange}
+                  onReload={handleEditorReload}
+                  onFlushClick={handleFlushClick}
+                  hasUnflushedChanges={activeDirty}
+                  mentionCandidates={mentionCandidates}
+                  dependencies={activeDeps}
+                />
+              ) : workspacePaths.length === 0 ? (
+                <EmptyVault onCreateWelcomeDoc={handleCreateWelcomeDoc} />
+              ) : (
+                <Flex align="center" justify="center" style={{ height: "100%" }} p="4">
+                  <Flex direction="column" align="center" gap="3">
+                    <Text size="2" color="gray" align="center">
+                      Tap the menu icon to pick a file.
+                    </Text>
+                    <Button size="3" onClick={() => setMobileSidebarOpen(true)}>
+                      <HamburgerMenuIcon /> Open files
+                    </Button>
+                  </Flex>
+                </Flex>
+              )}
+            </Box>
+
+            {/* Bottom action row — single Commit affordance. */}
+            <Flex
+              align="center"
+              gap="2"
+              px="2"
+              py="2"
+              style={{ borderTop: "1px solid var(--gray-5)", flexShrink: 0 }}
+            >
+              <MobileCommitButton
+                repoRoot={repoRoot}
+                refreshNonce={refreshNonce}
+                onClick={() => setCommitSheetOpen(true)}
+              />
+            </Flex>
+
+            <ChannelDrawer
+              client={client}
+              onUseAsCommitMessage={setCommitMessage}
+              openSignal={drawerOpenSignal}
+            />
+            <AgentMessageNotifier
+              client={client}
+              onOpenDrawer={requestDrawerOpen}
+              selfHandle={PANEL_METADATA.handle}
+            />
+
+            {/* Slide-in sidebar — file tree + backlinks. */}
+            <MobileSidebar open={mobileSidebarOpen} onClose={closeMobileSidebar}>
+              <Flex direction="column" style={{ height: "100%" }}>
+                <Flex align="center" justify="between" px="2" py="2" style={{ borderBottom: "1px solid var(--gray-5)" }}>
+                  <Heading size="2">Files</Heading>
+                  <Button size="2" variant="ghost" color="gray" onClick={closeMobileSidebar} aria-label="Close files">
+                    Done
+                  </Button>
+                </Flex>
+                <Box style={{ flex: 1, minHeight: 0 }}>
+                  <FileTree
+                    root={repoRoot}
+                    activePath={activePath}
+                    onOpen={handleOpenInSidebar}
+                    refreshNonce={refreshNonce}
+                    onPathsRefreshed={setWorkspacePaths}
+                  />
+                </Box>
+                <BacklinksPanel
+                  root={repoRoot}
+                  activePath={activePath}
+                  paths={workspacePaths}
+                  refreshKey={refreshNonce}
+                  onOpen={handleOpenInSidebar}
+                />
+              </Flex>
+            </MobileSidebar>
+
+            {/* Commit bottom sheet. */}
+            <BottomSheet open={commitSheetOpen} onOpenChange={setCommitSheetOpen} title="Commit">
+              <CommitStrip
+                repoRoot={repoRoot}
+                client={client}
+                primaryAgentHandle={primaryAgentHandle ?? roster[0]?.handle}
+                onCommitted={(sha) => {
+                  setRefreshNonce((n) => n + 1);
+                  if (sha) setCommitSheetOpen(false);
+                }}
+                message={commitMessage}
+                onMessageChange={setCommitMessage}
+              />
+            </BottomSheet>
+          </Flex>
+        </WikilinkContext.Provider>
       </Theme>
     );
   }

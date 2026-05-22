@@ -89,3 +89,50 @@
 .spectrolite-mdx .mdxeditor [data-lexical-decorator] {
   margin: var(--space-2) 0;
 }
+
+/* ----------------------------------------------------------------
+ * Mobile adjustments
+ * Triggered by max-width 767px (matches @workspace/react useIsMobile).
+ * ---------------------------------------------------------------- */
+@media (max-width: 767px) {
+  /* MDXEditor toolbar gets too wide for phone screens — let it scroll
+   * horizontally instead of wrapping awkwardly or being cropped. */
+  .spectrolite-mdx .mdxeditor-toolbar {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+  }
+  .spectrolite-mdx .mdxeditor-toolbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Editor padding tighter so prose isn't a thin column. */
+  .spectrolite-content {
+    padding: var(--space-3);
+    font-size: var(--font-size-3);
+    line-height: var(--line-height-3);
+  }
+}
+
+/* ----------------------------------------------------------------
+ * Touch-device adjustments (coarse pointer = phone OR tablet).
+ * Bumps interactive elements to a 44px tap target.
+ * ---------------------------------------------------------------- */
+@media (pointer: coarse) {
+  .spectrolite-mdx .mdxeditor-toolbar button {
+    min-height: 36px;
+    min-width: 36px;
+  }
+  /* File tree rows are size=1 Radix Buttons by design (visual density),
+   * but on touch they're undersized. Bump each row so the tap target
+   * reaches the iOS/Android 44px guideline. */
+  .spectrolite-file-tree button {
+    min-height: 40px;
+  }
+}
+
+/* Mobile sidebar / bottom sheet — make sure the editor underneath
+ * doesn't bleed through behind the sidebar's solid panel. */
+.spectrolite-file-tree {
+  background: var(--color-panel-solid);
+}
