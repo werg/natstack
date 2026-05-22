@@ -34,7 +34,14 @@ export function MobileCommitButton({ repoRoot, refreshNonce, onClick }: MobileCo
   useEffect(() => {
     let cancelled = false;
     const git = makeClient();
-    if (!git) return;
+    if (!git) {
+      // No git server available — clear stale display so the user
+      // doesn't see a phantom "5 dirty files" badge after the server
+      // goes away.
+      setDirtyCount(0);
+      setBranch(null);
+      return;
+    }
     (async () => {
       try {
         const s = await git.status(repoRoot);
@@ -45,7 +52,13 @@ export function MobileCommitButton({ repoRoot, refreshNonce, onClick }: MobileCo
         setDirtyCount(dirty);
         setBranch(s.branch ?? null);
       } catch {
-        /* swallow */
+        // Failed to read status — don't leave the old values stuck on
+        // screen. The button still works; user can open the sheet for
+        // a real error from the underlying GitClient.
+        if (!cancelled) {
+          setDirtyCount(0);
+          setBranch(null);
+        }
       }
     })();
     return () => { cancelled = true; };

@@ -356,16 +356,24 @@ export function DocumentEditor({
   //      the editor via setMarkdown. The editor's onChange fires and
   //      routes through handleEditorChange in the usual way, so the
   //      flush pipeline picks the doc up as dirty.
-  const handleDocStateChange = useCallback((key: string, value: unknown) => {
+  const handleDocStateChange = useCallback((key: string, update: unknown) => {
     setDocState((prev) => {
+      // Resolve functional updates against the LATEST state map (the
+      // `prev` argument here is React's freshest value), not against a
+      // render-time snapshot. Without this, two setX(n => n+1) calls
+      // in the same tick both see the same prev and collapse to a
+      // single increment.
+      const resolved = typeof update === "function"
+        ? (update as (prev: unknown) => unknown)(prev[key])
+        : update;
+      const current = prev[key];
       // Skip the update if the new value is structurally equal — common
       // when controlled inputs re-emit the same value on focus changes.
-      const current = prev[key];
-      if (Object.is(current, value)) return prev;
+      if (Object.is(current, resolved)) return prev;
       try {
-        if (JSON.stringify(current) === JSON.stringify(value)) return prev;
+        if (JSON.stringify(current) === JSON.stringify(resolved)) return prev;
       } catch { /* fallthrough */ }
-      return { ...prev, [key]: value };
+      return { ...prev, [key]: resolved };
     });
     if (mergeTimerRef.current) clearTimeout(mergeTimerRef.current);
     mergeTimerRef.current = setTimeout(() => {

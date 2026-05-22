@@ -53,6 +53,24 @@ const importedNames = Object.keys(mdxComponents as Record<string, unknown>)
   .filter((n) => /^[A-Z]/.test(n));
 const importList = importedNames.join(", ");
 
+/**
+ * Identifiers the wrapper itself binds. If a doc-level export collides
+ * with one of these (e.g. someone exports `WikiLink` or `useDocState`),
+ * destructuring it would shadow our binding with `undefined` and break
+ * the compile. The user's export is dropped from the destructure — the
+ * wrapper's version wins.
+ */
+const RESERVED_WRAPPER_NAMES = new Set([
+  ...importedNames,
+  "React",
+  "WikiLink",
+  "useDocState",
+  "useIsMobile",
+  "useTouchDevice",
+  "useViewportHeight",
+  "runtime",
+]);
+
 interface MdastJsxLike {
   type: string;
   name?: string | null;
@@ -66,8 +84,12 @@ interface MdastJsxLike {
  * the agentic-chat surface (e.g. `<Card>`).
  */
 function wrapForSandbox(source: string, docExportNames: ReadonlyArray<string>): string {
-  const builtinSet = new Set(importedNames);
-  const destructured = docExportNames.filter((n) => !builtinSet.has(n) && /^[A-Za-z_$][\w$]*$/.test(n));
+  // Filter out exports that would shadow the wrapper's own bindings —
+  // a doc that does `export const useDocState = …` shouldn't be allowed
+  // to clobber our hook in the same scope.
+  const destructured = docExportNames.filter(
+    (n) => !RESERVED_WRAPPER_NAMES.has(n) && /^[A-Za-z_$][\w$]*$/.test(n),
+  );
   const destructureLine = destructured.length > 0
     ? `const { ${destructured.join(", ")} } = (globalThis.__spectroliteDocExports__ ?? {});`
     : "";

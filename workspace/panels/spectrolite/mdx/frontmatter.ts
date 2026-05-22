@@ -76,14 +76,23 @@ export function replaceFrontmatterState(markdown: string, newState: Record<strin
   let frontmatterObj: Record<string, unknown> = {};
   let body: string;
   if (m) {
+    let parsed: unknown;
     try {
-      const parsed = YAML.parse(m[1] ?? "");
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        frontmatterObj = parsed as Record<string, unknown>;
-      }
+      parsed = YAML.parse(m[1] ?? "");
     } catch {
-      // Malformed frontmatter — start fresh so we don't propagate errors.
+      // Malformed frontmatter — refuse to rewrite. Silently emitting a
+      // fresh frontmatter would erase the user's `title`, `dependencies`,
+      // and any other keys we couldn't parse. The user's component-state
+      // mutations stay in memory; they'll land successfully once the
+      // frontmatter parses again.
+      return markdown;
     }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      // Frontmatter parsed but isn't an object map — same conservative
+      // bail-out.
+      return markdown;
+    }
+    frontmatterObj = parsed as Record<string, unknown>;
     body = markdown.slice(m[0].length);
   } else {
     body = markdown;
@@ -96,8 +105,8 @@ export function replaceFrontmatterState(markdown: string, newState: Record<strin
   }
 
   if (Object.keys(frontmatterObj).length === 0) {
-    // No frontmatter needed; ensure the body still starts with content.
-    return body.startsWith("---") || body.length === 0 ? body : body;
+    // No frontmatter needed; return the body as-is.
+    return body;
   }
   const newYaml = YAML.stringify(frontmatterObj).trimEnd();
   // Ensure exactly one blank line between the frontmatter and the body.

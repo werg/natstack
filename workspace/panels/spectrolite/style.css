@@ -116,18 +116,17 @@
 
 /* ----------------------------------------------------------------
  * Touch-device adjustments (coarse pointer = phone OR tablet).
- * Bumps interactive elements to a 44px tap target.
+ * Bumps interactive elements to the iOS/Android 44 px tap target.
  * ---------------------------------------------------------------- */
 @media (pointer: coarse) {
   .spectrolite-mdx .mdxeditor-toolbar button {
-    min-height: 36px;
-    min-width: 36px;
+    min-height: 44px;
+    min-width: 44px;
   }
   /* File tree rows are size=1 Radix Buttons by design (visual density),
-   * but on touch they're undersized. Bump each row so the tap target
-   * reaches the iOS/Android 44px guideline. */
+   * but on touch they're undersized. Bump each row to 44 px. */
   .spectrolite-file-tree button {
-    min-height: 40px;
+    min-height: 44px;
   }
 }
 

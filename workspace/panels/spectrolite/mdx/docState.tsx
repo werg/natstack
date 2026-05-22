@@ -7,23 +7,35 @@
  *     const [count, setCount] = useDocState("count", 0);
  *
  * Reads come from the active doc's parsed `state.<key>` value (or
- * `initial` if absent). Writes update the in-memory map immediately (so
- * other consumers re-render via React context) and are merged back into
- * the doc's frontmatter after a short debounce by `DocumentEditor`.
+ * `initial` if absent). Writes update the in-memory map immediately
+ * (so other consumers re-render via React context) and are merged
+ * back into the doc's frontmatter after a short debounce by
+ * `DocumentEditor`.
  *
- * Fallback behavior: outside a `DocStateContext.Provider` (e.g. when this
- * MDX is rendered by the chat panel's `inline_ui`, or in a non-Spectrolite
- * preview environment), the hook degrades to plain `React.useState` —
- * ephemeral, but the component still works.
+ * Functional updates (`setCount(n => n + 1)`) are resolved by the
+ * provider against the LATEST state map, so chained calls within the
+ * same tick (or in callbacks) behave like `useState` rather than
+ * collapsing to the render-time value.
+ *
+ * Fallback behavior: outside a `DocStateContext.Provider` (e.g. when
+ * this MDX is rendered by the chat panel's `inline_ui`), the hook
+ * degrades to plain `React.useState` — ephemeral, but the component
+ * still works.
  */
 
 import { createContext, useCallback, useContext, useState } from "react";
 
+export type DocStateUpdate = unknown | ((prev: unknown) => unknown);
+
 export interface DocStateContextValue {
   /** Current state map. */
   state: Record<string, unknown>;
-  /** Schedule an update. The actual frontmatter rewrite is debounced. */
-  setState: (key: string, value: unknown) => void;
+  /**
+   * Schedule an update. `value` may be a function `(prev) => next`,
+   * which the provider resolves against the LATEST state map so that
+   * multiple setter calls in the same tick compose correctly.
+   */
+  setState: (key: string, value: DocStateUpdate) => void;
 }
 
 export const DocStateContext = createContext<DocStateContextValue | null>(null);
@@ -46,12 +58,20 @@ export function useDocState<T>(key: string, initial: T): [T, Setter<T>] {
         setLocal(next as never);
         return;
       }
-      const resolved = typeof next === "function"
-        ? (next as (prev: T) => T)(value)
-        : next;
-      ctxSetState(key, resolved);
+      // Forward functional updates verbatim so the provider can resolve
+      // them against the LATEST state map. Calling `next(value)` here
+      // would capture the render-time `value` and break chained
+      // updates within a single tick.
+      if (typeof next === "function") {
+        const fn = next as (prev: T) => T;
+        ctxSetState(key, (prev: unknown) => fn(
+          prev === undefined ? initial : (prev as T),
+        ));
+      } else {
+        ctxSetState(key, next);
+      }
     },
-    [ctxSetState, key, value],
+    [ctxSetState, key, initial],
   );
 
   return [value, setValue];
