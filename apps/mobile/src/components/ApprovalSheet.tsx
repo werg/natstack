@@ -74,8 +74,11 @@ function icon(name: string, glyph: string): IconComponent {
 }
 
 const AlertTriangle = icon("AlertTriangle", "!");
+const ArrowRight = icon("ArrowRight", ">");
 const CheckCircle2 = icon("CheckCircle2", "+");
 const ChevronDown = icon("ChevronDown", "v");
+const ChevronLeft = icon("ChevronLeft", "<");
+const ChevronRight = icon("ChevronRight", ">");
 const ExternalLink = icon("ExternalLink", ">");
 const Globe = icon("Globe", "@");
 const Info = icon("Info", "i");
@@ -86,6 +89,61 @@ const User = icon("User", "u");
 const Workflow = icon("Workflow", "~");
 const X = icon("X", "x");
 const XCircle = icon("XCircle", "x");
+
+interface CallerInfo {
+  /** Friendly user-visible label — panel title, worker source basename, etc. */
+  label: string;
+  /** Caller kind, formatted for display ("Panel" / "Worker" / "Service"). */
+  kindLabel: string;
+  /** Caller kind as accepted by the approval payload. */
+  kind: "panel" | "worker" | "do";
+  /** Set when this caller refers to a panel that exists in the live tree. */
+  panelId?: string;
+  /** Truncated id, retained for the expandable details panel. */
+  shortId: string;
+}
+
+function basename(path: string): string {
+  if (!path) return "";
+  const trimmed = path.replace(/\/+$/, "");
+  const idx = trimmed.lastIndexOf("/");
+  return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
+}
+
+function prettifyId(callerId: string): string {
+  return callerId.replace(/^(do-service:|do:|worker:|panel:)/, "");
+}
+
+function resolveCallerInfo(approval: PendingApproval): CallerInfo {
+  const shortId = truncateId(approval.callerId);
+  const serverTitle = approval.callerTitle?.trim() || undefined;
+  if (approval.callerKind === "panel") {
+    return {
+      label: serverTitle ?? prettifyId(approval.callerId),
+      kindLabel: "Panel",
+      kind: "panel",
+      panelId: approval.callerId,
+      shortId,
+    };
+  }
+  if (approval.callerKind === "worker") {
+    const fromRepo = basename(approval.repoPath);
+    return {
+      label: serverTitle ?? fromRepo ?? prettifyId(approval.callerId),
+      kindLabel: "Worker",
+      kind: "worker",
+      shortId,
+    };
+  }
+  const id = prettifyId(approval.callerId);
+  const segments = id.split(":");
+  return {
+    label: serverTitle ?? segments[segments.length - 1] ?? id,
+    kindLabel: "Service",
+    kind: "do",
+    shortId,
+  };
+}
 
 export interface ApprovalSheetProps {
   approvals: PendingApproval[];
@@ -99,6 +157,12 @@ export interface ApprovalSheetProps {
     values: Record<string, string>
   ) => Promise<void> | void;
   onResolveUserland: (approvalId: string, choice: string | "dismiss") => Promise<void> | void;
+  /**
+   * Optional. When supplied and the current approval comes from a panel,
+   * the caller chip becomes touchable and invokes this with the panel id.
+   * Mobile wires it to `activatePanel` so the user can jump to the source.
+   */
+  onNavigateToPanel?: (panelId: string) => void;
 }
 
 type PendingAction =
@@ -109,9 +173,9 @@ type PendingAction =
 
 type ButtonVariant = "primary" | "surface" | "danger" | "outline";
 
-const SECONDARY_GRANT_DECISIONS: Array<Exclude<ApprovalDecision, "once" | "version" | "repo" | "deny" | "dismiss">> = [
-  "session",
-];
+const SECONDARY_GRANT_DECISIONS: Array<
+  Exclude<ApprovalDecision, "once" | "version" | "repo" | "deny" | "dismiss">
+> = ["session"];
 
 export function ApprovalSheet({
   approvals,
@@ -119,10 +183,22 @@ export function ApprovalSheet({
   onSubmitClientConfig,
   onSubmitCredentialInput,
   onResolveUserland,
+  onNavigateToPanel,
 }: ApprovalSheetProps) {
   const colors = useAtomValue(themeColorsAtom);
-  const current = approvals[0] ?? null;
-  const extraCount = Math.max(0, approvals.length - 1);
+  const [browseIndex, setBrowseIndex] = useState(0);
+  useEffect(() => {
+    setBrowseIndex((idx) => {
+      if (approvals.length === 0) return 0;
+      if (idx >= approvals.length) return approvals.length - 1;
+      return idx;
+    });
+  }, [approvals.length]);
+
+  const current = approvals[browseIndex] ?? approvals[0] ?? null;
+  const queueLength = approvals.length;
+  const canPrev = queueLength > 1 && browseIndex > 0;
+  const canNext = queueLength > 1 && browseIndex < queueLength - 1;
   const [values, setValues] = useState<Record<string, string>>({});
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
@@ -131,9 +207,10 @@ export function ApprovalSheet({
   const backdropOpacity = useRef(new Animated.Value(0)).current;
   const dragOffset = useRef(0);
 
-  const callerLabel = current?.callerKind === "worker" ? "Worker" : "Panel";
-  const copy = current ? getApprovalCopy(current, callerLabel) : null;
+  const callerInfo = current ? resolveCallerInfo(current) : null;
+  const copy = current && callerInfo ? getApprovalCopy(current, callerInfo.kindLabel) : null;
   const categoryLabel = current ? getApprovalCategoryLabel(current) : "";
+  const accentColor = current?.kind === "extension" ? colors.warning : colors.primary;
 
   const isBusy = pendingAction !== null;
   const currentApprovalId = current?.approvalId;
@@ -231,7 +308,13 @@ export function ApprovalSheet({
     [dismiss, isBusy, translateY]
   );
 
-  if (!current || !copy) return null;
+  const showRequestingPanel = useCallback(() => {
+    if (callerInfo?.panelId && onNavigateToPanel) {
+      onNavigateToPanel(callerInfo.panelId);
+    }
+  }, [callerInfo, onNavigateToPanel]);
+
+  if (!current || !copy || !callerInfo) return null;
 
   return (
     <Modal visible transparent animationType="none" presentationStyle="overFullScreen">
@@ -262,7 +345,7 @@ export function ApprovalSheet({
               ]}
               testID="approval-sheet"
             >
-              <View style={[styles.accentStripe, { backgroundColor: colors.primary }]} />
+              <View style={[styles.accentStripe, { backgroundColor: accentColor }]} />
               <Pressable
                 accessibilityLabel="Dismiss approval"
                 accessibilityRole="button"
@@ -284,14 +367,28 @@ export function ApprovalSheet({
                 <ApprovalHeader
                   approval={current}
                   categoryLabel={categoryLabel}
-                  extraCount={extraCount}
+                  accentColor={accentColor}
+                  queueLength={queueLength}
+                  queueIndex={browseIndex}
+                  canPrev={canPrev}
+                  canNext={canNext}
+                  onPrev={() => setBrowseIndex((idx) => Math.max(0, idx - 1))}
+                  onNext={() => setBrowseIndex((idx) => Math.min(queueLength - 1, idx + 1))}
                 />
                 <Text style={[styles.title, { color: colors.text }]}>{copy.title}</Text>
+                <CallerRow
+                  caller={callerInfo}
+                  categoryLabel={categoryLabel}
+                  canNavigate={!!onNavigateToPanel && !!callerInfo.panelId}
+                  onPress={showRequestingPanel}
+                />
                 <Text style={[styles.summary, { color: colors.textSecondary }]}>
                   {copy.summary}
                 </Text>
                 {copy.warning ? <WarningBand message={copy.warning} /> : null}
-                {current.kind === "userland" ? <IssuerPanel approval={current} /> : null}
+                {current.kind === "userland" ? (
+                  <IssuerPanel approval={current} caller={callerInfo} />
+                ) : null}
                 {current.kind === "device-code" ? <DeviceCodePanel approval={current} /> : null}
                 {error ? <InlineError message={error} /> : null}
                 {current.kind === "client-config" || current.kind === "credential-input" ? (
@@ -305,11 +402,13 @@ export function ApprovalSheet({
                 ) : null}
                 <ApprovalDetails
                   approval={current}
-                  callerLabel={callerLabel}
+                  caller={callerInfo}
                   open={detailsOpen}
                   onToggle={() => setDetailsOpen((open) => !open)}
                 />
-                {current.kind === "userland" ? <RememberedHint approval={current} /> : null}
+                {current.kind === "userland" ? (
+                  <RememberedHint approval={current} caller={callerInfo} />
+                ) : null}
               </ScrollView>
 
               <View
@@ -394,22 +493,138 @@ export function ApprovalSheet({
 function ApprovalHeader({
   approval,
   categoryLabel,
-  extraCount,
+  accentColor,
+  queueLength,
+  queueIndex,
+  canPrev,
+  canNext,
+  onPrev,
+  onNext,
 }: {
   approval: PendingApproval;
   categoryLabel: string;
-  extraCount: number;
+  accentColor: string;
+  queueLength: number;
+  queueIndex: number;
+  canPrev: boolean;
+  canNext: boolean;
+  onPrev: () => void;
+  onNext: () => void;
 }) {
   const colors = useAtomValue(themeColorsAtom);
   const CategoryIcon = getCategoryIcon(approval);
   return (
     <View style={styles.headerRow}>
-      <View style={[styles.categoryIcon, { backgroundColor: colors.primary }]}>
+      <View style={[styles.categoryIcon, { backgroundColor: accentColor }]}>
         <CategoryIcon size={17} color="#ffffff" />
       </View>
-      <Text style={[styles.categoryLabel, { color: colors.accent }]}>{categoryLabel}</Text>
       {approval.kind === "credential" ? <Pill>{approval.credentialLabel}</Pill> : null}
-      {extraCount > 0 ? <Pill>+{extraCount} queued</Pill> : null}
+      {queueLength > 1 ? (
+        <QueueNavigator
+          index={queueIndex}
+          total={queueLength}
+          canPrev={canPrev}
+          canNext={canNext}
+          onPrev={onPrev}
+          onNext={onNext}
+        />
+      ) : null}
+    </View>
+  );
+}
+
+function QueueNavigator({
+  index,
+  total,
+  canPrev,
+  canNext,
+  onPrev,
+  onNext,
+}: {
+  index: number;
+  total: number;
+  canPrev: boolean;
+  canNext: boolean;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  const colors = useAtomValue(themeColorsAtom);
+  return (
+    <View style={styles.queueNavigator}>
+      <Pressable
+        accessibilityLabel="Previous approval"
+        accessibilityRole="button"
+        accessibilityState={{ disabled: !canPrev }}
+        disabled={!canPrev}
+        onPress={onPrev}
+        style={[styles.queueButton, !canPrev ? styles.disabled : null]}
+        testID="approval-queue-prev"
+      >
+        <ChevronLeft size={16} color={colors.textSecondary} />
+      </Pressable>
+      <Text style={[styles.queueLabel, { color: colors.textSecondary }]}>
+        {index + 1} / {total}
+      </Text>
+      <Pressable
+        accessibilityLabel="Next approval"
+        accessibilityRole="button"
+        accessibilityState={{ disabled: !canNext }}
+        disabled={!canNext}
+        onPress={onNext}
+        style={[styles.queueButton, !canNext ? styles.disabled : null]}
+        testID="approval-queue-next"
+      >
+        <ChevronRight size={16} color={colors.textSecondary} />
+      </Pressable>
+    </View>
+  );
+}
+
+function CallerRow({
+  caller,
+  categoryLabel,
+  canNavigate,
+  onPress,
+}: {
+  caller: CallerInfo;
+  categoryLabel: string;
+  canNavigate: boolean;
+  onPress: () => void;
+}) {
+  const colors = useAtomValue(themeColorsAtom);
+  const KindIcon =
+    caller.kind === "panel" ? LayoutPanelTop : caller.kind === "worker" ? Workflow : Settings2;
+  const chip = (
+    <View
+      style={[
+        styles.callerChip,
+        { backgroundColor: colors.background, borderColor: colors.border },
+      ]}
+    >
+      <KindIcon size={12} color={colors.textSecondary} />
+      <Text numberOfLines={1} style={[styles.callerChipLabel, { color: colors.text }]}>
+        {caller.label}
+      </Text>
+      {canNavigate ? <ArrowRight size={12} color={colors.accent} /> : null}
+    </View>
+  );
+  return (
+    <View style={styles.callerRow}>
+      <Text style={[styles.callerRowLabel, { color: colors.textSecondary }]}>Requested by</Text>
+      {canNavigate ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Show ${caller.kindLabel.toLowerCase()} ${caller.label}`}
+          onPress={onPress}
+          testID="approval-caller-chip"
+          style={({ pressed }) => [pressed ? styles.pressed : null]}
+        >
+          {chip}
+        </Pressable>
+      ) : (
+        <View testID="approval-caller-chip">{chip}</View>
+      )}
+      <Text style={[styles.categoryLabel, { color: colors.accent }]}>{categoryLabel}</Text>
     </View>
   );
 }
@@ -454,8 +669,17 @@ function InlineError({ message }: { message: string }) {
   );
 }
 
-function IssuerPanel({ approval }: { approval: PendingUserlandApproval }) {
+function IssuerPanel({
+  approval,
+  caller,
+}: {
+  approval: PendingUserlandApproval;
+  caller: CallerInfo;
+}) {
   const colors = useAtomValue(themeColorsAtom);
+  const issuer = approval.issuer;
+  const showIssuer =
+    issuer && (issuer.kind !== approval.callerKind || issuer.id !== approval.callerId);
   return (
     <View
       style={[
@@ -466,13 +690,23 @@ function IssuerPanel({ approval }: { approval: PendingUserlandApproval }) {
       <View style={styles.issuerHeader}>
         <User size={14} color={colors.textSecondary} />
         <Text style={[styles.helperText, { color: colors.textSecondary }]}>
-          From <IdCode value={approval.callerId} />:
+          From {caller.kindLabel.toLowerCase()}{" "}
+          <Text style={[styles.helperEmphasis, { color: colors.text }]}>{caller.label}</Text>
+          {showIssuer && issuer
+            ? `  ·  on behalf of ${issuer.kind} ${issuer.label ?? prettifyId(issuer.id)}`
+            : null}
         </Text>
       </View>
       <Text style={[styles.providerTitle, { color: colors.text }]}>{approval.title}</Text>
       <Text style={[styles.helperText, { color: colors.textSecondary }]}>
-        Subject: <IdCode value={approval.subject.id} />
-        {approval.subject.label ? ` ${approval.subject.label}` : ""}
+        Subject:{" "}
+        {approval.subject.label ? (
+          <Text style={[styles.helperEmphasis, { color: colors.text }]}>
+            {approval.subject.label}
+          </Text>
+        ) : (
+          <Text style={styles.codeText}>{truncateId(approval.subject.id)}</Text>
+        )}
       </Text>
       {approval.warning ? <WarningBand message={approval.warning} /> : null}
       {approval.summary ? (
@@ -537,12 +771,12 @@ function SecretConfigFields({
 
 function ApprovalDetails({
   approval,
-  callerLabel,
+  caller,
   open,
   onToggle,
 }: {
   approval: PendingApproval;
-  callerLabel: string;
+  caller: CallerInfo;
   open: boolean;
   onToggle: () => void;
 }) {
@@ -555,14 +789,26 @@ function ApprovalDetails({
         onPress={onToggle}
         style={styles.detailsSummary}
       >
-        <ChevronDown size={14} color={colors.textSecondary} />
+        <ChevronDown
+          size={14}
+          color={colors.textSecondary}
+          // Visual hint: chevron points down when open, right when closed.
+          // Native RN can't rotate icons declaratively without animated value;
+          // we keep it static and rely on accessibilityState for assistive tech.
+        />
         <Text style={[styles.detailsSummaryText, { color: colors.textSecondary }]}>
           Request details
         </Text>
       </Pressable>
       {open ? (
         <View style={styles.detailRows}>
-          <DetailRow icon={User} label="Requester" value={`${callerLabel} ${approval.callerId}`} />
+          <DetailRow
+            icon={User}
+            label="Requester"
+            value={`${caller.kindLabel} · ${caller.label}`}
+            secondary={approval.callerId}
+            secondarySelectable
+          />
           <DetailRow icon={Globe} label="Repo" value={approval.repoPath} code />
           <DetailRow icon={Lock} label="Version" value={approval.effectiveVersion} code />
           {approval.kind === "credential" ? (
@@ -826,30 +1072,49 @@ function DetailRow({
   value,
   code,
   danger,
+  secondary,
+  secondarySelectable,
 }: {
   icon: IconComponent;
   label: string;
   value: string;
   code?: boolean;
   danger?: boolean;
+  /** Optional supplementary value (e.g. the full opaque id under a label). */
+  secondary?: string;
+  secondarySelectable?: boolean;
 }) {
   const colors = useAtomValue(themeColorsAtom);
   return (
     <View accessibilityLabel={`${label}: ${value}`} style={styles.detailRow}>
       <RowIcon size={14} color={danger ? colors.danger : colors.textSecondary} />
       <Text style={[styles.detailLabel, { color: colors.textSecondary }]}>{label}</Text>
-      <Text
-        style={[
-          styles.detailValue,
-          code ? styles.codeText : null,
-          {
-            color: danger ? colors.danger : colors.text,
-            backgroundColor: code ? colors.codeBackground : "transparent",
-          },
-        ]}
-      >
-        {value}
-      </Text>
+      <View style={styles.detailValueColumn}>
+        <Text
+          style={[
+            styles.detailValue,
+            code ? styles.codeText : null,
+            {
+              color: danger ? colors.danger : colors.text,
+              backgroundColor: code ? colors.codeBackground : "transparent",
+            },
+          ]}
+        >
+          {value}
+        </Text>
+        {secondary ? (
+          <Text
+            selectable={secondarySelectable}
+            style={[
+              styles.detailValueSecondary,
+              styles.codeText,
+              { color: colors.textSecondary, backgroundColor: colors.codeBackground },
+            ]}
+          >
+            {secondary}
+          </Text>
+        ) : null}
+      </View>
     </View>
   );
 }
@@ -870,8 +1135,25 @@ function StandardActions({
     return (
       <View style={styles.actionGroups}>
         <View style={styles.actionRow}>
-          <DecisionButton label={copy.once.label} description={copy.once.description} variant="primary" disabled={busy} loading={pendingAction === "once"} onPress={() => onChoose("once")} testID="approval-action-once" />
-          <DecisionButton label="Deny" description={copy.denyDescription} variant="danger" disabled={busy} loading={pendingAction === "deny"} icon={XCircle} onPress={() => onChoose("deny")} testID="approval-action-deny" />
+          <DecisionButton
+            label={copy.once.label}
+            description={copy.once.description}
+            variant="primary"
+            disabled={busy}
+            loading={pendingAction === "once"}
+            onPress={() => onChoose("once")}
+            testID="approval-action-once"
+          />
+          <DecisionButton
+            label="Deny"
+            description={copy.denyDescription}
+            variant="danger"
+            disabled={busy}
+            loading={pendingAction === "deny"}
+            icon={XCircle}
+            onPress={() => onChoose("deny")}
+            testID="approval-action-deny"
+          />
         </View>
       </View>
     );
@@ -1146,19 +1428,21 @@ function Pill({ children, tone }: { children: React.ReactNode; tone?: "warning" 
   );
 }
 
-function RememberedHint({ approval }: { approval: PendingUserlandApproval }) {
+function RememberedHint({
+  approval,
+  caller,
+}: {
+  approval: PendingUserlandApproval;
+  caller: CallerInfo;
+}) {
   const colors = useAtomValue(themeColorsAtom);
   return (
     <View style={styles.rememberedHint}>
       <Info size={14} color={colors.textSecondary} />
       <Text style={[styles.helperText, { color: colors.textSecondary }]}>
-        {approval.promptOptions === "scoped" ? (
-          "Use Trust version to remember this approval."
-        ) : (
-          <>
-            Remembered for <IdCode value={approval.callerId} /> until revoked.
-          </>
-        )}
+        {approval.promptOptions === "scoped"
+          ? "Use Trust version to remember this approval."
+          : `Remembered for ${caller.kindLabel.toLowerCase()} "${caller.label}" until revoked.`}
       </Text>
     </View>
   );
@@ -1167,10 +1451,6 @@ function RememberedHint({ approval }: { approval: PendingUserlandApproval }) {
 function truncateId(id: string, head = 8, tail = 4): string {
   if (id.length <= head + tail + 1) return id;
   return `${id.slice(0, head)}...${id.slice(-tail)}`;
-}
-
-function IdCode({ value }: { value: string }) {
-  return <Text>{truncateId(value)}</Text>;
 }
 
 const styles = StyleSheet.create({
@@ -1245,10 +1525,56 @@ const styles = StyleSheet.create({
     letterSpacing: 0,
     textTransform: "uppercase",
   },
+  queueNavigator: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 6,
+    marginLeft: "auto",
+  },
+  queueButton: {
+    alignItems: "center",
+    borderRadius: 6,
+    height: 28,
+    justifyContent: "center",
+    width: 28,
+  },
+  queueLabel: {
+    fontSize: 12,
+    fontVariant: ["tabular-nums"],
+    fontWeight: "600",
+    minWidth: 36,
+    textAlign: "center",
+  },
   title: {
     fontSize: 22,
     fontWeight: "600",
     marginTop: 16,
+  },
+  callerRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 8,
+  },
+  callerRowLabel: {
+    fontSize: 12,
+    fontWeight: "500",
+  },
+  callerChip: {
+    alignItems: "center",
+    borderRadius: 999,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 5,
+    maxWidth: 220,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  callerChipLabel: {
+    flexShrink: 1,
+    fontSize: 12,
+    fontWeight: "600",
   },
   summary: {
     fontSize: 15,
@@ -1350,14 +1676,28 @@ const styles = StyleSheet.create({
     fontWeight: "500",
     width: 80,
   },
+  detailValueColumn: {
+    flex: 1,
+    flexDirection: "column",
+    gap: 4,
+    minWidth: 0,
+  },
   detailValue: {
     borderRadius: 6,
-    flex: 1,
     flexWrap: "wrap",
     fontSize: 13,
     fontWeight: "500",
     lineHeight: 18,
     minWidth: 0,
+  },
+  detailValueSecondary: {
+    alignSelf: "flex-start",
+    borderRadius: 6,
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  helperEmphasis: {
+    fontWeight: "600",
   },
   codeText: {
     fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),

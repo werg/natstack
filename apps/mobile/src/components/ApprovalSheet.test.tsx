@@ -75,9 +75,12 @@ const userland: PendingApproval = {
   ],
 };
 
-function renderSheet(approval: PendingApproval, overrides: Partial<React.ComponentProps<typeof ApprovalSheet>> = {}) {
+function renderSheet(
+  approval: PendingApproval | PendingApproval[],
+  overrides: Partial<React.ComponentProps<typeof ApprovalSheet>> = {}
+) {
   const props = {
-    approvals: [approval],
+    approvals: Array.isArray(approval) ? approval : [approval],
     onResolve: jest.fn(async () => undefined),
     onSubmitClientConfig: jest.fn(async () => undefined),
     onSubmitCredentialInput: jest.fn(async () => undefined),
@@ -109,7 +112,7 @@ describe("ApprovalSheet", () => {
       fireEvent.press(getByTestId(`approval-action-${decision}`));
 
       await waitFor(() => expect(onResolve).toHaveBeenCalledWith("approval-1", decision));
-    },
+    }
   );
 
   it("submits client config only after required fields are filled", async () => {
@@ -123,10 +126,12 @@ describe("ApprovalSheet", () => {
     fireEvent.changeText(getByTestId("approval-field-clientSecret"), "secret");
     fireEvent.press(getByTestId("approval-submit"));
 
-    await waitFor(() => expect(onSubmitClientConfig).toHaveBeenCalledWith("approval-1", {
-      clientId: "client-id",
-      clientSecret: "secret",
-    }));
+    await waitFor(() =>
+      expect(onSubmitClientConfig).toHaveBeenCalledWith("approval-1", {
+        clientId: "client-id",
+        clientSecret: "secret",
+      })
+    );
   });
 
   it("submits credential input only after required fields are filled", async () => {
@@ -139,9 +144,11 @@ describe("ApprovalSheet", () => {
     fireEvent.changeText(getByTestId("approval-field-apiKey"), "github_pat_1");
     fireEvent.press(getByTestId("approval-submit"));
 
-    await waitFor(() => expect(onSubmitCredentialInput).toHaveBeenCalledWith("approval-1", {
-      apiKey: "github_pat_1",
-    }));
+    await waitFor(() =>
+      expect(onSubmitCredentialInput).toHaveBeenCalledWith("approval-1", {
+        apiKey: "github_pat_1",
+      })
+    );
   });
 
   it("renders OAuth mismatch warning conditionally", () => {
@@ -155,7 +162,7 @@ describe("ApprovalSheet", () => {
         onSubmitClientConfig={jest.fn()}
         onSubmitCredentialInput={jest.fn()}
         onResolveUserland={jest.fn()}
-      />,
+      />
     );
     expect(queryByText("The sign-in domain differs from the service domain.")).toBeNull();
   });
@@ -165,10 +172,66 @@ describe("ApprovalSheet", () => {
     const { getByText, getByTestId } = renderSheet(userland, { onResolveUserland });
 
     expect(getByText("Worker request")).toBeTruthy();
-    expect(getByText(/Remembered for/)).toBeTruthy();
+    expect(getByText(/Remembered for worker/)).toBeTruthy();
 
     fireEvent.press(getByTestId("approval-userland-allow"));
     await waitFor(() => expect(onResolveUserland).toHaveBeenCalledWith("approval-1", "allow"));
+  });
+
+  it("renders the caller chip with the kind icon and label", () => {
+    const titledPanel: PendingApproval = {
+      ...base,
+      callerKind: "panel",
+      callerTitle: "My Project",
+      kind: "capability",
+      capability: "open-url",
+      title: "Open URL",
+      resource: { type: "url", label: "URL", value: "https://example.com" },
+    };
+    const { getByText, getByTestId } = renderSheet(titledPanel);
+    expect(getByTestId("approval-caller-chip")).toBeTruthy();
+    expect(getByText("My Project")).toBeTruthy();
+    expect(getByText("Requested by")).toBeTruthy();
+  });
+
+  it("calls onNavigateToPanel when the caller is a panel and the chip is pressed", () => {
+    const titledPanel: PendingApproval = {
+      ...base,
+      callerId: "panel:abc",
+      callerKind: "panel",
+      callerTitle: "Spectrolite",
+      kind: "userland",
+      subject: { id: "subj-1", label: "Foo" },
+      title: "Allow foo?",
+      promptOptions: "choices",
+      options: [{ value: "allow", label: "Allow", tone: "primary" }],
+    };
+    const onNavigateToPanel = jest.fn();
+    const { getByTestId } = renderSheet(titledPanel, { onNavigateToPanel });
+    fireEvent.press(getByTestId("approval-caller-chip"));
+    expect(onNavigateToPanel).toHaveBeenCalledWith("panel:abc");
+  });
+
+  it("steps through a queue of pending approvals", () => {
+    const a: PendingApproval = {
+      ...base,
+      approvalId: "a1",
+      kind: "userland",
+      subject: { id: "s-1" },
+      title: "First request",
+      promptOptions: "choices",
+      options: [{ value: "ok", label: "OK", tone: "primary" }],
+    };
+    const b: PendingApproval = { ...a, approvalId: "a2", title: "Second request" };
+    const c: PendingApproval = { ...a, approvalId: "a3", title: "Third request" };
+    const { getByText, getByTestId } = renderSheet([a, b, c]);
+    expect(getByText("First request")).toBeTruthy();
+    expect(getByText("1 / 3")).toBeTruthy();
+    fireEvent.press(getByTestId("approval-queue-next"));
+    expect(getByText("Second request")).toBeTruthy();
+    expect(getByText("2 / 3")).toBeTruthy();
+    fireEvent.press(getByTestId("approval-queue-prev"));
+    expect(getByText("First request")).toBeTruthy();
   });
 
   it("uses userland tone variants", () => {
@@ -199,7 +262,7 @@ describe("ApprovalSheet", () => {
         onSubmitClientConfig={jest.fn()}
         onSubmitCredentialInput={jest.fn()}
         onResolveUserland={jest.fn()}
-      />,
+      />
     );
     expect(getByText("Add service")).toBeTruthy();
   });

@@ -1234,6 +1234,7 @@ export function MainScreen() {
         onSubmitClientConfig={submitClientConfig}
         onSubmitCredentialInput={submitCredentialInput}
         onResolveUserland={resolveUserland}
+        onNavigateToPanel={activatePanel}
       />
       <Toast />
     </View>
