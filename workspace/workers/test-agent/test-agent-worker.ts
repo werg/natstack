@@ -21,6 +21,11 @@ function delay(ms: number): Promise<void> {
 export class TestAgentWorker extends AgentWorkerBase {
   static override schemaVersion = 5;
 
+  constructor(ctx: ConstructorParameters<typeof AgentWorkerBase>[0], env: unknown) {
+    super(ctx, env);
+    void this.setOwnTitle("Test Agent");
+  }
+
   /** Anthropic sonnet — smaller surface for unit tests than OpenAI Codex. */
   protected override getDefaultModel(): string {
     return "anthropic:claude-sonnet-4-6";

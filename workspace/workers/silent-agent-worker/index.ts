@@ -16,6 +16,11 @@ function asSilentAgentConfig(config: unknown): SilentAgentConfig {
 export class SilentAgentWorker extends AiChatWorker {
   static override schemaVersion = 1;
 
+  constructor(ctx: ConstructorParameters<typeof AiChatWorker>[0], env: unknown) {
+    super(ctx, env);
+    void this.setOwnTitle("Silent Agent");
+  }
+
   protected override getParticipantInfo(channelId: string, config?: unknown): ParticipantDescriptor {
     const base = super.getParticipantInfo(channelId, config);
     const cfg = asSilentAgentConfig(config);

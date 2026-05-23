@@ -62,6 +62,10 @@ async function createGadBackedChannel(options: {
           targetId: gadTarget,
         };
       }
+      if (target === "main" && method === "runtime.setTitle") {
+        // Title registry isn't relevant in unit tests; treat as a no-op.
+        return undefined;
+      }
       if (target === gadTarget) {
         const callable = gad.instance as unknown as Record<string, (...methodArgs: unknown[]) => unknown>;
         return await callable[method]!(...args);

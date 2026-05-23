@@ -528,6 +528,19 @@ export class PubSubChannel extends DurableObjectBase {
     this.setStateValue("contextId", contextId);
     this.setStateValue("createdAt", String(Date.now()));
     if (channelConfig) this.setStateValue("config", JSON.stringify(channelConfig));
+    void this.refreshOwnTitle();
+  }
+
+  /** Push this channel's display title to the server-side registry. Falls
+   *  back to "Channel" when no title is configured so approval UIs always
+   *  have a meaningful label. */
+  private async refreshOwnTitle(): Promise<void> {
+    const config = this.getChannelConfig();
+    const configured =
+      config && typeof config.title === "string" && config.title.trim().length > 0
+        ? config.title.trim()
+        : null;
+    await this.setOwnTitle(configured ?? "Channel");
   }
 
   private getChannelConfig(): ChannelConfig | null {
@@ -1249,6 +1262,7 @@ export class PubSubChannel extends DurableObjectBase {
     this.setStateValue("config", JSON.stringify(newConfig));
     const event = await this.appendLogEvent("config-update", newConfig, "system");
     broadcast(this.broadcastDeps, event, { kind: "log", phase: "live" }, "system");
+    void this.refreshOwnTitle();
     return newConfig;
   }
 

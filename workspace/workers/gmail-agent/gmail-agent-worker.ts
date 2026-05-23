@@ -220,6 +220,7 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
 
   constructor(ctx: DurableObjectContext, env: unknown) {
     super(ctx, env);
+    void this.setOwnTitle("Gmail");
   }
 
   protected override createTables(): void {

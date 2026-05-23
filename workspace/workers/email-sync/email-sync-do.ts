@@ -43,6 +43,7 @@ export class EmailSyncWorker extends DurableObjectBase {
     static override schemaVersion = 1;
     constructor(ctx: DurableObjectContext, env: unknown) {
         super(ctx, env);
+        void this.setOwnTitle("Email sync");
     }
     protected override createTables(): void {
         // Track synced message IDs to avoid duplicate notifications across restarts

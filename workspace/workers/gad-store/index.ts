@@ -220,6 +220,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
   constructor(ctx: ConstructorParameters<typeof DurableObjectBase>[0], env: unknown) {
     super(ctx, env);
     this.ensureReady();
+    void this.setOwnTitle("GAD store");
   }
 
   protected createTables(): void {
