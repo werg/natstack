@@ -90,6 +90,7 @@ export class VscodeTerminalFrontend implements TerminalFrontend {
 
   open(host: HTMLElement): void {
     this.raw.open(host);
+    this.installTextareaPasteResidueGuard();
     void this.loadCoreAddons().then(() => {
       if (this.disposed) return;
       this.fit();
@@ -284,6 +285,32 @@ export class VscodeTerminalFrontend implements TerminalFrontend {
     safeDispose(webglAddon);
     void this.refreshImageAddon(this.rendererGeneration);
     if (refit && !this.disposed) this.fit();
+  }
+
+  private installTextareaPasteResidueGuard(): void {
+    const element = this.raw.element;
+    const textarea = this.raw.textarea;
+    if (!element || !textarea) return;
+    const clearResidue = () => {
+      if (this.disposed || document.activeElement !== textarea) return;
+      textarea.value = "";
+    };
+    const scheduleClear = () => {
+      window.setTimeout(clearResidue, 0);
+      window.setTimeout(clearResidue, 50);
+    };
+    const onAuxClick = (event: MouseEvent) => {
+      if (event.button === 1) scheduleClear();
+    };
+    const onPaste = () => scheduleClear();
+    element.addEventListener("auxclick", onAuxClick);
+    textarea.addEventListener("paste", onPaste);
+    this.disposables.push({
+      dispose: () => {
+        element.removeEventListener("auxclick", onAuxClick);
+        textarea.removeEventListener("paste", onPaste);
+      },
+    });
   }
 }
 
