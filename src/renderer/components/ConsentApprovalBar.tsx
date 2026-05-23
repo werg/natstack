@@ -237,7 +237,6 @@ export function ConsentApprovalBar() {
   // light/dark overrides in overrides.css remain authoritative.
   const toneStyle = {
     "--app-approval-bg": `var(--app-approval-${accent}-bg)`,
-    "--app-approval-edge": `var(--app-approval-${accent}-edge)`,
     "--app-approval-border": `var(--app-approval-${accent}-border)`,
     "--app-approval-stripe": `var(--app-approval-${accent}-stripe)`,
     "--app-approval-text": `var(--app-approval-${accent}-text)`,

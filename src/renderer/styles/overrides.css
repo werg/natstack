@@ -11,13 +11,11 @@
   --app-chrome-selected-hover: var(--gray-a5);
   /* Approval bar — sky (default) */
   --app-approval-sky-bg: var(--sky-a4);
-  --app-approval-sky-edge: var(--sky-a6);
   --app-approval-sky-border: var(--sky-a7);
   --app-approval-sky-stripe: var(--sky-9);
   --app-approval-sky-text: var(--sky-12);
   /* Approval bar — amber (extensions / elevated warnings) */
   --app-approval-amber-bg: var(--amber-a4);
-  --app-approval-amber-edge: var(--amber-a6);
   --app-approval-amber-border: var(--amber-a7);
   --app-approval-amber-stripe: var(--amber-10);
   --app-approval-amber-text: var(--amber-12);
@@ -33,12 +31,10 @@
   /* Light mode: use Radix step-3 surfaces — gentler than hand-rolled hex
      but still distinctly tinted against gray chrome. */
   --app-approval-sky-bg: var(--sky-3);
-  --app-approval-sky-edge: var(--sky-5);
   --app-approval-sky-border: var(--sky-7);
   --app-approval-sky-stripe: var(--sky-9);
   --app-approval-sky-text: var(--sky-12);
   --app-approval-amber-bg: var(--amber-3);
-  --app-approval-amber-edge: var(--amber-5);
   --app-approval-amber-border: var(--amber-7);
   --app-approval-amber-stripe: var(--amber-10);
   --app-approval-amber-text: var(--amber-12);
@@ -81,11 +77,14 @@
   background-color: var(--red-a4);
 }
 
+.titlebar-breadcrumb-scroll::-webkit-scrollbar {
+  display: none;
+}
+
 /* Approval bar: container, stripe, and entry animation */
 .approval-bar {
   position: relative;
   background-color: var(--app-approval-bg);
-  background-image: linear-gradient(90deg, var(--app-approval-edge), transparent 60%);
   border-bottom: 1px solid var(--app-approval-border);
   box-shadow:
     inset 4px 0 0 0 var(--app-approval-stripe),
