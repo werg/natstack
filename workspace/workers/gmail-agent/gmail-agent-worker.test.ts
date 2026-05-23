@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createTestDO } from "@workspace/runtime/worker/test-utils";
 import type { GmailClient, GmailMessage, GmailThread } from "@workspace/gmail";
 import { AGENTIC_EVENT_PAYLOAD_KIND } from "@workspace/agentic-protocol";
+import { TrajectoryVesselBase } from "@workspace/agentic-do";
 
 import { GmailAgentWorker } from "./gmail-agent-worker.js";
 
@@ -11,7 +12,7 @@ function message(
   headers: Record<string, string>,
   body = "hello",
   snippet = body,
-  labelIds = ["INBOX", "UNREAD"],
+  labelIds = ["INBOX", "UNREAD"]
 ): GmailMessage {
   return {
     id,
@@ -27,8 +28,19 @@ function message(
 }
 
 class TestGmailAgentWorker extends GmailAgentWorker {
-  published: Array<{ participantId: string; event: { kind?: string; payload?: unknown }; opts?: unknown }> = [];
-  replayEvents: Array<{ id: number; type: string; senderId: string; payload: unknown; messageId: string; ts: number }> = [];
+  published: Array<{
+    participantId: string;
+    event: { kind?: string; payload?: unknown };
+    opts?: unknown;
+  }> = [];
+  replayEvents: Array<{
+    id: number;
+    type: string;
+    senderId: string;
+    payload: unknown;
+    messageId: string;
+    ts: number;
+  }> = [];
   profile = vi.fn(async () => ({
     emailAddress: "me@example.com",
     messagesTotal: 1,
@@ -38,18 +50,32 @@ class TestGmailAgentWorker extends GmailAgentWorker {
   sync = vi.fn(async () => ({
     historyId: "h2",
     rawHistory: { historyId: "h2", history: [] },
-    threads: [{ threadId: "thr-1", messagesAdded: [], messagesDeleted: [], labelsAdded: [], labelsRemoved: [] }],
+    threads: [
+      {
+        threadId: "thr-1",
+        messagesAdded: [],
+        messagesDeleted: [],
+        labelsAdded: [],
+        labelsRemoved: [],
+      },
+    ],
   }));
   fakeThread: GmailThread = {
     id: "thr-1",
     messages: [
-      message("msg-1", "thr-1", {
-        Subject: "Question",
-        From: "a@example.com",
-        To: "me@example.com",
-        "Message-ID": "<msg-1@example.com>",
-        Date: "Fri, 22 May 2026 10:00:00 +0000",
-      }, "Private full email body", "Short snippet"),
+      message(
+        "msg-1",
+        "thr-1",
+        {
+          Subject: "Question",
+          From: "a@example.com",
+          To: "me@example.com",
+          "Message-ID": "<msg-1@example.com>",
+          Date: "Fri, 22 May 2026 10:00:00 +0000",
+        },
+        "Private full email body",
+        "Short snippet"
+      ),
     ],
   };
   sent = vi.fn(async (params: unknown) => ({ id: "sent-1", threadId: "thr-1", params }));
@@ -85,7 +111,11 @@ class TestGmailAgentWorker extends GmailAgentWorker {
         snapshots: [],
         ready: { totalCount: this.replayEvents.length, envelopeCount: this.replayEvents.length },
       }),
-      publishAgenticEvent: async (participantId: string, event: { kind?: string; payload?: unknown }, opts?: unknown) => {
+      publishAgenticEvent: async (
+        participantId: string,
+        event: { kind?: string; payload?: unknown },
+        opts?: unknown
+      ) => {
         this.published.push({ participantId, event, opts });
         return { id: this.published.length };
       },
@@ -100,7 +130,7 @@ class TestGmailAgentWorker extends GmailAgentWorker {
       "ctx-1",
       Date.now(),
       JSON.stringify({ handle: "gmail" }),
-      participantId,
+      participantId
     );
   }
 
@@ -118,6 +148,10 @@ class TestGmailAgentWorker extends GmailAgentWorker {
 }
 
 describe("GmailAgentWorker", () => {
+  it("inherits the base vessel schema version so base-table migrations run", () => {
+    expect(GmailAgentWorker.schemaVersion).toBe(TrajectoryVesselBase.schemaVersion);
+  });
+
   it("advertises the gmail participant and strict mention policy", async () => {
     const { instance } = await createTestDO(TestGmailAgentWorker);
     const worker = instance as TestGmailAgentWorker;
@@ -228,16 +262,25 @@ describe("GmailAgentWorker", () => {
     await expect(worker.onMethodCall("ch-1", "call-2", "checkNow", {})).resolves.toMatchObject({
       result: { ok: true, historyId: "h2", threadsUpdated: 1 },
     });
-    expect(worker.published.map((entry) => (entry.event.payload as { typeId?: string }).typeId).filter(Boolean))
-      .toContain("gmail.thread");
+    expect(
+      worker.published
+        .map((entry) => (entry.event.payload as { typeId?: string }).typeId)
+        .filter(Boolean)
+    ).toContain("gmail.thread");
 
     const beforeCategorize = worker.published.length;
-    await expect(worker.onMethodCall("ch-1", "call-3", "categorize", {
-      threadId: "thr-1",
-      category: "urgent",
-    })).resolves.toMatchObject({ result: { threadId: "thr-1", category: "urgent" } });
+    await expect(
+      worker.onMethodCall("ch-1", "call-3", "categorize", {
+        threadId: "thr-1",
+        category: "urgent",
+      })
+    ).resolves.toMatchObject({ result: { threadId: "thr-1", category: "urgent" } });
     const afterCategorize = worker.published.slice(beforeCategorize);
-    expect(afterCategorize.some((entry) => (entry.event.payload as { typeId?: string }).typeId === "gmail.category")).toBe(true);
+    expect(
+      afterCategorize.some(
+        (entry) => (entry.event.payload as { typeId?: string }).typeId === "gmail.category"
+      )
+    ).toBe(true);
 
     expect(JSON.stringify(worker.published)).not.toContain("Private full email body");
   });
@@ -249,39 +292,58 @@ describe("GmailAgentWorker", () => {
 
     await worker.onMethodCall("ch-1", "call-1", "checkNow", {});
     await worker.onMethodCall("ch-1", "call-2", "checkNow", {});
-    await expect(worker.onMethodCall("ch-1", "call-3", "listActionableThreads", {})).resolves.toMatchObject({
+    await expect(
+      worker.onMethodCall("ch-1", "call-3", "listActionableThreads", {})
+    ).resolves.toMatchObject({
       result: [expect.objectContaining({ threadId: "thr-1", actionable: true })],
     });
 
     worker.fakeThread = {
       id: "thr-1",
       messages: [
-        message("msg-2", "thr-1", {
-          Subject: "Promo",
-          From: "a@example.com",
-          To: "me@example.com",
-          Date: "Fri, 22 May 2026 10:05:00 +0000",
-        }, "Sale", "Sale", ["INBOX", "UNREAD", "CATEGORY_PROMOTIONS"]),
+        message(
+          "msg-2",
+          "thr-1",
+          {
+            Subject: "Promo",
+            From: "a@example.com",
+            To: "me@example.com",
+            Date: "Fri, 22 May 2026 10:05:00 +0000",
+          },
+          "Sale",
+          "Sale",
+          ["INBOX", "UNREAD", "CATEGORY_PROMOTIONS"]
+        ),
       ],
     };
     await worker.onMethodCall("ch-1", "call-4", "checkNow", {});
-    await expect(worker.onMethodCall("ch-1", "call-5", "listActionableThreads", {})).resolves.toMatchObject({
+    await expect(
+      worker.onMethodCall("ch-1", "call-5", "listActionableThreads", {})
+    ).resolves.toMatchObject({
       result: [],
     });
 
     worker.fakeThread = {
       id: "thr-1",
       messages: [
-        message("msg-3", "thr-1", {
-          Subject: "Sent by me",
-          From: "me@example.com",
-          To: "a@example.com",
-          Date: "Fri, 22 May 2026 10:10:00 +0000",
-        }, "I replied", "I replied"),
+        message(
+          "msg-3",
+          "thr-1",
+          {
+            Subject: "Sent by me",
+            From: "me@example.com",
+            To: "a@example.com",
+            Date: "Fri, 22 May 2026 10:10:00 +0000",
+          },
+          "I replied",
+          "I replied"
+        ),
       ],
     };
     await worker.onMethodCall("ch-1", "call-6", "checkNow", {});
-    await expect(worker.onMethodCall("ch-1", "call-7", "listActionableThreads", {})).resolves.toMatchObject({
+    await expect(
+      worker.onMethodCall("ch-1", "call-7", "listActionableThreads", {})
+    ).resolves.toMatchObject({
       result: [],
     });
   });
@@ -290,34 +352,38 @@ describe("GmailAgentWorker", () => {
     const { instance } = await createTestDO(TestGmailAgentWorker);
     const worker = instance as TestGmailAgentWorker;
     worker.seedSubscription();
-    worker.replayEvents = [{
-      id: 1,
-      messageId: "custom-start",
-      type: AGENTIC_EVENT_PAYLOAD_KIND,
-      senderId: "agent-gmail",
-      payload: {
-        kind: "custom.started",
-        actor: { kind: "agent", id: "agent-gmail" },
+    worker.replayEvents = [
+      {
+        id: 1,
+        messageId: "custom-start",
+        type: AGENTIC_EVENT_PAYLOAD_KIND,
+        senderId: "agent-gmail",
         payload: {
-          protocol: "agentic.trajectory.v1",
-          typeId: "gmail.thread",
-          messageId: "thread-card-1",
-          initialState: {
-            threadId: "thr-recovered",
-            subject: "Recovered",
-            participants: ["a@example.com"],
-            lastSnippet: "Needs reply",
-            unreadCount: 1,
-            hasDraft: false,
-            status: "unread",
+          kind: "custom.started",
+          actor: { kind: "agent", id: "agent-gmail" },
+          payload: {
+            protocol: "agentic.trajectory.v1",
+            typeId: "gmail.thread",
+            messageId: "thread-card-1",
+            initialState: {
+              threadId: "thr-recovered",
+              subject: "Recovered",
+              participants: ["a@example.com"],
+              lastSnippet: "Needs reply",
+              unreadCount: 1,
+              hasDraft: false,
+              status: "unread",
+            },
           },
+          createdAt: new Date().toISOString(),
         },
-        createdAt: new Date().toISOString(),
+        ts: Date.now(),
       },
-      ts: Date.now(),
-    }];
+    ];
 
-    const result = await worker.onMethodCall("ch-1", "call-1", "listActionableThreads", { limit: 3 });
+    const result = await worker.onMethodCall("ch-1", "call-1", "listActionableThreads", {
+      limit: 3,
+    });
 
     expect(result.isError).toBeUndefined();
     expect(result.result).toEqual([

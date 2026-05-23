@@ -74,6 +74,8 @@ const DEBUG_RING_LIMIT = 80;
 const DEBUG_PREVIEW_LIMIT = 240;
 const DEBUG_COLLECTION_LIMIT = 16;
 const DEBUG_DEPTH_LIMIT = 3;
+const MAX_PARTIAL_UPDATES_PER_CALL = 256;
+const CLAIM_LOST = Symbol("CLAIM_LOST");
 export type RespondPolicy = "all" | "mentioned" | "mentioned-strict" | "from-participants";
 type CachedParticipant = Awaited<ReturnType<ChannelClient["getParticipants"]>>[number];
 type AgentSettingSource = "state" | "config" | "default";
@@ -121,10 +123,9 @@ function summarizeDebugValue(value: unknown, depth = 0): unknown {
   if (typeof value === "object") {
     if (depth >= DEBUG_DEPTH_LIMIT) return "[object]";
     const entries = Object.entries(value as Record<string, unknown>);
-    const sample = entries.slice(0, DEBUG_COLLECTION_LIMIT).map(([key, item]) => [
-      key,
-      summarizeDebugValue(item, depth + 1),
-    ]);
+    const sample = entries
+      .slice(0, DEBUG_COLLECTION_LIMIT)
+      .map(([key, item]) => [key, summarizeDebugValue(item, depth + 1)]);
     const result = Object.fromEntries(sample) as Record<string, unknown>;
     if (entries.length > sample.length) result["omittedKeys"] = entries.length - sample.length;
     return result;
@@ -505,6 +506,48 @@ interface MethodResultWaiter {
   reject: (error: unknown) => void;
 }
 
+type MethodSuspensionKind = "channelMethod" | "askUser" | "uiPrompt" | "approval";
+type MethodSuspensionTerminalKind = "none" | "completed" | "failed" | "cancelled";
+type MethodSuspensionDeliveryStatus =
+  | "pending"
+  | "delivered_live"
+  | "recovering"
+  | "transcript_admitted"
+  | "recovered"
+  | "superseded"
+  | "cancelled"
+  | "ignored"
+  | "stale"
+  | "dispatch_failed"
+  | "recovery_error";
+
+interface MethodSuspensionRow {
+  transportCallId: string;
+  channelId: string;
+  invocationId: string;
+  modelToolCallId: string;
+  assistantMessageId: string | null;
+  toolCallIndex: number | null;
+  toolName: string;
+  turnId: string | null;
+  kind: MethodSuspensionKind;
+  method: string;
+  participantHandle: string | null;
+  targetParticipantId: string | null;
+  argsJson: string | null;
+  sessionLeafBeforeCall: string | null;
+  terminalKind: MethodSuspensionTerminalKind;
+  resultJson: string | null;
+  resultIsError: number | null;
+  resultEventId: number | null;
+  resultReceivedAt: number | null;
+  deliveryStatus: MethodSuspensionDeliveryStatus;
+  recoveredEntryId: string | null;
+  recoveryError: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
 interface AgentDebugPhase {
   channelId: string;
   phase: string;
@@ -584,7 +627,7 @@ function deriveFallbackTitleFromMessage(content: string): string | null {
 }
 
 export abstract class TrajectoryVesselBase extends DurableObjectBase {
-  static override schemaVersion = 12;
+  static override schemaVersion = 14;
 
   protected identity: DOIdentity;
   protected subscriptions: SubscriptionManager;
@@ -626,6 +669,15 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
   private readonly recentDebugPhases: AgentDebugPhase[] = [];
   private readonly recentChannelEvents: AgentDebugChannelEvent[] = [];
   private readonly lastErrors: AgentDebugError[] = [];
+  private readonly recoveryChainByChannel = new Map<string, Promise<void>>();
+  private readonly recoveredUiPromptReplies = new Map<
+    string,
+    Array<{ result: unknown; isError: boolean }>
+  >();
+  private readonly recoveryDirectAbortControllers = new Map<string, Set<AbortController>>();
+  private activationReadyPromise: Promise<void> | null = null;
+  private lastActivationTypingCleanup: { at: number; count: number; errors: string[] } | null =
+    null;
 
   /** Phase 0D: Transient poison message tracker. Resets on hibernation. */
   private failedEvents = new Map<number, number>();
@@ -731,6 +783,953 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     });
   }
 
+  private stringifySuspensionJson(value: unknown): string | null {
+    if (value === undefined) return null;
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return JSON.stringify(summarizeDebugValue(value));
+    }
+  }
+
+  private parseSuspensionJson(value: string | null): unknown {
+    if (value == null) return null;
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value;
+    }
+  }
+
+  private recoveredUiPromptKey(channelId: string, invocationId: string): string {
+    return `${channelId}\u0000${invocationId}`;
+  }
+
+  private enqueueRecoveredUiPromptReply(
+    channelId: string,
+    invocationId: string,
+    result: unknown,
+    isError: boolean
+  ): void {
+    const key = this.recoveredUiPromptKey(channelId, invocationId);
+    const replies = this.recoveredUiPromptReplies.get(key) ?? [];
+    replies.push({ result, isError });
+    this.recoveredUiPromptReplies.set(key, replies);
+  }
+
+  private consumeRecoveredUiPromptReply(
+    channelId: string,
+    invocationId: string
+  ): { result: unknown; isError: boolean } | null {
+    const key = this.recoveredUiPromptKey(channelId, invocationId);
+    const replies = this.recoveredUiPromptReplies.get(key);
+    if (!replies || replies.length === 0) return null;
+    const reply = replies.shift()!;
+    if (replies.length === 0) this.recoveredUiPromptReplies.delete(key);
+    return reply;
+  }
+
+  private clearRecoveredUiPromptReplies(channelId: string, invocationId: string): void {
+    this.recoveredUiPromptReplies.delete(this.recoveredUiPromptKey(channelId, invocationId));
+  }
+
+  private trackRecoveryDirectAbort(channelId: string, controller: AbortController): () => void {
+    const controllers = this.recoveryDirectAbortControllers.get(channelId) ?? new Set();
+    controllers.add(controller);
+    this.recoveryDirectAbortControllers.set(channelId, controllers);
+    return () => {
+      controllers.delete(controller);
+      if (controllers.size === 0) this.recoveryDirectAbortControllers.delete(channelId);
+    };
+  }
+
+  private abortRecoveryDirectExecutions(channelId: string, reason: string): void {
+    const controllers = this.recoveryDirectAbortControllers.get(channelId);
+    if (!controllers) return;
+    for (const controller of controllers) {
+      controller.abort(new Error(reason));
+    }
+    controllers.clear();
+    this.recoveryDirectAbortControllers.delete(channelId);
+  }
+
+  private methodSuspensionRow(row: Record<string, unknown>): MethodSuspensionRow {
+    return {
+      transportCallId: row["transport_call_id"] as string,
+      channelId: row["channel_id"] as string,
+      invocationId: row["invocation_id"] as string,
+      modelToolCallId: row["model_tool_call_id"] as string,
+      assistantMessageId: (row["assistant_message_id"] as string | null) ?? null,
+      toolCallIndex:
+        typeof row["tool_call_index"] === "number" ? (row["tool_call_index"] as number) : null,
+      toolName: row["tool_name"] as string,
+      turnId: (row["turn_id"] as string | null) ?? null,
+      kind: row["kind"] as MethodSuspensionKind,
+      method: row["method"] as string,
+      participantHandle: (row["participant_handle"] as string | null) ?? null,
+      targetParticipantId: (row["target_participant_id"] as string | null) ?? null,
+      argsJson: (row["args_json"] as string | null) ?? null,
+      sessionLeafBeforeCall: (row["session_leaf_before_call"] as string | null) ?? null,
+      terminalKind: row["terminal_kind"] as MethodSuspensionTerminalKind,
+      resultJson: (row["result_json"] as string | null) ?? null,
+      resultIsError:
+        typeof row["result_is_error"] === "number" ? (row["result_is_error"] as number) : null,
+      resultEventId:
+        typeof row["result_event_id"] === "number" ? (row["result_event_id"] as number) : null,
+      resultReceivedAt:
+        typeof row["result_received_at"] === "number"
+          ? (row["result_received_at"] as number)
+          : null,
+      deliveryStatus: row["delivery_status"] as MethodSuspensionDeliveryStatus,
+      recoveredEntryId: (row["recovered_entry_id"] as string | null) ?? null,
+      recoveryError: (row["recovery_error"] as string | null) ?? null,
+      createdAt: row["created_at"] as number,
+      updatedAt: row["updated_at"] as number,
+    };
+  }
+
+  private loadMethodSuspension(callId: string): MethodSuspensionRow | null {
+    const rows = this.sql
+      .exec(`SELECT * FROM agent_method_suspensions WHERE transport_call_id = ?`, callId)
+      .toArray();
+    return rows.length > 0 ? this.methodSuspensionRow(rows[0]!) : null;
+  }
+
+  private async recordMethodSuspension(opts: {
+    channelId: string;
+    transportCallId: string;
+    invocationId: string;
+    kind: MethodSuspensionKind;
+    method: string;
+    participantHandle?: string;
+    targetParticipantId?: string;
+    args?: unknown;
+    turnId?: string;
+    fallbackToolName?: string;
+    requireOpenInvocation?: boolean;
+  }): Promise<boolean> {
+    const runner = this.runners.get(opts.channelId)?.runner;
+    const open =
+      runner && typeof runner.getOpenInvocation === "function"
+        ? runner.getOpenInvocation(opts.invocationId)
+        : undefined;
+    if (opts.requireOpenInvocation && !open) {
+      this.recordDebugPhase(
+        opts.channelId,
+        "channel_method.suspension.skipped_no_open_invocation",
+        {
+          invocationId: opts.invocationId,
+          transportCallId: opts.transportCallId,
+          kind: opts.kind,
+        }
+      );
+      return false;
+    }
+    let sessionLeafBeforeCall: string | null = null;
+    try {
+      sessionLeafBeforeCall = (await runner?.session?.getLeafId()) ?? null;
+    } catch (err) {
+      this.recordLastError("channel_method.suspension.leaf", err, opts.channelId);
+    }
+    const now = Date.now();
+    this.sql.exec(
+      `INSERT OR REPLACE INTO agent_method_suspensions (
+         transport_call_id, channel_id, invocation_id, model_tool_call_id,
+         assistant_message_id, tool_call_index, tool_name, turn_id, kind, method,
+         participant_handle, target_participant_id, args_json, session_leaf_before_call,
+         terminal_kind, delivery_status, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', 'pending', ?, ?)`,
+      opts.transportCallId,
+      opts.channelId,
+      opts.invocationId,
+      open?.modelToolCallId ?? opts.invocationId,
+      open?.messageId ?? null,
+      open?.blockIndex ?? null,
+      open?.name ?? opts.fallbackToolName ?? opts.method,
+      opts.turnId ?? open?.turnId ?? null,
+      opts.kind,
+      opts.method,
+      opts.participantHandle ?? null,
+      opts.targetParticipantId ?? null,
+      this.stringifySuspensionJson(opts.args),
+      sessionLeafBeforeCall,
+      now,
+      now
+    );
+    return true;
+  }
+
+  private appendMethodSuspensionUpdate(callId: string, content: unknown): void {
+    const row = this.loadMethodSuspension(callId);
+    if (!row) return;
+    const seqRow = this.sql
+      .exec(
+        `SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq
+           FROM agent_method_suspension_updates
+           WHERE transport_call_id = ?`,
+        callId
+      )
+      .one();
+    const seq = seqRow["next_seq"] as number;
+    this.sql.exec(
+      `INSERT INTO agent_method_suspension_updates
+         (transport_call_id, seq, content_json, received_at)
+       VALUES (?, ?, ?, ?)`,
+      callId,
+      seq,
+      this.stringifySuspensionJson(content) ?? "null",
+      Date.now()
+    );
+    this.sql.exec(
+      `DELETE FROM agent_method_suspension_updates
+         WHERE transport_call_id = ?
+           AND seq <= ? - ?`,
+      callId,
+      seq,
+      MAX_PARTIAL_UPDATES_PER_CALL
+    );
+  }
+
+  private deletePartials(callId: string): void {
+    this.sql.exec(
+      `DELETE FROM agent_method_suspension_updates WHERE transport_call_id = ?`,
+      callId
+    );
+  }
+
+  private deletePartialsForInvocation(channelId: string, invocationId: string): void {
+    this.sql.exec(
+      `DELETE FROM agent_method_suspension_updates
+         WHERE transport_call_id IN (
+           SELECT transport_call_id FROM agent_method_suspensions
+           WHERE channel_id = ? AND invocation_id = ?
+         )`,
+      channelId,
+      invocationId
+    );
+  }
+
+  private markMethodSuspensionTerminal(
+    callId: string,
+    opts: {
+      terminalKind: Exclude<MethodSuspensionTerminalKind, "none">;
+      result: unknown;
+      isError: boolean;
+      eventId?: number;
+      waiterPresent: boolean;
+    }
+  ): void {
+    this.sql.exec(
+      `UPDATE agent_method_suspensions
+         SET terminal_kind = CASE WHEN terminal_kind = 'none' THEN ? ELSE terminal_kind END,
+             result_json = CASE WHEN terminal_kind = 'none' THEN ? ELSE result_json END,
+             result_is_error = CASE WHEN terminal_kind = 'none' THEN ? ELSE result_is_error END,
+             result_event_id = CASE WHEN terminal_kind = 'none' THEN ? ELSE result_event_id END,
+             result_received_at = CASE WHEN terminal_kind = 'none' THEN ? ELSE result_received_at END,
+             delivery_status = CASE
+               WHEN terminal_kind = 'none' AND delivery_status = 'pending' AND ? = 1
+                 THEN 'delivered_live'
+               ELSE delivery_status
+             END,
+             updated_at = ?
+         WHERE transport_call_id = ?`,
+      opts.terminalKind,
+      this.stringifySuspensionJson(opts.result),
+      opts.isError ? 1 : 0,
+      opts.eventId ?? null,
+      Date.now(),
+      opts.waiterPresent ? 1 : 0,
+      Date.now(),
+      callId
+    );
+  }
+
+  private markMethodSuspensionDispatchFailed(callId: string, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const now = Date.now();
+    this.sql.exec(
+      `UPDATE agent_method_suspensions
+         SET terminal_kind = 'failed',
+             result_json = ?,
+             result_is_error = 1,
+             result_received_at = ?,
+             delivery_status = 'dispatch_failed',
+             recovery_error = ?,
+             updated_at = ?
+         WHERE transport_call_id = ?
+           AND terminal_kind = 'none'
+           AND delivery_status = 'pending'`,
+      this.stringifySuspensionJson({ error: message }),
+      now,
+      `dispatch_failed: ${message}`,
+      now,
+      callId
+    );
+  }
+
+  private cancelMethodSuspension(callId: string, reason: string): void {
+    const now = Date.now();
+    const cancelled = this.sql
+      .exec(
+        `UPDATE agent_method_suspensions
+         SET terminal_kind = 'cancelled',
+             result_json = ?,
+             result_is_error = 1,
+             result_received_at = ?,
+             delivery_status = 'cancelled',
+             recovery_error = ?,
+             updated_at = ?
+         WHERE transport_call_id = ?
+           AND terminal_kind = 'none'
+           AND delivery_status = 'pending'
+         RETURNING transport_call_id`,
+        this.stringifySuspensionJson({ reason }),
+        now,
+        reason,
+        now,
+        callId
+      )
+      .toArray();
+    if (cancelled.length > 0) this.deletePartials(callId);
+  }
+
+  private cancelMethodSuspensionsForChannel(channelId: string, reason: string): string[] {
+    const rows = this.sql
+      .exec(
+        `SELECT transport_call_id FROM agent_method_suspensions
+           WHERE channel_id = ?
+             AND delivery_status IN ('pending', 'delivered_live', 'recovering')`,
+        channelId
+      )
+      .toArray();
+    const callIds = rows.map((row) => row["transport_call_id"] as string);
+    if (callIds.length === 0) return [];
+    const now = Date.now();
+    this.sql.exec(
+      `UPDATE agent_method_suspensions
+         SET terminal_kind = 'cancelled',
+             result_json = ?,
+             result_is_error = 1,
+             result_received_at = ?,
+             delivery_status = 'cancelled',
+             recovery_error = ?,
+             updated_at = ?
+         WHERE channel_id = ?
+           AND delivery_status IN ('pending', 'delivered_live', 'recovering')`,
+      this.stringifySuspensionJson({ reason }),
+      now,
+      reason,
+      now,
+      channelId
+    );
+    for (const callId of callIds) this.deletePartials(callId);
+    return callIds;
+  }
+
+  private markMethodSuspensionIgnored(callId: string, lateResult?: unknown): void {
+    const now = Date.now();
+    this.sql.exec(
+      `UPDATE agent_method_suspensions
+         SET delivery_status = 'ignored',
+             recovery_error = ?,
+             updated_at = ?
+         WHERE transport_call_id = ?
+           AND delivery_status IN ('cancelled', 'ignored', 'dispatch_failed')`,
+      lateResult === undefined
+        ? "late terminal ignored"
+        : `late terminal ignored: ${JSON.stringify(summarizeDebugValue(lateResult))}`,
+      now,
+      callId
+    );
+    this.deletePartials(callId);
+  }
+
+  private recordIfSuspensionStillPending(channelId: string, callId: string): void {
+    const row = this.loadMethodSuspension(callId);
+    if (!row || row.deliveryStatus !== "pending") return;
+    this.recordDebugPhase(channelId, "channel_method.suspension.still_pending_after_waiter", {
+      callId,
+      invocationId: row.invocationId,
+      terminalKind: row.terminalKind,
+    });
+  }
+
+  private pickChosenSuspension(rows: MethodSuspensionRow[]): MethodSuspensionRow | null {
+    const terminalRows = rows.filter((row) => row.terminalKind !== "none");
+    if (terminalRows.length === 0) return null;
+    const pendingModelVisible = rows.some(
+      (row) =>
+        (row.kind === "channelMethod" || row.kind === "askUser") && row.terminalKind === "none"
+    );
+    if (pendingModelVisible) return null;
+    const priority = (row: MethodSuspensionRow) =>
+      row.kind === "channelMethod" || row.kind === "askUser" ? 0 : 1;
+    return (
+      terminalRows.sort((a, b) => {
+        const priorityDiff = priority(a) - priority(b);
+        if (priorityDiff !== 0) return priorityDiff;
+        if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+        if ((a.resultEventId ?? 0) !== (b.resultEventId ?? 0)) {
+          return (a.resultEventId ?? 0) - (b.resultEventId ?? 0);
+        }
+        return a.transportCallId.localeCompare(b.transportCallId);
+      })[0] ?? null
+    );
+  }
+
+  private sortChosenSuspensions(rows: MethodSuspensionRow[]): MethodSuspensionRow[] {
+    return rows.sort((a, b) => {
+      const messageDiff = (a.assistantMessageId ?? "").localeCompare(b.assistantMessageId ?? "");
+      if (messageDiff !== 0) return messageDiff;
+      if (
+        (a.toolCallIndex ?? Number.MAX_SAFE_INTEGER) !==
+        (b.toolCallIndex ?? Number.MAX_SAFE_INTEGER)
+      ) {
+        return (
+          (a.toolCallIndex ?? Number.MAX_SAFE_INTEGER) -
+          (b.toolCallIndex ?? Number.MAX_SAFE_INTEGER)
+        );
+      }
+      if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+      if ((a.resultEventId ?? 0) !== (b.resultEventId ?? 0)) {
+        return (a.resultEventId ?? 0) - (b.resultEventId ?? 0);
+      }
+      return a.transportCallId.localeCompare(b.transportCallId);
+    });
+  }
+
+  private claimGroupForRecovery(
+    channelId: string,
+    invocationId: string,
+    chosenCallId: string
+  ): boolean {
+    try {
+      this.ctx.storage.transactionSync(() => {
+        const now = Date.now();
+        const won = this.sql
+          .exec(
+            `UPDATE agent_method_suspensions
+               SET delivery_status = 'recovering', updated_at = ?
+               WHERE transport_call_id = ?
+                 AND delivery_status IN ('pending', 'delivered_live')
+               RETURNING transport_call_id`,
+            now,
+            chosenCallId
+          )
+          .toArray();
+        if (won.length !== 1) throw CLAIM_LOST;
+        this.sql.exec(
+          `UPDATE agent_method_suspensions
+             SET delivery_status = 'superseded', updated_at = ?
+             WHERE channel_id = ?
+               AND invocation_id = ?
+               AND transport_call_id != ?
+               AND delivery_status IN ('pending', 'delivered_live')`,
+          now,
+          channelId,
+          invocationId,
+          chosenCallId
+        );
+      });
+      return true;
+    } catch (err) {
+      if (err === CLAIM_LOST) return false;
+      throw err;
+    }
+  }
+
+  private markRecovered(callId: string, entryId: string): void {
+    this.sql.exec(
+      `UPDATE agent_method_suspensions
+         SET delivery_status = 'recovered',
+             recovered_entry_id = ?,
+             updated_at = ?
+         WHERE transport_call_id = ? AND delivery_status = 'recovering'`,
+      entryId,
+      Date.now(),
+      callId
+    );
+  }
+
+  private markResumeInternalSuspensionsSuperseded(
+    channelId: string,
+    invocationId: string,
+    chosenCallId: string
+  ): void {
+    this.sql.exec(
+      `UPDATE agent_method_suspensions
+         SET delivery_status = 'superseded',
+             updated_at = ?
+         WHERE channel_id = ?
+           AND invocation_id = ?
+           AND transport_call_id != ?
+           AND delivery_status IN ('pending', 'delivered_live')`,
+      Date.now(),
+      channelId,
+      invocationId,
+      chosenCallId
+    );
+  }
+
+  private markStale(callId: string, reason: string): void {
+    this.sql.exec(
+      `UPDATE agent_method_suspensions
+         SET delivery_status = 'stale',
+             recovery_error = ?,
+             updated_at = ?
+         WHERE transport_call_id = ? AND delivery_status = 'recovering'`,
+      reason,
+      Date.now(),
+      callId
+    );
+    this.deletePartials(callId);
+  }
+
+  private markRecoveryError(callId: string, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    this.sql.exec(
+      `UPDATE agent_method_suspensions
+         SET delivery_status = 'recovery_error',
+             recovery_error = ?,
+             updated_at = ?
+         WHERE transport_call_id = ? AND delivery_status = 'recovering'`,
+      message,
+      Date.now(),
+      callId
+    );
+  }
+
+  private extractResumeToolInput(row: MethodSuspensionRow): unknown {
+    const args = this.parseSuspensionJson(row.argsJson);
+    if (args && typeof args === "object" && "resumeToolInput" in args) {
+      return (args as { resumeToolInput?: unknown }).resumeToolInput ?? {};
+    }
+    return {};
+  }
+
+  private enqueueRecoveredUiPromptRepliesForInvocation(
+    channelId: string,
+    invocationId: string
+  ): void {
+    const rows = this.sql
+      .exec(
+        `SELECT * FROM agent_method_suspensions
+           WHERE channel_id = ?
+             AND invocation_id = ?
+             AND kind = 'uiPrompt'
+             AND terminal_kind != 'none'
+           ORDER BY created_at, COALESCE(result_event_id, 0), transport_call_id`,
+        channelId,
+        invocationId
+      )
+      .toArray()
+      .map((row) => this.methodSuspensionRow(row));
+    for (const row of rows) {
+      this.enqueueRecoveredUiPromptReply(
+        channelId,
+        invocationId,
+        this.parseSuspensionJson(row.resultJson),
+        row.resultIsError === 1
+      );
+    }
+  }
+
+  private composePromptRecoveryError(row: MethodSuspensionRow, result: unknown): AgentMessage {
+    const text =
+      row.resultIsError === 1
+        ? resultToAnswerText(result)
+        : row.kind === "approval"
+          ? "User denied tool call"
+          : "Tool execution was interrupted by hibernation before completion; please retry.";
+    return {
+      role: "toolResult",
+      toolCallId: row.invocationId,
+      toolName: row.toolName,
+      content: [{ type: "text", text }],
+      isError: true,
+    } as AgentMessage;
+  }
+
+  private toolResultMessageFromDirectResult(
+    row: MethodSuspensionRow,
+    result: AgentToolResult<any>
+  ): AgentMessage {
+    return {
+      role: "toolResult",
+      toolCallId: row.invocationId,
+      toolName: row.toolName,
+      ...result,
+    } as AgentMessage;
+  }
+
+  private toolResultMessageFromDirectError(row: MethodSuspensionRow, err: unknown): AgentMessage {
+    return {
+      role: "toolResult",
+      toolCallId: row.invocationId,
+      toolName: row.toolName,
+      content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }],
+      isError: true,
+    } as AgentMessage;
+  }
+
+  private async composeRecoveredToolResult(
+    channelId: string,
+    runner: PiRunner,
+    row: MethodSuspensionRow
+  ): Promise<AgentMessage> {
+    const result = this.parseSuspensionJson(row.resultJson);
+    if (row.kind === "channelMethod") {
+      const toolResult =
+        row.resultIsError === 1 ? methodErrorResult(result) : toAgentToolResult(result);
+      return {
+        role: "toolResult",
+        toolCallId: row.invocationId,
+        toolName: row.toolName,
+        ...toolResult,
+      } as AgentMessage;
+    }
+    if (row.kind === "askUser") {
+      return {
+        role: "toolResult",
+        toolCallId: row.invocationId,
+        toolName: row.toolName,
+        content: [{ type: "text", text: resultToAnswerText(result) }],
+        isError: row.resultIsError === 1,
+      } as AgentMessage;
+    }
+
+    if (row.kind === "approval") {
+      if (row.resultIsError === 1 || result !== true) {
+        return this.composePromptRecoveryError(row, result);
+      }
+    } else if (row.resultIsError === 1) {
+      return this.composePromptRecoveryError(row, result);
+    }
+
+    this.enqueueRecoveredUiPromptRepliesForInvocation(channelId, row.invocationId);
+    const controller = new AbortController();
+    const untrack = this.trackRecoveryDirectAbort(channelId, controller);
+    try {
+      const directResult = await runner.executeToolDirect(
+        row.toolName,
+        row.invocationId,
+        this.extractResumeToolInput(row),
+        controller.signal
+      );
+      return this.toolResultMessageFromDirectResult(row, directResult);
+    } catch (err) {
+      return this.toolResultMessageFromDirectError(row, err);
+    } finally {
+      untrack();
+      this.clearRecoveredUiPromptReplies(channelId, row.invocationId);
+    }
+  }
+
+  private async preflightRecoveredSuspension(
+    runner: PiRunner,
+    row: MethodSuspensionRow
+  ): Promise<string | null> {
+    if (!runner.isInvocationOpen(row.invocationId) && (await runner.hasToolResult(row.invocationId))) {
+      return "invocation closed";
+    }
+    if (row.sessionLeafBeforeCall) {
+      const onActiveBranch = await runner.isLeafDescendantOf(row.sessionLeafBeforeCall);
+      if (!onActiveBranch) return "session branch moved";
+    }
+    return null;
+  }
+
+  private runOnChannelRecoveryChain(channelId: string, fn: () => Promise<void>): Promise<void> {
+    const prev = this.recoveryChainByChannel.get(channelId) ?? Promise.resolve();
+    const next = prev.catch(() => undefined).then(fn);
+    this.recoveryChainByChannel.set(channelId, next);
+    return next;
+  }
+
+  private async recoverDeliveredAndOrphanedSuspensions(channelId: string): Promise<void> {
+    if (this.transcriptPoisonedChannels.has(channelId)) {
+      this.recordDebugPhase(channelId, "channel_method.recovery.skipped_poisoned");
+      return;
+    }
+    const invocationRows = this.sql
+      .exec(
+        `SELECT DISTINCT invocation_id
+           FROM agent_method_suspensions
+           WHERE channel_id = ?
+             AND terminal_kind != 'none'
+             AND delivery_status IN ('pending', 'delivered_live')`,
+        channelId
+      )
+      .toArray();
+    const invocationIds = invocationRows
+      .map((row) => row["invocation_id"])
+      .filter((id): id is string => typeof id === "string" && id.length > 0);
+    if (invocationIds.length === 0) return;
+
+    const placeholders = invocationIds.map(() => "?").join(", ");
+    const rows = this.sql
+      .exec(
+        `SELECT * FROM agent_method_suspensions
+           WHERE channel_id = ?
+             AND invocation_id IN (${placeholders})
+             AND delivery_status IN ('pending', 'delivered_live')`,
+        channelId,
+        ...invocationIds
+      )
+      .toArray()
+      .map((row) => this.methodSuspensionRow(row));
+
+    const grouped = new Map<string, MethodSuspensionRow[]>();
+    for (const row of rows) {
+      const group = grouped.get(row.invocationId) ?? [];
+      group.push(row);
+      grouped.set(row.invocationId, group);
+    }
+
+    const chosen = this.sortChosenSuspensions(
+      [...grouped.values()]
+        .map((group) => this.pickChosenSuspension(group))
+        .filter((row): row is MethodSuspensionRow => row !== null)
+    );
+    if (chosen.length === 0) return;
+
+    const runner = await this.getOrCreateRunner(channelId);
+    let admitted = 0;
+    for (const row of chosen) {
+      if (!this.claimGroupForRecovery(channelId, row.invocationId, row.transportCallId)) continue;
+      const staleReason = await this.preflightRecoveredSuspension(runner, row);
+      if (staleReason) {
+        this.markStale(row.transportCallId, staleReason);
+        this.recordDebugPhase(channelId, "channel_method.recovery.stale", {
+          callId: row.transportCallId,
+          invocationId: row.invocationId,
+          reason: staleReason,
+        });
+        continue;
+      }
+      try {
+        const entryId = await runner.appendToolResult(
+          await this.composeRecoveredToolResult(channelId, runner, row)
+        );
+        this.markResumeInternalSuspensionsSuperseded(
+          channelId,
+          row.invocationId,
+          row.transportCallId
+        );
+        this.markRecovered(row.transportCallId, entryId);
+        this.deletePartialsForInvocation(channelId, row.invocationId);
+        admitted++;
+      } catch (err) {
+        this.markRecoveryError(row.transportCallId, err);
+        this.recordDebugPhase(channelId, "channel_method.recovery.append_failed", {
+          callId: row.transportCallId,
+          invocationId: row.invocationId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        break;
+      }
+    }
+    if (admitted > 0) {
+      this.submitRecoveryContinue(channelId, runner, "method_suspension_recovered");
+    }
+  }
+
+  private async sweepStuckDelivery(channelId: string, runner: PiRunner): Promise<void> {
+    const rows = this.sql
+      .exec(
+        `SELECT * FROM agent_method_suspensions
+           WHERE channel_id = ? AND delivery_status IN ('delivered_live', 'recovering')`,
+        channelId
+      )
+      .toArray()
+      .map((row) => this.methodSuspensionRow(row));
+    const grouped = new Map<string, MethodSuspensionRow[]>();
+    for (const row of rows) {
+      const group = grouped.get(row.invocationId) ?? [];
+      group.push(row);
+      grouped.set(row.invocationId, group);
+    }
+    for (const [invocationId, group] of grouped.entries()) {
+      if (runner.isInvocationOpen(invocationId)) {
+        for (const row of group) {
+          this.sql.exec(
+            `UPDATE agent_method_suspensions
+               SET delivery_status = 'delivered_live',
+                   recovery_error = NULL,
+                   updated_at = ?
+               WHERE transport_call_id = ?
+                 AND delivery_status IN ('delivered_live', 'recovering')`,
+            Date.now(),
+            row.transportCallId
+          );
+        }
+        continue;
+      }
+      const hasToolResult = await runner.hasToolResult(invocationId);
+      if (!hasToolResult) {
+        for (const row of group) {
+          this.sql.exec(
+            `UPDATE agent_method_suspensions
+               SET delivery_status = 'delivered_live',
+                   recovery_error = NULL,
+                   updated_at = ?
+               WHERE transport_call_id = ?
+                 AND delivery_status IN ('delivered_live', 'recovering')`,
+            Date.now(),
+            row.transportCallId
+          );
+        }
+        continue;
+      }
+      const shouldContinue = await runner.isCurrentLeafToolResult(invocationId);
+
+      const chosen = this.pickChosenSuspension(group);
+      if (!chosen) continue;
+      const now = Date.now();
+      for (const row of group) {
+        const nextStatus =
+          row.transportCallId === chosen.transportCallId
+            ? row.deliveryStatus === "recovering"
+              ? "recovered"
+              : "transcript_admitted"
+            : "superseded";
+        this.sql.exec(
+          `UPDATE agent_method_suspensions
+             SET delivery_status = ?, updated_at = ?
+             WHERE transport_call_id = ?
+               AND delivery_status IN ('delivered_live', 'recovering')`,
+          nextStatus,
+          now,
+          row.transportCallId
+        );
+      }
+      this.deletePartialsForInvocation(channelId, invocationId);
+      if (shouldContinue) {
+        this.markRecoveryContinuePending(channelId, "method_suspension_recovered");
+      }
+    }
+  }
+
+  private markLiveToolResultAdmitted(channelId: string, message: AgentMessage): void {
+    const invocationId = (message as { toolCallId?: unknown }).toolCallId;
+    if (typeof invocationId !== "string" || invocationId.length === 0) return;
+    const settled = this.ctx.storage.transactionSync(() => {
+      const rows = this.sql
+        .exec(
+          `SELECT * FROM agent_method_suspensions
+             WHERE channel_id = ?
+               AND invocation_id = ?
+               AND delivery_status = 'delivered_live'`,
+          channelId,
+          invocationId
+        )
+        .toArray()
+        .map((row) => this.methodSuspensionRow(row));
+      // Hot-path admission only sees delivered_live rows. Those rows have
+      // already received a terminal event, so pending higher-priority siblings
+      // are intentionally outside this transaction.
+      const chosen = this.pickChosenSuspension(rows);
+      if (!chosen) return false;
+      const now = Date.now();
+      this.sql.exec(
+        `UPDATE agent_method_suspensions
+           SET delivery_status = 'transcript_admitted', updated_at = ?
+           WHERE transport_call_id = ?
+             AND delivery_status = 'delivered_live'`,
+        now,
+        chosen.transportCallId
+      );
+      this.sql.exec(
+        `UPDATE agent_method_suspensions
+           SET delivery_status = 'superseded', updated_at = ?
+           WHERE channel_id = ?
+             AND invocation_id = ?
+             AND transport_call_id != ?
+             AND delivery_status = 'delivered_live'`,
+        now,
+        channelId,
+        invocationId,
+        chosen.transportCallId
+      );
+      return true;
+    });
+    if (settled) this.deletePartialsForInvocation(channelId, invocationId);
+  }
+
+  private markRecoveryContinuePending(channelId: string, reason: string): void {
+    const now = Date.now();
+    this.sql.exec(
+      `INSERT INTO agent_recovery_continuations (channel_id, reason, created_at, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(channel_id) DO UPDATE SET reason = excluded.reason, updated_at = excluded.updated_at`,
+      channelId,
+      reason,
+      now,
+      now
+    );
+  }
+
+  private clearRecoveryContinuePending(channelId: string): void {
+    this.sql.exec(`DELETE FROM agent_recovery_continuations WHERE channel_id = ?`, channelId);
+  }
+
+  private hasRecoveryContinuePending(channelId: string): boolean {
+    return (
+      this.sql
+        .exec(`SELECT channel_id FROM agent_recovery_continuations WHERE channel_id = ?`, channelId)
+        .toArray().length > 0
+    );
+  }
+
+  private submitRecoveryContinue(channelId: string, runner: PiRunner, reason: string): void {
+    this.markRecoveryContinuePending(channelId, reason);
+    this.getOrCreateDispatcher(channelId, runner).submitContinue();
+  }
+
+  private replayPendingRecoveryContinue(channelId: string, runner: PiRunner): void {
+    if (!this.hasRecoveryContinuePending(channelId)) return;
+    this.getOrCreateDispatcher(channelId, runner).submitContinue();
+  }
+
+  private async ensureAgentActivationReady(): Promise<void> {
+    if (!this.activationReadyPromise) {
+      this.activationReadyPromise = this.runAgentActivationOnce().catch((err) => {
+        this.recordLastError("activation", err);
+        this.activationReadyPromise = null;
+        throw err;
+      });
+    }
+    return this.activationReadyPromise;
+  }
+
+  private async runAgentActivationOnce(): Promise<void> {
+    await this.clearStaleTypingForPersistedSubscriptions();
+  }
+
+  private async clearStaleTypingForPersistedSubscriptions(): Promise<void> {
+    const rows = this.subscriptions.listAll();
+    let cleared = 0;
+    const errors: string[] = [];
+    for (const { channelId, participantId } of rows) {
+      if (!participantId) continue;
+      const dispatcherState = this.dispatchers.get(channelId)?.getDebugState() as
+        | { busy?: boolean }
+        | undefined;
+      if (dispatcherState?.busy) continue;
+      try {
+        await this.createChannelClient(channelId).setTypingState(participantId, false);
+        cleared++;
+      } catch (err) {
+        errors.push(`${channelId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    this.lastActivationTypingCleanup = { at: Date.now(), count: cleared, errors };
+    this.recordDebugPhase("activation", "activation.typing_cleared", {
+      count: cleared,
+      errors,
+    });
+  }
+
   protected createTables(): void {
     this.identity.createTables();
     this.subscriptions.createTables();
@@ -749,6 +1748,59 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
         resume_count INTEGER NOT NULL,
         created_at INTEGER NOT NULL,
         PRIMARY KEY (channel_id, provider_id)
+      )
+    `);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS agent_method_suspensions (
+        transport_call_id TEXT PRIMARY KEY,
+        channel_id TEXT NOT NULL,
+        invocation_id TEXT NOT NULL,
+        model_tool_call_id TEXT NOT NULL,
+        assistant_message_id TEXT,
+        tool_call_index INTEGER,
+        tool_name TEXT NOT NULL,
+        turn_id TEXT,
+        kind TEXT NOT NULL,
+        method TEXT NOT NULL,
+        participant_handle TEXT,
+        target_participant_id TEXT,
+        args_json TEXT,
+        session_leaf_before_call TEXT,
+        terminal_kind TEXT NOT NULL DEFAULT 'none',
+        result_json TEXT,
+        result_is_error INTEGER,
+        result_event_id INTEGER,
+        result_received_at INTEGER,
+        delivery_status TEXT NOT NULL DEFAULT 'pending',
+        recovered_entry_id TEXT,
+        recovery_error TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `);
+    this.sql.exec(`
+      CREATE INDEX IF NOT EXISTS idx_suspensions_channel_delivery
+        ON agent_method_suspensions(channel_id, delivery_status, assistant_message_id, tool_call_index, created_at)
+    `);
+    this.sql.exec(`
+      CREATE INDEX IF NOT EXISTS idx_suspensions_invocation
+        ON agent_method_suspensions(invocation_id)
+    `);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS agent_method_suspension_updates (
+        transport_call_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        content_json TEXT NOT NULL,
+        received_at INTEGER NOT NULL,
+        PRIMARY KEY (transport_call_id, seq)
+      )
+    `);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS agent_recovery_continuations (
+        channel_id TEXT PRIMARY KEY,
+        reason TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
       )
     `);
   }
@@ -929,7 +1981,6 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     args: unknown
   ): Promise<{ result: unknown; isError?: boolean } | null> {
     switch (methodName) {
-      case "connectModelCredentialOAuth":
       case "connectModelCredential":
         return {
           result: await this.connectModelCredential(
@@ -1478,20 +2529,29 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     content: unknown;
     complete: boolean;
     isError: boolean;
+    terminalKind?: Exclude<MethodSuspensionTerminalKind, "none">;
+    eventId?: number;
   } | null {
     if (event.type !== AGENTIC_EVENT_PAYLOAD_KIND) return null;
     const agentic = this.agenticEventFromChannelEvent(event);
     if (!agentic?.kind?.startsWith("invocation.") || agentic.kind === "invocation.started") {
       return null;
     }
-    const callId = agentic.causality?.transportCallId ?? agentic.causality?.invocationId;
+    const callId = agentic.causality?.transportCallId;
     if (!callId) return null;
     const payload =
       agentic.payload && typeof agentic.payload === "object"
         ? (agentic.payload as Record<string, unknown>)
         : {};
     if (agentic.kind === "invocation.completed") {
-      return { callId, content: payload["result"], complete: true, isError: false };
+      return {
+        callId,
+        content: payload["result"],
+        complete: true,
+        isError: false,
+        terminalKind: "completed",
+        ...(event.id !== undefined ? { eventId: event.id } : {}),
+      };
     }
     if (agentic.kind === "invocation.failed" || agentic.kind === "invocation.cancelled") {
       return {
@@ -1499,6 +2559,8 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
         content: payload["error"] ?? payload["reason"] ?? "Invocation failed",
         complete: true,
         isError: true,
+        terminalKind: agentic.kind === "invocation.cancelled" ? "cancelled" : "failed",
+        ...(event.id !== undefined ? { eventId: event.id } : {}),
       };
     }
     return {
@@ -1615,6 +2677,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     config?: unknown;
     replay?: boolean;
   }): Promise<{ ok: boolean; participantId: string }> {
+    await this.ensureAgentActivationReady();
     // Security: a buggy or malicious caller can hand us any string for
     // opts.contextId. Before subscribing, verify that the requested contextId
     // actually matches this DO's own runtime contextId — otherwise a caller
@@ -1646,6 +2709,10 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
   }
 
   async unsubscribeChannel(channelId: string): Promise<UnsubscribeResult> {
+    await this.ensureAgentActivationReady();
+    this.abortRecoveryDirectExecutions(channelId, "channel_unsubscribe");
+    this.clearRecoveryContinuePending(channelId);
+    this.cancelMethodSuspensionsForChannel(channelId, "channel_unsubscribe");
     await this.subscriptions.unsubscribeFromChannel(channelId);
 
     // Dispose dispatcher before the runner — unsubscribes its listener
@@ -1679,6 +2746,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     event: ChannelEvent,
     opts?: { mode?: "auto" | "sequential" }
   ): Promise<void> {
+    await this.ensureAgentActivationReady();
     this.recordChannelDebugEvent(channelId, event, opts);
     const eventId = event.id;
 
@@ -1824,13 +2892,17 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     const invocationResult = this.channelInvocationResult(event);
     if (invocationResult) {
       if (!invocationResult.complete) {
+        this.appendMethodSuspensionUpdate(invocationResult.callId, invocationResult.content);
         const cb = this.streamCallbacks.get(invocationResult.callId);
         if (cb) cb(invocationResult.content);
       } else {
         await this.handleCompletedMethodResult(
+          channelId,
           invocationResult.callId,
           invocationResult.content,
-          invocationResult.isError
+          invocationResult.isError,
+          invocationResult.terminalKind ?? (invocationResult.isError ? "failed" : "completed"),
+          invocationResult.eventId
         );
       }
       return;
@@ -1842,6 +2914,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
   // ── PiRunner lifecycle (one per channel, lazy) ──────────────────────────
 
   protected async getOrCreateRunner(channelId: string): Promise<PiRunner> {
+    await this.ensureAgentActivationReady();
     const existing = this.runners.get(channelId);
     if (existing) return existing.runner;
 
@@ -1962,6 +3035,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     });
 
     await runner.init();
+    await this.sweepStuckDelivery(channelId, runner);
 
     const abortedTurnListener = (event: RunnerEvent) => {
       const msg = abortedAgentEndMessage(event);
@@ -1974,12 +3048,25 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       );
     };
     runner.hooks.on("event", abortedTurnListener);
+    runner.hooks.on("event", (event: RunnerEvent) => {
+      if (event.type !== "message_end") return;
+      const message = (event as { message?: AgentMessage }).message;
+      if (!message) return;
+      const role = (message as { role?: unknown }).role;
+      if (role === "assistant") {
+        this.clearRecoveryContinuePending(channelId);
+        return;
+      }
+      if (role !== "toolResult") return;
+      this.markLiveToolResultAdmitted(channelId, message);
+    });
 
     this.runners.set(channelId, { runner });
     // Dispatcher self-subscribes to runner events for absorption tracking
     // and sweep. Created here so it exists before the first processChannelEvent
     // (which expects to hand messages to it).
     this.getOrCreateDispatcher(channelId, runner);
+    this.replayPendingRecoveryContinue(channelId, runner);
     return runner;
   }
 
@@ -2334,6 +3421,18 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
 
     const invocationId = toolCallId;
     const transportCallId = crypto.randomUUID();
+    await this.recordMethodSuspension({
+      channelId,
+      transportCallId,
+      invocationId,
+      kind: "channelMethod",
+      method,
+      participantHandle,
+      targetParticipantId: target.participantId,
+      args,
+      turnId,
+      fallbackToolName: method,
+    });
     const waiter = this.createMethodResultWaiter(channelId, transportCallId, invocationId, {
       method,
       participantHandle,
@@ -2344,20 +3443,29 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     });
     if (onStreamUpdate) this.streamCallbacks.set(transportCallId, onStreamUpdate);
     try {
-      await channel.callMethod(callerId, target.participantId, transportCallId, method, args, {
-        invocationId,
-        transportCallId,
-        ...(turnId ? { turnId } : {}),
-      });
+      try {
+        await channel.callMethod(callerId, target.participantId, transportCallId, method, args, {
+          invocationId,
+          transportCallId,
+          ...(turnId ? { turnId } : {}),
+        });
+      } catch (err) {
+        this.markMethodSuspensionDispatchFailed(transportCallId, err);
+        waiter.cancel(err);
+        void waiter.promise.catch(() => undefined);
+        throw err;
+      }
       const completion = await waiter.promise;
       if (completion.isError) return methodErrorResult(completion.result);
       return toAgentToolResult(completion.result);
     } catch (err) {
+      this.cancelMethodSuspension(transportCallId, "waiter_rejected");
       waiter.cancel(err);
       await this.cancelChannelMethodCall(channelId, transportCallId);
       throw err;
     } finally {
       this.streamCallbacks.delete(transportCallId);
+      this.recordIfSuspensionStillPending(channelId, transportCallId);
     }
   }
 
@@ -2384,6 +3492,17 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
 
     const invocationId = toolCallId || crypto.randomUUID();
     const transportCallId = crypto.randomUUID();
+    await this.recordMethodSuspension({
+      channelId,
+      transportCallId,
+      invocationId,
+      kind: "askUser",
+      method: "feedback_form",
+      targetParticipantId: panel.participantId,
+      args: params,
+      turnId,
+      fallbackToolName: "feedback_form",
+    });
     const waiter = this.createMethodResultWaiter(channelId, transportCallId, invocationId, {
       method: "feedback_form",
       targetParticipantId: panel.participantId,
@@ -2392,27 +3511,36 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       signal,
     });
     try {
-      await channel.callMethod(
-        callerId,
-        panel.participantId,
-        transportCallId,
-        "feedback_form",
-        params,
-        {
-          invocationId,
+      try {
+        await channel.callMethod(
+          callerId,
+          panel.participantId,
           transportCallId,
-          ...(turnId ? { turnId } : {}),
-        }
-      );
+          "feedback_form",
+          params,
+          {
+            invocationId,
+            transportCallId,
+            ...(turnId ? { turnId } : {}),
+          }
+        );
+      } catch (err) {
+        this.markMethodSuspensionDispatchFailed(transportCallId, err);
+        waiter.cancel(err);
+        void waiter.promise.catch(() => undefined);
+        throw err;
+      }
       const completion = await waiter.promise;
       if (completion.isError) return methodErrorResult(completion.result);
       return resultToAnswerText(completion.result);
     } catch (err) {
+      this.cancelMethodSuspension(transportCallId, "waiter_rejected");
       waiter.cancel(err);
       await this.cancelChannelMethodCall(channelId, transportCallId);
       throw err;
     } finally {
       this.streamCallbacks.delete(transportCallId);
+      this.recordIfSuspensionStillPending(channelId, transportCallId);
     }
   }
 
@@ -2482,6 +3610,15 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
         });
       },
     };
+  }
+
+  private coerceUiPromptResult(
+    kind: "select" | "confirm" | "input" | "editor",
+    result: unknown
+  ): unknown {
+    if (kind === "confirm") return result === true || result === "true";
+    if (result == null) return undefined;
+    return typeof result === "string" ? result : JSON.stringify(result);
   }
 
   private emitModelCredentialRequiredCard(
@@ -2578,7 +3715,10 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       });
       const signal = opts.signal;
       if (signal) {
-        const onAbort = () => fail(new Error("Request was aborted"));
+        const onAbort = () => {
+          this.cancelMethodSuspension(callId, "aborted");
+          fail(new Error("Request was aborted"));
+        };
         if (signal.aborted) {
           onAbort();
         } else {
@@ -2617,15 +3757,62 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
   }
 
   private async handleCompletedMethodResult(
+    channelId: string,
     callId: string,
     result: unknown,
-    isError: boolean
+    isError: boolean,
+    terminalKind: Exclude<MethodSuspensionTerminalKind, "none"> = isError ? "failed" : "completed",
+    eventId?: number
   ): Promise<void> {
     this.streamCallbacks.delete(callId);
+    const row = this.loadMethodSuspension(callId);
+    if (!row) {
+      this.recordDebugPhase(channelId, "channel_method.orphan_result_without_suspension", {
+        callId,
+        isError,
+      });
+      const dispatcher = this.dispatchers.get(channelId);
+      const dispatcherState = dispatcher?.getDebugState() as { busy?: boolean } | undefined;
+      if (!dispatcherState?.busy) this.broadcastTyping(channelId, false);
+      return;
+    }
+
+    if (
+      row.deliveryStatus === "cancelled" ||
+      row.deliveryStatus === "ignored" ||
+      row.deliveryStatus === "dispatch_failed"
+    ) {
+      this.markMethodSuspensionIgnored(callId, { result, isError });
+      return;
+    }
+
+    if (
+      row.deliveryStatus === "transcript_admitted" ||
+      row.deliveryStatus === "recovered" ||
+      row.deliveryStatus === "superseded" ||
+      row.deliveryStatus === "stale" ||
+      row.deliveryStatus === "recovery_error"
+    ) {
+      return;
+    }
+
     const waiter = this.methodResultWaiters.get(callId);
+    this.markMethodSuspensionTerminal(callId, {
+      terminalKind,
+      result,
+      isError,
+      eventId,
+      waiterPresent: Boolean(waiter),
+    });
     if (waiter) {
       waiter.resolve({ result, isError });
+      return;
     }
+
+    await this.getOrCreateRunner(channelId);
+    await this.runOnChannelRecoveryChain(channelId, () =>
+      this.recoverDeliveredAndOrphanedSuspensions(channelId)
+    );
   }
 
   private async dispatchUiPrompt(
@@ -2637,6 +3824,15 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     meta?: { toolName?: string; toolInput?: unknown; mode?: "approval" | "ui-prompt" }
   ): Promise<unknown> {
     if (signal?.aborted) throw new Error("aborted");
+    const invocationId = toolCallId || crypto.randomUUID();
+    const recoveredReply = this.consumeRecoveredUiPromptReply(channelId, invocationId);
+    if (recoveredReply) {
+      if (recoveredReply.isError) {
+        throw new Error(resultToAnswerText(recoveredReply.result));
+      }
+      return this.coerceUiPromptResult(kind, recoveredReply.result);
+    }
+
     const callerId = this.subscriptions.getParticipantId(channelId);
     if (!callerId) throw new Error(`Not subscribed to channel ${channelId}`);
     const channel = this.createChannelClient(channelId);
@@ -2647,9 +3843,23 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     });
     if (!panel) throw new Error(`No panel participant in channel ${channelId}`);
 
-    const invocationId = toolCallId || crypto.randomUUID();
     const transportCallId = crypto.randomUUID();
     const turnId = this.currentTurnIdForChannel(channelId);
+    await this.recordMethodSuspension({
+      channelId,
+      transportCallId,
+      invocationId,
+      kind: meta?.mode === "approval" ? "approval" : "uiPrompt",
+      method: "ui_prompt",
+      targetParticipantId: panel.participantId,
+      args: {
+        prompt: { kind, ...params },
+        resumeToolInput: meta?.toolInput,
+      },
+      turnId,
+      fallbackToolName: meta?.toolName ?? "ui_prompt",
+      requireOpenInvocation: true,
+    });
     const waiter = this.createMethodResultWaiter(channelId, transportCallId, invocationId, {
       method: "ui_prompt",
       targetParticipantId: panel.participantId,
@@ -2658,36 +3868,41 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       signal,
     });
     try {
-      await channel.callMethod(
-        callerId,
-        panel.participantId,
-        transportCallId,
-        "ui_prompt",
-        {
-          kind,
-          ...params,
-        },
-        {
-          invocationId,
+      try {
+        await channel.callMethod(
+          callerId,
+          panel.participantId,
           transportCallId,
-          ...(turnId ? { turnId } : {}),
-        }
-      );
+          "ui_prompt",
+          {
+            kind,
+            ...params,
+          },
+          {
+            invocationId,
+            transportCallId,
+            ...(turnId ? { turnId } : {}),
+          }
+        );
+      } catch (err) {
+        this.markMethodSuspensionDispatchFailed(transportCallId, err);
+        waiter.cancel(err);
+        void waiter.promise.catch(() => undefined);
+        throw err;
+      }
       const completion = await waiter.promise;
       if (completion.isError) {
         throw new Error(resultToAnswerText(completion.result));
       }
-      if (kind === "confirm") return completion.result === true || completion.result === "true";
-      if (completion.result == null) return undefined;
-      return typeof completion.result === "string"
-        ? completion.result
-        : JSON.stringify(completion.result);
+      return this.coerceUiPromptResult(kind, completion.result);
     } catch (err) {
+      this.cancelMethodSuspension(transportCallId, "waiter_rejected");
       waiter.cancel(err);
       await this.cancelChannelMethodCall(channelId, transportCallId);
       throw err;
     } finally {
       this.streamCallbacks.delete(transportCallId);
+      this.recordIfSuspensionStillPending(channelId, transportCallId);
     }
   }
 
@@ -2709,6 +3924,9 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     const pendingCalls = [...this.methodResultWaiters.entries()]
       .filter(([, waiter]) => waiter.channelId === channelId)
       .map(([callId, waiter]) => ({ callId, invocationId: waiter.invocationId }));
+    this.abortRecoveryDirectExecutions(channelId, "user_interrupted");
+    this.clearRecoveryContinuePending(channelId);
+    this.cancelMethodSuspensionsForChannel(channelId, "user_interrupted");
     this.rejectMethodWaitersForChannel(channelId, "Request was aborted");
     const runner = this.runners.get(channelId)?.runner;
     for (const { callId, invocationId } of pendingCalls) {
@@ -2736,6 +3954,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     event: ChannelEvent,
     opts?: { mode?: "auto" | "sequential" }
   ): Promise<void> {
+    await this.ensureAgentActivationReady();
     if (!this.shouldProcess(event)) return;
     await this.ensureChannelContext(channelId);
     if (!(await this.shouldRespond(channelId, event))) return;
@@ -2771,6 +3990,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       ts?: number;
     }
   ): Promise<void> {
+    await this.ensureAgentActivationReady();
     if (envelope.kind === "control") {
       if (envelope.type === "ready") this.channelsInReplay.delete(channelId);
       return;
@@ -2847,6 +4067,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     channelId: string,
     opts?: { providerId?: string; modelBaseUrl?: string }
   ): Promise<boolean> {
+    await this.ensureAgentActivationReady();
     await this.ensureChannelContext(channelId);
     const entry = this.runners.get(channelId);
     if (!entry) {
@@ -2925,6 +4146,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     channelId: string,
     reason: AgentAbortReason = "interrupt-channel"
   ): Promise<void> {
+    await this.ensureAgentActivationReady();
     this.abortModelCredentialResolution(channelId, "Model credential resolution aborted by user");
     const entry = this.runners.get(channelId);
     if (entry) {
@@ -2959,6 +4181,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
   // ── Fork support (Pi-native) ────────────────────────────────────────────
 
   async canFork(): Promise<{ ok: boolean; subscriptionCount: number; reason?: string }> {
+    await this.ensureAgentActivationReady();
     const count = this.sql.exec(`SELECT COUNT(*) as cnt FROM subscriptions`).toArray();
     const n = (count[0]?.["cnt"] as number) ?? 0;
     if (n > 1) {
@@ -2978,6 +4201,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     oldChannelId: string,
     forkAtMessageIndex: number | null
   ): Promise<void> {
+    await this.ensureAgentActivationReady();
     this.sql.exec(
       `INSERT OR REPLACE INTO state (key, value) VALUES ('__objectKey', ?)`,
       this.objectKey
@@ -3067,6 +4291,97 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     await this.onForkRequested(oldChannelId, newChannelId, forkAtMessageIndex);
   }
 
+  private getSuspensionDebugState(channelId?: string): Record<string, unknown> {
+    const where = channelId ? "WHERE channel_id = ?" : "";
+    const params = channelId ? [channelId] : [];
+    const rows = this.sql
+      .exec(`SELECT * FROM agent_method_suspensions ${where}`, ...params)
+      .toArray()
+      .map((row) => this.methodSuspensionRow(row));
+    const partialCounts = new Map<string, number>();
+    for (const row of this.sql
+      .exec(
+        `SELECT transport_call_id, COUNT(*) AS count
+           FROM agent_method_suspension_updates
+           GROUP BY transport_call_id`
+      )
+      .toArray()) {
+      partialCounts.set(row["transport_call_id"] as string, row["count"] as number);
+    }
+    const latestPartials = new Map<string, unknown>();
+    for (const row of this.sql
+      .exec(
+        `SELECT u.transport_call_id, u.content_json
+           FROM agent_method_suspension_updates u
+           INNER JOIN (
+             SELECT transport_call_id, MAX(seq) AS seq
+               FROM agent_method_suspension_updates
+               GROUP BY transport_call_id
+           ) latest
+             ON latest.transport_call_id = u.transport_call_id
+            AND latest.seq = u.seq`
+      )
+      .toArray()) {
+      latestPartials.set(
+        row["transport_call_id"] as string,
+        summarizeDebugValue(this.parseSuspensionJson(row["content_json"] as string))
+      );
+    }
+    const statuses: MethodSuspensionDeliveryStatus[] = [
+      "pending",
+      "delivered_live",
+      "recovering",
+      "transcript_admitted",
+      "recovered",
+      "superseded",
+      "cancelled",
+      "ignored",
+      "stale",
+      "dispatch_failed",
+      "recovery_error",
+    ];
+    const byDeliveryStatus = Object.fromEntries(
+      statuses.map((status) => [status, rows.filter((row) => row.deliveryStatus === status).length])
+    );
+    const compact = (row: MethodSuspensionRow) => ({
+      callId: row.transportCallId,
+      channelId: row.channelId,
+      invocationId: row.invocationId,
+      modelToolCallId: row.modelToolCallId,
+      assistantMessageId: row.assistantMessageId,
+      toolCallIndex: row.toolCallIndex,
+      toolName: row.toolName,
+      kind: row.kind,
+      terminalKind: row.terminalKind,
+      createdAt: new Date(row.createdAt).toISOString(),
+      updatedAt: new Date(row.updatedAt).toISOString(),
+      partialCount: partialCounts.get(row.transportCallId) ?? 0,
+      latestPartialSummary: latestPartials.get(row.transportCallId) ?? null,
+    });
+    const bucket = (status: MethodSuspensionDeliveryStatus) =>
+      rows
+        .filter((row) => row.deliveryStatus === status)
+        .slice(0, DEBUG_RING_LIMIT)
+        .map(compact);
+    return {
+      byDeliveryStatus,
+      pending: bucket("pending"),
+      delivered_live: bucket("delivered_live"),
+      recovering: bucket("recovering"),
+      recovered: bucket("recovered"),
+      recoveryErrors: rows
+        .filter((row) => row.deliveryStatus === "recovery_error")
+        .slice(0, DEBUG_RING_LIMIT)
+        .map((row) => ({ ...compact(row), error: row.recoveryError })),
+      ignoredAfterCancel: bucket("ignored"),
+      dispatchFailed: rows
+        .filter((row) => row.deliveryStatus === "dispatch_failed")
+        .slice(0, DEBUG_RING_LIMIT)
+        .map((row) => ({ ...compact(row), error: row.recoveryError })),
+      lastActivationTypingCleanup: this.lastActivationTypingCleanup,
+    };
+  }
+
   // ── Fetch override ───────────────────────────────────────────────────────
 
   override async fetch(request: Request): Promise<Response> {
@@ -3078,6 +4393,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
 
     this.ensureReady();
     this.ensureBootstrapped();
+    await this.ensureAgentActivationReady();
 
     if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
       return this.handleWebSocketUpgrade(request);
@@ -3187,6 +4503,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
   }
 
   async getDebugState(channelId?: string): Promise<Record<string, unknown>> {
+    await this.ensureAgentActivationReady();
     const readTable = (table: string): unknown[] => {
       try {
         return this.sql.exec(`SELECT * FROM ${table}`).toArray();
@@ -3226,6 +4543,9 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
         subscriptions: subscriptionRows,
         deliveryCursor: readTable("delivery_cursor"),
         modelCredentialInterruptions: readTable("model_credential_interruptions"),
+        methodSuspensions: readTable("agent_method_suspensions"),
+        methodSuspensionUpdates: readTable("agent_method_suspension_updates"),
+        recoveryContinuations: readTable("agent_recovery_continuations"),
       },
       volatile: {
         runners: Object.fromEntries(runnerEntries),
@@ -3253,12 +4573,14 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
           .map(([id, controller]) => ({
             channelId: id,
             aborted: controller.signal.aborted,
-            reason: controller.signal.reason
-              ? String(controller.signal.reason)
-              : null,
+            reason: controller.signal.reason ? String(controller.signal.reason) : null,
           })),
-        recentPhases: this.recentDebugPhases.filter((phase) => !channelId || phase.channelId === channelId),
-        recentChannelEvents: this.recentChannelEvents.filter((event) => !channelId || event.channelId === channelId),
+        recentPhases: this.recentDebugPhases.filter(
+          (phase) => !channelId || phase.channelId === channelId
+        ),
+        recentChannelEvents: this.recentChannelEvents.filter(
+          (event) => !channelId || event.channelId === channelId
+        ),
         lastErrors: this.lastErrors.filter((error) => !channelId || error.channelId === channelId),
         failedEvents: [...this.failedEvents.entries()],
         channelsInReplay: [...this.channelsInReplay],
@@ -3266,9 +4588,8 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
         transcriptPoisonNotified: [...this.transcriptPoisonNotified],
         credentialPromptCardsEmitted: [...this.credentialPromptCardsEmitted],
         lastUserInterruptAt: [...this.lastUserInterruptAt.entries()],
-        cachedRoster: Object.fromEntries(
-          [...this.cachedRoster.entries()].filter(channelFilter)
-        ),
+        suspensions: this.getSuspensionDebugState(channelId),
+        cachedRoster: Object.fromEntries([...this.cachedRoster.entries()].filter(channelFilter)),
         cachedParticipants: Object.fromEntries(
           [...this.cachedParticipants.entries()].filter(channelFilter)
         ),
@@ -3277,6 +4598,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
   }
 
   override async getState(): Promise<Record<string, unknown>> {
+    await this.ensureAgentActivationReady();
     const subscriptions = this.sql.exec(`SELECT * FROM subscriptions`).toArray();
     const deliveryCursors = this.sql.exec(`SELECT * FROM delivery_cursor`).toArray();
     return { subscriptions, deliveryCursors };

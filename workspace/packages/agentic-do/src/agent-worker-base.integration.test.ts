@@ -113,6 +113,976 @@ describe("AgentWorkerBase runner contract", () => {
   });
 });
 
+describe("AgentWorkerBase method suspension ledger", () => {
+  function insertSuspension(
+    sql: { exec(query: string, ...bindings: unknown[]): { toArray(): Record<string, unknown>[] } },
+    opts: {
+      callId: string;
+      channelId?: string;
+      invocationId?: string;
+      kind?: string;
+      deliveryStatus?: string;
+      terminalKind?: string;
+      result?: unknown;
+      resultIsError?: number;
+      createdAt?: number;
+      toolCallIndex?: number;
+      toolName?: string;
+      sessionLeafBeforeCall?: string | null;
+      args?: unknown;
+    }
+  ) {
+    const channelId = opts.channelId ?? "chat-1";
+    const invocationId = opts.invocationId ?? "tool-1";
+    const now = opts.createdAt ?? Date.now();
+    sql.exec(
+      `INSERT INTO agent_method_suspensions (
+         transport_call_id, channel_id, invocation_id, model_tool_call_id,
+         assistant_message_id, tool_call_index, tool_name, turn_id, kind, method,
+         participant_handle, target_participant_id, args_json, session_leaf_before_call,
+         terminal_kind, result_json, result_is_error, result_event_id, result_received_at,
+         delivery_status, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      opts.callId,
+      channelId,
+      invocationId,
+      invocationId,
+      "assistant-1",
+      opts.toolCallIndex ?? 0,
+      opts.toolName ?? "eval",
+      opts.kind ?? "channelMethod",
+      opts.kind === "approval" || opts.kind === "uiPrompt" ? "ui_prompt" : "eval",
+      opts.kind === "approval" || opts.kind === "uiPrompt" ? "panel-1" : "tool-1",
+      opts.args === undefined ? null : JSON.stringify(opts.args),
+      opts.sessionLeafBeforeCall ?? "leaf-1",
+      opts.terminalKind ?? "none",
+      opts.result === undefined ? null : JSON.stringify(opts.result),
+      opts.resultIsError ?? null,
+      now,
+      opts.terminalKind === "none" ? null : now,
+      opts.deliveryStatus ?? "pending",
+      now,
+      now
+    );
+  }
+
+  it("caps partial updates and deletes them after hot-path transcript admission", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const worker = instance as unknown as {
+      appendMethodSuspensionUpdate(callId: string, content: unknown): void;
+      markMethodSuspensionTerminal(
+        callId: string,
+        opts: {
+          terminalKind: "completed";
+          result: unknown;
+          isError: boolean;
+          waiterPresent: boolean;
+        }
+      ): void;
+      markLiveToolResultAdmitted(channelId: string, message: AgentMessage): void;
+    };
+
+    insertSuspension(sql, { callId: "call-1" });
+    for (let i = 0; i < 260; i++) {
+      worker.appendMethodSuspensionUpdate("call-1", { chunk: i });
+    }
+    expect(
+      sql
+        .exec(
+          `SELECT COUNT(*) AS count, MIN(seq) AS min_seq, MAX(seq) AS max_seq
+             FROM agent_method_suspension_updates
+             WHERE transport_call_id = ?`,
+          "call-1"
+        )
+        .toArray()[0]
+    ).toMatchObject({ count: 256, min_seq: 5, max_seq: 260 });
+
+    worker.markMethodSuspensionTerminal("call-1", {
+      terminalKind: "completed",
+      result: { content: [{ type: "text", text: "done" }] },
+      isError: false,
+      waiterPresent: true,
+    });
+    worker.markLiveToolResultAdmitted("chat-1", {
+      role: "toolResult",
+      toolCallId: "tool-1",
+      toolName: "eval",
+      content: [{ type: "text", text: "done" }],
+    } as AgentMessage);
+
+    expect(
+      sql
+        .exec(
+          `SELECT delivery_status FROM agent_method_suspensions WHERE transport_call_id = ?`,
+          "call-1"
+        )
+        .toArray()[0]
+    ).toMatchObject({ delivery_status: "transcript_admitted" });
+    expect(
+      sql
+        .exec(
+          `SELECT COUNT(*) AS count FROM agent_method_suspension_updates WHERE transport_call_id = ?`,
+          "call-1"
+        )
+        .toArray()[0]
+    ).toMatchObject({ count: 0 });
+  });
+
+  it("settles approval siblings as superseded when the live tool result is admitted", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const worker = instance as unknown as {
+      markLiveToolResultAdmitted(channelId: string, message: AgentMessage): void;
+    };
+
+    insertSuspension(sql, {
+      callId: "approval-call",
+      invocationId: "tool-1",
+      kind: "approval",
+      deliveryStatus: "delivered_live",
+      terminalKind: "completed",
+      result: true,
+      createdAt: 100,
+      toolName: "bash",
+    });
+    insertSuspension(sql, {
+      callId: "eval-call",
+      invocationId: "tool-1",
+      kind: "channelMethod",
+      deliveryStatus: "delivered_live",
+      terminalKind: "completed",
+      result: { content: [{ type: "text", text: "ran" }] },
+      createdAt: 200,
+      toolName: "bash",
+    });
+
+    worker.markLiveToolResultAdmitted("chat-1", {
+      role: "toolResult",
+      toolCallId: "tool-1",
+      toolName: "bash",
+      content: [{ type: "text", text: "ran" }],
+    } as AgentMessage);
+
+    expect(
+      sql
+        .exec(
+          `SELECT transport_call_id, delivery_status
+             FROM agent_method_suspensions
+             ORDER BY transport_call_id`
+        )
+        .toArray()
+    ).toEqual([
+      { transport_call_id: "approval-call", delivery_status: "superseded" },
+      { transport_call_id: "eval-call", delivery_status: "transcript_admitted" },
+    ]);
+  });
+
+  it("does not delete partials when a live admission hook has no delivered row to settle", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const worker = instance as unknown as {
+      appendMethodSuspensionUpdate(callId: string, content: unknown): void;
+      markLiveToolResultAdmitted(channelId: string, message: AgentMessage): void;
+    };
+
+    insertSuspension(sql, { callId: "call-1", deliveryStatus: "pending" });
+    worker.appendMethodSuspensionUpdate("call-1", { chunk: "still-in-flight" });
+    worker.markLiveToolResultAdmitted("chat-1", {
+      role: "toolResult",
+      toolCallId: "tool-1",
+      toolName: "eval",
+      content: [{ type: "text", text: "done" }],
+    } as AgentMessage);
+
+    expect(
+      sql
+        .exec(
+          `SELECT COUNT(*) AS count FROM agent_method_suspension_updates WHERE transport_call_id = ?`,
+          "call-1"
+        )
+        .toArray()[0]
+    ).toMatchObject({ count: 1 });
+  });
+
+  it("settles delivered-live siblings group-wise during activation sweep", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const worker = instance as unknown as {
+      sweepStuckDelivery(channelId: string, runner: PiRunner): Promise<void>;
+    };
+
+    insertSuspension(sql, {
+      callId: "approval-call",
+      invocationId: "tool-1",
+      kind: "approval",
+      deliveryStatus: "delivered_live",
+      terminalKind: "completed",
+      result: true,
+      createdAt: 100,
+      toolName: "bash",
+    });
+    insertSuspension(sql, {
+      callId: "eval-call",
+      invocationId: "tool-1",
+      kind: "channelMethod",
+      deliveryStatus: "delivered_live",
+      terminalKind: "completed",
+      result: { content: [{ type: "text", text: "ran" }] },
+      createdAt: 200,
+      toolName: "bash",
+    });
+
+    await worker.sweepStuckDelivery("chat-1", {
+      isInvocationOpen: () => false,
+      hasToolResult: async () => true,
+      isCurrentLeafToolResult: async () => false,
+    } as unknown as PiRunner);
+
+    expect(
+      sql
+        .exec(
+          `SELECT transport_call_id, delivery_status
+             FROM agent_method_suspensions
+             ORDER BY transport_call_id`
+        )
+        .toArray()
+    ).toEqual([
+      { transport_call_id: "approval-call", delivery_status: "superseded" },
+      { transport_call_id: "eval-call", delivery_status: "transcript_admitted" },
+    ]);
+  });
+
+  it("recovers the model-visible channel result instead of an older approval prompt", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const appended: AgentMessage[] = [];
+    const submitContinue = vi.fn();
+    const worker = instance as unknown as {
+      runners: Map<string, { runner: unknown }>;
+      dispatchers: Map<string, unknown>;
+      recoverDeliveredAndOrphanedSuspensions(channelId: string): Promise<void>;
+    };
+    worker.runners.set("chat-1", {
+      runner: {
+        isInvocationOpen: () => true,
+        isLeafDescendantOf: async () => true,
+        appendToolResult: async (message: AgentMessage) => {
+          appended.push(message);
+          return "entry-recovered";
+        },
+      },
+    });
+    worker.dispatchers.set("chat-1", {
+      submitContinue,
+      getDebugState: () => ({ busy: false }),
+    });
+
+    insertSuspension(sql, {
+      callId: "approval-call",
+      invocationId: "tool-1",
+      kind: "approval",
+      deliveryStatus: "pending",
+      terminalKind: "completed",
+      result: true,
+      createdAt: 100,
+      toolName: "bash",
+    });
+    insertSuspension(sql, {
+      callId: "eval-call",
+      invocationId: "tool-1",
+      kind: "channelMethod",
+      deliveryStatus: "pending",
+      terminalKind: "completed",
+      result: { content: [{ type: "text", text: "real output" }] },
+      createdAt: 200,
+      toolName: "bash",
+    });
+
+    await worker.recoverDeliveredAndOrphanedSuspensions("chat-1");
+
+    expect(appended).toHaveLength(1);
+    expect(appended[0]).toMatchObject({
+      role: "toolResult",
+      toolCallId: "tool-1",
+      toolName: "bash",
+      content: [{ type: "text", text: "real output" }],
+    });
+    expect(submitContinue).toHaveBeenCalledTimes(1);
+    expect(
+      sql
+        .exec(
+          `SELECT transport_call_id, delivery_status, recovered_entry_id
+             FROM agent_method_suspensions
+             ORDER BY transport_call_id`
+        )
+        .toArray()
+    ).toEqual([
+      {
+        transport_call_id: "approval-call",
+        delivery_status: "superseded",
+        recovered_entry_id: null,
+      },
+      {
+        transport_call_id: "eval-call",
+        delivery_status: "recovered",
+        recovered_entry_id: "entry-recovered",
+      },
+    ]);
+  });
+
+  it("skips an approval result while the higher-priority channel method is still pending", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const appended: AgentMessage[] = [];
+    const worker = instance as unknown as {
+      runners: Map<string, { runner: unknown }>;
+      dispatchers: Map<string, unknown>;
+      recoverDeliveredAndOrphanedSuspensions(channelId: string): Promise<void>;
+    };
+    worker.runners.set("chat-1", {
+      runner: {
+        isInvocationOpen: () => true,
+        isLeafDescendantOf: async () => true,
+        appendToolResult: async (message: AgentMessage) => {
+          appended.push(message);
+          return "entry-recovered";
+        },
+      },
+    });
+    worker.dispatchers.set("chat-1", {
+      submitContinue: vi.fn(),
+      getDebugState: () => ({ busy: false }),
+    });
+
+    insertSuspension(sql, {
+      callId: "approval-call",
+      invocationId: "tool-1",
+      kind: "approval",
+      deliveryStatus: "pending",
+      terminalKind: "completed",
+      result: true,
+      createdAt: 100,
+      toolName: "bash",
+    });
+    insertSuspension(sql, {
+      callId: "eval-call",
+      invocationId: "tool-1",
+      kind: "channelMethod",
+      deliveryStatus: "pending",
+      terminalKind: "none",
+      createdAt: 200,
+      toolName: "bash",
+    });
+
+    await worker.recoverDeliveredAndOrphanedSuspensions("chat-1");
+
+    expect(appended).toEqual([]);
+    expect(
+      sql
+        .exec(
+          `SELECT transport_call_id, delivery_status
+             FROM agent_method_suspensions
+             ORDER BY transport_call_id`
+        )
+        .toArray()
+    ).toEqual([
+      { transport_call_id: "approval-call", delivery_status: "pending" },
+      { transport_call_id: "eval-call", delivery_status: "pending" },
+    ]);
+  });
+
+  it("resumes approval-only groups by directly executing the pre-approved outer tool", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const appended: AgentMessage[] = [];
+    const executeToolDirect = vi.fn().mockResolvedValue({
+      content: [{ type: "text", text: "resumed output" }],
+      details: { resumed: true },
+    });
+    const submitContinue = vi.fn();
+    const worker = instance as unknown as {
+      runners: Map<string, { runner: unknown }>;
+      dispatchers: Map<string, unknown>;
+      recoverDeliveredAndOrphanedSuspensions(channelId: string): Promise<void>;
+    };
+    worker.runners.set("chat-1", {
+      runner: {
+        isInvocationOpen: () => true,
+        isLeafDescendantOf: async () => true,
+        executeToolDirect,
+        appendToolResult: async (message: AgentMessage) => {
+          appended.push(message);
+          return "entry-approval";
+        },
+      },
+    });
+    worker.dispatchers.set("chat-1", {
+      submitContinue,
+      getDebugState: () => ({ busy: false }),
+    });
+    insertSuspension(sql, {
+      callId: "approval-call",
+      invocationId: "tool-1",
+      kind: "approval",
+      deliveryStatus: "pending",
+      terminalKind: "completed",
+      result: true,
+      createdAt: 100,
+      toolName: "bash",
+      args: {
+        prompt: { kind: "confirm", title: "Allow tool call?", message: "Tool: bash" },
+        resumeToolInput: { command: "echo resumed" },
+      },
+    });
+
+    await worker.recoverDeliveredAndOrphanedSuspensions("chat-1");
+
+    expect(executeToolDirect).toHaveBeenCalledWith(
+      "bash",
+      "tool-1",
+      { command: "echo resumed" },
+      expect.any(AbortSignal)
+    );
+    expect(appended).toHaveLength(1);
+    expect(appended[0]).toMatchObject({
+      role: "toolResult",
+      toolCallId: "tool-1",
+      toolName: "bash",
+      content: [
+        {
+          type: "text",
+          text: "resumed output",
+        },
+      ],
+      details: { resumed: true },
+    });
+    expect(submitContinue).toHaveBeenCalledTimes(1);
+    expect(
+      sql
+        .exec(`SELECT channel_id, reason FROM agent_recovery_continuations WHERE channel_id = ?`, "chat-1")
+        .toArray()
+    ).toEqual([{ channel_id: "chat-1", reason: "method_suspension_recovered" }]);
+  });
+
+  it("replays recovered ui prompt answers while resuming the outer tool", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const appended: AgentMessage[] = [];
+    const submitContinue = vi.fn();
+    const worker = instance as unknown as {
+      runners: Map<string, { runner: unknown }>;
+      dispatchers: Map<string, unknown>;
+      dispatchUiPrompt(
+        channelId: string,
+        toolCallId: string,
+        kind: "confirm" | "input",
+        params: Record<string, unknown>
+      ): Promise<unknown>;
+      recoverDeliveredAndOrphanedSuspensions(channelId: string): Promise<void>;
+    };
+    const executeToolDirect = vi.fn(async () => {
+      const first = await worker.dispatchUiPrompt("chat-1", "tool-1", "confirm", {
+        title: "Continue?",
+        message: "Use first recovered answer",
+      });
+      const second = await worker.dispatchUiPrompt("chat-1", "tool-1", "input", {
+        title: "Name?",
+      });
+      return {
+        content: [{ type: "text", text: `replayed=${String(first)}:${String(second)}` }],
+      };
+    });
+    worker.runners.set("chat-1", {
+      runner: {
+        isInvocationOpen: () => true,
+        isLeafDescendantOf: async () => true,
+        executeToolDirect,
+        appendToolResult: async (message: AgentMessage) => {
+          appended.push(message);
+          return "entry-ui";
+        },
+      },
+    });
+    worker.dispatchers.set("chat-1", {
+      submitContinue,
+      getDebugState: () => ({ busy: false }),
+    });
+    insertSuspension(sql, {
+      callId: "ui-call",
+      invocationId: "tool-1",
+      kind: "uiPrompt",
+      deliveryStatus: "pending",
+      terminalKind: "completed",
+      result: "true",
+      createdAt: 100,
+      toolName: "custom_tool",
+      args: {
+        prompt: { kind: "confirm", title: "Continue?", message: "Use first recovered answer" },
+        resumeToolInput: { value: 42 },
+      },
+    });
+    insertSuspension(sql, {
+      callId: "ui-call-2",
+      invocationId: "tool-1",
+      kind: "uiPrompt",
+      deliveryStatus: "pending",
+      terminalKind: "completed",
+      result: "alice",
+      createdAt: 101,
+      toolName: "custom_tool",
+      args: {
+        prompt: { kind: "input", title: "Name?" },
+        resumeToolInput: { value: 42 },
+      },
+    });
+
+    await worker.recoverDeliveredAndOrphanedSuspensions("chat-1");
+
+    expect(executeToolDirect).toHaveBeenCalledWith(
+      "custom_tool",
+      "tool-1",
+      { value: 42 },
+      expect.any(AbortSignal)
+    );
+    expect(appended).toHaveLength(1);
+    expect(appended[0]).toMatchObject({
+      role: "toolResult",
+      toolCallId: "tool-1",
+      toolName: "custom_tool",
+      content: [{ type: "text", text: "replayed=true:alice" }],
+    });
+    expect(submitContinue).toHaveBeenCalledTimes(1);
+  });
+
+  it("recovers multiple terminal tool calls in assistant block order", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const appended: AgentMessage[] = [];
+    const worker = instance as unknown as {
+      runners: Map<string, { runner: unknown }>;
+      dispatchers: Map<string, unknown>;
+      recoverDeliveredAndOrphanedSuspensions(channelId: string): Promise<void>;
+    };
+    worker.runners.set("chat-1", {
+      runner: {
+        isInvocationOpen: () => true,
+        isLeafDescendantOf: async () => true,
+        appendToolResult: async (message: AgentMessage) => {
+          appended.push(message);
+          return `entry-${String((message as { toolCallId?: unknown }).toolCallId)}`;
+        },
+      },
+    });
+    worker.dispatchers.set("chat-1", {
+      submitContinue: vi.fn(),
+      getDebugState: () => ({ busy: false }),
+    });
+    insertSuspension(sql, {
+      callId: "call-b",
+      invocationId: "tool-b",
+      terminalKind: "completed",
+      result: "B",
+      createdAt: 100,
+      toolCallIndex: 1,
+    });
+    insertSuspension(sql, {
+      callId: "call-a",
+      invocationId: "tool-a",
+      terminalKind: "completed",
+      result: "A",
+      createdAt: 200,
+      toolCallIndex: 0,
+    });
+
+    await worker.recoverDeliveredAndOrphanedSuspensions("chat-1");
+
+    expect(appended.map((message) => (message as { toolCallId?: string }).toolCallId)).toEqual([
+      "tool-a",
+      "tool-b",
+    ]);
+  });
+
+  it("ignores late terminal results for cancelled suspensions", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const worker = instance as unknown as {
+      handleCompletedMethodResult(
+        channelId: string,
+        callId: string,
+        result: unknown,
+        isError: boolean
+      ): Promise<void>;
+      runners: Map<string, unknown>;
+    };
+    insertSuspension(sql, {
+      callId: "call-1",
+      deliveryStatus: "cancelled",
+      terminalKind: "cancelled",
+      result: { reason: "user_interrupted" },
+      resultIsError: 1,
+    });
+
+    await worker.handleCompletedMethodResult("chat-1", "call-1", "late success", false);
+
+    expect(
+      sql
+        .exec(
+          `SELECT delivery_status FROM agent_method_suspensions WHERE transport_call_id = ?`,
+          "call-1"
+        )
+        .toArray()[0]
+    ).toMatchObject({ delivery_status: "ignored" });
+    expect(worker.runners.has("chat-1")).toBe(false);
+  });
+
+  it("recovers an orphan terminal through the channel event completion handler", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const appended: AgentMessage[] = [];
+    const submitContinue = vi.fn();
+    const worker = instance as unknown as {
+      runners: Map<string, { runner: unknown }>;
+      dispatchers: Map<string, unknown>;
+      handleCompletedMethodResult(
+        channelId: string,
+        callId: string,
+        result: unknown,
+        isError: boolean
+      ): Promise<void>;
+    };
+    worker.runners.set("chat-1", {
+      runner: {
+        isInvocationOpen: () => true,
+        isLeafDescendantOf: async () => true,
+        appendToolResult: async (message: AgentMessage) => {
+          appended.push(message);
+          return "entry-orphan";
+        },
+      },
+    });
+    worker.dispatchers.set("chat-1", {
+      submitContinue,
+      getDebugState: () => ({ busy: false }),
+    });
+    insertSuspension(sql, {
+      callId: "call-1",
+      terminalKind: "none",
+      deliveryStatus: "pending",
+      sessionLeafBeforeCall: null,
+    });
+
+    await worker.handleCompletedMethodResult("chat-1", "call-1", "terminal payload", false);
+
+    expect(appended).toHaveLength(1);
+    expect(appended[0]).toMatchObject({
+      role: "toolResult",
+      toolCallId: "tool-1",
+      content: [{ type: "text", text: "terminal payload" }],
+    });
+    expect(submitContinue).toHaveBeenCalledTimes(1);
+    expect(
+      sql
+        .exec(
+          `SELECT terminal_kind, delivery_status, recovered_entry_id
+             FROM agent_method_suspensions
+             WHERE transport_call_id = ?`,
+          "call-1"
+        )
+        .toArray()[0]
+    ).toMatchObject({
+      terminal_kind: "completed",
+      delivery_status: "recovered",
+      recovered_entry_id: "entry-orphan",
+    });
+  });
+
+  it("marks recovery rows stale when the invocation is no longer open", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const appendToolResult = vi.fn();
+    const submitContinue = vi.fn();
+    const worker = instance as unknown as {
+      runners: Map<string, { runner: unknown }>;
+      dispatchers: Map<string, unknown>;
+      recoverDeliveredAndOrphanedSuspensions(channelId: string): Promise<void>;
+    };
+    worker.runners.set("chat-1", {
+      runner: {
+        isInvocationOpen: () => false,
+        hasToolResult: async () => true,
+        isLeafDescendantOf: async () => true,
+        appendToolResult,
+      },
+    });
+    worker.dispatchers.set("chat-1", {
+      submitContinue,
+      getDebugState: () => ({ busy: false }),
+    });
+    insertSuspension(sql, {
+      callId: "call-1",
+      terminalKind: "completed",
+      result: "done",
+    });
+
+    await worker.recoverDeliveredAndOrphanedSuspensions("chat-1");
+
+    expect(appendToolResult).not.toHaveBeenCalled();
+    expect(submitContinue).not.toHaveBeenCalled();
+    expect(
+      sql
+        .exec(
+          `SELECT delivery_status, recovery_error
+             FROM agent_method_suspensions
+             WHERE transport_call_id = ?`,
+          "call-1"
+        )
+        .toArray()[0]
+    ).toMatchObject({ delivery_status: "stale", recovery_error: "invocation closed" });
+  });
+
+  it("records recovery_error and retains partials when appendToolResult fails", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const worker = instance as unknown as {
+      runners: Map<string, { runner: unknown }>;
+      dispatchers: Map<string, unknown>;
+      appendMethodSuspensionUpdate(callId: string, content: unknown): void;
+      recoverDeliveredAndOrphanedSuspensions(channelId: string): Promise<void>;
+    };
+    worker.runners.set("chat-1", {
+      runner: {
+        isInvocationOpen: () => true,
+        isLeafDescendantOf: async () => true,
+        appendToolResult: async () => {
+          throw new Error("append failed");
+        },
+      },
+    });
+    worker.dispatchers.set("chat-1", {
+      submitContinue: vi.fn(),
+      getDebugState: () => ({ busy: false }),
+    });
+    insertSuspension(sql, {
+      callId: "call-1",
+      terminalKind: "completed",
+      result: "done",
+    });
+    worker.appendMethodSuspensionUpdate("call-1", { partial: "kept" });
+
+    await worker.recoverDeliveredAndOrphanedSuspensions("chat-1");
+
+    expect(
+      sql
+        .exec(
+          `SELECT delivery_status, recovery_error
+             FROM agent_method_suspensions
+             WHERE transport_call_id = ?`,
+          "call-1"
+        )
+        .toArray()[0]
+    ).toMatchObject({ delivery_status: "recovery_error", recovery_error: "append failed" });
+    expect(
+      sql
+        .exec(
+          `SELECT COUNT(*) AS count
+             FROM agent_method_suspension_updates
+             WHERE transport_call_id = ?`,
+          "call-1"
+        )
+        .toArray()[0]
+    ).toMatchObject({ count: 1 });
+  });
+
+  it("releases stuck recovering rows on activation sweep when the invocation is still open", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const worker = instance as unknown as {
+      sweepStuckDelivery(channelId: string, runner: PiRunner): Promise<void>;
+    };
+    insertSuspension(sql, {
+      callId: "call-1",
+      terminalKind: "completed",
+      result: "done",
+      deliveryStatus: "recovering",
+    });
+
+    await worker.sweepStuckDelivery("chat-1", {
+      isInvocationOpen: () => true,
+      hasToolResult: async () => false,
+    } as unknown as PiRunner);
+
+    expect(
+      sql
+        .exec(
+          `SELECT delivery_status FROM agent_method_suspensions WHERE transport_call_id = ?`,
+          "call-1"
+        )
+        .toArray()[0]
+    ).toMatchObject({ delivery_status: "delivered_live" });
+  });
+
+  it("does not treat a closed invocation as admitted unless a tool result is present", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const worker = instance as unknown as {
+      sweepStuckDelivery(channelId: string, runner: PiRunner): Promise<void>;
+    };
+    insertSuspension(sql, {
+      callId: "call-1",
+      terminalKind: "completed",
+      result: "done",
+      deliveryStatus: "recovering",
+    });
+
+    await worker.sweepStuckDelivery("chat-1", {
+      isInvocationOpen: () => false,
+      hasToolResult: async () => false,
+    } as unknown as PiRunner);
+
+    expect(
+      sql
+        .exec(
+          `SELECT delivery_status, recovery_error FROM agent_method_suspensions WHERE transport_call_id = ?`,
+          "call-1"
+        )
+        .toArray()[0]
+    ).toMatchObject({ delivery_status: "delivered_live", recovery_error: null });
+  });
+
+  it("cancels terminal-but-not-admitted suspensions on interrupt", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const worker = instance as unknown as {
+      cancelMethodSuspensionsForChannel(channelId: string, reason: string): string[];
+    };
+    insertSuspension(sql, {
+      callId: "call-1",
+      terminalKind: "completed",
+      result: "done",
+      deliveryStatus: "delivered_live",
+    });
+
+    expect(worker.cancelMethodSuspensionsForChannel("chat-1", "user_interrupted")).toEqual([
+      "call-1",
+    ]);
+    expect(
+      sql
+        .exec(
+          `SELECT terminal_kind, delivery_status, recovery_error
+             FROM agent_method_suspensions
+             WHERE transport_call_id = ?`,
+          "call-1"
+        )
+        .toArray()[0]
+    ).toMatchObject({
+      terminal_kind: "cancelled",
+      delivery_status: "cancelled",
+      recovery_error: "user_interrupted",
+    });
+  });
+
+  it("marks dispatch failures durably and retains forensic partials", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const cancelCall = vi.fn().mockResolvedValue(undefined);
+    const worker = instance as unknown as {
+      subscriptions: {
+        getParticipantId(channelId: string): string | null;
+      };
+      createChannelClient: ReturnType<typeof vi.fn>;
+      invokeChannelMethod(
+        channelId: string,
+        toolCallId: string,
+        participantHandle: string,
+        method: string,
+        args: unknown,
+        signal?: AbortSignal,
+        onStreamUpdate?: (content: unknown) => void,
+        turnId?: string
+      ): Promise<unknown>;
+      appendMethodSuspensionUpdate(callId: string, content: unknown): void;
+    };
+    worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
+    worker.createChannelClient = vi.fn().mockReturnValue({
+      getParticipants: vi.fn().mockResolvedValue([
+        {
+          participantId: "panel:panel-1",
+          metadata: { handle: "user", type: "panel" },
+        },
+      ]),
+      callMethod: vi.fn(async (_callerId, _targetId, callId) => {
+        worker.appendMethodSuspensionUpdate(callId, { partial: "retained" });
+        throw new Error("dispatch exploded");
+      }),
+      cancelCall,
+    });
+
+    await expect(
+      worker.invokeChannelMethod("chat-1", "tool-1", "user", "eval", { code: "1" })
+    ).rejects.toThrow("dispatch exploded");
+
+    const row = sql.exec(`SELECT * FROM agent_method_suspensions`).toArray()[0]!;
+    expect(row).toMatchObject({
+      terminal_kind: "failed",
+      delivery_status: "dispatch_failed",
+      recovery_error: "dispatch_failed: dispatch exploded",
+    });
+    expect(
+      sql.exec(`SELECT COUNT(*) AS count FROM agent_method_suspension_updates`).toArray()[0]
+    ).toMatchObject({ count: 1 });
+    expect(cancelCall).toHaveBeenCalledTimes(1);
+  });
+
+  it("activation cleanup clears stale typing for persisted subscriptions", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const setTypingState = vi.fn().mockResolvedValue(undefined);
+    const worker = instance as unknown as {
+      createChannelClient: ReturnType<typeof vi.fn>;
+      ensureAgentActivationReady(): Promise<void>;
+    };
+    sql.exec(
+      `INSERT INTO subscriptions (channel_id, context_id, subscribed_at, config, participant_id)
+       VALUES (?, ?, ?, NULL, ?)`,
+      "chat-1",
+      "ctx-1",
+      Date.now(),
+      "do:agent"
+    );
+    worker.createChannelClient = vi.fn().mockReturnValue({ setTypingState });
+
+    await worker.ensureAgentActivationReady();
+
+    expect(setTypingState).toHaveBeenCalledWith("do:agent", false);
+    const debug = await (
+      instance as unknown as { getDebugState(): Promise<Record<string, unknown>> }
+    ).getDebugState();
+    expect(
+      (debug["volatile"] as { suspensions?: { lastActivationTypingCleanup?: { count?: number } } })
+        .suspensions?.lastActivationTypingCleanup?.count
+    ).toBe(1);
+  });
+});
+
 describe("AgentWorkerBase interrupt recovery", () => {
   it("resets dispatcher and force-closes the turn without awaiting a stuck runner interrupt", async () => {
     const { instance } = await createTestDO(InterruptTestAgentWorker, {
@@ -613,6 +1583,156 @@ describe("AgentWorkerBase dispatched method results", () => {
     });
   });
 
+  it("returns participant method failures as tool error results", async () => {
+    const { instance } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const worker = instance as unknown as {
+      subscriptions: {
+        getParticipantId(channelId: string): string | null;
+      };
+      createChannelClient: ReturnType<typeof vi.fn>;
+      handleIncomingChannelEvent(channelId: string, event: unknown): Promise<void>;
+      invokeChannelMethod(
+        channelId: string,
+        toolCallId: string,
+        participantHandle: string,
+        method: string,
+        args: unknown,
+        signal?: AbortSignal,
+        onStreamUpdate?: (content: unknown) => void,
+        turnId?: string
+      ): Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+    };
+
+    worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
+    worker.createChannelClient = vi.fn().mockReturnValue({
+      getParticipants: vi.fn().mockResolvedValue([
+        {
+          participantId: "panel:panel-1",
+          metadata: { handle: "user", type: "panel" },
+        },
+      ]),
+      callMethod: vi.fn(async (_callerId, _targetId, _callId, _method, _args, opts) => {
+        await worker.handleIncomingChannelEvent("chat-1", {
+          id: 1,
+          messageId: "result-failed",
+          type: AGENTIC_EVENT_PAYLOAD_KIND,
+          payload: {
+            kind: "invocation.failed",
+            actor: { kind: "panel", id: "panel:panel-1" },
+            causality: { invocationId: opts.invocationId, transportCallId: opts.transportCallId },
+            payload: {
+              protocol: "agentic.trajectory.v1",
+              reason: "method failed",
+              error: { error: "Authentication failed for internal push" },
+            },
+            createdAt: new Date().toISOString(),
+          },
+          senderId: "panel:panel-1",
+          ts: Date.now(),
+        });
+      }),
+    });
+
+    const result = await worker.invokeChannelMethod(
+      "chat-1",
+      "tool-1",
+      "user",
+      "eval",
+      { code: "throw new Error()" },
+      undefined,
+      undefined,
+      "turn-1"
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toBe("Authentication failed for internal push");
+  });
+
+  it("clears stale typing and ignores method results without a durable suspension row", async () => {
+    const { instance } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const setTypingState = vi.fn().mockResolvedValue(undefined);
+    const worker = instance as unknown as {
+      subscriptions: {
+        getParticipantId(channelId: string): string | null;
+      };
+      createChannelClient: ReturnType<typeof vi.fn>;
+      handleIncomingChannelEvent(channelId: string, event: unknown): Promise<void>;
+      runners: Map<string, unknown>;
+    };
+
+    worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
+    worker.createChannelClient = vi.fn().mockReturnValue({
+      setTypingState,
+    });
+
+    await worker.handleIncomingChannelEvent("chat-1", {
+      id: 1,
+      messageId: "orphan-result",
+      type: AGENTIC_EVENT_PAYLOAD_KIND,
+      payload: {
+        kind: "invocation.failed",
+        actor: { kind: "panel", id: "panel:panel-1" },
+        causality: { invocationId: "tool-1", transportCallId: "transport-lost" },
+        payload: {
+          protocol: "agentic.trajectory.v1",
+          reason: "method failed",
+          error: "Authentication failed",
+        },
+        createdAt: new Date().toISOString(),
+      },
+      senderId: "panel:panel-1",
+      ts: Date.now(),
+    });
+
+    expect(setTypingState).toHaveBeenCalledWith("do:agent", false);
+    expect(worker.runners.has("chat-1")).toBe(false);
+  });
+
+  it("does not treat local invocation completion events as channel method results", async () => {
+    const { instance } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const setTypingState = vi.fn().mockResolvedValue(undefined);
+    const worker = instance as unknown as {
+      subscriptions: {
+        getParticipantId(channelId: string): string | null;
+      };
+      createChannelClient: ReturnType<typeof vi.fn>;
+      handleIncomingChannelEvent(channelId: string, event: unknown): Promise<void>;
+      runners: Map<string, unknown>;
+    };
+
+    worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
+    worker.createChannelClient = vi.fn().mockReturnValue({
+      setTypingState,
+    });
+
+    await worker.handleIncomingChannelEvent("chat-1", {
+      id: 1,
+      messageId: "local-result",
+      type: AGENTIC_EVENT_PAYLOAD_KIND,
+      payload: {
+        kind: "invocation.completed",
+        actor: { kind: "agent", id: "do:agent" },
+        causality: { invocationId: "tool-1" },
+        payload: {
+          protocol: "agentic.trajectory.v1",
+          result: { ok: true },
+        },
+        createdAt: new Date().toISOString(),
+      },
+      senderId: "do:agent",
+      ts: Date.now(),
+    });
+
+    expect(setTypingState).not.toHaveBeenCalled();
+    expect(worker.runners.has("chat-1")).toBe(false);
+  });
+
   it("cancels the channel pending call when an in-flight method call aborts", async () => {
     const { instance } = await createTestDO(TestAgentWorker, {
       __objectKey: "agent-test",
@@ -734,21 +1854,23 @@ describe("AgentWorkerBase dispatched method results", () => {
       { code: "await forever()" },
       controller.signal,
       undefined,
-      "turn-open",
+      "turn-open"
     );
     await callStarted;
 
-    const debug = await worker.getDebugState("chat-1") as {
+    const debug = (await worker.getDebugState("chat-1")) as {
       volatile?: {
         methodResultWaiters?: Array<Record<string, unknown>>;
         runners?: Record<string, Record<string, unknown>>;
       };
     };
-    expect(debug.volatile?.runners?.["chat-1"]).toEqual(expect.objectContaining({
-      running: true,
-      currentTurnId: "turn-open",
-      phase: expect.objectContaining({ awaitingProviderFirstEvent: true }),
-    }));
+    expect(debug.volatile?.runners?.["chat-1"]).toEqual(
+      expect.objectContaining({
+        running: true,
+        currentTurnId: "turn-open",
+        phase: expect.objectContaining({ awaitingProviderFirstEvent: true }),
+      })
+    );
     expect(debug.volatile?.methodResultWaiters).toEqual([
       expect.objectContaining({
         callId: capturedCallId,

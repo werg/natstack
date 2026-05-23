@@ -10,6 +10,7 @@ export type {
   ThinkingLevel,
   PiRunnerGadProvenance,
   RunnerTurnInput,
+  HibernationResumableTool,
 } from "./pi-runner.js";
 
 // TurnSnapshot (Phase 2) — surfaced via `onPrepareNextTurn`.

@@ -8,13 +8,29 @@ import {
   type CustomMessageDisplayMode,
   type MessageId,
 } from "@workspace/agentic-protocol";
-import { createGmailClient, type GmailClient, type GmailMessage, type GmailThread } from "@workspace/gmail";
-import { reduce as reduceGmailThread, type GmailThreadState } from "@workspace/gmail/renderers/gmail-thread.reducer";
+import {
+  createGmailClient,
+  type GmailClient,
+  type GmailMessage,
+  type GmailThread,
+} from "@workspace/gmail";
+import {
+  reduce as reduceGmailThread,
+  type GmailThreadState,
+} from "@workspace/gmail/renderers/gmail-thread.reducer";
 import type { PiRunnerOptions } from "@natstack/harness";
 import type { ParticipantDescriptor } from "@natstack/harness/types";
 
 const DEFAULT_POLL_INTERVAL_MS = 5 * 60 * 1000;
-const METADATA_HEADERS = ["Subject", "From", "To", "Date", "Message-ID", "References", "In-Reply-To"];
+const METADATA_HEADERS = [
+  "Subject",
+  "From",
+  "To",
+  "Date",
+  "Message-ID",
+  "References",
+  "In-Reply-To",
+];
 const GMAIL_SYSTEM_CATEGORIES: Record<string, string> = {
   CATEGORY_PERSONAL: "Primary",
   CATEGORY_PROMOTIONS: "Promotions",
@@ -94,7 +110,7 @@ interface GmailInboxState {
 }
 
 function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" ? value as Record<string, unknown> : {};
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
 function stringArg(args: Record<string, unknown>, key: string): string | undefined {
@@ -119,9 +135,10 @@ function latestMessage(thread: GmailThread): GmailMessage | undefined {
 function decodeBase64Url(data: string): string {
   const normalized = data.replace(/-/g, "+").replace(/_/g, "/");
   const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
-  const bytes = typeof Buffer !== "undefined"
-    ? Buffer.from(padded, "base64")
-    : Uint8Array.from(atob(padded), (char) => char.charCodeAt(0));
+  const bytes =
+    typeof Buffer !== "undefined"
+      ? Buffer.from(padded, "base64")
+      : Uint8Array.from(atob(padded), (char) => char.charCodeAt(0));
   return new TextDecoder().decode(bytes);
 }
 
@@ -151,13 +168,18 @@ function categoryFromLabels(labels: Set<string>): string | undefined {
 }
 
 function isExcludedActionableCategory(labels: Set<string>): boolean {
-  return labels.has("CATEGORY_PROMOTIONS")
-    || labels.has("CATEGORY_SOCIAL")
-    || labels.has("CATEGORY_UPDATES")
-    || labels.has("CATEGORY_FORUMS");
+  return (
+    labels.has("CATEGORY_PROMOTIONS") ||
+    labels.has("CATEGORY_SOCIAL") ||
+    labels.has("CATEGORY_UPDATES") ||
+    labels.has("CATEGORY_FORUMS")
+  );
 }
 
-function addressHeaderIncludes(message: GmailMessage | undefined, email: string | undefined): boolean {
+function addressHeaderIncludes(
+  message: GmailMessage | undefined,
+  email: string | undefined
+): boolean {
   if (!message || !email) return false;
   const normalizedEmail = email.toLowerCase();
   const recipients = [header(message, "To"), header(message, "Cc"), header(message, "Bcc")]
@@ -171,35 +193,47 @@ function isNotFoundError(err: unknown): boolean {
   return err instanceof Error && /\b404\b/.test(err.message);
 }
 
-function toolResult(details: unknown): { content: Array<{ type: "text"; text: string }>; details: unknown } {
+function toolResult(details: unknown): {
+  content: Array<{ type: "text"; text: string }>;
+  details: unknown;
+} {
   return {
     content: [{ type: "text", text: JSON.stringify(details, null, 2) }],
     details,
   };
 }
 
-function threadCardState(thread: GmailThread, category?: string | null, userEmail?: string): GmailThreadCardState {
+function threadCardState(
+  thread: GmailThread,
+  category?: string | null,
+  userEmail?: string
+): GmailThreadCardState {
   const message = latestMessage(thread) ?? thread.messages?.[0];
   const labels = new Set((thread.messages ?? []).flatMap((m) => m.labelIds ?? []));
   const latestLabels = new Set(message?.labelIds ?? []);
   const resolvedCategory = category ?? categoryFromLabels(labels);
-  const actionable = latestLabels.has("UNREAD")
-    && !isExcludedActionableCategory(labels)
-    && addressHeaderIncludes(message, userEmail);
+  const actionable =
+    latestLabels.has("UNREAD") &&
+    !isExcludedActionableCategory(labels) &&
+    addressHeaderIncludes(message, userEmail);
   const updatedAt = Math.max(
     Date.now(),
-    ...((thread.messages ?? [])
+    ...(thread.messages ?? [])
       .map((m) => Number(m.internalDate ?? 0))
-      .filter((value) => Number.isFinite(value))),
+      .filter((value) => Number.isFinite(value))
   );
   return {
     threadId: thread.id,
     subject: (message && header(message, "Subject")) || "(no subject)",
     from: (message && header(message, "From")) || "",
     snippet: message?.snippet ?? "",
-    participants: Array.from(new Set((thread.messages ?? [])
-      .flatMap((m) => [header(m, "From"), header(m, "To")])
-      .filter((value): value is string => Boolean(value)))),
+    participants: Array.from(
+      new Set(
+        (thread.messages ?? [])
+          .flatMap((m) => [header(m, "From"), header(m, "To")])
+          .filter((value): value is string => Boolean(value))
+      )
+    ),
     lastSnippet: message?.snippet ?? "",
     unreadCount: labels.has("UNREAD") ? 1 : 0,
     hasDraft: false,
@@ -213,7 +247,7 @@ function threadCardState(thread: GmailThread, category?: string | null, userEmai
 }
 
 export class GmailAgentWorker extends TrajectoryVesselBase {
-  static override schemaVersion = 1;
+  static override schemaVersion = TrajectoryVesselBase.schemaVersion;
 
   private _gmail: GmailClient | null = null;
   private recoveredChannels = new Set<string>();
@@ -307,34 +341,46 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
         "Return only the email body, without a subject, greeting explanation, markdown, or signoff unless the thread clearly calls for one.",
         "Do not invent facts. If the answer needs missing information, ask for it briefly.",
       ].join("\n"),
-      messages: [{
-        role: "user",
-        timestamp: Date.now(),
-        content: [
-          `Subject: ${latest ? header(latest, "Subject") ?? "" : ""}`,
-          "",
-          "Thread:",
-          ...(thread.messages ?? []).map((message) => [
-            `From: ${header(message, "From") ?? ""}`,
-            `Date: ${header(message, "Date") ?? ""}`,
-            textFromPart(message.payload).slice(0, 4_000) || message.snippet || "",
-          ].join("\n")),
-        ].join("\n\n").slice(0, 16_000),
-      }],
+      messages: [
+        {
+          role: "user",
+          timestamp: Date.now(),
+          content: [
+            `Subject: ${latest ? (header(latest, "Subject") ?? "") : ""}`,
+            "",
+            "Thread:",
+            ...(thread.messages ?? []).map((message) =>
+              [
+                `From: ${header(message, "From") ?? ""}`,
+                `Date: ${header(message, "Date") ?? ""}`,
+                textFromPart(message.payload).slice(0, 4_000) || message.snippet || "",
+              ].join("\n")
+            ),
+          ]
+            .join("\n\n")
+            .slice(0, 16_000),
+        },
+      ],
     };
     const response = await complete(model, context, {
       apiKey: await this.getApiKeyForChannel(channelId)(),
       temperature: 0.2,
       maxTokens: 300,
     });
-    return textContentFromAssistant(response) || "Thanks for the note. I will take a look and follow up shortly.";
+    return (
+      textContentFromAssistant(response) ||
+      "Thanks for the note. I will take a look and follow up shortly."
+    );
   }
 
   protected override getRespondPolicy(_channelId: string): RespondPolicy {
     return "mentioned-strict";
   }
 
-  protected override getRunnerPromptConfig(_channelId: string): { systemPrompt?: string; systemPromptMode?: "replace" } {
+  protected override getRunnerPromptConfig(_channelId: string): {
+    systemPrompt?: string;
+    systemPromptMode?: "replace";
+  } {
     return {
       systemPromptMode: "replace",
       systemPrompt: [
@@ -352,29 +398,54 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
 
   protected override getRunnerTools(channelId: string): PiRunnerOptions["extraTools"] {
     return [
-      this.gmailTool("gmail_checkInbox", "Synchronize Gmail now and refresh Gmail cards.", async (_toolCallId, params) =>
-        this.syncChannel(channelId)),
-      this.gmailTool("gmail_search", "Search Gmail. Parameters: { q: string, limit?: number }.", async (_toolCallId, params) =>
-        this.search(channelId, record(params))),
-      this.gmailTool("gmail_summarizeThread", "Fetch sanitized thread contents for summarization. Parameters: { threadId: string }.", async (_toolCallId, params) =>
-        this.getThread(record(params))),
-      this.gmailTool("gmail_draftReply", "Create a reply compose card. Parameters: { threadId: string }.", async (_toolCallId, params) =>
-        this.draftReply(channelId, record(params))),
-      this.gmailTool("gmail_send", "Send a Gmail message. Parameters: { to: string, subject: string, body: string, threadId?: string, messageId?: string }.", async (_toolCallId, params) =>
-        this.send(channelId, record(params))),
-      this.gmailTool("gmail_categorize", "Set a local category for a Gmail thread. Parameters: { threadId: string, category: string }.", async (_toolCallId, params) =>
-        this.categorize(channelId, record(params))),
-      this.gmailTool("gmail_setPollInterval", "Configure Gmail polling. Parameters: { pollIntervalMs: number }.", async (_toolCallId, params) =>
-        this.setPollInterval(channelId, record(params))),
-      this.gmailTool("gmail_listActionableThreads", "List current unread or inbox threads. Parameters: { limit?: number }.", async (_toolCallId, params) =>
-        this.listActionableThreads(channelId, numberArg(record(params), "limit") ?? 6)),
+      this.gmailTool(
+        "gmail_checkInbox",
+        "Synchronize Gmail now and refresh Gmail cards.",
+        async (_toolCallId, params) => this.syncChannel(channelId)
+      ),
+      this.gmailTool(
+        "gmail_search",
+        "Search Gmail. Parameters: { q: string, limit?: number }.",
+        async (_toolCallId, params) => this.search(channelId, record(params))
+      ),
+      this.gmailTool(
+        "gmail_summarizeThread",
+        "Fetch sanitized thread contents for summarization. Parameters: { threadId: string }.",
+        async (_toolCallId, params) => this.getThread(record(params))
+      ),
+      this.gmailTool(
+        "gmail_draftReply",
+        "Create a reply compose card. Parameters: { threadId: string }.",
+        async (_toolCallId, params) => this.draftReply(channelId, record(params))
+      ),
+      this.gmailTool(
+        "gmail_send",
+        "Send a Gmail message. Parameters: { to: string, subject: string, body: string, threadId?: string, messageId?: string }.",
+        async (_toolCallId, params) => this.send(channelId, record(params))
+      ),
+      this.gmailTool(
+        "gmail_categorize",
+        "Set a local category for a Gmail thread. Parameters: { threadId: string, category: string }.",
+        async (_toolCallId, params) => this.categorize(channelId, record(params))
+      ),
+      this.gmailTool(
+        "gmail_setPollInterval",
+        "Configure Gmail polling. Parameters: { pollIntervalMs: number }.",
+        async (_toolCallId, params) => this.setPollInterval(channelId, record(params))
+      ),
+      this.gmailTool(
+        "gmail_listActionableThreads",
+        "List current unread or inbox threads. Parameters: { limit?: number }.",
+        async (_toolCallId, params) =>
+          this.listActionableThreads(channelId, numberArg(record(params), "limit") ?? 6)
+      ),
     ];
   }
 
   private gmailTool(
     name: string,
     description: string,
-    execute: (toolCallId: string, params: unknown) => Promise<unknown> | unknown,
+    execute: (toolCallId: string, params: unknown) => Promise<unknown> | unknown
   ): GmailTool {
     return {
       name,
@@ -385,7 +456,10 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
     } as GmailTool;
   }
 
-  protected override getParticipantInfo(_channelId: string, config?: unknown): ParticipantDescriptor {
+  protected override getParticipantInfo(
+    _channelId: string,
+    config?: unknown
+  ): ParticipantDescriptor {
     const cfg = record(config);
     return {
       handle: typeof cfg["handle"] === "string" ? cfg["handle"] : "gmail",
@@ -406,7 +480,9 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
     };
   }
 
-  override async subscribeChannel(opts: Parameters<TrajectoryVesselBase["subscribeChannel"]>[0]): Promise<{ ok: boolean; participantId: string }> {
+  override async subscribeChannel(
+    opts: Parameters<TrajectoryVesselBase["subscribeChannel"]>[0]
+  ): Promise<{ ok: boolean; participantId: string }> {
     const result = await super.subscribeChannel(opts);
     this.ensureChannelState(opts.channelId);
     this.setAlarm(this.getChannelState(opts.channelId).pollIntervalMs);
@@ -436,7 +512,7 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
     channelId: string,
     _transportCallId: string,
     methodName: string,
-    args: unknown,
+    args: unknown
   ): Promise<{ result: unknown; isError?: boolean }> {
     try {
       switch (methodName) {
@@ -459,7 +535,9 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
           return { result: await this.search(channelId, record(args)) };
         case "listActionableThreads":
           await this.ensureRecovered(channelId);
-          return { result: this.listActionableThreads(channelId, numberArg(record(args), "limit") ?? 6) };
+          return {
+            result: this.listActionableThreads(channelId, numberArg(record(args), "limit") ?? 6),
+          };
         case "setPollInterval":
           return { result: this.setPollInterval(channelId, record(args)) };
         case "getThread":
@@ -476,13 +554,15 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
     this.sql.exec(
       `INSERT OR IGNORE INTO gmail_channel_state (channel_id, poll_interval_ms) VALUES (?, ?)`,
       channelId,
-      DEFAULT_POLL_INTERVAL_MS,
+      DEFAULT_POLL_INTERVAL_MS
     );
   }
 
   private getChannelState(channelId: string): GmailChannelState {
     this.ensureChannelState(channelId);
-    const row = this.sql.exec(`SELECT * FROM gmail_channel_state WHERE channel_id = ?`, channelId).toArray()[0]!;
+    const row = this.sql
+      .exec(`SELECT * FROM gmail_channel_state WHERE channel_id = ?`, channelId)
+      .toArray()[0]!;
     return {
       channelId,
       historyId: row["history_id"] as string | undefined,
@@ -507,7 +587,7 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
       state.inboxMessageId ?? null,
       state.lastSyncAt ?? null,
       state.lastError ?? null,
-      state.lastOverviewJson ?? null,
+      state.lastOverviewJson ?? null
     );
   }
 
@@ -534,19 +614,24 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
       const threadId = typeof thread["threadId"] === "string" ? thread["threadId"] : undefined;
       if (!threadId) continue;
       const subject = typeof thread["subject"] === "string" ? thread["subject"] : "(no subject)";
-      const from = Array.isArray(thread["participants"]) && typeof thread["participants"][0] === "string"
-        ? thread["participants"][0]
-        : "";
-      const snippet = typeof thread["lastSnippet"] === "string"
-        ? thread["lastSnippet"]
-        : typeof thread["snippet"] === "string"
-          ? thread["snippet"]
+      const from =
+        Array.isArray(thread["participants"]) && typeof thread["participants"][0] === "string"
+          ? thread["participants"][0]
           : "";
+      const snippet =
+        typeof thread["lastSnippet"] === "string"
+          ? thread["lastSnippet"]
+          : typeof thread["snippet"] === "string"
+            ? thread["snippet"]
+            : "";
       const unreadCount = typeof thread["unreadCount"] === "number" ? thread["unreadCount"] : 0;
       const status = typeof thread["status"] === "string" ? thread["status"] : "unread";
       const category = typeof thread["category"] === "string" ? thread["category"] : null;
-      const actionable = Boolean(thread["actionable"])
-        || (unreadCount > 0 && status !== "archived" && !["Promotions", "Social", "Updates", "Forums"].includes(category ?? ""));
+      const actionable =
+        Boolean(thread["actionable"]) ||
+        (unreadCount > 0 &&
+          status !== "archived" &&
+          !["Promotions", "Social", "Updates", "Forums"].includes(category ?? ""));
       this.sql.exec(
         `INSERT OR REPLACE INTO gmail_threads
          (channel_id, thread_id, message_id, subject, from_addr, snippet, unread, in_inbox, actionable, category, updated_at)
@@ -561,7 +646,7 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
         status === "archived" ? 0 : 1,
         actionable ? 1 : 0,
         category,
-        Date.now(),
+        Date.now()
       );
     }
 
@@ -572,13 +657,19 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
         `INSERT OR REPLACE INTO gmail_categories (channel_id, category, message_id) VALUES (?, ?, ?)`,
         channelId,
         category,
-        messageId,
+        messageId
       );
     }
   }
 
-  private setPollInterval(channelId: string, args: Record<string, unknown>): { pollIntervalMs: number } {
-    const pollIntervalMs = Math.max(60_000, numberArg(args, "pollIntervalMs") ?? DEFAULT_POLL_INTERVAL_MS);
+  private setPollInterval(
+    channelId: string,
+    args: Record<string, unknown>
+  ): { pollIntervalMs: number } {
+    const pollIntervalMs = Math.max(
+      60_000,
+      numberArg(args, "pollIntervalMs") ?? DEFAULT_POLL_INTERVAL_MS
+    );
     const state = this.getChannelState(channelId);
     state.pollIntervalMs = pollIntervalMs;
     this.saveChannelState(state);
@@ -586,7 +677,9 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
     return { pollIntervalMs };
   }
 
-  private async syncChannel(channelId: string): Promise<{ ok: true; historyId: string; threadsUpdated: number }> {
+  private async syncChannel(
+    channelId: string
+  ): Promise<{ ok: true; historyId: string; threadsUpdated: number }> {
     const state = this.getChannelState(channelId);
     if (!state.historyId) {
       const profile = await this.gmail.getProfile();
@@ -622,25 +715,43 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
     this.saveChannelState(state);
   }
 
-  private async refreshThread(channelId: string, threadId: string, userEmail?: string): Promise<GmailThreadCardState> {
+  private async refreshThread(
+    channelId: string,
+    threadId: string,
+    userEmail?: string
+  ): Promise<GmailThreadCardState> {
     const existing = this.threadRow(channelId, threadId);
     let thread: GmailThread;
     try {
-      thread = await this.gmail.getThread(threadId, { format: "metadata", metadataHeaders: METADATA_HEADERS });
+      thread = await this.gmail.getThread(threadId, {
+        format: "metadata",
+        metadataHeaders: METADATA_HEADERS,
+      });
     } catch (err) {
       if (!existing || !isNotFoundError(err)) throw err;
-      const archived = this.threadCardFromRow({ ...existing, unread: 0, in_inbox: 0, actionable: 0, updated_at: Date.now() });
+      const archived = this.threadCardFromRow({
+        ...existing,
+        unread: 0,
+        in_inbox: 0,
+        actionable: 0,
+        updated_at: Date.now(),
+      });
       this.sql.exec(
         `UPDATE gmail_threads SET unread = 0, in_inbox = 0, actionable = 0, updated_at = ? WHERE channel_id = ? AND thread_id = ?`,
         archived.updatedAt,
         channelId,
-        threadId,
+        threadId
       );
-      if (existing.message_id) await this.updateCustom(channelId, existing.message_id, { kind: "statusChange", status: "archived" });
+      if (existing.message_id)
+        await this.updateCustom(channelId, existing.message_id, {
+          kind: "statusChange",
+          status: "archived",
+        });
       return archived;
     }
     const card = threadCardState(thread, existing?.category, userEmail);
-    const messageId = existing?.message_id ?? await this.publishCustom(channelId, "gmail.thread", card, "row");
+    const messageId =
+      existing?.message_id ?? (await this.publishCustom(channelId, "gmail.thread", card, "row"));
     this.sql.exec(
       `INSERT OR REPLACE INTO gmail_threads
        (channel_id, thread_id, message_id, subject, from_addr, snippet, unread, in_inbox, actionable, category, updated_at)
@@ -655,7 +766,7 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
       card.inInbox ? 1 : 0,
       card.actionable ? 1 : 0,
       card.category ?? null,
-      card.updatedAt,
+      card.updatedAt
     );
     if (existing?.message_id) {
       await this.updateCustom(channelId, existing.message_id, card);
@@ -664,9 +775,15 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
   }
 
   private threadRow(channelId: string, threadId: string): GmailThreadStateRow | null {
-    return (this.sql
-      .exec(`SELECT * FROM gmail_threads WHERE channel_id = ? AND thread_id = ?`, channelId, threadId)
-      .toArray()[0] as GmailThreadStateRow | undefined) ?? null;
+    return (
+      (this.sql
+        .exec(
+          `SELECT * FROM gmail_threads WHERE channel_id = ? AND thread_id = ?`,
+          channelId,
+          threadId
+        )
+        .toArray()[0] as GmailThreadStateRow | undefined) ?? null
+    );
   }
 
   private threadCardFromRow(row: GmailThreadStateRow): GmailThreadCardState {
@@ -689,27 +806,32 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
   }
 
   private listActionableThreads(channelId: string, limit: number): GmailThreadCardState[] {
-    const rows = this.sql.exec(
-      `SELECT * FROM gmail_threads
+    const rows = this.sql
+      .exec(
+        `SELECT * FROM gmail_threads
        WHERE channel_id = ? AND actionable = 1
        ORDER BY updated_at DESC
        LIMIT ?`,
-      channelId,
-      Math.max(1, Math.min(limit, 25)),
-    ).toArray() as unknown as GmailThreadStateRow[];
+        channelId,
+        Math.max(1, Math.min(limit, 25))
+      )
+      .toArray() as unknown as GmailThreadStateRow[];
     return rows.map((row) => this.threadCardFromRow(row));
   }
 
   private async publishOverview(channelId: string, email?: string): Promise<void> {
     const state = this.getChannelState(channelId);
     const actionable = this.listActionableThreads(channelId, 8);
-    const rows = this.sql.exec(
-      `SELECT
+    const rows =
+      this.sql
+        .exec(
+          `SELECT
         SUM(CASE WHEN unread = 1 THEN 1 ELSE 0 END) AS unread,
         SUM(CASE WHEN in_inbox = 1 THEN 1 ELSE 0 END) AS inbox
        FROM gmail_threads WHERE channel_id = ?`,
-      channelId,
-    ).toArray()[0] ?? {};
+          channelId
+        )
+        .toArray()[0] ?? {};
     const payload: GmailInboxState = {
       email,
       unread: Number(rows["unread"] ?? 0),
@@ -733,7 +855,10 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
     await this.publishCategories(channelId);
   }
 
-  private async categorize(channelId: string, args: Record<string, unknown>): Promise<{ threadId: string; category: string }> {
+  private async categorize(
+    channelId: string,
+    args: Record<string, unknown>
+  ): Promise<{ threadId: string; category: string }> {
     const threadId = stringArg(args, "threadId");
     const category = stringArg(args, "category");
     if (!threadId || !category) throw new Error("categorize requires threadId and category");
@@ -742,24 +867,30 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
       category,
       Date.now(),
       channelId,
-      threadId,
+      threadId
     );
     const row = this.threadRow(channelId, threadId);
     if (row?.message_id) {
-      await this.updateCustom(channelId, row.message_id, this.threadCardFromRow({ ...row, category, updated_at: Date.now() }));
+      await this.updateCustom(
+        channelId,
+        row.message_id,
+        this.threadCardFromRow({ ...row, category, updated_at: Date.now() })
+      );
     }
     await this.publishOverview(channelId);
     return { threadId, category };
   }
 
   private categoryCounts(channelId: string): Record<string, number> {
-    const rows = this.sql.exec(
-      `SELECT category, COUNT(*) AS count
+    const rows = this.sql
+      .exec(
+        `SELECT category, COUNT(*) AS count
        FROM gmail_threads
        WHERE channel_id = ? AND category IS NOT NULL
        GROUP BY category`,
-      channelId,
-    ).toArray();
+        channelId
+      )
+      .toArray();
     const counts: Record<string, number> = {};
     for (const row of rows) {
       const category = row["category"];
@@ -771,14 +902,16 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
   private async publishCategories(channelId: string): Promise<void> {
     const categories = Object.keys(this.categoryCounts(channelId));
     for (const category of categories) {
-      const rows = this.sql.exec(
-        `SELECT * FROM gmail_threads
+      const rows = this.sql
+        .exec(
+          `SELECT * FROM gmail_threads
          WHERE channel_id = ? AND category = ?
          ORDER BY updated_at DESC
          LIMIT 10`,
-        channelId,
-        category,
-      ).toArray() as unknown as GmailThreadStateRow[];
+          channelId,
+          category
+        )
+        .toArray() as unknown as GmailThreadStateRow[];
       const payload = {
         name: category,
         unread: rows.filter((row) => row.unread === 1).length,
@@ -788,11 +921,13 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
           unreadCount: row.unread === 1 ? 1 : 0,
         })),
       };
-      const existing = this.sql.exec(
-        `SELECT message_id FROM gmail_categories WHERE channel_id = ? AND category = ?`,
-        channelId,
-        category,
-      ).toArray()[0]?.["message_id"] as string | undefined;
+      const existing = this.sql
+        .exec(
+          `SELECT message_id FROM gmail_categories WHERE channel_id = ? AND category = ?`,
+          channelId,
+          category
+        )
+        .toArray()[0]?.["message_id"] as string | undefined;
       if (existing) {
         await this.updateCustom(channelId, existing, payload);
       } else {
@@ -801,13 +936,16 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
           `INSERT OR REPLACE INTO gmail_categories (channel_id, category, message_id) VALUES (?, ?, ?)`,
           channelId,
           category,
-          messageId,
+          messageId
         );
       }
     }
   }
 
-  private async compose(channelId: string, args: Record<string, unknown>): Promise<{ messageId: string }> {
+  private async compose(
+    channelId: string,
+    args: Record<string, unknown>
+  ): Promise<{ messageId: string }> {
     const state: GmailComposeState = {
       to: stringArg(args, "to"),
       subject: stringArg(args, "subject"),
@@ -819,22 +957,30 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
     return { messageId: await this.publishCustom(channelId, "gmail.compose", state, "row") };
   }
 
-  private async draftReply(channelId: string, args: Record<string, unknown>): Promise<{ messageId: string; body: string }> {
+  private async draftReply(
+    channelId: string,
+    args: Record<string, unknown>
+  ): Promise<{ messageId: string; body: string }> {
     const threadId = stringArg(args, "threadId");
     if (!threadId) throw new Error("draftReply requires threadId");
     const thread = await this.gmail.getThread(threadId, { format: "full" });
     const latest = latestMessage(thread);
-    const subject = header(latest ?? {} as GmailMessage, "Subject") ?? "";
-    const to = header(latest ?? {} as GmailMessage, "From") ?? "";
+    const subject = header(latest ?? ({} as GmailMessage), "Subject") ?? "";
+    const to = header(latest ?? ({} as GmailMessage), "From") ?? "";
     const body = await this.generateDraftReplyBody(channelId, thread);
-    const messageId = await this.publishCustom(channelId, "gmail.compose", {
-      to,
-      subject: subject.startsWith("Re:") ? subject : `Re: ${subject}`,
-      body,
-      threadId,
-      sourceThreadId: threadId,
-      status: "draft",
-    } satisfies GmailComposeState, "row");
+    const messageId = await this.publishCustom(
+      channelId,
+      "gmail.compose",
+      {
+        to,
+        subject: subject.startsWith("Re:") ? subject : `Re: ${subject}`,
+        body,
+        threadId,
+        sourceThreadId: threadId,
+        status: "draft",
+      } satisfies GmailComposeState,
+      "row"
+    );
     return { messageId, body };
   }
 
@@ -852,22 +998,31 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
       if (!explicitTo || !explicitSubject) throw new Error("send requires to and subject");
       return { to: explicitTo, subject: explicitSubject };
     }
-    const thread = await this.gmail.getThread(threadId, { format: "metadata", metadataHeaders: METADATA_HEADERS });
+    const thread = await this.gmail.getThread(threadId, {
+      format: "metadata",
+      metadataHeaders: METADATA_HEADERS,
+    });
     const latest = latestMessage(thread);
-    const threadSubject = header(latest ?? {} as GmailMessage, "Subject") ?? "";
-    const subject = explicitSubject ?? (threadSubject.startsWith("Re:") ? threadSubject : `Re: ${threadSubject}`);
-    const to = explicitTo ?? header(latest ?? {} as GmailMessage, "From") ?? "";
+    const threadSubject = header(latest ?? ({} as GmailMessage), "Subject") ?? "";
+    const subject =
+      explicitSubject ?? (threadSubject.startsWith("Re:") ? threadSubject : `Re: ${threadSubject}`);
+    const to = explicitTo ?? header(latest ?? ({} as GmailMessage), "From") ?? "";
     if (!to || !subject) throw new Error("send could not resolve reply recipient and subject");
     return {
       to,
       subject,
       threadId,
-      inReplyTo: header(latest ?? {} as GmailMessage, "Message-ID"),
-      references: header(latest ?? {} as GmailMessage, "References") ?? header(latest ?? {} as GmailMessage, "Message-ID"),
+      inReplyTo: header(latest ?? ({} as GmailMessage), "Message-ID"),
+      references:
+        header(latest ?? ({} as GmailMessage), "References") ??
+        header(latest ?? ({} as GmailMessage), "Message-ID"),
     };
   }
 
-  private async send(channelId: string, args: Record<string, unknown>): Promise<{ sent: true; id: string }> {
+  private async send(
+    channelId: string,
+    args: Record<string, unknown>
+  ): Promise<{ sent: true; id: string }> {
     const messageId = stringArg(args, "messageId");
     if (messageId) await this.updateCustom(channelId, messageId, { status: "sending" });
     try {
@@ -883,20 +1038,30 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
       if (messageId) await this.updateCustom(channelId, messageId, { status: "sent" });
       const sourceThreadId = stringArg(args, "sourceThreadId") ?? stringArg(args, "threadId");
       if (sourceThreadId) {
-        await this.gmail.modifyLabels({ threadId: sourceThreadId, removeLabelIds: ["INBOX"] }).catch(() => undefined);
-        await this.refreshThread(channelId, sourceThreadId, this.getChannelState(channelId).emailAddress).catch(() => undefined);
+        await this.gmail
+          .modifyLabels({ threadId: sourceThreadId, removeLabelIds: ["INBOX"] })
+          .catch(() => undefined);
+        await this.refreshThread(
+          channelId,
+          sourceThreadId,
+          this.getChannelState(channelId).emailAddress
+        ).catch(() => undefined);
       }
       return { sent: true, id: sent.id };
     } catch (err) {
-      if (messageId) await this.updateCustom(channelId, messageId, {
-        status: "error",
-        error: err instanceof Error ? err.message : String(err),
-      });
+      if (messageId)
+        await this.updateCustom(channelId, messageId, {
+          status: "error",
+          error: err instanceof Error ? err.message : String(err),
+        });
       throw err;
     }
   }
 
-  private async search(channelId: string, args: Record<string, unknown>): Promise<{ messageId: string; count: number }> {
+  private async search(
+    channelId: string,
+    args: Record<string, unknown>
+  ): Promise<{ messageId: string; count: number }> {
     const q = stringArg(args, "q");
     if (!q) throw new Error("search requires q");
     const result = await this.gmail.search(q, {
@@ -910,19 +1075,26 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
       from: header(message, "From") ?? "",
       snippet: message.snippet ?? "",
     }));
-    const messageId = await this.publishCustom(channelId, "gmail.inbox", {
-      search: q,
-      unread: 0,
-      urgent: 0,
-      draftCount: 0,
-      perCategory: {},
-      actionable: threads,
-      lastSyncedAt: new Date().toISOString(),
-    }, "row");
+    const messageId = await this.publishCustom(
+      channelId,
+      "gmail.inbox",
+      {
+        search: q,
+        unread: 0,
+        urgent: 0,
+        draftCount: 0,
+        perCategory: {},
+        actionable: threads,
+        lastSyncedAt: new Date().toISOString(),
+      },
+      "row"
+    );
     return { messageId, count: threads.length };
   }
 
-  private async getThread(args: Record<string, unknown>): Promise<{ threadId: string; messages: Array<Record<string, unknown>> }> {
+  private async getThread(
+    args: Record<string, unknown>
+  ): Promise<{ threadId: string; messages: Array<Record<string, unknown>> }> {
     const threadId = stringArg(args, "threadId");
     if (!threadId) throw new Error("getThread requires threadId");
     const thread = await this.gmail.getThread(threadId, { format: "full" });
@@ -956,7 +1128,7 @@ export class GmailAgentWorker extends TrajectoryVesselBase {
     channelId: string,
     typeId: string,
     initialState: unknown,
-    displayMode: CustomMessageDisplayMode,
+    displayMode: CustomMessageDisplayMode
   ): Promise<string> {
     const channel = this.createChannelClient(channelId);
     const actor = this.localActor(channelId);

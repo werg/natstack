@@ -17,7 +17,7 @@ export class SubscriptionManager {
   constructor(
     private sql: SqlStorage,
     private channelFactory: (channelId: string) => ChannelClient,
-    private identity: DOIdentity,
+    private identity: DOIdentity
   ) {}
 
   createTables(): void {
@@ -45,10 +45,18 @@ export class SubscriptionManager {
     descriptor: ParticipantDescriptor;
     /** Request replay of persisted messages sent before this subscriber joined. */
     replay?: boolean;
-  }): Promise<{ ok: boolean; participantId: string; channelConfig?: Record<string, unknown>; envelope?: ChannelReplayEnvelope }> {
+  }): Promise<{
+    ok: boolean;
+    participantId: string;
+    channelConfig?: Record<string, unknown>;
+    envelope?: ChannelReplayEnvelope;
+  }> {
     this.sql.exec(
       `INSERT OR REPLACE INTO subscriptions (channel_id, context_id, subscribed_at, config) VALUES (?, ?, ?, ?)`,
-      opts.channelId, opts.contextId, Date.now(), opts.config ? JSON.stringify(opts.config) : null,
+      opts.channelId,
+      opts.contextId,
+      Date.now(),
+      opts.config ? JSON.stringify(opts.config) : null
     );
 
     const participantId = this.buildParticipantId();
@@ -79,7 +87,8 @@ export class SubscriptionManager {
 
     this.sql.exec(
       `UPDATE subscriptions SET participant_id = ? WHERE channel_id = ?`,
-      participantId, opts.channelId,
+      participantId,
+      opts.channelId
     );
 
     return {
@@ -100,27 +109,37 @@ export class SubscriptionManager {
   }
 
   getParticipantId(channelId: string): string | null {
-    const row = this.sql.exec(
-      `SELECT participant_id FROM subscriptions WHERE channel_id = ?`, channelId,
-    ).toArray();
+    const row = this.sql
+      .exec(`SELECT participant_id FROM subscriptions WHERE channel_id = ?`, channelId)
+      .toArray();
     return row.length > 0 ? (row[0]!["participant_id"] as string | null) : null;
   }
 
   getContextId(channelId: string): string {
-    const row = this.sql.exec(
-      `SELECT context_id FROM subscriptions WHERE channel_id = ?`, channelId,
-    ).toArray();
+    const row = this.sql
+      .exec(`SELECT context_id FROM subscriptions WHERE channel_id = ?`, channelId)
+      .toArray();
     if (row.length === 0) throw new Error(`No subscription for channel ${channelId}`);
     return row[0]!["context_id"] as string;
   }
 
   getConfig(channelId: string): AgentSubscriptionConfig | null {
-    const row = this.sql.exec(
-      `SELECT config FROM subscriptions WHERE channel_id = ?`, channelId,
-    ).toArray();
+    const row = this.sql
+      .exec(`SELECT config FROM subscriptions WHERE channel_id = ?`, channelId)
+      .toArray();
     if (row.length === 0 || !row[0]!["config"]) return null;
     const parsed = JSON.parse(row[0]!["config"] as string);
-    return parsed && typeof parsed === "object" ? parsed as AgentSubscriptionConfig : null;
+    return parsed && typeof parsed === "object" ? (parsed as AgentSubscriptionConfig) : null;
+  }
+
+  listAll(): Array<{ channelId: string; participantId: string | null }> {
+    return this.sql
+      .exec(`SELECT channel_id, participant_id FROM subscriptions`)
+      .toArray()
+      .map((row) => ({
+        channelId: row["channel_id"] as string,
+        participantId: row["participant_id"] as string | null,
+      }));
   }
 
   /** Delete subscription record only (no channel call). Used during unsubscribeChannel cleanup. */

@@ -10,18 +10,21 @@ type SilentAgentConfig = {
 };
 
 function asSilentAgentConfig(config: unknown): SilentAgentConfig {
-  return config && typeof config === "object" ? config as SilentAgentConfig : {};
+  return config && typeof config === "object" ? (config as SilentAgentConfig) : {};
 }
 
 export class SilentAgentWorker extends AiChatWorker {
-  static override schemaVersion = 1;
+  static override schemaVersion = AiChatWorker.schemaVersion;
 
   constructor(ctx: ConstructorParameters<typeof AiChatWorker>[0], env: unknown) {
     super(ctx, env);
     void this.setOwnTitle("Silent Agent");
   }
 
-  protected override getParticipantInfo(channelId: string, config?: unknown): ParticipantDescriptor {
+  protected override getParticipantInfo(
+    channelId: string,
+    config?: unknown
+  ): ParticipantDescriptor {
     const base = super.getParticipantInfo(channelId, config);
     const cfg = asSilentAgentConfig(config);
     return {
@@ -51,7 +54,8 @@ export class SilentAgentWorker extends AiChatWorker {
     return {
       name: "say",
       label: "say",
-      description: "Send a concise message to the channel. Use this only when you intentionally want participants to see the response.",
+      description:
+        "Send a concise message to the channel. Use this only when you intentionally want participants to see the response.",
       parameters: {
         type: "object",
         properties: {
@@ -72,7 +76,10 @@ export class SilentAgentWorker extends AiChatWorker {
         }
         const participantId = this.subscriptions.getParticipantId(channelId);
         if (!participantId) throw new Error("silent agent is not subscribed to the channel");
-        const descriptor = this.getParticipantInfo(channelId, this.subscriptions.getConfig(channelId));
+        const descriptor = this.getParticipantInfo(
+          channelId,
+          this.subscriptions.getConfig(channelId)
+        );
         const messageId = crypto.randomUUID();
         await this.createChannelClient(channelId).send(participantId, messageId, input.content, {
           senderMetadata: {
@@ -95,4 +102,8 @@ export class SilentAgentWorker extends AiChatWorker {
   }
 }
 
-export default { fetch(_req: Request) { return new Response("silent-agent-worker DO service"); } };
+export default {
+  fetch(_req: Request) {
+    return new Response("silent-agent-worker DO service");
+  },
+};

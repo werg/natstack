@@ -22,6 +22,13 @@ abort, unsubscribe, or user interruption changes state.
 - `persisted`: Durable Object SQLite tables relevant to agent ownership:
   `state`, `do_identity`, `subscriptions`, `delivery_cursor`, and
   `model_credential_interruptions`.
+- `persisted.methodSuspensions` / `persisted.methodSuspensionUpdates`:
+  durable external-tool suspension ledger and bounded partial-update log used
+  to recover channel method, approval, UI prompt, and ask-user waits after
+  hibernation.
+- `persisted.recoveryContinuations`: channels with a recovered tool result
+  already in the transcript but whose follow-up model continuation still needs
+  to start after activation.
 - `volatile`: process-local state that is lost on hibernation/restart.
 
 ## Volatile State

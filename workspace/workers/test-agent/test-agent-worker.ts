@@ -1,10 +1,7 @@
 import { AgentWorkerBase } from "@workspace/agentic-do";
 import type { ChannelEvent, ParticipantDescriptor } from "@natstack/harness/types";
 import path from "node:path";
-import {
-  AGENTIC_PROTOCOL_VERSION,
-  type AgenticEvent,
-} from "@workspace/agentic-protocol";
+import { AGENTIC_PROTOCOL_VERSION, type AgenticEvent } from "@workspace/agentic-protocol";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -19,7 +16,7 @@ function delay(ms: number): Promise<void> {
  * folder before spawning the worker.
  */
 export class TestAgentWorker extends AgentWorkerBase {
-  static override schemaVersion = 5;
+  static override schemaVersion = AgentWorkerBase.schemaVersion;
 
   constructor(ctx: ConstructorParameters<typeof AgentWorkerBase>[0], env: unknown) {
     super(ctx, env);
@@ -31,8 +28,11 @@ export class TestAgentWorker extends AgentWorkerBase {
     return "anthropic:claude-sonnet-4-6";
   }
 
-  protected override getParticipantInfo(_channelId: string, config?: unknown): ParticipantDescriptor {
-    const cfg = config && typeof config === "object" ? config as Record<string, unknown> : {};
+  protected override getParticipantInfo(
+    _channelId: string,
+    config?: unknown
+  ): ParticipantDescriptor {
+    const cfg = config && typeof config === "object" ? (config as Record<string, unknown>) : {};
     const handle = typeof cfg["handle"] === "string" ? cfg["handle"] : "test-agent";
     return {
       handle,
@@ -65,12 +65,14 @@ export class TestAgentWorker extends AgentWorkerBase {
     };
     const invocationId = `deterministic-eval-${event.messageId || Date.now()}`;
     const messageId = `deterministic-message-${event.messageId || Date.now()}`;
-    const code = typeof config["code"] === "string"
-      ? config["code"]
-      : `return ${JSON.stringify(input.content)}`;
-    const responseText = typeof config["responseText"] === "string"
-      ? config["responseText"]
-      : `Deterministic response to: ${input.content}`;
+    const code =
+      typeof config["code"] === "string"
+        ? config["code"]
+        : `return ${JSON.stringify(input.content)}`;
+    const responseText =
+      typeof config["responseText"] === "string"
+        ? config["responseText"]
+        : `Deterministic response to: ${input.content}`;
     const delayMs = typeof config["delayMs"] === "number" ? config["delayMs"] : 250;
     await this.maybeWriteVaultSwitchMarker(config, input.content);
 
@@ -80,72 +82,86 @@ export class TestAgentWorker extends AgentWorkerBase {
       });
     };
 
-    await publish({
-      kind: "invocation.started",
-      actor,
-      causality: { invocationId: invocationId as never },
-      payload: {
-        protocol: AGENTIC_PROTOCOL_VERSION,
-        name: "eval",
-        request: { code },
-        userVisible: true,
-      },
-      createdAt: now,
-    }, "invocation-started");
-
-    await delay(delayMs);
-
-    await publish({
-      kind: "invocation.output",
-      actor,
-      causality: { invocationId: invocationId as never },
-      payload: {
-        protocol: AGENTIC_PROTOCOL_VERSION,
-        output: "deterministic eval output",
-      },
-      createdAt: new Date().toISOString(),
-    }, "invocation-output");
-
-    await delay(delayMs);
-
-    await publish({
-      kind: "invocation.completed",
-      actor,
-      causality: { invocationId: invocationId as never },
-      payload: {
-        protocol: AGENTIC_PROTOCOL_VERSION,
-        result: {
-          toolCallId: invocationId,
-          toolName: "eval",
-          details: { input: { code } },
-          content: [{ type: "text", text: "deterministic eval result" }],
+    await publish(
+      {
+        kind: "invocation.started",
+        actor,
+        causality: { invocationId: invocationId as never },
+        payload: {
+          protocol: AGENTIC_PROTOCOL_VERSION,
+          name: "eval",
+          request: { code },
+          userVisible: true,
         },
+        createdAt: now,
       },
-      createdAt: new Date().toISOString(),
-    }, "invocation-completed");
+      "invocation-started"
+    );
 
-    await publish({
-      kind: "message.completed",
-      actor,
-      causality: { messageId: messageId as never },
-      payload: {
-        protocol: AGENTIC_PROTOCOL_VERSION,
-        role: "assistant",
-        content: responseText,
+    await delay(delayMs);
+
+    await publish(
+      {
+        kind: "invocation.output",
+        actor,
+        causality: { invocationId: invocationId as never },
+        payload: {
+          protocol: AGENTIC_PROTOCOL_VERSION,
+          output: "deterministic eval output",
+        },
+        createdAt: new Date().toISOString(),
       },
-      createdAt: new Date().toISOString(),
-    }, "message-completed");
+      "invocation-output"
+    );
+
+    await delay(delayMs);
+
+    await publish(
+      {
+        kind: "invocation.completed",
+        actor,
+        causality: { invocationId: invocationId as never },
+        payload: {
+          protocol: AGENTIC_PROTOCOL_VERSION,
+          result: {
+            toolCallId: invocationId,
+            toolName: "eval",
+            details: { input: { code } },
+            content: [{ type: "text", text: "deterministic eval result" }],
+          },
+        },
+        createdAt: new Date().toISOString(),
+      },
+      "invocation-completed"
+    );
+
+    await publish(
+      {
+        kind: "message.completed",
+        actor,
+        causality: { messageId: messageId as never },
+        payload: {
+          protocol: AGENTIC_PROTOCOL_VERSION,
+          role: "assistant",
+          content: responseText,
+        },
+        createdAt: new Date().toISOString(),
+      },
+      "message-completed"
+    );
   }
 
-  private async maybeWriteVaultSwitchMarker(config: Record<string, unknown>, content: string): Promise<void> {
+  private async maybeWriteVaultSwitchMarker(
+    config: Record<string, unknown>,
+    content: string
+  ): Promise<void> {
     if (config["writeVaultSwitchMarker"] !== true) return;
     const current = /Current vault:\s*`([^`]+)`/.exec(content)?.[1];
     if (!current) return;
     const currentDir = path.posix.normalize(current.replace(/\\/g, "/")).replace(/\/+$/, "");
     if (!currentDir.startsWith("/projects/")) return;
-    const markerPath = typeof config["markerPath"] === "string"
-      ? config["markerPath"]
-      : "AgentProof.mdx";
+    const markerPath =
+      typeof config["markerPath"] === "string" ? config["markerPath"] : "AgentProof.mdx";
     const normalizedMarker = markerPath.replace(/^\/+/, "");
     if (normalizedMarker.includes("..")) return;
     const fullPath = path.posix.normalize(path.posix.join(currentDir, normalizedMarker));
@@ -162,7 +178,7 @@ export class TestAgentWorker extends AgentWorkerBase {
         "",
         `Deterministic agent wrote this in ${current}.`,
         "",
-      ].join("\n"),
+      ].join("\n")
     );
   }
 }

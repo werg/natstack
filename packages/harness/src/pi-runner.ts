@@ -180,9 +180,15 @@ export interface PiRunnerOptions {
   fetcher?: typeof fetch;
 }
 
+export interface HibernationResumableTool {
+  natstackResume?: {
+    safeAcrossHibernation: true;
+  };
+}
+
 export interface PiStateSnapshot {
-    messages: AgentMessage[];
-    isStreaming: boolean;
+  messages: AgentMessage[];
+  isStreaming: boolean;
 }
 
 export interface RunnerTurnInput {
@@ -227,6 +233,7 @@ interface OpenToolInvocationDebug {
   name: string;
   request: unknown;
   messageId?: string;
+  blockIndex?: number;
   turnId?: string;
   startedAt: string;
 }
@@ -329,10 +336,9 @@ function summarizeDebugValue(value: unknown, depth = 0): unknown {
   if (typeof value === "object") {
     if (depth >= DEBUG_DEPTH_LIMIT) return "[object]";
     const entries = Object.entries(value as Record<string, unknown>);
-    const sample = entries.slice(0, DEBUG_COLLECTION_LIMIT).map(([key, item]) => [
-      key,
-      summarizeDebugValue(item, depth + 1),
-    ]);
+    const sample = entries
+      .slice(0, DEBUG_COLLECTION_LIMIT)
+      .map(([key, item]) => [key, summarizeDebugValue(item, depth + 1)]);
     const result = Object.fromEntries(sample) as Record<string, unknown>;
     if (entries.length > sample.length) {
       result["omittedKeys"] = entries.length - sample.length;
@@ -362,7 +368,10 @@ export class PiRunner {
   private currentTurnId: TurnId | null = null;
   private readonly channelTargetPromises = new Map<string, Promise<string>>();
   private readonly channelPublicationBroadcastChains = new Map<string, Promise<void>>();
-  private readonly channelPublicationBroadcasts = new Map<string, ChannelPublicationBroadcastState>();
+  private readonly channelPublicationBroadcasts = new Map<
+    string,
+    ChannelPublicationBroadcastState
+  >();
   private readonly openInvocationIds = new Set<string>();
   private readonly openToolInvocations = new Map<string, OpenToolInvocationDebug>();
   private readonly phaseCheckpoints: RunnerDebugCheckpoint[] = [];
@@ -374,7 +383,8 @@ export class PiRunner {
   private providerRequestCount = 0;
   private credentialRequestCount = 0;
   private restoredTrajectoryState: TrajectoryState | null = null;
-  private activeAssistantMessage: { messageId: string; lastText: string; started: boolean } | null = null;
+  private activeAssistantMessage: { messageId: string; lastText: string; started: boolean } | null =
+    null;
   private activeRunSignal: AbortSignal | null = null;
   private activeOperationAbortController: AbortController | null = null;
   private lastContinueDiagnostic: Record<string, unknown> | null = null;
@@ -466,12 +476,12 @@ export class PiRunner {
     let sessionEntries: unknown[] | null = null;
     let contextMessages: unknown[] | null = null;
     try {
-      sessionLeafId = await this.session?.getLeafId() ?? null;
+      sessionLeafId = (await this.session?.getLeafId()) ?? null;
     } catch (err) {
       sessionLeafId = `error: ${err instanceof Error ? err.message : String(err)}`;
     }
     try {
-      sessionEntries = await this.session?.getEntries() ?? null;
+      sessionEntries = (await this.session?.getEntries()) ?? null;
     } catch (err) {
       sessionEntries = [{ error: err instanceof Error ? err.message : String(err) }];
     }
@@ -487,12 +497,12 @@ export class PiRunner {
       openToolInvocations: [...this.openToolInvocations.values()].map((invocation) => ({
         ...invocation,
       })),
-      activeAssistantMessage: this.activeAssistantMessage ? { ...this.activeAssistantMessage } : null,
+      activeAssistantMessage: this.activeAssistantMessage
+        ? { ...this.activeAssistantMessage }
+        : null,
       phase: {
         currentOperation: this.currentOperation ? { ...this.currentOperation } : null,
-        activeRunSignal: this.activeRunSignal
-          ? { aborted: this.activeRunSignal.aborted }
-          : null,
+        activeRunSignal: this.activeRunSignal ? { aborted: this.activeRunSignal.aborted } : null,
         activeOperationSignal: this.activeOperationAbortController
           ? { aborted: this.activeOperationAbortController.signal.aborted }
           : null,
@@ -548,7 +558,9 @@ export class PiRunner {
             ...state,
             queuedEnvelopeIds: [...state.queuedEnvelopeIds],
             activeEnvelopeIds: [...state.activeEnvelopeIds],
-            lastError: state.lastError ? { ...state.lastError, envelopeIds: [...state.lastError.envelopeIds] } : undefined,
+            lastError: state.lastError
+              ? { ...state.lastError, envelopeIds: [...state.lastError.envelopeIds] }
+              : undefined,
           },
         ])
       ),
@@ -567,7 +579,10 @@ export class PiRunner {
     };
   }
 
-  async forceCloseCurrentTurn(reason = "user_interrupted", summary = "Agent turn interrupted"): Promise<boolean> {
+  async forceCloseCurrentTurn(
+    reason = "user_interrupted",
+    summary = "Agent turn interrupted"
+  ): Promise<boolean> {
     if (!this.options.gad || !this.currentTurnId) return false;
     const turnId = this.currentTurnId;
     this.currentTurnId = null;
@@ -603,6 +618,59 @@ export class PiRunner {
     this.openToolInvocations.delete(invocationId);
   }
 
+  getOpenInvocation(invocationId: string):
+    | {
+        invocationId: string;
+        modelToolCallId?: string;
+        name: string;
+        messageId?: string;
+        blockIndex?: number;
+        turnId?: string;
+      }
+    | undefined {
+    const invocation = this.openToolInvocations.get(invocationId);
+    if (!invocation) return undefined;
+    return {
+      invocationId: invocation.invocationId,
+      ...(invocation.modelToolCallId ? { modelToolCallId: invocation.modelToolCallId } : {}),
+      name: invocation.name,
+      ...(invocation.messageId ? { messageId: invocation.messageId } : {}),
+      ...(invocation.blockIndex !== undefined ? { blockIndex: invocation.blockIndex } : {}),
+      ...(invocation.turnId ? { turnId: invocation.turnId } : {}),
+    };
+  }
+
+  isInvocationOpen(invocationId: string): boolean {
+    return this.openInvocationIds.has(invocationId);
+  }
+
+  async hasToolResult(invocationId: string): Promise<boolean> {
+    if (!this.session) {
+      throw new AgentWorkerError("invalid_state", "PiRunner not initialized");
+    }
+    const context = await this.session.buildContext();
+    return context.messages.some((message) => {
+      return message?.role === "toolResult" && message.toolCallId === invocationId;
+    });
+  }
+
+  async isCurrentLeafToolResult(invocationId: string): Promise<boolean> {
+    if (!this.session) {
+      throw new AgentWorkerError("invalid_state", "PiRunner not initialized");
+    }
+    const context = await this.session.buildContext();
+    const message = context.messages[context.messages.length - 1];
+    return message?.role === "toolResult" && message.toolCallId === invocationId;
+  }
+
+  async isLeafDescendantOf(ancestorEntryId: string): Promise<boolean> {
+    if (!this.session) {
+      throw new AgentWorkerError("invalid_state", "PiRunner not initialized");
+    }
+    const branch = await this.session.getBranch();
+    return branch.some((entry: { id?: unknown }) => entry.id === ancestorEntryId);
+  }
+
   async init(): Promise<void> {
     const cwd = this.options.cwd ?? "/";
     this.currentResources = await loadNatStackResources({ rpc: this.options.rpc });
@@ -625,7 +693,7 @@ export class PiRunner {
             args,
             signal,
             onStreamUpdate,
-            this.currentTurnId ?? undefined,
+            this.currentTurnId ?? undefined
           ),
         builtinToolNames: [...BUILTIN_TOOL_NAMES],
       }),
@@ -849,11 +917,7 @@ export class PiRunner {
         input,
       });
       if (needsApproval) {
-        await this.recordApprovalResolved(
-          toolCallId,
-          result?.block ? false : true,
-          result?.reason,
-        );
+        await this.recordApprovalResolved(toolCallId, result?.block ? false : true, result?.reason);
       }
       return result ?? undefined;
     } catch (err) {
@@ -861,7 +925,7 @@ export class PiRunner {
         await this.recordApprovalResolved(
           toolCallId,
           false,
-          err instanceof Error ? err.message : String(err),
+          err instanceof Error ? err.message : String(err)
         );
       }
       throw err;
@@ -878,7 +942,7 @@ export class PiRunner {
   private async recordApprovalRequested(
     toolCallId: string,
     toolName: string,
-    input: Record<string, unknown>,
+    input: Record<string, unknown>
   ): Promise<void> {
     this.provenanceQueue.push({
       event: {
@@ -905,7 +969,7 @@ export class PiRunner {
   private async recordApprovalResolved(
     toolCallId: string,
     granted: boolean,
-    reason?: string,
+    reason?: string
   ): Promise<void> {
     const payload: Extract<AgenticEvent<"approval.resolved">["payload"], { granted: boolean }> = {
       protocol: AGENTIC_PROTOCOL_VERSION,
@@ -1149,7 +1213,12 @@ export class PiRunner {
   }
 
   private isTerminalInvocationStatus(status: string | undefined): boolean {
-    return status === "completed" || status === "failed" || status === "cancelled" || status === "abandoned";
+    return (
+      status === "completed" ||
+      status === "failed" ||
+      status === "cancelled" ||
+      status === "abandoned"
+    );
   }
 
   private async handleMessageEnd(message: AgentMessage): Promise<void> {
@@ -1157,9 +1226,10 @@ export class PiRunner {
     const messageEntryId = await this.session.getLeafId();
     if (!messageEntryId) return;
     const role = this.messageRole(message);
-    const messageId = role === "assistant" && this.activeAssistantMessage
-      ? this.activeAssistantMessage.messageId
-      : messageEntryId;
+    const messageId =
+      role === "assistant" && this.activeAssistantMessage
+        ? this.activeAssistantMessage.messageId
+        : messageEntryId;
     this.queueMessageProvenance(message, messageEntryId, messageId);
     if (role === "assistant") this.activeAssistantMessage = null;
     await this.flushProvenance();
@@ -1219,7 +1289,11 @@ export class PiRunner {
     ]);
   }
 
-  private queueMessageProvenance(message: AgentMessage, messageEntryId: string, visibleMessageId = messageEntryId): void {
+  private queueMessageProvenance(
+    message: AgentMessage,
+    messageEntryId: string,
+    visibleMessageId = messageEntryId
+  ): void {
     const role = this.messageRole(message);
     const blocks = this.messageBlocks(message);
     const content = this.messageText(message);
@@ -1244,7 +1318,8 @@ export class PiRunner {
       const toolCallId = this.toolCallIdFromBlock(block);
       if (toolCallId) {
         const name = this.toolNameFromBlock(block) ?? "unknown";
-        const request = this.toolInputFromBlock(block) ?? this.asJsonRecord(block) ?? { blockIndex };
+        const request = this.toolInputFromBlock(block) ??
+          this.asJsonRecord(block) ?? { blockIndex };
         this.openInvocationIds.add(toolCallId);
         this.openToolInvocations.set(toolCallId, {
           invocationId: toolCallId,
@@ -1252,6 +1327,7 @@ export class PiRunner {
           name,
           request: summarizeDebugValue(request),
           messageId: visibleMessageId,
+          blockIndex,
           ...(this.currentTurnId ? { turnId: this.currentTurnId } : {}),
           startedAt: this.messageTimestamp(message),
         });
@@ -1288,37 +1364,39 @@ export class PiRunner {
         this.openToolInvocations.delete(toolCallId);
         this.provenanceQueue.push({
           event: {
-            kind: (message as { isError?: boolean }).isError === true
-              ? "invocation.failed"
-              : "invocation.completed",
+            kind:
+              (message as { isError?: boolean }).isError === true
+                ? "invocation.failed"
+                : "invocation.completed",
             actor: this.agentActor(),
             causality: {
               messageId: brandId<MessageId>(visibleMessageId),
               invocationId: brandId<InvocationId>(toolCallId),
               modelToolCallId: toolCallId,
             },
-            payload: (message as { isError?: boolean }).isError === true
-              ? {
-                  protocol: "agentic.trajectory.v1",
-                  reason: this.summarizeToolResult({
-                    content: (message as { content?: unknown }).content ?? [],
-                    details,
-                  } as AgentToolResult<unknown>),
-                  recoverable: true,
-                }
-              : {
-                  protocol: "agentic.trajectory.v1",
-                  result: {
-                    toolCallId,
-                    toolName: typeof toolName === "string" ? toolName : "unknown",
-                    content: (message as { content?: unknown }).content ?? [],
-                    details,
+            payload:
+              (message as { isError?: boolean }).isError === true
+                ? {
+                    protocol: "agentic.trajectory.v1",
+                    reason: this.summarizeToolResult({
+                      content: (message as { content?: unknown }).content ?? [],
+                      details,
+                    } as AgentToolResult<unknown>),
+                    recoverable: true,
+                  }
+                : {
+                    protocol: "agentic.trajectory.v1",
+                    result: {
+                      toolCallId,
+                      toolName: typeof toolName === "string" ? toolName : "unknown",
+                      content: (message as { content?: unknown }).content ?? [],
+                      details,
+                    },
+                    summary: this.summarizeToolResult({
+                      content: (message as { content?: unknown }).content ?? [],
+                      details,
+                    } as AgentToolResult<unknown>),
                   },
-                  summary: this.summarizeToolResult({
-                    content: (message as { content?: unknown }).content ?? [],
-                    details,
-                  } as AgentToolResult<unknown>),
-                },
             createdAt: this.messageTimestamp(message),
           },
           publishToChannel: true,
@@ -1400,7 +1478,9 @@ export class PiRunner {
     }
   }
 
-  private schedulePublishedChannelEnvelopeBroadcasts(publications: PublishedChannelEnvelope[]): void {
+  private schedulePublishedChannelEnvelopeBroadcasts(
+    publications: PublishedChannelEnvelope[]
+  ): void {
     if (publications.length === 0) return;
     const byChannel = new Map<string, string[]>();
     for (const publication of publications) {
@@ -1471,7 +1551,10 @@ export class PiRunner {
     return state;
   }
 
-  private pruneChannelPublicationBroadcastState(channelId: string, state: ChannelPublicationBroadcastState): void {
+  private pruneChannelPublicationBroadcastState(
+    channelId: string,
+    state: ChannelPublicationBroadcastState
+  ): void {
     if (
       state.pendingBatches === 0 &&
       state.queuedEnvelopeIds.length === 0 &&
@@ -1486,7 +1569,10 @@ export class PiRunner {
     let promise = this.channelTargetPromises.get(channelId);
     if (!promise) {
       promise = this.options.rpc
-        .call<ResolvedServiceLike>("main", "workers.resolveService", ["natstack.channel.v1", channelId])
+        .call<ResolvedServiceLike>("main", "workers.resolveService", [
+          "natstack.channel.v1",
+          channelId,
+        ])
         .then((service) => {
           if (service.kind !== "durable-object" || !service.targetId) {
             throw new Error(`Channel service for ${channelId} did not resolve to a Durable Object`);
@@ -1507,7 +1593,7 @@ export class PiRunner {
     if (
       event.turnId ||
       event.actor.kind !== "agent" ||
-      !TURN_SCOPED_OWNER_KINDS.includes(event.kind as typeof TURN_SCOPED_OWNER_KINDS[number])
+      !TURN_SCOPED_OWNER_KINDS.includes(event.kind as (typeof TURN_SCOPED_OWNER_KINDS)[number])
     ) {
       return event;
     }
@@ -1563,27 +1649,27 @@ export class PiRunner {
     const intent: TrajectoryQueueItem = {
       eventId: intentEntryId,
       event: {
-      kind: "state.file_mutation_intended",
-      actor: this.agentActor(),
-      causality: {
-        invocationId: brandId<InvocationId>(toolCallId),
-        modelToolCallId: toolCallId,
-      },
-      payload: {
-        protocol: "agentic.trajectory.v1",
-        mutationId: intentEntryId,
-        path: relativePathString,
-        beforeHash: before?.digest,
-        operation: toolName,
-        metadata: {
-          toolCallId,
-          beforeSize: before?.size ?? null,
-          plannedTool: toolName,
-          plannedParams: this.asJsonRecord(params) ?? {},
-          parentEntryId: await this.currentLeafEntryId(),
+        kind: "state.file_mutation_intended",
+        actor: this.agentActor(),
+        causality: {
+          invocationId: brandId<InvocationId>(toolCallId),
+          modelToolCallId: toolCallId,
         },
-      },
-      createdAt: new Date().toISOString(),
+        payload: {
+          protocol: "agentic.trajectory.v1",
+          mutationId: intentEntryId,
+          path: relativePathString,
+          beforeHash: before?.digest,
+          operation: toolName,
+          metadata: {
+            toolCallId,
+            beforeSize: before?.size ?? null,
+            plannedTool: toolName,
+            plannedParams: this.asJsonRecord(params) ?? {},
+            parentEntryId: await this.currentLeafEntryId(),
+          },
+        },
+        createdAt: new Date().toISOString(),
       },
     };
 
@@ -1687,11 +1773,11 @@ export class PiRunner {
             modelToolCallId: toolCallId,
           },
           payload: {
-          protocol: "agentic.trajectory.v1",
-          path,
-          contentHash: blob.digest,
-          size: blob.size,
-          metadata: { parentEntryId, observedStateHash: undefined, toolName, toolCallId },
+            protocol: "agentic.trajectory.v1",
+            path,
+            contentHash: blob.digest,
+            size: blob.size,
+            metadata: { parentEntryId, observedStateHash: undefined, toolName, toolCallId },
           },
           createdAt: new Date().toISOString(),
         },
@@ -1706,20 +1792,20 @@ export class PiRunner {
           modelToolCallId: toolCallId,
         },
         payload: {
-        protocol: "agentic.trajectory.v1",
-        path,
-        contentHash: blob.digest,
-        size: blob.size,
-        summary: this.summarizeToolResult(result),
-        metadata: {
-          parentEntryId,
-          toolName,
-          readType: toolName === "read" ? "file" : toolName,
-          parameters: this.asJsonRecord(params),
-          toolCallId,
+          protocol: "agentic.trajectory.v1",
+          path,
+          contentHash: blob.digest,
+          size: blob.size,
+          summary: this.summarizeToolResult(result),
+          metadata: {
+            parentEntryId,
+            toolName,
+            readType: toolName === "read" ? "file" : toolName,
+            parameters: this.asJsonRecord(params),
+            toolCallId,
+          },
         },
-      },
-      createdAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
       },
     });
   }
@@ -1739,11 +1825,9 @@ export class PiRunner {
       if (typeof value === "string") {
         return await this.options.rpc.call<GadBlobSnapshot>("main", "blobstore.putText", [value]);
       }
-      return await this.options.rpc.call<GadBlobSnapshot>(
-        "main",
-        "blobstore.putBase64",
-        [Buffer.from(value).toString("base64")]
-      );
+      return await this.options.rpc.call<GadBlobSnapshot>("main", "blobstore.putBase64", [
+        Buffer.from(value).toString("base64"),
+      ]);
     } catch (err) {
       console.warn("[PiRunner] blobstore put failed:", err);
       return null;
@@ -1803,14 +1887,14 @@ export class PiRunner {
             kind: "system.event",
             actor: { kind: "system", id: "pi-runner" },
             causality: { parentEventId: brandId<EventId>(orphan.event_id) },
-          payload: {
+            payload: {
               protocol: "agentic.trajectory.v1",
-            kind: event.kind,
+              kind: event.kind,
               details: {
                 intentEntryId: event.intentEntryId,
                 path,
               },
-          },
+            },
             createdAt: new Date().toISOString(),
           },
         },
@@ -1912,8 +1996,15 @@ export class PiRunner {
     return { kind: "system", id: this.agentActor().id };
   }
 
-  private agentActor(opts?: { idSuffix?: string; displayNameSuffix?: string }): AgenticEvent["actor"] {
-    const base = this.options.agentActor ?? { kind: "agent" as const, id: "pi", displayName: "AI Agent" };
+  private agentActor(opts?: {
+    idSuffix?: string;
+    displayNameSuffix?: string;
+  }): AgenticEvent["actor"] {
+    const base = this.options.agentActor ?? {
+      kind: "agent" as const,
+      id: "pi",
+      displayName: "AI Agent",
+    };
     return {
       ...base,
       id: `${base.id}${opts?.idSuffix ?? ""}`,
@@ -1977,11 +2068,12 @@ export class PiRunner {
       }
       return {
         type: "text",
-        content: typeof record?.["text"] === "string"
-          ? record["text"]
-          : typeof block === "string"
-            ? block
-            : undefined,
+        content:
+          typeof record?.["text"] === "string"
+            ? record["text"]
+            : typeof block === "string"
+              ? block
+              : undefined,
         metadata: record ?? undefined,
       };
     });
@@ -2194,7 +2286,7 @@ export class PiRunner {
       };
       throw new AgentWorkerError(
         "session",
-        "Cannot continue: session context is empty. Send a new prompt instead.",
+        "Cannot continue: session context is empty. Send a new prompt instead."
       );
     }
     if (last.role === "user" || last.role === "toolResult") {
@@ -2238,7 +2330,7 @@ export class PiRunner {
     };
     throw new AgentWorkerError(
       "session",
-      `Cannot continue: session context ends with ${last.role ?? "an unknown role"}. Send a new prompt instead.`,
+      `Cannot continue: session context ends with ${last.role ?? "an unknown role"}. Send a new prompt instead.`
     );
   }
 
@@ -2256,23 +2348,25 @@ export class PiRunner {
   private async abandonOpenInvocations(reason: string): Promise<void> {
     if (this.openInvocationIds.size === 0) return;
     const now = new Date().toISOString();
-    const items = [...this.openInvocationIds].map((toolCallId): TrajectoryQueueItem => ({
-      event: {
-        kind: "invocation.abandoned",
-        actor: this.agentActor(),
-        causality: {
-          invocationId: brandId<InvocationId>(toolCallId),
-          modelToolCallId: toolCallId,
+    const items = [...this.openInvocationIds].map(
+      (toolCallId): TrajectoryQueueItem => ({
+        event: {
+          kind: "invocation.abandoned",
+          actor: this.agentActor(),
+          causality: {
+            invocationId: brandId<InvocationId>(toolCallId),
+            modelToolCallId: toolCallId,
+          },
+          payload: {
+            protocol: "agentic.trajectory.v1",
+            reason,
+            recoverable: true,
+          },
+          createdAt: now,
         },
-        payload: {
-          protocol: "agentic.trajectory.v1",
-          reason,
-          recoverable: true,
-        },
-        createdAt: now,
-      },
-      publishToChannel: true,
-    }));
+        publishToChannel: true,
+      })
+    );
     this.openInvocationIds.clear();
     this.openToolInvocations.clear();
     await this.appendTrajectoryEvents(items);
@@ -2285,24 +2379,38 @@ export class PiRunner {
   async executeToolDirect(
     toolName: string,
     toolCallId: string,
-    params: unknown
+    params: unknown,
+    signal?: AbortSignal
   ): Promise<AgentToolResult<any>> {
-    this.markToolCallPreApproved(toolCallId);
     const tool = this.computeActiveTools().find((candidate) => candidate.name === toolName);
     if (!tool) {
       return {
         content: [{ type: "text", text: `Tool "${toolName}" not available at resume time` }],
         details: { __natstack_tool_missing: true },
-      };
+        isError: true,
+      } as AgentToolResult<any>;
+    }
+    if (
+      (tool as AgentTool<any> & HibernationResumableTool).natstackResume
+        ?.safeAcrossHibernation !== true
+    ) {
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `Tool "${toolName}" cannot be resumed safely after hibernation; ` +
+              "please retry the tool call.",
+          },
+        ],
+        details: { __natstack_resume_disabled: true },
+        isError: true,
+      } as AgentToolResult<any>;
     }
 
     try {
-      const result = await tool.execute(
-        toolCallId,
-        params as never,
-        new AbortController().signal,
-        undefined
-      );
+      this.markToolCallPreApproved(toolCallId);
+      const result = await tool.execute(toolCallId, params as never, signal, undefined);
       if (toolName === "edit" || toolName === "write") {
         await this.recordMutationObserved(toolCallId, "ok");
       } else {

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createTestDO } from "@workspace/runtime/worker/test-utils";
 import type { TurnSnapshot } from "@natstack/harness";
+import { AgentWorkerBase } from "@workspace/agentic-do";
 
 import { AiChatWorker } from "./ai-chat-worker.js";
 
@@ -40,7 +41,9 @@ class TestAiChatWorker extends AiChatWorker {
   }
 
   modelBaseUrl(): string {
-    return (this as unknown as { getModelBaseUrl(channelId: string): string }).getModelBaseUrl("ch-1");
+    return (this as unknown as { getModelBaseUrl(channelId: string): string }).getModelBaseUrl(
+      "ch-1"
+    );
   }
 
   prepare(channelId: string, snapshot: TurnSnapshot): Promise<TurnSnapshot | void> {
@@ -48,33 +51,35 @@ class TestAiChatWorker extends AiChatWorker {
   }
 
   insertSubscriptionConfig(channelId: string, config: Record<string, unknown>): void {
-    (this as unknown as {
-      sql: {
-        exec: (query: string, ...params: unknown[]) => unknown;
-      };
-    }).sql.exec(
+    (
+      this as unknown as {
+        sql: {
+          exec: (query: string, ...params: unknown[]) => unknown;
+        };
+      }
+    ).sql.exec(
       `INSERT OR REPLACE INTO subscriptions (channel_id, context_id, subscribed_at, config, participant_id)
        VALUES (?, ?, ?, ?, ?)`,
       channelId,
       "ctx-1",
       Date.now(),
       JSON.stringify(config),
-      `participant:${channelId}`,
+      `participant:${channelId}`
     );
   }
 }
 
 class ApiKeyAiChatWorker extends TestAiChatWorker {
-  protected override getModelCredentialSetupProps(providerId: string): Record<string, unknown> | null {
+  protected override getModelCredentialSetupProps(
+    providerId: string
+  ): Record<string, unknown> | null {
     if (providerId !== "openai-codex") return null;
     return {
       credentialLabel: "Test API key",
       flow: {
         type: "api-key",
         title: "Test API key",
-        fields: [
-          { name: "apiKey", label: "API key", type: "secret", required: true },
-        ],
+        fields: [{ name: "apiKey", label: "API key", type: "secret", required: true }],
         materialTemplate: {
           type: "bearer-token",
           valueTemplate: "{apiKey}",
@@ -92,6 +97,10 @@ class ApiKeyAiChatWorker extends TestAiChatWorker {
 }
 
 describe("AiChatWorker model credential defaults", () => {
+  it("inherits the base agent schema version so base-table migrations run", () => {
+    expect(AiChatWorker.schemaVersion).toBe(AgentWorkerBase.schemaVersion);
+  });
+
   it("wires the default OpenAI Codex model through URL-bound credential OAuth setup", async () => {
     const { instance } = await createTestDO(TestAiChatWorker);
     const worker = instance as TestAiChatWorker;
@@ -162,7 +171,7 @@ describe("AiChatWorker model credential defaults", () => {
       }),
     ]);
 
-    await worker.onMethodCall("ch-1", "call-internal", "connectModelCredentialOAuth", {
+    await worker.onMethodCall("ch-1", "call-internal", "connectModelCredential", {
       providerId: "openai-codex",
       browserOpenMode: "internal",
       browserHandoffCallerId: "panel-1",
@@ -182,7 +191,7 @@ describe("AiChatWorker model credential defaults", () => {
       }),
     ]);
 
-    await worker.onMethodCall("ch-1", "call-2", "connectModelCredentialOAuth", {
+    await worker.onMethodCall("ch-1", "call-2", "connectModelCredential", {
       providerId: "openai-codex",
       browserOpenMode: "external",
       browserHandoffCallerId: "panel-1",
@@ -203,21 +212,6 @@ describe("AiChatWorker model credential defaults", () => {
     ]);
   });
 
-  it("keeps connectModelCredentialOAuth as a compatibility alias", async () => {
-    const { instance } = await createTestDO(TestAiChatWorker);
-    const worker = instance as TestAiChatWorker;
-
-    await worker.onMethodCall("ch-1", "call-legacy", "connectModelCredentialOAuth", {
-      providerId: "openai-codex",
-    });
-
-    expect(worker.rpcCall).toHaveBeenCalledWith("main", "credentials.connect", [
-      expect.objectContaining({
-        flow: expect.objectContaining({ type: "oauth2-auth-code-pkce" }),
-      }),
-    ]);
-  });
-
   it("passes API-key credential specs through credentials.connect", async () => {
     const { instance } = await createTestDO(ApiKeyAiChatWorker);
     const worker = instance as ApiKeyAiChatWorker;
@@ -231,9 +225,7 @@ describe("AiChatWorker model credential defaults", () => {
         flow: {
           type: "api-key",
           title: "Test API key",
-          fields: [
-            { name: "apiKey", label: "API key", type: "secret", required: true },
-          ],
+          fields: [{ name: "apiKey", label: "API key", type: "secret", required: true }],
           materialTemplate: {
             type: "bearer-token",
             valueTemplate: "{apiKey}",
@@ -259,14 +251,15 @@ describe("AiChatWorker model credential defaults", () => {
     const { instance } = await createTestDO(TestAiChatWorker);
     const worker = instance as TestAiChatWorker;
 
-    expect((await worker.onMethodCall("ch-1", "call-default", "getAgentSettings", {})).result)
-      .toMatchObject({
-        model: { value: "openai-codex:gpt-5.5", source: "default" },
-        thinkingLevel: { value: "medium", source: "default" },
-        approvalLevel: { value: 2, source: "default" },
-        respondPolicy: { value: "all", source: "default" },
-        respondFrom: { value: [], source: "default" },
-      });
+    expect(
+      (await worker.onMethodCall("ch-1", "call-default", "getAgentSettings", {})).result
+    ).toMatchObject({
+      model: { value: "openai-codex:gpt-5.5", source: "default" },
+      thinkingLevel: { value: "medium", source: "default" },
+      approvalLevel: { value: 2, source: "default" },
+      respondPolicy: { value: "all", source: "default" },
+      respondFrom: { value: [], source: "default" },
+    });
 
     worker.insertSubscriptionConfig("ch-config", {
       model: "openai-codex:gpt-5.5",
@@ -276,14 +269,15 @@ describe("AiChatWorker model credential defaults", () => {
       respondFrom: ["user-1"],
     });
 
-    expect((await worker.onMethodCall("ch-config", "call-config", "getAgentSettings", {})).result)
-      .toMatchObject({
-        model: { value: "openai-codex:gpt-5.5", source: "config" },
-        thinkingLevel: { value: "low", source: "config" },
-        approvalLevel: { value: 1, source: "config" },
-        respondPolicy: { value: "from-participants", source: "config" },
-        respondFrom: { value: ["user-1"], source: "config" },
-      });
+    expect(
+      (await worker.onMethodCall("ch-config", "call-config", "getAgentSettings", {})).result
+    ).toMatchObject({
+      model: { value: "openai-codex:gpt-5.5", source: "config" },
+      thinkingLevel: { value: "low", source: "config" },
+      approvalLevel: { value: 1, source: "config" },
+      respondPolicy: { value: "from-participants", source: "config" },
+      respondFrom: { value: ["user-1"], source: "config" },
+    });
 
     await worker.onMethodCall("ch-config", "call-thinking", "setThinkingLevel", { level: "high" });
     await worker.onMethodCall("ch-config", "call-approval", "setApprovalLevel", { level: 0 });
@@ -291,12 +285,8 @@ describe("AiChatWorker model credential defaults", () => {
       policy: "mentioned",
     });
 
-    const settings = (await worker.onMethodCall(
-      "ch-config",
-      "call-state",
-      "getAgentSettings",
-      {},
-    )).result as AgentSettingsResult;
+    const settings = (await worker.onMethodCall("ch-config", "call-state", "getAgentSettings", {}))
+      .result as AgentSettingsResult;
     expect(settings).toMatchObject({
       model: { value: "openai-codex:gpt-5.5", source: "config" },
       thinkingLevel: { value: "high", source: "state" },
@@ -323,9 +313,10 @@ describe("AiChatWorker model credential defaults", () => {
 
     await worker.onMethodCall("ch-1", "call-thinking", "setThinkingLevel", { level: "high" });
     await expect(worker.prepare("ch-1", snapshot)).resolves.toBeUndefined();
-    expect((await worker.onMethodCall("ch-1", "call-settings", "getAgentSettings", {})).result)
-      .toMatchObject({
-        thinkingLevel: { value: "high", source: "state" },
-      });
+    expect(
+      (await worker.onMethodCall("ch-1", "call-settings", "getAgentSettings", {})).result
+    ).toMatchObject({
+      thinkingLevel: { value: "high", source: "state" },
+    });
   });
 });
