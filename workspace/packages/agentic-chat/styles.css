@@ -246,7 +246,7 @@
   display: flex;
   inline-size: fit-content;
   min-inline-size: 0;
-  max-inline-size: min(100%, 72ch);
+  max-inline-size: min(100%, 85rem);
   overflow-x: hidden;
 }
 
