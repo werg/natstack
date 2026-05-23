@@ -1971,9 +1971,7 @@ async function main() {
         let detectedVpn = await detectVpnPublicUrl().catch(() => null);
         if (!detectedVpn) {
           const { detectHttpsServePublicUrl } = await import("./tailscaleServe.js");
-          const serveUrl = await detectHttpsServePublicUrl({ port: gatewayPort }).catch(
-            () => null
-          );
+          const serveUrl = await detectHttpsServePublicUrl({ port: gatewayPort }).catch(() => null);
           if (serveUrl) {
             detectedVpn = {
               vendor: "tailscale",

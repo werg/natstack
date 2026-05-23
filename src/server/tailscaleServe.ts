@@ -208,9 +208,10 @@ export interface DetectedTailscaleServeUrl {
   url: string;
 }
 
-export async function detectHttpsServePublicUrl(
-  opts: { port: number; timeoutMs?: number }
-): Promise<DetectedTailscaleServeUrl | null> {
+export async function detectHttpsServePublicUrl(opts: {
+  port: number;
+  timeoutMs?: number;
+}): Promise<DetectedTailscaleServeUrl | null> {
   const timeoutMs = opts.timeoutMs ?? 12000;
   const deadline = Date.now() + timeoutMs;
   const cli = await locateTailscale(deadline);
