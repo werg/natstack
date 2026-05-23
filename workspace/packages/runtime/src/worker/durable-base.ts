@@ -284,6 +284,92 @@ export abstract class DurableObjectBase {
     return createParentHandle({ rpc: this.rpc, parentId: null });
   }
 
+  /** Last value pushed via `setOwnTitle` during this activation. Used to
+   *  dedupe redundant `runtime.setTitle` RPCs. Persists only across method
+   *  calls within one isolate; on hibernation it resets. */
+  private _titleSetForThisActivation: string | null = null;
+
+  /** Persistent state key used to record explicit (tool-driven) title sets.
+   *  When this key is "1" the heuristic first-message fallback in chat agents
+   *  is suppressed so explicit titles survive hibernation/restart. */
+  private static readonly EXPLICIT_TITLE_STATE_KEY = "__title_explicit";
+
+  protected get titleSetForThisActivation(): string | null {
+    return this._titleSetForThisActivation;
+  }
+
+  /**
+   * Returns true iff a previous activation called `setOwnTitleExplicitly`.
+   * Heuristic title setters (e.g. chat agents' first-user-message fallback)
+   * should bail when this is true so a user-confirmed title isn't overwritten.
+   */
+  protected isOwnTitleExplicitlySet(): boolean {
+    try {
+      return this.getStateValue(DurableObjectBase.EXPLICIT_TITLE_STATE_KEY) === "1";
+    } catch {
+      // `state` table may not exist before the first ensureReady — read
+      // returning false is the safe default (no explicit title yet).
+      return false;
+    }
+  }
+
+  /**
+   * Set the title and durably record that an explicit setter (e.g. the
+   * built-in `set_title` agent tool) chose it. Subsequent activations check
+   * `isOwnTitleExplicitlySet` before running any heuristic fallback.
+   */
+  protected async setOwnTitleExplicitly(title: string | null | undefined): Promise<void> {
+    await this.setOwnTitle(title);
+    try {
+      this.ensureReady();
+      this.setStateValue(DurableObjectBase.EXPLICIT_TITLE_STATE_KEY, "1");
+    } catch (err) {
+      console.warn("[DurableObjectBase] failed to persist explicit-title flag:", err);
+    }
+  }
+
+  /**
+   * Set the server-controlled display title for this entity. Approval UIs
+   * (and any other surface that resolves an entity by id) show this in
+   * place of the opaque id. Best-effort — failures log a warning and do
+   * not throw. Pass null/empty to clear.
+   *
+   * This is the heuristic / non-persisting setter — use
+   * `setOwnTitleExplicitly` when an explicit tool call drives the change.
+   */
+  protected async setOwnTitle(title: string | null | undefined): Promise<void> {
+    const normalized = title == null ? null : title.trim();
+    const effective = normalized && normalized.length > 0 ? normalized : null;
+    if (effective === this._titleSetForThisActivation) return;
+    let bridge: RpcBridge;
+    try {
+      bridge = this.rpc;
+    } catch (err) {
+      // `this.rpc` throws when the workerd env bindings aren't ready yet —
+      // typical during constructor-time calls before the first request has
+      // attached the RPC token. Skip silently; setOwnTitle will be retried
+      // on the next caller (request, alarm, RPC handler).
+      void err;
+      return;
+    }
+    // Set the flag eagerly so concurrent callers (e.g. constructor-issued
+    // setOwnTitle + the first-message fallback) see this title as already
+    // claimed and don't race to overwrite it.
+    this._titleSetForThisActivation = effective;
+    // Test harnesses point GATEWAY_URL at an unreachable sentinel; emit no
+    // noise when the RPC fails in that mode. Real installs surface failures.
+    const gatewayUrl = String(this.env["GATEWAY_URL"] ?? "");
+    const isTestSentinel =
+      gatewayUrl.includes("test-server.invalid") || gatewayUrl.includes(".test/");
+    try {
+      await bridge.call("main", "runtime.setTitle", [effective]);
+    } catch (err) {
+      if (!isTestSentinel) {
+        console.warn("[DurableObjectBase] runtime.setTitle failed:", err);
+      }
+    }
+  }
+
   // --- Object key identity ---
   // Set from the first fetch() request URL: /{objectKey}/{method}
   // The router includes the objectKey in the forwarded URL.

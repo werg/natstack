@@ -559,6 +559,30 @@ function abortedAgentEndMessage(event: RunnerEvent): string | null {
   return last.errorMessage ?? "Turn aborted.";
 }
 
+/**
+ * Derive a short, human-readable display title from a free-form user message.
+ * Strips markdown noise, collapses whitespace, prefers the first sentence,
+ * and caps the result around 60 chars.
+ */
+function deriveFallbackTitleFromMessage(content: string): string | null {
+  const stripped = content
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/^[#>\-*+\s]+/gm, "")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!stripped) return null;
+  // Prefer the first sentence-ish segment.
+  const sentence = stripped.split(/(?<=[.!?])\s|\n/)[0] ?? stripped;
+  const candidate = (sentence || stripped).trim();
+  if (!candidate) return null;
+  const MAX = 60;
+  if (candidate.length <= MAX) return candidate;
+  return candidate.slice(0, MAX - 1).trimEnd() + "…";
+}
+
 export abstract class TrajectoryVesselBase extends DurableObjectBase {
   static override schemaVersion = 12;
 
@@ -1519,6 +1543,62 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     return null;
   }
 
+  /**
+   * Tools always available to the agent in addition to whatever
+   * `getRunnerTools` returns. Subclasses can override to suppress or
+   * replace the defaults; the base set includes a `set_title` tool that
+   * persists an explicit display title via the runtime title registry.
+   */
+  protected getBuiltInTools(channelId: string): NonNullable<PiRunnerOptions["extraTools"]> {
+    return [this.createSetTitleTool(channelId)];
+  }
+
+  /**
+   * Built-in `set_title` tool — lets an agent rename itself in the shell
+   * (approval bar, panel tree, status surfaces). Calling this records an
+   * explicit-title flag so the heuristic first-message fallback no longer
+   * fires on subsequent activations.
+   */
+  protected createSetTitleTool(
+    _channelId: string
+  ): NonNullable<PiRunnerOptions["extraTools"]>[number] {
+    return {
+      name: "set_title",
+      label: "set_title",
+      description:
+        "Set this agent's display title in the shell. Use a short, descriptive label (under ~60 chars) that summarises the conversation or the agent's purpose. Calling this overrides the auto-generated title and persists across restarts.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            description: "The new display title. Empty string clears any explicit title.",
+          },
+        },
+        required: ["title"],
+        additionalProperties: false,
+      } as never,
+      execute: async (_toolCallId, params) => {
+        const input = params as { title?: unknown };
+        const raw = typeof input.title === "string" ? input.title : "";
+        const trimmed = raw.trim();
+        await this.setOwnTitleExplicitly(trimmed.length === 0 ? null : trimmed);
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                trimmed.length === 0
+                  ? "Cleared explicit display title."
+                  : `Display title set to: ${trimmed}`,
+            },
+          ],
+          details: { title: trimmed || null },
+        };
+      },
+    };
+  }
+
   protected getRunnerToolFilter(_channelId: string): PiRunnerOptions["toolFilter"] | null {
     return null;
   }
@@ -1765,7 +1845,12 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     const existing = this.runners.get(channelId);
     if (existing) return existing.runner;
 
-    const extraTools = this.getRunnerTools(channelId);
+    const subclassExtraTools = this.getRunnerTools(channelId);
+    const builtInTools = this.getBuiltInTools(channelId);
+    const extraTools =
+      builtInTools.length === 0 && !subclassExtraTools
+        ? null
+        : [...builtInTools, ...(subclassExtraTools ?? [])];
     const toolFilter = this.getRunnerToolFilter(channelId);
     void this.getRunnerSkills(channelId);
 
@@ -2657,6 +2742,18 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
 
     const runner = this.runners.get(channelId)!.runner;
     const input = this.buildTurnInput(event);
+    // Fall back to the first user message as the display title when no
+    // explicit (tool-driven) title has been set and no in-activation title
+    // is in flight yet. Heuristic-only — doesn't persist a flag, so a
+    // later activation will re-derive from a (possibly more representative)
+    // message if no one calls `set_title` in the meantime.
+    if (
+      this.titleSetForThisActivation === null &&
+      input.content &&
+      !this.isOwnTitleExplicitlySet()
+    ) {
+      void this.setOwnTitle(deriveFallbackTitleFromMessage(input.content));
+    }
     const images = await this.resizeAttachments(channelId, input.attachments);
     const dispatcher = this.getOrCreateDispatcher(channelId, runner);
     dispatcher.submit({ content: input.content, ...(images ? { images } : {}) }, opts);
