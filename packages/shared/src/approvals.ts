@@ -86,6 +86,13 @@ export interface ApprovalPrincipal {
   callerKind: "panel" | "worker" | "do";
   repoPath: string;
   effectiveVersion: string;
+  /**
+   * Server-controlled human-readable name for this caller — e.g. a panel's
+   * current title or a worker's `runtime.setTitle()` value. Approval UIs
+   * should prefer this over the opaque `callerId`. Optional because not
+   * every entity sets one; consumers fall back to the id.
+   */
+  callerTitle?: string;
 }
 
 /** What a userland approval is about. The issuing provider supplies this. */
@@ -98,6 +105,10 @@ export interface UserlandApprovalSubject {
  * Who is asking the user. For direct panel/worker calls this equals the
  * principal; for extension-issued approvals (via `ctx.approvals.request`),
  * this identifies the extension acting on behalf of the principal.
+ *
+ * `label` is a server-controlled display title (panel title, worker
+ * `setTitle` value, extension manifest name) — present when the server can
+ * resolve it. Consumers should prefer `label` over `id` in UI.
  */
 export interface UserlandApprovalIssuer {
   kind: "panel" | "worker" | "do" | "extension";
@@ -128,6 +139,12 @@ export interface PendingApprovalBase {
   repoPath: string;
   effectiveVersion: string;
   requestedAt: number;
+  /**
+   * Server-resolved display title for the caller, if known. Surfaced by the
+   * shell instead of the opaque `callerId`. The id remains available for
+   * audit/inspection in the approval bar's expandable details.
+   */
+  callerTitle?: string;
 }
 
 export interface PendingCredentialApproval extends PendingApprovalBase {

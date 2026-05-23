@@ -252,8 +252,16 @@ export type SensitiveActionQueue = ApprovalQueue;
 
 export function createApprovalQueue(deps: {
   eventService: EventService;
+  /**
+   * Optional resolver for server-controlled display titles. When set, every
+   * pending approval includes `callerTitle` and userland-issuer `label`
+   * populated from this lookup. Without it, both fall back to opaque ids in
+   * the UI.
+   */
+  resolveTitle?: (entityId: string) => string | undefined;
 }): ApprovalQueueWithListeners {
   const { eventService } = deps;
+  const resolveTitle = deps.resolveTitle ?? (() => undefined);
   const entriesById = new Map<string, QueueEntry>();
   const entriesByDedupKey = new Map<string, QueueEntry>();
   const pendingListeners = new Set<(pending: PendingApproval[]) => void>();
@@ -349,6 +357,7 @@ export function createApprovalQueue(deps: {
   }
 
   function createPendingApproval(req: ApprovalQueueRequest): PendingApproval {
+    const callerTitle = resolveTitle(req.callerId);
     const base = {
       approvalId: randomUUID(),
       callerId: req.callerId,
@@ -356,6 +365,7 @@ export function createApprovalQueue(deps: {
       repoPath: req.repoPath,
       effectiveVersion: req.effectiveVersion,
       requestedAt: Date.now(),
+      ...(callerTitle !== undefined ? { callerTitle } : {}),
     };
     if (req.kind === "capability") {
       return {
@@ -740,6 +750,18 @@ export function createApprovalQueue(deps: {
       let entry = entriesByDedupKey.get(dedupKey);
       let newEntry = false;
       if (!entry) {
+        const callerTitle = req.principal.callerTitle ?? resolveTitle(req.principal.callerId);
+        const enrichedIssuer = req.issuer
+          ? {
+              ...req.issuer,
+              ...(req.issuer.label === undefined
+                ? (() => {
+                    const resolved = resolveTitle(req.issuer.id);
+                    return resolved !== undefined ? { label: resolved } : {};
+                  })()
+                : {}),
+            }
+          : undefined;
         const approval = {
           approvalId: randomUUID(),
           callerId: req.principal.callerId,
@@ -747,8 +769,9 @@ export function createApprovalQueue(deps: {
           repoPath: req.principal.repoPath,
           effectiveVersion: req.principal.effectiveVersion,
           requestedAt: Date.now(),
+          ...(callerTitle !== undefined ? { callerTitle } : {}),
           kind: "userland",
-          ...(req.issuer ? { issuer: req.issuer } : {}),
+          ...(enrichedIssuer ? { issuer: enrichedIssuer } : {}),
           subject: req.subject,
           title: req.title,
           summary: req.summary,

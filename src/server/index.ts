@@ -572,8 +572,29 @@ async function main() {
   const capabilityGrantStore = new CapabilityGrantStore({ statePath });
   const { UserlandApprovalGrantStore } = await import("./services/userlandApprovalGrantStore.js");
   const userlandApprovalGrantStore = new UserlandApprovalGrantStore({ statePath });
+  // EntityTitleService: source-of-truth for display titles lives in the
+  // WorkspaceDO (entities.display_title). The cache here is populated at
+  // boot via `hydrate()` and updated on every write. The lazy doDispatch
+  // resolver lets approval-queue consumers read the cache immediately,
+  // while DO writes only start landing once the container has spun up
+  // `doDispatch` (registered alongside workerdManager).
+  const { createEntityTitleService } = await import("./services/entityTitleService.js");
+  const { INTERNAL_DO_SOURCE: ENTITY_TITLE_INTERNAL_DO_SOURCE } =
+    await import("./internalDOs/internalDoLoader.js");
+  let resolvedDoDispatchForTitles: import("./doDispatch.js").DODispatch | null = null;
+  const entityTitleService = createEntityTitleService({
+    getDoDispatch: () => resolvedDoDispatchForTitles,
+    workspaceRef: {
+      source: ENTITY_TITLE_INTERNAL_DO_SOURCE,
+      className: "WorkspaceDO",
+      objectKey: workspace.config.id,
+    },
+  });
   const { createApprovalQueue } = await import("./services/approvalQueue.js");
-  const approvalQueue = createApprovalQueue({ eventService });
+  const approvalQueue = createApprovalQueue({
+    eventService,
+    resolveTitle: (entityId) => entityTitleService.getTitle(entityId),
+  });
   const credentialLifecycle = new CredentialLifecycle({
     credentialStore,
     clientConfigStore,
@@ -601,6 +622,7 @@ async function main() {
       credentialSessionGrantStore,
       tokenManager,
       connectionGrants,
+      entityTitleService,
       getFsService: () => {
         try {
           return container.get<import("@natstack/shared/fsService").FsService>("fsService");
@@ -1176,9 +1198,22 @@ async function main() {
         const doDispatch = assertPresent(
           resolve<import("./doDispatch.js").DODispatch>("doDispatch")
         );
+        // Now that doDispatch is up, the title cache can talk to the DO.
+        // Hydrate so synchronous getTitle() lookups (used by approvalQueue
+        // when building a PendingApproval) see existing titles from previous
+        // sessions. Best-effort — failures keep an empty cache until the
+        // first explicit write.
+        resolvedDoDispatchForTitles = doDispatch;
+        void entityTitleService.hydrate();
         workspaceStateDefinition = createWorkspaceStateService({
           doDispatch,
           workspaceId: workspace.config.id,
+          // The DO already writes display_title in the same transaction as
+          // searchable_title (see workspaceDO.panelIndex / panelUpdateTitle),
+          // so the callback only needs to mirror into the in-memory cache.
+          onPanelTitleChanged: (entityId, title) => {
+            entityTitleService.mirrorCachedTitle(entityId, title);
+          },
         });
       },
       getServiceDefinition() {
@@ -1230,6 +1265,7 @@ async function main() {
             approvalQueue,
             grantStore: capabilityGrantStore,
           },
+          setEntityTitle: (entityId, title) => entityTitleService.setTitle(entityId, title),
         });
       },
       getServiceDefinition() {

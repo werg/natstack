@@ -43,6 +43,12 @@ const WRITE_POLICY: ServicePolicy = {
 export interface WorkspaceStateServiceDeps {
   doDispatch: DODispatch;
   workspaceId: string;
+  /**
+   * Optional hook for mirroring authoritative panel titles into the
+   * server-side display-title registry. Called whenever `panel.updateTitle`
+   * succeeds.
+   */
+  onPanelTitleChanged?: (panelEntityId: string, title: string) => void;
 }
 
 export function createWorkspaceStateService(deps: WorkspaceStateServiceDeps): ServiceDefinition {
@@ -226,12 +232,21 @@ export function createWorkspaceStateService(deps: WorkspaceStateServiceDeps): Se
         }
         case "panel.index": {
           const [input] = args as [IndexablePanel];
-          await dispatch<undefined>("panelIndex", [input]);
+          // The DO returns the slot's current entity id when it stamped a
+          // title onto entities.display_title — we pass that on (rather than
+          // the slot id) so cache mirrors stay keyed correctly.
+          const entityId = await dispatch<string | null>("panelIndex", [input]);
+          if (entityId && input?.title) {
+            deps.onPanelTitleChanged?.(entityId, input.title);
+          }
           return;
         }
         case "panel.updateTitle": {
-          const [entityId, title] = args as [string, string];
-          await dispatch<undefined>("panelUpdateTitle", [entityId, title]);
+          const [slotId, title] = args as [string, string];
+          const entityId = await dispatch<string | null>("panelUpdateTitle", [slotId, title]);
+          if (entityId) {
+            deps.onPanelTitleChanged?.(entityId, title);
+          }
           return;
         }
         case "panel.incrementAccess": {

@@ -67,6 +67,12 @@ export interface RuntimeServiceDeps {
   hooks: RuntimeEntityHooks;
   capability: CapabilityPermissionDeps;
   entityCache: EntityCache;
+  /**
+   * Server-controlled display-title registry. Workers (and DOs / panels)
+   * call `runtime.setTitle(title)` to populate the title that approval UIs
+   * surface in place of the opaque entity id.
+   */
+  setEntityTitle?: (entityId: string, title: string | undefined) => void | Promise<void>;
 }
 
 const CreateEntitySpecSchema = z.discriminatedUnion("kind", [
@@ -275,6 +281,11 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
         description:
           "Return the contextId for an entity (or null if unknown). Cached read; falls back to DO.",
       },
+      setTitle: {
+        args: z.tuple([z.string().nullable()]),
+        description:
+          "Set a server-controlled display title for the calling entity. Surfaced by approval UIs in place of the opaque id. Pass null/empty to clear.",
+      },
     },
     handler: async (ctx, method, args) => {
       switch (method) {
@@ -290,6 +301,15 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
         case "resolveContext": {
           const [id] = args as [string];
           return await resolveContext(id);
+        }
+        case "setTitle": {
+          const [title] = args as [string | null];
+          const callerKind = ctx.caller.runtime.kind;
+          if (callerKind !== "panel" && callerKind !== "worker" && callerKind !== "do") {
+            throw new Error(`runtime.setTitle is only available to panel/worker/do callers`);
+          }
+          await deps.setEntityTitle?.(ctx.caller.runtime.id, title == null ? undefined : title);
+          return;
         }
         default:
           throw new Error(`Unknown runtime method: ${method}`);
