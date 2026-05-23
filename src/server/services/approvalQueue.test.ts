@@ -1,10 +1,33 @@
 import { describe, expect, it, vi } from "vitest";
-import { createApprovalQueue } from "./approvalQueue.js";
+import { createApprovalQueue, type ExtensionApprovalQueueRequest } from "./approvalQueue.js";
 
 function createQueue() {
   const emit = vi.fn();
   const queue = createApprovalQueue({ eventService: { emit } as never });
   return { queue, emit };
+}
+
+function extensionRequest(
+  overrides: Partial<ExtensionApprovalQueueRequest> = {}
+): ExtensionApprovalQueueRequest {
+  return {
+    kind: "extension" as const,
+    callerId: "panel-1",
+    callerKind: "panel" as const,
+    repoPath: "panels/example",
+    effectiveVersion: "hash-1",
+    action: "source-push" as const,
+    extensionName: "@workspace-extensions/typecheck-service",
+    version: "1.0.0",
+    source: {
+      kind: "internal-git" as const,
+      repo: "extensions/@workspace-extensions/typecheck-service",
+      ref: "HEAD",
+    },
+    title: "Update extension source",
+    description: "Accepting this push updates trusted native extension code.",
+    ...overrides,
+  };
 }
 
 describe("approvalQueue", () => {
@@ -207,6 +230,50 @@ describe("approvalQueue", () => {
     queue.resolve(pending[0]!.approvalId, "session");
     queue.resolve(pending[1]!.approvalId, "deny");
     await expect(first).resolves.toBe("session");
+    await expect(second).resolves.toBe("deny");
+  });
+
+  it("honors custom extension approval dedup keys", async () => {
+    const { queue } = createQueue();
+    const first = queue.request(
+      extensionRequest({ dedupKey: "extension-source-push:typecheck:main" })
+    );
+    const second = queue.request(
+      extensionRequest({
+        dedupKey: "extension-source-push:typecheck:main",
+        sha: "newer-commit",
+      })
+    );
+
+    const pending = queue.listPending();
+    expect(pending).toHaveLength(1);
+
+    queue.resolve(pending[0]!.approvalId, "session");
+    await expect(first).resolves.toBe("session");
+    await expect(second).resolves.toBe("session");
+  });
+
+  it("keeps custom extension approval dedup scoped to the concrete caller", async () => {
+    const { queue } = createQueue();
+    const first = queue.request(
+      extensionRequest({
+        callerId: "panel-1",
+        dedupKey: "extension-source-push:typecheck:main",
+      })
+    );
+    const second = queue.request(
+      extensionRequest({
+        callerId: "panel-2",
+        dedupKey: "extension-source-push:typecheck:main",
+      })
+    );
+
+    const pending = queue.listPending();
+    expect(pending).toHaveLength(2);
+
+    queue.resolve(pending[0]!.approvalId, "once");
+    queue.resolve(pending[1]!.approvalId, "deny");
+    await expect(first).resolves.toBe("once");
     await expect(second).resolves.toBe("deny");
   });
 

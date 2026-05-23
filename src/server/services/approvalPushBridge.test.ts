@@ -18,13 +18,21 @@ function createQueue() {
   return createApprovalQueue({ eventService: { emit: vi.fn() } as never });
 }
 
-function createPushMock(): PushServiceInternal {
+function createPushMock(): PushServiceInternal & { triggerRegistrationsChanged(): void } {
+  const registrationListeners = new Set<() => void>();
   return {
     send: vi.fn(),
     sendBatch: vi.fn(async () => [SENT_PUSH_RESULT]),
     cancel: vi.fn(async () => []),
     listRegistrations: vi.fn(() => []),
+    onRegistrationsChanged: vi.fn((listener) => {
+      registrationListeners.add(listener);
+      return () => registrationListeners.delete(listener);
+    }),
     unregister: vi.fn(() => false),
+    triggerRegistrationsChanged() {
+      for (const listener of registrationListeners) listener();
+    },
   };
 }
 
@@ -45,14 +53,17 @@ function requestCapability(queue: ReturnType<typeof createQueue>) {
   });
 }
 
-function requestExtension(queue: ReturnType<typeof createQueue>) {
+function requestExtension(
+  queue: ReturnType<typeof createQueue>,
+  action: "install" | "source-push" = "install"
+) {
   return queue.request({
     kind: "extension",
     callerId: "panel-1",
     callerKind: "panel",
     repoPath: "panels/example",
     effectiveVersion: "hash-1",
-    action: "install",
+    action,
     extensionName: "@workspace-extensions/image-service",
     version: "1.0.0",
     source: {
@@ -62,6 +73,23 @@ function requestExtension(queue: ReturnType<typeof createQueue>) {
     },
     title: "Install extension",
     description: "Install and run this extension.",
+  });
+}
+
+function requestDoCapability(queue: ReturnType<typeof createQueue>) {
+  return queue.request({
+    kind: "capability",
+    callerId: "do:workers/example:ExampleDO:agent-1",
+    callerKind: "do",
+    repoPath: "workers/example",
+    effectiveVersion: "hash-1",
+    capability: "external-browser-open",
+    title: "Open external browser",
+    resource: {
+      type: "url-origin",
+      label: "Origin",
+      value: "https://example.com",
+    },
   });
 }
 
@@ -320,6 +348,96 @@ describe("approvalPushBridge", () => {
 
     queue.resolve(queue.listPending()[0]!.approvalId, "once");
     await expect(promise).resolves.toBe("once");
+  });
+
+  it("offers session grants for extension source-push approvals", async () => {
+    const queue = createQueue();
+    const push = createPushMock();
+    createApprovalPushBridge({
+      approvalQueue: queue,
+      push,
+      shellPresence: {
+        isAnyShellActive: () => false,
+        markActive: vi.fn(),
+        getActiveShellCount: () => 0,
+      },
+    });
+
+    const promise = requestExtension(queue, "source-push");
+    await flush();
+
+    expect(push.sendBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          approvalKind: "extension",
+          actionsJson: JSON.stringify([
+            { id: "once", title: "Approve" },
+            { id: "session", title: "Session" },
+            { id: "deny", title: "Deny" },
+            { id: "open", title: "Open" },
+          ]),
+        }),
+      })
+    );
+
+    queue.resolve(queue.listPending()[0]!.approvalId, "session");
+    await expect(promise).resolves.toBe("session");
+  });
+
+  it("labels DO-origin approvals accurately in push copy", async () => {
+    const queue = createQueue();
+    const push = createPushMock();
+    createApprovalPushBridge({
+      approvalQueue: queue,
+      push,
+      shellPresence: {
+        isAnyShellActive: () => false,
+        markActive: vi.fn(),
+        getActiveShellCount: () => 0,
+      },
+    });
+
+    const promise = requestDoCapability(queue);
+    await flush();
+
+    expect(push.sendBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining("DO"),
+      })
+    );
+
+    queue.resolve(queue.listPending()[0]!.approvalId, "deny");
+    await expect(promise).resolves.toBe("deny");
+  });
+
+  it("resends pending approvals when a push registration appears later", async () => {
+    const queue = createQueue();
+    const push = createPushMock();
+    vi.mocked(push.sendBatch).mockResolvedValueOnce([]).mockResolvedValueOnce([SENT_PUSH_RESULT]);
+    createApprovalPushBridge({
+      approvalQueue: queue,
+      push,
+      shellPresence: {
+        isAnyShellActive: () => false,
+        markActive: vi.fn(),
+        getActiveShellCount: () => 0,
+      },
+    });
+
+    const promise = requestCapability(queue);
+    await flush();
+    expect(push.sendBatch).toHaveBeenCalledTimes(1);
+
+    push.triggerRegistrationsChanged();
+    await flush();
+    expect(push.sendBatch).toHaveBeenCalledTimes(2);
+
+    const approvalId = queue.listPending()[0]!.approvalId;
+    queue.resolve(approvalId, "deny");
+    await flush();
+
+    expect(push.cancel).toHaveBeenCalledWith(approvalId);
+    await expect(promise).resolves.toBe("deny");
   });
 
   it("does not send a cancel for a delayed approval that never pushed", async () => {

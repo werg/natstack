@@ -48,6 +48,10 @@ describe("extension child runtime process", () => {
         "  ctx.log.info('activated');",
         "  return {",
         "    ping(value) { return `pong:${value}`; },",
+        "    callerContext() {",
+        "      const invocation = ctx.invocation.current();",
+        "      return invocation?.chainCaller?.contextId ?? invocation?.caller.contextId ?? null;",
+        "    },",
         "  };",
         "}",
         "",
@@ -115,7 +119,7 @@ describe("extension child runtime process", () => {
     });
 
     const ready = await readyPromise;
-    expect(ready.message.args[0]).toEqual({ methods: ["ping"], hasFetch: false });
+    expect(ready.message.args[0]).toEqual({ methods: ["ping", "callerContext"], hasFetch: false });
 
     const requestId = randomUUID();
     const response = await waitForMessage<RpcResponse>((resolve, reject) => {
@@ -156,6 +160,54 @@ describe("extension child runtime process", () => {
       type: "response",
       requestId,
       result: "pong:ok",
+    });
+
+    const contextRequestId = randomUUID();
+    const contextResponse = await waitForMessage<RpcResponse>((resolve, reject) => {
+      ready.ws.on("message", (raw) => {
+        try {
+          const message = JSON.parse(String(raw)) as WsClientMessage;
+          if (message.type !== "ws:rpc") return;
+          const rpc = message.message as RpcMessage;
+          if (rpc.type === "response" && rpc.requestId === contextRequestId) {
+            resolve(rpc);
+          }
+        } catch (err) {
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      });
+      ready.ws.send(JSON.stringify({
+        type: "ws:rpc",
+        message: {
+          type: "request",
+          requestId: contextRequestId,
+          fromId: "main",
+          method: "extension.invoke",
+          args: [
+            "callerContext",
+            [],
+            {
+              requestId: contextRequestId,
+              extensionName: "@workspace-extensions/process-test",
+              method: "callerContext",
+              caller: { callerId: "panel-1", callerKind: "panel", contextId: "ctx-panel" },
+              chainCaller: {
+                callerId: "panel-1",
+                callerKind: "panel",
+                repoPath: "panels/test",
+                effectiveVersion: "ev-test",
+                contextId: "ctx-panel",
+              },
+            },
+          ],
+        } satisfies RpcRequest,
+      } satisfies WsServerMessage));
+    });
+
+    expect(contextResponse).toEqual({
+      type: "response",
+      requestId: contextRequestId,
+      result: "ctx-panel",
     });
   });
 });

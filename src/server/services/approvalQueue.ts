@@ -297,6 +297,9 @@ export function createApprovalQueue(deps: {
       if (req.dedupKey === null) {
         return ["extension-isolated", randomUUID()].join("\x00");
       }
+      if (req.dedupKey) {
+        return ["extension-custom", req.callerId, req.dedupKey].join("\x00");
+      }
       return [
         "extension",
         req.callerId,

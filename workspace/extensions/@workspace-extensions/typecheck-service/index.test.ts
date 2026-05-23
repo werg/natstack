@@ -16,14 +16,34 @@ function tempPanel(): string {
   return dir;
 }
 
-async function api(callerId?: string) {
+async function api(
+  caller?: string | {
+    callerId: string;
+    contextId?: string;
+    chainContextId?: string;
+  },
+  contextsPath = path.join(os.tmpdir(), "natstack-contexts"),
+) {
+  const callerInfo = typeof caller === "string" ? { callerId: caller } : caller;
   return activate({
     workspace: {
       async getInfo() {
-        return { path: process.cwd(), contextsPath: path.join(os.tmpdir(), "natstack-contexts") };
+        return { path: process.cwd(), contextsPath };
       },
     },
-    invocation: { current: () => callerId ? { caller: { callerId } } : null },
+    invocation: {
+      current: () => callerInfo
+        ? {
+            caller: {
+              callerId: callerInfo.callerId,
+              ...(callerInfo.contextId ? { contextId: callerInfo.contextId } : {}),
+            },
+            ...(callerInfo.chainContextId
+              ? { chainCaller: { contextId: callerInfo.chainContextId } }
+              : {}),
+          }
+        : null,
+    },
     log: { info: () => {} },
   });
 }
@@ -56,6 +76,46 @@ describe("@workspace-extensions/typecheck-service", () => {
       expect(result.warningCount).toBeGreaterThanOrEqual(0);
     } finally {
       fs.rmSync(panelPath, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves checkPanel against an explicit context", async () => {
+    const contextsPath = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-typecheck-contexts-"));
+    const panelPath = path.join(contextsPath, "ctx-1", "panels", "my-app");
+    fs.mkdirSync(panelPath, { recursive: true });
+    fs.writeFileSync(
+      path.join(panelPath, "package.json"),
+      JSON.stringify({ name: "context-panel", version: "0.0.0" }),
+    );
+    fs.writeFileSync(path.join(panelPath, "index.tsx"), "const value: number = 'context-error';\n");
+    const service = await api(undefined, contextsPath);
+
+    try {
+      const result = await service.checkPanel("panels/my-app", { contextId: "ctx-1" });
+      expect(result.errorCount).toBeGreaterThan(0);
+      expect(result.diagnostics.some((diagnostic) => diagnostic.file.includes("ctx-1"))).toBe(true);
+    } finally {
+      fs.rmSync(contextsPath, { recursive: true, force: true });
+    }
+  });
+
+  it("infers checkPanel context from the current extension invocation", async () => {
+    const contextsPath = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-typecheck-contexts-"));
+    const panelPath = path.join(contextsPath, "ctx-auto", "panels", "my-app");
+    fs.mkdirSync(panelPath, { recursive: true });
+    fs.writeFileSync(
+      path.join(panelPath, "package.json"),
+      JSON.stringify({ name: "context-panel", version: "0.0.0" }),
+    );
+    fs.writeFileSync(path.join(panelPath, "index.tsx"), "const value: number = 'context-error';\n");
+    const service = await api({ callerId: "worker:agent", chainContextId: "ctx-auto" }, contextsPath);
+
+    try {
+      const result = await service.checkPanel("panels/my-app");
+      expect(result.errorCount).toBeGreaterThan(0);
+      expect(result.diagnostics.some((diagnostic) => diagnostic.file.includes("ctx-auto"))).toBe(true);
+    } finally {
+      fs.rmSync(contextsPath, { recursive: true, force: true });
     }
   });
 

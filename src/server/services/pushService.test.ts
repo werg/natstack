@@ -131,6 +131,34 @@ describe("pushService", () => {
     expect(JSON.parse(fs.readFileSync(registrationsPath, "utf-8"))).toEqual([]);
   });
 
+  it("notifies internal listeners when registrations change", async () => {
+    const registrationsPath = tempRegistrationsPath();
+    const service = createPushService({
+      registrationsPath,
+      metrics: createPushMetrics(),
+    });
+    const listener = vi.fn();
+    const unsubscribe = service.internal.onRegistrationsChanged(listener);
+
+    await service.definition.handler(
+      { caller: createVerifiedCaller("shell", "shell") },
+      "register",
+      [{ clientId: "mobile-1", platform: "android", token: "token-1" }]
+    );
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    service.internal.unregister("mobile-1");
+    expect(listener).toHaveBeenCalledTimes(2);
+
+    unsubscribe();
+    await service.definition.handler(
+      { caller: createVerifiedCaller("shell", "shell") },
+      "register",
+      [{ clientId: "mobile-2", platform: "ios", token: "token-2" }]
+    );
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
+
   it("continues batch delivery after removing an invalid registration", async () => {
     const registrationsPath = tempRegistrationsPath();
     const messages: unknown[] = [];

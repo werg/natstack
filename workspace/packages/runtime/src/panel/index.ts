@@ -141,6 +141,9 @@ const gitApi = {
     removeSharedRemote(repoPath: string, remoteName: string): Promise<Record<string, unknown> | undefined> {
         return rpc.call("main", "git.removeSharedRemote", [repoPath, remoteName]);
     },
+    syncRepoToContexts(repoPath: string): Promise<{ synced: string }> {
+        return rpc.call("main", "git.syncRepoToContexts", [repoPath]);
+    },
     client(options: {
         credentialId?: string;
     } = {}) {

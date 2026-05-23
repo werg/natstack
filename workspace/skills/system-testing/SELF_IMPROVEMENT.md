@@ -293,15 +293,15 @@ if (!scope.checkoutDir.startsWith("projects/")) {
 //   branch-created -> non-fast-forward; host HEAD unchanged
 // Reconnect/retry the test after the dogfood server restarts.
 
-// Check types
-const typecheck = await chat.rpc.call(
-  "main",
-  "extensions.invoke",
-  "@workspace-extensions/typecheck-service",
-  "check",
-  [],
-);
-console.log("Type errors:", typecheck);
+// For panel fixes, check types in the current context before re-testing.
+if (scope.checkoutDir.startsWith("panels/")) {
+  const typecheck = await chat.rpc.call("main", "extensions.invoke", [
+    "@workspace-extensions/typecheck-service",
+    "checkPanel",
+    [scope.checkoutDir],
+  ]);
+  console.log("Type errors:", typecheck);
+}
 
 // Re-run the specific failed test
 const runner = new HeadlessRunner(contextId);

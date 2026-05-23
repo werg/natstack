@@ -52,6 +52,7 @@ function makeHost(overrides: {
   candidateExternalDeps?: Record<string, string>;
   activeRuntimeDepsKey?: string | null;
   extensionTransport?: { call: ReturnType<typeof vi.fn> };
+  getContextIdForCaller?: (callerId: string) => string | null;
   installed?: boolean;
   enabled?: boolean;
   status?: "running" | "stopped" | "building" | "error" | "pending-approval";
@@ -128,6 +129,7 @@ function makeHost(overrides: {
     eventService: eventService as any,
     approvalQueue,
     getGatewayUrl: () => "http://127.0.0.1:3000",
+    getContextIdForCaller: overrides.getContextIdForCaller,
     extensionTransport: overrides.extensionTransport ?? {
       call: vi.fn(async () => {
         throw new Error("extensionTransport.call should not be invoked in this test");
@@ -153,6 +155,39 @@ function makeHost(overrides: {
   }
   return { host, approvalQueue, buildSystem, extensionNode, eventService };
 }
+
+describe("ExtensionHost invocation attribution", () => {
+  it("passes caller context id through extension invocations", async () => {
+    const extensionTransport = {
+      call: vi.fn(async () => "ok"),
+    };
+    const { host } = makeHost({
+      extensionTransport,
+      getContextIdForCaller: (callerId) => callerId === "panel-1" ? "ctx-panel" : null,
+    });
+    vi.spyOn(host.processes, "isRunning").mockReturnValue(true);
+
+    await expect(host.invoke(panelCtx("panel-1"), "@workspace-extensions/git-tools", "ping", []))
+      .resolves.toBe("ok");
+
+    expect(extensionTransport.call).toHaveBeenCalledWith(
+      "@workspace-extensions/git-tools",
+      "extension.invoke",
+      "ping",
+      [],
+      expect.objectContaining({
+        caller: expect.objectContaining({
+          callerId: "panel-1",
+          contextId: "ctx-panel",
+        }),
+        chainCaller: expect.objectContaining({
+          callerId: "panel-1",
+          contextId: "ctx-panel",
+        }),
+      }),
+    );
+  });
+});
 
 describe("ExtensionHost source push authorization", () => {
   it("stores a four-hour dev-session grant for extension main pushes", async () => {

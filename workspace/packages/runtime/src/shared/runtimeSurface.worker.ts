@@ -59,6 +59,7 @@ export const workerRuntimeSurface: RuntimeSurface = {
       "completeWorkspaceDependencies",
       "setSharedRemote",
       "removeSharedRemote",
+      "syncRepoToContexts",
       "client",
     ]),
     gad: namespaceEntry([

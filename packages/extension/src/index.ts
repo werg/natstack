@@ -19,6 +19,14 @@ export interface ExtensionInvocation {
       | "extension"
       | "http";
     connectionId?: string;
+    contextId?: string;
+  };
+  chainCaller?: {
+    callerId: string;
+    callerKind: "panel" | "worker" | "do";
+    repoPath: string;
+    effectiveVersion: string;
+    contextId?: string;
   };
 }
 

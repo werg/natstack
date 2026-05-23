@@ -134,6 +134,7 @@ export interface ExtensionHostDeps {
   eventService: EventService;
   approvalQueue: ApprovalQueueLike;
   notificationService?: NotificationServiceLike;
+  getContextIdForCaller?: (callerId: string) => string | null;
   getGatewayUrl(): string;
   /**
    * Bridge from the dispatcher to a connected extension's WebSocket. Required
@@ -491,7 +492,13 @@ export class ExtensionHost {
   }
 
   private createTrackedInvocation(ctx: ServiceContext, extensionName: string, method: string): ExtensionInvocation {
-    const invocation = invocationFromServiceContext(ctx, extensionName, method, randomUUID());
+    const invocation = invocationFromServiceContext(
+      ctx,
+      extensionName,
+      method,
+      randomUUID(),
+      this.deps.getContextIdForCaller,
+    );
     const token = randomUUID();
     invocation.invocationToken = token;
     this.activeInvocations.set(this.invocationKey(extensionName, token), invocation);

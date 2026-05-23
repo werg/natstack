@@ -113,6 +113,7 @@ export interface RuntimeGitApi {
     }): Promise<CompleteWorkspaceDependenciesResult>;
     setSharedRemote(repoPath: string, remote: GitRemoteSpec): Promise<Record<string, unknown> | undefined>;
     removeSharedRemote(repoPath: string, remoteName: string): Promise<Record<string, unknown> | undefined>;
+    syncRepoToContexts(repoPath: string): Promise<{ synced: string }>;
     client(options?: {
         credentialId?: string;
     }): GitClient;
@@ -216,6 +217,9 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
     },
     removeSharedRemote(repoPath: string, remoteName: string): Promise<Record<string, unknown> | undefined> {
       return callMain("git.removeSharedRemote", repoPath, remoteName);
+    },
+    syncRepoToContexts(repoPath: string): Promise<{ synced: string }> {
+      return callMain("git.syncRepoToContexts", repoPath);
     },
     client(options: { credentialId?: string } = {}) {
       if (!gitConfig) {

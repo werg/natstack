@@ -50,6 +50,7 @@ export interface PushServiceInternal {
   sendBatch(opts: PushBroadcastOptions): Promise<PushSendResult[]>;
   cancel(approvalId: string, cancelKey?: string): Promise<PushSendResult[]>;
   listRegistrations(): PushRegistration[];
+  onRegistrationsChanged(listener: () => void): () => void;
   unregister(clientId: string): boolean;
 }
 
@@ -267,6 +268,17 @@ export function createPushService(deps: PushServiceDeps = {}): PushServiceResult
   const metrics = deps.metrics ?? pushMetrics;
   const loadFirebase =
     deps.firebaseAdminLoader ?? createDefaultFirebaseLoader(deps.env ?? process.env);
+  const registrationListeners = new Set<() => void>();
+
+  function emitRegistrationsChanged(): void {
+    for (const listener of registrationListeners) {
+      try {
+        listener();
+      } catch (error) {
+        console.warn("[PushService] Registration listener failed:", error);
+      }
+    }
+  }
 
   if (registrations.size > 0) {
     console.log(`[PushService] Loaded ${registrations.size} persisted registration(s)`);
@@ -302,6 +314,7 @@ export function createPushService(deps: PushServiceDeps = {}): PushServiceResult
       if (isInvalidTokenError(error)) {
         registrations.delete(registration.clientId);
         saveRegistrations(registrations, registrationsPath);
+        emitRegistrationsChanged();
       }
       metrics.recordPushSend({ platform: registration.platform, category, outcome: "failed" });
       throw error;
@@ -357,11 +370,17 @@ export function createPushService(deps: PushServiceDeps = {}): PushServiceResult
       return [...registrations.values()];
     },
 
+    onRegistrationsChanged(listener) {
+      registrationListeners.add(listener);
+      return () => registrationListeners.delete(listener);
+    },
+
     unregister(clientId) {
       const existed = registrations.delete(clientId);
       if (existed) {
         saveRegistrations(registrations, registrationsPath);
         console.log(`[PushService] Unregistered device for client ${clientId}`);
+        emitRegistrationsChanged();
       }
       return existed;
     },
@@ -418,6 +437,7 @@ export function createPushService(deps: PushServiceDeps = {}): PushServiceResult
           console.log(
             `[PushService] Registered device for client ${opts.clientId} (${opts.platform})`
           );
+          emitRegistrationsChanged();
           return { registered: true };
         }
 

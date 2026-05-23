@@ -40,7 +40,11 @@ function categoryFor(approval: PendingApproval): string {
 }
 
 function actionsFor(approval: PendingApproval): readonly string[] {
-  if (approval.kind === "extension") return ["once", "deny", "open"];
+  if (approval.kind === "extension") {
+    return approval.action === "source-push"
+      ? ["once", "session", "deny", "open"]
+      : ["once", "deny", "open"];
+  }
   return approval.kind === "credential" || approval.kind === "capability"
     ? NOTIFICATION_ACTION_IDS_STANDARD
     : NOTIFICATION_ACTION_IDS_INPUT_REQUIRED;
@@ -62,7 +66,9 @@ function actionPayloadFor(approval: PendingApproval): Array<{ id: string; title:
 }
 
 function callerLabel(approval: PendingApproval): string {
-  return approval.callerKind === "worker" ? "Worker" : "Panel";
+  if (approval.callerKind === "worker") return "Worker";
+  if (approval.callerKind === "do") return "DO";
+  return "Panel";
 }
 
 function payloadFor(
@@ -90,6 +96,13 @@ export function createApprovalPushBridge(deps: ApprovalPushBridgeDeps): Approval
   const clearTimeoutFn = deps.clearTimeoutFn ?? clearTimeout;
   const tracked = new Map<string, TrackedApproval>();
 
+  function clearTrackedTimers(trackedApproval: TrackedApproval): void {
+    for (const timer of trackedApproval.timers) {
+      clearTimeoutFn(timer);
+    }
+    trackedApproval.timers = [];
+  }
+
   async function sendApproval(approval: PendingApproval): Promise<boolean> {
     const category = categoryFor(approval);
     const copy = getApprovalCopy(approval, callerLabel(approval));
@@ -101,6 +114,18 @@ export function createApprovalPushBridge(deps: ApprovalPushBridgeDeps): Approval
       data: payloadFor(approval, copy.title, body, category),
     });
     return results.some((result) => result.sent);
+  }
+
+  async function attemptSend(
+    trackedApproval: TrackedApproval,
+    logContext: "immediate" | "delayed" | "registration"
+  ): Promise<void> {
+    try {
+      const sent = await sendApproval(trackedApproval.approval);
+      trackedApproval.sent = sent;
+    } catch (error) {
+      console.warn(`[ApprovalPushBridge] ${logContext} push send failed:`, error);
+    }
   }
 
   function trackNewApproval(approval: PendingApproval): void {
@@ -116,17 +141,8 @@ export function createApprovalPushBridge(deps: ApprovalPushBridgeDeps): Approval
       if (reason === "presence-stale" && deps.shellPresence.isAnyShellActive(presenceMaxAgeMs)) {
         return;
       }
-      for (const timer of trackedApproval.timers) {
-        clearTimeoutFn(timer);
-      }
-      trackedApproval.timers = [];
-      void sendApproval(approval)
-        .then((sent) => {
-          trackedApproval.sent = sent;
-        })
-        .catch((error) => {
-          console.warn("[ApprovalPushBridge] delayed push send failed:", error);
-        });
+      clearTrackedTimers(trackedApproval);
+      void attemptSend(trackedApproval, "delayed");
     };
 
     if (deps.shellPresence.isAnyShellActive()) {
@@ -137,21 +153,13 @@ export function createApprovalPushBridge(deps: ApprovalPushBridgeDeps): Approval
       return;
     }
 
-    void sendApproval(approval)
-      .then((sent) => {
-        trackedApproval.sent = sent;
-      })
-      .catch((error) => {
-        console.warn("[ApprovalPushBridge] push send failed:", error);
-      });
+    void attemptSend(trackedApproval, "immediate");
   }
 
   function cancelTracked(approvalId: string): void {
     const existing = tracked.get(approvalId);
     if (!existing) return;
-    for (const timer of existing.timers) {
-      clearTimeoutFn(timer);
-    }
+    clearTrackedTimers(existing);
     tracked.delete(approvalId);
     if (!existing.sent) return;
     void deps.push.cancel(approvalId).catch((error) => {
@@ -174,11 +182,19 @@ export function createApprovalPushBridge(deps: ApprovalPushBridgeDeps): Approval
   }
 
   const unsubscribe = deps.approvalQueue.onPendingChanged(onPendingChanged);
+  const unsubscribePushRegistrations = deps.push.onRegistrationsChanged(() => {
+    for (const trackedApproval of tracked.values()) {
+      if (trackedApproval.sent) continue;
+      clearTrackedTimers(trackedApproval);
+      void attemptSend(trackedApproval, "registration");
+    }
+  });
   onPendingChanged(deps.approvalQueue.listPending());
 
   return {
     stop() {
       unsubscribe();
+      unsubscribePushRegistrations();
       for (const approvalId of [...tracked.keys()]) {
         cancelTracked(approvalId);
       }

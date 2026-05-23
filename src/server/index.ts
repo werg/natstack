@@ -1392,6 +1392,7 @@ async function main() {
         eventService,
         approvalQueue,
         notificationService: notificationResult.internal,
+        getContextIdForCaller: (callerId) => entityCache.resolveContext(callerId),
         getGatewayUrl: () => {
           if (!gatewayPortResolved) {
             throw new Error("Gateway port not finalized before extension startup");

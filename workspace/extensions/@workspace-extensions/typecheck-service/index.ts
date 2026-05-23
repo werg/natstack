@@ -7,12 +7,19 @@ interface ExtensionContextLike {
     getInfo(): Promise<{ path: string; contextsPath: string }>;
   };
   invocation: {
-    current(): { caller: { callerId: string } } | null;
+    current(): {
+      caller: { callerId: string; contextId?: string };
+      chainCaller?: { contextId?: string };
+    } | null;
   };
   log: {
     info(message: string): void;
   };
 }
+
+type CheckPanelOptions = {
+  contextId?: string;
+};
 
 function extractPanelSourceFromCallerId(callerId: string): string | undefined {
   const treePrefix = `${PANEL_PRINCIPAL_PREFIX}tree/`;
@@ -69,10 +76,21 @@ function currentCallerPanelPath(ctx: ExtensionContextLike): string | undefined {
   return callerId ? extractPanelSourceFromCallerId(callerId) : undefined;
 }
 
+function currentInvocationContextId(ctx: ExtensionContextLike): string | undefined {
+  const invocation = ctx.invocation.current();
+  return invocation?.chainCaller?.contextId ?? invocation?.caller.contextId;
+}
+
+function normalizeCheckPanelOptions(options?: CheckPanelOptions | string): CheckPanelOptions {
+  if (options === undefined) return {};
+  if (typeof options === "string") return { contextId: options };
+  return options;
+}
+
 export async function activate(ctx: ExtensionContextLike) {
   ctx.log.info("typecheck-service activating");
   return {
-    async checkPanel(panelPath?: string) {
+    async checkPanel(panelPath?: string, options?: CheckPanelOptions | string) {
       const source = panelPath ?? currentCallerPanelPath(ctx);
       if (!source) {
         throw new Error(
@@ -80,7 +98,8 @@ export async function activate(ctx: ExtensionContextLike) {
           "Pass the panel source path explicitly, e.g. checkPanel(\"panels/my-app\")",
         );
       }
-      const resolvedPath = await resolvePanelPath(ctx, source, undefined);
+      const { contextId = currentInvocationContextId(ctx) } = normalizeCheckPanelOptions(options);
+      const resolvedPath = await resolvePanelPath(ctx, source, contextId);
       const result = await typeCheckRpcMethods["typecheck.check"](resolvedPath, undefined, undefined);
       return {
         diagnostics: result.diagnostics,
@@ -102,8 +121,9 @@ export async function activate(ctx: ExtensionContextLike) {
           "Pass the panel source path explicitly, e.g. check(\"panels/my-app\")",
         );
       }
-      const resolvedPanelPath = await resolvePanelPath(ctx, source, contextId);
-      await validateFilePath(ctx, filePath, contextId);
+      const effectiveContextId = contextId ?? currentInvocationContextId(ctx);
+      const resolvedPanelPath = await resolvePanelPath(ctx, source, effectiveContextId);
+      await validateFilePath(ctx, filePath, effectiveContextId);
       return typeCheckRpcMethods["typecheck.check"](resolvedPanelPath, filePath, fileContent);
     },
 
@@ -115,8 +135,9 @@ export async function activate(ctx: ExtensionContextLike) {
       fileContent?: string,
       contextId?: string,
     ) {
-      const resolvedPanelPath = await resolvePanelPath(ctx, panelPath, contextId);
-      await validateFilePath(ctx, filePath, contextId);
+      const effectiveContextId = contextId ?? currentInvocationContextId(ctx);
+      const resolvedPanelPath = await resolvePanelPath(ctx, panelPath, effectiveContextId);
+      await validateFilePath(ctx, filePath, effectiveContextId);
       return typeCheckRpcMethods["typecheck.getTypeInfo"](
         resolvedPanelPath,
         filePath,
@@ -134,8 +155,9 @@ export async function activate(ctx: ExtensionContextLike) {
       fileContent?: string,
       contextId?: string,
     ) {
-      const resolvedPanelPath = await resolvePanelPath(ctx, panelPath, contextId);
-      await validateFilePath(ctx, filePath, contextId);
+      const effectiveContextId = contextId ?? currentInvocationContextId(ctx);
+      const resolvedPanelPath = await resolvePanelPath(ctx, panelPath, effectiveContextId);
+      await validateFilePath(ctx, filePath, effectiveContextId);
       return typeCheckRpcMethods["typecheck.getCompletions"](
         resolvedPanelPath,
         filePath,
