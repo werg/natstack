@@ -47,6 +47,21 @@ const COLORS = {
   connector: "var(--gray-a5)",
 } as const;
 
+function getWindowPositionFromMouseEvent(e: React.MouseEvent): { x: number; y: number } {
+  if (Number.isFinite(e.clientX) && Number.isFinite(e.clientY)) {
+    return {
+      x: Math.round(e.clientX),
+      y: Math.round(e.clientY),
+    };
+  }
+
+  const rect = e.currentTarget.getBoundingClientRect();
+  return {
+    x: Math.round(rect.left),
+    y: Math.round(rect.bottom),
+  };
+}
+
 // ============================================================================
 // Style Helpers
 // ============================================================================
@@ -150,11 +165,7 @@ const SortableTreeItem = memo(
       async (e: React.MouseEvent) => {
         e.preventDefault();
         e.stopPropagation();
-        const { screenX, screenY } = e;
-        const action = await menu.showPanelContext(panel.id, {
-          x: Math.round(screenX),
-          y: Math.round(screenY),
-        });
+        const action = await menu.showPanelContext(panel.id, getWindowPositionFromMouseEvent(e));
         if (action) {
           onPanelAction?.(panel.id, action);
         }
