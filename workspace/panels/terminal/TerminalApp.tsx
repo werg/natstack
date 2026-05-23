@@ -11,6 +11,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CommandLauncher } from "./CommandLauncher.js";
 import { documentTitleForSession } from "./documentTitle.js";
 import { NotificationCenter } from "./NotificationCenter.js";
+import { ScratchOverlay } from "./ScratchOverlay.js";
+import { SCRATCH_BUFFER_MAX_COUNT } from "./migrateState.js";
 import { Settings } from "./Settings.js";
 import { SessionStore, sessionIdsConnectKey, useAllSessions } from "./SessionStore.js";
 import { SplitTree } from "./SplitTree.js";
@@ -34,7 +36,7 @@ import {
 import { useKeybindings } from "./useKeybindings.js";
 import { useShellExtension } from "./useShellExtension.js";
 import { liveSessionCwd } from "./vscodeShellIntegrationMeta.js";
-import type { SessionInfo, SplitNode, TerminalState } from "./types.js";
+import type { ScratchBuffer, SessionInfo, SplitNode, TerminalState } from "./types.js";
 
 declare global {
   interface Window {
@@ -90,6 +92,7 @@ export function TerminalApp() {
   const approvedOpenUrlIdsRef = useRef(new Set<string>());
   const latestStateRef = useRef(state);
   const latestShellRef = useRef(shell);
+  const prevScratchOpenRef = useRef(state.scratchOpen);
   const { toast, showToast } = useToast();
 
   const appearance = state.themeOverride === "auto" ? panelAppearance : state.themeOverride;
@@ -121,6 +124,135 @@ export function TerminalApp() {
   );
   const actions = usePanelActions({ shell, state, sessions, setState, setSessions });
 
+  const openScratch = useCallback(() => {
+    setState((prev) => {
+      const now = Date.now();
+      const activeId = prev.scratchActiveBufferId;
+      const active = activeId
+        ? prev.scratchBuffers.find((buffer) => buffer.bufferId === activeId)
+        : undefined;
+      // Drop empty stale buffers from prior opens (keep the currently active one).
+      const cleaned = prev.scratchBuffers.filter(
+        (buffer) => buffer.text !== "" || buffer.bufferId === activeId
+      );
+      if (active && active.text === "") {
+        return {
+          ...prev,
+          scratchBuffers: cleaned,
+          scratchActiveBufferId: active.bufferId,
+          scratchOpen: true,
+        };
+      }
+      const fresh: ScratchBuffer = {
+        bufferId: crypto.randomUUID(),
+        text: "",
+        createdAt: now,
+        updatedAt: now,
+      };
+      return {
+        ...prev,
+        scratchBuffers: [fresh, ...cleaned].slice(0, SCRATCH_BUFFER_MAX_COUNT),
+        scratchActiveBufferId: fresh.bufferId,
+        scratchOpen: true,
+      };
+    });
+  }, []);
+
+  const setScratchOpen = useCallback((open: boolean) => {
+    if (open) {
+      openScratch();
+      return;
+    }
+    setState((prev) => ({ ...prev, scratchOpen: false }));
+  }, [openScratch]);
+
+  const newScratchBuffer = useCallback(() => {
+    setState((prev) => {
+      const now = Date.now();
+      const fresh: ScratchBuffer = {
+        bufferId: crypto.randomUUID(),
+        text: "",
+        createdAt: now,
+        updatedAt: now,
+      };
+      return {
+        ...prev,
+        scratchBuffers: [fresh, ...prev.scratchBuffers].slice(0, SCRATCH_BUFFER_MAX_COUNT),
+        scratchActiveBufferId: fresh.bufferId,
+      };
+    });
+  }, []);
+
+  const selectScratchBuffer = useCallback((bufferId: string) => {
+    setState((prev) => ({ ...prev, scratchActiveBufferId: bufferId }));
+  }, []);
+
+  const ejectScratchBuffer = useCallback((bufferId: string) => {
+    setState((prev) => {
+      const index = prev.scratchBuffers.findIndex((buffer) => buffer.bufferId === bufferId);
+      if (index === -1) return prev;
+      const remaining = [
+        ...prev.scratchBuffers.slice(0, index),
+        ...prev.scratchBuffers.slice(index + 1),
+      ];
+      if (prev.scratchActiveBufferId !== bufferId) {
+        return { ...prev, scratchBuffers: remaining };
+      }
+      if (remaining.length > 0) {
+        // Pick the buffer that took the ejected slot, else the one before it.
+        const nextIndex = Math.min(index, remaining.length - 1);
+        return {
+          ...prev,
+          scratchBuffers: remaining,
+          scratchActiveBufferId: remaining[nextIndex]!.bufferId,
+        };
+      }
+      const now = Date.now();
+      const fresh: ScratchBuffer = {
+        bufferId: crypto.randomUUID(),
+        text: "",
+        createdAt: now,
+        updatedAt: now,
+      };
+      return {
+        ...prev,
+        scratchBuffers: [fresh],
+        scratchActiveBufferId: fresh.bufferId,
+      };
+    });
+  }, []);
+
+  const commitScratchText = useCallback((bufferId: string, text: string) => {
+    setState((prev) => {
+      let changed = false;
+      const next = prev.scratchBuffers.map((buffer) => {
+        if (buffer.bufferId !== bufferId) return buffer;
+        if (buffer.text === text) return buffer;
+        changed = true;
+        return { ...buffer, text, updatedAt: Date.now() };
+      });
+      if (!changed) return prev;
+      return { ...prev, scratchBuffers: next };
+    });
+  }, []);
+
+  const pasteScratch = useCallback(
+    (bufferId: string, text: string, run: boolean) => {
+      const targetSessionId = latestStateRef.current.focusedSessionId;
+      if (!targetSessionId) {
+        showToast("Open a terminal first");
+        return;
+      }
+      commitScratchText(bufferId, text);
+      const payload = run ? (text.endsWith("\n") ? text : `${text}\n`) : text;
+      void actions.sendText(targetSessionId, payload).catch((err) => {
+        showToast(err instanceof Error ? `Paste failed: ${err.message}` : "Paste failed");
+      });
+      setState((prev) => ({ ...prev, scratchOpen: false }));
+    },
+    [actions, commitScratchText, showToast]
+  );
+
   useEffect(() => {
     document.title = documentTitleForSession(focusedSession);
   }, [focusedSession]);
@@ -145,6 +277,14 @@ export function TerminalApp() {
   useEffect(() => {
     void setStateArgs(state as unknown as Record<string, unknown>);
   }, [state]);
+
+  useEffect(() => {
+    const prev = prevScratchOpenRef.current;
+    prevScratchOpenRef.current = state.scratchOpen;
+    if (prev && !state.scratchOpen) {
+      window.dispatchEvent(new Event("terminal:refocus"));
+    }
+  }, [state.scratchOpen]);
 
   const openInitialSession = useCallback(
     async (force = false): Promise<string | undefined> => {
@@ -404,6 +544,13 @@ export function TerminalApp() {
       showToast("Font 13px");
       setState((prev) => ({ ...prev, fontSize: 13 }));
     },
+    openScratch: () => {
+      if (latestStateRef.current.scratchOpen) {
+        setState((prev) => ({ ...prev, scratchOpen: false }));
+      } else {
+        openScratch();
+      }
+    },
   });
 
   useEffect(() => {
@@ -660,6 +807,7 @@ export function TerminalApp() {
                   zoomedSessionId: prev.zoomedSessionId === sessionId ? undefined : sessionId,
                 }))
               }
+              onOpenScratch={openScratch}
               onRatioChange={(path, ratio) => {
                 setState((prev) => ({
                   ...prev,
@@ -735,6 +883,20 @@ export function TerminalApp() {
           await runCommand(command, target);
         }}
         onBuiltin={runBuiltin}
+      />
+      <ScratchOverlay
+        open={state.scratchOpen}
+        buffers={state.scratchBuffers}
+        activeBufferId={state.scratchActiveBufferId}
+        fontFamily={state.fontFamily}
+        hasFocusedSession={!!focusedSessionId}
+        onOpenChange={setScratchOpen}
+        onNewBuffer={newScratchBuffer}
+        onSelectBuffer={selectScratchBuffer}
+        onEjectBuffer={ejectScratchBuffer}
+        onCommitText={commitScratchText}
+        onPaste={(bufferId, text) => pasteScratch(bufferId, text, false)}
+        onPasteAndRun={(bufferId, text) => pasteScratch(bufferId, text, true)}
       />
     </Theme>
   );

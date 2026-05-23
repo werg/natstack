@@ -30,6 +30,7 @@ export function SplitTree(props: {
   onRestartCommand(sessionId: string): void;
   onFind(sessionId: string): void;
   onZoom(sessionId: string): void;
+  onOpenScratch(): void;
   onRatioChange(path: Array<"a" | "b">, ratio: number): void;
   onNotification(sessionId: string, notification: ParsedNotification): void;
 }) {
@@ -62,6 +63,7 @@ export function SplitTree(props: {
         onRestartCommand={() => props.onRestartCommand(session.sessionId)}
         onFind={() => props.onFind(session.sessionId)}
         onZoom={() => props.onZoom(session.sessionId)}
+        onOpenScratch={props.onOpenScratch}
         onNotification={(notification) => props.onNotification(session.sessionId, notification)}
       />
     );

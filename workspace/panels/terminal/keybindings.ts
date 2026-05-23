@@ -22,6 +22,7 @@ export const defaultKeybindings = {
   paste: "Mod+V",
   clear: "Mod+Shift+L",
   settings: "Mod+,",
+  openScratch: "Mod+E",
 } as const;
 
 export type KeybindingAction = keyof typeof defaultKeybindings;

@@ -1,7 +1,9 @@
-import type { PerSessionState, SplitNode, TerminalNotification, TerminalState } from "./types.js";
+import type { PerSessionState, ScratchBuffer, SplitNode, TerminalNotification, TerminalState } from "./types.js";
 import { defaultKeybindings, sanitizeKeybindingOverrides, type KeybindingAction, type KeybindingOverrides } from "./keybindings.js";
 
-export const TERMINAL_STATE_SCHEMA_VERSION = 1;
+export const TERMINAL_STATE_SCHEMA_VERSION = 2;
+export const SCRATCH_BUFFER_MAX_COUNT = 50;
+export const SCRATCH_BUFFER_MAX_TEXT_BYTES = 1_000_000;
 
 export function defaultTerminalState(): TerminalState {
   return {
@@ -19,6 +21,9 @@ export function defaultTerminalState(): TerminalState {
     pasteMode: "path",
     imagePasteRelative: false,
     keybindings: {},
+    scratchBuffers: [],
+    scratchActiveBufferId: undefined,
+    scratchOpen: false,
     schemaVersion: TERMINAL_STATE_SCHEMA_VERSION,
   };
 }
@@ -28,7 +33,15 @@ export function migrateState(raw: unknown): TerminalState {
   if (!raw || typeof raw !== "object") return defaults;
   const state = raw as Partial<TerminalState> & {
     notifications?: Array<Partial<TerminalNotification> & { message?: string }>;
+    scratchBuffers?: unknown;
+    scratchActiveBufferId?: unknown;
   };
+  const scratchBuffers = migrateScratchBuffers(state.scratchBuffers);
+  const scratchActiveBufferId =
+    typeof state.scratchActiveBufferId === "string" &&
+    scratchBuffers.some((buffer) => buffer.bufferId === state.scratchActiveBufferId)
+      ? state.scratchActiveBufferId
+      : undefined;
   const restoredTree = migrateSplitNode(state.tree);
   const restoredFocus =
     typeof state.focusedSessionId === "string" && containsSession(restoredTree, state.focusedSessionId)
@@ -60,8 +73,31 @@ export function migrateState(raw: unknown): TerminalState {
     pasteMode: isPasteMode(state.pasteMode) ? state.pasteMode : defaults.pasteMode,
     imagePasteRelative: typeof state.imagePasteRelative === "boolean" ? state.imagePasteRelative : defaults.imagePasteRelative,
     keybindings: migrateKeybindings(state.keybindings),
+    scratchBuffers,
+    scratchActiveBufferId,
+    scratchOpen: false,
     schemaVersion: TERMINAL_STATE_SCHEMA_VERSION,
   };
+}
+
+function migrateScratchBuffers(value: unknown): ScratchBuffer[] {
+  if (!Array.isArray(value)) return [];
+  const buffers: ScratchBuffer[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const bufferId = typeof entry["bufferId"] === "string" ? entry["bufferId"] : null;
+    const text = typeof entry["text"] === "string" ? entry["text"] : null;
+    if (!bufferId || text === null) continue;
+    buffers.push({
+      bufferId,
+      text: text.length > SCRATCH_BUFFER_MAX_TEXT_BYTES
+        ? text.slice(0, SCRATCH_BUFFER_MAX_TEXT_BYTES)
+        : text,
+      createdAt: clampNumber(entry["createdAt"], 0, Number.MAX_SAFE_INTEGER, Date.now()),
+      updatedAt: clampNumber(entry["updatedAt"], 0, Number.MAX_SAFE_INTEGER, Date.now()),
+    });
+  }
+  return buffers.slice(0, SCRATCH_BUFFER_MAX_COUNT);
 }
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {

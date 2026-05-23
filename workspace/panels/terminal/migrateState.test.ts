@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { defaultTerminalState, migrateState, TERMINAL_STATE_SCHEMA_VERSION } from "./migrateState.js";
+import {
+  defaultTerminalState,
+  migrateState,
+  SCRATCH_BUFFER_MAX_COUNT,
+  SCRATCH_BUFFER_MAX_TEXT_BYTES,
+  TERMINAL_STATE_SCHEMA_VERSION,
+} from "./migrateState.js";
 
 describe("terminal state migration", () => {
   it("fills defaults for missing or invalid persisted state", () => {
@@ -116,6 +122,64 @@ describe("terminal state migration", () => {
     });
 
     expect(migrated.keybindings).toEqual({});
+  });
+
+  it("supplies empty scratch state when missing from v1 persisted state", () => {
+    const migrated = migrateState({ fontSize: 13 });
+
+    expect(migrated.scratchBuffers).toEqual([]);
+    expect(migrated.scratchActiveBufferId).toBeUndefined();
+    expect(migrated.scratchOpen).toBe(false);
+  });
+
+  it("preserves valid scratch buffers and drops invalid entries", () => {
+    const migrated = migrateState({
+      scratchBuffers: [
+        { bufferId: "b1", text: "echo hi", createdAt: 100, updatedAt: 200 },
+        { bufferId: "", text: "skip" },
+        { bufferId: "b2", text: 42 },
+        null,
+        { bufferId: "b3", text: "", createdAt: 1, updatedAt: 2 },
+      ],
+    });
+
+    expect(migrated.scratchBuffers).toEqual([
+      { bufferId: "b1", text: "echo hi", createdAt: 100, updatedAt: 200 },
+      { bufferId: "b3", text: "", createdAt: 1, updatedAt: 2 },
+    ]);
+  });
+
+  it("clamps scratch buffer text length and stack depth", () => {
+    const longText = "x".repeat(SCRATCH_BUFFER_MAX_TEXT_BYTES + 500);
+    const oversized = Array.from({ length: SCRATCH_BUFFER_MAX_COUNT + 5 }, (_, index) => ({
+      bufferId: `b${index}`,
+      text: index === 0 ? longText : `t${index}`,
+      createdAt: index,
+      updatedAt: index,
+    }));
+    const migrated = migrateState({ scratchBuffers: oversized });
+
+    expect(migrated.scratchBuffers).toHaveLength(SCRATCH_BUFFER_MAX_COUNT);
+    expect(migrated.scratchBuffers[0]?.text.length).toBe(SCRATCH_BUFFER_MAX_TEXT_BYTES);
+  });
+
+  it("keeps scratchActiveBufferId only if it still exists after sanitisation", () => {
+    const validated = migrateState({
+      scratchBuffers: [{ bufferId: "keep", text: "x", createdAt: 1, updatedAt: 1 }],
+      scratchActiveBufferId: "keep",
+    });
+    expect(validated.scratchActiveBufferId).toBe("keep");
+
+    const dropped = migrateState({
+      scratchBuffers: [{ bufferId: "keep", text: "x", createdAt: 1, updatedAt: 1 }],
+      scratchActiveBufferId: "ghost",
+    });
+    expect(dropped.scratchActiveBufferId).toBeUndefined();
+  });
+
+  it("always forces scratchOpen to false on reload", () => {
+    const migrated = migrateState({ scratchOpen: true });
+    expect(migrated.scratchOpen).toBe(false);
   });
 
   it("drops unknown persisted fields instead of carrying them forward", () => {

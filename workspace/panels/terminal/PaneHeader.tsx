@@ -1,5 +1,11 @@
 import { Badge, DropdownMenu, Flex, IconButton, Text } from "@radix-ui/themes";
-import { DotsHorizontalIcon, EnterFullScreenIcon, ViewHorizontalIcon, ViewVerticalIcon } from "@radix-ui/react-icons";
+import {
+  DotsHorizontalIcon,
+  EnterFullScreenIcon,
+  Pencil2Icon,
+  ViewHorizontalIcon,
+  ViewVerticalIcon,
+} from "@radix-ui/react-icons";
 import type { ReactNode } from "react";
 import { headerBackground, headerBorderColor, paneAttentionShadow, severityDotColor } from "./paneChrome.js";
 import { sessionExitText } from "./sessionStatus.js";
@@ -29,6 +35,7 @@ export function PaneHeader(props: {
   onRestartCommand(): void;
   onFind(): void;
   onZoom(): void;
+  onOpenScratch(): void;
 }) {
   const ports = props.session.detectedPorts.slice(0, 3);
   const exitText = sessionExitText(props.session);
@@ -75,6 +82,16 @@ export function PaneHeader(props: {
         ))}
       </Flex>
       <Flex align="center" gap="1">
+        <IconButton
+          size="1"
+          variant="soft"
+          color="indigo"
+          aria-label="Open scratch buffer"
+          title="Scratch buffer — draft text and paste into this terminal"
+          onClick={props.onOpenScratch}
+        >
+          <Pencil2Icon />
+        </IconButton>
         <IconButton size="1" variant="ghost" aria-label="Split right" onClick={props.onSplitRight}><ViewVerticalIcon /></IconButton>
         <IconButton size="1" variant="ghost" aria-label="Split down" onClick={props.onSplitDown}><ViewHorizontalIcon /></IconButton>
         <IconButton size="1" variant="ghost" aria-label="Zoom pane" onClick={props.onZoom}><EnterFullScreenIcon /></IconButton>

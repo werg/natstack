@@ -76,6 +76,13 @@ export interface PerSessionState {
   lastSeenAt: number;
 }
 
+export interface ScratchBuffer {
+  bufferId: string;
+  text: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface TerminalState {
   tree?: SplitNode;
   focusedSessionId?: string;
@@ -92,5 +99,8 @@ export interface TerminalState {
   pasteMode: "path" | "dataUri" | "both";
   imagePasteRelative: boolean;
   keybindings: KeybindingOverrides;
+  scratchBuffers: ScratchBuffer[];
+  scratchActiveBufferId?: string;
+  scratchOpen: boolean;
   schemaVersion: number;
 }

@@ -64,6 +64,7 @@ export function PaneView(props: {
   onRestartCommand(): void;
   onFind(): void;
   onZoom(): void;
+  onOpenScratch(): void;
   onNotification(notification: ParsedNotification): void;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -233,11 +234,16 @@ export function PaneView(props: {
     const paste = () => {
       if (props.focused) void pasteClipboard();
     };
+    const refocus = () => {
+      if (props.focused) requestAnimationFrame(() => terminalRef.current?.focus());
+    };
     window.addEventListener("terminal:copy", copy);
     window.addEventListener("terminal:paste", paste);
+    window.addEventListener("terminal:refocus", refocus);
     return () => {
       window.removeEventListener("terminal:copy", copy);
       window.removeEventListener("terminal:paste", paste);
+      window.removeEventListener("terminal:refocus", refocus);
     };
   }, [
     props.focused,
@@ -512,6 +518,7 @@ export function PaneView(props: {
         onRestartCommand={props.onRestartCommand}
         onFind={() => setFindOpen(true)}
         onZoom={props.onZoom}
+        onOpenScratch={props.onOpenScratch}
       />
       <div
         ref={hostRef}
