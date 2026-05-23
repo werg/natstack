@@ -185,14 +185,19 @@ export function printConnectBanner({
   console.log(`  Gateway:    ${gatewayUrl}`);
   console.log(`  Pair code:  ${pairingCode}`);
   console.log(`  ${deepLinkLabel}:  ${deepLink}`);
-  if (clientCommandLabel) {
-    console.log(`  ${clientCommandLabel}:`);
-    console.log(`    ${createStartRemotePairCommand(gatewayUrl, pairingCode)}`);
-  }
   console.log();
   qrcode.generate(deepLink, { small: true });
   console.log(divider);
-  console.log(`  ${instructions}`);
+  if (clientCommandLabel) {
+    console.log(`  ${clientCommandLabel}:`);
+    console.log(`    ${createStartRemotePairCommand(gatewayUrl, pairingCode)}`);
+    if (instructions) {
+      console.log("");
+      console.log(`  ${instructions}`);
+    }
+  } else {
+    console.log(`  ${instructions}`);
+  }
   console.log(`${divider}\n`);
 }
 

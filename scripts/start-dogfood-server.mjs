@@ -431,7 +431,7 @@ export function runDogfoodServer(argv = process.argv.slice(2)) {
     bannerTitle: "NatStack dogfood server",
     deepLinkLabel: "Pair URL",
     clientCommandLabel: "Client command",
-    instructions: "Connect with pnpm start:remote --pair, mobile pairing, or the Pair URL.",
+    instructions: "Scan the QR for mobile pairing, or run the client command above.",
   };
   if (argv.includes("--help")) {
     printPairHelp(config);
