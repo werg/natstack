@@ -400,7 +400,7 @@
 .inline-action-pill {
   flex: 0 1 auto;
   inline-size: auto;
-  max-inline-size: min(100%, 34rem);
+  max-inline-size: min(100%, 28rem);
   display: inline-flex !important;
   align-items: center;
   flex-wrap: nowrap;
@@ -422,10 +422,10 @@
 
 .inline-action-pill .inline-pill-label {
   flex: 0 0 auto;
-  min-inline-size: 0;
-  max-inline-size: min(70%, 24rem);
-  overflow: hidden;
-  text-overflow: ellipsis;
+  min-inline-size: max-content;
+  max-inline-size: none;
+  overflow: visible;
+  text-overflow: clip;
   white-space: nowrap;
 }
 
