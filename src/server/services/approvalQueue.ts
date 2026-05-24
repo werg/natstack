@@ -337,12 +337,20 @@ export function createApprovalQueue(deps: {
       if (req.dedupKey) {
         return ["extension-batch-custom", req.callerId, req.dedupKey].join("\x00");
       }
-      // Coalesce duplicate reconciles for the same trigger + set onto one prompt.
-      return [
+      // Coalesce duplicate reconciles for the same trigger + set onto one
+      // prompt. Include each extension's source repo/ref/ev and the config
+      // write, so batches that differ only in those (same names) don't collapse
+      // and surface stale consent details.
+      return canonicalKey([
         "extension-batch",
         req.trigger,
-        ...req.extensions.map((e) => e.extensionName).sort(),
-      ].join("\x00");
+        ...req.extensions
+          .slice()
+          .sort((a, b) => a.extensionName.localeCompare(b.extensionName))
+          .flatMap((e) => [e.extensionName, e.source.repo, e.source.ref, e.ev ?? null]),
+        req.configWrite?.repoPath ?? null,
+        req.configWrite?.summary ?? null,
+      ]);
     }
     if (req.kind === "client-config") {
       return [

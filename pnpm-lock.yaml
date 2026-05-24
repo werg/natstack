@@ -322,6 +322,9 @@ importers:
       '@babel/runtime':
         specifier: ^7.29.2
         version: 7.29.2
+      '@natstack/browser-data':
+        specifier: workspace:*
+        version: link:../../packages/browser-data
       '@natstack/rpc':
         specifier: workspace:*
         version: link:../../packages/rpc

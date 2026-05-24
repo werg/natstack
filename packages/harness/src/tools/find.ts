@@ -188,7 +188,9 @@ function isFileToolsExtensionUnavailable(err: unknown): boolean {
   const code = typeof err === "object" && err !== null
     ? (err as { code?: unknown }).code
     : undefined;
-  if (code === "ENOEXT") return true;
+  // ENOEXT = not installed/enabled; ENOTREADY = declared but not yet running.
+  // Both mean the extension can't serve this call, so fall back to runtime-fs.
+  if (code === "ENOEXT" || code === "ENOTREADY") return true;
   const message = err instanceof Error ? err.message : String(err);
   return /Extension @workspace-extensions\/file-tools(?:\.\w+)? invocation failed: Extension is not installed or enabled|Extension is not running/.test(message);
 }

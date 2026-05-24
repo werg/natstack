@@ -152,7 +152,8 @@ function isFileToolsExtensionFallback(err: unknown): boolean {
     const code = typeof err === "object" && err !== null
         ? (err as { code?: unknown }).code
         : undefined;
-    if (code === "ENOEXT" || code === "EIMAGE") return true;
+    // ENOTREADY = declared but not yet running; treat like ENOEXT and fall back.
+    if (code === "ENOEXT" || code === "ENOTREADY" || code === "EIMAGE") return true;
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes("Image reads are handled by the image service path")) return true;
     return /Extension @workspace-extensions\/file-tools(?:\.\w+)? invocation failed: Extension is not installed or enabled|Extension is not running/.test(message);

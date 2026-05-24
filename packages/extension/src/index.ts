@@ -166,7 +166,12 @@ export function createExtensionsClient(rpc: ExtensionsClientRpc): ExtensionsClie
       cached = rpc
         .call("main", "extensions.streamingMethods", [name])
         .then((methods) => new Set((methods as string[] | null) ?? []))
-        .catch(() => new Set<string>());
+        .catch(() => {
+          // Don't pin a transient failure as "no streaming methods" for the
+          // client's lifetime — drop the entry so the next call re-fetches.
+          streamingCache.delete(name);
+          return new Set<string>();
+        });
       streamingCache.set(name, cached);
     }
     return cached;

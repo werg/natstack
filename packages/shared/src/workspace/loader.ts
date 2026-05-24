@@ -557,7 +557,15 @@ function validateDeclaredExtensions(extensions: WorkspaceExtensionDecl[] | undef
     if (!decl || typeof decl.source !== "string" || decl.source.trim().length === 0) {
       throw new Error("meta/natstack.yml: every `extensions` entry needs a non-empty `source`");
     }
-    const key = decl.source.replace(/^workspace\//, "").replace(EXTENSION_SOURCE_NORMALIZE, "");
+    // YAML is untyped at runtime — validate optional fields so e.g.
+    // `enabled: "false"` can't slip through and read as truthy later.
+    if (decl.ref !== undefined && (typeof decl.ref !== "string" || decl.ref.trim().length === 0)) {
+      throw new Error("meta/natstack.yml: `extensions[].ref` must be a non-empty string when provided");
+    }
+    if (decl.enabled !== undefined && typeof decl.enabled !== "boolean") {
+      throw new Error("meta/natstack.yml: `extensions[].enabled` must be a boolean when provided");
+    }
+    const key = decl.source.trim().replace(/^workspace\//, "").replace(EXTENSION_SOURCE_NORMALIZE, "");
     if (seen.has(key)) {
       throw new Error(`meta/natstack.yml: duplicate extension declaration for "${decl.source}"`);
     }
@@ -574,8 +582,8 @@ export function resolveDeclaredExtensions(
   config: WorkspaceConfig,
 ): Array<{ source: string; ref: string; enabled: boolean }> {
   return (config.extensions ?? []).map((decl) => ({
-    source: decl.source,
-    ref: decl.ref ?? "main",
+    source: decl.source.trim(),
+    ref: (decl.ref ?? "main").trim(),
     enabled: decl.enabled ?? true,
   }));
 }
