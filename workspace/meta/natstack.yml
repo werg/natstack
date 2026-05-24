@@ -179,3 +179,4 @@ extensions:
   - source: extensions/@workspace-extensions/file-tools
   - source: extensions/@workspace-extensions/typecheck-service
   - source: extensions/@workspace-extensions/browser-data
+  - source: extensions/@workspace-extensions/shell
