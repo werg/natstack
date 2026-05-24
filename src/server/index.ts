@@ -779,6 +779,8 @@ async function main() {
         // second prompt.
         extensionHostForGateway
           ?.reconcileDeclared(resolveDeclaredExtensions(nextConfig))
+          .then(() => import("@natstack/shared/workspace/extensionRegistry"))
+          .then(({ writeExtensionRegistry }) => writeExtensionRegistry(workspacePath))
           .catch((err: unknown) =>
             console.warn("[Extensions] Failed to reconcile after meta push:", err)
           );
@@ -2250,6 +2252,16 @@ async function main() {
   const extensionHost =
     container.get<import("@natstack/extension-host").ExtensionHost>("extensionHost");
   await extensionHost.reconcileDeclared(resolveDeclaredExtensions(workspaceConfig));
+
+  // Keep the @workspace/runtime extension-registry barrel in sync with the
+  // extensions present in the workspace, so panels type-check
+  // `extensions.use("...")` against the live registry (see extensionRegistry.ts).
+  try {
+    const { writeExtensionRegistry } = await import("@natstack/shared/workspace/extensionRegistry");
+    writeExtensionRegistry(workspacePath);
+  } catch (err) {
+    console.warn("[Extensions] Failed to generate extension registry barrel:", err);
+  }
 
   // ===========================================================================
   // Report ready

@@ -176,3 +176,106 @@ describe("TypeCheckService workspace resolution", () => {
     expect(errors).toHaveLength(0);
   });
 });
+
+describe("TypeCheckService extension registry propagation", () => {
+  // Mirrors the real chain: a panel imports `@workspace/runtime`, whose
+  // extensions surface re-exports the generated registry barrel, which
+  // type-only re-exports each extension's `Api`. That pulls the extension's
+  // `declare module "@natstack/extension"` augmentation into the panel's
+  // program, so `extensions.use("...")` resolves — without the panel importing
+  // the extension directly.
+  function buildRuntimeWorkspace(opts: { withBarrel: boolean }): { root: string; panelFile: string } {
+    const root = createTempDir("typecheck-registry-");
+    writeFile(path.join(root, "pnpm-workspace.yaml"), "packages:\n  - 'packages/*'\n  - 'extensions/*'\n");
+
+    // @natstack/extension: empty registry + use() keyed on it.
+    writeFile(
+      path.join(root, "packages", "extension", "package.json"),
+      JSON.stringify({ name: "@natstack/extension", type: "module", exports: { ".": "./index.ts" } }),
+    );
+    writeFile(
+      path.join(root, "packages", "extension", "index.ts"),
+      [
+        "export interface WorkspaceExtensions {}",
+        "export type ExtensionName = keyof WorkspaceExtensions & string;",
+        "export function use<K extends ExtensionName>(_n: K): WorkspaceExtensions[K] {",
+        "  return undefined as WorkspaceExtensions[K];",
+        "}",
+      ].join("\n"),
+    );
+
+    // Extension package that self-registers.
+    writeFile(
+      path.join(root, "extensions", "foo", "package.json"),
+      JSON.stringify({ name: "@ext/foo", type: "module", exports: { ".": "./index.ts" } }),
+    );
+    writeFile(
+      path.join(root, "extensions", "foo", "index.ts"),
+      [
+        "export type Api = { greet(): string };",
+        'declare module "@natstack/extension" {',
+        '  interface WorkspaceExtensions { "@ext/foo": Api }',
+        "}",
+      ].join("\n"),
+    );
+
+    // @workspace/runtime: re-exports use(), and (optionally) the barrel.
+    writeFile(
+      path.join(root, "packages", "runtime", "package.json"),
+      JSON.stringify({ name: "@workspace/runtime", type: "module", exports: { ".": "./src/index.ts" } }),
+    );
+    writeFile(
+      path.join(root, "packages", "runtime", "src", "registry.ts"),
+      'export type { Api as Foo } from "@ext/foo";\n',
+    );
+    writeFile(
+      path.join(root, "packages", "runtime", "src", "index.ts"),
+      [
+        'export { use } from "@natstack/extension";',
+        ...(opts.withBarrel ? ['export type * from "./registry.js";'] : []),
+      ].join("\n"),
+    );
+
+    // The panel: uses the registry without importing the extension.
+    writeFile(
+      path.join(root, "packages", "panel", "package.json"),
+      JSON.stringify({ name: "@workspace/panel", type: "module" }),
+    );
+    const panelFile = path.join(root, "packages", "panel", "index.ts");
+    writeFile(
+      panelFile,
+      [
+        'import { use } from "@workspace/runtime";',
+        'const greeting: string = use("@ext/foo").greet();',
+        "void greeting;",
+      ].join("\n"),
+    );
+    return { root, panelFile };
+  }
+
+  it("resolves use() through the runtime barrel without importing the extension", () => {
+    const { root, panelFile } = buildRuntimeWorkspace({ withBarrel: true });
+    const service = new TypeCheckService({
+      panelPath: path.join(root, "packages", "panel"),
+      skipSuggestions: true,
+      disableTsconfigDiscovery: true,
+    });
+    service.updateFile(panelFile, fs.readFileSync(panelFile, "utf-8"));
+
+    const result = service.check(panelFile);
+    expect(result.diagnostics.filter((d) => d.severity === "error")).toHaveLength(0);
+  });
+
+  it("without the barrel the registry is empty and use() is rejected", () => {
+    const { root, panelFile } = buildRuntimeWorkspace({ withBarrel: false });
+    const service = new TypeCheckService({
+      panelPath: path.join(root, "packages", "panel"),
+      skipSuggestions: true,
+      disableTsconfigDiscovery: true,
+    });
+    service.updateFile(panelFile, fs.readFileSync(panelFile, "utf-8"));
+
+    const result = service.check(panelFile);
+    expect(result.diagnostics.filter((d) => d.severity === "error").length).toBeGreaterThan(0);
+  });
+});
