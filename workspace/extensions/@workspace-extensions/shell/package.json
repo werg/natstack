@@ -7,7 +7,10 @@
     "displayName": "Shell",
     "entry": "index.ts",
     "sourcemap": true,
-    "extension": { "activationEvents": ["*"] }
+    "extension": {
+      "activationEvents": ["*"],
+      "streamingMethods": ["attach", "watchSessionInfo", "watchAllSessionInfo"]
+    }
   },
   "dependencies": {
     "node-pty": "^1.0.0",

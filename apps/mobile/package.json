@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@babel/runtime": "^7.29.2",
+    "@natstack/browser-data": "workspace:*",
     "@natstack/rpc": "workspace:*",
     "@natstack/shared": "workspace:*",
     "@notifee/react-native": "^9.1.8",

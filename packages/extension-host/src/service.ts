@@ -62,7 +62,7 @@ interface BuildSystemLike {
       path: string;
       dependencies: Record<string, string>;
       internalDeps: string[];
-      manifest: { displayName?: string; extension?: { activationEvents?: string[] } };
+      manifest: { displayName?: string; extension?: { activationEvents?: string[]; streamingMethods?: string[] } };
     }>;
   };
   onPushBuild(callback: (source: string) => void): void;
@@ -434,6 +434,7 @@ export class ExtensionHost {
       methods: {
         invoke: { args: z.tuple([z.string(), z.string(), z.array(z.unknown())]) },
         invokeStream: { args: z.tuple([z.string(), z.string(), z.array(z.unknown())]) },
+        streamingMethods: { args: z.tuple([z.string()]) },
         list: { args: z.tuple([]) },
         on: { args: z.tuple([z.string(), z.string()]) },
         ready: { args: z.tuple([z.object({ methods: z.array(z.string()), hasFetch: z.boolean() })]) },
@@ -454,6 +455,8 @@ export class ExtensionHost {
         return this.invoke(ctx, args[0] as string, args[1] as string, args[2] as unknown[]);
       case "invokeStream":
         return this.invokeStream(ctx, args[0] as string, args[1] as string, args[2] as unknown[]);
+      case "streamingMethods":
+        return this.streamingMethodsFor(args[0] as string);
       case "list":
         return this.registry.list();
       case "on":
@@ -533,6 +536,20 @@ export class ExtensionHost {
       throw wrapped;
     } finally {
       this.clearTrackedInvocation(invocation);
+    }
+  }
+
+  /**
+   * Streaming method names declared in the extension's manifest. Consumers use
+   * this to route the right methods through `invokeStream` without hardcoding
+   * the set at the call site. Unknown extensions return an empty list.
+   */
+  streamingMethodsFor(name: string): string[] {
+    try {
+      const node = this.findExtensionNode(name);
+      return node.manifest.extension?.streamingMethods ?? [];
+    } catch {
+      return [];
     }
   }
 

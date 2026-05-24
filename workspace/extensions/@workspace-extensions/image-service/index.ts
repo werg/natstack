@@ -26,6 +26,14 @@ function toUint8Array(value: unknown): Uint8Array {
   throw new Error("image-service: expected binary data");
 }
 
+/** Public API surface of this extension — the awaited return of {@link activate}. */
+export type Api = Awaited<ReturnType<typeof activate>>;
+declare module "@natstack/extension" {
+  interface WorkspaceExtensions {
+    "@workspace-extensions/image-service": Api;
+  }
+}
+
 export async function activate(ctx: { log: { info(message: string): void } }) {
   ctx.log.info("image-service activating");
   return {

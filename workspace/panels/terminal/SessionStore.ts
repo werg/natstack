@@ -72,13 +72,14 @@ export class SessionStore {
   }
 
   connect(shell: ShellApi, fallbackSessionIds: string[] = []): () => void {
-    const nextKey = shell.watchAllSessionInfo ? "bulk" : `per-session:${sessionIdsConnectKey(fallbackSessionIds)}`;
+    const hasBulk = typeof shell.watchAllSessionInfo === "function";
+    const nextKey = hasBulk ? "bulk" : `per-session:${sessionIdsConnectKey(fallbackSessionIds)}`;
     if (this.shell === shell && this.abort && this.connectKey === nextKey) return () => {};
     this.disconnect();
     this.shell = shell;
     this.connectKey = nextKey;
     this.abort = new AbortController();
-    if (shell.watchAllSessionInfo) {
+    if (hasBulk) {
       void this.readBulk(shell, this.abort.signal);
     } else {
       void this.readPerSession(shell, fallbackSessionIds, this.abort.signal);

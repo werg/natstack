@@ -106,6 +106,18 @@
       "@workspace-extensions/shell": [
         "workspace/extensions/@workspace-extensions/shell/index.ts"
       ],
+      "@workspace-extensions/file-tools": [
+        "workspace/extensions/@workspace-extensions/file-tools/index.ts"
+      ],
+      "@workspace-extensions/image-service": [
+        "workspace/extensions/@workspace-extensions/image-service/index.ts"
+      ],
+      "@workspace-extensions/browser-data": [
+        "workspace/extensions/@workspace-extensions/browser-data/index.ts"
+      ],
+      "@workspace-extensions/typecheck-service": [
+        "workspace/extensions/@workspace-extensions/typecheck-service/index.ts"
+      ],
       "@workspace-panels/email": [
         "workspace/panels/email/index.tsx"
       ],

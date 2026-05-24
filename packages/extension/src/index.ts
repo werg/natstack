@@ -67,20 +67,131 @@ export interface RegistryEntry {
   lastError: string | null;
 }
 
+/**
+ * Open registry of the workspace's installed extensions, mapping each
+ * extension's package name to its public API type. Each extension augments
+ * this interface from its own module:
+ *
+ * ```ts
+ * export type Api = Awaited<ReturnType<typeof activate>>;
+ * declare module "@natstack/extension" {
+ *   interface WorkspaceExtensions { "@workspace-extensions/foo": Api; }
+ * }
+ * ```
+ *
+ * `ExtensionsClient.use` is keyed on `keyof WorkspaceExtensions`, so a
+ * registered name infers its API type and an unregistered name is a compile
+ * error. There is deliberately no `string` fallback.
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface WorkspaceExtensions {}
+
+/** Name of any extension registered in {@link WorkspaceExtensions}. */
+export type ExtensionName = keyof WorkspaceExtensions & string;
+
 export interface ExtensionsClient {
   /**
-   * Create a typed extension client. Methods default to ordinary unary RPC.
-   * Declare Response/ReadableStream-returning methods in `streamingMethods` so the proxy routes
-   * them through `extensions.invokeStream` and preserves incremental response bodies.
+   * Create a typed client for a registered extension. The returned object's
+   * methods are the extension's `activate` return type. Streaming methods
+   * (those returning `Response`) are declared by the extension's manifest and
+   * routed through `extensions.invokeStream` automatically; pass
+   * `options.streamingMethods` only to override that resolution.
    */
-  use<T extends object>(name: string, options?: { streamingMethods?: Iterable<string> }): T;
-  /** Convenience alias for `use(name, { streamingMethods })`. */
-  useWithStreams<T extends object>(name: string, streamingMethods: Iterable<string>): T;
-  streamCall(name: string, method: string, args: unknown[]): Promise<Response>;
-  on(name: string, event: string, cb: (payload: unknown) => void): Disposable;
+  use<K extends ExtensionName>(
+    name: K,
+    options?: { streamingMethods?: Iterable<string> },
+  ): WorkspaceExtensions[K];
+  on(name: ExtensionName, event: string, cb: (payload: unknown) => void): Disposable;
   list(): Promise<RegistryEntry[]>;
   /** Restart the active approved build (dev/diagnostics). Approval-gated. */
-  reload(name: string): Promise<void>;
+  reload(name: ExtensionName): Promise<void>;
+}
+
+/**
+ * Minimal RPC surface the extensions client needs. Both the workspace runtime
+ * (`RpcCaller`) and host-side callers (harness, etc.) satisfy this shape.
+ */
+export interface ExtensionsClientRpc {
+  call(target: string, method: string, args: unknown[]): Promise<unknown>;
+  streamCall(target: string, method: string, args: unknown[]): Promise<Response>;
+  onEvent?: (event: string, listener: (fromId: string, payload: unknown) => void) => () => void;
+}
+
+const IGNORED_PROXY_PROPS = new Set<PropertyKey>([
+  "then",
+  "catch",
+  "finally",
+  "constructor",
+  Symbol.toPrimitive,
+  Symbol.toStringTag,
+  "inspect",
+  "toJSON",
+]);
+
+/**
+ * Build the invocation proxy for a single extension. Method access becomes a
+ * unary `extensions.invoke` call, or `extensions.invokeStream` when the method
+ * is in `resolveStreaming(...)`. The proxy methods are async so streaming
+ * resolution (which may await the registry) never races the first call.
+ */
+export function createExtensionProxy<T extends object>(
+  rpc: Pick<ExtensionsClientRpc, "call" | "streamCall">,
+  name: string,
+  resolveStreaming: (method: string) => boolean | Promise<boolean>,
+): T {
+  return new Proxy(Object.create(null), {
+    get(_target, prop) {
+      if (IGNORED_PROXY_PROPS.has(prop) || typeof prop !== "string") return undefined;
+      return async (...args: unknown[]) => {
+        const streaming = await resolveStreaming(prop);
+        return streaming
+          ? rpc.streamCall("main", "extensions.invokeStream", [name, prop, args])
+          : rpc.call("main", "extensions.invoke", [name, prop, args]);
+      };
+    },
+  }) as T;
+}
+
+/**
+ * Construct the canonical typed extensions client over any
+ * {@link ExtensionsClientRpc}. Streaming-method routing is resolved from the
+ * extension manifest via `extensions.streamingMethods`, cached per client, and
+ * overridable through `use(name, { streamingMethods })`.
+ */
+export function createExtensionsClient(rpc: ExtensionsClientRpc): ExtensionsClient {
+  const streamingCache = new Map<string, Promise<Set<string>>>();
+  const declaredStreaming = (name: string): Promise<Set<string>> => {
+    let cached = streamingCache.get(name);
+    if (!cached) {
+      cached = rpc
+        .call("main", "extensions.streamingMethods", [name])
+        .then((methods) => new Set((methods as string[] | null) ?? []))
+        .catch(() => new Set<string>());
+      streamingCache.set(name, cached);
+    }
+    return cached;
+  };
+  const client: ExtensionsClient = {
+    use(name, options) {
+      const override = options?.streamingMethods ? new Set(options.streamingMethods) : null;
+      return createExtensionProxy(
+        rpc,
+        name,
+        override ? (method) => override.has(method) : (method) => declaredStreaming(name).then((s) => s.has(method)),
+      ) as WorkspaceExtensions[typeof name];
+    },
+    on(name, event, cb) {
+      const eventName = `extensions:${name}::${event}`;
+      const unsubscribe = rpc.onEvent
+        ? rpc.onEvent(`event:${eventName}`, (_fromId, payload) => cb(payload))
+        : () => {};
+      void rpc.call("main", "extensions.on", [name, event]);
+      return { dispose: unsubscribe };
+    },
+    list: () => rpc.call("main", "extensions.list", []) as Promise<RegistryEntry[]>,
+    reload: (name) => rpc.call("main", "extensions.reload", [name]) as Promise<void>,
+  };
+  return client;
 }
 
 export interface ExtensionFileStats {

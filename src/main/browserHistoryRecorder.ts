@@ -1,4 +1,5 @@
 import { createDevLogger } from "@natstack/dev-log";
+import { createBrowserDataRpcClient, type BrowserDataClient } from "@natstack/browser-data";
 import {
   canonicalizeBrowserHistoryUrl,
   type BrowserNavigationIntent,
@@ -13,8 +14,11 @@ export type { BrowserNavigationIntent };
 export class BrowserHistoryRecorder {
   private readonly pendingIntent = new Map<string, BrowserNavigationIntent>();
   private readonly recentRecords = new Map<string, number>();
+  private readonly browserData: BrowserDataClient;
 
-  constructor(private readonly serverClient: ServerClient) {}
+  constructor(serverClient: ServerClient) {
+    this.browserData = createBrowserDataRpcClient(serverClient);
+  }
 
   markNext(panelId: string, intent: BrowserNavigationIntent): void {
     this.pendingIntent.set(panelId, intent);
@@ -30,20 +34,14 @@ export class BrowserHistoryRecorder {
     const previous = this.recentRecords.get(key);
     if (previous && now - previous < DUPLICATE_WINDOW_MS) return;
     this.recentRecords.set(key, now);
-    void this.serverClient
-      .call("extensions", "invoke", [
-        "@workspace-extensions/browser-data",
-        "recordHistoryVisit",
-        [
-          {
-            url,
-            title,
-            transition,
-            typed: Boolean(intent.typed),
-            visitTime: now,
-          },
-        ],
-      ])
+    void this.browserData.history
+      .recordVisit({
+        url,
+        title,
+        transition,
+        typed: Boolean(intent.typed),
+        visitTime: now,
+      })
       .catch((error: unknown) => {
         log.warn(
           `Failed to record browser history: ${error instanceof Error ? error.message : String(error)}`
@@ -53,18 +51,12 @@ export class BrowserHistoryRecorder {
 
   updateTitle(url: string, title: string): void {
     if (!/^https?:\/\//i.test(url) || !title.trim()) return;
-    void this.serverClient
-      .call("extensions", "invoke", [
-        "@workspace-extensions/browser-data",
-        "updateHistoryTitle",
-        [
-          {
-            url,
-            title,
-            observedAt: Date.now(),
-          },
-        ],
-      ])
+    void this.browserData.history
+      .updateTitle({
+        url,
+        title,
+        observedAt: Date.now(),
+      })
       .catch((error: unknown) => {
         log.warn(
           `Failed to update browser history title: ${error instanceof Error ? error.message : String(error)}`

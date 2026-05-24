@@ -1,30 +1,8 @@
 import type { KeybindingOverrides } from "./keybindings.js";
 
-export interface ShellApi {
-  exec(req: { command: string; args?: string[]; cwd?: string; shell?: boolean }): Promise<{ exitCode: number | null; stdout: string; stderr: string }>;
-  open(req: { command?: string; args?: string[]; cwd?: string; cols?: number; rows?: number; label?: string }): Promise<{ sessionId: string }>;
-  write(sessionId: string, data: string): Promise<void>;
-  acknowledgeDataEvent?(sessionId: string, charCount: number): Promise<void>;
-  resize(sessionId: string, cols: number, rows: number): Promise<void>;
-  kill(sessionId: string, signal?: "SIGINT" | "SIGTERM" | "SIGKILL" | "SIGHUP"): Promise<void>;
-  list(): Promise<SessionInfo[]>;
-  get(sessionId: string): Promise<SessionInfo>;
-  getSessionInfo(sessionId: string): Promise<SessionInfo>;
-  watchSessionInfo(sessionId: string): Promise<Response>;
-  watchAllSessionInfo?(): Promise<Response>;
-  attach(sessionId: string, opts?: { after?: string }): Promise<Response>;
-  awaitExit(sessionId: string): Promise<{ exitCode: number | null; signal?: string }>;
-  getScrollback(sessionId: string, maxBytes?: number): Promise<{ text: string; cursor: string }>;
-  dispose?(sessionId: string): Promise<void>;
-  restart?(sessionId: string, opts?: { cols?: number; rows?: number }): Promise<{ sessionId: string }>;
-  clearScrollback?(sessionId: string): Promise<void>;
-  setScrollbackLimit?(sessionId: string, maxBytes: number): Promise<void>;
-  stashScratch?(bytes: Uint8Array, ext: string): Promise<{ absolutePath: string; workspaceRelative: string }>;
-  setMeta?(sessionId: string, key: string, value: unknown): Promise<void>;
-  getMeta?(sessionId: string, key?: string): Promise<unknown>;
-  deleteMeta?(sessionId: string, key: string): Promise<void>;
-  setLabel?(sessionId: string, label: string): Promise<void>;
-}
+// The shell extension's public API is the single source of truth; the terminal
+// panel consumes it under the local `ShellApi` name.
+export type { Api as ShellApi } from "@workspace-extensions/shell";
 
 export interface SessionInfo {
   sessionId: string;

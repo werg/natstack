@@ -74,6 +74,7 @@ export function validateExtensionManifestBlock(
   const extension = record["extension"] as {
     activationEvents?: unknown;
     dependencyMode?: unknown;
+    streamingMethods?: unknown;
   } | undefined;
   const events = extension?.activationEvents;
   if (events !== undefined) {
@@ -94,6 +95,16 @@ export function validateExtensionManifestBlock(
     throw new ExtensionManifestError(
       `Extension ${options.unitName} dependencyMode must be "auto", "bundle", or "external"`,
       "MANIFEST_DEPENDENCY_MODE",
+    );
+  }
+  const streamingMethods = extension?.streamingMethods;
+  if (
+    streamingMethods !== undefined
+    && (!Array.isArray(streamingMethods) || streamingMethods.some((m) => typeof m !== "string"))
+  ) {
+    throw new ExtensionManifestError(
+      `Extension ${options.unitName} streamingMethods must be an array of method names`,
+      "MANIFEST_STREAMING_METHODS",
     );
   }
 }

@@ -84,6 +84,14 @@ const SHELL_ONLY_METHODS = new Set([
   "clearCookies",
 ]);
 
+/** Public API surface of this extension — the awaited return of {@link activate}. */
+export type Api = Awaited<ReturnType<typeof activate>>;
+declare module "@natstack/extension" {
+  interface WorkspaceExtensions {
+    "@workspace-extensions/browser-data": Api;
+  }
+}
+
 export async function activate(ctx: ExtensionContextLike) {
   ctx.log.info("browser-data extension activating");
   ctx.health?.healthy({ summary: "Browser data extension ready" });

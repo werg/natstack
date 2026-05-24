@@ -31,6 +31,7 @@ import {
   type DurableObjectContext,
   type DORef,
 } from "@workspace/runtime/worker";
+import { createExtensionsClient } from "@natstack/extension";
 import type {
   Attachment,
   ChannelEvent,
@@ -4022,19 +4023,15 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
   ): Promise<ImageContent[] | undefined> {
     if (!attachments || attachments.length === 0) return undefined;
     const images: ImageContent[] = [];
+    const imageService = createExtensionsClient(this.rpc).use(IMAGE_SERVICE_EXTENSION);
     for (const att of attachments) {
       if (!att.mimeType?.startsWith("image/")) continue;
       try {
         const bytes = Buffer.from(att.data, "base64");
-        const resized = await this.rpc.call<{
-          data: Uint8Array;
-          mimeType: string;
-          wasResized: boolean;
-        }>("main", "extensions.invoke", [
-          IMAGE_SERVICE_EXTENSION,
-          "resize",
-          [bytes, att.mimeType, { maxWidth: 2000, maxHeight: 2000 }],
-        ]);
+        const resized = await imageService.resize(bytes, att.mimeType, {
+          maxWidth: 2000,
+          maxHeight: 2000,
+        });
         images.push({
           type: "image",
           mimeType: resized.mimeType,

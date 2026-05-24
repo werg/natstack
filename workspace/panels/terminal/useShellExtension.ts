@@ -4,17 +4,11 @@ import { SessionStore, sessionIdsConnectKey, useAllSessions } from "./SessionSto
 import type { SessionInfo, ShellApi } from "./types.js";
 
 const SHELL_EXTENSION = "@workspace-extensions/shell";
-const STREAMING_METHODS = new Set<string>([
-  "attach",
-  "watchSessionInfo",
-  "watchAllSessionInfo",
-]);
 
 export function useShellExtension(): ShellApi {
-  return useMemo(
-    () => extensions.use<ShellApi>(SHELL_EXTENSION, { streamingMethods: STREAMING_METHODS }),
-    []
-  );
+  // Streaming methods are declared by the shell extension's manifest and
+  // resolved by the client; no call-site declaration needed.
+  return useMemo(() => extensions.use(SHELL_EXTENSION), []);
 }
 
 export function useAllSessionInfo(shell: ShellApi, sessionIds: string[] = []): Record<string, SessionInfo> {

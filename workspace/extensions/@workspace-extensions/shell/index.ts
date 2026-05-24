@@ -89,6 +89,14 @@ async function requireApproval(
   }
 }
 
+/** Public API surface of this extension — the awaited return of {@link activate}. */
+export type Api = Awaited<ReturnType<typeof activate>>;
+declare module "@natstack/extension" {
+  interface WorkspaceExtensions {
+    "@workspace-extensions/shell": Api;
+  }
+}
+
 export async function activate(ctx: ExtensionContext) {
   const workspace = await ctx.workspace.getInfo();
   let snug!: SnugServer;
@@ -340,6 +348,10 @@ export async function activate(ctx: ExtensionContext) {
     async deleteMeta(sessionId: string, key: string) {
       if (isReservedMetaKey(key)) throw error("EACCES", `Reserved shell metadata key: ${key}`);
       sessions.deleteMeta(sessions.requireOwner(sessionId, currentOwner(ctx).callerId), key);
+    },
+
+    async setLabel(sessionId: string, label: string) {
+      sessions.setLabel(sessions.requireOwner(sessionId, currentOwner(ctx).callerId), label);
     },
   };
 }

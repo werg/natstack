@@ -39,6 +39,12 @@ export interface PackageManifest {
      * dependencies and externalize packages that need runtime assets/native code.
      */
     dependencyMode?: "auto" | "bundle" | "external";
+    /**
+     * API methods that return a streaming `Response` and must be routed through
+     * `extensions.invokeStream`. Declared here so consumers never have to know
+     * the extension's internals — the client resolves them automatically.
+     */
+    streamingMethods?: string[];
   };
   /** Future shared manifest discriminator for worker units. */
   worker?: Record<string, unknown>;

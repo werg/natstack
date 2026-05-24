@@ -20,6 +20,14 @@ import {
   type PanelAddressOptions,
   type PanelRepoState,
 } from "@natstack/shared/panelChrome";
+import {
+  createBrowserDataRpcClient,
+  type BrowserDataClient,
+} from "@natstack/browser-data/client/browserDataRpcClient";
+import type {
+  RecordHistoryVisitRequest,
+  UpdateHistoryTitleRequest,
+} from "@natstack/browser-data/types";
 import { createBridgeAdapter, type MobilePanelRuntimeHost } from "./bridgeAdapter";
 import { MobileTransport, type ConnectionStatus } from "./mobileTransport";
 import { createMobileShellCore } from "../shellCore/createMobileShellCore";
@@ -35,6 +43,7 @@ class MobilePanels {
   private panelManager: PanelManager | null = null;
   private registryInstance: PanelRegistry | null = null;
   private bridgeAdapterInstance: ReturnType<typeof createBridgeAdapter> | null = null;
+  private readonly browserData: BrowserDataClient;
   constructor(
     private readonly deps: {
       serverUrl: string;
@@ -43,7 +52,12 @@ class MobilePanels {
       navigateToPanel: (panelId: string) => void;
       clientSessionId: string;
     }
-  ) {}
+  ) {
+    this.browserData = createBrowserDataRpcClient({
+      call: (service, method, args) =>
+        this.deps.transport.call("main", `${service}.${method}`, args),
+    });
+  }
   get registry(): PanelRegistry {
     if (!this.registryInstance) throw new Error("Panels not initialized");
     return this.registryInstance;
@@ -285,40 +299,18 @@ class MobilePanels {
       panels: this.getTree(),
       browserData: {
         searchHistoryForAutocomplete: (searchQuery, limit) =>
-          this.invokeBrowserData<Record<string, unknown>[]>("searchHistoryForAutocomplete", [
-            { query: searchQuery, limit },
-          ]),
-        getHistory: (historyQuery) =>
-          this.invokeBrowserData<Record<string, unknown>[]>("getHistory", [historyQuery]),
-        searchBookmarks: (searchQuery) =>
-          this.invokeBrowserData<Record<string, unknown>[]>("searchBookmarks", [searchQuery]),
-        getSearchEngines: () =>
-          this.invokeBrowserData<Record<string, unknown>[]>("getSearchEngines", []),
+          this.browserData.history.searchForAutocomplete(searchQuery, limit),
+        getHistory: (historyQuery) => this.browserData.history.get(historyQuery),
+        searchBookmarks: (searchQuery) => this.browserData.bookmarks.search(searchQuery),
+        getSearchEngines: () => this.browserData.searchEngines.getAll(),
       },
     });
   }
-  async recordHistoryVisit(request: {
-    url: string;
-    title?: string;
-    transition?: string;
-    visitTime?: number;
-    typed?: boolean;
-  }): Promise<void> {
-    await this.invokeBrowserData("recordHistoryVisit", [request]);
+  async recordHistoryVisit(request: RecordHistoryVisitRequest): Promise<void> {
+    await this.browserData.history.recordVisit(request);
   }
-  async updateHistoryTitle(request: {
-    url: string;
-    title: string;
-    observedAt?: number;
-  }): Promise<void> {
-    await this.invokeBrowserData("updateHistoryTitle", [request]);
-  }
-  private invokeBrowserData<T = unknown>(method: string, args: unknown[]): Promise<T> {
-    return this.deps.transport.call<T>("main", "extensions.invoke", [
-      "@workspace-extensions/browser-data",
-      method,
-      args,
-    ]);
+  async updateHistoryTitle(request: UpdateHistoryTitleRequest): Promise<void> {
+    await this.browserData.history.updateTitle(request);
   }
   async updateTheme(theme: ThemeAppearance): Promise<void> {
     this.requireManager().setCurrentTheme(theme);

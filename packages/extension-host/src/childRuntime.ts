@@ -13,6 +13,11 @@ import {
   type StreamingMethodFrame,
 } from "@natstack/rpc";
 import type { WsClientMessage, WsServerMessage } from "@natstack/shared/ws/protocol";
+import {
+  createExtensionProxy,
+  type ExtensionsClient,
+  type RegistryEntry,
+} from "@natstack/extension";
 
 import type { ExtensionInvocation } from "./types.js";
 import {
@@ -135,38 +140,31 @@ function serviceProxy(service: string): Record<string, (...args: unknown[]) => P
   });
 }
 
-function createExtensionsClient() {
-  const createExtensionProxy = <T extends object>(
-    extensionName: string,
-    streamingMethods: ReadonlySet<string> = new Set()
-  ): T =>
-    new Proxy(Object.create(null), {
-      get(_target, prop) {
-        if (
-          typeof prop !== "string"
-          || prop === "then"
-          || prop === "toJSON"
-          || prop === "inspect"
-        ) {
-          return undefined;
-        }
-        if (streamingMethods.has(prop)) {
-          return (...args: unknown[]) =>
-            getRuntimeBridge().streamCall("main", "extensions.invokeStream", [extensionName, prop, args]);
-        }
-        return (...args: unknown[]) =>
-          rpcCall("extensions.invoke", [extensionName, prop, args]);
-      },
-    }) as T;
-  return {
-    use<T extends object>(extensionName: string, options?: { streamingMethods?: Iterable<string> }): T {
-      return createExtensionProxy<T>(extensionName, new Set(options?.streamingMethods ?? []));
-    },
-    useWithStreams<T extends object>(extensionName: string, streamingMethods: Iterable<string>): T {
-      return createExtensionProxy<T>(extensionName, new Set(streamingMethods));
-    },
-    streamCall(name: string, method: string, args: unknown[]) {
-      return getRuntimeBridge().streamCall("main", "extensions.invokeStream", [name, method, args]);
+function createExtensionsClient(): ExtensionsClient {
+  const proxyRpc = {
+    call: (_target: string, method: string, args: unknown[]) => rpcCall(method, args),
+    streamCall: (_target: string, method: string, args: unknown[]) =>
+      getRuntimeBridge().streamCall("main", method, args),
+  };
+  const streamingCache = new Map<string, Promise<Set<string>>>();
+  const declaredStreaming = (name: string): Promise<Set<string>> => {
+    let cached = streamingCache.get(name);
+    if (!cached) {
+      cached = rpcCall<string[] | null>("extensions.streamingMethods", [name])
+        .then((methods) => new Set(methods ?? []))
+        .catch(() => new Set<string>());
+      streamingCache.set(name, cached);
+    }
+    return cached;
+  };
+  const client: ExtensionsClient = {
+    use(name, options) {
+      const override = options?.streamingMethods ? new Set(options.streamingMethods) : null;
+      return createExtensionProxy(
+        proxyRpc,
+        name,
+        override ? (method) => override.has(method) : (method) => declaredStreaming(name).then((s) => s.has(method)),
+      ) as never;
     },
     on(targetName: string, event: string, cb: (payload: unknown) => void) {
       const eventName = `extensions:${targetName}::${event}`;
@@ -193,9 +191,10 @@ function createExtensionsClient() {
         },
       };
     },
-    list: () => rpcCall("extensions.list", []),
-    reload: (name: string) => rpcCall("extensions.reload", [name]),
+    list: () => rpcCall<RegistryEntry[]>("extensions.list", []),
+    reload: (name) => rpcCall<void>("extensions.reload", [name]),
   };
+  return client;
 }
 
 function encodeBinary(data: Uint8Array): BinaryEnvelope {

@@ -87,6 +87,14 @@ function normalizeCheckPanelOptions(options?: CheckPanelOptions | string): Check
   return options;
 }
 
+/** Public API surface of this extension — the awaited return of {@link activate}. */
+export type Api = Awaited<ReturnType<typeof activate>>;
+declare module "@natstack/extension" {
+  interface WorkspaceExtensions {
+    "@workspace-extensions/typecheck-service": Api;
+  }
+}
+
 export async function activate(ctx: ExtensionContextLike) {
   ctx.log.info("typecheck-service activating");
   return {

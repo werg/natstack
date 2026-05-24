@@ -160,8 +160,6 @@ export const panelRuntimeSurface: RuntimeSurface = {
     ]),
     extensions: namespaceEntry([
       "use",
-      "useWithStreams",
-      "streamCall",
       "on",
       "list",
       "install",

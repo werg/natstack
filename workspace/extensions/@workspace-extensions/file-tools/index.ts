@@ -227,6 +227,14 @@ function codedError(code: string, message: string): Error {
   return Object.assign(new Error(message), { code });
 }
 
+/** Public API surface of this extension — the awaited return of {@link activate}. */
+export type Api = Awaited<ReturnType<typeof activate>>;
+declare module "@natstack/extension" {
+  interface WorkspaceExtensions {
+    "@workspace-extensions/file-tools": Api;
+  }
+}
+
 export async function activate(ctx: ExtensionContextLike) {
   ctx.log.info("file-tools extension activating");
   ctx.health?.healthy({ summary: "File tools extension activated" });

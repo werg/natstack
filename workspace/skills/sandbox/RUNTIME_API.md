@@ -68,7 +68,7 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `git` | namespace | `http`, `importProject`, `completeWorkspaceDependencies`, `setSharedRemote`, `removeSharedRemote`, `syncRepoToContexts`, `client` |  |
 | `gad` | namespace | `rawSql`, `query`, `status`, `ensureBlob`, `getTrajectoryBranchHead`, `appendTrajectoryBatch`, `listTrajectoryEvents`, `appendChannelEnvelope`, `getChannelEnvelope`, `getTrajectoryForEnvelope`, `listPublishedEnvelopesForTrajectory`, `getEnvelopesForTrajectory`, `getPublishedArtifactsForTurn`, `getPrivateLineageForPublishedEnvelope`, `getDownstreamConsumers`, `getChannelReplayWindow`, `listChannelEnvelopesAfter`, `listChannelEnvelopesBefore`, `getInitialChannelWindow`, `listChannelEnvelopes`, `listGadBranchFiles`, `diffGadStates`, `readGadFileAtState`, `getGadStateProducer`, `blameGadFileSnippet`, `validateGadHashes`, `clearDirtyAfterValidation`, `checkGadIntegrity`, `rebuildTrajectoryProjections` |  |
 | `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
-| `extensions` | namespace | `use`, `useWithStreams`, `streamCall`, `on`, `list`, `install`, `uninstall`, `setEnabled`, `update`, `reload` |  |
+| `extensions` | namespace | `use`, `on`, `list`, `install`, `uninstall`, `setEnabled`, `update`, `reload` |  |
 | `approvals` | namespace | `request`, `revoke`, `list` |  |
 | `requestApproval` | value |  |  |
 | `revokeApproval` | value |  |  |

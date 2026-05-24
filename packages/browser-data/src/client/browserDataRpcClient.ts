@@ -48,11 +48,11 @@ export function createBrowserDataRpcClient(rpc: RpcLike): BrowserDataClient {
     // calls go through the dispatcher's `extensions.invoke` relay rather than a
     // dedicated host service.
     const call = <T>(method: string, ...args: unknown[]) => {
-        return rpc.call("extensions", "invoke", [[
+        return rpc.call("extensions", "invoke", [
                 BROWSER_DATA_EXTENSION,
                 method,
                 args,
-            ]]) as Promise<T>;
+            ]) as Promise<T>;
     };
     return {
         cookies: {

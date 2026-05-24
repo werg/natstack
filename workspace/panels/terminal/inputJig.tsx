@@ -6,7 +6,12 @@ import "@xterm/xterm/css/xterm.css";
 import { createVscodeTerminalFrontend } from "./vscodeTerminalFrontend.js";
 import { VscodeTerminalInstance } from "./vscodeTerminalInstance.js";
 import { resolveTerminalTheme } from "./paneTheme.js";
-import type { SessionInfo, ShellApi } from "./types.js";
+import type { ShellApi } from "./types.js";
+
+// The jig mocks the shell extension, so its session/exec shapes are sourced
+// from the extension's own API rather than the panel's view-model types.
+type ShellSessionInfo = Awaited<ReturnType<ShellApi["get"]>>;
+type ShellExecResult = Awaited<ReturnType<ShellApi["exec"]>>;
 
 type JigEvent = {
   at: number;
@@ -22,13 +27,19 @@ type JigState = {
 };
 
 class JigShell implements ShellApi {
-  readonly session: SessionInfo = {
+  readonly session: ShellSessionInfo = {
     sessionId: "jig-session",
+    ownerCallerId: "panel:input-jig",
     label: "Input Jig",
     command: { argv: ["jig"], cwd: "/tmp" },
+    pid: 0,
+    pgid: 0,
     cols: 80,
     rows: 24,
+    startedAt: Date.now(),
     alive: true,
+    processTree: [],
+    listeningPorts: [],
     detectedPorts: [],
     detectedUrls: [],
     lastActivityAt: Date.now(),
@@ -41,11 +52,17 @@ class JigShell implements ShellApi {
 
   constructor(private readonly onEvent: (event: JigEvent) => void) {}
 
-  async exec(): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
-    return { exitCode: 0, stdout: "", stderr: "" };
+  async exec(): Promise<ShellExecResult> {
+    return { exitCode: 0, stdout: "", stderr: "", durationMs: 0 };
   }
 
   async open(): Promise<{ sessionId: string }> {
+    return { sessionId: this.session.sessionId };
+  }
+
+  async dispose(): Promise<void> {}
+
+  async restart(): Promise<{ sessionId: string }> {
     return { sessionId: this.session.sessionId };
   }
 
@@ -53,6 +70,8 @@ class JigShell implements ShellApi {
     this.onEvent({ at: Date.now(), kind: "write", value: data });
     this.controller?.enqueue(this.encoder.encode(data));
   }
+
+  async acknowledgeDataEvent(): Promise<void> {}
 
   async resize(_sessionId: string, cols: number, rows: number): Promise<void> {
     this.session.cols = cols;
@@ -62,19 +81,23 @@ class JigShell implements ShellApi {
 
   async kill(): Promise<void> {}
 
-  async list(): Promise<SessionInfo[]> {
+  async list(): Promise<ShellSessionInfo[]> {
     return [this.session];
   }
 
-  async get(): Promise<SessionInfo> {
+  async get(): Promise<ShellSessionInfo> {
     return this.session;
   }
 
-  async getSessionInfo(): Promise<SessionInfo> {
+  async getSessionInfo(): Promise<ShellSessionInfo> {
     return this.session;
   }
 
   async watchSessionInfo(): Promise<Response> {
+    return new Response(new ReadableStream<Uint8Array>());
+  }
+
+  async watchAllSessionInfo(): Promise<Response> {
     return new Response(new ReadableStream<Uint8Array>());
   }
 
@@ -104,6 +127,24 @@ class JigShell implements ShellApi {
   async getScrollback(): Promise<{ text: string; cursor: string }> {
     return { text: "", cursor: "0" };
   }
+
+  async setScrollbackLimit(): Promise<void> {}
+
+  async clearScrollback(): Promise<void> {}
+
+  async stashScratch(): Promise<{ absolutePath: string; workspaceRelative: string }> {
+    return { absolutePath: "", workspaceRelative: "" };
+  }
+
+  async setMeta(): Promise<void> {}
+
+  async getMeta(): Promise<unknown> {
+    return undefined;
+  }
+
+  async deleteMeta(): Promise<void> {}
+
+  async setLabel(): Promise<void> {}
 }
 
 function activeElementLabel(): string {

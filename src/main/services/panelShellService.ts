@@ -17,11 +17,13 @@ import {
   isBrowserPanelSource,
   getSharedBrowserAddressOptions,
   getSharedPanelAddressOptions,
+  type AddressProviderBrowserDataAdapter,
   type PanelAddressOptions,
   type BrowserAddressOptions,
   type PanelChromeState,
   type PanelRepoState,
 } from "@natstack/shared/panelChrome";
+import { createBrowserDataRpcClient } from "@natstack/browser-data";
 import { getPanelSource } from "@natstack/shared/panel/accessors";
 import {
   BROWSER_NAVIGATION_TRANSITIONS,
@@ -75,19 +77,14 @@ function createGitAdapter(serverClient: ServerClient) {
   };
 }
 
-function createBrowserDataAdapter(serverClient: ServerClient) {
-  const invoke = (method: string, args: unknown[]) =>
-    serverClient.call("extensions", "invoke", ["@workspace-extensions/browser-data", method, args]);
+function createBrowserDataAdapter(serverClient: ServerClient): AddressProviderBrowserDataAdapter {
+  const client = createBrowserDataRpcClient(serverClient);
   return {
-    searchHistoryForAutocomplete: (query: string, limit: number) =>
-      invoke("searchHistoryForAutocomplete", [{ query, limit }]) as Promise<
-        Record<string, unknown>[]
-      >,
-    getHistory: (query: { limit: number }) =>
-      invoke("getHistory", [query]) as Promise<Record<string, unknown>[]>,
-    searchBookmarks: (query: string) =>
-      invoke("searchBookmarks", [query]) as Promise<Record<string, unknown>[]>,
-    getSearchEngines: () => invoke("getSearchEngines", []) as Promise<Record<string, unknown>[]>,
+    searchHistoryForAutocomplete: (query, limit) =>
+      client.history.searchForAutocomplete(query, limit),
+    getHistory: (query) => client.history.get(query),
+    searchBookmarks: (query) => client.bookmarks.search(query),
+    getSearchEngines: () => client.searchEngines.getAll(),
   };
 }
 
