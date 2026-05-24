@@ -71,7 +71,13 @@ describe("remoteCredService", () => {
 
     const { createRemoteCredService } = await import("./remoteCredService.js");
     const service = createRemoteCredService({
-      startupMode: { kind: "local", wsDir: "/tmp/ws", workspaceId: "ws", isEphemeral: false },
+      startupMode: {
+        kind: "local",
+        wsDir: "/tmp/ws",
+        workspaceName: "ws",
+        workspaceId: "ws",
+        isEphemeral: false,
+      },
     });
 
     await expect(
@@ -93,6 +99,51 @@ describe("remoteCredService", () => {
     expect(mocks.app.exit).toHaveBeenCalledWith(0);
   });
 
+  it("exchanges pairing codes through a supervisor tenant URL prefix", async () => {
+    const seenUrls: string[] = [];
+    const rootUrl = await startAuthServer(async (req, res, body) => {
+      seenUrls.push(req.url ?? "");
+      if (req.method === "GET" && req.url === "/base/w/alpha/healthz") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, serverId: "srv_1", workspaceId: "alpha" }));
+        return;
+      }
+      if (req.method === "POST" && req.url === "/base/w/alpha/_r/s/auth/complete-pairing") {
+        expect(JSON.parse(body || "{}")).toMatchObject({ code: "A".repeat(24) });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ deviceId: "dev_1", refreshToken: "refresh_1" }));
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    const url = `${rootUrl}/base/w/alpha`;
+
+    const { createRemoteCredService } = await import("./remoteCredService.js");
+    const service = createRemoteCredService({
+      startupMode: {
+        kind: "local",
+        wsDir: "/tmp/ws",
+        workspaceName: "ws",
+        workspaceId: "ws",
+        isEphemeral: false,
+      },
+    });
+
+    await expect(
+      service.handler(shellCtx, "exchangePairingCode", [{ url, code: "A".repeat(24) }])
+    ).resolves.toEqual({ ok: true });
+
+    expect(seenUrls).toEqual(["/base/w/alpha/healthz", "/base/w/alpha/_r/s/auth/complete-pairing"]);
+    expect(mocks.saveRemoteCredentials).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "device",
+        url,
+        deviceId: "dev_1",
+        refreshToken: "refresh_1",
+      })
+    );
+  });
+
   it("probes a CA-valid HTTP health endpoint without TOFU", async () => {
     const url = await startAuthServer(async (req, res) => {
       if (req.method === "GET" && req.url === "/healthz") {
@@ -109,6 +160,27 @@ describe("remoteCredService", () => {
       serverVersion: "0.1.0",
       serverId: "srv_1",
     });
+  });
+
+  it("probes health under a supervisor tenant URL prefix", async () => {
+    const seenUrls: string[] = [];
+    const rootUrl = await startAuthServer(async (req, res) => {
+      seenUrls.push(req.url ?? "");
+      if (req.method === "GET" && req.url === "/base/w/alpha/healthz") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, serverId: "srv_1", workspaceId: "alpha" }));
+        return;
+      }
+      res.writeHead(404).end();
+    });
+
+    const { probeRemoteTrust } = await import("./remoteCredService.js");
+    await expect(probeRemoteTrust({ url: `${rootUrl}/base/w/alpha` })).resolves.toMatchObject({
+      ok: true,
+      serverId: "srv_1",
+      workspaceId: "alpha",
+    });
+    expect(seenUrls).toEqual(["/base/w/alpha/healthz"]);
   });
 
   it.runIf(hasOpenssl())("exercises self-signed TLS TOFU and pin matching", async () => {
@@ -189,7 +261,13 @@ describe("remoteCredService", () => {
     const call = vi.fn();
     const { createRemoteCredService } = await import("./remoteCredService.js");
     const service = createRemoteCredService({
-      startupMode: { kind: "local", wsDir: "/tmp/ws", workspaceId: "ws", isEphemeral: false },
+      startupMode: {
+        kind: "local",
+        wsDir: "/tmp/ws",
+        workspaceName: "ws",
+        workspaceId: "ws",
+        isEphemeral: false,
+      },
       getServerClient: () => ({ call }) as never,
     });
 

@@ -20,7 +20,7 @@ Generated from `runtimeSurface.worker.ts`. Use `await help()` at runtime for the
 | `git` | namespace | `http`, `importProject`, `completeWorkspaceDependencies`, `setSharedRemote`, `removeSharedRemote`, `syncRepoToContexts`, `client` |  |
 | `gad` | namespace | `rawSql`, `query`, `status`, `ensureBlob`, `getTrajectoryBranchHead`, `appendTrajectoryBatch`, `listTrajectoryEvents`, `appendChannelEnvelope`, `getChannelEnvelope`, `getTrajectoryForEnvelope`, `listPublishedEnvelopesForTrajectory`, `getEnvelopesForTrajectory`, `getPublishedArtifactsForTurn`, `getPrivateLineageForPublishedEnvelope`, `getDownstreamConsumers`, `getChannelReplayWindow`, `listChannelEnvelopesAfter`, `listChannelEnvelopesBefore`, `getInitialChannelWindow`, `listChannelEnvelopes`, `listGadBranchFiles`, `diffGadStates`, `readGadFileAtState`, `getGadStateProducer`, `blameGadFileSnippet`, `validateGadHashes`, `clearDirtyAfterValidation`, `checkGadIntegrity`, `rebuildTrajectoryProjections` |  |
 | `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
-| `extensions` | namespace | `use`, `on`, `list`, `reload` | Install/enable is declarative via `meta/natstack.yml`; there are no `install`/`uninstall`/`setEnabled`/`update` methods |
+| `extensions` | namespace | `use`, `on`, `list`, `install`, `uninstall`, `setEnabled`, `update`, `reload` |  |
 | `approvals` | namespace | `request`, `revoke`, `list` |  |
 | `notifications` | namespace | `show`, `dismiss` |  |
 | `contextId` | value |  |  |

@@ -38,6 +38,7 @@ import { extractSourceForBuild } from "./sourceExtractor.js";
 import { PANEL_CSP_META } from "@natstack/shared/constants";
 import { EXTENSION_RUNTIME_ABI_VERSION } from "@natstack/shared/extensionRuntimeAbi";
 import { getAdapter } from "./adapters/index.js";
+import { getPublicBasePath } from "../publicUrl.js";
 import type { FrameworkAdapter } from "./adapters/types.js";
 import { resolveTemplate } from "./templateResolver.js";
 import { resolveExportSubpath } from "@natstack/typecheck";
@@ -840,6 +841,11 @@ function escapeHtml(str: string): string {
     .replace(/"/g, "&quot;");
 }
 
+function publicAssetPath(pathname: string): string {
+  const base = getPublicBasePath();
+  return `${base}${pathname}`;
+}
+
 /**
  * Inject standard transforms into a custom/template HTML file:
  * importmap, CSP, base href, bundle.js → __loader.js replacement.
@@ -898,7 +904,7 @@ export function injectHtmlTransforms(
   // Replace bundle.js script with loader
   result = result.replace(
     /<script\b[^>]*\bsrc\s*=\s*["'](?:\.\/)?bundle\.js(?:\?[^"']*)?["'][^>]*><\/script>/i,
-    `<script src="/__loader.js"></script>`
+    `<script src="${escapeHtml(publicAssetPath("/__loader.js"))}"></script>`
   );
   return result;
 }
@@ -910,7 +916,7 @@ function generatePanelHtml(
   adapter: FrameworkAdapter,
   options: { hasCss: boolean; externals?: Record<string, string> }
 ): string {
-  const baseHref = `/${relativePath}/`;
+  const baseHref = `${getPublicBasePath()}/${relativePath}/`;
 
   // If template or panel provides HTML, use it with standard injections
   if (templateHtmlPath && fs.existsSync(templateHtmlPath)) {
@@ -947,7 +953,7 @@ function generatePanelHtml(
 </head>
 <body>
   ${rootElement}
-  <script src="/__loader.js"></script>
+  <script src="${escapeHtml(publicAssetPath("/__loader.js"))}"></script>
 </body>
 </html>`;
 }

@@ -81,7 +81,9 @@ function detectServerIpcChannel(): IpcChannel | null {
   // Node.js fork: process.send exists
   if (typeof process.send === "function") {
     return {
-      postMessage: (msg: unknown) => assertPresent(process.send)(msg),
+      postMessage: (msg: unknown) => {
+        process.send!(msg as never);
+      },
       on: (_event: string, handler: (msg: unknown) => void) => {
         process.on("message", handler);
       },
@@ -144,7 +146,6 @@ function ipcRequest<T = unknown>(
 
 interface CliArgs {
   workspaceName?: string;
-  workspaceDir?: string;
   appRoot?: string;
   logLevel?: string;
   readyFile?: string;
@@ -174,7 +175,6 @@ Usage:
 
 Options:
   --workspace <name>       Workspace name to resolve (default: last-opened or "default")
-  --workspace-dir <path>   Explicit workspace directory path
   --app-root <path>        Application root directory (default: cwd)
   --ready-file <path>      Write structured readiness JSON to this file
   --ephemeral              Use a disposable dev workspace (deleted on shutdown)
@@ -209,7 +209,6 @@ Environment variables:
   NATSTACK_PROTOCOL        Protocol for panel URLs (same as --protocol)
   NATSTACK_GATEWAY_PORT    Gateway ingress port (same as --gateway-port)
   NATSTACK_WORKSPACE       Workspace name (same as --workspace)
-  NATSTACK_WORKSPACE_DIR   Workspace directory (same as --workspace-dir)
   NATSTACK_APP_ROOT        Application root (same as --app-root)
   NATSTACK_LOG_LEVEL       Log verbosity (same as --log-level)
   NATSTACK_PUBLIC_URL      External base URL (same as --public-url)
@@ -274,7 +273,6 @@ function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {};
   const known = new Set([
     "workspace",
-    "workspace-dir",
     "app-root",
     "ready-file",
     "ephemeral",
@@ -343,9 +341,6 @@ function parseArgs(argv: string[]): CliArgs {
     switch (key) {
       case "workspace":
         args.workspaceName = value;
-        break;
-      case "workspace-dir":
-        args.workspaceDir = value;
         break;
       case "app-root":
         args.appRoot = value;
@@ -428,7 +423,6 @@ if (!ipcChannel) {
     console.error("--tls-key requires --tls-cert");
     process.exit(1);
   }
-  if (args.workspaceDir) process.env["NATSTACK_WORKSPACE_DIR"] = args.workspaceDir;
   process.env["NATSTACK_APP_ROOT"] =
     args.appRoot ?? process.env["NATSTACK_APP_ROOT"] ?? process.cwd();
   if (args.logLevel) process.env["NATSTACK_LOG_LEVEL"] = args.logLevel;
@@ -470,9 +464,7 @@ async function main() {
   // Workspace resolution
   // ===========================================================================
   // Shared resolution via resolveLocalWorkspaceStartup():
-  //   --workspace-dir <path>   → explicit managed workspace root
   //   --workspace <name>       → resolve by name via getWorkspaceDir()
-  //   NATSTACK_WORKSPACE_DIR   → env var (set by Electron parent or user)
   //   (none, standalone)       → last-opened from central data, or "default"
   //
   // With --init: auto-create from template if workspace doesn't exist.
@@ -481,7 +473,6 @@ async function main() {
   assertGitAvailable();
   const centralData = !ipcChannel ? new CentralDataManager() : null;
 
-  const wsDir = args.workspaceDir ?? process.env["NATSTACK_WORKSPACE_DIR"];
   const wsName = args.workspaceName ?? process.env["NATSTACK_WORKSPACE"];
 
   let workspace: import("@natstack/shared/workspace/types").Workspace;
@@ -491,7 +482,6 @@ async function main() {
     const startup = resolveLocalWorkspaceStartup({
       appRoot,
       centralData,
-      wsDir,
       name: wsName,
       init: args.init,
       isDev: !!args.ephemeral,
@@ -1581,6 +1571,9 @@ async function main() {
             if (!gatewayPortResolved) {
               throw new Error("Gateway port not finalized before workerd startup");
             }
+            if (process.env["NATSTACK_SUPERVISOR_MODE"] === "1") {
+              return getPublicUrl();
+            }
             return `http://127.0.0.1:${gatewayPortResolved}`;
           },
           getServerAliasUrls: () => {
@@ -1732,6 +1725,13 @@ async function main() {
         return resp?.workspaces ?? [];
       }
     : undefined;
+  const requestActiveWorkspaceEntry: (() => Promise<unknown | null>) | undefined = ipcChannel
+    ? async () => {
+        const resp = await ipcRequest<{ entry: unknown | null }>("workspace-active-entry-request");
+        return resp?.entry ?? null;
+      }
+    : undefined;
+  const isSupervisorMode = process.env["NATSTACK_SUPERVISOR_MODE"] === "1";
   const commonDeps = {
     container,
     dispatcher,
@@ -1746,8 +1746,10 @@ async function main() {
     args,
     hostConfig,
     isIpcMode: !!ipcChannel,
+    isSupervisorMode,
     eventService,
     requestRelaunch,
+    requestActiveWorkspaceEntry,
     requestWorkspaceList,
     listWorkspaceUnits: () => {
       const buildSystem = container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");

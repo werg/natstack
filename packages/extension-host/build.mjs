@@ -20,10 +20,7 @@ await esbuild.build({
   format: "esm",
   outdir: "dist",
   sourcemap: true,
-  external: [
-    "@natstack/extension",
-    "@natstack/process-adapter",
-  ],
+  external: ["@natstack/extension", "@natstack/process-adapter", "yaml"],
 });
 
 // Emit real .d.ts files alongside the bundled JS. Use the project's
@@ -33,5 +30,5 @@ const tscBin = require.resolve("typescript/lib/tsc.js");
 execFileSync(
   process.execPath,
   [tscBin, "--project", "tsconfig.build.json", "--emitDeclarationOnly"],
-  { stdio: "inherit", cwd: path.dirname(new URL(import.meta.url).pathname) },
+  { stdio: "inherit", cwd: path.dirname(new URL(import.meta.url).pathname) }
 );

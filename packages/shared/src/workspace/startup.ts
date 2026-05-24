@@ -5,7 +5,6 @@ import type { CentralDataManager } from "../centralData.js";
 export interface ResolveLocalWorkspaceStartupOpts {
   appRoot: string;
   centralData?: CentralDataManager | null;
-  wsDir?: string;
   name?: string;
   init?: boolean;
   isDev?: boolean;
@@ -21,32 +20,18 @@ export interface LocalWorkspaceStartup {
  * Shared local-workspace startup resolution for desktop and standalone server.
  *
  * Resolution order:
- * 1. Explicit workspace directory
- * 2. Explicit workspace name
- * 3. Ephemeral dev workspace when `isDev`
- * 4. Last-opened workspace from central data
- * 5. Default workspace
+ * 1. Explicit workspace name
+ * 2. Ephemeral dev workspace when `isDev`
+ * 3. Last-opened workspace from central data
+ * 4. Default workspace
  *
  * IPC/server callers can set `requireExplicitSelection` to reject implicit
  * selection when they do not own central workspace state.
  */
 export function resolveLocalWorkspaceStartup(
-  opts: ResolveLocalWorkspaceStartupOpts,
+  opts: ResolveLocalWorkspaceStartupOpts
 ): LocalWorkspaceStartup {
   const centralData = opts.centralData ?? null;
-
-  if (opts.wsDir) {
-    const resolved = resolveOrCreateWorkspace({
-      wsDir: opts.wsDir,
-      appRoot: opts.appRoot,
-      init: opts.init,
-    });
-    centralData?.addWorkspace(resolved.name);
-    return {
-      resolved,
-      isEphemeral: false,
-    };
-  }
 
   if (opts.name) {
     const resolved = resolveOrCreateWorkspace({
@@ -90,7 +75,7 @@ export function resolveLocalWorkspaceStartup(
   }
 
   if (opts.requireExplicitSelection) {
-    throw new Error("No workspace specified (set NATSTACK_WORKSPACE_DIR or pass --workspace)");
+    throw new Error("No workspace specified (set NATSTACK_WORKSPACE or pass --workspace)");
   }
 
   return {

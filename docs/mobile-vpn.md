@@ -228,7 +228,6 @@ Use the normal server workspace flags:
 
 ```bash
 pnpm mobile:pair --workspace my-workspace
-pnpm mobile:pair --workspace-dir /path/to/workspace
 ```
 
 `--init` is on by default so a missing workspace is created from the template.
@@ -236,8 +235,7 @@ Pass `--no-init` to require the workspace to already exist.
 
 For development, use `pnpm mobile:pair:dev` or `pnpm mobile:pair --dev` instead
 of a named workspace. Dev mode intentionally cannot be combined with
-`--workspace` or `--workspace-dir`, because its purpose is to always start from a
-fresh template copy.
+`--workspace`, because its purpose is to always start from a fresh template copy.
 
 ## Reconnecting later
 

@@ -16,7 +16,12 @@ import {
 import { createServerClient, type ServerClient, type TlsPinningOptions } from "../serverClient.js";
 import { createPinnedHttpsAgent } from "../tlsPinning.js";
 import { discoverNatstackServers } from "@natstack/shared/tailscaleDiscovery";
-import { PAIRING_CODE_PATTERN, parseConnectServerUrl } from "@natstack/shared/connect";
+import {
+  PAIRING_CODE_PATTERN,
+  parseConnectServerUrl,
+  resolveServerRouteUrl,
+  resolveServerWsUrl,
+} from "@natstack/shared/connect";
 import { assertPresent } from "../../lintHelpers";
 
 export interface RemoteCredCurrent {
@@ -102,11 +107,12 @@ async function healthProbe(
 ): Promise<{ status: number; body: string; fingerprint?: string }> {
   const isTls = parsed.protocol === "https:";
   const port = parseInt(parsed.port, 10) || (isTls ? 443 : 80);
+  const healthUrl = resolveServerRouteUrl(parsed, "/healthz");
   const requestOptions: RequestOptions = {
     method: "GET",
     host: parsed.hostname,
     port,
-    path: "/healthz",
+    path: `${healthUrl.pathname}${healthUrl.search}`,
     timeout: TEST_CONNECT_TIMEOUT_MS,
   };
 
@@ -245,7 +251,7 @@ async function postAuthJson(
   bodyValue: unknown,
   tlsOpts?: TlsPinningOptions
 ): Promise<{ statusCode: number; statusMessage: string; body: string }> {
-  const requestUrl = new URL(route, remoteUrl);
+  const requestUrl = resolveServerRouteUrl(remoteUrl, route);
   const body = JSON.stringify(bodyValue);
   const isHttps = requestUrl.protocol === "https:";
   const agent =
@@ -389,7 +395,7 @@ export function createRemoteCredService(deps: {
           const parsed = new URL(parseOkUrl(payload.url));
           const isTls = parsed.protocol === "https:";
           const gatewayPort = parseInt(parsed.port, 10) || (isTls ? 443 : 80);
-          const wsUrl = `${isTls ? "wss" : "ws"}://${parsed.hostname}:${gatewayPort}/rpc`;
+          const wsUrl = resolveServerWsUrl(parsed);
           let client: Awaited<ReturnType<typeof createServerClient>> | null = null;
           try {
             client = await createServerClient(gatewayPort, payload.token, {

@@ -27,6 +27,7 @@ import type { WorkspaceConfig } from "@natstack/shared/workspace/types";
 import type { CentralDataManager } from "@natstack/shared/centralData";
 import type { StartupMode } from "./startupMode.js";
 import { saveRemoteCredentials } from "./remoteCredentialStore.js";
+import { resolveServerRouteUrl, resolveServerWsUrl } from "@natstack/shared/connect";
 
 const log = createDevLogger("ServerSession");
 
@@ -88,7 +89,7 @@ async function postAuthJson(
   bearerToken: string | null,
   tls?: TlsPinningOptions
 ): Promise<{ statusCode: number; statusMessage: string; body: string }> {
-  const requestUrl = new URL(path, remoteUrl);
+  const requestUrl = resolveServerRouteUrl(remoteUrl, path);
   const body = JSON.stringify(bodyValue);
   return new Promise<{
     statusCode: number;
@@ -281,7 +282,7 @@ export async function establishServerSession(args: {
     externalHost = remoteUrl.hostname;
     protocol = remoteUrl.protocol === "https:" ? "https" : "http";
     const remotePort = parseInt(remoteUrl.port) || (protocol === "https" ? 443 : 80);
-    gatewayConfig = { serverUrl: `${protocol}://${externalHost}:${remotePort}` };
+    gatewayConfig = { serverUrl: remoteUrl.toString().replace(/\/$/, "") };
 
     let shellCredential = await acquireShellCredential(mode);
     let shellToken = shellCredential.shellToken;
@@ -293,7 +294,7 @@ export async function establishServerSession(args: {
     };
 
     serverClient = await createServerClient(remotePort, shellToken, {
-      wsUrl: `${protocol === "https" ? "wss" : "ws"}://${externalHost}:${remotePort}/rpc`,
+      wsUrl: resolveServerWsUrl(remoteUrl),
       tls,
       reconnect: true,
       refreshAuthToken: async () => {
@@ -334,6 +335,7 @@ export async function establishServerSession(args: {
 
     serverProcessManager = new ServerProcessManager({
       wsDir: mode.wsDir,
+      workspaceName: mode.workspaceName,
       appRoot: getAppRoot(),
       isEphemeral: mode.isEphemeral,
       onCrash: (code) => {
@@ -353,6 +355,9 @@ export async function establishServerSession(args: {
       onIpcRequest: async (type, msg) => {
         if (type === "workspace-list-request") {
           return { workspaces: args.centralData.listWorkspaces() };
+        }
+        if (type === "workspace-active-entry-request") {
+          return { entry: args.centralData.getWorkspaceEntry(mode.workspaceName) };
         }
         const delegated = await args.onIpcRequest?.(type, msg);
         if (delegated) return delegated;

@@ -24,25 +24,34 @@ afterEach(() => {
 });
 
 describe("loadWorkspaceConfig", () => {
-  (process.platform === "linux" ? it : it.skip)("derives the workspace id from the managed workspace folder name", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-loader-"));
-    tempRoots.push(root);
-    process.env["XDG_CONFIG_HOME"] = path.join(root, "xdg");
+  (process.platform === "linux" ? it : it.skip)(
+    "derives the workspace id from the managed workspace folder name",
+    () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-loader-"));
+      tempRoots.push(root);
+      process.env["XDG_CONFIG_HOME"] = path.join(root, "xdg");
 
-    const sourceRoot = path.join(process.env["XDG_CONFIG_HOME"], "natstack", "workspaces", "cloned-ws", "source");
-    writeConfig(sourceRoot, "initPanels: []\n");
+      const sourceRoot = path.join(
+        process.env["XDG_CONFIG_HOME"],
+        "natstack",
+        "workspaces",
+        "cloned-ws",
+        "source"
+      );
+      writeConfig(sourceRoot, "initPanels: []\n");
 
-    expect(loadWorkspaceConfig(sourceRoot).id).toBe("cloned-ws");
-  });
+      expect(loadWorkspaceConfig(sourceRoot).id).toBe("cloned-ws");
+    }
+  );
 
-  it("derives the workspace id from the absolute workspace root for unmanaged paths", () => {
+  it("derives the workspace id from the folder name for non-registry paths", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-loader-"));
     tempRoots.push(root);
     const workspaceRoot = path.join(root, "external-workspace");
     const sourceRoot = path.join(workspaceRoot, "source");
     writeConfig(sourceRoot, "initPanels: []\n");
 
-    expect(loadWorkspaceConfig(sourceRoot).id).toBe(workspaceRoot);
+    expect(loadWorkspaceConfig(sourceRoot).id).toBe("external-workspace");
   });
 
   it("ignores an explicit workspace id when one is configured", () => {
@@ -52,7 +61,7 @@ describe("loadWorkspaceConfig", () => {
     const sourceRoot = path.join(workspaceRoot, "source");
     writeConfig(sourceRoot, "id: explicit\ninitPanels: []\n");
 
-    expect(loadWorkspaceConfig(sourceRoot).id).toBe(workspaceRoot);
+    expect(loadWorkspaceConfig(sourceRoot).id).toBe("workspace");
   });
 
   it("rejects duplicate extension declarations", () => {
@@ -61,7 +70,7 @@ describe("loadWorkspaceConfig", () => {
     const sourceRoot = path.join(root, "workspace", "source");
     writeConfig(
       sourceRoot,
-      "extensions:\n  - source: extensions/@scope/a\n  - source: extensions/@scope/a.git\n",
+      "extensions:\n  - source: extensions/@scope/a\n  - source: extensions/@scope/a.git\n"
     );
 
     expect(() => loadWorkspaceConfig(sourceRoot)).toThrow(/duplicate extension/);
@@ -86,8 +95,11 @@ describe("resolveDeclaredExtensions", () => {
     expect(
       resolveDeclaredExtensions({
         id: "ws",
-        extensions: [{ source: "extensions/@scope/a" }, { source: "@scope/b", ref: "dev", enabled: false }],
-      }),
+        extensions: [
+          { source: "extensions/@scope/a" },
+          { source: "@scope/b", ref: "dev", enabled: false },
+        ],
+      })
     ).toEqual([
       { source: "extensions/@scope/a", ref: "main", enabled: true },
       { source: "@scope/b", ref: "dev", enabled: false },
@@ -96,35 +108,38 @@ describe("resolveDeclaredExtensions", () => {
 });
 
 describe("initWorkspace", () => {
-  (process.platform === "linux" ? it : it.skip)("records template provenance for new managed workspaces", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-loader-"));
-    tempRoots.push(root);
-    process.env["XDG_CONFIG_HOME"] = path.join(root, "xdg");
+  (process.platform === "linux" ? it : it.skip)(
+    "records template provenance for new managed workspaces",
+    () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-loader-"));
+      tempRoots.push(root);
+      process.env["XDG_CONFIG_HOME"] = path.join(root, "xdg");
 
-    const templateRoot = path.join(root, "workspace-template");
-    writeConfig(templateRoot, "initPanels: []\n");
+      const templateRoot = path.join(root, "workspace-template");
+      writeConfig(templateRoot, "initPanels: []\n");
 
-    initWorkspace("fresh-ws", { templateDir: templateRoot });
+      initWorkspace("fresh-ws", { templateDir: templateRoot });
 
-    const markerPath = path.join(
-      process.env["XDG_CONFIG_HOME"],
-      "natstack",
-      "workspaces",
-      "fresh-ws",
-      "source",
-      "meta",
-      ".natstack-template-source.json",
-    );
-    const marker = JSON.parse(fs.readFileSync(markerPath, "utf-8")) as {
-      kind?: string;
-      sourcePath?: string;
-      copiedAt?: string;
-      gitHead?: unknown;
-    };
+      const markerPath = path.join(
+        process.env["XDG_CONFIG_HOME"],
+        "natstack",
+        "workspaces",
+        "fresh-ws",
+        "source",
+        "meta",
+        ".natstack-template-source.json"
+      );
+      const marker = JSON.parse(fs.readFileSync(markerPath, "utf-8")) as {
+        kind?: string;
+        sourcePath?: string;
+        copiedAt?: string;
+        gitHead?: unknown;
+      };
 
-    expect(marker.kind).toBe("template");
-    expect(marker.sourcePath).toBe(templateRoot);
-    expect(marker.copiedAt).toEqual(expect.any(String));
-    expect(marker.gitHead === null || typeof marker.gitHead === "string").toBe(true);
-  });
+      expect(marker.kind).toBe("template");
+      expect(marker.sourcePath).toBe(templateRoot);
+      expect(marker.copiedAt).toEqual(expect.any(String));
+      expect(marker.gitHead === null || typeof marker.gitHead === "string").toBe(true);
+    }
+  );
 });

@@ -2,6 +2,9 @@
 
 NatStack supports a **remote server mode** where the Electron frontend connects to a NatStack server running on a different machine (or in a container, VM, etc.) instead of spawning a local server child process.
 
+For process-per-workspace multi-tenant hosting, use the supervisor described in
+[multi-workspace-supervisor.md](./multi-workspace-supervisor.md).
+
 ## Architecture
 
 ```
@@ -77,24 +80,23 @@ natstack-server ready:
 
 ### 2. Server CLI flags
 
-| Flag                       | Env var                  | Description                                                                                                                                                                                                                            |
-| -------------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--workspace <name>`       | `NATSTACK_WORKSPACE`     | Workspace name to resolve                                                                                                                                                                                                              |
-| `--workspace-dir <path>`   | `NATSTACK_WORKSPACE_DIR` | Explicit workspace directory                                                                                                                                                                                                           |
-| `--app-root <path>`        | `NATSTACK_APP_ROOT`      | Application root (default: `cwd()`)                                                                                                                                                                                                    |
-| `--host <hostname>`        | `NATSTACK_HOST`          | External hostname; also sets bind to `0.0.0.0`                                                                                                                                                                                         |
-| `--bind-host <addr>`       | `NATSTACK_BIND_HOST`     | Explicit bind address (overrides `--host` default)                                                                                                                                                                                     |
-| `--protocol <http\|https>` | `NATSTACK_PROTOCOL`      | Protocol for panel-facing URLs                                                                                                                                                                                                         |
-| `--tls-cert <path>`        | —                        | TLS certificate file (PEM). Enables HTTPS with `--tls-key`.                                                                                                                                                                            |
-| `--tls-key <path>`         | —                        | TLS private key file (PEM). Required with `--tls-cert`.                                                                                                                                                                                |
-| `--serve-panels`           | —                        | Enable panel HTTP serving                                                                                                                                                                                                              |
-| `--gateway-port <port>`    | `NATSTACK_GATEWAY_PORT`  | Port for the gateway HTTP/WS ingress (default: auto-assigned). Use a fixed value for phone/VPN pairing or firewall rules.                                                                                                              |
-| `--panel-port <port>`      | —                        | Port for panel HTTP (default: auto-assigned)                                                                                                                                                                                           |
-| `--init`                   | —                        | Auto-create workspace from template if it doesn't exist                                                                                                                                                                                |
-| `--log-level <level>`      | `NATSTACK_LOG_LEVEL`     | Log verbosity                                                                                                                                                                                                                          |
-| `--print-credentials`      | —                        | Print `NATSTACK_ADMIN_TOKEN=...` and `NATSTACK_PAIRING_CODE=...` for scripting                                                                                                                                                         |
-| `--public-url <url>`       | `NATSTACK_PUBLIC_URL`    | Externally-reachable base URL used to build OAuth redirect URIs, webhook advertisements, etc. Defaults to `${protocol}://${host}:${gatewayPort}` but should be set explicitly when a reverse proxy or DNS-facing hostname is in front. |
-| `--help`                   | —                        | Show usage and exit                                                                                                                                                                                                                    |
+| Flag                       | Env var                 | Description                                                                                                                                                                                                                            |
+| -------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--workspace <name>`       | `NATSTACK_WORKSPACE`    | Workspace name to resolve                                                                                                                                                                                                              |
+| `--app-root <path>`        | `NATSTACK_APP_ROOT`     | Application root (default: `cwd()`)                                                                                                                                                                                                    |
+| `--host <hostname>`        | `NATSTACK_HOST`         | External hostname; also sets bind to `0.0.0.0`                                                                                                                                                                                         |
+| `--bind-host <addr>`       | `NATSTACK_BIND_HOST`    | Explicit bind address (overrides `--host` default)                                                                                                                                                                                     |
+| `--protocol <http\|https>` | `NATSTACK_PROTOCOL`     | Protocol for panel-facing URLs                                                                                                                                                                                                         |
+| `--tls-cert <path>`        | —                       | TLS certificate file (PEM). Enables HTTPS with `--tls-key`.                                                                                                                                                                            |
+| `--tls-key <path>`         | —                       | TLS private key file (PEM). Required with `--tls-cert`.                                                                                                                                                                                |
+| `--serve-panels`           | —                       | Enable panel HTTP serving                                                                                                                                                                                                              |
+| `--gateway-port <port>`    | `NATSTACK_GATEWAY_PORT` | Port for the gateway HTTP/WS ingress (default: auto-assigned). Use a fixed value for phone/VPN pairing or firewall rules.                                                                                                              |
+| `--panel-port <port>`      | —                       | Port for panel HTTP (default: auto-assigned)                                                                                                                                                                                           |
+| `--init`                   | —                       | Auto-create workspace from template if it doesn't exist                                                                                                                                                                                |
+| `--log-level <level>`      | `NATSTACK_LOG_LEVEL`    | Log verbosity                                                                                                                                                                                                                          |
+| `--print-credentials`      | —                       | Print `NATSTACK_ADMIN_TOKEN=...` and `NATSTACK_PAIRING_CODE=...` for scripting                                                                                                                                                         |
+| `--public-url <url>`       | `NATSTACK_PUBLIC_URL`   | Externally-reachable base URL used to build OAuth redirect URIs, webhook advertisements, etc. Defaults to `${protocol}://${host}:${gatewayPort}` but should be set explicitly when a reverse proxy or DNS-facing hostname is in front. |
+| `--help`                   | —                       | Show usage and exit                                                                                                                                                                                                                    |
 
 ### 3. Admin token persistence
 
@@ -241,7 +243,7 @@ export async function readDogfoodInfo(workspaceDir = process.cwd()) {
 
 `pnpm dev:self:server --help` shows the supported pairing flags. It deliberately
 rejects flags that would break the managed workspace contract, such as
-`--workspace-dir`, `--dev`, and `--no-init`.
+`--dev` and `--no-init`.
 
 Admin-token bootstrap is still available for headless or scripted setups. On
 each launch, credentials resolve in this order:

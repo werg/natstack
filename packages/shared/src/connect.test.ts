@@ -1,6 +1,12 @@
 import os from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createConnectDeepLink, isTrustedCleartextHost, parseConnectLink } from "./connect";
+import {
+  createConnectDeepLink,
+  isTrustedCleartextHost,
+  parseConnectLink,
+  resolveServerRouteUrl,
+  resolveServerWsUrl,
+} from "./connect";
 
 function ipv4(address: string): os.NetworkInterfaceInfo {
   return {
@@ -25,6 +31,27 @@ describe("connect deep links", () => {
       url: "https://host.tailnet.ts.net",
       code: "A".repeat(24),
     });
+  });
+
+  it("preserves supervisor tenant base paths in pairing links", () => {
+    const link = createConnectDeepLink("https://host.test/base/w/alpha", "A".repeat(24));
+    expect(parseConnectLink(link)).toEqual({
+      kind: "ok",
+      url: "https://host.test/base/w/alpha",
+      code: "A".repeat(24),
+    });
+  });
+
+  it("resolves HTTP and WebSocket routes under a canonical server base path", () => {
+    expect(
+      resolveServerRouteUrl("https://host.test/base/w/alpha", "/_r/s/auth/refresh-shell").href
+    ).toBe("https://host.test/base/w/alpha/_r/s/auth/refresh-shell");
+    expect(resolveServerRouteUrl("https://host.test/base/w/alpha/", "healthz").href).toBe(
+      "https://host.test/base/w/alpha/healthz"
+    );
+    expect(resolveServerWsUrl("https://host.test/base/w/alpha")).toBe(
+      "wss://host.test/base/w/alpha/rpc"
+    );
   });
 
   it("rejects public cleartext HTTP", () => {
@@ -60,6 +87,7 @@ describe("connect deep links", () => {
     };
     const fixtures = [
       createConnectDeepLink("https://host.tailnet.ts.net", "A".repeat(24)),
+      createConnectDeepLink("https://host.tailnet.ts.net/base/w/alpha", "A".repeat(24)),
       createConnectDeepLink("http://127.0.0.1:3030", "B".repeat(24)),
       createConnectDeepLink("http://example.com", "C".repeat(24)),
       "not-a-link",
@@ -69,9 +97,7 @@ describe("connect deep links", () => {
     expect(script.createConnectDeepLink("https://host.tailnet.ts.net", "A".repeat(24))).toBe(
       createConnectDeepLink("https://host.tailnet.ts.net", "A".repeat(24))
     );
-    expect(
-      script.createStartRemotePairCommand("https://host.tailnet.ts.net", "A".repeat(24))
-    ).toBe(
+    expect(script.createStartRemotePairCommand("https://host.tailnet.ts.net", "A".repeat(24))).toBe(
       `pnpm start:remote --pair '${createConnectDeepLink(
         "https://host.tailnet.ts.net",
         "A".repeat(24)

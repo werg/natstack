@@ -1,0 +1,25 @@
+{
+  "name": "@natstack/server-supervisor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./managedServer": "./src/managedServer.ts",
+    "./workspaceSupervisor": "./src/workspaceSupervisor.ts",
+    "./supervisorGateway": "./src/supervisorGateway.ts",
+    "./operatorAuth": "./src/operatorAuth.ts"
+  },
+  "bin": {
+    "natstack-supervisor": "../../dist/supervisor.mjs"
+  },
+  "scripts": {
+    "build": "echo 'source-only package, bundled by root build'"
+  },
+  "dependencies": {
+    "@natstack/dev-log": "workspace:*",
+    "@natstack/env-paths": "workspace:*",
+    "@natstack/process-adapter": "workspace:*",
+    "@natstack/shared": "workspace:*"
+  }
+}

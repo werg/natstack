@@ -143,6 +143,12 @@ const __dirname = __pathDirname(__filename);
   },
 };
 
+const supervisorConfig = {
+  ...serverConfig,
+  entryPoints: ["packages/server-supervisor/src/index.ts"],
+  outfile: "dist/supervisor.mjs",
+};
+
 const clientConfig = {
   entryPoints: ["src/cli/client.ts"],
   bundle: true,
@@ -586,6 +592,10 @@ async function build() {
       ...serverConfig,
       define: { ...(serverConfig.define ?? {}), ...internalDoBundleDefine },
     };
+    const supervisorWithBundle = {
+      ...supervisorConfig,
+      define: { ...(supervisorConfig.define ?? {}), ...internalDoBundleDefine },
+    };
     // Clean stale renderer artifacts before ESM build (prevents accidental loading of old CJS bundle)
     try {
       fs.unlinkSync("dist/renderer.js");
@@ -596,6 +606,7 @@ async function build() {
     await esbuild.build(rendererConfig);
     await esbuild.build(serverElectronWithBundle);
     await esbuild.build(serverWithBundle);
+    await esbuild.build(supervisorWithBundle);
     await esbuild.build(clientConfig);
     await buildDependencyWorkers();
 

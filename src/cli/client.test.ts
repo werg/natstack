@@ -35,9 +35,11 @@ describe("natstack-client", () => {
 
   it("pairs from a natstack link and writes a 0600 device credential file", async () => {
     const bodies: unknown[] = [];
+    const urls: string[] = [];
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (_url: URL, init?: RequestInit) => {
+      vi.fn(async (url: URL, init?: RequestInit) => {
+        urls.push(String(url));
         bodies.push(JSON.parse(String(init?.body ?? "{}")));
         return new Response(JSON.stringify({ deviceId: "dev_cli", refreshToken: "refresh_cli" }));
       })
@@ -58,6 +60,7 @@ describe("natstack-client", () => {
       },
     ]);
     const filePath = path.join(tmpDir, ".config", "natstack", "cli-credentials.json");
+    expect(urls).toEqual(["https://host.tailnet.ts.net/_r/s/auth/complete-pairing"]);
     expect(JSON.parse(fs.readFileSync(filePath, "utf8"))).toEqual({
       schemaVersion: 1,
       kind: "device",
@@ -68,6 +71,30 @@ describe("natstack-client", () => {
     if (process.platform !== "win32") {
       expect(fs.statSync(filePath).mode & 0o777).toBe(0o600);
     }
+  });
+
+  it("pairs and stores supervisor tenant URLs without dropping the path prefix", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: URL) => {
+        urls.push(String(url));
+        return new Response(JSON.stringify({ deviceId: "dev_cli", refreshToken: "refresh_cli" }));
+      })
+    );
+
+    const { main } = await import("./client.js");
+    const code = await main([
+      "pair",
+      createConnectDeepLink("https://host.tailnet.ts.net/base/w/alpha", "A".repeat(24)),
+    ]);
+
+    expect(code).toBe(0);
+    expect(urls).toEqual(["https://host.tailnet.ts.net/base/w/alpha/_r/s/auth/complete-pairing"]);
+    const filePath = path.join(tmpDir, ".config", "natstack", "cli-credentials.json");
+    expect(JSON.parse(fs.readFileSync(filePath, "utf8")).url).toBe(
+      "https://host.tailnet.ts.net/base/w/alpha"
+    );
   });
 
   it("tightens an existing CLI credential file to 0600 when pairing", async () => {
@@ -163,5 +190,38 @@ describe("natstack-client", () => {
 
     const { main } = await import("./client.js");
     await expect(main(["status"])).resolves.toBe(0);
+  });
+
+  it("checks status under a stored supervisor tenant URL", async () => {
+    const credentialDir = path.join(tmpDir, ".config", "natstack");
+    fs.mkdirSync(credentialDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(credentialDir, "cli-credentials.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        kind: "device",
+        url: "https://host.tailnet.ts.net/base/w/alpha",
+        deviceId: "dev_cli",
+        refreshToken: "refresh_cli",
+      })
+    );
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: URL) => {
+        urls.push(String(url));
+        if (String(url).endsWith("/_r/s/auth/refresh-shell")) {
+          return new Response(JSON.stringify({ workspaceId: "alpha", serverId: "srv_1" }));
+        }
+        return new Response(JSON.stringify({ ok: true, product: "natstack" }));
+      })
+    );
+
+    const { main } = await import("./client.js");
+    await expect(main(["status"])).resolves.toBe(0);
+    expect(urls).toEqual([
+      "https://host.tailnet.ts.net/base/w/alpha/_r/s/auth/refresh-shell",
+      "https://host.tailnet.ts.net/base/w/alpha/healthz",
+    ]);
   });
 });

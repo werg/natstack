@@ -89,7 +89,7 @@ export const CONFIG_LOADER_JS = `(async () => {
 
   await new Promise((resolve, reject) => {
     const s = document.createElement("script");
-    s.src = "/__transport.js";
+    s.src = new URL("__transport.js", document.currentScript?.src ?? location.href).href;
     s.onload = resolve;
     s.onerror = reject;
     document.head.appendChild(s);

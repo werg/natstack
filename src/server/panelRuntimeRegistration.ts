@@ -24,9 +24,11 @@ export interface CommonDeps {
   centralData: CentralDataManager | null;
   hostConfig: HostConfig;
   isIpcMode: boolean;
+  isSupervisorMode?: boolean;
   requestRelaunch?: (name: string) => void;
   /** IPC proxy: fetch workspace list from Electron main when centralData is null. */
   requestWorkspaceList?: () => Promise<unknown[]>;
+  requestActiveWorkspaceEntry?: () => Promise<unknown | null>;
   listWorkspaceUnits?: () =>
     | Promise<import("./services/workspaceService.js").WorkspaceUnitStatus[]>
     | import("./services/workspaceService.js").WorkspaceUnitStatus[];
@@ -82,6 +84,8 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
           deleteWorkspaceDir,
           requestRelaunch: deps.requestRelaunch,
           requestWorkspaceList: deps.requestWorkspaceList,
+          requestActiveWorkspaceEntry: deps.requestActiveWorkspaceEntry,
+          isSupervisorMode: deps.isSupervisorMode,
           listUnits: deps.listWorkspaceUnits,
           restartUnit: deps.restartWorkspaceUnit,
           listUnitLogs: deps.listWorkspaceUnitLogs,

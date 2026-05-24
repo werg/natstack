@@ -15,6 +15,7 @@ import { request as httpsRequest, Agent as HttpsAgent } from "https";
 import * as fs from "fs";
 import { createDevLogger } from "@natstack/dev-log";
 import type { EventService } from "@natstack/shared/eventsService";
+import { resolveServerRouteUrl } from "@natstack/shared/connect";
 import { createPinnedHttpsAgent } from "./tlsPinning.js";
 
 const log = createDevLogger("RemoteHealthPoll");
@@ -101,11 +102,12 @@ export function startRemoteHealthPoll(opts: RemoteHealthPollOptions): RemoteHeal
   async function probe(): Promise<Record<string, unknown>> {
     const isTls = opts.baseUrl.protocol === "https:";
     const port = parseInt(opts.baseUrl.port, 10) || (isTls ? 443 : 80);
+    const healthUrl = resolveServerRouteUrl(opts.baseUrl, "/healthz");
     const req = (isTls ? httpsRequest : httpRequest)({
       method: "GET",
       host: opts.baseUrl.hostname,
       port,
-      path: "/healthz",
+      path: `${healthUrl.pathname}${healthUrl.search}`,
       timeout: REQUEST_TIMEOUT_MS,
       headers: opts.adminToken
         ? {

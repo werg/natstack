@@ -75,6 +75,9 @@ importers:
       '@natstack/rpc':
         specifier: workspace:*
         version: link:packages/rpc
+      '@natstack/server-supervisor':
+        specifier: workspace:*
+        version: link:packages/server-supervisor
       '@natstack/shared':
         specifier: workspace:*
         version: link:packages/shared
@@ -654,6 +657,21 @@ importers:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
+
+  packages/server-supervisor:
+    dependencies:
+      '@natstack/dev-log':
+        specifier: workspace:*
+        version: link:../dev-log
+      '@natstack/env-paths':
+        specifier: workspace:*
+        version: link:../env-paths
+      '@natstack/process-adapter':
+        specifier: workspace:*
+        version: link:../process-adapter
+      '@natstack/shared':
+        specifier: workspace:*
+        version: link:../shared
 
   packages/shared:
     dependencies:
@@ -16446,7 +16464,9 @@ snapshots:
       metro-runtime: 0.82.5
     transitivePeerDependencies:
       - '@babel/core'
+      - bufferutil
       - supports-color
+      - utf-8-validate
 
   '@react-native/normalize-colors@0.79.7': {}
 

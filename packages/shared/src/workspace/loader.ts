@@ -16,11 +16,25 @@ import dotenv from "dotenv";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("Workspace");
-import type { Workspace, WorkspaceConfig, WorkspaceExtensionDecl, CentralConfig, CentralConfigPaths, WorkspaceEntry } from "./types.js";
+import type {
+  Workspace,
+  WorkspaceConfig,
+  WorkspaceExtensionDecl,
+  CentralConfig,
+  CentralConfigPaths,
+  WorkspaceEntry,
+} from "./types.js";
 import type { CentralDataManager } from "../centralData.js";
 import { assertGitAvailable, execGitFileSync } from "../gitRuntime.js";
-import { getExistingWorkspaceTemplateDir, getWorkspaceTemplateCandidates } from "../runtimePaths.js";
-import { WORKSPACE_GIT_INIT_PATTERNS, WORKSPACE_SOURCE_DIRS, WORKSPACE_STATE_DIRS } from "./sourceDirs.js";
+import {
+  getExistingWorkspaceTemplateDir,
+  getWorkspaceTemplateCandidates,
+} from "../runtimePaths.js";
+import {
+  WORKSPACE_GIT_INIT_PATTERNS,
+  WORKSPACE_SOURCE_DIRS,
+  WORKSPACE_STATE_DIRS,
+} from "./sourceDirs.js";
 
 const WORKSPACE_CONFIG_FILE = "meta/natstack.yml";
 const WORKSPACE_TEMPLATE_SOURCE_FILE = "meta/.natstack-template-source.json";
@@ -110,7 +124,7 @@ function migrateClaudeAgentModelsConfig(parsed: CentralConfig): boolean {
     const migrated = migrateClaudeAgentModelValue(value);
     if (migrated !== null) {
       console.warn(
-        `[NatStack] Migrated old model role 'claude-agent:${(value as string).slice("claude-agent:".length)}' → '${migrated}' in models.${role}`,
+        `[NatStack] Migrated old model role 'claude-agent:${(value as string).slice("claude-agent:".length)}' → '${migrated}' in models.${role}`
       );
       (parsed.models as Record<string, unknown>)[role] = migrated;
       mutated = true;
@@ -140,12 +154,19 @@ export function loadCentralConfig(): CentralConfig {
       try {
         // Audit finding #51: secret-bearing config writes must be 0o600
         // regardless of dir perms.
-        fs.writeFileSync(paths.configPath, YAML.stringify(parsed), { encoding: "utf-8", mode: 0o600 });
-        try { fs.chmodSync(paths.configPath, 0o600); } catch { /* best-effort */ }
+        fs.writeFileSync(paths.configPath, YAML.stringify(parsed), {
+          encoding: "utf-8",
+          mode: 0o600,
+        });
+        try {
+          fs.chmodSync(paths.configPath, 0o600);
+        } catch {
+          /* best-effort */
+        }
       } catch (writeErr) {
         console.warn(
           `[Config] Failed to persist migrated config back to ${paths.configPath}:`,
-          writeErr,
+          writeErr
         );
       }
     }
@@ -217,7 +238,11 @@ export function saveSecretsToPath(secretsPath: string, secrets: Record<string, s
     fs.mkdirSync(path.dirname(secretsPath), { recursive: true, mode: 0o700 });
     fs.writeFileSync(secretsPath, YAML.stringify(secrets), { encoding: "utf-8", mode: 0o600 });
     if (process.platform !== "win32") {
-      try { fs.chmodSync(secretsPath, 0o600); } catch { /* best-effort */ }
+      try {
+        fs.chmodSync(secretsPath, 0o600);
+      } catch {
+        /* best-effort */
+      }
     }
   } catch (error) {
     console.error("[Config] Failed to save secrets:", error);
@@ -237,7 +262,11 @@ export function saveCentralConfig(config: CentralConfig): void {
     // imply token presence; treat as secret-adjacent and lock to 0o600.
     fs.writeFileSync(paths.configPath, YAML.stringify(config), { encoding: "utf-8", mode: 0o600 });
     if (process.platform !== "win32") {
-      try { fs.chmodSync(paths.configPath, 0o600); } catch { /* best-effort */ }
+      try {
+        fs.chmodSync(paths.configPath, 0o600);
+      } catch {
+        /* best-effort */
+      }
     }
   } catch (error) {
     console.error("[Config] Failed to save central config:", error);
@@ -293,7 +322,7 @@ export function resolveWorkspaceName(): string | null {
  * Validate a workspace name.
  * Must be alphanumeric with hyphens/underscores, max 64 chars.
  */
-function validateWorkspaceName(name: string): void {
+export function validateWorkspaceName(name: string): void {
   if (!name) throw new Error("Workspace name cannot be empty");
   if (name.length > WORKSPACE_NAME_MAX_LENGTH) {
     throw new Error(`Workspace name too long (max ${WORKSPACE_NAME_MAX_LENGTH} chars)`);
@@ -318,8 +347,8 @@ export function resolveWorkspaceTemplateDir(appRoot: string): string | null {
   if (debug) {
     console.log(
       `[Workspace] resolveWorkspaceTemplateDir appRoot=${appRoot} candidates=${JSON.stringify(
-        getWorkspaceTemplateCandidates(appRoot),
-      )} selected=${templateDir ?? "(none)"}`,
+        getWorkspaceTemplateCandidates(appRoot)
+      )} selected=${templateDir ?? "(none)"}`
     );
   }
   return templateDir;
@@ -422,7 +451,8 @@ function copyDirRecursive(src: string, dest: string): void {
     const srcPath = path.join(src, entry.name);
     const destPath = path.join(dest, entry.name);
     if (entry.isDirectory()) {
-      if (entry.name === ".git" || entry.name === "node_modules" || entry.name === ".cache") continue;
+      if (entry.name === ".git" || entry.name === "node_modules" || entry.name === ".cache")
+        continue;
       copyDirRecursive(srcPath, destPath);
     } else if (entry.isFile()) {
       fs.copyFileSync(srcPath, destPath);
@@ -433,7 +463,7 @@ function copyDirRecursive(src: string, dest: string): void {
 function writeTemplateSourceMarker(
   sourceRoot: string,
   templateSrc: string,
-  kind: "template" | "fork",
+  kind: "template" | "fork"
 ): void {
   const markerPath = path.join(sourceRoot, WORKSPACE_TEMPLATE_SOURCE_FILE);
   const marker = {
@@ -471,7 +501,6 @@ function initGitRepos(wsDir: string): void {
     if (!fs.existsSync(parentDir)) continue;
 
     for (const repoDir of listWorkspaceUnitDirs(parentDir, sourceDir)) {
-
       // Skip if already a git repo
       if (fs.existsSync(path.join(repoDir, ".git"))) continue;
 
@@ -482,8 +511,16 @@ function initGitRepos(wsDir: string): void {
       execGitFileSync(["init"], { cwd: repoDir, stdio: "pipe" });
       execGitFileSync(["add", "-A"], { cwd: repoDir, stdio: "pipe" });
       execGitFileSync(
-        ["-c", "user.email=natstack@local", "-c", "user.name=natstack", "commit", "-m", "Initial workspace"],
-        { cwd: repoDir, stdio: "pipe" },
+        [
+          "-c",
+          "user.email=natstack@local",
+          "-c",
+          "user.name=natstack",
+          "commit",
+          "-m",
+          "Initial workspace",
+        ],
+        { cwd: repoDir, stdio: "pipe" }
       );
     }
   }
@@ -536,8 +573,7 @@ export function loadWorkspaceConfig(workspacePath: string): WorkspaceConfig {
   const config = YAML.parse(content) as WorkspaceConfig;
 
   // Workspace id is not read from disk. Managed workspaces derive it from the
-  // data-dir folder name; explicit external workspaces derive it from their
-  // absolute workspace root path.
+  // data-dir folder name, which is validated before resolution.
   config.id = deriveWorkspaceId(workspacePath);
 
   validateDeclaredExtensions(config.extensions);
@@ -560,12 +596,17 @@ function validateDeclaredExtensions(extensions: WorkspaceExtensionDecl[] | undef
     // YAML is untyped at runtime — validate optional fields so e.g.
     // `enabled: "false"` can't slip through and read as truthy later.
     if (decl.ref !== undefined && (typeof decl.ref !== "string" || decl.ref.trim().length === 0)) {
-      throw new Error("meta/natstack.yml: `extensions[].ref` must be a non-empty string when provided");
+      throw new Error(
+        "meta/natstack.yml: `extensions[].ref` must be a non-empty string when provided"
+      );
     }
     if (decl.enabled !== undefined && typeof decl.enabled !== "boolean") {
       throw new Error("meta/natstack.yml: `extensions[].enabled` must be a boolean when provided");
     }
-    const key = decl.source.trim().replace(/^workspace\//, "").replace(EXTENSION_SOURCE_NORMALIZE, "");
+    const key = decl.source
+      .trim()
+      .replace(/^workspace\//, "")
+      .replace(EXTENSION_SOURCE_NORMALIZE, "");
     if (seen.has(key)) {
       throw new Error(`meta/natstack.yml: duplicate extension declaration for "${decl.source}"`);
     }
@@ -579,7 +620,7 @@ function validateDeclaredExtensions(extensions: WorkspaceExtensionDecl[] | undef
  * the declared set is authoritative, so absent means "no extensions".
  */
 export function resolveDeclaredExtensions(
-  config: WorkspaceConfig,
+  config: WorkspaceConfig
 ): Array<{ source: string; ref: string; enabled: boolean }> {
   return (config.extensions ?? []).map((decl) => ({
     source: decl.source.trim(),
@@ -588,17 +629,13 @@ export function resolveDeclaredExtensions(
   }));
 }
 
-function deriveWorkspaceId(workspacePath: string): string {
+export function deriveWorkspaceId(workspacePath: string): string {
   const sourceRoot = path.resolve(workspacePath);
-  const workspaceRoot = path.basename(sourceRoot) === "source"
-    ? path.dirname(sourceRoot)
-    : sourceRoot;
-  const workspacesDir = path.resolve(getWorkspacesDir());
-
-  if (path.dirname(workspaceRoot) === workspacesDir) {
-    return path.basename(workspaceRoot);
-  }
-  return workspaceRoot;
+  const workspaceRoot =
+    path.basename(sourceRoot) === "source" ? path.dirname(sourceRoot) : sourceRoot;
+  const id = path.basename(workspaceRoot);
+  validateWorkspaceName(id);
+  return id;
 }
 
 /**
@@ -646,10 +683,8 @@ export function createWorkspace(wsDir: string): Workspace {
 // =============================================================================
 
 export interface ResolveWorkspaceOpts {
-  /** Explicit managed workspace root path */
-  wsDir?: string;
   /** Workspace name (resolved via getWorkspaceDir) */
-  name?: string;
+  name: string;
   /** App root for template resolution (required when init is true) */
   appRoot?: string;
   /** Auto-create from template if workspace doesn't exist */
@@ -676,18 +711,9 @@ export interface ResolvedWorkspace {
  * Throws if workspace doesn't exist and init is false.
  */
 export function resolveOrCreateWorkspace(opts: ResolveWorkspaceOpts): ResolvedWorkspace {
-  let wsDir = opts.wsDir;
-  let name = opts.name;
-
-  if (!wsDir && name) {
-    wsDir = getWorkspaceDir(name);
-  }
-  if (!wsDir) {
-    throw new Error("No workspace specified (provide wsDir or name)");
-  }
-  if (!name) {
-    name = path.basename(wsDir);
-  }
+  const name = opts.name;
+  validateWorkspaceName(name);
+  const wsDir = getWorkspaceDir(name);
 
   const configPath = path.join(wsDir, "source", WORKSPACE_CONFIG_FILE);
   let created = false;
@@ -718,7 +744,7 @@ export function resolveOrCreateWorkspace(opts: ResolveWorkspaceOpts): ResolvedWo
 export function createAndRegisterWorkspace(
   name: string,
   centralData: CentralDataManager,
-  opts?: { templateDir?: string; forkFrom?: string },
+  opts?: { templateDir?: string; forkFrom?: string }
 ): WorkspaceEntry {
   if (centralData.hasWorkspace(name)) {
     throw new Error(`Workspace "${name}" already exists`);

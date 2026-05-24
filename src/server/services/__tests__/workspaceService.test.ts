@@ -258,6 +258,28 @@ describe("workspace service handler", () => {
     expect(result).toEqual({ name: "test-ws", lastOpened: 1000 });
   });
 
+  it("getActiveEntry uses the supervisor/Electron parent IPC proxy when provided", async () => {
+    const requestActiveWorkspaceEntry = vi.fn(async () => ({
+      name: "test-ws",
+      lastOpened: 2000,
+    }));
+    const service = createWorkspaceService({
+      workspace: makeWorkspace(),
+      getConfig: () => makeConfig(),
+      setConfigField: vi.fn(),
+      centralData: null,
+      createWorkspace: vi.fn(),
+      deleteWorkspaceDir: vi.fn(),
+      requestActiveWorkspaceEntry,
+    });
+
+    await expect(service.handler(panelCtx, "getActiveEntry", [])).resolves.toEqual({
+      name: "test-ws",
+      lastOpened: 2000,
+    });
+    expect(requestActiveWorkspaceEntry).toHaveBeenCalledTimes(1);
+  });
+
   it("getConfig returns the workspace config", async () => {
     const service = makeService();
     const result = await service.handler(panelCtx, "getConfig", []);
@@ -395,6 +417,66 @@ describe("workspace.select", () => {
     expect(captured).toHaveLength(1);
     expect(captured[0]!.method).toBe("workspace.select");
     expect(captured[0]!.args).toEqual(["other"]);
+  });
+});
+
+describe("workspace supervisor mode", () => {
+  function makeSupervisorService() {
+    return createWorkspaceService({
+      workspace: makeWorkspace(),
+      getConfig: () => makeConfig(),
+      setConfigField: vi.fn(),
+      centralData: makeCentralData(),
+      createWorkspace: vi.fn(),
+      deleteWorkspaceDir: vi.fn(),
+      requestRelaunch: vi.fn(),
+      isSupervisorMode: true,
+      approvalQueue: { requestUserland: vi.fn(async () => grantedApproval()) },
+    });
+  }
+
+  it("rejects workspace.create with an explicit supervisor-mode code", async () => {
+    const service = makeSupervisorService();
+
+    await expect(service.handler(panelCtx, "create", ["new-ws"])).rejects.toMatchObject({
+      name: "ServiceError",
+      code: "unsupported_in_supervisor",
+      method: "create",
+    });
+  });
+
+  it("rejects workspace.delete with an explicit supervisor-mode code", async () => {
+    const service = makeSupervisorService();
+
+    await expect(service.handler(panelCtx, "delete", ["other"])).rejects.toMatchObject({
+      name: "ServiceError",
+      code: "unsupported_in_supervisor",
+      method: "delete",
+    });
+  });
+
+  it("rejects workspace.select without touching the catalog or relaunching", async () => {
+    const requestRelaunch = vi.fn();
+    const central = makeCentralData();
+    const service = createWorkspaceService({
+      workspace: makeWorkspace(),
+      getConfig: () => makeConfig(),
+      setConfigField: vi.fn(),
+      centralData: central,
+      createWorkspace: vi.fn(),
+      deleteWorkspaceDir: vi.fn(),
+      requestRelaunch,
+      isSupervisorMode: true,
+      approvalQueue: { requestUserland: vi.fn(async () => grantedApproval()) },
+    });
+
+    await expect(service.handler(panelCtx, "select", ["other"])).rejects.toMatchObject({
+      name: "ServiceError",
+      code: "unsupported_in_supervisor",
+      method: "select",
+    });
+    expect(central.touchWorkspace).not.toHaveBeenCalled();
+    expect(requestRelaunch).not.toHaveBeenCalled();
   });
 });
 

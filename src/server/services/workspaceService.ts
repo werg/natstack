@@ -107,6 +107,8 @@ export interface WorkspaceServiceDeps {
    * with workspace.getActive() regardless of runtime mode.
    */
   requestWorkspaceList?: () => Promise<unknown[]>;
+  requestActiveWorkspaceEntry?: () => Promise<unknown | null>;
+  isSupervisorMode?: boolean;
   /** Workspace-unit operational status rows, including extension health. */
   listUnits?: () => Promise<WorkspaceUnitStatus[]> | WorkspaceUnitStatus[];
   /** Restart a workspace unit through the owning manager. */
@@ -316,18 +318,19 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
   // happen to be schema-valid). Omit the methods entirely instead: callers
   // get a single, consistent "Unknown workspace method: create" that makes
   // it obvious the API isn't available in this mode.
-  const catalogMethods: ServiceDefinition["methods"] = deps.centralData
-    ? {
-        create: {
-          args: z.tuple([z.string(), z.object({ forkFrom: z.string().optional() }).optional()]),
-          policy: { allowed: ["shell", "panel", "worker", "do", "server"] },
-        },
-        delete: {
-          args: z.tuple([z.string()]),
-          policy: { allowed: ["shell", "panel", "worker", "do", "server"] },
-        },
-      }
-    : {};
+  const catalogMethods: ServiceDefinition["methods"] =
+    deps.centralData || deps.isSupervisorMode
+      ? {
+          create: {
+            args: z.tuple([z.string(), z.object({ forkFrom: z.string().optional() }).optional()]),
+            policy: { allowed: ["shell", "panel", "worker", "do", "server"] },
+          },
+          delete: {
+            args: z.tuple([z.string()]),
+            policy: { allowed: ["shell", "panel", "worker", "do", "server"] },
+          },
+        }
+      : {};
 
   return {
     name: "workspace",
@@ -411,6 +414,7 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
           return deps.getConfig().id;
 
         case "getActiveEntry":
+          if (deps.requestActiveWorkspaceEntry) return deps.requestActiveWorkspaceEntry();
           if (!deps.centralData) return null;
           return deps.centralData.getWorkspaceEntry(deps.getConfig().id);
 
@@ -422,6 +426,14 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
         // -----------------------------------------------------------------
 
         case "create": {
+          if (deps.isSupervisorMode) {
+            throw new ServiceError(
+              "workspace",
+              "create",
+              "Workspace creation is only available through the supervisor provisioning API",
+              "unsupported_in_supervisor"
+            );
+          }
           if (!deps.centralData) throw new Error("Workspace creation not available");
           const [name, opts] = args as [string, { forkFrom?: string } | undefined];
           await requireWorkspaceApproval(deps, ctx, "create", {
@@ -434,6 +446,14 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
         }
 
         case "delete": {
+          if (deps.isSupervisorMode) {
+            throw new ServiceError(
+              "workspace",
+              "delete",
+              "Workspace deletion is only available through the supervisor provisioning API",
+              "unsupported_in_supervisor"
+            );
+          }
           if (!deps.centralData) throw new Error("Workspace deletion not available");
           const [name] = args as [string];
           if (name === deps.getConfig().id) {
@@ -452,6 +472,14 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
 
         case "select": {
           const [name] = args as [string];
+          if (deps.isSupervisorMode) {
+            throw new ServiceError(
+              "workspace",
+              "select",
+              `Workspace switching is not available inside a supervisor backend; reconnect to /w/${encodeURIComponent(name)}`,
+              "unsupported_in_supervisor"
+            );
+          }
           await requireWorkspaceApproval(deps, ctx, "select", {
             target: name,
             title: "Switch workspace?",

@@ -70,7 +70,16 @@ export function parseConnectServerUrl(rawUrl) {
       reason: `Cleartext HTTP is only allowed for loopback, private LAN, Tailscale, or local hostnames. Use https:// for ${server.hostname}.`,
     };
   }
-  return { kind: "ok", url: `${server.protocol}//${server.host}` };
+  return { kind: "ok", url: canonicalServerBaseUrl(server) };
+}
+
+function canonicalServerBaseUrl(server) {
+  return `${server.protocol}//${server.host}${normalizeBasePath(server.pathname)}`;
+}
+
+function normalizeBasePath(pathname) {
+  if (!pathname || pathname === "/") return "";
+  return `/${pathname.replace(/^\/+|\/+$/g, "")}`;
 }
 
 function isTrustedCleartextHost(host) {

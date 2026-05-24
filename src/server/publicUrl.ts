@@ -20,6 +20,7 @@ interface PublicUrlState {
   protocol: "http" | "https";
   externalHost: string;
   gatewayPort: number;
+  publicBasePath: string;
 }
 
 let state: PublicUrlState | null = null;
@@ -30,14 +31,19 @@ export interface ConfigurePublicUrlOptions {
   protocol: "http" | "https";
   externalHost: string;
   gatewayPort: number;
+  publicBasePath?: string;
 }
 
 export function configurePublicUrl(opts: ConfigurePublicUrlOptions): void {
+  const override = normalizeOverride(opts.override);
   state = {
-    override: normalizeOverride(opts.override),
+    override,
     protocol: opts.protocol,
     externalHost: opts.externalHost,
     gatewayPort: opts.gatewayPort,
+    publicBasePath: normalizeBasePath(
+      opts.publicBasePath ?? process.env["NATSTACK_PUBLIC_BASE_PATH"] ?? pathFromOverride(override)
+    ),
   };
 }
 
@@ -86,6 +92,11 @@ export function buildPublicUrl(pathname: string): string {
   return base + pathname;
 }
 
+export function getPublicBasePath(): string {
+  if (state) return state.publicBasePath;
+  return normalizeBasePath(process.env["NATSTACK_PUBLIC_BASE_PATH"]);
+}
+
 /** For tests. */
 export function resetPublicUrl(): void {
   state = null;
@@ -98,4 +109,18 @@ function normalizeOverride(value: string | undefined): string | undefined {
   if (trimmed.length === 0) return undefined;
   // Strip trailing slash so concatenation with "/..." paths is clean.
   return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
+}
+
+function pathFromOverride(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    return new URL(value).pathname;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeBasePath(value: string | undefined): string {
+  if (!value || value === "/") return "";
+  return `/${value.replace(/^\/+|\/+$/g, "")}`;
 }

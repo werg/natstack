@@ -89,6 +89,17 @@ describe("parseRemoteStartupMode priority", () => {
     expect(result.refreshToken).toBe("refresh-store");
   });
 
+  it("preserves remote URL path prefixes from stored supervisor tenant credentials", () => {
+    mockLoadRemoteCredentials.mockReturnValue({
+      kind: "device",
+      url: "https://store:1/base/w/alpha",
+      deviceId: "dev_store",
+      refreshToken: "refresh-store",
+    });
+    const result = assertPresent(mod.parseRemoteStartupMode());
+    expect(result.remoteUrl.href).toBe("https://store:1/base/w/alpha");
+  });
+
   it("uses device-only store credentials", () => {
     mockLoadRemoteCredentials.mockReturnValue({
       kind: "device",

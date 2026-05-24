@@ -10,7 +10,6 @@
 
 import {
   createServer,
-  request,
   type Server as HttpServer,
   type IncomingMessage,
   type ServerResponse,
@@ -18,10 +17,10 @@ import {
 import { createServer as createHttpsServer } from "https";
 import { randomBytes } from "crypto";
 import * as fs from "fs";
-import { connect as connectNet } from "net";
 import { WebSocketServer, WebSocket } from "ws";
 import type { Duplex } from "stream";
 import { createDevLogger } from "@natstack/dev-log";
+import { proxyRequest, proxyUpgrade } from "@natstack/shared/nodeHttpProxy";
 import { constantTimeStringEqual, type TokenManager } from "@natstack/shared/tokenManager";
 import type { ConnectionGrantService } from "@natstack/shared/connectionGrants";
 import {
@@ -56,22 +55,6 @@ const log = createDevLogger("Gateway");
  * `x-natstack-*` covers `x-natstack-token` (admin) and any future
  * NatStack-internal admin-bearing headers.
  */
-const STRIP_UPSTREAM_HEADERS = new Set<string>(["authorization", "cookie", "proxy-authorization"]);
-
-function stripUpstreamHeaders(
-  headers: IncomingMessage["headers"]
-): Record<string, string | string[]> {
-  const out: Record<string, string | string[]> = {};
-  for (const [k, v] of Object.entries(headers)) {
-    if (v === undefined) continue;
-    const lower = k.toLowerCase();
-    if (STRIP_UPSTREAM_HEADERS.has(lower)) continue;
-    if (lower.startsWith("x-natstack-")) continue;
-    out[k] = v as string | string[];
-  }
-  return out;
-}
-
 /** Handler interface for PanelHttpServer (in-process dispatch) */
 export interface PanelHttpHandler {
   handleGatewayRequest(req: IncomingMessage, res: ServerResponse): void;
@@ -234,8 +217,13 @@ export class Gateway {
           res.end("Forbidden");
           return;
         }
-        return proxyRequest(req, res, workerdPort, url, workerdToken, undefined, {
-          "X-NatStack-Dispatch-Secret": dispatchSecret,
+        return proxyRequest(req, res, {
+          targetPort: workerdPort,
+          targetPath: url,
+          auth: { mode: "replace", upstreamToken: workerdToken },
+          extraHeaders: { "X-NatStack-Dispatch-Secret": dispatchSecret },
+          errorPrefix: "Gateway proxy error",
+          logWarning: (message) => log.warn(message),
         });
       }
 
@@ -396,8 +384,11 @@ export class Gateway {
           socket.destroy();
           return;
         }
-        return proxyUpgrade(req, socket, head, workerdPort, workerdToken, {
-          "X-NatStack-Dispatch-Secret": dispatchSecret,
+        return proxyUpgrade(req, socket, head, {
+          targetPort: workerdPort,
+          auth: { mode: "replace", upstreamToken: workerdToken },
+          extraHeaders: { "X-NatStack-Dispatch-Secret": dispatchSecret },
+          logWarning: (message) => log.warn(message),
         });
       }
 
@@ -547,98 +538,6 @@ function isOriginAllowed(
     if (parsed.hostname === suffix.replace(/^\./, "")) return true;
   }
   return false;
-}
-
-// ===========================================================================
-// Reverse proxy helpers (for external processes: git, workerd)
-// ===========================================================================
-
-function proxyRequest(
-  req: IncomingMessage,
-  res: ServerResponse,
-  targetPort: number,
-  targetPath: string,
-  upstreamToken: string,
-  hostHeader?: string,
-  extraHeaders: Record<string, string> = {}
-): void {
-  // Strip inbound auth/cookie/X-NatStack-* before forwarding (audit #32).
-  // Workerd-served code is untrusted-by-design; it must never see the
-  // gateway's admin token, the panel's bearer, or session cookies. After
-  // stripping, stamp a per-upstream gateway-internal bearer so the
-  // upstream can attribute the request to "the gateway".
-  const safeHeaders = stripUpstreamHeaders(req.headers);
-  safeHeaders["authorization"] = `Bearer ${upstreamToken}`;
-  if (hostHeader) safeHeaders["host"] = hostHeader;
-  Object.assign(safeHeaders, extraHeaders);
-
-  const proxyReq = request(
-    {
-      hostname: "127.0.0.1",
-      port: targetPort,
-      path: targetPath,
-      method: req.method,
-      headers: safeHeaders,
-    },
-    (proxyRes) => {
-      res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
-      proxyRes.on("error", (err) => {
-        log.warn(`Proxy response stream error: ${err.message}`);
-        try {
-          res.end();
-        } catch {
-          /* already closed */
-        }
-      });
-      proxyRes.pipe(res);
-    }
-  );
-
-  proxyReq.on("error", (err) => {
-    if (!res.headersSent) {
-      res.writeHead(502, { "Content-Type": "text/plain" });
-    }
-    res.end(`Gateway proxy error: ${err.message}`);
-  });
-
-  req.pipe(proxyReq);
-}
-
-function proxyUpgrade(
-  req: IncomingMessage,
-  socket: Duplex,
-  head: Buffer,
-  targetPort: number,
-  upstreamToken: string,
-  extraHeaders: Record<string, string> = {}
-): void {
-  // Strip inbound auth/cookie/X-NatStack-* (audit #32). See proxyRequest.
-  // After stripping, stamp the per-upstream gateway bearer.
-  const safeHeaders = stripUpstreamHeaders(req.headers);
-  safeHeaders["authorization"] = `Bearer ${upstreamToken}`;
-  Object.assign(safeHeaders, extraHeaders);
-  const targetSocket = connectNet(targetPort, "127.0.0.1", () => {
-    const headers = Object.entries(safeHeaders)
-      .filter(([, v]) => v !== undefined)
-      .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
-      .join("\r\n");
-    const upgradeReq = `${req.method} ${req.url} HTTP/${req.httpVersion}\r\n${headers}\r\n\r\n`;
-
-    targetSocket.write(upgradeReq);
-    if (head.length > 0) targetSocket.write(head);
-
-    socket.pipe(targetSocket);
-    targetSocket.pipe(socket);
-  });
-
-  targetSocket.on("error", (err) => {
-    log.warn(`Gateway WS proxy error: ${err.message}`);
-    socket.destroy();
-  });
-
-  socket.on("error", () => {
-    targetSocket.destroy();
-  });
 }
 
 // ===========================================================================
@@ -811,7 +710,14 @@ function handleRouteRequest(
     result.kind === "worker-do" && workerdDispatchSecret
       ? { "X-NatStack-Dispatch-Secret": workerdDispatchSecret }
       : undefined;
-  proxyRequest(req, res, workerdPort, targetPath, workerdToken, undefined, extraHeaders);
+  proxyRequest(req, res, {
+    targetPort: workerdPort,
+    targetPath,
+    auth: { mode: "replace", upstreamToken: workerdToken },
+    extraHeaders,
+    errorPrefix: "Gateway proxy error",
+    logWarning: (message) => log.warn(message),
+  });
   return true;
 }
 
@@ -874,6 +780,12 @@ function handleRouteUpgrade(
     result.kind === "worker-do" && workerdDispatchSecret
       ? { "X-NatStack-Dispatch-Secret": workerdDispatchSecret }
       : undefined;
-  proxyUpgrade(req, socket, head, workerdPort, workerdToken, extraHeaders);
+  proxyUpgrade(req, socket, head, {
+    targetPort: workerdPort,
+    targetPath: req.url,
+    auth: { mode: "replace", upstreamToken: workerdToken },
+    extraHeaders,
+    logWarning: (message) => log.warn(message),
+  });
   return true;
 }

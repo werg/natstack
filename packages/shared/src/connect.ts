@@ -71,7 +71,29 @@ export function parseConnectServerUrl(raw: string): { kind: "ok"; url: string } 
     };
   }
 
-  return { kind: "ok", url: `${server.protocol}//${server.host}` };
+  return { kind: "ok", url: canonicalServerBaseUrl(server) };
+}
+
+export function resolveServerRouteUrl(baseUrl: string | URL, route: string): URL {
+  const base = typeof baseUrl === "string" ? new URL(baseUrl) : new URL(baseUrl.href);
+  const routeUrl = new URL(route.startsWith("/") ? route : `/${route}`, "http://natstack.route");
+  const basePath = normalizeBasePath(base.pathname);
+  base.pathname = `${basePath}${routeUrl.pathname}`;
+  base.search = routeUrl.search;
+  base.hash = "";
+  return base;
+}
+
+export function resolveServerWsUrl(baseUrl: string | URL, route = "/rpc"): string {
+  const url = resolveServerRouteUrl(baseUrl, route);
+  if (url.protocol === "https:") {
+    url.protocol = "wss:";
+  } else if (url.protocol === "http:") {
+    url.protocol = "ws:";
+  } else {
+    throw new Error(`Server URL must use http:// or https:// (got ${url.protocol || "no scheme"})`);
+  }
+  return url.toString();
 }
 
 export function isTrustedCleartextHost(host: string): boolean {
@@ -84,6 +106,15 @@ export function isTrustedCleartextHost(host: string): boolean {
   if (isSingleLabelHostname(lower)) return true;
   if (lower.endsWith(".local")) return true;
   return false;
+}
+
+function canonicalServerBaseUrl(server: URL): string {
+  return `${server.protocol}//${server.host}${normalizeBasePath(server.pathname)}`;
+}
+
+function normalizeBasePath(pathname: string): string {
+  if (!pathname || pathname === "/") return "";
+  return `/${pathname.replace(/^\/+|\/+$/g, "")}`;
 }
 
 function isSingleLabelHostname(host: string): boolean {

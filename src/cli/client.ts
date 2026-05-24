@@ -6,6 +6,7 @@ import {
   parseConnectLink,
   parseConnectServerUrl,
   PAIRING_CODE_PATTERN,
+  resolveServerRouteUrl,
 } from "@natstack/shared/connect";
 import {
   clearCliCredentials,
@@ -69,15 +70,18 @@ async function pair(argv: string[]): Promise<number> {
     console.error(parsedUrl.reason);
     return 2;
   }
-  const response = await fetch(new URL("/_r/s/auth/complete-pairing", parsedUrl.url), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      code: opts.code,
-      label: opts.label ?? `${os.userInfo().username}@${os.hostname()}`,
-      platform: "desktop",
-    }),
-  });
+  const response = await fetch(
+    resolveServerRouteUrl(parsedUrl.url, "/_r/s/auth/complete-pairing"),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        code: opts.code,
+        label: opts.label ?? `${os.userInfo().username}@${os.hostname()}`,
+        platform: "desktop",
+      }),
+    }
+  );
   const body = (await response.json().catch(() => ({}))) as {
     deviceId?: unknown;
     refreshToken?: unknown;
@@ -109,7 +113,7 @@ async function status(): Promise<number> {
     console.log("not paired");
     return 1;
   }
-  const refresh = await fetch(new URL("/_r/s/auth/refresh-shell", creds.url), {
+  const refresh = await fetch(resolveServerRouteUrl(creds.url, "/_r/s/auth/refresh-shell"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ deviceId: creds.deviceId, refreshToken: creds.refreshToken }),
@@ -125,7 +129,7 @@ async function status(): Promise<number> {
     );
     return 1;
   }
-  const response = await fetch(new URL("/healthz", creds.url));
+  const response = await fetch(resolveServerRouteUrl(creds.url, "/healthz"));
   if (!response.ok) {
     console.log(`unreachable (${response.status})`);
     return 1;
