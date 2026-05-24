@@ -202,6 +202,7 @@ export interface BrowserDataApi {
     exportAll(): Promise<string>;
 }
 const SVC = "browser-data";
+const BROWSER_DATA_EXTENSION = "@workspace-extensions/browser-data";
 /**
  * Call function signature: (method, ...args) → Promise.
  * Both the Electron IPC path and the RPC bridge path satisfy this shape.
@@ -258,7 +259,12 @@ export function createBrowserDataApi(rpc: RpcBridge): BrowserDataApi {
             "In eval context: import { rpc } from '@workspace/runtime'. " +
             "In inline_ui components: use chat.rpc.");
     }
-    return buildApi((method, ...args) => rpc.call("main", method, [...args]));
+    // browser-data is an extension, not a standalone `browser-data.*` service.
+    // Strip the legacy service prefix and relay through the extension host.
+    return buildApi((method, ...args) => {
+        const bareMethod = method.startsWith(`${SVC}.`) ? method.slice(SVC.length + 1) : method;
+        return rpc.call("main", "extensions.invoke", [BROWSER_DATA_EXTENSION, bareMethod, args]);
+    });
 }
 // Auto-initialize using the runtime's RPC bridge via __natstackRequire__
 // (the module system for panel bundles and eval/inline_ui blocks).
