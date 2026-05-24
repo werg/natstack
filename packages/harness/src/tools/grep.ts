@@ -21,6 +21,7 @@ import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
 import path from "node:path";
 import { Buffer } from "node:buffer";
 import type { RpcCaller } from "@natstack/rpc";
+import { createExtensionsClient } from "@natstack/extension";
 import type { RuntimeFs, Dirent } from "./runtime-fs.js";
 import { resolveToCwd } from "./path-utils.js";
 import {
@@ -192,6 +193,9 @@ export function createGrepTool(
   fs: RuntimeFs,
   deps?: GrepToolDeps,
 ): AgentTool<typeof grepSchema, GrepToolDetails | undefined> {
+  const fileTools = deps?.rpc
+    ? createExtensionsClient(deps.rpc).use(FILE_TOOLS_EXTENSION, { streamingMethods: [] })
+    : null;
   return {
     name: "grep",
     label: "grep",
@@ -211,22 +215,18 @@ export function createGrepTool(
         throw new Error("Operation aborted");
       }
 
-      if (deps?.rpc) {
+      if (fileTools) {
         try {
-          return await deps.rpc.call<GrepToolResult>("main", "extensions.invoke", [
-            FILE_TOOLS_EXTENSION,
-            "grep",
-            [{
-              pattern,
-              path: searchDir,
-              cwd,
-              glob,
-              ignoreCase,
-              literal,
-              context,
-              limit,
-            }],
-          ]);
+          return (await fileTools.grep({
+            pattern,
+            path: searchDir,
+            cwd,
+            glob,
+            ignoreCase,
+            literal,
+            context,
+            limit,
+          })) as GrepToolResult;
         } catch (err) {
           if (!isFileToolsExtensionUnavailable(err)) throw err;
           if (onUpdate) {

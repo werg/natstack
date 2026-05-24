@@ -14,6 +14,7 @@ import { Type, type Static } from "@sinclair/typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
 import type { RpcCaller } from "@natstack/rpc";
+import { createExtensionsClient } from "@natstack/extension";
 import path from "node:path";
 import type { RuntimeFs, Dirent } from "./runtime-fs.js";
 import { resolveToCwd } from "./path-utils.js";
@@ -69,6 +70,9 @@ export function createFindTool(
   fs: RuntimeFs,
   deps?: FindToolDeps,
 ): AgentTool<typeof findSchema, FindToolDetails | undefined> {
+  const fileTools = deps?.rpc
+    ? createExtensionsClient(deps.rpc).use(FILE_TOOLS_EXTENSION, { streamingMethods: [] })
+    : null;
   return {
     name: "find",
     label: "find",
@@ -83,13 +87,9 @@ export function createFindTool(
         throw new Error("Operation aborted");
       }
 
-      if (deps?.rpc) {
+      if (fileTools) {
         try {
-          return await deps.rpc.call<FindToolResult>("main", "extensions.invoke", [
-            FILE_TOOLS_EXTENSION,
-            "find",
-            [{ pattern, path: searchDir, cwd, limit }],
-          ]);
+          return (await fileTools.find({ pattern, path: searchDir, cwd, limit })) as FindToolResult;
         } catch (err) {
           if (!isFileToolsExtensionUnavailable(err)) throw err;
         }

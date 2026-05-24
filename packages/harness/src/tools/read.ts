@@ -13,6 +13,7 @@ import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
 import { Buffer } from "node:buffer";
 import type { RuntimeFs } from "./runtime-fs.js";
 import type { RpcCaller } from "@natstack/rpc";
+import { createExtensionsClient } from "@natstack/extension";
 import { resolveReadPath } from "./path-utils.js";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead, type TruncationResult, } from "./truncate.js";
 const readSchema = Type.Object({
@@ -55,6 +56,9 @@ export interface ReadToolDeps {
     rpc?: RpcCaller;
 }
 export function createReadTool(cwd: string, fs: RuntimeFs, deps?: ReadToolDeps): AgentTool<typeof readSchema, ReadToolDetails> {
+    const extensions = deps?.rpc ? createExtensionsClient(deps.rpc) : null;
+    const fileTools = extensions?.use(FILE_TOOLS_EXTENSION, { streamingMethods: [] });
+    const imageService = extensions?.use(IMAGE_SERVICE_EXTENSION, { streamingMethods: [] });
     return {
         name: "read",
         label: "read",
@@ -69,13 +73,15 @@ export function createReadTool(cwd: string, fs: RuntimeFs, deps?: ReadToolDeps):
                 throw new Error("Operation aborted");
             }
             const absolutePath = resolveReadPath(path, cwd);
-            if (deps?.rpc && !isLikelyImagePath(path)) {
+            if (fileTools && !isLikelyImagePath(path)) {
                 try {
-                    return await deps.rpc.call<{ content: (TextContent | ImageContent)[]; details: ReadToolDetails }>("main", "extensions.invoke", [
-                        FILE_TOOLS_EXTENSION,
-                        "read",
-                        [{ path, cwd, offset, limit }],
-                    ]);
+                    // The extension's result family is structurally distinct from the
+                    // harness's public detail types; assert at this boundary as the
+                    // pre-migration rpc.call<...> generic did.
+                    return (await fileTools.read({ path, cwd, offset, limit })) as {
+                        content: (TextContent | ImageContent)[];
+                        details: ReadToolDetails;
+                    };
                 }
                 catch (err) {
                     if (!isFileToolsExtensionFallback(err)) throw err;
@@ -108,14 +114,10 @@ export function createReadTool(cwd: string, fs: RuntimeFs, deps?: ReadToolDeps):
                 }
                 throw err;
             }
-            if (raw instanceof Uint8Array && deps?.rpc) {
-                const mimeType = await deps.rpc.call<string | null>("main", "extensions.invoke", [IMAGE_SERVICE_EXTENSION,
-                    "detectMimeType",
-                    [raw]]);
+            if (raw instanceof Uint8Array && imageService) {
+                const mimeType = await imageService.detectMimeType(raw);
                 if (mimeType?.startsWith("image/")) {
-                    const resized = await deps.rpc.call<ImageResizeResult>("main", "extensions.invoke", [IMAGE_SERVICE_EXTENSION,
-                        "resize",
-                        [raw, mimeType, { maxWidth: 2000, maxHeight: 2000 }]]);
+                    const resized = await imageService.resize(raw, mimeType, { maxWidth: 2000, maxHeight: 2000 });
                     const base64 = Buffer.from(resized.data).toString("base64");
                     const content: (TextContent | ImageContent)[] = [
                         { type: "image", mimeType: resized.mimeType, data: base64 },
