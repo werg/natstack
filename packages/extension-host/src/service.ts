@@ -172,10 +172,11 @@ export class ExtensionHost {
   // Background joint-approval flows (startup). Chained so boot never blocks on
   // a user decision; awaitable via whenSettled() for tests/diagnostics.
   private backgroundFlow: Promise<void> = Promise.resolve();
-  // Set by the meta-push combined approval (§4): the extension names the user
-  // just trusted as part of an accepted meta push, consumed by the immediately
-  // following reconcile so it activates them without a second prompt.
-  private pendingMetaApproval: { commit: string; names: Set<string> } | null = null;
+  // Set by the meta-push combined approval (§4): the exact extension
+  // declarations the user just trusted as part of an accepted meta push,
+  // consumed by the immediately following reconcile so it activates them
+  // without a second prompt.
+  private pendingMetaApproval: { commit: string; declarationKeys: Set<string> } | null = null;
 
   constructor(private readonly deps: ExtensionHostDeps) {
     this.registry = new ExtensionRegistry({ statePath: deps.statePath });
@@ -253,7 +254,12 @@ export class ExtensionHost {
   private async reconcileDeclaredOnce(
     declared: Array<{ source: string; ref: string; enabled: boolean }>,
   ): Promise<void> {
-    const preApproved = this.pendingMetaApproval?.names ?? new Set<string>();
+    const metaRepoDir = path.join(this.deps.workspacePath, "meta");
+    const metaHead = resolveGitCommit(metaRepoDir, "HEAD");
+    const preApproved =
+      this.pendingMetaApproval && metaHead === this.pendingMetaApproval.commit
+        ? this.pendingMetaApproval.declarationKeys
+        : new Set<string>();
     this.pendingMetaApproval = null;
 
     const resolved: Array<{ decl: { ref: string; enabled: boolean }; node: ReturnType<ExtensionHost["findExtensionNode"]> }> = [];
@@ -282,8 +288,9 @@ export class ExtensionHost {
     const needsApproval: Array<{ node: ReturnType<ExtensionHost["findExtensionNode"]>; decl: { ref: string; enabled: boolean } }> = [];
     for (const { node, decl } of resolved) {
       const entry = this.registry.get(node.name);
-      const isApproved = !!entry?.activeBundleKey && entry.status !== "pending-approval";
-      if (isApproved || preApproved.has(node.name)) {
+      const isApproved = this.isApprovedForDeclaration(entry, node, decl.ref);
+      const declarationKey = this.declarationTrustKey(node, decl.ref);
+      if (isApproved || preApproved.has(declarationKey)) {
         await this.applyDeclared(node, decl);
       } else if (decl.enabled) {
         if (!entry) this.registry.upsert(this.pendingEntryFor(node, decl));
@@ -360,10 +367,30 @@ export class ExtensionHost {
       const entry = this.registry.get(node.name);
       if (!decl.enabled) {
         if (this.processes.isRunning(node.name)) await this.processes.stop(node.name);
-        this.registry.patch(node.name, { enabled: false, status: "stopped" });
+        if (entry) {
+          const patch: Partial<RegistryEntry> = {
+            enabled: false,
+            status: "stopped",
+            lastError: null,
+          };
+          if (!this.entrySourceMatches(entry, node, decl.ref)) {
+            Object.assign(patch, {
+              source: { kind: "internal-git" as const, repo: node.relativePath, ref: decl.ref },
+              activeEv: null,
+              activeSha: null,
+              activeBundleKey: null,
+              activeDependencyEvs: {},
+              activeExternalDeps: {},
+              activeRuntimeDepsKey: null,
+            });
+          }
+          this.registry.patch(node.name, patch);
+        } else {
+          this.registry.upsert(this.pendingEntryFor(node, decl));
+        }
         return;
       }
-      const isApproved = !!entry?.activeBundleKey && entry.status !== "pending-approval";
+      const isApproved = this.isApprovedForDeclaration(entry, node, decl.ref);
       if (!isApproved) {
         if (!entry) this.registry.upsert(this.pendingEntryFor(node, decl, true));
         await this.buildAndActivate(node.name, decl.ref);
@@ -401,7 +428,7 @@ export class ExtensionHost {
       activeExternalDeps: {},
       activeRuntimeDepsKey: null,
       enabled: decl.enabled,
-      status: building ? "building" : "pending-approval",
+      status: building ? "building" : decl.enabled ? "pending-approval" : "stopped",
       lastError: null,
     };
   }
@@ -1053,6 +1080,7 @@ export class ExtensionHost {
     const declared = this.readDeclaredExtensionsFromCommit(request.commit);
     const unapproved: Array<{ node: ReturnType<ExtensionHost["findExtensionNode"]>; ref: string }> = [];
     for (const decl of declared) {
+      if (!decl.enabled) continue;
       let node: ReturnType<ExtensionHost["findExtensionNode"]>;
       try {
         node = this.findExtensionNode(decl.source);
@@ -1060,11 +1088,13 @@ export class ExtensionHost {
         continue;
       }
       const entry = this.registry.get(node.name);
-      if (!entry || !entry.activeBundleKey || entry.status === "pending-approval") {
+      if (!this.isApprovedForDeclaration(entry, node, decl.ref)) {
         unapproved.push({ node, ref: decl.ref });
       }
     }
+    const declarationKeys = new Set(unapproved.map(({ node, ref }) => this.declarationTrustKey(node, ref)));
     const names = unapproved.map(({ node }) => node.name);
+    const approvedCommit = resolveGitCommit(path.join(this.deps.workspacePath, "meta"), request.commit) ?? request.commit;
 
     const sessionGrantKey = extensionPushSessionGrantKey(
       request.caller.runtime.id,
@@ -1072,8 +1102,7 @@ export class ExtensionHost {
       "meta",
       request.branch,
     );
-    if (this.sourcePushGrants.hasActive(sessionGrantKey)) {
-      if (names.length > 0) this.pendingMetaApproval = { commit: request.commit, names: new Set(names) };
+    if (this.sourcePushGrants.hasActive(sessionGrantKey) && declarationKeys.size === 0) {
       return { allowed: true };
     }
 
@@ -1098,7 +1127,7 @@ export class ExtensionHost {
       callerKind: request.caller.runtime.kind,
       repoPath: identity.repoPath,
       effectiveVersion: identity.effectiveVersion,
-      dedupKey: `extension-meta-push:${request.caller.runtime.id}:${request.branch}`,
+      dedupKey: `extension-meta-push:${request.caller.runtime.id}:${request.branch}:${approvedCommit}`,
       trigger: "meta-push",
       title: names.length > 0 ? "Workspace extensions changed" : "Edit workspace config",
       description:
@@ -1114,7 +1143,9 @@ export class ExtensionHost {
     if (decision === "session") {
       this.sourcePushGrants.grant(sessionGrantKey, EXTENSION_DEV_SESSION_TTL_MS);
     }
-    if (names.length > 0) this.pendingMetaApproval = { commit: request.commit, names: new Set(names) };
+    if (declarationKeys.size > 0) {
+      this.pendingMetaApproval = { commit: approvedCommit, declarationKeys };
+    }
     return { allowed: true };
   }
 
@@ -1169,6 +1200,39 @@ export class ExtensionHost {
     };
   }
 
+  private isApprovedForDeclaration(
+    entry: RegistryEntry | null,
+    node: ReturnType<ExtensionHost["findExtensionNode"]>,
+    ref: string,
+  ): entry is RegistryEntry {
+    return Boolean(
+      entry?.activeBundleKey
+        && entry.status !== "pending-approval"
+        && this.entrySourceMatches(entry, node, ref),
+    );
+  }
+
+  private entrySourceMatches(
+    entry: RegistryEntry,
+    node: ReturnType<ExtensionHost["findExtensionNode"]>,
+    ref: string,
+  ): boolean {
+    return normalizeRepoPath(entry.source.repo) === normalizeRepoPath(node.relativePath)
+      && entry.source.ref === ref;
+  }
+
+  private declarationTrustKey(
+    node: ReturnType<ExtensionHost["findExtensionNode"]>,
+    ref: string,
+  ): string {
+    return [
+      node.name,
+      normalizeRepoPath(node.relativePath),
+      ref,
+      this.deps.buildSystem.getEffectiveVersion(node.name) ?? "",
+    ].join("\x00");
+  }
+
   private async requestBatchApproval(
     entries: ExtensionBatchEntry[],
     trigger: "startup" | "meta-push",
@@ -1216,6 +1280,8 @@ export class ExtensionHost {
     const activeDependencyEvs = this.currentDependencyEvs(node);
     const activeExternalDeps = this.currentExternalDeps(node);
     this.registry.patch(node.name, {
+      source: { kind: "internal-git", repo: node.relativePath, ref: ref ?? "main" },
+      version: this.readNodeVersion(node.path),
       activeEv: build.metadata.ev,
       activeSha: resolveGitCommit(node.path, ref),
       activeBundleKey: path.basename(build.dir),

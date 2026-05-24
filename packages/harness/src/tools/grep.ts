@@ -21,7 +21,7 @@ import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
 import path from "node:path";
 import { Buffer } from "node:buffer";
 import type { RpcCaller } from "@natstack/rpc";
-import { createExtensionsClient } from "@natstack/extension";
+import { createExtensionProxy } from "@natstack/extension";
 import type { RuntimeFs, Dirent } from "./runtime-fs.js";
 import { resolveToCwd } from "./path-utils.js";
 import {
@@ -158,6 +158,19 @@ interface GrepToolResult {
   details: GrepToolDetails | undefined;
 }
 
+interface FileToolsApi {
+  grep(request: {
+    pattern: string;
+    path?: string;
+    cwd: string;
+    glob?: string;
+    ignoreCase?: boolean;
+    literal?: boolean;
+    context?: number;
+    limit?: number;
+  }): Promise<GrepToolResult>;
+}
+
 export interface GrepToolDetails {
   type?: "console";
   content?: string;
@@ -195,7 +208,9 @@ export function createGrepTool(
   fs: RuntimeFs,
   deps?: GrepToolDeps,
 ): AgentTool<typeof grepSchema, GrepToolDetails | undefined> {
-  const fileTools = deps?.rpc ? createExtensionsClient(deps.rpc).use(FILE_TOOLS_EXTENSION) : null;
+  const fileTools = deps?.rpc
+    ? createExtensionProxy<FileToolsApi>(deps.rpc, FILE_TOOLS_EXTENSION, () => false)
+    : null;
   return {
     name: "grep",
     label: "grep",

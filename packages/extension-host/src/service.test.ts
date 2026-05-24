@@ -2,6 +2,7 @@ import { createVerifiedCaller } from "@natstack/shared/serviceDispatcher";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { execFileSync } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
@@ -153,7 +154,33 @@ function makeHost(overrides: {
       lastError: overrides.status === "error" ? "previous failure" : null,
     });
   }
-  return { host, approvalQueue, buildSystem, extensionNode, eventService };
+  return { host, approvalQueue, buildSystem, extensionNode, eventService, statePath };
+}
+
+function commitMetaConfig(workspacePath: string, content: string): string {
+  const metaPath = path.join(workspacePath, "meta");
+  fs.mkdirSync(metaPath, { recursive: true });
+  if (!fs.existsSync(path.join(metaPath, ".git"))) {
+    execFileSync("git", ["init", "-q"], { cwd: metaPath });
+  }
+  fs.writeFileSync(path.join(metaPath, "natstack.yml"), content);
+  execFileSync("git", ["add", "natstack.yml"], { cwd: metaPath });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=NatStack Test",
+      "-c",
+      "user.email=test@natstack.local",
+      "commit",
+      "-q",
+      "--allow-empty",
+      "-m",
+      "update meta",
+    ],
+    { cwd: metaPath },
+  );
+  return String(execFileSync("git", ["rev-parse", "HEAD"], { cwd: metaPath })).trim();
 }
 
 describe("ExtensionHost invocation attribution", () => {
@@ -249,6 +276,72 @@ describe("ExtensionHost source push authorization", () => {
       repoPath: "workers/agent-worker",
     }));
   });
+
+  it("keys meta-push approvals to the exact pushed commit and declared extension ref", async () => {
+    const { host, approvalQueue, extensionNode, statePath } = makeHost({ approvalDecision: "once" });
+    const commit = commitMetaConfig(
+      path.join(statePath, "source"),
+      [
+        "extensions:",
+        `  - source: ${extensionNode.relativePath}`,
+        "    ref: feature",
+      ].join("\n"),
+    );
+
+    await expect(host.authorizeSourcePush({
+      caller: panelCtx("panel-1").caller,
+      repoPath: "meta",
+      branch: "main",
+      commit,
+    })).resolves.toEqual({ allowed: true });
+
+    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "extension-batch",
+      dedupKey: expect.stringContaining(commit),
+      extensions: [
+        expect.objectContaining({
+          extensionName: extensionNode.name,
+          source: expect.objectContaining({ repo: extensionNode.relativePath, ref: "feature" }),
+        }),
+      ],
+    }));
+  });
+
+  it("does not let a meta dev-session grant auto-trust newly declared extensions", async () => {
+    const { host, approvalQueue, extensionNode, statePath } = makeHost({
+      installed: false,
+      approvalDecision: "session",
+    });
+    const workspacePath = path.join(statePath, "source");
+    const configOnlyCommit = commitMetaConfig(workspacePath, "extensions: []\n");
+
+    await expect(host.authorizeSourcePush({
+      caller: panelCtx("panel-1").caller,
+      repoPath: "meta",
+      branch: "main",
+      commit: configOnlyCommit,
+    })).resolves.toEqual({ allowed: true });
+
+    const extensionCommit = commitMetaConfig(
+      workspacePath,
+      [
+        "extensions:",
+        `  - source: ${extensionNode.relativePath}`,
+      ].join("\n"),
+    );
+    await expect(host.authorizeSourcePush({
+      caller: panelCtx("panel-1").caller,
+      repoPath: "meta",
+      branch: "main",
+      commit: extensionCommit,
+    })).resolves.toEqual({ allowed: true });
+
+    expect(approvalQueue.request).toHaveBeenCalledTimes(2);
+    expect(approvalQueue.request).toHaveBeenLastCalledWith(expect.objectContaining({
+      kind: "extension-batch",
+      extensions: [expect.objectContaining({ extensionName: extensionNode.name })],
+    }));
+  });
 });
 
 const declare = (
@@ -328,6 +421,24 @@ describe("ExtensionHost reconcileDeclared", () => {
     });
   });
 
+  it("records a new disabled declaration without prompting or activating it", async () => {
+    const { host, approvalQueue, buildSystem, extensionNode } = makeHost({ installed: false });
+    const start = vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
+
+    await host.reconcileDeclared(declare(extensionNode.name, { enabled: false }));
+    await host.whenSettled();
+
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+    expect(buildSystem.getBuild).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    expect(host.registry.get(extensionNode.name)).toMatchObject({
+      enabled: false,
+      status: "stopped",
+      activeBundleKey: null,
+      source: { repo: extensionNode.relativePath, ref: "main" },
+    });
+  });
+
   it("removes a registry entry that is no longer declared", async () => {
     const { host, extensionNode } = makeHost();
     const stop = vi.spyOn(host.processes, "stop").mockResolvedValue(undefined);
@@ -350,6 +461,32 @@ describe("ExtensionHost reconcileDeclared", () => {
 
     expect(approvalQueue.request).not.toHaveBeenCalled();
     expect(buildSystem.getBuild).toHaveBeenCalledWith(extensionNode.name, "main");
+  });
+
+  it("treats a declared ref change as a new approval and persists the approved ref", async () => {
+    const { host, approvalQueue, buildSystem, extensionNode } = makeHost({
+      approvalDecision: "once",
+    });
+    vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
+
+    await host.reconcileDeclared(declare(extensionNode.name, { ref: "feature" }));
+    await host.whenSettled();
+
+    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "extension-batch",
+      extensions: [
+        expect.objectContaining({
+          extensionName: extensionNode.name,
+          source: expect.objectContaining({ repo: extensionNode.relativePath, ref: "feature" }),
+        }),
+      ],
+    }));
+    expect(buildSystem.getBuild).toHaveBeenCalledWith(extensionNode.name, "feature");
+    expect(host.registry.get(extensionNode.name)).toMatchObject({
+      enabled: true,
+      activeBundleKey: "candidate-key",
+      source: { repo: extensionNode.relativePath, ref: "feature" },
+    });
   });
 });
 

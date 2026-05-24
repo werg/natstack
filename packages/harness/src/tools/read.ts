@@ -13,7 +13,7 @@ import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
 import { Buffer } from "node:buffer";
 import type { RuntimeFs } from "./runtime-fs.js";
 import type { RpcCaller } from "@natstack/rpc";
-import { createExtensionsClient } from "@natstack/extension";
+import { createExtensionProxy } from "@natstack/extension";
 import { resolveReadPath } from "./path-utils.js";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead, type TruncationResult, } from "./truncate.js";
 const readSchema = Type.Object({
@@ -49,6 +49,26 @@ interface ImageResizeResult {
     wasResized: boolean;
     dimensionNote?: string;
 }
+interface ReadResult {
+    content: (TextContent | ImageContent)[];
+    details: ReadToolDetails;
+}
+interface FileToolsApi {
+    read(request: {
+        path: string;
+        cwd: string;
+        offset?: number;
+        limit?: number;
+    }): Promise<ReadResult>;
+}
+interface ImageServiceApi {
+    detectMimeType(bytes: Uint8Array): Promise<string | null>;
+    resize(
+        bytes: Uint8Array,
+        mimeType: string,
+        opts: { maxWidth: number; maxHeight: number },
+    ): Promise<ImageResizeResult>;
+}
 const IMAGE_SERVICE_EXTENSION = "@workspace-extensions/image-service";
 const FILE_TOOLS_EXTENSION = "@workspace-extensions/file-tools";
 export interface ReadToolDeps {
@@ -56,9 +76,12 @@ export interface ReadToolDeps {
     rpc?: RpcCaller;
 }
 export function createReadTool(cwd: string, fs: RuntimeFs, deps?: ReadToolDeps): AgentTool<typeof readSchema, ReadToolDetails> {
-    const extensions = deps?.rpc ? createExtensionsClient(deps.rpc) : null;
-    const fileTools = extensions?.use(FILE_TOOLS_EXTENSION);
-    const imageService = extensions?.use(IMAGE_SERVICE_EXTENSION);
+    const fileTools = deps?.rpc
+        ? createExtensionProxy<FileToolsApi>(deps.rpc, FILE_TOOLS_EXTENSION, () => false)
+        : null;
+    const imageService = deps?.rpc
+        ? createExtensionProxy<ImageServiceApi>(deps.rpc, IMAGE_SERVICE_EXTENSION, () => false)
+        : null;
     return {
         name: "read",
         label: "read",
@@ -75,13 +98,7 @@ export function createReadTool(cwd: string, fs: RuntimeFs, deps?: ReadToolDeps):
             const absolutePath = resolveReadPath(path, cwd);
             if (fileTools && !isLikelyImagePath(path)) {
                 try {
-                    // The extension's result family is structurally distinct from the
-                    // harness's public detail types; assert at this boundary as the
-                    // pre-migration rpc.call<...> generic did.
-                    return (await fileTools.read({ path, cwd, offset, limit })) as {
-                        content: (TextContent | ImageContent)[];
-                        details: ReadToolDetails;
-                    };
+                    return await fileTools.read({ path, cwd, offset, limit });
                 }
                 catch (err) {
                     if (!isFileToolsExtensionFallback(err)) throw err;

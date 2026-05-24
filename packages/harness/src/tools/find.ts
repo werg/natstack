@@ -14,7 +14,7 @@ import { Type, type Static } from "@sinclair/typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
 import type { RpcCaller } from "@natstack/rpc";
-import { createExtensionsClient } from "@natstack/extension";
+import { createExtensionProxy } from "@natstack/extension";
 import path from "node:path";
 import type { RuntimeFs, Dirent } from "./runtime-fs.js";
 import { resolveToCwd } from "./path-utils.js";
@@ -47,6 +47,15 @@ interface FindToolResult {
   details: FindToolDetails | undefined;
 }
 
+interface FileToolsApi {
+  find(request: {
+    pattern: string;
+    path?: string;
+    cwd: string;
+    limit?: number;
+  }): Promise<FindToolResult>;
+}
+
 export interface FindToolDeps {
   rpc?: RpcCaller;
 }
@@ -70,7 +79,9 @@ export function createFindTool(
   fs: RuntimeFs,
   deps?: FindToolDeps,
 ): AgentTool<typeof findSchema, FindToolDetails | undefined> {
-  const fileTools = deps?.rpc ? createExtensionsClient(deps.rpc).use(FILE_TOOLS_EXTENSION) : null;
+  const fileTools = deps?.rpc
+    ? createExtensionProxy<FileToolsApi>(deps.rpc, FILE_TOOLS_EXTENSION, () => false)
+    : null;
   return {
     name: "find",
     label: "find",

@@ -79,12 +79,6 @@
       "@natstack/types": [
         "packages/types/src/index.ts"
       ],
-      "@workspace-extensions/file-tools": [
-        "workspace/extensions/@workspace-extensions/file-tools/index.ts"
-      ],
-      "@workspace-extensions/image-service": [
-        "workspace/extensions/@workspace-extensions/image-service/index.ts"
-      ],
       "@workspace/integrations/providers": [
         "workspace/packages/integrations/src/providers.ts"
       ]

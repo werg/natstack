@@ -32,6 +32,7 @@
   "dependencies": {
     "@earendil-works/pi-ai": "^0.74.1",
     "@mozilla/readability": "^0.6.0",
+    "@natstack/extension": "workspace:*",
     "@natstack/rpc": "workspace:*",
     "@natstack/shared": "workspace:*",
     "@workspace/agentic-protocol": "workspace:*",

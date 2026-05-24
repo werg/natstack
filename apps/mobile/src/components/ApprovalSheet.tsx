@@ -34,6 +34,7 @@ import type {
   PendingCredentialInputApproval,
   PendingDeviceCodeApproval,
   PendingExtensionApproval,
+  PendingExtensionBatchApproval,
   PendingUserlandApproval,
   UserlandApprovalOption,
 } from "@natstack/shared/approvals";
@@ -462,6 +463,15 @@ export function ApprovalSheet({
                       runAction("dismiss", () => onResolve(current.approvalId, "dismiss"))
                     }
                   />
+                ) : current.kind === "extension-batch" ? (
+                  <ExtensionBatchActions
+                    approval={current}
+                    busy={isBusy}
+                    pendingAction={pendingAction}
+                    onChoose={(decision) =>
+                      runAction(decision, () => onResolve(current.approvalId, decision))
+                    }
+                  />
                 ) : current.kind === "extension" ? (
                   <StandardActions
                     approval={current}
@@ -823,6 +833,8 @@ function ApprovalDetails({
             <DeviceCodeDetails approval={approval} />
           ) : approval.kind === "extension" ? (
             <ExtensionDetails approval={approval} />
+          ) : approval.kind === "extension-batch" ? (
+            <ExtensionBatchDetails approval={approval} />
           ) : (
             <CapabilityDetails approval={approval} />
           )}
@@ -1005,6 +1017,37 @@ function ExtensionDetails({ approval }: { approval: PendingExtensionApproval }) 
       ) : null}
       {(approval.details ?? []).map((detail) => (
         <DetailRow key={detail.label} icon={Lock} label={detail.label} value={detail.value} code />
+      ))}
+    </>
+  );
+}
+
+function ExtensionBatchDetails({ approval }: { approval: PendingExtensionBatchApproval }) {
+  return (
+    <>
+      {approval.configWrite ? (
+        <DetailRow
+          icon={Settings2}
+          label="Workspace config"
+          value={`${approval.configWrite.repoPath} · ${approval.configWrite.summary}`}
+          code
+        />
+      ) : null}
+      {approval.extensions.map((entry) => (
+        <React.Fragment key={entry.extensionName}>
+          <DetailRow icon={Lock} label="Extension" value={entry.extensionName} code />
+          <DetailRow
+            icon={Globe}
+            label="Source"
+            value={`${entry.source.repo}@${entry.source.ref}`}
+            code
+          />
+          {entry.version ? <DetailRow icon={Lock} label="Version" value={entry.version} code /> : null}
+          {entry.ev ? <DetailRow icon={Lock} label="EV" value={entry.ev} code /> : null}
+          {entry.capabilities.length > 0 ? (
+            <DetailRow icon={Lock} label="Access" value={entry.capabilities.join(", ")} code />
+          ) : null}
+        </React.Fragment>
       ))}
     </>
   );
@@ -1203,6 +1246,62 @@ function StandardActions({
             testID={`approval-action-${decision}`}
           />
         ))}
+      </View>
+    </View>
+  );
+}
+
+function ExtensionBatchActions({
+  approval,
+  busy,
+  pendingAction,
+  onChoose,
+}: {
+  approval: PendingExtensionBatchApproval;
+  busy: boolean;
+  pendingAction: PendingAction | null;
+  onChoose: (decision: ApprovalDecision) => void;
+}) {
+  const count = approval.extensions.length;
+  return (
+    <View style={styles.actionGroups}>
+      <View style={styles.actionRow}>
+        <DecisionButton
+          label={count > 0 ? "Approve all" : "Allow"}
+          description={
+            count > 0
+              ? `Install and run ${count} extension${count === 1 ? "" : "s"} as native code.`
+              : "Apply this workspace config change."
+          }
+          variant="primary"
+          disabled={busy}
+          loading={pendingAction === "once"}
+          onPress={() => onChoose("once")}
+          testID="approval-action-once"
+        />
+        {approval.trigger === "meta-push" ? (
+          <DecisionButton
+            label="Dev session"
+            description="Allow workspace-config pushes without asking again for the next 4 hours."
+            variant="surface"
+            disabled={busy}
+            loading={pendingAction === "session"}
+            onPress={() => onChoose("session")}
+            testID="approval-action-session"
+          />
+        ) : null}
+        <DecisionButton
+          label={count > 0 ? "Deny all" : "Deny"}
+          description={
+            count > 0 ? "Do not install these extensions." : "Reject this workspace config change."
+          }
+          variant="danger"
+          disabled={busy}
+          loading={pendingAction === "deny"}
+          icon={XCircle}
+          onPress={() => onChoose("deny")}
+          testID="approval-action-deny"
+        />
       </View>
     </View>
   );

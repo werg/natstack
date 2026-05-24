@@ -1,6 +1,7 @@
 import type { PanelManager } from "@natstack/shared/shell/panelManager";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import { getCurrentSnapshot } from "@natstack/shared/panel/accessors";
+import { asPanelSlotId } from "@natstack/shared/panel/ids";
 import type { MobileTransport } from "./mobileTransport";
 import { Platform } from "react-native";
 
@@ -47,17 +48,18 @@ export function createBridgeAdapter(deps: {
             runtimeHost = host;
         },
         async handle(panelId: string, method: string, args: unknown[]): Promise<unknown> {
+            const slotId = asPanelSlotId(panelId);
             switch (method) {
                 case "getPanelInit":
-                    return deps.panelManager.getPanelInit(panelId);
+                    return deps.panelManager.getPanelInit(slotId);
                 case "getInfo":
-                    return deps.panelManager.getInfo(panelId);
+                    return deps.panelManager.getInfo(slotId);
                 case "setStateArgs":
-                    return deps.panelManager.updateStateArgs(panelId, (args[0] ?? {}) as Record<string, unknown>);
+                    return deps.panelManager.updateStateArgs(slotId, (args[0] ?? {}) as Record<string, unknown>);
                 case "panel.close": {
                     const targetId = args[0] as string;
                     const nextPanelId = chooseNextPanel(deps.registry, targetId);
-                    await deps.panelManager.close(targetId);
+                    await deps.panelManager.close(asPanelSlotId(targetId));
                     if (nextPanelId)
                         deps.callbacks.navigateToPanel(nextPanelId);
                     return;
@@ -72,7 +74,7 @@ export function createBridgeAdapter(deps: {
                 case "panel.setStateArgs": {
                     const targetId = args[0] as string;
                     const updates = (args[1] ?? {}) as Record<string, unknown>;
-                    return deps.panelManager.updateStateArgs(targetId, updates);
+                    return deps.panelManager.updateStateArgs(asPanelSlotId(targetId), updates);
                 }
                 case "panel.list": {
                     const parentId = args[0] as string | null | undefined;
@@ -80,7 +82,7 @@ export function createBridgeAdapter(deps: {
                 }
                 case "focusPanel": {
                     const targetId = args[0] as string;
-                    await deps.panelManager.notifyFocused(targetId);
+                    await deps.panelManager.notifyFocused(asPanelSlotId(targetId));
                     deps.callbacks.navigateToPanel(targetId);
                     return;
                 }
@@ -95,9 +97,9 @@ export function createBridgeAdapter(deps: {
                     ];
                     const isBrowser = /^https?:\/\//i.test(source);
                     const created = isBrowser
-                        ? await deps.panelManager.createBrowser(panelId, source, { name: options?.name })
+                        ? await deps.panelManager.createBrowser(slotId, source, { name: options?.name })
                         : await deps.panelManager.create(source, {
-                            parentId: panelId,
+                            parentId: slotId,
                             name: options?.name,
                             stateArgs: options?.stateArgs,
                         });
