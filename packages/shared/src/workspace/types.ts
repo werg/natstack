@@ -186,6 +186,29 @@ export type WorkspaceServiceDecl = {
   | { worker: { routePath: string }; durableObject?: never }
 );
 
+/**
+ * Extension declaration in `workspace/meta/natstack.yml`. The declared list is
+ * the single source of truth for which extensions a workspace uses and the only
+ * install/enable/disable/uninstall surface — editing it (a gated meta write)
+ * triggers the joint extension approval and registry reconciliation.
+ */
+export interface WorkspaceExtensionDecl {
+  /**
+   * Extension identity: a workspace-relative repo path
+   * (e.g. `"extensions/@workspace-extensions/image-service"`) OR the package
+   * name (e.g. `"@workspace-extensions/image-service"`). Both resolve via the
+   * build graph.
+   */
+  source: string;
+  /** Git ref the extension floats to. Defaults to `"main"`. */
+  ref?: string;
+  /**
+   * Whether the extension should be running. Defaults to `true`. `false` keeps
+   * it installed/approved but stopped.
+   */
+  enabled?: boolean;
+}
+
 /** HTTP route declaration in `workspace/meta/natstack.yml`. */
 export interface WorkspaceRouteDecl {
   source: string;
@@ -229,6 +252,14 @@ export interface WorkspaceConfig {
   services?: WorkspaceServiceDecl[];
   /** HTTP route declarations exposed under `/_r/w/<source>/...`. */
   routes?: WorkspaceRouteDecl[];
+  /**
+   * Declarative extension set for this workspace — the single source of truth
+   * for which extensions are in use. Editing this list is the only way to
+   * install/enable/disable/uninstall an extension; the edit is a gated meta
+   * write that triggers the joint approval and reconciliation. Absent or empty
+   * means no extensions (reconciliation removes any left in the registry).
+   */
+  extensions?: WorkspaceExtensionDecl[];
 }
 
 /**

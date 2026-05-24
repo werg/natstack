@@ -37,6 +37,9 @@ export function getApprovalCategoryLabel(approval: PendingApproval): string {
   if (approval.kind === "extension") {
     return approval.action === "source-push" ? "Extension source" : "Extension management";
   }
+  if (approval.kind === "extension-batch") {
+    return "Extension setup";
+  }
   if (approval.capability === "internal-git-write") {
     return approval.resource?.value === "meta" ? "Config edit" : "Write request";
   }
@@ -358,6 +361,24 @@ export function getApprovalCopy(
         "Approving this can run Node extension code with filesystem, network, and process access.",
     };
   }
+  if (approval.kind === "extension-batch") {
+    const count = approval.extensions.length;
+    const fallbackTitle =
+      approval.trigger === "meta-push" ? "Workspace extensions changed" : "Approve workspace extensions";
+    const fallbackSummary = count > 0
+      ? `This workspace declares ${count} extension${count === 1 ? "" : "s"} that need approval before they run.`
+      : "This push changes workspace configuration.";
+    return {
+      title: approval.title || fallbackTitle,
+      summary: approval.description || fallbackSummary,
+      ...(count > 0
+        ? {
+            warning:
+              "Approving runs Node extension code with filesystem, network, and process access.",
+          }
+        : {}),
+    };
+  }
   if (approval.kind === "capability") {
     if (approval.capability === "internal-git-write") {
       const destination = approval.resource?.value ?? "this repository";
@@ -500,7 +521,7 @@ export function getCapabilityPrimaryDestination(approval: PendingCapabilityAppro
 }
 
 export function shouldOpenApprovalDetails(approval: PendingApproval): boolean {
-  return approval.kind === "extension";
+  return approval.kind === "extension" || approval.kind === "extension-batch";
 }
 
 export function originForUrl(raw: string): string {

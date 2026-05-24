@@ -68,7 +68,6 @@ export type {
   Disposable,
   ExtensionSource,
   ExtensionsClient,
-  InstallSpec,
   RegistryEntry,
 } from "../shared/extensions.js";
 export type * from "../shared/gad.js";

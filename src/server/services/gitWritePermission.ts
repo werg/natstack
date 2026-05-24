@@ -11,26 +11,25 @@ export function createGitWriteAuthorizer(deps: {
 }): GitWriteAuthorizer {
   return async (request) => {
     const repoPath = normalizeRepoPathForPermission(request.repoPath);
-    const isMetaRepo = repoPath === "meta";
+    // meta/ writes are gated by the commit-aware push-phase combined approval
+    // (config write + extension trust) in the extension host's push authorizer.
+    // The pre-flight write gate would have no commit and could not list the
+    // candidate extensions, so it defers here.
+    if (repoPath === "meta") {
+      return { allowed: true };
+    }
     return requestCapabilityPermission(deps, {
       caller: request.caller,
       capability: INTERNAL_GIT_WRITE_CAPABILITY,
       dedupKey: null,
-      title: isMetaRepo ? "Edit workspace config" : "Write project files",
-      description: isMetaRepo
-        ? "Allow this code version to push changes to sensitive workspace configuration."
-        : "Allow this code version to push changes to an internal git repository.",
+      title: "Write project files",
+      description: "Allow this code version to push changes to an internal git repository.",
       resource: {
         type: "git-repo",
-        label: isMetaRepo ? "Config repository" : "Repository",
+        label: "Repository",
         value: repoPath,
       },
-      details: [
-        { label: "Operation", value: isMetaRepo ? "git push to meta" : "git push" },
-        ...(isMetaRepo
-          ? [{ label: "Scope", value: "Workspace prompts, settings, and shared git remotes" }]
-          : []),
-      ],
+      details: [{ label: "Operation", value: "git push" }],
       deniedReason: "Git write permission denied",
     });
   };

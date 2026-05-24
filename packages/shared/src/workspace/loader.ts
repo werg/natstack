@@ -16,7 +16,7 @@ import dotenv from "dotenv";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("Workspace");
-import type { Workspace, WorkspaceConfig, CentralConfig, CentralConfigPaths, WorkspaceEntry } from "./types.js";
+import type { Workspace, WorkspaceConfig, WorkspaceExtensionDecl, CentralConfig, CentralConfigPaths, WorkspaceEntry } from "./types.js";
 import type { CentralDataManager } from "../centralData.js";
 import { assertGitAvailable, execGitFileSync } from "../gitRuntime.js";
 import { getExistingWorkspaceTemplateDir, getWorkspaceTemplateCandidates } from "../runtimePaths.js";
@@ -540,7 +540,44 @@ export function loadWorkspaceConfig(workspacePath: string): WorkspaceConfig {
   // absolute workspace root path.
   config.id = deriveWorkspaceId(workspacePath);
 
+  validateDeclaredExtensions(config.extensions);
+
   return config;
+}
+
+const EXTENSION_SOURCE_NORMALIZE = /(^\/+|\.git(\/.*)?$|\/+$)/g;
+
+function validateDeclaredExtensions(extensions: WorkspaceExtensionDecl[] | undefined): void {
+  if (extensions === undefined) return;
+  if (!Array.isArray(extensions)) {
+    throw new Error("meta/natstack.yml: `extensions` must be a list");
+  }
+  const seen = new Set<string>();
+  for (const decl of extensions) {
+    if (!decl || typeof decl.source !== "string" || decl.source.trim().length === 0) {
+      throw new Error("meta/natstack.yml: every `extensions` entry needs a non-empty `source`");
+    }
+    const key = decl.source.replace(/^workspace\//, "").replace(EXTENSION_SOURCE_NORMALIZE, "");
+    if (seen.has(key)) {
+      throw new Error(`meta/natstack.yml: duplicate extension declaration for "${decl.source}"`);
+    }
+    seen.add(key);
+  }
+}
+
+/**
+ * Resolve the declared extension set with defaults applied (`ref: "main"`,
+ * `enabled: true`). Returns an empty list when no `extensions` section exists —
+ * the declared set is authoritative, so absent means "no extensions".
+ */
+export function resolveDeclaredExtensions(
+  config: WorkspaceConfig,
+): Array<{ source: string; ref: string; enabled: boolean }> {
+  return (config.extensions ?? []).map((decl) => ({
+    source: decl.source,
+    ref: decl.ref ?? "main",
+    enabled: decl.enabled ?? true,
+  }));
 }
 
 function deriveWorkspaceId(workspacePath: string): string {

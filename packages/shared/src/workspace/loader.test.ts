@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { initWorkspace, loadWorkspaceConfig } from "./loader.js";
+import { initWorkspace, loadWorkspaceConfig, resolveDeclaredExtensions } from "./loader.js";
 
 const originalXdgConfigHome = process.env["XDG_CONFIG_HOME"];
 const tempRoots: string[] = [];
@@ -53,6 +53,45 @@ describe("loadWorkspaceConfig", () => {
     writeConfig(sourceRoot, "id: explicit\ninitPanels: []\n");
 
     expect(loadWorkspaceConfig(sourceRoot).id).toBe(workspaceRoot);
+  });
+
+  it("rejects duplicate extension declarations", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-loader-"));
+    tempRoots.push(root);
+    const sourceRoot = path.join(root, "workspace", "source");
+    writeConfig(
+      sourceRoot,
+      "extensions:\n  - source: extensions/@scope/a\n  - source: extensions/@scope/a.git\n",
+    );
+
+    expect(() => loadWorkspaceConfig(sourceRoot)).toThrow(/duplicate extension/);
+  });
+
+  it("rejects extension declarations without a source", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-loader-"));
+    tempRoots.push(root);
+    const sourceRoot = path.join(root, "workspace", "source");
+    writeConfig(sourceRoot, "extensions:\n  - ref: main\n");
+
+    expect(() => loadWorkspaceConfig(sourceRoot)).toThrow(/non-empty `source`/);
+  });
+});
+
+describe("resolveDeclaredExtensions", () => {
+  it("returns an empty list when no extensions section exists", () => {
+    expect(resolveDeclaredExtensions({ id: "ws" })).toEqual([]);
+  });
+
+  it("applies ref and enabled defaults", () => {
+    expect(
+      resolveDeclaredExtensions({
+        id: "ws",
+        extensions: [{ source: "extensions/@scope/a" }, { source: "@scope/b", ref: "dev", enabled: false }],
+      }),
+    ).toEqual([
+      { source: "extensions/@scope/a", ref: "main", enabled: true },
+      { source: "@scope/b", ref: "dev", enabled: false },
+    ]);
   });
 });
 

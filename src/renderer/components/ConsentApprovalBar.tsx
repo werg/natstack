@@ -35,6 +35,7 @@ import type {
   PendingClientConfigApproval,
   PendingDeviceCodeApproval,
   PendingExtensionApproval,
+  PendingExtensionBatchApproval,
   PendingUserlandApproval,
 } from "@natstack/shared/approvals";
 import {
@@ -161,6 +162,14 @@ export function ConsentApprovalBar() {
         shortId,
       };
     }
+    if (approval.callerKind === "system") {
+      return {
+        label: serverTitle ?? "Workspace",
+        kindLabel: "Workspace",
+        kind: "do",
+        shortId,
+      };
+    }
     // Durable-object service or unknown — show the trailing segment of the id.
     const id = prettifyId(approval.callerId);
     const segments = id.split(":");
@@ -231,7 +240,7 @@ export function ConsentApprovalBar() {
   if (!currentCaller) return null;
   const callerLabel = currentCaller.kindLabel;
   const copy = getApprovalCopy(current, callerLabel);
-  const isExtensionApproval = current.kind === "extension";
+  const isExtensionApproval = current.kind === "extension" || current.kind === "extension-batch";
   const accent = isExtensionApproval ? "amber" : "sky";
   // Drive the bar palette through CSS variables on a single class so the
   // light/dark overrides in overrides.css remain authoritative.
@@ -377,6 +386,8 @@ export function ConsentApprovalBar() {
             <UserlandApprovalActions approval={current} onChoose={resolveUserland} />
           ) : current.kind === "device-code" ? (
             <DeviceCodeActions onCancel={() => decide("dismiss")} />
+          ) : current.kind === "extension-batch" ? (
+            <ExtensionBatchActions approval={current} decide={decide} />
           ) : (
             <StandardApprovalActions approval={current} decide={decide} />
           )}
@@ -531,6 +542,54 @@ function StandardApprovalActions({
       <DecisionButton
         label="Deny"
         description={copy.denyDescription}
+        color="red"
+        icon={<CrossCircledIcon />}
+        style={{ marginLeft: 6 }}
+        onClick={() => decide("deny")}
+      />
+      <Tooltip content="Dismiss">
+        <IconButton size="1" variant="ghost" color="gray" onClick={() => decide("dismiss")}>
+          <Cross2Icon />
+        </IconButton>
+      </Tooltip>
+    </Flex>
+  );
+}
+
+function ExtensionBatchActions({
+  approval,
+  decide,
+}: {
+  approval: PendingExtensionBatchApproval;
+  decide: (decision: ApprovalDecision) => void;
+}) {
+  const count = approval.extensions.length;
+  return (
+    <Flex align="center" className="approval-actions" gap="2" wrap="wrap">
+      <DecisionButton
+        label={count > 0 ? "Approve all" : "Allow"}
+        description={
+          count > 0
+            ? `Install and run ${count} extension${count === 1 ? "" : "s"} as native code.`
+            : "Apply this workspace config change."
+        }
+        color="amber"
+        variant="solid"
+        onClick={() => decide("once")}
+      />
+      {approval.trigger === "meta-push" ? (
+        <DecisionButton
+          label="Dev session"
+          description="Allow workspace-config pushes without asking for the next 4 hours."
+          variant="surface"
+          onClick={() => decide("session")}
+        />
+      ) : null}
+      <DecisionButton
+        label={count > 0 ? "Deny all" : "Deny"}
+        description={
+          count > 0 ? "Do not install these extensions." : "Reject this workspace config change."
+        }
         color="red"
         icon={<CrossCircledIcon />}
         style={{ marginLeft: 6 }}
@@ -913,6 +972,8 @@ function ApprovalDetails({
           <DeviceCodeDetails approval={approval} />
         ) : approval.kind === "extension" ? (
           <ExtensionDetails approval={approval} />
+        ) : approval.kind === "extension-batch" ? (
+          <ExtensionBatchDetails approval={approval} />
         ) : (
           <CapabilityDetails approval={approval} />
         )}
@@ -1397,6 +1458,100 @@ function ExtensionDetails({ approval }: { approval: PendingExtensionApproval }) 
           value={<InlineCode>{detail.value}</InlineCode>}
         />
       ))}
+    </>
+  );
+}
+
+function ExtensionBatchDetails({ approval }: { approval: PendingExtensionBatchApproval }) {
+  return (
+    <>
+      {approval.configWrite ? (
+        <Detail
+          icon={<GearIcon />}
+          label="Workspace config"
+          value={
+            <InlineCode>
+              {approval.configWrite.repoPath} · {approval.configWrite.summary}
+            </InlineCode>
+          }
+        />
+      ) : null}
+      {approval.extensions.length === 0 ? (
+        <Text size="1" color="gray">
+          No new extensions — this change only edits workspace configuration.
+        </Text>
+      ) : null}
+      {approval.extensions.map((entry) => {
+        const deps = Object.entries(entry.dependencyEvs ?? {});
+        const external = Object.entries(entry.externalDeps ?? {});
+        return (
+          <details key={entry.extensionName} className="approval-details" open>
+            <summary>
+              <ChevronDownIcon className="approval-details-chevron" width={13} height={13} />
+              {entry.displayName}
+              {entry.version ? ` · v${entry.version}` : ""}
+            </summary>
+            <Flex direction="column" gap="2" pt="2">
+              <Detail
+                icon={<ExclamationTriangleIcon />}
+                label="Extension"
+                value={<InlineCode>{entry.extensionName}</InlineCode>}
+              />
+              <Detail
+                icon={<GlobeIcon />}
+                label="Source"
+                value={<InlineCode>{`${entry.source.repo}@${entry.source.ref}`}</InlineCode>}
+              />
+              {entry.ev ? (
+                <Detail icon={<LockClosedIcon />} label="EV" value={<IdCode value={entry.ev} />} />
+              ) : null}
+              <Detail
+                icon={<ExclamationTriangleIcon />}
+                label="Access"
+                value={
+                  <Flex align="center" gap="1" wrap="wrap">
+                    {entry.capabilities.map((capability) => (
+                      <Badge key={capability} color="amber" variant="soft">
+                        {capability}
+                      </Badge>
+                    ))}
+                  </Flex>
+                }
+              />
+              {deps.length > 0 ? (
+                <Detail
+                  icon={<LockClosedIcon />}
+                  label="Deps"
+                  value={
+                    <Flex align="center" gap="1" wrap="wrap">
+                      {deps.map(([name, ev]) => (
+                        <Code key={name} size="1" variant="soft" style={{ maxWidth: 360 }}>
+                          {name}: {truncateId(ev)}
+                        </Code>
+                      ))}
+                    </Flex>
+                  }
+                />
+              ) : null}
+              {external.length > 0 ? (
+                <Detail
+                  icon={<LockClosedIcon />}
+                  label="External"
+                  value={
+                    <Flex align="center" gap="1" wrap="wrap">
+                      {external.map(([name, version]) => (
+                        <Code key={name} size="1" variant="soft">
+                          {name}@{version}
+                        </Code>
+                      ))}
+                    </Flex>
+                  }
+                />
+              ) : null}
+            </Flex>
+          </details>
+        );
+      })}
     </>
   );
 }

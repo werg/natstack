@@ -37,7 +37,7 @@ afterEach(async () => {
 });
 
 maybeDescribe("image-service extension server smoke", () => {
-  it("enables and invokes image-service through the server RPC surface", async () => {
+  it("approves declared extensions then invokes image-service through the server RPC surface", async () => {
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-extension-server-smoke-"));
     const readyFile = path.join(tempRoot, "ready.json");
     proc = spawn(
@@ -66,34 +66,60 @@ maybeDescribe("image-service extension server smoke", () => {
     const ready = await waitForReadyFile(readyFile, proc, () => stderr);
     const shellToken = await issueShellToken(ready);
 
-    await expect(rpc(ready, shellToken, "extensions.setEnabled", [
-      "@workspace-extensions/image-service",
-      true,
-    ])).resolves.toBeUndefined();
+    // Extensions are declared in meta/natstack.yml; the startup reconcile raises
+    // one joint approval. Approve it as the shell would, then wait for the
+    // image-service process to come up.
+    const approvalId = await waitForExtensionBatchApproval(ready, shellToken);
+    await rpc(ready, shellToken, "shellApproval.resolve", [approvalId, "once"]);
+    await waitForExtensionRunning(ready, shellToken, "@workspace-extensions/image-service");
 
     await expect(rpc(ready, shellToken, "extensions.invoke", [
       "@workspace-extensions/image-service",
       "detectMimeType",
       [[137, 80, 78, 71, 13, 10, 26, 10]],
     ])).resolves.toBe("image/png");
+  }, 60_000);
+});
 
+async function waitForExtensionBatchApproval(
+  ready: ReadyPayload,
+  shellToken: string,
+): Promise<string> {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    const pending = await rpc<Array<{ approvalId: string; kind: string }>>(
+      ready,
+      shellToken,
+      "shellApproval.listPending",
+      [],
+    );
+    const batch = pending.find((p) => p.kind === "extension-batch");
+    if (batch) return batch.approvalId;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error("extension-batch approval never appeared");
+}
+
+async function waitForExtensionRunning(
+  ready: ReadyPayload,
+  shellToken: string,
+  name: string,
+): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
     const extensions = await rpc<Array<{ name: string; status: string; lastError: string | null }>>(
       ready,
       shellToken,
       "extensions.list",
       [],
     );
-    expect(extensions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          name: "@workspace-extensions/image-service",
-          status: "running",
-          lastError: null,
-        }),
-      ]),
-    );
-  }, 60_000);
-});
+    const entry = extensions.find((e) => e.name === name);
+    if (entry?.status === "running") return;
+    if (entry?.status === "error") throw new Error(`${name} failed: ${entry.lastError}`);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`${name} never reached running state`);
+}
 
 async function waitForReadyFile(
   readyFile: string,

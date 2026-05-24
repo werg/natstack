@@ -112,9 +112,11 @@ Available via `import { ... } from "@workspace/runtime"` and `import { ... } fro
 | `buildPanelLink(source, opts)` | Build a URL for panel navigation (low-level — prefer `openPanel`)               |
 | `focusPanel(panelId)`          | Focus an existing panel by ID (does NOT open new panels)                        |
 
-### Extension Install / Enable Prompts
+### Using extensions
 
-`extensions.use(name).method(...)` prompts automatically when the named extension is present in the workspace but not installed or enabled. If you need to prompt explicitly before invoking it, call `extensions.install` for a missing extension or `extensions.setEnabled(name, true)` for an installed disabled extension.
+Extensions are **declared** in `meta/natstack.yml` under `extensions:`. That declaration is the only way to install/enable/disable/uninstall one — there is no `extensions.install` / `setEnabled` API, and invoking an extension never prompts. To start using an extension, add it to the `extensions:` list in `meta/natstack.yml`; saving that change (a gated meta write) raises one joint approval covering every newly-declared extension. Once approved and running, call it with `extensions.use(name)`.
+
+`extensions.use(name).method(...)` fails with `ENOEXT` if the extension is not declared/enabled, or `ENOTREADY` if it is still starting. If you need an extension that isn't declared yet, edit `meta/natstack.yml` rather than calling an install API.
 
 Extension methods normally use unary RPC and must return JSON-serializable values. If an extension method returns a `Response` or `ReadableStream`, declare it when creating the client so the runtime uses streaming RPC end-to-end:
 
@@ -133,23 +135,21 @@ const shell = extensions.use<ShellApi>("@workspace-extensions/shell", {
 
 `extensions.useWithStreams(name, methods)` is an alias for the same option. Prefer `extensions.use(name, { streamingMethods })` in new code so unary and streaming methods live on one typed client.
 
+To check whether an extension is available before calling it, use `extensions.list()`:
+
 ```
 eval({ code: `
   import { extensions } from "@workspace/runtime";
   const name = "@workspace-extensions/image-service";
-  const installed = (await extensions.list()).find((entry) => entry.name === name);
-  if (!installed) {
-    await extensions.install({
-      source: { kind: "internal-git", repo: "extensions/@workspace-extensions/image-service", ref: "HEAD" },
-    });
-  } else if (!installed.enabled) {
-    await extensions.setEnabled(name, true);
+  const entry = (await extensions.list()).find((e) => e.name === name);
+  if (!entry || !entry.enabled || entry.status !== "running") {
+    throw new Error(name + " is not available — declare it in meta/natstack.yml and approve it.");
   }
 `
 })
 ```
 
-The shell will show the user an extension-management approval prompt. If the user denies it, stop and report that the extension is required for the requested operation.
+If an extension isn't declared, adding it to `meta/natstack.yml` raises a joint approval. If the user denies it, stop and report that the extension is required for the requested operation.
 
 **Pre-injected** (use directly, do NOT import):
 

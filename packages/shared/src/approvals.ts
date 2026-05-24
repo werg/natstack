@@ -135,7 +135,9 @@ export interface PendingApprovalBase {
   // principal == { callerId, callerKind, repoPath, effectiveVersion }
   approvalId: string;
   callerId: string;
-  callerKind: "panel" | "worker" | "do";
+  // "system" is a host-initiated principal (e.g. workspace-startup extension
+  // reconciliation), not a userland caller pretending to be one.
+  callerKind: "panel" | "worker" | "do" | "system";
   repoPath: string;
   effectiveVersion: string;
   requestedAt: number;
@@ -275,6 +277,40 @@ export interface PendingExtensionApproval extends PendingApprovalBase {
   }>;
 }
 
+/**
+ * One extension in a joint `extension-batch` approval. Carries the
+ * informed-consent overview the prompt renders per row.
+ */
+export interface ExtensionBatchEntry {
+  extensionName: string;
+  displayName: string;
+  version?: string | null;
+  source: { kind: "internal-git"; repo: string; ref: string };
+  ev?: string | null;
+  /** Native capabilities granted by running this extension (node:fs, …). */
+  capabilities: string[];
+  dependencyEvs?: Record<string, string>;
+  externalDeps?: Record<string, string>;
+  commit?: ExtensionApprovalCommit | null;
+}
+
+/**
+ * Joint, informed-consent approval for the set of unapproved declared
+ * extensions. Raised at workspace startup (`trigger: "startup"`, system
+ * principal) and when a push to `meta/` adds extensions (`trigger:
+ * "meta-push"`, with `configWrite` describing the workspace-config change the
+ * same push performs). One decision approves or denies the whole set.
+ */
+export interface PendingExtensionBatchApproval extends PendingApprovalBase {
+  kind: "extension-batch";
+  trigger: "startup" | "meta-push";
+  title: string;
+  description: string;
+  extensions: ExtensionBatchEntry[];
+  /** Present on `meta-push`: the workspace-config write this push performs. */
+  configWrite?: { repoPath: string; summary: string } | null;
+}
+
 export interface PendingClientConfigField {
   name: string;
   label: string;
@@ -395,6 +431,7 @@ export type PendingApproval =
   | PendingCredentialApproval
   | PendingCapabilityApproval
   | PendingExtensionApproval
+  | PendingExtensionBatchApproval
   | PendingClientConfigApproval
   | PendingCredentialInputApproval
   | PendingUserlandApproval

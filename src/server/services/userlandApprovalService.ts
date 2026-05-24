@@ -161,6 +161,9 @@ export function createUserlandApprovalService(deps: {
         if (typeof deps.approvalQueue.resolveMatchingUserland === "function") {
           deps.approvalQueue.resolveMatchingUserland((approval) => {
             if (approval.kind !== "userland") return false;
+            // Userland approvals always have a panel/worker/do principal; the
+            // "system" principal is only used for host-initiated prompts.
+            if (approval.callerKind === "system") return false;
             if (approval.promptOptions !== "scoped") return false;
             if (!approval.options.some((option) => option.value === result.choice)) return false;
             const hit = deps.grantStore.lookup(

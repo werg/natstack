@@ -136,34 +136,21 @@ describe("gitWritePermission", () => {
     expect(approvalQueue.request).toHaveBeenCalledTimes(2);
   });
 
-  it("uses sensitive config copy for meta repo pushes", async () => {
+  it("defers meta repo pushes to the push-phase combined approval without prompting here", async () => {
     const approvalQueue = createApprovalQueueMock("once");
     const authorizer = createGitWriteAuthorizer({
       approvalQueue,
       grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
     });
 
-    await authorizer({
-      caller: caller("panel-source", "panel", "panels/source"),
-      repoPath: "meta",
-    });
-
-    expect(approvalQueue.request).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: "Edit workspace config",
-        description:
-          "Allow this code version to push changes to sensitive workspace configuration.",
-        resource: {
-          type: "git-repo",
-          label: "Config repository",
-          value: "meta",
-        },
-        details: expect.arrayContaining([
-          { label: "Operation", value: "git push to meta" },
-          { label: "Scope", value: "Workspace prompts, settings, and shared git remotes" },
-        ]),
+    await expect(
+      authorizer({
+        caller: caller("panel-source", "panel", "panels/source"),
+        repoPath: "meta",
       })
-    );
+    ).resolves.toEqual({ allowed: true });
+
+    expect(approvalQueue.request).not.toHaveBeenCalled();
   });
 
   it("denies unknown callers before prompting", async () => {

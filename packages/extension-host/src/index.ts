@@ -5,6 +5,5 @@ export type {
   ExtensionHealth,
   ExtensionInvocation,
   ExtensionSource,
-  InstallSpec,
   RegistryEntry,
 } from "./types.js";

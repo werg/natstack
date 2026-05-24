@@ -15,14 +15,17 @@ import type { NotificationPayload } from "@natstack/shared/events";
 import type { EventService, Subscriber } from "@natstack/shared/eventsService";
 import { EXTENSION_RUNTIME_ABI_VERSION } from "@natstack/shared/extensionRuntimeAbi";
 import type {
+  ExtensionBatchEntry,
   PendingExtensionApproval,
   PendingExtensionApprovalAction,
+  PendingExtensionBatchApproval,
 } from "@natstack/shared/approvals";
 import {
   ExtensionManifestError,
   readAndValidateExtensionManifest,
 } from "@natstack/shared/extensionManifest";
 import { execGitFileSync } from "@natstack/shared/gitRuntime";
+import YAML from "yaml";
 
 import { ExtensionRegistry } from "./registry.js";
 import { ExtensionProcessManager } from "./processManager.js";
@@ -39,7 +42,6 @@ import type {
   ExtensionHealth,
   ExtensionInvocation,
   ExtensionUserlandCaller,
-  InstallSpec,
   RegistryEntry,
 } from "./types.js";
 import { invocationFromServiceContext } from "./types.js";
@@ -118,6 +120,18 @@ interface ApprovalQueueLike {
     integrity?: string | null;
     capabilities?: string[];
     details?: PendingExtensionApproval["details"];
+  } | {
+    kind: "extension-batch";
+    callerId: string;
+    callerKind: "panel" | "worker" | "do" | "system";
+    repoPath: string;
+    effectiveVersion: string;
+    dedupKey?: string | null;
+    trigger: "startup" | "meta-push";
+    title: string;
+    description: string;
+    extensions: PendingExtensionBatchApproval["extensions"];
+    configWrite?: PendingExtensionBatchApproval["configWrite"];
   })): Promise<"once" | "session" | "version" | "repo" | "deny">;
 }
 
@@ -150,9 +164,18 @@ export class ExtensionHost {
   private inspectorUrls = new Map<string, string | null>();
   private unitLogs = new Map<string, UnitLogRecord[]>();
   private fetchRequestBodies = new Map<string, FetchRequestBodyStream>();
-  private invokeAvailability = new Map<string, Promise<RegistryEntry | null>>();
   private activeInvocations = new Map<string, ExtensionInvocation>();
   private readonly sourcePushGrants: SourcePushGrantStore;
+  // Single in-flight reconcile guard (meta-push uses queueMicrotask, so two
+  // pushes can overlap).
+  private reconciling: Promise<void> | null = null;
+  // Background joint-approval flows (startup). Chained so boot never blocks on
+  // a user decision; awaitable via whenSettled() for tests/diagnostics.
+  private backgroundFlow: Promise<void> = Promise.resolve();
+  // Set by the meta-push combined approval (§4): the extension names the user
+  // just trusted as part of an accepted meta push, consumed by the immediately
+  // following reconcile so it activates them without a second prompt.
+  private pendingMetaApproval: { commit: string; names: Set<string> } | null = null;
 
   constructor(private readonly deps: ExtensionHostDeps) {
     this.registry = new ExtensionRegistry({ statePath: deps.statePath });
@@ -200,27 +223,187 @@ export class ExtensionHost {
     });
   }
 
-  async startEnabled(): Promise<void> {
-    for (const entry of this.registry.list()) {
-      if (!entry.enabled || !entry.activeBundleKey) continue;
+  /**
+   * Reconcile the registry against the declared extension set from
+   * `meta/natstack.yml`. This is the single entry point that installs, enables,
+   * disables, or removes extensions — there is no imperative path. Called at
+   * boot and after a meta push (post-receive). The declared set is
+   * authoritative: anything in the registry but not declared is removed.
+   */
+  async reconcileDeclared(
+    declared: Array<{ source: string; ref: string; enabled: boolean }>,
+  ): Promise<void> {
+    // Serialize overlapping reconciles (two meta pushes in quick succession).
+    const run = (this.reconciling ?? Promise.resolve()).then(() =>
+      this.reconcileDeclaredOnce(declared),
+    );
+    this.reconciling = run.catch(() => {});
+    await run;
+  }
+
+  /**
+   * Test/diagnostic hook: resolves once the synchronous reconcile AND any
+   * background joint-approval flow it kicked off have settled.
+   */
+  async whenSettled(): Promise<void> {
+    await this.reconciling;
+    await this.backgroundFlow;
+  }
+
+  private async reconcileDeclaredOnce(
+    declared: Array<{ source: string; ref: string; enabled: boolean }>,
+  ): Promise<void> {
+    const preApproved = this.pendingMetaApproval?.names ?? new Set<string>();
+    this.pendingMetaApproval = null;
+
+    const resolved: Array<{ decl: { ref: string; enabled: boolean }; node: ReturnType<ExtensionHost["findExtensionNode"]> }> = [];
+    const unresolved: string[] = [];
+    for (const decl of declared) {
       try {
-        const node = this.findExtensionNode(entry.name);
-        // Fail-closed manifest validation at boot — the source on disk may
-        // have drifted out of spec since install. A failing extension is
-        // marked error and not activated; siblings keep starting.
-        this.validateExtensionManifestAtPath(node.path, entry.name);
-        if (this.needsBuildRefresh(entry, node)) {
-          await this.buildAndActivate(entry.name, entry.source.ref);
-        } else {
-          await this.activate(entry.name);
-        }
-      } catch (err) {
-        this.registry.patch(entry.name, {
-          status: "error",
-          lastError: err instanceof Error ? err.message : String(err),
-        });
+        resolved.push({ decl, node: this.findExtensionNode(decl.source) });
+      } catch {
+        unresolved.push(decl.source);
       }
     }
+    if (unresolved.length > 0) {
+      this.deps.notificationService?.show({
+        id: `extensions-unresolved-${encodeURIComponent(unresolved.join(","))}`,
+        type: "error",
+        title: "Unknown extensions declared",
+        message: `meta/natstack.yml declares extensions that don't exist: ${unresolved.join(", ")}.`,
+      });
+    }
+
+    const declaredByName = new Map(resolved.map((r) => [r.node.name, r]));
+
+    // Build/start the already-approved and the meta-push-pre-approved set now
+    // (awaited); collect the genuinely-unapproved for a background prompt so
+    // boot never blocks on a user decision.
+    const needsApproval: Array<{ node: ReturnType<ExtensionHost["findExtensionNode"]>; decl: { ref: string; enabled: boolean } }> = [];
+    for (const { node, decl } of resolved) {
+      const entry = this.registry.get(node.name);
+      const isApproved = !!entry?.activeBundleKey && entry.status !== "pending-approval";
+      if (isApproved || preApproved.has(node.name)) {
+        await this.applyDeclared(node, decl);
+      } else if (decl.enabled) {
+        if (!entry) this.registry.upsert(this.pendingEntryFor(node, decl));
+        needsApproval.push({ node, decl });
+      } else {
+        // Declared but disabled and unapproved — register, do not prompt.
+        if (!entry) this.registry.upsert(this.pendingEntryFor(node, decl));
+        if (this.processes.isRunning(node.name)) await this.processes.stop(node.name);
+      }
+    }
+
+    // Removal pass: anything in the registry but no longer declared is stopped
+    // and removed (storage retained). The meta edit was the gate; no prompt.
+    for (const entry of this.registry.list()) {
+      if (declaredByName.has(entry.name)) continue;
+      try {
+        await this.processes.stop(entry.name);
+      } catch {
+        // best-effort
+      }
+      this.registry.delete(entry.name);
+      this.deps.eventService.emit("extensions:status", {
+        name: entry.name,
+        status: "stopped",
+        error: null,
+      });
+    }
+
+    if (needsApproval.length > 0) {
+      // Boot must not block on the user. Present the joint approval in the
+      // background and build/activate each extension once granted.
+      this.backgroundFlow = this.backgroundFlow
+        .then(() => this.promptAndActivate(needsApproval))
+        .catch((err) => {
+          console.error(
+            "[ExtensionHost] Background extension approval flow failed:",
+            err instanceof Error ? err.message : String(err),
+          );
+        });
+    }
+  }
+
+  private async promptAndActivate(
+    needsApproval: Array<{ node: ReturnType<ExtensionHost["findExtensionNode"]>; decl: { ref: string; enabled: boolean } }>,
+  ): Promise<void> {
+    const decision = await this.requestBatchApproval(
+      needsApproval.map(({ node, decl }) => this.buildBatchEntry(node, decl.ref)),
+      "startup",
+    );
+    if (decision === "deny") {
+      const names = needsApproval.map((p) => p.node.name);
+      for (const name of names) {
+        this.deps.eventService.emit("extensions:status", { name, status: "pending-approval", error: null });
+      }
+      this.deps.notificationService?.show({
+        id: `extensions-pending-approval-${names.join(",")}`,
+        type: "info",
+        title: "Extensions need approval",
+        message: `${names.join(", ")} ${names.length === 1 ? "is" : "are"} declared but not approved. They will be offered again on next startup or when meta is edited.`,
+      });
+      return;
+    }
+    for (const { node, decl } of needsApproval) {
+      await this.applyDeclared(node, decl);
+    }
+  }
+
+  /** Build/start (or stop) a single declared extension per its declaration. */
+  private async applyDeclared(
+    node: ReturnType<ExtensionHost["findExtensionNode"]>,
+    decl: { ref: string; enabled: boolean },
+  ): Promise<void> {
+    try {
+      const entry = this.registry.get(node.name);
+      if (!decl.enabled) {
+        if (this.processes.isRunning(node.name)) await this.processes.stop(node.name);
+        this.registry.patch(node.name, { enabled: false, status: "stopped" });
+        return;
+      }
+      const isApproved = !!entry?.activeBundleKey && entry.status !== "pending-approval";
+      if (!isApproved) {
+        if (!entry) this.registry.upsert(this.pendingEntryFor(node, decl, true));
+        await this.buildAndActivate(node.name, decl.ref);
+        return;
+      }
+      // Already approved: fail-closed manifest validation, then (re)start.
+      this.validateExtensionManifestAtPath(node.path, node.name);
+      if (this.needsBuildRefresh(entry, node)) {
+        await this.buildAndActivate(node.name, decl.ref);
+      } else {
+        await this.activate(node.name);
+      }
+    } catch (err) {
+      this.registry.patch(node.name, {
+        status: "error",
+        lastError: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  private pendingEntryFor(
+    node: ReturnType<ExtensionHost["findExtensionNode"]>,
+    decl: { ref: string; enabled: boolean },
+    building = false,
+  ): RegistryEntry {
+    return {
+      name: node.name,
+      version: this.readNodeVersion(node.path),
+      source: { kind: "internal-git", repo: node.relativePath, ref: decl.ref },
+      installedAt: Date.now(),
+      activeEv: null,
+      activeSha: null,
+      activeBundleKey: null,
+      activeDependencyEvs: {},
+      activeExternalDeps: {},
+      activeRuntimeDepsKey: null,
+      enabled: decl.enabled,
+      status: building ? "building" : "pending-approval",
+      lastError: null,
+    };
   }
 
   private validateExtensionManifestAtPath(nodePath: string, unitName: string): void {
@@ -236,67 +419,6 @@ export class ExtensionHost {
         `Extension ${unitName} manifest validation failed: ${err instanceof Error ? err.message : String(err)}`,
         "MANIFEST_INTERNAL",
       );
-    }
-  }
-
-  async ensureBuiltInExtensions(names: string[]): Promise<void> {
-    const newlyPending: string[] = [];
-    for (const name of names) {
-      const node = this.findExtensionNode(name);
-      const current = this.registry.get(node.name);
-      if (!current) {
-        this.registry.upsert({
-          name: node.name,
-          version: this.readNodeVersion(node.path),
-          source: { kind: "internal-git", repo: node.relativePath, ref: "HEAD" },
-          installedAt: Date.now(),
-          activeEv: null,
-          activeSha: null,
-          activeBundleKey: null,
-          activeDependencyEvs: {},
-          activeExternalDeps: {},
-          activeRuntimeDepsKey: null,
-          enabled: false,
-          status: "pending-approval",
-          lastError: null,
-        });
-        newlyPending.push(node.name);
-        continue;
-      }
-
-      const patch: Partial<RegistryEntry> = {};
-      if (current.enabled && current.status === "error" && !current.activeBundleKey) {
-        patch.status = "building";
-        patch.lastError = null;
-      }
-      if (Object.keys(patch).length > 0) {
-        this.registry.patch(node.name, patch);
-      }
-      if (current.enabled && !current.activeBundleKey) {
-        await this.buildAndActivate(node.name);
-      }
-    }
-    if (newlyPending.length > 0) {
-      // Surface the pending-approval state on first boot so the user knows
-      // the migrated built-in extensions need to be installed; without this
-      // the user only discovers them when a feature that depends on them
-      // appears broken.
-      const list = newlyPending.length === 1
-        ? newlyPending[0]!
-        : `${newlyPending.slice(0, -1).join(", ")} and ${newlyPending[newlyPending.length - 1]!}`;
-      this.deps.notificationService?.show({
-        id: `extensions-pending-approval-${newlyPending.join(",")}`,
-        type: "info",
-        title: "Extensions need approval",
-        message: `${list} ${newlyPending.length === 1 ? "is" : "are"} installed but disabled. Approve installation from the extensions panel to enable.`,
-      });
-      for (const pendingName of newlyPending) {
-        this.deps.eventService.emit("extensions:status", {
-          name: pendingName,
-          status: "pending-approval",
-          error: null,
-        });
-      }
     }
   }
 
@@ -320,10 +442,6 @@ export class ExtensionHost {
         fetchRequestBodyClose: { args: z.tuple([z.string()]) },
         health: { args: z.tuple([z.enum(["healthy", "degraded", "unhealthy"]), z.unknown().optional()]) },
         log: { args: z.tuple([z.enum(["debug", "info", "warn", "error"]), z.string(), z.record(z.unknown()).optional()]) },
-        install: { args: z.tuple([installSpecSchema]) },
-        uninstall: { args: z.tuple([z.string(), z.object({ purge: z.boolean().optional() }).optional()]) },
-        setEnabled: { args: z.tuple([z.string(), z.boolean()]) },
-        update: { args: z.tuple([z.string()]) },
         reload: { args: z.tuple([z.string()]) },
       },
       handler: (ctx, method, args) => this.handle(ctx, method, args),
@@ -360,14 +478,6 @@ export class ExtensionHost {
           args[1] as string,
           args[2] as Record<string, unknown> | undefined,
         );
-      case "install":
-        return this.install(ctx, args[0] as InstallSpec);
-      case "uninstall":
-        return this.uninstall(ctx, args[0] as string, args[1] as { purge?: boolean } | undefined);
-      case "setEnabled":
-        return this.setEnabled(ctx, args[0] as string, args[1] as boolean);
-      case "update":
-        return this.update(ctx, args[0] as string);
       case "reload":
         return this.reload(ctx, args[0] as string);
       default:
@@ -376,13 +486,13 @@ export class ExtensionHost {
   }
 
   async invoke(ctx: ServiceContext, name: string, method: string, args: unknown[]): Promise<unknown> {
-    const entry = await this.ensureAvailableForInvoke(ctx, name);
+    const entry = this.lookupForInvoke(name);
     if (!entry || !entry.enabled) {
       throw new ServiceError("extensions", "invoke", `Extension is not installed or enabled: ${name}`, "ENOEXT");
     }
     const invocation = this.createTrackedInvocation(ctx, entry.name, method);
     if (!this.processes.isRunning(entry.name)) {
-      throw new ServiceError("extensions", "invoke", `Extension is not running: ${entry.name}`, "ENOEXT");
+      throw new ServiceError("extensions", "invoke", `Extension is not running: ${entry.name}`, "ENOTREADY");
     }
     try {
       return await this.deps.extensionTransport.call(
@@ -427,7 +537,7 @@ export class ExtensionHost {
   }
 
   async invokeStream(ctx: ServiceContext, name: string, method: string, args: unknown[]): Promise<Response> {
-    const entry = await this.ensureAvailableForInvoke(ctx, name);
+    const entry = this.lookupForInvoke(name);
     if (!entry || !entry.enabled) {
       throw new ServiceError("extensions", "invokeStream", `Extension is not installed or enabled: ${name}`, "ENOEXT");
     }
@@ -436,7 +546,7 @@ export class ExtensionHost {
     }
     const invocation = this.createTrackedInvocation(ctx, entry.name, method);
     if (!this.processes.isRunning(entry.name)) {
-      throw new ServiceError("extensions", "invokeStream", `Extension is not running: ${entry.name}`, "ENOEXT");
+      throw new ServiceError("extensions", "invokeStream", `Extension is not running: ${entry.name}`, "ENOTREADY");
     }
     try {
       const response = await this.deps.extensionTransport.streamCallTarget(
@@ -515,86 +625,21 @@ export class ExtensionHost {
     return `${extensionName}\x00${invocationToken}`;
   }
 
-  private async ensureAvailableForInvoke(
-    ctx: ServiceContext,
-    name: string,
-  ): Promise<RegistryEntry | null> {
-    let node: ReturnType<ExtensionHost["findExtensionNode"]>;
+  /**
+   * Pure lookup for the invoke path — never installs, builds, or enables.
+   * Returns the running-eligible registry entry, or null. Trust is granted at
+   * declaration time (startup / meta-push reconcile), not at invocation.
+   */
+  private lookupForInvoke(name: string): RegistryEntry | null {
+    let resolvedName = name;
     try {
-      node = this.findExtensionNode(name);
+      resolvedName = this.findExtensionNode(name).name;
     } catch {
-      const entry = this.registry.get(name);
-      return entry?.enabled ? entry : null;
+      // Not a known extension unit — fall back to a direct registry lookup so
+      // a stale name still yields a clean ENOEXT rather than throwing here.
     }
-
-    // Re-entrant self-invocation: extension code that calls
-    // `extensions.use("self")` during its own activate / fetch / invoke
-    // would otherwise await the same in-flight install/update promise that
-    // its own activation is fulfilling. If the process is already running
-    // and the registry entry is enabled, skip the availability gate.
-    if (ctx.caller.runtime.kind === "extension" && ctx.caller.runtime.id === node.name) {
-      const entry = this.registry.get(node.name);
-      if (entry?.enabled && this.processes.isRunning(node.name)) {
-        return entry;
-      }
-    }
-
-    const entry = this.registry.get(node.name);
-    if (entry?.enabled) {
-      if (!entry.activeBundleKey) {
-        return this.runInvokeAvailability(node.name, () => this.buildAndActivate(entry.name, entry.source.ref));
-      }
-      if (this.needsBuildRefresh(entry, node)) {
-        return this.runInvokeAvailability(node.name, () => this.update(ctx, entry.name));
-      }
-      return entry;
-    }
-
-    return this.runInvokeAvailability(node.name, async () => {
-      const current = this.registry.get(node.name);
-      if (current?.enabled && current.activeBundleKey && !this.needsBuildRefresh(current, node)) return;
-      if (current?.enabled && current.activeBundleKey) {
-        await this.update(ctx, current.name);
-        return;
-      }
-      if (current?.enabled && !current.activeBundleKey) {
-        await this.buildAndActivate(current.name, current.source.ref);
-        return;
-      }
-
-      if (!current) {
-        await this.install(ctx, {
-          source: { kind: "internal-git", repo: node.relativePath, ref: "HEAD" },
-        });
-        return;
-      }
-
-      if (!current.activeBundleKey) {
-        await this.install(ctx, { source: current.source });
-        return;
-      }
-
-      await this.setEnabled(ctx, node.name, true);
-    });
-  }
-
-  private async runInvokeAvailability(
-    name: string,
-    work: () => Promise<void>,
-  ): Promise<RegistryEntry | null> {
-    const existing = this.invokeAvailability.get(name);
-    if (existing) return existing;
-
-    const promise = (async () => {
-      await work();
-      return this.registry.get(name) ?? null;
-    })();
-    this.invokeAvailability.set(name, promise);
-    try {
-      return await promise;
-    } finally {
-      this.invokeAvailability.delete(name);
-    }
+    const entry = this.registry.get(resolvedName);
+    return entry?.enabled && entry.activeBundleKey ? entry : null;
   }
 
   async handleExtensionHttpRequest(
@@ -797,85 +842,8 @@ export class ExtensionHost {
     return null;
   }
 
-  async install(ctx: ServiceContext, spec: InstallSpec): Promise<void> {
-    const node = this.findExtensionNode(spec.source.repo);
-    // Validate the manifest before asking the user to approve installation —
-    // a malformed manifest should fail closed without prompting.
-    this.validateExtensionManifestAtPath(node.path, node.name);
-    await this.requestManagementApproval(ctx, "install", node.name);
-    const version = this.readNodeVersion(node.path);
-    const ev = this.deps.buildSystem.getEffectiveVersion(node.name);
-    if (!ev) throw new Error(`No effective version for extension ${node.name}`);
-    const entry: RegistryEntry = {
-      name: node.name,
-      version,
-      source: spec.source,
-      installedAt: Date.now(),
-      activeEv: null,
-      activeSha: null,
-      activeBundleKey: null,
-      activeDependencyEvs: {},
-      activeExternalDeps: {},
-      activeRuntimeDepsKey: null,
-      enabled: true,
-      status: "building",
-      lastError: null,
-    };
-    this.registry.upsert(entry);
-    await this.buildAndActivate(node.name, spec.source.ref);
-  }
-
-  async uninstall(ctx: ServiceContext, name: string, opts?: { purge?: boolean }): Promise<void> {
-    await this.requestManagementApproval(ctx, "uninstall", name);
-    await this.processes.stop(name);
-    this.registry.delete(name);
-    if (opts?.purge) {
-      const storageDir = this.storageDirFor(name);
-      await import("node:fs/promises").then((fs) => fs.rm(storageDir, { recursive: true, force: true }));
-    }
-  }
-
-  async setEnabled(ctx: ServiceContext, name: string, enabled: boolean): Promise<void> {
-    await this.requestManagementApproval(ctx, enabled ? "enable" : "disable", name);
-    if (!enabled) {
-      this.registry.patch(name, { enabled: false, status: "stopped" });
-      await this.processes.stop(name);
-      return;
-    }
-
-    const entry = this.registry.get(name);
-    if (!entry?.activeBundleKey) {
-      await this.buildAndActivate(name, entry?.source.ref);
-      return;
-    }
-
-    this.registry.patch(name, { enabled: true, status: "stopped" });
-    await this.activate(name);
-  }
-
-  async update(ctx: ServiceContext, name: string): Promise<void> {
-    const entry = this.registry.get(name);
-    if (!entry) throw new Error(`Extension is not installed: ${name}`);
-    const node = this.findExtensionNode(name);
-    const currentEv = this.deps.buildSystem.getEffectiveVersion(node.name);
-    const currentDependencyEvs = this.currentDependencyEvs(node);
-    const currentExternalDeps = this.currentExternalDeps(node);
-    if (
-      currentEv
-      && entry.activeEv === currentEv
-      && shallowRecordEqual(entry.activeDependencyEvs, currentDependencyEvs)
-      && shallowRecordEqual(entry.activeExternalDeps ?? {}, currentExternalDeps)
-      && (Object.keys(currentExternalDeps).length === 0 || entry.activeRuntimeDepsKey)
-      && this.hasCurrentExtensionRuntimeAbi(entry)
-    ) {
-      return;
-    }
-    await this.requestManagementApproval(ctx, "update", name);
-    await this.buildAndActivate(name, entry.source.ref);
-  }
-
   async reload(ctx: ServiceContext, name: string): Promise<void> {
-    await this.requestManagementApproval(ctx, "reload", name);
+    await this.reloadApproval(ctx, name);
     await this.activate(name);
   }
 
@@ -969,6 +937,11 @@ export class ExtensionHost {
     commit: string;
   }): Promise<{ allowed: boolean; reason?: string }> {
     const repoPath = normalizeRepoPath(request.repoPath);
+    // meta/ pushes are the sole gate for workspace-config writes AND for
+    // trusting any newly-declared extensions — one combined prompt (§4).
+    if (repoPath === "meta") {
+      return this.authorizeMetaPush(request);
+    }
     const installed = this.findInstalledExtensionByRepo(repoPath);
     if (!installed) return { allowed: true };
     if (request.branch !== "main" && request.branch !== "master") return { allowed: true };
@@ -1041,6 +1014,162 @@ export class ExtensionHost {
       this.sourcePushGrants.grant(sessionGrantKey, EXTENSION_DEV_SESSION_TTL_MS);
     }
     return { allowed: true };
+  }
+
+  /**
+   * Combined meta-push approval (§4): one prompt covering the workspace-config
+   * write AND trust for any newly-declared extensions in the pushed commit. On
+   * approval the trusted names are stashed for the post-push reconcile so it
+   * activates them without a second prompt.
+   */
+  private async authorizeMetaPush(request: {
+    caller: VerifiedCaller;
+    branch: string;
+    commit: string;
+  }): Promise<{ allowed: boolean; reason?: string }> {
+    // Trusted internal callers (CLI, server bootstrap) are not interactively
+    // prompted; the post-push reconcile still surfaces the joint approval.
+    if (request.caller.runtime.kind === "shell" || request.caller.runtime.kind === "server") {
+      return { allowed: true };
+    }
+
+    const declared = this.readDeclaredExtensionsFromCommit(request.commit);
+    const unapproved: Array<{ node: ReturnType<ExtensionHost["findExtensionNode"]>; ref: string }> = [];
+    for (const decl of declared) {
+      let node: ReturnType<ExtensionHost["findExtensionNode"]>;
+      try {
+        node = this.findExtensionNode(decl.source);
+      } catch {
+        continue;
+      }
+      const entry = this.registry.get(node.name);
+      if (!entry || !entry.activeBundleKey || entry.status === "pending-approval") {
+        unapproved.push({ node, ref: decl.ref });
+      }
+    }
+    const names = unapproved.map(({ node }) => node.name);
+
+    const sessionGrantKey = extensionPushSessionGrantKey(
+      request.caller.runtime.id,
+      "meta",
+      "meta",
+      request.branch,
+    );
+    if (this.sourcePushGrants.hasActive(sessionGrantKey)) {
+      if (names.length > 0) this.pendingMetaApproval = { commit: request.commit, names: new Set(names) };
+      return { allowed: true };
+    }
+
+    if (
+      request.caller.runtime.kind !== "panel" &&
+      request.caller.runtime.kind !== "worker" &&
+      request.caller.runtime.kind !== "do"
+    ) {
+      return {
+        allowed: false,
+        reason: `Workspace config pushes from ${request.caller.runtime.kind} callers are not supported`,
+      };
+    }
+    const identity = request.caller.code;
+    if (!identity || identity.callerKind !== request.caller.runtime.kind) {
+      return { allowed: false, reason: `Unknown caller identity: ${request.caller.runtime.id}` };
+    }
+
+    const decision = await this.deps.approvalQueue.request({
+      kind: "extension-batch",
+      callerId: request.caller.runtime.id,
+      callerKind: request.caller.runtime.kind,
+      repoPath: identity.repoPath,
+      effectiveVersion: identity.effectiveVersion,
+      dedupKey: `extension-meta-push:${request.caller.runtime.id}:${request.branch}`,
+      trigger: "meta-push",
+      title: names.length > 0 ? "Workspace extensions changed" : "Edit workspace config",
+      description:
+        names.length > 0
+          ? `This push edits workspace config and adds ${names.length} extension${names.length === 1 ? "" : "s"} that will run as native code.`
+          : "This push edits sensitive workspace configuration.",
+      extensions: unapproved.map(({ node, ref }) => this.buildBatchEntry(node, ref)),
+      configWrite: { repoPath: "meta", summary: this.metaDiffSummary(request.commit) },
+    });
+    if (decision === "deny") {
+      return { allowed: false, reason: "Workspace config push denied" };
+    }
+    if (decision === "session") {
+      this.sourcePushGrants.grant(sessionGrantKey, EXTENSION_DEV_SESSION_TTL_MS);
+    }
+    if (names.length > 0) this.pendingMetaApproval = { commit: request.commit, names: new Set(names) };
+    return { allowed: true };
+  }
+
+  private readDeclaredExtensionsFromCommit(
+    commit: string,
+  ): Array<{ source: string; ref: string; enabled: boolean }> {
+    const metaRepoDir = path.join(this.deps.workspacePath, "meta");
+    try {
+      const out = String(
+        execGitFileSync(["show", "--end-of-options", `${commit}:natstack.yml`], {
+          cwd: metaRepoDir,
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "ignore"],
+        }),
+      );
+      const parsed = YAML.parse(out) as
+        | { extensions?: Array<{ source?: string; ref?: string; enabled?: boolean }> }
+        | null;
+      return (parsed?.extensions ?? [])
+        .filter((d): d is { source: string; ref?: string; enabled?: boolean } =>
+          typeof d?.source === "string" && d.source.length > 0,
+        )
+        .map((d) => ({ source: d.source, ref: d.ref ?? "main", enabled: d.enabled ?? true }));
+    } catch {
+      return [];
+    }
+  }
+
+  private metaDiffSummary(commit: string): string {
+    const metaRepoDir = path.join(this.deps.workspacePath, "meta");
+    const previous = resolveGitCommit(metaRepoDir, "HEAD");
+    const stat = readGitDiffStat(metaRepoDir, previous, resolveGitCommit(metaRepoDir, commit) ?? commit);
+    return stat
+      ? `${stat.filesChanged} file(s) changed, +${stat.insertions} -${stat.deletions}`
+      : "workspace config change";
+  }
+
+  private buildBatchEntry(
+    node: ReturnType<ExtensionHost["findExtensionNode"]>,
+    ref: string,
+  ): ExtensionBatchEntry {
+    return {
+      extensionName: node.name,
+      displayName: node.manifest.displayName ?? node.name,
+      version: this.readNodeVersion(node.path),
+      source: { kind: "internal-git", repo: node.relativePath, ref },
+      ev: this.deps.buildSystem.getEffectiveVersion(node.name),
+      capabilities: extensionRuntimeCapabilities(),
+      dependencyEvs: this.currentDependencyEvs(node),
+      externalDeps: this.currentExternalDeps(node),
+      commit: null,
+    };
+  }
+
+  private async requestBatchApproval(
+    entries: ExtensionBatchEntry[],
+    trigger: "startup" | "meta-push",
+    configWrite?: PendingExtensionBatchApproval["configWrite"],
+  ): Promise<"once" | "session" | "version" | "repo" | "deny"> {
+    const count = entries.length;
+    return this.deps.approvalQueue.request({
+      kind: "extension-batch",
+      callerId: "system:extensions",
+      callerKind: "system",
+      repoPath: "meta",
+      effectiveVersion: "",
+      trigger,
+      title: "Approve workspace extensions",
+      description: `This workspace uses ${count} extension${count === 1 ? "" : "s"} that need your approval to run as native code.`,
+      extensions: entries,
+      configWrite: configWrite ?? null,
+    });
   }
 
   async activate(name: string): Promise<void> {
@@ -1237,16 +1366,10 @@ export class ExtensionHost {
     return pkg.version ?? "0.0.0";
   }
 
-  private async requestManagementApproval(
-    ctx: ServiceContext,
-    action: "install" | "uninstall" | "enable" | "disable" | "update" | "reload",
-    name: string,
-  ): Promise<void> {
+  private async reloadApproval(ctx: ServiceContext, name: string): Promise<void> {
     // Trusted internal callers (CLI shell) are pre-authorized and skip the
-    // user prompt. Panels, workers, and DOs always go through approval. Other
-    // caller kinds (e.g., `extension`) are rejected — extensions cannot
-    // self-install other extensions in v1. `server` is not in the
-    // dispatcher's allow list for `extensions`, so it never reaches here.
+    // prompt. Panels, workers, and DOs go through approval. Other caller kinds
+    // are rejected.
     if (ctx.caller.runtime.kind === "shell") return;
     if (
       ctx.caller.runtime.kind !== "panel" &&
@@ -1255,64 +1378,45 @@ export class ExtensionHost {
     ) {
       throw new ServiceError(
         "extensions",
-        action,
-        `Extension management is not available to ${ctx.caller.runtime.kind} callers`,
+        "reload",
+        `Extension reload is not available to ${ctx.caller.runtime.kind} callers`,
         "EACCES",
       );
     }
     const identity = ctx.caller.code;
     if (!identity || identity.callerKind !== ctx.caller.runtime.kind) {
-      throw new ServiceError("extensions", action, `Unknown caller identity: ${ctx.caller.runtime.id}`, "ENOENT");
+      throw new ServiceError("extensions", "reload", `Unknown caller identity: ${ctx.caller.runtime.id}`, "ENOENT");
     }
     const node = this.findExtensionNode(name);
     const entry = this.registry.get(node.name);
-    const approvalAction = extensionManagementAction(action);
-    const currentEv = this.deps.buildSystem.getEffectiveVersion(node.name);
-    const candidateDependencyEvs = this.currentDependencyEvs(node);
-    const candidateExternalDeps = this.currentExternalDeps(node);
-    const workspaceDepChanges = dependencyEvChanges(entry?.activeDependencyEvs ?? {}, candidateDependencyEvs);
-    const externalDepChanges = externalDependencyChanges(entry?.activeExternalDeps ?? {}, candidateExternalDeps);
     const source = entry?.source ?? {
       kind: "internal-git" as const,
       repo: node.relativePath,
-      ref: "HEAD",
+      ref: "main",
     };
-    const version = entry?.version ?? this.readNodeVersion(node.path);
-    const details = [
-      { label: "Action", value: action },
-      { label: "Extension", value: node.name },
-      { label: "Source", value: `${source.repo}@${source.ref}` },
-    ];
-    if (entry?.activeEv) details.push({ label: "Current EV", value: entry.activeEv });
-    if (currentEv) details.push({ label: "Candidate EV", value: currentEv });
     const decision = await this.deps.approvalQueue.request({
       kind: "extension",
       callerId: ctx.caller.runtime.id,
       callerKind: ctx.caller.runtime.kind,
       repoPath: identity.repoPath,
       effectiveVersion: identity.effectiveVersion,
-      action: approvalAction,
+      action: "reload",
       extensionName: node.name,
-      version,
+      version: entry?.version ?? this.readNodeVersion(node.path),
       source,
-      title: `${actionTitle(action)} extension`,
-      description: `Allow ${ctx.caller.runtime.kind} ${ctx.caller.runtime.id} to ${action} ${name}.`,
-      ev: currentEv,
+      title: "Reload extension",
+      description: `Allow ${ctx.caller.runtime.kind} ${ctx.caller.runtime.id} to reload ${name}.`,
+      ev: entry?.activeEv,
       previousEv: entry?.activeEv,
       previousSha: entry?.activeSha,
-      activeDependencyEvs: entry?.activeDependencyEvs,
-      candidateDependencyEvs,
-      activeRuntimeDepsKey: entry?.activeRuntimeDepsKey,
-      candidateRuntimeDepsKey: null,
-      extensionDiff: null,
-      workspaceDepChanges,
-      externalDepChanges,
-      integrity: null,
       capabilities: extensionRuntimeCapabilities(),
-      details,
+      details: [
+        { label: "Extension", value: node.name },
+        { label: "Source", value: `${source.repo}@${source.ref}` },
+      ],
     });
     if (decision === "deny") {
-      throw new ServiceError("extensions", action, "Extension management approval denied", "EACCES");
+      throw new ServiceError("extensions", "reload", "Extension reload approval denied", "EACCES");
     }
   }
 
@@ -1368,14 +1472,6 @@ const LOG_LEVEL_RANK = {
   warn: 30,
   error: 40,
 } as const;
-
-const installSpecSchema = z.object({
-  source: z.object({
-    kind: z.literal("internal-git"),
-    repo: z.string().min(1),
-    ref: z.string().min(1).default("main"),
-  }),
-}).strict();
 
 function headersToRecord(headers: IncomingMessage["headers"]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -1481,16 +1577,6 @@ function extensionPushSessionGrantKey(
   return `${callerId}\x00${extensionName}\x00${repoPath}\x00${branch}`;
 }
 
-function extensionManagementAction(
-  action: "install" | "uninstall" | "enable" | "disable" | "update" | "reload",
-): PendingExtensionApprovalAction {
-  return action === "enable" || action === "disable" ? "toggle" : action;
-}
-
-function actionTitle(action: "install" | "uninstall" | "enable" | "disable" | "update" | "reload"): string {
-  return `${action[0]!.toUpperCase()}${action.slice(1)}`;
-}
-
 function extensionRuntimeCapabilities(): string[] {
   return ["node:fs", "node:child_process", "node:net", "node:process", "userland:*"];
 }
@@ -1505,34 +1591,6 @@ function resolveGitCommit(repoPath: string, ref = "HEAD"): string | null {
   } catch {
     return null;
   }
-}
-
-function dependencyEvChanges(
-  active: Record<string, string>,
-  candidate: Record<string, string>,
-): NonNullable<PendingExtensionApproval["workspaceDepChanges"]> {
-  const names = [...new Set([...Object.keys(active), ...Object.keys(candidate)])].sort();
-  return names
-    .filter((name) => active[name] !== candidate[name])
-    .map((name) => ({
-      name,
-      fromEv: active[name] ?? null,
-      toEv: candidate[name] ?? null,
-    }));
-}
-
-function externalDependencyChanges(
-  active: Record<string, string>,
-  candidate: Record<string, string>,
-): NonNullable<PendingExtensionApproval["externalDepChanges"]> {
-  const names = [...new Set([...Object.keys(active), ...Object.keys(candidate)])].sort();
-  return names
-    .filter((name) => active[name] !== candidate[name])
-    .map((name) => ({
-      name,
-      fromVersion: active[name] ?? null,
-      toVersion: candidate[name] ?? null,
-    }));
 }
 
 function makeExtensionDiff(

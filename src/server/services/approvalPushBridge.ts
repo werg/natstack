@@ -34,7 +34,8 @@ interface TrackedApproval {
 function categoryFor(approval: PendingApproval): string {
   return approval.kind === "credential" ||
     approval.kind === "capability" ||
-    approval.kind === "extension"
+    approval.kind === "extension" ||
+    approval.kind === "extension-batch"
     ? APPROVAL_CATEGORY_DECIDE
     : APPROVAL_CATEGORY_INPUT_REQUIRED;
 }
@@ -42,6 +43,12 @@ function categoryFor(approval: PendingApproval): string {
 function actionsFor(approval: PendingApproval): readonly string[] {
   if (approval.kind === "extension") {
     return approval.action === "source-push"
+      ? ["once", "session", "deny", "open"]
+      : ["once", "deny", "open"];
+  }
+  if (approval.kind === "extension-batch") {
+    // Meta-push offers a "dev session" grant (session); startup does not.
+    return approval.trigger === "meta-push"
       ? ["once", "session", "deny", "open"]
       : ["once", "deny", "open"];
   }
@@ -61,13 +68,19 @@ const ACTION_TITLES: Record<string, string> = {
 function actionPayloadFor(approval: PendingApproval): Array<{ id: string; title: string }> {
   return actionsFor(approval).map((id) => ({
     id,
-    title: approval.kind === "extension" && id === "once" ? "Approve" : (ACTION_TITLES[id] ?? id),
+    title:
+      id === "once" && approval.kind === "extension"
+        ? "Approve"
+        : id === "once" && approval.kind === "extension-batch"
+          ? "Approve all"
+          : (ACTION_TITLES[id] ?? id),
   }));
 }
 
 function callerLabel(approval: PendingApproval): string {
   if (approval.callerKind === "worker") return "Worker";
   if (approval.callerKind === "do") return "DO";
+  if (approval.callerKind === "system") return "Workspace";
   return "Panel";
 }
 

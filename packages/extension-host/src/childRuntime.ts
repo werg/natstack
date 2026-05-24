@@ -194,10 +194,6 @@ function createExtensionsClient() {
       };
     },
     list: () => rpcCall("extensions.list", []),
-    install: (spec: unknown) => rpcCall("extensions.install", [spec]),
-    uninstall: (name: string, opts?: { purge?: boolean }) => rpcCall("extensions.uninstall", [name, opts]),
-    setEnabled: (name: string, enabled: boolean) => rpcCall("extensions.setEnabled", [name, enabled]),
-    update: (name: string) => rpcCall("extensions.update", [name]),
     reload: (name: string) => rpcCall("extensions.reload", [name]),
   };
 }

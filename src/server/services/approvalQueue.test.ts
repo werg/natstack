@@ -477,6 +477,77 @@ describe("approvalQueue", () => {
     await expect(second).resolves.toEqual({ decision: "deny" });
   });
 
+  describe("extension-batch approvals", () => {
+    const batchRequest = (overrides: Record<string, unknown> = {}) => ({
+      kind: "extension-batch" as const,
+      callerId: "system:extensions",
+      callerKind: "system" as const,
+      repoPath: "meta",
+      effectiveVersion: "",
+      trigger: "startup" as const,
+      title: "Approve workspace extensions",
+      description: "2 extensions need approval.",
+      extensions: [
+        {
+          extensionName: "@workspace-extensions/image-service",
+          displayName: "Image Service",
+          source: {
+            kind: "internal-git" as const,
+            repo: "extensions/@workspace-extensions/image-service",
+            ref: "main",
+          },
+          capabilities: ["node:fs"],
+        },
+        {
+          extensionName: "@workspace-extensions/file-tools",
+          displayName: "File Tools",
+          source: {
+            kind: "internal-git" as const,
+            repo: "extensions/@workspace-extensions/file-tools",
+            ref: "main",
+          },
+          capabilities: ["node:fs"],
+        },
+      ],
+      ...overrides,
+    });
+
+    it("creates a pending extension-batch approval carrying the extension list", async () => {
+      const { queue } = createQueue();
+      void queue.request(batchRequest());
+      await Promise.resolve();
+      const pending = queue.listPending();
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toMatchObject({
+        kind: "extension-batch",
+        trigger: "startup",
+        callerKind: "system",
+        extensions: [
+          { extensionName: "@workspace-extensions/image-service" },
+          { extensionName: "@workspace-extensions/file-tools" },
+        ],
+      });
+    });
+
+    it("coalesces duplicate reconciles for the same trigger + set onto one prompt", async () => {
+      const { queue } = createQueue();
+      void queue.request(batchRequest());
+      void queue.request(batchRequest());
+      await Promise.resolve();
+      expect(queue.listPending()).toHaveLength(1);
+    });
+
+    it("resolves all waiters when the batch is approved", async () => {
+      const { queue } = createQueue();
+      const first = queue.request(batchRequest());
+      const second = queue.request(batchRequest());
+      await Promise.resolve();
+      queue.resolve(queue.listPending()[0]!.approvalId, "once");
+      await expect(first).resolves.toBe("once");
+      await expect(second).resolves.toBe("once");
+    });
+  });
+
   describe("userland approvals", () => {
     const userlandRequest = {
       principal: {

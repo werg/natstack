@@ -251,126 +251,105 @@ describe("ExtensionHost source push authorization", () => {
   });
 });
 
-describe("ExtensionHost built-in extension bootstrap", () => {
-  it("records missing built-in extensions as pending approval without building", async () => {
-    const { host, approvalQueue, buildSystem, extensionNode } = makeHost({ installed: false });
+const declare = (
+  name: string,
+  opts: { ref?: string; enabled?: boolean } = {},
+) => [{ source: name, ref: opts.ref ?? "main", enabled: opts.enabled ?? true }];
+
+describe("ExtensionHost reconcileDeclared", () => {
+  it("leaves declared extensions pending when the joint approval is denied", async () => {
+    const { host, approvalQueue, buildSystem, extensionNode } = makeHost({
+      installed: false,
+      approvalDecision: "deny",
+    });
     const start = vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
 
-    await host.ensureBuiltInExtensions([extensionNode.name]);
+    await host.reconcileDeclared(declare(extensionNode.name));
+    await host.whenSettled();
 
-    const entry = host.registry.get(extensionNode.name);
-    expect(entry).toMatchObject({
-      name: extensionNode.name,
-      enabled: false,
+    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "extension-batch",
+      trigger: "startup",
+      extensions: [expect.objectContaining({ extensionName: extensionNode.name })],
+    }));
+    expect(host.registry.get(extensionNode.name)).toMatchObject({
       activeBundleKey: null,
-      activeEv: null,
       status: "pending-approval",
     });
     expect(buildSystem.getBuild).not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
-    expect(approvalQueue.request).not.toHaveBeenCalled();
   });
 
-  it("preserves a user-disabled built-in extension", async () => {
-    const { host, buildSystem, extensionNode } = makeHost({
-      enabled: false,
-      status: "error",
-    });
-
-    await host.ensureBuiltInExtensions([extensionNode.name]);
-
-    expect(host.registry.get(extensionNode.name)).toMatchObject({
-      enabled: false,
-      status: "error",
-      lastError: "previous failure",
-      activeBundleKey: "bundle-key",
-    });
-    expect(buildSystem.getBuild).not.toHaveBeenCalled();
-  });
-
-  it("builds enabled built-ins that do not yet have an active bundle", async () => {
-    const { host, buildSystem, extensionNode } = makeHost({
-      activeBundleKey: null,
-      status: "building",
+  it("builds and activates declared extensions when the joint approval is granted", async () => {
+    const { host, approvalQueue, buildSystem, extensionNode } = makeHost({
+      installed: false,
+      approvalDecision: "once",
     });
     const start = vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
 
-    await host.ensureBuiltInExtensions([extensionNode.name]);
+    await host.reconcileDeclared(declare(extensionNode.name));
+    await host.whenSettled();
 
-    expect(buildSystem.getBuild).toHaveBeenCalledWith(extensionNode.name, undefined);
-    expect(start).toHaveBeenCalledWith(expect.objectContaining({
-      name: extensionNode.name,
-      bundlePath: expect.stringContaining("candidate-key"),
+    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "extension-batch",
+      trigger: "startup",
     }));
-  });
-
-  it("builds and activates when enabling an installed extension without an active bundle", async () => {
-    const { host, buildSystem, extensionNode } = makeHost({
-      activeBundleKey: null,
-      enabled: false,
-      status: "pending-approval",
-    });
-    const start = vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
-
-    await host.setEnabled(panelCtx("panel-1"), extensionNode.name, true);
-
     expect(buildSystem.getBuild).toHaveBeenCalledWith(extensionNode.name, "main");
-    expect(start).toHaveBeenCalledWith(expect.objectContaining({
-      name: extensionNode.name,
-      bundlePath: expect.stringContaining("candidate-key"),
-    }));
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ name: extensionNode.name }));
     expect(host.registry.get(extensionNode.name)).toMatchObject({
       enabled: true,
       activeBundleKey: "candidate-key",
-      status: "building",
-      lastError: null,
     });
   });
-});
 
-describe("ExtensionHost update", () => {
-  it("does not prompt or rebuild when the active EV and dependency EVs are current", async () => {
-    const { host, approvalQueue, buildSystem, extensionNode } = makeHost({
-      activeEv: "ev-current",
-      depEv: "ev-runtime",
-    });
+  it("starts an already-approved declared extension without prompting", async () => {
+    const { host, approvalQueue, buildSystem, extensionNode } = makeHost();
+    const start = vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
 
-    await host.update(panelCtx("panel-1"), extensionNode.name);
+    await host.reconcileDeclared(declare(extensionNode.name));
 
     expect(approvalQueue.request).not.toHaveBeenCalled();
     expect(buildSystem.getBuild).not.toHaveBeenCalled();
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ name: extensionNode.name }));
   });
 
-  it("prompts with dependency change layers before rebuilding", async () => {
+  it("stops an approved declared extension when declared enabled:false", async () => {
+    const { host, approvalQueue, extensionNode } = makeHost();
+    const stop = vi.spyOn(host.processes, "stop").mockResolvedValue(undefined);
+    vi.spyOn(host.processes, "isRunning").mockReturnValue(true);
+
+    await host.reconcileDeclared(declare(extensionNode.name, { enabled: false }));
+
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+    expect(stop).toHaveBeenCalledWith(extensionNode.name);
+    expect(host.registry.get(extensionNode.name)).toMatchObject({
+      enabled: false,
+      status: "stopped",
+    });
+  });
+
+  it("removes a registry entry that is no longer declared", async () => {
+    const { host, extensionNode } = makeHost();
+    const stop = vi.spyOn(host.processes, "stop").mockResolvedValue(undefined);
+
+    await host.reconcileDeclared([]);
+
+    expect(stop).toHaveBeenCalledWith(extensionNode.name);
+    expect(host.registry.get(extensionNode.name)).toBeNull();
+  });
+
+  it("rebuilds an already-approved extension whose dependency EV changed, without prompting", async () => {
     const { host, approvalQueue, buildSystem, extensionNode } = makeHost({
       activeEv: "ev-current",
       depEv: "ev-runtime-next",
       activeDepEv: "ev-runtime-old",
-      activeExternalDeps: { zod: "3.22.4" },
-      candidateExternalDeps: { zod: "3.23.8", chalk: "5.3.0" },
     });
     vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
 
-    await host.update(panelCtx("panel-1"), extensionNode.name);
+    await host.reconcileDeclared(declare(extensionNode.name));
 
-    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
-      kind: "extension",
-      action: "update",
-      workspaceDepChanges: [{
-        name: "@workspace/runtime",
-        fromEv: "ev-runtime-old",
-        toEv: "ev-runtime-next",
-      }],
-      externalDepChanges: [
-        { name: "chalk", fromVersion: null, toVersion: "5.3.0" },
-        { name: "zod", fromVersion: "3.22.4", toVersion: "3.23.8" },
-      ],
-      extensionDiff: null,
-      candidateRuntimeDepsKey: null,
-    }));
-    expect(approvalQueue.request.mock.invocationCallOrder[0]!).toBeLessThan(
-      buildSystem.getBuild.mock.invocationCallOrder[0]!,
-    );
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+    expect(buildSystem.getBuild).toHaveBeenCalledWith(extensionNode.name, "main");
   });
 });
 
@@ -469,150 +448,43 @@ describe("ExtensionHost activation", () => {
     ]);
   });
 
-  it("prompts to install a pending workspace extension on first invoke", async () => {
+  it("fails with ENOEXT and never prompts when invoking an undeclared extension", async () => {
     const extensionTransport = { call: vi.fn(async () => "transport-result") };
     const { host, approvalQueue, buildSystem, extensionNode } = makeHost({
       extensionTransport,
       installed: false,
     });
-    vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
     vi.spyOn(host.processes, "isRunning").mockReturnValue(true);
 
-    await host.ensureBuiltInExtensions([extensionNode.name]);
     await expect(
       host.invoke(panelCtx("panel-1"), extensionNode.name, "blame", ["README.md"]),
-    ).resolves.toBe("transport-result");
+    ).rejects.toMatchObject({ code: "ENOEXT" });
 
-    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
-      kind: "extension",
-      action: "install",
-      extensionName: extensionNode.name,
-    }));
-    expect(buildSystem.getBuild).toHaveBeenCalledWith(extensionNode.name, "HEAD");
-    expect(host.registry.get(extensionNode.name)).toMatchObject({
-      enabled: true,
-      activeBundleKey: "candidate-key",
-    });
-    expect(extensionTransport.call).toHaveBeenCalledWith(
-      extensionNode.name,
-      "extension.invoke",
-      "blame",
-      ["README.md"],
-      expect.objectContaining({ extensionName: extensionNode.name }),
-    );
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+    expect(buildSystem.getBuild).not.toHaveBeenCalled();
+    expect(extensionTransport.call).not.toHaveBeenCalled();
   });
 
-  it("prompts DO callers to install a pending workspace extension on first invoke", async () => {
-    const extensionTransport = { call: vi.fn(async () => "transport-result") };
-    const { host, approvalQueue, buildSystem, extensionNode } = makeHost({
-      extensionTransport,
-      installed: false,
-    });
-    vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
-    vi.spyOn(host.processes, "isRunning").mockReturnValue(true);
-
-    await host.ensureBuiltInExtensions([extensionNode.name]);
-    await expect(
-      host.invoke(doCtx(), extensionNode.name, "blame", ["README.md"]),
-    ).resolves.toBe("transport-result");
-
-    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
-      kind: "extension",
-      action: "install",
-      callerId: "do:workers/agent-worker:AiChatWorker:agent-1",
-      callerKind: "do",
-      repoPath: "workers/agent-worker",
-    }));
-    expect(buildSystem.getBuild).toHaveBeenCalledWith(extensionNode.name, "HEAD");
-  });
-
-  it("prompts to enable an installed disabled extension on first invoke", async () => {
-    const extensionTransport = { call: vi.fn(async () => "transport-result") };
-    const { host, approvalQueue, buildSystem, extensionNode } = makeHost({
-      extensionTransport,
+  it("fails with ENOEXT when invoking a disabled extension", async () => {
+    const { host, approvalQueue, extensionNode } = makeHost({
       enabled: false,
       status: "stopped",
     });
-    vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
     vi.spyOn(host.processes, "isRunning").mockReturnValue(true);
 
     await expect(
-      host.invoke(panelCtx("panel-1"), extensionNode.name, "blame", ["README.md"]),
-    ).resolves.toBe("transport-result");
-
-    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
-      kind: "extension",
-      action: "toggle",
-      extensionName: extensionNode.name,
-      title: "Enable extension",
-    }));
-    expect(buildSystem.getBuild).not.toHaveBeenCalled();
-    expect(host.registry.get(extensionNode.name)).toMatchObject({
-      enabled: true,
-      activeBundleKey: "bundle-key",
-    });
-    expect(extensionTransport.call).toHaveBeenCalled();
+      host.invoke(panelCtx("panel-1"), extensionNode.name, "blame", []),
+    ).rejects.toMatchObject({ code: "ENOEXT" });
+    expect(approvalQueue.request).not.toHaveBeenCalled();
   });
 
-  it("prompts to update an enabled extension whose active bundle predates runtime deps", async () => {
-    const extensionTransport = { call: vi.fn(async () => "transport-result") };
-    const { host, approvalQueue, buildSystem, extensionNode } = makeHost({
-      extensionTransport,
-      activeExternalDeps: { "@silvia-odwyer/photon-node": "^0.3.4" },
-      candidateExternalDeps: { "@silvia-odwyer/photon-node": "^0.3.4" },
-      activeRuntimeDepsKey: null,
-    });
-    vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
-    vi.spyOn(host.processes, "isRunning").mockReturnValue(true);
+  it("fails with ENOTREADY when an enabled extension is not running", async () => {
+    const { host, extensionNode } = makeHost();
+    vi.spyOn(host.processes, "isRunning").mockReturnValue(false);
 
     await expect(
-      host.invoke(panelCtx("panel-1"), extensionNode.name, "resize", []),
-    ).resolves.toBe("transport-result");
-
-    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
-      kind: "extension",
-      action: "update",
-      extensionName: extensionNode.name,
-    }));
-    expect(buildSystem.getBuild).toHaveBeenCalledWith(extensionNode.name, "main");
-    expect(host.registry.get(extensionNode.name)).toMatchObject({
-      activeBundleKey: "candidate-key",
-      activeRuntimeDepsKey: "runtime-candidate",
-    });
-  });
-
-  it("shares one pending install approval across concurrent first invokes", async () => {
-    const extensionTransport = { call: vi.fn(async () => "transport-result") };
-    const { host, approvalQueue, buildSystem, extensionNode } = makeHost({
-      extensionTransport,
-      installed: false,
-    });
-    vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
-    vi.spyOn(host.processes, "isRunning").mockReturnValue(true);
-    const approval = deferred<"once">();
-    let approvalRequested!: () => void;
-    const approvalStarted = new Promise<void>((resolve) => {
-      approvalRequested = resolve;
-    });
-    approvalQueue.request.mockImplementation(async () => {
-      approvalRequested();
-      return approval.promise;
-    });
-
-    await host.ensureBuiltInExtensions([extensionNode.name]);
-    const first = host.invoke(panelCtx("panel-1"), extensionNode.name, "blame", ["a"]);
-    await approvalStarted;
-    const second = host.invoke(panelCtx("panel-2"), extensionNode.name, "blame", ["b"]);
-    await Promise.resolve();
-
-    expect(approvalQueue.request).toHaveBeenCalledTimes(1);
-    expect(buildSystem.getBuild).not.toHaveBeenCalled();
-
-    approval.resolve("once");
-    await expect(Promise.all([first, second])).resolves.toEqual(["transport-result", "transport-result"]);
-
-    expect(buildSystem.getBuild).toHaveBeenCalledTimes(1);
-    expect(extensionTransport.call).toHaveBeenCalledTimes(2);
+      host.invoke(panelCtx("panel-1"), extensionNode.name, "blame", []),
+    ).rejects.toMatchObject({ code: "ENOTREADY" });
   });
 
   it("streams extension fetch request bodies through chunk RPC", async () => {

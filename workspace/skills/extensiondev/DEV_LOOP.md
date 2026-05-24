@@ -73,7 +73,7 @@ await extensions.reload("@workspace-extensions/hello");
 
 Approval-gated. Restarts the *currently active approved build* — does not pull dependency changes. Use this after editing in-process state (env vars, on-disk config) that the extension reads at `activate()` time.
 
-To adopt dependency changes (a `@workspace/runtime` push, an `npm` version bump), use `extensions.update(name)` instead. That builds against the current dependency graph, prompts the extension update approval, and on grant replaces the process.
+To adopt dependency changes (a `@workspace/runtime` push, an `npm` version bump), the extension rebuilds on the next reconcile — at workspace startup, or when `meta/natstack.yml` is pushed. `extensions.reload(name)` also rebuilds if the dependency graph changed. Dependency pushes do not auto-reload a running extension on their own.
 
 ## Common failure shapes
 
@@ -90,9 +90,4 @@ To adopt dependency changes (a `@workspace/runtime` push, an `npm` version bump)
 
 ## Uninstall
 
-```ts
-await extensions.uninstall("@workspace-extensions/hello");                   // keep storage scratch
-await extensions.uninstall("@workspace-extensions/hello", { purge: true });  // also wipe storage
-```
-
-Approval-gated. Removes the registry entry and stops the process. The workspace source tree stays — you'd `git rm` that separately. Userland approval grants the extension received persist (they're keyed by `(principal, extension-name)`); reinstalling under the same name reuses them.
+Remove the extension's entry from the `extensions:` list in `meta/natstack.yml` and push. The next reconcile stops the process and deletes its registry entry; the per-extension storage scratch is retained. The workspace source tree stays — you'd `git rm` that separately. Userland approval grants the extension received persist (they're keyed by `(principal, extension-name)`); re-declaring under the same name reuses them. There is no `extensions.uninstall` API — the declared set is authoritative.

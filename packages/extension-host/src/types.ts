@@ -2,14 +2,12 @@ import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
 import type {
   ExtensionInvocation,
   ExtensionSource,
-  InstallSpec,
   RegistryEntry,
 } from "@natstack/extension";
 
 export type {
   ExtensionInvocation,
   ExtensionSource,
-  InstallSpec,
   RegistryEntry,
 };
 

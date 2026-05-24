@@ -21,6 +21,7 @@ import type {
   PendingDeviceCodeApproval,
   PendingExtensionApproval,
   PendingExtensionApprovalAction,
+  PendingExtensionBatchApproval,
   PendingUserlandApproval,
   UserlandApprovalChoice,
   UserlandApprovalOption,
@@ -37,7 +38,7 @@ export type GrantedDecision = "once" | "session" | "version" | "repo" | "deny";
 
 interface ApprovalQueueRequestBase {
   callerId: string;
-  callerKind: "panel" | "worker" | "do";
+  callerKind: "panel" | "worker" | "do" | "system";
   repoPath: string;
   effectiveVersion: string;
   signal?: AbortSignal;
@@ -102,6 +103,16 @@ export interface ExtensionApprovalQueueRequest extends ApprovalQueueRequestBase 
   details?: PendingExtensionApproval["details"];
 }
 
+export interface ExtensionBatchApprovalQueueRequest extends ApprovalQueueRequestBase {
+  kind: "extension-batch";
+  dedupKey?: string | null;
+  trigger: PendingExtensionBatchApproval["trigger"];
+  title: string;
+  description: string;
+  extensions: PendingExtensionBatchApproval["extensions"];
+  configWrite?: PendingExtensionBatchApproval["configWrite"];
+}
+
 export interface ClientConfigApprovalQueueRequest extends ApprovalQueueRequestBase {
   kind: "client-config";
   configId: string;
@@ -164,13 +175,15 @@ export type ApprovalQueueRequest =
   | CredentialApprovalQueueRequest
   | CapabilityApprovalQueueRequest
   | ExtensionApprovalQueueRequest
+  | ExtensionBatchApprovalQueueRequest
   | ClientConfigApprovalQueueRequest
   | CredentialInputApprovalQueueRequest
   | DeviceCodeApprovalQueueRequest;
 export type DecisionApprovalQueueRequest =
   | CredentialApprovalQueueRequest
   | CapabilityApprovalQueueRequest
-  | ExtensionApprovalQueueRequest;
+  | ExtensionApprovalQueueRequest
+  | ExtensionBatchApprovalQueueRequest;
 
 export type ClientConfigApprovalResult =
   | { decision: "submit"; values: Record<string, string> }
@@ -317,6 +330,20 @@ export function createApprovalQueue(deps: {
         req.source.ref,
       ].join("\x00");
     }
+    if (req.kind === "extension-batch") {
+      if (req.dedupKey === null) {
+        return ["extension-batch-isolated", randomUUID()].join("\x00");
+      }
+      if (req.dedupKey) {
+        return ["extension-batch-custom", req.callerId, req.dedupKey].join("\x00");
+      }
+      // Coalesce duplicate reconciles for the same trigger + set onto one prompt.
+      return [
+        "extension-batch",
+        req.trigger,
+        ...req.extensions.map((e) => e.extensionName).sort(),
+      ].join("\x00");
+    }
     if (req.kind === "client-config") {
       return [
         "client-config",
@@ -409,6 +436,17 @@ export function createApprovalQueue(deps: {
         ],
         details: req.details,
       } satisfies PendingExtensionApproval;
+    }
+    if (req.kind === "extension-batch") {
+      return {
+        ...base,
+        kind: "extension-batch",
+        trigger: req.trigger,
+        title: req.title,
+        description: req.description,
+        extensions: req.extensions,
+        configWrite: req.configWrite ?? null,
+      } satisfies PendingExtensionBatchApproval;
     }
     if (req.kind === "client-config") {
       return {

@@ -168,7 +168,7 @@ export type { CreateWebhookIngressSubscriptionRequest, RotateWebhookIngressSecre
 export const webhooks = helpfulNamespace("webhooks", createWebhookIngressClient(rpc));
 // Extension RPC client.
 import { createExtensionsClient } from "../shared/extensions.js";
-export type { Disposable, ExtensionSource, ExtensionsClient, InstallSpec, RegistryEntry, } from "../shared/extensions.js";
+export type { Disposable, ExtensionSource, ExtensionsClient, RegistryEntry, } from "../shared/extensions.js";
 export const extensions = helpfulNamespace("extensions", createExtensionsClient(rpc));
 // Userland consent approvals.
 import { listUserlandApprovals, requestUserlandApproval, revokeUserlandApproval, } from "../approvals.js";

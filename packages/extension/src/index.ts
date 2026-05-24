@@ -51,14 +51,10 @@ export interface ExtensionSource {
   ref: string;
 }
 
-export interface InstallSpec {
-  source: ExtensionSource;
-}
-
 export interface RegistryEntry {
   name: string;
   version: string;
-  source: InstallSpec["source"];
+  source: ExtensionSource;
   installedAt: number;
   activeEv: string | null;
   activeSha: string | null;
@@ -83,10 +79,7 @@ export interface ExtensionsClient {
   streamCall(name: string, method: string, args: unknown[]): Promise<Response>;
   on(name: string, event: string, cb: (payload: unknown) => void): Disposable;
   list(): Promise<RegistryEntry[]>;
-  install(spec: InstallSpec): Promise<void>;
-  uninstall(name: string, opts?: { purge?: boolean }): Promise<void>;
-  setEnabled(name: string, enabled: boolean): Promise<void>;
-  update(name: string): Promise<void>;
+  /** Restart the active approved build (dev/diagnostics). Approval-gated. */
   reload(name: string): Promise<void>;
 }
 

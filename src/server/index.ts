@@ -688,12 +688,6 @@ async function main() {
     | "https";
   const configuredExternalHost = process.env["NATSTACK_HOST"] ?? args.host ?? "localhost";
   let extensionHostForGateway: import("@natstack/extension-host").ExtensionHost | null = null;
-  const requiredBuiltInExtensions = [
-    "@workspace-extensions/image-service",
-    "@workspace-extensions/file-tools",
-    "@workspace-extensions/typecheck-service",
-    "@workspace-extensions/browser-data",
-  ];
 
   const { createGitWriteAuthorizer } = await import("./services/gitWritePermission.js");
   const { WORKSPACE_GIT_INIT_PATTERNS } = await import("@natstack/shared/workspace/sourceDirs");
@@ -740,7 +734,8 @@ async function main() {
   });
 
   const { syncDeclaredRemoteForRepo } = await import("@natstack/shared/workspace/remotes");
-  const { loadWorkspaceConfig } = await import("@natstack/shared/workspace/loader");
+  const { loadWorkspaceConfig, resolveDeclaredExtensions } =
+    await import("@natstack/shared/workspace/loader");
   const syncDeclaredRemotesForSource = async (repoPath?: string): Promise<void> => {
     const repos = repoPath
       ? [repoPath]
@@ -778,6 +773,15 @@ async function main() {
       try {
         const nextConfig = loadWorkspaceConfig(workspacePath);
         replaceWorkspaceConfig(workspaceConfig, nextConfig);
+        // Reconcile the declared extension set against the registry. The
+        // combined meta-push approval already gated this push and stashed any
+        // newly-trusted extensions, so this reconcile activates without a
+        // second prompt.
+        extensionHostForGateway
+          ?.reconcileDeclared(resolveDeclaredExtensions(nextConfig))
+          .catch((err: unknown) =>
+            console.warn("[Extensions] Failed to reconcile after meta push:", err)
+          );
         syncDeclaredRemotesForSource()
           .then(() => contextFolderManager.syncDeclaredRemotes())
           .catch((err: unknown) =>
@@ -2245,8 +2249,7 @@ async function main() {
 
   const extensionHost =
     container.get<import("@natstack/extension-host").ExtensionHost>("extensionHost");
-  await extensionHost.ensureBuiltInExtensions(requiredBuiltInExtensions);
-  await extensionHost.startEnabled();
+  await extensionHost.reconcileDeclared(resolveDeclaredExtensions(workspaceConfig));
 
   // ===========================================================================
   // Report ready

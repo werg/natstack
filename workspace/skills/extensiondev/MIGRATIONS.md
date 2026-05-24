@@ -42,9 +42,9 @@ The canary migrations all follow the same shape:
    await svc.<method>(...);
    ```
 
-4. **Seed the extension as a built-in** (optional) via `ExtensionHost.ensureBuiltInExtensions([name])` in the server bootstrap so the extension is registered on first boot. The user still has to approve install — built-in is not pre-approved — but they get a notification on first boot prompting them.
+4. **Declare the extension** in the workspace template's `meta/natstack.yml` under `extensions:` so it is reconciled on first boot. It is not pre-approved — the startup reconcile raises a joint approval the user (or, headlessly, the shell via `shellApproval.resolve`) must grant before it runs.
 
-5. **Add an integration test** at `tests/extension-<name>.integration.test.ts` that boots a real server, installs the extension, calls a representative method, and asserts the response matches the old service's contract.
+5. **Add an integration test** at `tests/extension-<name>.integration.test.ts` that boots a real server, approves the joint extension approval, calls a representative method, and asserts the response matches the old service's contract.
 
 ## What changes for callers
 
@@ -89,6 +89,6 @@ The canary migrations all follow the same shape:
 - [ ] Delete the in-host service and its registration.
 - [ ] Update every consumer (`ctx.<name>` → `extensions.use<ApiType>(name)`).
 - [ ] Add an integration test that boots a real server.
-- [ ] Optionally register the extension as a built-in via `ensureBuiltInExtensions`.
+- [ ] Declare the extension in the workspace template's `meta/natstack.yml` (`extensions:`).
 - [ ] Confirm `workspace.units.list()` shows the new extension and `lastError` is `null`.
 - [ ] Document the public API type (`export interface <Name>Api`) so consumers can `extensions.use<NameApi>(...)`.

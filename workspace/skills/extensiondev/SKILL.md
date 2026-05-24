@@ -69,18 +69,22 @@ export async function activate(ctx: ExtensionContext) {
 }
 ```
 
-Install from a panel or worker:
+Declare it in `meta/natstack.yml` to install/enable it:
+
+```yaml
+extensions:
+  - source: extensions/@workspace-extensions/hello
+```
+
+Saving that change (a gated meta write) raises one **elevated, joint approval** listing every newly-declared extension, because they run as native code. Once approved and running, call it:
 
 ```ts
 import { extensions } from "@workspace/runtime";
-await extensions.install({
-  source: { kind: "internal-git", repo: "extensions/@workspace-extensions/hello", ref: "HEAD" },
-});
 const hello = extensions.use<{ greet(name: string): Promise<string> }>("@workspace-extensions/hello");
 await hello.greet("world");
 ```
 
-The first `install` triggers an **elevated approval** ("Install and run / Don't install") because the extension runs as native code.
+There is no `extensions.install` / `setEnabled` / `uninstall` API — the declared set in `meta/natstack.yml` is the single source of truth, reconciled at startup and on every meta push.
 
 ## Common tasks
 

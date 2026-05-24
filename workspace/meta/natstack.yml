@@ -164,3 +164,18 @@ services:
 # factory hook). `worker: true` binds the canonical regular-worker instance.
 # =============================================================================
 routes: []
+
+# =============================================================================
+# Declarative extension set. This list is the single source of truth for which
+# extensions the workspace uses and the only install/enable/disable/uninstall
+# surface. Editing it triggers one joint approval (at startup, or combined with
+# the meta-push prompt) before any newly-declared extension runs. Each entry:
+#   source:  repo path or package name (required)
+#   ref:     git ref to float to (default "main")
+#   enabled: whether it should run (default true)
+# =============================================================================
+extensions:
+  - source: extensions/@workspace-extensions/image-service
+  - source: extensions/@workspace-extensions/file-tools
+  - source: extensions/@workspace-extensions/typecheck-service
+  - source: extensions/@workspace-extensions/browser-data
