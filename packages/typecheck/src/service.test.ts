@@ -176,3 +176,121 @@ describe("TypeCheckService workspace resolution", () => {
     expect(errors).toHaveLength(0);
   });
 });
+
+describe("TypeCheckService augmentation files", () => {
+  /**
+   * Builds a monorepo with a `@natstack/extension`-style registry, an extension
+   * package that augments it, and a consumer panel that calls
+   * `use("@workspace-extensions/foo")` WITHOUT importing the extension. Returns
+   * the paths the tests need.
+   */
+  function buildRegistryWorkspace(): {
+    root: string;
+    consumerFile: string;
+    extensionIndex: string;
+  } {
+    const root = createTempDir("typecheck-service-augment-");
+    writeFile(path.join(root, "pnpm-workspace.yaml"), "packages:\n  - 'packages/*'\n  - 'extensions/*'\n");
+
+    // Registry host: empty WorkspaceExtensions + a use() keyed off it.
+    writeFile(
+      path.join(root, "packages", "extension", "package.json"),
+      JSON.stringify({ name: "@natstack/extension", type: "module", exports: { ".": "./index.ts" } }),
+    );
+    writeFile(
+      path.join(root, "packages", "extension", "index.ts"),
+      [
+        "export interface WorkspaceExtensions {}",
+        "export type ExtensionName = keyof WorkspaceExtensions;",
+        "export function use<K extends ExtensionName>(_name: K): WorkspaceExtensions[K] {",
+        "  return undefined as WorkspaceExtensions[K];",
+        "}",
+      ].join("\n"),
+    );
+
+    // Extension package: augments the registry and (deliberately) contains its
+    // own type error to prove ambient files aren't reported.
+    const extensionDir = path.join(root, "extensions", "foo");
+    writeFile(
+      path.join(extensionDir, "package.json"),
+      JSON.stringify({ name: "@workspace-extensions/foo", type: "module", natstack: { entry: "index.ts", extension: {} } }),
+    );
+    const extensionIndex = path.join(extensionDir, "index.ts");
+    writeFile(
+      extensionIndex,
+      [
+        "export type Api = { greet(): string };",
+        "const ambientError: number = \"reported only if this file is checked\";",
+        "void ambientError;",
+        'declare module "@natstack/extension" {',
+        "  interface WorkspaceExtensions {",
+        '    "@workspace-extensions/foo": Api;',
+        "  }",
+        "}",
+      ].join("\n"),
+    );
+
+    const consumerDir = path.join(root, "packages", "panel");
+    writeFile(path.join(consumerDir, "package.json"), JSON.stringify({ name: "@workspace/panel", type: "module" }));
+    const consumerFile = path.join(consumerDir, "index.ts");
+    writeFile(
+      consumerFile,
+      [
+        'import { use } from "@natstack/extension";',
+        'const api = use("@workspace-extensions/foo");',
+        "const greeting: string = api.greet();",
+        "void greeting;",
+      ].join("\n"),
+    );
+
+    return { root, consumerFile, extensionIndex };
+  }
+
+  it("makes extension registry augmentations visible to panels that never import the extension", () => {
+    const { root, consumerFile, extensionIndex } = buildRegistryWorkspace();
+
+    const service = new TypeCheckService({
+      panelPath: path.join(root, "packages", "panel"),
+      skipSuggestions: true,
+      disableTsconfigDiscovery: true,
+      augmentationFiles: [extensionIndex],
+    });
+    service.updateFile(consumerFile, fs.readFileSync(consumerFile, "utf-8"));
+
+    const result = service.check(consumerFile);
+    expect(result.diagnostics.filter((d) => d.severity === "error")).toHaveLength(0);
+  });
+
+  it("does not report diagnostics for ambient augmentation files in a whole-project check", () => {
+    const { root, consumerFile, extensionIndex } = buildRegistryWorkspace();
+
+    const service = new TypeCheckService({
+      panelPath: path.join(root, "packages", "panel"),
+      skipSuggestions: true,
+      disableTsconfigDiscovery: true,
+      augmentationFiles: [extensionIndex],
+    });
+    service.updateFile(consumerFile, fs.readFileSync(consumerFile, "utf-8"));
+
+    const result = service.check();
+    expect(result.checkedFiles).toContain(consumerFile);
+    expect(result.checkedFiles).not.toContain(extensionIndex);
+    // The extension file's deliberate `number = string` error must not surface.
+    expect(result.diagnostics.filter((d) => d.severity === "error")).toHaveLength(0);
+  });
+
+  it("rejects use() of an extension whose augmentation is not seeded", () => {
+    const { root, consumerFile } = buildRegistryWorkspace();
+
+    const service = new TypeCheckService({
+      panelPath: path.join(root, "packages", "panel"),
+      skipSuggestions: true,
+      disableTsconfigDiscovery: true,
+    });
+    service.updateFile(consumerFile, fs.readFileSync(consumerFile, "utf-8"));
+
+    const result = service.check(consumerFile);
+    // Empty registry → ExtensionName is `never`, so the string arg is rejected.
+    expect(result.diagnostics.filter((d) => d.severity === "error").length).toBeGreaterThan(0);
+  });
+});

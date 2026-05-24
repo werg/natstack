@@ -82,6 +82,14 @@ export interface TypeCheckServiceConfig {
   workspaceContext?: WorkspaceContext | null;
   /** Opt out of automatic tsconfig.json discovery — useful for hermetic tests. */
   disableTsconfigDiscovery?: boolean;
+  /** Absolute paths to ambient files that should join the program for their
+   *  side effects (module augmentations + exported types) but are never
+   *  themselves reported. Used to make extension registry augmentations
+   *  (`declare module "@natstack/extension"`) visible so workspace panels can
+   *  type-check `extensions.use("@workspace-extensions/...")` without importing
+   *  the extension. A file that is later registered as a real source via
+   *  `updateFile` graduates out of ambient status and is reported normally. */
+  augmentationFiles?: string[];
 }
 
 /**
@@ -93,6 +101,8 @@ export class TypeCheckService {
   private config: TypeCheckServiceConfig;
   /** Workspace context (monorepo root + package map) for source-based resolution */
   private workspaceContext: WorkspaceContext | null = null;
+  /** Files present only to contribute augmentations/types — never reported. */
+  private ambientFiles = new Set<string>();
   /** Cache of disk file existence checks */
   private diskFileExistsCache = new Map<string, boolean>();
   /** Cached merged compiler options (defaults + tsconfig + overrides) */
@@ -117,7 +127,27 @@ export class TypeCheckService {
     }
 
     this.addBundledLibFiles();
+    this.addAugmentationFiles();
     this.languageService = this.createLanguageService();
+  }
+
+  /**
+   * Register ambient augmentation files (e.g. extension `index.ts` files that
+   * declare `WorkspaceExtensions` entries) into the program so their module
+   * augmentations and exported `Api` types are in scope. They are tracked as
+   * ambient so whole-project checks never surface their own diagnostics.
+   */
+  private addAugmentationFiles(): void {
+    for (const filePath of this.config.augmentationFiles ?? []) {
+      let content: string;
+      try {
+        content = fs.readFileSync(filePath, "utf-8");
+      } catch {
+        continue;
+      }
+      this.files.set(filePath, { content, version: 1 });
+      this.ambientFiles.add(filePath);
+    }
   }
 
   /**
@@ -140,6 +170,9 @@ export class TypeCheckService {
       content,
       version: (existing?.version ?? 0) + 1,
     });
+    // A file explicitly registered as a source is no longer purely ambient and
+    // should be reported like any other panel file.
+    this.ambientFiles.delete(filePath);
     this.invalidateTsResolutionCache();
   }
 
@@ -157,7 +190,9 @@ export class TypeCheckService {
    * requested. Excludes the bundled lib stubs.
    */
   getFileNames(): string[] {
-    return [...this.files.keys()].filter((p) => !p.startsWith("/@typescript/lib/"));
+    return [...this.files.keys()].filter(
+      (p) => !p.startsWith("/@typescript/lib/") && !this.ambientFiles.has(p),
+    );
   }
 
   // ===========================================================================

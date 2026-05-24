@@ -164,6 +164,31 @@ async function resolveTypecheckNodeModulesPaths(panelPath: string): Promise<stri
 }
 
 /**
+ * Entry files of every extension reachable from the workspace, so their
+ * `declare module "@natstack/extension"` registry augmentations join the
+ * program. Without these, a panel that calls
+ * `extensions.use("@workspace-extensions/foo")` would type-check against an
+ * empty `WorkspaceExtensions` registry (the extension's `index.ts` is otherwise
+ * never referenced from panel code). Extensions are identified by a
+ * `natstack.extension` manifest entry, so this works for any workspace and any
+ * package scope.
+ */
+function resolveExtensionAugmentationFiles(panelPath: string): string[] {
+  const ctx = discoverWorkspaceContext(panelPath);
+  if (!ctx) return [];
+  const files: string[] = [];
+  for (const info of ctx.packages.values()) {
+    const natstack = (info.packageJson as { natstack?: unknown }).natstack;
+    if (!natstack || typeof natstack !== "object" || !("extension" in natstack)) continue;
+    const entryField = (natstack as { entry?: unknown }).entry;
+    const entry = typeof entryField === "string" ? entryField : "index.ts";
+    const entryPath = path.join(info.dir, entry);
+    if (fsSync.existsSync(entryPath)) files.push(entryPath);
+  }
+  return files;
+}
+
+/**
  * Build (or reuse) a `TypeCheckService` for the given panel/package path.
  * The service auto-discovers the monorepo context and reads files from disk.
  */
@@ -173,7 +198,8 @@ async function getOrCreateTypeCheckService(panelPath: string): Promise<TypeCheck
   if (cached) return cached;
 
   const nodeModulesPaths = await resolveTypecheckNodeModulesPaths(resolved);
-  const service = new TypeCheckService({ panelPath: resolved, nodeModulesPaths });
+  const augmentationFiles = resolveExtensionAugmentationFiles(resolved);
+  const service = new TypeCheckService({ panelPath: resolved, nodeModulesPaths, augmentationFiles });
 
   // Load initial files with absolute paths (consistent with all downstream
   // updateFile calls).
