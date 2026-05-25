@@ -35,8 +35,10 @@ export type PanelCommandId =
   | "stop"
   | "focus-address"
   | "copy-address"
+  | "copy-panel-id"
   | "open-external"
   | "duplicate"
+  | "add-child"
   | "unload"
   | "archive";
 
@@ -172,6 +174,12 @@ export function getPanelCommandDefinitions(
       enabled: hasAddress,
     },
     {
+      id: "copy-panel-id",
+      label: "Copy Panel ID",
+      visible: true,
+      enabled: true,
+    },
+    {
       id: "open-external",
       label: "Open in System Browser",
       visible: isBrowser,
@@ -180,6 +188,12 @@ export function getPanelCommandDefinitions(
     {
       id: "duplicate",
       label: "Duplicate",
+      visible: true,
+      enabled: Boolean(chrome),
+    },
+    {
+      id: "add-child",
+      label: "Add Child",
       visible: true,
       enabled: Boolean(chrome),
     },
