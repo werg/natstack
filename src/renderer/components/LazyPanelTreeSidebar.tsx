@@ -101,6 +101,7 @@ interface SortableTreeItemProps {
   onToggleCollapse: (panelId: string) => void;
   onPanelAction?: (panelId: string, action: PanelContextMenuAction) => void;
   onArchive?: (panelId: string) => void;
+  onAddChild?: (panelId: string) => void;
   onIndent: (panelId: string) => void;
   onUnindent: (panelId: string) => void;
 }
@@ -118,6 +119,7 @@ const SortableTreeItem = memo(
     onToggleCollapse,
     onPanelAction,
     onArchive,
+    onAddChild,
     onIndent,
     onUnindent,
   }: SortableTreeItemProps) {
@@ -205,6 +207,14 @@ const SortableTreeItem = memo(
         onArchive?.(panel.id);
       },
       [panel.id, onArchive]
+    );
+
+    const handleAddChild = useCallback(
+      (e: React.MouseEvent) => {
+        e.stopPropagation();
+        onAddChild?.(panel.id);
+      },
+      [panel.id, onAddChild]
     );
 
     // Connector line for visual hierarchy (only for non-root nodes)
@@ -336,6 +346,33 @@ const SortableTreeItem = memo(
             />
           )}
 
+          {/* Add child panel (+) button - shown on hover (or always on touch), hidden during drag */}
+          {(isHovered || isTouch) && !isDraggingAny && (
+            <IconButton
+              size="1"
+              variant="ghost"
+              color="gray"
+              aria-label="Add child panel"
+              onClick={handleAddChild}
+              style={{
+                width: 16,
+                height: 16,
+                flexShrink: 0,
+                opacity: 0.7,
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.opacity = "1";
+                e.currentTarget.style.backgroundColor = "var(--accent-a4)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.opacity = "0.7";
+                e.currentTarget.style.backgroundColor = "transparent";
+              }}
+            >
+              <PlusIcon width={10} height={10} />
+            </IconButton>
+          )}
+
           {/* Archive (X) button - shown on hover (or always on touch), hidden during drag */}
           {(isHovered || isTouch) && !isDraggingAny && (
             <IconButton
@@ -387,6 +424,7 @@ const SortableTreeItem = memo(
       prev.onToggleCollapse === next.onToggleCollapse &&
       prev.onPanelAction === next.onPanelAction &&
       prev.onArchive === next.onArchive &&
+      prev.onAddChild === next.onAddChild &&
       prev.onIndent === next.onIndent &&
       prev.onUnindent === next.onUnindent
     );
@@ -473,6 +511,21 @@ export function LazyPanelTreeSidebar({
       })
     );
   }, []);
+
+  const handleAddChild = useCallback(
+    async (parentId: string) => {
+      if (collapsedIds.has(parentId)) {
+        expandIds([parentId]);
+      }
+      const result = await panel.createChild(parentId, "about/new", { focus: true });
+      window.dispatchEvent(
+        new CustomEvent("shell-panel-created", {
+          detail: { panelId: result.id },
+        })
+      );
+    },
+    [collapsedIds, expandIds]
+  );
 
   // Scroll container ref for the virtualizer.
   // Uses a plain div with overflow:auto instead of Radix ScrollArea,
@@ -597,6 +650,7 @@ export function LazyPanelTreeSidebar({
                   onToggleCollapse={toggleCollapse}
                   onPanelAction={onPanelAction}
                   onArchive={onArchive}
+                  onAddChild={handleAddChild}
                   onIndent={indentPanel}
                   onUnindent={unindentPanel}
                 />

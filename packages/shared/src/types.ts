@@ -304,8 +304,10 @@ export type PanelContextMenuAction =
   | "back"
   | "forward"
   | "copy-address"
+  | "copy-panel-id"
   | "open-external"
   | "duplicate"
+  | "add-child"
   | "unload"
   | "archive";
 

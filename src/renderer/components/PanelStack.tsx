@@ -349,6 +349,14 @@ export function PanelStack({
         await navigator.clipboard.writeText(state.editableAddress);
         break;
       }
+      case "copy-panel-id":
+        await navigator.clipboard.writeText(panelId);
+        break;
+      case "add-child": {
+        const result = await panelService.createChild(panelId, "about/new", { focus: true });
+        navigateToPanelId(result.id);
+        break;
+      }
       case "open-external": {
         const state = await panelService.getChromeState(panelId);
         if (state.resolvedUrl && /^https?:\/\//i.test(state.resolvedUrl)) {
