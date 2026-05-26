@@ -785,6 +785,12 @@ importers:
         specifier: ^13.13.5
         version: 13.16.1(react-native@0.79.7(@babel/core@7.29.0)(@react-native-community/cli@18.0.1(typescript@5.9.3))(@types/react@19.2.10)(react@19.0.0))(react@19.0.0)
 
+  workspace/apps/remote-cli:
+    dependencies:
+      '@natstack/shared':
+        specifier: workspace:*
+        version: link:../../../packages/shared
+
   workspace/apps/shell:
     dependencies:
       '@dnd-kit/core':
@@ -16588,9 +16594,7 @@ snapshots:
       metro-runtime: 0.82.5
     transitivePeerDependencies:
       - '@babel/core'
-      - bufferutil
       - supports-color
-      - utf-8-validate
 
   '@react-native/normalize-colors@0.79.7': {}
 
