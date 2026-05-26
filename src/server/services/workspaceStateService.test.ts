@@ -37,6 +37,14 @@ function makeService(opts: {
 }
 
 describe("workspaceStateService — title mirror hooks", () => {
+  it("allows approved shell apps to read and write workspace slot state", () => {
+    const { svc } = makeService({});
+
+    expect(svc.policy.allowed).toContain("app");
+    expect(svc.methods["slot.list"]?.policy?.allowed).toContain("app");
+    expect(svc.methods["slot.create"]?.policy?.allowed).toContain("app");
+  });
+
   it("fires onPanelTitleChanged with the DO-resolved entity id on panel.index", async () => {
     const onPanelTitleChanged = vi.fn();
     const { svc } = makeService({

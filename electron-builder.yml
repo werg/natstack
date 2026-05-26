@@ -52,6 +52,12 @@ extraResources:
     to: "builtin-workers"
     filter:
       - "**/*"
+  # Optional app dist bake. This directory is intentionally empty unless an
+  # approved app build has been explicitly baked for standalone packaging.
+  - from: "dist/baked-app"
+    to: "baked-app"
+    filter:
+      - "**/*"
 
 # macOS configuration
 mac:

@@ -188,7 +188,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
   /**
    * Create a root panel from an arbitrary source path.
    * Unlike createAboutPanel (which prefixes with "about/"), this method
-   * uses the source string as-is, making it suitable for mobile shells
+   * uses the source string as-is, making it suitable for workspace apps
    * that need to create panels from any source.
    */
   async createRootPanel(

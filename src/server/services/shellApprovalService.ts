@@ -2,7 +2,7 @@
  * Shell approval service — thin RPC shim over the in-memory approvalQueue.
  *
  * The renderer's ConsentApprovalBar calls `resolve` with a user decision and
- * `listPending` on mount to rehydrate. Shell callers are permitted directly.
+ * `listPending` on mount to rehydrate. Shell and app-host callers are permitted directly.
  * Embedded Electron shell calls arrive through the trusted main-process
  * serverClient, so the server sees them as `server` callers. Panels/workers
  * remain blocked. Resolution paths record approval_resolved_total with the
@@ -32,7 +32,7 @@ export function createShellApprovalService(deps: {
   return {
     name: "shellApproval",
     description: "Shell-owned consent approval queue",
-    policy: { allowed: ["shell", "server"] },
+    policy: { allowed: ["shell", "app", "server"] },
     methods: {
       resolve: { args: z.tuple([z.string(), z.enum(APPROVAL_DECISIONS)]) },
       resolveUserland: {

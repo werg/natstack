@@ -65,6 +65,9 @@ import {
 import { assertPresent } from "../../lintHelpers";
 
 const log = createDevLogger("CredentialService");
+type BrowserHandoffCallerKind = "app" | "panel" | "shell";
+type BrowserDeliveryCallerKind = "app" | "shell";
+
 const IDENTIFIER_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9._@+=:-]{0,127}$/;
 const identifierSchema = z
   .string()
@@ -311,7 +314,7 @@ const tokenAuthSchema = z.enum([
 const browserHandoffTargetSchema = z
   .object({
     callerId: z.string().min(1).max(512),
-    callerKind: z.enum(["panel", "shell"]),
+    callerKind: z.enum(["app", "panel", "shell"]),
   })
   .strict();
 
@@ -865,7 +868,7 @@ interface OAuthConnectionTransaction {
   redirectUri: string;
   redirectStrategy: OAuthRedirectStrategy;
   deliveryCallerId?: string;
-  deliveryCallerKind?: "shell";
+  deliveryCallerKind?: BrowserDeliveryCallerKind;
   callbackUsed: boolean;
   resolve: (value: { code: string; state: string; url: string }) => void;
   reject: (error: Error) => void;
@@ -903,7 +906,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   type UserlandRuntimeContext = ServiceContext & {
     caller: ServiceContext["caller"] & {
       runtime: ServiceContext["caller"]["runtime"] & {
-        kind: "panel" | "worker" | "do";
+        kind: "panel" | "app" | "worker" | "do";
       };
     };
   };
@@ -911,6 +914,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   function isUserlandRuntimeCaller(ctx: ServiceContext): ctx is UserlandRuntimeContext {
     return (
       ctx.caller.runtime.kind === "panel" ||
+      ctx.caller.runtime.kind === "app" ||
       ctx.caller.runtime.kind === "worker" ||
       ctx.caller.runtime.kind === "do"
     );
@@ -918,10 +922,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   function resolveBrowserHandoffTarget(
     ctx: ServiceContext,
-    handoffTarget?: { callerId: string; callerKind: "panel" | "shell" }
+    handoffTarget?: { callerId: string; callerKind: BrowserHandoffCallerKind }
   ): {
     deliveryCallerId: string;
-    deliveryCallerKind: "shell";
+    deliveryCallerKind: BrowserDeliveryCallerKind;
     deliveryConnectionId?: string;
     parentPanelId?: string;
   } | null {
@@ -931,6 +935,14 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       return {
         deliveryCallerId: targetCallerId,
         deliveryCallerKind: "shell",
+        deliveryConnectionId:
+          targetCallerId === ctx.caller.runtime.id ? ctx.connectionId : undefined,
+      };
+    }
+    if (targetCallerKind === "app") {
+      return {
+        deliveryCallerId: targetCallerId,
+        deliveryCallerKind: "app",
         deliveryConnectionId:
           targetCallerId === ctx.caller.runtime.id ? ctx.connectionId : undefined,
       };
@@ -1309,7 +1321,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
           "client-loopback callbacks require a transaction id"
         );
       }
-      if (tx.deliveryCallerId !== ctx.caller.runtime.id || tx.deliveryCallerKind !== "shell") {
+      if (
+        tx.deliveryCallerId !== ctx.caller.runtime.id ||
+        tx.deliveryCallerKind !== ctx.caller.runtime.kind
+      ) {
         throw new OAuthConnectionError("client_not_authorized");
       }
     } else if (tx.redirectStrategy === "client-forwarded") {
@@ -1445,7 +1460,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     params: ConnectCredentialParams
   ): {
     request: ConnectCredentialRequest;
-    handoffTarget?: { callerId: string; callerKind: "panel" | "shell" };
+    handoffTarget?: { callerId: string; callerKind: BrowserHandoffCallerKind };
   } {
     if ("spec" in params) {
       if (ctx.caller.runtime.kind === "panel") {
@@ -2464,7 +2479,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   async function connectOAuth1a(
     ctx: ServiceContext,
     request: ConnectCredentialRequest,
-    handoffTarget?: { callerId: string; callerKind: "panel" | "shell" }
+    handoffTarget?: { callerId: string; callerKind: BrowserHandoffCallerKind }
   ): Promise<StoredCredentialSummary> {
     if (request.flow.type !== "oauth1a") {
       throw new OAuthConnectionError("unsupported_flow");
@@ -2626,7 +2641,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   async function connectOAuth2AuthCode(
     ctx: ServiceContext,
     request: AuthCodeConnectRequest,
-    explicitHandoffTarget?: { callerId: string; callerKind: "panel" | "shell" }
+    explicitHandoffTarget?: { callerId: string; callerKind: BrowserHandoffCallerKind }
   ): Promise<StoredCredentialSummary> {
     const redirect = request.redirect ?? {};
     const redirectStrategy = resolveDefaultRedirectStrategy(redirect.type);
@@ -3538,7 +3553,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       redirectStrategy: OAuthConnectionTransaction["redirectStrategy"];
       stateParam: string;
       deliveryCallerId?: string;
-      deliveryCallerKind?: "shell";
+      deliveryCallerKind?: BrowserDeliveryCallerKind;
     }
   ): Promise<OAuthConnectionTransaction> {
     const identity = resolveApprovalIdentity(ctx);
@@ -3825,6 +3840,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     if (
       !approvalQueue ||
       (ctx.caller.runtime.kind !== "panel" &&
+        ctx.caller.runtime.kind !== "app" &&
         ctx.caller.runtime.kind !== "worker" &&
         ctx.caller.runtime.kind !== "do")
     ) {
@@ -4011,7 +4027,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   const definition: ServiceDefinition = {
     name: "credentials",
     description: "URL-bound userland credential storage and egress",
-    policy: { allowed: ["shell", "panel", "server", "worker", "do", "extension"] },
+    policy: { allowed: ["shell", "app", "panel", "server", "worker", "do", "extension"] },
     methods: {
       storeCredential: { args: z.tuple([storeUrlBoundCredentialParamsSchema]) },
       connect: { args: z.tuple([connectCredentialParamsSchema]) },

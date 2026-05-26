@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { canonicalKey } from "@natstack/shared/canonicalKey";
 import { writeJsonFileAtomic } from "./atomicFile.js";
 
 export type CapabilityGrantDecision = "session" | "version" | "repo";
@@ -34,7 +35,7 @@ export class CapabilityGrantStore {
   }
 
   hasGrant(capability: string, resourceKey: string, identity: CapabilityGrantIdentity): boolean {
-    if (this.sessionGrants.has(grantKey("session", capability, resourceKey, identity))) {
+    if (this.sessionGrants.has(capabilityGrantKey("session", capability, resourceKey, identity))) {
       return true;
     }
     return this.persistent.grants.some(
@@ -56,7 +57,7 @@ export class CapabilityGrantStore {
     now = Date.now()
   ): void {
     if (scope === "session") {
-      this.sessionGrants.add(grantKey(scope, capability, resourceKey, identity));
+      this.sessionGrants.add(capabilityGrantKey(scope, capability, resourceKey, identity));
       return;
     }
     const next: CapabilityGrant = {
@@ -101,19 +102,19 @@ export class CapabilityGrantStore {
   }
 }
 
-function grantKey(
+export function capabilityGrantKey(
   scope: CapabilityGrantDecision,
   capability: string,
   resourceKey: string,
   identity: CapabilityGrantIdentity
 ): string {
-  // TODO(canonicalKey): migrate this legacy grant key to shared canonicalKey.
-  return [
+  return canonicalKey([
+    "capability-grant",
     scope,
     capability,
     resourceKey,
     scope === "session" ? identity.callerId : "",
     identity.repoPath,
     scope === "version" ? identity.effectiveVersion : "",
-  ].join("\x00");
+  ]);
 }

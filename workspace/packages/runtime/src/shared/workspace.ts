@@ -1,6 +1,6 @@
 /**
  * Workspace client — typed RPC wrapper for workspace management.
- * Shared by both panel and worker entry points.
+ * Shared by panel, app, and worker entry points.
  */
 import type { RpcCaller } from "@natstack/rpc";
 export interface WorkspaceEntry {
@@ -11,8 +11,23 @@ export interface InitPanelEntry {
     source: string;
     stateArgs?: Record<string, unknown>;
 }
+export type WorkspaceAppTarget = "electron" | "react-native" | "terminal";
+export interface WorkspaceExtensionDecl {
+    source: string;
+    ref?: string;
+    enabled?: boolean;
+}
+export interface WorkspaceAppDecl {
+    source: string;
+    target?: WorkspaceAppTarget;
+    ref?: string;
+    enabled?: boolean;
+    autostart?: boolean;
+}
 export interface WorkspaceConfig {
     id: string;
+    extensions?: WorkspaceExtensionDecl[];
+    apps?: WorkspaceAppDecl[];
     initPanels?: InitPanelEntry[];
     git?: {
         remotes?: Record<string, Record<string, Record<string, string | null | undefined> | undefined> | undefined>;
@@ -20,7 +35,7 @@ export interface WorkspaceConfig {
 }
 export interface WorkspaceUnitStatus {
     name: string;
-    kind: "panel" | "worker" | "extension";
+    kind: "panel" | "worker" | "extension" | "app";
     source: string;
     displayName?: string;
     enabled?: boolean;
@@ -31,6 +46,11 @@ export interface WorkspaceUnitStatus {
     activeBundleKey?: string | null;
     activeRuntimeDepsKey?: string | null;
     lastError?: string | null;
+    lastErrorDetails?: unknown;
+    target?: string;
+    canRollback?: boolean;
+    rollbackRetentionLimit?: number;
+    previousVersions?: WorkspaceAppVersionRecord[];
     health?: unknown;
     methods?: string[];
     hasFetch?: boolean;
@@ -40,10 +60,27 @@ export interface WorkspaceUnitStatus {
     } | null;
     inspectorUrl?: string | null;
 }
+export interface WorkspaceAppVersionRecord {
+    version: string;
+    target: string;
+    capabilities: string[];
+    activeEv: string | null;
+    activeSha: string | null;
+    activeBundleKey: string;
+    activeDependencyEvs: Record<string, string>;
+    activeExternalDeps: Record<string, string>;
+    activeRuntimeDepsKey: string | null;
+    activatedAt: number;
+}
+export interface WorkspaceAppVersions {
+    current: WorkspaceAppVersionRecord | null;
+    previous: WorkspaceAppVersionRecord[];
+    retentionLimit: number;
+}
 export interface WorkspaceUnitLogRecord {
     workspaceId: string;
     unitName: string;
-    kind: "extension" | "worker" | "panel";
+    kind: "extension" | "worker" | "panel" | "app";
     timestamp: number;
     level: "debug" | "info" | "warn" | "error";
     message: string;
@@ -62,6 +99,10 @@ export interface WorkspaceUnitsClient {
         level?: WorkspaceUnitLogRecord["level"];
         limit?: number;
     }): Promise<WorkspaceUnitLogRecord[]>;
+    versions(name: string): Promise<WorkspaceAppVersions>;
+    rollback(name: string, opts?: {
+        buildKey?: string;
+    }): Promise<unknown>;
 }
 type WorkspaceRpc = RpcCaller & {
     onEvent?: (event: string, listener: (fromId: string, payload: unknown) => void) => () => void;
@@ -108,6 +149,8 @@ export function createWorkspaceClient(rpc: WorkspaceRpc): WorkspaceClient {
             inspector: (name) => rpc.call("main", "workspace.units.inspector", [name]),
             restart: (name) => rpc.call("main", "workspace.units.restart", [name]),
             logs: (name, opts) => rpc.call("main", "workspace.units.logs", [name, opts]),
+            versions: (name) => rpc.call("main", "workspace.units.versions", [name]),
+            rollback: (name, opts) => rpc.call("main", "workspace.units.rollback", [name, opts]),
         },
     };
 }
@@ -138,6 +181,9 @@ function createUnitsWatch(rpc: WorkspaceRpc, listUnits: () => Promise<WorkspaceU
                 rpc.onEvent?.("event:extensions:status", pushSnapshot),
                 rpc.onEvent?.("event:extensions:health", pushSnapshot),
                 rpc.onEvent?.("event:extensions:error", pushSnapshot),
+                rpc.onEvent?.("event:apps:available", pushSnapshot),
+                rpc.onEvent?.("event:apps:status", pushSnapshot),
+                rpc.onEvent?.("event:apps:lifecycle", pushSnapshot),
                 rpc.onEvent?.("event:workspace:unit-log", pushSnapshot),
             ].filter((unsubscribe): unsubscribe is () => void => typeof unsubscribe === "function");
             pushSnapshot();

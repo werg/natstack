@@ -389,7 +389,7 @@ export function createPushService(deps: PushServiceDeps = {}): PushServiceResult
   const definition: ServiceDefinition = {
     name: "push",
     description: "Push notification device registration and delivery",
-    policy: { allowed: ["shell", "server"] },
+    policy: { allowed: ["shell", "app", "server"] },
     methods: {
       register: {
         args: z.tuple([

@@ -9,6 +9,9 @@ function createHarness() {
     applyRuntimeLeaseChanged: vi.fn(async () => {}),
     createBrowserUrlPanel: vi.fn(async () => ({ id: "browser", title: "Browser" })),
   };
+  const appOrchestrator = {
+    applyAppAvailable: vi.fn(async () => {}),
+  };
   const serverClient = {
     call: vi.fn(async () => undefined),
   };
@@ -16,11 +19,12 @@ function createHarness() {
   const handle = createServerEventBridge({
     eventService: eventService as never,
     getPanelOrchestrator: () => panelOrchestrator as never,
+    getAppOrchestrator: () => appOrchestrator as never,
     getServerClient: () => serverClient as never,
     openExternal: vi.fn(async () => {}),
     warn,
   });
-  return { handle, eventService, panelOrchestrator, serverClient, warn };
+  return { handle, eventService, panelOrchestrator, appOrchestrator, serverClient, warn };
 }
 
 describe("createServerEventBridge", () => {
@@ -79,5 +83,21 @@ describe("createServerEventBridge", () => {
       { focus: true }
     );
     expect(eventService.emit).not.toHaveBeenCalled();
+  });
+
+  it("applies app availability locally and still forwards the app event to shell UI", async () => {
+    const { handle, eventService, appOrchestrator } = createHarness();
+    const payload = {
+      appId: "@workspace-apps/shell",
+      target: "electron",
+      url: "http://127.0.0.1/_a/app/index.html",
+      adoptionPolicy: "prompt",
+    };
+
+    handle("event:apps:available", payload);
+    await Promise.resolve();
+
+    expect(appOrchestrator.applyAppAvailable).toHaveBeenCalledWith(payload);
+    expect(eventService.emit).toHaveBeenCalledWith("apps:available", payload);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createApprovalQueue, type ExtensionApprovalQueueRequest } from "./approvalQueue.js";
+import { createApprovalQueue, type UnitBatchApprovalQueueRequest } from "./approvalQueue.js";
 
 function createQueue() {
   const emit = vi.fn();
@@ -7,25 +7,35 @@ function createQueue() {
   return { queue, emit };
 }
 
-function extensionRequest(
-  overrides: Partial<ExtensionApprovalQueueRequest> = {}
-): ExtensionApprovalQueueRequest {
+function unitBatchRequest(
+  overrides: Partial<UnitBatchApprovalQueueRequest> = {}
+): UnitBatchApprovalQueueRequest {
   return {
-    kind: "extension" as const,
+    kind: "unit-batch" as const,
     callerId: "panel-1",
     callerKind: "panel" as const,
     repoPath: "panels/example",
     effectiveVersion: "hash-1",
-    action: "source-push" as const,
-    extensionName: "@workspace-extensions/typecheck-service",
-    version: "1.0.0",
-    source: {
-      kind: "internal-git" as const,
-      repo: "extensions/@workspace-extensions/typecheck-service",
-      ref: "HEAD",
-    },
-    title: "Update extension source",
+    trigger: "source-push" as const,
+    title: "Update trusted unit source",
     description: "Accepting this push updates trusted native extension code.",
+    units: [
+      {
+        unitKind: "extension" as const,
+        unitName: "@workspace-extensions/typecheck-service",
+        displayName: "Typecheck Service",
+        version: "1.0.0",
+        target: null,
+        source: {
+          kind: "internal-git" as const,
+          repo: "extensions/typecheck-service",
+          ref: "main",
+        },
+        ev: "ev-typecheck",
+        capabilities: ["node:fs"],
+      },
+    ],
+    configWrite: null,
     ...overrides,
   };
 }
@@ -233,15 +243,15 @@ describe("approvalQueue", () => {
     await expect(second).resolves.toBe("deny");
   });
 
-  it("honors custom extension approval dedup keys", async () => {
+  it("honors custom unit-batch approval dedup keys", async () => {
     const { queue } = createQueue();
     const first = queue.request(
-      extensionRequest({ dedupKey: "extension-source-push:typecheck:main" })
+      unitBatchRequest({ dedupKey: "unit-source-push:extension:typecheck:main" })
     );
     const second = queue.request(
-      extensionRequest({
-        dedupKey: "extension-source-push:typecheck:main",
-        sha: "newer-commit",
+      unitBatchRequest({
+        dedupKey: "unit-source-push:extension:typecheck:main",
+        effectiveVersion: "newer-commit",
       })
     );
 
@@ -253,18 +263,18 @@ describe("approvalQueue", () => {
     await expect(second).resolves.toBe("session");
   });
 
-  it("keeps custom extension approval dedup scoped to the concrete caller", async () => {
+  it("keeps custom unit-batch approval dedup scoped to the concrete caller", async () => {
     const { queue } = createQueue();
     const first = queue.request(
-      extensionRequest({
+      unitBatchRequest({
         callerId: "panel-1",
-        dedupKey: "extension-source-push:typecheck:main",
+        dedupKey: "unit-source-push:extension:typecheck:main",
       })
     );
     const second = queue.request(
-      extensionRequest({
+      unitBatchRequest({
         callerId: "panel-2",
-        dedupKey: "extension-source-push:typecheck:main",
+        dedupKey: "unit-source-push:extension:typecheck:main",
       })
     );
 
@@ -477,9 +487,9 @@ describe("approvalQueue", () => {
     await expect(second).resolves.toEqual({ decision: "deny" });
   });
 
-  describe("extension-batch approvals", () => {
+  describe("unit-batch approvals", () => {
     const batchRequest = (overrides: Record<string, unknown> = {}) => ({
-      kind: "extension-batch" as const,
+      kind: "unit-batch" as const,
       callerId: "system:extensions",
       callerKind: "system" as const,
       repoPath: "meta",
@@ -487,23 +497,25 @@ describe("approvalQueue", () => {
       trigger: "startup" as const,
       title: "Approve workspace extensions",
       description: "2 extensions need approval.",
-      extensions: [
+      units: [
         {
-          extensionName: "@workspace-extensions/image-service",
+          unitKind: "extension" as const,
+          unitName: "@workspace-extensions/image-service",
           displayName: "Image Service",
           source: {
             kind: "internal-git" as const,
-            repo: "extensions/@workspace-extensions/image-service",
+            repo: "extensions/image-service",
             ref: "main",
           },
           capabilities: ["node:fs"],
         },
         {
-          extensionName: "@workspace-extensions/file-tools",
+          unitKind: "extension" as const,
+          unitName: "@workspace-extensions/file-tools",
           displayName: "File Tools",
           source: {
             kind: "internal-git" as const,
-            repo: "extensions/@workspace-extensions/file-tools",
+            repo: "extensions/file-tools",
             ref: "main",
           },
           capabilities: ["node:fs"],
@@ -512,19 +524,19 @@ describe("approvalQueue", () => {
       ...overrides,
     });
 
-    it("creates a pending extension-batch approval carrying the extension list", async () => {
+    it("creates a pending unit-batch approval carrying the unit list", async () => {
       const { queue } = createQueue();
       void queue.request(batchRequest());
       await Promise.resolve();
       const pending = queue.listPending();
       expect(pending).toHaveLength(1);
       expect(pending[0]).toMatchObject({
-        kind: "extension-batch",
+        kind: "unit-batch",
         trigger: "startup",
         callerKind: "system",
-        extensions: [
-          { extensionName: "@workspace-extensions/image-service" },
-          { extensionName: "@workspace-extensions/file-tools" },
+        units: [
+          { unitKind: "extension", unitName: "@workspace-extensions/image-service" },
+          { unitKind: "extension", unitName: "@workspace-extensions/file-tools" },
         ],
       });
     });

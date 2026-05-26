@@ -22,7 +22,7 @@ export function createPanelRuntimeService(deps: {
   return {
     name: "panelRuntime",
     description: "Panel runtime lease coordination",
-    policy: { allowed: ["shell", "server"], description: "Shell/runtime coordination only" },
+    policy: { allowed: ["shell", "app", "server"], description: "Shell/runtime coordination only" },
     methods: {
       registerClient: { args: z.tuple([registerClientSchema]) },
       getSnapshot: { args: z.tuple([]) },

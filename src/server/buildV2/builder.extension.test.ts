@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setUserDataPath } from "@natstack/env-paths";
 
 import { buildUnit } from "./builder.js";
+import { primaryTextArtifactContent } from "./buildStore.js";
 import { discoverPackageGraph } from "./packageGraph.js";
 
 function git(cwd: string, args: string[]): void {
@@ -29,8 +30,8 @@ describe("buildUnit extension builds", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it("builds a scoped workspace extension as a node ESM bundle with inline sourcemaps", async () => {
-    const extensionDir = path.join(workspaceRoot, "extensions", "@workspace-extensions", "hello");
+  it("builds a workspace extension package as a node ESM bundle with inline sourcemaps", async () => {
+    const extensionDir = path.join(workspaceRoot, "extensions", "hello");
     fs.mkdirSync(extensionDir, { recursive: true });
     fs.writeFileSync(
       path.join(extensionDir, "package.json"),
@@ -78,23 +79,22 @@ describe("buildUnit extension builds", () => {
       kind: "extension",
       name: "@workspace-extensions/hello",
       sourcemap: true,
-      runtimeDepsKey: null,
-      extensionRuntimeAbi: "2",
+      details: {
+        kind: "extension",
+        runtimeDepsKey: null,
+        runtimeAbi: "2",
+      },
     });
     expect(fs.readFileSync(path.join(result.dir, "package.json"), "utf8")).toBe(
       '{"type":"module"}'
     );
-    expect(result.bundle).toContain("ping() {");
-    expect(result.bundle).toContain("sourceMappingURL=data:application/json");
+    const bundle = primaryTextArtifactContent(result);
+    expect(bundle).toContain("ping() {");
+    expect(bundle).toContain("sourceMappingURL=data:application/json");
   });
 
   it("runs bundled CommonJS dependencies from an ESM extension bundle", async () => {
-    const extensionDir = path.join(
-      workspaceRoot,
-      "extensions",
-      "@workspace-extensions",
-      "cjs-extension"
-    );
+    const extensionDir = path.join(workspaceRoot, "extensions", "cjs-extension");
     fs.mkdirSync(extensionDir, { recursive: true });
     fs.writeFileSync(
       path.join(extensionDir, "package.json"),

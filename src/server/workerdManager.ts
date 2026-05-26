@@ -20,7 +20,7 @@ import type { TokenManager } from "@natstack/shared/tokenManager";
 import { createVerifiedCaller, type VerifiedCaller } from "@natstack/shared/serviceDispatcher";
 import type { FsService } from "@natstack/shared/fsService";
 import { canonicalEntityId } from "@natstack/shared/runtime/entitySpec";
-import type { BuildResult } from "./buildV2/buildStore.js";
+import { primaryTextArtifactContent, type BuildResult } from "./buildV2/buildStore.js";
 import type { RouteRegistry, ManifestRouteDecl } from "./routeRegistry.js";
 import type { SingletonRegistry } from "@natstack/shared/workspace/singletonRegistry";
 import { createDevLogger } from "@natstack/dev-log";
@@ -705,7 +705,7 @@ export class WorkerdManager {
           doService.buildKey = buildResult.buildKey;
         } else {
           const buildResult = await this.deps.getBuild(doService.source);
-          bundleContent = buildResult.bundle;
+          bundleContent = primaryTextArtifactContent(buildResult);
           doService.buildKey = buildResult.metadata.ev;
         }
       } catch (err) {
@@ -798,7 +798,7 @@ export class WorkerdManager {
       let bundleContent: string;
       try {
         const buildResult = await this.deps.getBuild(instance.source, instance.ref);
-        bundleContent = buildResult.bundle;
+        bundleContent = primaryTextArtifactContent(buildResult);
         instance.buildKey = buildResult.metadata.ev;
       } catch (err) {
         log.warn(`Skipping worker "${name}" — build not available:`, err);

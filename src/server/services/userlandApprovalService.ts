@@ -75,6 +75,7 @@ export function createUserlandApprovalService(deps: {
     }
     if (
       ctx.caller.runtime.kind !== "panel" &&
+      ctx.caller.runtime.kind !== "app" &&
       ctx.caller.runtime.kind !== "worker" &&
       ctx.caller.runtime.kind !== "do"
     ) {
@@ -161,7 +162,7 @@ export function createUserlandApprovalService(deps: {
         if (typeof deps.approvalQueue.resolveMatchingUserland === "function") {
           deps.approvalQueue.resolveMatchingUserland((approval) => {
             if (approval.kind !== "userland") return false;
-            // Userland approvals always have a panel/worker/do principal; the
+            // Userland approvals always have a panel/app/worker/do principal; the
             // "system" principal is only used for host-initiated prompts.
             if (approval.callerKind === "system") return false;
             if (approval.promptOptions !== "scoped") return false;
@@ -192,7 +193,7 @@ export function createUserlandApprovalService(deps: {
   return {
     name: SERVICE_NAME,
     description: "Userland-managed consent approvals",
-    policy: { allowed: ["panel", "worker", "do", "extension"] },
+    policy: { allowed: ["panel", "app", "worker", "do", "extension"] },
     methods: {
       request: { args: z.tuple([userlandApprovalRequestSchema]) },
       revoke: { args: z.tuple([userlandApprovalSubjectIdSchema]) },

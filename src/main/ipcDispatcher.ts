@@ -7,7 +7,11 @@
 
 import { ipcMain, type WebContents } from "electron";
 import { ELECTRON_LOCAL_SERVICE_NAMES } from "@natstack/rpc";
-import { createVerifiedCaller, type ServiceDispatcher } from "@natstack/shared/serviceDispatcher";
+import {
+  createVerifiedCaller,
+  type ServiceDispatcher,
+  type VerifiedCodeIdentity,
+} from "@natstack/shared/serviceDispatcher";
 import type { RpcMessage, RpcRequest, RpcResponse } from "@natstack/rpc";
 import type { ServerClient } from "./serverClient.js";
 import type { EventService, Subscriber } from "@natstack/shared/eventsService";
@@ -24,6 +28,17 @@ export interface IpcDispatcherDeps {
   /** Server client for forwarding server-service calls */
   serverClient: ServerClient;
   getShellWebContents: () => WebContents | null;
+  resolveCallerForWebContents: (
+    webContentsId: number
+  ) => { callerId: string; callerKind: "shell" | "panel" | "app" } | null;
+  getCodeIdentityForCaller?: (callerId: string) => VerifiedCodeIdentity | null;
+  getWebContentsForCaller: (callerId: string) => WebContents | null;
+  authorizeAppServerCall?: (
+    callerId: string,
+    service: string,
+    method: string,
+    args: readonly unknown[]
+  ) => void;
   /** EventService for registering IPC-backed shell subscriber */
   eventService: EventService;
 }
@@ -36,9 +51,11 @@ export interface IpcDispatcherDeps {
 class IpcSubscriber implements Subscriber {
   private destroyed = false;
   private destroyHandlers: (() => void)[] = [];
-  callerKind: CallerKind = "shell";
 
-  constructor(private getWebContents: () => WebContents | null) {}
+  constructor(
+    private getWebContents: () => WebContents | null,
+    readonly callerKind: CallerKind
+  ) {}
 
   get isAlive(): boolean {
     const wc = this.getWebContents();
@@ -74,30 +91,37 @@ class IpcSubscriber implements Subscriber {
 
 export class IpcDispatcher {
   private deps: IpcDispatcherDeps;
+  private readonly appMessageBridges = new Map<string, () => void>();
+  private readonly appEventSubscribers = new Map<string, IpcSubscriber>();
 
   constructor(deps: IpcDispatcherDeps) {
     this.deps = deps;
 
     // Register an IPC-backed subscriber for the shell so EventService can push
     // events to it without requiring a WebSocket connection.
-    const shellSubscriber = new IpcSubscriber(deps.getShellWebContents);
+    const shellSubscriber = new IpcSubscriber(deps.getShellWebContents, "shell");
     deps.eventService.registerSubscriber("shell", shellSubscriber);
 
     ipcMain.on("natstack:rpc:send", (event, targetId: string, message: unknown) => {
-      // Derive callerKind from the IPC sender's webContents id (audit #19).
-      // Only the shell webContents may speak this generic relay channel
-      // ("shell" callerKind). Every other webContents (panels, browser
-      // panels, autofill overlay, devtools) is rejected outright.
-      const shellWc = this.deps.getShellWebContents();
-      const isShell = !!shellWc && !shellWc.isDestroyed() && shellWc.id === event.sender.id;
-      if (!isShell) {
+      const caller = this.deps.resolveCallerForWebContents(event.sender.id);
+      if (!caller || (caller.callerKind !== "shell" && caller.callerKind !== "app")) {
         console.warn(
-          `[IpcDispatcher] Rejecting natstack:rpc:send from non-shell sender ` +
+          `[IpcDispatcher] Rejecting natstack:rpc:send from unauthorized sender ` +
             `(webContentsId=${event.sender.id})`
         );
         return;
       }
-      this.handleMessage(event.sender, "shell", "shell", targetId, message as RpcMessage);
+      if (caller.callerKind === "app") {
+        this.ensureAppMessageBridge(caller.callerId);
+        this.ensureAppEventSubscriber(caller.callerId);
+      }
+      this.handleMessage(
+        event.sender,
+        caller.callerId,
+        caller.callerKind,
+        targetId,
+        message as RpcMessage
+      );
     });
   }
 
@@ -149,12 +173,30 @@ export class IpcDispatcher {
         if (ELECTRON_LOCAL_SERVICES.has(service)) {
           // Dispatch locally to Electron services. The dispatcher itself
           // enforces policy via checkServiceAccess (single choke-point).
-          const ctx = { caller: createVerifiedCaller(callerId, callerKind) };
+          const ctx = {
+            caller: createVerifiedCaller(
+              callerId,
+              callerKind,
+              this.deps.getCodeIdentityForCaller?.(callerId) ?? null
+            ),
+          };
           result = await this.deps.dispatcher.dispatch(ctx, service, method, req.args);
         } else {
           // Server is the default owner so newly registered userland/workerd
           // services are reachable without a shared routing-list update.
-          result = await this.deps.serverClient.call(service, method, req.args);
+          if (callerKind === "shell") {
+            result = await this.deps.serverClient.call(service, method, req.args);
+          } else if (callerKind === "app") {
+            this.deps.authorizeAppServerCall?.(callerId, service, method, req.args);
+            result = await this.deps.serverClient.callAs(
+              { callerId, callerKind },
+              service,
+              method,
+              req.args
+            );
+          } else {
+            throw new Error(`Server RPC relay is not available for ${callerKind} callers`);
+          }
         }
         this.sendResponse(sender, req.requestId, {
           type: "response",
@@ -178,5 +220,28 @@ export class IpcDispatcher {
     if (!sender.isDestroyed()) {
       sender.send("natstack:rpc:message", "main", response);
     }
+  }
+
+  private ensureAppMessageBridge(callerId: string): void {
+    if (this.appMessageBridges.has(callerId)) return;
+    const unsubscribe = this.deps.serverClient.addMessageListener(
+      { callerId, callerKind: "app" },
+      (fromId, message) => {
+        const wc = this.deps.getWebContentsForCaller(callerId);
+        if (!wc || wc.isDestroyed()) return;
+        wc.send("natstack:rpc:message", fromId, message);
+      }
+    );
+    this.appMessageBridges.set(callerId, unsubscribe);
+  }
+
+  private ensureAppEventSubscriber(callerId: string): void {
+    const existing = this.appEventSubscribers.get(callerId);
+    if (existing?.isAlive) return;
+    existing?.destroy();
+    const subscriber = new IpcSubscriber(() => this.deps.getWebContentsForCaller(callerId), "app");
+    subscriber.onDestroyed(() => this.appEventSubscribers.delete(callerId));
+    this.appEventSubscribers.set(callerId, subscriber);
+    this.deps.eventService.registerSubscriber(callerId, subscriber);
   }
 }

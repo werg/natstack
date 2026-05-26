@@ -76,7 +76,7 @@ function testServer(server: RpcServer): TestRpcServer {
   return server as unknown as TestRpcServer;
 }
 
-function createServer() {
+function createServer(opts: Partial<ConstructorParameters<typeof RpcServer>[0]> = {}) {
   const tokenManager = new TokenManager();
   const entityCache = new EntityCache();
   entityCache._onActivate(makeRecord("panel-a", "panel"));
@@ -112,6 +112,7 @@ function createServer() {
       entityCache,
       connectionGrants,
       runtimeCoordinator,
+      ...opts,
     }),
   };
 }
@@ -621,14 +622,30 @@ describe("RpcServer caller identity", () => {
     const grant = connectionGrants.grant("electron-main", "shell:test").token;
     const ws = createTestWs();
 
-    // kindForPrincipal sees kind:"shell" in the cache and reports
-    // kind:"shell-remote" so the WS path can accept the grant; the rebrand
-    // collapses it back to "shell" on the connection.
+    // The principal-kind registry maps shell entities to shell-remote at the
+    // WS boundary; the connection rebrand collapses it back to shell for
+    // downstream policy.
     testServer(server).handleAuth(ws, grant, "conn-grant");
     expect(ws.close).not.toHaveBeenCalled();
     const callers = testServer(server).connections.getCallerConnections("electron-main");
     expect(callers).toHaveLength(1);
     expect(callers[0]!.caller.runtime.kind).toBe("shell");
+  });
+
+  it("rejects WS authentication when a connection grant has no runtime entity kind", () => {
+    const { server, connectionGrants, entityCache } = createServer();
+    const principal = makeRecord("missing-principal", "app");
+    entityCache._onActivate(principal);
+    const grant = connectionGrants.grant(principal.id, "shell:test").token;
+    entityCache._onRetire({ ...principal, status: "retired", retiredAt: Date.now() });
+    const ws = createTestWs();
+
+    testServer(server).handleAuth(ws, grant, "conn-missing-principal");
+
+    expect(ws.close).toHaveBeenCalledWith(4006, "Invalid token");
+    expect(testServer(server).connections.getCallerConnections("missing-principal")).toHaveLength(
+      0
+    );
   });
 
   it("denies worker callers for shell-only methods", async () => {
@@ -663,5 +680,41 @@ describe("RpcServer caller identity", () => {
       caller: { runtime: { id: client.caller.runtime.id, kind: "server" } },
     });
     expect(sentResponse(client).message.result).toEqual({ ok: true });
+  });
+
+  it("preserves app chain caller attribution for extension parent invocations", async () => {
+    const { server } = createServer({
+      resolveExtensionInvocation: vi.fn(() => ({
+        caller: {
+          callerId: "@workspace-apps/shell",
+          callerKind: "app" as const,
+        },
+      })),
+    });
+    const client = createClient("@workspace-extensions/tools");
+    client.caller = createVerifiedCaller("@workspace-extensions/tools", "extension");
+    const dispatched: unknown[] = [];
+    testServer(server).dispatcher.getPolicy.mockReturnValue({ allowed: ["extension"] });
+    testServer(server).dispatcher.getMethodPolicy.mockReturnValue(undefined);
+    testServer(server).dispatcher.dispatch.mockImplementation(async (ctx: unknown) => {
+      dispatched.push(ctx);
+      return { ok: true };
+    });
+
+    await testServer(server).handleRpc(client, {
+      ...rpcRequest("req-app-chain", "workspace.getInfo"),
+      parentInvocationToken: "inv-app",
+    });
+
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0]).toMatchObject({
+      caller: { runtime: { id: "@workspace-extensions/tools", kind: "extension" } },
+      chainCaller: {
+        callerId: "@workspace-apps/shell",
+        callerKind: "app",
+        repoPath: "",
+        effectiveVersion: "",
+      },
+    });
   });
 });

@@ -4,8 +4,8 @@
  * Replaces the old workspace-sync op-log service. Reads (slot.list/get/history,
  * entity.resolveActive) are open to all runtime kinds; writes (slot create /
  * appendHistory / setCurrent / replaceHistory / setParent / close) are gated to
- * shell + server only. Panels and workers manipulate slots via runtime.*, not
- * directly here.
+ * the shipped shell, approved shell app, and server. Panels and workers
+ * manipulate slots via runtime.*, not directly here.
  */
 
 import { z } from "zod";
@@ -34,10 +34,10 @@ const SlotCreateInputSchema = z.object({
 });
 
 const READ_POLICY: ServicePolicy = {
-  allowed: ["shell", "server", "panel", "worker"],
+  allowed: ["shell", "app", "server", "panel", "worker", "do"],
 };
 const WRITE_POLICY: ServicePolicy = {
-  allowed: ["shell", "server"],
+  allowed: ["shell", "app", "server"],
 };
 
 export interface WorkspaceStateServiceDeps {

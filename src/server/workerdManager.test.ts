@@ -10,6 +10,7 @@ import {
 } from "./workerdManager.js";
 import { spawn } from "child_process";
 import { findServicePort } from "@natstack/port-utils";
+import type { BuildResult } from "./buildV2/buildStore.js";
 
 // Mock child_process to prevent actual workerd spawning
 vi.mock("child_process", () => ({
@@ -54,6 +55,31 @@ vi.mock("@natstack/port-utils", () => ({
   releaseServicePort: vi.fn(),
 }));
 
+function mockWorkerBuild(
+  bundle = 'export default { fetch() { return new Response("ok"); } };'
+): BuildResult {
+  return {
+    dir: "/tmp/test-build",
+    metadata: {
+      kind: "worker",
+      name: "workers/hello",
+      ev: "abc123",
+      sourcemap: false,
+      details: { kind: "generic" },
+      builtAt: "2026-01-01T00:00:00.000Z",
+    },
+    artifacts: [
+      {
+        path: "worker.js",
+        role: "primary",
+        contentType: "text/javascript; charset=utf-8",
+        encoding: "utf8",
+        content: bundle,
+      },
+    ],
+  };
+}
+
 function createMockDeps(overrides: Partial<WorkerdManagerDeps> = {}): WorkerdManagerDeps {
   return {
     tokenManager: {
@@ -64,10 +90,7 @@ function createMockDeps(overrides: Partial<WorkerdManagerDeps> = {}): WorkerdMan
       closeHandlesForCaller: vi.fn(),
     } as unknown as WorkerdManagerDeps["fsService"],
     getServerUrl: () => "http://127.0.0.1:9999",
-    getBuild: vi.fn().mockResolvedValue({
-      bundle: 'export default { fetch() { return new Response("ok"); } };',
-      metadata: { ev: "abc123" },
-    }),
+    getBuild: vi.fn().mockResolvedValue(mockWorkerBuild()),
     workspacePath: "/tmp/test-workspace",
     statePath: "/tmp/test-workspace-state",
     getProxyPort: () => 49444,
@@ -383,10 +406,7 @@ describe("WorkerdManager", () => {
 
       // Make getBuild fail on the second call (during config regeneration in restart)
       vi.mocked(deps.getBuild)
-        .mockResolvedValueOnce({
-          bundle: "// ok",
-          metadata: { ev: "v2" },
-        } as Awaited<ReturnType<WorkerdManagerDeps["getBuild"]>>)
+        .mockResolvedValueOnce(mockWorkerBuild("// ok"))
         .mockRejectedValueOnce(new Error("build broken"));
 
       // The restart itself might not throw (it catches internally)

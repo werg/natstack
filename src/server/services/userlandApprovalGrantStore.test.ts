@@ -17,6 +17,13 @@ const workerAlpha = {
   effectiveVersion: "hash-1",
 };
 
+const appShell = {
+  callerId: "app:apps/shell:device-1",
+  callerKind: "app" as const,
+  repoPath: "apps/shell",
+  effectiveVersion: "app-hash-1",
+};
+
 describe("UserlandApprovalGrantStore", () => {
   it("records, looks up, lists, and revokes grants", async () => {
     const store = new UserlandApprovalGrantStore({ statePath: tempDir() });
@@ -50,6 +57,38 @@ describe("UserlandApprovalGrantStore", () => {
       callerId: "panel-one",
       repoPath: "panels/one",
       effectiveVersion: "hash-1",
+    });
+  });
+
+  it("persists app-scoped grants and app issuers", async () => {
+    const statePath = tempDir();
+    const store = new UserlandApprovalGrantStore({ statePath });
+    await store.record(
+      appShell,
+      { id: "native:notifications", label: "Notifications" },
+      "allow",
+      20,
+      { kind: "app", id: appShell.repoPath, label: "Shell app" }
+    );
+
+    const restarted = new UserlandApprovalGrantStore({ statePath });
+    expect(
+      restarted.lookup(appShell, "native:notifications", {
+        kind: "app",
+        id: appShell.repoPath,
+        label: "Shell app",
+      })
+    ).toMatchObject({
+      choice: "allow",
+      principal: {
+        callerKind: "app",
+        repoPath: appShell.repoPath,
+        effectiveVersion: appShell.effectiveVersion,
+      },
+      issuer: {
+        kind: "app",
+        id: appShell.repoPath,
+      },
     });
   });
 

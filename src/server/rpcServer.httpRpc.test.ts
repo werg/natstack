@@ -212,7 +212,7 @@ describe("RpcServer HTTP POST /rpc", () => {
         args: [],
       });
       expect(status).toBe(401);
-      expect(body["error"]).toContain("issue a device credential");
+      expect(body["error"]).toContain("caller-scoped token or connection grant");
     });
 
     it("accepts worker token", async () => {
@@ -227,6 +227,26 @@ describe("RpcServer HTTP POST /rpc", () => {
 
   describe("verified runtime identity", () => {
     it("uses a verified concrete DO caller for service dispatch", async () => {
+      await gateway.stop();
+      await setup.server.stop();
+
+      const entityCache = new EntityCache();
+      entityCache._onActivate(
+        makeDoRecord(
+          "do:workers/agent-worker:AiChatWorker:agent-1",
+          "workers/agent-worker",
+          "hash-1"
+        )
+      );
+      setup = createTestSetup({ entityCache });
+      setup.server.initHandlers();
+      gateway = new Gateway({
+        tokenManager: setup.tokenManager,
+        externalHost: "localhost",
+        getRpcHandler: () => setup.server,
+      });
+      port = await gateway.start(0);
+
       const serviceToken = setup.tokenManager.ensureToken(
         "do-service:workers/agent-worker:AiChatWorker",
         "worker"
@@ -251,7 +271,7 @@ describe("RpcServer HTTP POST /rpc", () => {
         caller: {
           runtime: {
             id: "do:workers/agent-worker:AiChatWorker:agent-1",
-            kind: "worker",
+            kind: "do",
           },
         },
       });

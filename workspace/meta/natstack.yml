@@ -175,8 +175,19 @@ routes: []
 #   enabled: whether it should run (default true)
 # =============================================================================
 extensions:
-  - source: extensions/@workspace-extensions/image-service
-  - source: extensions/@workspace-extensions/file-tools
-  - source: extensions/@workspace-extensions/typecheck-service
-  - source: extensions/@workspace-extensions/browser-data
-  - source: extensions/@workspace-extensions/shell
+  - source: extensions/image-service
+  - source: extensions/file-tools
+  - source: extensions/typecheck-service
+  - source: extensions/browser-data
+  - source: extensions/shell
+  - source: extensions/react-native
+
+apps:
+  - source: apps/shell
+    target: electron
+  - source: apps/mobile
+    target: react-native
+  - source: apps/remote-cli
+    target: terminal
+    enabled: false
+    autostart: false

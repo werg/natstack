@@ -204,7 +204,7 @@ function isGrant(value: unknown): value is UserlandApprovalGrant {
     (typeof grant.issuer !== "object" ||
       grant.issuer === null ||
       typeof (grant.issuer as UserlandApprovalIssuer).id !== "string" ||
-      !["panel", "worker", "do", "extension"].includes(
+      !["panel", "app", "worker", "do", "extension"].includes(
         (grant.issuer as UserlandApprovalIssuer).kind
       ))
   ) {
@@ -216,6 +216,7 @@ function isGrant(value: unknown): value is UserlandApprovalGrant {
     !!grant.principal &&
     typeof grant.principal.callerId === "string" &&
     (grant.principal.callerKind === "panel" ||
+      grant.principal.callerKind === "app" ||
       grant.principal.callerKind === "worker" ||
       grant.principal.callerKind === "do") &&
     (grant.scope === undefined ||

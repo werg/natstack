@@ -68,6 +68,10 @@ describe("browserService handler", () => {
     mockWc.loadURL.mockResolvedValue(undefined);
   });
 
+  it("allows app principals to use the browser service surface", () => {
+    expect(svc.policy.allowed).toContain("app");
+  });
+
   it("getCdpEndpoint delegates correctly", async () => {
     const result = await handler(ctx, "getCdpEndpoint", ["browser-1"]);
     expect(cdpServer.getCdpEndpoint).toHaveBeenCalledWith("browser-1", "panel-1");

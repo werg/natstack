@@ -26,4 +26,10 @@ export class WorkspaceClient {
     getActive(): Promise<string> {
         return this.rpc.call<string>("main", "workspace.getActive", []);
     }
+    appVersions(name: string): Promise<{ current: unknown; previous: unknown[]; retentionLimit: number }> {
+        return this.rpc.call("main", "workspace.units.versions", [name]);
+    }
+    rollbackApp(name: string, opts?: { buildKey?: string }): Promise<unknown> {
+        return this.rpc.call("main", "workspace.units.rollback", [name, opts]);
+    }
 }

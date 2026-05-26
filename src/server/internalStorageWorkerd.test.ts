@@ -237,9 +237,26 @@ describe("internal storage DOs under workerd", () => {
           plugins: [workspaceAliasPlugin],
           logLevel: "silent",
         });
+        const bundle = result.outputFiles[0]!.text;
         return {
-          bundle: result.outputFiles[0]!.text,
-          metadata: { ev: "gad-store-test" },
+          dir: "/tmp/natstack-gad-store-test-build",
+          metadata: {
+            kind: "worker",
+            name: "workers/gad-store",
+            ev: "gad-store-test",
+            sourcemap: false,
+            details: { kind: "generic" },
+            builtAt: "2026-01-01T00:00:00.000Z",
+          },
+          artifacts: [
+            {
+              path: "worker.js",
+              role: "primary",
+              contentType: "text/javascript; charset=utf-8",
+              encoding: "utf8",
+              content: bundle,
+            },
+          ],
         } as never;
       },
     });

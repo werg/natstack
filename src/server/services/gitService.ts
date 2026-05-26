@@ -105,7 +105,7 @@ export function createGitService(deps: GitServiceDeps): ServiceDefinition {
   return {
     name: "git",
     description: "Git operations and scoped filesystem access for panels",
-    policy: { allowed: ["shell", "panel", "server", "worker", "do", "extension"] },
+    policy: { allowed: ["shell", "panel", "app", "server", "worker", "do", "extension"] },
     methods: {
       getWorkspaceTree: { args: z.tuple([]) },
       findRepoForPath: { args: z.tuple([z.string()]) },
@@ -444,6 +444,7 @@ async function ensureImportProjectPermission(
   }
   if (
     ctx.caller.runtime.kind !== "panel" &&
+    ctx.caller.runtime.kind !== "app" &&
     ctx.caller.runtime.kind !== "worker" &&
     ctx.caller.runtime.kind !== "do"
   ) {
@@ -501,6 +502,7 @@ async function ensureSharedRemotePermission(
   }
   if (
     ctx.caller.runtime.kind !== "panel" &&
+    ctx.caller.runtime.kind !== "app" &&
     ctx.caller.runtime.kind !== "worker" &&
     ctx.caller.runtime.kind !== "do"
   ) {
@@ -681,6 +683,7 @@ async function ensureGitWritePermission(
   }
   if (
     ctx.caller.runtime.kind !== "panel" &&
+    ctx.caller.runtime.kind !== "app" &&
     ctx.caller.runtime.kind !== "worker" &&
     ctx.caller.runtime.kind !== "do"
   ) {

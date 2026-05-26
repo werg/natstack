@@ -1,0 +1,10 @@
+{
+  "kind": "product-seed-source",
+  "unitKind": "app",
+  "name": "@workspace-apps/shell",
+  "sourceRepo": "apps/shell",
+  "sourceDigest": "59e392a2fa7f34185bf99d3a8119751ce38cc3203a686b066435bbb2c9665aeb",
+  "signatureKeyId": "natstack-dev-seed-v1",
+  "signature": "natstack-dev-seed-sha256:d56c7b38ecff1dc2c77d8dac7671e27202e674a7d047527aba90c87cd7a72c51",
+  "createdBy": "natstack"
+}

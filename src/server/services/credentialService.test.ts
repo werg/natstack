@@ -14,7 +14,10 @@ import { createCredentialService } from "./credentialService.js";
 import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
 import { CredentialSessionGrantStore } from "./credentialSessionGrants.js";
 
-function verifiedTestCaller(callerId: string, callerKind: "panel" | "worker" | "do" | "shell") {
+function verifiedTestCaller(
+  callerId: string,
+  callerKind: "app" | "panel" | "worker" | "do" | "shell"
+) {
   if (callerKind !== "panel" && callerKind !== "worker") {
     if (callerKind !== "do") {
       return createVerifiedCaller(callerId, callerKind);
@@ -867,6 +870,76 @@ describe("credentialService", () => {
       expect(eventService.emitToConnection).toHaveBeenCalledWith(
         "shell:owner",
         "owner-conn",
+        "external-open:open",
+        expect.objectContaining({
+          callerId: "worker:test",
+          callerKind: "worker",
+        })
+      )
+    );
+    const authorizeUrl = new URL(emit.mock.calls[0]![1].url);
+    await deliverOAuthCallback(
+      authorizeUrl.searchParams.get("redirect_uri")!,
+      new URLSearchParams({
+        code: "code-1",
+        state: authorizeUrl.searchParams.get("state")!,
+      })
+    );
+    await pending;
+  });
+
+  it("credentials.connect can open OAuth externally for a worker-requested app handoff", async () => {
+    const emit = vi.fn();
+    const eventService = targetedOpenEventService(emit);
+    const service = createCredentialService({
+      credentialStore: new MemoryCredentialStore() as never,
+      eventService: eventService as never,
+      approvalQueue: approvingQueue() as never,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              access_token: "token",
+              expires_in: 3600,
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          )
+      )
+    );
+
+    const pending = service.handler(
+      { caller: verifiedTestCaller("worker:test", "worker") },
+      "connect",
+      [
+        {
+          spec: {
+            flow: {
+              type: "oauth2-auth-code-pkce",
+              authorizeUrl: "https://auth.example.test/oauth/authorize",
+              tokenUrl: "https://auth.example.test/oauth/token",
+              clientId: "client-1",
+            },
+            credential: {
+              label: "Example OAuth",
+              audience: [{ url: "https://api.example.test/", match: "origin" }],
+              injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+            },
+            browser: "external",
+          },
+          handoffTarget: {
+            callerId: "@workspace-apps/shell",
+            callerKind: "app",
+          },
+        },
+      ]
+    ) as Promise<StoredCredentialSummary>;
+
+    await vi.waitFor(() =>
+      expect(eventService.emitToCaller).toHaveBeenCalledWith(
+        "@workspace-apps/shell",
         "external-open:open",
         expect.objectContaining({
           callerId: "worker:test",

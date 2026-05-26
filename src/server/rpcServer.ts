@@ -1,5 +1,6 @@
 /**
- * RPC WebSocket Server — handles all panel, shell, and worker communication.
+ * RPC WebSocket Server — handles caller-scoped app, panel, worker, extension,
+ * shell-host, server, and harness communication.
  *
  * Replaces Electron IPC with a single WebSocket transport.
  * Auth is unified through TokenManager. Events use a Subscriber interface.
@@ -33,6 +34,7 @@ import type { TokenManager } from "@natstack/shared/tokenManager";
 import { WsEventSession, type EventService } from "@natstack/shared/eventsService";
 import type { ConnectionGrantService } from "@natstack/shared/connectionGrants";
 import type { EntityCache } from "@natstack/shared/runtime/entityCache";
+import { callerKindForPrincipalKind } from "@natstack/shared/principalKinds";
 import { resolveCodeIdentity } from "./services/principalIdentity.js";
 import { SessionRegistry, type SessionRegistryOptions } from "./rpcServer/sessionRegistry.js";
 import type { ClientPlatform } from "@natstack/shared/panel/panelLease";
@@ -40,6 +42,8 @@ import type { PanelRuntimeCoordinator } from "./panelRuntimeCoordinator.js";
 
 const log = createDevLogger("RpcServer");
 const RPC_RUNTIME_ID_HEADER = "x-natstack-runtime-id";
+const ADMIN_RPC_AUTH_ERROR =
+  "Admin token cannot authenticate RPC; use a caller-scoped token or connection grant.";
 
 /**
  * Parse a "do:source:className:objectKey" target ID.
@@ -359,11 +363,20 @@ export class RpcServer {
       ) => {
         caller?: {
           callerId: string;
-          callerKind: "panel" | "worker" | "do" | "shell" | "shell-remote" | "extension" | "http";
+          callerKind:
+            | "panel"
+            | "app"
+            | "worker"
+            | "do"
+            | "shell"
+            | "server"
+            | "shell-remote"
+            | "extension"
+            | "http";
         };
         chainCaller?: {
           callerId: string;
-          callerKind: "panel" | "worker" | "do";
+          callerKind: "panel" | "app" | "worker" | "do";
           repoPath: string;
           effectiveVersion: string;
         };
@@ -426,6 +439,7 @@ export class RpcServer {
       const caller = invocation?.caller;
       if (
         caller?.callerKind !== "panel" &&
+        caller?.callerKind !== "app" &&
         caller?.callerKind !== "worker" &&
         caller?.callerKind !== "do"
       ) {
@@ -580,8 +594,7 @@ export class RpcServer {
       const msg: WsServerMessage = {
         type: "ws:auth-result",
         success: false,
-        error:
-          "Admin token cannot authenticate RPC; issue a device credential and refresh a shell token first.",
+        error: ADMIN_RPC_AUTH_ERROR,
       };
       ws.send(JSON.stringify(msg));
       ws.close(4006, "Admin token cannot authenticate RPC");
@@ -589,9 +602,17 @@ export class RpcServer {
     }
 
     const grant = this.deps.connectionGrants?.redeem(token);
-    const entry = grant
-      ? { callerId: grant.principalId, callerKind: this.kindForPrincipal(grant.principalId) }
-      : this.deps.tokenManager.validateToken(token);
+    let entry: { callerId: string; callerKind: CallerKind } | null;
+    try {
+      entry = grant
+        ? {
+            callerId: grant.principalId,
+            callerKind: this.callerKindForRuntimePrincipal(grant.principalId),
+          }
+        : this.deps.tokenManager.validateToken(token);
+    } catch {
+      entry = null;
+    }
     if (!entry) {
       const msg: WsServerMessage = {
         type: "ws:auth-result",
@@ -605,10 +626,9 @@ export class RpcServer {
     // Shell-attribution invariant (plan §Core decisions):
     //   - kind:"shell"        — IN-PROCESS dispatch only (Electron main IPC
     //                            handlers). Never authenticates over WS.
-    //   - kind:"shell-remote" — WS-authenticated trusted clients (Electron
-    //                            main → child-server in standalone mode, or
-    //                            paired remote devices). Issued via the
-    //                            shellToken bootstrap / device-refresh flows.
+    //   - kind:"shell-remote" — WS-authenticated trusted host clients
+    //                            (Electron main → child-server in standalone
+    //                            mode, or paired remote host devices).
     // We reject any token claiming kind:"shell" at the WS boundary, then
     // rebrand kind:"shell-remote" → kind:"shell" on the connection so all
     // downstream policy checks see a single trust level.
@@ -755,19 +775,9 @@ export class RpcServer {
     return this.getConnectionForPrincipal(authorizingPrincipal);
   }
 
-  private kindForPrincipal(principalId: string): CallerKind {
+  private callerKindForRuntimePrincipal(principalId: string): CallerKind {
     const kind = this.deps.entityCache?.resolve(principalId)?.kind;
-    if (kind === "shell") {
-      // entity-cache bootstrap rows for the trusted shell principal carry
-      // kind:"shell" (the in-process identity), but on a WS connection-grant
-      // path the caller is reaching us over WS — report it as shell-remote
-      // so the handshake-rebrand path takes over cleanly.
-      return "shell-remote";
-    }
-    if (kind === "panel" || kind === "worker" || kind === "do" || kind === "server") {
-      return kind;
-    }
-    return "worker";
+    return callerKindForPrincipalKind(kind, { transport: "ws" });
   }
 
   private handleMessage(client: WsClientState, data: Buffer | ArrayBuffer | Buffer[]): void {
@@ -1376,8 +1386,7 @@ export class RpcServer {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(
         JSON.stringify({
-          error:
-            "Admin token cannot authenticate RPC; issue a device credential and refresh a shell token first.",
+          error: ADMIN_RPC_AUTH_ERROR,
         })
       );
       return;
@@ -1397,7 +1406,7 @@ export class RpcServer {
         callerKind,
         req.headers[RPC_RUNTIME_ID_HEADER]
       );
-      if (callerId !== entry.callerId) callerKind = this.kindForPrincipal(callerId);
+      if (callerId !== entry.callerId) callerKind = this.callerKindForRuntimePrincipal(callerId);
     } catch (err) {
       res.writeHead(403, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
@@ -1561,8 +1570,7 @@ export class RpcServer {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(
         JSON.stringify({
-          error:
-            "Admin token cannot authenticate RPC; issue a device credential and refresh a shell token first.",
+          error: ADMIN_RPC_AUTH_ERROR,
         })
       );
       return;
@@ -1581,7 +1589,7 @@ export class RpcServer {
         callerKind,
         req.headers[RPC_RUNTIME_ID_HEADER]
       );
-      if (callerId !== entry.callerId) callerKind = this.kindForPrincipal(callerId);
+      if (callerId !== entry.callerId) callerKind = this.callerKindForRuntimePrincipal(callerId);
     } catch (err) {
       res.writeHead(403, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));

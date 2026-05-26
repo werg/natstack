@@ -10,6 +10,7 @@ import { buildPanelChromeState } from "@natstack/shared/panelChrome";
 import { getAvailablePanelCommands, type PanelCommandId } from "@natstack/shared/panelCommands";
 import { getPanelSource } from "@natstack/shared/panel/accessors";
 import { buildHamburgerMenuTemplate } from "../menu.js";
+import { requireAppCapability } from "./appCapabilities.js";
 
 export function createMenuService(deps: {
   panelOrchestrator: PanelOrchestrator;
@@ -20,7 +21,7 @@ export function createMenuService(deps: {
   return {
     name: "menu",
     description: "Native menus",
-    policy: { allowed: ["shell"] },
+    policy: { allowed: ["shell", "app"] },
     methods: {
       showHamburger: { args: z.tuple([z.object({ x: z.number(), y: z.number() })]) },
       showContext: {
@@ -31,8 +32,9 @@ export function createMenuService(deps: {
       },
       showPanelContext: { args: z.tuple([z.string(), z.object({ x: z.number(), y: z.number() })]) },
     },
-    handler: async (_ctx, method, args) => {
+    handler: async (ctx, method, args) => {
       const vm = deps.getViewManager();
+      requireAppCapability(ctx, vm, "native-menus", `menu.${method}`);
       const lifecycle = deps.panelOrchestrator;
       const registry = deps.panelRegistry;
 

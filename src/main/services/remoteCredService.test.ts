@@ -185,6 +185,45 @@ describe("remoteCredService", () => {
     expect(mocks.app.relaunch).toHaveBeenCalled();
   });
 
+  it("proxies pairing invite creation through the active server client", async () => {
+    const call = vi.fn(async (_service: string, method: string, args: unknown[]) => {
+      expect(method).toBe("createPairingInvite");
+      expect(args).toEqual([{ ttlMs: 60_000 }]);
+      return {
+        code: "A".repeat(24),
+        deepLink:
+          "natstack://connect?url=http%3A%2F%2F127.0.0.1%3A3030&code=AAAAAAAAAAAAAAAAAAAAAAAA",
+        connectUrl: "http://127.0.0.1:3030",
+        serverUrl: "http://127.0.0.1:3030",
+        expiresAt: 123,
+        expiresInMs: 60_000,
+        serverId: "srv",
+        serverBootId: "boot",
+        workspaceId: "ws",
+      };
+    });
+
+    const { createRemoteCredService } = await import("./remoteCredService.js");
+    const service = createRemoteCredService({
+      startupMode: {
+        kind: "remote",
+        remoteUrl: new URL("http://127.0.0.1:3030"),
+        bootstrap: "device",
+        deviceId: "dev_self",
+        refreshToken: "refresh",
+      },
+      getServerClient: () => ({ call }) as never,
+    });
+
+    await expect(
+      service.handler(shellCtx, "createPairingInvite", [{ ttlMs: 60_000 }])
+    ).resolves.toMatchObject({
+      code: "A".repeat(24),
+      connectUrl: "http://127.0.0.1:3030",
+    });
+    expect(call).toHaveBeenCalledWith("auth", "createPairingInvite", [{ ttlMs: 60_000 }]);
+  });
+
   it("does not proxy paired-device management while running locally", async () => {
     const call = vi.fn();
     const { createRemoteCredService } = await import("./remoteCredService.js");

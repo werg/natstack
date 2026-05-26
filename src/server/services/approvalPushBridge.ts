@@ -34,21 +34,15 @@ interface TrackedApproval {
 function categoryFor(approval: PendingApproval): string {
   return approval.kind === "credential" ||
     approval.kind === "capability" ||
-    approval.kind === "extension" ||
-    approval.kind === "extension-batch"
+    approval.kind === "unit-batch"
     ? APPROVAL_CATEGORY_DECIDE
     : APPROVAL_CATEGORY_INPUT_REQUIRED;
 }
 
 function actionsFor(approval: PendingApproval): readonly string[] {
-  if (approval.kind === "extension") {
-    return approval.action === "source-push"
-      ? ["once", "session", "deny", "open"]
-      : ["once", "deny", "open"];
-  }
-  if (approval.kind === "extension-batch") {
-    // Meta-push offers a "dev session" grant (session); startup does not.
-    return approval.trigger === "meta-push"
+  if (approval.kind === "unit-batch") {
+    // Push approvals offer a "dev session" grant; startup/management do not.
+    return approval.trigger === "meta-push" || approval.trigger === "source-push"
       ? ["once", "session", "deny", "open"]
       : ["once", "deny", "open"];
   }
@@ -69,15 +63,18 @@ function actionPayloadFor(approval: PendingApproval): Array<{ id: string; title:
   return actionsFor(approval).map((id) => ({
     id,
     title:
-      id === "once" && approval.kind === "extension"
-        ? "Approve"
-        : id === "once" && approval.kind === "extension-batch"
-          ? "Approve all"
-          : (ACTION_TITLES[id] ?? id),
+      id === "once" && approval.kind === "unit-batch"
+        ? approval.trigger === "source-push"
+          ? "Approve push"
+          : approval.trigger === "management"
+            ? "Approve"
+            : "Approve all"
+        : (ACTION_TITLES[id] ?? id),
   }));
 }
 
 function callerLabel(approval: PendingApproval): string {
+  if (approval.callerKind === "app") return "App";
   if (approval.callerKind === "worker") return "Worker";
   if (approval.callerKind === "do") return "DO";
   if (approval.callerKind === "system") return "Workspace";

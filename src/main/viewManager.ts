@@ -30,6 +30,7 @@ import {
 
 import { createDevLogger } from "@natstack/dev-log";
 import { ShellOverlayView, type ShellOverlayOptions } from "./shellOverlayView.js";
+import type { AppCapability } from "@natstack/shared/unitManifest";
 
 const log = createDevLogger("ViewManager");
 
@@ -44,7 +45,7 @@ export interface ViewConfig {
   /** Unique view ID (typically panel ID) */
   id: string;
   /** View type for tracking */
-  type: "shell" | "panel";
+  type: "shell" | "panel" | "app";
   /** Session partition for browser views (shared session for cookies/auth). Omit for default session. */
   partition?: string;
   /** Preload script path. Set to null to disable preload (for browsers). */
@@ -55,16 +56,25 @@ export interface ViewConfig {
   parentId?: string;
   /** Whether to inject host theme CSS */
   injectHostThemeVariables?: boolean;
+  /** App capabilities declared by the active app manifest. */
+  appCapabilities?: readonly AppCapability[];
+  /** Full-window host chrome app. These views are not panel content. */
+  hostChrome?: boolean;
+  /** Workspace source path and effective version for app principals. */
+  appIdentity?: { source?: string; effectiveVersion?: string | null };
 }
 
 interface ManagedView {
   id: string;
   view: WebContentsView;
-  type: "shell" | "panel";
+  type: "shell" | "panel" | "app";
   parentId?: string;
   visible: boolean;
   bounds: ViewBounds;
   injectHostThemeVariables: boolean;
+  appCapabilities: readonly AppCapability[];
+  hostChrome: boolean;
+  appIdentity?: { source?: string; effectiveVersion?: string | null };
   themeCssKey?: string;
   /** Stored event handlers for proper cleanup */
   handlers?: {
@@ -141,14 +151,14 @@ export class ViewManager {
     devTools?: boolean;
   }) {
     this.window = options.window;
-    // Create shell view (React UI) - fills entire window
-    // nodeIntegration enabled for direct fs/git access (shell is trusted app UI)
+    // Create the minimal shipped bootstrap/recovery UI. The full shell is a
+    // workspace app; this surface only owns host recovery and approval actions.
     this.shellView = new WebContentsView({
       webPreferences: {
         preload: options.shellPreload,
-        nodeIntegration: true,
-        contextIsolation: false,
-        sandbox: false,
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
         additionalArguments: options.shellAdditionalArguments,
       },
     });
@@ -174,6 +184,8 @@ export class ViewManager {
       visible: true,
       bounds: { x: 0, y: 0, width: 0, height: 0 },
       injectHostThemeVariables: false,
+      appCapabilities: [],
+      hostChrome: false,
     });
     this.webContentsIdToViewId.set(this.shellView.webContents.id, "shell");
 
@@ -222,6 +234,7 @@ export class ViewManager {
     // Update shell and panel bounds when window resizes
     this.window.on("resize", () => {
       this.updateShellBounds();
+      this.updateHostChromeBounds();
       this.applyBoundsToVisiblePanel();
     });
 
@@ -250,6 +263,20 @@ export class ViewManager {
     const width = size[0] ?? 0;
     const height = size[1] ?? 0;
     this.shellView.setBounds({ x: 0, y: 0, width, height });
+  }
+
+  private fullWindowBounds(): ViewBounds {
+    const size = this.window.getContentSize();
+    return { x: 0, y: 0, width: size[0] ?? 0, height: size[1] ?? 0 };
+  }
+
+  private updateHostChromeBounds(): void {
+    const bounds = this.fullWindowBounds();
+    for (const managed of this.views.values()) {
+      if (!managed.hostChrome || !managed.visible) continue;
+      managed.bounds = bounds;
+      managed.view.setBounds(bounds);
+    }
   }
 
   /**
@@ -311,6 +338,9 @@ export class ViewManager {
       visible: false,
       bounds: { x: 0, y: 0, width: 0, height: 0 },
       injectHostThemeVariables: config.injectHostThemeVariables ?? true,
+      appCapabilities: config.type === "app" ? [...(config.appCapabilities ?? [])] : [],
+      hostChrome: config.type === "app" ? (config.hostChrome ?? false) : false,
+      appIdentity: config.type === "app" ? config.appIdentity : undefined,
     };
     this.views.set(config.id, managed);
     this.webContentsIdToViewId.set(view.webContents.id, config.id);
@@ -538,8 +568,15 @@ export class ViewManager {
 
     managed.visible = visible;
 
-    // Track visible panel and apply calculated bounds
-    if (visible && managed.type !== "shell") {
+    if (visible && managed.hostChrome) {
+      const bounds = this.fullWindowBounds();
+      managed.bounds = bounds;
+      managed.view.setBounds(bounds);
+      managed.view.setVisible(true);
+      this.bringToFront(id);
+      this.focusVisibleView(managed);
+    } else if (visible && managed.type !== "shell") {
+      // Track visible panel and apply calculated bounds
       this.visiblePanelId = id;
       const bounds = this.calculatePanelBounds();
       managed.bounds = bounds;
@@ -928,7 +965,13 @@ export class ViewManager {
   /**
    * Get view info for debugging.
    */
-  getViewInfo(id: string): { type: string; visible: boolean; bounds: ViewBounds } | null {
+  getViewInfo(id: string): {
+    type: string;
+    visible: boolean;
+    bounds: ViewBounds;
+    capabilities: readonly AppCapability[];
+    appIdentity?: { source?: string; effectiveVersion?: string | null };
+  } | null {
     const managed = this.views.get(id);
     if (!managed) {
       return null;
@@ -938,6 +981,8 @@ export class ViewManager {
       type: managed.type,
       visible: managed.visible,
       bounds: managed.bounds,
+      capabilities: managed.appCapabilities,
+      appIdentity: managed.appIdentity,
     };
   }
 
@@ -1013,6 +1058,22 @@ export class ViewManager {
     }
 
     await contents.loadURL(url);
+  }
+
+  async updateAppView(
+    id: string,
+    url: string,
+    capabilities?: readonly AppCapability[],
+    identity?: { source?: string; effectiveVersion?: string | null }
+  ): Promise<void> {
+    const managed = this.views.get(id);
+    if (!managed) throw new Error(`View not found: ${id}`);
+    if (managed.type !== "app") throw new Error(`View is not an app view: ${id}`);
+    managed.appCapabilities = [...(capabilities ?? [])];
+    managed.hostChrome = capabilities?.includes("panel-hosting") ?? false;
+    managed.appIdentity = identity;
+    await managed.view.webContents.loadURL(url);
+    if (managed.visible) this.updateLayout({});
   }
 
   /**

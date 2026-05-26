@@ -176,13 +176,13 @@ const __injected_dirname__ = typeof __dirname !== 'undefined' ? __dirname : (typ
   },
 };
 
-const preloadConfig = {
-  entryPoints: ["src/preload/index.ts"],
+const bootstrapPreloadConfig = {
+  entryPoints: ["src/preload/bootstrapPreload.ts"],
   bundle: true,
   platform: "node",
   target: "node20",
   format: "cjs",
-  outfile: "dist/preload.cjs",
+  outfile: "dist/bootstrapPreload.cjs",
   external: ["electron"],
   sourcemap: isDev,
   minify: !isDev,
@@ -196,6 +196,19 @@ const panelPreloadConfig = {
   target: "node20",
   format: "cjs",
   outfile: "dist/panelPreload.cjs",
+  external: ["electron"],
+  sourcemap: isDev,
+  minify: !isDev,
+  logOverride,
+};
+
+const appPreloadConfig = {
+  entryPoints: ["src/preload/appPreload.ts"],
+  bundle: true,
+  platform: "node",
+  target: "node20",
+  format: "cjs",
+  outfile: "dist/appPreload.cjs",
   external: ["electron"],
   sourcemap: isDev,
   minify: !isDev,
@@ -282,11 +295,10 @@ const internalDoBundleConfig = {
   logOverride,
 };
 
-// Plugin to rewrite bare Node builtin imports to node: prefix and mark electron as external.
-// Required for ESM splitting: esbuild can't bundle builtins but the renderer runs with
-// nodeIntegration: true, so node:-prefixed imports work at runtime.
-const rendererExternalsPlugin = {
-  name: "renderer-externals",
+// Plugin to rewrite bare Node builtin imports to node: prefix and mark electron
+// as external for the shipped bootstrap/recovery UI bundle.
+const bootstrapExternalsPlugin = {
+  name: "bootstrap-externals",
   setup(build) {
     // Hardcoded set of Node builtin module names (covers all common ones)
     const builtins = new Set([
@@ -350,14 +362,13 @@ const rendererExternalsPlugin = {
   },
 };
 
-const rendererConfig = {
-  entryPoints: ["src/renderer/index.tsx"],
+const bootstrapConfig = {
+  entryPoints: ["src/bootstrap/index.ts"],
   bundle: true,
-  // Shell has nodeIntegration enabled, so we can use Node.js platform
-  platform: "node",
-  target: "node20",
+  platform: "browser",
+  target: "es2022",
   format: "esm",
-  outdir: "dist/renderer",
+  outdir: "dist/bootstrap",
   entryNames: "[name]",
   chunkNames: "chunks/[name]-[hash]",
   splitting: true,
@@ -387,13 +398,14 @@ const rendererConfig = {
     react: path.resolve("node_modules/react"),
     "react-dom": path.resolve("node_modules/react-dom"),
   },
-  plugins: [rendererExternalsPlugin],
+  plugins: [bootstrapExternalsPlugin],
 };
 
 function copyAssets() {
-  fs.copyFileSync("src/renderer/index.html", "dist/index.html");
+  fs.copyFileSync("src/bootstrap/index.html", "dist/index.html");
+  fs.mkdirSync("dist/baked-app", { recursive: true });
   copyDirectoryRecursive(
-    "workspace/extensions/@workspace-extensions/shell/vscode-shell-integration",
+    "workspace/extensions/shell/vscode-shell-integration",
     "dist/vscode-shell-integration"
   );
 }
@@ -561,8 +573,9 @@ async function build() {
     // Dependencies: buildWorkspacePackages
     // Required by: None (final outputs)
     await esbuild.build(mainConfig);
-    await esbuild.build(preloadConfig);
+    await esbuild.build(bootstrapPreloadConfig);
     await esbuild.build(panelPreloadConfig);
+    await esbuild.build(appPreloadConfig);
     await esbuild.build(browserPreloadConfig);
     await esbuild.build(autofillPreloadConfig);
     await esbuild.build(autofillOverlayPreloadConfig);
@@ -586,14 +599,22 @@ async function build() {
       ...serverConfig,
       define: { ...(serverConfig.define ?? {}), ...internalDoBundleDefine },
     };
-    // Clean stale renderer artifacts before ESM build (prevents accidental loading of old CJS bundle)
+    // Clean stale renderer/bootstrap artifacts before ESM build.
     try {
       fs.unlinkSync("dist/renderer.js");
     } catch {}
     try {
       fs.unlinkSync("dist/renderer.css");
     } catch {}
-    await esbuild.build(rendererConfig);
+    try {
+      fs.unlinkSync("dist/preload.cjs");
+    } catch {}
+    try {
+      fs.unlinkSync("dist/preload.cjs.map");
+    } catch {}
+    fs.rmSync("dist/renderer", { recursive: true, force: true });
+    fs.rmSync("dist/bootstrap", { recursive: true, force: true });
+    await esbuild.build(bootstrapConfig);
     await esbuild.build(serverElectronWithBundle);
     await esbuild.build(serverWithBundle);
     await esbuild.build(clientConfig);

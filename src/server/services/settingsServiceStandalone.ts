@@ -17,7 +17,7 @@ export function createSettingsServiceStandalone(_deps: {
   return {
     name: "settings",
     description: "Settings, model roles (standalone mode)",
-    policy: { allowed: ["shell"] },
+    policy: { allowed: ["shell", "app"] },
     methods: {
       getData: { args: z.tuple([]) },
     },

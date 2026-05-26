@@ -51,7 +51,7 @@ export async function requestCapabilityPermission(
   if (!callerKind) {
     return {
       allowed: false,
-      reason: "Capability caller is not a panel, worker, or durable object",
+      reason: "Capability caller is not an app, panel, worker, or durable object",
     };
   }
 
@@ -107,8 +107,8 @@ export async function requestCapabilityPermission(
   return { allowed: true, decision };
 }
 
-export function normalizeCallerKind(kind: string): "panel" | "worker" | "do" | null {
-  if (kind === "panel" || kind === "worker" || kind === "do") {
+export function normalizeCallerKind(kind: string): "panel" | "app" | "worker" | "do" | null {
+  if (kind === "panel" || kind === "app" || kind === "worker" || kind === "do") {
     return kind;
   }
   return null;

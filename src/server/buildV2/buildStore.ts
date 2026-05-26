@@ -6,6 +6,7 @@
  *   ├── bundle.css  (if any)
  *   ├── index.html  (panels/about only)
  *   ├── assets/     (chunks, images, fonts)
+ *   ├── artifacts.json
  *   └── metadata.json
  *
  * Same key = same content. Forever. GC prunes unreferenced entries.
@@ -22,39 +23,76 @@ import { assertPresent } from "../../lintHelpers";
 // ---------------------------------------------------------------------------
 
 export interface BuildArtifacts {
-  /** Main JS bundle content */
-  bundle: string;
-  /** CSS content (may be empty) */
-  css?: string;
-  /** HTML content (panels/about only) */
-  html?: string;
-  /** Additional assets: relative path → { content, encoding } */
-  assets?: Record<string, { content: string; encoding?: "base64" }>;
+  entries: BuildArtifactInput[];
 }
 
+export type BuildArtifactRole = "primary" | "asset" | "html" | "css" | "map";
+export type BuildArtifactEncoding = "utf8" | "base64";
+
+export interface BuildArtifactInput {
+  path: string;
+  role: BuildArtifactRole;
+  contentType: string;
+  encoding?: BuildArtifactEncoding;
+  platform?: string;
+  integrity?: string;
+  content: string;
+}
+
+export interface BuildArtifactManifestEntry {
+  path: string;
+  role: BuildArtifactRole;
+  contentType: string;
+  encoding: BuildArtifactEncoding;
+  platform?: string;
+  integrity?: string;
+}
+
+export type BuildArtifactWithContent = BuildArtifactManifestEntry & { content: string };
+
+export type BuildMetadataDetails =
+  | {
+      kind: "extension";
+      runtimeDepsKey: string | null;
+      runtimeAbi: string | null;
+      dependencyMode?: "auto" | "bundle" | "external";
+      externalDeps?: Record<string, string>;
+      dependencyOverrides?: Record<string, string>;
+      classifiedDeps?: Array<{
+        name: string;
+        version: string;
+        external: boolean;
+        format: "cjs" | "esm" | "unknown";
+        reasons: string[];
+        explanation: string;
+      }>;
+      smokeTest?: {
+        mode: "child-process";
+        passed: boolean;
+      };
+    }
+  | {
+      kind: "app";
+      target: "electron" | "react-native" | "terminal";
+      platform?: "electron" | "ios" | "android" | "terminal";
+      integrity?: string | null;
+      rnHostAbi?: string | null;
+      provider?: {
+        name: string;
+        activeEv: string | null;
+        activeBuildKey: string | null;
+        contractVersion: string;
+      } | null;
+    }
+  | { kind: "generic" };
+
 export interface BuildMetadata {
-  kind: "panel" | "package" | "worker" | "extension" | "template";
+  kind: "panel" | "package" | "worker" | "extension" | "app" | "template";
   name: string;
   ev: string;
   sourcemap: boolean;
   framework?: string;
-  runtimeDepsKey?: string | null;
-  extensionRuntimeAbi?: string | null;
-  extensionDependencyMode?: "auto" | "bundle" | "external";
-  extensionExternalDeps?: Record<string, string>;
-  extensionDependencyOverrides?: Record<string, string>;
-  extensionClassifiedDeps?: Array<{
-    name: string;
-    version: string;
-    external: boolean;
-    format: "cjs" | "esm" | "unknown";
-    reasons: string[];
-    explanation: string;
-  }>;
-  extensionSmokeTest?: {
-    mode: "child-process";
-    passed: boolean;
-  };
+  details: BuildMetadataDetails;
   builtAt: string;
 }
 
@@ -63,20 +101,8 @@ export interface BuildResult {
   dir: string;
   /** Build metadata */
   metadata: BuildMetadata;
-  /** Absolute path to main bundle */
-  bundlePath: string;
-  /** Absolute path to CSS (if exists) */
-  cssPath?: string;
-  /** Absolute path to HTML (if exists) */
-  htmlPath?: string;
-  /** Bundle content (for protocol serving) */
-  bundle: string;
-  /** CSS content (for protocol serving) */
-  css?: string;
-  /** HTML content (for protocol serving) */
-  html?: string;
-  /** Asset map: relative path → content */
-  assets?: Record<string, { content: string; encoding?: string }>;
+  /** Target-agnostic artifact manifest with content loaded. */
+  artifacts: BuildArtifactWithContent[];
 }
 
 // ---------------------------------------------------------------------------
@@ -146,6 +172,136 @@ function isBinaryAsset(file: string): boolean {
   ].includes(ext);
 }
 
+export function contentTypeForPath(filePath: string): string {
+  switch (path.extname(filePath).toLowerCase()) {
+    case ".js":
+    case ".mjs":
+      return "text/javascript; charset=utf-8";
+    case ".css":
+      return "text/css; charset=utf-8";
+    case ".html":
+      return "text/html; charset=utf-8";
+    case ".json":
+    case ".map":
+      return "application/json; charset=utf-8";
+    case ".svg":
+      return "image/svg+xml";
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".webp":
+      return "image/webp";
+    case ".gif":
+      return "image/gif";
+    case ".wasm":
+      return "application/wasm";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+function readArtifactContent(dir: string, entry: BuildArtifactManifestEntry): string {
+  const filePath = path.join(dir, entry.path);
+  return entry.encoding === "base64"
+    ? fs.readFileSync(filePath, "base64")
+    : fs.readFileSync(filePath, "utf-8");
+}
+
+function manifestForEntry(entry: BuildArtifactInput): BuildArtifactManifestEntry {
+  return {
+    path: entry.path,
+    role: entry.role,
+    contentType: entry.contentType,
+    encoding: entry.encoding ?? "utf8",
+    ...(entry.platform ? { platform: entry.platform } : {}),
+    ...(entry.integrity ? { integrity: entry.integrity } : {}),
+  };
+}
+
+function artifactIntegrity(entry: BuildArtifactInput): string {
+  const bytes =
+    (entry.encoding ?? "utf8") === "base64"
+      ? Buffer.from(entry.content, "base64")
+      : Buffer.from(entry.content, "utf-8");
+  return `sha256-${crypto.createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function buildArtifactSetIntegrity(entries: BuildArtifactManifestEntry[]): string {
+  const canonical = entries
+    .map((entry) => ({
+      path: entry.path,
+      role: entry.role,
+      contentType: entry.contentType,
+      encoding: entry.encoding,
+      platform: entry.platform ?? null,
+      integrity: entry.integrity ?? null,
+    }))
+    .sort((a, b) =>
+      `${a.path}\0${a.platform ?? ""}`.localeCompare(`${b.path}\0${b.platform ?? ""}`)
+    );
+  return `sha256-${crypto.createHash("sha256").update(JSON.stringify(canonical)).digest("hex")}`;
+}
+
+function metadataForEntries(
+  metadata: BuildMetadata,
+  entries: BuildArtifactManifestEntry[]
+): BuildMetadata {
+  if (metadata.details.kind !== "app") return metadata;
+  return {
+    ...metadata,
+    details: {
+      ...metadata.details,
+      integrity: buildArtifactSetIntegrity(entries),
+    },
+  };
+}
+
+function legacyArtifactFromFile(
+  dir: string,
+  artifactPath: string,
+  role: BuildArtifactRole
+): BuildArtifactWithContent | null {
+  const filePath = path.join(dir, artifactPath);
+  if (!fs.existsSync(filePath)) return null;
+  const encoding: BuildArtifactEncoding = isBinaryAsset(filePath) ? "base64" : "utf8";
+  const input: BuildArtifactInput = {
+    path: artifactPath.split(path.sep).join(path.posix.sep),
+    role,
+    contentType: contentTypeForPath(artifactPath),
+    encoding,
+    content:
+      encoding === "base64"
+        ? fs.readFileSync(filePath, "base64")
+        : fs.readFileSync(filePath, "utf-8"),
+  };
+  return {
+    ...manifestForEntry({ ...input, integrity: artifactIntegrity(input) }),
+    content: input.content,
+  };
+}
+
+function readLegacyArtifacts(dir: string): BuildArtifactWithContent[] | null {
+  const artifacts: BuildArtifactWithContent[] = [];
+  const add = (artifactPath: string, role: BuildArtifactRole) => {
+    const artifact = legacyArtifactFromFile(dir, artifactPath, role);
+    if (artifact) artifacts.push(artifact);
+  };
+
+  add("bundle.js", "primary");
+  add("bundle.css", "css");
+  add("index.html", "html");
+
+  const assetsDir = path.join(dir, "assets");
+  for (const filePath of walkFilesRecursive(assetsDir).sort()) {
+    const relative = path.relative(dir, filePath).split(path.sep).join(path.posix.sep);
+    add(relative, path.extname(filePath).toLowerCase() === ".map" ? "map" : "asset");
+  }
+
+  return artifacts.length > 0 ? artifacts : null;
+}
+
 export function has(key: string): boolean {
   const dir = getBuildDir(key);
   return fs.existsSync(path.join(dir, "metadata.json"));
@@ -159,49 +315,76 @@ export function get(key: string): BuildResult | null {
 
   try {
     const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf-8")) as BuildMetadata;
-
-    const bundlePath = path.join(dir, "bundle.js");
-    const cssPath = path.join(dir, "bundle.css");
-    const htmlPath = path.join(dir, "index.html");
-
-    const bundle = fs.existsSync(bundlePath) ? fs.readFileSync(bundlePath, "utf-8") : "";
-    const css = fs.existsSync(cssPath) ? fs.readFileSync(cssPath, "utf-8") : undefined;
-    const html = fs.existsSync(htmlPath) ? fs.readFileSync(htmlPath, "utf-8") : undefined;
-
-    // Load assets
-    let assets: Record<string, { content: string; encoding?: string }> | undefined;
-    const assetsDir = path.join(dir, "assets");
-    if (fs.existsSync(assetsDir)) {
-      assets = {};
-      for (const filePath of walkFilesRecursive(assetsDir)) {
-        const relativeName = path.relative(assetsDir, filePath).replace(/\\/g, "/");
-        if (isBinaryAsset(filePath)) {
-          assets[relativeName] = {
-            content: fs.readFileSync(filePath, "base64"),
-            encoding: "base64",
-          };
-        } else {
-          assets[relativeName] = {
-            content: fs.readFileSync(filePath, "utf-8"),
-          };
-        }
-      }
-    }
-
+    const manifestPath = path.join(dir, "artifacts.json");
+    const artifacts = fs.existsSync(manifestPath)
+      ? (JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as BuildArtifactManifestEntry[])
+          .filter((entry) => fs.existsSync(path.join(dir, entry.path)))
+          .map((entry) => ({ ...entry, content: readArtifactContent(dir, entry) }))
+      : readLegacyArtifacts(dir);
+    if (!artifacts) return null;
+    const artifactManifest = artifacts.map(({ content: _content, ...entry }) => entry);
     return {
       dir,
-      metadata,
-      bundlePath,
-      cssPath: fs.existsSync(cssPath) ? cssPath : undefined,
-      htmlPath: fs.existsSync(htmlPath) ? htmlPath : undefined,
-      bundle,
-      css,
-      html,
-      assets,
+      metadata: metadataForEntries(metadata, artifactManifest),
+      artifacts,
     };
   } catch {
     return null;
   }
+}
+
+export function primaryArtifact(
+  build: Pick<BuildResult, "artifacts">,
+  opts: { platform?: string } = {}
+): BuildArtifactWithContent | null {
+  return (
+    build.artifacts.find(
+      (entry) =>
+        entry.role === "primary" &&
+        (opts.platform === undefined || entry.platform === opts.platform)
+    ) ?? null
+  );
+}
+
+export function primaryTextArtifactContent(
+  build: Pick<BuildResult, "artifacts" | "metadata">,
+  opts: { platform?: string } = {}
+): string {
+  const artifact = primaryArtifact(build, opts);
+  if (!artifact) {
+    throw new Error(
+      `Build ${build.metadata.name} has no primary artifact${opts.platform ? ` for ${opts.platform}` : ""}`
+    );
+  }
+  if (artifact.encoding !== "utf8") {
+    throw new Error(
+      `Build ${build.metadata.name} primary artifact ${artifact.path} is not UTF-8 text`
+    );
+  }
+  return artifact.content;
+}
+
+export function artifactFilePath(
+  build: Pick<BuildResult, "dir">,
+  artifact: Pick<BuildArtifactManifestEntry, "path">
+): string {
+  if (path.isAbsolute(artifact.path) || artifact.path.split(/[\\/]/).includes("..")) {
+    throw new Error(`Invalid build artifact path: ${artifact.path}`);
+  }
+  return path.join(build.dir, artifact.path);
+}
+
+export function primaryArtifactFilePath(
+  build: Pick<BuildResult, "dir" | "artifacts" | "metadata">,
+  opts: { platform?: string } = {}
+): string {
+  const artifact = primaryArtifact(build, opts);
+  if (!artifact) {
+    throw new Error(
+      `Build ${build.metadata.name} has no primary artifact${opts.platform ? ` for ${opts.platform}` : ""}`
+    );
+  }
+  return artifactFilePath(build, artifact);
 }
 
 export function put(key: string, artifacts: BuildArtifacts, metadata: BuildMetadata): BuildResult {
@@ -216,38 +399,38 @@ export function put(key: string, artifacts: BuildArtifacts, metadata: BuildMetad
 
   fs.mkdirSync(tmpDir, { recursive: true });
 
-  // Write bundle
-  fs.writeFileSync(path.join(tmpDir, "bundle.js"), artifacts.bundle);
+  const entries = artifacts.entries.map((entry) => ({
+    ...entry,
+    encoding: entry.encoding ?? "utf8",
+    integrity: artifactIntegrity(entry),
+  }));
+  if (entries.length === 0) {
+    throw new Error(`Build ${key} has no artifact entries`);
+  }
+  for (const entry of entries) {
+    if (path.isAbsolute(entry.path) || entry.path.split(/[\\/]/).includes("..")) {
+      throw new Error(`Invalid build artifact path: ${entry.path}`);
+    }
+    const targetPath = path.join(tmpDir, entry.path);
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(
+      targetPath,
+      entry.content,
+      (entry.encoding === "base64" ? "base64" : "utf-8") as BufferEncoding
+    );
+  }
+  const artifactManifest = entries.map(manifestForEntry);
+  const storedMetadata = metadataForEntries(metadata, artifactManifest);
 
   // Ensure Node.js treats bundle.js as ESM.
-  if (metadata.kind === "worker" || metadata.kind === "extension") {
+  if (storedMetadata.kind === "worker" || storedMetadata.kind === "extension") {
     fs.writeFileSync(path.join(tmpDir, "package.json"), '{"type":"module"}');
   }
 
-  // Write CSS if present
-  if (artifacts.css) {
-    fs.writeFileSync(path.join(tmpDir, "bundle.css"), artifacts.css);
-  }
-
-  // Write HTML if present
-  if (artifacts.html) {
-    fs.writeFileSync(path.join(tmpDir, "index.html"), artifacts.html);
-  }
-
-  // Write assets
-  if (artifacts.assets) {
-    const assetsDir = path.join(tmpDir, "assets");
-    fs.mkdirSync(assetsDir, { recursive: true });
-    for (const [name, asset] of Object.entries(artifacts.assets)) {
-      const encoding = asset.encoding === "base64" ? "base64" : "utf-8";
-      const targetPath = path.join(assetsDir, name);
-      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-      fs.writeFileSync(targetPath, asset.content, encoding as BufferEncoding);
-    }
-  }
+  fs.writeFileSync(path.join(tmpDir, "artifacts.json"), JSON.stringify(artifactManifest, null, 2));
 
   // Write metadata (sentinel) inside tmpDir BEFORE rename so winner is always complete
-  fs.writeFileSync(path.join(tmpDir, "metadata.json"), JSON.stringify(metadata, null, 2));
+  fs.writeFileSync(path.join(tmpDir, "metadata.json"), JSON.stringify(storedMetadata, null, 2));
 
   // Race-safe promotion: try rename, handle concurrent winner
   try {

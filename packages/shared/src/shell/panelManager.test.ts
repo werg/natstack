@@ -42,7 +42,7 @@ function createWorkspaceMemory() {
   }
   interface MemEntity {
     id: string;
-    kind: "panel" | "worker" | "do";
+    kind: "panel" | "app" | "worker" | "do";
     source: string;
     contextId: string;
     status: "active" | "retired";
@@ -297,6 +297,7 @@ describe("PanelManager", () => {
 
     const init = (await manager.getPanelInit(created.panelId)) as {
       entityId: string;
+      panelId?: string;
       slotId: string;
       contextId: string;
       sourceRepo: string;
@@ -307,6 +308,7 @@ describe("PanelManager", () => {
     const currentEntityId = createdSlot?.current_entity_id;
     expect(currentEntityId).toBeTruthy();
     expect(init.entityId).toBe(currentEntityId);
+    expect(init.panelId).toBeUndefined();
     expect(init.slotId).toBe(created.panelId);
     expect(init.contextId).toBe(created.contextId);
     expect(init.sourceRepo).toBe("panels/example");

@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { constantTimeStringEqual } from "@natstack/shared/tokenManager";
 import { writeJsonFileAtomic } from "./atomicFile.js";
+import { authError } from "./auth/errors.js";
 
 export interface DeviceRecord {
   deviceId: string;
@@ -80,7 +81,7 @@ export class DeviceAuthStore {
     const record = this.pairingCodes.get(codeHash);
     if (!record || record.expiresAt < this.now()) {
       this.pairingCodes.delete(codeHash);
-      throw new Error("Pairing code is invalid or expired");
+      throw authError("PAIRING_CODE_INVALID_OR_EXPIRED", "Pairing code is invalid or expired", 401);
     }
     this.pairingCodes.delete(codeHash);
     return this.issueDevice({
@@ -107,11 +108,11 @@ export class DeviceAuthStore {
   validateRefresh(deviceId: string, refreshToken: string): DeviceRecord {
     const record = this.state.devices.find((device) => device.deviceId === deviceId);
     if (!record || record.revokedAt) {
-      throw new Error("Device is not paired");
+      throw authError("DEVICE_NOT_PAIRED", "Device is not paired", 401);
     }
     const presentedHash = hashSecret(refreshToken);
     if (!constantTimeStringEqual(presentedHash, record.refreshTokenHash)) {
-      throw new Error("Invalid refresh credential");
+      throw authError("INVALID_REFRESH_CREDENTIAL", "Invalid refresh credential", 401);
     }
     record.lastUsedAt = this.now();
     this.save();

@@ -44,6 +44,14 @@ export interface CommonDeps {
   ) =>
     | Promise<import("./services/workspaceService.js").WorkspaceUnitLogRecord[]>
     | import("./services/workspaceService.js").WorkspaceUnitLogRecord[];
+  reseedCanonicalShellApp?: () => Promise<unknown> | unknown;
+  bakeAppDist?: (sourceOrName: string, opts?: { outDir?: string }) => Promise<unknown> | unknown;
+  listAppVersions?: (
+    sourceOrName: string
+  ) =>
+    | Promise<import("./services/workspaceService.js").WorkspaceAppVersions>
+    | import("./services/workspaceService.js").WorkspaceAppVersions;
+  rollbackAppVersion?: (sourceOrName: string, buildKey?: string) => Promise<unknown> | unknown;
   approvalQueue?: Pick<ApprovalQueue, "requestUserland">;
   getEffectiveVersion?: (source: string) => Promise<string | undefined>;
 }
@@ -85,6 +93,10 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
           listUnits: deps.listWorkspaceUnits,
           restartUnit: deps.restartWorkspaceUnit,
           listUnitLogs: deps.listWorkspaceUnitLogs,
+          reseedCanonicalShellApp: deps.reseedCanonicalShellApp,
+          bakeAppDist: deps.bakeAppDist,
+          listAppVersions: deps.listAppVersions,
+          rollbackAppVersion: deps.rollbackAppVersion,
           approvalQueue: deps.approvalQueue,
         })
       )
@@ -178,11 +190,12 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
         // `worker` callers gives attackers a TOCTOU primitive. Restrict
         // both to trusted native-code callers only — internal server callers
         // needing these ops can bypass the dispatcher, and extensions already
-        // have equivalent raw Node access after install approval.
+        // have equivalent raw Node access after install approval. App callers
+        // are pre-gated by the Electron host's fs-read/fs-write capabilities.
         return {
           name: "fs",
           description: "Per-context filesystem operations (sandboxed to context folder)",
-          policy: { allowed: ["panel", "server", "worker", "do", "extension"] },
+          policy: { allowed: ["panel", "app", "server", "worker", "do", "extension"] },
           methods: {
             readFile: fsMethodSchema,
             writeFile: fsMethodSchema,

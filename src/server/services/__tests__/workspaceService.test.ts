@@ -123,6 +123,14 @@ const panelCtx: ServiceContext = {
     effectiveVersion: "ev-test",
   }),
 };
+const appCtx: ServiceContext = {
+  caller: createVerifiedCaller("@workspace-apps/shell", "app", {
+    callerId: "@workspace-apps/shell",
+    callerKind: "app",
+    repoPath: "apps/shell",
+    effectiveVersion: "ev-app",
+  }),
+};
 const shellCtx: ServiceContext = { caller: createVerifiedCaller("shell-1", "shell") };
 
 // ─── Contract: client/server method-name alignment ───────────────────────────
@@ -162,6 +170,8 @@ describe("workspace service ↔ client contract", () => {
     await client.units.inspector("extensions/foo");
     await client.units.restart("extensions/foo");
     await client.units.logs("extensions/foo");
+    await client.units.versions("apps/shell");
+    await client.units.rollback("apps/shell");
 
     const service = makeService();
     for (const { method } of captured) {
@@ -193,6 +203,8 @@ describe("workspace service ↔ client contract", () => {
     void client.units.inspector("extensions/foo");
     void client.units.restart("extensions/foo");
     void client.units.logs("extensions/foo");
+    void client.units.versions("apps/shell");
+    void client.units.rollback("apps/shell");
 
     // The server should have a method handler for each captured wire name.
     const service = makeService();
@@ -289,6 +301,125 @@ describe("workspace service handler", () => {
     await expect(service.handler(panelCtx, "units.inspector", ["missing"])).resolves.toBeNull();
   });
 
+  it("units.reseedCanonicalShell delegates only for shell callers", async () => {
+    const reseedCanonicalShellApp = vi.fn(() => ({ source: "apps/shell" }));
+    const service = createWorkspaceService({
+      workspace: makeWorkspace(),
+      getConfig: () => makeConfig(),
+      setConfigField: vi.fn(),
+      centralData: makeCentralData(),
+      createWorkspace: vi.fn(),
+      deleteWorkspaceDir: vi.fn(),
+      reseedCanonicalShellApp,
+    });
+
+    await expect(service.handler(shellCtx, "units.reseedCanonicalShell", [])).resolves.toEqual({
+      source: "apps/shell",
+    });
+    await expect(service.handler(panelCtx, "units.reseedCanonicalShell", [])).rejects.toThrow(
+      /not accessible to panel callers/
+    );
+    expect(reseedCanonicalShellApp).toHaveBeenCalledTimes(1);
+  });
+
+  it("units.bakeAppDist delegates only for shell callers", async () => {
+    const bakeAppDist = vi.fn(() => ({ build: { key: "app-key" } }));
+    const service = createWorkspaceService({
+      workspace: makeWorkspace(),
+      getConfig: () => makeConfig(),
+      setConfigField: vi.fn(),
+      centralData: makeCentralData(),
+      createWorkspace: vi.fn(),
+      deleteWorkspaceDir: vi.fn(),
+      bakeAppDist,
+    });
+
+    await expect(
+      service.handler(shellCtx, "units.bakeAppDist", [
+        "apps/shell",
+        { outDir: "/tmp/natstack-dist" },
+      ])
+    ).resolves.toEqual({ build: { key: "app-key" } });
+    await expect(service.handler(panelCtx, "units.bakeAppDist", ["apps/shell"])).rejects.toThrow(
+      /not accessible to panel callers/
+    );
+    expect(bakeAppDist).toHaveBeenCalledWith("apps/shell", { outDir: "/tmp/natstack-dist" });
+    expect(bakeAppDist).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows shell to inspect and roll back any app unit", async () => {
+    const listAppVersions = vi.fn(() => ({ current: null, previous: [], retentionLimit: 5 }));
+    const rollbackAppVersion = vi.fn(() => ({ ok: true }));
+    const service = createWorkspaceService({
+      workspace: makeWorkspace(),
+      getConfig: () => makeConfig(),
+      setConfigField: vi.fn(),
+      centralData: makeCentralData(),
+      createWorkspace: vi.fn(),
+      deleteWorkspaceDir: vi.fn(),
+      listUnits: vi.fn(() => [
+        {
+          name: "@workspace-apps/other",
+          kind: "app" as const,
+          source: "apps/other",
+          status: "running" as const,
+        },
+      ]),
+      listAppVersions,
+      rollbackAppVersion,
+    });
+
+    await expect(
+      service.handler(shellCtx, "units.versions", ["@workspace-apps/other"])
+    ).resolves.toEqual({ current: null, previous: [], retentionLimit: 5 });
+    await expect(
+      service.handler(shellCtx, "units.rollback", ["@workspace-apps/other"])
+    ).resolves.toEqual({ ok: true });
+  });
+
+  it("allows app callers to manage only their own app unit", async () => {
+    const rollbackAppVersion = vi.fn(() => ({ ok: true }));
+    const service = createWorkspaceService({
+      workspace: makeWorkspace(),
+      getConfig: () => makeConfig(),
+      setConfigField: vi.fn(),
+      centralData: makeCentralData(),
+      createWorkspace: vi.fn(),
+      deleteWorkspaceDir: vi.fn(),
+      listUnits: vi.fn(() => [
+        {
+          name: "@workspace-apps/self",
+          kind: "app" as const,
+          source: "apps/self",
+          status: "running" as const,
+        },
+        {
+          name: "@workspace-apps/other",
+          kind: "app" as const,
+          source: "apps/other",
+          status: "running" as const,
+        },
+      ]),
+      rollbackAppVersion,
+    });
+    const selfCtx: ServiceContext = {
+      caller: createVerifiedCaller("@workspace-apps/self", "app", {
+        callerId: "@workspace-apps/self",
+        callerKind: "app",
+        repoPath: "apps/self",
+        effectiveVersion: "ev-self",
+      }),
+    };
+
+    await expect(
+      service.handler(selfCtx, "units.rollback", ["@workspace-apps/self"])
+    ).resolves.toEqual({ ok: true });
+    await expect(
+      service.handler(selfCtx, "units.rollback", ["@workspace-apps/other"])
+    ).rejects.toThrow(/can only manage the calling app/);
+    expect(rollbackAppVersion).toHaveBeenCalledTimes(1);
+  });
+
   it("create delegates to the createWorkspace dep", async () => {
     const service = makeService();
     const result = (await service.handler(panelCtx, "create", [
@@ -301,6 +432,12 @@ describe("workspace service handler", () => {
   it("delete is approval-gated for panels", async () => {
     const service = makeService();
     await service.handler(panelCtx, "delete", ["other"]);
+    // Should not throw when approval is granted.
+  });
+
+  it("delete is approval-gated for apps", async () => {
+    const service = makeService();
+    await service.handler(appCtx, "delete", ["other"]);
     // Should not throw when approval is granted.
   });
 

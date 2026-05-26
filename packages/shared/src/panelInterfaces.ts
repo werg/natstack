@@ -11,6 +11,8 @@
  * abstractions for cross-process wiring.
  */
 
+import type { AppCapability } from "./unitManifest.js";
+
 /**
  * Shared Electron session partition for all browser panels.
  * All browser panels share one cookie jar / session, like tabs in a normal browser.
@@ -69,6 +71,19 @@ export interface ServerInfoLike {
  */
 export interface PanelViewLike {
   createViewForPanel(panelId: string, url: string, contextId?: string): Promise<void>;
+  createViewForApp?(
+    appId: string,
+    url: string,
+    contextId?: string,
+    capabilities?: readonly AppCapability[],
+    identity?: { source?: string; effectiveVersion?: string | null }
+  ): Promise<void>;
+  updateAppView?(
+    appId: string,
+    url: string,
+    capabilities?: readonly AppCapability[],
+    identity?: { source?: string; effectiveVersion?: string | null }
+  ): Promise<void>;
   createViewForBrowser?(panelId: string, url: string, contextId: string): Promise<void>;
   hasView(panelId: string): boolean;
   setViewVisible?(panelId: string, visible: boolean): void;

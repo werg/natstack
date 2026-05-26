@@ -49,6 +49,19 @@ export interface DeviceRecord {
   revokedAt?: number;
 }
 
+export interface PairingInvite {
+  code: string;
+  deepLink: string | null;
+  connectUrl: string;
+  serverUrl: string;
+  publicUrl?: string | null;
+  expiresAt: number;
+  expiresInMs: number;
+  serverId: string;
+  serverBootId: string;
+  workspaceId: string;
+}
+
 const TEST_CONNECT_TIMEOUT_MS = 7_000;
 
 function sha256Fingerprint(der: Buffer): string {
@@ -325,6 +338,20 @@ export function createRemoteCredService(deps: {
         ]),
       },
       discoverServers: { args: z.tuple([]) },
+      createPairingInvite: {
+        args: z.tuple([
+          z
+            .object({
+              ttlMs: z
+                .number()
+                .int()
+                .min(30_000)
+                .max(60 * 60 * 1000)
+                .optional(),
+            })
+            .optional(),
+        ]),
+      },
       listDevices: { args: z.tuple([]) },
       revokeDevice: { args: z.tuple([z.string()]) },
       fetchPeerFingerprint: { args: z.tuple([z.string()]) },
@@ -477,6 +504,17 @@ export function createRemoteCredService(deps: {
         }
         case "discoverServers":
           return discoverNatstackServers();
+        case "createPairingInvite": {
+          if (deps.startupMode.kind !== "remote")
+            throw new Error(
+              "Pairing invites are only available while connected to a remote server"
+            );
+          const client = deps.getServerClient?.();
+          if (!client) throw new Error("Not connected to a server");
+          return (await client.call("auth", "createPairingInvite", [
+            args[0] ?? {},
+          ])) as PairingInvite;
+        }
         case "listDevices": {
           if (deps.startupMode.kind !== "remote") return [];
           const client = deps.getServerClient?.();

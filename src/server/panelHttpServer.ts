@@ -10,7 +10,11 @@ import * as path from "path";
 import { WebSocketServer } from "ws";
 import { createDevLogger } from "@natstack/dev-log";
 import { constantTimeStringEqual } from "@natstack/shared/tokenManager";
-import type { BuildResult, BuildMetadata } from "./buildV2/buildStore.js";
+import type {
+  BuildArtifactManifestEntry,
+  BuildResult,
+  BuildMetadata,
+} from "./buildV2/buildStore.js";
 import type { CdpBridge } from "./cdpBridge.js";
 import { CONFIG_LOADER_JS } from "./configLoader.js";
 import { assertPresent } from "../lintHelpers";
@@ -74,34 +78,11 @@ export interface PanelHttpCallbacks {
 
 /** Build output cached by source path (shared across panels) */
 interface CachedBuild {
-  html: string;
-  bundle: string;
-  css?: string;
-  assets?: Record<string, { content: string; encoding?: string }>;
+  artifacts: Array<BuildArtifactManifestEntry & { content: string }>;
+  htmlArtifact: BuildArtifactManifestEntry & { content: string };
   metadata: BuildMetadata;
   revision: number;
 }
-
-/** MIME types for serving panel assets */
-const ASSET_MIME_TYPES: Record<string, string> = {
-  ".js": "application/javascript; charset=utf-8",
-  ".mjs": "application/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".map": "application/json; charset=utf-8",
-  ".wasm": "application/wasm",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".webp": "image/webp",
-  ".svg": "image/svg+xml; charset=utf-8",
-  ".ico": "image/x-icon",
-  ".woff": "font/woff",
-  ".woff2": "font/woff2",
-  ".ttf": "font/ttf",
-  ".otf": "font/otf",
-};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -255,16 +236,16 @@ export class PanelHttpServer {
    * Store a build result. Keyed by source/ref.
    */
   storeBuild(source: string, buildResult: BuildResult, ref?: string): void {
-    if (!buildResult.html || !buildResult.bundle) {
-      throw new Error(`Build result for ${source} missing HTML or bundle`);
+    const htmlArtifact = buildResult.artifacts.find((artifact) => artifact.role === "html");
+    const primaryArtifact = buildResult.artifacts.find((artifact) => artifact.role === "primary");
+    if (!htmlArtifact || !primaryArtifact) {
+      throw new Error(`Build result for ${source} missing HTML or primary artifact`);
     }
 
     const revision = ++this.buildRevisionCounter;
     this.servingCache.set(this.buildCacheKey(source, ref), {
-      html: buildResult.html,
-      bundle: buildResult.bundle,
-      css: buildResult.css,
-      assets: buildResult.assets,
+      artifacts: buildResult.artifacts,
+      htmlArtifact,
       metadata: buildResult.metadata,
       revision,
     });
@@ -698,66 +679,10 @@ export class PanelHttpServer {
     build: CachedBuild,
     resource: string
   ): void {
-    // ── HTML (static — no per-panel injection) ──
-    if (resource === "/" || resource === "/index.html") {
-      res.writeHead(200, {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store",
-        "X-NatStack-Build-Revision": String(build.revision),
-      });
-      res.end(build.html);
+    const artifact = this.resolvePanelArtifact(build, resource);
+    if (artifact) {
+      this.writeArtifact(res, build.revision, artifact);
       return;
-    }
-
-    // ── JS bundle ──
-    if (resource === "/bundle.js") {
-      res.writeHead(200, {
-        "Content-Type": "application/javascript; charset=utf-8",
-        "Cache-Control": "no-store",
-        "X-NatStack-Build-Revision": String(build.revision),
-      });
-      res.end(build.bundle);
-      return;
-    }
-
-    // ── CSS bundle ──
-    if (resource === "/bundle.css" && build.css) {
-      res.writeHead(200, {
-        "Content-Type": "text/css; charset=utf-8",
-        "Cache-Control": "no-store",
-        "X-NatStack-Build-Revision": String(build.revision),
-      });
-      res.end(build.css);
-      return;
-    }
-
-    // ── Static assets ──
-    if (build.assets) {
-      const normalized = resource.startsWith("/") ? resource : `/${resource}`;
-      const asset = build.assets[normalized] ?? build.assets[normalized.slice(1)];
-      if (asset) {
-        const ext = path.extname(normalized).toLowerCase();
-        const contentType = ASSET_MIME_TYPES[ext] ?? "application/octet-stream";
-
-        if (asset.encoding === "base64") {
-          const buf = Buffer.from(asset.content, "base64");
-          res.writeHead(200, {
-            "Content-Type": contentType,
-            "Content-Length": buf.length,
-            "Cache-Control": "public, max-age=31536000, immutable",
-            "X-NatStack-Build-Revision": String(build.revision),
-          });
-          res.end(buf);
-        } else {
-          res.writeHead(200, {
-            "Content-Type": contentType,
-            "Cache-Control": "public, max-age=31536000, immutable",
-            "X-NatStack-Build-Revision": String(build.revision),
-          });
-          res.end(asset.content);
-        }
-        return;
-      }
     }
 
     // ── SPA catch-all ──
@@ -768,7 +693,44 @@ export class PanelHttpServer {
       "Cache-Control": "no-store",
       "X-NatStack-Build-Revision": String(build.revision),
     });
-    res.end(build.html);
+    res.end(build.htmlArtifact.content);
+  }
+
+  private resolvePanelArtifact(
+    build: CachedBuild,
+    resource: string
+  ): (BuildArtifactManifestEntry & { content: string }) | null {
+    if (resource === "/" || resource === "/index.html") return build.htmlArtifact;
+    const normalized = resource.replace(/^\/+/, "");
+    return build.artifacts.find((artifact) => artifact.path === normalized) ?? null;
+  }
+
+  private writeArtifact(
+    res: import("http").ServerResponse,
+    revision: number,
+    artifact: BuildArtifactManifestEntry & { content: string }
+  ): void {
+    const cacheControl =
+      artifact.role === "asset" || artifact.role === "map"
+        ? "public, max-age=31536000, immutable"
+        : "no-store";
+    if (artifact.encoding === "base64") {
+      const body = Buffer.from(artifact.content, "base64");
+      res.writeHead(200, {
+        "Content-Type": artifact.contentType,
+        "Content-Length": body.length,
+        "Cache-Control": cacheControl,
+        "X-NatStack-Build-Revision": String(revision),
+      });
+      res.end(body);
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": artifact.contentType,
+      "Cache-Control": cacheControl,
+      "X-NatStack-Build-Revision": String(revision),
+    });
+    res.end(artifact.content);
   }
 
   // =========================================================================

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en" style="margin: 0; padding: 0; overflow: hidden">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NatStack - Agentic Panel Platform</title>
+    <link rel="stylesheet" href="./bundle.css" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        background-color: #111113;
+      }
+      #app {
+        margin: 0;
+        padding: 0;
+        min-height: 100dvh;
+      }
+      /* Ensure only the root Radix Theme fills viewport */
+      .radix-themes[data-is-root-theme="true"] {
+        min-height: 100dvh;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./bundle.js"></script>
+  </body>
+</html>

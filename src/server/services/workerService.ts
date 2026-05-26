@@ -29,7 +29,7 @@ export function createWorkerService(deps: {
   return {
     name: "workers",
     description: "Worker discovery and userland service resolution",
-    policy: { allowed: ["shell", "server", "panel", "worker", "do", "extension"] },
+    policy: { allowed: ["shell", "server", "panel", "app", "worker", "do", "extension"] },
     methods: {
       listSources: {
         description: "List available worker sources with durable object classes",

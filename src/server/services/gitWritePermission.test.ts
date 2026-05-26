@@ -13,7 +13,7 @@ function tempStatePath(): string {
 
 function caller(
   id: string,
-  kind: "panel" | "worker" | "do",
+  kind: "panel" | "app" | "worker" | "do",
   repoPath: string,
   effectiveVersion = "version-1"
 ) {
@@ -50,6 +50,7 @@ function createApprovalQueueMock(
 describe("gitWritePermission", () => {
   it.each([
     ["panel", "panel-source"],
+    ["app", "app:apps/shell:desktop"],
     ["worker", "worker:source"],
     ["do", "do:source:WorkspaceDO:object"],
   ] as const)("requests permission for %s internal git writes", async (kind, callerId) => {

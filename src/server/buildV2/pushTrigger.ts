@@ -240,10 +240,11 @@ export class PushTrigger extends EventEmitter {
       const node = this.graph.tryGet(name);
       if (!node) continue;
       if (node.kind === "package" || node.kind === "template") continue; // Packages/templates are not directly buildable
-      if (node.kind === "extension" && name !== nodeName) continue;
+      if ((node.kind === "extension" || node.kind === "app") && name !== nodeName) continue;
 
       const ev = assertPresent(result.evMap[name]);
-      const sourcemap = node.kind === "extension" ? true : node.manifest.sourcemap !== false;
+      const sourcemap =
+        node.kind === "extension" || node.kind === "app" ? true : node.manifest.sourcemap !== false;
       const buildKey = computeBuildKey(name, ev, sourcemap);
 
       if (buildStore.has(buildKey)) continue; // Already built
@@ -343,10 +344,11 @@ export class PushTrigger extends EventEmitter {
       const node = newGraph.tryGet(name);
       if (!node) continue;
       if (node.kind === "package" || node.kind === "template") continue;
-      if (node.kind === "extension" && name !== sourceNodeName) continue;
+      if ((node.kind === "extension" || node.kind === "app") && name !== sourceNodeName) continue;
 
       const ev = assertPresent(result.evMap[name]);
-      const sourcemap = node.kind === "extension" ? true : node.manifest.sourcemap !== false;
+      const sourcemap =
+        node.kind === "extension" || node.kind === "app" ? true : node.manifest.sourcemap !== false;
       const buildKey = computeBuildKey(name, ev, sourcemap);
 
       if (buildStore.has(buildKey)) continue;

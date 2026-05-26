@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { CapabilityGrantStore } from "./capabilityGrantStore.js";
+import { parseCanonicalKey } from "@natstack/shared/canonicalKey";
+import { CapabilityGrantStore, capabilityGrantKey } from "./capabilityGrantStore.js";
 import { normalizeCallerKind, requestCapabilityPermission } from "./capabilityPermission.js";
 import type { ApprovalQueue } from "./approvalQueue.js";
 import { createVerifiedCaller } from "@natstack/shared/serviceDispatcher";
@@ -34,6 +35,26 @@ function createApprovalQueueMock(
 }
 
 describe("capabilityPermission", () => {
+  it("uses the shared canonical key shape for session grants", () => {
+    expect(
+      parseCanonicalKey(
+        capabilityGrantKey("session", "native.notifications", "desktop", {
+          callerId: "app:apps/shell:window-1",
+          repoPath: "apps/shell",
+          effectiveVersion: "ev-shell",
+        })
+      )
+    ).toEqual([
+      "capability-grant",
+      "session",
+      "native.notifications",
+      "desktop",
+      "app:apps/shell:window-1",
+      "apps/shell",
+      "",
+    ]);
+  });
+
   it("stores reusable grants with a stable resource key", async () => {
     const approvalQueue = createApprovalQueueMock("session");
     const deps = {
@@ -138,7 +159,8 @@ describe("capabilityPermission", () => {
   });
 
   describe("normalizeCallerKind", () => {
-    it("accepts panel, worker, and do caller kinds", () => {
+    it("accepts app, panel, worker, and do caller kinds", () => {
+      expect(normalizeCallerKind("app")).toBe("app");
       expect(normalizeCallerKind("panel")).toBe("panel");
       expect(normalizeCallerKind("worker")).toBe("worker");
       expect(normalizeCallerKind("do")).toBe("do");

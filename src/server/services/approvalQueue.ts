@@ -19,9 +19,7 @@ import type {
   PendingCredentialInputApproval,
   PendingClientConfigApproval,
   PendingDeviceCodeApproval,
-  PendingExtensionApproval,
-  PendingExtensionApprovalAction,
-  PendingExtensionBatchApproval,
+  PendingUnitBatchApproval,
   PendingUserlandApproval,
   UserlandApprovalChoice,
   UserlandApprovalOption,
@@ -38,7 +36,7 @@ export type GrantedDecision = "once" | "session" | "version" | "repo" | "deny";
 
 interface ApprovalQueueRequestBase {
   callerId: string;
-  callerKind: "panel" | "worker" | "do" | "system";
+  callerKind: "panel" | "app" | "worker" | "do" | "system";
   repoPath: string;
   effectiveVersion: string;
   signal?: AbortSignal;
@@ -78,39 +76,14 @@ export interface CapabilityApprovalQueueRequest extends ApprovalQueueRequestBase
   details?: PendingCapabilityApproval["details"];
 }
 
-export interface ExtensionApprovalQueueRequest extends ApprovalQueueRequestBase {
-  kind: "extension";
+export interface UnitBatchApprovalQueueRequest extends ApprovalQueueRequestBase {
+  kind: "unit-batch";
   dedupKey?: string | null;
-  action: PendingExtensionApprovalAction;
-  extensionName: string;
-  version?: string | null;
-  source: PendingExtensionApproval["source"];
+  trigger: PendingUnitBatchApproval["trigger"];
   title: string;
   description: string;
-  ev?: string | null;
-  previousEv?: string | null;
-  sha?: string | null;
-  previousSha?: string | null;
-  activeDependencyEvs?: Record<string, string>;
-  candidateDependencyEvs?: Record<string, string>;
-  activeRuntimeDepsKey?: string | null;
-  candidateRuntimeDepsKey?: string | null;
-  extensionDiff?: PendingExtensionApproval["extensionDiff"];
-  workspaceDepChanges?: PendingExtensionApproval["workspaceDepChanges"];
-  externalDepChanges?: PendingExtensionApproval["externalDepChanges"];
-  integrity?: string | null;
-  capabilities?: string[];
-  details?: PendingExtensionApproval["details"];
-}
-
-export interface ExtensionBatchApprovalQueueRequest extends ApprovalQueueRequestBase {
-  kind: "extension-batch";
-  dedupKey?: string | null;
-  trigger: PendingExtensionBatchApproval["trigger"];
-  title: string;
-  description: string;
-  extensions: PendingExtensionBatchApproval["extensions"];
-  configWrite?: PendingExtensionBatchApproval["configWrite"];
+  units: PendingUnitBatchApproval["units"];
+  configWrite?: PendingUnitBatchApproval["configWrite"];
 }
 
 export interface ClientConfigApprovalQueueRequest extends ApprovalQueueRequestBase {
@@ -174,16 +147,14 @@ export interface DeviceCodeApprovalHandle {
 export type ApprovalQueueRequest =
   | CredentialApprovalQueueRequest
   | CapabilityApprovalQueueRequest
-  | ExtensionApprovalQueueRequest
-  | ExtensionBatchApprovalQueueRequest
+  | UnitBatchApprovalQueueRequest
   | ClientConfigApprovalQueueRequest
   | CredentialInputApprovalQueueRequest
   | DeviceCodeApprovalQueueRequest;
 export type DecisionApprovalQueueRequest =
   | CredentialApprovalQueueRequest
   | CapabilityApprovalQueueRequest
-  | ExtensionApprovalQueueRequest
-  | ExtensionBatchApprovalQueueRequest;
+  | UnitBatchApprovalQueueRequest;
 
 export type ClientConfigApprovalResult =
   | { decision: "submit"; values: Record<string, string> }
@@ -297,63 +268,60 @@ export function createApprovalQueue(deps: {
   }
 
   function dedupKeyFor(req: ApprovalQueueRequest): string {
-    // TODO(canonicalKey): migrate these legacy approval keys to shared canonicalKey.
     if (req.kind === "capability") {
       if (req.dedupKey === null) {
-        return ["capability-isolated", randomUUID()].join("\x00");
+        return canonicalKey(["capability-isolated", randomUUID()]);
       }
       if (req.dedupKey) {
-        return ["capability-custom", req.callerId, req.dedupKey].join("\x00");
+        return canonicalKey(["capability-custom", req.callerId, req.dedupKey]);
       }
-      return [
+      return canonicalKey([
         "capability",
         req.callerId,
         req.repoPath,
         req.effectiveVersion,
         req.capability,
         req.resource?.value ?? "",
-      ].join("\x00");
+      ]);
     }
-    if (req.kind === "extension") {
+    if (req.kind === "unit-batch") {
       if (req.dedupKey === null) {
-        return ["extension-isolated", randomUUID()].join("\x00");
+        return canonicalKey(["unit-batch-isolated", randomUUID()]);
       }
       if (req.dedupKey) {
-        return ["extension-custom", req.callerId, req.dedupKey].join("\x00");
-      }
-      return [
-        "extension",
-        req.callerId,
-        req.action,
-        req.extensionName,
-        req.source.repo,
-        req.source.ref,
-      ].join("\x00");
-    }
-    if (req.kind === "extension-batch") {
-      if (req.dedupKey === null) {
-        return ["extension-batch-isolated", randomUUID()].join("\x00");
-      }
-      if (req.dedupKey) {
-        return ["extension-batch-custom", req.callerId, req.dedupKey].join("\x00");
+        return canonicalKey(["unit-batch-custom", req.callerId, req.dedupKey]);
       }
       // Coalesce duplicate reconciles for the same trigger + set onto one
-      // prompt. Include each extension's source repo/ref/ev and the config
+      // prompt. Include each unit's source repo/ref/ev and the config
       // write, so batches that differ only in those (same names) don't collapse
       // and surface stale consent details.
       return canonicalKey([
-        "extension-batch",
+        "unit-batch",
         req.trigger,
-        ...req.extensions
+        ...req.units
           .slice()
-          .sort((a, b) => a.extensionName.localeCompare(b.extensionName))
-          .flatMap((e) => [e.extensionName, e.source.repo, e.source.ref, e.ev ?? null]),
+          .sort((a, b) =>
+            `${a.unitKind}:${a.unitName}`.localeCompare(`${b.unitKind}:${b.unitName}`)
+          )
+          .flatMap((unit) => [
+            unit.unitKind,
+            unit.unitName,
+            unit.target ?? null,
+            unit.source.repo,
+            unit.source.ref,
+            unit.ev ?? null,
+            unit.integrity ?? null,
+            unit.provider?.name ?? null,
+            unit.provider?.activeEv ?? null,
+            unit.provider?.activeBuildKey ?? null,
+            unit.provider?.contractVersion ?? null,
+          ]),
         req.configWrite?.repoPath ?? null,
         req.configWrite?.summary ?? null,
       ]);
     }
     if (req.kind === "client-config") {
-      return [
+      return canonicalKey([
         "client-config",
         req.repoPath,
         req.effectiveVersion,
@@ -361,20 +329,26 @@ export function createApprovalQueue(deps: {
         req.authorizeUrl,
         req.tokenUrl,
         req.fields.map((field) => field.name).join(","),
-      ].join("\x00");
+      ]);
     }
     if (req.kind === "credential-input") {
       // A submitted secret is a one-shot input, not a reusable approval. Keep
       // concurrent prompts isolated so one submission cannot release multiple
       // waiters and create duplicate credentials.
-      return ["credential-input-isolated", randomUUID()].join("\x00");
+      return canonicalKey(["credential-input-isolated", randomUUID()]);
     }
     if (req.kind === "device-code") {
       // Each device-code flow is independent — the user_code is unique and
       // the polling loop is tied to a specific outstanding request.
-      return ["device-code", randomUUID()].join("\x00");
+      return canonicalKey(["device-code", randomUUID()]);
     }
-    return `${req.callerId}\x00${req.repoPath}\x00${req.effectiveVersion}\x00${req.credentialId}`;
+    return canonicalKey([
+      "credential",
+      req.callerId,
+      req.repoPath,
+      req.effectiveVersion,
+      req.credentialId,
+    ]);
   }
 
   function userlandDedupKeyFor(req: UserlandApprovalQueueRequest): string {
@@ -414,47 +388,16 @@ export function createApprovalQueue(deps: {
         details: req.details,
       } satisfies PendingCapabilityApproval;
     }
-    if (req.kind === "extension") {
+    if (req.kind === "unit-batch") {
       return {
         ...base,
-        kind: "extension",
-        action: req.action,
-        extensionName: req.extensionName,
-        version: req.version,
-        source: req.source,
-        title: req.title,
-        description: req.description,
-        ev: req.ev,
-        previousEv: req.previousEv,
-        sha: req.sha,
-        previousSha: req.previousSha,
-        activeDependencyEvs: req.activeDependencyEvs,
-        candidateDependencyEvs: req.candidateDependencyEvs,
-        activeRuntimeDepsKey: req.activeRuntimeDepsKey,
-        candidateRuntimeDepsKey: req.candidateRuntimeDepsKey,
-        extensionDiff: req.extensionDiff,
-        workspaceDepChanges: req.workspaceDepChanges,
-        externalDepChanges: req.externalDepChanges,
-        integrity: req.integrity,
-        capabilities: req.capabilities ?? [
-          "node:fs",
-          "node:child_process",
-          "node:net",
-          "userland:*",
-        ],
-        details: req.details,
-      } satisfies PendingExtensionApproval;
-    }
-    if (req.kind === "extension-batch") {
-      return {
-        ...base,
-        kind: "extension-batch",
+        kind: "unit-batch",
         trigger: req.trigger,
         title: req.title,
         description: req.description,
-        extensions: req.extensions,
+        units: req.units,
         configWrite: req.configWrite ?? null,
-      } satisfies PendingExtensionBatchApproval;
+      } satisfies PendingUnitBatchApproval;
     }
     if (req.kind === "client-config") {
       return {

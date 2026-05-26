@@ -11,6 +11,7 @@ import type { ViewManager } from "./viewManager.js";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import type { PanelViewLike, ServerInfoLike } from "@natstack/shared/panelInterfaces";
 import { BROWSER_SESSION_PARTITION } from "@natstack/shared/panelInterfaces";
+import type { AppCapability } from "@natstack/shared/unitManifest";
 import {
   getCurrentSnapshot,
   getPanelSource,
@@ -78,6 +79,7 @@ export class PanelView implements PanelViewLike {
   private autofillManager?: AutofillManagerLike;
   private autofillPreloadPath?: string;
   private panelPreloadPath?: string;
+  private appPreloadPath?: string;
   private browserPreloadPath?: string;
   private browserHistoryRecorder?: BrowserHistoryRecorder;
 
@@ -111,6 +113,7 @@ export class PanelView implements PanelViewLike {
     autofillManager?: AutofillManagerLike;
     autofillPreloadPath?: string;
     panelPreloadPath?: string;
+    appPreloadPath?: string;
     browserPreloadPath?: string;
     browserHistoryRecorder?: BrowserHistoryRecorder;
   }) {
@@ -124,6 +127,7 @@ export class PanelView implements PanelViewLike {
     this.autofillManager = deps.autofillManager;
     this.autofillPreloadPath = deps.autofillPreloadPath;
     this.panelPreloadPath = deps.panelPreloadPath;
+    this.appPreloadPath = deps.appPreloadPath;
     this.browserPreloadPath = deps.browserPreloadPath;
     this.browserHistoryRecorder = deps.browserHistoryRecorder;
   }
@@ -162,6 +166,40 @@ export class PanelView implements PanelViewLike {
     }
 
     this.setupLinkInterception(panelId, view.webContents);
+  }
+
+  async createViewForApp(
+    appId: string,
+    url: string,
+    contextId?: string,
+    capabilities?: readonly AppCapability[],
+    identity?: { source?: string; effectiveVersion?: string | null }
+  ): Promise<void> {
+    if (this.viewManager.hasView(appId)) {
+      const currentUrl = this.viewManager.getViewUrl(appId);
+      if (currentUrl !== url) {
+        await this.viewManager.updateAppView(appId, url, capabilities, identity);
+      }
+      return;
+    }
+    if (!this.appPreloadPath) {
+      throw new Error("App preload is required for privileged app views");
+    }
+
+    const view = this.viewManager.createView({
+      id: appId,
+      type: "app",
+      preload: this.appPreloadPath,
+      url,
+      partition: contextId ? contextIdToPartition(contextId) : undefined,
+      injectHostThemeVariables: true,
+      appCapabilities: capabilities,
+      hostChrome: capabilities?.includes("panel-hosting") ?? false,
+      appIdentity: identity,
+    });
+
+    this.setupBrowserStateTracking(appId, view.webContents);
+    this.setupLinkInterception(appId, view.webContents);
   }
 
   setViewVisible(panelId: string, visible: boolean): void {

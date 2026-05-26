@@ -96,10 +96,29 @@ const { PanelHttpServer } = await import("./panelHttpServer.js");
 describe("PanelHttpServer build cache", () => {
   const buildResult = {
     dir: "/tmp/build",
-    bundlePath: "/tmp/build/bundle.js",
-    html: "<html></html>",
-    bundle: "console.log('hi')",
-    css: "body{}",
+    artifacts: [
+      {
+        path: "index.html",
+        role: "html",
+        contentType: "text/html; charset=utf-8",
+        encoding: "utf8",
+        content: "<html></html>",
+      },
+      {
+        path: "bundle.js",
+        role: "primary",
+        contentType: "application/javascript; charset=utf-8",
+        encoding: "utf8",
+        content: "console.log('hi')",
+      },
+      {
+        path: "bundle.css",
+        role: "css",
+        contentType: "text/css; charset=utf-8",
+        encoding: "utf8",
+        content: "body{}",
+      },
+    ],
     metadata: { entryPoint: "index.tsx", outputSize: 100, buildDuration: 50 },
   } as unknown as import("./buildV2/buildStore.js").BuildResult;
 
@@ -141,12 +160,22 @@ describe("PanelHttpServer build cache", () => {
 
   it("storeBuild rejects build without html", () => {
     const server = new PanelHttpServer();
-    expect(() => server.storeBuild("panels/x", { ...buildResult, html: "" })).toThrow();
+    expect(() =>
+      server.storeBuild("panels/x", {
+        ...buildResult,
+        artifacts: buildResult.artifacts.filter((artifact) => artifact.role !== "html"),
+      })
+    ).toThrow(/missing HTML or primary artifact/);
   });
 
   it("storeBuild rejects build without bundle", () => {
     const server = new PanelHttpServer();
-    expect(() => server.storeBuild("panels/x", { ...buildResult, bundle: "" })).toThrow();
+    expect(() =>
+      server.storeBuild("panels/x", {
+        ...buildResult,
+        artifacts: buildResult.artifacts.filter((artifact) => artifact.role !== "primary"),
+      })
+    ).toThrow(/missing HTML or primary artifact/);
   });
 
   it("storeBuild calls onBuildComplete callback with source", () => {

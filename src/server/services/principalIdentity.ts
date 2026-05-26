@@ -1,8 +1,13 @@
 import type { EntityCache } from "@natstack/shared/runtime/entityCache";
+import {
+  callerKindForPrincipalKind,
+  isCodeIdentityCallerKind,
+  type CodeIdentityCallerKind,
+} from "@natstack/shared/principalKinds";
 
 export interface ResolvedCodeIdentity {
   callerId: string;
-  callerKind: "worker" | "panel" | "do";
+  callerKind: CodeIdentityCallerKind;
   repoPath: string;
   effectiveVersion: string;
 }
@@ -20,10 +25,12 @@ export function resolveCodeIdentity(
 ): ResolvedCodeIdentity | null {
   const record = entityCache.resolveActive(callerId);
   if (!record) return null;
-  if (record.kind !== "panel" && record.kind !== "worker" && record.kind !== "do") return null;
+  if (!isCodeIdentityCallerKind(record.kind)) return null;
+  const callerKind = callerKindForPrincipalKind(record.kind);
+  if (!isCodeIdentityCallerKind(callerKind)) return null;
   return {
     callerId,
-    callerKind: record.kind === "panel" ? "panel" : record.kind === "do" ? "do" : "worker",
+    callerKind,
     repoPath: record.source.repoPath,
     effectiveVersion: record.source.effectiveVersion,
   };

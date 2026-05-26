@@ -53,26 +53,55 @@ function requestCapability(queue: ReturnType<typeof createQueue>) {
   });
 }
 
-function requestExtension(
-  queue: ReturnType<typeof createQueue>,
-  action: "install" | "source-push" = "install"
-) {
+function requestAppSourcePush(queue: ReturnType<typeof createQueue>) {
   return queue.request({
-    kind: "extension",
+    kind: "unit-batch",
     callerId: "panel-1",
     callerKind: "panel",
     repoPath: "panels/example",
     effectiveVersion: "hash-1",
-    action,
-    extensionName: "@workspace-extensions/image-service",
-    version: "1.0.0",
-    source: {
-      kind: "internal-git",
-      repo: "extensions/@workspace-extensions/image-service",
-      ref: "HEAD",
-    },
-    title: "Install extension",
-    description: "Install and run this extension.",
+    trigger: "source-push",
+    title: "@workspace-apps/shell app source push",
+    description: "Accepting this push updates trusted workspace app code.",
+    units: [
+      {
+        unitKind: "app",
+        unitName: "@workspace-apps/shell",
+        displayName: "Shell",
+        version: "1.0.0",
+        target: "electron",
+        source: { kind: "internal-git", repo: "apps/shell", ref: "main" },
+        ev: "ev-shell",
+        capabilities: ["notifications"],
+      },
+    ],
+    configWrite: null,
+  });
+}
+
+function requestUnitManagement(queue: ReturnType<typeof createQueue>) {
+  return queue.request({
+    kind: "unit-batch",
+    callerId: "panel-1",
+    callerKind: "panel",
+    repoPath: "panels/example",
+    effectiveVersion: "hash-1",
+    trigger: "management",
+    title: "Reload extension",
+    description: "Allow panel panel-1 to reload @workspace-extensions/image-service.",
+    units: [
+      {
+        unitKind: "extension",
+        unitName: "@workspace-extensions/image-service",
+        displayName: "Image Service",
+        version: "1.0.0",
+        target: null,
+        source: { kind: "internal-git", repo: "extensions/image-service", ref: "main" },
+        ev: "ev-image",
+        capabilities: ["node:fs"],
+      },
+    ],
+    configWrite: null,
   });
 }
 
@@ -316,7 +345,7 @@ describe("approvalPushBridge", () => {
     await expect(promise).resolves.toEqual({ decision: "deny" });
   });
 
-  it("sends extension approvals with approve, deny, and open actions only", async () => {
+  it("offers session grants for unit source-push approvals", async () => {
     const queue = createQueue();
     const push = createPushMock();
     createApprovalPushBridge({
@@ -329,14 +358,47 @@ describe("approvalPushBridge", () => {
       },
     });
 
-    const promise = requestExtension(queue);
+    const promise = requestAppSourcePush(queue);
     await flush();
 
     expect(push.sendBatch).toHaveBeenCalledWith(
       expect.objectContaining({
-        category: APPROVAL_CATEGORY_DECIDE,
         data: expect.objectContaining({
-          approvalKind: "extension",
+          approvalKind: "unit-batch",
+          actionsJson: JSON.stringify([
+            { id: "once", title: "Approve push" },
+            { id: "session", title: "Session" },
+            { id: "deny", title: "Deny" },
+            { id: "open", title: "Open" },
+          ]),
+        }),
+      })
+    );
+
+    queue.resolve(queue.listPending()[0]!.approvalId, "session");
+    await expect(promise).resolves.toBe("session");
+  });
+
+  it("does not offer session grants for unit management approvals", async () => {
+    const queue = createQueue();
+    const push = createPushMock();
+    createApprovalPushBridge({
+      approvalQueue: queue,
+      push,
+      shellPresence: {
+        isAnyShellActive: () => false,
+        markActive: vi.fn(),
+        getActiveShellCount: () => 0,
+      },
+    });
+
+    const promise = requestUnitManagement(queue);
+    await flush();
+
+    expect(push.sendBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          approvalKind: "unit-batch",
           actionsJson: JSON.stringify([
             { id: "once", title: "Approve" },
             { id: "deny", title: "Deny" },
@@ -348,40 +410,6 @@ describe("approvalPushBridge", () => {
 
     queue.resolve(queue.listPending()[0]!.approvalId, "once");
     await expect(promise).resolves.toBe("once");
-  });
-
-  it("offers session grants for extension source-push approvals", async () => {
-    const queue = createQueue();
-    const push = createPushMock();
-    createApprovalPushBridge({
-      approvalQueue: queue,
-      push,
-      shellPresence: {
-        isAnyShellActive: () => false,
-        markActive: vi.fn(),
-        getActiveShellCount: () => 0,
-      },
-    });
-
-    const promise = requestExtension(queue, "source-push");
-    await flush();
-
-    expect(push.sendBatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          approvalKind: "extension",
-          actionsJson: JSON.stringify([
-            { id: "once", title: "Approve" },
-            { id: "session", title: "Session" },
-            { id: "deny", title: "Deny" },
-            { id: "open", title: "Open" },
-          ]),
-        }),
-      })
-    );
-
-    queue.resolve(queue.listPending()[0]!.approvalId, "session");
-    await expect(promise).resolves.toBe("session");
   });
 
   it("labels DO-origin approvals accurately in push copy", async () => {

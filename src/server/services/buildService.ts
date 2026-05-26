@@ -6,7 +6,7 @@ export function createBuildService(deps: { buildSystem: BuildSystemV2 }): Servic
   return {
     name: "build",
     description: "Build system (getBuild, getBuildNpm, recompute, gc, getAboutPages)",
-    policy: { allowed: ["panel", "shell", "server", "worker", "do", "extension"] },
+    policy: { allowed: ["panel", "app", "shell", "server", "worker", "do", "extension"] },
     methods: {
       getBuild: {
         args: z.tuple([
@@ -44,12 +44,18 @@ export function createBuildService(deps: { buildSystem: BuildSystemV2 }): Servic
     handler: async (_ctx, method, args) => {
       const bs = deps.buildSystem;
       switch (method) {
-        case "getBuild":
-          return bs.getBuild(
-            args[0] as string,
-            args[1] as string | undefined,
-            args[2] as BuildUnitOptions | undefined
-          );
+        case "getBuild": {
+          const options = args[2] as BuildUnitOptions | undefined;
+          return options?.library
+            ? bs.getBuild(args[0] as string, args[1] as string | undefined, {
+                ...options,
+                library: true,
+              })
+            : bs.getBuild(args[0] as string, args[1] as string | undefined, {
+                ...options,
+                library: false,
+              });
+        }
         case "getBuildNpm":
           return bs.getBuildNpm(
             args[0] as string,

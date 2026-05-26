@@ -33,7 +33,7 @@ import {
   type ChangeSet,
 } from "./effectiveVersion.js";
 import * as buildStore from "./buildStore.js";
-import type { BuildResult } from "./buildStore.js";
+import { primaryTextArtifactContent, type BuildResult } from "./buildStore.js";
 import {
   analyzeExtensionDependencies,
   buildUnit,
@@ -53,6 +53,7 @@ import {
 import type { GitServer } from "@natstack/git-server";
 import { EXTENSION_RUNTIME_ABI_VERSION } from "@natstack/shared/extensionRuntimeAbi";
 import { assertPresent } from "../../lintHelpers";
+import { onBuildProviderChange, resolveBuildProvider } from "./buildProviderRegistry.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -75,10 +76,27 @@ export interface ExtensionDoctorReport {
 }
 
 export type { BuildUnitOptions } from "./builder.js";
+export {
+  clearBuildProvidersForTests,
+  listBuildProviders,
+  registerBuildProvider,
+  resolveBuildProvider,
+  onBuildProviderChange,
+  unregisterBuildProvider,
+} from "./buildProviderRegistry.js";
 
 export interface BuildSystemV2 {
   /** Get build result for a panel/worker/extension/library. Optional ref builds at a specific git ref. */
-  getBuild(unitPath: string, ref?: string, options?: BuildUnitOptions): Promise<BuildResult>;
+  getBuild(
+    unitPath: string,
+    ref: string | undefined,
+    options: BuildUnitOptions & { library: true }
+  ): Promise<{ bundle: string }>;
+  getBuild(
+    unitPath: string,
+    ref?: string,
+    options?: BuildUnitOptions & { library?: false | undefined }
+  ): Promise<BuildResult>;
 
   /** Get an immutable build-store artifact by build key. */
   getBuildByKey(key: string): BuildResult | null;
@@ -95,6 +113,28 @@ export interface BuildSystemV2 {
 
   /** Get external npm runtime/build dependencies for a unit. */
   getExternalDeps(unitName: string): Record<string, string>;
+
+  /** Get the active provider identity that affects builds for a pluggable target. */
+  getBuildProviderDetails(target: "react-native"): {
+    name: string;
+    activeEv: string | null;
+    activeBuildKey: string | null;
+    contractVersion: string;
+  } | null;
+
+  /** Subscribe to provider registration changes that can invalidate app build trust. */
+  onBuildProviderChange(
+    callback: (event: {
+      type: "registered" | "unregistered";
+      target: "react-native";
+      provider: {
+        name: string;
+        activeEv: string | null;
+        activeBuildKey: string | null;
+        contractVersion: string;
+      };
+    }) => void
+  ): () => void;
 
   /** Inspect an extension manifest, dependency routing, cached metadata, and smoke/build status. */
   doctorExtension(unitName: string): Promise<ExtensionDoctorReport>;
@@ -169,9 +209,11 @@ export async function initBuildSystemV2(
   // Step 5: Build anything that's missing from the store
   const buildableNodes = graph
     .allNodes()
-    // Extensions are native-code units. They are built only after an explicit
-    // extension approval path, or after an approved extension source push.
-    .filter((n) => n.kind !== "package" && n.kind !== "template" && n.kind !== "extension");
+    // Trusted units are built only after the approval/reconcile path.
+    .filter(
+      (n) =>
+        n.kind !== "package" && n.kind !== "template" && n.kind !== "extension" && n.kind !== "app"
+    );
 
   let buildCount = 0;
   for (const node of buildableNodes) {
@@ -240,119 +282,127 @@ export async function initBuildSystemV2(
   // Public API
   // ---------------------------------------------------------------------------
 
-  return {
-    async getBuild(
-      unitPath: string,
-      ref?: string,
-      options?: BuildUnitOptions
-    ): Promise<BuildResult> {
-      // unitPath can be a package name or workspace-relative path
-      let node = resolveUnit(currentGraph, unitPath, workspaceRoot);
-      if (!node) {
-        // Unit not in current graph — may have been just created via create_project.
-        // Try a quick rediscovery before giving up.
-        const newGraph = discoverPackageGraph(workspaceRoot);
-        const result = computeEffectiveVersions(newGraph);
-        currentGraph = newGraph;
-        currentEvMap = result.evMap;
-        currentContentHashes = result.contentHashes;
-        persistEvMap(result.evMap);
-        persistRefState(snapshotRefState(newGraph));
-        pushTrigger.updateState(newGraph, result.evMap, result.contentHashes);
+  const libraryBuildResult = (build: BuildResult): { bundle: string } => ({
+    bundle: primaryTextArtifactContent(build),
+  });
 
-        node = resolveUnit(currentGraph, unitPath, workspaceRoot);
-        if (!node) {
-          // @natstack/* packages aren't in the workspace graph — they're compiled
-          // platform packages in node_modules. Build them as library bundles
-          // so eval can import them.
-          if (unitPath.startsWith("@natstack/") && options?.library) {
-            const bundle = await buildPlatformLibrary(unitPath, options.externals ?? []);
-            // Library builds only need the bundle string — callers destructure { bundle }
-            return { bundle } as BuildResult;
-          }
-          throw new Error(`Unknown build unit: ${unitPath}`);
+  const getBuild = async function getBuild(
+    unitPath: string,
+    ref?: string,
+    options?: BuildUnitOptions
+  ): Promise<BuildResult | { bundle: string }> {
+    // unitPath can be a package name or workspace-relative path
+    let node = resolveUnit(currentGraph, unitPath, workspaceRoot);
+    if (!node) {
+      // Unit not in current graph — may have been just created via create_project.
+      // Try a quick rediscovery before giving up.
+      const newGraph = discoverPackageGraph(workspaceRoot);
+      const result = computeEffectiveVersions(newGraph);
+      currentGraph = newGraph;
+      currentEvMap = result.evMap;
+      currentContentHashes = result.contentHashes;
+      persistEvMap(result.evMap);
+      persistRefState(snapshotRefState(newGraph));
+      pushTrigger.updateState(newGraph, result.evMap, result.contentHashes);
+
+      node = resolveUnit(currentGraph, unitPath, workspaceRoot);
+      if (!node) {
+        // @natstack/* packages aren't in the workspace graph — they're compiled
+        // platform packages in node_modules. Build them as library bundles
+        // so eval can import them.
+        if (unitPath.startsWith("@natstack/") && options?.library) {
+          const bundle = await buildPlatformLibrary(unitPath, options.externals ?? []);
+          // Library builds only need the bundle string — callers destructure { bundle }
+          return { bundle };
         }
+        throw new Error(`Unknown build unit: ${unitPath}`);
+      }
+    }
+
+    // ── Ref-specific build path ──
+    if (ref) {
+      const commitSha = getCommitAt(node.path, ref);
+      if (!commitSha) {
+        throw new Error(`Ref not found: ${ref}`);
       }
 
-      // ── Ref-specific build path ──
-      if (ref) {
-        const commitSha = getCommitAt(node.path, ref);
-        if (!commitSha) {
-          throw new Error(`Ref not found: ${ref}`);
+      // Build commitMap by walking the dep tree parent-by-parent.
+      // Each parent resolves its own children's refs via internalDepRefs,
+      // so transitive deps (A→B→C) correctly use B's ref spec for C.
+      const commitMap = new Map<string, string>();
+      commitMap.set(node.name, commitSha);
+
+      function walkDeps(parent: GraphNode): void {
+        for (const depName of parent.internalDeps) {
+          if (commitMap.has(depName)) continue;
+          const dep = currentGraph.tryGet(depName);
+          if (!dep) continue;
+          const depRef = parent.internalDepRefs[depName];
+          const gitRef = resolveDepRefToGitRef(dep.path, depRef);
+          const depCommit = getCommitAt(dep.path, gitRef);
+          if (depCommit) commitMap.set(dep.name, depCommit);
+          walkDeps(dep);
         }
+      }
+      walkDeps(node);
 
-        // Build commitMap by walking the dep tree parent-by-parent.
-        // Each parent resolves its own children's refs via internalDepRefs,
-        // so transitive deps (A→B→C) correctly use B's ref spec for C.
-        const commitMap = new Map<string, string>();
-        commitMap.set(node.name, commitSha);
+      // Recompute EV at the requested ref
+      const refResult = recomputeFromNode(
+        currentGraph,
+        node.name,
+        currentEvMap,
+        currentContentHashes,
+        commitSha
+      );
+      const ev = refResult.evMap[node.name];
+      if (!ev) {
+        throw new Error(`No effective version for ${node.name} at ref ${ref}`);
+      }
 
-        function walkDeps(parent: GraphNode): void {
-          for (const depName of parent.internalDeps) {
-            if (commitMap.has(depName)) continue;
-            const dep = currentGraph.tryGet(depName);
-            if (!dep) continue;
-            const depRef = parent.internalDepRefs[depName];
-            const gitRef = resolveDepRefToGitRef(dep.path, depRef);
-            const depCommit = getCommitAt(dep.path, gitRef);
-            if (depCommit) commitMap.set(dep.name, depCommit);
-            walkDeps(dep);
-          }
-        }
-        walkDeps(node);
+      const build = await buildUnit(node, ev, currentGraph, workspaceRoot, commitMap, options);
+      return options?.library ? libraryBuildResult(build) : build;
+    }
 
-        // Recompute EV at the requested ref
-        const refResult = recomputeFromNode(
+    // ── HEAD build path (existing behavior) ──
+
+    // Check if the git tree hash has changed since the last EV computation.
+    // This catches the race where commit_and_push returns before the push
+    // trigger has processed the event. Fast path: if hash matches, skip
+    // the expensive recomputeFromNode call entirely.
+    // Uses async git to avoid blocking the event loop on every HTML request.
+    let ev = currentEvMap[node.name];
+    try {
+      const freshTreeHash = await computeGitTreeHashAsync(node.path);
+      if (freshTreeHash !== currentContentHashes[node.name]) {
+        const result = recomputeFromNode(
           currentGraph,
           node.name,
           currentEvMap,
-          currentContentHashes,
-          commitSha
+          currentContentHashes
         );
-        const ev = refResult.evMap[node.name];
-        if (!ev) {
-          throw new Error(`No effective version for ${node.name} at ref ${ref}`);
+        const freshEv = result.evMap[node.name];
+        if (freshEv && freshEv !== ev) {
+          currentEvMap = result.evMap;
+          currentContentHashes = result.contentHashes;
+          persistEvMap(result.evMap);
+          ev = freshEv;
         }
-
-        return buildUnit(node, ev, currentGraph, workspaceRoot, commitMap, options);
       }
+    } catch {
+      // Git hash check failed — use cached EV (best effort)
+    }
 
-      // ── HEAD build path (existing behavior) ──
+    if (!ev) {
+      throw new Error(`No effective version for ${node.name}`);
+    }
 
-      // Check if the git tree hash has changed since the last EV computation.
-      // This catches the race where commit_and_push returns before the push
-      // trigger has processed the event. Fast path: if hash matches, skip
-      // the expensive recomputeFromNode call entirely.
-      // Uses async git to avoid blocking the event loop on every HTML request.
-      let ev = currentEvMap[node.name];
-      try {
-        const freshTreeHash = await computeGitTreeHashAsync(node.path);
-        if (freshTreeHash !== currentContentHashes[node.name]) {
-          const result = recomputeFromNode(
-            currentGraph,
-            node.name,
-            currentEvMap,
-            currentContentHashes
-          );
-          const freshEv = result.evMap[node.name];
-          if (freshEv && freshEv !== ev) {
-            currentEvMap = result.evMap;
-            currentContentHashes = result.contentHashes;
-            persistEvMap(result.evMap);
-            ev = freshEv;
-          }
-        }
-      } catch {
-        // Git hash check failed — use cached EV (best effort)
-      }
+    // Build on demand (buildUnit handles cache + coalescing internally)
+    const build = await buildUnit(node, ev, currentGraph, workspaceRoot, undefined, options);
+    return options?.library ? libraryBuildResult(build) : build;
+  } as BuildSystemV2["getBuild"];
 
-      if (!ev) {
-        throw new Error(`No effective version for ${node.name}`);
-      }
-
-      // Build on demand (buildUnit handles cache + coalescing internally)
-      return buildUnit(node, ev, currentGraph, workspaceRoot, undefined, options);
-    },
+  return {
+    getBuild,
 
     async getBuildNpm(
       specifier: string,
@@ -375,6 +425,36 @@ export async function initBuildSystemV2(
       const node = resolveUnit(currentGraph, unitName, workspaceRoot);
       if (!node) return {};
       return collectTransitiveExternalDeps(node, currentGraph, workspaceRoot, appNodeModuleRoots);
+    },
+
+    getBuildProviderDetails(target: "react-native") {
+      try {
+        const provider = resolveBuildProvider(target);
+        return {
+          name: provider.name,
+          activeEv: provider.activeEv,
+          activeBuildKey: provider.activeBuildKey,
+          contractVersion: provider.contractVersion,
+        };
+      } catch {
+        return null;
+      }
+    },
+
+    onBuildProviderChange(callback) {
+      return onBuildProviderChange((event) => {
+        if (event.target !== "react-native") return;
+        callback({
+          type: event.type,
+          target: event.target,
+          provider: {
+            name: event.provider.name,
+            activeEv: event.provider.activeEv,
+            activeBuildKey: event.provider.activeBuildKey,
+            contractVersion: event.provider.contractVersion,
+          },
+        });
+      });
     },
 
     async doctorExtension(unitName: string): Promise<ExtensionDoctorReport> {
@@ -417,6 +497,8 @@ export async function initBuildSystemV2(
           )
         : null;
       const build = buildKey ? buildStore.get(buildKey) : null;
+      const extensionDetails =
+        build?.metadata.details.kind === "extension" ? build.metadata.details : null;
       const checks: ExtensionDoctorReport["checks"] = [
         { name: "manifest", status: "pass", message: "Extension manifest was discovered." },
         {
@@ -435,15 +517,15 @@ export async function initBuildSystemV2(
           name: "build-cache",
           status: build ? "pass" : "warn",
           message: build
-            ? `Cached build found with ABI ${build.metadata.extensionRuntimeAbi ?? "unknown"}.`
+            ? `Cached build found with ABI ${extensionDetails?.runtimeAbi ?? "unknown"}.`
             : "No cached build found for the current runtime ABI.",
         },
       ];
-      if (build?.metadata.extensionSmokeTest?.passed) {
+      if (extensionDetails?.smokeTest?.passed) {
         checks.push({
           name: "smoke-test",
           status: "pass",
-          message: `Build smoke test passed in ${build.metadata.extensionSmokeTest.mode}.`,
+          message: `Build smoke test passed in ${extensionDetails.smokeTest.mode}.`,
         });
       } else if (build) {
         checks.push({
@@ -492,7 +574,13 @@ export async function initBuildSystemV2(
       // Trigger builds for changed buildable units
       const buildableChanged = [...changes.changed, ...changes.added].filter((name) => {
         const n = newGraph.tryGet(name);
-        return n && n.kind !== "package" && n.kind !== "template" && n.kind !== "extension";
+        return (
+          n &&
+          n.kind !== "package" &&
+          n.kind !== "template" &&
+          n.kind !== "extension" &&
+          n.kind !== "app"
+        );
       });
 
       for (const name of buildableChanged) {
@@ -597,5 +685,7 @@ function resolveUnit(
 }
 
 function sourcemapForNode(node: GraphNode): boolean {
-  return node.kind === "extension" ? true : node.manifest.sourcemap !== false;
+  return node.kind === "extension" || node.kind === "app"
+    ? true
+    : node.manifest.sourcemap !== false;
 }

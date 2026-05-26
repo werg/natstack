@@ -12,14 +12,25 @@ function makeBuildSystem(): BuildSystemV2 {
       key === "build-key"
         ? {
             dir: "/tmp/build-key",
-            bundlePath: "/tmp/build-key/bundle.js",
-            bundle: "export {};",
+            artifacts: [
+              {
+                path: "bundle.js",
+                role: "primary",
+                contentType: "text/javascript; charset=utf-8",
+                encoding: "utf8",
+                content: "export {};",
+              },
+            ],
             metadata: {
               kind: "extension",
               name: "@workspace-extensions/example",
               ev: "ev-1",
               sourcemap: true,
-              extensionRuntimeAbi: "2",
+              details: {
+                kind: "extension",
+                runtimeDepsKey: null,
+                runtimeAbi: "2",
+              },
               builtAt: "2026-01-01T00:00:00.000Z",
             },
           }
@@ -30,7 +41,7 @@ function makeBuildSystem(): BuildSystemV2 {
     doctorExtension: vi.fn(async () => ({
       name: "@workspace-extensions/example",
       kind: "extension" as const,
-      path: "extensions/@workspace-extensions/example",
+      path: "extensions/example",
       dependencyDiagnostics: {
         dependencyMode: "auto" as const,
         classifiedDeps: [],
@@ -53,6 +64,23 @@ function makeBuildSystem(): BuildSystemV2 {
 }
 
 describe("build service extension diagnostics", () => {
+  it("preserves the legacy { bundle } contract for library builds", async () => {
+    const buildSystem = makeBuildSystem();
+    vi.mocked(buildSystem.getBuild).mockResolvedValue({ bundle: "module.exports = {};" } as never);
+    const service = createBuildService({ buildSystem });
+
+    await expect(
+      service.handler({ caller: createVerifiedCaller("shell", "shell") }, "getBuild", [
+        "@workspace-packages/example",
+        undefined,
+        { library: true },
+      ])
+    ).resolves.toEqual({ bundle: "module.exports = {};" });
+    expect(buildSystem.getBuild).toHaveBeenCalledWith("@workspace-packages/example", undefined, {
+      library: true,
+    });
+  });
+
   it("exposes build metadata by immutable build key", async () => {
     const buildSystem = makeBuildSystem();
     const service = createBuildService({ buildSystem });
@@ -64,7 +92,7 @@ describe("build service extension diagnostics", () => {
     ).resolves.toMatchObject({
       kind: "extension",
       name: "@workspace-extensions/example",
-      extensionRuntimeAbi: "2",
+      details: { kind: "extension", runtimeAbi: "2" },
     });
   });
 

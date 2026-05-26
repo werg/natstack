@@ -3,9 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
 import { createPanelShellService } from "./panelShellService.js";
 
-const shellCtx: ServiceContext = { caller: createVerifiedCaller("shell", "shell") };
+const appCtx: ServiceContext = { caller: createVerifiedCaller("@workspace-apps/shell", "app") };
 
-function createServiceHarness(panelExists: boolean) {
+function createServiceHarness(panelExists: boolean, appCapabilities: string[] = []) {
   const focusPanel = vi.fn(async (panelId: string) => ({
     panelId,
     status: "loaded",
@@ -28,6 +28,12 @@ function createServiceHarness(panelExists: boolean) {
     getViewManager: () =>
       ({
         refreshVisiblePanel,
+        getViewInfo: vi.fn(() => ({
+          type: "app",
+          visible: true,
+          bounds: { x: 0, y: 0, width: 100, height: 100 },
+          capabilities: appCapabilities,
+        })),
       }) as never,
   });
 
@@ -36,9 +42,11 @@ function createServiceHarness(panelExists: boolean) {
 
 describe("PanelShellService", () => {
   it("ignores focus notifications for missing panels", async () => {
-    const { service, focusPanel, refreshVisiblePanel } = createServiceHarness(false);
+    const { service, focusPanel, refreshVisiblePanel } = createServiceHarness(false, [
+      "panel-hosting",
+    ]);
 
-    const result = await service.handler(shellCtx, "notifyFocused", ["missing-panel"]);
+    const result = await service.handler(appCtx, "notifyFocused", ["missing-panel"]);
 
     expect(focusPanel).not.toHaveBeenCalled();
     expect(refreshVisiblePanel).not.toHaveBeenCalled();
@@ -46,12 +54,43 @@ describe("PanelShellService", () => {
   });
 
   it("focuses and loads existing panels with a structured result", async () => {
-    const { service, focusPanel, refreshVisiblePanel } = createServiceHarness(true);
+    const { service, focusPanel, refreshVisiblePanel } = createServiceHarness(true, [
+      "panel-hosting",
+    ]);
 
-    const result = await service.handler(shellCtx, "notifyFocused", ["panel-1"]);
+    const result = await service.handler(appCtx, "notifyFocused", ["panel-1"]);
 
     expect(focusPanel).toHaveBeenCalledWith("panel-1", { loadIfNeeded: true });
     expect(refreshVisiblePanel).toHaveBeenCalled();
     expect(result).toMatchObject({ status: "loaded", focused: true, loaded: true });
+  });
+
+  it("allows app callers only when the panel-hosting capability is declared", async () => {
+    const { service, focusPanel } = createServiceHarness(true, ["panel-hosting"]);
+
+    const result = await service.handler(appCtx, "notifyFocused", ["panel-1"]);
+
+    expect(focusPanel).toHaveBeenCalledWith("panel-1", { loadIfNeeded: true });
+    expect(result).toMatchObject({ status: "loaded" });
+  });
+
+  it("denies app callers without the panel-hosting capability", async () => {
+    const { service, focusPanel } = createServiceHarness(true);
+
+    await expect(service.handler(appCtx, "notifyFocused", ["panel-1"])).rejects.toThrow(
+      /panel-hosting/
+    );
+    expect(focusPanel).not.toHaveBeenCalled();
+  });
+
+  it("denies bootstrap shell callers for panel-hosting operations", async () => {
+    const { service, focusPanel } = createServiceHarness(true, ["panel-hosting"]);
+
+    await expect(
+      service.handler({ caller: createVerifiedCaller("shell", "shell") }, "notifyFocused", [
+        "panel-1",
+      ])
+    ).rejects.toThrow(/restricted to app callers/);
+    expect(focusPanel).not.toHaveBeenCalled();
   });
 });

@@ -193,11 +193,11 @@ describe("PackageGraph", () => {
 });
 
 describe("discoverPackageGraph extension units", () => {
-  it("discovers scoped extension packages under workspace/extensions", () => {
+  it("discovers extension packages under flat workspace/extensions paths", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-ext-graph-"));
     try {
       const runtimeDir = path.join(root, "packages", "runtime");
-      const extensionDir = path.join(root, "extensions", "@acme", "git-tools");
+      const extensionDir = path.join(root, "extensions", "git-tools");
       fs.mkdirSync(runtimeDir, { recursive: true });
       fs.mkdirSync(extensionDir, { recursive: true });
       fs.writeFileSync(
@@ -226,7 +226,52 @@ describe("discoverPackageGraph extension units", () => {
       const graph = discoverPackageGraph(root);
       const node = graph.get("@workspace-extensions/git-tools");
       expect(node.kind).toBe("extension");
-      expect(node.relativePath).toBe("extensions/@acme/git-tools");
+      expect(node.relativePath).toBe("extensions/git-tools");
+      expect(node.internalDeps).toContain("@workspace/runtime");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("discoverPackageGraph app units", () => {
+  it("discovers app packages under flat workspace/apps paths", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-app-graph-"));
+    try {
+      const runtimeDir = path.join(root, "packages", "runtime");
+      const appDir = path.join(root, "apps", "shell");
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      fs.mkdirSync(appDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(runtimeDir, "package.json"),
+        JSON.stringify({
+          name: "@workspace/runtime",
+          version: "0.0.0",
+          natstack: {},
+        })
+      );
+      fs.writeFileSync(
+        path.join(appDir, "package.json"),
+        JSON.stringify({
+          name: "@workspace-apps/shell",
+          version: "1.0.0",
+          dependencies: {
+            "@workspace/runtime": "workspace:*",
+          },
+          natstack: {
+            app: {
+              target: "electron",
+              renderer: "index.tsx",
+              capabilities: ["native-menus"],
+            },
+          },
+        })
+      );
+
+      const graph = discoverPackageGraph(root);
+      const node = graph.get("@workspace-apps/shell");
+      expect(node.kind).toBe("app");
+      expect(node.relativePath).toBe("apps/shell");
       expect(node.internalDeps).toContain("@workspace/runtime");
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

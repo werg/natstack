@@ -3,20 +3,28 @@ import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { SettingsData, ModelRoleConfig } from "@natstack/shared/types";
 import type { ServerClient } from "../serverClient.js";
 import { loadCentralConfig } from "@natstack/shared/workspace/loader";
+import type { ViewManager } from "../viewManager.js";
+import { requireAppCapability } from "./appCapabilities.js";
 
 export function createSettingsService(_deps: {
   serverClient: ServerClient | null;
+  getViewManager?: () => ViewManager;
 }): ServiceDefinition {
   return {
     name: "settings",
     description: "Settings, model roles",
-    policy: { allowed: ["shell"] },
+    policy: { allowed: ["shell", "app"] },
     methods: {
       getData: { args: z.tuple([]) },
     },
-    handler: async (_ctx, method, _args) => {
+    handler: async (ctx, method, _args) => {
       switch (method) {
         case "getData": {
+          if (ctx.caller.runtime.kind === "app") {
+            if (!_deps.getViewManager)
+              throw new Error("settings.getData app capability unavailable");
+            requireAppCapability(ctx, _deps.getViewManager(), "panel-hosting", "settings.getData");
+          }
           const centralConfig = loadCentralConfig();
 
           const modelRoles: ModelRoleConfig = {};

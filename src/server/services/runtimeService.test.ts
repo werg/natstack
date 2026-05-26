@@ -73,6 +73,10 @@ interface BuildDepsOptions {
   resolvePanelEffectiveVersion?: NonNullable<
     Parameters<typeof createRuntimeService>[0]["hooks"]
   >["resolvePanelEffectiveVersion"];
+  resolveAppEffectiveVersion?: NonNullable<
+    Parameters<typeof createRuntimeService>[0]["hooks"]
+  >["resolveAppEffectiveVersion"];
+  setEntityTitle?: Parameters<typeof createRuntimeService>[0]["setEntityTitle"];
 }
 
 async function buildDeps(opts: BuildDepsOptions = {}) {
@@ -97,6 +101,7 @@ async function buildDeps(opts: BuildDepsOptions = {}) {
   const onRetire = opts.onRetire ?? vi.fn(async () => {});
   const resolvePanelEffectiveVersion =
     opts.resolvePanelEffectiveVersion ?? vi.fn(async () => "ev-panel");
+  const resolveAppEffectiveVersion = opts.resolveAppEffectiveVersion ?? vi.fn(async () => "ev-app");
 
   const service = createRuntimeService({
     doDispatch: dispatch,
@@ -105,10 +110,12 @@ async function buildDeps(opts: BuildDepsOptions = {}) {
       prepareDurableObject,
       prepareWorker,
       resolvePanelEffectiveVersion,
+      resolveAppEffectiveVersion,
       onRetire,
     },
     capability: { approvalQueue, grantStore },
     entityCache,
+    setEntityTitle: opts.setEntityTitle,
   });
 
   return {
@@ -122,6 +129,7 @@ async function buildDeps(opts: BuildDepsOptions = {}) {
     prepareWorker,
     onRetire,
     resolvePanelEffectiveVersion,
+    resolveAppEffectiveVersion,
   };
 }
 
@@ -130,6 +138,14 @@ const panelCaller = (id = "panel:caller", _contextId = "ctx-caller") =>
     callerId: id,
     callerKind: "panel",
     repoPath: "panels/caller",
+    effectiveVersion: "v1",
+  });
+
+const appCaller = (id = "app:apps/shell:desktop", _contextId = "ctx-caller") =>
+  createVerifiedCaller(id, "app", {
+    callerId: id,
+    callerKind: "app",
+    repoPath: "apps/shell",
     effectiveVersion: "v1",
   });
 
@@ -245,6 +261,84 @@ describe("runtimeService.createEntity (do kind)", () => {
     expect(reactivated?.status).toBe("active");
     expect(reactivated?.source.effectiveVersion).toBe("ev-panel-v1");
   });
+
+  it("creates app entities as first-class runtime records", async () => {
+    const resolveAppEffectiveVersion = vi.fn(async () => "ev-app-shell");
+    const { service, entityCache } = await buildDeps({ resolveAppEffectiveVersion });
+    const spec: RuntimeEntityCreateSpec = {
+      kind: "app",
+      source: "apps/shell",
+      key: "desktop",
+      contextId: "ctx-app",
+      stateArgs: { window: "main" },
+    };
+
+    const handle = (await service.handler({ caller: serverCaller }, "createEntity", [spec])) as {
+      id: string;
+      kind: string;
+      targetId: string;
+    };
+
+    expect(handle.kind).toBe("app");
+    expect(handle.id).toBe(
+      canonicalEntityId({
+        kind: "app",
+        source: "apps/shell",
+        key: "desktop",
+      })
+    );
+    expect(handle.targetId).toBe(handle.id);
+    expect(entityCache.resolveActive(handle.id)).toMatchObject({
+      kind: "app",
+      source: { repoPath: "apps/shell", effectiveVersion: "ev-app-shell" },
+      contextId: "ctx-app",
+      key: "desktop",
+      stateArgs: { window: "main" },
+    });
+    expect(resolveAppEffectiveVersion).toHaveBeenCalledWith({
+      source: "apps/shell",
+      ref: undefined,
+    });
+  });
+
+  it("rejects non-host callers creating app entities", async () => {
+    const { service } = await buildDeps();
+    const spec: RuntimeEntityCreateSpec = {
+      kind: "app",
+      source: "apps/shell",
+      key: "desktop",
+      contextId: "ctx-app",
+    };
+
+    await expect(
+      service.handler({ caller: panelCaller() }, "createEntity", [spec])
+    ).rejects.toThrow(/host-managed/);
+  });
+
+  it("reactivates a retired app row without changing its effective version", async () => {
+    const resolveAppEffectiveVersion = vi
+      .fn()
+      .mockResolvedValueOnce("ev-app-v1")
+      .mockResolvedValueOnce("ev-app-v2");
+    const { service, instance } = await buildDeps({ resolveAppEffectiveVersion });
+    const spec: RuntimeEntityCreateSpec = {
+      kind: "app",
+      source: "apps/shell",
+      key: "desktop",
+      contextId: "ctx-app",
+    };
+
+    const handle = (await service.handler({ caller: serverCaller }, "createEntity", [spec])) as {
+      id: string;
+    };
+    instance.entityRetire(handle.id);
+
+    await service.handler({ caller: serverCaller }, "createEntity", [spec]);
+
+    const reactivated = instance.entityResolve(handle.id);
+    expect(reactivated?.status).toBe("active");
+    expect(reactivated?.source.effectiveVersion).toBe("ev-app-v1");
+  });
 });
 
 describe("runtimeService.createEntity context policy", () => {
@@ -317,6 +411,35 @@ describe("runtimeService.createEntity context policy", () => {
     expect(approvalQueue.request).toHaveBeenCalledTimes(1);
   });
 
+  it("requests approval for app callers in cross-context and grants when allowed", async () => {
+    const { service, approvalQueue, entityCache } = await buildDeps({
+      approvalDecision: "session",
+    });
+    const caller = appCaller("app:apps/shell:desktop", "ctx-caller");
+    entityCache._onActivate({
+      id: caller.runtime.id,
+      kind: "app",
+      source: { repoPath: "apps/shell", effectiveVersion: "v1" },
+      contextId: "ctx-caller",
+      key: "desktop",
+      createdAt: 1,
+      status: "active",
+      cleanupComplete: true,
+    });
+
+    const handle = (await service.handler({ caller }, "createEntity", [
+      doCreateSpec({ contextId: "ctx-target" }),
+    ])) as { contextId: string };
+    expect(handle.contextId).toBe("ctx-target");
+    expect(approvalQueue.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callerId: "app:apps/shell:desktop",
+        callerKind: "app",
+        capability: "runtime.crossContextEntity",
+      })
+    );
+  });
+
   it("rejects panel callers in cross-context when denied", async () => {
     const { service, entityCache } = await buildDeps({ approvalDecision: "deny" });
     const caller = panelCaller("panel:p3", "ctx-caller");
@@ -333,6 +456,20 @@ describe("runtimeService.createEntity context policy", () => {
     await expect(
       service.handler({ caller }, "createEntity", [doCreateSpec({ contextId: "ctx-target" })])
     ).rejects.toThrow(/denied/i);
+  });
+});
+
+describe("runtimeService.setTitle", () => {
+  it("allows app callers to set their display title", async () => {
+    const setEntityTitle = vi.fn();
+    const { service } = await buildDeps({ setEntityTitle });
+    const caller = appCaller("app:apps/shell:desktop");
+
+    await expect(
+      service.handler({ caller }, "setTitle", ["Workspace Shell"])
+    ).resolves.toBeUndefined();
+
+    expect(setEntityTitle).toHaveBeenCalledWith("app:apps/shell:desktop", "Workspace Shell");
   });
 });
 

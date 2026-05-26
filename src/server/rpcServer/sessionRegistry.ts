@@ -39,6 +39,7 @@ class CallerSession {
 
 const DEFAULT_TTL_MS: Required<SessionTtlMs> = {
   panel: 5 * 60_000,
+  app: 15 * 60_000,
   shell: 15 * 60_000,
   "shell-remote": 15 * 60_000,
   server: 30 * 60_000,

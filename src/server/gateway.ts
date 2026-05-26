@@ -24,11 +24,7 @@ import type { Duplex } from "stream";
 import { createDevLogger } from "@natstack/dev-log";
 import { constantTimeStringEqual, type TokenManager } from "@natstack/shared/tokenManager";
 import type { ConnectionGrantService } from "@natstack/shared/connectionGrants";
-import {
-  createVerifiedCaller,
-  type CallerKind,
-  type VerifiedCaller,
-} from "@natstack/shared/serviceDispatcher";
+import { createVerifiedCaller, type VerifiedCaller } from "@natstack/shared/serviceDispatcher";
 import type { RouteRegistry, LookupResult } from "./routeRegistry.js";
 import { assertPresent } from "../lintHelpers";
 import type { EntityCache } from "@natstack/shared/runtime/entityCache";
@@ -104,6 +100,15 @@ export interface ExtensionHttpHandler {
   ): Promise<void> | void;
 }
 
+export interface AppArtifactHandler {
+  handleAppArtifactRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+    buildKey: string,
+    remainderPath: string
+  ): Promise<void> | void;
+}
+
 export interface GatewayDeps {
   /** In-process RPC handler */
   rpcHandler?: RpcHandler;
@@ -117,6 +122,8 @@ export interface GatewayDeps {
   getGitHandler?: () => GitHttpHandler | null | undefined;
   /** Dynamic in-process extension fetch handler getter. */
   getExtensionHttpHandler?: () => ExtensionHttpHandler | null | undefined;
+  /** Dynamic in-process workspace-app artifact handler getter. */
+  getAppArtifactHandler?: () => AppArtifactHandler | null | undefined;
   /** Workerd port for /_w/ path (reverse proxy) */
   workerdPort?: number | null;
   /** Dynamic workerd port getter. */
@@ -182,6 +189,7 @@ export class Gateway {
       const panelHttpHandler = this.deps.getPanelHttpHandler?.() ?? this.deps.panelHttpHandler;
       const gitHandler = this.deps.getGitHandler?.();
       const extensionHttpHandler = this.deps.getExtensionHttpHandler?.();
+      const appArtifactHandler = this.deps.getAppArtifactHandler?.();
       const workerdPort = this.deps.getWorkerdPort?.() ?? this.deps.workerdPort;
 
       // /healthz → liveness + (token-gated) detailed status. No auth for basic
@@ -282,6 +290,22 @@ export class Gateway {
         );
         if (handled) return;
         // Fall through to 404 below — no panel fallback for `/_r/` misses.
+      }
+
+      // /_a/<build-key>/... → approved workspace app artifacts.
+      if (url.startsWith("/_a/") && appArtifactHandler) {
+        const parsed = parseAppArtifactRoute(url);
+        if (!parsed) {
+          res.writeHead(404, { "Content-Type": "text/plain" });
+          res.end("App artifact not found");
+          return;
+        }
+        return appArtifactHandler.handleAppArtifactRequest(
+          req,
+          res,
+          parsed.buildKey,
+          parsed.remainderPath
+        );
       }
 
       // /_git/ → git server reverse proxy
@@ -672,7 +696,7 @@ function validateCallerBearer(
   }
   return createVerifiedCaller(
     entry.callerId,
-    entry.callerKind as CallerKind,
+    entry.callerKind,
     entityCache ? (resolveCodeIdentity(entityCache, entry.callerId) ?? undefined) : undefined
   );
 }
@@ -697,6 +721,25 @@ function parseExtensionRoute(url: string): { name: string; remainderPath: string
     return {
       name: decodeURIComponent(encodedName),
       remainderPath: slash === -1 ? "/" : `/${rest.slice(slash + 1)}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseAppArtifactRoute(url: string): { buildKey: string; remainderPath: string } | null {
+  const qIdx = url.indexOf("?");
+  const pathOnly = qIdx === -1 ? url : url.slice(0, qIdx);
+  const prefix = "/_a/";
+  if (!pathOnly.startsWith(prefix)) return null;
+  const rest = pathOnly.slice(prefix.length);
+  const slash = rest.indexOf("/");
+  const encodedKey = slash === -1 ? rest : rest.slice(0, slash);
+  if (!encodedKey) return null;
+  try {
+    return {
+      buildKey: decodeURIComponent(encodedKey),
+      remainderPath: slash === -1 ? "index.html" : rest.slice(slash + 1),
     };
   } catch {
     return null;

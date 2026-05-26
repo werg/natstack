@@ -81,12 +81,6 @@ export function resolveSource(
  */
 export function buildBootstrapConfig(opts: BuildBootstrapConfigOpts): unknown {
   return {
-    // `panelId` is the panel's RPC identity (the panel ENTITY id under the
-    // entity model) — this is what the panel uses as its `caller.runtime.id`
-    // on the WS connection. Kept as `panelId` for back-compat with panel
-    // runtime consumers; also exposed as `entityId` for callers that want to
-    // be explicit about the new naming.
-    panelId: opts.entityId,
     entityId: opts.entityId,
     slotId: opts.slotId,
     contextId: opts.contextId,

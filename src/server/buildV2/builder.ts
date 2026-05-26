@@ -24,9 +24,21 @@ import { createRequire } from "module";
 import { promisify } from "util";
 import { pathToFileURL } from "url";
 import type { GraphNode, PackageGraph } from "./packageGraph.js";
-import { validateExtensionManifestBlock } from "@natstack/shared/extensionManifest";
+import {
+  appUnitManifestDescriptor,
+  extensionUnitManifestDescriptor,
+  validateUnitManifest,
+} from "@natstack/shared/unitManifest";
 import * as buildStore from "./buildStore.js";
-import type { BuildArtifacts, BuildMetadata, BuildResult } from "./buildStore.js";
+import {
+  contentTypeForPath,
+  primaryArtifactFilePath,
+  primaryTextArtifactContent,
+  type BuildArtifactInput,
+  type BuildArtifacts,
+  type BuildMetadata,
+  type BuildResult,
+} from "./buildStore.js";
 import { computeBuildKey } from "./effectiveVersion.js";
 import {
   collectTransitiveDependencyOverrides,
@@ -42,6 +54,12 @@ import type { FrameworkAdapter } from "./adapters/types.js";
 import { resolveTemplate } from "./templateResolver.js";
 import { resolveExportSubpath } from "@natstack/typecheck";
 import { assertPresent } from "../../lintHelpers";
+import { resolveBuildProvider } from "./buildProviderRegistry.js";
+import type {
+  BuildProvider,
+  BuildProviderArtifact,
+  BuildProviderInput,
+} from "@natstack/shared/buildProvider";
 
 // ---------------------------------------------------------------------------
 // Module Initialization
@@ -187,7 +205,7 @@ function releaseSemaphore(): void {
 
 // Build coalescing: dedup concurrent builds of the same key
 const inFlightBuilds = new Map<string, Promise<BuildResult>>();
-const inFlightLibraryBuilds = new Map<string, Promise<{ bundle: string }>>();
+const inFlightLibraryBuilds = new Map<string, Promise<BuildResult>>();
 
 // ---------------------------------------------------------------------------
 // Resolve Plugin
@@ -1190,6 +1208,16 @@ async function doBuild(
       );
     } else if (node.kind === "extension") {
       return await buildExtension(node, ev, buildKey, graph, workspaceRoot, extracted.sourceRoot);
+    } else if (node.kind === "app") {
+      return await buildApp(
+        node,
+        ev,
+        buildKey,
+        graph,
+        workspaceRoot,
+        sourcemap,
+        extracted.sourceRoot
+      );
     } else if (node.kind === "template") {
       throw new Error(`Templates are not buildable: ${node.name}`);
     } else {
@@ -1291,16 +1319,31 @@ function storeSimpleBuild(
   sourcemap: boolean,
   extraMetadata: Partial<BuildMetadata> = {}
 ): BuildResult {
-  const artifacts: BuildArtifacts = { bundle };
+  const artifacts = bundleArtifacts(bundle);
   const metadata: BuildMetadata = {
     kind: node.kind as BuildMetadata["kind"],
     name: node.name,
     ev,
     sourcemap,
+    details: { kind: "generic" },
     ...extraMetadata,
     builtAt: new Date().toISOString(),
   };
   return buildStore.put(buildKey, artifacts, metadata);
+}
+
+function bundleArtifacts(bundle: string): BuildArtifacts {
+  return {
+    entries: [
+      {
+        path: "bundle.js",
+        role: "primary",
+        contentType: "text/javascript; charset=utf-8",
+        encoding: "utf8",
+        content: bundle,
+      },
+    ],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1440,8 +1483,26 @@ async function buildPanel(
     const bundle = fs.existsSync(bundlePath) ? fs.readFileSync(bundlePath, "utf-8") : "";
     const css = fs.existsSync(cssPath) ? fs.readFileSync(cssPath, "utf-8") : undefined;
 
+    const artifactEntries: BuildArtifactInput[] = [
+      {
+        path: "bundle.js",
+        role: "primary",
+        contentType: "text/javascript; charset=utf-8",
+        encoding: "utf8",
+        content: bundle,
+      },
+    ];
+    if (css) {
+      artifactEntries.push({
+        path: "bundle.css",
+        role: "css",
+        contentType: "text/css; charset=utf-8",
+        encoding: "utf8",
+        content: css,
+      });
+    }
+
     // Collect assets (chunks, images, etc.)
-    const assets: Record<string, { content: string; encoding?: "base64" }> = {};
     if (result.metafile) {
       for (const outputPath of Object.keys(result.metafile.outputs)) {
         // esbuild metafile keys are relative to absWorkingDir (defaults to
@@ -1459,9 +1520,15 @@ async function buildPanel(
         const ext = path.extname(absPath).toLowerCase();
         const isText = TEXT_EXTENSIONS.has(ext);
 
-        assets[relativeName] = isText
-          ? { content: fs.readFileSync(absPath, "utf-8") }
-          : { content: fs.readFileSync(absPath).toString("base64"), encoding: "base64" };
+        artifactEntries.push({
+          path: relativeName,
+          role: ext === ".map" ? "map" : "asset",
+          contentType: contentTypeForPath(relativeName),
+          encoding: isText ? "utf8" : "base64",
+          content: isText
+            ? fs.readFileSync(absPath, "utf-8")
+            : fs.readFileSync(absPath).toString("base64"),
+        });
       }
     }
 
@@ -1472,13 +1539,13 @@ async function buildPanel(
       externals: manifestExternals,
     });
 
-    // Store artifacts
-    const artifacts: BuildArtifacts = {
-      bundle,
-      css,
-      html,
-      assets: Object.keys(assets).length > 0 ? assets : undefined,
-    };
+    artifactEntries.push({
+      path: "index.html",
+      role: "html",
+      contentType: "text/html; charset=utf-8",
+      encoding: "utf8",
+      content: html,
+    });
 
     const metadata: BuildMetadata = {
       kind: node.kind,
@@ -1486,10 +1553,21 @@ async function buildPanel(
       ev,
       sourcemap,
       framework: resolved.framework,
+      details:
+        node.kind === "app"
+          ? {
+              kind: "app",
+              target: "electron",
+              platform: "electron",
+              integrity: null,
+              rnHostAbi: null,
+              provider: null,
+            }
+          : { kind: "generic" },
       builtAt: new Date().toISOString(),
     };
 
-    return buildStore.put(buildKey, artifacts, metadata);
+    return buildStore.put(buildKey, { entries: artifactEntries }, metadata);
   } finally {
     env.cleanup();
   }
@@ -1828,11 +1906,220 @@ async function buildWorker(
 }
 
 // ---------------------------------------------------------------------------
+// App Build
+// ---------------------------------------------------------------------------
+
+async function buildApp(
+  node: GraphNode,
+  ev: string,
+  buildKey: string,
+  graph: PackageGraph,
+  workspaceRoot: string,
+  sourcemap: boolean,
+  sourceRoot: string
+): Promise<BuildResult> {
+  const appSourcePath = path.join(sourceRoot, node.relativePath);
+  const extractedPkgPath = path.join(appSourcePath, "package.json");
+  const extractedPkg = JSON.parse(fs.readFileSync(extractedPkgPath, "utf-8")) as {
+    natstack?: Record<string, unknown>;
+  };
+  const extractedManifest = extractedPkg.natstack ?? {};
+  validateUnitManifest(appUnitManifestDescriptor, extractedManifest, { unitName: node.name });
+
+  const appManifest = extractedManifest["app"] as Record<string, unknown>;
+  if (appManifest["target"] === "terminal") {
+    return buildTerminalApp(
+      node,
+      ev,
+      buildKey,
+      graph,
+      workspaceRoot,
+      sourcemap,
+      sourceRoot,
+      appManifest
+    );
+  }
+  if (appManifest["target"] === "react-native") {
+    const provider = resolveBuildProvider("react-native");
+    const providerBuildKey = computeBuildKey(
+      node.name,
+      [
+        ev,
+        `provider:${provider.name}`,
+        `provider-ev:${provider.activeEv ?? ""}`,
+        `provider-build:${provider.activeBuildKey ?? ""}`,
+        `provider-contract:${provider.contractVersion}`,
+      ].join(":"),
+      sourcemap
+    );
+    const providerInput: BuildProviderInput = {
+      target: "react-native",
+      unitName: node.name,
+      sourcePath: appSourcePath,
+      sourceRoot,
+      workspaceRoot,
+      effectiveVersion: ev,
+      manifest: extractedManifest,
+    };
+    const output = await provider.build(providerInput);
+    const entries = await materializeBuildProviderArtifacts(
+      provider,
+      providerInput,
+      output.artifacts
+    );
+    const metadata: BuildMetadata = {
+      kind: "app",
+      name: node.name,
+      ev,
+      sourcemap,
+      details: {
+        kind: "app",
+        target: "react-native",
+        platform: output.metadata?.platform,
+        integrity: null,
+        rnHostAbi: output.metadata?.rnHostAbi ?? null,
+        provider: {
+          name: provider.name,
+          activeEv: provider.activeEv,
+          activeBuildKey: provider.activeBuildKey,
+          contractVersion: provider.contractVersion,
+        },
+      },
+      builtAt: new Date().toISOString(),
+    };
+    return buildStore.put(providerBuildKey, { entries }, metadata);
+  }
+
+  return buildPanel(node, ev, buildKey, graph, workspaceRoot, sourcemap, sourceRoot);
+}
+
+async function buildTerminalApp(
+  node: GraphNode,
+  ev: string,
+  buildKey: string,
+  graph: PackageGraph,
+  workspaceRoot: string,
+  sourcemap: boolean,
+  sourceRoot: string,
+  appManifest: Record<string, unknown>
+): Promise<BuildResult> {
+  const env = await prepareBuildEnv(node, buildKey, graph, workspaceRoot, sourceRoot);
+  const { outdir, nodePaths, resolveDir, sourcePath } = env;
+  const entry = appManifest["entry"];
+  if (typeof entry !== "string" || entry.trim().length === 0) {
+    throw new Error(`Terminal app ${node.name} requires natstack.app.entry`);
+  }
+  const entryFile = path.join(sourcePath, entry);
+  if (!fs.existsSync(entryFile)) {
+    throw new Error(`Terminal app ${node.name} entry does not exist: ${entry}`);
+  }
+  try {
+    await esbuild.build({
+      entryPoints: [entryFile],
+      bundle: true,
+      platform: "node",
+      target: "node20",
+      format: "esm",
+      outfile: path.join(outdir, "index.mjs"),
+      sourcemap: sourcemap ? "inline" : false,
+      metafile: true,
+      logLevel: "warning",
+      conditions: ["node", "import"],
+      external: [...WORKER_NODE_BUILTIN_EXTERNALS],
+      plugins: [
+        createWorkspaceResolvePlugin(graph, workspaceRoot, sourceRoot),
+        createTsExtensionPlugin(sourceRoot),
+      ],
+      nodePaths,
+      absWorkingDir: resolveDir,
+      tsconfigRaw: { compilerOptions: {} },
+    });
+    const bundle = fs.readFileSync(path.join(outdir, "index.mjs"), "utf8");
+    return buildStore.put(
+      buildKey,
+      {
+        entries: [
+          {
+            path: "index.mjs",
+            role: "primary",
+            contentType: "text/javascript; charset=utf-8",
+            encoding: "utf8",
+            content: bundle,
+          },
+        ],
+      },
+      {
+        kind: "app",
+        name: node.name,
+        ev,
+        sourcemap,
+        details: {
+          kind: "app",
+          target: "terminal",
+          platform: "terminal",
+          integrity: null,
+          rnHostAbi: null,
+          provider: null,
+        },
+        builtAt: new Date().toISOString(),
+      }
+    );
+  } finally {
+    env.cleanup();
+  }
+}
+
+async function materializeBuildProviderArtifacts(
+  provider: BuildProvider,
+  input: BuildProviderInput,
+  artifacts: BuildProviderArtifact[]
+): Promise<BuildArtifactInput[]> {
+  return Promise.all(
+    artifacts.map(async (artifact) => {
+      const encoding = artifact.encoding ?? "utf8";
+      let content: string;
+      if (typeof artifact.content === "string") {
+        content = artifact.content;
+      } else if (artifact.stream) {
+        if (!provider.streamArtifact) {
+          throw new Error(
+            `Build provider ${provider.name} returned stream-backed artifact ${artifact.path} but does not expose streamArtifact`
+          );
+        }
+        const response = await provider.streamArtifact(artifact, input);
+        if (!response.ok) {
+          throw new Error(
+            `Build provider ${provider.name} failed streaming artifact ${artifact.path}: ${response.status} ${response.statusText}`
+          );
+        }
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        content =
+          encoding === "base64"
+            ? Buffer.from(bytes).toString("base64")
+            : new TextDecoder().decode(bytes);
+      } else {
+        throw new Error(
+          `Build provider ${provider.name} returned artifact ${artifact.path} without content or stream`
+        );
+      }
+      return {
+        path: artifact.path,
+        role: artifact.role,
+        contentType: artifact.contentType,
+        encoding,
+        ...(artifact.platform ? { platform: artifact.platform } : {}),
+        content,
+      };
+    })
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Extension Build
 // ---------------------------------------------------------------------------
 
 function validateExtensionManifest(node: GraphNode, manifest: Record<string, unknown>): void {
-  validateExtensionManifestBlock(manifest, { unitName: node.name });
+  validateUnitManifest(extensionUnitManifestDescriptor, manifest, { unitName: node.name });
 }
 
 async function buildExtension(
@@ -1926,29 +2213,42 @@ async function buildExtension(
         name: node.name,
         ev,
         sourcemap: true,
-        runtimeDepsKey: runtimeDeps.key,
-        extensionRuntimeAbi: EXTENSION_RUNTIME_ABI_VERSION,
-        extensionDependencyMode: dependencyMode,
-        extensionExternalDeps: runtimeExternalDeps,
-        extensionDependencyOverrides: env.dependencyOverrides,
-        extensionClassifiedDeps: classifiedDeps,
+        details: {
+          kind: "extension",
+          runtimeDepsKey: runtimeDeps.key,
+          runtimeAbi: EXTENSION_RUNTIME_ABI_VERSION,
+          dependencyMode,
+          externalDeps: runtimeExternalDeps,
+          dependencyOverrides: env.dependencyOverrides,
+          classifiedDeps,
+        },
         builtAt: new Date().toISOString(),
       },
-      bundlePath,
-      bundle,
+      artifacts: [
+        {
+          path: "bundle.js",
+          role: "primary",
+          contentType: "text/javascript; charset=utf-8",
+          encoding: "utf8",
+          content: bundle,
+        },
+      ],
     };
     await smokeTestExtensionBuild(smokeResult, node, {
       dependencyDiagnostics,
     });
 
     const result = storeSimpleBuild(buildKey, bundle, node, ev, true, {
-      runtimeDepsKey: runtimeDeps.key,
-      extensionRuntimeAbi: EXTENSION_RUNTIME_ABI_VERSION,
-      extensionDependencyMode: dependencyMode,
-      extensionExternalDeps: runtimeExternalDeps,
-      extensionDependencyOverrides: env.dependencyOverrides,
-      extensionClassifiedDeps: classifiedDeps,
-      extensionSmokeTest: { mode: "child-process", passed: true },
+      details: {
+        kind: "extension",
+        runtimeDepsKey: runtimeDeps.key,
+        runtimeAbi: EXTENSION_RUNTIME_ABI_VERSION,
+        dependencyMode,
+        externalDeps: runtimeExternalDeps,
+        dependencyOverrides: env.dependencyOverrides,
+        classifiedDeps,
+        smokeTest: { mode: "child-process", passed: true },
+      },
     });
     if (runtimeDeps.nodeModulesDir) {
       linkExtensionRuntimeDeps(result.dir, runtimeDeps.nodeModulesDir, node.name);
@@ -1973,16 +2273,17 @@ async function smokeTestExtensionBuild(
     fs.writeFileSync(
       smokeScript,
       generateExtensionSmokeScript(
-        result.bundlePath,
+        primaryArtifactFilePath(result),
         Object.keys(details.dependencyDiagnostics.runtimeExternalDeps)
       )
     );
+    const bundlePath = primaryArtifactFilePath(result);
     await execFileAsync(process.execPath, [smokeScript], {
       cwd: result.dir,
       env: {
         ...process.env,
         ELECTRON_RUN_AS_NODE: "1",
-        NATSTACK_EXTENSION_SMOKE_BUNDLE: result.bundlePath,
+        NATSTACK_EXTENSION_SMOKE_BUNDLE: bundlePath,
       },
       timeout: 15_000,
       maxBuffer: 1024 * 1024,
@@ -2001,7 +2302,7 @@ async function smokeTestExtensionBuild(
     const smokeError = new Error(
       [
         `Extension smoke test failed for ${node.name}: ${err instanceof Error ? err.message : String(err)}`,
-        `bundle=${result.bundlePath}`,
+        `bundle=${primaryArtifactFilePath(result)}`,
         `dependencyMode=${diagnostics.dependencyMode}`,
         `runtimeDeps=${Object.keys(diagnostics.runtimeExternalDeps).join(",") || "none"}`,
         `classifiedDeps=${depSummary.join(";") || "none"}`,
@@ -2109,19 +2410,21 @@ if (typeof activate === "function") {
 }
 
 async function refreshCachedExtensionRuntimeDeps(result: BuildResult): Promise<void> {
-  const deps = result.metadata.extensionExternalDeps ?? {};
+  const extensionDetails =
+    result.metadata.details.kind === "extension" ? result.metadata.details : null;
+  const deps = extensionDetails?.externalDeps ?? {};
   if (Object.keys(deps).length === 0) return;
-  if (extensionRuntimeDepsResolvable(result.bundlePath, Object.keys(deps))) return;
+  if (extensionRuntimeDepsResolvable(primaryArtifactFilePath(result), Object.keys(deps))) return;
 
   const runtimeDeps = await ensureExtensionRuntimeDeps(
     deps,
-    result.metadata.extensionDependencyOverrides ?? {}
+    extensionDetails?.dependencyOverrides ?? {}
   );
   if (runtimeDeps.nodeModulesDir) {
     linkExtensionRuntimeDeps(result.dir, runtimeDeps.nodeModulesDir, result.metadata.name);
   }
-  if (result.metadata.runtimeDepsKey !== runtimeDeps.key) {
-    result.metadata.runtimeDepsKey = runtimeDeps.key;
+  if (extensionDetails && extensionDetails.runtimeDepsKey !== runtimeDeps.key) {
+    extensionDetails.runtimeDepsKey = runtimeDeps.key;
     fs.writeFileSync(
       path.join(result.dir, "metadata.json"),
       JSON.stringify(result.metadata, null, 2)
@@ -2312,17 +2615,17 @@ export async function buildNpmLibrary(
 
   // Check store cache
   const cached = buildStore.get(buildKey);
-  if (cached) return cached.bundle;
+  if (cached) return primaryTextArtifactContent(cached);
 
   // Check in-flight builds (coalescing)
   const inFlight = inFlightBuilds.get(buildKey);
-  if (inFlight) return (await inFlight).bundle;
+  if (inFlight) return primaryTextArtifactContent(await inFlight);
 
   const buildPromise = doNpmBuild(specifier, version, externals, buildKey);
   inFlightBuilds.set(buildKey, buildPromise);
 
   try {
-    return (await buildPromise).bundle;
+    return primaryTextArtifactContent(await buildPromise);
   } finally {
     inFlightBuilds.delete(buildKey);
   }
@@ -2377,15 +2680,15 @@ async function doNpmBuild(
       const bundleContent = fs.readFileSync(path.join(outdir, "bundle.js"), "utf-8");
 
       // Store in build cache (same as workspace library builds)
-      const artifacts: BuildArtifacts = { bundle: bundleContent };
       const metadata: BuildMetadata = {
         kind: "panel",
         name: specifier,
         ev: `npm:${version}`,
         sourcemap: false,
+        details: { kind: "generic" },
         builtAt: new Date().toISOString(),
       };
-      return buildStore.put(buildKey, artifacts, metadata);
+      return buildStore.put(buildKey, bundleArtifacts(bundleContent), metadata);
     } finally {
       try {
         fs.rmSync(outdir, { recursive: true, force: true });
@@ -2421,17 +2724,17 @@ export async function buildPlatformLibrary(
 
   // Check cache
   const cached = buildStore.get(buildKey);
-  if (cached) return cached.bundle;
+  if (cached) return primaryTextArtifactContent(cached);
 
   // Check in-flight
   const inFlight = inFlightLibraryBuilds.get(buildKey);
-  if (inFlight) return (await inFlight).bundle;
+  if (inFlight) return primaryTextArtifactContent(await inFlight);
 
   const buildPromise = doPlatformBuild(specifier, externals, buildKey);
   inFlightLibraryBuilds.set(buildKey, buildPromise);
 
   try {
-    return (await buildPromise).bundle;
+    return primaryTextArtifactContent(await buildPromise);
   } finally {
     inFlightLibraryBuilds.delete(buildKey);
   }
@@ -2441,7 +2744,7 @@ async function doPlatformBuild(
   specifier: string,
   externals: string[],
   buildKey: string
-): Promise<{ bundle: string }> {
+): Promise<BuildResult> {
   await acquireSemaphore();
 
   try {
@@ -2476,17 +2779,15 @@ async function doPlatformBuild(
 
       const bundleContent = fs.readFileSync(path.join(outdir, "bundle.js"), "utf-8");
 
-      const artifacts: BuildArtifacts = { bundle: bundleContent };
       const metadata: BuildMetadata = {
         kind: "package",
         name: specifier,
         ev: buildKey,
         sourcemap: false,
+        details: { kind: "generic" },
         builtAt: new Date().toISOString(),
       };
-      buildStore.put(buildKey, artifacts, metadata);
-
-      return { bundle: bundleContent };
+      return buildStore.put(buildKey, bundleArtifacts(bundleContent), metadata);
     } finally {
       try {
         fs.rmSync(outdir, { recursive: true, force: true });

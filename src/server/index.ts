@@ -19,8 +19,14 @@ import * as path from "path";
 import * as fs from "fs";
 import { createHash, randomBytes } from "crypto";
 import { canonicalEntityId, type EntityRecord } from "@natstack/shared/runtime/entitySpec";
+import { UnitSourcePushGrantStore } from "@natstack/unit-host";
 import { formatPairUrlLine } from "./pairingBanner.js";
 import { getPublicUrl } from "./publicUrl.js";
+import { registerBuildProvider, unregisterBuildProvider } from "./buildV2/buildProviderRegistry.js";
+import {
+  createWorkspaceMetaPushAuthorizer,
+  createWorkspaceUnitPushAuthorizer,
+} from "./unitPushAuthorizer.js";
 import { assertPresent, deleteDynamicProperty } from "../lintHelpers";
 
 // __filename is available natively in CJS and via the esbuild banner shim in ESM.
@@ -445,10 +451,11 @@ async function main() {
   const {
     loadCentralEnv,
     deleteWorkspaceDir,
-    loadPersistedAdminToken,
-    savePersistedAdminToken,
-    getAdminTokenPath,
+    reseedCanonicalShellApp,
+    resolveWorkspaceTemplateDir,
   } = await import("@natstack/shared/workspace/loader");
+  const { loadPersistedAdminToken, savePersistedAdminToken, getAdminTokenPath } =
+    await import("@natstack/shared/centralAuth");
   const { resolveLocalWorkspaceStartup } = await import("@natstack/shared/workspace/startup");
   const { CentralDataManager } = await import("@natstack/shared/centralData");
   const { GitServer } = await import("@natstack/git-server");
@@ -595,6 +602,8 @@ async function main() {
     eventService,
     resolveTitle: (entityId) => entityTitleService.getTitle(entityId),
   });
+  const { ServerUnitApprovalCoordinator } = await import("./unitApprovalCoordinator.js");
+  const unitApprovalCoordinator = new ServerUnitApprovalCoordinator({ approvalQueue });
   const credentialLifecycle = new CredentialLifecycle({
     credentialStore,
     clientConfigStore,
@@ -688,6 +697,21 @@ async function main() {
     | "https";
   const configuredExternalHost = process.env["NATSTACK_HOST"] ?? args.host ?? "localhost";
   let extensionHostForGateway: import("@natstack/extension-host").ExtensionHost | null = null;
+  let appHostForGateway: import("./appHost.js").AppHost | null = null;
+  type TrustedUnitHostInstance =
+    | import("@natstack/extension-host").ExtensionHost
+    | import("./appHost.js").AppHost;
+  const trustedUnitHosts = (): TrustedUnitHostInstance[] =>
+    [extensionHostForGateway, appHostForGateway].filter(
+      (host): host is TrustedUnitHostInstance => host !== null
+    );
+  const workspaceMetaPushAuthorizer = createWorkspaceMetaPushAuthorizer({
+    workspacePath,
+    approvalQueue,
+    grantStore: new UnitSourcePushGrantStore({ statePath }),
+    grantTtlMs: 4 * 60 * 60 * 1000,
+    getProviders: trustedUnitHosts,
+  });
 
   const { createGitWriteAuthorizer } = await import("./services/gitWritePermission.js");
   const { WORKSPACE_GIT_INIT_PATTERNS } = await import("@natstack/shared/workspace/sourceDirs");
@@ -720,8 +744,13 @@ async function main() {
       approvalQueue,
       grantStore: capabilityGrantStore,
     }),
-    pushAuthorizer: (request) =>
-      extensionHostForGateway?.authorizeSourcePush(request) ?? { allowed: true },
+    pushAuthorizer: createWorkspaceUnitPushAuthorizer({
+      targets: [
+        { sourceRoot: "apps", getHandler: () => appHostForGateway },
+        { sourceRoot: "extensions", getHandler: () => extensionHostForGateway },
+      ],
+      getMetaHandler: () => workspaceMetaPushAuthorizer,
+    }),
   });
 
   // Create ContextFolderManager before core services
@@ -734,8 +763,26 @@ async function main() {
   });
 
   const { syncDeclaredRemoteForRepo } = await import("@natstack/shared/workspace/remotes");
-  const { loadWorkspaceConfig, resolveDeclaredExtensions } =
+  const { loadWorkspaceConfig, resolveDeclaredApps, resolveDeclaredExtensions } =
     await import("@natstack/shared/workspace/loader");
+  const reconcileDeclaredWorkspaceUnits = async (
+    nextConfig: ReturnType<typeof loadWorkspaceConfig>,
+    trigger: "startup" | "meta-push"
+  ): Promise<void> => {
+    const extensionTask = extensionHostForGateway
+      ?.reconcileDeclared(resolveDeclaredExtensions(nextConfig), { trigger })
+      .then(() => import("@natstack/shared/workspace/extensionRegistry"))
+      .then(({ writeExtensionRegistry }) => writeExtensionRegistry(workspacePath))
+      .catch((err: unknown) =>
+        console.warn("[Extensions] Failed to reconcile declared workspace units:", err)
+      );
+    const appTask = appHostForGateway
+      ?.reconcileDeclared(resolveDeclaredApps(nextConfig), { trigger })
+      .catch((err: unknown) =>
+        console.warn("[Apps] Failed to reconcile declared workspace units:", err)
+      );
+    await Promise.all([extensionTask ?? Promise.resolve(), appTask ?? Promise.resolve()]);
+  };
   const syncDeclaredRemotesForSource = async (repoPath?: string): Promise<void> => {
     const repos = repoPath
       ? [repoPath]
@@ -773,17 +820,11 @@ async function main() {
       try {
         const nextConfig = loadWorkspaceConfig(workspacePath);
         replaceWorkspaceConfig(workspaceConfig, nextConfig);
-        // Reconcile the declared extension set against the registry. The
-        // combined meta-push approval already gated this push and stashed any
-        // newly-trusted extensions, so this reconcile activates without a
-        // second prompt.
-        extensionHostForGateway
-          ?.reconcileDeclared(resolveDeclaredExtensions(nextConfig))
-          .then(() => import("@natstack/shared/workspace/extensionRegistry"))
-          .then(({ writeExtensionRegistry }) => writeExtensionRegistry(workspacePath))
-          .catch((err: unknown) =>
-            console.warn("[Extensions] Failed to reconcile after meta push:", err)
-          );
+        // Reconcile declared workspace units after the combined meta-push gate.
+        // Any newly trusted app/extension identities were preapproved by the
+        // unit push authorizer, so these reconciles activate without a second
+        // prompt.
+        void reconcileDeclaredWorkspaceUnits(nextConfig, "meta-push");
         syncDeclaredRemotesForSource()
           .then(() => contextFolderManager.syncDeclaredRemotes())
           .catch((err: unknown) =>
@@ -1263,6 +1304,10 @@ async function main() {
               void ref;
               return buildSystem.getEffectiveVersion(source) ?? "";
             },
+            resolveAppEffectiveVersion: async ({ source, ref }) => {
+              void ref;
+              return buildSystem.getEffectiveVersion(source) ?? "";
+            },
             onRetire: async (record) => {
               await cleanupRuntimeEntityRecord(record);
             },
@@ -1284,7 +1329,7 @@ async function main() {
   }
 
   // browser-data is now an extension at
-  // workspace/extensions/@workspace-extensions/browser-data — callers reach it
+  // workspace/extensions/browser-data — callers reach it
   // through `extensions.invoke`. The extension proxies to the BrowserDataDO
   // via unified RPC, so storage stays in workerd unchanged.
 
@@ -1434,6 +1479,7 @@ async function main() {
         eventService,
         approvalQueue,
         notificationService: notificationResult.internal,
+        approvalCoordinator: unitApprovalCoordinator,
         getContextIdForCaller: (callerId) => entityCache.resolveContext(callerId),
         getGatewayUrl: () => {
           if (!gatewayPortResolved) {
@@ -1454,6 +1500,8 @@ async function main() {
             return rpcServer.streamCallTarget(name, method, ...args);
           },
         },
+        registerBuildProvider,
+        unregisterBuildProvider,
       });
       extensionHostForGateway = host;
       return host;
@@ -1470,6 +1518,38 @@ async function main() {
   });
 
   // ── Workers RPC service ──
+
+  // ── App host (workspace-owned privileged frontend apps) ──
+  container.register({
+    name: "appHost",
+    dependencies: ["buildSystem"],
+    async start(resolve) {
+      const { AppHost } = await import("./appHost.js");
+      const buildSystemInst = assertPresent(
+        resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")
+      );
+      const host = new AppHost({
+        statePath,
+        workspacePath,
+        workspaceId: workspace.config.id,
+        buildSystem: buildSystemInst,
+        eventService,
+        approvalQueue,
+        notificationService: notificationResult.internal,
+        approvalCoordinator: unitApprovalCoordinator,
+        entityCache,
+        getGatewayUrl: () => {
+          if (!gatewayPortResolved) {
+            throw new Error("Gateway port not finalized before app startup");
+          }
+          const isTls = !!(hostConfig.tlsCert && hostConfig.tlsKey);
+          return `${isTls ? "https" : "http"}://127.0.0.1:${gatewayPortResolved}`;
+        },
+      });
+      appHostForGateway = host;
+      return host;
+    },
+  });
 
   {
     let workerServiceDef: import("@natstack/shared/serviceDefinition").ServiceDefinition;
@@ -1751,18 +1831,25 @@ async function main() {
     requestWorkspaceList,
     listWorkspaceUnits: () => {
       const buildSystem = container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");
-      const extensionRows = extensionHostForGateway?.listWorkspaceUnits() ?? [];
-      const extensionsBySource = new Map(extensionRows.map((row) => [row.source, row]));
+      type WorkspaceUnitStatus = import("./services/workspaceService.js").WorkspaceUnitStatus;
+      const trustedRows: WorkspaceUnitStatus[] = trustedUnitHosts().flatMap(
+        (host) => host.listWorkspaceUnits() as WorkspaceUnitStatus[]
+      );
+      const trustedRowsBySource = new Map<string, WorkspaceUnitStatus>(
+        trustedRows.map((row) => [row.source, row])
+      );
       const workerInstances = new Map(
         workerdManagerForGateway?.listInstances().map((instance) => [instance.source, instance]) ??
           []
       );
-      const rows: import("./services/workspaceService.js").WorkspaceUnitStatus[] = [];
+      const rows: import("./services/workspaceService.js").WorkspaceUnitStatus[] = [
+        ...trustedRows.filter((row) => row.kind === "app"),
+      ];
       for (const node of buildSystem?.getGraph().allNodes() ?? []) {
         if (node.kind !== "panel" && node.kind !== "worker" && node.kind !== "extension") continue;
         if (node.kind === "extension") {
           rows.push(
-            extensionsBySource.get(node.relativePath) ?? {
+            trustedRowsBySource.get(node.relativePath) ?? {
               name: node.name,
               kind: "extension",
               source: node.relativePath,
@@ -1864,6 +1951,9 @@ async function main() {
         .allNodes()
         .find((candidate) => candidate.name === name || candidate.relativePath === name);
       const kind = node?.kind;
+      if (kind === "app") {
+        return appHostForGateway?.listWorkspaceUnitLogs(name) ?? [];
+      }
       if (kind === "worker") {
         const source = node?.relativePath ?? name;
         const buffer = workerUnitLogs.get(source) ?? [];
@@ -1872,6 +1962,31 @@ async function main() {
       // Default and extension: the extension host has its own buffer and
       // also returns [] if the name is unknown.
       return extensionHostForGateway?.listWorkspaceUnitLogs(name, opts) ?? [];
+    },
+    reseedCanonicalShellApp: () => {
+      const template = resolveWorkspaceTemplateDir(appRoot);
+      if (!template) {
+        throw new Error("Cannot reseed canonical shell app: no workspace template is available");
+      }
+      return reseedCanonicalShellApp(workspacePath, { templateDir: template });
+    },
+    bakeAppDist: (sourceOrName: string, opts?: { outDir?: string }) => {
+      const appHost = appHostForGateway;
+      if (!appHost) throw new Error("App host is not available");
+      return appHost.bakeDist(
+        sourceOrName,
+        opts?.outDir ?? path.join(appRoot, "dist", "baked-app")
+      );
+    },
+    listAppVersions: (sourceOrName: string) => {
+      const appHost = appHostForGateway;
+      if (!appHost) return { current: null, previous: [], retentionLimit: 0 };
+      return appHost.listAppVersions(sourceOrName);
+    },
+    rollbackAppVersion: (sourceOrName: string, buildKey?: string) => {
+      const appHost = appHostForGateway;
+      if (!appHost) throw new Error("App host is not available");
+      return appHost.rollbackAppVersion(sourceOrName, buildKey);
     },
     approvalQueue,
     getEffectiveVersion: async (source: string) => {
@@ -1901,7 +2016,7 @@ async function main() {
   }
 
   if (!ipcChannel) {
-    // Settings service for remote/mobile shells.
+    // Settings service for trusted remote hosts and mobile workspace apps.
     const { createSettingsServiceStandalone } =
       await import("./services/settingsServiceStandalone.js");
     container.register(rpcService(createSettingsServiceStandalone({ dispatcher })));
@@ -1919,7 +2034,36 @@ async function main() {
           deviceAuthStore,
           getServerBootId: () => serverBootId,
           getWorkspaceId: () => workspace.config.id,
+          getConnectionInfo: () => {
+            if (!gatewayPortResolved) {
+              throw new Error("Gateway is not ready");
+            }
+            const isTls = !!(hostConfig.tlsCert && hostConfig.tlsKey);
+            const protocol = isTls ? "https" : "http";
+            let publicUrl: string | null = null;
+            try {
+              publicUrl = getPublicUrl();
+            } catch {
+              publicUrl = null;
+            }
+            return {
+              serverUrl: `${protocol}://${hostConfig.externalHost}:${gatewayPortResolved}`,
+              publicUrl,
+              protocol,
+              externalHost: hostConfig.externalHost,
+              gatewayPort: gatewayPortResolved,
+            };
+          },
           connectionGrants,
+          auditLog,
+          hasAppCapability: (callerId, capability) =>
+            appHostForGateway?.hasAppCapability(callerId, capability) ?? false,
+          getMobileAppBootstrap: () => appHostForGateway?.getReactNativeBootstrap() ?? null,
+          registerMobileAppPrincipal: (deviceId) =>
+            appHostForGateway?.registerReactNativeAppPrincipal(deviceId) ?? null,
+          retireMobileAppPrincipal: (deviceId) => {
+            appHostForGateway?.retireReactNativeAppPrincipal(deviceId);
+          },
         }),
         routeRegistry
       )
@@ -1946,6 +2090,7 @@ async function main() {
     },
     getGitHandler: () => gitServer,
     getExtensionHttpHandler: () => extensionHostForGateway,
+    getAppArtifactHandler: () => appHostForGateway,
     getWorkerdPort: () => workerdManagerForGateway?.getPort() ?? null,
     externalHost: hostConfig.externalHost,
     bindHost: hostConfig.bindHost,
@@ -2249,19 +2394,7 @@ async function main() {
   });
   cleanupReaper.start();
 
-  const extensionHost =
-    container.get<import("@natstack/extension-host").ExtensionHost>("extensionHost");
-  await extensionHost.reconcileDeclared(resolveDeclaredExtensions(workspaceConfig));
-
-  // Keep the @workspace/runtime extension-registry barrel in sync with the
-  // extensions present in the workspace, so panels type-check
-  // `extensions.use("...")` against the live registry (see extensionRegistry.ts).
-  try {
-    const { writeExtensionRegistry } = await import("@natstack/shared/workspace/extensionRegistry");
-    writeExtensionRegistry(workspacePath);
-  } catch (err) {
-    console.warn("[Extensions] Failed to generate extension registry barrel:", err);
-  }
+  await reconcileDeclaredWorkspaceUnits(workspaceConfig, "startup");
 
   // ===========================================================================
   // Report ready
@@ -2483,6 +2616,8 @@ async function main() {
         rpcUrl: `${wsProto}://${hostConfig.externalHost}:${gatewayPort}/rpc`,
         gitUrl: `${proto}://${hostConfig.externalHost}:${gatewayPort}/_git/`,
         workerdUrl: `${proto}://${hostConfig.externalHost}:${gatewayPort}/_w/`,
+        publicUrl: explicitPublicUrl ?? detectedVpn?.url ?? null,
+        connectUrl: pairingTargetUrl,
         adminToken,
         pairingCode: startupPairingCode,
         serverId: deviceAuthStore.getServerId(),

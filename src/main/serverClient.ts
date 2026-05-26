@@ -9,9 +9,18 @@ import {
   type ConnectionStatus,
   type WsLike,
 } from "@natstack/shared/shell/transport";
+import type { RpcMessage } from "@natstack/rpc";
+import type { CallerKind } from "@natstack/shared/serviceDispatcher";
 import { createPinnedTlsSocket } from "./tlsPinning.js";
 
 export type { ConnectionStatus };
+
+export interface ScopedServerCaller {
+  callerId: string;
+  callerKind: CallerKind;
+}
+
+export type ServerMessageListener = (fromId: string, message: RpcMessage) => void;
 
 export interface TlsPinningOptions {
   /** Path to a CA certificate (PEM) for self-signed servers */
@@ -23,6 +32,15 @@ export interface TlsPinningOptions {
 export interface ServerClient {
   /** Call a backend service via the server */
   call(service: string, method: string, args: unknown[]): Promise<unknown>;
+  /** Call a backend service via the server as an Electron-hosted runtime principal. */
+  callAs(
+    caller: ScopedServerCaller,
+    service: string,
+    method: string,
+    args: unknown[]
+  ): Promise<unknown>;
+  /** Forward server-originated messages for an Electron-hosted runtime principal. */
+  addMessageListener(caller: ScopedServerCaller, listener: ServerMessageListener): () => void;
   /** Check if connected */
   isConnected(): boolean;
   /** Current connection status */
@@ -141,9 +159,92 @@ export async function createServerClient(
 
   await transport.connectAndWait();
 
+  type ScopedClient = {
+    transport: BaseWsTransport;
+    close(): Promise<void>;
+  };
+  const scopedClients = new Map<string, Promise<ScopedClient>>();
+  const scopedListeners = new Map<string, Set<ServerMessageListener>>();
+  const scopedKey = (caller: ScopedServerCaller): string =>
+    `${caller.callerKind}\x00${caller.callerId}`;
+
+  const createScopedClient = async (caller: ScopedServerCaller): Promise<ScopedClient> => {
+    if (caller.callerKind !== "app") {
+      throw new Error(`Scoped server RPC is not available for ${caller.callerKind} callers`);
+    }
+    const grant = await transport.callMain<{ token: string }>("auth.grantConnection", [
+      caller.callerId,
+    ]);
+    const scopedTransport = new BaseWsTransport({
+      selfId: caller.callerId,
+      getWsUrl,
+      reconnect: false,
+      logPrefix: `ServerClient:${caller.callerId}`,
+      adapter: {
+        now: () => Date.now(),
+        getAuthToken: async () => grant.token,
+        createSocket: (url) =>
+          new NodeWsLike(new WebSocket(url, createWsOptions(url, options?.tls))),
+      },
+      onDisconnect: () => {
+        scopedClients.delete(scopedKey(caller));
+      },
+    });
+    scopedTransport.onMessage((fromId, message) => {
+      for (const listener of scopedListeners.get(scopedKey(caller)) ?? []) {
+        listener(fromId, message);
+      }
+    });
+    await scopedTransport.connectAndWait();
+    return {
+      transport: scopedTransport,
+      close: () => scopedTransport.close(),
+    };
+  };
+
+  const getScopedClient = async (caller: ScopedServerCaller): Promise<ScopedClient> => {
+    const key = scopedKey(caller);
+    const existing = scopedClients.get(key);
+    if (existing) {
+      const client = await existing;
+      if (client.transport.isConnected()) return client;
+      scopedClients.delete(key);
+      void client.close();
+    }
+    const next = createScopedClient(caller).catch((err) => {
+      scopedClients.delete(key);
+      throw err;
+    });
+    scopedClients.set(key, next);
+    return next;
+  };
+
   return {
     call(service: string, method: string, args: unknown[]): Promise<unknown> {
       return transport.callMain(`${service}.${method}`, args);
+    },
+    async callAs(
+      caller: ScopedServerCaller,
+      service: string,
+      method: string,
+      args: unknown[]
+    ): Promise<unknown> {
+      if (caller.callerKind === "shell") return transport.callMain(`${service}.${method}`, args);
+      const client = await getScopedClient(caller);
+      return client.transport.callMain(`${service}.${method}`, args);
+    },
+    addMessageListener(caller: ScopedServerCaller, listener: ServerMessageListener): () => void {
+      const key = scopedKey(caller);
+      let listeners = scopedListeners.get(key);
+      if (!listeners) {
+        listeners = new Set();
+        scopedListeners.set(key, listeners);
+      }
+      listeners.add(listener);
+      return () => {
+        listeners?.delete(listener);
+        if (listeners?.size === 0) scopedListeners.delete(key);
+      };
     },
     isConnected(): boolean {
       return transport.isConnected();
@@ -151,7 +252,11 @@ export async function createServerClient(
     getConnectionStatus(): ConnectionStatus {
       return transport.getConnectionStatus();
     },
-    close(): Promise<void> {
+    async close(): Promise<void> {
+      await Promise.allSettled(
+        [...scopedClients.values()].map(async (client) => (await client).close())
+      );
+      scopedClients.clear();
       return transport.close();
     },
   };

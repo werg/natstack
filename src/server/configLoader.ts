@@ -68,7 +68,7 @@ export const CONFIG_LOADER_JS = `(async () => {
     cfg = parseStoredInit();
   }
 
-  const entityId = cfg?.entityId ?? cfg?.panelId;
+  const entityId = cfg?.entityId;
   const slotId = cfg?.slotId ?? entityId;
   const connectionId = cfg?.connectionId ?? cfg?.leaseConnectionId;
 

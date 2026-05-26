@@ -72,7 +72,7 @@ export function createNotificationService(deps: { eventService: EventService }):
   const definition: ServiceDefinition = {
     name: "notification",
     description: "Push notifications to the shell chrome area",
-    policy: { allowed: ["shell", "panel", "worker", "do", "extension", "server"] },
+    policy: { allowed: ["shell", "app", "panel", "worker", "do", "extension", "server"] },
     methods: {
       show: {
         args: z.tuple([
@@ -87,7 +87,7 @@ export function createNotificationService(deps: { eventService: EventService }):
                 scopes: z.array(z.string()),
                 callerId: z.string(),
                 callerTitle: z.string(),
-                callerKind: z.enum(["panel", "worker"]),
+                callerKind: z.enum(["panel", "app", "worker", "do"]),
               })
               .optional(),
             ttl: z.number().optional(),
@@ -97,6 +97,16 @@ export function createNotificationService(deps: { eventService: EventService }):
                   id: z.string(),
                   label: z.string(),
                   variant: z.enum(["solid", "soft", "ghost"]).optional(),
+                  command: z
+                    .union([
+                      z.object({ type: z.literal("app.applyUpdate"), appId: z.string() }),
+                      z.object({
+                        type: z.literal("app.rollback"),
+                        appId: z.string(),
+                        buildKey: z.string().optional(),
+                      }),
+                    ])
+                    .optional(),
                 })
               )
               .optional(),

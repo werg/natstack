@@ -112,6 +112,39 @@ describe("corsApprovalService", () => {
     );
   });
 
+  it("approval-gates app access to target origins", async () => {
+    const approvalQueue = createApprovalQueueMock("session");
+    const service = createCorsApprovalService({
+      approvalQueue,
+      grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
+    });
+    const ctx = {
+      caller: createVerifiedCaller("@workspace-apps/shell", "app", {
+        callerId: "@workspace-apps/shell",
+        callerKind: "app",
+        repoPath: "apps/shell",
+        effectiveVersion: "version-1",
+      }),
+    };
+
+    await expect(
+      service.handler(ctx, "authorize", [
+        {
+          targetUrl: "https://api.example.com/v1/models",
+          requestOrigin: "http://localhost:9100",
+        },
+      ])
+    ).resolves.toMatchObject({ allowed: true, decision: "session" });
+
+    expect(approvalQueue.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callerId: "@workspace-apps/shell",
+        callerKind: "app",
+        repoPath: "apps/shell",
+      })
+    );
+  });
+
   it("rejects callers without verified code identity", async () => {
     const service = createCorsApprovalService({
       approvalQueue: createApprovalQueueMock(),

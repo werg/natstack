@@ -30,6 +30,7 @@ import {
   type BrowserNavigationIntent,
 } from "@natstack/shared/panelCommands";
 import { createDevLogger } from "@natstack/dev-log";
+import { requireAppCapability } from "./appCapabilities.js";
 
 const log = createDevLogger("PanelShellService");
 
@@ -131,7 +132,7 @@ export function createPanelShellService(deps: {
   return {
     name: "panel",
     description: "Panel tree management, reload, close",
-    policy: { allowed: ["shell"] },
+    policy: { allowed: ["shell", "app"] },
     methods: {
       loadTree: { args: z.tuple([]) },
       getTree: { args: z.tuple([]) },
@@ -238,11 +239,12 @@ export function createPanelShellService(deps: {
       setCollapsed: { args: z.tuple([z.string(), z.boolean()]) },
       expandIds: { args: z.tuple([z.array(z.string())]) },
     },
-    handler: async (_ctx, method, args) => {
+    handler: async (ctx, method, args) => {
       const lifecycle = deps.panelOrchestrator;
       const registry = deps.panelRegistry;
       const pv = deps.panelView;
       const vm = deps.getViewManager();
+      requireAppCapability(ctx, vm, "panel-hosting", `panel.${method}`);
 
       switch (method) {
         case "loadTree":

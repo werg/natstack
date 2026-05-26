@@ -116,13 +116,40 @@ export interface WorkspaceServiceDeps {
     name: string,
     opts?: { since?: number; level?: WorkspaceUnitLogRecord["level"]; limit?: number }
   ) => Promise<WorkspaceUnitLogRecord[]> | WorkspaceUnitLogRecord[];
+  /** Restore the product-seeded canonical shell app source for recovery. */
+  reseedCanonicalShellApp?: () => Promise<unknown> | unknown;
+  /** Bake an active approved app build into the packaging payload directory. */
+  bakeAppDist?: (sourceOrName: string, opts?: { outDir?: string }) => Promise<unknown> | unknown;
+  /** List active and rollback-capable versions for an app unit. */
+  listAppVersions?: (sourceOrName: string) => Promise<WorkspaceAppVersions> | WorkspaceAppVersions;
+  /** Roll an app unit back to a previous active build. */
+  rollbackAppVersion?: (sourceOrName: string, buildKey?: string) => Promise<unknown> | unknown;
   /** Queue used to gate userland workspace mutations. */
   approvalQueue?: Pick<ApprovalQueue, "requestUserland">;
 }
 
+export interface WorkspaceAppVersionRecord {
+  version: string;
+  target: string;
+  capabilities: string[];
+  activeEv: string | null;
+  activeSha: string | null;
+  activeBundleKey: string;
+  activeDependencyEvs: Record<string, string>;
+  activeExternalDeps: Record<string, string>;
+  activeRuntimeDepsKey: string | null;
+  activatedAt: number;
+}
+
+export interface WorkspaceAppVersions {
+  current: WorkspaceAppVersionRecord | null;
+  previous: WorkspaceAppVersionRecord[];
+  retentionLimit: number;
+}
+
 export interface WorkspaceUnitStatus {
   name: string;
-  kind: "panel" | "worker" | "extension";
+  kind: "panel" | "worker" | "extension" | "app";
   source: string;
   displayName?: string;
   enabled?: boolean;
@@ -149,6 +176,11 @@ export interface WorkspaceUnitStatus {
    */
   availableUpdate?: { reason: "dependency"; checkedAt: number } | null;
   lastError?: string | null;
+  lastErrorDetails?: unknown;
+  target?: string;
+  canRollback?: boolean;
+  rollbackRetentionLimit?: number;
+  previousVersions?: WorkspaceAppVersionRecord[];
   health?: unknown;
   methods?: string[];
   hasFetch?: boolean;
@@ -159,7 +191,7 @@ export interface WorkspaceUnitStatus {
 export interface WorkspaceUnitLogRecord {
   workspaceId: string;
   unitName: string;
-  kind: "extension" | "worker" | "panel";
+  kind: "extension" | "worker" | "panel" | "app";
   timestamp: number;
   level: "debug" | "info" | "warn" | "error";
   message: string;
@@ -176,6 +208,45 @@ type WorkspaceApprovalOperation =
 
 function isTrustedWorkspaceCaller(ctx: ServiceContext): boolean {
   return ctx.caller.runtime.kind === "shell" || ctx.caller.runtime.kind === "server";
+}
+
+async function requireAppUnitManagementAccess(
+  deps: WorkspaceServiceDeps,
+  ctx: ServiceContext,
+  method: string,
+  name: string
+): Promise<void> {
+  if (isTrustedWorkspaceCaller(ctx)) return;
+  if (ctx.caller.runtime.kind !== "app") {
+    throw new ServiceError(
+      "workspace",
+      method,
+      `workspace.${method} is not accessible to ${ctx.caller.runtime.kind} callers`,
+      "EACCES"
+    );
+  }
+  if (ctx.caller.runtime.id === "@workspace-apps/shell") return;
+  const rows = deps.listUnits ? await deps.listUnits() : [];
+  const row = rows.find(
+    (unit) => unit.kind === "app" && (unit.name === name || unit.source === name)
+  );
+  if (!row) {
+    throw new ServiceError("workspace", method, `Unknown app unit: ${name}`, "ENOENT");
+  }
+  const normalizedSource = row.source.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  const callerId = ctx.caller.runtime.id;
+  if (
+    callerId === row.name ||
+    callerId === normalizedSource ||
+    callerId.startsWith(`app:${normalizedSource}:`)
+  )
+    return;
+  throw new ServiceError(
+    "workspace",
+    method,
+    `workspace.${method} can only manage the calling app`,
+    "EACCES"
+  );
 }
 
 function truncateApprovalValue(value: string, max = 200): string {
@@ -202,13 +273,14 @@ function resolveWorkspacePrincipal(
 ): ApprovalPrincipal {
   if (
     ctx.caller.runtime.kind !== "panel" &&
+    ctx.caller.runtime.kind !== "app" &&
     ctx.caller.runtime.kind !== "worker" &&
     ctx.caller.runtime.kind !== "do"
   ) {
     throw new ServiceError(
       "workspace",
       method,
-      "Workspace mutation approvals are only available to panel, worker, and DO callers",
+      "Workspace mutation approvals are only available to panel, app, worker, and DO callers",
       "EACCES"
     );
   }
@@ -320,11 +392,11 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
     ? {
         create: {
           args: z.tuple([z.string(), z.object({ forkFrom: z.string().optional() }).optional()]),
-          policy: { allowed: ["shell", "panel", "worker", "do", "server"] },
+          policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
         },
         delete: {
           args: z.tuple([z.string()]),
-          policy: { allowed: ["shell", "panel", "worker", "do", "server"] },
+          policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
         },
       }
     : {};
@@ -332,7 +404,7 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
   return {
     name: "workspace",
     description: "Workspace catalog, configuration, and lifecycle (list, create, switch, etc.)",
-    policy: { allowed: ["shell", "panel", "worker", "do", "extension", "server"] },
+    policy: { allowed: ["shell", "app", "panel", "worker", "do", "extension", "server"] },
     methods: {
       // Read methods
       getInfo: { args: z.tuple([]) },
@@ -346,7 +418,7 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
       // app.relaunch() — disruptive and reachable only via shell UI.
       select: {
         args: z.tuple([z.string()]),
-        policy: { allowed: ["shell", "panel", "worker", "do", "server"] },
+        policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
       },
       setInitPanels: {
         args: z.tuple([
@@ -357,13 +429,13 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
             })
           ),
         ]),
-        policy: { allowed: ["shell", "panel", "worker", "do", "server"] },
+        policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
       },
       // SECURITY: arbitrary config-field writes — server-internal use
       // by default, but userland can request a one-shot approval.
       setConfigField: {
         args: z.tuple([z.string(), z.unknown()]),
-        policy: { allowed: ["shell", "panel", "worker", "do", "server"] },
+        policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
       },
       // Agent resource loading — read AGENTS.md and skill definitions directly
       // from the workspace source tree. Kept server-side because they touch
@@ -385,6 +457,20 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
             })
             .optional(),
         ]),
+      },
+      "units.versions": {
+        args: z.tuple([z.string()]),
+      },
+      "units.rollback": {
+        args: z.tuple([z.string(), z.object({ buildKey: z.string().optional() }).optional()]),
+      },
+      "units.reseedCanonicalShell": {
+        args: z.tuple([]),
+        policy: { allowed: ["shell", "server"] },
+      },
+      "units.bakeAppDist": {
+        args: z.tuple([z.string(), z.object({ outDir: z.string().optional() }).optional()]),
+        policy: { allowed: ["shell", "server"] },
       },
     },
     handler: async (ctx, method, args) => {
@@ -582,6 +668,51 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
             { since?: number; level?: WorkspaceUnitLogRecord["level"]; limit?: number } | undefined,
           ];
           return await deps.listUnitLogs(name, opts);
+        }
+
+        case "units.versions": {
+          if (!deps.listAppVersions) return { current: null, previous: [] };
+          const [name] = args as [string];
+          await requireAppUnitManagementAccess(deps, ctx, method, name);
+          return await deps.listAppVersions(name);
+        }
+
+        case "units.rollback": {
+          if (!deps.rollbackAppVersion) throw new Error("App rollback is not available");
+          const [name, opts] = args as [string, { buildKey?: string } | undefined];
+          await requireAppUnitManagementAccess(deps, ctx, method, name);
+          return await deps.rollbackAppVersion(name, opts?.buildKey);
+        }
+
+        case "units.reseedCanonicalShell": {
+          if (ctx.caller.runtime.kind !== "shell" && ctx.caller.runtime.kind !== "server") {
+            throw new ServiceError(
+              "workspace",
+              method,
+              `workspace.${method} is not accessible to ${ctx.caller.runtime.kind} callers`,
+              "EACCES"
+            );
+          }
+          if (!deps.reseedCanonicalShellApp) {
+            throw new Error("Canonical shell reseed is not available");
+          }
+          return await deps.reseedCanonicalShellApp();
+        }
+
+        case "units.bakeAppDist": {
+          if (ctx.caller.runtime.kind !== "shell" && ctx.caller.runtime.kind !== "server") {
+            throw new ServiceError(
+              "workspace",
+              method,
+              `workspace.${method} is not accessible to ${ctx.caller.runtime.kind} callers`,
+              "EACCES"
+            );
+          }
+          if (!deps.bakeAppDist) {
+            throw new Error("App dist bake is not available");
+          }
+          const [sourceOrName, opts] = args as [string, { outDir?: string } | undefined];
+          return await deps.bakeAppDist(sourceOrName, opts);
         }
 
         default:

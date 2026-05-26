@@ -1,6 +1,6 @@
 /**
- * remoteCredentialStore tests — encrypt/decrypt round-trip, safeStorage-
- * unavailable fallback, file mode 0o600, dir mode 0o700.
+ * remoteCredentialStore tests — encrypt/decrypt round-trip, fail-closed
+ * safeStorage handling, file mode 0o600, dir mode 0o700.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -112,79 +112,36 @@ describe("remoteCredentialStore", () => {
     expect(storeMod.loadRemoteCredentials()).toEqual(creds);
   });
 
-  it.each([
-    {
-      name: "admin-token-only",
-      raw: {
-        url: "https://old-admin.example",
-        token: legacyEncryptedValue("admin-secret"),
-        encrypted: true,
-      },
-      expected: {
-        kind: "admin-token",
-        url: "https://old-admin.example",
-        adminToken: "admin-secret",
-      },
-    },
-    {
-      name: "device-only",
-      raw: {
-        url: "https://old-device.example",
-        deviceId: "dev_old",
-        refreshToken: legacyEncryptedValue("refresh-secret"),
-        encrypted: true,
-      },
-      expected: {
-        kind: "device",
-        url: "https://old-device.example",
-        deviceId: "dev_old",
-        refreshToken: "refresh-secret",
-      },
-    },
-    {
-      name: "hybrid",
-      raw: {
-        url: "https://old-hybrid.example",
-        token: legacyEncryptedValue("admin-secret"),
-        deviceId: "dev_old",
-        refreshToken: legacyEncryptedValue("refresh-secret"),
-        encrypted: true,
-        caPath: "/ca.pem",
-        fingerprint: "AA:BB",
-      },
-      expected: {
-        kind: "hybrid",
-        url: "https://old-hybrid.example",
-        adminToken: "admin-secret",
-        deviceId: "dev_old",
-        refreshToken: "refresh-secret",
-        caPath: "/ca.pem",
-        fingerprint: "AA:BB",
-      },
-    },
-  ])("migrates v1 $name credentials on read", ({ raw, expected }) => {
-    writeRawStore(raw);
-    expect(storeMod.loadRemoteCredentials()).toEqual(expected);
-  });
-
-  it("returns null for corrupt v1 credentials", () => {
-    writeRawStore({ url: "https://old.example", encrypted: true });
+  it("rejects pre-cutover credential schemas", () => {
+    writeRawStore({
+      url: "https://old-admin.example",
+      token: Buffer.from("admin-secret", "utf-8").toString("base64"),
+      encrypted: true,
+    });
     expect(storeMod.loadRemoteCredentials()).toBeNull();
   });
 
-  it("falls back to plaintext storage when safeStorage is unavailable", () => {
+  it("refuses to persist credentials when safeStorage is unavailable", () => {
     mockSafeStorage._available = false;
-    storeMod.saveRemoteCredentials({ kind: "admin-token", url: "http://x:1", adminToken: "plain" });
-    const raw = fs.readFileSync(path.join(tmpDir, "remote-credentials.json"), "utf-8");
-    const parsed = JSON.parse(raw);
-    expect(parsed.adminToken.encrypted).toBe(false);
-    expect(parsed.adminToken.value).toBe("plain");
+    expect(() =>
+      storeMod.saveRemoteCredentials({
+        kind: "admin-token",
+        url: "http://x:1",
+        adminToken: "plain",
+      })
+    ).toThrow(/safeStorage encryption is unavailable/);
+    expect(fs.existsSync(path.join(tmpDir, "remote-credentials.json"))).toBe(false);
+  });
 
-    // Re-enable → refuses to decrypt a plaintext-marked token, but the
-    // unencrypted branch handles it correctly.
-    const loaded = storeMod.loadRemoteCredentials();
-    expect(loaded?.kind).toBe("admin-token");
-    expect(loaded?.kind === "admin-token" ? loaded.adminToken : undefined).toBe("plain");
+  it("rejects unencrypted v2 credential secrets", () => {
+    writeRawStore({
+      schemaVersion: 2,
+      kind: "admin-token",
+      url: "https://plain.example",
+      adminToken: { value: "plain", encrypted: false },
+    });
+
+    expect(storeMod.loadRemoteCredentials()).toBeNull();
   });
 
   it("returns null when safeStorage becomes unavailable mid-lifetime", () => {
@@ -230,10 +187,6 @@ describe("remoteCredentialStore", () => {
     expect(storeMod.loadRemoteCredentials()).toBeNull();
   });
 });
-
-function legacyEncryptedValue(value: string): string {
-  return Buffer.from(value, "utf-8").toString("base64");
-}
 
 function writeRawStore(raw: unknown): void {
   fs.mkdirSync(tmpDir, { recursive: true });

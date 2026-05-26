@@ -293,6 +293,35 @@ describe("ViewManager", () => {
       expect(vm.isViewVisible("test-view")).toBe(false);
     });
 
+    it("keeps host chrome app views full-window and out of panel layout", () => {
+      const hostView = vm.createView({
+        id: "@workspace-apps/shell",
+        type: "app",
+        hostChrome: true,
+        appCapabilities: ["panel-hosting"],
+      });
+      const panelView = vm.createView({
+        id: "panel-1",
+        type: "panel",
+      });
+
+      vm.setViewVisible("@workspace-apps/shell", true);
+      vm.updateLayout({ sidebarVisible: true, sidebarWidth: 260, titleBarHeight: 32 });
+
+      expect(hostView.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 1200, height: 800 });
+
+      vm.setViewVisible("panel-1", true);
+      vm.updateLayout({ sidebarVisible: true, sidebarWidth: 260, titleBarHeight: 32 });
+
+      expect(hostView.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 1200, height: 800 });
+      expect(panelView.setBounds).toHaveBeenLastCalledWith({
+        x: 260,
+        y: 32,
+        width: 940,
+        height: 768,
+      });
+    });
+
     it("ignores hiding a missing view", () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 

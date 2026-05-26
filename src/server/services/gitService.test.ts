@@ -40,6 +40,15 @@ function panelSourceCaller() {
   });
 }
 
+function appSourceCaller() {
+  return createVerifiedCaller("@workspace-apps/shell", "app", {
+    callerId: "@workspace-apps/shell",
+    callerKind: "app",
+    repoPath: "apps/shell",
+    effectiveVersion: "version-1",
+  });
+}
+
 describe("gitService", () => {
   it("gates panel-created repositories through git write permission", async () => {
     const approvalQueue = createApprovalQueueMock();
@@ -86,6 +95,32 @@ describe("gitService", () => {
     ).rejects.toThrow("Invalid repo path: escapes workspace root");
 
     expect(approvalQueue.request).not.toHaveBeenCalled();
+  });
+
+  it("gates app-created repositories through git write permission", async () => {
+    const approvalQueue = createApprovalQueueMock();
+    const service = createGitService({
+      gitServer: {} as never,
+      tokenManager: {} as never,
+      workspacePath: fs.mkdtempSync(path.join(os.tmpdir(), "natstack-workspace-")),
+      approvalQueue,
+      grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
+    });
+
+    await expect(
+      service.handler({ caller: appSourceCaller() }, "createRepo", ["apps/new"])
+    ).rejects.toThrow("Git write permission denied");
+
+    expect(approvalQueue.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "capability",
+        capability: "internal-git-write",
+        callerId: "@workspace-apps/shell",
+        callerKind: "app",
+        repoPath: "apps/shell",
+        effectiveVersion: "version-1",
+      })
+    );
   });
 
   it("uses a targeted approval for shared remote configuration", async () => {
