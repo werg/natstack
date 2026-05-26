@@ -1045,6 +1045,17 @@ export class AppHost {
       } else {
         entry = this.registry.patch(entry.name, { lastErrorDetails: null });
       }
+      const pinnedSelection = this.pinnedSelectionForEntry(entry);
+      if (
+        pinnedSelection?.buildKey &&
+        pinnedSelection.buildKey !== entry.activeBundleKey &&
+        entry.previousVersions.some(
+          (candidate) => candidate.activeBundleKey === pinnedSelection.buildKey
+        )
+      ) {
+        await this.rollbackAppVersion(entry.name, pinnedSelection.buildKey);
+        return;
+      }
       this.activateAppEntity(entry);
       await this.syncTerminalRuntime(entry, previous);
       entry = this.registry.get(entry.name) ?? entry;
@@ -1499,6 +1510,20 @@ export class AppHost {
       normalizeRepoPath(current.selection.source) === normalizeRepoPath(entry.source.repo) ||
       current.selection.appId === entry.name
     );
+  }
+
+  private pinnedSelectionForEntry(entry: AppRegistryEntry): HostTargetSelection | null {
+    const current = this.getHostTargetSelection(entry.target);
+    const selection = current.valid ? current.selection : null;
+    if (!selection) return null;
+    if (selection.mode !== "pinned-build" && selection.mode !== "pinned-commit") return null;
+    if (
+      selection.appId !== entry.name &&
+      normalizeRepoPath(selection.source) !== normalizeRepoPath(entry.source.repo)
+    ) {
+      return null;
+    }
+    return selection;
   }
 
   private activateAppEntity(entry: AppRegistryEntry): void {

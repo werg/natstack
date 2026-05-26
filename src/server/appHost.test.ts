@@ -179,6 +179,8 @@ function makeHarness(
     notificationService,
     graphNode,
     appPath,
+    root,
+    workspacePath,
     entityCache,
     providerChangeCallbacks,
   };
@@ -222,6 +224,112 @@ function installApp(host: AppHost, graphNode: ReturnType<typeof makeHarness>["gr
     status: "running",
     lastError: null,
     previousVersions: [],
+  });
+}
+
+function createAppGraphNode(
+  workspacePath: string,
+  source: string,
+  opts: {
+    name: string;
+    target: "electron" | "react-native" | "terminal";
+    capabilities?: string[];
+    displayName?: string;
+  }
+) {
+  const appPath = path.join(workspacePath, source);
+  fs.mkdirSync(appPath, { recursive: true });
+  fs.writeFileSync(
+    path.join(appPath, "package.json"),
+    JSON.stringify({
+      name: opts.name,
+      version: "1.0.0",
+      natstack: {
+        displayName: opts.displayName ?? opts.name,
+        app: {
+          target: opts.target,
+          renderer: opts.target === "terminal" ? "index.mjs" : "index.tsx",
+          capabilities: opts.capabilities ?? [],
+        },
+      },
+    })
+  );
+  fs.writeFileSync(
+    path.join(appPath, opts.target === "terminal" ? "index.mjs" : "index.tsx"),
+    "export default null;\n"
+  );
+  return {
+    name: opts.name,
+    kind: "app" as const,
+    relativePath: source,
+    path: appPath,
+    internalDeps: [],
+    manifest: {
+      displayName: opts.displayName ?? opts.name,
+      app: { target: opts.target, capabilities: opts.capabilities ?? [] },
+    },
+  };
+}
+
+function installAppEntry(
+  host: AppHost,
+  node: {
+    name: string;
+    relativePath: string;
+    manifest: {
+      app: {
+        target: "electron" | "react-native" | "terminal";
+        capabilities: readonly string[];
+      };
+    };
+  },
+  opts: {
+    target?: "electron" | "react-native" | "terminal";
+    activeBundleKey?: string;
+    activeEv?: string;
+    capabilities?: string[];
+    previousVersions?: Array<{
+      activeBundleKey: string;
+      activeEv: string | null;
+      target?: "electron" | "react-native" | "terminal";
+      capabilities?: string[];
+    }>;
+  } = {}
+): void {
+  const target = opts.target ?? node.manifest.app.target;
+  host.registry.upsert({
+    unitKind: "app",
+    name: node.name,
+    version: "1.0.0",
+    target,
+    autostart: true,
+    capabilities: (opts.capabilities ?? node.manifest.app.capabilities) as never,
+    source: { kind: "internal-git", repo: node.relativePath, ref: "main" },
+    installedAt: Date.now(),
+    activeEv: opts.activeEv ?? `ev-${node.name}`,
+    activeSha: "abc123",
+    activeBundleKey: opts.activeBundleKey ?? `${node.name}-key`,
+    activeDependencyEvs: {},
+    activeExternalDeps: {},
+    activeRuntimeDepsKey: null,
+    enabled: true,
+    status: target === "terminal" ? "available" : "running",
+    lastError: null,
+    previousVersions: (opts.previousVersions ?? []).map((version) => ({
+      version: "1.0.0",
+      target: version.target ?? target,
+      autostart: true,
+      capabilities: (version.capabilities ??
+        opts.capabilities ??
+        node.manifest.app.capabilities) as never,
+      activeEv: version.activeEv,
+      activeSha: "previous-sha",
+      activeBundleKey: version.activeBundleKey,
+      activeDependencyEvs: {},
+      activeExternalDeps: {},
+      activeRuntimeDepsKey: null,
+      activatedAt: Date.now() - 1000,
+    })),
   });
 }
 
@@ -447,6 +555,204 @@ describe("AppHost", () => {
         canRollback: true,
       })
     );
+  });
+
+  it("persists host target selections and invalidates them when the app disappears", () => {
+    const { host, buildSystem, graphNode } = makeHarness();
+    graphNode.manifest.app.capabilities = ["panel-hosting"] as never;
+
+    const selection = host.setHostTargetSelection("electron", {
+      source: "apps/shell",
+      mode: "follow-ref",
+    });
+
+    expect(selection).toMatchObject({
+      workspaceId: "ws",
+      target: "electron",
+      source: "apps/shell",
+      appId: "@workspace-apps/shell",
+      mode: "follow-ref",
+    });
+    expect(host.getHostTargetSelection("electron")).toMatchObject({
+      valid: true,
+      selection: expect.objectContaining({ source: "apps/shell" }),
+    });
+    buildSystem.getGraph.mockReturnValueOnce({ allNodes: () => [] } as never);
+    expect(host.getHostTargetSelection("electron")).toMatchObject({
+      valid: false,
+      reason: "Selected app is no longer available",
+    });
+  });
+
+  it("marks unselected Electron app availability events for the host to ignore", async () => {
+    const { host, buildSystem, eventService, graphNode, workspacePath } = makeHarness();
+    graphNode.manifest.app.capabilities = ["panel-hosting"] as never;
+    const altNode = createAppGraphNode(workspacePath, "apps/desktop-alt", {
+      name: "@workspace-apps/desktop-alt",
+      target: "electron",
+      capabilities: ["panel-hosting"],
+    });
+    buildSystem.getGraph.mockReturnValue({
+      allNodes: () => [graphNode, altNode],
+    } as never);
+
+    host.setHostTargetSelection("electron", { source: "apps/desktop-alt" });
+    await host.reconcileDeclared([
+      { source: "apps/shell", target: "electron", ref: "main", enabled: true, autostart: true },
+    ]);
+    await host.whenSettled();
+
+    expect(eventService.emit).toHaveBeenCalledWith(
+      "apps:available",
+      expect.objectContaining({
+        appId: "@workspace-apps/shell",
+        selectedForHost: false,
+      })
+    );
+  });
+
+  it("uses the selected React Native source instead of the canonical mobile fallback", () => {
+    const { host, buildSystem, graphNode, workspacePath } = makeHarness();
+    const otherNode = createAppGraphNode(workspacePath, "apps/field-mobile", {
+      name: "@workspace-apps/field-mobile",
+      target: "react-native",
+      capabilities: ["notifications"],
+    });
+    buildSystem.getGraph.mockReturnValue({
+      allNodes: () => [graphNode, otherNode],
+    } as never);
+    const rnBuild = (ev: string) => ({
+      dir: path.join(workspacePath, "..", "state", "builds", ev),
+      metadata: {
+        ev,
+        details: {
+          kind: "app" as const,
+          target: "react-native" as const,
+          integrity: `sha256-${ev}`,
+          rnHostAbi: "rn-host-1",
+          provider: REACT_NATIVE_PROVIDER,
+        },
+      },
+      artifacts: [
+        {
+          path: "index.ios.bundle",
+          role: "primary",
+          contentType: "application/javascript; charset=utf-8",
+          encoding: "utf8",
+          platform: "ios",
+          integrity: `sha256-${ev}-ios`,
+          content: "bundle",
+        },
+      ],
+    });
+    buildSystem.getBuildByKey.mockImplementation((key: string) => {
+      if (key === "mobile-key") return rnBuild("ev-mobile") as never;
+      if (key === "field-key") return rnBuild("ev-field") as never;
+      return null;
+    });
+    installAppEntry(host, graphNode, {
+      target: "react-native",
+      activeBundleKey: "mobile-key",
+      activeEv: "ev-mobile",
+      capabilities: ["notifications"],
+    });
+    host.registry.patch(graphNode.name, {
+      source: { kind: "internal-git", repo: "apps/mobile", ref: "main" },
+    });
+    installAppEntry(host, otherNode, {
+      target: "react-native",
+      activeBundleKey: "field-key",
+      activeEv: "ev-field",
+      capabilities: ["notifications"],
+    });
+
+    host.setHostTargetSelection("react-native", { source: "apps/field-mobile" });
+
+    expect(host.getReactNativeBootstrap()).toMatchObject({
+      appId: "@workspace-apps/field-mobile",
+      buildKey: "field-key",
+      effectiveVersion: "ev-field",
+    });
+    expect(host.registerReactNativeAppPrincipal("device-1")).toBe("app:apps/field-mobile:device-1");
+  });
+
+  it("keeps pinned host target builds active when a newer build is produced", async () => {
+    const { host, buildSystem, graphNode } = makeHarness();
+    graphNode.manifest.app.capabilities = ["panel-hosting"] as never;
+    const buildByKey = new Map([
+      [
+        "app-key",
+        {
+          dir: path.join(path.dirname(graphNode.path), "..", "..", "state", "builds", "app-key"),
+          metadata: {
+            ev: "ev-app",
+            details: { kind: "app" as const, target: "electron" as const, integrity: "sha256-app" },
+          },
+          artifacts: [
+            {
+              path: "index.html",
+              role: "html",
+              contentType: "text/html; charset=utf-8",
+              encoding: "utf8",
+              content: "<!doctype html><div>old</div>",
+            },
+          ],
+        },
+      ],
+      [
+        "app-key-2",
+        {
+          dir: path.join(path.dirname(graphNode.path), "..", "..", "state", "builds", "app-key-2"),
+          metadata: {
+            ev: "ev-app-2",
+            details: {
+              kind: "app" as const,
+              target: "electron" as const,
+              integrity: "sha256-app-2",
+            },
+          },
+          artifacts: [
+            {
+              path: "index.html",
+              role: "html",
+              contentType: "text/html; charset=utf-8",
+              encoding: "utf8",
+              content: "<!doctype html><div>new</div>",
+            },
+          ],
+        },
+      ],
+    ]);
+    buildSystem.getBuildByKey.mockImplementation(
+      (key: string) => (buildByKey.get(key) ?? null) as never
+    );
+    installAppEntry(host, graphNode, {
+      target: "electron",
+      activeBundleKey: "app-key",
+      activeEv: "ev-app",
+      capabilities: ["panel-hosting"],
+    });
+    host.setHostTargetSelection("electron", {
+      source: "apps/shell",
+      mode: "pinned-build",
+      buildKey: "app-key",
+    });
+    buildSystem.getBuild.mockResolvedValueOnce(buildByKey.get("app-key-2") as never);
+
+    const onPush = buildSystem.onPushBuild.mock.calls[0]?.[0] as
+      | ((source: string) => void)
+      | undefined;
+    expect(onPush).toBeDefined();
+    onPush?.("apps/shell");
+    await flushAsyncWork();
+
+    expect(host.registry.get("@workspace-apps/shell")).toMatchObject({
+      activeBundleKey: "app-key",
+      activeEv: "ev-app",
+      previousVersions: [
+        expect.objectContaining({ activeBundleKey: "app-key-2", activeEv: "ev-app-2" }),
+      ],
+    });
   });
 
   it("emits a development app status diagnostic for dirty app source", async () => {

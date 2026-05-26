@@ -516,9 +516,11 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
       },
       "hostTargets.list": {
         args: z.tuple([HostTargetSchema]),
+        policy: { allowed: ["shell", "shell-remote", "server"] },
       },
       "hostTargets.getSelection": {
         args: z.tuple([HostTargetSchema]),
+        policy: { allowed: ["shell", "shell-remote", "server"] },
       },
       "hostTargets.setSelection": {
         args: z.tuple([HostTargetSchema, HostTargetSelectionInputSchema]),
@@ -530,6 +532,7 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
       },
       "hostTargets.versions": {
         args: z.tuple([HostTargetSchema, z.string()]),
+        policy: { allowed: ["shell", "shell-remote", "server"] },
       },
       "hostTargets.preparePinnedCommit": {
         args: z.tuple([HostTargetSchema, z.string(), z.string()]),
