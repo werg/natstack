@@ -59,6 +59,12 @@ approval** (remembered per requester→target; escalated for privileged targets)
    before RPC to an unloaded panel).
 8. Rename the automation namespace `handle.browser.*` → `handle.cdp.*`, and `browser`→
    `target`/`panel` throughout the CDP layer.
+9. **(Scope extension, §9) Multi-host model with an always-on headless host as the default
+   home.** Panel runtimes are held by exactly one *host* via the existing server-arbitrated
+   lease; an always-connected headless Electron host is the default lessee for any panel no
+   interactive client has taken over, so CDP/agentic work has a CDP-capable home with zero
+   interactive clients. Note 6 (interactive approvals) still holds — headless *hosting* is not
+   headless *approval*; a human still approves the automate/structural grant.
 
 ## 3. Architecture constraint (READ FIRST — load-bearing)
 
@@ -282,6 +288,12 @@ target's runtime: `cdp.*`, RPC `call`/`emit`, and `_agent` introspection
   side effects (idempotent; `{loaded, reason}`: already_loaded / not_in_registry /
   build_error / view_creation_failed). Inverse of `unloadPanel`. **Verify** a not-yet-visible
   `WebContentsView` is debugger-attachable so loading-without-focus still permits CDP.
+- **"Loaded" is now host/lease-scoped (§9).** A panel's live runtime is held by exactly one
+  *host* via the existing server-arbitrated lease (`panelRuntimeCoordinator`). `ensureLoaded`
+  means "ensure a CDP-capable host holds this panel" — with the always-on headless host (§9)
+  this is nearly always already true, so `no_host` should not arise; a panel currently leased
+  by a non-CDP client (mobile) yields a `leased_elsewhere` result and the take-over policy
+  in §9 decides what happens.
 - **Transparent on CDP access:** fold `ensureLoaded(targetId)` into the main `getCdpEndpoint`
   handler (and the `cdp.*` drive paths), so `handle.cdp.page()` on an unloaded panel just
   works — no caller action. Loading runs *after* main's §4.3 grant enforcement passes (never
@@ -291,7 +303,90 @@ target's runtime: `cdp.*`, RPC `call`/`emit`, and `_agent` introspection
   examples no longer need to call it (transparency handles them). RPC/`_agent` do **not**
   auto-load — callers use the explicit primitive there.
 
-## 9. Docs & tests
+## 9. Execution surfaces, hosts & the always-on headless host (scope extension)
+
+This section generalizes "loading" from a single implicit desktop host to a multi-host model
+with an always-connected headless host as the default home for panel runtimes. Approved as an
+explicit scope extension.
+
+### 9.1 What exists today (the seam we build on)
+- **`PanelOrchestrator` exists only in desktop Electron main** (`src/main/index.ts`); the
+  server has **no** orchestrator and **no** view host (no `WebContentsView` under `src/server`).
+  Mobile renders panels in iOS WebViews and has **no CDP** (`bridgeAdapter.ts:135`). So CDP +
+  view loading is an Electron-`WebContentsView` capability.
+- The orchestrator is already decoupled from its render surface via an injected
+  `getPanelView()` returning a `PanelViewLike` (`panelOrchestrator.ts:65,118`); if absent it
+  **silently no-ops** (`loadSnapshotIntoView`: `const view = this.getPanelView(); if (!view)
+  return;`).
+- A **server-arbitrated runtime-lease system already exists**: `src/server/panelRuntimeCoordinator.ts`
+  + `services/panelRuntimeService.ts` is the authority. The orchestrator
+  `syncRuntimeLeaseSnapshot()` / `applyRuntimeLeaseChanged()` and, on transfer, unloads its
+  local view (`unloadPanelIfPresent(slotId, "lease-transfer")`); it reports `leased_elsewhere`
+  + `holderLabel`, and supports `acquire` vs `takeOver` (`panelOrchestrator.ts:693-702,
+  844-900`). Leases are **exclusive**: one host holds a panel's live runtime at a time.
+- **`shellPresenceService`** already tracks connected interactive clients
+  (`isAnyShellActive()` / `getActiveShellCount()`, heartbeat, 6s prune).
+
+### 9.2 The model: hosts as lease holders, headless as default home
+- A **host** is anything that can instantiate a panel's runtime and offers a `PanelViewLike`:
+  interactive desktop Electron, (future) headless host, mobile WebView. Each host runs the
+  lease-syncing orchestrator and acquires the lease for panels it instantiates; the server
+  coordinates exclusivity. CDP-capable hosts = Electron-based (desktop, headless); **mobile is
+  not** CDP-capable.
+- **Always-on headless host = the default lessee.** A panel that no interactive client has
+  leased is held by the headless host. When a desktop/mobile client wants to *display* it, it
+  `takeOver`-leases (existing path → headless unloads via `lease-transfer`); when that client
+  releases or disconnects, the panel **falls back** to the headless host (re-acquire). This is
+  policy on top of the existing coordinator, not new transport.
+- **Spin-up policy:** the headless host is the default *target* for spin-up; load **lazily**
+  (when a panel must be live for CDP/RPC/agent work and no client holds it) rather than eagerly
+  instantiating the whole tree, plus idle teardown to bound resource use. Eager-restore can be
+  a tunable (`panelRestorePolicy` already exists, default `"focused"`).
+
+### 9.3 Implementation: headless host = headless Electron (Option A)
+Run the **existing** `PanelOrchestrator` + `cdpServer` in a **windowless Electron main** with
+an offscreen `PanelViewLike` (hidden/offscreen `WebContentsView`). This reuses the entire
+view + debugger + CDP stack unchanged — one code path — versus Option B (a Chromium-in-Node
+host + parallel orchestrator/CDP in the server), which doubles the rendering stack. The
+headless host connects to the server like any other client, is **always present**, and
+registers as a host the lease coordinator can assign to.
+
+### 9.4 How this resolves the CDP/loading questions
+- **Client-awareness:** host selection becomes explicit. Extend `shellPresenceService` (or add
+  a host registry) to report host **capabilities** (hosts-views, supports-CDP) so a request
+  resolves to a concrete holder. CDP requests resolve to a CDP-capable holder.
+- **No-client case disappears:** because the headless host is always connected and CDP-capable,
+  every unleased panel has a CDP-ready home — agentic/background automation works with zero
+  interactive clients. `ensureLoaded`'s `no_host` becomes effectively unreachable.
+- **CDP vs. current holder:** desktop-held → attach there (the instance the human sees);
+  headless-held → attach to the invisible instance; **mobile-held → not CDP-capable**, so the
+  automate request must either `takeOver` to the headless host (panel disappears from the
+  device — needs user-facing handling) or be rejected. **Decide this policy with the owner.**
+
+### 9.5 Hard problems to flag (not hand-wave)
+- **Leasing is re-instantiation, not live migration.** A lease transfer unloads then reloads
+  the panel on the new host; in-memory DOM/JS state is lost (only persisted `stateArgs`/registry
+  state survives). This matches today's `lease-transfer` unload behavior, but "move a panel to
+  a client" must be understood as re-instantiation.
+- **CDP session survives a holder change?** If the holder changes mid-automation (a human takes
+  over a headless-driven panel, or vice-versa), the existing CDP socket breaks; the SDK must
+  detect the lease change (`panel:runtimeLeaseChanged` event already exists) and reconnect, or
+  hold the lease for the duration of automation.
+- **Two orchestrators, one tree.** Headless + desktop both run orchestrators; tree-mutation ops
+  (open/close/move) must stay single-authority — they already route through the registry/server,
+  so confirm no host-local divergence.
+- **Resource bounds:** headless host accumulating live web contents → enforce lazy load + idle
+  GC + a cap.
+
+### 9.6 Suggested phasing
+Land §1-8 first (they work with today's single desktop host). Then: (a) host-capability
+presence; (b) headless Electron host process running the existing orchestrator; (c) default-
+lessee + fallback-on-release policy in `panelRuntimeCoordinator`; (d) lease-change reconnect in
+the CDP SDK; (e) the mobile-held-target policy. The lease coordinator, lease-transfer unload,
+and presence service already exist, so this is mostly policy + a new host process, not new
+transport.
+
+## 10. Docs & tests
 
 - **Docs/skills:** rewrite Browser Automation sections to use `panelTree.get(id)` →
   `handle.cdp.page()` (no explicit load needed for CDP); document that the first
@@ -311,7 +406,7 @@ target's runtime: `cdp.*`, RPC `call`/`emit`, and `_agent` introspection
   needs no prompt; CDP on an unloaded panel transparently loads it; worker/DO attaching a
   panel; root attachable.
 
-## 10. Suggested implementation order
+## 11. Suggested implementation order
 
 1. Shared `accessDecision` policy module + `panel.automate`/`panel.structural` constants
    (+ tests). No behavior change yet.
@@ -329,8 +424,11 @@ target's runtime: `cdp.*`, RPC `call`/`emit`, and `_agent` introspection
    `refresh()`); remove `ParentHandle`; update `parent`/`noopParent`.
 8. `panelTree` API; export from panel/worker/DO runtimes.
 9. Docs/skills/examples + tests.
+10. **(§9 scope extension, after the above)** host-capability presence → headless Electron host
+    → default-lessee/fallback policy in `panelRuntimeCoordinator` → CDP lease-change reconnect →
+    mobile-held-target policy.
 
-## 11. Open risks / verify before/while building
+## 12. Open risks / verify before/while building
 
 - **Grant enforcement at main** (§4.3) — decide signed-token offline verification (preferred,
   no round-trip) vs. a `capabilityGrants.check` query; confirm the `cdpGrants` signing scheme
@@ -341,9 +439,16 @@ target's runtime: `cdp.*`, RPC `call`/`emit`, and `_agent` introspection
   can't be replayed via a stale token; main re-runs `accessDecision` regardless.
 - **Host debugger coexistence** (§7) — renames/access-widening must not disturb
   `getAccessibilityTree`/snapshot or single-session command serialization.
-- **Hidden-view CDP attach** (§8) — verify a non-visible `WebContentsView` attaches.
+- **Hidden-view CDP attach** (§8) — verify a non-visible `WebContentsView` attaches (also the
+  basis for the headless host, §9.3).
+- **(§9) Mobile-held target + CDP** — define the policy when an automate request targets a
+  panel currently leased by a non-CDP client (take-over vs reject).
+- **(§9) Lease-change mid-automation** — CDP socket breaks on holder change; SDK reconnect via
+  `panel:runtimeLeaseChanged`, or hold the lease for the automation's duration.
+- **(§9) Runtime re-instantiation** — lease transfer loses in-memory state; only persisted
+  `stateArgs`/registry survive.
 
-## 12. End-to-end verification
+## 13. End-to-end verification
 
 - `pnpm type-check`; `pnpm vitest run` (cdp/handle/grants/browser + new policy/service suites).
 - Manual E2E (`pnpm dev`):
@@ -360,3 +465,8 @@ target's runtime: `cdp.*`, RPC `call`/`emit`, and `_agent` introspection
      it succeeds; a shell principal bypasses.
   6. `panelTree.get(child.id).close()` from its parent → prompts first time (no relationship
      bypass), then remembered. Confirm an `automate` grant does not silently authorize it.
+- **(§9 scope extension) Headless-host E2E:** with **no** interactive client connected, an
+  agent `cdp.page()`s a panel → it spins up in the always-on headless host and drives (with
+  approval). Then open the desktop and `takeOver` the same panel for display → it transfers
+  (headless unloads); release/disconnect the desktop → the panel falls back to the headless
+  host. A panel held by mobile → automate request follows the §9.4 take-over-or-reject policy.
