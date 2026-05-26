@@ -32,6 +32,11 @@ export interface ProcessAdapterOptions {
   preferNode?: boolean;
 }
 
+function isClosedIpcError(error: unknown): boolean {
+  const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+  return code === "EPIPE" || code === "ERR_IPC_CHANNEL_CLOSED";
+}
+
 /** Detect whether we're running inside Electron with a functional utilityProcess. */
 let _useElectron: boolean | null = null;
 export function hasElectronUtilityProcess(): boolean {
@@ -70,7 +75,18 @@ export function createNodeProcessAdapter(
     execArgv: options.execArgv,
   });
   const adapter: ProcessAdapter = {
-    postMessage: (msg) => proc.send!(msg as Serializable),
+    postMessage: (msg) => {
+      if (!proc.connected || typeof proc.send !== "function") return;
+      try {
+        proc.send(msg as Serializable, (error) => {
+          if (error && !isClosedIpcError(error)) {
+            proc.emit("error", error);
+          }
+        });
+      } catch (error) {
+        if (!isClosedIpcError(error)) throw error;
+      }
+    },
     on: (event: string, handler: (...args: any[]) => void) => {
       proc.on(event as any, handler);
       return adapter;
@@ -124,7 +140,13 @@ export function createProcessAdapter(
     stdio: "pipe",
   });
   const adapter: ProcessAdapter = {
-    postMessage: (msg) => proc.postMessage(msg),
+    postMessage: (msg) => {
+      try {
+        proc.postMessage(msg);
+      } catch (error) {
+        if (!isClosedIpcError(error)) throw error;
+      }
+    },
     on: (event: string, handler: (...args: any[]) => void) => {
       proc.on(event, handler);
       return adapter;

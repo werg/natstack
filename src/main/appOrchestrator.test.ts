@@ -144,7 +144,7 @@ describe("AppOrchestrator", () => {
     }
   });
 
-  it("ignores terminal artifact availability for desktop view adoption", async () => {
+  it("ignores terminal app process availability for desktop view adoption", async () => {
     const panelView = createPanelView();
     const orchestrator = new AppOrchestrator({ getPanelView: () => panelView });
 
@@ -152,7 +152,7 @@ describe("AppOrchestrator", () => {
       appId: "@workspace-apps/remote-cli",
       target: "terminal",
       url: "http://localhost/app.mjs",
-      adoptionPolicy: "artifact-only",
+      adoptionPolicy: "immediate",
     });
 
     expect(panelView.createViewForApp).not.toHaveBeenCalled();

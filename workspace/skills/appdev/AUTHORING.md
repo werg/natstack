@@ -2,12 +2,12 @@
 
 Trusted workspace apps live under `apps/` and use flat source paths:
 
-| Package name | Source path |
-| --- | --- |
-| `@workspace-apps/shell` | `apps/shell` |
-| `@workspace-apps/mobile` | `apps/mobile` |
+| Package name                 | Source path       |
+| ---------------------------- | ----------------- |
+| `@workspace-apps/shell`      | `apps/shell`      |
+| `@workspace-apps/mobile`     | `apps/mobile`     |
 | `@workspace-apps/remote-cli` | `apps/remote-cli` |
-| `@workspace-apps/foo` | `apps/foo` |
+| `@workspace-apps/foo`        | `apps/foo`        |
 
 Do not add a package scope segment to the filesystem path. The path
 `apps/@workspace-apps/foo` is wrong.
@@ -106,9 +106,8 @@ their own UI. Relevant event types are:
 
 Adoption policies are target-aware. `prompt` means the client should keep its
 currently loaded build and ask the user when to adopt the new one. `immediate`
-is used for first load and user-requested rollback. `artifact-only` is used for
-terminal targets, which publish a trusted artifact but are not host-supervised
-client processes.
+is used for first load, user-requested rollback, and terminal process
+replacement. Terminal apps are supervised by the server runner once started.
 
 For explicit version controls, call `workspace.units.versions(appName)` to list
 current/previous app builds and `workspace.units.rollback(appName, { buildKey?
@@ -119,6 +118,7 @@ Host notifications can include typed app commands:
 
 - `{ type: "app.applyUpdate", appId }`
 - `{ type: "app.rollback", appId, buildKey? }`
+- `{ type: "workspace.restartUnit", name }`
 
 Prefer these structured commands over encoding app ids in action strings.
 Desktop shell also exposes a durable App updates section in connection settings

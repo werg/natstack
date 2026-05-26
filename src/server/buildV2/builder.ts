@@ -2021,6 +2021,11 @@ async function buildTerminalApp(
       target: "node20",
       format: "esm",
       outfile: path.join(outdir, "index.mjs"),
+      banner: {
+        js:
+          'import { createRequire as __natstackCreateRequire } from "node:module";\n' +
+          "const require = __natstackCreateRequire(import.meta.url);",
+      },
       sourcemap: sourcemap ? "inline" : false,
       metafile: true,
       logLevel: "warning",

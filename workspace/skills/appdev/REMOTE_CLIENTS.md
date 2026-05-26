@@ -6,13 +6,13 @@ capability.
 
 ## Concepts
 
-| Concept | Purpose |
-| --- | --- |
-| Pairing invite | One-time bootstrap material: server URL plus pairing code |
+| Concept           | Purpose                                                                   |
+| ----------------- | ------------------------------------------------------------------------- |
+| Pairing invite    | One-time bootstrap material: server URL plus pairing code                 |
 | Device credential | Long-lived device id plus refresh token, stored by the client/native host |
-| Shell token | Desktop remote shell token refreshed from a device credential |
-| Principal grant | Short-lived grant scoped to one app/runtime principal |
-| Connection info | Server URL and public connection metadata |
+| Shell token       | Desktop remote shell token refreshed from a device credential             |
+| Principal grant   | Short-lived grant scoped to one app/runtime principal                     |
+| Connection info   | Server URL and public connection metadata                                 |
 
 ## Desktop Remote Shell
 
@@ -53,16 +53,21 @@ or handle the refresh token directly in JS.
 
 ## Terminal Client
 
-The terminal target currently produces an artifact-only Node ESM entry. A
-terminal remote client should:
+The terminal target produces a Node ESM entry and the server can launch it as a
+supervised app process. A terminal remote client should:
 
-- parse or accept a pairing invite
-- call `/auth/complete-pairing`
-- store a device credential in CLI/user config
-- refresh connection material from the server
-- connect as the intended principal once terminal runtime primitives exist
+- connect over `/rpc` with the runner-provided principal grant
+- use app identity and manifest capabilities for privileged calls
+- create pairing invites with `auth.createPairingInvite` only when it has
+  `connection-management`
+- parse or accept pairing invites when acting as an external CLI client
+- call `/auth/complete-pairing` for external device bootstrap flows
+- store external device credentials in CLI/user config, not in trusted app
+  bundle state
 
-Today, the server reports terminal apps as `available`, not `running`.
+The built-in `@workspace-apps/remote-cli` is the canonical terminal app shape:
+it connects as an app principal, lists workspace status, and can mint a pairing
+invite for another client.
 
 ## Pairing Invite Creation
 
@@ -90,7 +95,8 @@ Remote-client UX should handle:
 - server URL change
 - TLS fingerprint or CA mismatch
 - no active mobile app bootstrap
-- terminal artifact available but no runtime launched
+- terminal app build available but process not started
+- terminal app process exited or failed WebSocket auth
 
 The recovery surface should remain usable even when the workspace app cannot be
 loaded.

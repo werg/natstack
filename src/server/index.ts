@@ -1533,6 +1533,7 @@ async function main() {
         notificationService: notificationResult.internal,
         approvalCoordinator: unitApprovalCoordinator,
         entityCache,
+        connectionGrants,
         getGatewayUrl: () => {
           if (!gatewayPortResolved) {
             throw new Error("Gateway port not finalized before app startup");
@@ -1543,6 +1544,9 @@ async function main() {
       });
       appHostForGateway = host;
       return host;
+    },
+    async stop(instance: import("./appHost.js").AppHost) {
+      await instance?.shutdown();
     },
   });
 
@@ -1901,6 +1905,14 @@ async function main() {
       const extensionHost = extensionHostForGateway;
       if (extensionHost?.registry.get(name)) {
         await extensionHost.reload(ctx, name);
+        return;
+      }
+      const appHost = appHostForGateway;
+      if (
+        appHost?.registry.get(name) ||
+        appHost?.registry.list().some((entry) => entry.source.repo === name)
+      ) {
+        await appHost.restartApp(name);
         return;
       }
       const buildSystem = container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");

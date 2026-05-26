@@ -86,7 +86,7 @@ Important behavior:
 - The bootstrap may contain one platform artifact or multiple platform
   artifacts. The native host selects the current platform.
 - Platform primary artifacts must have `platform: "android"` or `platform:
-  "ios"` and an integrity string.
+"ios"` and an integrity string.
 - Provider identity is part of trust. Missing provider identity fails closed.
 - Updates are installed through a native prompt. Choosing `Install` prepares and
   activates the current trusted bundle; choosing `Roll back` switches the server
@@ -108,25 +108,32 @@ Manifest:
 }
 ```
 
-The terminal target currently builds a Node ESM entry artifact. The server emits
-`apps:available` with `launchMode: "artifact-only"` and status `available`.
+The terminal target builds a Node ESM entry artifact and can be launched by the
+server as a supervised app process. The server emits `apps:available` with
+`launchMode: "terminal-process"`. Disabled or stopped terminal apps report
+`available`; launched terminal apps report `running`.
 
-Current limitations:
+Important behavior:
 
-- The host does not yet launch or supervise terminal app processes.
-- A terminal app build being `available` does not mean a runtime is running.
-- Updates use `adoptionPolicy: "artifact-only"` and are surfaced as new trusted
-  artifacts, not reload prompts.
-- Terminal app code should be written as a client entry artifact, but launch
-  orchestration is future work.
+- The runner starts the approved primary `.mjs` artifact with Node.
+- The app authenticates over `/rpc` with a one-time app principal grant.
+- Runtime identity is `callerKind: "app"` and `callerId` is the app package
+  name, for example `@workspace-apps/remote-cli`.
+- The runner passes bootstrap env vars:
+  `NATSTACK_TERMINAL_APP_ID`, `NATSTACK_TERMINAL_APP_SOURCE`,
+  `NATSTACK_TERMINAL_APP_BUILD_KEY`,
+  `NATSTACK_TERMINAL_APP_EFFECTIVE_VERSION`,
+  `NATSTACK_TERMINAL_APP_GATEWAY_URL`,
+  `NATSTACK_TERMINAL_APP_RPC_TOKEN`, and
+  `NATSTACK_TERMINAL_APP_CONNECTION_ID`.
+- `autostart: true` starts the process after activation. `autostart: false`
+  keeps the build available until `workspace.units.restart(appName)` starts it.
+- Push updates and rollback replace the process if it is already running.
+- stdout/stderr are available through `workspace.units.logs(appName)`.
 
-First-class terminal apps should eventually add a runner/supervisor that owns
-start, stop, restart, logs, environment, pairing material, and rollback-aware
-process replacement. Until then, keep terminal app UX explicit about artifact
-delivery.
-
-Use terminal apps for remote-client CLI artifacts and shared client primitives
-only when artifact-only delivery is acceptable.
+Use terminal apps for trusted CLI clients, remote-server setup helpers, and
+pairing/client-management flows that should run with app capabilities rather
+than shell authority.
 
 ## Target Selection
 
@@ -134,7 +141,7 @@ Use:
 
 - `electron` for trusted desktop client UI.
 - `react-native` for mobile client UI delivered to the native host.
-- `terminal` for CLI/client artifacts that are not yet host-launched.
+- `terminal` for trusted CLI/client processes.
 
 Do not use apps for ordinary user panels. Apps carry stronger trust and approval
 implications than panels.

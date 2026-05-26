@@ -48,6 +48,8 @@ import {
   createCapabilityAuthorizer,
   type CapabilityAuthorizer,
 } from "./services/capabilityAuthorizer.js";
+import type { ConnectionGrantService } from "@natstack/shared/connectionGrants";
+import { TerminalAppRunner } from "./terminalAppRunner.js";
 
 const APP_UNIT_DESCRIPTOR: UnitDescriptor<"app"> = {
   kind: "app",
@@ -79,6 +81,7 @@ export interface WorkspaceAppDeclaration extends UnitDeclaration {
 export interface AppRegistryEntry extends UnitRegistryEntryBase {
   unitKind: "app";
   target: WorkspaceAppTarget;
+  autostart: boolean;
   capabilities: AppCapability[];
   previousVersions: AppVersionRecord[];
   lastErrorDetails?: AppUpdateErrorDiagnostic | null;
@@ -87,6 +90,7 @@ export interface AppRegistryEntry extends UnitRegistryEntryBase {
 export interface AppVersionRecord {
   version: string;
   target: WorkspaceAppTarget;
+  autostart: boolean;
   capabilities: AppCapability[];
   activeEv: string | null;
   activeSha: string | null;
@@ -216,7 +220,8 @@ interface NotificationServiceLike {
       variant?: "solid" | "soft" | "ghost";
       command?:
         | { type: "app.applyUpdate"; appId: string }
-        | { type: "app.rollback"; appId: string; buildKey?: string };
+        | { type: "app.rollback"; appId: string; buildKey?: string }
+        | { type: "workspace.restartUnit"; name: string };
     }>;
   }): string;
 }
@@ -231,6 +236,7 @@ export interface AppHostDeps {
   notificationService?: NotificationServiceLike;
   approvalCoordinator?: UnitApprovalCoordinator<UnitBatchEntry>;
   entityCache?: Pick<EntityCache, "resolve" | "listActive" | "_onActivate" | "_onRetire">;
+  connectionGrants?: Pick<ConnectionGrantService, "grant" | "revokeForPrincipal">;
   getGatewayUrl(): string;
 }
 
@@ -244,6 +250,19 @@ export class AppHost {
     UnitBatchEntry
   >;
   private readonly sourcePushGrants: UnitSourcePushGrantStore;
+  private readonly terminalRunner: TerminalAppRunner | null;
+  private readonly appLogs = new Map<
+    string,
+    Array<{
+      workspaceId: string;
+      unitName: string;
+      kind: "app";
+      timestamp: number;
+      level: "info" | "error";
+      message: string;
+      source?: "stdout" | "stderr" | "runner";
+    }>
+  >();
   private lastDeclared: WorkspaceAppDeclaration[] = [];
   private lastDirtyDevDiagnosticKey: string | null = null;
 
@@ -256,11 +275,22 @@ export class AppHost {
         activeDependencyEvs: entry.activeDependencyEvs ?? {},
         activeExternalDeps: entry.activeExternalDeps ?? {},
         capabilities: entry.capabilities ?? [],
+        autostart: entry.autostart ?? false,
         previousVersions: entry.previousVersions ?? [],
         lastErrorDetails: entry.lastErrorDetails ?? null,
       }),
     });
     this.sourcePushGrants = new UnitSourcePushGrantStore({ statePath: deps.statePath });
+    this.terminalRunner =
+      deps.connectionGrants && deps.entityCache
+        ? new TerminalAppRunner({
+            connectionGrants: deps.connectionGrants,
+            onStatus: (appId, status, error = null) =>
+              this.updateTerminalRuntimeStatus(appId, status, error),
+            onLog: (appId, level, message, source) =>
+              this.recordAppLog(appId, level, message, source),
+          })
+        : null;
     this.trustResolver = new UnitTrustResolver<AppRegistryEntry>({
       entryIdentity: (entry) => this.registryEntryIdentity(entry),
       productSeedTrust: (identity) =>
@@ -281,11 +311,13 @@ export class AppHost {
       applyTrusted: (node, decl) => this.applyDeclared(node, decl),
       applyUntrustedDisabled: async (node) => {
         const entry = this.registry.get(node.name);
+        await this.stopTerminalApp(node.name);
         if (entry) this.retireDeviceScopedAppEntities(entry);
         this.retireAppEntity(node.name);
         this.emitStatus(node.name, "stopped", null);
       },
       removeUndeclared: async (entry) => {
+        await this.stopTerminalApp(entry.name);
         this.retireDeviceScopedAppEntities(entry);
         this.retireAppEntity(entry.name);
         this.emitStatus(entry.name, "stopped", null);
@@ -356,6 +388,10 @@ export class AppHost {
     await this.unitHost.whenSettled();
   }
 
+  async shutdown(): Promise<void> {
+    await this.terminalRunner?.stopAll();
+  }
+
   acceptPreapprovedTrust(version: string, keys: Iterable<string>): void {
     this.unitHost.acceptPreapprovedTrust(version, keys);
   }
@@ -406,7 +442,7 @@ export class AppHost {
     };
   }
 
-  rollbackAppVersion(sourceOrName: string, buildKey?: string): AppRegistryEntry {
+  async rollbackAppVersion(sourceOrName: string, buildKey?: string): Promise<AppRegistryEntry> {
     const entry = this.findRegistryEntry(sourceOrName);
     if (!entry) throw new Error(`Unknown app: ${sourceOrName}`);
     const selected = buildKey
@@ -433,6 +469,7 @@ export class AppHost {
     const updated = this.registry.patch(entry.name, {
       version: selected.version,
       target: selected.target,
+      autostart: selected.autostart,
       capabilities: selected.capabilities,
       activeEv: selected.activeEv,
       activeSha: selected.activeSha,
@@ -448,12 +485,14 @@ export class AppHost {
         : appVersionHistory(remaining),
     });
     this.activateAppEntity(updated);
-    this.emitAvailable(updated, {
+    await this.syncTerminalRuntime(updated, entry);
+    const activated = this.registry.get(updated.name) ?? updated;
+    this.emitAvailable(activated, {
       lifecycleType: "rolled-back",
       previousBuildKey: entry.activeBundleKey ?? null,
       notify: true,
     });
-    return updated;
+    return activated;
   }
 
   listWorkspaceUnitLogs(name: string): Array<{
@@ -464,7 +503,10 @@ export class AppHost {
     level: "info" | "error";
     message: string;
   }> {
-    return this.unitHost.listWorkspaceUnitLogs(this.deps.workspaceId, name);
+    return this.unitHost
+      .listWorkspaceUnitLogs(this.deps.workspaceId, name)
+      .concat(this.appLogs.get(this.resolveAppLogName(name)) ?? [])
+      .sort((a, b) => a.timestamp - b.timestamp);
   }
 
   hasAppCapability(callerId: string, capability: AppCapability): boolean {
@@ -717,6 +759,7 @@ export class AppHost {
       decl,
       validateBeforeApply: () => this.validateAppManifestAtPath(node.path, node.name),
       afterDisabled: async (entry) => {
+        await this.stopTerminalApp(node.name);
         if (entry) this.retireDeviceScopedAppEntities(entry);
         this.retireAppEntity(node.name);
         this.emitStatus(node.name, "stopped", null);
@@ -724,7 +767,10 @@ export class AppHost {
       needsBuildRefresh: (entry) => this.needsBuildRefresh(entry, node, decl),
       buildAndActivate: (n, d) => this.buildAndActivate(n, d),
       validateBeforeActivateCurrent: (entry) => this.validateActiveBuild(entry),
-      activateCurrent: async (entry) => this.emitAvailable(entry),
+      activateCurrent: async (entry) => {
+        await this.syncTerminalRuntime(entry);
+        this.emitAvailable(this.registry.get(entry.name) ?? entry);
+      },
       onError: (_node, _decl, message) => this.emitStatus(node.name, "error", message),
     });
   }
@@ -757,6 +803,7 @@ export class AppHost {
         status: appRegistryStatusForTarget(target),
         extra: {
           target,
+          autostart: decl.autostart ?? false,
           capabilities,
         },
       });
@@ -776,6 +823,8 @@ export class AppHost {
         entry = this.registry.patch(entry.name, { lastErrorDetails: null });
       }
       this.activateAppEntity(entry);
+      await this.syncTerminalRuntime(entry, previous);
+      entry = this.registry.get(entry.name) ?? entry;
       this.emitAvailable(entry, {
         lifecycleType: previousRecord ? "update-available" : "available",
         previousBuildKey: previous?.activeBundleKey ?? null,
@@ -861,7 +910,7 @@ export class AppHost {
       adoptionPolicy: appAdoptionPolicy(entry.target, opts.lifecycleType ?? "available"),
     });
     if (opts.notify) this.notifyAppUpdateAvailable(entry);
-    this.emitStatus(entry.name, appRegistryStatusForTarget(entry.target), null);
+    this.emitStatus(entry.name, entry.status, entry.lastError ?? null);
   }
 
   private validateActiveBuild(entry: AppRegistryEntry): void {
@@ -968,7 +1017,7 @@ export class AppHost {
     errorDetails?: AppUpdateErrorDiagnostic | null;
     canRollback: boolean;
     requiresReload?: boolean;
-    adoptionPolicy?: "immediate" | "prompt" | "artifact-only";
+    adoptionPolicy?: "immediate" | "prompt";
   }): void {
     this.deps.eventService.emit("apps:lifecycle" as EventName, {
       ...payload,
@@ -986,6 +1035,19 @@ export class AppHost {
               label: "Load update",
               variant: "solid" as const,
               command: { type: "app.applyUpdate" as const, appId: entry.name },
+            },
+          ]
+        : []),
+      ...(entry.target === "terminal"
+        ? [
+            {
+              id: "workspace.restartUnit",
+              label: entry.status === "running" ? "Restart" : "Start",
+              variant: "solid" as const,
+              command: {
+                type: "workspace.restartUnit" as const,
+                name: entry.name,
+              },
             },
           ]
         : []),
@@ -1160,6 +1222,7 @@ export class AppHost {
         building,
       }),
       target: this.appTarget(node, decl),
+      autostart: decl.autostart ?? false,
       capabilities: this.appCapabilities(node),
       previousVersions: [],
     };
@@ -1263,7 +1326,7 @@ export class AppHost {
         ref: entry.source.ref,
         enabled: true,
         target: entry.target,
-        autostart: true,
+        autostart: entry.autostart,
       });
       this.emitDevStatusDiagnostic("source-rebuilt");
     } catch (err) {
@@ -1450,6 +1513,92 @@ export class AppHost {
       [`build-provider:${provider.name}`]: buildProviderIdentityValue(provider),
     };
   }
+
+  async restartApp(sourceOrName: string): Promise<void> {
+    const entry = this.findRegistryEntry(sourceOrName);
+    if (!entry) throw new Error(`Unknown app: ${sourceOrName}`);
+    if (entry.target !== "terminal") {
+      throw new Error(`App ${entry.name} is not restartable by the terminal runner`);
+    }
+    await this.startTerminalApp(entry);
+  }
+
+  private async syncTerminalRuntime(
+    entry: AppRegistryEntry,
+    previous: AppRegistryEntry | null = null
+  ): Promise<void> {
+    if (entry.target !== "terminal") return;
+    const wasRunning = previous ? this.terminalRunner?.isRunning(previous.name) === true : false;
+    if (entry.autostart || wasRunning) {
+      await this.startTerminalApp(entry);
+    } else {
+      await this.stopTerminalApp(entry.name);
+      this.registry.patch(entry.name, { status: "available", lastError: null });
+    }
+  }
+
+  private async startTerminalApp(entry: AppRegistryEntry): Promise<void> {
+    if (!this.terminalRunner) {
+      this.registry.patch(entry.name, {
+        status: "error",
+        lastError: "Terminal app runner is not configured",
+      });
+      this.emitStatus(entry.name, "error", "Terminal app runner is not configured");
+      return;
+    }
+    if (!entry.activeBundleKey) throw new Error(`Terminal app ${entry.name} has no active build`);
+    const build = this.deps.buildSystem.getBuildByKey?.(entry.activeBundleKey);
+    if (!build) throw new Error(`Terminal app build is missing: ${entry.activeBundleKey}`);
+    this.validateBuildForTarget(entry.name, "terminal", build);
+    await this.terminalRunner.start({
+      appId: entry.name,
+      source: normalizeRepoPath(entry.source.repo),
+      buildKey: entry.activeBundleKey,
+      effectiveVersion: entry.activeEv,
+      gatewayUrl: this.deps.getGatewayUrl(),
+      build,
+    });
+  }
+
+  private async stopTerminalApp(appId: string): Promise<void> {
+    await this.terminalRunner?.stop(appId);
+  }
+
+  private updateTerminalRuntimeStatus(
+    appId: string,
+    status: "running" | "stopped" | "error",
+    error: string | null
+  ): void {
+    const entry = this.registry.get(appId);
+    if (!entry || entry.target !== "terminal") return;
+    const nextStatus = status === "stopped" && entry.enabled ? "available" : status;
+    this.registry.patch(appId, { status: nextStatus, lastError: error });
+    this.emitStatus(appId, nextStatus, error);
+  }
+
+  private recordAppLog(
+    appId: string,
+    level: "info" | "error",
+    message: string,
+    source: "stdout" | "stderr" | "runner"
+  ): void {
+    const records = this.appLogs.get(appId) ?? [];
+    records.push({
+      workspaceId: this.deps.workspaceId,
+      unitName: appId,
+      kind: "app",
+      timestamp: Date.now(),
+      level,
+      message,
+      source,
+    });
+    if (records.length > 500) records.splice(0, records.length - 500);
+    this.appLogs.set(appId, records);
+  }
+
+  private resolveAppLogName(sourceOrName: string): string {
+    return this.findRegistryEntry(sourceOrName)?.name ?? sourceOrName;
+  }
 }
 
 function buildProviderIdentityValue(provider: AppBuildProviderDetails): string {
@@ -1460,10 +1609,10 @@ function buildProviderIdentityValue(provider: AppBuildProviderDetails): string {
 
 function appLaunchMode(
   target: WorkspaceAppTarget
-): "hosted-view" | "native-bootstrap" | "artifact-only" {
+): "hosted-view" | "native-bootstrap" | "terminal-process" {
   if (target === "electron") return "hosted-view";
   if (target === "react-native") return "native-bootstrap";
-  return "artifact-only";
+  return "terminal-process";
 }
 
 function appRegistryStatusForTarget(target: WorkspaceAppTarget): AppRegistryEntry["status"] {
@@ -1594,6 +1743,7 @@ function appVersionRecordFromEntry(entry: AppRegistryEntry): AppVersionRecord | 
   return {
     version: entry.version,
     target: entry.target,
+    autostart: entry.autostart,
     capabilities: [...entry.capabilities],
     activeEv: entry.activeEv,
     activeSha: entry.activeSha,
@@ -1623,8 +1773,8 @@ function appVersionHistory(
 function appAdoptionPolicy(
   target: WorkspaceAppTarget,
   lifecycleType: "available" | "update-available" | "rolled-back"
-): "immediate" | "prompt" | "artifact-only" {
-  if (target === "terminal") return "artifact-only";
+): "immediate" | "prompt" {
+  if (target === "terminal") return "immediate";
   if (lifecycleType === "update-available") return "prompt";
   return "immediate";
 }
@@ -1638,8 +1788,8 @@ function appUpdateTargetCopy(target: WorkspaceAppTarget): { title: string; messa
   }
   if (target === "terminal") {
     return {
-      title: "Terminal app artifact updated",
-      message: "a new trusted terminal artifact is available.",
+      title: "Terminal app update available",
+      message: "a new trusted terminal build is ready.",
     };
   }
   return {

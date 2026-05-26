@@ -115,27 +115,41 @@ export function NotificationBar() {
       void notification.reportAction(notificationId, actionId);
       if (action.command?.type === "app.applyUpdate") {
         const appId = action.command.appId;
-        void app.applyUpdate(appId).then((result) => {
-          if (!result.applied) {
+        void app
+          .applyUpdate(appId)
+          .then((result) => {
+            if (!result.applied) {
+              void notification.show({
+                type: "warning",
+                title: "No pending update",
+                message: `${appId} does not have a pending desktop update.`,
+              });
+            }
+          })
+          .catch((err) => {
             void notification.show({
-              type: "warning",
-              title: "No pending update",
-              message: `${appId} does not have a pending desktop update.`,
+              type: "error",
+              title: "Update failed",
+              message: err instanceof Error ? err.message : String(err),
+              ttl: 0,
             });
-          }
-        }).catch((err) => {
-          void notification.show({
-            type: "error",
-            title: "Update failed",
-            message: err instanceof Error ? err.message : String(err),
-            ttl: 0,
           });
-        });
       } else if (action.command?.type === "app.rollback") {
-        void workspaceUnits.rollback(action.command.appId, { buildKey: action.command.buildKey }).catch((err) => {
+        void workspaceUnits
+          .rollback(action.command.appId, { buildKey: action.command.buildKey })
+          .catch((err) => {
+            void notification.show({
+              type: "error",
+              title: "Rollback failed",
+              message: err instanceof Error ? err.message : String(err),
+              ttl: 0,
+            });
+          });
+      } else if (action.command?.type === "workspace.restartUnit") {
+        void workspaceUnits.restart(action.command.name).catch((err) => {
           void notification.show({
             type: "error",
-            title: "Rollback failed",
+            title: "Restart failed",
             message: err instanceof Error ? err.message : String(err),
             ttl: 0,
           });

@@ -60,8 +60,9 @@ already-loaded clients:
   with `Load update` and, when available, `Roll back`
 - mobile apps show a native prompt with `Install`, `Later`, and `Roll back`
   when rollback history exists
-- terminal apps are artifact-only, so updates are announced as new trusted
-  artifacts rather than as reloadable clients
+- terminal apps restart automatically when they are already running or when
+  `autostart: true`; otherwise the new trusted build remains available until
+  `workspace.units.restart(appName)` starts it
 
 Clients can call `workspace.units.versions(appName)` to inspect the current and
 previous builds, and `workspace.units.rollback(appName, { buildKey? })` to
@@ -115,14 +116,18 @@ Useful smoke path:
 
 For terminal apps:
 
-- Treat the build as an artifact.
-- Expect `apps:available` with `launchMode: "artifact-only"`.
-- Expect status `available`, not `running`.
-- Do not rely on host process supervision.
+- Expect `apps:available` with `launchMode: "terminal-process"`.
+- Use `workspace.units.restart(appName)` to start or restart an available
+  terminal app.
+- Expect `available` when the build is trusted but no process is running, and
+  `running` when the runner has spawned the process.
+- Inspect stdout/stderr with `workspace.units.logs(appName)`.
+- Test push updates and rollback while the terminal app is running; the runner
+  should replace the process with the selected trusted build.
 
-Terminal app source should be written as a clean Node ESM entry with explicit
-client configuration and pairing flows. Keep launch orchestration assumptions
-out of the workspace app until terminal runtime support exists.
+Terminal app source should be written as a clean Node ESM entry that reads the
+runner-provided `NATSTACK_TERMINAL_APP_*` environment, connects with the
+provided RPC grant, and handles shutdown messages from the runner.
 
 ## Updating Docs And Skills
 

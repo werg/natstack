@@ -44,4 +44,15 @@ describe("createNodeProcessAdapter", () => {
 
     expect(message).toEqual({ ok: true });
   });
+
+  it("ignores postMessage after the IPC channel has closed", async () => {
+    const dir = tempDir();
+    const childPath = path.join(dir, "child.cjs");
+    fs.writeFileSync(childPath, "process.exit(0);\n", "utf8");
+
+    const proc = createNodeProcessAdapter(childPath, process.env);
+    await new Promise<void>((resolve) => proc.on("exit", () => resolve()));
+
+    expect(() => proc.postMessage({ type: "shutdown" })).not.toThrow();
+  });
 });

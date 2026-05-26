@@ -7,6 +7,7 @@ When system tests reveal bugs in NatStack, follow this workflow to fix them.
 **Never work around broken infrastructure in skills or prompts.** If an RPC method returns unintuitive results, has a confusing signature, swallows errors, or doesn't exist when it should — fix the service, not the caller. The goal is a platform where agents can discover how to use APIs naturally from skill documentation, without needing implementation tricks.
 
 Concretely:
+
 - **RPC method doesn't work as expected** → fix the service in `src/server/services/`, not the eval code calling it
 - **API requires unintuitive parameters** → fix the API signature, add sensible defaults, improve error messages
 - **Error is swallowed or unclear** → surface it properly with a descriptive message
@@ -47,7 +48,7 @@ eval({
 For each failed test, inspect **everything** — the conversation, every tool call and its result, harness lifecycle, and participant state:
 
 ```typescript
-for (const r of scope.results.results.filter(r => !r.result.passed)) {
+for (const r of scope.results.results.filter((r) => !r.result.passed)) {
   console.log(`\n${"=".repeat(60)}`);
   console.log(`FAIL: ${r.test.name} (${r.test.category})`);
   console.log(`Prompt: ${r.test.prompt}`);
@@ -87,7 +88,9 @@ for (const r of scope.results.results.filter(r => !r.result.passed)) {
   if (snap?.participants) {
     console.log(`\n--- Participants ---`);
     for (const [id, p] of Object.entries(snap.participants)) {
-      console.log(`  ${p.name} (${p.type}/${p.handle}): ${p.connected ? "connected" : "DISCONNECTED"}`);
+      console.log(
+        `  ${p.name} (${p.type}/${p.handle}): ${p.connected ? "connected" : "DISCONNECTED"}`
+      );
     }
   }
 }
@@ -111,6 +114,7 @@ field guide.
 For each failure, determine the root cause category and act accordingly:
 
 ### Infrastructure bugs (fix the platform)
+
 - **RPC method returns wrong data** → fix the service handler
 - **RPC method missing** → add it to the service definition
 - **Error swallowed silently** → add proper error propagation
@@ -119,11 +123,13 @@ For each failure, determine the root cause category and act accordingly:
 - **Service not registered** → add it to the server or Electron ServiceContainer; only add true Electron-local services to `ELECTRON_LOCAL_SERVICE_NAMES`
 
 ### Documentation bugs (fix the docs)
+
 - **Skill docs describe a different API** → update the skill docs to match reality
 - **Skill docs missing a capability** → add documentation for the undocumented feature
 - **System prompt misleads the agent** → fix the headless system prompt
 
 ### Test bugs (fix the test — last resort)
+
 - **Validation too strict** → loosen the validator, but only after confirming the agent's response is correct
 - **Prompt ambiguous** → clarify the prompt, but only if the underlying API works correctly
 - **Long-running task** → inspect where progress stopped and fix the blocked operation
@@ -132,21 +138,21 @@ For each failure, determine the root cause category and act accordingly:
 
 ## Phase 4: Identify Files to Change
 
-| Symptom | Likely files |
-|---------|-------------|
-| fs operation failed | `src/server/services/fsService.ts`, `workspace/packages/runtime/src/panel/fs.ts` |
-| DO storage operation failed | `src/server/internalDOs/*`, `workspace/packages/runtime/src/worker/durable-base.ts` |
-| git operation failed | `packages/git/src/client.ts`, `src/server/services/gitService.ts` |
-| Build failed | `src/server/buildV2/`, `build.mjs` |
-| Worker/DO issue | `src/server/services/workerService.ts`, `workspace/packages/runtime/src/worker/` |
-| Panel lifecycle | `src/main/panelOrchestrator.ts`, `src/server/services/bridgeService.ts` |
-| Credential/OAuth error | `src/server/services/credentialService.ts`, `workspace/packages/runtime/src/shared/credentials.ts` |
-| Harness crash | `packages/harness/src/entry.ts`, `src/server/harnessManager.ts` |
-| PubSub issue | `workspace/packages/pubsub/src/`, `workspace/workers/pubsub-channel/` |
-| Skill import | `src/server/buildV2/`, package.json exports |
-| Agent behavior | `workspace/workers/agent-worker/ai-chat-worker.ts`, harness config |
-| RPC routing | `src/shared/serviceDispatcher.ts`, `packages/rpc/src/` |
-| Error swallowed | Search for `.catch(` and empty catch blocks near the failure site |
+| Symptom                     | Likely files                                                                                       |
+| --------------------------- | -------------------------------------------------------------------------------------------------- |
+| fs operation failed         | `src/server/services/fsService.ts`, `workspace/packages/runtime/src/panel/fs.ts`                   |
+| DO storage operation failed | `src/server/internalDOs/*`, `workspace/packages/runtime/src/worker/durable-base.ts`                |
+| git operation failed        | `packages/git/src/client.ts`, `src/server/services/gitService.ts`                                  |
+| Build failed                | `src/server/buildV2/`, `build.mjs`                                                                 |
+| Worker/DO issue             | `src/server/services/workerService.ts`, `workspace/packages/runtime/src/worker/`                   |
+| Panel lifecycle             | `src/main/panelOrchestrator.ts`, `src/server/services/bridgeService.ts`                            |
+| Credential/OAuth error      | `src/server/services/credentialService.ts`, `workspace/packages/runtime/src/shared/credentials.ts` |
+| Harness crash               | `packages/harness/src/entry.ts`, `src/server/harnessManager.ts`                                    |
+| PubSub issue                | `workspace/packages/pubsub/src/`, `workspace/workers/pubsub-channel/`                              |
+| Skill import                | `src/server/buildV2/`, package.json exports                                                        |
+| Agent behavior              | `workspace/workers/agent-worker/ai-chat-worker.ts`, harness config                                 |
+| RPC routing                 | `src/shared/serviceDispatcher.ts`, `packages/rpc/src/`                                             |
+| Error swallowed             | Search for `.catch(` and empty catch blocks near the failure site                                  |
 
 ## Phase 5: Prepare an Editable Checkout
 
@@ -162,7 +168,7 @@ are live build inputs.
 
 For `workspace/apps/` bugs, read `workspace/skills/appdev/SKILL.md` before
 editing. App fixes can require target-specific validation: Electron host chrome,
-mobile native bootstrap and principal grants, or terminal artifact-only status.
+mobile native bootstrap and principal grants, or terminal process supervision.
 
 ### NatStack Application Source
 
@@ -269,7 +275,7 @@ eval({
 
 ```typescript
 const branchName = `fix/system-test-${failedTestName}`;
-await scope.git.createBranch(scope.checkoutDir, branchName);  // positional: (dir, name)
+await scope.git.createBranch(scope.checkoutDir, branchName); // positional: (dir, name)
 await scope.git.checkout(scope.checkoutDir, branchName);
 ```
 
@@ -285,6 +291,7 @@ await fs.writeFile("projects/natstack/src/server/services/fsService.ts", fixedCo
 ```
 
 **Fix checklist:**
+
 - [ ] Service method has clear parameter types and returns useful data
 - [ ] Errors are propagated with descriptive messages (no empty catch blocks)
 - [ ] The fix is in the service/infrastructure layer, not a workaround in caller code

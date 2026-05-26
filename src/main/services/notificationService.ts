@@ -37,6 +37,10 @@ export function createNotificationService(deps: {
                         appId: z.string(),
                         buildKey: z.string().optional(),
                       }),
+                      z.object({
+                        type: z.literal("workspace.restartUnit"),
+                        name: z.string(),
+                      }),
                     ])
                     .optional(),
                 })

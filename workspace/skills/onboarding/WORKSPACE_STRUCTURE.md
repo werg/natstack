@@ -77,9 +77,8 @@ Workspace app targets are:
 
 - `electron` — browser/Electron shell surfaces.
 - `react-native` — mobile workspace app bundles.
-- `terminal` — Node CLI entry artifacts for terminal-client style tooling.
-  Terminal apps are currently artifact-only until launch orchestration is
-  promoted to a first-class runtime.
+- `terminal` — supervised Node CLI/client processes for terminal-client style
+  tooling.
 
 Capabilities are explicit in `package.json`. Connection management actions
 such as minting a pairing invite require the `connection-management`

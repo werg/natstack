@@ -208,6 +208,7 @@ function installApp(host: AppHost, graphNode: ReturnType<typeof makeHarness>["gr
     name: graphNode.name,
     version: "1.0.0",
     target: "electron",
+    autostart: true,
     capabilities: ["notifications"],
     source: { kind: "internal-git", repo: graphNode.relativePath, ref: "main" },
     installedAt: Date.now(),
@@ -427,7 +428,7 @@ describe("AppHost", () => {
     expect(res.statusCode).toBe(200);
     expect(res.body.toString()).toContain("old");
 
-    host.rollbackAppVersion("@workspace-apps/shell");
+    await host.rollbackAppVersion("@workspace-apps/shell");
 
     expect(host.registry.get("@workspace-apps/shell")).toMatchObject({
       status: "running",
@@ -588,7 +589,7 @@ describe("AppHost", () => {
     ).toThrow(/does not have capability 'panel-hosting'/);
   });
 
-  it("activates terminal apps as artifact-only app builds", async () => {
+  it("activates terminal apps as launchable terminal process builds", async () => {
     const { host, buildSystem, eventService, graphNode } = makeHarness();
     fs.writeFileSync(
       path.join(graphNode.path, "package.json"),
@@ -658,7 +659,7 @@ describe("AppHost", () => {
       expect.objectContaining({
         appId: "@workspace-apps/shell",
         target: "terminal",
-        launchMode: "artifact-only",
+        launchMode: "terminal-process",
         url: "http://127.0.0.1:1234/_a/terminal-key/index.mjs",
       })
     );

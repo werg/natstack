@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setUserDataPath } from "@natstack/env-paths";
 
@@ -91,6 +92,32 @@ describe("buildUnit app builds", () => {
   });
 
   it("bundles terminal app targets as node entry artifacts", async () => {
+    const rpcDir = path.join(workspaceRoot, "packages", "rpc");
+    fs.mkdirSync(path.join(rpcDir, "src"), { recursive: true });
+    fs.writeFileSync(
+      path.join(rpcDir, "package.json"),
+      JSON.stringify({
+        name: "@natstack/rpc",
+        version: "0.1.0",
+        type: "module",
+        exports: { ".": "./src/index.ts" },
+      })
+    );
+    fs.writeFileSync(
+      path.join(rpcDir, "src", "index.ts"),
+      "export function createHandlerRegistry() { return { ok: true }; }\n"
+    );
+    git(rpcDir, ["init", "-b", "main"]);
+    git(rpcDir, ["add", "."]);
+    git(rpcDir, [
+      "-c",
+      "user.name=NatStack Test",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-m",
+      "initial rpc package",
+    ]);
     const appDir = path.join(workspaceRoot, "apps", "remote-cli");
     fs.mkdirSync(appDir, { recursive: true });
     fs.writeFileSync(
@@ -106,11 +133,23 @@ describe("buildUnit app builds", () => {
             capabilities: ["connection-management"],
           },
         },
+        dependencies: {
+          "@natstack/rpc": "workspace:*",
+          ws: "^8.18.3",
+        },
       })
     );
     fs.writeFileSync(
       path.join(appDir, "index.ts"),
-      "export function main() { return 'remote-cli'; }\n"
+      [
+        "import { createHandlerRegistry } from '@natstack/rpc';",
+        "import WebSocket from 'ws';",
+        "export function main() {",
+        "  const registry = createHandlerRegistry();",
+        "  return { label: 'remote-cli', hasWs: typeof WebSocket === 'function', registry };",
+        "}",
+        "",
+      ].join("\n")
     );
     git(appDir, ["init", "-b", "main"]);
     git(appDir, ["add", "."]);
@@ -136,6 +175,10 @@ describe("buildUnit app builds", () => {
     expect(result.artifacts).toEqual(
       expect.arrayContaining([expect.objectContaining({ path: "index.mjs", role: "primary" })])
     );
+    const mod = (await import(pathToFileURL(path.join(result.dir, "index.mjs")).href)) as {
+      main: () => { hasWs: boolean };
+    };
+    expect(mod.main()).toMatchObject({ hasWs: true });
   });
 
   it("routes React Native app builds through the registered build provider", async () => {

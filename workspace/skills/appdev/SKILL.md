@@ -17,15 +17,15 @@ from panels, workers, and extensions:
 
 ## Files
 
-| Document | Content |
-| --- | --- |
-| [AUTHORING.md](AUTHORING.md) | Package layout, manifest shape, source paths, dependencies, and declaration rules |
-| [TARGETS.md](TARGETS.md) | Electron, React Native, and terminal target contracts |
-| [CAPABILITIES.md](CAPABILITIES.md) | Capability declarations and what each app capability unlocks |
-| [DEV_LOOP.md](DEV_LOOP.md) | Edit, commit, push, approval, rebuild, reload, and debugging workflow |
-| [MOBILE.md](MOBILE.md) | Native mobile host bootstrap, pairing, principal grants, and RN build artifacts |
-| [REMOTE_CLIENTS.md](REMOTE_CLIENTS.md) | Server pairing, remote shells, terminal-client direction, and credential model |
-| [TESTING.md](TESTING.md) | Focused checks and smoke scenarios for app changes |
+| Document                               | Content                                                                           |
+| -------------------------------------- | --------------------------------------------------------------------------------- |
+| [AUTHORING.md](AUTHORING.md)           | Package layout, manifest shape, source paths, dependencies, and declaration rules |
+| [TARGETS.md](TARGETS.md)               | Electron, React Native, and terminal target contracts                             |
+| [CAPABILITIES.md](CAPABILITIES.md)     | Capability declarations and what each app capability unlocks                      |
+| [DEV_LOOP.md](DEV_LOOP.md)             | Edit, commit, push, approval, rebuild, reload, and debugging workflow             |
+| [MOBILE.md](MOBILE.md)                 | Native mobile host bootstrap, pairing, principal grants, and RN build artifacts   |
+| [REMOTE_CLIENTS.md](REMOTE_CLIENTS.md) | Server pairing, remote shells, terminal-client direction, and credential model    |
+| [TESTING.md](TESTING.md)               | Focused checks and smoke scenarios for app changes                                |
 
 ## Critical Rules
 
@@ -39,8 +39,9 @@ from panels, workers, and extensions:
 5. Electron shell apps that manage panel layout must declare `panel-hosting`.
 6. React Native workspace apps are loaded by the shipped native host bootstrap;
    clean-install pairing must work before the workspace app bundle is available.
-7. Terminal apps are currently artifact-only. Do not assume they are launched or
-   supervised by the host until terminal app orchestration is made first-class.
+7. Terminal apps run as supervised Node processes only after they are enabled
+   and either `autostart: true` or explicitly restarted through
+   `workspace.units.restart(appName)`.
 
 ## Quick Start
 

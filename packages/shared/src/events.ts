@@ -52,7 +52,8 @@ export interface NotificationAction {
   variant?: "solid" | "soft" | "ghost";
   command?:
     | { type: "app.applyUpdate"; appId: string }
-    | { type: "app.rollback"; appId: string; buildKey?: string };
+    | { type: "app.rollback"; appId: string; buildKey?: string }
+    | { type: "workspace.restartUnit"; name: string };
 }
 
 /**

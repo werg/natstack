@@ -69,16 +69,18 @@ export const app = {
   applyUpdate: (appId: string) =>
     rpc.call<{ applied: boolean }>("main", "app.applyUpdate", [appId]),
   listPendingUpdates: () =>
-    rpc.call<Array<{
-      appId: string;
-      source?: string;
-      target?: string;
-      url: string;
-      buildKey?: string | null;
-      effectiveVersion?: string | null;
-      previousBuildKey?: string | null;
-      previousEffectiveVersion?: string | null;
-    }>>("main", "app.listPendingUpdates", []),
+    rpc.call<
+      Array<{
+        appId: string;
+        source?: string;
+        target?: string;
+        url: string;
+        buildKey?: string | null;
+        effectiveVersion?: string | null;
+        previousBuildKey?: string | null;
+        previousEffectiveVersion?: string | null;
+      }>
+    >("main", "app.listPendingUpdates", []),
 };
 // =============================================================================
 // Panel Service
@@ -455,31 +457,38 @@ export const notification = {
 // =============================================================================
 export const workspaceUnits = {
   list: () =>
-    rpc.call<Array<{
-      name: string;
-      kind: string;
-      source: string;
-      displayName?: string;
-      status: string;
-      target?: string;
-      activeEv?: string | null;
-      activeBundleKey?: string | null;
-      lastError?: string | null;
-      lastErrorDetails?: unknown;
-      canRollback?: boolean;
-      rollbackRetentionLimit?: number;
-      previousVersions?: Array<{
-        version: string;
-        target: string;
-        activeEv: string | null;
-        activeBundleKey: string;
-        activatedAt: number;
-      }>;
-    }>>("main", "workspace.units.list", []),
+    rpc.call<
+      Array<{
+        name: string;
+        kind: string;
+        source: string;
+        displayName?: string;
+        status: string;
+        target?: string;
+        activeEv?: string | null;
+        activeBundleKey?: string | null;
+        lastError?: string | null;
+        lastErrorDetails?: unknown;
+        canRollback?: boolean;
+        rollbackRetentionLimit?: number;
+        previousVersions?: Array<{
+          version: string;
+          target: string;
+          activeEv: string | null;
+          activeBundleKey: string;
+          activatedAt: number;
+        }>;
+      }>
+    >("main", "workspace.units.list", []),
   versions: (name: string) =>
-    rpc.call<{ current: unknown; previous: unknown[]; retentionLimit?: number }>("main", "workspace.units.versions", [name]),
+    rpc.call<{ current: unknown; previous: unknown[]; retentionLimit?: number }>(
+      "main",
+      "workspace.units.versions",
+      [name]
+    ),
   rollback: (name: string, opts?: { buildKey?: string }) =>
     rpc.call<unknown>("main", "workspace.units.rollback", [name, opts]),
+  restart: (name: string) => rpc.call<unknown>("main", "workspace.units.restart", [name]),
 };
 // =============================================================================
 // Shell Approval Service (consent approval queue)

@@ -76,9 +76,10 @@ Verify:
 Verify:
 
 - terminal target builds a Node ESM primary artifact
-- `apps:available` includes `launchMode: "artifact-only"`
-- status is `available`, not `running`
-- no code assumes a supervised terminal runtime exists
+- `apps:available` includes `launchMode: "terminal-process"`
+- status is `available` before launch and `running` after the runner starts it
+- `workspace.units.restart(appName)` starts or replaces the process
+- stdout/stderr are visible through `workspace.units.logs(appName)`
 
 ## Approval And Trust Checks
 

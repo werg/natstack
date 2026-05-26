@@ -286,6 +286,10 @@ function resolveHttpRuntimeCaller(
   );
 }
 
+function normalizeHttpCallerKind(kind: CallerKind): CallerKind {
+  return kind === "shell-remote" ? "shell" : kind;
+}
+
 export class RpcServer {
   private wss: WebSocketServer | null = null;
   private workerdUrl: string | null = null;
@@ -1398,7 +1402,7 @@ export class RpcServer {
       res.end(JSON.stringify({ error: "Invalid token" }));
       return;
     }
-    let callerKind = entry.callerKind;
+    let callerKind = normalizeHttpCallerKind(entry.callerKind);
     let callerId: string;
     try {
       callerId = resolveHttpRuntimeCaller(
@@ -1406,7 +1410,9 @@ export class RpcServer {
         callerKind,
         req.headers[RPC_RUNTIME_ID_HEADER]
       );
-      if (callerId !== entry.callerId) callerKind = this.callerKindForRuntimePrincipal(callerId);
+      if (callerId !== entry.callerId) {
+        callerKind = normalizeHttpCallerKind(this.callerKindForRuntimePrincipal(callerId));
+      }
     } catch (err) {
       res.writeHead(403, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
@@ -1581,7 +1587,7 @@ export class RpcServer {
       res.end(JSON.stringify({ error: "Invalid token" }));
       return;
     }
-    let callerKind = entry.callerKind;
+    let callerKind = normalizeHttpCallerKind(entry.callerKind);
     let callerId: string;
     try {
       callerId = resolveHttpRuntimeCaller(
@@ -1589,7 +1595,9 @@ export class RpcServer {
         callerKind,
         req.headers[RPC_RUNTIME_ID_HEADER]
       );
-      if (callerId !== entry.callerId) callerKind = this.callerKindForRuntimePrincipal(callerId);
+      if (callerId !== entry.callerId) {
+        callerKind = normalizeHttpCallerKind(this.callerKindForRuntimePrincipal(callerId));
+      }
     } catch (err) {
       res.writeHead(403, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
