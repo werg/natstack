@@ -1308,6 +1308,17 @@ function BreadcrumbBar({
     }
   };
 
+  const handleCurrentPanelContextMenu = async (e: MouseEvent<HTMLSpanElement>) => {
+    e.preventDefault();
+    const currentId = navigationData?.currentId;
+    if (!currentId) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const action = await menu.showPanelContext(currentId, getWindowPositionFromRect(rect));
+    if (action) {
+      onPanelAction?.(currentId, action);
+    }
+  };
+
   const showSiblingMenu = async (e: MouseEvent<HTMLButtonElement>, siblings: PanelSummary[]) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const items = siblings.map((sibling) => ({
@@ -1564,9 +1575,7 @@ function BreadcrumbBar({
               onNavigate={() => {
                 if (navigationData?.currentId) onNavigateToId?.(navigationData.currentId);
               }}
-              onContextMenu={(e) => {
-                e.preventDefault();
-              }}
+              onContextMenu={handleCurrentPanelContextMenu}
             />
           </span>
         )}
