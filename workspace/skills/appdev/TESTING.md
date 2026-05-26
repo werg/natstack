@@ -31,6 +31,18 @@ pnpm vitest run \
   packages/unit-host/src/index.test.ts
 ```
 
+Host target selection changes should also cover:
+
+- selected target state persists per workspace and is not written to
+  `meta/natstack.yml`
+- missing or incompatible selected apps report an invalid selection
+- Electron ignores unselected app availability events once a desktop target is
+  selected
+- React Native bootstrap and grants use the selected `apps/<name>` source
+- pinned builds/commits stay active when newer approved builds arrive
+- terminal selections start/restart the selected process and do not leave a
+  different terminal app running
+
 Build artifact/provider changes:
 
 ```bash
@@ -68,6 +80,8 @@ Verify:
 - native host fetches only the current platform artifact
 - integrity verification fails closed on bad artifacts
 - workspace app connects with a principal grant
+- when using a non-default mobile app, pairing and reconnect grant caller ids
+  use `app:apps/<name>:<device-id>`
 - approval notifications and in-app approval sheet still work
 - app remains recoverable when no active mobile bootstrap exists
 

@@ -146,13 +146,40 @@ Use:
 Do not use apps for ordinary user panels. Apps carry stronger trust and approval
 implications than panels.
 
+Host target selection is intentionally local operational state, not workspace
+configuration. A workspace may contain multiple apps for the same target under
+`apps/*`; the user chooses which app the current host should run through the
+workspace/host target picker. The selection is stored under the workspace state
+directory and can differ per workspace and per client install. Do not write
+these bindings into `meta/natstack.yml`.
+
+Selection modes:
+
+- `follow-ref`: the host follows the app's current approved build.
+- `pinned-build`: the host stays on a retained build key until the user selects
+  `Follow latest` or picks another build.
+- `pinned-commit`: the host asks the git-backed build system to materialize a
+  specific commit/ref, then pins the resulting build key.
+
+Pinned selections are recovery tools as well as dev tools. If a newer push is
+approved while a target is pinned, the server records the newer build in
+rollback history and restores the pinned build as the active host target. The
+user can return to normal update adoption by switching that target back to
+`follow-ref`.
+
+Host-target management RPC is shell-only (`shell`, `shell-remote`, `server`).
+Panels, workers, extensions, and ordinary apps should not change which trusted
+app a native host executes. They may still receive app lifecycle events and
+should honor `selectedForHost` when deciding whether a notification applies to
+the current host.
+
 ## Lifecycle Status Semantics
 
 All app targets use the same workspace-unit status vocabulary, with
 target-specific meaning at the activation edge:
 
-| Status             | Meaning                                                                 |
-| ------------------ | ----------------------------------------------------------------------- |
+| Status             | Meaning                                                                  |
+| ------------------ | ------------------------------------------------------------------------ |
 | `pending-approval` | A declared app build needs trust approval before it can be activated     |
 | `building`         | The server is producing or validating the next build                     |
 | `available`        | A trusted build is active and launchable, but no process/view is running |

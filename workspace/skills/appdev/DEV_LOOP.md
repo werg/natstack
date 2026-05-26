@@ -69,6 +69,13 @@ previous builds, and `workspace.units.rollback(appName, { buildKey? })` to
 switch the app back to a previous trusted build. Omitting `buildKey` rolls back
 to the most recent previous version.
 
+The workspace target picker also supports pinning a host target to a retained
+build or to a specific commit/ref. Use this when the latest desktop, mobile, or
+terminal app is broken and the host needs to recover on a known-good version.
+Pinned targets do not follow newer pushes automatically: approved newer builds
+are retained in history, then the host target is restored to the pinned build.
+Choose `Follow latest` in the picker to resume normal update adoption.
+
 ## Electron App Loop
 
 For Electron apps:

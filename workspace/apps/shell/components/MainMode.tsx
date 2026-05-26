@@ -34,7 +34,7 @@ export default function MainMode() {
 
       {/* Workspace Chooser Dialog (for switching workspaces in main mode) */}
       <Dialog.Root open={workspaceChooserOpen} onOpenChange={setWorkspaceChooserOpen}>
-        <Dialog.Content maxWidth="600px">
+        <Dialog.Content maxWidth="920px">
           <WorkspaceChooser />
         </Dialog.Content>
       </Dialog.Root>

@@ -12,7 +12,6 @@ import {
 } from "../shell/client";
 import { PairedDevicesSection } from "./PairedDevicesSection";
 import { AppUpdatesSection } from "./AppUpdatesSection";
-import { HostTargetsSection } from "./HostTargetsSection";
 
 interface Props {
   open: boolean;
@@ -422,7 +421,6 @@ export function ConnectionSettingsDialog({ open, onOpenChange }: Props) {
           <PairedDevicesSection currentDeviceId={current.deviceId} />
         ) : null}
         <AppUpdatesSection />
-        <HostTargetsSection />
 
         <Flex justify="between" mt="4" gap="3">
           <Flex gap="2">

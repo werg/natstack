@@ -172,7 +172,7 @@ export function HostTargetsSection() {
                 disabled={busy === `${target}:launch`}
                 onClick={() => void launch(target)}
               >
-                Launch
+                {target === "terminal" ? "Start" : "Launch"}
               </Button>
             </Flex>
             <Table.Root size="1" variant="surface">
@@ -191,6 +191,7 @@ export function HostTargetsSection() {
                   const selected =
                     selections[target].selection?.appId === candidate.name ||
                     selections[target].selection?.source === candidate.source;
+                  const selection = selected ? selections[target].selection : null;
                   const latestPrevious = candidate.previousVersions[0] as
                     | { activeBundleKey?: string }
                     | undefined;
@@ -201,6 +202,9 @@ export function HostTargetsSection() {
                           <Flex gap="1" align="center">
                             <Text size="2">{candidate.displayName ?? candidate.name}</Text>
                             {selected ? <Badge color="green">selected</Badge> : null}
+                            {selection?.mode && selection.mode !== "follow-ref" ? (
+                              <Badge color="amber">{selection.mode}</Badge>
+                            ) : null}
                             {candidate.declared ? <Badge color="blue">declared</Badge> : null}
                           </Flex>
                           <Code size="1">{candidate.source}</Code>
@@ -217,6 +221,21 @@ export function HostTargetsSection() {
                       <Table.Cell>
                         <Flex direction="column" gap="1">
                           <Code size="1">{shortBuild(candidate.activeBundleKey)}</Code>
+                          {candidate.activeBundleKey ? (
+                            <Button
+                              size="1"
+                              variant="ghost"
+                              disabled={
+                                busy ===
+                                `${target}:${candidate.name}:pin:${candidate.activeBundleKey}`
+                              }
+                              onClick={() =>
+                                void pinBuild(target, candidate, candidate.activeBundleKey!)
+                              }
+                            >
+                              Pin current
+                            </Button>
+                          ) : null}
                           {latestPrevious?.activeBundleKey ? (
                             <Button
                               size="1"
@@ -257,7 +276,9 @@ export function HostTargetsSection() {
                             }
                             onClick={() => void selectCandidate(target, candidate)}
                           >
-                            Select
+                            {selection?.mode && selection.mode !== "follow-ref"
+                              ? "Follow latest"
+                              : "Select"}
                           </Button>
                           <Button
                             size="1"

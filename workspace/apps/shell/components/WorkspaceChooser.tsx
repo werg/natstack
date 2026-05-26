@@ -27,6 +27,7 @@ import {
   workspaceErrorAtom,
 } from "../state/appModeAtoms";
 import type { WorkspaceEntry } from "@natstack/shared/types";
+import { HostTargetsSection } from "./HostTargetsSection";
 
 function formatRelativeTime(timestamp: number): string {
   const seconds = Math.floor((Date.now() - timestamp) / 1000);
@@ -184,6 +185,8 @@ export function WorkspaceChooser() {
           Create New Workspace
         </Button>
       </Flex>
+
+      {activeWorkspaceName ? <HostTargetsSection /> : null}
 
       {/* Delete confirmation dialog */}
       <AlertDialog.Root

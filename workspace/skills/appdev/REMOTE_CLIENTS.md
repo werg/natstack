@@ -48,6 +48,27 @@ The resulting caller id is device-scoped, for example:
 app:apps/mobile:<device-id>
 ```
 
+For workspaces with more than one React Native app, the selected mobile source
+is supplied to pairing, bundle bootstrap, and principal-grant refresh:
+
+```json
+{
+  "principal": "react-native-app",
+  "source": "apps/field-mobile"
+}
+```
+
+That yields a source-scoped caller id such as:
+
+```text
+app:apps/field-mobile:<device-id>
+```
+
+The native host persists the selected source alongside the activated bundle so
+future reconnects refresh grants for the same app. If no source is supplied,
+the server keeps the legacy fallback behavior: prefer the active `apps/mobile`
+React Native app, or the only active React Native app when there is exactly one.
+
 The workspace app should use that principal grant for RPC. It should not store
 or handle the refresh token directly in JS.
 
