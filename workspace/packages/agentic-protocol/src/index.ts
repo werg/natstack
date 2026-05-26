@@ -64,6 +64,7 @@ export type {
   BlobWriter,
   BlobReader,
   EncodedAgenticEvent,
+  HydrateStoredValueRefsOptions,
   StoredValueRef,
 } from "./stored-values.js";
 export {

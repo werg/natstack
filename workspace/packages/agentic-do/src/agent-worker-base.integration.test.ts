@@ -2122,7 +2122,9 @@ describe("AgentWorkerBase method suspension ledger", () => {
         },
         false
       )
-    ).rejects.toThrow("Stored transport blob is missing: missing-digest");
+    ).rejects.toThrow(
+      "method result channel=chat-1 call=call-1 invocation=tool-1 stored value missing at $: missing-digest"
+    );
     expect(
       sql
         .exec(
@@ -2137,6 +2139,45 @@ describe("AgentWorkerBase method suspension ledger", () => {
       result_json: null,
       delivery_status: "pending",
     });
+  });
+
+  it("rejects stored refs that reach transcript admission", async () => {
+    const { instance } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const worker = instance as unknown as {
+      runners: Map<string, { runner: unknown }>;
+      readRunnerMessages(channelId: string): Promise<AgentMessage[]>;
+    };
+    worker.runners.set("chat-1", {
+      runner: {
+        getStateSnapshot: async () => ({
+          messages: [
+            {
+              role: "toolResult",
+              toolCallId: "tool-1",
+              toolName: "eval",
+              content: [
+                {
+                  type: "text",
+                  text: {
+                    protocol: "natstack.blob-ref.v1",
+                    digest: "leaked-digest",
+                    size: 32,
+                    encoding: "json",
+                    originalBytes: 32,
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      },
+    });
+
+    await expect(worker.readRunnerMessages("chat-1")).rejects.toThrow(
+      "runner.getStateSnapshot channel=chat-1[0] contains unresolved stored value refs: $.content[0].text -> leaked-digest"
+    );
   });
 
   it("ignores duplicate terminal results already delivered to a live waiter", async () => {
@@ -3114,6 +3155,15 @@ describe("TrajectoryVesselBase custom message recovery", () => {
       ): Promise<Map<string, Map<string, unknown>>>;
     };
 
+    const blobstoreGetText = vi.fn(async (_target: string, method: string, args: unknown[]) => {
+      if (method === "blobstore.getText" && args[0] === "custom-initial-digest") {
+        return JSON.stringify({ count: 0 });
+      }
+      if (method === "blobstore.getText" && args[0] === "custom-update-digest") {
+        return JSON.stringify({ delta: 1 });
+      }
+      return null;
+    });
     (instance as unknown as {
       _rpc: {
         call: ReturnType<typeof vi.fn>;
@@ -3123,15 +3173,7 @@ describe("TrajectoryVesselBase custom message recovery", () => {
         handleIncomingPost: ReturnType<typeof vi.fn>;
       };
     })._rpc = {
-      call: vi.fn(async (_target: string, method: string, args: unknown[]) => {
-        if (method === "blobstore.getText" && args[0] === "custom-initial-digest") {
-          return JSON.stringify({ count: 0 });
-        }
-        if (method === "blobstore.getText" && args[0] === "custom-update-digest") {
-          return JSON.stringify({ delta: 1 });
-        }
-        return null;
-      }),
+      call: blobstoreGetText,
       streamCall: vi.fn(),
       emit: vi.fn(),
       onEvent: vi.fn(),
@@ -3227,6 +3269,12 @@ describe("TrajectoryVesselBase custom message recovery", () => {
 
     expect(result.get("gmail.thread")?.get("custom-1")).toEqual({ count: 501 });
     expect(result.get("gmail.thread")?.has("custom-other")).toBe(false);
+    expect(blobstoreGetText).toHaveBeenCalledWith("main", "blobstore.getText", [
+      "custom-initial-digest",
+    ]);
+    expect(blobstoreGetText).toHaveBeenCalledWith("main", "blobstore.getText", [
+      "custom-update-digest",
+    ]);
   });
 });
 

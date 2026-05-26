@@ -42,6 +42,7 @@ import type {
 import { isClientParticipantType } from "@workspace/pubsub";
 import {
   AGENTIC_EVENT_PAYLOAD_KIND,
+  assertNoStoredValueRefs,
   hydrateStoredValueRefs,
   publicParticipantMetadata,
 } from "@workspace/agentic-protocol";
@@ -56,6 +57,7 @@ import {
   type SystemPromptMode,
   AgentWorkerError,
   type RunnerEvent,
+  type RunnerTurnInput,
   type TurnSnapshot,
 } from "@natstack/harness";
 import type { AgentMessage, AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -102,6 +104,7 @@ function isExpectedTestServerFailure(error: unknown): boolean {
 
 function isTranscriptShapeError(error: unknown): boolean {
   if (error instanceof Error && error.name === "TranscriptShapeError") return true;
+  if (error instanceof AgentWorkerError && error.code === "transcript_shape") return true;
   return /\bMalformed (?:agent|GAD) (?:append|transcript)\b/.test(String(error));
 }
 
@@ -1947,7 +1950,8 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     row: MethodSuspensionRow
   ): Promise<AgentMessage> {
     const result = await this.hydrateStoredTransportValue(
-      this.parseSuspensionJson(row.resultJson, row.resultRefJson)
+      this.parseSuspensionJson(row.resultJson, row.resultRefJson),
+      `recovered suspension channel=${channelId} invocation=${row.invocationId} call=${row.transportCallId}`
     );
     if (row.kind === "channelMethod") {
       const toolResult =
@@ -2139,8 +2143,12 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
         continue;
       }
       try {
+        const recovered = await this.composeRecoveredToolResult(channelId, runner, row);
         const entryId = await runner.appendToolResult(
-          await this.composeRecoveredToolResult(channelId, runner, row)
+          this.toolResultMessageForAdmission(
+            recovered,
+            `recovered tool result channel=${channelId} invocation=${row.invocationId}`
+          )
         );
         this.markResumeInternalSuspensionsSuperseded(
           channelId,
@@ -3391,9 +3399,17 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
           const messageId = typeof payload["messageId"] === "string" ? payload["messageId"] : null;
           const typeId = typeof payload["typeId"] === "string" ? payload["typeId"] : null;
           if (!messageId || !typeId) continue;
+          const initialState = await this.hydrateStoredTransportValue(
+            payload["initialState"],
+            `custom message initialState channel=${channelId} message=${messageId}`
+          );
+          this.assertNoStoredRefsForAdmission(
+            initialState,
+            `custom message initialState channel=${channelId} message=${messageId}`
+          );
           byMessageId.set(messageId, {
             typeId,
-            state: await this.hydrateStoredTransportValue(payload["initialState"]),
+            state: initialState,
           });
           continue;
         }
@@ -3405,7 +3421,14 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
           const existing = byMessageId.get(messageId);
           if (!existing) continue;
           const reducer = reducerLookup?.(existing.typeId) ?? null;
-          const update = await this.hydrateStoredTransportValue(payload["update"]);
+          const update = await this.hydrateStoredTransportValue(
+            payload["update"],
+            `custom message update channel=${channelId} message=${messageId}`
+          );
+          this.assertNoStoredRefsForAdmission(
+            update,
+            `custom message update channel=${channelId} message=${messageId}`
+          );
           byMessageId.set(messageId, {
             typeId: existing.typeId,
             state: reducer ? reducer(existing.state, update) : update,
@@ -3433,19 +3456,51 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     return payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
   }
 
-  private async hydrateStoredTransportValue(value: unknown): Promise<unknown> {
-    return hydrateStoredValueRefs(value, {
-      getText: async (digest) => {
-        const text = await this.rpc.call<string | null>("main", "blobstore.getText", [digest]);
-        if (text === null) {
-          throw new AgentWorkerError(
-            "transcript_shape",
-            `Stored transport blob is missing: ${digest}`
-          );
-        }
-        return text;
-      },
-    });
+  private async hydrateStoredTransportValue(
+    value: unknown,
+    context = "transport payload"
+  ): Promise<unknown> {
+    try {
+      return await hydrateStoredValueRefs(
+        value,
+        {
+          getText: (digest) => this.rpc.call<string | null>("main", "blobstore.getText", [digest]),
+        },
+        { strict: true, context }
+      );
+    } catch (err) {
+      if (err instanceof AgentWorkerError) throw err;
+      throw new AgentWorkerError(
+        "transcript_shape",
+        err instanceof Error ? err.message : String(err)
+      );
+    }
+  }
+
+  private assertNoStoredRefsForAdmission(value: unknown, context: string): void {
+    try {
+      assertNoStoredValueRefs(value, context);
+    } catch (err) {
+      throw new AgentWorkerError(
+        "transcript_shape",
+        err instanceof Error ? err.message : String(err)
+      );
+    }
+  }
+
+  private toolResultMessageForAdmission(message: AgentMessage, context: string): AgentMessage {
+    this.assertNoStoredRefsForAdmission(message, context);
+    return message;
+  }
+
+  private toolResultForAdmission(result: AgentToolResult<any>, context: string): AgentToolResult<any> {
+    this.assertNoStoredRefsForAdmission(result, context);
+    return result;
+  }
+
+  private turnInputForAdmission(input: RunnerTurnInput, context: string): RunnerTurnInput {
+    this.assertNoStoredRefsForAdmission(input, context);
+    return input;
   }
 
   private isOwnCustomMessageActor(
@@ -3877,7 +3932,12 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       if (!invocationResult.complete) {
         this.appendMethodSuspensionUpdate(invocationResult.callId, rawContent);
         const cb = this.streamCallbacks.get(invocationResult.callId);
-        if (cb) cb(await this.hydrateStoredTransportValue(rawContent));
+        if (cb) {
+          cb(await this.hydrateStoredTransportValue(
+            rawContent,
+            `invocation payload channel=${channelId} call=${invocationResult.callId}`
+          ));
+        }
       } else {
         await this.handleCompletedMethodResult(
           channelId,
@@ -4713,8 +4773,13 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
         throw err;
       }
       const completion = await waiter.promise;
-      if (completion.isError) return methodErrorResult(completion.result);
-      return toAgentToolResult(completion.result);
+      const toolResult = completion.isError
+        ? methodErrorResult(completion.result)
+        : toAgentToolResult(completion.result);
+      return this.toolResultForAdmission(
+        toolResult,
+        `live channel method result channel=${channelId} invocation=${invocationId}`
+      );
     } catch (err) {
       this.cancelMethodSuspension(transportCallId, "waiter_rejected");
       waiter.cancel(err);
@@ -5088,7 +5153,10 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     // blob by encodeSuspensionStorage; the hydrated form is recomputed at the
     // model-visible boundary — here for a live waiter, or in
     // composeRecoveredToolResult during recovery.
-    const hydratedResult = await this.hydrateStoredTransportValue(result);
+    const hydratedResult = await this.hydrateStoredTransportValue(
+      result,
+      `method result channel=${channelId} call=${callId} invocation=${row.invocationId}`
+    );
     await this.markMethodSuspensionTerminal(callId, {
       terminalKind,
       result,
@@ -5276,7 +5344,13 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     }
     const images = await this.resizeAttachments(channelId, input.attachments);
     const dispatcher = this.getOrCreateDispatcher(channelId, runner);
-    dispatcher.submit({ content: input.content, ...(images ? { images } : {}) }, opts);
+    dispatcher.submit(
+      this.turnInputForAdmission(
+        { content: input.content, ...(images ? { images } : {}) },
+        `user turn input channel=${channelId}`
+      ),
+      opts
+    );
   }
 
   async onChannelEnvelope(
@@ -6099,6 +6173,14 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
 
 function validateAgentMessages(messages: AgentMessage[], source: string): AgentMessage[] {
   for (const [index, message] of messages.entries()) {
+    try {
+      assertNoStoredValueRefs(message, `${source}[${index}]`);
+    } catch (err) {
+      throw new AgentWorkerError(
+        "transcript_shape",
+        err instanceof Error ? err.message : String(err)
+      );
+    }
     if ((message as { role?: string }).role !== "toolResult") continue;
     const toolCallId = (message as { toolCallId?: unknown }).toolCallId;
     const valid = typeof toolCallId === "string" && toolCallId.length > 0;

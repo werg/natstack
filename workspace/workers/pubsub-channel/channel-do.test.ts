@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { createTestDO } from "@workspace/runtime/worker/test-utils";
-import { AGENTIC_EVENT_PAYLOAD_KIND, AGENTIC_PROTOCOL_VERSION } from "@workspace/agentic-protocol";
+import {
+  AGENTIC_EVENT_PAYLOAD_KIND,
+  AGENTIC_PROTOCOL_VERSION,
+} from "@workspace/agentic-protocol";
 import { GadWorkspaceDO } from "../gad-store/index.js";
 import { PubSubChannel } from "./channel-do.js";
 
@@ -211,6 +214,40 @@ describe("PubSubChannel", () => {
     }
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain("blobstore unavailable");
+  });
+
+  it("spills large durable payloads to blobstore and replays hydrated payloads", async () => {
+    const blobs = new Map<string, string>();
+    const { instance } = await createGadBackedChannel({
+      blobstorePutText: async (value) => {
+        const digest = `digest-${blobs.size + 1}`;
+        blobs.set(digest, value);
+        return { digest, size: value.length };
+      },
+    });
+    setRpcCaller(instance, "panel:user", "panel");
+    const largeResult = "x".repeat(140 * 1024);
+
+    await instance.subscribe("panel:user", { contextId: "ctx-1", name: "User", type: "panel" });
+    await instance.publish(
+      "panel:user",
+      AGENTIC_EVENT_PAYLOAD_KIND,
+      {
+        ...agenticEvent("invocation.completed"),
+        causality: { invocationId: "inv-large", transportCallId: "call-large" },
+        payload: {
+          protocol: AGENTIC_PROTOCOL_VERSION,
+          result: { text: largeResult },
+        },
+      },
+      { idempotencyKey: "large-publish" }
+    );
+
+    const replay = await instance.getReplayAfter(1);
+    const event = replay.logEvents.find((item) => item.type === AGENTIC_EVENT_PAYLOAD_KIND);
+    const payload = ((event?.payload as { payload?: unknown })?.payload ?? {}) as Record<string, unknown>;
+    expect(blobs.size).toBeGreaterThan(0);
+    expect(payload["result"]).toEqual({ text: largeResult });
   });
 
   it("replays envelopes by sequence and paginates before a sequence", async () => {

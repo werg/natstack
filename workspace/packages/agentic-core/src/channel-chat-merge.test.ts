@@ -374,7 +374,7 @@ describe("chatMessagesFromChannelView", () => {
 
     expect(() => [envelope(started, 1), envelope(completed, 2)]
       .reduce(reduceChannelView, createInitialChannelViewState())).toThrow(
-      /must be hydrated before semantic use/
+      /contains unresolved stored value refs/
     );
   });
 
@@ -798,5 +798,54 @@ describe("chatMessagesFromChannelView", () => {
       maxHeight: 180,
       result: { ok: true },
     });
+  });
+
+  it("rejects sync UI executable sources that still contain stored refs", () => {
+    const storedSource = {
+      protocol: "natstack.blob-ref.v1",
+      digest: "ui-source-digest",
+      size: 1024,
+      encoding: "json",
+      originalBytes: 1024,
+      preview: "{\"type\":\"code\",\"code\":\"export default function App(){}\"}",
+    };
+    const inline: AgenticEvent<"ui.inline_rendered"> = {
+      kind: "ui.inline_rendered",
+      actor: agent,
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        uiType: "inline",
+        id: "ui-stored",
+        source: storedSource as never,
+      },
+      createdAt: "2026-05-20T12:00:03.000Z",
+    };
+    const actionBar: AgenticEvent<"ui.action_bar.updated"> = {
+      kind: "ui.action_bar.updated",
+      actor: agent,
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        uiType: "action_bar",
+        id: "bar-stored",
+        source: storedSource as never,
+      },
+      createdAt: "2026-05-20T12:00:04.000Z",
+    };
+    const messageType: AgenticEvent<"messageType.registered"> = {
+      kind: "messageType.registered",
+      actor: agent,
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        typeId: "stored-ui",
+        displayMode: "row",
+        source: storedSource as never,
+      },
+      createdAt: "2026-05-20T12:00:05.000Z",
+    };
+
+    expect(() => [envelope(inline, 1), envelope(actionBar, 2), envelope(messageType, 3)]
+      .reduce(reduceChannelView, createInitialChannelViewState())).toThrow(
+      /contains unresolved stored value refs/
+    );
   });
 });

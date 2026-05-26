@@ -4,6 +4,7 @@ import {
   AGENTIC_PROTOCOL_VERSION,
   GENESIS_EVENT_HASH,
   MAX_INLINE_TRAJECTORY_EVENT_BYTES,
+  assertNoStoredValueRefs,
   agenticSlice,
   agenticEventSchema,
   brandId,
@@ -17,6 +18,7 @@ import {
   reduceTrajectory,
   sanitizeAgenticEventParticipantRefs,
   storedAgenticEventSchema,
+  isStoredValueRef,
   trajectoryEventSchema,
   userVisibleTrajectoryProjection,
   type AgenticEvent,
@@ -277,6 +279,152 @@ describe("@workspace/agentic-protocol schemas", () => {
         methods: [{ name: "eval" }],
       });
     }
+  });
+});
+
+describe("@workspace/agentic-protocol stored values", () => {
+  it("strictly hydrates stored refs and reports missing blob paths", async () => {
+    const stored = {
+      outer: {
+        value: {
+          protocol: "natstack.blob-ref.v1" as const,
+          digest: "json-digest",
+          size: 12,
+          encoding: "json" as const,
+          originalBytes: 12,
+        },
+      },
+    };
+
+    await expect(
+      hydrateStoredValueRefs(
+        stored,
+        { getText: async () => JSON.stringify({ ok: true }) },
+        { strict: true, context: "test payload" }
+      )
+    ).resolves.toEqual({ outer: { value: { ok: true } } });
+
+    await expect(
+      hydrateStoredValueRefs(
+        stored,
+        { getText: async () => null },
+        { strict: true, context: "test payload" }
+      )
+    ).rejects.toThrow("test payload stored value missing at $.outer.value: json-digest");
+
+    await expect(
+      hydrateStoredValueRefs(stored, { getText: async () => null })
+    ).resolves.toEqual({ outer: { value: null } });
+  });
+
+  it("asserts when stored refs cross forbidden boundaries", () => {
+    expect(() =>
+      assertNoStoredValueRefs(
+        {
+          content: [
+            {
+              type: "text",
+              text: {
+                protocol: "natstack.blob-ref.v1",
+                digest: "digest-1",
+                size: 10,
+                encoding: "json",
+                originalBytes: 10,
+              },
+            },
+          ],
+        },
+        "toolResult admission"
+      )
+    ).toThrow("toolResult admission contains unresolved stored value refs: $.content[0].text -> digest-1");
+  });
+
+  it("encodes every unbounded agentic payload field as a stored ref", async () => {
+    const unboundedFields = [
+      "request",
+      "result",
+      "details",
+      "data",
+      "output",
+      "error",
+      "replacement",
+      "body",
+      "update",
+      "initialState",
+      "props",
+      "imports",
+      "schemaSourceOrPath",
+      "source",
+    ];
+
+    const writes: string[] = [];
+    for (const field of unboundedFields) {
+      const event: AgenticEvent = {
+        kind: "invocation.completed",
+        actor: agent,
+        causality: { invocationId: brandId<InvocationId>(`inv-${field}`) },
+        payload: {
+          protocol: AGENTIC_PROTOCOL_VERSION,
+          [field]: { field, nested: ["value"] },
+        } as AgenticEvent["payload"],
+        createdAt: "2026-05-20T12:00:00.000Z",
+      };
+      const { event: encoded } = await encodeAgenticEventStoredValues(event, {
+        putText: async (value) => {
+          writes.push(value);
+          return { digest: `digest-${field}`, size: value.length };
+        },
+      });
+      const payload = encoded.payload as Record<string, unknown>;
+      expect(isStoredValueRef(payload[field]), field).toBe(true);
+      expect((payload[field] as { digest: string }).digest).toBe(`digest-${field}`);
+    }
+
+    expect(writes).toHaveLength(unboundedFields.length);
+  });
+
+  it("encodes large message content, deltas, and block content as stored refs", async () => {
+    const largeText = "x".repeat(140 * 1024);
+    const writes: string[] = [];
+    const writer = {
+      putText: async (value: string) => {
+        writes.push(value);
+        return { digest: `digest-${writes.length}`, size: value.length };
+      },
+    };
+
+    const completed = await encodeAgenticEventStoredValues(
+      messageEvent({
+        payload: {
+          protocol: AGENTIC_PROTOCOL_VERSION,
+          role: "assistant",
+          content: largeText,
+          blocks: [{ type: "text", content: largeText }],
+        },
+      }),
+      writer
+    );
+    const completedPayload = completed.event.payload as Record<string, unknown>;
+    expect(isStoredValueRef(completedPayload["content"])).toBe(true);
+    const block = (completedPayload["blocks"] as Array<Record<string, unknown>>)[0]!;
+    expect(isStoredValueRef(block["content"])).toBe(true);
+
+    const delta = await encodeAgenticEventStoredValues(
+      {
+        kind: "message.delta",
+        actor: agent,
+        causality: { messageId: brandId<MessageId>("msg-large-delta") },
+        payload: {
+          protocol: AGENTIC_PROTOCOL_VERSION,
+          delta: largeText,
+        },
+        createdAt: "2026-05-20T12:00:00.000Z",
+      },
+      writer
+    );
+    const deltaPayload = delta.event.payload as Record<string, unknown>;
+    expect(isStoredValueRef(deltaPayload["delta"])).toBe(true);
+    expect(writes).toHaveLength(3);
   });
 });
 

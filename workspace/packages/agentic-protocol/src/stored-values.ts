@@ -21,6 +21,11 @@ export interface BlobReader {
   getText(digest: string): Promise<string | null>;
 }
 
+export interface HydrateStoredValueRefsOptions {
+  strict?: boolean;
+  context?: string;
+}
+
 export interface EncodedAgenticEvent {
   event: AgenticEvent;
   eventBytes: number;
@@ -139,11 +144,15 @@ export function collectStoredValueRefs(value: unknown, path = "$"): Array<{ path
   );
 }
 
-export function assertNoStoredValueRefs(value: unknown, context: string): void {
+export function assertNoStoredValueRefs(value: unknown, context = "value"): void {
   const refs = collectStoredValueRefs(value);
   if (refs.length === 0) return;
-  const summary = refs.slice(0, 5).map(({ path, ref }) => `${path}:${ref.digest}`).join(", ");
-  throw new Error(`${context} must be hydrated before semantic use; found stored refs at ${summary}`);
+  const summary = refs
+    .slice(0, 8)
+    .map(({ path, ref }) => `${path} -> ${ref.digest} (${ref.encoding}, ${ref.size} bytes)`)
+    .join("; ");
+  const suffix = refs.length > 8 ? `; ${refs.length - 8} more` : "";
+  throw new Error(`${context} contains unresolved stored value refs: ${summary}${suffix}`);
 }
 
 export function findUnencodedAgenticEventStoredValues(event: AgenticEvent): Array<{ path: string; reason: string }> {
@@ -185,21 +194,43 @@ export function assertAgenticEventStoredValuesEncoded(event: AgenticEvent): void
   }
 }
 
-export async function hydrateStoredValueRef(ref: StoredValueRef, reader: BlobReader): Promise<unknown> {
+export async function hydrateStoredValueRef(
+  ref: StoredValueRef,
+  reader: BlobReader,
+  options: HydrateStoredValueRefsOptions = {},
+  path = "$"
+): Promise<unknown> {
   const text = await reader.getText(ref.digest);
-  if (text === null) return null;
+  if (text === null) {
+    if (options.strict) {
+      const context = options.context ? `${options.context} ` : "";
+      throw new Error(
+        `${context}stored value missing at ${path}: ${ref.digest} (${ref.encoding}, ${ref.size} bytes)`
+      );
+    }
+    return null;
+  }
   if (ref.encoding === "text") return text;
-  return hydrateStoredValueRefs(JSON.parse(text), reader);
+  return hydrateStoredValueRefs(JSON.parse(text), reader, options, path);
 }
 
-export async function hydrateStoredValueRefs(value: unknown, reader: BlobReader): Promise<unknown> {
-  if (isStoredValueRef(value)) return hydrateStoredValueRef(value, reader);
+export async function hydrateStoredValueRefs(
+  value: unknown,
+  reader: BlobReader,
+  options: HydrateStoredValueRefsOptions = {},
+  path = "$"
+): Promise<unknown> {
+  if (isStoredValueRef(value)) return hydrateStoredValueRef(value, reader, options, path);
   if (!value || typeof value !== "object") return value;
-  if (Array.isArray(value)) return Promise.all(value.map((item) => hydrateStoredValueRefs(item, reader)));
+  if (Array.isArray(value)) {
+    return Promise.all(
+      value.map((item, index) => hydrateStoredValueRefs(item, reader, options, `${path}[${index}]`))
+    );
+  }
   const entries = await Promise.all(
     Object.entries(value as Record<string, unknown>).map(async ([key, item]) => [
       key,
-      await hydrateStoredValueRefs(item, reader),
+      await hydrateStoredValueRefs(item, reader, options, `${path}.${key}`),
     ] as const)
   );
   return Object.fromEntries(entries);
