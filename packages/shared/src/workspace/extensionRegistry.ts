@@ -77,9 +77,8 @@ function selfRegisters(dir: string, manifest: ExtensionManifest): boolean {
 }
 
 /**
- * Names of every extension package under `<workspacePath>/extensions` (matching
- * the pnpm globs `extensions/*` and `extensions/<scope>/*`) that registers
- * itself in the `WorkspaceExtensions` type registry.
+ * Names of every extension package under `<workspacePath>/extensions/*` that
+ * registers itself in the `WorkspaceExtensions` type registry.
  */
 export function discoverExtensionPackageNames(workspacePath: string): string[] {
   const root = path.join(workspacePath, "extensions");
@@ -97,21 +96,9 @@ export function discoverExtensionPackageNames(workspacePath: string): string[] {
   }
   for (const entry of top) {
     if (!entry.isDirectory()) continue;
+    if (entry.name.startsWith(".")) continue;
     const dir = path.join(root, entry.name);
-    if (entry.name.startsWith("@")) {
-      // Scope directory: descend one level (extensions/<scope>/<pkg>).
-      let scoped: fs.Dirent[];
-      try {
-        scoped = fs.readdirSync(dir, { withFileTypes: true });
-      } catch {
-        continue;
-      }
-      for (const child of scoped) {
-        if (child.isDirectory()) consider(path.join(dir, child.name));
-      }
-    } else {
-      consider(dir);
-    }
+    consider(dir);
   }
   return names;
 }

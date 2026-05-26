@@ -1,12 +1,12 @@
 /**
  * Unified runtime-entity model. Replaces the old PrincipalRegistry record shape.
  *
- * Every runtime principal (panel, worker, DO, shell, server) has the same identity
+ * Every runtime principal (panel, app, worker, DO, shell, server) has the same identity
  * shape: { source, contextId, key } (+ className for DOs). Identity columns are
  * write-once; lifecycle (status, retiredAt, cleanupComplete, error) is mutable.
  */
 
-export type EntityKind = "panel" | "worker" | "do" | "shell" | "server";
+export type EntityKind = "panel" | "app" | "worker" | "do" | "shell" | "server";
 
 export interface EntitySource {
   repoPath: string;
@@ -43,6 +43,14 @@ export type RuntimeEntityCreateSpec =
       stateArgs?: unknown;
     }
   | {
+      kind: "app";
+      source: string;
+      ref?: string;
+      contextId?: string | null;
+      key?: string;
+      stateArgs?: unknown;
+    }
+  | {
       kind: "worker";
       source: string;
       ref?: string;
@@ -62,7 +70,7 @@ export type RuntimeEntityCreateSpec =
 
 export interface RuntimeEntityHandle {
   id: string;
-  kind: "panel" | "worker" | "do";
+  kind: "panel" | "app" | "worker" | "do";
   source: EntitySource;
   contextId: string;
   targetId: string;
@@ -71,6 +79,7 @@ export interface RuntimeEntityHandle {
 /**
  * Build canonical entity id from identity components.
  * - panel: `panel:<key>` (key is historyEntryKey)
+ * - app: `app:<source>:<key>`
  * - worker: `worker:<source>:<key>`
  * - do: `do:<source>:<className>:<key>`
  */
@@ -83,6 +92,9 @@ export function canonicalEntityId(args: {
   switch (args.kind) {
     case "panel":
       return `panel:${args.key}`;
+    case "app":
+      if (!args.source) throw new Error("app entity requires source");
+      return `app:${args.source}:${args.key}`;
     case "worker":
       if (!args.source) throw new Error("worker entity requires source");
       return `worker:${args.source}:${args.key}`;

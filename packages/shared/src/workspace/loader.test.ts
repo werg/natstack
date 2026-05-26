@@ -2,7 +2,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { initWorkspace, loadWorkspaceConfig, resolveDeclaredExtensions } from "./loader.js";
+import {
+  initWorkspace,
+  loadWorkspaceConfig,
+  parseWorkspaceConfigContent,
+  reseedCanonicalShellApp,
+  resolveDeclaredApps,
+  resolveDeclaredExtensions,
+} from "./loader.js";
 
 const originalXdgConfigHome = process.env["XDG_CONFIG_HOME"];
 const tempRoots: string[] = [];
@@ -61,10 +68,40 @@ describe("loadWorkspaceConfig", () => {
     const sourceRoot = path.join(root, "workspace", "source");
     writeConfig(
       sourceRoot,
-      "extensions:\n  - source: extensions/@scope/a\n  - source: extensions/@scope/a.git\n",
+      "extensions:\n  - source: extensions/a\n  - source: extensions/a.git\n",
     );
 
     expect(() => loadWorkspaceConfig(sourceRoot)).toThrow(/duplicate extension/);
+  });
+
+  it("rejects duplicate extension declarations across source-root and package-name forms", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-loader-"));
+    tempRoots.push(root);
+    const sourceRoot = path.join(root, "workspace", "source");
+    writeConfig(
+      sourceRoot,
+      "extensions:\n  - source: extensions/a\n  - source: \"@workspace-extensions/a\"\n",
+    );
+
+    expect(() => loadWorkspaceConfig(sourceRoot)).toThrow(/duplicate extension/);
+  });
+
+  it("rejects extension declarations outside the extension source root", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-loader-"));
+    tempRoots.push(root);
+    const sourceRoot = path.join(root, "workspace", "source");
+    writeConfig(sourceRoot, "extensions:\n  - source: apps/shell\n");
+
+    expect(() => loadWorkspaceConfig(sourceRoot)).toThrow(/extensions\[\]\.source.*extensions\/name/);
+  });
+
+  it("rejects nested extension source paths", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-loader-"));
+    tempRoots.push(root);
+    const sourceRoot = path.join(root, "workspace", "source");
+    writeConfig(sourceRoot, "extensions:\n  - source: extensions/react-native/nested\n");
+
+    expect(() => loadWorkspaceConfig(sourceRoot)).toThrow(/extensions\[\]\.source.*@workspace-extensions\/name/);
   });
 
   it("rejects extension declarations without a source", () => {
@@ -74,6 +111,73 @@ describe("loadWorkspaceConfig", () => {
     writeConfig(sourceRoot, "extensions:\n  - ref: main\n");
 
     expect(() => loadWorkspaceConfig(sourceRoot)).toThrow(/non-empty `source`/);
+  });
+
+  it("rejects duplicate app declarations", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-loader-"));
+    tempRoots.push(root);
+    const sourceRoot = path.join(root, "workspace", "source");
+    writeConfig(
+      sourceRoot,
+      "apps:\n  - source: apps/shell\n  - source: apps/shell.git\n",
+    );
+
+    expect(() => loadWorkspaceConfig(sourceRoot)).toThrow(/duplicate app/);
+  });
+
+  it("rejects duplicate app declarations across source-root and package-name forms", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-loader-"));
+    tempRoots.push(root);
+    const sourceRoot = path.join(root, "workspace", "source");
+    writeConfig(
+      sourceRoot,
+      "apps:\n  - source: apps/shell\n  - source: \"@workspace-apps/shell\"\n",
+    );
+
+    expect(() => loadWorkspaceConfig(sourceRoot)).toThrow(/duplicate app/);
+  });
+
+  it("rejects app declarations outside the app source root", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-loader-"));
+    tempRoots.push(root);
+    const sourceRoot = path.join(root, "workspace", "source");
+    writeConfig(sourceRoot, "apps:\n  - source: extensions/react-native\n");
+
+    expect(() => loadWorkspaceConfig(sourceRoot)).toThrow(/apps\[\]\.source.*apps\/name/);
+  });
+
+  it("rejects unscoped app package names", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-loader-"));
+    tempRoots.push(root);
+    const sourceRoot = path.join(root, "workspace", "source");
+    writeConfig(sourceRoot, "apps:\n  - source: shell\n");
+
+    expect(() => loadWorkspaceConfig(sourceRoot)).toThrow(/apps\[\]\.source.*@workspace-apps\/name/);
+  });
+
+  it("rejects mistyped app declaration fields", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-loader-"));
+    tempRoots.push(root);
+    const sourceRoot = path.join(root, "workspace", "source");
+    writeConfig(
+      sourceRoot,
+      "apps:\n  - source: apps/shell\n    target: browser\n    autostart: yes\n",
+    );
+
+    expect(() => loadWorkspaceConfig(sourceRoot)).toThrow(/apps\[\]\.target/);
+  });
+
+  it("validates parsed workspace config content without reading from disk", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-loader-"));
+    tempRoots.push(root);
+    const sourceRoot = path.join(root, "workspace", "source");
+
+    expect(() =>
+      parseWorkspaceConfigContent(
+        "apps:\n  - source: apps/shell\n    target: browser\n",
+        sourceRoot,
+      ),
+    ).toThrow(/apps\[\]\.target/);
   });
 });
 
@@ -86,16 +190,169 @@ describe("resolveDeclaredExtensions", () => {
     expect(
       resolveDeclaredExtensions({
         id: "ws",
-        extensions: [{ source: "extensions/@scope/a" }, { source: "@scope/b", ref: "dev", enabled: false }],
+        extensions: [
+          { source: "extensions/a" },
+          { source: "@workspace-extensions/b", ref: "dev", enabled: false },
+        ],
       }),
     ).toEqual([
-      { source: "extensions/@scope/a", ref: "main", enabled: true },
-      { source: "@scope/b", ref: "dev", enabled: false },
+      { source: "extensions/a", ref: "main", enabled: true },
+      { source: "@workspace-extensions/b", ref: "dev", enabled: false },
+    ]);
+  });
+});
+
+describe("resolveDeclaredApps", () => {
+  it("returns an empty list when no apps section exists", () => {
+    expect(resolveDeclaredApps({ id: "ws" })).toEqual([]);
+  });
+
+  it("applies ref, enabled, and autostart defaults", () => {
+    expect(
+      resolveDeclaredApps({
+        id: "ws",
+        apps: [
+          { source: "apps/shell", target: "electron" },
+          { source: "@workspace-apps/mobile", target: "react-native", ref: "dev", enabled: false, autostart: false },
+        ],
+      }),
+    ).toEqual([
+      { source: "apps/shell", target: "electron", ref: "main", enabled: true, autostart: true },
+      { source: "@workspace-apps/mobile", target: "react-native", ref: "dev", enabled: false, autostart: false },
     ]);
   });
 });
 
 describe("initWorkspace", () => {
+  (process.platform === "linux" ? it : it.skip)("seeds canonical workspace apps for bare managed workspaces", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-loader-"));
+    tempRoots.push(root);
+    process.env["XDG_CONFIG_HOME"] = path.join(root, "xdg");
+
+    initWorkspace("fresh-app-ws");
+
+    const sourceRoot = path.join(
+      process.env["XDG_CONFIG_HOME"],
+      "natstack",
+      "workspaces",
+      "fresh-app-ws",
+      "source",
+    );
+    const config = loadWorkspaceConfig(sourceRoot);
+
+    expect(resolveDeclaredApps(config)).toEqual([
+      { source: "apps/shell", target: "electron", ref: "main", enabled: true, autostart: true },
+      { source: "apps/mobile", target: "react-native", ref: "main", enabled: true, autostart: true },
+    ]);
+    expect(resolveDeclaredExtensions(config)).toEqual([
+      { source: "extensions/react-native", ref: "main", enabled: true },
+    ]);
+    expect(fs.existsSync(path.join(sourceRoot, "apps", "shell", ".git"))).toBe(true);
+    expect(fs.existsSync(path.join(sourceRoot, "apps", "mobile", ".git"))).toBe(true);
+    expect(fs.existsSync(path.join(
+      sourceRoot,
+      "extensions",
+      "react-native",
+      ".git",
+    ))).toBe(true);
+    expect(
+      JSON.parse(fs.readFileSync(
+        path.join(sourceRoot, "apps", "shell", "package.json"),
+        "utf-8",
+      )),
+    ).toMatchObject({
+      name: "@workspace-apps/shell",
+      natstack: {
+        app: {
+          target: "electron",
+          renderer: "index.tsx",
+          capabilities: expect.arrayContaining([
+            "panel-hosting",
+            "incoming-pair-links",
+            "connection-management",
+          ]),
+        },
+      },
+    });
+    expect(
+      JSON.parse(fs.readFileSync(
+        path.join(sourceRoot, "apps", "mobile", "package.json"),
+        "utf-8",
+      )),
+    ).toMatchObject({
+      name: "@workspace-apps/mobile",
+      natstack: {
+        app: {
+          target: "react-native",
+          renderer: "App.tsx",
+          rnComponentName: "NatStack",
+          rnHostAbi: "rn-host-1",
+          capabilities: expect.arrayContaining([
+            "notifications",
+            "camera",
+            "keychain",
+            "clipboard",
+            "open-external",
+          ]),
+        },
+      },
+    });
+    const mobileSource = fs.readFileSync(path.join(sourceRoot, "apps", "mobile", "App.tsx"), "utf-8");
+    expect(mobileSource).toContain("AppRegistry.registerComponent('NatStack', () => App)");
+    expect(
+      JSON.parse(fs.readFileSync(
+        path.join(sourceRoot, "apps", "shell", ".natstack-seed.json"),
+        "utf-8",
+      )),
+    ).toMatchObject({
+      kind: "product-seed-source",
+      unitKind: "app",
+      name: "@workspace-apps/shell",
+      sourceRepo: "apps/shell",
+      signatureKeyId: "natstack-dev-seed-v1",
+      createdBy: "natstack",
+    });
+    expect(
+      JSON.parse(fs.readFileSync(
+        path.join(sourceRoot, "extensions", "react-native", ".natstack-seed.json"),
+        "utf-8",
+      )),
+    ).toMatchObject({
+      kind: "product-seed-source",
+      unitKind: "extension",
+      name: "@workspace-extensions/react-native",
+      sourceRepo: "extensions/react-native",
+      signatureKeyId: "natstack-dev-seed-v1",
+      createdBy: "natstack",
+    });
+    expect(
+      JSON.parse(fs.readFileSync(
+        path.join(sourceRoot, "extensions", "react-native", "package.json"),
+        "utf-8",
+      )),
+    ).toMatchObject({
+      name: "@workspace-extensions/react-native",
+      natstack: {
+        extension: {
+          streamingMethods: ["buildArtifact"],
+          contributes: { buildTargets: ["react-native"] },
+        },
+      },
+    });
+    const providerSource = fs.readFileSync(
+      path.join(sourceRoot, "extensions", "react-native", "index.ts"),
+      "utf-8",
+    );
+    expect(providerSource).toContain("stream: { method: 'buildArtifact'");
+    expect(providerSource).toContain("buildArtifact(artifactId: string)");
+    expect(providerSource).toContain("path: `assets/${platform}/");
+    expect(providerSource).toContain("contentTypeForPath(assetPath)");
+    expect(providerSource).toContain("releaseTempDir(artifact.tempDir, tempDirRefs)");
+    expect(providerSource).toContain("react-native/cli.js");
+    expect(providerSource).toContain("NATSTACK_WORKSPACE_APP_ROOT");
+    expect(providerSource).not.toContain("content: ''");
+  });
+
   (process.platform === "linux" ? it : it.skip)("records template provenance for new managed workspaces", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-loader-"));
     tempRoots.push(root);
@@ -126,5 +383,44 @@ describe("initWorkspace", () => {
     expect(marker.sourcePath).toBe(templateRoot);
     expect(marker.copiedAt).toEqual(expect.any(String));
     expect(marker.gitHead === null || typeof marker.gitHead === "string").toBe(true);
+  });
+});
+
+describe("reseedCanonicalShellApp", () => {
+  it("replaces shell app source from the template and commits the result", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-loader-"));
+    tempRoots.push(root);
+    const template = path.join(root, "template");
+    const sourceRoot = path.join(root, "workspace", "source");
+    const templateShell = path.join(template, "apps", "shell");
+    const targetShell = path.join(sourceRoot, "apps", "shell");
+    fs.mkdirSync(templateShell, { recursive: true });
+    fs.mkdirSync(targetShell, { recursive: true });
+    fs.writeFileSync(path.join(templateShell, "package.json"), JSON.stringify({
+      name: "@workspace-apps/shell",
+      version: "0.1.0",
+      natstack: { app: { target: "electron", renderer: "index.tsx", capabilities: [] } },
+    }));
+    fs.writeFileSync(path.join(templateShell, "index.tsx"), "export const template = true;\n");
+    fs.writeFileSync(path.join(targetShell, "package.json"), "{}\n");
+    fs.writeFileSync(path.join(targetShell, "stale.ts"), "stale\n");
+
+    const result = reseedCanonicalShellApp(sourceRoot, { templateDir: template });
+
+    expect(result).toMatchObject({
+      source: "apps/shell",
+      commit: expect.any(String),
+    });
+    expect(fs.existsSync(path.join(targetShell, "stale.ts"))).toBe(false);
+    expect(fs.readFileSync(path.join(targetShell, "index.tsx"), "utf-8")).toContain("template");
+    expect(fs.existsSync(path.join(targetShell, ".git"))).toBe(true);
+    expect(
+      JSON.parse(fs.readFileSync(path.join(targetShell, ".natstack-seed.json"), "utf-8")),
+    ).toMatchObject({
+      kind: "product-seed-source",
+      unitKind: "app",
+      name: "@workspace-apps/shell",
+      sourceRepo: "apps/shell",
+    });
   });
 });

@@ -1,6 +1,7 @@
 export const WORKSPACE_SOURCE_DIRS = [
   "meta",
   "panels",
+  "apps",
   "packages",
   "agents",
   "workers",
@@ -17,10 +18,11 @@ export const WORKSPACE_STATE_DIRS = [".cache", ".databases", ".contexts"] as con
 
 export const WORKSPACE_GIT_INIT_PATTERNS = [
   "panels/*",
+  "apps/*",
   "packages/*",
   "agents/*",
   "workers/*",
-  "extensions/*/*",
+  "extensions/*",
   "skills/*",
   "about/*",
   "templates/*",
@@ -29,6 +31,7 @@ export const WORKSPACE_GIT_INIT_PATTERNS = [
 
 export const WORKSPACE_IMPORT_PARENT_DIRS = [
   "panels",
+  "apps",
   "packages",
   "agents",
   "workers",

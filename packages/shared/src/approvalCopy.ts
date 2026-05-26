@@ -4,7 +4,7 @@ import type {
   PendingCredentialApproval,
   PendingCredentialInputApproval,
   PendingDeviceCodeApproval,
-  PendingExtensionApproval,
+  PendingUnitBatchApproval,
 } from "./approvals.js";
 
 function truncateId(id: string, head = 8, tail = 4): string {
@@ -29,16 +29,25 @@ export function getApprovalCategoryLabel(approval: PendingApproval): string {
     return "Service setup";
   }
   if (approval.kind === "userland") {
-    return approval.callerKind === "worker" ? "Worker request" : "Panel request";
+    return `${userlandCallerKindLabel(approval.callerKind)} request`;
   }
   if (approval.kind === "device-code") {
     return "Device sign-in";
   }
-  if (approval.kind === "extension") {
-    return approval.action === "source-push" ? "Extension source" : "Extension management";
-  }
-  if (approval.kind === "extension-batch") {
-    return "Extension setup";
+  if (approval.kind === "unit-batch") {
+    if (approval.trigger === "management") {
+      if (approval.units.every((unit) => unit.unitKind === "app")) return "App management";
+      if (approval.units.every((unit) => unit.unitKind === "extension")) return "Extension management";
+      return "Unit management";
+    }
+    if (approval.trigger === "source-push") {
+      if (approval.units.every((unit) => unit.unitKind === "app")) return "App source";
+      if (approval.units.every((unit) => unit.unitKind === "extension")) return "Extension source";
+      return "Unit source";
+    }
+    if (approval.units.every((unit) => unit.unitKind === "app")) return "App setup";
+    if (approval.units.every((unit) => unit.unitKind === "extension")) return "Extension setup";
+    return "Workspace setup";
   }
   if (approval.capability === "internal-git-write") {
     return approval.resource?.value === "meta" ? "Config edit" : "Write request";
@@ -49,17 +58,11 @@ export function getApprovalCategoryLabel(approval: PendingApproval): string {
   if (approval.capability === "workspace-project-import") {
     return "Project import";
   }
-  if (approval.capability === "extension-source-push") {
-    return "Extension source";
-  }
-  if (approval.capability === "extension-management") {
-    return "Extension management";
-  }
   return isOAuthExternalApproval(approval) ? "Sign-in action" : "Browser action";
 }
 
 export function getStandardActionCopy(
-  approval: PendingCredentialApproval | PendingCapabilityApproval | PendingExtensionApproval
+  approval: PendingCredentialApproval | PendingCapabilityApproval
 ): {
   once: { label: string; description: string };
   session: { label: string; description: string };
@@ -130,85 +133,6 @@ export function getStandardActionCopy(
       },
       repo: { label: "Trust repo", description: "Reuse this service for this workspace." },
       denyDescription: "Do not use this service.",
-    };
-  }
-  if (approval.kind === "extension") {
-    if (approval.action === "source-push") {
-      return {
-        once: { label: "Allow push", description: "Allow this extension source push once." },
-        session: {
-          label: "Allow push",
-          description: "Allow this extension source push.",
-        },
-        version: {
-          label: "Allow push",
-          description: "Allow this extension source push.",
-        },
-        repo: {
-          label: "Allow push",
-          description: "Allow this extension source push.",
-        },
-        denyDescription: "Reject this extension source push.",
-      };
-    }
-    if (approval.action === "install") {
-      return {
-        once: {
-          label: "Install and run",
-          description: "Install this extension in the workspace and start it.",
-        },
-        session: {
-          label: "Install and run",
-          description: "Install this extension in the workspace and start it.",
-        },
-        version: {
-          label: "Install and run",
-          description: "Install this extension in the workspace and start it.",
-        },
-        repo: {
-          label: "Install and run",
-          description: "Install this extension in the workspace and start it.",
-        },
-        denyDescription: "Don't install this extension.",
-      };
-    }
-    if (approval.action === "update") {
-      return {
-        once: {
-          label: "Update and run",
-          description: "Update this workspace extension and start the approved build.",
-        },
-        session: {
-          label: "Update and run",
-          description: "Update this workspace extension and start the approved build.",
-        },
-        version: {
-          label: "Update and run",
-          description: "Update this workspace extension and start the approved build.",
-        },
-        repo: {
-          label: "Update and run",
-          description: "Update this workspace extension and start the approved build.",
-        },
-        denyDescription: "Cancel this extension update.",
-      };
-    }
-    const action = approval.action === "toggle" ? "change" : approval.action;
-    return {
-      once: { label: "Approve", description: `Approve this extension ${action} operation.` },
-      session: {
-        label: "Approve",
-        description: `Approve this extension ${action} operation.`,
-      },
-      version: {
-        label: "Approve",
-        description: `Approve this extension ${action} operation.`,
-      },
-      repo: {
-        label: "Approve",
-        description: `Approve this extension ${action} operation.`,
-      },
-      denyDescription: "Do not manage this extension.",
     };
   }
   if (isOAuthExternalApproval(approval)) {
@@ -290,43 +214,6 @@ export function getStandardActionCopy(
       denyDescription: "Do not import this project.",
     };
   }
-  if (approval.capability === "extension-source-push") {
-    const name = approval.resource?.value ?? "this extension";
-    return {
-      once: { label: "Allow push", description: "Allow this extension source push once." },
-      session: {
-        label: "Allow dev session",
-        description: `Allow extension pushes to ${name} without asking for the next 4 hours.`,
-      },
-      version: {
-        label: "Trust version",
-        description: "Allow this code version to push this extension source.",
-      },
-      repo: {
-        label: "Trust repo",
-        description: "Allow this workspace project to push this extension source.",
-      },
-      denyDescription: "Reject this extension source push.",
-    };
-  }
-  if (approval.capability === "extension-management") {
-    return {
-      once: { label: "Allow once", description: "Allow this extension management action once." },
-      session: {
-        label: "Allow this session",
-        description: "Allow extension management until NatStack restarts.",
-      },
-      version: {
-        label: "Trust version",
-        description: "Allow this code version to manage extensions.",
-      },
-      repo: {
-        label: "Trust repo",
-        description: "Allow this workspace project to manage extensions.",
-      },
-      denyDescription: "Do not manage this extension.",
-    };
-  }
   return {
     once: { label: "Open once", description: "Open this browser action once." },
     session: {
@@ -347,26 +234,21 @@ export function getApprovalCopy(
   callerLabel: string
 ): { title: string; summary: string; warning?: string } {
   const requester = `${callerLabel} ${truncateId(approval.callerId)}`;
-  if (approval.kind === "extension") {
-    const action =
-      approval.action === "source-push"
-        ? "update trusted source for"
-        : approval.action === "toggle"
-          ? "change the enabled state of"
-          : `${approval.action}`;
-    return {
-      title: approval.title || "Manage extension",
-      summary: `${requester} wants to ${action} ${approval.extensionName}.`,
-      warning:
-        "Approving this can run Node extension code with filesystem, network, and process access.",
-    };
-  }
-  if (approval.kind === "extension-batch") {
-    const count = approval.extensions.length;
+  if (approval.kind === "unit-batch") {
+    const count = approval.units.length;
+    const unitLabel = unitBatchLabel(approval);
     const fallbackTitle =
-      approval.trigger === "meta-push" ? "Workspace extensions changed" : "Approve workspace extensions";
+      approval.trigger === "management"
+        ? `Manage workspace ${unitLabel.plural}`
+        : approval.trigger === "source-push"
+        ? `${unitLabel.singular[0]?.toUpperCase() ?? "U"}${unitLabel.singular.slice(1)} source push`
+        : approval.trigger === "meta-push" ? `Workspace ${unitLabel.plural} changed` : `Approve workspace ${unitLabel.plural}`;
     const fallbackSummary = count > 0
-      ? `This workspace declares ${count} extension${count === 1 ? "" : "s"} that need approval before they run.`
+      ? approval.trigger === "management"
+        ? `This request manages ${count} workspace ${unitLabel.singular}${count === 1 ? "" : "s"}.`
+        : approval.trigger === "source-push"
+        ? `This push updates trusted workspace ${unitLabel.singular} source code.`
+        : `This workspace declares ${count} ${unitLabel.singular}${count === 1 ? "" : "s"} that need approval before they run.`
       : "This push changes workspace configuration.";
     return {
       title: approval.title || fallbackTitle,
@@ -374,7 +256,9 @@ export function getApprovalCopy(
       ...(count > 0
         ? {
             warning:
-              "Approving runs Node extension code with filesystem, network, and process access.",
+              unitLabel.nativeCode
+                ? "Approving runs native code with filesystem, network, and process access."
+                : "Approving allows these workspace apps to run in the app host.",
           }
         : {}),
     };
@@ -410,22 +294,6 @@ export function getApprovalCopy(
         summary: `${requester} wants to import ${destination} from a remote git repository.`,
       };
     }
-    if (approval.capability === "extension-source-push") {
-      const destination = approval.resource?.value ?? "this extension";
-      return {
-        title: approval.title || `${destination} source push`,
-        summary: `${requester} wants to update trusted native extension code for ${destination}.`,
-        warning:
-          "Accepting this push runs updated Node code with filesystem, network, and process access.",
-      };
-    }
-    if (approval.capability === "extension-management") {
-      const destination = approval.resource?.value ?? "this extension";
-      return {
-        title: approval.title || "Manage extension",
-        summary: `${requester} wants to manage ${destination}, which can run native Node code.`,
-      };
-    }
     const isOAuth = isOAuthExternalApproval(approval);
     const destination = formatCapabilityDestination(approval, isOAuth);
     if (isOAuth) {
@@ -457,7 +325,7 @@ export function getApprovalCopy(
     // Header text is renderer-controlled. Provider-supplied title, summary,
     // and warning render inside the "From <issuer>" framed body so they
     // cannot impersonate the verified-issuer chrome.
-    const callerKindLabel = approval.callerKind === "worker" ? "Worker" : "Panel";
+    const callerKindLabel = userlandCallerKindLabel(approval.callerKind);
     const issuer = approval.issuer;
     const issuerDiffers = issuer && (issuer.kind !== approval.callerKind || issuer.id !== approval.callerId);
     if (issuerDiffers && issuer) {
@@ -512,6 +380,21 @@ export function getApprovalCopy(
   };
 }
 
+function userlandCallerKindLabel(kind: "panel" | "app" | "worker" | "do" | "system"): string {
+  switch (kind) {
+    case "panel":
+      return "Panel";
+    case "app":
+      return "App";
+    case "worker":
+      return "Worker";
+    case "do":
+      return "DO";
+    case "system":
+      return "Workspace";
+  }
+}
+
 export function getCapabilityPrimaryDestination(approval: PendingCapabilityApproval): string {
   return (
     approval.details?.find((detail) => detail.label.toLowerCase() === "url")?.value ??
@@ -521,7 +404,19 @@ export function getCapabilityPrimaryDestination(approval: PendingCapabilityAppro
 }
 
 export function shouldOpenApprovalDetails(approval: PendingApproval): boolean {
-  return approval.kind === "extension" || approval.kind === "extension-batch";
+  return approval.kind === "unit-batch";
+}
+
+function unitBatchLabel(approval: PendingUnitBatchApproval): {
+  singular: string;
+  plural: string;
+  nativeCode: boolean;
+} {
+  const hasExtensions = approval.units.some((unit) => unit.unitKind === "extension");
+  const hasApps = approval.units.some((unit) => unit.unitKind === "app");
+  if (hasExtensions && !hasApps) return { singular: "extension", plural: "extensions", nativeCode: true };
+  if (hasApps && !hasExtensions) return { singular: "app", plural: "apps", nativeCode: false };
+  return { singular: "unit", plural: "units", nativeCode: hasExtensions };
 }
 
 export function originForUrl(raw: string): string {

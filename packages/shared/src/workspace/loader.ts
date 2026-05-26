@@ -14,13 +14,27 @@ import { getCentralDataPath, getWorkspacesDir, getWorkspaceDir } from "@natstack
 import YAML from "yaml";
 import dotenv from "dotenv";
 import { createDevLogger } from "@natstack/dev-log";
+import { parseWorkspaceConfigContentWithId } from "./configParser.js";
+export { resolveDeclaredApps, resolveDeclaredExtensions } from "./configParser.js";
 
 const log = createDevLogger("Workspace");
-import type { Workspace, WorkspaceConfig, WorkspaceExtensionDecl, CentralConfig, CentralConfigPaths, WorkspaceEntry } from "./types.js";
+import type {
+  Workspace,
+  WorkspaceConfig,
+  CentralConfig,
+  CentralConfigPaths,
+  WorkspaceEntry,
+  WorkspaceAppTarget,
+} from "./types.js";
 import type { CentralDataManager } from "../centralData.js";
 import { assertGitAvailable, execGitFileSync } from "../gitRuntime.js";
+import { writeProductSeedSourceRecord } from "../productSeedTrust.js";
 import { getExistingWorkspaceTemplateDir, getWorkspaceTemplateCandidates } from "../runtimePaths.js";
-import { WORKSPACE_GIT_INIT_PATTERNS, WORKSPACE_SOURCE_DIRS, WORKSPACE_STATE_DIRS } from "./sourceDirs.js";
+import {
+  WORKSPACE_GIT_INIT_PATTERNS,
+  WORKSPACE_SOURCE_DIRS,
+  WORKSPACE_STATE_DIRS,
+} from "./sourceDirs.js";
 
 const WORKSPACE_CONFIG_FILE = "meta/natstack.yml";
 const WORKSPACE_TEMPLATE_SOURCE_FILE = "meta/.natstack-template-source.json";
@@ -42,21 +56,9 @@ export function getCentralConfigDir(): string {
   return getCentralDataPath();
 }
 
-// Central-config dir management + admin-token helpers live in `centralAuth.ts`
-// (they're central-data concerns, not workspace concerns). Re-exported here
-// for backwards compatibility with existing importers.
-import {
-  ensureCentralConfigDir,
-  getAdminTokenPath,
-  loadPersistedAdminToken,
-  savePersistedAdminToken,
-} from "../centralAuth.js";
-export {
-  ensureCentralConfigDir,
-  getAdminTokenPath,
-  loadPersistedAdminToken,
-  savePersistedAdminToken,
-};
+// Central-config dir management lives in `centralAuth.ts` because it is a
+// central-data concern, not a workspace concern.
+import { ensureCentralConfigDir } from "../centralAuth.js";
 
 const DATA_FILE = "data.json";
 
@@ -397,7 +399,15 @@ export function initWorkspace(
   const configPath = path.join(sourceRoot, WORKSPACE_CONFIG_FILE);
 
   if (!fs.existsSync(configPath)) {
+    writeCanonicalWorkspaceUnits(sourceRoot);
     const configContent = `# NatStack Workspace Configuration
+extensions:
+  - source: extensions/react-native
+apps:
+  - source: apps/shell
+    target: electron
+  - source: apps/mobile
+    target: react-native
 initPanels:
   - source: panels/chat
 `;
@@ -415,6 +425,382 @@ initPanels:
   log.info(`[Workspace] Created managed workspace "${name}" at ${wsDir}`);
 }
 
+function writeCanonicalWorkspaceUnits(sourceRoot: string): void {
+  writeSeededExtension(
+    path.join(sourceRoot, "extensions", "react-native"),
+    {
+      name: "@workspace-extensions/react-native",
+      displayName: "React Native Build Provider",
+      streamingMethods: ["buildArtifact"],
+    },
+    [
+      "import { spawn } from 'node:child_process';",
+      "import { randomUUID } from 'node:crypto';",
+      "import * as fs from 'node:fs';",
+      "import * as os from 'node:os';",
+      "import * as path from 'node:path';",
+      "import { createRequire } from 'node:module';",
+      "import type { BuildProviderInput, BuildProviderOutput } from '@natstack/shared/buildProvider';",
+      "",
+      "interface ArtifactFile {",
+      "  filePath: string;",
+      "  tempDir: string;",
+      "}",
+      "",
+      "const require = createRequire(import.meta.url);",
+      "",
+      "export async function activate() {",
+      "  const artifactFiles = new Map<string, ArtifactFile>();",
+      "  const tempDirRefs = new Map<string, number>();",
+      "  return {",
+      "    async build(input: BuildProviderInput): Promise<BuildProviderOutput> {",
+      "      if (input.target !== 'react-native') {",
+      "        throw new Error(`react-native provider cannot build target: ${input.target}`);",
+      "      }",
+      "      const appManifest = input.manifest['app'] && typeof input.manifest['app'] === 'object'",
+      "        ? input.manifest['app'] as Record<string, unknown>",
+      "        : input.manifest;",
+      "      const entry = String(appManifest['renderer'] ?? 'index.tsx');",
+      "      const entryPath = path.resolve(input.sourcePath, entry);",
+      "      const rnHostAbi = typeof appManifest['rnHostAbi'] === 'string'",
+      "        ? appManifest['rnHostAbi']",
+      "        : null;",
+      "      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'natstack-rn-provider-'));",
+      "      const artifacts: BuildProviderOutput['artifacts'] = [];",
+      "      for (const platform of ['android', 'ios'] as const) {",
+      "        const bundlePath = path.join(tempDir, `index.${platform}.bundle`);",
+      "        const assetsDir = path.join(tempDir, `${platform}-assets`);",
+      "        fs.mkdirSync(assetsDir, { recursive: true });",
+      "        await runReactNativeBundle(input, platform, entryPath, bundlePath, assetsDir);",
+      "        const bundleArtifactId = randomUUID();",
+      "        artifactFiles.set(bundleArtifactId, { filePath: bundlePath, tempDir });",
+      "        artifacts.push({",
+      "          path: `index.${platform}.bundle`,",
+      "          role: 'primary',",
+      "          contentType: 'application/javascript; charset=utf-8',",
+      "          encoding: 'utf8',",
+      "          platform,",
+      "          stream: { method: 'buildArtifact', args: [bundleArtifactId] },",
+      "        });",
+      "        for (const assetPath of walkFiles(assetsDir)) {",
+      "          const assetArtifactId = randomUUID();",
+      "          artifactFiles.set(assetArtifactId, { filePath: assetPath, tempDir });",
+      "          artifacts.push({",
+      "            path: `assets/${platform}/${path.relative(assetsDir, assetPath).replace(/\\\\/g, '/')}`,",
+      "            role: 'asset',",
+      "            contentType: contentTypeForPath(assetPath),",
+      "            encoding: 'base64',",
+      "            platform,",
+      "            stream: { method: 'buildArtifact', args: [assetArtifactId] },",
+      "          });",
+      "        }",
+      "      }",
+      "      tempDirRefs.set(tempDir, artifacts.length);",
+      "      return {",
+      "        artifacts,",
+      "        metadata: { rnHostAbi },",
+      "      };",
+      "    },",
+      "    buildArtifact(artifactId: string): ReadableStream<Uint8Array> {",
+      "      const artifact = artifactFiles.get(artifactId);",
+      "      if (!artifact) {",
+      "        throw new Error('Unknown React Native build artifact');",
+      "      }",
+      "      artifactFiles.delete(artifactId);",
+      "      const source = fs.createReadStream(artifact.filePath);",
+      "      return new ReadableStream<Uint8Array>({",
+      "        start(controller) {",
+      "          source.on('data', (chunk) => {",
+      "            controller.enqueue(typeof chunk === 'string' ? Buffer.from(chunk) : new Uint8Array(chunk));",
+      "          });",
+      "          source.on('error', (error) => controller.error(error));",
+      "          source.on('end', () => {",
+      "            controller.close();",
+      "            releaseTempDir(artifact.tempDir, tempDirRefs);",
+      "          });",
+      "        },",
+      "        cancel() {",
+      "          source.destroy();",
+      "          releaseTempDir(artifact.tempDir, tempDirRefs);",
+      "        },",
+      "      });",
+      "    },",
+      "  };",
+      "}",
+      "",
+      "async function runReactNativeBundle(input: BuildProviderInput, platform: 'android' | 'ios', entryPath: string, bundlePath: string, assetsDir: string): Promise<void> {",
+      "  const repoRoot = resolveRepoRoot(input.workspaceRoot);",
+      "  const bundleScript = require.resolve('react-native/scripts/bundle.js', { paths: [repoRoot, process.cwd()] });",
+      "  const cliPath = require.resolve('react-native/cli.js', { paths: [repoRoot, process.cwd()] });",
+      "  const metroConfig = path.join(repoRoot, 'apps', 'mobile', 'metro.config.js');",
+      "  const args = [",
+      "    bundleScript,",
+      "    '--platform',",
+      "    platform,",
+      "    '--dev',",
+      "    'false',",
+      "    '--entry-file',",
+      "    entryPath,",
+      "    '--bundle-output',",
+      "    bundlePath,",
+      "    '--assets-dest',",
+      "    assetsDir,",
+      "    '--config',",
+      "    metroConfig,",
+      "    '--reset-cache',",
+      "    '--config-cmd',",
+      "    `${process.execPath} ${cliPath} config`,",
+      "  ];",
+      "  await run(process.execPath, args, {",
+      "    cwd: path.join(repoRoot, 'apps', 'mobile'),",
+      "    env: {",
+      "      ...process.env,",
+      "      NATSTACK_WORKSPACE_APP_ROOT: input.sourcePath,",
+      "    },",
+      "  });",
+      "}",
+      "",
+      "function run(",
+      "  command: string,",
+      "  args: string[],",
+      "  opts: { cwd: string; env: NodeJS.ProcessEnv },",
+      "): Promise<void> {",
+      "  return new Promise((resolve, reject) => {",
+      "    const child = spawn(command, args, {",
+      "      cwd: opts.cwd,",
+      "      env: opts.env,",
+      "      stdio: ['ignore', 'pipe', 'pipe'],",
+      "    });",
+      "    let stderr = '';",
+      "    child.stderr?.on('data', (chunk) => {",
+      "      stderr += chunk.toString();",
+      "    });",
+      "    child.on('error', reject);",
+      "    child.on('exit', (code) => {",
+      "      if (code === 0) resolve();",
+      "      else reject(new Error(`${command} ${args.join(' ')} failed with code ${code}\\n${stderr.trim()}`));",
+      "    });",
+      "  });",
+      "}",
+      "",
+      "function resolveRepoRoot(workspaceRoot: string): string {",
+      "  for (const start of [process.env['NATSTACK_REPO_ROOT'], process.cwd(), workspaceRoot]) {",
+      "    if (!start) continue;",
+      "    let current = path.resolve(start);",
+      "    while (true) {",
+      "      if (fs.existsSync(path.join(current, 'apps', 'mobile', 'metro.config.js')) && fs.existsSync(path.join(current, 'node_modules', 'react-native', 'cli.js'))) {",
+      "        return current;",
+      "      }",
+      "      const parent = path.dirname(current);",
+      "      if (parent === current) break;",
+      "      current = parent;",
+      "    }",
+      "  }",
+      "  throw new Error('Could not locate NatStack repo root for React Native provider');",
+      "}",
+      "",
+      "function walkFiles(dir: string): string[] {",
+      "  if (!fs.existsSync(dir)) return [];",
+      "  const out: string[] = [];",
+      "  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {",
+      "    const full = path.join(dir, entry.name);",
+      "    if (entry.isDirectory()) out.push(...walkFiles(full));",
+      "    else if (entry.isFile()) out.push(full);",
+      "  }",
+      "  return out;",
+      "}",
+      "",
+      "function contentTypeForPath(filePath: string): string {",
+      "  switch (path.extname(filePath).toLowerCase()) {",
+      "    case '.png':",
+      "      return 'image/png';",
+      "    case '.jpg':",
+      "    case '.jpeg':",
+      "      return 'image/jpeg';",
+      "    case '.webp':",
+      "      return 'image/webp';",
+      "    case '.gif':",
+      "      return 'image/gif';",
+      "    case '.json':",
+      "      return 'application/json; charset=utf-8';",
+      "    default:",
+      "      return 'application/octet-stream';",
+      "  }",
+      "}",
+      "",
+      "function releaseTempDir(tempDir: string, refs: Map<string, number>): void {",
+      "  const remaining = (refs.get(tempDir) ?? 1) - 1;",
+      "  if (remaining > 0) {",
+      "    refs.set(tempDir, remaining);",
+      "    return;",
+      "  }",
+      "  refs.delete(tempDir);",
+      "  fs.rmSync(tempDir, { recursive: true, force: true });",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  writeSeededApp(
+    path.join(sourceRoot, "apps", "shell"),
+    {
+      name: "@workspace-apps/shell",
+      target: "electron",
+      renderer: "index.tsx",
+      capabilities: [
+        "native-menus",
+        "notifications",
+        "open-external",
+        "window-management",
+        "panel-hosting",
+        "incoming-pair-links",
+        "connection-management",
+      ],
+    },
+    [
+      "const root = document.getElementById('root') ?? document.body.appendChild(document.createElement('div'));",
+      "root.id = 'root';",
+      "root.textContent = 'NatStack';",
+      "",
+    ].join("\n"),
+  );
+  writeSeededApp(
+    path.join(sourceRoot, "apps", "mobile"),
+    {
+      name: "@workspace-apps/mobile",
+      target: "react-native",
+      renderer: "App.tsx",
+      rnComponentName: "NatStack",
+      rnHostAbi: "rn-host-1",
+      capabilities: ["notifications", "camera", "keychain", "clipboard", "open-external"],
+    },
+    [
+      "import { AppRegistry } from 'react-native';",
+      "",
+      "function App() {",
+      "  return null;",
+      "}",
+      "",
+      "AppRegistry.registerComponent('NatStack', () => App);",
+      "",
+      "export default App;",
+      "",
+    ].join("\n"),
+  );
+}
+
+export function reseedCanonicalShellApp(
+  sourceRoot: string,
+  opts: { templateDir: string }
+): { source: string; commit: string | null } {
+  assertGitAvailable();
+  const relativeSource = path.join("apps", "shell");
+  const templateAppDir = path.join(opts.templateDir, relativeSource);
+  if (!fs.existsSync(path.join(templateAppDir, "package.json"))) {
+    throw new Error(`Canonical shell app template not found: ${templateAppDir}`);
+  }
+  const targetAppDir = path.join(sourceRoot, relativeSource);
+  fs.mkdirSync(targetAppDir, { recursive: true });
+  clearDirExceptGit(targetAppDir);
+  copyDirRecursive(templateAppDir, targetAppDir);
+  if (!fs.existsSync(path.join(targetAppDir, ".natstack-seed.json"))) {
+    writeProductSeedSourceRecord({
+      unitDir: targetAppDir,
+      unitKind: "app",
+      name: "@workspace-apps/shell",
+      sourceRepo: relativeSource,
+    });
+  }
+  ensureUnitGitRepo(targetAppDir, "Reseed canonical shell app");
+  return { source: relativeSource.replace(/\\/g, "/"), commit: readGitHead(targetAppDir) };
+}
+
+function writeSeededExtension(
+  extensionDir: string,
+  extension: {
+    name: string;
+    displayName: string;
+    streamingMethods?: string[];
+  },
+  source: string,
+): void {
+  fs.mkdirSync(extensionDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(extensionDir, "package.json"),
+    `${JSON.stringify({
+      name: extension.name,
+      version: "0.1.0",
+      private: true,
+      type: "module",
+      natstack: {
+        displayName: extension.displayName,
+        entry: "index.ts",
+        sourcemap: true,
+        extension: {
+          activationEvents: ["*"],
+          dependencyMode: "external",
+          ...(extension.streamingMethods ? { streamingMethods: extension.streamingMethods } : {}),
+          contributes: { buildTargets: ["react-native"] },
+        },
+      },
+      dependencies: {
+        "@natstack/shared": "workspace:*",
+      },
+    }, null, 2)}\n`,
+    "utf-8",
+  );
+  fs.writeFileSync(path.join(extensionDir, "index.ts"), source, "utf-8");
+  writeProductSeedSourceRecord({
+    unitDir: extensionDir,
+    unitKind: "extension",
+    name: extension.name,
+    sourceRepo: seedSourceRepoForUnitDir(extensionDir),
+  });
+}
+
+function writeSeededApp(
+  appDir: string,
+  app: {
+    name: string;
+    target: WorkspaceAppTarget;
+    renderer: string;
+    capabilities: string[];
+    rnComponentName?: string;
+    rnHostAbi?: string;
+  },
+  source: string,
+): void {
+  fs.mkdirSync(appDir, { recursive: true });
+  const appManifest = {
+    target: app.target,
+    renderer: app.renderer,
+    capabilities: app.capabilities,
+    ...(app.rnComponentName ? { rnComponentName: app.rnComponentName } : {}),
+    ...(app.rnHostAbi ? { rnHostAbi: app.rnHostAbi } : {}),
+  };
+  fs.writeFileSync(
+    path.join(appDir, "package.json"),
+    `${JSON.stringify({
+      name: app.name,
+      version: "0.1.0",
+      private: true,
+      type: "module",
+      natstack: { app: appManifest },
+    }, null, 2)}\n`,
+    "utf-8",
+  );
+  fs.writeFileSync(path.join(appDir, app.renderer), source, "utf-8");
+  writeProductSeedSourceRecord({
+    unitDir: appDir,
+    unitKind: "app",
+    name: app.name,
+    sourceRepo: seedSourceRepoForUnitDir(appDir),
+  });
+}
+
+function seedSourceRepoForUnitDir(unitDir: string): string {
+  return path.relative(path.resolve(unitDir, "..", ".."), unitDir).replace(/\\/g, "/");
+}
+
 /** Recursively copy a directory, skipping .git, node_modules, and .cache. */
 function copyDirRecursive(src: string, dest: string): void {
   fs.mkdirSync(dest, { recursive: true });
@@ -427,6 +813,37 @@ function copyDirRecursive(src: string, dest: string): void {
     } else if (entry.isFile()) {
       fs.copyFileSync(srcPath, destPath);
     }
+  }
+}
+
+function clearDirExceptGit(dir: string): void {
+  if (!fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === ".git") continue;
+    fs.rmSync(path.join(dir, entry.name), { recursive: true, force: true });
+  }
+}
+
+function ensureUnitGitRepo(repoDir: string, message: string): void {
+  if (!fs.existsSync(path.join(repoDir, ".git"))) {
+    execGitFileSync(["init", "-b", "main"], { cwd: repoDir, stdio: ["ignore", "ignore", "ignore"] });
+  }
+  execGitFileSync(["add", "-A"], { cwd: repoDir, stdio: ["ignore", "ignore", "ignore"] });
+  try {
+    execGitFileSync(
+      [
+        "-c",
+        "user.name=NatStack",
+        "-c",
+        "user.email=natstack@local",
+        "commit",
+        "-m",
+        message,
+      ],
+      { cwd: repoDir, stdio: ["ignore", "ignore", "ignore"] },
+    );
+  } catch {
+    // No changes to commit.
   }
 }
 
@@ -489,21 +906,11 @@ function initGitRepos(wsDir: string): void {
   }
 }
 
-function listWorkspaceUnitDirs(parentDir: string, sourceDir: string): string[] {
+function listWorkspaceUnitDirs(parentDir: string, _sourceDir: string): string[] {
   const dirs: string[] = [];
   for (const entry of fs.readdirSync(parentDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const entryPath = path.join(parentDir, entry.name);
-
-    if (sourceDir === "extensions" && entry.name.startsWith("@")) {
-      for (const scoped of fs.readdirSync(entryPath, { withFileTypes: true })) {
-        if (scoped.isDirectory() && !scoped.name.startsWith(".")) {
-          dirs.push(path.join(entryPath, scoped.name));
-        }
-      }
-      continue;
-    }
-
     dirs.push(entryPath);
   }
   return dirs;
@@ -533,59 +940,14 @@ export function loadWorkspaceConfig(workspacePath: string): WorkspaceConfig {
   }
 
   const content = fs.readFileSync(configPath, "utf-8");
-  const config = YAML.parse(content) as WorkspaceConfig;
+  return parseWorkspaceConfigContent(content, workspacePath);
+}
 
+export function parseWorkspaceConfigContent(content: string, workspacePath: string): WorkspaceConfig {
   // Workspace id is not read from disk. Managed workspaces derive it from the
   // data-dir folder name; explicit external workspaces derive it from their
   // absolute workspace root path.
-  config.id = deriveWorkspaceId(workspacePath);
-
-  validateDeclaredExtensions(config.extensions);
-
-  return config;
-}
-
-const EXTENSION_SOURCE_NORMALIZE = /(^\/+|\.git(\/.*)?$|\/+$)/g;
-
-function validateDeclaredExtensions(extensions: WorkspaceExtensionDecl[] | undefined): void {
-  if (extensions === undefined) return;
-  if (!Array.isArray(extensions)) {
-    throw new Error("meta/natstack.yml: `extensions` must be a list");
-  }
-  const seen = new Set<string>();
-  for (const decl of extensions) {
-    if (!decl || typeof decl.source !== "string" || decl.source.trim().length === 0) {
-      throw new Error("meta/natstack.yml: every `extensions` entry needs a non-empty `source`");
-    }
-    // YAML is untyped at runtime — validate optional fields so e.g.
-    // `enabled: "false"` can't slip through and read as truthy later.
-    if (decl.ref !== undefined && (typeof decl.ref !== "string" || decl.ref.trim().length === 0)) {
-      throw new Error("meta/natstack.yml: `extensions[].ref` must be a non-empty string when provided");
-    }
-    if (decl.enabled !== undefined && typeof decl.enabled !== "boolean") {
-      throw new Error("meta/natstack.yml: `extensions[].enabled` must be a boolean when provided");
-    }
-    const key = decl.source.trim().replace(/^workspace\//, "").replace(EXTENSION_SOURCE_NORMALIZE, "");
-    if (seen.has(key)) {
-      throw new Error(`meta/natstack.yml: duplicate extension declaration for "${decl.source}"`);
-    }
-    seen.add(key);
-  }
-}
-
-/**
- * Resolve the declared extension set with defaults applied (`ref: "main"`,
- * `enabled: true`). Returns an empty list when no `extensions` section exists —
- * the declared set is authoritative, so absent means "no extensions".
- */
-export function resolveDeclaredExtensions(
-  config: WorkspaceConfig,
-): Array<{ source: string; ref: string; enabled: boolean }> {
-  return (config.extensions ?? []).map((decl) => ({
-    source: decl.source.trim(),
-    ref: (decl.ref ?? "main").trim(),
-    enabled: decl.enabled ?? true,
-  }));
+  return parseWorkspaceConfigContentWithId(content, deriveWorkspaceId(workspacePath));
 }
 
 function deriveWorkspaceId(workspacePath: string): string {

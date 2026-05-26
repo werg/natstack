@@ -149,27 +149,56 @@ describe("approvalCopy", () => {
       warning: "The sign-in domain differs from the service domain.",
     },
     {
-      name: "extension source push",
+      name: "app source push unit batch",
       approval: {
         ...base,
-        kind: "extension",
-        action: "source-push",
-        extensionName: "@workspace-extensions/acme",
-        version: "1.2.3",
-        source: { kind: "internal-git", repo: "extensions/acme", ref: "main" },
-        title: "Acme source push",
-        description: "Accepting this push updates trusted native extension code.",
-        previousEv: "ev-old",
-        ev: "ev-new",
-        previousSha: "abc123",
-        sha: "def456",
-        capabilities: ["node:fs", "node:child_process"],
+        kind: "unit-batch",
+        trigger: "source-push",
+        title: "Shell app source push",
+        description: "Accepting this push updates trusted workspace app code.",
+        units: [{
+          unitKind: "app",
+          unitName: "@workspace-apps/shell",
+          displayName: "Shell",
+          version: "1.0.0",
+          target: "electron",
+          source: { kind: "internal-git", repo: "apps/shell", ref: "main" },
+          ev: "ev-shell",
+          capabilities: ["notifications"],
+        }],
+        configWrite: null,
       },
-      category: "Extension source",
-      title: "Acme source push",
-      summaryIncludes: "update trusted source",
+      category: "App source",
+      title: "Shell app source push",
+      summaryIncludes: "trusted workspace app code",
+      warning: "Approving allows these workspace apps to run in the app host.",
+      detailsOpen: true,
+    },
+    {
+      name: "extension management unit batch",
+      approval: {
+        ...base,
+        kind: "unit-batch",
+        trigger: "management",
+        title: "Reload extension",
+        description: "Allow panel panel-1 to reload @workspace-extensions/acme.",
+        units: [{
+          unitKind: "extension",
+          unitName: "@workspace-extensions/acme",
+          displayName: "Acme",
+          version: "1.2.3",
+          target: null,
+          source: { kind: "internal-git", repo: "extensions/acme", ref: "main" },
+          ev: "ev-acme",
+          capabilities: ["node:fs", "node:child_process"],
+        }],
+        configWrite: null,
+      },
+      category: "Extension management",
+      title: "Reload extension",
+      summaryIncludes: "reload @workspace-extensions/acme",
       warning:
-        "Approving this can run Node extension code with filesystem, network, and process access.",
+        "Approving runs native code with filesystem, network, and process access.",
       detailsOpen: true,
     },
     {
@@ -187,12 +216,43 @@ describe("approvalCopy", () => {
       title: "Worker requests your decision",
       summaryIncludes: "team-x:foo",
     },
+    {
+      name: "app userland",
+      approval: {
+        ...base,
+        callerId: "app:apps/shell:device-1",
+        callerKind: "app",
+        repoPath: "apps/shell",
+        kind: "userland",
+        subject: { id: "native:notifications", label: "Notifications" },
+        title: "Allow notifications?",
+        summary: "The shell app is requesting notification access.",
+        promptOptions: "choices",
+        options: [{ value: "allow", label: "Allow", tone: "primary" }],
+      },
+      category: "App request",
+      title: "App requests your decision",
+      summaryIncludes: "native:notifications",
+    },
   ];
+
+  const requesterLabel = (approval: PendingApproval): string => {
+    switch (approval.callerKind) {
+      case "app":
+        return "App";
+      case "worker":
+        return "Worker";
+      case "do":
+        return "DO";
+      default:
+        return "Panel";
+    }
+  };
 
   it.each(fixtures)(
     "formats $name copy",
     ({ approval, category, title, summaryIncludes, warning, detailsOpen }) => {
-      const copy = getApprovalCopy(approval, approval.callerKind === "worker" ? "Worker" : "Panel");
+      const copy = getApprovalCopy(approval, requesterLabel(approval));
 
       expect(getApprovalCategoryLabel(approval)).toBe(category);
       expect(copy.title).toBe(title);
@@ -215,12 +275,6 @@ describe("approvalCopy", () => {
       getStandardActionCopy(capability as Extract<PendingApproval, { kind: "capability" }>).once
         .label
     ).toBe("Open once");
-    expect(
-      getStandardActionCopy(
-        fixtures.find((fixture) => fixture.name === "extension source push")!
-          .approval as Extract<PendingApproval, { kind: "extension" }>
-      ).session.label
-    ).toBe("Allow push");
   });
 
   it("formats low-level detail helpers", () => {

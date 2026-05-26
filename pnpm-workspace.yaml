@@ -4,5 +4,5 @@ packages:
   - 'workspace/panels/*'
   - 'workspace/workers/*'
   - 'workspace/extensions/*'
-  - 'workspace/extensions/*/*'
+  - 'workspace/apps/*'
   - 'apps/*'

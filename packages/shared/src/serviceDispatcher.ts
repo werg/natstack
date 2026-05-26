@@ -10,6 +10,8 @@ import { z } from "zod";
 import type { ServiceDefinition, MethodDef } from "./serviceDefinition.js";
 import type { ServicePolicy } from "./servicePolicy.js";
 import { checkServiceAccess } from "./servicePolicy.js";
+import type { CallerKind, CodeIdentityCallerKind } from "./principalKinds.js";
+export type { CallerKind } from "./principalKinds.js";
 
 /**
  * Normalize an args array for wire compatibility with a Zod tuple schema.
@@ -49,32 +51,10 @@ function normalizeArgs(args: unknown[], schema: z.ZodType): unknown[] {
   });
 }
 
-export type CallerKind =
-  | "panel"
-  /**
-   * In-process trusted dispatch from the Electron main process. Never appears
-   * on a WS connection. The WS-handshake invariant in `rpcServer.ts` rejects
-   * any token claiming this kind. WS-authenticated trusted clients use
-   * `"shell-remote"` instead.
-   */
-  | "shell"
-  /**
-   * WS-authenticated trusted client — Electron main child-spawned in
-   * standalone mode, or a paired remote device. Has the same policy reach as
-   * `"shell"` (see `checkServiceAccess`: any policy allowing `"shell"`
-   * implicitly allows `"shell-remote"`).
-   */
-  | "shell-remote"
-  | "server"
-  | "worker"
-  | "do"
-  | "extension"
-  | "harness";
-
 export interface VerifiedCodeIdentity {
   /** Concrete caller this source/build attribution was verified for. */
   callerId: string;
-  callerKind: "worker" | "panel" | "do";
+  callerKind: CodeIdentityCallerKind;
   /** Workspace source path that produced this runtime. */
   repoPath: string;
   /** Effective build/content version for policy and audit. */

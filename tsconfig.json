@@ -31,6 +31,9 @@
       "@natstack/browser-data": [
         "packages/browser-data/src/index.ts"
       ],
+      "@natstack/browser-data/client": [
+        "packages/browser-data/src/client.ts"
+      ],
       "@natstack/dev-log": [
         "packages/dev-log/src/index.ts"
       ],
@@ -75,6 +78,9 @@
       ],
       "@natstack/typecheck": [
         "packages/typecheck/src/index.ts"
+      ],
+      "@natstack/unit-host": [
+        "packages/unit-host/src/index.ts"
       ],
       "@natstack/types": [
         "packages/types/src/index.ts"

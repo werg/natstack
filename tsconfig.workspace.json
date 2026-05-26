@@ -31,6 +31,9 @@
       "@natstack/browser-data": [
         "packages/browser-data/src/index.ts"
       ],
+      "@natstack/browser-data/client": [
+        "packages/browser-data/src/client.ts"
+      ],
       "@natstack/dev-log": [
         "packages/dev-log/src/index.ts"
       ],
@@ -70,6 +73,9 @@
       "@natstack/typecheck": [
         "packages/typecheck/src/index.ts"
       ],
+      "@natstack/unit-host": [
+        "packages/unit-host/src/index.ts"
+      ],
       "@natstack/types": [
         "packages/types/src/index.ts"
       ],
@@ -104,19 +110,19 @@
         "workspace/panels/terminal/index.tsx"
       ],
       "@workspace-extensions/shell": [
-        "workspace/extensions/@workspace-extensions/shell/index.ts"
+        "workspace/extensions/shell/index.ts"
       ],
       "@workspace-extensions/file-tools": [
-        "workspace/extensions/@workspace-extensions/file-tools/index.ts"
+        "workspace/extensions/file-tools/index.ts"
       ],
       "@workspace-extensions/image-service": [
-        "workspace/extensions/@workspace-extensions/image-service/index.ts"
+        "workspace/extensions/image-service/index.ts"
       ],
       "@workspace-extensions/browser-data": [
-        "workspace/extensions/@workspace-extensions/browser-data/index.ts"
+        "workspace/extensions/browser-data/index.ts"
       ],
       "@workspace-extensions/typecheck-service": [
-        "workspace/extensions/@workspace-extensions/typecheck-service/index.ts"
+        "workspace/extensions/typecheck-service/index.ts"
       ],
       "@workspace-panels/email": [
         "workspace/panels/email/index.tsx"
@@ -283,6 +289,9 @@
     "node_modules",
     "**/dist",
     "**/node_modules",
+    "workspace/apps/mobile/jest.setup.ts",
+    "workspace/apps/mobile/**/*.test.ts",
+    "workspace/apps/mobile/**/*.test.tsx",
     "workspace/panels/terminal/vscode-upstream",
     "workspace/packages/playwright-*"
   ]

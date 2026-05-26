@@ -11,9 +11,14 @@
  *    - meta/natstack.yml: Init panels and shared git remotes
  *    - meta/AGENTS.md: Agent system prompt
  *    - panels/: Panel source code
+ *    - apps/: Trusted workspace-owned frontend apps
  *    - projects/: Plain editable repositories that are not runtime units
  *    - .cache/: Build cache
  */
+
+import type { AppCapability, WorkspaceAppTarget } from "../unitManifest.js";
+
+export type { AppCapability, WorkspaceAppTarget };
 
 /**
  * Standard model roles with fallback behavior
@@ -151,6 +156,7 @@ export type PanelRestorePolicy = "focused" | "none";
  */
 export type WorkspaceServiceCallerKind =
   | "panel"
+  | "app"
   | "shell"
   | "server"
   | "worker"
@@ -190,12 +196,12 @@ export type WorkspaceServiceDecl = {
  * Extension declaration in `workspace/meta/natstack.yml`. The declared list is
  * the single source of truth for which extensions a workspace uses and the only
  * install/enable/disable/uninstall surface — editing it (a gated meta write)
- * triggers the joint extension approval and registry reconciliation.
+ * triggers the joint unit approval and registry reconciliation.
  */
 export interface WorkspaceExtensionDecl {
   /**
    * Extension identity: a workspace-relative repo path
-   * (e.g. `"extensions/@workspace-extensions/image-service"`) OR the package
+   * (e.g. `"extensions/image-service"`) OR the package
    * name (e.g. `"@workspace-extensions/image-service"`). Both resolve via the
    * build graph.
    */
@@ -207,6 +213,31 @@ export interface WorkspaceExtensionDecl {
    * it installed/approved but stopped.
    */
   enabled?: boolean;
+}
+
+/**
+ * App declaration in `workspace/meta/natstack.yml`. Apps are the frontend
+ * counterpart to extensions: privileged, workspace-coupled units that are
+ * build-gated, approval-gated, and hot-loaded onto a shipped host.
+ */
+export interface WorkspaceAppDecl {
+  /**
+   * App identity: a workspace-relative repo path
+   * (e.g. `"apps/shell"`) OR the package name
+   * (e.g. `"@workspace-apps/shell"`). Both resolve via the build graph.
+   */
+  source: string;
+  /**
+   * Optional declared host target. When present it must match the package
+   * manifest's natstack.app.target.
+   */
+  target?: WorkspaceAppTarget;
+  /** Git ref the app floats to. Defaults to `"main"`. */
+  ref?: string;
+  /** Whether the app should run. Defaults to `true`. */
+  enabled?: boolean;
+  /** Whether the host should start it automatically. Defaults to `true`. */
+  autostart?: boolean;
 }
 
 /** HTTP route declaration in `workspace/meta/natstack.yml`. */
@@ -260,6 +291,11 @@ export interface WorkspaceConfig {
    * means no extensions (reconciliation removes any left in the registry).
    */
   extensions?: WorkspaceExtensionDecl[];
+  /**
+   * Declarative privileged frontend app set for this workspace. Absent or
+   * empty means no apps; the reconciler removes anything not declared here.
+   */
+  apps?: WorkspaceAppDecl[];
 }
 
 /**

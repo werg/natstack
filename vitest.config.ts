@@ -74,7 +74,13 @@ export default defineConfig({
       "apps/**/*.test.ts",
       "apps/**/*.test.tsx",
     ],
-    exclude: ["**/node_modules/**", "dist", "workspace/.contexts", "apps/mobile/**"],
+    exclude: [
+      "**/node_modules/**",
+      "dist",
+      "workspace/.contexts",
+      "apps/mobile/**",
+      "workspace/apps/mobile/**",
+    ],
     setupFiles: ["tests/setup/vitest.setup.ts"],
     server: {
       deps: {

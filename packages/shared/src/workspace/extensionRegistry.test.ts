@@ -69,12 +69,12 @@ describe("renderExtensionRegistry", () => {
 });
 
 describe("discoverExtensionPackageNames", () => {
-  it("finds scoped and unscoped extension packages, skipping non-extensions", () => {
+  it("finds extension packages in flat paths, skipping non-extensions", () => {
     const root = tempDir();
-    writeExtension(root, "@workspace-extensions/shell", "@workspace-extensions/shell");
-    writeExtension(root, "@workspace-extensions/file-tools", "@workspace-extensions/file-tools");
+    writeExtension(root, "shell", "@workspace-extensions/shell");
+    writeExtension(root, "file-tools", "@workspace-extensions/file-tools");
     writeExtension(root, "standalone-ext", "standalone-ext");
-    writeExtension(root, "@workspace-extensions/not-an-ext", "@workspace-extensions/not-an-ext", {
+    writeExtension(root, "not-an-ext", "@workspace-extensions/not-an-ext", {
       manifestExtension: false,
     });
 
@@ -87,9 +87,9 @@ describe("discoverExtensionPackageNames", () => {
 
   it("excludes extensions that do not self-register in WorkspaceExtensions", () => {
     const root = tempDir();
-    writeExtension(root, "@workspace-extensions/shell", "@workspace-extensions/shell");
+    writeExtension(root, "shell", "@workspace-extensions/shell");
     // Infra extension: has the manifest marker but never augments the registry.
-    writeExtension(root, "@workspace-extensions/infra", "@workspace-extensions/infra", {
+    writeExtension(root, "infra", "@workspace-extensions/infra", {
       selfRegisters: false,
     });
 
@@ -105,7 +105,7 @@ describe("writeExtensionRegistry", () => {
   it("writes the barrel and is idempotent", () => {
     const root = tempDir();
     fs.mkdirSync(path.join(root, "packages", "runtime", "src", "shared"), { recursive: true });
-    writeExtension(root, "@workspace-extensions/shell", "@workspace-extensions/shell");
+    writeExtension(root, "shell", "@workspace-extensions/shell");
 
     expect(writeExtensionRegistry(root)).toBe(true);
     const barrel = path.join(root, EXTENSION_REGISTRY_RELATIVE_PATH);
@@ -116,7 +116,7 @@ describe("writeExtensionRegistry", () => {
 
   it("is a no-op when the workspace has no runtime package", () => {
     const root = tempDir();
-    writeExtension(root, "@workspace-extensions/shell", "@workspace-extensions/shell");
+    writeExtension(root, "shell", "@workspace-extensions/shell");
     expect(writeExtensionRegistry(root)).toBe(false);
   });
 });

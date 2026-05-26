@@ -83,7 +83,7 @@ export const userlandApprovalRequestSchema = z.object({
 /** The verified runtime caller that issued the prompt. Populated by the dispatcher. */
 export interface ApprovalPrincipal {
   callerId: string;
-  callerKind: "panel" | "worker" | "do";
+  callerKind: "panel" | "app" | "worker" | "do";
   repoPath: string;
   effectiveVersion: string;
   /**
@@ -111,7 +111,7 @@ export interface UserlandApprovalSubject {
  * resolve it. Consumers should prefer `label` over `id` in UI.
  */
 export interface UserlandApprovalIssuer {
-  kind: "panel" | "worker" | "do" | "extension";
+  kind: "panel" | "app" | "worker" | "do" | "extension";
   id: string;
   label?: string;
 }
@@ -120,7 +120,7 @@ export interface UserlandApprovalIssuer {
 export interface UserlandApprovalGrant {
   principal: {
     callerId: string;
-    callerKind: "panel" | "worker" | "do";
+    callerKind: "panel" | "app" | "worker" | "do";
     repoPath?: string;
     effectiveVersion?: string;
   };
@@ -137,7 +137,7 @@ export interface PendingApprovalBase {
   callerId: string;
   // "system" is a host-initiated principal (e.g. workspace-startup extension
   // reconciliation), not a userland caller pretending to be one.
-  callerKind: "panel" | "worker" | "do" | "system";
+  callerKind: "panel" | "app" | "worker" | "do" | "system";
   repoPath: string;
   effectiveVersion: string;
   requestedAt: number;
@@ -193,120 +193,67 @@ export interface PendingCapabilityApproval extends PendingApprovalBase {
   }>;
 }
 
-export type PendingExtensionApprovalAction =
-  | "install"
-  | "update"
-  | "source-push"
-  | "uninstall"
-  | "toggle"
-  | "reload";
-
-export interface ExtensionApprovalDiffStat {
+export interface UnitApprovalDiffStat {
   filesChanged: number;
   insertions: number;
   deletions: number;
 }
 
-export interface ExtensionApprovalGitIdentity {
+export interface UnitApprovalGitIdentity {
   name: string;
   email: string;
 }
 
-export interface ExtensionApprovalCommit {
-  author: ExtensionApprovalGitIdentity;
-  committer: ExtensionApprovalGitIdentity;
+export interface UnitApprovalCommit {
+  author: UnitApprovalGitIdentity;
+  committer: UnitApprovalGitIdentity;
   message: string;
   timestamp: number;
 }
 
-export interface ExtensionApprovalPush {
-  pushedAt: number;
-  pushedBy?: string | null;
-  ref: string;
-}
-
-export interface ExtensionApprovalDiff {
-  sha?: string | null;
-  previousSha?: string | null;
-  stat?: ExtensionApprovalDiffStat | null;
-  commit?: ExtensionApprovalCommit | null;
-  push?: ExtensionApprovalPush | null;
-}
-
-export interface ExtensionWorkspaceDependencyChange {
-  name: string;
-  fromEv?: string | null;
-  toEv?: string | null;
-  sha?: string | null;
-  previousSha?: string | null;
-  stat?: ExtensionApprovalDiffStat | null;
-  commit?: ExtensionApprovalCommit | null;
-  push?: ExtensionApprovalPush | null;
-}
-
-export interface ExtensionExternalDependencyChange {
-  name: string;
-  fromVersion?: string | null;
-  toVersion?: string | null;
-}
-
-export interface PendingExtensionApproval extends PendingApprovalBase {
-  kind: "extension";
-  action: PendingExtensionApprovalAction;
-  extensionName: string;
-  version?: string | null;
-  source: { kind: "internal-git"; repo: string; ref: string };
-  title: string;
-  description: string;
-  ev?: string | null;
-  previousEv?: string | null;
-  sha?: string | null;
-  previousSha?: string | null;
-  activeDependencyEvs?: Record<string, string>;
-  candidateDependencyEvs?: Record<string, string>;
-  activeRuntimeDepsKey?: string | null;
-  candidateRuntimeDepsKey?: string | null;
-  extensionDiff?: ExtensionApprovalDiff | null;
-  workspaceDepChanges?: ExtensionWorkspaceDependencyChange[];
-  externalDepChanges?: ExtensionExternalDependencyChange[];
-  integrity?: string | null;
-  capabilities: string[];
-  details?: Array<{
-    label: string;
-    value: string;
-  }>;
-}
+export type UnitBatchEntryKind = "extension" | "app";
 
 /**
- * One extension in a joint `extension-batch` approval. Carries the
+ * One workspace-owned unit in a joint `unit-batch` approval. Carries the
  * informed-consent overview the prompt renders per row.
  */
-export interface ExtensionBatchEntry {
-  extensionName: string;
+export interface UnitBatchEntry {
+  unitKind: UnitBatchEntryKind;
+  unitName: string;
   displayName: string;
   version?: string | null;
+  target?: "electron" | "react-native" | "terminal" | null;
   source: { kind: "internal-git"; repo: string; ref: string };
   ev?: string | null;
-  /** Native capabilities granted by running this extension (node:fs, …). */
+  /** Native or host capabilities granted by running this unit. */
   capabilities: string[];
   dependencyEvs?: Record<string, string>;
   externalDeps?: Record<string, string>;
-  commit?: ExtensionApprovalCommit | null;
+  integrity?: string | null;
+  provider?: {
+    name: string;
+    activeEv: string | null;
+    activeBuildKey: string | null;
+    contractVersion: string;
+  } | null;
+  commit?: UnitApprovalCommit | null;
 }
 
 /**
  * Joint, informed-consent approval for the set of unapproved declared
- * extensions. Raised at workspace startup (`trigger: "startup"`, system
- * principal) and when a push to `meta/` adds extensions (`trigger:
+ * workspace units. Raised at workspace startup (`trigger: "startup"`, system
+ * principal) and when a push to `meta/` adds units (`trigger:
  * "meta-push"`, with `configWrite` describing the workspace-config change the
- * same push performs). One decision approves or denies the whole set.
+ * same push performs). It is also used for one-unit source pushes and
+ * management actions so apps and extensions share a single privileged-unit
+ * approval shape. One decision approves or denies the whole set.
  */
-export interface PendingExtensionBatchApproval extends PendingApprovalBase {
-  kind: "extension-batch";
-  trigger: "startup" | "meta-push";
+export interface PendingUnitBatchApproval extends PendingApprovalBase {
+  kind: "unit-batch";
+  trigger: "startup" | "meta-push" | "source-push" | "management";
   title: string;
   description: string;
-  extensions: ExtensionBatchEntry[];
+  units: UnitBatchEntry[];
   /** Present on `meta-push`: the workspace-config write this push performs. */
   configWrite?: { repoPath: string; summary: string } | null;
 }
@@ -430,8 +377,7 @@ export type UserlandApprovalChoice =
 export type PendingApproval =
   | PendingCredentialApproval
   | PendingCapabilityApproval
-  | PendingExtensionApproval
-  | PendingExtensionBatchApproval
+  | PendingUnitBatchApproval
   | PendingClientConfigApproval
   | PendingCredentialInputApproval
   | PendingUserlandApproval
