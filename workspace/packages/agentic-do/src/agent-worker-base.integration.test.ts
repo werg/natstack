@@ -811,6 +811,166 @@ describe("AgentWorkerBase method suspension ledger", () => {
     });
   });
 
+  it("hydrates stored transport refs before admitting recovered tool results", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const appended: AgentMessage[] = [];
+    const submitContinue = vi.fn();
+    const hydratedResult = {
+      content: [{ type: "text", text: "stored eval output" }],
+      details: { bytes: 18 },
+    };
+    const rpcCall = vi.fn(async (_target: string, method: string, args: unknown[]) => {
+      if (method === "blobstore.getText" && args[0] === "stored-result-digest") {
+        return JSON.stringify(hydratedResult);
+      }
+      return null;
+    });
+    const worker = instance as unknown as {
+      _rpc: {
+        call: ReturnType<typeof vi.fn>;
+        streamCall: ReturnType<typeof vi.fn>;
+        emit: ReturnType<typeof vi.fn>;
+        onEvent: ReturnType<typeof vi.fn>;
+        handleIncomingPost: ReturnType<typeof vi.fn>;
+      };
+      runners: Map<string, { runner: unknown }>;
+      dispatchers: Map<string, unknown>;
+      handleCompletedMethodResult(
+        channelId: string,
+        callId: string,
+        result: unknown,
+        isError: boolean
+      ): Promise<void>;
+    };
+    worker._rpc = {
+      call: rpcCall,
+      streamCall: vi.fn(),
+      emit: vi.fn(),
+      onEvent: vi.fn(),
+      handleIncomingPost: vi.fn(),
+    };
+    worker.runners.set("chat-1", {
+      runner: {
+        isInvocationOpen: () => true,
+        isLeafDescendantOf: async () => true,
+        appendToolResult: async (message: AgentMessage) => {
+          appended.push(message);
+          return "entry-stored";
+        },
+      },
+    });
+    worker.dispatchers.set("chat-1", {
+      submitContinue,
+      getDebugState: () => ({ busy: false }),
+    });
+    insertSuspension(sql, {
+      callId: "call-1",
+      terminalKind: "none",
+      deliveryStatus: "pending",
+      sessionLeafBeforeCall: null,
+    });
+
+    await worker.handleCompletedMethodResult(
+      "chat-1",
+      "call-1",
+      {
+        protocol: "natstack.blob-ref.v1",
+        digest: "stored-result-digest",
+        size: 128,
+        encoding: "json",
+        originalBytes: 128,
+        preview: "{\"content\":[{\"type\":\"text\",\"text\":\"stored eval output\"}]}",
+      },
+      false
+    );
+
+    expect(rpcCall).toHaveBeenCalledWith("main", "blobstore.getText", ["stored-result-digest"]);
+    expect(appended).toHaveLength(1);
+    expect(appended[0]).toMatchObject({
+      role: "toolResult",
+      toolCallId: "tool-1",
+      content: [{ type: "text", text: "stored eval output" }],
+      details: { bytes: 18 },
+    });
+    expect(
+      sql
+        .exec(
+          `SELECT result_json, delivery_status
+             FROM agent_method_suspensions
+             WHERE transport_call_id = ?`,
+          "call-1"
+        )
+        .toArray()[0]
+    ).toMatchObject({
+      result_json: JSON.stringify(hydratedResult),
+      delivery_status: "recovered",
+    });
+  });
+
+  it("raises missing stored transport blobs instead of admitting blob refs", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const worker = instance as unknown as {
+      _rpc: {
+        call: ReturnType<typeof vi.fn>;
+        streamCall: ReturnType<typeof vi.fn>;
+        emit: ReturnType<typeof vi.fn>;
+        onEvent: ReturnType<typeof vi.fn>;
+        handleIncomingPost: ReturnType<typeof vi.fn>;
+      };
+      handleCompletedMethodResult(
+        channelId: string,
+        callId: string,
+        result: unknown,
+        isError: boolean
+      ): Promise<void>;
+    };
+    worker._rpc = {
+      call: vi.fn(async () => null),
+      streamCall: vi.fn(),
+      emit: vi.fn(),
+      onEvent: vi.fn(),
+      handleIncomingPost: vi.fn(),
+    };
+    insertSuspension(sql, {
+      callId: "call-1",
+      terminalKind: "none",
+      deliveryStatus: "pending",
+    });
+
+    await expect(
+      worker.handleCompletedMethodResult(
+        "chat-1",
+        "call-1",
+        {
+          protocol: "natstack.blob-ref.v1",
+          digest: "missing-digest",
+          size: 64,
+          encoding: "json",
+          originalBytes: 64,
+        },
+        false
+      )
+    ).rejects.toThrow("Stored transport blob is missing: missing-digest");
+    expect(
+      sql
+        .exec(
+          `SELECT terminal_kind, result_json, delivery_status
+             FROM agent_method_suspensions
+             WHERE transport_call_id = ?`,
+          "call-1"
+        )
+        .toArray()[0]
+    ).toMatchObject({
+      terminal_kind: "none",
+      result_json: null,
+      delivery_status: "pending",
+    });
+  });
+
   it("ignores duplicate terminal results already delivered to a live waiter", async () => {
     const { instance, sql } = await createTestDO(TestAgentWorker, {
       __objectKey: "agent-test",
