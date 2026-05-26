@@ -1575,6 +1575,29 @@ describe("TrajectoryVesselBase custom message recovery", () => {
       ): Promise<Map<string, Map<string, unknown>>>;
     };
 
+    (instance as unknown as {
+      _rpc: {
+        call: ReturnType<typeof vi.fn>;
+        streamCall: ReturnType<typeof vi.fn>;
+        emit: ReturnType<typeof vi.fn>;
+        onEvent: ReturnType<typeof vi.fn>;
+        handleIncomingPost: ReturnType<typeof vi.fn>;
+      };
+    })._rpc = {
+      call: vi.fn(async (_target: string, method: string, args: unknown[]) => {
+        if (method === "blobstore.getText" && args[0] === "custom-initial-digest") {
+          return JSON.stringify({ count: 0 });
+        }
+        if (method === "blobstore.getText" && args[0] === "custom-update-digest") {
+          return JSON.stringify({ delta: 1 });
+        }
+        return null;
+      }),
+      streamCall: vi.fn(),
+      emit: vi.fn(),
+      onEvent: vi.fn(),
+      handleIncomingPost: vi.fn(),
+    };
     worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
 
     const events = [
@@ -1590,7 +1613,13 @@ describe("TrajectoryVesselBase custom message recovery", () => {
             protocol: "agentic.trajectory.v1",
             messageId: "custom-1",
             typeId: "gmail.thread",
-            initialState: { count: 0 },
+            initialState: {
+              protocol: "natstack.blob-ref.v1",
+              digest: "custom-initial-digest",
+              size: 11,
+              encoding: "json",
+              originalBytes: 11,
+            },
           },
           createdAt: new Date().toISOString(),
         },
@@ -1625,7 +1654,13 @@ describe("TrajectoryVesselBase custom message recovery", () => {
           payload: {
             protocol: "agentic.trajectory.v1",
             messageId: "custom-1",
-            update: { delta: 1 },
+            update: {
+              protocol: "natstack.blob-ref.v1",
+              digest: "custom-update-digest",
+              size: 11,
+              encoding: "json",
+              originalBytes: 11,
+            },
           },
           createdAt: new Date().toISOString(),
         },

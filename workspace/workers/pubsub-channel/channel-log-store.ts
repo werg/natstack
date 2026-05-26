@@ -283,20 +283,8 @@ export class GadChannelLogStore implements ChannelLogStore {
 
   private async encodePayload(payload: unknown): Promise<unknown> {
     return encodeChannelPayloadStoredValues(payload, {
-      putText: async (value) => {
-        try {
-          return await this.rpc.call<{ digest: string; size: number }>("main", "blobstore.putText", [value]);
-        } catch {
-          return this.localBlobMeta(value);
-        }
-      },
+      putText: (value) =>
+        this.rpc.call<{ digest: string; size: number }>("main", "blobstore.putText", [value]),
     });
-  }
-
-  private async localBlobMeta(value: string): Promise<{ digest: string; size: number }> {
-    const bytes = new TextEncoder().encode(value);
-    const digestBuffer = await crypto.subtle.digest("SHA-256", bytes);
-    const digest = Array.from(new Uint8Array(digestBuffer), (byte) => byte.toString(16).padStart(2, "0")).join("");
-    return { digest, size: bytes.byteLength };
   }
 }

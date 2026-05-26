@@ -2485,7 +2485,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
           if (!messageId || !typeId) continue;
           byMessageId.set(messageId, {
             typeId,
-            state: payload["initialState"],
+            state: await this.hydrateStoredTransportValue(payload["initialState"]),
           });
           continue;
         }
@@ -2497,9 +2497,10 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
           const existing = byMessageId.get(messageId);
           if (!existing) continue;
           const reducer = reducerLookup?.(existing.typeId) ?? null;
+          const update = await this.hydrateStoredTransportValue(payload["update"]);
           byMessageId.set(messageId, {
             typeId: existing.typeId,
-            state: reducer ? reducer(existing.state, payload["update"]) : payload["update"],
+            state: reducer ? reducer(existing.state, update) : update,
           });
         }
       }

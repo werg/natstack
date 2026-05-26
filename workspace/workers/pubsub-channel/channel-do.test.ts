@@ -39,6 +39,7 @@ async function createGadBackedChannel(options: {
   emitted?: unknown[];
   channelKey?: string;
   gad?: TestDO<GadWorkspaceDO>;
+  blobstorePutText?: (value: string) => Promise<{ digest: string; size: number }>;
 } = {}) {
   const gad = options.gad ?? await createTestDO(GadWorkspaceDO, { __objectKey: "workspace-gad" });
   const channel = await createTestDO(PubSubChannel, { __objectKey: options.channelKey ?? "channel-1" });
@@ -65,6 +66,10 @@ async function createGadBackedChannel(options: {
       if (target === "main" && method === "runtime.setTitle") {
         // Title registry isn't relevant in unit tests; treat as a no-op.
         return undefined;
+      }
+      if (target === "main" && method === "blobstore.putText") {
+        if (options.blobstorePutText) return options.blobstorePutText(String(args[0] ?? ""));
+        return { digest: "test-digest", size: String(args[0] ?? "").length };
       }
       if (target === gadTarget) {
         const callable = gad.instance as unknown as Record<string, (...methodArgs: unknown[]) => unknown>;
@@ -100,6 +105,28 @@ describe("PubSubChannel", () => {
       kind: "message.completed",
     });
     expect(JSON.parse(rows[1]!["metadata_json"] as string)).toMatchObject({ name: "User" });
+  });
+
+  it("fails durable publishes when blobstore storage fails", async () => {
+    const { instance } = await createGadBackedChannel({
+      blobstorePutText: async (value) => {
+        if (!value.includes("must be stored")) {
+          return { digest: "setup-digest", size: value.length };
+        }
+        throw new Error("blobstore unavailable");
+      },
+    });
+    setRpcCaller(instance, "panel:user", "panel");
+
+    await instance.subscribe("panel:user", { contextId: "ctx-1", name: "User", type: "panel" });
+    let error: unknown;
+    try {
+      await instance.publish("panel:user", "custom.large", { value: "must be stored" });
+    } catch (err) {
+      error = err;
+    }
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("blobstore unavailable");
   });
 
   it("replays envelopes by sequence and paginates before a sequence", async () => {
