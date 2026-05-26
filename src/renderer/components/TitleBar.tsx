@@ -22,7 +22,6 @@ import {
   type CSSProperties,
   type KeyboardEvent,
   type MouseEvent,
-  type PointerEvent,
   type RefObject,
 } from "react";
 import { useIsMobile, useTouchDevice } from "@workspace/react/responsive";
@@ -1031,8 +1030,8 @@ const groupStyle = {
   padding: "1px",
   borderRadius: "4px",
   border: "1px solid var(--gray-6)",
-  appRegion: "no-drag",
-  WebkitAppRegion: "no-drag",
+  appRegion: "drag",
+  WebkitAppRegion: "drag",
 } as CSSProperties;
 
 // Hoverable breadcrumb item with X button on hover
@@ -1250,14 +1249,6 @@ function BreadcrumbBar({
   const currentSiblings = navigationData?.currentSiblings ?? [];
   const descendantGroups = statusNavigation?.descendantGroups ?? [];
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const dragStateRef = useRef<{
-    pointerId: number;
-    startX: number;
-    startScrollLeft: number;
-    didDrag: boolean;
-  } | null>(null);
-  const suppressClickRef = useRef(false);
-  const [isDragging, setIsDragging] = useState(false);
   const [maxVisibleSiblings, setMaxVisibleSiblings] = useState(MAX_VISIBLE_SIBLINGS_PER_GROUP);
   const [scrollState, setScrollState] = useState({ canScrollLeft: false, canScrollRight: false });
 
@@ -1327,53 +1318,6 @@ function BreadcrumbBar({
     if (selected !== null) {
       onNavigateToId?.(selected);
     }
-  };
-
-  const handlePointerDown = (e: PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
-    const target = e.target as HTMLElement | null;
-    if (target?.closest("button")) return;
-    dragStateRef.current = {
-      pointerId: e.pointerId,
-      startX: e.clientX,
-      startScrollLeft: e.currentTarget.scrollLeft,
-      didDrag: false,
-    };
-    e.currentTarget.setPointerCapture(e.pointerId);
-    setIsDragging(true);
-  };
-
-  const handlePointerMove = (e: PointerEvent<HTMLDivElement>) => {
-    const state = dragStateRef.current;
-    if (!state || state.pointerId !== e.pointerId) return;
-    const deltaX = e.clientX - state.startX;
-    if (Math.abs(deltaX) > 3) {
-      state.didDrag = true;
-    }
-    e.currentTarget.scrollLeft = state.startScrollLeft - deltaX;
-  };
-
-  const finishPointerDrag = (e: PointerEvent<HTMLDivElement>) => {
-    const state = dragStateRef.current;
-    if (!state || state.pointerId !== e.pointerId) return;
-    suppressClickRef.current = state.didDrag;
-    dragStateRef.current = null;
-    setIsDragging(false);
-    if (state.didDrag) {
-      window.setTimeout(() => {
-        suppressClickRef.current = false;
-      }, 0);
-    }
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    }
-  };
-
-  const handleClickCapture = (e: MouseEvent<HTMLDivElement>) => {
-    if (!suppressClickRef.current) return;
-    suppressClickRef.current = false;
-    e.preventDefault();
-    e.stopPropagation();
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -1560,8 +1504,8 @@ function BreadcrumbBar({
           position: "relative",
           minWidth: 0,
           overflow: "hidden",
-          appRegion: "no-drag",
-          WebkitAppRegion: "no-drag",
+          appRegion: "drag",
+          WebkitAppRegion: "drag",
         } as CSSProperties
       }
     >
@@ -1570,23 +1514,16 @@ function BreadcrumbBar({
         align="center"
         gap="1"
         className="titlebar-breadcrumb-scroll"
-        data-dragging={isDragging ? "true" : undefined}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={finishPointerDrag}
-        onPointerCancel={finishPointerDrag}
         onScroll={refreshScrollState}
         onKeyDown={handleKeyDown}
-        onClickCapture={handleClickCapture}
         style={
           {
-            appRegion: "no-drag",
-            WebkitAppRegion: "no-drag",
+            appRegion: "drag",
+            WebkitAppRegion: "drag",
             minWidth: 0,
             overflowX: "auto",
             overflowY: "hidden",
             overscrollBehaviorX: "contain",
-            cursor: isDragging ? "grabbing" : "grab",
             scrollbarWidth: "none",
             touchAction: "pan-x",
           } as CSSProperties
