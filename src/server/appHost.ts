@@ -476,9 +476,10 @@ export class AppHost {
     valid: boolean;
     reason?: string;
   } {
-    const selection = this.readHostTargetSelections().find(
+    const explicitSelection = this.readHostTargetSelections().find(
       (candidate) => candidate.workspaceId === this.deps.workspaceId && candidate.target === target
     );
+    const selection = explicitSelection ?? this.defaultHostTargetSelection(target);
     if (!selection) return { selection: null, valid: false, reason: "No app selected" };
     const candidate = this.listHostTargetCandidates(target).find(
       (item) => item.name === selection.appId || item.source === selection.source
@@ -501,6 +502,39 @@ export class AppHost {
         return { selection, valid: false, reason: "Selected build is no longer retained" };
     }
     return { selection, valid: true };
+  }
+
+  private defaultHostTargetSelection(target: HostTarget): HostTargetSelection | null {
+    const candidates = this.listHostTargetCandidates(target).filter(
+      (candidate) => candidate.compatibility.selectable
+    );
+    const declared = candidates.filter((candidate) => candidate.declared);
+    const preferredSource =
+      target === "electron"
+        ? "apps/shell"
+        : target === "react-native"
+          ? "apps/mobile"
+          : target === "terminal"
+            ? "apps/remote-cli"
+            : null;
+    const selected =
+      (preferredSource
+        ? (declared.find((candidate) => normalizeRepoPath(candidate.source) === preferredSource) ??
+          candidates.find((candidate) => normalizeRepoPath(candidate.source) === preferredSource))
+        : null) ??
+      declared.find((candidate) => candidate.compatibility.recommended) ??
+      declared[0] ??
+      (candidates.length === 1 ? candidates[0] : null);
+    if (!selected) return null;
+    return {
+      workspaceId: this.deps.workspaceId,
+      target,
+      source: selected.source,
+      appId: selected.name,
+      mode: "follow-ref",
+      autoSelected: true,
+      updatedAt: 0,
+    };
   }
 
   setHostTargetSelection(target: HostTarget, input: HostTargetSelectionInput): HostTargetSelection {

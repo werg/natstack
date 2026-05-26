@@ -81,6 +81,7 @@ import {
   type StartupMode,
 } from "./startupMode.js";
 import { establishServerSession, type SessionConnection } from "./serverSession.js";
+import type { ServerClient } from "./serverClient.js";
 import { CdpServer } from "./cdpServer.js";
 import { EventService } from "@natstack/shared/eventsService";
 import type { EventName } from "@natstack/shared/events";
@@ -805,6 +806,25 @@ function installRemoteTlsPinning(mode: StartupMode): void {
   installPinnedTlsForAllPartitions(mode.remoteUrl.hostname, expectedFingerprint);
 }
 
+async function syncElectronHostTarget(serverClient: Pick<ServerClient, "call">): Promise<void> {
+  try {
+    const result = await serverClient.call("workspace", "hostTargets.launch", ["electron"]);
+    const launched =
+      typeof result === "object" &&
+      result !== null &&
+      (result as { launched?: unknown }).launched === true;
+    if (!launched) {
+      log.warn("[apps] No launchable Electron host target is selected");
+    }
+  } catch (error) {
+    log.warn(
+      `[apps] Failed to synchronize Electron host target: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+}
+
 // =============================================================================
 // Window Creation
 // =============================================================================
@@ -874,6 +894,7 @@ function createWindow(): void {
       getPanelView: () => panelView,
       statePath: startupMode.kind === "remote" ? getRemoteUserDataDir() : serverSession.statePath,
     });
+    void syncElectronHostTarget(serverSession.serverClient);
     void appOrchestrator
       .loadBakedApp(path.join(getResourcesPath(), "baked-app"))
       .catch((error: unknown) => {
@@ -1218,6 +1239,7 @@ app.on("ready", async () => {
       serverSession = await establish(startupMode);
     }
     serverClientRef = serverSession.serverClient;
+    shellEventSubscriptions.add("apps:available");
     shellEventSubscriptions.add("external-open:open");
     shellEventSubscriptions.add("browser-panel:open");
     await replayShellSubscriptionsToServer();

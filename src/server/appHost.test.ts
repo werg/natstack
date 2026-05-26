@@ -584,6 +584,33 @@ describe("AppHost", () => {
     });
   });
 
+  it("auto-selects and launches the canonical Electron shell when no host selection is stored", async () => {
+    const { host, eventService, graphNode } = makeHarness();
+    graphNode.manifest.app.capabilities = ["panel-hosting"] as never;
+    installApp(host, graphNode);
+
+    expect(host.getHostTargetSelection("electron")).toMatchObject({
+      valid: true,
+      selection: expect.objectContaining({
+        source: "apps/shell",
+        appId: "@workspace-apps/shell",
+        mode: "follow-ref",
+        autoSelected: true,
+      }),
+    });
+
+    await expect(host.launchHostTarget("electron")).resolves.toBe(true);
+    expect(eventService.emit).toHaveBeenCalledWith(
+      "apps:available",
+      expect.objectContaining({
+        appId: "@workspace-apps/shell",
+        source: "apps/shell",
+        target: "electron",
+        selectedForHost: true,
+      })
+    );
+  });
+
   it("marks unselected Electron app availability events for the host to ignore", async () => {
     const { host, buildSystem, eventService, graphNode, workspacePath } = makeHarness();
     graphNode.manifest.app.capabilities = ["panel-hosting"] as never;
