@@ -146,12 +146,12 @@ async function refreshWorkspaces(): Promise<void> {
   }
 }
 
-async function reseedShell(): Promise<void> {
+async function rollbackShell(): Promise<void> {
   try {
-    const result = await rpc.call("main", "workspace.units.reseedCanonicalShell", []);
-    setOutput(`Shell app reseeded.\n${JSON.stringify(result, null, 2)}`);
+    const result = await rpc.call("main", "workspace.units.rollback", ["@workspace-apps/shell"]);
+    setOutput(`Shell app rolled back.\n${JSON.stringify(result, null, 2)}`);
   } catch (err) {
-    setOutput(`Shell reseed failed: ${err instanceof Error ? err.message : String(err)}`);
+    setOutput(`Shell rollback failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -211,7 +211,7 @@ async function createWorkspace(): Promise<void> {
   }
 }
 
-document.getElementById("reseed-shell")?.addEventListener("click", () => void reseedShell());
+document.getElementById("rollback-shell")?.addEventListener("click", () => void rollbackShell());
 document.getElementById("show-logs")?.addEventListener("click", () => void showLogs());
 document
   .getElementById("open-workspace")

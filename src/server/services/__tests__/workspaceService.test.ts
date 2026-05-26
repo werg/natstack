@@ -301,27 +301,6 @@ describe("workspace service handler", () => {
     await expect(service.handler(panelCtx, "units.inspector", ["missing"])).resolves.toBeNull();
   });
 
-  it("units.reseedCanonicalShell delegates only for shell callers", async () => {
-    const reseedCanonicalShellApp = vi.fn(() => ({ source: "apps/shell" }));
-    const service = createWorkspaceService({
-      workspace: makeWorkspace(),
-      getConfig: () => makeConfig(),
-      setConfigField: vi.fn(),
-      centralData: makeCentralData(),
-      createWorkspace: vi.fn(),
-      deleteWorkspaceDir: vi.fn(),
-      reseedCanonicalShellApp,
-    });
-
-    await expect(service.handler(shellCtx, "units.reseedCanonicalShell", [])).resolves.toEqual({
-      source: "apps/shell",
-    });
-    await expect(service.handler(panelCtx, "units.reseedCanonicalShell", [])).rejects.toThrow(
-      /not accessible to panel callers/
-    );
-    expect(reseedCanonicalShellApp).toHaveBeenCalledTimes(1);
-  });
-
   it("units.bakeAppDist delegates only for shell callers", async () => {
     const bakeAppDist = vi.fn(() => ({ build: { key: "app-key" } }));
     const service = createWorkspaceService({

@@ -448,12 +448,7 @@ if (!ipcChannel) {
 
 async function main() {
   const { getUserDataPath, setUserDataPath } = await import("@natstack/env-paths");
-  const {
-    loadCentralEnv,
-    deleteWorkspaceDir,
-    reseedCanonicalShellApp,
-    resolveWorkspaceTemplateDir,
-  } = await import("@natstack/shared/workspace/loader");
+  const { loadCentralEnv, deleteWorkspaceDir } = await import("@natstack/shared/workspace/loader");
   const { loadPersistedAdminToken, savePersistedAdminToken, getAdminTokenPath } =
     await import("@natstack/shared/centralAuth");
   const { resolveLocalWorkspaceStartup } = await import("@natstack/shared/workspace/startup");
@@ -1962,13 +1957,6 @@ async function main() {
       // Default and extension: the extension host has its own buffer and
       // also returns [] if the name is unknown.
       return extensionHostForGateway?.listWorkspaceUnitLogs(name, opts) ?? [];
-    },
-    reseedCanonicalShellApp: () => {
-      const template = resolveWorkspaceTemplateDir(appRoot);
-      if (!template) {
-        throw new Error("Cannot reseed canonical shell app: no workspace template is available");
-      }
-      return reseedCanonicalShellApp(workspacePath, { templateDir: template });
     },
     bakeAppDist: (sourceOrName: string, opts?: { outDir?: string }) => {
       const appHost = appHostForGateway;

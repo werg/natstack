@@ -44,7 +44,6 @@ export interface CommonDeps {
   ) =>
     | Promise<import("./services/workspaceService.js").WorkspaceUnitLogRecord[]>
     | import("./services/workspaceService.js").WorkspaceUnitLogRecord[];
-  reseedCanonicalShellApp?: () => Promise<unknown> | unknown;
   bakeAppDist?: (sourceOrName: string, opts?: { outDir?: string }) => Promise<unknown> | unknown;
   listAppVersions?: (
     sourceOrName: string
@@ -93,7 +92,6 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
           listUnits: deps.listWorkspaceUnits,
           restartUnit: deps.restartWorkspaceUnit,
           listUnitLogs: deps.listWorkspaceUnitLogs,
-          reseedCanonicalShellApp: deps.reseedCanonicalShellApp,
           bakeAppDist: deps.bakeAppDist,
           listAppVersions: deps.listAppVersions,
           rollbackAppVersion: deps.rollbackAppVersion,

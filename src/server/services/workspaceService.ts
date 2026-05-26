@@ -116,8 +116,6 @@ export interface WorkspaceServiceDeps {
     name: string,
     opts?: { since?: number; level?: WorkspaceUnitLogRecord["level"]; limit?: number }
   ) => Promise<WorkspaceUnitLogRecord[]> | WorkspaceUnitLogRecord[];
-  /** Restore the product-seeded canonical shell app source for recovery. */
-  reseedCanonicalShellApp?: () => Promise<unknown> | unknown;
   /** Bake an active approved app build into the packaging payload directory. */
   bakeAppDist?: (sourceOrName: string, opts?: { outDir?: string }) => Promise<unknown> | unknown;
   /** List active and rollback-capable versions for an app unit. */
@@ -464,10 +462,6 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
       "units.rollback": {
         args: z.tuple([z.string(), z.object({ buildKey: z.string().optional() }).optional()]),
       },
-      "units.reseedCanonicalShell": {
-        args: z.tuple([]),
-        policy: { allowed: ["shell", "server"] },
-      },
       "units.bakeAppDist": {
         args: z.tuple([z.string(), z.object({ outDir: z.string().optional() }).optional()]),
         policy: { allowed: ["shell", "server"] },
@@ -682,21 +676,6 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
           const [name, opts] = args as [string, { buildKey?: string } | undefined];
           await requireAppUnitManagementAccess(deps, ctx, method, name);
           return await deps.rollbackAppVersion(name, opts?.buildKey);
-        }
-
-        case "units.reseedCanonicalShell": {
-          if (ctx.caller.runtime.kind !== "shell" && ctx.caller.runtime.kind !== "server") {
-            throw new ServiceError(
-              "workspace",
-              method,
-              `workspace.${method} is not accessible to ${ctx.caller.runtime.kind} callers`,
-              "EACCES"
-            );
-          }
-          if (!deps.reseedCanonicalShellApp) {
-            throw new Error("Canonical shell reseed is not available");
-          }
-          return await deps.reseedCanonicalShellApp();
         }
 
         case "units.bakeAppDist": {

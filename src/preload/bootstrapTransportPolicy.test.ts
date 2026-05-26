@@ -13,7 +13,7 @@ describe("bootstrap transport policy", () => {
     expect(() =>
       assertBootstrapRpcMessageAllowed("main", {
         type: "request",
-        method: "workspace.units.reseedCanonicalShell",
+        method: "workspace.units.rollback",
       })
     ).not.toThrow();
   });

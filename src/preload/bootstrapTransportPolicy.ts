@@ -5,7 +5,7 @@ const BOOTSTRAP_RPC_METHODS = new Set([
   "workspace.getActive",
   "workspace.create",
   "workspace.select",
-  "workspace.units.reseedCanonicalShell",
+  "workspace.units.rollback",
   "workspace.units.logs",
   "app.openWorkspacePath",
 ]);

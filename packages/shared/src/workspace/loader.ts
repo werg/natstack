@@ -24,12 +24,13 @@ import type {
   CentralConfig,
   CentralConfigPaths,
   WorkspaceEntry,
-  WorkspaceAppTarget,
 } from "./types.js";
 import type { CentralDataManager } from "../centralData.js";
 import { assertGitAvailable, execGitFileSync } from "../gitRuntime.js";
-import { writeProductSeedSourceRecord } from "../productSeedTrust.js";
-import { getExistingWorkspaceTemplateDir, getWorkspaceTemplateCandidates } from "../runtimePaths.js";
+import {
+  getExistingWorkspaceTemplateDir,
+  getWorkspaceTemplateCandidates,
+} from "../runtimePaths.js";
 import {
   WORKSPACE_GIT_INIT_PATTERNS,
   WORKSPACE_SOURCE_DIRS,
@@ -41,6 +42,14 @@ const WORKSPACE_TEMPLATE_SOURCE_FILE = "meta/.natstack-template-source.json";
 const CENTRAL_CONFIG_FILE = "config.yml";
 const SECRETS_FILE = ".secrets.yml";
 const ENV_FILE = ".env";
+const WORKSPACE_BOOTSTRAP_GIT_CONFIG = [
+  "-c",
+  "user.name=NatStack",
+  "-c",
+  "user.email=natstack@local",
+  "-c",
+  "commit.gpgSign=false",
+] as const;
 
 // =============================================================================
 // Central Config
@@ -112,7 +121,7 @@ function migrateClaudeAgentModelsConfig(parsed: CentralConfig): boolean {
     const migrated = migrateClaudeAgentModelValue(value);
     if (migrated !== null) {
       console.warn(
-        `[NatStack] Migrated old model role 'claude-agent:${(value as string).slice("claude-agent:".length)}' → '${migrated}' in models.${role}`,
+        `[NatStack] Migrated old model role 'claude-agent:${(value as string).slice("claude-agent:".length)}' → '${migrated}' in models.${role}`
       );
       (parsed.models as Record<string, unknown>)[role] = migrated;
       mutated = true;
@@ -142,12 +151,19 @@ export function loadCentralConfig(): CentralConfig {
       try {
         // Audit finding #51: secret-bearing config writes must be 0o600
         // regardless of dir perms.
-        fs.writeFileSync(paths.configPath, YAML.stringify(parsed), { encoding: "utf-8", mode: 0o600 });
-        try { fs.chmodSync(paths.configPath, 0o600); } catch { /* best-effort */ }
+        fs.writeFileSync(paths.configPath, YAML.stringify(parsed), {
+          encoding: "utf-8",
+          mode: 0o600,
+        });
+        try {
+          fs.chmodSync(paths.configPath, 0o600);
+        } catch {
+          /* best-effort */
+        }
       } catch (writeErr) {
         console.warn(
           `[Config] Failed to persist migrated config back to ${paths.configPath}:`,
-          writeErr,
+          writeErr
         );
       }
     }
@@ -219,7 +235,11 @@ export function saveSecretsToPath(secretsPath: string, secrets: Record<string, s
     fs.mkdirSync(path.dirname(secretsPath), { recursive: true, mode: 0o700 });
     fs.writeFileSync(secretsPath, YAML.stringify(secrets), { encoding: "utf-8", mode: 0o600 });
     if (process.platform !== "win32") {
-      try { fs.chmodSync(secretsPath, 0o600); } catch { /* best-effort */ }
+      try {
+        fs.chmodSync(secretsPath, 0o600);
+      } catch {
+        /* best-effort */
+      }
     }
   } catch (error) {
     console.error("[Config] Failed to save secrets:", error);
@@ -239,7 +259,11 @@ export function saveCentralConfig(config: CentralConfig): void {
     // imply token presence; treat as secret-adjacent and lock to 0o600.
     fs.writeFileSync(paths.configPath, YAML.stringify(config), { encoding: "utf-8", mode: 0o600 });
     if (process.platform !== "win32") {
-      try { fs.chmodSync(paths.configPath, 0o600); } catch { /* best-effort */ }
+      try {
+        fs.chmodSync(paths.configPath, 0o600);
+      } catch {
+        /* best-effort */
+      }
     }
   } catch (error) {
     console.error("[Config] Failed to save central config:", error);
@@ -320,8 +344,8 @@ export function resolveWorkspaceTemplateDir(appRoot: string): string | null {
   if (debug) {
     console.log(
       `[Workspace] resolveWorkspaceTemplateDir appRoot=${appRoot} candidates=${JSON.stringify(
-        getWorkspaceTemplateCandidates(appRoot),
-      )} selected=${templateDir ?? "(none)"}`,
+        getWorkspaceTemplateCandidates(appRoot)
+      )} selected=${templateDir ?? "(none)"}`
     );
   }
   return templateDir;
@@ -334,7 +358,7 @@ export function resolveWorkspaceTemplateDir(appRoot: string): string | null {
  * - `templateDir`: Copy source dirs from a local directory (e.g., the shipped workspace template)
  * - `forkFrom`:   Copy source dirs from another managed workspace by name
  *
- * If none are provided, creates a bare workspace with scaffolding.
+ * Workspaces are always created from a template or an existing workspace fork.
  * Fails if the directory already exists on disk.
  */
 export function initWorkspace(
@@ -368,19 +392,16 @@ export function initWorkspace(
       throw new Error(`Source workspace "${opts.forkFrom}" does not exist`);
     }
   }
+  if (!templateSrc) {
+    throw new Error("Workspace creation requires a templateDir or forkFrom workspace");
+  }
 
-  // If we have a local source dir (template or fork), copy source dirs into source/
-  if (templateSrc) {
-    fs.mkdirSync(sourceRoot, { recursive: true });
-    for (const dir of WORKSPACE_SOURCE_DIRS) {
-      const src = path.join(templateSrc, dir);
-      if (fs.existsSync(src)) {
-        copyDirRecursive(src, path.join(sourceRoot, dir));
-      }
+  fs.mkdirSync(sourceRoot, { recursive: true });
+  for (const dir of WORKSPACE_SOURCE_DIRS) {
+    const src = path.join(templateSrc, dir);
+    if (fs.existsSync(src)) {
+      copyDirRecursive(src, path.join(sourceRoot, dir));
     }
-  } else {
-    // Bare workspace
-    fs.mkdirSync(sourceRoot, { recursive: true });
   }
 
   // Scaffold source directories
@@ -394,27 +415,13 @@ export function initWorkspace(
     fs.mkdirSync(path.join(stateRoot, dir), { recursive: true });
   }
 
-  // Write natstack.yml for bare workspaces. Template/forked workspaces keep
-  // their copied config as-is.
+  // Template/forked workspaces must provide their own config.
   const configPath = path.join(sourceRoot, WORKSPACE_CONFIG_FILE);
-
   if (!fs.existsSync(configPath)) {
-    writeCanonicalWorkspaceUnits(sourceRoot);
-    const configContent = `# NatStack Workspace Configuration
-extensions:
-  - source: extensions/react-native
-apps:
-  - source: apps/shell
-    target: electron
-  - source: apps/mobile
-    target: react-native
-initPanels:
-  - source: panels/chat
-`;
-    fs.writeFileSync(configPath, configContent, "utf-8");
+    throw new Error(`Workspace template is missing ${WORKSPACE_CONFIG_FILE}: ${templateSrc}`);
   }
 
-  if (templateSrc && templateSourceKind) {
+  if (templateSourceKind) {
     writeTemplateSourceMarker(sourceRoot, templateSrc, templateSourceKind);
   }
 
@@ -425,382 +432,6 @@ initPanels:
   log.info(`[Workspace] Created managed workspace "${name}" at ${wsDir}`);
 }
 
-function writeCanonicalWorkspaceUnits(sourceRoot: string): void {
-  writeSeededExtension(
-    path.join(sourceRoot, "extensions", "react-native"),
-    {
-      name: "@workspace-extensions/react-native",
-      displayName: "React Native Build Provider",
-      streamingMethods: ["buildArtifact"],
-    },
-    [
-      "import { spawn } from 'node:child_process';",
-      "import { randomUUID } from 'node:crypto';",
-      "import * as fs from 'node:fs';",
-      "import * as os from 'node:os';",
-      "import * as path from 'node:path';",
-      "import { createRequire } from 'node:module';",
-      "import type { BuildProviderInput, BuildProviderOutput } from '@natstack/shared/buildProvider';",
-      "",
-      "interface ArtifactFile {",
-      "  filePath: string;",
-      "  tempDir: string;",
-      "}",
-      "",
-      "const require = createRequire(import.meta.url);",
-      "",
-      "export async function activate() {",
-      "  const artifactFiles = new Map<string, ArtifactFile>();",
-      "  const tempDirRefs = new Map<string, number>();",
-      "  return {",
-      "    async build(input: BuildProviderInput): Promise<BuildProviderOutput> {",
-      "      if (input.target !== 'react-native') {",
-      "        throw new Error(`react-native provider cannot build target: ${input.target}`);",
-      "      }",
-      "      const appManifest = input.manifest['app'] && typeof input.manifest['app'] === 'object'",
-      "        ? input.manifest['app'] as Record<string, unknown>",
-      "        : input.manifest;",
-      "      const entry = String(appManifest['renderer'] ?? 'index.tsx');",
-      "      const entryPath = path.resolve(input.sourcePath, entry);",
-      "      const rnHostAbi = typeof appManifest['rnHostAbi'] === 'string'",
-      "        ? appManifest['rnHostAbi']",
-      "        : null;",
-      "      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'natstack-rn-provider-'));",
-      "      const artifacts: BuildProviderOutput['artifacts'] = [];",
-      "      for (const platform of ['android', 'ios'] as const) {",
-      "        const bundlePath = path.join(tempDir, `index.${platform}.bundle`);",
-      "        const assetsDir = path.join(tempDir, `${platform}-assets`);",
-      "        fs.mkdirSync(assetsDir, { recursive: true });",
-      "        await runReactNativeBundle(input, platform, entryPath, bundlePath, assetsDir);",
-      "        const bundleArtifactId = randomUUID();",
-      "        artifactFiles.set(bundleArtifactId, { filePath: bundlePath, tempDir });",
-      "        artifacts.push({",
-      "          path: `index.${platform}.bundle`,",
-      "          role: 'primary',",
-      "          contentType: 'application/javascript; charset=utf-8',",
-      "          encoding: 'utf8',",
-      "          platform,",
-      "          stream: { method: 'buildArtifact', args: [bundleArtifactId] },",
-      "        });",
-      "        for (const assetPath of walkFiles(assetsDir)) {",
-      "          const assetArtifactId = randomUUID();",
-      "          artifactFiles.set(assetArtifactId, { filePath: assetPath, tempDir });",
-      "          artifacts.push({",
-      "            path: `assets/${platform}/${path.relative(assetsDir, assetPath).replace(/\\\\/g, '/')}`,",
-      "            role: 'asset',",
-      "            contentType: contentTypeForPath(assetPath),",
-      "            encoding: 'base64',",
-      "            platform,",
-      "            stream: { method: 'buildArtifact', args: [assetArtifactId] },",
-      "          });",
-      "        }",
-      "      }",
-      "      tempDirRefs.set(tempDir, artifacts.length);",
-      "      return {",
-      "        artifacts,",
-      "        metadata: { rnHostAbi },",
-      "      };",
-      "    },",
-      "    buildArtifact(artifactId: string): ReadableStream<Uint8Array> {",
-      "      const artifact = artifactFiles.get(artifactId);",
-      "      if (!artifact) {",
-      "        throw new Error('Unknown React Native build artifact');",
-      "      }",
-      "      artifactFiles.delete(artifactId);",
-      "      const source = fs.createReadStream(artifact.filePath);",
-      "      return new ReadableStream<Uint8Array>({",
-      "        start(controller) {",
-      "          source.on('data', (chunk) => {",
-      "            controller.enqueue(typeof chunk === 'string' ? Buffer.from(chunk) : new Uint8Array(chunk));",
-      "          });",
-      "          source.on('error', (error) => controller.error(error));",
-      "          source.on('end', () => {",
-      "            controller.close();",
-      "            releaseTempDir(artifact.tempDir, tempDirRefs);",
-      "          });",
-      "        },",
-      "        cancel() {",
-      "          source.destroy();",
-      "          releaseTempDir(artifact.tempDir, tempDirRefs);",
-      "        },",
-      "      });",
-      "    },",
-      "  };",
-      "}",
-      "",
-      "async function runReactNativeBundle(input: BuildProviderInput, platform: 'android' | 'ios', entryPath: string, bundlePath: string, assetsDir: string): Promise<void> {",
-      "  const repoRoot = resolveRepoRoot(input.workspaceRoot);",
-      "  const bundleScript = require.resolve('react-native/scripts/bundle.js', { paths: [repoRoot, process.cwd()] });",
-      "  const cliPath = require.resolve('react-native/cli.js', { paths: [repoRoot, process.cwd()] });",
-      "  const metroConfig = path.join(repoRoot, 'apps', 'mobile', 'metro.config.js');",
-      "  const args = [",
-      "    bundleScript,",
-      "    '--platform',",
-      "    platform,",
-      "    '--dev',",
-      "    'false',",
-      "    '--entry-file',",
-      "    entryPath,",
-      "    '--bundle-output',",
-      "    bundlePath,",
-      "    '--assets-dest',",
-      "    assetsDir,",
-      "    '--config',",
-      "    metroConfig,",
-      "    '--reset-cache',",
-      "    '--config-cmd',",
-      "    `${process.execPath} ${cliPath} config`,",
-      "  ];",
-      "  await run(process.execPath, args, {",
-      "    cwd: path.join(repoRoot, 'apps', 'mobile'),",
-      "    env: {",
-      "      ...process.env,",
-      "      NATSTACK_WORKSPACE_APP_ROOT: input.sourcePath,",
-      "    },",
-      "  });",
-      "}",
-      "",
-      "function run(",
-      "  command: string,",
-      "  args: string[],",
-      "  opts: { cwd: string; env: NodeJS.ProcessEnv },",
-      "): Promise<void> {",
-      "  return new Promise((resolve, reject) => {",
-      "    const child = spawn(command, args, {",
-      "      cwd: opts.cwd,",
-      "      env: opts.env,",
-      "      stdio: ['ignore', 'pipe', 'pipe'],",
-      "    });",
-      "    let stderr = '';",
-      "    child.stderr?.on('data', (chunk) => {",
-      "      stderr += chunk.toString();",
-      "    });",
-      "    child.on('error', reject);",
-      "    child.on('exit', (code) => {",
-      "      if (code === 0) resolve();",
-      "      else reject(new Error(`${command} ${args.join(' ')} failed with code ${code}\\n${stderr.trim()}`));",
-      "    });",
-      "  });",
-      "}",
-      "",
-      "function resolveRepoRoot(workspaceRoot: string): string {",
-      "  for (const start of [process.env['NATSTACK_REPO_ROOT'], process.cwd(), workspaceRoot]) {",
-      "    if (!start) continue;",
-      "    let current = path.resolve(start);",
-      "    while (true) {",
-      "      if (fs.existsSync(path.join(current, 'apps', 'mobile', 'metro.config.js')) && fs.existsSync(path.join(current, 'node_modules', 'react-native', 'cli.js'))) {",
-      "        return current;",
-      "      }",
-      "      const parent = path.dirname(current);",
-      "      if (parent === current) break;",
-      "      current = parent;",
-      "    }",
-      "  }",
-      "  throw new Error('Could not locate NatStack repo root for React Native provider');",
-      "}",
-      "",
-      "function walkFiles(dir: string): string[] {",
-      "  if (!fs.existsSync(dir)) return [];",
-      "  const out: string[] = [];",
-      "  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {",
-      "    const full = path.join(dir, entry.name);",
-      "    if (entry.isDirectory()) out.push(...walkFiles(full));",
-      "    else if (entry.isFile()) out.push(full);",
-      "  }",
-      "  return out;",
-      "}",
-      "",
-      "function contentTypeForPath(filePath: string): string {",
-      "  switch (path.extname(filePath).toLowerCase()) {",
-      "    case '.png':",
-      "      return 'image/png';",
-      "    case '.jpg':",
-      "    case '.jpeg':",
-      "      return 'image/jpeg';",
-      "    case '.webp':",
-      "      return 'image/webp';",
-      "    case '.gif':",
-      "      return 'image/gif';",
-      "    case '.json':",
-      "      return 'application/json; charset=utf-8';",
-      "    default:",
-      "      return 'application/octet-stream';",
-      "  }",
-      "}",
-      "",
-      "function releaseTempDir(tempDir: string, refs: Map<string, number>): void {",
-      "  const remaining = (refs.get(tempDir) ?? 1) - 1;",
-      "  if (remaining > 0) {",
-      "    refs.set(tempDir, remaining);",
-      "    return;",
-      "  }",
-      "  refs.delete(tempDir);",
-      "  fs.rmSync(tempDir, { recursive: true, force: true });",
-      "}",
-      "",
-    ].join("\n"),
-  );
-  writeSeededApp(
-    path.join(sourceRoot, "apps", "shell"),
-    {
-      name: "@workspace-apps/shell",
-      target: "electron",
-      renderer: "index.tsx",
-      capabilities: [
-        "native-menus",
-        "notifications",
-        "open-external",
-        "window-management",
-        "panel-hosting",
-        "incoming-pair-links",
-        "connection-management",
-      ],
-    },
-    [
-      "const root = document.getElementById('root') ?? document.body.appendChild(document.createElement('div'));",
-      "root.id = 'root';",
-      "root.textContent = 'NatStack';",
-      "",
-    ].join("\n"),
-  );
-  writeSeededApp(
-    path.join(sourceRoot, "apps", "mobile"),
-    {
-      name: "@workspace-apps/mobile",
-      target: "react-native",
-      renderer: "App.tsx",
-      rnComponentName: "NatStack",
-      rnHostAbi: "rn-host-1",
-      capabilities: ["notifications", "camera", "keychain", "clipboard", "open-external"],
-    },
-    [
-      "import { AppRegistry } from 'react-native';",
-      "",
-      "function App() {",
-      "  return null;",
-      "}",
-      "",
-      "AppRegistry.registerComponent('NatStack', () => App);",
-      "",
-      "export default App;",
-      "",
-    ].join("\n"),
-  );
-}
-
-export function reseedCanonicalShellApp(
-  sourceRoot: string,
-  opts: { templateDir: string }
-): { source: string; commit: string | null } {
-  assertGitAvailable();
-  const relativeSource = path.join("apps", "shell");
-  const templateAppDir = path.join(opts.templateDir, relativeSource);
-  if (!fs.existsSync(path.join(templateAppDir, "package.json"))) {
-    throw new Error(`Canonical shell app template not found: ${templateAppDir}`);
-  }
-  const targetAppDir = path.join(sourceRoot, relativeSource);
-  fs.mkdirSync(targetAppDir, { recursive: true });
-  clearDirExceptGit(targetAppDir);
-  copyDirRecursive(templateAppDir, targetAppDir);
-  if (!fs.existsSync(path.join(targetAppDir, ".natstack-seed.json"))) {
-    writeProductSeedSourceRecord({
-      unitDir: targetAppDir,
-      unitKind: "app",
-      name: "@workspace-apps/shell",
-      sourceRepo: relativeSource,
-    });
-  }
-  ensureUnitGitRepo(targetAppDir, "Reseed canonical shell app");
-  return { source: relativeSource.replace(/\\/g, "/"), commit: readGitHead(targetAppDir) };
-}
-
-function writeSeededExtension(
-  extensionDir: string,
-  extension: {
-    name: string;
-    displayName: string;
-    streamingMethods?: string[];
-  },
-  source: string,
-): void {
-  fs.mkdirSync(extensionDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(extensionDir, "package.json"),
-    `${JSON.stringify({
-      name: extension.name,
-      version: "0.1.0",
-      private: true,
-      type: "module",
-      natstack: {
-        displayName: extension.displayName,
-        entry: "index.ts",
-        sourcemap: true,
-        extension: {
-          activationEvents: ["*"],
-          dependencyMode: "external",
-          ...(extension.streamingMethods ? { streamingMethods: extension.streamingMethods } : {}),
-          contributes: { buildTargets: ["react-native"] },
-        },
-      },
-      dependencies: {
-        "@natstack/shared": "workspace:*",
-      },
-    }, null, 2)}\n`,
-    "utf-8",
-  );
-  fs.writeFileSync(path.join(extensionDir, "index.ts"), source, "utf-8");
-  writeProductSeedSourceRecord({
-    unitDir: extensionDir,
-    unitKind: "extension",
-    name: extension.name,
-    sourceRepo: seedSourceRepoForUnitDir(extensionDir),
-  });
-}
-
-function writeSeededApp(
-  appDir: string,
-  app: {
-    name: string;
-    target: WorkspaceAppTarget;
-    renderer: string;
-    capabilities: string[];
-    rnComponentName?: string;
-    rnHostAbi?: string;
-  },
-  source: string,
-): void {
-  fs.mkdirSync(appDir, { recursive: true });
-  const appManifest = {
-    target: app.target,
-    renderer: app.renderer,
-    capabilities: app.capabilities,
-    ...(app.rnComponentName ? { rnComponentName: app.rnComponentName } : {}),
-    ...(app.rnHostAbi ? { rnHostAbi: app.rnHostAbi } : {}),
-  };
-  fs.writeFileSync(
-    path.join(appDir, "package.json"),
-    `${JSON.stringify({
-      name: app.name,
-      version: "0.1.0",
-      private: true,
-      type: "module",
-      natstack: { app: appManifest },
-    }, null, 2)}\n`,
-    "utf-8",
-  );
-  fs.writeFileSync(path.join(appDir, app.renderer), source, "utf-8");
-  writeProductSeedSourceRecord({
-    unitDir: appDir,
-    unitKind: "app",
-    name: app.name,
-    sourceRepo: seedSourceRepoForUnitDir(appDir),
-  });
-}
-
-function seedSourceRepoForUnitDir(unitDir: string): string {
-  return path.relative(path.resolve(unitDir, "..", ".."), unitDir).replace(/\\/g, "/");
-}
-
 /** Recursively copy a directory, skipping .git, node_modules, and .cache. */
 function copyDirRecursive(src: string, dest: string): void {
   fs.mkdirSync(dest, { recursive: true });
@@ -808,7 +439,8 @@ function copyDirRecursive(src: string, dest: string): void {
     const srcPath = path.join(src, entry.name);
     const destPath = path.join(dest, entry.name);
     if (entry.isDirectory()) {
-      if (entry.name === ".git" || entry.name === "node_modules" || entry.name === ".cache") continue;
+      if (entry.name === ".git" || entry.name === "node_modules" || entry.name === ".cache")
+        continue;
       copyDirRecursive(srcPath, destPath);
     } else if (entry.isFile()) {
       fs.copyFileSync(srcPath, destPath);
@@ -816,41 +448,22 @@ function copyDirRecursive(src: string, dest: string): void {
   }
 }
 
-function clearDirExceptGit(dir: string): void {
-  if (!fs.existsSync(dir)) return;
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name === ".git") continue;
-    fs.rmSync(path.join(dir, entry.name), { recursive: true, force: true });
-  }
-}
-
-function ensureUnitGitRepo(repoDir: string, message: string): void {
-  if (!fs.existsSync(path.join(repoDir, ".git"))) {
-    execGitFileSync(["init", "-b", "main"], { cwd: repoDir, stdio: ["ignore", "ignore", "ignore"] });
-  }
-  execGitFileSync(["add", "-A"], { cwd: repoDir, stdio: ["ignore", "ignore", "ignore"] });
+function hasStagedChanges(repoDir: string): boolean {
   try {
-    execGitFileSync(
-      [
-        "-c",
-        "user.name=NatStack",
-        "-c",
-        "user.email=natstack@local",
-        "commit",
-        "-m",
-        message,
-      ],
-      { cwd: repoDir, stdio: ["ignore", "ignore", "ignore"] },
-    );
+    execGitFileSync(["diff", "--cached", "--quiet"], {
+      cwd: repoDir,
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    return false;
   } catch {
-    // No changes to commit.
+    return true;
   }
 }
 
 function writeTemplateSourceMarker(
   sourceRoot: string,
   templateSrc: string,
-  kind: "template" | "fork",
+  kind: "template" | "fork"
 ): void {
   const markerPath = path.join(sourceRoot, WORKSPACE_TEMPLATE_SOURCE_FILE);
   const marker = {
@@ -888,7 +501,6 @@ function initGitRepos(wsDir: string): void {
     if (!fs.existsSync(parentDir)) continue;
 
     for (const repoDir of listWorkspaceUnitDirs(parentDir, sourceDir)) {
-
       // Skip if already a git repo
       if (fs.existsSync(path.join(repoDir, ".git"))) continue;
 
@@ -896,12 +508,13 @@ function initGitRepos(wsDir: string): void {
       const contents = fs.readdirSync(repoDir);
       if (contents.length === 0) continue;
 
-      execGitFileSync(["init"], { cwd: repoDir, stdio: "pipe" });
+      execGitFileSync(["init", "-b", "main"], { cwd: repoDir, stdio: "pipe" });
       execGitFileSync(["add", "-A"], { cwd: repoDir, stdio: "pipe" });
-      execGitFileSync(
-        ["-c", "user.email=natstack@local", "-c", "user.name=natstack", "commit", "-m", "Initial workspace"],
-        { cwd: repoDir, stdio: "pipe" },
-      );
+      if (!hasStagedChanges(repoDir)) continue;
+      execGitFileSync([...WORKSPACE_BOOTSTRAP_GIT_CONFIG, "commit", "-m", "Initial workspace"], {
+        cwd: repoDir,
+        stdio: "pipe",
+      });
     }
   }
 }
@@ -943,7 +556,10 @@ export function loadWorkspaceConfig(workspacePath: string): WorkspaceConfig {
   return parseWorkspaceConfigContent(content, workspacePath);
 }
 
-export function parseWorkspaceConfigContent(content: string, workspacePath: string): WorkspaceConfig {
+export function parseWorkspaceConfigContent(
+  content: string,
+  workspacePath: string
+): WorkspaceConfig {
   // Workspace id is not read from disk. Managed workspaces derive it from the
   // data-dir folder name; explicit external workspaces derive it from their
   // absolute workspace root path.
@@ -952,9 +568,8 @@ export function parseWorkspaceConfigContent(content: string, workspacePath: stri
 
 function deriveWorkspaceId(workspacePath: string): string {
   const sourceRoot = path.resolve(workspacePath);
-  const workspaceRoot = path.basename(sourceRoot) === "source"
-    ? path.dirname(sourceRoot)
-    : sourceRoot;
+  const workspaceRoot =
+    path.basename(sourceRoot) === "source" ? path.dirname(sourceRoot) : sourceRoot;
   const workspacesDir = path.resolve(getWorkspacesDir());
 
   if (path.dirname(workspaceRoot) === workspacesDir) {
@@ -1080,14 +695,28 @@ export function resolveOrCreateWorkspace(opts: ResolveWorkspaceOpts): ResolvedWo
 export function createAndRegisterWorkspace(
   name: string,
   centralData: CentralDataManager,
-  opts?: { templateDir?: string; forkFrom?: string },
+  opts?: { templateDir?: string; forkFrom?: string }
 ): WorkspaceEntry {
   if (centralData.hasWorkspace(name)) {
     throw new Error(`Workspace "${name}" already exists`);
   }
-  initWorkspace(name, opts);
+  const resolvedOpts = resolveWorkspaceCreationOpts(opts);
+  initWorkspace(name, resolvedOpts);
   centralData.addWorkspace(name);
   return { name, lastOpened: Date.now() };
+}
+
+function resolveWorkspaceCreationOpts(opts?: { templateDir?: string; forkFrom?: string }): {
+  templateDir?: string;
+  forkFrom?: string;
+} {
+  if (opts?.templateDir || opts?.forkFrom) return opts;
+  const appRoot = process.env["NATSTACK_APP_ROOT"] ?? process.cwd();
+  const templateDir = resolveWorkspaceTemplateDir(appRoot);
+  if (!templateDir) {
+    throw new Error("Workspace creation requires a template, but no workspace template was found");
+  }
+  return { templateDir };
 }
 
 /**
