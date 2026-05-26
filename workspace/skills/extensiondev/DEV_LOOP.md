@@ -4,7 +4,7 @@ Extension source authoring happens **in the workspace git repo for the extension
 
 ## The flow
 
-1. Edit files under `workspace/extensions/<scope>/<name>/`.
+1. Edit files under `workspace/extensions/<name>/`.
 2. Commit and push to the extension repo's `main` (or `master`).
 3. The git server sees an extension push and triggers the extension-specific approval prompt.
 4. On approve, the manager rebuilds the bundle, replaces the running process, and runs `activate(ctx)` again.
@@ -30,7 +30,7 @@ This is the one place the extension trust model loosens for ergonomics. Source p
 import { commitAndPush } from "@workspace-skills/paneldev";
 
 await commitAndPush(
-  "extensions/@workspace-extensions/hello",
+  "extensions/hello",
   "Add greet method",
 );
 ```

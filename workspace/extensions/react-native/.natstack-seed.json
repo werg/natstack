@@ -1,0 +1,10 @@
+{
+  "kind": "product-seed-source",
+  "unitKind": "extension",
+  "name": "@workspace-extensions/react-native",
+  "sourceRepo": "extensions/react-native",
+  "sourceDigest": "d10b8f3c4be14d52a963594c9ec3ad17ebe4726194562d741826e5b32bb43be5",
+  "signatureKeyId": "natstack-dev-seed-v1",
+  "signature": "natstack-dev-seed-sha256:6f8fdfcbdb9b5ffa30b468d9b58f514f7175a6a16e44a89c31f7348684471a91",
+  "createdBy": "natstack"
+}

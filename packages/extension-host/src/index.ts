@@ -1,6 +1,6 @@
 export { ExtensionHost } from "./service.js";
-export { ExtensionRegistry } from "./registry.js";
 export { ExtensionProcessManager } from "./processManager.js";
+export { UnitRegistry } from "@natstack/unit-host";
 export type {
   ExtensionHealth,
   ExtensionInvocation,

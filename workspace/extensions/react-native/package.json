@@ -1,0 +1,22 @@
+{
+  "name": "@workspace-extensions/react-native",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "displayName": "React Native Build Provider",
+    "entry": "index.ts",
+    "sourcemap": true,
+    "extension": {
+      "activationEvents": ["*"],
+      "dependencyMode": "external",
+      "streamingMethods": ["buildArtifact"],
+      "contributes": {
+        "buildTargets": ["react-native"]
+      }
+    }
+  },
+  "dependencies": {
+    "@natstack/shared": "workspace:*"
+  }
+}

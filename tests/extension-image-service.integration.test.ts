@@ -69,7 +69,7 @@ maybeDescribe("image-service extension server smoke", () => {
     // Extensions are declared in meta/natstack.yml; the startup reconcile raises
     // one joint approval. Approve it as the shell would, then wait for the
     // image-service process to come up.
-    const approvalId = await waitForExtensionBatchApproval(ready, shellToken);
+    const approvalId = await waitForUnitBatchApproval(ready, shellToken);
     await rpc(ready, shellToken, "shellApproval.resolve", [approvalId, "once"]);
     await waitForExtensionRunning(ready, shellToken, "@workspace-extensions/image-service");
 
@@ -81,7 +81,7 @@ maybeDescribe("image-service extension server smoke", () => {
   }, 60_000);
 });
 
-async function waitForExtensionBatchApproval(
+async function waitForUnitBatchApproval(
   ready: ReadyPayload,
   shellToken: string,
 ): Promise<string> {
@@ -93,11 +93,11 @@ async function waitForExtensionBatchApproval(
       "shellApproval.listPending",
       [],
     );
-    const batch = pending.find((p) => p.kind === "extension-batch");
+    const batch = pending.find((p) => p.kind === "unit-batch");
     if (batch) return batch.approvalId;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  throw new Error("extension-batch approval never appeared");
+  throw new Error("unit-batch approval never appeared");
 }
 
 async function waitForExtensionRunning(

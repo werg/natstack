@@ -2,7 +2,6 @@ import { createVerifiedCaller } from "@natstack/shared/serviceDispatcher";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { execFileSync } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
@@ -53,6 +52,9 @@ function makeHost(overrides: {
   candidateExternalDeps?: Record<string, string>;
   activeRuntimeDepsKey?: string | null;
   extensionTransport?: { call: ReturnType<typeof vi.fn> };
+  buildTargets?: string[];
+  registerBuildProvider?: ReturnType<typeof vi.fn>;
+  unregisterBuildProvider?: ReturnType<typeof vi.fn>;
   getContextIdForCaller?: (callerId: string) => string | null;
   installed?: boolean;
   enabled?: boolean;
@@ -63,13 +65,16 @@ function makeHost(overrides: {
   const extensionNode = {
     name: "@workspace-extensions/git-tools",
     kind: "extension",
-    relativePath: "extensions/@workspace-extensions/git-tools",
-    path: path.join(statePath, "source", "extensions", "@workspace-extensions", "git-tools"),
+    relativePath: "extensions/git-tools",
+    path: path.join(statePath, "source", "extensions", "git-tools"),
     dependencies: overrides.candidateExternalDeps ?? {},
     internalDeps: ["@workspace/runtime"],
     manifest: {
       displayName: "Git Tools",
-      extension: { activationEvents: ["*"] },
+      extension: {
+        activationEvents: ["*"],
+        ...(overrides.buildTargets ? { contributes: { buildTargets: overrides.buildTargets } } : {}),
+      },
     },
   };
   fs.mkdirSync(extensionNode.path, { recursive: true });
@@ -80,7 +85,10 @@ function makeHost(overrides: {
       version: "1.0.0",
       natstack: {
         displayName: "Git Tools",
-        extension: { activationEvents: ["*"] },
+        extension: {
+          activationEvents: ["*"],
+          ...(overrides.buildTargets ? { contributes: { buildTargets: overrides.buildTargets } } : {}),
+        },
       },
     }),
   );
@@ -88,24 +96,39 @@ function makeHost(overrides: {
     request: vi.fn(async () => overrides.approvalDecision ?? "once"),
   };
   const eventService = { emit: vi.fn(), getOrCreateSubscriber: vi.fn(), subscribe: vi.fn() };
+  const buildArtifacts = (key: string) => [{
+    path: "bundle.js",
+    role: "primary",
+    contentType: "text/javascript; charset=utf-8",
+    encoding: "utf8",
+    content: `export default ${JSON.stringify(key)};`,
+  }];
   const buildSystem = {
     getBuild: vi.fn(async () => ({
-      bundlePath: path.join(statePath, "builds", "candidate-key", "bundle.js"),
       dir: path.join(statePath, "builds", "candidate-key"),
+      artifacts: buildArtifacts("candidate-key"),
       metadata: {
         ev: "ev-candidate",
-        runtimeDepsKey: "runtime-candidate",
-        extensionRuntimeAbi: "2",
+        details: {
+          kind: "extension",
+          runtimeDepsKey: "runtime-candidate",
+          runtimeAbi: "2",
+          externalDeps: {},
+        },
       },
     })),
     getBuildByKey: vi.fn((key: string) => key === "bundle-key" || key === "candidate-key"
       ? {
-          bundlePath: path.join(statePath, "builds", key, "bundle.js"),
           dir: path.join(statePath, "builds", key),
+          artifacts: buildArtifacts(key),
           metadata: {
             ev: key === "candidate-key" ? "ev-candidate" : (overrides.activeEv ?? "ev-current"),
-            runtimeDepsKey: key === "candidate-key" ? "runtime-candidate" : "runtime-key",
-            extensionRuntimeAbi: "2",
+            details: {
+              kind: "extension",
+              runtimeDepsKey: key === "candidate-key" ? "runtime-candidate" : "runtime-key",
+              runtimeAbi: "2",
+              externalDeps: overrides.activeExternalDeps ?? {},
+            },
           },
         }
       : null),
@@ -136,9 +159,12 @@ function makeHost(overrides: {
         throw new Error("extensionTransport.call should not be invoked in this test");
       }),
     },
+    registerBuildProvider: overrides.registerBuildProvider,
+    unregisterBuildProvider: overrides.unregisterBuildProvider,
   });
   if (overrides.installed !== false) {
     host.registry.upsert({
+      unitKind: "extension",
       name: extensionNode.name,
       version: "1.0.0",
       source: { kind: "internal-git", repo: extensionNode.relativePath, ref: "main" },
@@ -155,32 +181,6 @@ function makeHost(overrides: {
     });
   }
   return { host, approvalQueue, buildSystem, extensionNode, eventService, statePath };
-}
-
-function commitMetaConfig(workspacePath: string, content: string): string {
-  const metaPath = path.join(workspacePath, "meta");
-  fs.mkdirSync(metaPath, { recursive: true });
-  if (!fs.existsSync(path.join(metaPath, ".git"))) {
-    execFileSync("git", ["init", "-q"], { cwd: metaPath });
-  }
-  fs.writeFileSync(path.join(metaPath, "natstack.yml"), content);
-  execFileSync("git", ["add", "natstack.yml"], { cwd: metaPath });
-  execFileSync(
-    "git",
-    [
-      "-c",
-      "user.name=NatStack Test",
-      "-c",
-      "user.email=test@natstack.local",
-      "commit",
-      "-q",
-      "--allow-empty",
-      "-m",
-      "update meta",
-    ],
-    { cwd: metaPath },
-  );
-  return String(execFileSync("git", ["rev-parse", "HEAD"], { cwd: metaPath })).trim();
 }
 
 describe("ExtensionHost invocation attribution", () => {
@@ -216,6 +216,45 @@ describe("ExtensionHost invocation attribution", () => {
   });
 });
 
+describe("ExtensionHost reload approval", () => {
+  it("requests a one-unit management approval for panel reloads", async () => {
+    const { host, approvalQueue, extensionNode } = makeHost();
+    const start = vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
+
+    await expect(host.reload(panelCtx("panel-1"), extensionNode.name)).resolves.toBeUndefined();
+
+    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "unit-batch",
+      callerId: "panel-1",
+      callerKind: "panel",
+      repoPath: "panels/test",
+      effectiveVersion: "ev-test",
+      trigger: "management",
+      title: "Reload extension",
+      units: [expect.objectContaining({
+        unitKind: "extension",
+        unitName: extensionNode.name,
+        source: expect.objectContaining({ repo: extensionNode.relativePath, ref: "main" }),
+        ev: "ev-current",
+      })],
+      configWrite: null,
+    }));
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ name: extensionNode.name }));
+  });
+
+  it("does not prompt trusted shell reloads", async () => {
+    const { host, approvalQueue, extensionNode } = makeHost();
+    const start = vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
+
+    await expect(
+      host.reload({ caller: createVerifiedCaller("shell-1", "shell") }, extensionNode.name),
+    ).resolves.toBeUndefined();
+
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ name: extensionNode.name }));
+  });
+});
+
 describe("ExtensionHost source push authorization", () => {
   it("stores a four-hour dev-session grant for extension main pushes", async () => {
     const { host, approvalQueue, extensionNode } = makeHost({ approvalDecision: "session" });
@@ -236,14 +275,20 @@ describe("ExtensionHost source push authorization", () => {
 
     expect(approvalQueue.request).toHaveBeenCalledTimes(2);
     expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
-      extensionDiff: expect.objectContaining({
-        previousSha: "abc123",
-        sha: "def456",
-        push: expect.objectContaining({
-          ref: "main",
-          pushedBy: "panel-1",
-        }),
-      }),
+      kind: "unit-batch",
+      callerId: "panel-1",
+      callerKind: "panel",
+      repoPath: "panels/test",
+      effectiveVersion: "ev-test",
+      trigger: "source-push",
+      title: `${extensionNode.name} source push`,
+      units: [expect.objectContaining({
+        unitKind: "extension",
+        unitName: extensionNode.name,
+        ev: "ev-current",
+        source: expect.objectContaining({ repo: extensionNode.relativePath, ref: "main" }),
+      })],
+      configWrite: null,
     }));
   });
 
@@ -277,70 +322,17 @@ describe("ExtensionHost source push authorization", () => {
     }));
   });
 
-  it("keys meta-push approvals to the exact pushed commit and declared extension ref", async () => {
-    const { host, approvalQueue, extensionNode, statePath } = makeHost({ approvalDecision: "once" });
-    const commit = commitMetaConfig(
-      path.join(statePath, "source"),
-      [
-        "extensions:",
-        `  - source: ${extensionNode.relativePath}`,
-        "    ref: feature",
-      ].join("\n"),
-    );
+  it("leaves meta-push gating to the workspace unit push authorizer", async () => {
+    const { host, approvalQueue } = makeHost();
 
     await expect(host.authorizeSourcePush({
       caller: panelCtx("panel-1").caller,
       repoPath: "meta",
       branch: "main",
-      commit,
+      commit: "def456",
     })).resolves.toEqual({ allowed: true });
 
-    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
-      kind: "extension-batch",
-      dedupKey: expect.stringContaining(commit),
-      extensions: [
-        expect.objectContaining({
-          extensionName: extensionNode.name,
-          source: expect.objectContaining({ repo: extensionNode.relativePath, ref: "feature" }),
-        }),
-      ],
-    }));
-  });
-
-  it("does not let a meta dev-session grant auto-trust newly declared extensions", async () => {
-    const { host, approvalQueue, extensionNode, statePath } = makeHost({
-      installed: false,
-      approvalDecision: "session",
-    });
-    const workspacePath = path.join(statePath, "source");
-    const configOnlyCommit = commitMetaConfig(workspacePath, "extensions: []\n");
-
-    await expect(host.authorizeSourcePush({
-      caller: panelCtx("panel-1").caller,
-      repoPath: "meta",
-      branch: "main",
-      commit: configOnlyCommit,
-    })).resolves.toEqual({ allowed: true });
-
-    const extensionCommit = commitMetaConfig(
-      workspacePath,
-      [
-        "extensions:",
-        `  - source: ${extensionNode.relativePath}`,
-      ].join("\n"),
-    );
-    await expect(host.authorizeSourcePush({
-      caller: panelCtx("panel-1").caller,
-      repoPath: "meta",
-      branch: "main",
-      commit: extensionCommit,
-    })).resolves.toEqual({ allowed: true });
-
-    expect(approvalQueue.request).toHaveBeenCalledTimes(2);
-    expect(approvalQueue.request).toHaveBeenLastCalledWith(expect.objectContaining({
-      kind: "extension-batch",
-      extensions: [expect.objectContaining({ extensionName: extensionNode.name })],
-    }));
+    expect(approvalQueue.request).not.toHaveBeenCalled();
   });
 });
 
@@ -361,9 +353,9 @@ describe("ExtensionHost reconcileDeclared", () => {
     await host.whenSettled();
 
     expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
-      kind: "extension-batch",
+      kind: "unit-batch",
       trigger: "startup",
-      extensions: [expect.objectContaining({ extensionName: extensionNode.name })],
+      units: [expect.objectContaining({ unitKind: "extension", unitName: extensionNode.name })],
     }));
     expect(host.registry.get(extensionNode.name)).toMatchObject({
       activeBundleKey: null,
@@ -384,7 +376,7 @@ describe("ExtensionHost reconcileDeclared", () => {
     await host.whenSettled();
 
     expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
-      kind: "extension-batch",
+      kind: "unit-batch",
       trigger: "startup",
     }));
     expect(buildSystem.getBuild).toHaveBeenCalledWith(extensionNode.name, "main");
@@ -449,7 +441,7 @@ describe("ExtensionHost reconcileDeclared", () => {
     expect(host.registry.get(extensionNode.name)).toBeNull();
   });
 
-  it("rebuilds an already-approved extension whose dependency EV changed, without prompting", async () => {
+  it("requires approval before rebuilding an extension whose dependency EV changed", async () => {
     const { host, approvalQueue, buildSystem, extensionNode } = makeHost({
       activeEv: "ev-current",
       depEv: "ev-runtime-next",
@@ -458,8 +450,18 @@ describe("ExtensionHost reconcileDeclared", () => {
     vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
 
     await host.reconcileDeclared(declare(extensionNode.name));
+    await host.whenSettled();
 
-    expect(approvalQueue.request).not.toHaveBeenCalled();
+    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "unit-batch",
+      units: [
+        expect.objectContaining({
+          unitKind: "extension",
+          unitName: extensionNode.name,
+          dependencyEvs: { "@workspace/runtime": "ev-runtime-next" },
+        }),
+      ],
+    }));
     expect(buildSystem.getBuild).toHaveBeenCalledWith(extensionNode.name, "main");
   });
 
@@ -473,10 +475,11 @@ describe("ExtensionHost reconcileDeclared", () => {
     await host.whenSettled();
 
     expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
-      kind: "extension-batch",
-      extensions: [
+      kind: "unit-batch",
+      units: [
         expect.objectContaining({
-          extensionName: extensionNode.name,
+          unitKind: "extension",
+          unitName: extensionNode.name,
           source: expect.objectContaining({ repo: extensionNode.relativePath, ref: "feature" }),
         }),
       ],
@@ -503,6 +506,95 @@ describe("ExtensionHost activation", () => {
       name: extensionNode.name,
       bundlePath: expect.stringContaining("bundle-key"),
     }));
+  });
+
+  it("registers contributed build providers through the activated extension transport", async () => {
+    const registerBuildProvider = vi.fn();
+    const extensionTransport = {
+      call: vi.fn(async () => ({
+        artifacts: [
+          {
+            path: "index.android.bundle",
+            role: "primary",
+            contentType: "application/javascript",
+            encoding: "utf8",
+            platform: "android",
+            stream: { method: "buildArtifact", args: ["artifact-1"] },
+          },
+        ],
+        metadata: { rnHostAbi: "rn-host-1" },
+      })),
+      streamCallTarget: vi.fn(async () => new Response("bundle")),
+    };
+    const { host, extensionNode } = makeHost({
+      buildTargets: ["react-native"],
+      registerBuildProvider,
+      extensionTransport,
+    });
+    vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
+
+    await host.activate(extensionNode.name);
+
+    expect(registerBuildProvider).toHaveBeenCalledWith(expect.objectContaining({
+      name: extensionNode.name,
+      target: "react-native",
+      activeEv: "ev-current",
+      activeBuildKey: "bundle-key",
+    }));
+    const provider = registerBuildProvider.mock.calls[0]![0] as {
+      build(input: unknown): Promise<unknown>;
+      streamArtifact(artifact: unknown, input: unknown): Promise<Response>;
+    };
+    const output = await provider.build({ target: "react-native" });
+    expect(output).toMatchObject({
+      artifacts: [expect.objectContaining({ path: "index.android.bundle", platform: "android" })],
+    });
+    const response = await provider.streamArtifact((output as { artifacts: unknown[] }).artifacts[0], { target: "react-native" });
+    await expect(response.text()).resolves.toBe("bundle");
+    expect(extensionTransport.call).toHaveBeenCalledWith(
+      extensionNode.name,
+      "extension.invoke",
+      "build",
+      [expect.objectContaining({ target: "react-native" })],
+      expect.objectContaining({
+        extensionName: extensionNode.name,
+        method: "build",
+        caller: expect.objectContaining({ callerId: "server:build-system", callerKind: "server" }),
+      }),
+    );
+    expect(extensionTransport.streamCallTarget).toHaveBeenCalledWith(
+      extensionNode.name,
+      "extension.invokeStream",
+      "buildArtifact",
+      ["artifact-1"],
+      expect.objectContaining({
+        extensionName: extensionNode.name,
+        method: "buildArtifact",
+        caller: expect.objectContaining({ callerId: "server:build-system", callerKind: "server" }),
+      }),
+    );
+  });
+
+  it("unregisters stale build providers when an activated extension stops contributing a target", async () => {
+    const registerBuildProvider = vi.fn();
+    const unregisterBuildProvider = vi.fn();
+    const { host, extensionNode } = makeHost({
+      buildTargets: ["react-native"],
+      registerBuildProvider,
+      unregisterBuildProvider,
+    });
+    vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
+
+    await host.activate(extensionNode.name);
+    expect(registerBuildProvider).toHaveBeenCalledWith(expect.objectContaining({
+      name: extensionNode.name,
+      target: "react-native",
+    }));
+
+    delete extensionNode.manifest.extension.contributes;
+    await host.activate(extensionNode.name);
+
+    expect(unregisterBuildProvider).toHaveBeenCalledWith("react-native", extensionNode.name);
   });
 
   it("surfaces running extension inspector URLs in workspace unit status", () => {
@@ -802,5 +894,10 @@ describe("ExtensionHost activation", () => {
         fields: { code: "TEST" },
       }),
     );
+  });
+
+  it("allows server callers to invoke extension providers through the dispatcher", () => {
+    const { host } = makeHost();
+    expect(host.createServiceDefinition().policy?.allowed).toContain("server");
   });
 });

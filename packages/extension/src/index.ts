@@ -1,3 +1,5 @@
+import type { UnitRegistryEntryBase } from "@natstack/unit-host";
+
 export interface Disposable {
   dispose(): void;
 }
@@ -12,9 +14,11 @@ export interface ExtensionInvocation {
     callerId: string;
     callerKind:
       | "panel"
+      | "app"
       | "worker"
       | "do"
       | "shell"
+      | "server"
       | "shell-remote"
       | "extension"
       | "http";
@@ -23,7 +27,7 @@ export interface ExtensionInvocation {
   };
   chainCaller?: {
     callerId: string;
-    callerKind: "panel" | "worker" | "do";
+    callerKind: "panel" | "app" | "worker" | "do";
     repoPath: string;
     effectiveVersion: string;
     contextId?: string;
@@ -51,20 +55,9 @@ export interface ExtensionSource {
   ref: string;
 }
 
-export interface RegistryEntry {
-  name: string;
-  version: string;
+export interface RegistryEntry extends UnitRegistryEntryBase {
+  unitKind: "extension";
   source: ExtensionSource;
-  installedAt: number;
-  activeEv: string | null;
-  activeSha: string | null;
-  activeBundleKey: string | null;
-  activeDependencyEvs: Record<string, string>;
-  activeExternalDeps: Record<string, string>;
-  activeRuntimeDepsKey: string | null;
-  enabled: boolean;
-  status: "running" | "stopped" | "error" | "pending-approval" | "building";
-  lastError: string | null;
 }
 
 /**

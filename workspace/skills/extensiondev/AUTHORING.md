@@ -4,10 +4,9 @@
 
 ```
 workspace/extensions/
-└── @workspace-extensions/             # convention: workspace-internal scope
-    └── hello/
-        ├── package.json               # manifest with natstack.extension
-        └── index.ts                   # entry — exports activate(ctx)
+└── hello/
+    ├── package.json                   # manifest with natstack.extension
+    └── index.ts                       # entry — exports activate(ctx)
 ```
 
 The directory layout matches `workspace/panels/` and `workspace/workers/`. Each extension is a workspace unit; the build graph discovers it via the `natstack.extension` block in `package.json`.
@@ -74,13 +73,13 @@ a fresh install.
 
 ### Validation
 
-The manifest is validated at three points (`@natstack/shared/extensionManifest`):
+The manifest is validated at three points (`@natstack/shared/unitManifest`):
 
 1. **Build** — refuse to produce a bundle if the manifest is malformed.
 2. **Install** — refuse to record a registry entry before asking the user to approve.
 3. **Boot** — refuse to activate a previously-installed extension whose on-disk manifest has drifted.
 
-Validation failures throw `ExtensionManifestError` with a machine-readable `code` (e.g. `MANIFEST_KIND`, `MANIFEST_ACTIVATION`). The error is recorded in `RegistryEntry.lastError` and the extension stays in `error` until the manifest is fixed.
+Validation failures throw `UnitManifestError` with a machine-readable `code` (e.g. `MANIFEST_KIND`, `MANIFEST_ACTIVATION`). The error is recorded in `RegistryEntry.lastError` and the extension stays in `error` until the manifest is fixed.
 
 ## `activate(ctx)`
 

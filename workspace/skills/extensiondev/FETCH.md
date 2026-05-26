@@ -75,7 +75,7 @@ Prefer RPC (the `activate` return surface) by default:
 - **RPC** is typed end-to-end via `extensions.use<T>(name).method(...)`, the dispatcher validates args, and you get caller attribution for free.
 - **Fetch** is for cases where the caller naturally speaks HTTP — embedding an existing HTTP-shaped library, exposing a download endpoint that benefits from streaming, or proxying to an upstream service that returns Fetch-compatible responses.
 
-A common pattern is to expose both: a typed RPC surface for in-app callers and a thin fetch handler that delegates to the same internal helpers. See `workspace/extensions/@workspace-extensions/browser-data/` for an example of the dual surface.
+A common pattern is to expose both: a typed RPC surface for in-app callers and a thin fetch handler that delegates to the same internal helpers. See `workspace/extensions/browser-data/` for an example of the dual surface.
 
 ## Reaching it from userland
 

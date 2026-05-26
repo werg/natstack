@@ -29,7 +29,7 @@ If a worker (workerd isolate) is sufficient, prefer that — workers are cheaper
 
 ## Critical rules
 
-1. **`workspace/extensions/<scope>/<name>/`** is the location. The package must be `private: true` and `type: "module"`, and the `package.json` must have `natstack.extension` (validated at install **and** boot — bad manifests fail closed).
+1. **`workspace/extensions/<name>/`** is the location. The package must be `private: true` and `type: "module"`, and the `package.json` must have `natstack.extension` (validated at install **and** boot — bad manifests fail closed).
 2. **`activate(ctx)` returns a plain object.** Its own enumerable function properties become RPC methods. Inherited methods, `then`, and non-function properties are skipped.
 3. **`ctx.fs` for an extension is unrestricted** — it covers the whole host filesystem. This is not a sandbox; it exists for *auditable* writes. For silent ambient work, import `node:fs` directly. The install approval is the trust boundary.
 4. **Use `ctx.approvals.request(...)`** for any operation the user should explicitly authorize per call. The host derives the principal from the active invocation chain; you supply the local subject, copy, and options.
@@ -40,7 +40,7 @@ If a worker (workerd isolate) is sufficient, prefer that — workers are cheaper
 ## Quick start
 
 ```ts
-// workspace/extensions/@workspace-extensions/hello/package.json
+// workspace/extensions/hello/package.json
 {
   "name": "@workspace-extensions/hello",
   "version": "0.1.0",
@@ -56,7 +56,7 @@ If a worker (workerd isolate) is sufficient, prefer that — workers are cheaper
 ```
 
 ```ts
-// workspace/extensions/@workspace-extensions/hello/index.ts
+// workspace/extensions/hello/index.ts
 import type { ExtensionContext } from "@natstack/extension";
 
 export async function activate(ctx: ExtensionContext) {
@@ -73,7 +73,7 @@ Declare it in `meta/natstack.yml` to install/enable it:
 
 ```yaml
 extensions:
-  - source: extensions/@workspace-extensions/hello
+  - source: extensions/hello
 ```
 
 Saving that change (a gated meta write) raises one **elevated, joint approval** listing every newly-declared extension, because they run as native code. Once approved and running, call it:
@@ -106,6 +106,6 @@ There is no `extensions.install` / `setEnabled` / `uninstall` API — the declar
 - [docs/extensions/generated-code.md](../../../docs/extensions/generated-code.md) — rules for code-generators emitting extensions
 - [docs/extensions/templates/](../../../docs/extensions/templates/) — four working scaffolds
 - Existing canary extensions (read these for working examples):
-  - `workspace/extensions/@workspace-extensions/image-service/`
-  - `workspace/extensions/@workspace-extensions/typecheck-service/`
-  - `workspace/extensions/@workspace-extensions/browser-data/`
+  - `workspace/extensions/image-service/`
+  - `workspace/extensions/typecheck-service/`
+  - `workspace/extensions/browser-data/`

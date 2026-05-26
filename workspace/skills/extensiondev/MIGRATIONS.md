@@ -25,7 +25,7 @@ When in doubt, check `EXTENSIONS.md` § "Must stay in-host" — that list is can
 
 The canary migrations all follow the same shape:
 
-1. **Create the extension** at `workspace/extensions/@workspace-extensions/<service-name>/`.
+1. **Create the extension** at `workspace/extensions/<service-name>/`.
    - Copy the existing service handler code into `activate(ctx)` and return the public methods.
    - Replace `ctx: ServiceContext` references with `ctx: ExtensionContext` and access to `ctx.invocation.current()` for caller info.
    - Move dependency wiring from the server bootstrap into top-level imports.
@@ -44,7 +44,7 @@ The canary migrations all follow the same shape:
 
 4. **Declare the extension** in the workspace template's `meta/natstack.yml` under `extensions:` so it is reconciled on first boot. It is not pre-approved — the startup reconcile raises a joint approval the user (or, headlessly, the shell via `shellApproval.resolve`) must grant before it runs.
 
-5. **Add an integration test** at `tests/extension-<name>.integration.test.ts` that boots a real server, approves the joint extension approval, calls a representative method, and asserts the response matches the old service's contract.
+5. **Add an integration test** at `tests/extension-<name>.integration.test.ts` that boots a real server, approves the joint unit approval, calls a representative method, and asserts the response matches the old service's contract.
 
 ## What changes for callers
 
@@ -84,7 +84,7 @@ The canary migrations all follow the same shape:
 ## Migration checklist
 
 - [ ] Confirm the service is on the migration list (or you've justified adding it).
-- [ ] Create `workspace/extensions/@workspace-extensions/<name>/` with manifest + `index.ts`.
+- [ ] Create `workspace/extensions/<name>/` with manifest + `index.ts`.
 - [ ] Copy handler logic, adjust `ctx` references.
 - [ ] Delete the in-host service and its registration.
 - [ ] Update every consumer (`ctx.<name>` → `extensions.use<ApiType>(name)`).

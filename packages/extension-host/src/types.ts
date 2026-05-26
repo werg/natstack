@@ -30,7 +30,7 @@ export interface ExtensionProcessState {
 
 export interface ExtensionUserlandCaller {
   callerId: string;
-  callerKind: "panel" | "worker" | "do";
+  callerKind: "panel" | "app" | "worker" | "do";
   repoPath: string;
   effectiveVersion: string;
   contextId?: string;
@@ -44,9 +44,7 @@ export function invocationFromServiceContext(
   resolveContextId?: (callerId: string) => string | null,
 ): ExtensionInvocation {
   const directContextId = resolveContextId?.(ctx.caller.runtime.id) ?? null;
-  const callerKind = ctx.caller.runtime.kind === "server" || ctx.caller.runtime.kind === "harness"
-    ? "shell"
-    : ctx.caller.runtime.kind;
+  const callerKind = ctx.caller.runtime.kind === "harness" ? "shell" : ctx.caller.runtime.kind;
   const invocation: ExtensionInvocation = {
     requestId,
     extensionName,
@@ -60,6 +58,7 @@ export function invocationFromServiceContext(
   };
   if (
     ctx.caller.runtime.kind === "panel" ||
+    ctx.caller.runtime.kind === "app" ||
     ctx.caller.runtime.kind === "worker" ||
     ctx.caller.runtime.kind === "do"
   ) {
