@@ -145,3 +145,41 @@ Use:
 
 Do not use apps for ordinary user panels. Apps carry stronger trust and approval
 implications than panels.
+
+## Lifecycle Status Semantics
+
+All app targets use the same workspace-unit status vocabulary, with
+target-specific meaning at the activation edge:
+
+| Status             | Meaning                                                                 |
+| ------------------ | ----------------------------------------------------------------------- |
+| `pending-approval` | A declared app build needs trust approval before it can be activated     |
+| `building`         | The server is producing or validating the next build                     |
+| `available`        | A trusted build is active and launchable, but no process/view is running |
+| `running`          | The selected trusted build is currently hosted by its target runtime     |
+| `stopped`          | The app is disabled or was removed from declarations                     |
+| `error`            | Build, validation, activation, or process supervision failed             |
+
+Target-specific notes:
+
+- Electron shell apps usually report `running` because the host view is loaded.
+  Electron updates are prompt-adopted so an already loaded view can continue to
+  use the old trusted build until the user selects `Load`.
+- React Native apps report the active trusted bundle from the server
+  perspective. The native host still owns whether that bundle has been fetched
+  and installed on a particular device.
+- Terminal apps report `available` after build activation and `running` only
+  while the supervised Node process is alive.
+
+`apps:lifecycle` carries the cross-target event stream:
+
+- `available`: first trusted build became active
+- `update-available`: a newer trusted build replaced the active build, or is
+  ready for prompt adoption
+- `update-error`: the attempted update failed and the previous build remains
+  the effective version
+- `rolled-back`: the active build was switched to a retained previous build
+
+Clients should use `target`, `source`, `appId`, `buildKey`, `canRollback`, and
+`selectedForHost` from lifecycle payloads to decide whether a prompt applies to
+the current host.

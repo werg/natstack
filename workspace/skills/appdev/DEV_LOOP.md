@@ -129,6 +129,28 @@ Terminal app source should be written as a clean Node ESM entry that reads the
 runner-provided `NATSTACK_TERMINAL_APP_*` environment, connects with the
 provided RPC grant, and handles shutdown messages from the runner.
 
+## Debugging Headless App State
+
+Use the admin helper when testing a server without a desktop shell:
+
+```bash
+node scripts/natstack-admin.mjs --url http://localhost:39139 --admin-token "$NATSTACK_ADMIN_TOKEN" approvals list
+node scripts/natstack-admin.mjs --url http://localhost:39139 --admin-token "$NATSTACK_ADMIN_TOKEN" approvals approve version
+node scripts/natstack-admin.mjs --url http://localhost:39139 --admin-token "$NATSTACK_ADMIN_TOKEN" units list
+node scripts/natstack-admin.mjs --url http://localhost:39139 --admin-token "$NATSTACK_ADMIN_TOKEN" units restart @workspace-apps/remote-cli
+node scripts/natstack-admin.mjs --url http://localhost:39139 --admin-token "$NATSTACK_ADMIN_TOKEN" units logs @workspace-apps/remote-cli --limit 120
+```
+
+For a full terminal app smoke:
+
+```bash
+pnpm test:terminal-app-smoke
+```
+
+That command builds the app, starts an ephemeral server, launches the built-in
+remote CLI terminal app, asserts it reaches `running`, verifies a pairing invite
+appears in logs, and shuts the server down cleanly.
+
 ## Updating Docs And Skills
 
 When app architecture changes, update:

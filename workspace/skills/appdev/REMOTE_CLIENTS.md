@@ -67,7 +67,14 @@ supervised app process. A terminal remote client should:
 
 The built-in `@workspace-apps/remote-cli` is the canonical terminal app shape:
 it connects as an app principal, lists workspace status, and can mint a pairing
-invite for another client.
+invite for another client. It is enabled in the template so it is available for
+server pairing/debugging, but `autostart: false` keeps it dormant until the
+shell UI or `workspace.units.restart("@workspace-apps/remote-cli")` starts it.
+
+Fresh workspaces created from the product template trust their initial declared
+app/extension set during startup. Later meta pushes, capability changes, source
+changes, dependency changes, and target changes still go through the normal unit
+approval path.
 
 ## Pairing Invite Creation
 
@@ -100,3 +107,19 @@ Remote-client UX should handle:
 
 The recovery surface should remain usable even when the workspace app cannot be
 loaded.
+
+## Operational Debugging
+
+When testing pairing or remote-server state without a shell UI:
+
+1. Start the server with `--ready-file` and read `gatewayUrl` plus
+   `adminToken`.
+2. Use `scripts/natstack-admin.mjs approvals list` to inspect pending trusted
+   unit approvals.
+3. Use `scripts/natstack-admin.mjs approvals approve version` only for local
+   trusted-template/dev scenarios where the unit set is expected.
+4. Use `scripts/natstack-admin.mjs units list` to inspect active build keys and
+   lifecycle states.
+5. Use `scripts/natstack-admin.mjs units restart <app>` for terminal apps.
+6. Use `scripts/natstack-admin.mjs units logs <app>` to inspect stdout/stderr
+   and runner errors.

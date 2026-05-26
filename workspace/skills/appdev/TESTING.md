@@ -80,6 +80,15 @@ Verify:
 - status is `available` before launch and `running` after the runner starts it
 - `workspace.units.restart(appName)` starts or replaces the process
 - stdout/stderr are visible through `workspace.units.logs(appName)`
+- rollback switches to a retained terminal build and returns the app to
+  `available` or `running` according to whether the process is launched
+
+Run the packaged smoke when terminal runtime, app host, pairing, or process
+supervision changes:
+
+```bash
+pnpm test:terminal-app-smoke
+```
 
 ## Approval And Trust Checks
 
@@ -90,6 +99,8 @@ When capabilities or dependency identity change, test:
 - approved update becomes active
 - source push approval works for app repos
 - capability denial surfaces clearly
+- newly created template workspaces activate their initial trusted app and
+  extension set without a headless approval dead end
 
 ## Regression Areas
 
