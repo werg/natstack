@@ -898,14 +898,24 @@ export class PiRunner {
       return undefined;
     });
     this.harness.on("save_point", async () => {
-      await this.flushProvenance();
-      await this.prepareFollowingTurn();
-      return undefined;
+      try {
+        await this.flushProvenance();
+        await this.prepareFollowingTurn();
+        return undefined;
+      } catch (err) {
+        this.failActiveRun("harness.save_point", err);
+        throw err;
+      }
     });
     this.harness.on("settled", async () => {
-      await this.flushProvenance();
-      await this.maybeCompactWhenIdle();
-      return undefined;
+      try {
+        await this.flushProvenance();
+        await this.maybeCompactWhenIdle();
+        return undefined;
+      } catch (err) {
+        this.failActiveRun("harness.settled", err);
+        throw err;
+      }
     });
   }
 
@@ -1104,35 +1114,58 @@ export class PiRunner {
 
   private async handleHarnessEvent(event: AgentHarnessEvent, _signal?: AbortSignal): Promise<void> {
     const signal = _signal ?? this.activeRunSignal ?? undefined;
-    this.rememberHarnessEvent(event);
-    if (event.type === "agent_start") {
-      this.activeRunSignal = signal ?? null;
-      this.rememberCheckpoint("agent.start", {
-        signalAborted: signal?.aborted ?? false,
-      });
-      this.running = true;
-      await this.openCurrentTurn();
-    }
-    if (event.type === "message_start") {
-      await this.handleMessageStart((event as { message: AgentMessage }).message);
-    }
-    if (event.type === "message_update") {
-      await this.handleMessageUpdate((event as { message: AgentMessage }).message);
-    }
-    if (event.type === "message_end") {
-      await this.handleMessageEnd(event.message);
-    }
-    if (event.type === "agent_end") {
-      await this.closeCurrentTurn();
-      this.running = false;
-      this.awaitingProviderFirstEvent = false;
-    }
     try {
+      this.rememberHarnessEvent(event);
+      if (event.type === "agent_start") {
+        this.activeRunSignal = signal ?? null;
+        this.rememberCheckpoint("agent.start", {
+          signalAborted: signal?.aborted ?? false,
+        });
+        this.running = true;
+        await this.openCurrentTurn();
+      }
+      if (event.type === "message_start") {
+        await this.handleMessageStart((event as { message: AgentMessage }).message);
+      }
+      if (event.type === "message_update") {
+        await this.handleMessageUpdate((event as { message: AgentMessage }).message);
+      }
+      if (event.type === "message_end") {
+        await this.handleMessageEnd(event.message);
+      }
+      if (event.type === "agent_end") {
+        await this.closeCurrentTurn();
+        this.running = false;
+        this.awaitingProviderFirstEvent = false;
+      }
       await this.hooks.emitEvent(event, { signal });
+    } catch (err) {
+      this.failActiveRun(`harness.event.${event.type}`, err);
+      throw err;
     } finally {
       if (event.type === "agent_end") {
         this.activeRunSignal = null;
       }
+    }
+  }
+
+  private failActiveRun(scope: string, err: unknown): void {
+    this.rememberError(scope, err);
+    this.rememberCheckpoint("agent.run.failed", {
+      scope,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    this.running = false;
+    this.currentTurnId = null;
+    this.activeAssistantMessage = null;
+    this.awaitingProviderFirstEvent = false;
+    this.activeRunSignal = null;
+    this.openInvocationIds.clear();
+    this.openToolInvocations.clear();
+    try {
+      this.options.uiCallbacks.setWorkingMessage(undefined);
+    } catch (callbackErr) {
+      console.warn("[PiRunner] setWorkingMessage cleanup failed:", callbackErr);
     }
   }
 

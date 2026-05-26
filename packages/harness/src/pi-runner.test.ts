@@ -374,6 +374,74 @@ describe("PiRunner", () => {
     }
   });
 
+  it("clears active run state when message-end provenance persistence fails", async () => {
+    const appendTrajectoryBatch = vi.fn(async () => {
+      throw new Error('DO RPC relay failed (500): {"error":"string or blob too big: SQLITE_TOOBIG"}');
+    });
+    const options = createOptions();
+    const runner = new PiRunner(options) as unknown as {
+      options: PiRunnerOptions;
+      gad: { call: typeof appendTrajectoryBatch };
+      session: {
+        getLeafId(): Promise<string>;
+        buildContext(): Promise<{ messages: unknown[] }>;
+      };
+      running: boolean;
+      currentTurnId: string | null;
+      activeAssistantMessage: { messageId: string; lastText: string; started: boolean } | null;
+      awaitingProviderFirstEvent: boolean;
+      activeRunSignal: AbortSignal | null;
+      openInvocationIds: Set<string>;
+      openToolInvocations: Map<string, unknown>;
+      handleHarnessEvent(event: unknown): Promise<void>;
+      getStateSnapshot(): Promise<{ isStreaming: boolean }>;
+    };
+    runner.options.gad = {
+      trajectoryId: "trajectory:test",
+      branchId: "branch:test",
+      channelId: "channel:test",
+    };
+    runner.gad = { call: appendTrajectoryBatch };
+    runner.session = {
+      getLeafId: vi.fn(async () => "entry-assistant"),
+      buildContext: vi.fn(async () => ({ messages: [] })),
+    };
+    runner.running = true;
+    runner.currentTurnId = "turn-open";
+    runner.activeAssistantMessage = {
+      messageId: "message-assistant",
+      lastText: "partial",
+      started: true,
+    };
+    runner.awaitingProviderFirstEvent = true;
+    runner.activeRunSignal = new AbortController().signal;
+    runner.openInvocationIds.add("call_1");
+    runner.openToolInvocations.set("call_1", { toolName: "eval" });
+
+    await expect(
+      runner.handleHarnessEvent({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "done" }],
+          timestamp: 0,
+        },
+      })
+    ).rejects.toMatchObject({
+      code: "provenance",
+      message: expect.stringContaining("Provenance event is too large to store"),
+    });
+
+    expect((await runner.getStateSnapshot()).isStreaming).toBe(false);
+    expect(runner.currentTurnId).toBeNull();
+    expect(runner.activeAssistantMessage).toBeNull();
+    expect(runner.awaitingProviderFirstEvent).toBe(false);
+    expect(runner.activeRunSignal).toBeNull();
+    expect(runner.openInvocationIds.size).toBe(0);
+    expect(runner.openToolInvocations.size).toBe(0);
+    expect(options.uiCallbacks.setWorkingMessage).toHaveBeenCalledWith(undefined);
+  });
+
   it("spills oversized invocation results to blobstore before appending provenance", async () => {
     const appendTrajectoryBatch = vi.fn(async () => undefined);
     const runner = new PiRunner(createOptions()) as unknown as {
