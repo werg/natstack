@@ -359,9 +359,12 @@ registers as a host the lease coordinator can assign to.
   every unleased panel has a CDP-ready home — agentic/background automation works with zero
   interactive clients. `ensureLoaded`'s `no_host` becomes effectively unreachable.
 - **CDP vs. current holder:** desktop-held → attach there (the instance the human sees);
-  headless-held → attach to the invisible instance; **mobile-held → not CDP-capable**, so the
-  automate request must either `takeOver` to the headless host (panel disappears from the
-  device — needs user-facing handling) or be rejected. **Decide this policy with the owner.**
+  headless-held → attach to the invisible instance; **mobile-held → not CDP-capable, so the
+  automate request is rejected** (for now) with a clear error
+  (`cdp_unavailable_mobile_held` / "target is open on a mobile client that does not support
+  CDP"). No silent take-over — we will not yank a panel off someone's device. (Future option,
+  not built: an explicit user-initiated hand-off that take-over-leases it to the headless
+  host.)
 
 ### 9.5 Hard problems to flag (not hand-wave)
 - **Leasing is re-instantiation, not live migration.** A lease transfer unloads then reloads
@@ -441,8 +444,10 @@ transport.
   `getAccessibilityTree`/snapshot or single-session command serialization.
 - **Hidden-view CDP attach** (§8) — verify a non-visible `WebContentsView` attaches (also the
   basis for the headless host, §9.3).
-- **(§9) Mobile-held target + CDP** — define the policy when an automate request targets a
-  panel currently leased by a non-CDP client (take-over vs reject).
+- **(§9) Mobile-held target + CDP** — *resolved:* reject with `cdp_unavailable_mobile_held`
+  (no take-over). Implementation note: enforcement must know the current holder's
+  CDP-capability — derive it from the lease `holderLabel`/host-capability presence (§9.4), not
+  from the panel itself.
 - **(§9) Lease-change mid-automation** — CDP socket breaks on holder change; SDK reconnect via
   `panel:runtimeLeaseChanged`, or hold the lease for the automation's duration.
 - **(§9) Runtime re-instantiation** — lease transfer loses in-memory state; only persisted
@@ -469,4 +474,5 @@ transport.
   agent `cdp.page()`s a panel → it spins up in the always-on headless host and drives (with
   approval). Then open the desktop and `takeOver` the same panel for display → it transfers
   (headless unloads); release/disconnect the desktop → the panel falls back to the headless
-  host. A panel held by mobile → automate request follows the §9.4 take-over-or-reject policy.
+  host. A panel currently leased by a mobile client → CDP automate request is **rejected** with
+  `cdp_unavailable_mobile_held` (no take-over, panel stays on the device).
