@@ -81,20 +81,15 @@ export class HookBus {
   async emitEvent(event: RunnerEvent, context: HookListenerContext = {}): Promise<void> {
     const listeners = [...this.eventListeners];
     for (const [idx, listener] of listeners.entries()) {
-      if (context.signal?.aborted) return;
-      try {
-        await this.awaitListener(
-          "event",
-          idx,
-          listeners.length,
-          event.type,
-          listener(event, context),
-          context.signal,
-        );
-      } catch (err) {
-        if (isAbortError(err)) return;
-        console.error("[HookBus] event listener threw:", err);
-      }
+      if (context.signal?.aborted) throw createAbortError();
+      await this.awaitListener(
+        "event",
+        idx,
+        listeners.length,
+        event.type,
+        listener(event, context),
+        context.signal,
+      );
     }
   }
 
@@ -105,21 +100,16 @@ export class HookBus {
     let current = messages;
     const listeners = [...this.transformContextListeners];
     for (const [idx, listener] of listeners.entries()) {
-      if (context.signal?.aborted) return current;
-      try {
-        const result = await this.awaitListener(
-          "transform_context",
-          idx,
-          listeners.length,
-          undefined,
-          listener(current, context),
-          context.signal,
-        );
-        if (Array.isArray(result)) current = result;
-      } catch (err) {
-        if (isAbortError(err)) return current;
-        console.error("[HookBus] transform_context listener threw:", err);
-      }
+      if (context.signal?.aborted) throw createAbortError();
+      const result = await this.awaitListener(
+        "transform_context",
+        idx,
+        listeners.length,
+        undefined,
+        listener(current, context),
+        context.signal,
+      );
+      if (Array.isArray(result)) current = result;
     }
     return current;
   }
@@ -131,22 +121,17 @@ export class HookBus {
     let streamOptions: AgentHarnessStreamOptionsPatch | undefined;
     const listeners = [...this.beforeProviderRequestListeners];
     for (const [idx, listener] of listeners.entries()) {
-      if (context.signal?.aborted) break;
-      try {
-        const result = await this.awaitListener(
-          "before_provider_request",
-          idx,
-          listeners.length,
-          event.type,
-          listener(event, context),
-          context.signal,
-        );
-        if (result?.streamOptions) {
-          streamOptions = mergeStreamOptionPatch(streamOptions, result.streamOptions);
-        }
-      } catch (err) {
-        if (isAbortError(err)) break;
-        console.error("[HookBus] before_provider_request listener threw:", err);
+      if (context.signal?.aborted) throw createAbortError();
+      const result = await this.awaitListener(
+        "before_provider_request",
+        idx,
+        listeners.length,
+        event.type,
+        listener(event, context),
+        context.signal,
+      );
+      if (result?.streamOptions) {
+        streamOptions = mergeStreamOptionPatch(streamOptions, result.streamOptions);
       }
     }
     return streamOptions ? { streamOptions } : undefined;
@@ -245,10 +230,6 @@ function createAbortError(): Error {
   const err = new Error("Hook listener aborted");
   err.name = "AbortError";
   return err;
-}
-
-function isAbortError(err: unknown): boolean {
-  return err instanceof Error && err.name === "AbortError";
 }
 
 function mergeStreamOptionPatch(

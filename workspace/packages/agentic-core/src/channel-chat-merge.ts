@@ -17,6 +17,7 @@ import type {
   CustomMessageCardPayload,
   InlineUiCardPayload,
   MessageTypeDefinition,
+  SandboxSource,
 } from "./derived-types.js";
 import type {
   ChannelViewState,
@@ -26,6 +27,7 @@ import type {
   ProjectedMessage,
   ProjectedTurn,
 } from "@workspace/agentic-protocol";
+import { isStoredValueRef } from "@workspace/agentic-protocol";
 import type { InvocationCardPayload } from "./invocation-card-payload.js";
 
 export function chatMessagesFromChannelView(state: ChannelViewState): ChatMessage[] {
@@ -42,7 +44,11 @@ export function chatMessagesFromChannelView(state: ChannelViewState): ChatMessag
     ? []
     : projectedTurnToTypingMessage(turn));
   const inlineUi = Object.entries(state.inlineUi).flatMap(([participantId, map]) =>
-    Object.values(map).map((item) => projectedInlineUiToChatMessage(participantId, item)),
+    Object.values(map).flatMap((item) =>
+      isStoredValueRef(item.source)
+        ? []
+        : [projectedInlineUiToChatMessage(participantId, item as Parameters<typeof projectedInlineUiToChatMessage>[1])]
+    ),
   );
   const custom = Object.values(state.customMessages).flatMap((item) =>
     projectedCustomMessageToChatMessage(item, state.messageTypes[item.typeId ?? ""]),
@@ -62,6 +68,8 @@ export function messageTypeDefinitionsFromChannelView(state: ChannelViewState): 
     .flatMap((item) => {
       const isCleared = item.updatedAtSeq <= (item.clearedAtSeq ?? -1);
       if (!isCleared && (!item.source || !item.displayMode)) return [];
+      if (!isCleared && isStoredValueRef(item.source)) return [];
+      const source = item.source as SandboxSource;
       const definition: MessageTypeDefinition = isCleared
         ? {
             typeId: item.typeId,
@@ -72,12 +80,12 @@ export function messageTypeDefinitionsFromChannelView(state: ChannelViewState): 
         : {
             typeId: item.typeId,
             displayMode: item.displayMode!,
-            source: item.source!,
+            source,
             updatedAtSeq: item.updatedAtSeq,
             cleared: false,
           };
       if (item.displayMode !== undefined && definition.cleared) definition.displayMode = item.displayMode;
-      if (item.source !== undefined && definition.cleared) definition.source = item.source;
+      if (item.source !== undefined && definition.cleared && !isStoredValueRef(item.source)) definition.source = item.source;
       if (item.imports !== undefined) definition.imports = item.imports;
       if (item.schemaSourceOrPath !== undefined) definition.schemaSourceOrPath = item.schemaSourceOrPath;
       if (item.registeredBy !== undefined) definition.registeredBy = item.registeredBy;
@@ -91,7 +99,7 @@ export function actionBarPayloadFromChannelView(state: ChannelViewState): Action
     .filter((item): item is NonNullable<typeof item> => Boolean(item))
     .sort((a, b) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt));
   const latestItem = latest[latest.length - 1];
-  if (!latestItem || latestItem.cleared || !latestItem.source) return null;
+  if (!latestItem || latestItem.cleared || !latestItem.source || isStoredValueRef(latestItem.source)) return null;
   const payload: ActionBarPayload = {
     source: latestItem.source,
   };
@@ -185,7 +193,7 @@ function projectedInvocationToChatMessage(invocation: ProjectedInvocation): Chat
     execution: {
       status,
       description: invocation.terminalReason ?? (invocation.status === "completed" ? "" : inferred.summary ?? ""),
-      result: invocation.result,
+      result: displayStoredValue(invocation.result),
       isError: invocation.status === "failed" || invocation.status === "cancelled" || invocation.status === "abandoned",
       consoleOutput: invocation.outputs.length > 0
         ? invocation.outputs.map((output) => stringifyOutput(output)).join("\n")
@@ -278,6 +286,7 @@ function projectedCustomMessageToChatMessage(
 }
 
 function recordOrEmpty(value: unknown): Record<string, unknown> {
+  if (isStoredValueRef(value)) return {};
   return value && typeof value === "object" && !Array.isArray(value)
     ? { ...(value as Record<string, unknown>) }
     : {};
@@ -294,6 +303,9 @@ function inferInvocationDisplay(value: unknown): {
   request?: unknown;
   summary?: string;
 } {
+  if (isStoredValueRef(value)) {
+    return { summary: value.preview ?? `${value.encoding} blob ${value.digest}` };
+  }
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const record = value as Record<string, unknown>;
   const name = meaningfulInvocationName(record["toolName"]) ?? meaningfulInvocationName(record["name"]);
@@ -309,5 +321,17 @@ function inferInvocationDisplay(value: unknown): {
 }
 
 function stringifyOutput(value: unknown): string {
+  if (isStoredValueRef(value)) return value.preview ?? `[stored ${value.encoding} blob ${value.digest}]`;
   return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function displayStoredValue(value: unknown): unknown {
+  if (!isStoredValueRef(value)) return value;
+  return {
+    stored: true,
+    digest: value.digest,
+    size: value.size,
+    encoding: value.encoding,
+    preview: value.preview,
+  };
 }

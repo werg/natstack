@@ -45,6 +45,15 @@ const usagePayloadSchema = z.object({
   metadata: z.record(z.unknown()).optional(),
 }).strict();
 
+const blobRefSchema = z.object({
+  protocol: z.literal("natstack.blob-ref.v1"),
+  digest: z.string().min(1),
+  size: z.number().int().nonnegative(),
+  encoding: z.enum(["json", "text"]),
+  originalBytes: z.number().int().nonnegative(),
+  preview: z.string().optional(),
+}).strict();
+
 const messageBlockInputSchema = z.object({
   blockId: idSchema.optional(),
   type: z.enum(["text", "thinking", "invocation", "attachment", "data"]),
@@ -57,6 +66,7 @@ const messageStartedPayloadSchema = z.object({
   protocol: protocolSchema,
   role: z.enum(["user", "assistant", "system", "tool", "panel"]),
   content: z.string().optional(),
+  contentBlob: blobRefSchema.optional(),
   blocks: z.array(messageBlockInputSchema).optional(),
   mentions: z.array(idSchema).optional(),
   replyTo: idSchema.optional(),
@@ -65,6 +75,7 @@ const messageStartedPayloadSchema = z.object({
 const messageDeltaPayloadSchema = z.object({
   protocol: protocolSchema,
   delta: z.string(),
+  deltaBlob: blobRefSchema.optional(),
   replace: z.boolean().optional(),
   block: messageBlockInputSchema.optional(),
 }).strict();
@@ -73,6 +84,7 @@ const messageCompletedPayloadSchema = z.object({
   protocol: protocolSchema,
   role: z.enum(["user", "assistant", "system", "tool", "panel"]).optional(),
   content: z.string(),
+  contentBlob: blobRefSchema.optional(),
   blocks: z.array(messageBlockInputSchema).optional(),
   usage: usagePayloadSchema.optional(),
   mentions: z.array(idSchema).optional(),
@@ -148,10 +160,10 @@ const approvalResolvedPayloadSchema = z.object({
   details: z.unknown().optional(),
 }).strict();
 
-const sandboxSourceSchema = z.discriminatedUnion("type", [
+const sandboxSourceSchema = z.union([blobRefSchema, z.discriminatedUnion("type", [
   z.object({ type: z.literal("code"), code: z.string() }).strict(),
   z.object({ type: z.literal("file"), path: z.string().min(1) }).strict(),
-]);
+])]);
 
 const uiInlineRenderedPayloadSchema = z.object({
   protocol: protocolSchema,

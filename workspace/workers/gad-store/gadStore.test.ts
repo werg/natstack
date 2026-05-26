@@ -12,7 +12,7 @@ const owner = { kind: "agent" as const, id: "agent-1" };
 
 function event<K extends AgenticEvent["kind"]>(
   kind: K,
-  patch: Omit<AgenticEvent<K>, "kind" | "actor" | "createdAt"> & { createdAt?: string },
+  patch: Omit<AgenticEvent<K>, "kind" | "actor" | "createdAt"> & { createdAt?: string }
 ): AgenticEvent<K> {
   return {
     kind,
@@ -22,13 +22,24 @@ function event<K extends AgenticEvent["kind"]>(
   } as AgenticEvent<K>;
 }
 
+function blobRef(digest: string, preview = "{}") {
+  return {
+    protocol: "natstack.blob-ref.v1" as const,
+    digest,
+    size: preview.length,
+    encoding: "json" as const,
+    originalBytes: preview.length,
+    preview,
+  };
+}
+
 describe("GadWorkspaceDO trajectory persistence", () => {
   it("creates only canonical trajectory/channel tables, not Pi/session dispatch tables", async () => {
     const { call } = await createTestDO(GadWorkspaceDO);
     const tables = await call<{ rows: Array<{ name: string }> }>(
       "query",
       "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
-      [],
+      []
     );
     expect(tables.rows.map((row) => row.name)).toEqual(
       expect.arrayContaining([
@@ -39,7 +50,7 @@ describe("GadWorkspaceDO trajectory persistence", () => {
         "channel_envelopes",
         "gad_worktree_states",
         "gad_claims",
-      ]),
+      ])
     );
     const allowedPrefixes = ["trajectory_", "channel_", "gad_"];
     const allowedExact = new Set(["blobs", "state"]);
@@ -47,7 +58,7 @@ describe("GadWorkspaceDO trajectory persistence", () => {
       tables.rows
         .map((row) => row.name)
         .filter((name) => allowedPrefixes.every((prefix) => !name.startsWith(prefix)))
-        .filter((name) => !allowedExact.has(name)),
+        .filter((name) => !allowedExact.has(name))
     ).toEqual([]);
   });
 
@@ -179,7 +190,7 @@ describe("GadWorkspaceDO trajectory persistence", () => {
     const projection = await call<{ rows: Array<Record<string, unknown>> }>(
       "query",
       "SELECT message_id, body_assembled, status FROM trajectory_messages",
-      [],
+      []
     );
     expect(projection.rows).toEqual([
       expect.objectContaining({
@@ -188,6 +199,166 @@ describe("GadWorkspaceDO trajectory persistence", () => {
         status: "completed",
       }),
     ]);
+  });
+
+  it("treats replayed matching event ids as idempotent appends", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    const input = {
+      trajectoryId: "traj-1",
+      branchId: "main",
+      owner,
+      events: [
+        {
+          eventId: "event-message-idempotent",
+          event: event("message.completed", {
+            turnId: "turn-1" as never,
+            causality: { messageId: "msg-1" as never },
+            payload: {
+              protocol: AGENTIC_PROTOCOL_VERSION,
+              role: "assistant",
+              content: "hello once",
+            },
+          }),
+          publish: { channelIds: ["channel-1"] },
+        },
+      ],
+    };
+
+    const first = await call<any>("appendTrajectoryBatch", input);
+    const second = await call<any>("appendTrajectoryBatch", input);
+
+    expect(second.headEventId).toBe(first.headEventId);
+    expect(second.headEventHash).toBe(first.headEventHash);
+    expect(second.events.map((row: { eventId: string }) => row.eventId)).toEqual([
+      "event-message-idempotent",
+    ]);
+    expect(second.published).toEqual(first.published);
+
+    const count = await call<{ rows: Array<{ cnt: number }> }>(
+      "query",
+      "SELECT COUNT(*) AS cnt FROM trajectory_events WHERE event_id = ?",
+      ["event-message-idempotent"]
+    );
+    expect(count.rows[0]?.cnt).toBe(1);
+  });
+
+  it("continues trajectory append replay from an already-applied prefix", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    const first = await call<any>("appendTrajectoryBatch", {
+      trajectoryId: "traj-1",
+      branchId: "main",
+      owner,
+      events: [
+        {
+          eventId: "event-prefix",
+          event: event("message.completed", {
+            turnId: "turn-1" as never,
+            causality: { messageId: "msg-prefix" as never },
+            payload: {
+              protocol: AGENTIC_PROTOCOL_VERSION,
+              role: "assistant",
+              content: "already committed",
+            },
+          }),
+          publish: { channelIds: ["channel-1"] },
+        },
+      ],
+    });
+
+    const replay = await call<any>("appendTrajectoryBatch", {
+      trajectoryId: "traj-1",
+      branchId: "main",
+      owner,
+      events: [
+        {
+          eventId: "event-prefix",
+          event: event("message.completed", {
+            turnId: "turn-1" as never,
+            causality: { messageId: "msg-prefix" as never },
+            payload: {
+              protocol: AGENTIC_PROTOCOL_VERSION,
+              role: "assistant",
+              content: "already committed",
+            },
+          }),
+          publish: { channelIds: ["channel-1"] },
+        },
+        {
+          eventId: "event-suffix",
+          event: event("invocation.completed", {
+            turnId: "turn-1" as never,
+            causality: { invocationId: "call-1" as never },
+            payload: { protocol: AGENTIC_PROTOCOL_VERSION, result: "ok" },
+          }),
+        },
+      ],
+    });
+
+    expect(replay.events.map((row: { eventId: string }) => row.eventId)).toEqual([
+      "event-prefix",
+      "event-suffix",
+    ]);
+    expect(replay.published).toEqual(first.published);
+    const rows = await call<{ rows: Array<{ event_id: string; kind: string }> }>(
+      "query",
+      "SELECT event_id, kind FROM trajectory_events WHERE branch_id = ? ORDER BY seq",
+      ["main"]
+    );
+    expect(rows.rows.map((row) => row.event_id)).toEqual([
+      "event-prefix",
+      expect.any(String),
+      "event-suffix",
+    ]);
+    expect(rows.rows.map((row) => row.kind)).toEqual([
+      "message.completed",
+      "external.envelope_published",
+      "invocation.completed",
+    ]);
+  });
+
+  it("rejects reused event ids with different event content", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    await call("appendTrajectoryBatch", {
+      trajectoryId: "traj-1",
+      branchId: "main",
+      owner,
+      events: [
+        {
+          eventId: "event-message-collision",
+          event: event("message.completed", {
+            turnId: "turn-1" as never,
+            causality: { messageId: "msg-1" as never },
+            payload: {
+              protocol: AGENTIC_PROTOCOL_VERSION,
+              role: "assistant",
+              content: "first",
+            },
+          }),
+        },
+      ],
+    });
+
+    await expect(
+      call("appendTrajectoryBatch", {
+        trajectoryId: "traj-1",
+        branchId: "main",
+        owner,
+        events: [
+          {
+            eventId: "event-message-collision",
+            event: event("message.completed", {
+              turnId: "turn-1" as never,
+              causality: { messageId: "msg-1" as never },
+              payload: {
+                protocol: AGENTIC_PROTOCOL_VERSION,
+                role: "assistant",
+                content: "different",
+              },
+            }),
+          },
+        ],
+      })
+    ).rejects.toThrow(/GAD event id collision with different content/u);
   });
 
   it("indexes transport call ids on projected invocations for channel/trajectory joins", async () => {
@@ -208,7 +379,7 @@ describe("GadWorkspaceDO trajectory persistence", () => {
             payload: {
               protocol: AGENTIC_PROTOCOL_VERSION,
               name: "eval",
-              request: { code: "1 + 1" },
+              request: blobRef("request-1", '{"code":"1 \+ 1"}'),
             },
           }),
         },
@@ -218,11 +389,9 @@ describe("GadWorkspaceDO trajectory persistence", () => {
     const projected = await call<{ rows: Array<Record<string, unknown>> }>(
       "query",
       "SELECT invocation_id, transport_call_id FROM trajectory_invocations WHERE branch_id = ?",
-      ["main"],
+      ["main"]
     );
-    expect(projected.rows).toEqual([
-      { invocation_id: "tool-1", transport_call_id: "transport-1" },
-    ]);
+    expect(projected.rows).toEqual([{ invocation_id: "tool-1", transport_call_id: "transport-1" }]);
   });
 
   it("stores generic opaque channel envelopes and exposes replay windows", async () => {
@@ -246,10 +415,12 @@ describe("GadWorkspaceDO trajectory persistence", () => {
       publishedAt: "2026-05-20T12:00:01.000Z",
     });
 
-    expect(await call<any[]>("listChannelEnvelopesAfter", { channelId: "channel-1", seq: 1 })).toEqual([
-      expect.objectContaining({ envelopeId: "env-2", seq: 2, payload: { value: 2 } }),
-    ]);
-    expect(await call<any[]>("listChannelEnvelopesBefore", { channelId: "channel-1", seq: 2, limit: 1 })).toEqual([
+    expect(
+      await call<any[]>("listChannelEnvelopesAfter", { channelId: "channel-1", seq: 1 })
+    ).toEqual([expect.objectContaining({ envelopeId: "env-2", seq: 2, payload: { value: 2 } })]);
+    expect(
+      await call<any[]>("listChannelEnvelopesBefore", { channelId: "channel-1", seq: 2, limit: 1 })
+    ).toEqual([
       expect.objectContaining({
         envelopeId: "env-1",
         seq: 1,
@@ -257,7 +428,10 @@ describe("GadWorkspaceDO trajectory persistence", () => {
         metadata: { name: "User" },
       }),
     ]);
-    const initial = await call<any>("getInitialChannelWindow", { channelId: "channel-1", limit: 1 });
+    const initial = await call<any>("getInitialChannelWindow", {
+      channelId: "channel-1",
+      limit: 1,
+    });
     expect(initial).toMatchObject({
       totalCount: 2,
       replayFromId: 2,
@@ -265,6 +439,35 @@ describe("GadWorkspaceDO trajectory persistence", () => {
       hasMoreBefore: true,
       envelopes: [expect.objectContaining({ envelopeId: "env-2" })],
     });
+  });
+
+  it("treats replayed matching channel envelope ids as idempotent appends", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    const input = {
+      channelId: "channel-1",
+      envelopeId: "env-idempotent",
+      from: { kind: "panel", id: "panel:user", participantId: "panel:user" },
+      payloadKind: "custom.kind",
+      payload: { value: 1 },
+      publishedAt: "2026-05-20T12:00:00.000Z",
+    };
+
+    const first = await call<any>("appendChannelEnvelope", input);
+    const second = await call<any>("appendChannelEnvelope", input);
+
+    expect(second).toEqual(first);
+    const count = await call<{ rows: Array<{ cnt: number }> }>(
+      "query",
+      "SELECT COUNT(*) AS cnt FROM channel_envelopes WHERE envelope_id = ?",
+      ["env-idempotent"]
+    );
+    expect(count.rows[0]?.cnt).toBe(1);
+    await expect(
+      call("appendChannelEnvelope", {
+        ...input,
+        payload: { value: 2 },
+      })
+    ).rejects.toThrow(/GAD channel envelope id collision with different content/u);
   });
 
   it("bounds replay-after windows and forks channel logs with preserved sequence lineage", async () => {
@@ -323,9 +526,24 @@ describe("GadWorkspaceDO trajectory persistence", () => {
       lastSeq: 3,
     });
     expect(result.lineage).toHaveLength(2);
-    expect(result.lineage[0]).toMatchObject({ sourceEnvelopeId: "env-1", sourceSeq: 1, forkSeq: 1 });
-    expect(result.lineage[1]).toMatchObject({ sourceEnvelopeId: "env-2", sourceSeq: 3, forkSeq: 3 });
+    expect(result.lineage[0]).toMatchObject({
+      sourceEnvelopeId: "env-1",
+      sourceSeq: 1,
+      forkSeq: 1,
+    });
+    expect(result.lineage[1]).toMatchObject({
+      sourceEnvelopeId: "env-2",
+      sourceSeq: 3,
+      forkSeq: 3,
+    });
     expect(result.lineage[0].forkEnvelopeId).not.toBe("env-1");
+    await expect(
+      call<any>("forkChannelLog", {
+        fromChannelId: "channel-parent",
+        toChannelId: "channel-fork",
+        throughSeq: 3,
+      })
+    ).resolves.toMatchObject({ lineage: result.lineage, copied: 2 });
 
     const forked = await call<any[]>("listChannelEnvelopesAfter", {
       channelId: "channel-fork",
@@ -351,19 +569,23 @@ describe("GadWorkspaceDO trajectory persistence", () => {
       seq: 3,
       limit: 10,
     });
-    expect(afterForkAppend).toEqual([expect.objectContaining({ envelopeId: "env-fork-new", seq: 4 })]);
+    expect(afterForkAppend).toEqual([
+      expect.objectContaining({ envelopeId: "env-fork-new", seq: 4 }),
+    ]);
 
     const lineageRows = await call<{ rows: Array<Record<string, unknown>> }>(
       "query",
       "SELECT source_envelope_id, fork_envelope_id, source_seq, fork_seq FROM channel_envelope_forks ORDER BY fork_seq",
-      [],
+      []
     );
-    expect(lineageRows.rows).toEqual(result.lineage.map((row: any) => ({
-      source_envelope_id: row.sourceEnvelopeId,
-      fork_envelope_id: row.forkEnvelopeId,
-      source_seq: row.sourceSeq,
-      fork_seq: row.forkSeq,
-    })));
+    expect(lineageRows.rows).toEqual(
+      result.lineage.map((row: any) => ({
+        source_envelope_id: row.sourceEnvelopeId,
+        fork_envelope_id: row.forkEnvelopeId,
+        source_seq: row.sourceSeq,
+        fork_seq: row.forkSeq,
+      }))
+    );
   });
 
   it("forks trajectory branches through a published channel sequence without copying later private state", async () => {
@@ -380,7 +602,7 @@ describe("GadWorkspaceDO trajectory persistence", () => {
             payload: {
               protocol: AGENTIC_PROTOCOL_VERSION,
               kind: "private-before",
-              details: { value: 1 },
+              details: blobRef("details-before", '{"value":1}'),
             },
           }),
         },
@@ -404,17 +626,19 @@ describe("GadWorkspaceDO trajectory persistence", () => {
             payload: {
               protocol: AGENTIC_PROTOCOL_VERSION,
               kind: "private-after",
-              details: { value: 2 },
+              details: blobRef("details-after", '{"value":2}'),
             },
           }),
         },
       ],
     });
-    const publishedSeq = (await call<any[]>("listChannelEnvelopesAfter", {
-      channelId: "channel-parent",
-      seq: 0,
-      limit: 10,
-    }))[0].seq;
+    const publishedSeq = (
+      await call<any[]>("listChannelEnvelopesAfter", {
+        channelId: "channel-parent",
+        seq: 0,
+        limit: 10,
+      })
+    )[0].seq;
     const channelFork = await call<any>("forkChannelLog", {
       fromChannelId: "channel-parent",
       toChannelId: "channel-fork",
@@ -437,6 +661,21 @@ describe("GadWorkspaceDO trajectory persistence", () => {
       "event-public-message",
     ]);
     expect(fork.headEventHash).toBe(fork.lineage[1].forkEventHash);
+    await expect(
+      call<any>("forkTrajectoryBranch", {
+        fromTrajectoryId: "branch:channel:parent",
+        fromBranchId: "branch:channel:parent",
+        toTrajectoryId: "branch:channel:fork",
+        toBranchId: "branch:channel:fork",
+        throughPublishedChannelId: "channel-parent",
+        throughPublishedChannelSeq: publishedSeq,
+        toPublishedChannelId: "channel-fork",
+        owner,
+      })
+    ).resolves.toMatchObject({
+      lineage: fork.lineage,
+      headEventHash: fork.headEventHash,
+    });
 
     const events = await call<any[]>("listTrajectoryEvents", {
       trajectoryId: "branch:channel:fork",
@@ -450,7 +689,7 @@ describe("GadWorkspaceDO trajectory persistence", () => {
     const messages = await call<{ rows: Array<Record<string, unknown>> }>(
       "query",
       "SELECT message_id, body_assembled, status FROM trajectory_messages WHERE branch_id = ?",
-      ["branch:channel:fork"],
+      ["branch:channel:fork"]
     );
     expect(messages.rows).toEqual([
       expect.objectContaining({
@@ -502,7 +741,7 @@ describe("GadWorkspaceDO trajectory persistence", () => {
             payload: {
               protocol: AGENTIC_PROTOCOL_VERSION,
               kind: "side-search-result",
-              details: { privateFinding: "keep this out of PubSub" },
+              details: blobRef("details-side", '{"privateFinding":"keep this out of PubSub"}'),
             },
           }),
         },
@@ -633,8 +872,111 @@ describe("GadWorkspaceDO trajectory persistence", () => {
             }),
           },
         ],
-      }),
+      })
     ).rejects.toThrow(/duplicate terminal invocation/u);
+  });
+
+  it("indexes stored value references from trajectory payloads", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    await call("appendTrajectoryBatch", {
+      trajectoryId: "traj-1",
+      branchId: "main",
+      owner,
+      events: [
+        {
+          eventId: "event-inv-complete-ref",
+          event: event("invocation.completed", {
+            turnId: "turn-1" as never,
+            causality: { invocationId: "inv-1" as never },
+            payload: {
+              protocol: AGENTIC_PROTOCOL_VERSION,
+              result: {
+                protocol: "natstack.blob-ref.v1",
+                digest: "abc123",
+                size: 42,
+                encoding: "json",
+                originalBytes: 42,
+                preview: '{"ok":true}',
+              },
+            },
+          }),
+        },
+      ],
+    });
+
+    const refs = await call<{
+      rows: Array<{ event_id: string; field_path: string; digest: string }>;
+    }>(
+      "query",
+      "SELECT event_id, field_path, digest FROM trajectory_blob_refs ORDER BY event_id, field_path",
+      []
+    );
+    expect(refs.rows).toEqual([
+      { event_id: "event-inv-complete-ref", field_path: "$.result", digest: "abc123" },
+    ]);
+  });
+
+  it("rejects raw unbounded trajectory payload fields", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    await expect(
+      call("appendTrajectoryBatch", {
+        trajectoryId: "traj-1",
+        branchId: "main",
+        owner,
+        events: [
+          {
+            eventId: "event-raw-result",
+            event: event("invocation.completed", {
+              turnId: "turn-1" as never,
+              causality: { invocationId: "inv-1" as never },
+              payload: { protocol: AGENTIC_PROTOCOL_VERSION, result: { raw: true } },
+            }),
+          },
+        ],
+      })
+    ).rejects.toThrow(/unencoded stored values/u);
+  });
+
+  it("reports storage diagnostics and garbage-collects unreferenced blob metadata", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    await call("ensureBlob", "orphan-digest", 10, "text/plain");
+    await call("appendTrajectoryBatch", {
+      trajectoryId: "traj-1",
+      branchId: "main",
+      owner,
+      events: [
+        {
+          eventId: "event-ref",
+          event: event("invocation.completed", {
+            turnId: "turn-1" as never,
+            causality: { invocationId: "inv-1" as never },
+            payload: {
+              protocol: AGENTIC_PROTOCOL_VERSION,
+              result: {
+                protocol: "natstack.blob-ref.v1",
+                digest: "kept-digest",
+                size: 20,
+                encoding: "json",
+                originalBytes: 20,
+              },
+            },
+          }),
+        },
+      ],
+    });
+
+    const refs = await call<{ rows: Array<{ digest: string }> }>("listStoredValueRefs", {
+      eventId: "event-ref",
+    });
+    expect(refs.rows.map((row) => row.digest)).toEqual(["kept-digest"]);
+    const diagnostics = await call<{ rows: unknown[] }>("inspectStorageDiagnostics", {});
+    expect(diagnostics.rows).toEqual([]);
+    const dryRun = await call<{ deleted: string[]; dryRun: boolean }>("collectGarbageBlobRefs", {});
+    expect(dryRun).toMatchObject({ deleted: ["orphan-digest"], dryRun: true });
+    const deleted = await call<{ deleted: string[]; dryRun: boolean }>("collectGarbageBlobRefs", {
+      dryRun: false,
+    });
+    expect(deleted).toMatchObject({ deleted: ["orphan-digest"], dryRun: false });
   });
 
   it("projects file intent/apply events into content-addressed state provenance", async () => {
@@ -690,7 +1032,7 @@ describe("GadWorkspaceDO trajectory persistence", () => {
     const mutation = await call<{ rows: Array<Record<string, unknown>> }>(
       "query",
       "SELECT output_state_hash FROM gad_file_mutations WHERE mutation_id = ?",
-      ["mut-1"],
+      ["mut-1"]
     );
     const outputStateHash = String(mutation.rows[0]?.["output_state_hash"]);
     expect(outputStateHash).toMatch(/^state:/);
@@ -767,10 +1109,14 @@ describe("GadWorkspaceDO trajectory persistence", () => {
     const messages = await call<{ rows: Array<Record<string, unknown>> }>(
       "query",
       "SELECT message_id, body_assembled, status FROM trajectory_messages",
-      [],
+      []
     );
     expect(messages.rows).toEqual([
-      expect.objectContaining({ message_id: "msg-1", body_assembled: "hello", status: "streaming" }),
+      expect.objectContaining({
+        message_id: "msg-1",
+        body_assembled: "hello",
+        status: "streaming",
+      }),
     ]);
   });
 
@@ -798,7 +1144,7 @@ describe("GadWorkspaceDO trajectory persistence", () => {
     const claims = await call<{ rows: Array<Record<string, unknown>> }>(
       "query",
       "SELECT claim_id, subject, predicate, object, status FROM gad_claims",
-      [],
+      []
     );
     expect(claims.rows).toEqual([
       expect.objectContaining({
@@ -829,22 +1175,22 @@ describe("GadWorkspaceDO trajectory persistence", () => {
       ],
     });
 
-    sql.exec("UPDATE trajectory_events SET payload_json = ? WHERE event_id = ?", "{}", "msg-1");
+    sql.exec("UPDATE trajectory_events SET payload_ref_json = ? WHERE event_id = ?", "{}", "msg-1");
     sql.exec(
       "INSERT INTO gad_state_transitions (event_id, input_state_hash, output_state_hash, created_at) VALUES (?, ?, ?, ?)",
       "missing-event",
       "state:missing-input",
       "state:missing-output",
-      "2026-05-20T12:00:00.000Z",
+      "2026-05-20T12:00:00.000Z"
     );
 
     const integrity = await call<{ ok: boolean; errors: Array<Record<string, unknown>> }>(
       "checkGadIntegrity",
-      {},
+      {}
     );
     expect(integrity.ok).toBe(false);
     expect(integrity.errors.map((error) => error["type"])).toEqual(
-      expect.arrayContaining(["trajectory-event", "state-transition"]),
+      expect.arrayContaining(["trajectory-event", "state-transition"])
     );
   });
 });

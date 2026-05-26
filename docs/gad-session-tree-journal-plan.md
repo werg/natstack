@@ -507,7 +507,7 @@ CREATE TABLE gad_events (
   anchor_kind TEXT,
   anchor_id TEXT,
 
-  payload_json TEXT NOT NULL,
+  payload_ref_json TEXT NOT NULL,
   metadata_json TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
 
@@ -546,7 +546,7 @@ Rules:
 - Event chains are per database. `event_seq` is monotonically increasing within
   the DO database, and `prev_event_hash` points to the prior event in that same
   database.
-- `payload_json` is typed by `kind`. Payload schemas live with the GAD journal
+- `payload_ref_json` is typed by `kind`. Payload schemas live with the GAD journal
   API definitions, and replay must validate each event against the schema for
   its `kind` before applying projections.
 
@@ -910,7 +910,7 @@ CREATE TABLE gad_approvals (
   requested_by_entry_id TEXT NOT NULL,
 
   approval_level INTEGER,
-  request_json TEXT,
+  request_ref_json TEXT,
 
   decision TEXT, -- approved | denied | dismissed | expired
   resolved_event_id TEXT,
@@ -975,7 +975,7 @@ CREATE TABLE gad_branch_events (
   source_entry_id TEXT,
   source_state_hash TEXT,
 
-  payload_json TEXT,
+  payload_ref_json TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
 
   PRIMARY KEY (branch_event_id)
@@ -989,7 +989,7 @@ CREATE TABLE gad_system_events (
   anchor_id TEXT,
 
   kind TEXT NOT NULL,
-  payload_json TEXT,
+  payload_ref_json TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
 
   PRIMARY KEY (system_event_id)
@@ -1344,7 +1344,7 @@ This is the key time-travel primitive.
 ### State Producer
 
 ```sql
-SELECT st.*, e.kind, e.anchor_kind, e.anchor_id, e.payload_json
+SELECT st.*, e.kind, e.anchor_kind, e.anchor_id, e.payload_ref_json
 FROM gad_state_transitions st
 JOIN gad_events e
   ON e.event_id = st.event_id

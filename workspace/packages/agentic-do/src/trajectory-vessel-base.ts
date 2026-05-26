@@ -40,7 +40,10 @@ import type {
   UnsubscribeResult,
 } from "@natstack/harness/types";
 import { isClientParticipantType } from "@workspace/pubsub";
-import { AGENTIC_EVENT_PAYLOAD_KIND } from "@workspace/agentic-protocol";
+import {
+  AGENTIC_EVENT_PAYLOAD_KIND,
+  hydrateStoredValueRefs,
+} from "@workspace/agentic-protocol";
 import {
   PiRunner,
   type PiRunnerOptions,
@@ -1378,7 +1381,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     runner: PiRunner,
     row: MethodSuspensionRow
   ): Promise<AgentMessage> {
-    const result = this.parseSuspensionJson(row.resultJson);
+    const result = await this.hydrateStoredTransportValue(this.parseSuspensionJson(row.resultJson));
     if (row.kind === "channelMethod") {
       const toolResult =
         row.resultIsError === 1 ? methodErrorResult(result) : toAgentToolResult(result);
@@ -1430,7 +1433,10 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     runner: PiRunner,
     row: MethodSuspensionRow
   ): Promise<string | null> {
-    if (!runner.isInvocationOpen(row.invocationId) && (await runner.hasToolResult(row.invocationId))) {
+    if (
+      !runner.isInvocationOpen(row.invocationId) &&
+      (await runner.hasToolResult(row.invocationId))
+    ) {
       return "invocation closed";
     }
     if (row.sessionLeafBeforeCall) {
@@ -2479,7 +2485,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
           if (!messageId || !typeId) continue;
           byMessageId.set(messageId, {
             typeId,
-            state: payload["initialState"],
+            state: await this.hydrateStoredTransportValue(payload["initialState"]),
           });
           continue;
         }
@@ -2491,9 +2497,10 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
           const existing = byMessageId.get(messageId);
           if (!existing) continue;
           const reducer = reducerLookup?.(existing.typeId) ?? null;
+          const update = await this.hydrateStoredTransportValue(payload["update"]);
           byMessageId.set(messageId, {
             typeId: existing.typeId,
-            state: reducer ? reducer(existing.state, payload["update"]) : payload["update"],
+            state: reducer ? reducer(existing.state, update) : update,
           });
         }
       }
@@ -2516,6 +2523,21 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
 
   private customPayload(payload: unknown): Record<string, unknown> {
     return payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  }
+
+  private async hydrateStoredTransportValue(value: unknown): Promise<unknown> {
+    return hydrateStoredValueRefs(value, {
+      getText: async (digest) => {
+        const text = await this.rpc.call<string | null>("main", "blobstore.getText", [digest]);
+        if (text === null) {
+          throw new AgentWorkerError(
+            "transcript_shape",
+            `Stored transport blob is missing: ${digest}`
+          );
+        }
+        return text;
+      },
+    });
   }
 
   private isOwnCustomMessageActor(
@@ -2892,15 +2914,16 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
 
     const invocationResult = this.channelInvocationResult(event);
     if (invocationResult) {
+      const content = await this.hydrateStoredTransportValue(invocationResult.content);
       if (!invocationResult.complete) {
-        this.appendMethodSuspensionUpdate(invocationResult.callId, invocationResult.content);
+        this.appendMethodSuspensionUpdate(invocationResult.callId, content);
         const cb = this.streamCallbacks.get(invocationResult.callId);
-        if (cb) cb(invocationResult.content);
+        if (cb) cb(content);
       } else {
         await this.handleCompletedMethodResult(
           channelId,
           invocationResult.callId,
-          invocationResult.content,
+          content,
           invocationResult.isError,
           invocationResult.terminalKind ?? (invocationResult.isError ? "failed" : "completed"),
           invocationResult.eventId
@@ -3797,16 +3820,26 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       return;
     }
 
+    if (row.deliveryStatus === "delivered_live") {
+      this.recordDebugPhase(channelId, "channel_method.duplicate_live_terminal_ignored", {
+        callId,
+        invocationId: row.invocationId,
+        terminalKind: row.terminalKind,
+      });
+      return;
+    }
+
+    const hydratedResult = await this.hydrateStoredTransportValue(result);
     const waiter = this.methodResultWaiters.get(callId);
     this.markMethodSuspensionTerminal(callId, {
       terminalKind,
-      result,
+      result: hydratedResult,
       isError,
       eventId,
       waiterPresent: Boolean(waiter),
     });
     if (waiter) {
-      waiter.resolve({ result, isError });
+      waiter.resolve({ result: hydratedResult, isError });
       return;
     }
 

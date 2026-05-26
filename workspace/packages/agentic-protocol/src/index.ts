@@ -60,6 +60,28 @@ export type {
 export { agenticSlice } from "./events.js";
 
 export type {
+  BlobWriter,
+  BlobReader,
+  EncodedAgenticEvent,
+  StoredValueRef,
+} from "./stored-values.js";
+export {
+  MAX_INLINE_TRAJECTORY_EVENT_BYTES,
+  MAX_INLINE_TRAJECTORY_TEXT_BYTES,
+  STORED_VALUE_REF_PROTOCOL,
+  TRAJECTORY_BLOB_PREVIEW_CHARS,
+  assertEncodedAgenticEventFits,
+  assertAgenticEventStoredValuesEncoded,
+  collectStoredValueRefs,
+  encodeChannelPayloadStoredValues,
+  encodeAgenticEventStoredValues,
+  findUnencodedAgenticEventStoredValues,
+  hydrateStoredValueRef,
+  hydrateStoredValueRefs,
+  isStoredValueRef,
+} from "./stored-values.js";
+
+export type {
   ChannelEnvelope,
   ChannelRosterEntry,
   EphemeralSignal,

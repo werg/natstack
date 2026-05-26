@@ -88,10 +88,12 @@ export interface EventCausality {
 
 export type MessageRole = "user" | "assistant" | "system" | "tool" | "panel";
 
+export type { StoredValueRef as BlobRefPayload } from "./stored-values.js";
+
 export type MessagePayload =
-  | { protocol: "agentic.trajectory.v1"; role: MessageRole; content?: string; blocks?: MessageBlockInput[]; mentions?: string[]; replyTo?: MessageId }
-  | { protocol: "agentic.trajectory.v1"; delta: string; replace?: boolean; block?: MessageBlockInput }
-  | { protocol: "agentic.trajectory.v1"; role?: MessageRole; content: string; blocks?: MessageBlockInput[]; usage?: UsagePayload; mentions?: string[]; replyTo?: MessageId }
+  | { protocol: "agentic.trajectory.v1"; role: MessageRole; content?: string; contentBlob?: StoredValueRef; blocks?: MessageBlockInput[]; mentions?: string[]; replyTo?: MessageId }
+  | { protocol: "agentic.trajectory.v1"; delta: string; deltaBlob?: StoredValueRef; replace?: boolean; block?: MessageBlockInput }
+  | { protocol: "agentic.trajectory.v1"; role?: MessageRole; content: string; contentBlob?: StoredValueRef; blocks?: MessageBlockInput[]; usage?: UsagePayload; mentions?: string[]; replyTo?: MessageId }
   | { protocol: "agentic.trajectory.v1"; reason: string; recoverable?: boolean };
 
 export interface MessageBlockInput {
@@ -149,7 +151,8 @@ export type ApprovalPayload =
 
 export type SandboxSourcePayload =
   | { type: "code"; code: string }
-  | { type: "file"; path: string };
+  | { type: "file"; path: string }
+  | StoredValueRef;
 
 export type CustomMessageDisplayMode = "inline" | "row";
 
@@ -349,3 +352,4 @@ export function agenticSlice<K extends EventKind>(event: TrajectoryEvent<K>): Ag
     createdAt: event.createdAt,
   };
 }
+import type { StoredValueRef } from "./stored-values.js";

@@ -3,6 +3,7 @@ export {
   PI_ENTRY_TRAJECTORY_BRIDGES,
   TrajectoryBackedSessionStorage,
   UnmappedEntryError,
+  sessionEntryToAgenticEvent,
 } from "./trajectory-backed-session-storage.js";
 export type {
   TrajectoryBackedSessionStorageOptions,

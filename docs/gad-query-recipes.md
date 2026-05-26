@@ -98,7 +98,7 @@ WITH RECURSIVE branch_chain AS (
    AND parent.id = child.parent_id
 )
 SELECT bc.id AS trajectory_id, bc.hash AS trajectory_hash, bc.kind,
-       bc.message_id, bc.block_id, bc.tool_call_id, p.json AS payload_json
+       bc.message_id, bc.block_id, bc.tool_call_id, p.json AS payload_ref_json
 FROM branch_chain bc
 LEFT JOIN gad_payloads p
   ON p.workspace_id = bc.workspace_id

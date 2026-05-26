@@ -22,6 +22,7 @@ import {
   type Result,
   type SessionMetadata,
   type SessionStorage,
+  type SessionTreeEntry,
   type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import { getModel as piGetModel, type ImageContent, type Model } from "@earendil-works/pi-ai";
@@ -68,12 +69,15 @@ import type { NatStackScopedUiContext } from "./natstack-extension-context.js";
 import {
   TrajectoryBackedSessionStorage,
   materializeSessionTree,
+  sessionEntryToAgenticEvent,
   type TrajectorySessionMetadata,
 } from "@workspace/pi-adapter";
 import {
   AGENTIC_PROTOCOL_VERSION,
   brandId,
   createInitialTrajectoryState,
+  encodeAgenticEventStoredValues,
+  MAX_INLINE_TRAJECTORY_EVENT_BYTES,
   reduceTrajectory,
   TURN_SCOPED_OWNER_KINDS,
   type AgenticEvent,
@@ -107,6 +111,7 @@ const BUILTIN_TOOL_NAMES = [
   "web_fetch",
   "web_read",
 ] as const;
+
 export interface PiRunnerGadProvenance {
   trajectoryId?: string | null;
   branchId: string;
@@ -389,6 +394,9 @@ export class PiRunner {
   private activeRunSignal: AbortSignal | null = null;
   private activeOperationAbortController: AbortController | null = null;
   private lastContinueDiagnostic: Record<string, unknown> | null = null;
+  private harnessEventChain: Promise<void> = Promise.resolve();
+  private harnessEventFailure: unknown = null;
+  private readonly harnessEventFailureWaiters = new Set<(err: unknown) => void>();
 
   constructor(private readonly options: PiRunnerOptions) {
     this._approvalLevel = options.approvalLevel;
@@ -586,15 +594,10 @@ export class PiRunner {
   ): Promise<boolean> {
     if (!this.options.gad || !this.currentTurnId) return false;
     const turnId = this.currentTurnId;
-    this.currentTurnId = null;
     this.running = false;
     this.activeAssistantMessage = null;
-    await this.flushProvenance().catch((err) => {
-      console.warn("[PiRunner] flushProvenance during forceCloseCurrentTurn failed:", err);
-    });
-    await this.abandonOpenInvocations(summary).catch((err) => {
-      console.warn("[PiRunner] abandonOpenInvocations during forceCloseCurrentTurn failed:", err);
-    });
+    await this.flushProvenance();
+    await this.abandonOpenInvocations(summary);
     await this.appendTrajectoryEvents([
       {
         event: {
@@ -611,6 +614,7 @@ export class PiRunner {
         publishToChannel: true,
       },
     ]);
+    if (this.currentTurnId === turnId) this.currentTurnId = null;
     return true;
   }
 
@@ -797,8 +801,9 @@ export class PiRunner {
       trajectoryId,
       branchId: gad.branchId,
       entries: materializeSessionTree(state),
-      appendEvent: async (event) => {
-        await this.appendTrajectoryEvents([{ event }]);
+      appendEvent: async (event, entry) => {
+        if (entry.type === "message") return;
+        await this.appendTrajectoryEvents([{ event, eventId: this.sessionEntryEventId(entry.id) }]);
       },
     });
   }
@@ -809,12 +814,27 @@ export class PiRunner {
     return gad.trajectoryId ?? gad.workspaceId ?? gad.branchId;
   }
 
+  private sessionEntryEventId(entryId: string): string {
+    return `${entryId}:pi-session-entry`;
+  }
+
+  private async queueSessionEntryProvenance(entryId: string): Promise<void> {
+    if (!this.options.gad || !(this.storage instanceof TrajectoryBackedSessionStorage)) return;
+    const entry = await this.storage.getEntry(entryId);
+    if (!entry || entry.type !== "message") return;
+    this.provenanceQueue.push({
+      event: sessionEntryToAgenticEvent(entry as SessionTreeEntry),
+      eventId: this.sessionEntryEventId(entry.id),
+      publishToChannel: false,
+    });
+  }
+
   private wireHarness(): void {
     if (!this.harness) throw new AgentWorkerError("invalid_state", "PiRunner not initialized");
 
-    this.harnessUnsub = this.harness.subscribe((event, signal) =>
-      this.handleHarnessEvent(event, signal)
-    );
+    this.harnessUnsub = this.harness.subscribe((event, signal) => {
+      this.enqueueHarnessEvent(event, signal);
+    });
 
     this.harness.on("context", async (event) => {
       this.rememberCheckpoint("context.transform.start", {
@@ -895,14 +915,24 @@ export class PiRunner {
       return undefined;
     });
     this.harness.on("save_point", async () => {
-      await this.flushProvenance();
-      await this.prepareFollowingTurn();
-      return undefined;
+      try {
+        await this.flushProvenance();
+        await this.prepareFollowingTurn();
+        return undefined;
+      } catch (err) {
+        this.failActiveRun("harness.save_point", err);
+        throw err;
+      }
     });
     this.harness.on("settled", async () => {
-      await this.flushProvenance();
-      await this.maybeCompactWhenIdle();
-      return undefined;
+      try {
+        await this.flushProvenance();
+        await this.maybeCompactWhenIdle();
+        return undefined;
+      } catch (err) {
+        this.failActiveRun("harness.settled", err);
+        throw err;
+      }
     });
   }
 
@@ -1099,37 +1129,130 @@ export class PiRunner {
     }
   }
 
-  private async handleHarnessEvent(event: AgentHarnessEvent, _signal?: AbortSignal): Promise<void> {
-    const signal = _signal ?? this.activeRunSignal ?? undefined;
-    this.rememberHarnessEvent(event);
-    if (event.type === "agent_start") {
-      this.activeRunSignal = signal ?? null;
-      this.rememberCheckpoint("agent.start", {
-        signalAborted: signal?.aborted ?? false,
-      });
-      this.running = true;
-      await this.openCurrentTurn();
+  private enqueueHarnessEvent(event: AgentHarnessEvent, signal?: AbortSignal): void {
+    const messageEndLeafId = event.type === "message_end" ? this.session?.getLeafId() : undefined;
+    const next = this.harnessEventChain.then(async () =>
+      this.handleHarnessEvent(
+        event,
+        signal,
+        (messageEndLeafId ? await messageEndLeafId : undefined) ?? undefined
+      )
+    );
+    this.harnessEventChain = next.catch((err) => {
+      this.recordHarnessEventFailure(err);
+    });
+  }
+
+  private recordHarnessEventFailure(err: unknown): void {
+    this.harnessEventFailure ??= err;
+    for (const reject of this.harnessEventFailureWaiters) reject(err);
+    this.harnessEventFailureWaiters.clear();
+  }
+
+  private watchHarnessEventFailure(): { promise: Promise<never>; dispose: () => void } {
+    if (this.harnessEventFailure) {
+      return { promise: Promise.reject(this.harnessEventFailure), dispose: () => undefined };
     }
-    if (event.type === "message_start") {
-      await this.handleMessageStart((event as { message: AgentMessage }).message);
-    }
-    if (event.type === "message_update") {
-      await this.handleMessageUpdate((event as { message: AgentMessage }).message);
-    }
-    if (event.type === "message_end") {
-      await this.handleMessageEnd(event.message);
-    }
-    if (event.type === "agent_end") {
-      await this.closeCurrentTurn();
-      this.running = false;
-      this.awaitingProviderFirstEvent = false;
-    }
+    let reject!: (err: unknown) => void;
+    const promise = new Promise<never>((_, rej) => {
+      reject = rej;
+    });
+    this.harnessEventFailureWaiters.add(reject);
+    return {
+      promise,
+      dispose: () => {
+        this.harnessEventFailureWaiters.delete(reject);
+      },
+    };
+  }
+
+  private throwHarnessEventFailure(): void {
+    if (this.harnessEventFailure) throw this.harnessEventFailure;
+  }
+
+  private async runHarnessOperation(
+    scope: string,
+    operation: () => Promise<unknown>
+  ): Promise<void> {
+    await this.harnessEventChain;
+    this.throwHarnessEventFailure();
+    this.harnessEventFailure = null;
+    const failure = this.watchHarnessEventFailure();
+    const operationPromise = operation();
+    void operationPromise.catch(() => undefined);
     try {
+      await Promise.race([operationPromise, failure.promise]);
+      await this.harnessEventChain;
+      this.throwHarnessEventFailure();
+      await operationPromise;
+    } catch (err) {
+      if (this.harnessEventFailure === err) {
+        this.rememberCheckpoint(`${scope}.harness_event_failed`, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        await this.harness?.abort();
+      }
+      throw err;
+    } finally {
+      failure.dispose();
+    }
+  }
+
+  private async handleHarnessEvent(
+    event: AgentHarnessEvent,
+    _signal?: AbortSignal,
+    capturedMessageEntryId?: string
+  ): Promise<void> {
+    const signal = _signal ?? this.activeRunSignal ?? undefined;
+    try {
+      this.rememberHarnessEvent(event);
+      if (event.type === "agent_start") {
+        this.activeRunSignal = signal ?? null;
+        this.rememberCheckpoint("agent.start", {
+          signalAborted: signal?.aborted ?? false,
+        });
+        this.running = true;
+        await this.openCurrentTurn();
+      }
+      if (event.type === "message_start") {
+        await this.handleMessageStart((event as { message: AgentMessage }).message);
+      }
+      if (event.type === "message_update") {
+        await this.handleMessageUpdate((event as { message: AgentMessage }).message);
+      }
+      if (event.type === "message_end") {
+        await this.handleMessageEnd(event.message, capturedMessageEntryId);
+      }
+      if (event.type === "agent_end") {
+        await this.closeCurrentTurn();
+        this.running = false;
+        this.awaitingProviderFirstEvent = false;
+      }
       await this.hooks.emitEvent(event, { signal });
+    } catch (err) {
+      this.failActiveRun(`harness.event.${event.type}`, err);
+      throw err;
     } finally {
       if (event.type === "agent_end") {
         this.activeRunSignal = null;
       }
+    }
+  }
+
+  private failActiveRun(scope: string, err: unknown): void {
+    this.rememberError(scope, err);
+    this.rememberCheckpoint("agent.run.failed", {
+      scope,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    this.running = false;
+    this.activeAssistantMessage = null;
+    this.awaitingProviderFirstEvent = false;
+    this.activeRunSignal = null;
+    try {
+      this.options.uiCallbacks.setWorkingMessage(undefined);
+    } catch (callbackErr) {
+      console.warn("[PiRunner] setWorkingMessage cleanup failed:", callbackErr);
     }
   }
 
@@ -1237,15 +1360,19 @@ export class PiRunner {
     );
   }
 
-  private async handleMessageEnd(message: AgentMessage): Promise<void> {
+  private async handleMessageEnd(
+    message: AgentMessage,
+    capturedMessageEntryId?: string
+  ): Promise<void> {
     if (!this.session) return;
-    const messageEntryId = await this.session.getLeafId();
+    const messageEntryId = capturedMessageEntryId ?? (await this.session.getLeafId());
     if (!messageEntryId) return;
     const role = this.messageRole(message);
     const messageId =
       role === "assistant" && this.activeAssistantMessage
         ? this.activeAssistantMessage.messageId
         : messageEntryId;
+    await this.queueSessionEntryProvenance(messageEntryId);
     this.queueMessageProvenance(message, messageEntryId, messageId);
     if (role === "assistant") this.activeAssistantMessage = null;
     await this.flushProvenance();
@@ -1366,6 +1493,7 @@ export class PiRunner {
             },
             createdAt: this.messageTimestamp(message),
           },
+          eventId: `${messageEntryId}:invocation:${toolCallId}:started`,
           publishToChannel: true,
         });
       }
@@ -1416,6 +1544,7 @@ export class PiRunner {
                   },
             createdAt: this.messageTimestamp(message),
           },
+          eventId: `${messageEntryId}:invocation:${toolCallId}:terminal`,
           publishToChannel: true,
         });
       }
@@ -1430,57 +1559,114 @@ export class PiRunner {
       await this.appendTrajectoryEvents(batch);
     } catch (err) {
       const outcome = await this.flushProvenanceIndividually(batch, err);
-      if (outcome.requeued > 0 || !isPermanentProvenanceError(err)) {
-        console.warn("[PiRunner] provenance flush failed:", err);
+      if (outcome.sizeLimitError) {
+        if (outcome.sizeLimitError.error instanceof AgentWorkerError)
+          throw outcome.sizeLimitError.error;
+        throw this.provenanceSizeLimitError(
+          outcome.sizeLimitError.item,
+          outcome.sizeLimitError.error
+        );
       }
+      if (outcome.permanentError) {
+        throw this.provenancePermanentError(
+          outcome.permanentError.item,
+          outcome.permanentError.error
+        );
+      }
+      if (outcome.requeued > 0 || !isPermanentProvenanceError(err)) throw err;
     }
   }
 
   private async flushProvenanceIndividually(
     batch: TrajectoryQueueItem[],
     batchError: unknown
-  ): Promise<{ dropped: number; requeued: number }> {
-    if (!this.options.gad) return { dropped: 0, requeued: 0 };
+  ): Promise<{
+    requeued: number;
+    sizeLimitError?: { item: TrajectoryQueueItem; error: unknown };
+    permanentError?: { item: TrajectoryQueueItem; error: unknown };
+  }> {
+    if (!this.options.gad) return { requeued: 0 };
     const retry: TrajectoryQueueItem[] = [];
-    let dropped = 0;
+    let sizeLimitError: { item: TrajectoryQueueItem; error: unknown } | undefined;
+    let permanentError: { item: TrajectoryQueueItem; error: unknown } | undefined;
     for (const item of batch) {
       try {
         await this.appendTrajectoryEvents([item]);
       } catch (err) {
+        if (isProvenanceSizeLimitError(err)) {
+          retry.push(item);
+          sizeLimitError ??= { item, error: err };
+          continue;
+        }
         if (isPermanentProvenanceError(err)) {
-          dropped += 1;
-          console.warn("[PiRunner] dropping invalid provenance event:", {
-            eventId: item.eventId,
-            kind: item.event.kind,
-            error: err instanceof Error ? err.message : String(err),
-          });
+          retry.push(item);
+          permanentError ??= { item, error: err };
           continue;
         }
         retry.push(item);
       }
     }
-    if (retry.length > 0 || !isPermanentProvenanceError(batchError)) {
-      this.provenanceQueue = retry.concat(this.provenanceQueue);
+    if (retry.length > 0 || permanentError || !isPermanentProvenanceError(batchError)) {
+      this.provenanceQueue = [...retry, ...this.provenanceQueue];
     }
-    return { dropped, requeued: retry.length };
+    return { requeued: retry.length, sizeLimitError, permanentError };
+  }
+
+  private provenancePermanentError(item: TrajectoryQueueItem, err: unknown): AgentWorkerError {
+    const eventId = item.eventId ? ` eventId=${item.eventId}` : "";
+    return new AgentWorkerError(
+      "provenance",
+      `Permanent provenance persistence failure:${eventId} kind=${item.event.kind}`,
+      { cause: err }
+    );
+  }
+
+  private provenanceSizeLimitError(item: TrajectoryQueueItem, err: unknown): AgentWorkerError {
+    const payloadBytes = Buffer.byteLength(JSON.stringify(item.event.payload), "utf8");
+    const eventBytes = Buffer.byteLength(JSON.stringify(item.event), "utf8");
+    const eventId = item.eventId ? ` eventId=${item.eventId}` : "";
+    return new AgentWorkerError(
+      "provenance",
+      `Provenance event is too large to store:${eventId} kind=${item.event.kind} payloadBytes=${payloadBytes} eventBytes=${eventBytes}`,
+      { cause: err }
+    );
+  }
+
+  private async normalizeProvenanceEvent(
+    event: AgenticEvent,
+    eventId?: string
+  ): Promise<AgenticEvent> {
+    const { event: normalized, eventBytes } = await encodeAgenticEventStoredValues(event, {
+      putText: (value) => this.putRequiredGadBlob(value),
+    });
+    if (eventBytes <= MAX_INLINE_TRAJECTORY_EVENT_BYTES) return normalized;
+    throw new AgentWorkerError(
+      "provenance",
+      `Provenance event remains too large after blob spilling:${eventId ? ` eventId=${eventId}` : ""} kind=${normalized.kind} eventBytes=${eventBytes} maxBytes=${MAX_INLINE_TRAJECTORY_EVENT_BYTES}`
+    );
   }
 
   private async appendTrajectoryEvents(items: TrajectoryQueueItem[]): Promise<void> {
     if (items.length === 0 || !this.options.gad) return;
-    const events = items.map((item) => {
-      const event = this.withCurrentTurnId(item.event);
-      const publishToChannel = this.options.publicationPolicy
-        ? this.options.publicationPolicy({ event, publishToChannel: item.publishToChannel })
-        : item.publishToChannel;
-      this.rememberTrajectoryEvent({ ...item, event, publishToChannel });
-      return {
-        event,
-        ...(item.eventId ? { eventId: item.eventId } : {}),
-        ...(this.options.gad?.channelId && publishToChannel === true
-          ? { publish: { channelIds: [this.options.gad.channelId] } }
-          : {}),
-      };
-    });
+    const events = await Promise.all(
+      items.map(async (item) => {
+        const event = await this.normalizeProvenanceEvent(
+          this.withCurrentTurnId(item.event),
+          item.eventId
+        );
+        const publishToChannel = this.options.publicationPolicy
+          ? this.options.publicationPolicy({ event, publishToChannel: item.publishToChannel })
+          : item.publishToChannel;
+        this.rememberTrajectoryEvent({ ...item, event, publishToChannel });
+        return {
+          event,
+          ...(item.eventId ? { eventId: item.eventId } : {}),
+          ...(this.options.gad?.channelId && publishToChannel === true
+            ? { publish: { channelIds: [this.options.gad.channelId] } }
+            : {}),
+        };
+      })
+    );
     try {
       const result = await this.gad.call<AppendTrajectoryBatchResultLike>("appendTrajectoryBatch", {
         trajectoryId: this.gadTrajectoryId(),
@@ -1489,7 +1675,8 @@ export class PiRunner {
         events,
       });
       for (const { event } of events) {
-        const invocationId = (event as { causality?: { invocationId?: unknown } }).causality?.invocationId;
+        const invocationId = (event as { causality?: { invocationId?: unknown } }).causality
+          ?.invocationId;
         if (typeof invocationId === "string" && this.isTerminalInvocationEvent(event.kind)) {
           this.terminalInvocationIds.add(invocationId);
         }
@@ -1634,6 +1821,7 @@ export class PiRunner {
     if (!entryId) {
       throw new AgentWorkerError("session", "appendMessage completed without a leaf entry");
     }
+    await this.queueSessionEntryProvenance(entryId);
     this.queueMessageProvenance(message, entryId);
     await this.flushProvenance();
     return entryId;
@@ -1836,56 +2024,58 @@ export class PiRunner {
   private async snapshotMutationTarget(absPath: string): Promise<GadBlobSnapshot | null> {
     try {
       const raw = await this.options.fs.readFile(absPath);
-      const blob = await this.putGadBlob(raw);
-      return blob ?? null;
-    } catch {
-      return null;
+      return await this.putGadBlob(raw);
+    } catch (err) {
+      if (err && typeof err === "object" && "code" in err && err.code === "ENOENT") return null;
+      throw err;
     }
   }
 
-  private async putGadBlob(value: string | Uint8Array | Buffer): Promise<GadBlobSnapshot | null> {
+  private async putGadBlob(value: string | Uint8Array | Buffer): Promise<GadBlobSnapshot> {
+    if (typeof value === "string") {
+      return await this.options.rpc.call<GadBlobSnapshot>("main", "blobstore.putText", [value]);
+    }
+    return await this.options.rpc.call<GadBlobSnapshot>("main", "blobstore.putBase64", [
+      Buffer.from(value).toString("base64"),
+    ]);
+  }
+
+  private async putRequiredGadBlob(value: string | Uint8Array | Buffer): Promise<GadBlobSnapshot> {
     try {
-      if (typeof value === "string") {
-        return await this.options.rpc.call<GadBlobSnapshot>("main", "blobstore.putText", [value]);
-      }
-      return await this.options.rpc.call<GadBlobSnapshot>("main", "blobstore.putBase64", [
-        Buffer.from(value).toString("base64"),
-      ]);
+      return await this.putGadBlob(value);
     } catch (err) {
-      console.warn("[PiRunner] blobstore put failed:", err);
-      return null;
+      throw new AgentWorkerError(
+        "provenance",
+        "Failed to spill oversized provenance payload to blobstore",
+        { cause: err }
+      );
     }
   }
 
   private async surfaceOrphanMutationIntents(): Promise<void> {
     if (!this.options.gad) return;
-    let intents: Array<{ event_id: string; payload_json: string }> = [];
-    let observed: Array<{ payload_json: string }> = [];
-    try {
-      const intentResult = await this.gad.call<{
-        rows: Array<{ event_id: string; payload_json: string }>;
-      }>(
-        "query",
-        "SELECT event_id, payload_json FROM trajectory_events WHERE branch_id = ? AND kind = 'state.file_mutation_intended'",
-        [this.options.gad.branchId]
-      );
-      const observedResult = await this.gad.call<{ rows: Array<{ payload_json: string }> }>(
-        "query",
-        "SELECT payload_json FROM trajectory_events WHERE branch_id = ? AND kind = 'state.file_mutation_applied'",
-        [this.options.gad.branchId]
-      );
-      intents = intentResult.rows;
-      observed = observedResult.rows;
-    } catch (err) {
-      console.warn("[PiRunner] orphan-intent scan failed:", err);
-      return;
-    }
+    let intents: Array<{ event_id: string; payload_ref_json: string }> = [];
+    let observed: Array<{ payload_ref_json: string }> = [];
+    const intentResult = await this.gad.call<{
+      rows: Array<{ event_id: string; payload_ref_json: string }>;
+    }>(
+      "query",
+      "SELECT event_id, payload_ref_json FROM trajectory_events WHERE branch_id = ? AND kind = 'state.file_mutation_intended'",
+      [this.options.gad.branchId]
+    );
+    const observedResult = await this.gad.call<{ rows: Array<{ payload_ref_json: string }> }>(
+      "query",
+      "SELECT payload_ref_json FROM trajectory_events WHERE branch_id = ? AND kind = 'state.file_mutation_applied'",
+      [this.options.gad.branchId]
+    );
+    intents = intentResult.rows;
+    observed = observedResult.rows;
 
     const observedParents = new Set(
       observed
         .map((o) => {
           try {
-            const payload = JSON.parse(o.payload_json) as { mutationId?: unknown };
+            const payload = JSON.parse(o.payload_ref_json) as { mutationId?: unknown };
             return typeof payload.mutationId === "string" ? payload.mutationId : null;
           } catch {
             return null;
@@ -1895,7 +2085,7 @@ export class PiRunner {
     );
     const orphans = intents.filter((intent) => !observedParents.has(intent.event_id));
     for (const orphan of orphans) {
-      const payload = JSON.parse(orphan.payload_json) as { path?: string };
+      const payload = JSON.parse(orphan.payload_ref_json) as { path?: string };
       const path = payload.path ?? null;
       const event = {
         type: "system_event" as const,
@@ -2187,7 +2377,9 @@ export class PiRunner {
       await this.refreshRuntimeTools();
       this.rememberCheckpoint("prompt.refresh_tools.ok");
       this.rememberCheckpoint("prompt.harness.start");
-      await this.harness.prompt(input.content, input.images ? { images: input.images } : undefined);
+      await this.runHarnessOperation("prompt", () =>
+        this.harness!.prompt(input.content, input.images ? { images: input.images } : undefined)
+      );
       this.rememberCheckpoint("prompt.harness.ok");
     } catch (err) {
       this.rememberError("prompt", err);
@@ -2274,7 +2466,7 @@ export class PiRunner {
       await this.refreshRuntimeTools();
       this.rememberCheckpoint("continue.refresh_tools.ok");
       this.rememberCheckpoint("continue.harness.start");
-      await this.harness.continue();
+      await this.runHarnessOperation("continue", () => this.harness!.continue());
       this.rememberCheckpoint("continue.harness.ok");
     } catch (err) {
       this.rememberError("continue", err);
@@ -2390,9 +2582,11 @@ export class PiRunner {
         publishToChannel: true,
       })
     );
-    this.openInvocationIds.clear();
-    this.openToolInvocations.clear();
     await this.appendTrajectoryEvents(items);
+    for (const toolCallId of items.map((item) => item.event.causality?.invocationId)) {
+      if (typeof toolCallId === "string") this.openInvocationIds.delete(toolCallId);
+    }
+    this.openToolInvocations.clear();
   }
 
   markToolCallPreApproved(toolCallId: string): void {
@@ -2414,8 +2608,8 @@ export class PiRunner {
       } as AgentToolResult<any>;
     }
     if (
-      (tool as AgentTool<any> & HibernationResumableTool).natstackResume
-        ?.safeAcrossHibernation !== true
+      (tool as AgentTool<any> & HibernationResumableTool).natstackResume?.safeAcrossHibernation !==
+      true
     ) {
       return {
         content: [
@@ -2714,6 +2908,12 @@ function isPermanentProvenanceError(err: unknown): boolean {
     /Cannot resolve unknown approval/u.test(message) ||
     /Cannot resolve approval .* more than once/u.test(message)
   );
+}
+
+function isProvenanceSizeLimitError(err: unknown): boolean {
+  if (err instanceof AgentWorkerError && err.code === "provenance") return true;
+  const message = err instanceof Error ? err.message : String(err);
+  return /SQLITE_TOOBIG/u.test(message) || /string or blob too big/u.test(message);
 }
 
 function fileErr<T>(code: FileError["code"], path: string, cause: unknown): Result<T, FileError> {

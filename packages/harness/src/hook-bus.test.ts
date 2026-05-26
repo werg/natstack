@@ -31,19 +31,13 @@ describe("HookBus.emitEvent", () => {
     expect(seen).toEqual(["a:agent_start", "b:agent_start"]);
   });
 
-  it("logs throwing listeners but still dispatches to later listeners", async () => {
-    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      const bus = new HookBus();
-      const seen: string[] = [];
-      bus.on("event", () => { throw new Error("boom"); });
-      bus.on("event", (e) => { seen.push(e.type); return; });
-      await bus.emitEvent({ type: "turn_start" } as any);
-      expect(seen).toEqual(["turn_start"]);
-      expect(errSpy).toHaveBeenCalled();
-    } finally {
-      errSpy.mockRestore();
-    }
+  it("raises throwing listeners and does not dispatch to later listeners", async () => {
+    const bus = new HookBus();
+    const seen: string[] = [];
+    bus.on("event", () => { throw new Error("boom"); });
+    bus.on("event", (e) => { seen.push(e.type); return; });
+    await expect(bus.emitEvent({ type: "turn_start" } as any)).rejects.toThrow("boom");
+    expect(seen).toEqual([]);
   });
 
   it("unsubscribes via the returned cleanup", async () => {
@@ -92,6 +86,12 @@ describe("HookBus.emitTransformContext", () => {
     expect(out).toHaveLength(1);
   });
 
+  it("raises transform listener failures", async () => {
+    const bus = new HookBus();
+    bus.on("transform_context", () => { throw new Error("transform boom"); });
+    await expect(bus.emitTransformContext([])).rejects.toThrow("transform boom");
+  });
+
   it("clear() removes every registered listener", async () => {
     const bus = new HookBus();
     const seen: string[] = [];
@@ -124,7 +124,17 @@ describe("HookBus.emitTransformContext", () => {
     });
 
     controller.abort();
-    await expect(pending).resolves.toEqual([]);
+    await expect(pending).rejects.toThrow("Hook listener aborted");
     expect(bus.getDebugState().active).toBeNull();
+  });
+});
+
+describe("HookBus.emitBeforeProviderRequest", () => {
+  it("raises provider request listener failures", async () => {
+    const bus = new HookBus();
+    bus.on("before_provider_request", () => { throw new Error("provider boom"); });
+    await expect(
+      bus.emitBeforeProviderRequest({ type: "before_provider_request" } as any),
+    ).rejects.toThrow("provider boom");
   });
 });

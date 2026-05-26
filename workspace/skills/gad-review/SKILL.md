@@ -21,7 +21,7 @@ ORDER BY updated_at DESC;
 ```
 
 ```sql
-SELECT event_id, seq, kind, causality_json, payload_json, created_at
+SELECT event_id, seq, kind, causality_json, payload_ref_json, created_at
 FROM trajectory_events
 WHERE branch_id = ?
 ORDER BY seq;
@@ -36,7 +36,7 @@ ORDER BY m.created_at, h.id;
 ```
 
 ```sql
-SELECT st.*, e.kind, e.causality_json, e.payload_json
+SELECT st.*, e.kind, e.causality_json, e.payload_ref_json
 FROM gad_state_transitions st
 JOIN trajectory_events e ON e.event_id = st.event_id
 WHERE st.output_state_hash = ?

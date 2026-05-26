@@ -4,6 +4,7 @@ import type { BootstrapSnapshot, ChannelReplayEnvelope, ServerLogEvent } from "@
 import {
   AGENTIC_EVENT_PAYLOAD_KIND,
   brandId,
+  encodeChannelPayloadStoredValues,
   type ChannelEnvelope,
   type ChannelId,
   type EnvelopeId,
@@ -149,18 +150,19 @@ export class GadChannelLogStore implements ChannelLogStore {
   private static readonly REPLAY_AFTER_LIMIT = 500;
 
   constructor(
-    rpc: RpcCallerLike,
+    private readonly rpc: RpcCallerLike,
     private readonly channelId: string,
   ) {
     this.gad = createGadServiceClient(rpc);
   }
 
   async append(input: AppendChannelLogInput): Promise<ChannelEvent> {
+    const payload = await this.encodePayload(input.payload);
     const envelope = await this.gad.call<ChannelEnvelope>("appendChannelEnvelope", {
       channelId: brandId<ChannelId>(this.channelId),
       envelopeId: brandId<EnvelopeId>(input.messageId ?? crypto.randomUUID()),
       from: participantRefForSender(input.senderId, input.senderMetadata),
-      payload: input.payload,
+      payload,
       payloadKind: input.type,
       metadata: input.senderMetadata,
       attachments: input.attachments,
@@ -177,11 +179,12 @@ export class GadChannelLogStore implements ChannelLogStore {
   }
 
   async appendWithRegistryMutation(input: AppendChannelLogInput, mutation: RegistryMutationInput): Promise<ChannelEvent> {
+    const payload = await this.encodePayload(input.payload);
     const envelope = await this.gad.call<ChannelEnvelope>("appendChannelEnvelopeWithRegistryMutation", {
       channelId: brandId<ChannelId>(this.channelId),
       envelopeId: brandId<EnvelopeId>(input.messageId ?? crypto.randomUUID()),
       from: participantRefForSender(input.senderId, input.senderMetadata),
-      payload: input.payload,
+      payload,
       payloadKind: input.type,
       metadata: input.senderMetadata,
       attachments: input.attachments,
@@ -276,5 +279,12 @@ export class GadChannelLogStore implements ChannelLogStore {
       attachments: envelope.attachments ? JSON.stringify(envelope.attachments) : null,
       published_at: Date.parse(envelope.publishedAt),
     }];
+  }
+
+  private async encodePayload(payload: unknown): Promise<unknown> {
+    return encodeChannelPayloadStoredValues(payload, {
+      putText: (value) =>
+        this.rpc.call<{ digest: string; size: number }>("main", "blobstore.putText", [value]),
+    });
   }
 }

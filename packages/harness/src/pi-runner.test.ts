@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 
 vi.mock("@earendil-works/pi-ai", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@earendil-works/pi-ai")>();
@@ -17,6 +18,7 @@ vi.mock("@earendil-works/pi-ai", async (importOriginal) => {
 import { PiRunner } from "./pi-runner.js";
 import type { HibernationResumableTool, PiRunnerOptions } from "./pi-runner.js";
 import type { RuntimeFs } from "./tools/runtime-fs.js";
+import { TrajectoryBackedSessionStorage } from "@workspace/pi-adapter";
 
 function deferred<T = void>(): {
   promise: Promise<T>;
@@ -67,8 +69,9 @@ function createFs(): RuntimeFs {
 }
 
 function createOptions(overrides: Partial<PiRunnerOptions> = {}): PiRunnerOptions {
+  const blobs = new Map<string, string>();
   const rpc = {
-    call: vi.fn(async (_target: string, method: string) => {
+    call: vi.fn(async (_target: string, method: string, args: unknown[] = []) => {
       if (method === "workspace.getAgentsMd") return "workspace prompt";
       if (method === "workspace.listSkills") return [];
       if (method === "workers.resolveService") {
@@ -78,6 +81,19 @@ function createOptions(overrides: Partial<PiRunnerOptions> = {}): PiRunnerOption
         };
       }
       if (method === "query") return { rows: [] };
+      if (method === "blobstore.putText") {
+        const text = String(args[0] ?? "");
+        const digest = createHash("sha256").update(text, "utf8").digest("hex");
+        blobs.set(digest, text);
+        return { digest, size: Buffer.byteLength(text, "utf8") };
+      }
+      if (method === "blobstore.getRange") {
+        const text = blobs.get(String(args[0]));
+        if (text === undefined) return null;
+        const offset = Number(args[1] ?? 0);
+        const limit = Number(args[2] ?? text.length);
+        return text.slice(offset, offset + limit);
+      }
       throw new Error(`unexpected rpc method ${method}`);
     }),
   };
@@ -166,6 +182,19 @@ describe("PiRunner", () => {
     runner.dispose();
   });
 
+  it("rejects prompt when async lifecycle handling fails", async () => {
+    const runner = new PiRunner(createOptions());
+    await runner.init();
+    runner.hooks.on("event", (event) => {
+      if (event.type === "agent_start") throw new Error("listener failed");
+    });
+
+    await expect(runner.prompt({ content: "hello" })).rejects.toThrow("listener failed");
+    expect(runner.isStreaming).toBe(false);
+
+    runner.dispose();
+  });
+
   it("appends user messages through the session", async () => {
     const runner = new PiRunner(createOptions());
     await runner.init();
@@ -242,8 +271,7 @@ describe("PiRunner", () => {
     runner.dispose();
   });
 
-  it("isolates permanent provenance failures so one bad event does not poison retries", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  it("raises permanent provenance failures instead of dropping events", async () => {
     const appendTrajectoryBatch = vi
       .fn()
       .mockRejectedValueOnce(new Error("GAD event id collision with different content"))
@@ -281,24 +309,65 @@ describe("PiRunner", () => {
     runner.gad = { call: appendTrajectoryBatch };
     runner.provenanceQueue = [valid, invalid];
 
-    try {
-      await runner.flushProvenance();
+    await expect(runner.flushProvenance()).rejects.toMatchObject({
+      code: "provenance",
+      message: expect.stringContaining("Permanent provenance persistence failure"),
+    });
 
-      expect(appendTrajectoryBatch).toHaveBeenCalledTimes(3);
-      expect(appendTrajectoryBatch).toHaveBeenNthCalledWith(
-        2,
-        "appendTrajectoryBatch",
-        expect.objectContaining({ events: [expect.objectContaining({ eventId: "valid" })] })
-      );
-      expect(appendTrajectoryBatch).toHaveBeenNthCalledWith(
-        3,
-        "appendTrajectoryBatch",
-        expect.objectContaining({ events: [expect.objectContaining({ eventId: "invalid" })] })
-      );
-      expect(runner.provenanceQueue).toEqual([]);
-      expect(warn).toHaveBeenCalledWith(
-        "[PiRunner] dropping invalid provenance event:",
-        expect.objectContaining({ eventId: "invalid", kind: "system.event" })
+    expect(appendTrajectoryBatch).toHaveBeenCalledTimes(3);
+    expect(appendTrajectoryBatch).toHaveBeenNthCalledWith(
+      2,
+      "appendTrajectoryBatch",
+      expect.objectContaining({ events: [expect.objectContaining({ eventId: "valid" })] })
+    );
+    expect(appendTrajectoryBatch).toHaveBeenNthCalledWith(
+      3,
+      "appendTrajectoryBatch",
+      expect.objectContaining({ events: [expect.objectContaining({ eventId: "invalid" })] })
+    );
+    expect(runner.provenanceQueue).toEqual([invalid]);
+  });
+
+  it("raises oversized provenance events that remain too large after blob spilling", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const appendTrajectoryBatch = vi.fn(async () => undefined);
+    const runner = new PiRunner(createOptions()) as unknown as {
+      options: PiRunnerOptions;
+      gad: { call: typeof appendTrajectoryBatch };
+      provenanceQueue: Array<Record<string, unknown>>;
+      flushProvenance(): Promise<void>;
+    };
+    const hugeMetadata: Record<string, string> = {};
+    for (let i = 0; i < 60000; i += 1) hugeMetadata[`k${i}`] = "v";
+    const oversized = {
+      eventId: "oversized",
+      event: {
+        kind: "invocation.completed",
+        actor: { kind: "agent", id: "test", metadata: hugeMetadata },
+        causality: { invocationId: "call_1" },
+        payload: { protocol: "agentic.trajectory.v1", result: { content: "small output" } },
+        createdAt: new Date(0).toISOString(),
+      },
+    };
+    runner.options.gad = {
+      trajectoryId: "trajectory:test",
+      branchId: "branch:test",
+      channelId: "channel:test",
+    };
+    runner.gad = { call: appendTrajectoryBatch };
+    runner.provenanceQueue = [oversized];
+
+    try {
+      await expect(runner.flushProvenance()).rejects.toMatchObject({
+        code: "provenance",
+        message: expect.stringContaining("Provenance event remains too large after blob spilling"),
+      });
+
+      expect(appendTrajectoryBatch).not.toHaveBeenCalled();
+      expect(runner.provenanceQueue).toEqual([oversized]);
+      expect(warn).not.toHaveBeenCalledWith(
+        "[PiRunner] dropping permanent provenance event:",
+        expect.anything()
       );
       expect(warn).not.toHaveBeenCalledWith(
         "[PiRunner] provenance flush failed:",
@@ -307,6 +376,155 @@ describe("PiRunner", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it("clears active run state when message-end provenance persistence fails", async () => {
+    const appendTrajectoryBatch = vi.fn(async () => {
+      throw new Error(
+        'DO RPC relay failed (500): {"error":"string or blob too big: SQLITE_TOOBIG"}'
+      );
+    });
+    const options = createOptions();
+    const runner = new PiRunner(options) as unknown as {
+      options: PiRunnerOptions;
+      gad: { call: typeof appendTrajectoryBatch };
+      session: {
+        getLeafId(): Promise<string>;
+        buildContext(): Promise<{ messages: unknown[] }>;
+      };
+      running: boolean;
+      currentTurnId: string | null;
+      activeAssistantMessage: { messageId: string; lastText: string; started: boolean } | null;
+      awaitingProviderFirstEvent: boolean;
+      activeRunSignal: AbortSignal | null;
+      openInvocationIds: Set<string>;
+      openToolInvocations: Map<string, unknown>;
+      handleHarnessEvent(event: unknown): Promise<void>;
+      getStateSnapshot(): Promise<{ isStreaming: boolean }>;
+    };
+    runner.options.gad = {
+      trajectoryId: "trajectory:test",
+      branchId: "branch:test",
+      channelId: "channel:test",
+    };
+    runner.gad = { call: appendTrajectoryBatch };
+    runner.session = {
+      getLeafId: vi.fn(async () => "entry-assistant"),
+      buildContext: vi.fn(async () => ({ messages: [] })),
+    };
+    runner.running = true;
+    runner.currentTurnId = "turn-open";
+    runner.activeAssistantMessage = {
+      messageId: "message-assistant",
+      lastText: "partial",
+      started: true,
+    };
+    runner.awaitingProviderFirstEvent = true;
+    runner.activeRunSignal = new AbortController().signal;
+    runner.openInvocationIds.add("call_1");
+    runner.openToolInvocations.set("call_1", { toolName: "eval" });
+
+    await expect(
+      runner.handleHarnessEvent({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "done" }],
+          timestamp: 0,
+        },
+      })
+    ).rejects.toMatchObject({
+      code: "provenance",
+      message: expect.stringContaining("Provenance event is too large to store"),
+    });
+
+    expect((await runner.getStateSnapshot()).isStreaming).toBe(false);
+    expect(runner.currentTurnId).toBe("turn-open");
+    expect(runner.activeAssistantMessage).toBeNull();
+    expect(runner.awaitingProviderFirstEvent).toBe(false);
+    expect(runner.activeRunSignal).toBeNull();
+    expect(runner.openInvocationIds.size).toBe(1);
+    expect(runner.openToolInvocations.size).toBe(1);
+    expect(options.uiCallbacks.setWorkingMessage).toHaveBeenCalledWith(undefined);
+  });
+
+  it("raises force-close persistence failures without dropping the open turn", async () => {
+    const appendTrajectoryBatch = vi.fn(async () => {
+      throw new Error("append failed");
+    });
+    const runner = new PiRunner(createOptions()) as unknown as {
+      options: PiRunnerOptions;
+      gad: { call: typeof appendTrajectoryBatch };
+      currentTurnId: string | null;
+      running: boolean;
+      activeAssistantMessage: { messageId: string; lastText: string; started: boolean } | null;
+      forceCloseCurrentTurn(reason?: string, summary?: string): Promise<boolean>;
+    };
+    runner.options.gad = {
+      trajectoryId: "trajectory:test",
+      branchId: "branch:test",
+      channelId: "channel:test",
+    };
+    runner.gad = { call: appendTrajectoryBatch };
+    runner.currentTurnId = "turn-open";
+    runner.running = true;
+    runner.activeAssistantMessage = {
+      messageId: "message-assistant",
+      lastText: "partial",
+      started: true,
+    };
+
+    await expect(runner.forceCloseCurrentTurn("failed", "failed")).rejects.toThrow("append failed");
+
+    expect(runner.currentTurnId).toBe("turn-open");
+    expect(runner.running).toBe(false);
+    expect(runner.activeAssistantMessage).toBeNull();
+  });
+
+  it("spills oversized invocation results to blobstore before appending provenance", async () => {
+    const appendTrajectoryBatch = vi.fn(async () => undefined);
+    const runner = new PiRunner(createOptions()) as unknown as {
+      options: PiRunnerOptions;
+      gad: { call: typeof appendTrajectoryBatch };
+      appendTrajectoryEvents(items: Array<Record<string, unknown>>): Promise<void>;
+    };
+    runner.options.gad = {
+      trajectoryId: "trajectory:test",
+      branchId: "branch:test",
+      channelId: "channel:test",
+    };
+    runner.gad = { call: appendTrajectoryBatch };
+    const largeText = "x".repeat(160 * 1024);
+
+    await runner.appendTrajectoryEvents([
+      {
+        publishToChannel: true,
+        event: {
+          kind: "invocation.completed",
+          actor: { kind: "agent", id: "test" },
+          causality: { invocationId: "call_1" },
+          payload: {
+            protocol: "agentic.trajectory.v1",
+            result: { toolCallId: "call_1", content: [{ type: "text", text: largeText }] },
+            summary: "large result",
+          },
+          createdAt: new Date(0).toISOString(),
+        },
+      },
+    ]);
+
+    expect(appendTrajectoryBatch).toHaveBeenCalledTimes(1);
+    const calls = appendTrajectoryBatch.mock.calls as unknown as Array<
+      [string, { events: Array<{ event: { payload: { result?: unknown } } }> }]
+    >;
+    const input = calls[0]![1];
+    const result = input.events[0]!.event.payload.result as Record<string, unknown>;
+    expect(result).toMatchObject({
+      protocol: "natstack.blob-ref.v1",
+      encoding: "json",
+      originalBytes: expect.any(Number),
+    });
+    expect(JSON.stringify(input)).not.toContain(largeText);
   });
 
   it("records completed tool results as trajectory invocation provenance", () => {
@@ -337,6 +555,7 @@ describe("PiRunner", () => {
         },
       },
       {
+        eventId: "entry-result:invocation:call_1:terminal",
         publishToChannel: true,
         event: {
           kind: "invocation.completed",
@@ -347,6 +566,102 @@ describe("PiRunner", () => {
         },
       },
     ]);
+  });
+
+  it("uses the message leaf captured at harness emission time for message-end provenance", async () => {
+    const runner = new PiRunner(createOptions()) as unknown as {
+      session: { getLeafId(): Promise<string> };
+      provenanceQueue: Array<Record<string, unknown>>;
+      handleMessageEnd(message: unknown, capturedMessageEntryId?: string): Promise<void>;
+    };
+    runner.session = {
+      getLeafId: vi.fn(async () => {
+        throw new Error("late leaf lookup should not run");
+      }),
+    };
+    runner.provenanceQueue = [];
+
+    await runner.handleMessageEnd(
+      {
+        role: "toolResult",
+        toolCallId: "call_1",
+        toolName: "eval",
+        content: [{ type: "text", text: "done" }],
+      },
+      "entry-at-emit"
+    );
+
+    expect(runner.provenanceQueue).toMatchObject([
+      { eventId: "entry-at-emit" },
+      { eventId: "entry-at-emit:invocation:call_1:terminal" },
+    ]);
+    expect(runner.session.getLeafId).not.toHaveBeenCalled();
+  });
+
+  it("batches exact Pi session entries with semantic message provenance", async () => {
+    const timestamp = new Date(0).toISOString();
+    const storage = new TrajectoryBackedSessionStorage({
+      trajectoryId: "trajectory:test",
+      branchId: "branch:test",
+      entries: [
+        {
+          type: "message",
+          id: "entry-tool",
+          parentId: null,
+          timestamp,
+          message: {
+            role: "toolResult",
+            toolCallId: "call_1",
+            toolName: "eval",
+            content: [{ type: "text", text: "done" }],
+          },
+        } as never,
+      ],
+    });
+    const runner = new PiRunner(createOptions()) as unknown as {
+      options: PiRunnerOptions;
+      gad: { call: ReturnType<typeof vi.fn> };
+      session: { getLeafId(): Promise<string> };
+      storage: TrajectoryBackedSessionStorage;
+      provenanceQueue: Array<Record<string, unknown>>;
+      handleMessageEnd(message: unknown, capturedMessageEntryId?: string): Promise<void>;
+    };
+    const appendTrajectoryBatch = vi.fn(async () => undefined);
+    runner.options.gad = { trajectoryId: "trajectory:test", branchId: "branch:test" };
+    runner.gad = { call: appendTrajectoryBatch };
+    runner.session = { getLeafId: vi.fn(async () => "entry-tool") };
+    runner.storage = storage;
+    runner.provenanceQueue = [];
+
+    await runner.handleMessageEnd(
+      {
+        role: "toolResult",
+        toolCallId: "call_1",
+        toolName: "eval",
+        content: [{ type: "text", text: "done" }],
+      },
+      "entry-tool"
+    );
+
+    expect(appendTrajectoryBatch).toHaveBeenCalledTimes(1);
+    expect(appendTrajectoryBatch).toHaveBeenCalledWith(
+      "appendTrajectoryBatch",
+      expect.objectContaining({
+        events: [
+          expect.objectContaining({
+            eventId: "entry-tool:pi-session-entry",
+            event: expect.objectContaining({
+              kind: "system.event",
+              payload: expect.objectContaining({
+                kind: "message",
+              }),
+            }),
+          }),
+          expect.objectContaining({ eventId: "entry-tool" }),
+          expect.objectContaining({ eventId: "entry-tool:invocation:call_1:terminal" }),
+        ],
+      })
+    );
   });
 
   it("does not emit duplicate terminal provenance for already-terminal invocations", () => {
@@ -444,6 +759,7 @@ describe("PiRunner", () => {
     ).toBe(false);
     expect(runner.provenanceQueue).toContainEqual(
       expect.objectContaining({
+        eventId: "entry-assistant:invocation:call_2:started",
         event: expect.objectContaining({
           kind: "invocation.started",
           causality: expect.objectContaining({ invocationId: "call_2" }),
@@ -616,7 +932,11 @@ describe("PiRunner", () => {
               }),
               payload: expect.objectContaining({
                 question: "Allow tool call?",
-                details: { toolName: "write", input: { path: "a.txt" } },
+                details: expect.objectContaining({
+                  protocol: "natstack.blob-ref.v1",
+                  encoding: "json",
+                  originalBytes: expect.any(Number),
+                }),
               }),
             }),
           }),

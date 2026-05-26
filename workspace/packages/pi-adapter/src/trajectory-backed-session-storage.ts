@@ -4,7 +4,12 @@ import {
   type SessionStorage,
   type SessionTreeEntry,
 } from "@earendil-works/pi-agent-core";
-import { brandId, type AgenticEvent, type EventId, type EventKind } from "@workspace/agentic-protocol";
+import {
+  brandId,
+  type AgenticEvent,
+  type EventId,
+  type EventKind,
+} from "@workspace/agentic-protocol";
 
 export interface TrajectorySessionMetadata extends SessionMetadata {
   trajectoryId: string;
@@ -15,7 +20,7 @@ export interface TrajectoryBackedSessionStorageOptions {
   trajectoryId: string;
   branchId: string;
   entries: SessionTreeEntry[];
-  appendEvent?: (event: AgenticEvent) => Promise<void>;
+  appendEvent?: (event: AgenticEvent, entry: SessionTreeEntry) => Promise<void>;
 }
 
 export class UnmappedEntryError extends Error {
@@ -25,8 +30,7 @@ export class UnmappedEntryError extends Error {
   }
 }
 
-type InterceptorBridge =
-  | { storage: "interceptor"; eventKind: EventKind };
+type InterceptorBridge = { storage: "interceptor"; eventKind: EventKind };
 
 export const PI_ENTRY_TRAJECTORY_BRIDGES = {
   message: { storage: "interceptor", eventKind: "system.event" },
@@ -79,8 +83,7 @@ export class TrajectoryBackedSessionStorage implements SessionStorage<Trajectory
   async appendEntry(entry: SessionTreeEntry): Promise<void> {
     this.entries.set(entry.id, entry);
     if (entry.type !== "leaf") this.leafId = entry.id;
-    const bridge = bridgeForEntry(entry);
-    await this.opts.appendEvent?.(entryToAgenticEvent(entry, bridge.eventKind));
+    await this.opts.appendEvent?.(sessionEntryToAgenticEvent(entry), entry);
   }
 
   async getEntry(id: string): Promise<SessionTreeEntry | undefined> {
@@ -88,10 +91,10 @@ export class TrajectoryBackedSessionStorage implements SessionStorage<Trajectory
   }
 
   async findEntries<TType extends SessionTreeEntry["type"]>(
-    type: TType,
+    type: TType
   ): Promise<Array<Extract<SessionTreeEntry, { type: TType }>>> {
     return [...this.entries.values()].filter(
-      (entry): entry is Extract<SessionTreeEntry, { type: TType }> => entry.type === type,
+      (entry): entry is Extract<SessionTreeEntry, { type: TType }> => entry.type === type
     );
   }
 
@@ -130,6 +133,11 @@ function bridgeForEntry(entry: SessionTreeEntry): InterceptorBridge {
   return bridge;
 }
 
+export function sessionEntryToAgenticEvent(entry: SessionTreeEntry): AgenticEvent {
+  const bridge = bridgeForEntry(entry);
+  return entryToAgenticEvent(entry, bridge.eventKind);
+}
+
 function entryToAgenticEvent(entry: SessionTreeEntry, kind: EventKind): AgenticEvent {
   if (kind === "system.event") {
     return systemEvent(entry, kind, { kind: "pi.session_entry", entry });
@@ -144,7 +152,11 @@ function entryToAgenticEvent(entry: SessionTreeEntry, kind: EventKind): AgenticE
           summary: entry.summary,
           rangeStart: brandId<EventId>(entry.id),
           rangeEnd: brandId<EventId>(entry.firstKeptEntryId),
-          replacement: { tokensBefore: entry.tokensBefore, details: entry.details, fromHook: entry.fromHook },
+          replacement: {
+            tokensBefore: entry.tokensBefore,
+            details: entry.details,
+            fromHook: entry.fromHook,
+          },
         },
         createdAt: entry.timestamp,
       };
