@@ -28,6 +28,12 @@ import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import { ServiceError, type ServiceContext } from "@natstack/shared/serviceDispatcher";
 import type { Workspace, WorkspaceConfig } from "@natstack/shared/workspace/types";
 import type { ApprovalPrincipal } from "@natstack/shared/approvals";
+import type {
+  HostTarget,
+  HostTargetCandidate,
+  HostTargetSelection,
+  HostTargetSelectionInput,
+} from "@natstack/shared/hostTargets";
 import type { ApprovalQueue } from "./approvalQueue.js";
 
 /**
@@ -122,6 +128,36 @@ export interface WorkspaceServiceDeps {
   listAppVersions?: (sourceOrName: string) => Promise<WorkspaceAppVersions> | WorkspaceAppVersions;
   /** Roll an app unit back to a previous active build. */
   rollbackAppVersion?: (sourceOrName: string, buildKey?: string) => Promise<unknown> | unknown;
+  /** List app candidates that can be selected as the active app for a host target. */
+  listHostTargetCandidates?: (
+    target: HostTarget
+  ) => Promise<HostTargetCandidate[]> | HostTargetCandidate[];
+  /** Read the active per-workspace selection for a host target. */
+  getHostTargetSelection?: (
+    target: HostTarget
+  ) =>
+    | Promise<{ selection: HostTargetSelection | null; valid: boolean; reason?: string }>
+    | { selection: HostTargetSelection | null; valid: boolean; reason?: string };
+  /** Persist a per-workspace selection for a host target. */
+  setHostTargetSelection?: (
+    target: HostTarget,
+    input: HostTargetSelectionInput
+  ) => Promise<HostTargetSelection> | HostTargetSelection;
+  /** Clear a persisted per-workspace selection for a host target. */
+  clearHostTargetSelection?: (target: HostTarget) => Promise<void> | void;
+  /** List retained versions for a host-target candidate. */
+  listHostTargetVersions?: (
+    target: HostTarget,
+    sourceOrName: string
+  ) => Promise<WorkspaceAppVersions> | WorkspaceAppVersions;
+  /** Materialize a retained build for a specific commit through the build system. */
+  prepareHostTargetPinnedCommit?: (
+    target: HostTarget,
+    sourceOrName: string,
+    commit: string
+  ) => Promise<unknown> | unknown;
+  /** Launch/reload the selected target app in this host. */
+  launchHostTarget?: (target: HostTarget) => Promise<boolean> | boolean;
   /** Queue used to gate userland workspace mutations. */
   approvalQueue?: Pick<ApprovalQueue, "requestUserland">;
 }
@@ -203,6 +239,16 @@ type WorkspaceApprovalOperation =
   | "select"
   | "setInitPanels"
   | "setConfigField";
+
+const HostTargetSchema = z.enum(["electron", "react-native", "terminal"]);
+const HostTargetSelectionInputSchema = z.object({
+  source: z.string().min(1),
+  mode: z.enum(["follow-ref", "pinned-build", "pinned-commit"]).optional(),
+  ref: z.string().min(1).optional(),
+  buildKey: z.string().min(1).optional(),
+  commit: z.string().min(1).optional(),
+  autoSelected: z.boolean().optional(),
+});
 
 function isTrustedWorkspaceCaller(ctx: ServiceContext): boolean {
   return ctx.caller.runtime.kind === "shell" || ctx.caller.runtime.kind === "server";
@@ -402,7 +448,9 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
   return {
     name: "workspace",
     description: "Workspace catalog, configuration, and lifecycle (list, create, switch, etc.)",
-    policy: { allowed: ["shell", "app", "panel", "worker", "do", "extension", "server"] },
+    policy: {
+      allowed: ["shell", "shell-remote", "app", "panel", "worker", "do", "extension", "server"],
+    },
     methods: {
       // Read methods
       getInfo: { args: z.tuple([]) },
@@ -465,6 +513,31 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
       "units.bakeAppDist": {
         args: z.tuple([z.string(), z.object({ outDir: z.string().optional() }).optional()]),
         policy: { allowed: ["shell", "server"] },
+      },
+      "hostTargets.list": {
+        args: z.tuple([HostTargetSchema]),
+      },
+      "hostTargets.getSelection": {
+        args: z.tuple([HostTargetSchema]),
+      },
+      "hostTargets.setSelection": {
+        args: z.tuple([HostTargetSchema, HostTargetSelectionInputSchema]),
+        policy: { allowed: ["shell", "shell-remote", "server"] },
+      },
+      "hostTargets.clearSelection": {
+        args: z.tuple([HostTargetSchema]),
+        policy: { allowed: ["shell", "shell-remote", "server"] },
+      },
+      "hostTargets.versions": {
+        args: z.tuple([HostTargetSchema, z.string()]),
+      },
+      "hostTargets.preparePinnedCommit": {
+        args: z.tuple([HostTargetSchema, z.string(), z.string()]),
+        policy: { allowed: ["shell", "shell-remote", "server"] },
+      },
+      "hostTargets.launch": {
+        args: z.tuple([HostTargetSchema]),
+        policy: { allowed: ["shell", "shell-remote", "server"] },
       },
     },
     handler: async (ctx, method, args) => {
@@ -692,6 +765,58 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
           }
           const [sourceOrName, opts] = args as [string, { outDir?: string } | undefined];
           return await deps.bakeAppDist(sourceOrName, opts);
+        }
+
+        case "hostTargets.list": {
+          if (!deps.listHostTargetCandidates) return [];
+          const [target] = args as [HostTarget];
+          return await deps.listHostTargetCandidates(target);
+        }
+
+        case "hostTargets.getSelection": {
+          if (!deps.getHostTargetSelection) {
+            return {
+              selection: null,
+              valid: false,
+              reason: "Host target selection is unavailable",
+            };
+          }
+          const [target] = args as [HostTarget];
+          return await deps.getHostTargetSelection(target);
+        }
+
+        case "hostTargets.setSelection": {
+          if (!deps.setHostTargetSelection) throw new Error("Host target selection is unavailable");
+          const [target, input] = args as [HostTarget, HostTargetSelectionInput];
+          return await deps.setHostTargetSelection(target, input);
+        }
+
+        case "hostTargets.clearSelection": {
+          if (!deps.clearHostTargetSelection) return;
+          const [target] = args as [HostTarget];
+          return await deps.clearHostTargetSelection(target);
+        }
+
+        case "hostTargets.versions": {
+          if (!deps.listHostTargetVersions) {
+            return { current: null, previous: [], retentionLimit: 0 };
+          }
+          const [target, sourceOrName] = args as [HostTarget, string];
+          return await deps.listHostTargetVersions(target, sourceOrName);
+        }
+
+        case "hostTargets.preparePinnedCommit": {
+          if (!deps.prepareHostTargetPinnedCommit) {
+            throw new Error("Pinned commit preparation is unavailable");
+          }
+          const [target, sourceOrName, commit] = args as [HostTarget, string, string];
+          return await deps.prepareHostTargetPinnedCommit(target, sourceOrName, commit);
+        }
+
+        case "hostTargets.launch": {
+          if (!deps.launchHostTarget) return false;
+          const [target] = args as [HostTarget];
+          return { launched: await deps.launchHostTarget(target) };
         }
 
         default:

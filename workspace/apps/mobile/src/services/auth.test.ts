@@ -71,7 +71,10 @@ describe("native-held mobile credentials", () => {
       deviceId: "dev_123",
       connectionGrant: "grant_123",
     });
-    expect(nativeHost.completePairing).toHaveBeenCalledWith("https://server.example", "pairing-code");
+    expect(nativeHost.completePairing).toHaveBeenCalledWith(
+      "https://server.example",
+      "pairing-code"
+    );
   });
 
   it("issues one-time app connection grants without exposing the refresh token", async () => {
@@ -81,7 +84,21 @@ describe("native-held mobile credentials", () => {
     });
   });
 
-  it("rejects native grants that are not canonical mobile app principals", async () => {
+  it("accepts native grants for the selected workspace mobile app principal", async () => {
+    nativeHost.issueConnectionGrant.mockResolvedValueOnce({
+      deviceId: "dev_123",
+      callerId: "app:apps/field-mobile:dev_123",
+      connectionGrant: "grant_123",
+      serverId: "srv_123",
+      workspaceId: "workspace_123",
+    });
+
+    await expect(issueConnectionGrant()).resolves.toMatchObject({
+      callerId: "app:apps/field-mobile:dev_123",
+    });
+  });
+
+  it("rejects native grants that are not workspace mobile app principals", async () => {
     nativeHost.issueConnectionGrant.mockResolvedValueOnce({
       deviceId: "dev_123",
       callerId: "app:other-app:dev_123",
@@ -93,7 +110,7 @@ describe("native-held mobile credentials", () => {
     await expect(issueConnectionGrant()).rejects.toThrow(/valid native app connection grant/);
   });
 
-  it("rejects native pairing responses without a canonical mobile app principal grant", async () => {
+  it("rejects native pairing responses without a workspace mobile app principal grant", async () => {
     nativeHost.completePairing.mockResolvedValueOnce({
       serverUrl: "https://server.example",
       deviceId: "dev_123",
@@ -127,36 +144,52 @@ describe("native-held mobile credentials", () => {
       integrity: "sha256-mobile",
       localPath: "/cache/natstack-rn/rn-key/index.ios.bundle",
     });
-    expect(nativeHost.prepareAppBundle).toHaveBeenCalledWith("rn-host-1", "ios");
+    expect(nativeHost.prepareAppBundle).toHaveBeenCalledWith("rn-host-1", "ios", null);
+  });
+
+  it("passes an explicit selected app source to the native bundle bootstrap", async () => {
+    await prepareAppBundle("rn-host-1", "ios", "apps/field-mobile");
+
+    expect(nativeHost.prepareAppBundle).toHaveBeenCalledWith(
+      "rn-host-1",
+      "ios",
+      "apps/field-mobile"
+    );
   });
 
   it("activates prepared app bundles through the native host", async () => {
-    await expect(activatePreparedAppBundle({
-      buildKey: "rn-key",
-      integrity: "sha256-mobile",
-      localPath: "/cache/natstack-rn/rn-key/index.ios.bundle",
-    })).resolves.toEqual({ activated: false });
+    await expect(
+      activatePreparedAppBundle({
+        buildKey: "rn-key",
+        integrity: "sha256-mobile",
+        localPath: "/cache/natstack-rn/rn-key/index.ios.bundle",
+      })
+    ).resolves.toEqual({ activated: false });
     expect(nativeHost.activatePreparedAppBundle).toHaveBeenCalledWith(
       "/cache/natstack-rn/rn-key/index.ios.bundle",
       "rn-key",
-      "sha256-mobile",
+      "sha256-mobile"
     );
   });
 
   it("rejects invalid native activation responses", async () => {
     nativeHost.activatePreparedAppBundle.mockResolvedValueOnce({});
 
-    await expect(activatePreparedAppBundle({
-      buildKey: "rn-key",
-      integrity: "sha256-mobile",
-      localPath: "/cache/natstack-rn/rn-key/index.ios.bundle",
-    })).rejects.toThrow(/invalid app bundle activation result/);
+    await expect(
+      activatePreparedAppBundle({
+        buildKey: "rn-key",
+        integrity: "sha256-mobile",
+        localPath: "/cache/natstack-rn/rn-key/index.ios.bundle",
+      })
+    ).rejects.toThrow(/invalid app bundle activation result/);
   });
 
   it("rejects invalid native prepared bundle responses", async () => {
     nativeHost.prepareAppBundle.mockResolvedValueOnce({ appId: "@workspace-apps/mobile" });
 
-    await expect(prepareAppBundle("rn-host-1", "ios")).rejects.toThrow(/invalid prepared app bundle/);
+    await expect(prepareAppBundle("rn-host-1", "ios")).rejects.toThrow(
+      /invalid prepared app bundle/
+    );
   });
 
   it("clears native credentials that need repair", async () => {

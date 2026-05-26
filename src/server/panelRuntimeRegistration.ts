@@ -11,6 +11,12 @@ import type { ServiceDispatcher } from "@natstack/shared/serviceDispatcher";
 import type { Workspace, WorkspaceConfig } from "@natstack/shared/workspace/types";
 import type { CentralDataManager } from "@natstack/shared/centralData";
 import type { HostConfig } from "@natstack/shared/hostConfig";
+import type {
+  HostTarget,
+  HostTargetCandidate,
+  HostTargetSelection,
+  HostTargetSelectionInput,
+} from "@natstack/shared/hostTargets";
 import type { ApprovalQueue } from "./services/approvalQueue.js";
 import { assertPresent } from "../lintHelpers";
 
@@ -51,6 +57,31 @@ export interface CommonDeps {
     | Promise<import("./services/workspaceService.js").WorkspaceAppVersions>
     | import("./services/workspaceService.js").WorkspaceAppVersions;
   rollbackAppVersion?: (sourceOrName: string, buildKey?: string) => Promise<unknown> | unknown;
+  listHostTargetCandidates?: (
+    target: HostTarget
+  ) => Promise<HostTargetCandidate[]> | HostTargetCandidate[];
+  getHostTargetSelection?: (
+    target: HostTarget
+  ) =>
+    | Promise<{ selection: HostTargetSelection | null; valid: boolean; reason?: string }>
+    | { selection: HostTargetSelection | null; valid: boolean; reason?: string };
+  setHostTargetSelection?: (
+    target: HostTarget,
+    input: HostTargetSelectionInput
+  ) => Promise<HostTargetSelection> | HostTargetSelection;
+  clearHostTargetSelection?: (target: HostTarget) => Promise<void> | void;
+  listHostTargetVersions?: (
+    target: HostTarget,
+    sourceOrName: string
+  ) =>
+    | Promise<import("./services/workspaceService.js").WorkspaceAppVersions>
+    | import("./services/workspaceService.js").WorkspaceAppVersions;
+  prepareHostTargetPinnedCommit?: (
+    target: HostTarget,
+    sourceOrName: string,
+    commit: string
+  ) => Promise<unknown> | unknown;
+  launchHostTarget?: (target: HostTarget) => Promise<boolean> | boolean;
   approvalQueue?: Pick<ApprovalQueue, "requestUserland">;
   getEffectiveVersion?: (source: string) => Promise<string | undefined>;
 }
@@ -95,6 +126,13 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
           bakeAppDist: deps.bakeAppDist,
           listAppVersions: deps.listAppVersions,
           rollbackAppVersion: deps.rollbackAppVersion,
+          listHostTargetCandidates: deps.listHostTargetCandidates,
+          getHostTargetSelection: deps.getHostTargetSelection,
+          setHostTargetSelection: deps.setHostTargetSelection,
+          clearHostTargetSelection: deps.clearHostTargetSelection,
+          listHostTargetVersions: deps.listHostTargetVersions,
+          prepareHostTargetPinnedCommit: deps.prepareHostTargetPinnedCommit,
+          launchHostTarget: deps.launchHostTarget,
           approvalQueue: deps.approvalQueue,
         })
       )

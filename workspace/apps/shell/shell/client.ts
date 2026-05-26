@@ -56,6 +56,12 @@ import type {
   PanelChromeState,
 } from "@natstack/shared/panelChrome";
 import type { PanelRuntimeLease } from "@natstack/shared/panel/panelLease";
+import type {
+  HostTarget,
+  HostTargetCandidate,
+  HostTargetSelection,
+  HostTargetSelectionInput,
+} from "@natstack/shared/hostTargets";
 // =============================================================================
 // App Service
 // =============================================================================
@@ -319,6 +325,34 @@ export const workspace = {
   select: (name: string) => rpc.call<undefined>("main", "workspace.select", [name]),
   delete: (name: string) => rpc.call<undefined>("main", "workspace.delete", [name]),
   getActive: () => rpc.call<string>("main", "workspace.getActive", []),
+  hostTargets: {
+    list: (target: HostTarget) =>
+      rpc.call<HostTargetCandidate[]>("main", "workspace.hostTargets.list", [target]),
+    getSelection: (target: HostTarget) =>
+      rpc.call<{ selection: HostTargetSelection | null; valid: boolean; reason?: string }>(
+        "main",
+        "workspace.hostTargets.getSelection",
+        [target]
+      ),
+    setSelection: (target: HostTarget, input: HostTargetSelectionInput) =>
+      rpc.call<HostTargetSelection>("main", "workspace.hostTargets.setSelection", [target, input]),
+    clearSelection: (target: HostTarget) =>
+      rpc.call<undefined>("main", "workspace.hostTargets.clearSelection", [target]),
+    versions: (target: HostTarget, sourceOrName: string) =>
+      rpc.call<{ current: unknown; previous: unknown[]; retentionLimit?: number }>(
+        "main",
+        "workspace.hostTargets.versions",
+        [target, sourceOrName]
+      ),
+    preparePinnedCommit: (target: HostTarget, sourceOrName: string, commit: string) =>
+      rpc.call<unknown>("main", "workspace.hostTargets.preparePinnedCommit", [
+        target,
+        sourceOrName,
+        commit,
+      ]),
+    launch: (target: HostTarget) =>
+      rpc.call<{ launched: boolean }>("main", "workspace.hostTargets.launch", [target]),
+  },
 };
 // =============================================================================
 // Settings Service
@@ -489,6 +523,22 @@ export const workspaceUnits = {
   rollback: (name: string, opts?: { buildKey?: string }) =>
     rpc.call<unknown>("main", "workspace.units.rollback", [name, opts]),
   restart: (name: string) => rpc.call<unknown>("main", "workspace.units.restart", [name]),
+  logs: (
+    name: string,
+    opts?: { since?: number; level?: "debug" | "info" | "warn" | "error"; limit?: number }
+  ) =>
+    rpc.call<
+      Array<{
+        workspaceId: string;
+        unitName: string;
+        kind: string;
+        timestamp: number;
+        level: "debug" | "info" | "warn" | "error";
+        message: string;
+        fields?: Record<string, unknown>;
+        source?: "stdout" | "stderr" | "ctx.log" | "console" | "runner";
+      }>
+    >("main", "workspace.units.logs", [name, opts]),
 };
 // =============================================================================
 // Shell Approval Service (consent approval queue)

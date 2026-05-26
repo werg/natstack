@@ -5,9 +5,11 @@ import { registerBackgroundHandlers } from "./backgroundHandlers";
 
 const RN_HOST_ABI = "rn-host-1";
 
-export async function ensureNativeWorkspaceAppBundle(): Promise<{ reloading: boolean }> {
+export async function ensureNativeWorkspaceAppBundle(
+  source?: string | null
+): Promise<{ reloading: boolean }> {
   const platform = Platform.OS === "ios" ? "ios" : "android";
-  const prepared = await prepareAppBundle(RN_HOST_ABI, platform);
+  const prepared = await prepareAppBundle(RN_HOST_ABI, platform, source);
   setApprovedAppCapabilities(prepared.capabilities);
   if (hasApprovedAppCapability("notifications")) {
     registerBackgroundHandlers();

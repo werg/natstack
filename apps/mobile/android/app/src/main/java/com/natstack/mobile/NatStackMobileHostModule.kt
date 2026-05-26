@@ -96,17 +96,21 @@ class NatStackMobileHostModule(
     }
 
     @ReactMethod
-    fun prepareAppBundle(expectedRnHostAbi: String, platform: String, promise: Promise) {
+    fun prepareAppBundle(expectedRnHostAbi: String, platform: String, source: String?, promise: Promise) {
         thread(start = true, isDaemon = true, name = "NatStackPrepareBundle") {
             try {
                 val credential = loadCredential()
                     ?: throw IllegalStateException("No mobile credentials are stored")
+                val body = JSONObject()
+                    .put("deviceId", credential.deviceId)
+                    .put("refreshToken", credential.refreshToken)
+                if (!source.isNullOrBlank()) {
+                    body.put("source", source)
+                }
                 val bootstrapResponse = postJson(
                     credential.serverUrl,
                     "/_r/s/auth/mobile-app-bootstrap",
-                    JSONObject()
-                        .put("deviceId", credential.deviceId)
-                        .put("refreshToken", credential.refreshToken)
+                    body
                 )
                 val bootstrap = bootstrapResponse.getJSONObject("bootstrap")
                 val rnHostAbi = bootstrap.getString("rnHostAbi")

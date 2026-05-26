@@ -32,6 +32,7 @@ export interface AppAvailableEvent {
   effectiveVersion?: string | null;
   buildKey?: string | null;
   adoptionPolicy?: "immediate" | "prompt" | "artifact-only";
+  selectedForHost?: boolean;
 }
 
 export interface AppOrchestratorDeps {
@@ -67,6 +68,10 @@ export class AppOrchestrator {
   async applyAppAvailable(event: AppAvailableEvent): Promise<void> {
     if (event.target && event.target !== "electron") {
       log.verbose(`Ignoring non-Electron app ${event.appId} for Electron host: ${event.target}`);
+      return;
+    }
+    if (event.selectedForHost === false) {
+      log.verbose(`Ignoring unselected Electron app ${event.appId} for Electron host`);
       return;
     }
     if (event.adoptionPolicy === "artifact-only") {

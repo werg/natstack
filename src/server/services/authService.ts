@@ -56,9 +56,12 @@ const RefreshShellBodySchema = z.object({
 
 const RefreshPrincipalGrantBodySchema = RefreshShellBodySchema.extend({
   principal: z.string().min(1).max(128).optional(),
+  source: z.string().min(1).max(256).optional(),
 });
 const RefreshAppGrantBodySchema = RefreshPrincipalGrantBodySchema;
-const MobileAppBootstrapBodySchema = RefreshShellBodySchema;
+const MobileAppBootstrapBodySchema = RefreshShellBodySchema.extend({
+  source: z.string().min(1).max(256).optional(),
+});
 
 const RevokeDeviceBodySchema = z.object({
   deviceId: z.string().min(1).max(128),
@@ -93,8 +96,8 @@ export function createAuthService(deps: {
   auditLog?: Pick<AuditLog, "append">;
   hasAppCapability?: (callerId: string, capability: AppCapability) => boolean;
   capabilityAuthorizer?: CapabilityAuthorizer;
-  getMobileAppBootstrap?: () => unknown | null;
-  registerMobileAppPrincipal?: (deviceId: string) => string | null;
+  getMobileAppBootstrap?: (source?: string | null) => unknown | null;
+  registerMobileAppPrincipal?: (deviceId: string, source?: string | null) => string | null;
   retireMobileAppPrincipal?: (deviceId: string) => void;
 }): ServiceWithRoutes {
   const capabilityAuthorizer =
@@ -306,7 +309,7 @@ export function createAuthService(deps: {
           }
           const body = MobileAppBootstrapBodySchema.parse(await readJson(req));
           deps.deviceAuthStore.validateRefresh(body.deviceId, body.refreshToken);
-          const bootstrap = deps.getMobileAppBootstrap();
+          const bootstrap = deps.getMobileAppBootstrap(body.source ?? null);
           if (!bootstrap) {
             sendJson(res, 404, {
               error: "No approved React Native workspace app is available",

@@ -17,15 +17,17 @@ export interface AppUpdatePromptDeps {
   shellClient: ShellClient;
   pushToast: (toast: ToastInput) => void;
   prompted: Set<string>;
+  selectedSource?: string | null;
+  selectedAppId?: string | null;
   alert?: typeof Alert.alert;
   ensureBundle?: typeof ensureNativeWorkspaceAppBundle;
 }
 
 export function handleMobileAppLifecycleEvent(
   event: AppLifecyclePayload,
-  deps: AppUpdatePromptDeps,
+  deps: AppUpdatePromptDeps
 ): void {
-  if (!isCanonicalMobileAppEvent(event)) return;
+  if (!isSelectedMobileAppEvent(event, deps)) return;
   if (event.type === "update-available") {
     promptMobileUpdate(event, deps);
     return;
@@ -48,10 +50,13 @@ export function handleMobileAppLifecycleEvent(
   }
 }
 
-function isCanonicalMobileAppEvent(event: AppLifecyclePayload): boolean {
+function isSelectedMobileAppEvent(event: AppLifecyclePayload, deps: AppUpdatePromptDeps): boolean {
   if (event.target && event.target !== "react-native") return false;
-  if (event.source && normalizeSource(event.source) !== "apps/mobile") return false;
-  if (event.appId && event.appId !== "@workspace-apps/mobile" && normalizeSource(event.appId) !== "apps/mobile") return false;
+  const selectedSource = deps.selectedSource ? normalizeSource(deps.selectedSource) : null;
+  if (selectedSource && event.source && normalizeSource(event.source) !== selectedSource) {
+    return false;
+  }
+  if (deps.selectedAppId && event.appId && event.appId !== deps.selectedAppId) return false;
   return true;
 }
 
@@ -66,18 +71,17 @@ function promptMobileUpdate(event: AppLifecyclePayload, deps: AppUpdatePromptDep
   deps.prompted.add(promptKey);
   const ensureBundle = deps.ensureBundle ?? ensureNativeWorkspaceAppBundle;
   const alert = deps.alert ?? Alert.alert;
-  alert(
-    "Mobile app update available",
-    `${appId} has a new trusted bundle ready to install.`,
-    [
-      { text: "Later", style: "cancel" },
-      ...(event.canRollback
-        ? [{
+  alert("Mobile app update available", `${appId} has a new trusted bundle ready to install.`, [
+    { text: "Later", style: "cancel" },
+    ...(event.canRollback
+      ? [
+          {
             text: "Roll back",
             style: "destructive" as const,
             onPress: () => {
-              void deps.shellClient.workspaces.rollbackApp(appId)
-                .then(() => ensureBundle())
+              void deps.shellClient.workspaces
+                .rollbackApp(appId)
+                .then(() => ensureBundle(event.source ?? deps.selectedSource ?? null))
                 .catch((error: unknown) => {
                   deps.pushToast({
                     title: "Rollback failed",
@@ -87,21 +91,21 @@ function promptMobileUpdate(event: AppLifecyclePayload, deps: AppUpdatePromptDep
                   });
                 });
             },
-          }]
-        : []),
-      {
-        text: "Install",
-        onPress: () => {
-          void ensureBundle().catch((error: unknown) => {
-            deps.pushToast({
-              title: "Update failed",
-              message: error instanceof Error ? error.message : String(error),
-              tone: "danger",
-              durationMs: 10000,
-            });
+          },
+        ]
+      : []),
+    {
+      text: "Install",
+      onPress: () => {
+        void ensureBundle(event.source ?? deps.selectedSource ?? null).catch((error: unknown) => {
+          deps.pushToast({
+            title: "Update failed",
+            message: error instanceof Error ? error.message : String(error),
+            tone: "danger",
+            durationMs: 10000,
           });
-        },
+        });
       },
-    ],
-  );
+    },
+  ]);
 }

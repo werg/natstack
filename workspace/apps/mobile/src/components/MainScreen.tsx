@@ -108,6 +108,10 @@ export function MainScreen() {
   const [panelAddressOptions, setPanelAddressOptions] = useState<PanelAddressOptions | null>(null);
   const [selectedBranch, setSelectedBranch] = useState<string | null>(null);
   const [selectedCommit, setSelectedCommit] = useState<string | null>(null);
+  const [selectedMobileApp, setSelectedMobileApp] = useState<{
+    source: string | null;
+    appId: string | null;
+  }>({ source: null, appId: null });
   const [webViewNavigation, setWebViewNavigation] = useState<Record<string, WebViewNavigation>>({});
   const [activeRepoState, setActiveRepoState] = useState<PanelRepoState | undefined>();
   const webViewStackRef = useRef<WebViewEntry[]>([]);
@@ -119,6 +123,28 @@ export function MainScreen() {
   useEffect(() => {
     webViewStackRef.current = webViewStack;
   }, [webViewStack]);
+  useEffect(() => {
+    let cancelled = false;
+    if (!shellClient) {
+      setSelectedMobileApp({ source: null, appId: null });
+      return;
+    }
+    void shellClient.workspaces
+      .getHostTargetSelection("react-native")
+      .then((result) => {
+        if (cancelled) return;
+        setSelectedMobileApp({
+          source: result.valid ? (result.selection?.source ?? null) : null,
+          appId: result.valid ? (result.selection?.appId ?? null) : null,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setSelectedMobileApp({ source: null, appId: null });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [shellClient]);
   useEffect(() => {
     const subscription = Appearance.addChangeListener(({ colorScheme: nextScheme }) => {
       setColorScheme(nextScheme);
@@ -604,6 +630,8 @@ export function MainScreen() {
           shellClient,
           pushToast,
           prompted: promptedAppUpdatesRef.current,
+          selectedSource: selectedMobileApp.source,
+          selectedAppId: selectedMobileApp.appId,
         });
       }
     );
@@ -640,7 +668,14 @@ export function MainScreen() {
         void shellClient.events.unsubscribe(name).catch(() => {});
       }
     };
-  }, [activatePanel, pushToast, refreshPendingApprovals, refreshTree, shellClient]);
+  }, [
+    activatePanel,
+    pushToast,
+    refreshPendingApprovals,
+    refreshTree,
+    selectedMobileApp,
+    shellClient,
+  ]);
   useEffect(() => {
     if (!activePanelId || !shellClient) return;
     void shellClient.panels.notifyFocused(activePanelId);

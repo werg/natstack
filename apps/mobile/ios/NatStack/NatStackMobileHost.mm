@@ -97,6 +97,7 @@ RCT_EXPORT_METHOD(issueConnectionGrant:(RCTPromiseResolveBlock)resolve
 
 RCT_EXPORT_METHOD(prepareAppBundle:(NSString *)expectedRnHostAbi
                   platform:(NSString *)platform
+                  source:(NSString *)source
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 {
@@ -106,10 +107,14 @@ RCT_EXPORT_METHOD(prepareAppBundle:(NSString *)expectedRnHostAbi
       if (credential == nil) {
         [NSException raise:@"NatStackNoCredentials" format:@"No mobile credentials are stored"];
       }
-      NSDictionary *response = [self postJson:credential[@"serverUrl"] path:@"/_r/s/auth/mobile-app-bootstrap" body:@{
+      NSMutableDictionary *body = [@{
         @"deviceId": credential[@"deviceId"],
         @"refreshToken": credential[@"refreshToken"],
-      }];
+      } mutableCopy];
+      if ([source isKindOfClass:[NSString class]] && source.length > 0) {
+        body[@"source"] = source;
+      }
+      NSDictionary *response = [self postJson:credential[@"serverUrl"] path:@"/_r/s/auth/mobile-app-bootstrap" body:body];
       NSDictionary *bootstrap = response[@"bootstrap"];
       if (![bootstrap isKindOfClass:[NSDictionary class]]) {
         [NSException raise:@"NatStackBundleBootstrapInvalid" format:@"Mobile app bootstrap payload is invalid"];

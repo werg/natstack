@@ -57,11 +57,11 @@ async function activateApprovedWorkspaceApp(options = {}) {
     throw new Error("Pair this device from the desktop app before loading the workspace app.");
   }
   await nativeHost.issueConnectionGrant();
-  const prepared = await nativeHost.prepareAppBundle(RN_HOST_ABI, platformName());
+  const prepared = await nativeHost.prepareAppBundle(RN_HOST_ABI, platformName(), null);
   await nativeHost.activatePreparedAppBundle(
     prepared.localPath,
     prepared.buildKey,
-    prepared.integrity,
+    prepared.integrity
   );
   return true;
 }
@@ -96,7 +96,11 @@ function NatStackMobileHostBootstrap() {
         return;
       }
       const activated = await activateApprovedWorkspaceApp();
-      setStatus(activated ? "Workspace app activated. Reloading..." : "Pair this device from the desktop app.");
+      setStatus(
+        activated
+          ? "Workspace app activated. Reloading..."
+          : "Pair this device from the desktop app."
+      );
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {

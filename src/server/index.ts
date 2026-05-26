@@ -489,6 +489,7 @@ async function main() {
   let workspace: import("@natstack/shared/workspace/types").Workspace;
   let workspaceName: string;
   let workspaceIsEphemeral = false;
+  let workspaceCreatedFromTemplate = false;
   try {
     const startup = resolveLocalWorkspaceStartup({
       appRoot,
@@ -501,6 +502,7 @@ async function main() {
     });
     workspace = startup.resolved.workspace;
     workspaceName = startup.resolved.name;
+    workspaceCreatedFromTemplate = startup.resolved.created;
     workspaceIsEphemeral =
       startup.isEphemeral || process.env["NATSTACK_WORKSPACE_EPHEMERAL"] === "1";
   } catch (error) {
@@ -598,7 +600,10 @@ async function main() {
     resolveTitle: (entityId) => entityTitleService.getTitle(entityId),
   });
   const { ServerUnitApprovalCoordinator } = await import("./unitApprovalCoordinator.js");
-  const unitApprovalCoordinator = new ServerUnitApprovalCoordinator({ approvalQueue });
+  const unitApprovalCoordinator = new ServerUnitApprovalCoordinator({
+    approvalQueue,
+    autoApproveStartup: workspaceCreatedFromTemplate,
+  });
   const credentialLifecycle = new CredentialLifecycle({
     credentialStore,
     clientConfigStore,
@@ -1988,6 +1993,52 @@ async function main() {
       if (!appHost) throw new Error("App host is not available");
       return appHost.rollbackAppVersion(sourceOrName, buildKey);
     },
+    listHostTargetCandidates: (target: import("@natstack/shared/hostTargets").HostTarget) => {
+      const appHost = appHostForGateway;
+      return appHost?.listHostTargetCandidates(target) ?? [];
+    },
+    getHostTargetSelection: (target: import("@natstack/shared/hostTargets").HostTarget) => {
+      const appHost = appHostForGateway;
+      return (
+        appHost?.getHostTargetSelection(target) ?? {
+          selection: null,
+          valid: false,
+          reason: "App host is not available",
+        }
+      );
+    },
+    setHostTargetSelection: (
+      target: import("@natstack/shared/hostTargets").HostTarget,
+      input: import("@natstack/shared/hostTargets").HostTargetSelectionInput
+    ) => {
+      const appHost = appHostForGateway;
+      if (!appHost) throw new Error("App host is not available");
+      return appHost.setHostTargetSelection(target, input);
+    },
+    clearHostTargetSelection: (target: import("@natstack/shared/hostTargets").HostTarget) => {
+      appHostForGateway?.clearHostTargetSelection(target);
+    },
+    listHostTargetVersions: (
+      target: import("@natstack/shared/hostTargets").HostTarget,
+      sourceOrName: string
+    ) => {
+      const appHost = appHostForGateway;
+      if (!appHost) return { current: null, previous: [], retentionLimit: 0 };
+      return appHost.listHostTargetVersions(target, sourceOrName);
+    },
+    prepareHostTargetPinnedCommit: (
+      target: import("@natstack/shared/hostTargets").HostTarget,
+      sourceOrName: string,
+      commit: string
+    ) => {
+      const appHost = appHostForGateway;
+      if (!appHost) throw new Error("App host is not available");
+      return appHost.prepareHostTargetPinnedCommit(target, sourceOrName, commit);
+    },
+    launchHostTarget: (target: import("@natstack/shared/hostTargets").HostTarget) => {
+      const appHost = appHostForGateway;
+      return appHost?.launchHostTarget(target) ?? false;
+    },
     approvalQueue,
     getEffectiveVersion: async (source: string) => {
       const buildSystem = container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");
@@ -2058,9 +2109,10 @@ async function main() {
           auditLog,
           hasAppCapability: (callerId, capability) =>
             appHostForGateway?.hasAppCapability(callerId, capability) ?? false,
-          getMobileAppBootstrap: () => appHostForGateway?.getReactNativeBootstrap() ?? null,
-          registerMobileAppPrincipal: (deviceId) =>
-            appHostForGateway?.registerReactNativeAppPrincipal(deviceId) ?? null,
+          getMobileAppBootstrap: (source) =>
+            appHostForGateway?.getReactNativeBootstrap(source) ?? null,
+          registerMobileAppPrincipal: (deviceId, source) =>
+            appHostForGateway?.registerReactNativeAppPrincipal(deviceId, source) ?? null,
           retireMobileAppPrincipal: (deviceId) => {
             appHostForGateway?.retireReactNativeAppPrincipal(deviceId);
           },

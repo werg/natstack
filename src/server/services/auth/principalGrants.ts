@@ -21,9 +21,14 @@ export function refreshPrincipalGrantResponse(
     getServerBootId: () => string;
     getWorkspaceId: () => string;
     connectionGrants?: ConnectionGrantService;
-    registerMobileAppPrincipal?: (deviceId: string) => string | null;
+    registerMobileAppPrincipal?: (deviceId: string, source?: string | null) => string | null;
   },
-  body: { deviceId: string; refreshToken: string; principal?: PrincipalGrantTarget | string }
+  body: {
+    deviceId: string;
+    refreshToken: string;
+    principal?: PrincipalGrantTarget | string;
+    source?: string | null;
+  }
 ): PrincipalGrantResponse {
   if (!deps.connectionGrants) {
     throw authError(
@@ -41,7 +46,7 @@ export function refreshPrincipalGrantResponse(
     );
   }
   const device = deps.deviceAuthStore.validateRefresh(body.deviceId, body.refreshToken);
-  const callerId = deps.registerMobileAppPrincipal?.(body.deviceId);
+  const callerId = deps.registerMobileAppPrincipal?.(body.deviceId, body.source ?? null);
   if (!callerId) {
     throw authError(
       "PRINCIPAL_UNAVAILABLE",

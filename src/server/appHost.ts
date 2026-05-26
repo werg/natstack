@@ -40,6 +40,12 @@ import {
   type AppCapability,
   type WorkspaceAppTarget,
 } from "@natstack/shared/unitManifest";
+import type {
+  HostTarget,
+  HostTargetCandidate,
+  HostTargetSelection,
+  HostTargetSelectionInput,
+} from "@natstack/shared/hostTargets";
 import type { EntityCache } from "@natstack/shared/runtime/entityCache";
 import type { EntityRecord } from "@natstack/shared/runtime/entitySpec";
 import { writeAppDistBake, type AppDistBakeManifest } from "./buildV2/distBake.js";
@@ -63,7 +69,6 @@ const APP_UNIT_DESCRIPTOR: UnitDescriptor<"app"> = {
   },
   seedTrustEligible: true,
 };
-const DEFAULT_REACT_NATIVE_APP_SOURCE = "apps/mobile";
 const APP_ROLLBACK_HISTORY_LIMIT = 5;
 
 export interface AppUpdateErrorDiagnostic {
@@ -142,6 +147,10 @@ interface BuildSystemLike {
     allNodes(): AppGraphNode[];
   };
   onPushBuild(callback: (source: string) => void): void;
+}
+
+interface HostTargetSelectionState {
+  selections?: HostTargetSelection[];
 }
 
 interface AppBuildArtifactLike {
@@ -442,6 +451,221 @@ export class AppHost {
     };
   }
 
+  listHostTargetCandidates(target: HostTarget): HostTargetCandidate[] {
+    const declaredNames = new Set(
+      this.lastDeclared
+        .map((decl) => this.tryFindAppNode(decl.source)?.name)
+        .filter((name): name is string => typeof name === "string")
+    );
+    return this.deps.buildSystem
+      .getGraph()
+      .allNodes()
+      .filter(
+        (node) => node.kind === "app" && normalizeRepoPath(node.relativePath).startsWith("apps/")
+      )
+      .filter(
+        (node) =>
+          this.appTarget(node, { source: node.relativePath, ref: "main", enabled: true }) === target
+      )
+      .map((node) => this.hostTargetCandidate(node, target, declaredNames.has(node.name)))
+      .sort((a, b) => Number(b.declared) - Number(a.declared) || a.source.localeCompare(b.source));
+  }
+
+  getHostTargetSelection(target: HostTarget): {
+    selection: HostTargetSelection | null;
+    valid: boolean;
+    reason?: string;
+  } {
+    const selection = this.readHostTargetSelections().find(
+      (candidate) => candidate.workspaceId === this.deps.workspaceId && candidate.target === target
+    );
+    if (!selection) return { selection: null, valid: false, reason: "No app selected" };
+    const candidate = this.listHostTargetCandidates(target).find(
+      (item) => item.name === selection.appId || item.source === selection.source
+    );
+    if (!candidate)
+      return { selection, valid: false, reason: "Selected app is no longer available" };
+    if (!candidate.compatibility.selectable) {
+      return {
+        selection,
+        valid: false,
+        reason: candidate.compatibility.reasons.join("; ") || "Selected app is not compatible",
+      };
+    }
+    if (selection.mode === "pinned-build" || selection.mode === "pinned-commit") {
+      const versions = this.listAppVersions(selection.appId);
+      const known = [versions.current, ...versions.previous].some(
+        (version) => version?.activeBundleKey === selection.buildKey
+      );
+      if (!known)
+        return { selection, valid: false, reason: "Selected build is no longer retained" };
+    }
+    return { selection, valid: true };
+  }
+
+  setHostTargetSelection(target: HostTarget, input: HostTargetSelectionInput): HostTargetSelection {
+    const candidate = this.listHostTargetCandidates(target).find(
+      (item) => item.name === input.source || item.source === normalizeRepoPath(input.source)
+    );
+    if (!candidate) throw new Error(`No ${target} app candidate found for ${input.source}`);
+    if (!candidate.compatibility.selectable) {
+      throw new Error(
+        `App ${candidate.name} cannot be selected for ${target}: ${candidate.compatibility.reasons.join("; ")}`
+      );
+    }
+    const mode = input.mode ?? "follow-ref";
+    if (mode === "pinned-build" || mode === "pinned-commit") {
+      if (!input.buildKey) throw new Error(`${mode} selections require buildKey`);
+      const versions = this.listAppVersions(candidate.name);
+      const known = [versions.current, ...versions.previous].some(
+        (version) => version?.activeBundleKey === input.buildKey
+      );
+      if (!known) throw new Error(`Build ${input.buildKey} is not retained for ${candidate.name}`);
+    }
+    if (mode === "pinned-commit" && !input.commit) {
+      throw new Error("pinned-commit selections require commit");
+    }
+    const selection: HostTargetSelection = {
+      workspaceId: this.deps.workspaceId,
+      target,
+      source: candidate.source,
+      appId: candidate.name,
+      mode,
+      ref: input.ref,
+      buildKey: input.buildKey,
+      commit: input.commit,
+      updatedAt: Date.now(),
+      autoSelected: input.autoSelected,
+    };
+    this.writeHostTargetSelection(selection);
+    if (target === "electron" || target === "terminal") {
+      void this.launchHostTarget(target).catch((err) => {
+        console.error(
+          `[AppHost] Failed to launch selected ${target} app ${selection.appId}:`,
+          err instanceof Error ? err.message : String(err)
+        );
+      });
+    }
+    return selection;
+  }
+
+  clearHostTargetSelection(target: HostTarget): void {
+    const selections = this.readHostTargetSelections().filter(
+      (selection) =>
+        !(selection.workspaceId === this.deps.workspaceId && selection.target === target)
+    );
+    this.writeHostTargetSelections(selections);
+  }
+
+  listHostTargetVersions(
+    target: HostTarget,
+    sourceOrName: string
+  ): {
+    current: AppVersionRecord | null;
+    previous: AppVersionRecord[];
+    retentionLimit: number;
+  } {
+    const candidate = this.listHostTargetCandidates(target).find(
+      (item) => item.name === sourceOrName || item.source === normalizeRepoPath(sourceOrName)
+    );
+    if (!candidate)
+      return { current: null, previous: [], retentionLimit: APP_ROLLBACK_HISTORY_LIMIT };
+    return this.listAppVersions(candidate.name);
+  }
+
+  async prepareHostTargetPinnedCommit(
+    target: HostTarget,
+    sourceOrName: string,
+    commit: string
+  ): Promise<{ buildKey: string; effectiveVersion: string; appId: string; source: string }> {
+    const candidate = this.listHostTargetCandidates(target).find(
+      (item) => item.name === sourceOrName || item.source === normalizeRepoPath(sourceOrName)
+    );
+    if (!candidate) throw new Error(`No ${target} app candidate found for ${sourceOrName}`);
+    const node = this.findAppNode(candidate.name);
+    const previous = this.registry.get(candidate.name) ?? null;
+    const build = await this.deps.buildSystem.getBuild(candidate.name, commit);
+    this.validateBuildForTarget(candidate.name, target, build);
+    const decl: WorkspaceAppDeclaration = {
+      source: candidate.source,
+      ref: commit,
+      target,
+      enabled: true,
+    };
+    let entry = this.unitHost.activateBuild({
+      name: node.name,
+      version: readPackageVersion(node.path),
+      sourceRepo: node.relativePath,
+      ref: commit,
+      buildDir: build.dir,
+      effectiveVersion: build.metadata.ev,
+      activeSha: commit,
+      dependencyEvs: this.currentDependencyEvs(node),
+      externalDeps: this.externalDepsForBuild(node, build.metadata, decl),
+      runtimeDepsKey: null,
+      status: appRegistryStatusForTarget(target),
+      extra: {
+        target,
+        autostart: false,
+        capabilities: this.appCapabilities(node),
+      },
+    });
+    const previousRecord =
+      previous && previous.activeBundleKey && previous.activeBundleKey !== entry.activeBundleKey
+        ? appVersionRecordFromEntry(previous)
+        : null;
+    if (previousRecord) {
+      entry = this.registry.patch(entry.name, {
+        previousVersions: appVersionHistory([
+          previousRecord,
+          ...(previous?.previousVersions ?? []),
+        ]),
+        lastErrorDetails: null,
+      });
+    } else {
+      entry = this.registry.patch(entry.name, { lastErrorDetails: null });
+    }
+    this.activateAppEntity(entry);
+    await this.syncTerminalRuntime(entry, previous);
+    this.emitAvailable(this.registry.get(entry.name) ?? entry);
+    return {
+      buildKey: path.basename(build.dir),
+      effectiveVersion: build.metadata.ev,
+      appId: candidate.name,
+      source: candidate.source,
+    };
+  }
+
+  async launchHostTarget(target: HostTarget): Promise<boolean> {
+    const { selection, valid } = this.getHostTargetSelection(target);
+    if (!selection || !valid) return false;
+    if (
+      (selection.mode === "pinned-build" || selection.mode === "pinned-commit") &&
+      selection.buildKey
+    ) {
+      const current = this.findRegistryEntry(selection.appId);
+      if (current?.activeBundleKey && current.activeBundleKey !== selection.buildKey) {
+        await this.rollbackAppVersion(selection.appId, selection.buildKey);
+      }
+    }
+    const entry = this.findRegistryEntry(selection.appId);
+    if (!entry || entry.target !== target || !entry.activeBundleKey) return false;
+    if (target === "electron") {
+      this.emitAvailable(entry);
+      return true;
+    }
+    if (target === "terminal") {
+      for (const other of this.registry.list()) {
+        if (other.target === "terminal" && other.name !== entry.name) {
+          await this.stopTerminalApp(other.name);
+        }
+      }
+      await this.startTerminalApp(entry);
+      return true;
+    }
+    return true;
+  }
+
   async rollbackAppVersion(sourceOrName: string, buildKey?: string): Promise<AppRegistryEntry> {
     const entry = this.findRegistryEntry(sourceOrName);
     if (!entry) throw new Error(`Unknown app: ${sourceOrName}`);
@@ -654,10 +878,10 @@ export class AppHost {
     else res.end(body);
   }
 
-  getReactNativeBootstrap(
-    source = DEFAULT_REACT_NATIVE_APP_SOURCE
-  ): ReactNativeAppBootstrap | null {
-    const normalizedSource = normalizeRepoPath(source);
+  getReactNativeBootstrap(source?: string | null): ReactNativeAppBootstrap | null {
+    const resolvedSource = source ?? this.getSelectedReactNativeSource();
+    if (!resolvedSource) return null;
+    const normalizedSource = normalizeRepoPath(resolvedSource);
     const entry = this.registry
       .list()
       .find(
@@ -709,7 +933,7 @@ export class AppHost {
       contentType: artifact.contentType,
       encoding: artifact.encoding,
       platform: artifact.platform,
-      integrity: artifact.integrity!,
+      integrity: artifact.integrity ?? "",
       url: `${baseUrl}/${encodeArtifactPath(artifact.path)}`,
     }));
     return {
@@ -724,11 +948,10 @@ export class AppHost {
     };
   }
 
-  registerReactNativeAppPrincipal(
-    deviceId: string,
-    source = DEFAULT_REACT_NATIVE_APP_SOURCE
-  ): string | null {
-    const normalizedSource = normalizeRepoPath(source);
+  registerReactNativeAppPrincipal(deviceId: string, source?: string | null): string | null {
+    const resolvedSource = source ?? this.getSelectedReactNativeSource();
+    if (!resolvedSource) return null;
+    const normalizedSource = normalizeRepoPath(resolvedSource);
     const entry = this.registry
       .list()
       .find(
@@ -871,6 +1094,7 @@ export class AppHost {
       artifactUrls.find((artifact) => entry.target === "electron" && artifact.role === "html") ??
       artifactUrls.find((artifact) => artifact.role === "primary") ??
       artifactUrls[0];
+    const selectedForHost = this.isSelectedForHost(entry);
     const details =
       build?.metadata.details &&
       build.metadata.details.kind === "app" &&
@@ -892,6 +1116,7 @@ export class AppHost {
       previousEffectiveVersion: opts.previousEffectiveVersion ?? null,
       canRollback: entry.previousVersions.length > 0,
       adoptionPolicy: appAdoptionPolicy(entry.target, opts.lifecycleType ?? "available"),
+      selectedForHost,
       integrity: details?.integrity ?? null,
       rnHostAbi: details?.rnHostAbi ?? null,
       provider: details?.provider ?? null,
@@ -908,6 +1133,7 @@ export class AppHost {
       canRollback: entry.previousVersions.length > 0,
       requiresReload: entry.target !== "terminal",
       adoptionPolicy: appAdoptionPolicy(entry.target, opts.lifecycleType ?? "available"),
+      ...(selectedForHost === undefined ? {} : { selectedForHost }),
     });
     if (opts.notify) this.notifyAppUpdateAvailable(entry);
     this.emitStatus(entry.name, entry.status, entry.lastError ?? null);
@@ -1018,6 +1244,7 @@ export class AppHost {
     canRollback: boolean;
     requiresReload?: boolean;
     adoptionPolicy?: "immediate" | "prompt";
+    selectedForHost?: boolean;
   }): void {
     this.deps.eventService.emit("apps:lifecycle" as EventName, {
       ...payload,
@@ -1137,6 +1364,140 @@ export class AppHost {
             normalizeRepoPath(candidate.source.repo) === normalizeRepoPath(sourceOrName)
         ) ??
       null
+    );
+  }
+
+  private hostTargetCandidate(
+    node: AppGraphNode,
+    target: HostTarget,
+    declared: boolean
+  ): HostTargetCandidate {
+    const entry = this.registry.get(node.name);
+    const capabilities = this.appCapabilities(node);
+    const reasons: string[] = [];
+    if (target === "electron" && !capabilities.includes("panel-hosting")) {
+      reasons.push("Electron shell apps must declare the panel-hosting capability");
+    }
+    const activeBuild = entry?.activeBundleKey
+      ? this.deps.buildSystem.getBuildByKey?.(entry.activeBundleKey)
+      : null;
+    if (target === "react-native" && activeBuild) {
+      const details = activeBuild.metadata.details;
+      if (
+        !isAppBuildDetailsLike(details) ||
+        details.target !== "react-native" ||
+        typeof details.rnHostAbi !== "string" ||
+        !details.rnHostAbi ||
+        typeof details.integrity !== "string" ||
+        !details.integrity ||
+        !isBuildProviderDetailsLike(details.provider)
+      ) {
+        reasons.push("Active React Native build is missing signed native metadata");
+      }
+    }
+    if (target === "terminal" && activeBuild) {
+      const details = activeBuild.metadata.details;
+      const primaryArtifacts = (activeBuild.artifacts ?? []).filter(
+        (artifact) => artifact.role === "primary"
+      );
+      if (!isAppBuildDetailsLike(details) || details.target !== "terminal") {
+        reasons.push("Active terminal build is missing terminal metadata");
+      } else if (primaryArtifacts.length !== 1 || !primaryArtifacts[0]?.path.endsWith(".mjs")) {
+        reasons.push("Terminal builds need exactly one primary .mjs artifact");
+      }
+    }
+    return {
+      name: node.name,
+      source: normalizeRepoPath(node.relativePath),
+      displayName: node.manifest.displayName ?? node.name,
+      target,
+      declared,
+      enabled: entry?.enabled,
+      status: entry?.status ?? "not-built",
+      activeEv: entry?.activeEv ?? null,
+      activeBundleKey: entry?.activeBundleKey ?? null,
+      capabilities,
+      canRollback: !!entry?.previousVersions.length,
+      previousVersions: entry?.previousVersions ?? [],
+      lastError: entry?.lastError ?? null,
+      lastErrorDetails: entry?.lastErrorDetails ?? null,
+      compatibility: {
+        selectable: reasons.length === 0,
+        reasons,
+        recommended: target !== "electron" || capabilities.includes("panel-hosting"),
+      },
+    };
+  }
+
+  private hostTargetSelectionPath(): string {
+    return path.join(this.deps.statePath, "host-targets", "selections.json");
+  }
+
+  private readHostTargetSelections(): HostTargetSelection[] {
+    const filePath = this.hostTargetSelectionPath();
+    if (!fs.existsSync(filePath)) return [];
+    try {
+      const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as HostTargetSelectionState;
+      return Array.isArray(parsed.selections)
+        ? parsed.selections.filter(isHostTargetSelection)
+        : [];
+    } catch (err) {
+      console.warn(
+        `[AppHost] Failed to read host target selections: ${err instanceof Error ? err.message : String(err)}`
+      );
+      return [];
+    }
+  }
+
+  private writeHostTargetSelection(selection: HostTargetSelection): void {
+    const selections = this.readHostTargetSelections().filter(
+      (candidate) =>
+        !(candidate.workspaceId === selection.workspaceId && candidate.target === selection.target)
+    );
+    selections.push(selection);
+    this.writeHostTargetSelections(selections);
+  }
+
+  private writeHostTargetSelections(selections: HostTargetSelection[]): void {
+    const filePath = this.hostTargetSelectionPath();
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify({ selections }, null, 2), "utf8");
+  }
+
+  private getSelectedReactNativeSource(): string | null {
+    const current = this.getHostTargetSelection("react-native");
+    if (current.valid && current.selection) return current.selection.source;
+    const activeEntries = this.registry
+      .list()
+      .filter(
+        (entry) =>
+          entry.target === "react-native" &&
+          entry.enabled &&
+          entry.status === "running" &&
+          !!entry.activeBundleKey
+      );
+    const canonicalMobile = activeEntries.find(
+      (entry) => normalizeRepoPath(entry.source.repo) === "apps/mobile"
+    );
+    if (canonicalMobile) return normalizeRepoPath(canonicalMobile.source.repo);
+    const onlyActiveEntry = activeEntries[0];
+    if (activeEntries.length === 1 && onlyActiveEntry) {
+      return normalizeRepoPath(onlyActiveEntry.source.repo);
+    }
+    const candidates = this.listHostTargetCandidates("react-native").filter(
+      (candidate) => candidate.compatibility.selectable
+    );
+    const onlyCandidate = candidates[0];
+    if (candidates.length === 1 && onlyCandidate) return onlyCandidate.source;
+    return null;
+  }
+
+  private isSelectedForHost(entry: AppRegistryEntry): boolean | undefined {
+    const current = this.getHostTargetSelection(entry.target);
+    if (!current.selection) return undefined;
+    return (
+      normalizeRepoPath(current.selection.source) === normalizeRepoPath(entry.source.repo) ||
+      current.selection.appId === entry.name
     );
   }
 
@@ -1435,6 +1796,14 @@ export class AppHost {
       APP_UNIT_DESCRIPTOR,
       nameOrRepo
     );
+  }
+
+  private tryFindAppNode(nameOrRepo: string): AppGraphNode | null {
+    try {
+      return this.findAppNode(nameOrRepo);
+    } catch {
+      return null;
+    }
   }
 
   private validateAppManifestAtPath(nodePath: string, unitName: string): void {
@@ -1736,6 +2105,23 @@ function normalizeArtifactPath(remainderPath: string): string {
 
 function mobileAppPrincipalId(repoPath: string, deviceId: string): string {
   return `app:${normalizeRepoPath(repoPath)}:${deviceId}`;
+}
+
+function isHostTargetSelection(value: unknown): value is HostTargetSelection {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<HostTargetSelection>;
+  return (
+    typeof candidate.workspaceId === "string" &&
+    (candidate.target === "electron" ||
+      candidate.target === "react-native" ||
+      candidate.target === "terminal") &&
+    typeof candidate.source === "string" &&
+    typeof candidate.appId === "string" &&
+    (candidate.mode === "follow-ref" ||
+      candidate.mode === "pinned-build" ||
+      candidate.mode === "pinned-commit") &&
+    typeof candidate.updatedAt === "number"
+  );
 }
 
 function appVersionRecordFromEntry(entry: AppRegistryEntry): AppVersionRecord | null {
