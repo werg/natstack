@@ -189,4 +189,5 @@ apps:
     target: react-native
   - source: apps/remote-cli
     target: terminal
+    enabled: true
     autostart: false

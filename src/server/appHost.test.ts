@@ -673,6 +673,145 @@ describe("AppHost", () => {
     );
   });
 
+  it("rolls terminal apps back to a retained terminal build", async () => {
+    const { host, buildSystem, eventService, notificationService, graphNode } = makeHarness();
+    const buildByKey = new Map([
+      [
+        "terminal-key-1",
+        {
+          dir: path.join(
+            path.dirname(graphNode.path),
+            "..",
+            "..",
+            "state",
+            "builds",
+            "terminal-key-1"
+          ),
+          metadata: {
+            ev: "ev-terminal-1",
+            details: {
+              kind: "app" as const,
+              target: "terminal" as const,
+              integrity: null,
+              rnHostAbi: null,
+              provider: null,
+            },
+          },
+          artifacts: [
+            {
+              path: "index.mjs",
+              role: "primary",
+              contentType: "text/javascript; charset=utf-8",
+              encoding: "utf8",
+              content: "export {};\n",
+            },
+          ],
+        },
+      ],
+      [
+        "terminal-key-2",
+        {
+          dir: path.join(
+            path.dirname(graphNode.path),
+            "..",
+            "..",
+            "state",
+            "builds",
+            "terminal-key-2"
+          ),
+          metadata: {
+            ev: "ev-terminal-2",
+            details: {
+              kind: "app" as const,
+              target: "terminal" as const,
+              integrity: null,
+              rnHostAbi: null,
+              provider: null,
+            },
+          },
+          artifacts: [
+            {
+              path: "index.mjs",
+              role: "primary",
+              contentType: "text/javascript; charset=utf-8",
+              encoding: "utf8",
+              content: "export {};\n",
+            },
+          ],
+        },
+      ],
+    ]);
+    buildSystem.getBuildByKey.mockImplementation(
+      (key: string) => (buildByKey.get(key) ?? null) as never
+    );
+    host.registry.upsert({
+      unitKind: "app",
+      name: graphNode.name,
+      version: "1.0.0",
+      target: "terminal",
+      autostart: false,
+      capabilities: ["connection-management"],
+      source: { kind: "internal-git", repo: graphNode.relativePath, ref: "main" },
+      installedAt: Date.now(),
+      activeEv: "ev-terminal-2",
+      activeSha: "sha-2",
+      activeBundleKey: "terminal-key-2",
+      activeDependencyEvs: {},
+      activeExternalDeps: {},
+      activeRuntimeDepsKey: null,
+      enabled: true,
+      status: "available",
+      lastError: null,
+      previousVersions: [
+        {
+          version: "1.0.0",
+          target: "terminal",
+          autostart: false,
+          capabilities: ["connection-management"],
+          activeEv: "ev-terminal-1",
+          activeSha: "sha-1",
+          activeBundleKey: "terminal-key-1",
+          activeDependencyEvs: {},
+          activeExternalDeps: {},
+          activeRuntimeDepsKey: null,
+          activatedAt: Date.now() - 1000,
+        },
+      ],
+    });
+
+    await host.rollbackAppVersion(graphNode.name);
+
+    expect(host.registry.get(graphNode.name)).toMatchObject({
+      target: "terminal",
+      status: "available",
+      activeBundleKey: "terminal-key-1",
+      activeEv: "ev-terminal-1",
+      previousVersions: [
+        expect.objectContaining({ activeBundleKey: "terminal-key-2", activeEv: "ev-terminal-2" }),
+      ],
+    });
+    expect(eventService.emit).toHaveBeenCalledWith(
+      "apps:lifecycle",
+      expect.objectContaining({
+        type: "rolled-back",
+        appId: graphNode.name,
+        target: "terminal",
+        buildKey: "terminal-key-1",
+        adoptionPolicy: "immediate",
+      })
+    );
+    expect(notificationService.show).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Terminal app update available",
+        actions: expect.arrayContaining([
+          expect.objectContaining({
+            command: { type: "workspace.restartUnit", name: graphNode.name },
+          }),
+        ]),
+      })
+    );
+  });
+
   it("trusts exact product-seeded app source without an approval prompt", async () => {
     const { host, buildSystem, eventService, approvalQueue } = makeHarness({ seeded: true });
 
