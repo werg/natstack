@@ -11,22 +11,21 @@ type ShellTransportBridge = {
 const globals = globalThis as unknown as { __natstackTransport?: ShellTransportBridge };
 const container = document.getElementById("approvals");
 if (!container) throw new Error("Bootstrap approval container missing");
-if (!globals.__natstackTransport) throw new Error("Bootstrap transport unavailable");
+const bootstrapTransport = globals.__natstackTransport;
+if (!bootstrapTransport) throw new Error("Bootstrap transport unavailable");
 const approvalsContainer = container;
 const output = document.getElementById("recovery-output") as HTMLPreElement | null;
 const workspaceSelect = document.getElementById("workspace-select") as HTMLSelectElement | null;
 const workspaceName = document.getElementById("workspace-name") as HTMLInputElement | null;
 
 const transport: RpcTransport = {
-  send: globals.__natstackTransport.send,
+  send: bootstrapTransport.send,
   onMessage: (_sourceId, handler) =>
-    globals.__natstackTransport!.onMessage((fromId, message) => {
+    bootstrapTransport.onMessage((fromId, message) => {
       if (fromId === "main") handler(message as RpcMessage);
     }),
   onAnyMessage: (handler) =>
-    globals.__natstackTransport!.onMessage((fromId, message) =>
-      handler(fromId, message as RpcMessage)
-    ),
+    bootstrapTransport.onMessage((fromId, message) => handler(fromId, message as RpcMessage)),
 };
 
 const rpc: RpcBridge = createRpcBridge({ selfId: "bootstrap", transport });
@@ -204,7 +203,7 @@ async function createWorkspace(): Promise<void> {
   try {
     await rpc.call("main", "workspace.create", [name]);
     setOutput(`Workspace ${name} created.`);
-    workspaceName!.value = "";
+    if (workspaceName) workspaceName.value = "";
     await refreshWorkspaces();
   } catch (err) {
     setOutput(`Workspace creation failed: ${err instanceof Error ? err.message : String(err)}`);

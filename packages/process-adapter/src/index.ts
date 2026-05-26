@@ -6,8 +6,9 @@
 import { fork as nodeFork } from "node:child_process";
 import type { Serializable } from "node:child_process";
 import { createRequire } from "node:module";
+import * as path from "node:path";
 
-const requireOptional = createRequire(import.meta.url);
+const requireOptional = createRequire(path.join(process.cwd(), "package.json"));
 
 /**
  * Abstraction over Electron utilityProcess / Node.js child_process.

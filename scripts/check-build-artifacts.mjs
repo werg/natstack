@@ -108,7 +108,7 @@ const contracts = [
     path: "packages/process-adapter/dist/index.js",
     runtime: "Node ESM package",
     format: "esm",
-    mustContain: ["createRequire(import.meta.url)"],
+    mustContain: ["createRequire(path.join(process.cwd(), \"package.json\"))"],
   },
 ];
 
