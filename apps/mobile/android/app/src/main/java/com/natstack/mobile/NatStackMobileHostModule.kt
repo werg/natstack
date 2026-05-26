@@ -14,6 +14,7 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.bridge.WritableMap
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.File
@@ -48,12 +49,12 @@ class NatStackMobileHostModule(
 
     @ReactMethod
     fun clearCredentials(promise: Promise) {
-        prefs.edit().remove(CREDENTIAL_KEY).apply()
+        prefs.edit().remove(CREDENTIAL_KEY).remove(ACTIVE_APP_SOURCE_KEY).apply()
         promise.resolve(null)
     }
 
     @ReactMethod
-    fun completePairing(serverUrl: String, code: String, promise: Promise) {
+    fun completePairing(serverUrl: String, code: String, source: String?, promise: Promise) {
         thread(start = true, isDaemon = true, name = "NatStackPairing") {
             try {
                 val normalizedUrl = normalizeServerUrl(serverUrl)
@@ -75,7 +76,7 @@ class NatStackMobileHostModule(
                         ?: throw IllegalStateException("Pairing response did not include a workspace id"),
                 )
                 saveCredential(credential)
-                promise.resolve(issueGrant(credential))
+                promise.resolve(issueGrant(credential, source))
             } catch (error: Exception) {
                 promise.reject("pairing_failed", error.message, error)
             }
@@ -88,7 +89,7 @@ class NatStackMobileHostModule(
             try {
                 val credential = loadCredential()
                     ?: throw IllegalStateException("No mobile credentials are stored")
-                promise.resolve(issueGrant(credential))
+                promise.resolve(issueGrant(credential, activeAppSource()))
             } catch (error: Exception) {
                 promise.reject("grant_failed", error.message, error)
             }
@@ -124,6 +125,11 @@ class NatStackMobileHostModule(
                 val integrity = artifact.getString("integrity")
                 verifySha256Integrity(integrity, bytes)
                 val bundleFile = writeBundleFile(bootstrap.getString("buildKey"), artifact.getString("path"), bytes)
+                if (!source.isNullOrBlank()) {
+                    prefs.edit().putString(ACTIVE_APP_SOURCE_KEY, source).apply()
+                } else {
+                    prefs.edit().remove(ACTIVE_APP_SOURCE_KEY).apply()
+                }
                 promise.resolve(Arguments.createMap().apply {
                     putString("appId", bootstrap.getString("appId"))
                     putString("buildKey", bootstrap.getString("buildKey"))
@@ -163,39 +169,51 @@ class NatStackMobileHostModule(
         }
     }
 
-    private fun issueGrant(credential: Credential) = postJson(
-        credential.serverUrl,
-        "/_r/s/auth/refresh-principal-grant",
-        JSONObject()
+    private fun issueGrant(credential: Credential, source: String? = null): WritableMap {
+        val body = JSONObject()
             .put("deviceId", credential.deviceId)
             .put("refreshToken", credential.refreshToken)
             .put("principal", "react-native-app")
-    ).let { json ->
-        val callerId = json.optString("callerId")
-        val connectionGrant = json.optString("connectionGrant")
-        val responseDeviceId = json.optString("deviceId")
-        if (!callerId.startsWith(CANONICAL_APP_CALLER_PREFIX)) {
-            throw IllegalStateException("Mobile app grant response did not include the canonical mobile app principal")
+        if (!source.isNullOrBlank()) {
+            body.put("source", source)
         }
-        if (connectionGrant.isBlank()) {
-            throw IllegalStateException("Mobile app grant response did not include a connection grant")
-        }
-        if (responseDeviceId.isNotBlank() && responseDeviceId != credential.deviceId) {
-            throw IllegalStateException("Mobile app grant response device did not match the stored credential")
-        }
-        Arguments.createMap().apply {
-            putString("serverUrl", credential.serverUrl)
-            putString("deviceId", credential.deviceId)
-            putString("callerId", callerId)
-            putString("connectionGrant", connectionGrant)
-            if (json.has("expiresAt")) putDouble("expiresAt", json.getDouble("expiresAt"))
-            putString("serverId", json.getString("serverId").takeIf { it.isNotBlank() }
-                ?: throw IllegalStateException("Mobile app grant response did not include a server id"))
-            json.optString("serverBootId").takeIf { it.isNotBlank() }?.let { putString("serverBootId", it) }
-            putString("workspaceId", json.getString("workspaceId").takeIf { it.isNotBlank() }
-                ?: throw IllegalStateException("Mobile app grant response did not include a workspace id"))
+        return postJson(
+            credential.serverUrl,
+            "/_r/s/auth/refresh-principal-grant",
+            body
+        ).let { json ->
+            val callerId = json.optString("callerId")
+            val connectionGrant = json.optString("connectionGrant")
+            val responseDeviceId = json.optString("deviceId")
+            if (!isWorkspaceMobileAppCaller(callerId, credential.deviceId)) {
+                throw IllegalStateException("Mobile app grant response did not include a workspace mobile app principal")
+            }
+            if (connectionGrant.isBlank()) {
+                throw IllegalStateException("Mobile app grant response did not include a connection grant")
+            }
+            if (responseDeviceId.isNotBlank() && responseDeviceId != credential.deviceId) {
+                throw IllegalStateException("Mobile app grant response device did not match the stored credential")
+            }
+            Arguments.createMap().apply {
+                putString("serverUrl", credential.serverUrl)
+                putString("deviceId", credential.deviceId)
+                putString("callerId", callerId)
+                putString("connectionGrant", connectionGrant)
+                if (json.has("expiresAt")) putDouble("expiresAt", json.getDouble("expiresAt"))
+                putString("serverId", json.getString("serverId").takeIf { it.isNotBlank() }
+                    ?: throw IllegalStateException("Mobile app grant response did not include a server id"))
+                json.optString("serverBootId").takeIf { it.isNotBlank() }?.let { putString("serverBootId", it) }
+                putString("workspaceId", json.getString("workspaceId").takeIf { it.isNotBlank() }
+                    ?: throw IllegalStateException("Mobile app grant response did not include a workspace id"))
+            }
         }
     }
+
+    private fun activeAppSource(): String? = prefs.getString(ACTIVE_APP_SOURCE_KEY, null)
+        ?.takeIf { it.isNotBlank() }
+
+    private fun isWorkspaceMobileAppCaller(callerId: String, deviceId: String): Boolean =
+        callerId.startsWith(WORKSPACE_APP_CALLER_PREFIX) && callerId.endsWith(":$deviceId")
 
     private fun postJson(serverUrl: String, path: String, body: JSONObject): JSONObject {
         val connection = URL("$serverUrl$path").openConnection() as HttpURLConnection
@@ -375,11 +393,12 @@ class NatStackMobileHostModule(
 
     private companion object {
         const val CREDENTIAL_KEY = "credential"
+        const val ACTIVE_APP_SOURCE_KEY = "activeBundle.source"
         const val TAG = "NatStackMobileHost"
         const val KEY_ALIAS = "natstack-mobile-refresh"
         const val GCM_IV_BYTES = 12
         const val GCM_TAG_BITS = 128
-        const val CANONICAL_APP_CALLER_PREFIX = "app:apps/mobile:"
+        const val WORKSPACE_APP_CALLER_PREFIX = "app:apps/"
 
         fun normalizeServerUrl(serverUrl: String): String {
             val url = URL(serverUrl.trim())

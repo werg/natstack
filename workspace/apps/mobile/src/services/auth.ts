@@ -68,7 +68,7 @@ export function isWorkspaceMobileAppCallerId(callerId: string, deviceId?: string
 interface NatStackMobileHostNative {
   getCredentials(): Promise<Credentials | null>;
   clearCredentials(): Promise<void>;
-  completePairing(serverUrl: string, code: string): Promise<PairingResponse>;
+  completePairing(serverUrl: string, code: string, source: string | null): Promise<PairingResponse>;
   issueConnectionGrant(): Promise<ConnectionGrantResponse>;
   prepareAppBundle(
     expectedRnHostAbi: string,
@@ -123,8 +123,12 @@ export async function clearCredentials(): Promise<void> {
   await nativeHost().clearCredentials();
 }
 
-export async function completePairing(serverUrl: string, code: string): Promise<PairingResponse> {
-  const response = await nativeHost().completePairing(serverUrl, code);
+export async function completePairing(
+  serverUrl: string,
+  code: string,
+  source?: string | null
+): Promise<PairingResponse> {
+  const response = await nativeHost().completePairing(serverUrl, code, source ?? null);
   validateNativeAppGrant(response, "Pairing response");
   return response;
 }

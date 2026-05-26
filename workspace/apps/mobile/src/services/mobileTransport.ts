@@ -15,7 +15,7 @@ import {
   type WsLike,
 } from "@natstack/shared/shell/transport";
 import type { RecoveryKind } from "@natstack/shared/shell/recoveryCoordinator";
-import { isCanonicalMobileAppCallerId } from "./auth";
+import { isWorkspaceMobileAppCallerId } from "./auth";
 
 export type { ConnectionStatus };
 
@@ -106,7 +106,7 @@ export class MobileTransport implements RpcBridge {
       (error) => {
         console.warn("[MobileTransport] Failed to initialize native app principal:", error);
         this.setStatus("disconnected");
-      },
+      }
     );
   }
 
@@ -156,9 +156,7 @@ export class MobileTransport implements RpcBridge {
   }
 
   emit(targetId: string, event: string, payload: unknown): Promise<void> {
-    return this.ensureTransport().then((transport) =>
-      transport.emit(targetId, event, payload)
-    );
+    return this.ensureTransport().then((transport) => transport.emit(targetId, event, payload));
   }
 
   onReconnect(listener: () => void): () => void {
@@ -227,7 +225,7 @@ export class MobileTransport implements RpcBridge {
       typeof grant.connectionGrant !== "string" ||
       !grant.connectionGrant ||
       typeof grant.callerId !== "string" ||
-      !isCanonicalMobileAppCallerId(grant.callerId)
+      !isWorkspaceMobileAppCallerId(grant.callerId)
     ) {
       throw new Error("Native host returned an invalid app connection grant");
     }

@@ -14,7 +14,11 @@ import {
 import type { StackNavigationProp } from "@react-navigation/stack";
 import { useSetAtom, useAtomValue } from "jotai";
 import type { RootStackParamList } from "../navigation/RootNavigator";
-import { completePairing, StoredCredentialsNeedRepairError, type Credentials } from "../services/auth";
+import {
+  completePairing,
+  StoredCredentialsNeedRepairError,
+  type Credentials,
+} from "../services/auth";
 import { ensureNativeWorkspaceAppBundle } from "../services/appBootstrap";
 import { getConnectionBootstrap } from "../services/connectionBootstrap";
 import { ShellClient } from "../services/shellClient";
@@ -41,7 +45,7 @@ function confirmConnectDeepLink(serverUrl: string): Promise<boolean> {
         { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
         { text: "Connect", onPress: () => resolve(true) },
       ],
-      { cancelable: true, onDismiss: () => resolve(false) },
+      { cancelable: true, onDismiss: () => resolve(false) }
     );
   });
 }
@@ -55,6 +59,7 @@ interface LoginScreenProps {
 export function LoginScreen({ navigation }: LoginScreenProps) {
   const [serverUrl, setServerUrl] = React.useState("");
   const [pairingCode, setPairingCode] = React.useState("");
+  const [mobileAppSource, setMobileAppSource] = React.useState("");
   const [bootstrapPending, setBootstrapPending] = React.useState(true);
   const [autoConnecting, setAutoConnecting] = React.useState(false);
   const colors = useAtomValue(themeColorsAtom);
@@ -71,7 +76,7 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
   // Reusable connect logic shared by auto-connect and manual button
   const connectWithCredentials = async (
     credentials: Credentials,
-    options?: { showAlert?: boolean },
+    options?: { showAlert?: boolean }
   ): Promise<boolean> => {
     setAuthLoading(true);
     setAuthError(null);
@@ -115,13 +120,13 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
   const pairAndConnect = async (
     targetUrl: string,
     code: string,
-    options?: { showAlert?: boolean },
+    options?: { showAlert?: boolean; mobileAppSource?: string | null }
   ): Promise<boolean> => {
     setAuthLoading(true);
     setAuthError(null);
     try {
-      const credentials = await completePairing(targetUrl, code);
-      if ((await ensureNativeWorkspaceAppBundle()).reloading) {
+      const credentials = await completePairing(targetUrl, code, options?.mobileAppSource ?? null);
+      if ((await ensureNativeWorkspaceAppBundle(options?.mobileAppSource ?? null)).reloading) {
         setAuthLoading(false);
         return true;
       }
@@ -153,7 +158,9 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
       if (!confirmed) return false;
       setServerUrl(result.serverUrl);
       setPairingCode(result.pairingCode);
-      const connected = await pairAndConnect(result.serverUrl, result.pairingCode, { showAlert: true });
+      const connected = await pairAndConnect(result.serverUrl, result.pairingCode, {
+        showAlert: true,
+      });
       consumedDeepLink = connected;
       return connected;
     };
@@ -213,7 +220,16 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
       return;
     }
 
-    await pairAndConnect(trimmedUrl, trimmedCode, { showAlert: true });
+    const selectedSource = mobileAppSource.trim() || null;
+    if (selectedSource && !selectedSource.startsWith("apps/")) {
+      Alert.alert("Invalid app source", "Mobile app sources must be under apps/.");
+      return;
+    }
+
+    await pairAndConnect(trimmedUrl, trimmedCode, {
+      showAlert: true,
+      mobileAppSource: selectedSource,
+    });
   };
 
   if (bootstrapPending || autoConnecting) {
@@ -222,10 +238,15 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         style={{ flex: 1, backgroundColor: colors.background }}
       >
-        <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+        >
           <Text style={[styles.title, { color: colors.text }]}>NatStack</Text>
           <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
-            {autoConnecting ? "Connecting to your NatStack server..." : "Loading development connection..."}
+            {autoConnecting
+              ? "Connecting to your NatStack server..."
+              : "Loading development connection..."}
           </Text>
           <ActivityIndicator color={colors.primary} size="large" />
         </ScrollView>
@@ -238,17 +259,17 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
       behavior={Platform.OS === "ios" ? "padding" : "height"}
       style={{ flex: 1, backgroundColor: colors.background }}
     >
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
-      >
+      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
         <Text style={[styles.title, { color: colors.text }]}>NatStack</Text>
         <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
           Connect to your NatStack server
         </Text>
 
         <TextInput
-          style={[styles.input, { borderColor: colors.border, color: colors.text, backgroundColor: colors.surface }]}
+          style={[
+            styles.input,
+            { borderColor: colors.border, color: colors.text, backgroundColor: colors.surface },
+          ]}
           placeholder="Server URL (e.g. https://natstack.example.com)"
           placeholderTextColor={colors.textSecondary}
           value={serverUrl}
@@ -260,7 +281,10 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
         />
 
         <TextInput
-          style={[styles.input, { borderColor: colors.border, color: colors.text, backgroundColor: colors.surface }]}
+          style={[
+            styles.input,
+            { borderColor: colors.border, color: colors.text, backgroundColor: colors.surface },
+          ]}
           placeholder="Pairing code"
           placeholderTextColor={colors.textSecondary}
           value={pairingCode}
@@ -271,8 +295,26 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
           editable={!authLoading}
         />
 
+        <TextInput
+          style={[
+            styles.input,
+            { borderColor: colors.border, color: colors.text, backgroundColor: colors.surface },
+          ]}
+          placeholder="Mobile app source (optional, e.g. apps/mobile)"
+          placeholderTextColor={colors.textSecondary}
+          value={mobileAppSource}
+          onChangeText={setMobileAppSource}
+          autoCapitalize="none"
+          autoCorrect={false}
+          editable={!authLoading}
+        />
+
         <Pressable
-          style={[styles.button, { backgroundColor: colors.primary }, authLoading && styles.buttonDisabled]}
+          style={[
+            styles.button,
+            { backgroundColor: colors.primary },
+            authLoading && styles.buttonDisabled,
+          ]}
           onPress={handleConnect}
           disabled={authLoading}
         >

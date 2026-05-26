@@ -6,9 +6,29 @@ jest.mock(
   { virtual: true }
 );
 
-import { buildWsUrl, MobileTransport } from "./mobileTransport";
+import { buildWsUrl, MobileTransport, type MobileConnectionGrant } from "./mobileTransport";
 
 describe("MobileTransport", () => {
+  it("accepts workspace mobile app principals from native grants", async () => {
+    const transport = new MobileTransport({
+      serverUrl: "https://server.example",
+      issueConnectionGrant: async () => ({
+        callerId: "app:apps/field-mobile:dev_123",
+        connectionGrant: "grant_123",
+      }),
+    });
+
+    await expect(
+      (
+        transport as unknown as {
+          issueNativeGrant(): Promise<MobileConnectionGrant>;
+        }
+      ).issueNativeGrant()
+    ).resolves.toMatchObject({
+      callerId: "app:apps/field-mobile:dev_123",
+    });
+  });
+
   it("rejects non-canonical app principals from native grants", async () => {
     const transport = new MobileTransport({
       serverUrl: "https://server.example",

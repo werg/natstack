@@ -75,7 +75,7 @@ async function pairAndActivateWorkspaceApp(rawUrl) {
 }
 
 async function pairAndActivateParsedLink(parsed) {
-  await nativeHost.completePairing(parsed.serverUrl, parsed.code);
+  await nativeHost.completePairing(parsed.serverUrl, parsed.code, null);
   await activateApprovedWorkspaceApp();
 }
 

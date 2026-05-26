@@ -16,7 +16,8 @@ static NSString *const NatStackCredentialAccount = @"mobile-refresh";
 static NSString *const NatStackActiveBundleLocalPath = @"activeBundle.localPath";
 static NSString *const NatStackActiveBundleBuildKey = @"activeBundle.buildKey";
 static NSString *const NatStackActiveBundleIntegrity = @"activeBundle.integrity";
-static NSString *const NatStackCanonicalAppCallerPrefix = @"app:apps/mobile:";
+static NSString *const NatStackActiveBundleSource = @"activeBundle.source";
+static NSString *const NatStackWorkspaceAppCallerPrefix = @"app:apps/";
 
 + (BOOL)requiresMainQueueSetup
 {
@@ -48,11 +49,13 @@ RCT_EXPORT_METHOD(clearCredentials:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 {
   [self deleteCredential];
+  [[NSUserDefaults standardUserDefaults] removeObjectForKey:NatStackActiveBundleSource];
   resolve(nil);
 }
 
 RCT_EXPORT_METHOD(completePairing:(NSString *)serverUrl
                   code:(NSString *)code
+                  source:(NSString *)source
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 {
@@ -72,7 +75,7 @@ RCT_EXPORT_METHOD(completePairing:(NSString *)serverUrl
         @"workspaceId": [self requiredString:response key:@"workspaceId"],
       };
       [self saveCredential:credential];
-      resolve([self issueGrantForCredential:credential]);
+      resolve([self issueGrantForCredential:credential source:source]);
     } @catch (NSException *exception) {
       reject(@"pairing_failed", exception.reason, nil);
     }
@@ -88,7 +91,7 @@ RCT_EXPORT_METHOD(issueConnectionGrant:(RCTPromiseResolveBlock)resolve
       if (credential == nil) {
         [NSException raise:@"NatStackNoCredentials" format:@"No mobile credentials are stored"];
       }
-      resolve([self issueGrantForCredential:credential]);
+      resolve([self issueGrantForCredential:credential source:[self activeAppSource]]);
     } @catch (NSException *exception) {
       reject(@"grant_failed", exception.reason, nil);
     }
@@ -130,6 +133,11 @@ RCT_EXPORT_METHOD(prepareAppBundle:(NSString *)expectedRnHostAbi
       NSString *integrity = [self requiredString:artifact key:@"integrity"];
       [self verifySha256Integrity:integrity data:bundleData];
       NSString *localPath = [self writeBundleData:bundleData buildKey:[self requiredString:bootstrap key:@"buildKey"] artifactPath:[self requiredString:artifact key:@"path"]];
+      if ([source isKindOfClass:[NSString class]] && source.length > 0) {
+        [[NSUserDefaults standardUserDefaults] setObject:source forKey:NatStackActiveBundleSource];
+      } else {
+        [[NSUserDefaults standardUserDefaults] removeObjectForKey:NatStackActiveBundleSource];
+      }
       NSMutableDictionary *result = [@{
         @"appId": [self requiredString:bootstrap key:@"appId"],
         @"buildKey": [self requiredString:bootstrap key:@"buildKey"],
@@ -184,18 +192,22 @@ RCT_EXPORT_METHOD(activatePreparedAppBundle:(NSString *)localPath
   }
 }
 
-- (NSDictionary *)issueGrantForCredential:(NSDictionary *)credential
+- (NSDictionary *)issueGrantForCredential:(NSDictionary *)credential source:(NSString *)source
 {
-  NSDictionary *response = [self postJson:credential[@"serverUrl"] path:@"/_r/s/auth/refresh-principal-grant" body:@{
+  NSMutableDictionary *body = [@{
     @"deviceId": credential[@"deviceId"],
     @"refreshToken": credential[@"refreshToken"],
     @"principal": @"react-native-app",
-  }];
+  } mutableCopy];
+  if ([source isKindOfClass:[NSString class]] && source.length > 0) {
+    body[@"source"] = source;
+  }
+  NSDictionary *response = [self postJson:credential[@"serverUrl"] path:@"/_r/s/auth/refresh-principal-grant" body:body];
   NSString *callerId = [self optionalString:response key:@"callerId"] ?: @"";
   NSString *connectionGrant = [self optionalString:response key:@"connectionGrant"] ?: @"";
   NSString *responseDeviceId = [self optionalString:response key:@"deviceId"];
-  if (![callerId hasPrefix:NatStackCanonicalAppCallerPrefix]) {
-    [NSException raise:@"NatStackAppGrantInvalid" format:@"Mobile app grant response did not include the canonical mobile app principal"];
+  if (![self isWorkspaceMobileAppCaller:callerId deviceId:credential[@"deviceId"]]) {
+    [NSException raise:@"NatStackAppGrantInvalid" format:@"Mobile app grant response did not include a workspace mobile app principal"];
   }
   if (connectionGrant.length == 0) {
     [NSException raise:@"NatStackAppGrantInvalid" format:@"Mobile app grant response did not include a connection grant"];
@@ -216,6 +228,19 @@ RCT_EXPORT_METHOD(activatePreparedAppBundle:(NSString *)localPath
   if (serverBootId != nil) result[@"serverBootId"] = serverBootId;
   result[@"workspaceId"] = [self requiredString:response key:@"workspaceId"];
   return result;
+}
+
+- (NSString *)activeAppSource
+{
+  NSString *source = [[NSUserDefaults standardUserDefaults] stringForKey:NatStackActiveBundleSource];
+  return source.length > 0 ? source : nil;
+}
+
+- (BOOL)isWorkspaceMobileAppCaller:(NSString *)callerId deviceId:(NSString *)deviceId
+{
+  return [callerId hasPrefix:NatStackWorkspaceAppCallerPrefix] &&
+    deviceId.length > 0 &&
+    [callerId hasSuffix:[@":" stringByAppendingString:deviceId]];
 }
 
 - (NSDictionary *)postJson:(NSString *)serverUrl path:(NSString *)path body:(NSDictionary *)body

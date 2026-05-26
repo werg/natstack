@@ -73,7 +73,18 @@ describe("native-held mobile credentials", () => {
     });
     expect(nativeHost.completePairing).toHaveBeenCalledWith(
       "https://server.example",
-      "pairing-code"
+      "pairing-code",
+      null
+    );
+  });
+
+  it("passes an explicit selected app source while pairing", async () => {
+    await completePairing("https://server.example", "pairing-code", "apps/field-mobile");
+
+    expect(nativeHost.completePairing).toHaveBeenCalledWith(
+      "https://server.example",
+      "pairing-code",
+      "apps/field-mobile"
     );
   });
 
