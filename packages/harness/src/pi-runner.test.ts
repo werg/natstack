@@ -18,6 +18,7 @@ vi.mock("@earendil-works/pi-ai", async (importOriginal) => {
 import { PiRunner } from "./pi-runner.js";
 import type { HibernationResumableTool, PiRunnerOptions } from "./pi-runner.js";
 import type { RuntimeFs } from "./tools/runtime-fs.js";
+import { TrajectoryBackedSessionStorage } from "@workspace/pi-adapter";
 
 function deferred<T = void>(): {
   promise: Promise<T>;
@@ -595,6 +596,72 @@ describe("PiRunner", () => {
       { eventId: "entry-at-emit:invocation:call_1:terminal" },
     ]);
     expect(runner.session.getLeafId).not.toHaveBeenCalled();
+  });
+
+  it("batches exact Pi session entries with semantic message provenance", async () => {
+    const timestamp = new Date(0).toISOString();
+    const storage = new TrajectoryBackedSessionStorage({
+      trajectoryId: "trajectory:test",
+      branchId: "branch:test",
+      entries: [
+        {
+          type: "message",
+          id: "entry-tool",
+          parentId: null,
+          timestamp,
+          message: {
+            role: "toolResult",
+            toolCallId: "call_1",
+            toolName: "eval",
+            content: [{ type: "text", text: "done" }],
+          },
+        } as never,
+      ],
+    });
+    const runner = new PiRunner(createOptions()) as unknown as {
+      options: PiRunnerOptions;
+      gad: { call: ReturnType<typeof vi.fn> };
+      session: { getLeafId(): Promise<string> };
+      storage: TrajectoryBackedSessionStorage;
+      provenanceQueue: Array<Record<string, unknown>>;
+      handleMessageEnd(message: unknown, capturedMessageEntryId?: string): Promise<void>;
+    };
+    const appendTrajectoryBatch = vi.fn(async () => undefined);
+    runner.options.gad = { trajectoryId: "trajectory:test", branchId: "branch:test" };
+    runner.gad = { call: appendTrajectoryBatch };
+    runner.session = { getLeafId: vi.fn(async () => "entry-tool") };
+    runner.storage = storage;
+    runner.provenanceQueue = [];
+
+    await runner.handleMessageEnd(
+      {
+        role: "toolResult",
+        toolCallId: "call_1",
+        toolName: "eval",
+        content: [{ type: "text", text: "done" }],
+      },
+      "entry-tool"
+    );
+
+    expect(appendTrajectoryBatch).toHaveBeenCalledTimes(1);
+    expect(appendTrajectoryBatch).toHaveBeenCalledWith(
+      "appendTrajectoryBatch",
+      expect.objectContaining({
+        events: [
+          expect.objectContaining({
+            eventId: "entry-tool:pi-session-entry",
+            event: expect.objectContaining({
+              kind: "system.event",
+              payload: expect.objectContaining({
+                kind: "message",
+              }),
+            }),
+          }),
+          expect.objectContaining({ eventId: "entry-tool" }),
+          expect.objectContaining({ eventId: "entry-tool:invocation:call_1:terminal" }),
+        ],
+      })
+    );
   });
 
   it("does not emit duplicate terminal provenance for already-terminal invocations", () => {

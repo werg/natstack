@@ -567,7 +567,10 @@ describe("AgentWorkerBase method suspension ledger", () => {
     expect(submitContinue).toHaveBeenCalledTimes(1);
     expect(
       sql
-        .exec(`SELECT channel_id, reason FROM agent_recovery_continuations WHERE channel_id = ?`, "chat-1")
+        .exec(
+          `SELECT channel_id, reason FROM agent_recovery_continuations WHERE channel_id = ?`,
+          "chat-1"
+        )
         .toArray()
     ).toEqual([{ channel_id: "chat-1", reason: "method_suspension_recovered" }]);
   });
@@ -806,6 +809,56 @@ describe("AgentWorkerBase method suspension ledger", () => {
       delivery_status: "recovered",
       recovered_entry_id: "entry-orphan",
     });
+  });
+
+  it("ignores duplicate terminal results already delivered to a live waiter", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const appendToolResult = vi.fn(async () => "entry-duplicate");
+    const submitContinue = vi.fn();
+    const worker = instance as unknown as {
+      runners: Map<string, { runner: unknown }>;
+      dispatchers: Map<string, unknown>;
+      handleCompletedMethodResult(
+        channelId: string,
+        callId: string,
+        result: unknown,
+        isError: boolean
+      ): Promise<void>;
+    };
+    worker.runners.set("chat-1", {
+      runner: {
+        isInvocationOpen: () => true,
+        isLeafDescendantOf: async () => true,
+        appendToolResult,
+      },
+    });
+    worker.dispatchers.set("chat-1", {
+      submitContinue,
+      getDebugState: () => ({ busy: false }),
+    });
+    insertSuspension(sql, {
+      callId: "call-1",
+      terminalKind: "completed",
+      deliveryStatus: "delivered_live",
+      result: { content: [{ type: "text", text: "already delivered" }] },
+    });
+
+    await worker.handleCompletedMethodResult("chat-1", "call-1", "duplicate payload", false);
+
+    expect(appendToolResult).not.toHaveBeenCalled();
+    expect(submitContinue).not.toHaveBeenCalled();
+    expect(
+      sql
+        .exec(
+          `SELECT delivery_status, recovered_entry_id
+             FROM agent_method_suspensions
+             WHERE transport_call_id = ?`,
+          "call-1"
+        )
+        .toArray()[0]
+    ).toMatchObject({ delivery_status: "delivered_live", recovered_entry_id: null });
   });
 
   it("marks recovery rows stale when the invocation is no longer open", async () => {

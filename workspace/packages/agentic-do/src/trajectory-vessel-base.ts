@@ -1430,7 +1430,10 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     runner: PiRunner,
     row: MethodSuspensionRow
   ): Promise<string | null> {
-    if (!runner.isInvocationOpen(row.invocationId) && (await runner.hasToolResult(row.invocationId))) {
+    if (
+      !runner.isInvocationOpen(row.invocationId) &&
+      (await runner.hasToolResult(row.invocationId))
+    ) {
       return "invocation closed";
     }
     if (row.sessionLeafBeforeCall) {
@@ -3794,6 +3797,15 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       row.deliveryStatus === "stale" ||
       row.deliveryStatus === "recovery_error"
     ) {
+      return;
+    }
+
+    if (row.deliveryStatus === "delivered_live") {
+      this.recordDebugPhase(channelId, "channel_method.duplicate_live_terminal_ignored", {
+        callId,
+        invocationId: row.invocationId,
+        terminalKind: row.terminalKind,
+      });
       return;
     }
 

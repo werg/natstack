@@ -39,15 +39,18 @@ describe("TrajectoryBackedSessionStorage", () => {
       provider: "anthropic",
       modelId: "claude",
     });
-    expect(appendEvent).toHaveBeenCalledWith(expect.objectContaining({
-      kind: "system.event",
-      payload: expect.objectContaining({
-        details: expect.objectContaining({
-          kind: "pi.session_entry",
-          entry: expect.objectContaining({ type: "model_change", modelId: "claude" }),
+    expect(appendEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "system.event",
+        payload: expect.objectContaining({
+          details: expect.objectContaining({
+            kind: "pi.session_entry",
+            entry: expect.objectContaining({ type: "model_change", modelId: "claude" }),
+          }),
         }),
       }),
-    }));
+      expect.objectContaining({ type: "model_change", modelId: "claude" })
+    );
   });
 
   it("persists message entries exactly for LLM cache/session restore", async () => {
@@ -65,18 +68,21 @@ describe("TrajectoryBackedSessionStorage", () => {
       timestamp,
       message: { role: "assistant", content: "hi", timestamp: 1 } as never,
     });
-    expect(appendEvent).toHaveBeenCalledWith(expect.objectContaining({
-      kind: "system.event",
-      payload: expect.objectContaining({
-        details: expect.objectContaining({
-          kind: "pi.session_entry",
-          entry: expect.objectContaining({
-            type: "message",
-            message: expect.objectContaining({ role: "assistant", content: "hi" }),
+    expect(appendEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "system.event",
+        payload: expect.objectContaining({
+          details: expect.objectContaining({
+            kind: "pi.session_entry",
+            entry: expect.objectContaining({
+              type: "message",
+              message: expect.objectContaining({ role: "assistant", content: "hi" }),
+            }),
           }),
         }),
       }),
-    }));
+      expect.objectContaining({ type: "message" })
+    );
   });
 
   it("materializes exact Pi entries ahead of lossy message projection", () => {

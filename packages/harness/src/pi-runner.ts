@@ -22,6 +22,7 @@ import {
   type Result,
   type SessionMetadata,
   type SessionStorage,
+  type SessionTreeEntry,
   type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import { getModel as piGetModel, type ImageContent, type Model } from "@earendil-works/pi-ai";
@@ -68,6 +69,7 @@ import type { NatStackScopedUiContext } from "./natstack-extension-context.js";
 import {
   TrajectoryBackedSessionStorage,
   materializeSessionTree,
+  sessionEntryToAgenticEvent,
   type TrajectorySessionMetadata,
 } from "@workspace/pi-adapter";
 import {
@@ -799,8 +801,9 @@ export class PiRunner {
       trajectoryId,
       branchId: gad.branchId,
       entries: materializeSessionTree(state),
-      appendEvent: async (event) => {
-        await this.appendTrajectoryEvents([{ event }]);
+      appendEvent: async (event, entry) => {
+        if (entry.type === "message") return;
+        await this.appendTrajectoryEvents([{ event, eventId: this.sessionEntryEventId(entry.id) }]);
       },
     });
   }
@@ -809,6 +812,21 @@ export class PiRunner {
     const gad = this.options.gad;
     if (!gad) throw new AgentWorkerError("invalid_state", "GAD provenance is not configured");
     return gad.trajectoryId ?? gad.workspaceId ?? gad.branchId;
+  }
+
+  private sessionEntryEventId(entryId: string): string {
+    return `${entryId}:pi-session-entry`;
+  }
+
+  private async queueSessionEntryProvenance(entryId: string): Promise<void> {
+    if (!this.options.gad || !(this.storage instanceof TrajectoryBackedSessionStorage)) return;
+    const entry = await this.storage.getEntry(entryId);
+    if (!entry || entry.type !== "message") return;
+    this.provenanceQueue.push({
+      event: sessionEntryToAgenticEvent(entry as SessionTreeEntry),
+      eventId: this.sessionEntryEventId(entry.id),
+      publishToChannel: false,
+    });
   }
 
   private wireHarness(): void {
@@ -1354,6 +1372,7 @@ export class PiRunner {
       role === "assistant" && this.activeAssistantMessage
         ? this.activeAssistantMessage.messageId
         : messageEntryId;
+    await this.queueSessionEntryProvenance(messageEntryId);
     this.queueMessageProvenance(message, messageEntryId, messageId);
     if (role === "assistant") this.activeAssistantMessage = null;
     await this.flushProvenance();
@@ -1802,6 +1821,7 @@ export class PiRunner {
     if (!entryId) {
       throw new AgentWorkerError("session", "appendMessage completed without a leaf entry");
     }
+    await this.queueSessionEntryProvenance(entryId);
     this.queueMessageProvenance(message, entryId);
     await this.flushProvenance();
     return entryId;
