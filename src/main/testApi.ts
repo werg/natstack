@@ -91,6 +91,16 @@ export interface TestApi {
   /** Return viewport and visible overflow diagnostics from a panel WebContents */
   getPanelLayoutAudit(panelId: string): Promise<PanelLayoutAudit>;
 
+  /** Return native panel slot debug state from ViewManager */
+  getNativePanelSlotDebugInfo(): Array<{
+    nativeSlotId: string;
+    panelId: string;
+    bounds: { x: number; y: number; width: number; height: number };
+    focused: boolean;
+    ownerViewId: string;
+    ownerGeneration: number;
+  }>;
+
   /** Click an element inside a panel's WebContents */
   clickPanelSelector(panelId: string, selector: string): Promise<boolean>;
 
@@ -357,6 +367,10 @@ export function setupTestApi(
         `,
         true
       ) as Promise<PanelLayoutAudit>;
+    },
+
+    getNativePanelSlotDebugInfo() {
+      return panelView?.getViewManager().getNativePanelSlotDebugInfo() ?? [];
     },
 
     async clickPanelSelector(panelId, selector): Promise<boolean> {

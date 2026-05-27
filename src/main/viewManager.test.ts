@@ -223,6 +223,130 @@ describe("ViewManager", () => {
     });
   });
 
+  describe("native panel slots", () => {
+    let vm: ViewManager;
+
+    beforeEach(() => {
+      vm = new ViewManager({
+        window: mockWindow,
+        shellPreload: "/path/to/preload.js",
+        shellHtmlPath: "/path/to/index.html",
+      });
+    });
+
+    it("binds a panel slot with measured bounds and focus", () => {
+      const hostView = vm.createView({
+        id: "@workspace-apps/shell",
+        type: "app",
+        hostChrome: true,
+        appCapabilities: ["panel-hosting"],
+      });
+      const panelView = vm.createView({ id: "panel-1", type: "panel" });
+
+      vm.setHostedShellReady("@workspace-apps/shell", true);
+      vm.bindPanelSlot("@workspace-apps/shell", {
+        nativeSlotId: "panel-stack:primary",
+        panelId: "panel-1",
+        bounds: { x: 11.4, y: 23.6, width: 500.2, height: 300.8 },
+        focused: true,
+      });
+
+      expect(hostView.setVisible).toHaveBeenCalledWith(true);
+      expect(panelView.setBounds).toHaveBeenLastCalledWith({
+        x: 11,
+        y: 24,
+        width: 500,
+        height: 301,
+      });
+      expect(panelView.setVisible).toHaveBeenCalledWith(true);
+      expect(panelView.webContents.focus).toHaveBeenCalled();
+      expect(vm.isPanelSlotted("panel-1")).toBe(true);
+    });
+
+    it("updates and clears a panel slot", () => {
+      const panelView = vm.createView({ id: "panel-1", type: "panel" });
+      vm.createView({
+        id: "@workspace-apps/shell",
+        type: "app",
+        hostChrome: true,
+        appCapabilities: ["panel-hosting"],
+      });
+
+      vm.setHostedShellReady("@workspace-apps/shell", true);
+      vm.bindPanelSlot("@workspace-apps/shell", {
+        nativeSlotId: "panel-stack:primary",
+        panelId: "panel-1",
+        bounds: { x: 10, y: 20, width: 300, height: 200 },
+      });
+      vm.updatePanelSlot("@workspace-apps/shell", {
+        nativeSlotId: "panel-stack:primary",
+        bounds: { x: 12, y: 24, width: 320, height: 220 },
+      });
+
+      expect(panelView.setBounds).toHaveBeenLastCalledWith({
+        x: 12,
+        y: 24,
+        width: 320,
+        height: 220,
+      });
+
+      vm.clearPanelSlot("@workspace-apps/shell", "panel-stack:primary");
+
+      expect(panelView.setVisible).toHaveBeenLastCalledWith(false);
+      expect(vm.isPanelSlotted("panel-1")).toBe(false);
+    });
+
+    it("rejects binding one panel to two native slots", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      vm.createView({ id: "panel-1", type: "panel" });
+      vm.createView({
+        id: "@workspace-apps/shell",
+        type: "app",
+        hostChrome: true,
+        appCapabilities: ["panel-hosting"],
+      });
+
+      vm.setHostedShellReady("@workspace-apps/shell", true);
+      vm.bindPanelSlot("@workspace-apps/shell", {
+        nativeSlotId: "slot-a",
+        panelId: "panel-1",
+        bounds: { x: 0, y: 0, width: 100, height: 100 },
+      });
+
+      expect(() =>
+        vm.bindPanelSlot("@workspace-apps/shell", {
+          nativeSlotId: "slot-b",
+          panelId: "panel-1",
+          bounds: { x: 0, y: 0, width: 100, height: 100 },
+        })
+      ).toThrow(/already bound/);
+      warnSpy.mockRestore();
+    });
+
+    it("hosted shell not-ready clears active slots", () => {
+      const panelView = vm.createView({ id: "panel-1", type: "panel" });
+      const hostView = vm.createView({
+        id: "@workspace-apps/shell",
+        type: "app",
+        hostChrome: true,
+        appCapabilities: ["panel-hosting"],
+      });
+
+      vm.setHostedShellReady("@workspace-apps/shell", true);
+      vm.bindPanelSlot("@workspace-apps/shell", {
+        nativeSlotId: "panel-stack:primary",
+        panelId: "panel-1",
+        bounds: { x: 0, y: 0, width: 100, height: 100 },
+      });
+      vm.setHostedShellReady("@workspace-apps/shell", false);
+
+      expect(panelView.setVisible).toHaveBeenLastCalledWith(false);
+      expect(hostView.setVisible).toHaveBeenLastCalledWith(false);
+      expect(vm.isPanelSlotted("panel-1")).toBe(false);
+      expect(vm.getVisibleHostChromeAppId()).toBeNull();
+    });
+  });
+
   describe("view lifecycle", () => {
     let vm: ViewManager;
 

@@ -117,6 +117,41 @@ function getWorkspaceTemplateDir(projectRoot: string): string {
   return templateDir;
 }
 
+function collectUnitDirs(root: string): string[] {
+  const result: string[] = [];
+  const visit = (dir: string) => {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "dist") continue;
+      const child = path.join(dir, entry.name);
+      if (!entry.isDirectory()) continue;
+      if (fs.existsSync(path.join(child, "package.json"))) {
+        result.push(child);
+        continue;
+      }
+      visit(child);
+    }
+  };
+  visit(root);
+  return result;
+}
+
+function initializeUnitGitRepos(sourceRoot: string): void {
+  for (const unitDir of collectUnitDirs(sourceRoot)) {
+    execFileSync("git", ["init", "-b", "main"], { cwd: unitDir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "e2e@example.invalid"], {
+      cwd: unitDir,
+      stdio: "ignore",
+    });
+    execFileSync("git", ["config", "user.name", "NatStack E2E"], { cwd: unitDir, stdio: "ignore" });
+    execFileSync("git", ["add", "-A"], { cwd: unitDir, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "Initial e2e workspace snapshot"], {
+      cwd: unitDir,
+      stdio: "ignore",
+    });
+  }
+}
+
 export function createManagedTestWorkspace(projectRoot?: string): string {
   const resolvedProjectRoot = projectRoot ?? path.resolve(__dirname, "../..");
   const templateDir = getWorkspaceTemplateDir(resolvedProjectRoot);
@@ -143,6 +178,8 @@ export function createManagedTestWorkspace(projectRoot?: string): string {
       fs.mkdirSync(dest, { recursive: true });
     }
   }
+
+  initializeUnitGitRepos(sourceRoot);
 
   for (const dir of WORKSPACE_STATE_DIRS) {
     fs.mkdirSync(path.join(stateRoot, dir), { recursive: true });
@@ -195,7 +232,13 @@ export async function launchTestApp(options: LaunchOptions = {}): Promise<TestAp
   }
 
   // Build electron args - first arg is the app entry point
-  const args = ["--no-sandbox", mainPath, `--workspace=${workspaceInfo.workspaceName}`];
+  const electronUserDataDir = path.join(workspaceInfo.testRoot, "electron-user-data");
+  const args = [
+    "--no-sandbox",
+    `--user-data-dir=${electronUserDataDir}`,
+    mainPath,
+    `--workspace=${workspaceInfo.workspaceName}`,
+  ];
   if (initialPanel) {
     args.push(`--panel=${initialPanel}`);
   }
@@ -217,9 +260,23 @@ export async function launchTestApp(options: LaunchOptions = {}): Promise<TestAp
     },
     timeout: launchTimeout,
   });
+  const output: string[] = [];
+  const child = app.process();
+  child.stdout?.on("data", (chunk) => output.push(String(chunk)));
+  child.stderr?.on("data", (chunk) => output.push(String(chunk)));
 
   // Get the first window
-  const window = await app.firstWindow({ timeout: launchTimeout });
+  let window: Page;
+  try {
+    window = await app.firstWindow({ timeout: launchTimeout });
+  } catch (error) {
+    const details = output.join("").trim();
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}${
+        details ? `\n\nElectron output before first window:\n${details}` : ""
+      }`
+    );
+  }
 
   // Wait for the app to initialize
   await window.waitForLoadState("domcontentloaded");
@@ -234,7 +291,7 @@ export async function launchTestApp(options: LaunchOptions = {}): Promise<TestAp
 
   // Cleanup function with timeout to prevent hanging
   const cleanup = async () => {
-    const appProcess = app.process();
+    const appProcess = child;
     const mainPid = appProcess.pid;
     // Use a timeout to prevent hanging on app.close()
     const closeWithTimeout = async (timeoutMs: number): Promise<void> => {
@@ -384,7 +441,9 @@ export async function waitForPanel(
  */
 export async function getPanelTree(
   app: ElectronApplication
-): Promise<Array<{ id: string; title: string; children: unknown[]; snapshot?: { source?: string } }>> {
+): Promise<
+  Array<{ id: string; title: string; children: unknown[]; snapshot?: { source?: string } }>
+> {
   return app.evaluate(() => {
     const testApi = (globalThis as { __testApi?: { getPanelTree: () => unknown[] } }).__testApi;
     if (!testApi) {
@@ -602,6 +661,38 @@ export async function getPanelLayoutAudit(
     }
     return testApi.getPanelLayoutAudit(id);
   }, panelId);
+}
+
+export async function getNativePanelSlotDebugInfo(app: ElectronApplication): Promise<
+  Array<{
+    nativeSlotId: string;
+    panelId: string;
+    bounds: { x: number; y: number; width: number; height: number };
+    focused: boolean;
+    ownerViewId: string;
+    ownerGeneration: number;
+  }>
+> {
+  return app.evaluate(async () => {
+    const testApi = (
+      globalThis as {
+        __testApi?: {
+          getNativePanelSlotDebugInfo: () => Array<{
+            nativeSlotId: string;
+            panelId: string;
+            bounds: { x: number; y: number; width: number; height: number };
+            focused: boolean;
+            ownerViewId: string;
+            ownerGeneration: number;
+          }>;
+        };
+      }
+    ).__testApi;
+    if (!testApi) {
+      throw new Error("Test API not available. Make sure NATSTACK_TEST_MODE=1 is set.");
+    }
+    return testApi.getNativePanelSlotDebugInfo();
+  });
 }
 
 export async function clickPanelSelector(

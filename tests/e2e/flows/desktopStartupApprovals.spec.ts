@@ -162,12 +162,34 @@ async function clickShellButton(testApp: TestApp, label: RegExp): Promise<boolea
   return testApp.app.evaluate(
     async ({ webContents }, labelSource) => {
       const label = new RegExp(labelSource, "i");
+      const candidates: Array<{ contents: Electron.WebContents; priority: number }> = [];
       for (const contents of webContents.getAllWebContents()) {
+        if (contents.isDestroyed()) continue;
+        try {
+          const priority = await contents.executeJavaScript(
+            `(() => {
+              const hasHostedShellChrome = Boolean(document.querySelector(".titlebar-breadcrumb-scroll")
+                || document.querySelector('[aria-label="Menu"]'));
+              const hasApprovalBar = Boolean(document.querySelector(".approval-bar"));
+              if (hasHostedShellChrome && hasApprovalBar) return 0;
+              if (hasApprovalBar) return 1;
+              if (hasHostedShellChrome) return 2;
+              return 3;
+            })()`,
+            true
+          );
+          candidates.push({ contents, priority });
+        } catch {
+          // Ignore non-DOM webContents.
+        }
+      }
+      candidates.sort((a, b) => a.priority - b.priority);
+      for (const { contents } of candidates) {
         if (contents.isDestroyed()) continue;
         try {
           const clicked = await contents.executeJavaScript(
             `(() => {
-              const label = new RegExp(${JSON.stringify(label.source)}, "i");
+              const label = new RegExp(${JSON.stringify(labelSource)}, "i");
               const buttons = Array.from(document.querySelectorAll("button"));
               const button = buttons.find((item) => label.test(item.textContent ?? ""));
               if (!button) return false;
