@@ -46,6 +46,7 @@ import type {
 import {
   AGENTIC_EVENT_PAYLOAD_KIND,
   AGENTIC_PROTOCOL_VERSION,
+  hydrateStoredValueRefs,
   type AgenticEvent,
   type InvocationId,
   type MessageId,
@@ -184,6 +185,15 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
   };
   const callChannel = async <R = unknown>(method: string, ...args: unknown[]): Promise<R> =>
     rpc.call<R>(await getDoTarget(), method, args);
+
+  const hydrateStoredTransportValue = async (value: unknown): Promise<unknown> =>
+    hydrateStoredValueRefs(value, {
+      getText: async (digest) => {
+        const text = await rpc.call<string | null>("main", "blobstore.getText", [digest]);
+        if (text === null) throw new Error(`Stored transport blob is missing: ${digest}`);
+        return text;
+      },
+    });
 
   // Convert MethodDefinitions to MethodAdvertisements
   function toMethodAdvertisements(methods: Record<string, MethodDefinition>): MethodAdvertisement[] {
@@ -798,7 +808,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     };
 
     try {
-      let args = event.args;
+      let args = await hydrateStoredTransportValue(event.args);
       if (methodDef.parameters && "_def" in methodDef.parameters) {
         args = (methodDef.parameters as z.ZodTypeAny).parse(args);
       }
@@ -1064,8 +1074,21 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
         const state = methodCallStates.get(result.callId);
         if (!state) continue;
 
+        let content: unknown;
+        try {
+          content = await hydrateStoredTransportValue(result.content);
+        } catch (err) {
+          const error = err instanceof Error ? err : new Error(String(err));
+          state.complete = true;
+          state.isError = true;
+          state.stream.close(error);
+          state.reject(new AgenticError(error.message, "execution-error", error));
+          methodCallStates.delete(result.callId);
+          continue;
+        }
+
         const chunk: MethodResultChunk = {
-          content: result.content,
+          content,
           attachments: result.attachments,
           contentType: result.contentType,
           complete: result.complete,
@@ -1306,6 +1329,10 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     };
   }
 
+  async function cancelMethodCall(callId: string): Promise<void> {
+    await callChannel("cancelMethodCall", callId);
+  }
+
   function events(evtOptions?: EventStreamOptions): AsyncIterableIterator<EventStreamItem> {
     const source = eventsFanout.subscribe();
     const includeReplay = evtOptions?.includeReplay ?? false;
@@ -1475,6 +1502,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     send: sendMessage,
     error: errorMessage,
     callMethod,
+    cancelMethodCall,
     getMessageTypes,
     getMessageType,
     registerMessageType,

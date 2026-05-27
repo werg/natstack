@@ -12,18 +12,29 @@ export class Journal {
   }
 }
 
-let current: Journal | null = null;
+const active = new Map<Journal, number>();
+const fanoutJournal: Journal = {
+  get entries() {
+    return [];
+  },
+  append(entry: PanelJournalEntry): void {
+    for (const journal of active.keys()) {
+      journal.append(entry);
+    }
+  },
+} as Journal;
 
 export async function withJournal<T>(journal: Journal, fn: () => Promise<T> | T): Promise<T> {
-  if (current) throw new Error("A panel operation journal is already active");
-  current = journal;
+  active.set(journal, (active.get(journal) ?? 0) + 1);
   try {
     return await fn();
   } finally {
-    current = null;
+    const count = active.get(journal) ?? 0;
+    if (count <= 1) active.delete(journal);
+    else active.set(journal, count - 1);
   }
 }
 
 export function currentJournal(): Journal | null {
-  return current;
+  return active.size > 0 ? fanoutJournal : null;
 }

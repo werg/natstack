@@ -51,7 +51,6 @@ const blobRefSchema = z.object({
   size: z.number().int().nonnegative(),
   encoding: z.enum(["json", "text"]),
   originalBytes: z.number().int().nonnegative(),
-  preview: z.string().optional(),
 }).strict();
 
 const messageBlockInputSchema = z.object({
@@ -66,7 +65,6 @@ const messageStartedPayloadSchema = z.object({
   protocol: protocolSchema,
   role: z.enum(["user", "assistant", "system", "tool", "panel"]),
   content: z.string().optional(),
-  contentBlob: blobRefSchema.optional(),
   blocks: z.array(messageBlockInputSchema).optional(),
   mentions: z.array(idSchema).optional(),
   replyTo: idSchema.optional(),
@@ -75,7 +73,6 @@ const messageStartedPayloadSchema = z.object({
 const messageDeltaPayloadSchema = z.object({
   protocol: protocolSchema,
   delta: z.string(),
-  deltaBlob: blobRefSchema.optional(),
   replace: z.boolean().optional(),
   block: messageBlockInputSchema.optional(),
 }).strict();
@@ -84,7 +81,6 @@ const messageCompletedPayloadSchema = z.object({
   protocol: protocolSchema,
   role: z.enum(["user", "assistant", "system", "tool", "panel"]).optional(),
   content: z.string(),
-  contentBlob: blobRefSchema.optional(),
   blocks: z.array(messageBlockInputSchema).optional(),
   usage: usagePayloadSchema.optional(),
   mentions: z.array(idSchema).optional(),
@@ -395,6 +391,82 @@ export const agenticEventSchema = z.discriminatedUnion("kind", Object.values(eve
   }
 });
 
+const storedEventKindSchema = z.enum(Object.keys(eventKindSchemas) as [
+  keyof typeof eventKindSchemas,
+  ...(keyof typeof eventKindSchemas)[],
+]);
+
+const storedPayloadObjectSchema = z.object({
+  protocol: protocolSchema,
+}).passthrough();
+
+const storedEventPayloadSchema = z.union([blobRefSchema, storedPayloadObjectSchema]);
+
+function storedPayloadRecord(payload: unknown): Record<string, unknown> | null {
+  return payload && typeof payload === "object" && !Array.isArray(payload) && !blobRefSchema.safeParse(payload).success
+    ? payload as Record<string, unknown>
+    : null;
+}
+
+function requireStoredPayloadField(
+  payload: Record<string, unknown> | null,
+  ctx: z.RefinementCtx,
+  field: string,
+  check: (value: unknown) => boolean,
+  message: string
+): void {
+  if (!payload) return;
+  if (check(payload[field])) return;
+  ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payload", field], message });
+}
+
+export const storedAgenticEventSchema = z.object({
+  kind: storedEventKindSchema,
+  actor: actorRefSchema,
+  payload: storedEventPayloadSchema,
+  createdAt: isoDateSchema,
+  turnId: idSchema.optional(),
+  causality: causalitySchema.optional(),
+}).passthrough().superRefine((event, ctx) => {
+  const causality = event.causality;
+  const payload = storedPayloadRecord(event.payload);
+  if (event.kind.startsWith("message.") && !causality?.messageId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["causality", "messageId"], message: "message events require causality.messageId" });
+  }
+  if (event.kind.startsWith("invocation.") && !causality?.invocationId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["causality", "invocationId"], message: "invocation events require causality.invocationId" });
+  }
+  if (event.kind.startsWith("approval.") && !causality?.approvalId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["causality", "approvalId"], message: "approval events require causality.approvalId" });
+  }
+  if (event.kind === "message.started") {
+    requireStoredPayloadField(payload, ctx, "role", (value) =>
+      value === "user" || value === "assistant" || value === "system" || value === "tool" || value === "panel",
+    "message.started requires payload.role");
+  } else if (event.kind === "message.delta") {
+    requireStoredPayloadField(payload, ctx, "delta", (value) => typeof value === "string" || blobRefSchema.safeParse(value).success, "message.delta requires payload.delta");
+  } else if (event.kind === "message.completed") {
+    requireStoredPayloadField(payload, ctx, "content", (value) => typeof value === "string" || blobRefSchema.safeParse(value).success, "message.completed requires payload.content");
+  } else if (event.kind === "invocation.started") {
+    requireStoredPayloadField(payload, ctx, "name", (value) => typeof value === "string" && value.length > 0, "invocation.started requires payload.name");
+  } else if (event.kind === "approval.requested") {
+    requireStoredPayloadField(payload, ctx, "question", (value) => typeof value === "string" && value.length > 0, "approval.requested requires payload.question");
+  } else if (event.kind === "approval.resolved") {
+    requireStoredPayloadField(payload, ctx, "granted", (value) => typeof value === "boolean", "approval.resolved requires payload.granted");
+    requireStoredPayloadField(payload, ctx, "resolvedBy", (value) => actorRefSchema.safeParse(value).success, "approval.resolved requires payload.resolvedBy");
+  } else if (event.kind === "ui.inline_rendered") {
+    requireStoredPayloadField(payload, ctx, "uiType", (value) => value === "inline", "ui.inline_rendered requires payload.uiType");
+    requireStoredPayloadField(payload, ctx, "id", (value) => typeof value === "string" && value.length > 0, "ui.inline_rendered requires payload.id");
+    requireStoredPayloadField(payload, ctx, "source", (value) => sandboxSourceSchema.safeParse(value).success, "ui.inline_rendered requires payload.source");
+  } else if (event.kind === "custom.started" || event.kind === "custom.updated") {
+    requireStoredPayloadField(payload, ctx, "messageId", (value) => typeof value === "string" && value.length > 0, `${event.kind} requires payload.messageId`);
+  } else if (event.kind === "external.envelope_published") {
+    requireStoredPayloadField(payload, ctx, "publications", (value) => Array.isArray(value) && value.length > 0, "external.envelope_published requires payload.publications");
+  } else if (event.kind === "system.compaction_recorded") {
+    requireStoredPayloadField(payload, ctx, "summary", (value) => typeof value === "string" && value.length > 0, "system.compaction_recorded requires payload.summary");
+  }
+});
+
 const trajectoryStorageSchema = z.object({
   eventId: idSchema,
   trajectoryId: idSchema,
@@ -429,7 +501,7 @@ export const trajectoryEventSchema = z.custom<Record<string, unknown>>(
   const storageResult = trajectoryStorageSchema.safeParse(value);
   if (!storageResult.success) addIssues(ctx, storageResult.error.issues);
 
-  const eventResult = agenticEventSchema.safeParse(stripTrajectoryStorage(value));
+  const eventResult = storedAgenticEventSchema.safeParse(stripTrajectoryStorage(value));
   if (!eventResult.success) {
     addIssues(ctx, eventResult.error.issues);
     return;
@@ -464,7 +536,7 @@ export const channelEnvelopeSchema = z.object({
 
 export const agenticEventEnvelopeSchema = channelEnvelopeSchema.extend({
   payloadKind: z.literal(AGENTIC_EVENT_PAYLOAD_KIND),
-  payload: agenticEventSchema,
+  payload: storedAgenticEventSchema,
 });
 
 export const ephemeralSignalSchema = z.object({

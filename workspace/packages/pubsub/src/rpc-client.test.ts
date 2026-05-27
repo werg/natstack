@@ -692,6 +692,106 @@ describe("connectViaRpc", () => {
 
       client.close();
     });
+
+    it("hydrates stored-value method arguments before validation", async () => {
+      const executeFn = vi.fn().mockResolvedValue({ ok: true });
+      const request = { x: 7 };
+      const encodedRequest = JSON.stringify(request);
+
+      const client = connectViaRpc({
+        rpc: mockRpc as any,
+        channel: CHANNEL,
+        methods: {
+          compute: {
+            description: "compute something",
+            parameters: z.object({ x: z.number() }).strict(),
+            execute: executeFn,
+          },
+        },
+      });
+
+      await emitReplayAndReady(emit, []);
+      await client.ready();
+      mockRpc.call.mockClear();
+      mockRpc.call.mockImplementation(async (target: string, method: string) => {
+        if (target === "main" && method === "blobstore.getText") return encodedRequest;
+        return undefined;
+      });
+
+      emit({
+        stream: "log", phase: "live",
+        id: 201,
+        type: AGENTIC_EVENT_PAYLOAD_KIND,
+        payload: invocationEvent("invocation.started", CALL_ID_1, {
+          name: "compute",
+          request: {
+            protocol: "natstack.blob-ref.v1",
+            digest: "abc123",
+            size: encodedRequest.length,
+            encoding: "json",
+            originalBytes: encodedRequest.length,
+          },
+          transport: { kind: "channel", channelId: CHANNEL, target: { kind: "panel", id: SELF_ID, participantId: SELF_ID }, transportCallId: TRANSPORT_ID_1 },
+        }, { transportCallId: TRANSPORT_ID_1 }),
+        senderId: "caller-1",
+        ts: Date.now(),
+      });
+
+      await vi.waitFor(() => {
+        expect(executeFn).toHaveBeenCalledWith(
+          request,
+          expect.objectContaining({ callId: TRANSPORT_ID_1 }),
+        );
+      });
+
+      client.close();
+    });
+
+    it("hydrates stored-value method results before resolving callers", async () => {
+      const result = { answer: 42 };
+      const encodedResult = JSON.stringify(result);
+
+      const client = connectViaRpc({
+        rpc: mockRpc as any,
+        channel: CHANNEL,
+      });
+
+      await emitReplayAndReady(emit, []);
+      await client.ready();
+      mockRpc.call.mockClear();
+      mockRpc.call.mockImplementation(async (target: string, method: string) => {
+        if (target === "main" && method === "blobstore.getText") return encodedResult;
+        return undefined;
+      });
+
+      const handle = client.callMethod("provider-1", "compute", {});
+      await Promise.resolve();
+
+      emit({
+        stream: "log", phase: "live",
+        id: 202,
+        type: AGENTIC_EVENT_PAYLOAD_KIND,
+        payload: invocationEvent("invocation.completed", handle.invocationId, {
+          result: {
+            protocol: "natstack.blob-ref.v1",
+            digest: "def456",
+            size: encodedResult.length,
+            encoding: "json",
+            originalBytes: encodedResult.length,
+          },
+        }, { transportCallId: handle.transportCallId }),
+        senderId: "provider-1",
+        ts: Date.now(),
+      });
+
+      await expect(handle.result).resolves.toEqual({
+        content: result,
+        attachments: undefined,
+        contentType: undefined,
+      });
+
+      client.close();
+    });
   });
 
   // ── 4. Close ──────────────────────────────────────────────────────────

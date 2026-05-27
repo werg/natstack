@@ -4,7 +4,6 @@ export const STORED_VALUE_REF_PROTOCOL = "natstack.blob-ref.v1" as const;
 
 export const MAX_INLINE_TRAJECTORY_TEXT_BYTES = 128 * 1024;
 export const MAX_INLINE_TRAJECTORY_EVENT_BYTES = 512 * 1024;
-export const TRAJECTORY_BLOB_PREVIEW_CHARS = 4096;
 
 export interface StoredValueRef {
   protocol: typeof STORED_VALUE_REF_PROTOCOL;
@@ -12,7 +11,6 @@ export interface StoredValueRef {
   size: number;
   encoding: "json" | "text";
   originalBytes: number;
-  preview?: string;
 }
 
 export interface BlobWriter {
@@ -28,82 +26,96 @@ export interface EncodedAgenticEvent {
   eventBytes: number;
 }
 
-const UNBOUNDED_PAYLOAD_FIELDS = [
-  "request",
-  "result",
-  "details",
-  "data",
-  "output",
-  "error",
-  "replacement",
-  "body",
-  "update",
-  "initialState",
-  "props",
-  "imports",
-  "schemaSourceOrPath",
-  "source",
-] as const;
+export interface BoundedJsonOptions {
+  maxInlineTextBytes?: number;
+  maxInlineJsonBytes?: number;
+  forceJsonRefPaths?: ReadonlySet<string>;
+}
+
+const DEFAULT_FORCE_JSON_REF_PATHS = new Set([
+  "$.payload.request",
+  "$.payload.result",
+  "$.payload.details",
+  "$.payload.data",
+  "$.payload.output",
+  "$.payload.error",
+  "$.payload.replacement",
+  "$.payload.body",
+  "$.payload.update",
+  "$.payload.initialState",
+  "$.payload.props",
+  "$.payload.imports",
+  "$.payload.schemaSourceOrPath",
+  "$.payload.source",
+]);
+const REQUIRED_STORED_PAYLOAD_PATHS = DEFAULT_FORCE_JSON_REF_PATHS;
 
 export async function encodeAgenticEventStoredValues(
   event: AgenticEvent,
   writer: BlobWriter
 ): Promise<EncodedAgenticEvent> {
-  const payload = event.payload as Record<string, unknown>;
-  const nextPayload: Record<string, unknown> = { ...payload };
-
-  if (typeof nextPayload["content"] === "string") {
-    const stored = await blobRefForLargeText(nextPayload["content"], writer);
-    if (stored) {
-      nextPayload["content"] = stored.preview;
-      nextPayload["contentBlob"] = stored.ref;
-    }
-  }
-
-  if (typeof nextPayload["delta"] === "string") {
-    const stored = await blobRefForLargeText(nextPayload["delta"], writer);
-    if (stored) {
-      nextPayload["delta"] = stored.preview;
-      nextPayload["deltaBlob"] = stored.ref;
-    }
-  }
-
-  if (Array.isArray(nextPayload["blocks"])) {
-    nextPayload["blocks"] = await Promise.all(
-      nextPayload["blocks"].map((block) => encodeMessageBlockStoredValues(block, writer))
-    );
-  }
-
-  for (const field of UNBOUNDED_PAYLOAD_FIELDS) {
-    if (!(field in nextPayload)) continue;
-    const ref = await blobRefForUnboundedJson(nextPayload[field], writer);
-    if (ref) nextPayload[field] = ref;
-  }
-
-  const encoded = { ...event, payload: nextPayload as AgenticEvent["payload"] };
-  return { event: encoded, eventBytes: byteLength(JSON.stringify(encoded)) };
+  const eventWithStoredPayload = {
+    ...event,
+    payload: await encodeBoundedJsonForStorage(event.payload, writer, {
+      forceJsonRefPaths: DEFAULT_FORCE_JSON_REF_PATHS,
+    }, "$.payload"),
+  } as AgenticEvent;
+  const eventBytes = byteLength(JSON.stringify(eventWithStoredPayload));
+  return { event: eventWithStoredPayload, eventBytes };
 }
 
 export async function encodeChannelPayloadStoredValues(
   payload: unknown,
   writer: BlobWriter
 ): Promise<unknown> {
-  if (isAgenticEventLike(payload)) {
-    return (await encodeAgenticEventStoredValues(payload as AgenticEvent, writer)).event;
+  return encodeBoundedJsonForStorage(payload, writer, {
+    forceJsonRefPaths: DEFAULT_FORCE_JSON_REF_PATHS,
+  });
+}
+
+export async function encodeBoundedJsonForStorage(
+  value: unknown,
+  writer: BlobWriter,
+  options: BoundedJsonOptions = {},
+  path = "$"
+): Promise<unknown> {
+  if (isStoredValueRef(value)) return value;
+
+  const maxText = options.maxInlineTextBytes ?? MAX_INLINE_TRAJECTORY_TEXT_BYTES;
+  const maxJson = options.maxInlineJsonBytes ?? MAX_INLINE_TRAJECTORY_TEXT_BYTES;
+  const forceJson = options.forceJsonRefPaths?.has(path) === true;
+
+  if (typeof value === "string") {
+    return forceJson || byteLength(value) > maxText
+      ? storeText(value, writer)
+      : value;
   }
-  if (
-    payload === null ||
-    payload === undefined ||
-    typeof payload === "number" ||
-    typeof payload === "boolean"
-  ) {
-    return payload;
+  if (value === null || value === undefined || typeof value === "number" || typeof value === "boolean") {
+    return value;
   }
-  if (typeof payload === "string") {
-    const stored = await blobRefForLargeText(payload, writer);
-    return stored?.ref ?? payload;
+  if (typeof value !== "object") {
+    return forceJson ? storeJson(String(value), writer) : String(value);
   }
-  return await blobRefForUnboundedJson(payload, writer);
+
+  if (forceJson) return storeJson(value, writer);
+
+  if (Array.isArray(value)) {
+    const encoded = await Promise.all(
+      value.map((item, index) => encodeBoundedJsonForStorage(item, writer, options, `${path}[${index}]`))
+    );
+    const json = JSON.stringify(encoded);
+    return byteLength(json) > maxJson ? storeJson(encoded, writer) : encoded;
+  }
+
+  const entries = await Promise.all(
+    Object.entries(value as Record<string, unknown>).map(async ([key, item]) => [
+      key,
+      await encodeBoundedJsonForStorage(item, writer, options, `${path}.${key}`),
+    ] as const)
+  );
+  const encoded = Object.fromEntries(entries);
+  const json = JSON.stringify(encoded);
+  return byteLength(json) > maxJson ? storeJson(encoded, writer) : encoded;
 }
 
 export function isStoredValueRef(value: unknown): value is StoredValueRef {
@@ -112,7 +124,8 @@ export function isStoredValueRef(value: unknown): value is StoredValueRef {
   return record["protocol"] === STORED_VALUE_REF_PROTOCOL &&
     typeof record["digest"] === "string" &&
     typeof record["size"] === "number" &&
-    (record["encoding"] === "json" || record["encoding"] === "text");
+    (record["encoding"] === "json" || record["encoding"] === "text") &&
+    typeof record["originalBytes"] === "number";
 }
 
 export function collectStoredValueRefs(value: unknown, path = "$"): Array<{ path: string; ref: StoredValueRef }> {
@@ -126,34 +139,42 @@ export function collectStoredValueRefs(value: unknown, path = "$"): Array<{ path
   );
 }
 
+export function assertNoStoredValueRefs(value: unknown, context: string): void {
+  const refs = collectStoredValueRefs(value);
+  if (refs.length === 0) return;
+  const summary = refs.slice(0, 5).map(({ path, ref }) => `${path}:${ref.digest}`).join(", ");
+  throw new Error(`${context} must be hydrated before semantic use; found stored refs at ${summary}`);
+}
+
 export function findUnencodedAgenticEventStoredValues(event: AgenticEvent): Array<{ path: string; reason: string }> {
-  const payload = event.payload as Record<string, unknown>;
   const violations: Array<{ path: string; reason: string }> = [];
-  for (const field of UNBOUNDED_PAYLOAD_FIELDS) {
-    if (!(field in payload)) continue;
-    const value = payload[field];
-    if (isInlineScalar(value) || isStoredValueRef(value)) continue;
-    violations.push({ path: `payload.${field}`, reason: "unbounded field must be a StoredValueRef" });
+  for (const { path, ref } of collectStoredValueRefs(event)) {
+    if (path === "$.payload" || path.startsWith("$.payload.")) continue;
+    violations.push({ path, reason: `stored ref is only allowed inside payload storage (${ref.digest})` });
   }
-  if (typeof payload["content"] === "string" && byteLength(payload["content"]) > MAX_INLINE_TRAJECTORY_TEXT_BYTES && !isStoredValueRef(payload["contentBlob"])) {
-    violations.push({ path: "payload.content", reason: "large text content requires contentBlob" });
+  for (const path of REQUIRED_STORED_PAYLOAD_PATHS) {
+    const value = getPath(event, path);
+    if (value === undefined || value === null || typeof value === "number" || typeof value === "boolean") {
+      continue;
+    }
+    if (isStoredValueRef(value)) continue;
+    violations.push({ path, reason: "storage-boundary payload field must be a StoredValueRef" });
   }
-  if (typeof payload["delta"] === "string" && byteLength(payload["delta"]) > MAX_INLINE_TRAJECTORY_TEXT_BYTES && !isStoredValueRef(payload["deltaBlob"])) {
-    violations.push({ path: "payload.delta", reason: "large text delta requires deltaBlob" });
-  }
-  const blocks = payload["blocks"];
-  if (Array.isArray(blocks)) {
-    blocks.forEach((block, index) => {
-      if (!block || typeof block !== "object" || Array.isArray(block)) return;
-      const record = block as Record<string, unknown>;
-      const content = record["content"];
-      const metadata = objectRecord(record["metadata"]);
-      if (typeof content === "string" && byteLength(content) > MAX_INLINE_TRAJECTORY_TEXT_BYTES && !isStoredValueRef(metadata["contentBlob"])) {
-        violations.push({ path: `payload.blocks[${index}].content`, reason: "large block content requires metadata.contentBlob" });
-      }
-    });
+  const eventBytes = byteLength(JSON.stringify(event));
+  if (eventBytes > MAX_INLINE_TRAJECTORY_EVENT_BYTES) {
+    violations.push({ path: "$", reason: `encoded event too large: ${eventBytes}` });
   }
   return violations;
+}
+
+function getPath(value: unknown, path: string): unknown {
+  if (path === "$") return value;
+  let current = value;
+  for (const segment of path.slice(2).split(".")) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) return undefined;
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return current;
 }
 
 export function assertAgenticEventStoredValuesEncoded(event: AgenticEvent): void {
@@ -167,7 +188,8 @@ export function assertAgenticEventStoredValuesEncoded(event: AgenticEvent): void
 export async function hydrateStoredValueRef(ref: StoredValueRef, reader: BlobReader): Promise<unknown> {
   const text = await reader.getText(ref.digest);
   if (text === null) return null;
-  return ref.encoding === "json" ? JSON.parse(text) : text;
+  if (ref.encoding === "text") return text;
+  return hydrateStoredValueRefs(JSON.parse(text), reader);
 }
 
 export async function hydrateStoredValueRefs(value: unknown, reader: BlobReader): Promise<unknown> {
@@ -190,90 +212,29 @@ export function assertEncodedAgenticEventFits(event: AgenticEvent, maxBytes = MA
   }
 }
 
-function isAgenticEventLike(value: unknown): boolean {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
-  return typeof record["kind"] === "string" &&
-    !!record["payload"] &&
-    typeof record["payload"] === "object" &&
-    !Array.isArray(record["payload"]);
-}
-
-function isInlineScalar(value: unknown): boolean {
-  return value === null ||
-    value === undefined ||
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean";
-}
-
-async function encodeMessageBlockStoredValues(block: unknown, writer: BlobWriter): Promise<unknown> {
-  if (!block || typeof block !== "object" || Array.isArray(block)) return block;
-  const record = { ...(block as Record<string, unknown>) };
-  if (typeof record["content"] === "string") {
-    const stored = await blobRefForLargeText(record["content"], writer);
-    if (stored) {
-      record["content"] = stored.preview;
-      record["metadata"] = {
-        ...objectRecord(record["metadata"]),
-        contentBlob: stored.ref,
-      };
-    }
-  }
-  return record;
-}
-
-async function blobRefForLargeText(
-  value: string,
-  writer: BlobWriter
-): Promise<{ preview: string; ref: StoredValueRef } | null> {
+async function storeText(value: string, writer: BlobWriter): Promise<StoredValueRef> {
   const originalBytes = byteLength(value);
-  if (originalBytes <= MAX_INLINE_TRAJECTORY_TEXT_BYTES) return null;
   const blob = await writer.putText(value);
   return {
-    preview: previewText(value, TRAJECTORY_BLOB_PREVIEW_CHARS),
-    ref: {
-      protocol: STORED_VALUE_REF_PROTOCOL,
-      digest: blob.digest,
-      size: blob.size,
-      encoding: "text",
-      originalBytes,
-      preview: previewText(value, 240),
-    },
+    protocol: STORED_VALUE_REF_PROTOCOL,
+    digest: blob.digest,
+    size: blob.size,
+    encoding: "text",
+    originalBytes,
   };
 }
 
-async function blobRefForUnboundedJson(value: unknown, writer: BlobWriter): Promise<StoredValueRef | null> {
-  if (
-    value === null ||
-    value === undefined ||
-    typeof value === "number" ||
-    typeof value === "boolean"
-  ) {
-    return null;
-  }
-  const jsonValue = JSON.stringify(value);
-  const originalBytes = byteLength(jsonValue);
-  const blob = await writer.putText(jsonValue);
+async function storeJson(value: unknown, writer: BlobWriter): Promise<StoredValueRef> {
+  const json = JSON.stringify(value);
+  const originalBytes = byteLength(json);
+  const blob = await writer.putText(json);
   return {
     protocol: STORED_VALUE_REF_PROTOCOL,
     digest: blob.digest,
     size: blob.size,
     encoding: "json",
     originalBytes,
-    preview: previewText(jsonValue, 240),
   };
-}
-
-function objectRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
-}
-
-function previewText(value: string, limit: number): string {
-  const compact = value.replace(/\s+/gu, " ").trim();
-  return compact.length > limit ? `${compact.slice(0, limit - 3)}...` : compact;
 }
 
 function byteLength(value: string): number {

@@ -90,10 +90,12 @@ export type MessageRole = "user" | "assistant" | "system" | "tool" | "panel";
 
 export type { StoredValueRef as BlobRefPayload } from "./stored-values.js";
 
+export type StoredAgenticEvent = Omit<AgenticEvent, "payload"> & { payload: unknown };
+
 export type MessagePayload =
-  | { protocol: "agentic.trajectory.v1"; role: MessageRole; content?: string; contentBlob?: StoredValueRef; blocks?: MessageBlockInput[]; mentions?: string[]; replyTo?: MessageId }
-  | { protocol: "agentic.trajectory.v1"; delta: string; deltaBlob?: StoredValueRef; replace?: boolean; block?: MessageBlockInput }
-  | { protocol: "agentic.trajectory.v1"; role?: MessageRole; content: string; contentBlob?: StoredValueRef; blocks?: MessageBlockInput[]; usage?: UsagePayload; mentions?: string[]; replyTo?: MessageId }
+  | { protocol: "agentic.trajectory.v1"; role: MessageRole; content?: string; blocks?: MessageBlockInput[]; mentions?: string[]; replyTo?: MessageId }
+  | { protocol: "agentic.trajectory.v1"; delta: string; replace?: boolean; block?: MessageBlockInput }
+  | { protocol: "agentic.trajectory.v1"; role?: MessageRole; content: string; blocks?: MessageBlockInput[]; usage?: UsagePayload; mentions?: string[]; replyTo?: MessageId }
   | { protocol: "agentic.trajectory.v1"; reason: string; recoverable?: boolean };
 
 export interface MessageBlockInput {

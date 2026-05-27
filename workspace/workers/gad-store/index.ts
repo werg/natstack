@@ -2,19 +2,25 @@ import { DurableObjectBase } from "@workspace/runtime/worker";
 import {
   AGENTIC_EVENT_PAYLOAD_KIND,
   GENESIS_EVENT_HASH,
-  agenticEventSchema,
   assertAgenticEventStoredValuesEncoded,
   brandId,
   channelEnvelopeSchema,
   checkTrajectoryIntegrity,
   collectStoredValueRefs,
   computeEventHash,
+  publicActorRef,
+  publicParticipantMetadata,
+  publicParticipantRef,
+  sanitizeAgenticEventParticipantRefs,
+  storedAgenticEventSchema,
   trajectoryEventSchema,
   type AgenticEvent,
   type ChannelEnvelope,
   type ChannelId,
   type EnvelopeId,
   type EventId,
+  type ParticipantRef,
+  type ParticipantSelector,
   type TrajectoryEvent,
 } from "@workspace/agentic-protocol";
 
@@ -86,6 +92,25 @@ export interface ChannelReplayWindow {
   replayFromId?: number;
   replayToId?: number;
   hasMoreBefore?: boolean;
+}
+
+export interface ChannelEnvelopeInspection {
+  envelopeId: string;
+  channelId: string;
+  seq: number;
+  payloadKind?: string;
+  from: JsonRecord;
+  metadata?: JsonRecord;
+  bytes: {
+    from: number;
+    to: number;
+    payload: number;
+    metadata: number;
+    attachments: number;
+  };
+  payloadSummary: unknown;
+  storedRefs: JsonRecord[];
+  publishedAt: string;
 }
 
 export interface ForkChannelLogInput {
@@ -223,6 +248,33 @@ function stableJson(value: unknown): string {
   return JSON.stringify(sortJson(value));
 }
 
+function utf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function summarizeJsonForInspection(value: unknown, depth = 0): unknown {
+  if (value == null) return value;
+  if (typeof value === "string") {
+    return value.length > 240 ? { type: "string", chars: value.length, preview: value.slice(0, 240) } : value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) {
+    const sample = value.slice(0, 20).map((item) => summarizeJsonForInspection(item, depth + 1));
+    return value.length > sample.length ? [...sample, { omittedItems: value.length - sample.length }] : sample;
+  }
+  if (typeof value === "object") {
+    if (depth >= 4) return { type: "object" };
+    const entries = Object.entries(value as Record<string, unknown>);
+    const sample = entries
+      .slice(0, 40)
+      .map(([key, child]) => [key, summarizeJsonForInspection(child, depth + 1)]);
+    const out = Object.fromEntries(sample) as Record<string, unknown>;
+    if (entries.length > sample.length) out["omittedKeys"] = entries.length - sample.length;
+    return out;
+  }
+  return String(value);
+}
+
 function semanticAgenticEvent(value: AgenticEvent | TrajectoryEvent): Record<string, unknown> {
   return {
     kind: value.kind,
@@ -255,6 +307,96 @@ function semanticChannelEnvelope(value: ChannelEnvelope): Record<string, unknown
 
 function sameChannelEnvelope(left: ChannelEnvelope, right: ChannelEnvelope): boolean {
   return stableJson(semanticChannelEnvelope(left)) === stableJson(semanticChannelEnvelope(right));
+}
+
+type ChannelEnvelopeInput = Omit<ChannelEnvelope, "seq" | "envelopeId" | "publishedAt"> & {
+  envelopeId?: string | null;
+  publishedAt?: string | null;
+};
+
+function sanitizeChannelEnvelopeInput<T extends ChannelEnvelopeInput>(input: T): T {
+  return {
+    ...input,
+    ...(input.from ? { from: publicParticipantRef(input.from) } : {}),
+    ...(input.to !== undefined ? { to: sanitizeEnvelopeAudience(input.to) } : {}),
+    ...(input.payload !== undefined ? { payload: sanitizeChannelPayload(input.payload, input.payloadKind) } : {}),
+    ...(input.metadata !== undefined ? { metadata: publicParticipantMetadata(input.metadata) } : {}),
+  };
+}
+
+function sanitizeChannelPayload(payload: unknown, payloadKind?: string): unknown {
+  if (payloadKind !== AGENTIC_EVENT_PAYLOAD_KIND || !isAgenticEventPayload(payload)) return payload;
+  return sanitizeAgenticEventParticipantRefs(payload);
+}
+
+function sanitizeEnvelopeAudience(
+  audience: ParticipantRef[] | ParticipantSelector | undefined
+): ParticipantRef[] | ParticipantSelector | undefined {
+  if (!Array.isArray(audience)) return audience;
+  return audience.map((participant) => publicParticipantRef(participant));
+}
+
+function isAgenticEventPayload(payload: unknown): payload is AgenticEvent {
+  return !!payload &&
+    typeof payload === "object" &&
+    !Array.isArray(payload) &&
+    typeof (payload as Record<string, unknown>)["kind"] === "string" &&
+    typeof (payload as Record<string, unknown>)["actor"] === "object" &&
+    typeof (payload as Record<string, unknown>)["createdAt"] === "string";
+}
+
+function sanitizeRegistryMutation(mutation: RegistryMutationInput): RegistryMutationInput {
+  if (mutation.kind !== "upsertMessageType") return mutation;
+  const registeredBy = mutation.row.registeredBy;
+  return {
+    ...mutation,
+    row: {
+      ...mutation.row,
+      ...(isActorRefLike(registeredBy)
+        ? { registeredBy: publicActorRef(registeredBy) }
+        : registeredBy !== undefined
+          ? { registeredBy: publicParticipantMetadata(registeredBy) }
+          : {}),
+    },
+  };
+}
+
+function isActorRefLike(value: unknown): value is { kind: "user" | "agent" | "system" | "panel" | "external"; id: string; metadata?: Record<string, unknown> } {
+  const kind = !!value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)["kind"]
+    : undefined;
+  return !!value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (kind === "user" || kind === "agent" || kind === "system" || kind === "panel" || kind === "external") &&
+    typeof (value as Record<string, unknown>)["id"] === "string";
+}
+
+function findPrivateParticipantMetadataPath(value: unknown, path = "$"): string | null {
+  if (!value || typeof value !== "object") return null;
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      const found = findPrivateParticipantMetadataPath(value[index], `${path}[${index}]`);
+      if (found) return found;
+    }
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  if ("methods" in record && Array.isArray(record["methods"])) {
+    for (const [index, method] of (record["methods"] as unknown[]).entries()) {
+      if (!method || typeof method !== "object" || Array.isArray(method)) continue;
+      const methodRecord = method as Record<string, unknown>;
+      if ("parameters" in methodRecord || "returns" in methodRecord || "description" in methodRecord) {
+        return `${path}.methods[${index}]`;
+      }
+    }
+  }
+  for (const key of Object.keys(record)) {
+    if (key === "parameters" || key === "returns" || key === "description") continue;
+    const found = findPrivateParticipantMetadataPath(record[key], `${path}.${key}`);
+    if (found) return found;
+  }
+  return null;
 }
 
 export class GadWorkspaceDO extends DurableObjectBase {
@@ -336,7 +478,6 @@ export class GadWorkspaceDO extends DurableObjectBase {
         field_path TEXT NOT NULL,
         digest TEXT NOT NULL,
         purpose TEXT NOT NULL,
-        preview_json TEXT,
         size INTEGER NOT NULL,
         created_at TEXT NOT NULL,
         PRIMARY KEY (event_id, field_path)
@@ -358,7 +499,6 @@ export class GadWorkspaceDO extends DurableObjectBase {
         message_id TEXT NOT NULL,
         branch_id TEXT NOT NULL,
         role TEXT NOT NULL,
-        body_assembled TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL,
         started_event_id TEXT,
         completed_event_id TEXT,
@@ -373,7 +513,6 @@ export class GadWorkspaceDO extends DurableObjectBase {
         branch_id TEXT NOT NULL,
         block_index INTEGER NOT NULL,
         block_type TEXT NOT NULL,
-        body_ref_json TEXT,
         invocation_id TEXT,
         PRIMARY KEY (branch_id, block_id)
       )
@@ -465,7 +604,6 @@ export class GadWorkspaceDO extends DurableObjectBase {
         field_path TEXT NOT NULL,
         digest TEXT NOT NULL,
         purpose TEXT NOT NULL,
-        preview_json TEXT,
         size INTEGER NOT NULL,
         created_at TEXT NOT NULL,
         PRIMARY KEY (envelope_id, field_path)
@@ -681,7 +819,6 @@ export class GadWorkspaceDO extends DurableObjectBase {
         subject TEXT,
         predicate TEXT,
         object TEXT,
-        body_ref_json TEXT,
         status TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -704,7 +841,6 @@ export class GadWorkspaceDO extends DurableObjectBase {
         theory_id TEXT PRIMARY KEY,
         trajectory_event_id TEXT NOT NULL,
         invocation_id TEXT,
-        body_ref_json TEXT,
         status TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -715,7 +851,6 @@ export class GadWorkspaceDO extends DurableObjectBase {
         version_id TEXT PRIMARY KEY,
         theory_id TEXT NOT NULL,
         trajectory_event_id TEXT NOT NULL,
-        body_ref_json TEXT,
         status TEXT NOT NULL,
         created_at TEXT NOT NULL
       )
@@ -725,7 +860,6 @@ export class GadWorkspaceDO extends DurableObjectBase {
         contradiction_id TEXT PRIMARY KEY,
         trajectory_event_id TEXT NOT NULL,
         invocation_id TEXT,
-        body_ref_json TEXT,
         status TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -806,7 +940,9 @@ export class GadWorkspaceDO extends DurableObjectBase {
     const now = nowIso();
 
     const prepareEvent = async (item: TrajectoryAppendItem): Promise<TrajectoryEvent> => {
-      const parsed = agenticEventSchema.parse(item.event) as AgenticEvent;
+      const parsed = sanitizeAgenticEventParticipantRefs(
+        storedAgenticEventSchema.parse(item.event) as AgenticEvent
+      );
       assertAgenticEventStoredValuesEncoded(parsed);
       const eventId = item.eventId ?? crypto.randomUUID();
       const eventHash = await computeEventHash({
@@ -845,7 +981,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
             seq: -1,
             from: event.actor,
             to: item.publish?.audience as ChannelEnvelope["to"],
-            payload: item.event,
+            payload: semanticAgenticEvent(event) as unknown as AgenticEvent,
             payloadKind: AGENTIC_EVENT_PAYLOAD_KIND,
             publishedAt: now,
           },
@@ -902,10 +1038,10 @@ export class GadWorkspaceDO extends DurableObjectBase {
       }
 
       for (const publication of envelopes) {
-        const envelope = {
+        const envelope = sanitizeChannelEnvelopeInput({
           ...publication.envelope,
           seq: this.nextChannelSeq(publication.channelId),
-        };
+        });
         channelEnvelopeSchema.parse(envelope);
         this.insertChannelEnvelope(envelope);
         publication.envelope = envelope;
@@ -1055,7 +1191,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       rows.push(
         ...(this.sql
           .exec(
-            `SELECT 'trajectory' AS ref_scope, event_id AS owner_id, field_path, digest, purpose, preview_json, size, created_at
+            `SELECT 'trajectory' AS ref_scope, event_id AS owner_id, field_path, digest, purpose, size, created_at
          FROM trajectory_blob_refs ${where}
          ORDER BY created_at ASC LIMIT ?`,
             ...bindings,
@@ -1079,7 +1215,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       rows.push(
         ...(this.sql
           .exec(
-            `SELECT 'channel' AS ref_scope, envelope_id AS owner_id, field_path, digest, purpose, preview_json, size, created_at
+            `SELECT 'channel' AS ref_scope, envelope_id AS owner_id, field_path, digest, purpose, size, created_at
          FROM channel_blob_refs ${where}
          ORDER BY created_at ASC LIMIT ?`,
             ...bindings,
@@ -1183,13 +1319,14 @@ export class GadWorkspaceDO extends DurableObjectBase {
     }
   ): ChannelEnvelope {
     this.ensureReady();
-    const existing = this.tryIdempotentChannelEnvelope(input);
+    const normalizedInput = sanitizeChannelEnvelopeInput(input);
+    const existing = this.tryIdempotentChannelEnvelope(normalizedInput);
     if (existing) return existing;
     const envelope = {
-      ...input,
-      envelopeId: brandId<EnvelopeId>(input.envelopeId ?? crypto.randomUUID()),
-      seq: this.nextChannelSeq(String(input.channelId)),
-      publishedAt: input.publishedAt ?? nowIso(),
+      ...normalizedInput,
+      envelopeId: brandId<EnvelopeId>(normalizedInput.envelopeId ?? crypto.randomUUID()),
+      seq: this.nextChannelSeq(String(normalizedInput.channelId)),
+      publishedAt: normalizedInput.publishedAt ?? nowIso(),
     } as ChannelEnvelope;
     channelEnvelopeSchema.parse(envelope);
     if (envelope.payloadKind === AGENTIC_EVENT_PAYLOAD_KIND) {
@@ -1208,10 +1345,11 @@ export class GadWorkspaceDO extends DurableObjectBase {
   ): ChannelEnvelope {
     this.ensureReady();
     this.ensureMessageTypesTable();
-    const existing = this.tryIdempotentChannelEnvelope(input);
+    const normalizedInput = sanitizeChannelEnvelopeInput(input);
+    const existing = this.tryIdempotentChannelEnvelope(normalizedInput);
     if (existing) return existing;
     return this.transaction(() => {
-      const { registryMutation, ...envelopeInput } = input;
+      const { registryMutation, ...envelopeInput } = normalizedInput;
       const envelope = {
         ...envelopeInput,
         envelopeId: brandId<EnvelopeId>(envelopeInput.envelopeId ?? crypto.randomUUID()),
@@ -1220,7 +1358,11 @@ export class GadWorkspaceDO extends DurableObjectBase {
       } as ChannelEnvelope;
       channelEnvelopeSchema.parse(envelope);
       this.insertChannelEnvelope(envelope);
-      this.applyRegistryMutation(String(envelopeInput.channelId), envelope.seq, registryMutation);
+      this.applyRegistryMutation(
+        String(envelopeInput.channelId),
+        envelope.seq,
+        sanitizeRegistryMutation(registryMutation)
+      );
       return envelope;
     });
   }
@@ -1367,7 +1509,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
     const prepared: Array<{ source: TrajectoryEvent; fork: TrajectoryEvent }> = [];
     for (const row of sourceRows) {
       const source = this.mapTrajectoryEvent(row);
-      const eventForHash = agenticEventSchema.parse({
+      const eventForHash = storedAgenticEventSchema.parse({
         kind: source.kind,
         actor: source.actor,
         turnId: source.turnId,
@@ -1851,6 +1993,38 @@ export class GadWorkspaceDO extends DurableObjectBase {
     return rows.map((row) => this.mapChannelEnvelope(row as JsonRecord));
   }
 
+  inspectChannelEnvelopes(input: {
+    channelId: string;
+    cursor?: number | null;
+    limit?: number | null;
+    payloadKind?: string | null;
+  }): { rows: ChannelEnvelopeInspection[] } {
+    this.ensureReady();
+    const cursor = input.cursor ?? 0;
+    const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+    const rows = input.payloadKind
+      ? this.sql
+          .exec(
+            `SELECT * FROM channel_envelopes
+             WHERE channel_id = ? AND seq > ? AND payload_kind = ?
+             ORDER BY seq ASC LIMIT ?`,
+            input.channelId,
+            cursor,
+            input.payloadKind,
+            limit
+          )
+          .toArray()
+      : this.sql
+          .exec(
+            `SELECT * FROM channel_envelopes WHERE channel_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?`,
+            input.channelId,
+            cursor,
+            limit
+          )
+          .toArray();
+    return { rows: rows.map((row) => this.inspectChannelEnvelopeRow(row as JsonRecord)) };
+  }
+
   listGadBranchFiles(input: { branchId: string }): JsonRecord[] {
     const head = this.sql
       .exec(
@@ -2015,6 +2189,57 @@ export class GadWorkspaceDO extends DurableObjectBase {
       }
     }
 
+    for (const publication of this.sql
+      .exec(`SELECT * FROM trajectory_channel_publications`)
+      .toArray() as JsonRecord[]) {
+      if (!this.trajectoryEventExists(String(publication["event_id"]))) {
+        addError("trajectory-channel-publication", "publication event is missing", {
+          eventId: publication["event_id"] as JsonValue,
+          envelopeId: publication["envelope_id"] as JsonValue,
+        });
+      }
+      const envelopeExists = this.sql
+        .exec(`SELECT 1 AS ok FROM channel_envelopes WHERE envelope_id = ?`, String(publication["envelope_id"]))
+        .toArray().length > 0;
+      if (!envelopeExists) {
+        addError("trajectory-channel-publication", "publication envelope is missing", {
+          eventId: publication["event_id"] as JsonValue,
+          envelopeId: publication["envelope_id"] as JsonValue,
+        });
+      }
+    }
+
+    for (const envelope of this.sql.exec(`SELECT * FROM channel_envelopes`).toArray() as JsonRecord[]) {
+      const fields = ["from_json", "to_json", "payload_ref_json", "metadata_json"] as const;
+      for (const field of fields) {
+        const path = findPrivateParticipantMetadataPath(parseJson(asString(envelope[field])));
+        if (path) {
+          addError("channel-envelope-shape", "channel envelope contains private participant metadata", {
+            envelopeId: envelope["envelope_id"] as JsonValue,
+            field,
+            path,
+          });
+        }
+      }
+    }
+
+    for (const event of this.sql.exec(`SELECT * FROM trajectory_events`).toArray() as JsonRecord[]) {
+      for (const field of ["actor_json", "payload_ref_json"] as const) {
+        const path = findPrivateParticipantMetadataPath(parseJson(asString(event[field])));
+        if (path) {
+          addError("trajectory-event-shape", "trajectory event contains private participant metadata", {
+            eventId: event["event_id"] as JsonValue,
+            field,
+            path,
+          });
+        }
+      }
+    }
+
+    for (const row of this.inspectStorageDiagnostics({}).rows) {
+      addError("storage-diagnostic", "oversized or missing indexed storage artifact", row);
+    }
+
     return { ok: errors.length === 0, errors };
   }
 
@@ -2061,13 +2286,12 @@ export class GadWorkspaceDO extends DurableObjectBase {
     for (const { path, ref } of collectStoredValueRefs(value)) {
       this.sql.exec(
         `INSERT OR REPLACE INTO trajectory_blob_refs (
-           event_id, field_path, digest, purpose, preview_json, size, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+           event_id, field_path, digest, purpose, size, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
         eventId,
         path,
         ref.digest,
         purpose,
-        ref.preview !== undefined ? JSON.stringify(ref.preview) : null,
         ref.size,
         nowIso()
       );
@@ -2141,16 +2365,11 @@ export class GadWorkspaceDO extends DurableObjectBase {
     const payload = event.payload as JsonRecord;
     const existing = this.sql
       .exec(
-        `SELECT body_assembled, role FROM trajectory_messages WHERE branch_id = ? AND message_id = ?`,
+        `SELECT role FROM trajectory_messages WHERE branch_id = ? AND message_id = ?`,
         event.branchId,
         messageId
       )
       .toArray()[0] as JsonRecord | undefined;
-    const existingBody = asString(existing?.["body_assembled"]) ?? "";
-    const body =
-      event.kind === "message.delta"
-        ? existingBody + (asString(payload["delta"]) ?? "")
-        : (asString(payload["content"]) ?? existingBody);
     const status =
       event.kind === "message.completed"
         ? "completed"
@@ -2161,11 +2380,10 @@ export class GadWorkspaceDO extends DurableObjectBase {
             : "started";
     this.sql.exec(
       `INSERT INTO trajectory_messages (
-         message_id, branch_id, role, body_assembled, status, started_event_id, completed_event_id, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         message_id, branch_id, role, status, started_event_id, completed_event_id, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(branch_id, message_id) DO UPDATE SET
          role = COALESCE(excluded.role, trajectory_messages.role),
-         body_assembled = excluded.body_assembled,
          status = excluded.status,
          started_event_id = COALESCE(trajectory_messages.started_event_id, excluded.started_event_id),
          completed_event_id = COALESCE(excluded.completed_event_id, trajectory_messages.completed_event_id),
@@ -2173,7 +2391,6 @@ export class GadWorkspaceDO extends DurableObjectBase {
       messageId,
       event.branchId,
       asString(payload["role"]) ?? asString(existing?.["role"]) ?? event.actor.kind,
-      body,
       status,
       event.kind === "message.started" ? event.eventId : null,
       event.kind === "message.completed" || event.kind === "message.failed" ? event.eventId : null,
@@ -2187,14 +2404,13 @@ export class GadWorkspaceDO extends DurableObjectBase {
       const blockId = asString(record["blockId"]) ?? `${messageId}:block:${index}`;
       this.sql.exec(
         `INSERT OR REPLACE INTO trajectory_message_blocks (
-           block_id, message_id, branch_id, block_index, block_type, body_ref_json, invocation_id
-         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+           block_id, message_id, branch_id, block_index, block_type, invocation_id
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
         blockId,
         messageId,
         event.branchId,
         index,
         asString(record["type"]) ?? "data",
-        JSON.stringify(record),
         asString(record["invocationId"])
       );
     });
@@ -2478,14 +2694,13 @@ export class GadWorkspaceDO extends DurableObjectBase {
       this.sql.exec(
         `INSERT INTO gad_claims (
            claim_id, trajectory_event_id, invocation_id, subject, predicate, object,
-           body_ref_json, status, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           status, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(claim_id) DO UPDATE SET
            trajectory_event_id = excluded.trajectory_event_id,
            subject = COALESCE(excluded.subject, gad_claims.subject),
            predicate = COALESCE(excluded.predicate, gad_claims.predicate),
            object = COALESCE(excluded.object, gad_claims.object),
-           body_ref_json = excluded.body_ref_json,
            status = excluded.status,
            updated_at = excluded.updated_at`,
         claimId,
@@ -2494,7 +2709,6 @@ export class GadWorkspaceDO extends DurableObjectBase {
         asString(payload["subject"]),
         asString(payload["predicate"]),
         asString(payload["object"]),
-        JSON.stringify(payload),
         asString(payload["status"]) ?? "active",
         event.createdAt,
         event.createdAt
@@ -2548,13 +2762,12 @@ export class GadWorkspaceDO extends DurableObjectBase {
     for (const { path, ref } of collectStoredValueRefs(value)) {
       this.sql.exec(
         `INSERT OR REPLACE INTO channel_blob_refs (
-           envelope_id, field_path, digest, purpose, preview_json, size, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+           envelope_id, field_path, digest, purpose, size, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
         envelopeId,
         path,
         ref.digest,
         purpose,
-        ref.preview !== undefined ? JSON.stringify(ref.preview) : null,
         ref.size,
         nowIso()
       );
@@ -2655,6 +2868,17 @@ export class GadWorkspaceDO extends DurableObjectBase {
   }
 
   private insertChannelPublication(publication: ChannelPublication): void {
+    const eventExists = this.sql
+      .exec(`SELECT 1 AS ok FROM trajectory_events WHERE event_id = ?`, publication.eventId)
+      .toArray().length > 0;
+    const envelopeExists = this.sql
+      .exec(`SELECT 1 AS ok FROM channel_envelopes WHERE envelope_id = ?`, publication.envelopeId)
+      .toArray().length > 0;
+    if (!eventExists || !envelopeExists) {
+      throw new Error(
+        `cannot publish trajectory/channel mapping before durable rows exist: event=${publication.eventId} envelope=${publication.envelopeId}`
+      );
+    }
     this.sql.exec(
       `INSERT INTO trajectory_channel_publications (
          event_id, trajectory_id, branch_id, channel_id, channel_seq, envelope_id, published_at
@@ -3085,13 +3309,46 @@ export class GadWorkspaceDO extends DurableObjectBase {
         : {}),
       payload:
         row["payload_kind"] === AGENTIC_EVENT_PAYLOAD_KIND
-          ? agenticEventSchema.parse(parseRecord(asString(row["payload_ref_json"])))
+          ? storedAgenticEventSchema.parse(parseRecord(asString(row["payload_ref_json"])))
           : parseJson(asString(row["payload_ref_json"])),
       payloadKind: asString(row["payload_kind"]) ?? undefined,
       ...(row["metadata_json"] ? { metadata: parseRecord(asString(row["metadata_json"])) } : {}),
       ...(row["attachments_json"]
         ? { attachments: parseJson(asString(row["attachments_json"])) as unknown[] }
         : {}),
+      publishedAt: String(row["published_at"]),
+    };
+  }
+
+  private inspectChannelEnvelopeRow(row: JsonRecord): ChannelEnvelopeInspection {
+    const envelopeId = String(row["envelope_id"]);
+    const payloadText = asString(row["payload_ref_json"]) ?? "null";
+    const refs = this.sql
+      .exec(
+        `SELECT field_path, digest, purpose, size, created_at
+           FROM channel_blob_refs WHERE envelope_id = ?
+           ORDER BY field_path ASC`,
+        envelopeId
+      )
+      .toArray() as JsonRecord[];
+    return {
+      envelopeId,
+      channelId: String(row["channel_id"]),
+      seq: asNumber(row["seq"]),
+      payloadKind: asString(row["payload_kind"]) ?? undefined,
+      from: summarizeJsonForInspection(parseRecord(asString(row["from_json"]))) as JsonRecord,
+      ...(row["metadata_json"]
+        ? { metadata: summarizeJsonForInspection(parseRecord(asString(row["metadata_json"]))) as JsonRecord }
+        : {}),
+      bytes: {
+        from: utf8Bytes(asString(row["from_json"]) ?? ""),
+        to: utf8Bytes(asString(row["to_json"]) ?? ""),
+        payload: utf8Bytes(payloadText),
+        metadata: utf8Bytes(asString(row["metadata_json"]) ?? ""),
+        attachments: utf8Bytes(asString(row["attachments_json"]) ?? ""),
+      },
+      payloadSummary: summarizeJsonForInspection(parseJson(payloadText)),
+      storedRefs: refs,
       publishedAt: String(row["published_at"]),
     };
   }

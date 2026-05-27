@@ -16,6 +16,8 @@ import type { BootstrapSnapshot, ParticipantSnapshot } from "@workspace/pubsub";
 import {
   AGENTIC_EVENT_PAYLOAD_KIND,
   AGENTIC_PROTOCOL_VERSION,
+  participantRefFromMetadata,
+  publicParticipantMetadata,
   type AgenticEvent,
   type InvocationId,
   type ParticipantRef,
@@ -181,17 +183,7 @@ export class PubSubChannel extends DurableObjectBase {
   }
 
   private participantRef(participantId: string): ParticipantRef {
-    const metadata = this.getSenderMetadata(participantId) ?? {};
-    const type = typeof metadata["type"] === "string" ? metadata["type"] : undefined;
-    return {
-      kind: type === "agent" || type === "panel" || type === "user" || type === "system"
-        ? type
-        : participantId === "system" ? "system" : participantId.startsWith("panel:") ? "panel" : "external",
-      id: participantId,
-      participantId,
-      displayName: typeof metadata["name"] === "string" ? metadata["name"] : participantId,
-      metadata,
-    };
+    return participantRefFromMetadata(participantId, this.getSenderMetadata(participantId));
   }
 
   private invocationStartedPayload(
@@ -540,7 +532,11 @@ export class PubSubChannel extends DurableObjectBase {
       config && typeof config.title === "string" && config.title.trim().length > 0
         ? config.title.trim()
         : null;
-    await this.setOwnTitle(configured ?? "Channel");
+    if (config?.titleExplicit === true) {
+      await this.setOwnTitleExplicitly(configured ?? null);
+    } else {
+      await this.setOwnTitle(configured ?? "Channel");
+    }
   }
 
   private getChannelConfig(): ChannelConfig | null {
@@ -589,13 +585,14 @@ export class PubSubChannel extends DurableObjectBase {
     leaveReason?: "graceful" | "disconnect" | "replaced",
     senderRef?: number
   ): Promise<void> {
+    const publicMetadata = publicParticipantMetadata(metadata) ?? {};
     const payload: PresencePayload = {
       action,
-      metadata,
+      metadata: publicMetadata,
       ...(leaveReason ? { leaveReason } : {}),
     };
 
-    const event = await this.appendLogEvent("presence", payload, senderId, metadata);
+    const event = await this.appendLogEvent("presence", payload, senderId, publicMetadata);
     broadcast(this.broadcastDeps, event, { kind: "log", phase: "live", ref: senderRef }, senderId);
   }
 

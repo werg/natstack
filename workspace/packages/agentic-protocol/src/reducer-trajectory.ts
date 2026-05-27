@@ -1,5 +1,6 @@
 import type { EventId, StateHash, TurnId } from "./ids.js";
 import type { TrajectoryEvent } from "./events.js";
+import { assertNoStoredValueRefs } from "./stored-values.js";
 import {
   applyApprovalEvent,
   applyInvocationEvent,
@@ -54,6 +55,7 @@ export function reduceTrajectory(
   state: TrajectoryState,
   event: TrajectoryEvent,
 ): TrajectoryState {
+  assertNoStoredValueRefs(event, "trajectory reducer input");
   const branchId = event.branchId;
   const branch: BranchProjection = {
     ...(state.branches[branchId] ?? { branchId, seq: -1 }),
@@ -83,6 +85,7 @@ export function reduceTrajectory(
       status: "open",
       openedAt: event.createdAt,
       summary: "summary" in event.payload ? event.payload.summary : undefined,
+      reason: "reason" in event.payload ? event.payload.reason : undefined,
     };
     next = {
       ...next,
@@ -106,6 +109,7 @@ export function reduceTrajectory(
           status: "closed",
           closedAt: event.createdAt,
           summary: "summary" in event.payload ? event.payload.summary : existing?.summary,
+          reason: "reason" in event.payload ? event.payload.reason : existing?.reason,
         },
       },
     };

@@ -1,5 +1,5 @@
 import type { ChannelId, EnvelopeId } from "./ids.js";
-import type { ParticipantRef, ParticipantSelector } from "./events.js";
+import type { ParticipantRef, ParticipantSelector, StoredAgenticEvent } from "./events.js";
 
 export interface ChannelEnvelope<Payload = unknown> {
   envelopeId: EnvelopeId;
@@ -13,6 +13,8 @@ export interface ChannelEnvelope<Payload = unknown> {
   attachments?: unknown[];
   publishedAt: string;
 }
+
+export type StoredChannelEnvelope = ChannelEnvelope<StoredAgenticEvent>;
 
 export type EphemeralSignalKind = "typing" | "presence" | "cursor" | "custom";
 

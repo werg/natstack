@@ -171,4 +171,7 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
     args?: unknown,
     options?: { signal?: AbortSignal; invocationId?: string; transportCallId?: string; turnId?: string }
   ): MethodCallHandle;
+
+  /** Cancel a specific in-flight method dispatch by transport call id. */
+  cancelMethodCall(callId: string): Promise<void>;
 }

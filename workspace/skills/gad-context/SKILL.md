@@ -21,7 +21,8 @@ Useful APIs:
 - `gad.getTrajectoryBranchHead({ trajectoryId, branchId })`
 - `gad.listTrajectoryEvents({ trajectoryId, branchId, cursor, limit })`
 - `gad.appendTrajectoryBatch({ trajectoryId, branchId, owner, events })`
-- `gad.listChannelEnvelopes({ channelId, cursor, limit, payloadKind })`
+- `gad.inspectChannelEnvelopes({ channelId, cursor, limit, payloadKind })` for normal debugging; it returns compact payload summaries, byte counts, and stored-ref digests.
+- `gad.listChannelEnvelopes({ channelId, cursor, limit, payloadKind })` only when code needs hydrated semantic envelopes. Do not use it for broad exploratory dumps inside an agent turn.
 - `gad.getChannelReplayWindow({ channelId, mode, sinceSeq, beforeSeq, limit })`
 - `gad.getTrajectoryForEnvelope({ envelopeId })`
 - `gad.listPublishedEnvelopesForTrajectory({ trajectoryId, branchId, eventId, turnId, channelId, limit })`
@@ -30,6 +31,7 @@ Useful APIs:
 - `gad.readGadFileAtState({ stateHash, path })`
 - `gad.getGadStateProducer({ stateHash })`
 - `gad.blameGadFileSnippet({ stateHash, path })`
+- `gad.inspectStorageDiagnostics({ rowByteLimit, limit })`
 
 For SQL reads, prefer:
 

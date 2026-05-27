@@ -1,6 +1,11 @@
 import type { RpcCaller } from "@natstack/rpc";
 import { createGadServiceClient } from "@natstack/shared/userlandServiceRpc";
-import type { AgenticEvent, ChannelEnvelope, TrajectoryEvent } from "@workspace/agentic-protocol";
+import {
+  hydrateStoredValueRefs,
+  type AgenticEvent,
+  type ChannelEnvelope,
+  type TrajectoryEvent,
+} from "@workspace/agentic-protocol";
 
 export { GAD_WORKSPACE_SERVICE_PROTOCOL } from "@natstack/shared/userlandServiceRpc";
 
@@ -75,6 +80,19 @@ export interface ChannelReplayWindow {
   hasMoreBefore?: boolean;
 }
 
+export interface ChannelEnvelopeInspection {
+  envelopeId: string;
+  channelId: string;
+  seq: number;
+  payloadKind?: string;
+  from: GadJsonRecord;
+  metadata?: GadJsonRecord;
+  bytes: Record<string, number>;
+  payloadSummary: unknown;
+  storedRefs: GadJsonRecord[];
+  publishedAt: string;
+}
+
 export interface ChannelMessageTypeDefinition {
   typeId: string;
   displayMode: "inline" | "row";
@@ -94,9 +112,11 @@ export type RegistryMutationInput =
     }
   | { kind: "clearMessageType"; typeId: string };
 
+export type GadSqlInput = string | { sql: string; params?: GadSqlBinding[]; bindings?: GadSqlBinding[] };
+
 export interface GadClient {
-  rawSql(sql: string, bindings?: GadSqlBinding[]): Promise<GadSqlResult>;
-  query(sql: string, bindings?: GadSqlBinding[]): Promise<GadSqlResult>;
+  rawSql(sql: GadSqlInput, bindings?: GadSqlBinding[]): Promise<GadSqlResult>;
+  query(sql: GadSqlInput, bindings?: GadSqlBinding[]): Promise<GadSqlResult>;
   status(): Promise<GadStatusMetric[]>;
   ensureBlob(hash: string, size?: number, mimeType?: string | null): Promise<void>;
   getTrajectoryBranchHead(input: { trajectoryId: string; branchId: string }): Promise<GadJsonRecord | null>;
@@ -150,6 +170,9 @@ export interface GadClient {
   listChannelEnvelopesBefore(input: { channelId: string; seq: number; limit?: number | null }): Promise<ChannelEnvelope[]>;
   getInitialChannelWindow(input: { channelId: string; limit?: number | null }): Promise<ChannelReplayWindow>;
   listChannelEnvelopes(input: { channelId: string; cursor?: number | null; limit?: number | null; payloadKind?: string | null }): Promise<ChannelEnvelope[]>;
+  inspectChannelEnvelopes(input: { channelId: string; cursor?: number | null; limit?: number | null; payloadKind?: string | null }): Promise<{ rows: ChannelEnvelopeInspection[] }>;
+  listStoredValueRefs(input?: { eventId?: string | null; envelopeId?: string | null; digest?: string | null; limit?: number | null }): Promise<{ rows: GadJsonRecord[] }>;
+  inspectStorageDiagnostics(input?: { rowByteLimit?: number | null; limit?: number | null }): Promise<{ rows: GadJsonRecord[] }>;
   listGadBranchFiles(input: { branchId: string }): Promise<GadJsonRecord[]>;
   diffGadStates(input: { leftStateHash: string; rightStateHash: string }): Promise<{ added: GadJsonRecord[]; removed: GadJsonRecord[]; changed: GadJsonRecord[] }>;
   readGadFileAtState(input: { stateHash: string; path: string }): Promise<GadJsonRecord | null>;
@@ -163,31 +186,68 @@ export interface GadClient {
 export function createGadClient(rpc: RpcCaller): GadClient {
   const service = createGadServiceClient(rpc);
   const call = <T>(method: string, ...args: unknown[]) => service.call<T>(method, ...args);
+  const normalizeSqlArgs = (input: GadSqlInput, bindings?: GadSqlBinding[]): [string, GadSqlBinding[]] => {
+    if (typeof input === "string") return [input, bindings ?? []];
+    return [input.sql, input.bindings ?? input.params ?? bindings ?? []];
+  };
+  const hydrate = async <T>(value: T): Promise<T> =>
+    hydrateStoredValueRefs(value, {
+      getText: (digest) => rpc.call<string | null>("main", "blobstore.getText", [digest]),
+    }) as Promise<T>;
+  const hydrateLineage = async <T extends { envelope: ChannelEnvelope; trajectoryEvent: TrajectoryEvent }>(
+    item: T
+  ): Promise<T> => ({
+    ...item,
+    envelope: await hydrate(item.envelope),
+    trajectoryEvent: await hydrate(item.trajectoryEvent),
+  });
 
   return {
-    rawSql: (sql, bindings) => call("rawSql", sql, bindings),
-    query: (sql, bindings) => call("query", sql, bindings),
+    rawSql: (input, bindings) => call("rawSql", ...normalizeSqlArgs(input, bindings)),
+    query: (input, bindings) => call("query", ...normalizeSqlArgs(input, bindings)),
     status: () => call("getStatus"),
     ensureBlob: (hash, size, mimeType) => call("ensureBlob", hash, size, mimeType),
     getTrajectoryBranchHead: (input) => call("getTrajectoryBranchHead", input),
-    appendTrajectoryBatch: (input) => call("appendTrajectoryBatch", input),
-    listTrajectoryEvents: (input) => call("listTrajectoryEvents", input),
-    appendChannelEnvelope: (input) => call("appendChannelEnvelope", input),
-    appendChannelEnvelopeWithRegistryMutation: (input) => call("appendChannelEnvelopeWithRegistryMutation", input),
+    appendTrajectoryBatch: async (input) => {
+      const result = await call<AppendTrajectoryBatchResult>("appendTrajectoryBatch", input);
+      return { ...result, events: await Promise.all(result.events.map((event) => hydrate(event))) };
+    },
+    listTrajectoryEvents: async (input) => Promise.all((await call<TrajectoryEvent[]>("listTrajectoryEvents", input)).map((event) => hydrate(event))),
+    appendChannelEnvelope: (input) => call<ChannelEnvelope>("appendChannelEnvelope", input).then(hydrate),
+    appendChannelEnvelopeWithRegistryMutation: (input) => call<ChannelEnvelope>("appendChannelEnvelopeWithRegistryMutation", input).then(hydrate),
     listMessageTypes: (input) => call("listMessageTypes", input),
     getMessageType: (input) => call("getMessageType", input),
-    getChannelEnvelope: (input) => call("getChannelEnvelope", input),
-    getTrajectoryForEnvelope: (input) => call("getTrajectoryForEnvelope", input),
-    listPublishedEnvelopesForTrajectory: (input) => call("listPublishedEnvelopesForTrajectory", input),
-    getEnvelopesForTrajectory: (input) => call("getEnvelopesForTrajectory", input),
-    getPublishedArtifactsForTurn: (input) => call("getPublishedArtifactsForTurn", input),
-    getPrivateLineageForPublishedEnvelope: (input) => call("getPrivateLineageForPublishedEnvelope", input),
-    getDownstreamConsumers: (input) => call("getDownstreamConsumers", input),
-    getChannelReplayWindow: (input) => call("getChannelReplayWindow", input),
-    listChannelEnvelopesAfter: (input) => call("listChannelEnvelopesAfter", input),
-    listChannelEnvelopesBefore: (input) => call("listChannelEnvelopesBefore", input),
-    getInitialChannelWindow: (input) => call("getInitialChannelWindow", input),
-    listChannelEnvelopes: (input) => call("listChannelEnvelopes", input),
+    getChannelEnvelope: (input) => call<ChannelEnvelope | null>("getChannelEnvelope", input).then((value) => value ? hydrate(value) : null),
+    getTrajectoryForEnvelope: (input) => call<EnvelopeLineage | null>("getTrajectoryForEnvelope", input).then((value) => value ? hydrateLineage(value) : null),
+    listPublishedEnvelopesForTrajectory: async (input) => Promise.all((await call<EnvelopeLineage[]>("listPublishedEnvelopesForTrajectory", input)).map(hydrateLineage)),
+    getEnvelopesForTrajectory: async (input) => Promise.all((await call<EnvelopeLineage[]>("getEnvelopesForTrajectory", input)).map(hydrateLineage)),
+    getPublishedArtifactsForTurn: async (input) => Promise.all((await call<PublishedArtifact[]>("getPublishedArtifactsForTurn", input)).map(async (item) => ({
+      ...item,
+      lineage: await hydrateLineage(item.lineage),
+    }))),
+    getPrivateLineageForPublishedEnvelope: async (input) => {
+      const value = await call<PrivateLineageForPublishedEnvelope | null>("getPrivateLineageForPublishedEnvelope", input);
+      return value ? {
+        ...value,
+        lineage: await hydrateLineage(value.lineage),
+        branchEvents: await Promise.all(value.branchEvents.map((event) => hydrate(event))),
+      } : null;
+    },
+    getDownstreamConsumers: async (input) => Promise.all((await call<TrajectoryEvent[]>("getDownstreamConsumers", input)).map((event) => hydrate(event))),
+    getChannelReplayWindow: async (input) => {
+      const window = await call<ChannelReplayWindow>("getChannelReplayWindow", input);
+      return { ...window, envelopes: await Promise.all(window.envelopes.map((envelope) => hydrate(envelope))) };
+    },
+    listChannelEnvelopesAfter: async (input) => Promise.all((await call<ChannelEnvelope[]>("listChannelEnvelopesAfter", input)).map((envelope) => hydrate(envelope))),
+    listChannelEnvelopesBefore: async (input) => Promise.all((await call<ChannelEnvelope[]>("listChannelEnvelopesBefore", input)).map((envelope) => hydrate(envelope))),
+    getInitialChannelWindow: async (input) => {
+      const window = await call<ChannelReplayWindow>("getInitialChannelWindow", input);
+      return { ...window, envelopes: await Promise.all(window.envelopes.map((envelope) => hydrate(envelope))) };
+    },
+    listChannelEnvelopes: async (input) => Promise.all((await call<ChannelEnvelope[]>("listChannelEnvelopes", input)).map((envelope) => hydrate(envelope))),
+    inspectChannelEnvelopes: (input) => call("inspectChannelEnvelopes", input),
+    listStoredValueRefs: (input) => call("listStoredValueRefs", input ?? {}),
+    inspectStorageDiagnostics: (input) => call("inspectStorageDiagnostics", input ?? {}),
     listGadBranchFiles: (input) => call("listGadBranchFiles", input),
     diffGadStates: (input) => call("diffGadStates", input),
     readGadFileAtState: (input) => call("readGadFileAtState", input),

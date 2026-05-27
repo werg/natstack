@@ -5,10 +5,14 @@ import {
   AGENTIC_EVENT_PAYLOAD_KIND,
   brandId,
   encodeChannelPayloadStoredValues,
+  hydrateStoredValueRefs,
+  participantRefFromMetadata,
+  publicParticipantMetadata,
+  sanitizeAgenticEventParticipantRefs,
+  type AgenticEvent,
   type ChannelEnvelope,
   type ChannelId,
   type EnvelopeId,
-  type ParticipantRef,
 } from "@workspace/agentic-protocol";
 import type { StoredAttachment } from "./types.js";
 import { buildChannelEvent } from "./broadcast.js";
@@ -81,35 +85,6 @@ interface GadReplayWindow {
   hasMoreBefore?: boolean;
 }
 
-function participantRefForSender(senderId: string, metadata?: Record<string, unknown>): ParticipantRef {
-  const declaredKind = metadata?.["kind"] ?? metadata?.["type"];
-  const kind = declaredKind === "user" ||
-    declaredKind === "agent" ||
-    declaredKind === "system" ||
-    declaredKind === "panel" ||
-    declaredKind === "external"
-      ? declaredKind
-      : senderId === "system"
-        ? "system"
-        : senderId.startsWith("panel:")
-          ? "panel"
-          : senderId.startsWith("do:")
-            ? "agent"
-            : "external";
-  const displayName = typeof metadata?.["name"] === "string"
-    ? metadata["name"]
-    : typeof metadata?.["displayName"] === "string"
-      ? metadata["displayName"]
-      : undefined;
-  return {
-    kind,
-    id: senderId,
-    participantId: senderId,
-    ...(displayName ? { displayName } : {}),
-    ...(metadata ? { metadata } : {}),
-  };
-}
-
 function eventFromGadEnvelope(envelope: ChannelEnvelope): ChannelEvent {
   return buildChannelEvent(
     envelope.seq,
@@ -158,15 +133,15 @@ export class GadChannelLogStore implements ChannelLogStore {
 
   async append(input: AppendChannelLogInput): Promise<ChannelEvent> {
     const payload = await this.encodePayload(input.payload);
-    const envelope = await this.gad.call<ChannelEnvelope>("appendChannelEnvelope", {
+    const envelope = await this.hydrateEnvelope(await this.gad.call<ChannelEnvelope>("appendChannelEnvelope", {
       channelId: brandId<ChannelId>(this.channelId),
       envelopeId: brandId<EnvelopeId>(input.messageId ?? crypto.randomUUID()),
-      from: participantRefForSender(input.senderId, input.senderMetadata),
+      from: participantRefFromMetadata(input.senderId, input.senderMetadata),
       payload,
       payloadKind: input.type,
-      metadata: input.senderMetadata,
+      metadata: publicParticipantMetadata(input.senderMetadata),
       attachments: input.attachments,
-    });
+    }));
     return eventFromGadEnvelope(envelope);
   }
 
@@ -180,16 +155,16 @@ export class GadChannelLogStore implements ChannelLogStore {
 
   async appendWithRegistryMutation(input: AppendChannelLogInput, mutation: RegistryMutationInput): Promise<ChannelEvent> {
     const payload = await this.encodePayload(input.payload);
-    const envelope = await this.gad.call<ChannelEnvelope>("appendChannelEnvelopeWithRegistryMutation", {
+    const envelope = await this.hydrateEnvelope(await this.gad.call<ChannelEnvelope>("appendChannelEnvelopeWithRegistryMutation", {
       channelId: brandId<ChannelId>(this.channelId),
       envelopeId: brandId<EnvelopeId>(input.messageId ?? crypto.randomUUID()),
-      from: participantRefForSender(input.senderId, input.senderMetadata),
+      from: participantRefFromMetadata(input.senderId, input.senderMetadata),
       payload,
       payloadKind: input.type,
-      metadata: input.senderMetadata,
+      metadata: publicParticipantMetadata(input.senderMetadata),
       attachments: input.attachments,
       registryMutation: mutation,
-    });
+    }));
     return eventFromGadEnvelope(envelope);
   }
 
@@ -207,18 +182,18 @@ export class GadChannelLogStore implements ChannelLogStore {
   }
 
   async getEventByEnvelopeId(envelopeId: string): Promise<ChannelEvent | null> {
-    const envelope = await this.gad.call<ChannelEnvelope | null>("getChannelEnvelope", { envelopeId });
+    const envelope = await this.hydrateNullableEnvelope(await this.gad.call<ChannelEnvelope | null>("getChannelEnvelope", { envelopeId }));
     if (!envelope || String(envelope.channelId) !== this.channelId) return null;
     return eventFromGadEnvelope(envelope);
   }
 
   async replayAfter(sinceId: number, context: ChannelReplayContext): Promise<ChannelReplayEnvelope> {
-    const window = await this.gad.call<GadReplayWindow>("getChannelReplayWindow", {
+    const window = await this.hydrateReplayWindow(await this.gad.call<GadReplayWindow>("getChannelReplayWindow", {
       channelId: this.channelId,
       mode: "after",
       sinceSeq: sinceId,
       limit: GadChannelLogStore.REPLAY_AFTER_LIMIT,
-    });
+    }));
     return replayFromGadWindow("after", window, context);
   }
 
@@ -227,21 +202,21 @@ export class GadChannelLogStore implements ChannelLogStore {
     limit: number,
     context: ChannelReplayContext,
   ): Promise<ChannelReplayEnvelope> {
-    const window = await this.gad.call<GadReplayWindow>("getChannelReplayWindow", {
+    const window = await this.hydrateReplayWindow(await this.gad.call<GadReplayWindow>("getChannelReplayWindow", {
       channelId: this.channelId,
       mode: "before",
       beforeSeq,
       limit,
-    });
+    }));
     return replayFromGadWindow("before", window, context);
   }
 
   async replayInitial(limit: number, context: ChannelReplayContext): Promise<ChannelReplayEnvelope> {
-    const window = await this.gad.call<GadReplayWindow>("getChannelReplayWindow", {
+    const window = await this.hydrateReplayWindow(await this.gad.call<GadReplayWindow>("getChannelReplayWindow", {
       channelId: this.channelId,
       mode: "initial",
       limit,
-    });
+    }));
     return replayFromGadWindow("initial", window, context);
   }
 
@@ -282,9 +257,38 @@ export class GadChannelLogStore implements ChannelLogStore {
   }
 
   private async encodePayload(payload: unknown): Promise<unknown> {
-    return encodeChannelPayloadStoredValues(payload, {
+    const semanticPayload = isAgenticEventPayload(payload)
+      ? sanitizeAgenticEventParticipantRefs(payload)
+      : payload;
+    return encodeChannelPayloadStoredValues(semanticPayload, {
       putText: (value) =>
         this.rpc.call<{ digest: string; size: number }>("main", "blobstore.putText", [value]),
     });
   }
+
+  private async hydrateEnvelope(envelope: ChannelEnvelope): Promise<ChannelEnvelope> {
+    return hydrateStoredValueRefs(envelope, {
+      getText: (digest) => this.rpc.call<string | null>("main", "blobstore.getText", [digest]),
+    }) as Promise<ChannelEnvelope>;
+  }
+
+  private async hydrateNullableEnvelope(envelope: ChannelEnvelope | null): Promise<ChannelEnvelope | null> {
+    return envelope ? this.hydrateEnvelope(envelope) : null;
+  }
+
+  private async hydrateReplayWindow(window: GadReplayWindow): Promise<GadReplayWindow> {
+    return {
+      ...window,
+      envelopes: await Promise.all(window.envelopes.map((envelope) => this.hydrateEnvelope(envelope))),
+    };
+  }
+}
+
+function isAgenticEventPayload(payload: unknown): payload is AgenticEvent {
+  return !!payload &&
+    typeof payload === "object" &&
+    !Array.isArray(payload) &&
+    typeof (payload as Record<string, unknown>)["kind"] === "string" &&
+    typeof (payload as Record<string, unknown>)["actor"] === "object" &&
+    typeof (payload as Record<string, unknown>)["createdAt"] === "string";
 }

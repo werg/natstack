@@ -3,6 +3,7 @@ import {
   AGENTIC_EVENT_PAYLOAD_KIND,
   AGENTIC_PROTOCOL_VERSION,
   GENESIS_EVENT_HASH,
+  MAX_INLINE_TRAJECTORY_EVENT_BYTES,
   agenticSlice,
   agenticEventSchema,
   brandId,
@@ -10,8 +11,12 @@ import {
   computeEventHash,
   createInitialChannelViewState,
   createInitialTrajectoryState,
+  encodeAgenticEventStoredValues,
+  hydrateStoredValueRefs,
   reduceChannelView,
   reduceTrajectory,
+  sanitizeAgenticEventParticipantRefs,
+  storedAgenticEventSchema,
   trajectoryEventSchema,
   userVisibleTrajectoryProjection,
   type AgenticEvent,
@@ -106,6 +111,171 @@ describe("@workspace/agentic-protocol schemas", () => {
       turnId: brandId<TurnId>("turn-1"),
     }));
     expect(trajectoryEventSchema.parse(event)["turnId"]).toBe("turn-1");
+  });
+
+  it("rejects unknown stored event kinds before reducer use", () => {
+    const result = storedAgenticEventSchema.safeParse({
+      kind: "invocation.typo",
+      actor: agent,
+      causality: { invocationId: "inv-1" },
+      payload: { protocol: AGENTIC_PROTOCOL_VERSION, reason: "bad kind" },
+      createdAt: "2026-05-20T12:00:00.000Z",
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects non-object stored event payloads unless the whole payload is a stored ref", () => {
+    expect(storedAgenticEventSchema.safeParse({
+      kind: "turn.closed",
+      actor: agent,
+      payload: null,
+      createdAt: "2026-05-20T12:00:00.000Z",
+    }).success).toBe(false);
+
+    expect(storedAgenticEventSchema.parse({
+      kind: "turn.closed",
+      actor: agent,
+      payload: {
+        protocol: "natstack.blob-ref.v1",
+        digest: "payload-digest",
+        size: 64,
+        encoding: "json",
+        originalBytes: 64,
+      },
+      createdAt: "2026-05-20T12:00:00.000Z",
+    }).payload).toMatchObject({ digest: "payload-digest" });
+  });
+
+  it("rejects stored events missing reducer-critical payload fields", () => {
+    const result = storedAgenticEventSchema.safeParse({
+      kind: "invocation.started",
+      actor: agent,
+      causality: { invocationId: "inv-1" },
+      payload: { protocol: AGENTIC_PROTOCOL_VERSION, request: { code: "run()" } },
+      createdAt: "2026-05-20T12:00:00.000Z",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.success ? "" : result.error.issues[0]?.message).toContain("payload.name");
+  });
+
+  it("spills oversized message blocks and metadata while preserving compact inline summaries", async () => {
+    const blobs = new Map<string, string>();
+    const large = "x".repeat(80 * 1024);
+    const event = messageEvent({
+      actor: agent,
+      turnId: brandId<TurnId>("turn-1"),
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        role: "assistant",
+        content: "done",
+        blocks: Array.from({ length: 8 }, (_, index) => ({
+          type: "text",
+          content: large,
+          metadata: {
+            index,
+            raw: large,
+            nested: { value: large },
+          },
+        })),
+      },
+    });
+
+    const encoded = await encodeAgenticEventStoredValues(event, {
+      putText: async (value) => {
+        const digest = `digest-${blobs.size + 1}`;
+        blobs.set(digest, value);
+        return { digest, size: value.length };
+      },
+    });
+
+    expect(encoded.eventBytes).toBeLessThan(MAX_INLINE_TRAJECTORY_EVENT_BYTES);
+    expect(storedAgenticEventSchema.parse(encoded.event).payload).toMatchObject({
+      blocks: { protocol: "natstack.blob-ref.v1", encoding: "json" },
+    });
+    expect(JSON.stringify(encoded.event.payload)).not.toContain(large);
+    expect(blobs.size).toBeGreaterThan(1);
+  });
+
+  it("hydrates refs nested inside hydrated json blobs", async () => {
+    const blobs = new Map<string, string>();
+    const innerRef = {
+      protocol: "natstack.blob-ref.v1" as const,
+      digest: "inner",
+      size: 14,
+      encoding: "json" as const,
+      originalBytes: 14,
+    };
+    const outerRef = {
+      protocol: "natstack.blob-ref.v1" as const,
+      digest: "outer",
+      size: 32,
+      encoding: "json" as const,
+      originalBytes: 32,
+    };
+    blobs.set("inner", JSON.stringify({ text: "hydrated" }));
+    blobs.set("outer", JSON.stringify({ blocks: [innerRef] }));
+
+    await expect(
+      hydrateStoredValueRefs(outerRef, {
+        getText: async (digest) => blobs.get(digest) ?? null,
+      })
+    ).resolves.toEqual({ blocks: [{ text: "hydrated" }] });
+  });
+
+  it("sanitizes participant refs without persisting method schemas", () => {
+    const fullMetadata = {
+      type: "panel",
+      name: "Panel",
+      handle: "panel",
+      methods: [{
+        name: "eval",
+        description: "large method description",
+        parameters: { type: "object", properties: { code: { type: "string" } } },
+        returns: { type: "object" },
+      }],
+      arbitraryLargeField: "x".repeat(1024),
+    };
+    const event: AgenticEvent<"invocation.started"> = {
+      kind: "invocation.started",
+      actor: { kind: "agent", id: "agent-1", metadata: fullMetadata },
+      turnId: brandId<TurnId>("turn-1"),
+      causality: { invocationId: brandId<InvocationId>("inv-1") },
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        name: "eval",
+        transport: {
+          kind: "channel",
+          channelId: brandId<ChannelId>("channel-1"),
+          target: { kind: "panel", id: "panel-1", participantId: "panel-1", metadata: fullMetadata },
+        },
+      },
+      createdAt: "2026-05-20T12:00:00.000Z",
+    };
+
+    const sanitized = sanitizeAgenticEventParticipantRefs(event);
+    const serialized = JSON.stringify(sanitized);
+
+    expect(serialized).not.toContain("parameters");
+    expect(serialized).not.toContain("returns");
+    expect(serialized).not.toContain("description");
+    expect(serialized).not.toContain("arbitraryLargeField");
+    expect(sanitized.actor.metadata).toEqual({
+      type: "panel",
+      name: "Panel",
+      handle: "panel",
+      methods: [{ name: "eval" }],
+    });
+    expect("transport" in sanitized.payload ? sanitized.payload.transport?.kind : undefined).toBe("channel");
+    if ("transport" in sanitized.payload && sanitized.payload.transport?.kind === "channel") {
+      expect(sanitized.payload.transport.target.metadata).toEqual({
+        type: "panel",
+        name: "Panel",
+        handle: "panel",
+        methods: [{ name: "eval" }],
+      });
+    }
   });
 });
 

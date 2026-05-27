@@ -23,6 +23,8 @@ export interface ParticipantInfo {
 /** Channel config (mirrors PubSub client ChannelConfig). */
 export interface ChannelConfig {
   title?: string;
+  /** True when the title came from an explicit title command. */
+  titleExplicit?: boolean;
   approvalLevel?: number;
   [key: string]: unknown;
 }

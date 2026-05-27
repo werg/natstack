@@ -44,6 +44,7 @@ async function createGadBackedChannel(options: {
   const gad = options.gad ?? await createTestDO(GadWorkspaceDO, { __objectKey: "workspace-gad" });
   const channel = await createTestDO(PubSubChannel, { __objectKey: options.channelKey ?? "channel-1" });
   const gadTarget = "do:workers/gad-store:GadWorkspaceDO:workspace-gad";
+  const blobs = new Map<string, string>();
   (channel.instance as unknown as {
     _rpc: {
       emit: (target: string, event: string, payload: unknown) => Promise<void>;
@@ -68,8 +69,15 @@ async function createGadBackedChannel(options: {
         return undefined;
       }
       if (target === "main" && method === "blobstore.putText") {
-        if (options.blobstorePutText) return options.blobstorePutText(String(args[0] ?? ""));
-        return { digest: "test-digest", size: String(args[0] ?? "").length };
+        const value = String(args[0] ?? "");
+        const blob = options.blobstorePutText
+          ? await options.blobstorePutText(value)
+          : { digest: `test-digest-${blobs.size + 1}`, size: value.length };
+        blobs.set(blob.digest, value);
+        return blob;
+      }
+      if (target === "main" && method === "blobstore.getText") {
+        return blobs.get(String(args[0] ?? "")) ?? null;
       }
       if (target === gadTarget) {
         const callable = gad.instance as unknown as Record<string, (...methodArgs: unknown[]) => unknown>;
@@ -107,6 +115,49 @@ describe("PubSubChannel", () => {
     expect(JSON.parse(rows[1]!["metadata_json"] as string)).toMatchObject({ name: "User" });
   });
 
+  it("does not persist full method schemas in durable participant metadata", async () => {
+    const { instance, gad } = await createGadBackedChannel();
+    setRpcCaller(instance, "panel:user", "panel");
+
+    await instance.subscribe("panel:user", {
+      contextId: "ctx-1",
+      name: "User",
+      type: "panel",
+      handle: "user",
+      methods: [{
+        name: "eval",
+        description: "x".repeat(4096),
+        parameters: {
+          type: "object",
+          properties: {
+            code: { type: "string", description: "y".repeat(4096) },
+          },
+        },
+        returns: { type: "object", description: "z".repeat(4096) },
+      }],
+    });
+    await instance.publish("panel:user", AGENTIC_EVENT_PAYLOAD_KIND, agenticEvent(), {
+      idempotencyKey: "publish-with-methods",
+    });
+
+    const rows = gad.sql.exec(
+      `SELECT from_json, payload_ref_json, metadata_json
+         FROM channel_envelopes ORDER BY seq ASC`,
+    ).toArray();
+    const durableJson = JSON.stringify(rows);
+
+    expect(durableJson).not.toContain("properties");
+    expect(durableJson).not.toContain("returns");
+    expect(durableJson).not.toContain("description");
+    expect(durableJson).not.toContain("yyyy");
+    expect(JSON.parse(rows[0]!["payload_ref_json"] as string)).toMatchObject({
+      metadata: { methods: [{ name: "eval" }] },
+    });
+    expect(JSON.parse(rows[1]!["metadata_json"] as string)).toMatchObject({
+      methods: [{ name: "eval" }],
+    });
+  });
+
   it("fails durable publishes when blobstore storage fails", async () => {
     const { instance } = await createGadBackedChannel({
       blobstorePutText: async (value) => {
@@ -121,7 +172,9 @@ describe("PubSubChannel", () => {
     await instance.subscribe("panel:user", { contextId: "ctx-1", name: "User", type: "panel" });
     let error: unknown;
     try {
-      await instance.publish("panel:user", "custom.large", { value: "must be stored" });
+      await instance.publish("panel:user", "custom.large", {
+        value: `must be stored ${"x".repeat(160 * 1024)}`,
+      });
     } catch (err) {
       error = err;
     }

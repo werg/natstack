@@ -22,15 +22,37 @@ function event<K extends AgenticEvent["kind"]>(
   } as AgenticEvent<K>;
 }
 
-function blobRef(digest: string, preview = "{}") {
+function blobRef(digest: string, encoded = "{}") {
   return {
     protocol: "natstack.blob-ref.v1" as const,
     digest,
-    size: preview.length,
+    size: encoded.length,
     encoding: "json" as const,
-    originalBytes: preview.length,
-    preview,
+    originalBytes: encoded.length,
   };
+}
+
+function largeParticipantMetadata() {
+  return {
+    type: "panel",
+    name: "Panel",
+    handle: "user",
+    methods: [{
+      name: "eval",
+      description: "large method description",
+      parameters: { type: "object", properties: { code: { type: "string" } } },
+      returns: { type: "object" },
+    }],
+    arbitraryLargeField: "x".repeat(1024),
+  };
+}
+
+function expectNoPrivateParticipantMetadata(value: unknown): void {
+  const serialized = JSON.stringify(value);
+  expect(serialized).not.toContain("parameters");
+  expect(serialized).not.toContain("returns");
+  expect(serialized).not.toContain("description");
+  expect(serialized).not.toContain("arbitraryLargeField");
 }
 
 describe("GadWorkspaceDO trajectory persistence", () => {
@@ -189,16 +211,19 @@ describe("GadWorkspaceDO trajectory persistence", () => {
 
     const projection = await call<{ rows: Array<Record<string, unknown>> }>(
       "query",
-      "SELECT message_id, body_assembled, status FROM trajectory_messages",
+      "SELECT message_id, role, status FROM trajectory_messages",
       []
     );
     expect(projection.rows).toEqual([
       expect.objectContaining({
         message_id: "msg-1",
-        body_assembled: "hello from trajectory",
+        role: "assistant",
         status: "completed",
       }),
     ]);
+
+    const integrity = await call<{ errors: Array<{ type: string }> }>("checkGadIntegrity", {});
+    expect(integrity.errors.filter((error) => error.type === "trajectory-channel-publication")).toEqual([]);
   });
 
   it("treats replayed matching event ids as idempotent appends", async () => {
@@ -288,7 +313,7 @@ describe("GadWorkspaceDO trajectory persistence", () => {
           event: event("invocation.completed", {
             turnId: "turn-1" as never,
             causality: { invocationId: "call-1" as never },
-            payload: { protocol: AGENTIC_PROTOCOL_VERSION, result: "ok" },
+            payload: { protocol: AGENTIC_PROTOCOL_VERSION, result: blobRef("result-ok", "\"ok\"") },
           }),
         },
       ],
@@ -438,6 +463,138 @@ describe("GadWorkspaceDO trajectory persistence", () => {
       replayToId: 2,
       hasMoreBefore: true,
       envelopes: [expect.objectContaining({ envelopeId: "env-2" })],
+    });
+  });
+
+  it("sanitizes every direct channel envelope append before persistence", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    const hugeMetadata = largeParticipantMetadata();
+
+    await call("appendChannelEnvelope", {
+      channelId: "channel-1",
+      envelopeId: "env-sanitized",
+      from: { kind: "panel", id: "panel:user", participantId: "panel:user", metadata: hugeMetadata },
+      to: [{ kind: "agent", id: "agent:one", participantId: "agent:one", metadata: hugeMetadata }],
+      payloadKind: AGENTIC_EVENT_PAYLOAD_KIND,
+      payload: event("invocation.started", {
+        causality: { invocationId: "inv-1" as never },
+        payload: {
+          protocol: AGENTIC_PROTOCOL_VERSION,
+          name: "eval",
+          transport: {
+            kind: "channel",
+            channelId: "channel-1" as never,
+            target: { kind: "panel", id: "panel:user", participantId: "panel:user", metadata: hugeMetadata },
+          },
+        },
+      }),
+      metadata: hugeMetadata,
+    });
+
+    const rows = await call<{ rows: Array<Record<string, unknown>> }>(
+      "query",
+      "SELECT from_json, to_json, payload_ref_json, metadata_json FROM channel_envelopes WHERE envelope_id = ?",
+      ["env-sanitized"]
+    );
+    expectNoPrivateParticipantMetadata(rows.rows);
+    expect(JSON.parse(rows.rows[0]?.["metadata_json"] as string)).toEqual({
+      type: "panel",
+      name: "Panel",
+      handle: "user",
+      methods: [{ name: "eval" }],
+    });
+  });
+
+  it("sanitizes registry and trajectory-published channel envelopes before persistence", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    const hugeMetadata = largeParticipantMetadata();
+
+    await call("appendChannelEnvelopeWithRegistryMutation", {
+      channelId: "channel-1",
+      envelopeId: "env-registry",
+      from: { kind: "panel", id: "panel:user", participantId: "panel:user", metadata: hugeMetadata },
+      payloadKind: "messageType.registered",
+      payload: { typeId: "x" },
+      metadata: hugeMetadata,
+      registryMutation: {
+        kind: "upsertMessageType",
+        typeId: "custom",
+        row: {
+          displayMode: "inline",
+          source: { type: "code", code: "export default null" },
+          registeredBy: { kind: "panel", id: "panel:user", metadata: hugeMetadata },
+        },
+      },
+    });
+
+    await call("appendTrajectoryBatch", {
+      trajectoryId: "traj-1",
+      branchId: "main",
+      owner: { kind: "agent", id: "agent-1", metadata: hugeMetadata },
+      events: [{
+        eventId: "event-sanitized",
+        event: {
+          kind: "invocation.started",
+          actor: { kind: "agent", id: "agent-1", metadata: hugeMetadata },
+          createdAt: "2026-05-20T12:00:00.000Z",
+          turnId: "turn-1" as never,
+          causality: { invocationId: "inv-1" as never },
+          payload: {
+            protocol: AGENTIC_PROTOCOL_VERSION,
+            name: "eval",
+            transport: {
+              kind: "channel",
+              channelId: "channel-1" as never,
+              target: { kind: "panel", id: "panel:user", participantId: "panel:user", metadata: hugeMetadata },
+            },
+          },
+        },
+        publish: {
+          channelIds: ["channel-1"],
+          audience: [{ kind: "panel", id: "panel:user", participantId: "panel:user", metadata: hugeMetadata }],
+        },
+      }],
+    });
+
+    const rows = await call<{ rows: Array<Record<string, unknown>> }>(
+      "query",
+      `SELECT from_json, to_json, payload_ref_json, metadata_json FROM channel_envelopes
+       UNION ALL
+       SELECT actor_json AS from_json, NULL AS to_json, payload_ref_json, NULL AS metadata_json FROM trajectory_events`,
+      []
+    );
+    const registered = await call<any[]>("listMessageTypes", { channelId: "channel-1" });
+
+    expectNoPrivateParticipantMetadata(rows.rows);
+    expectNoPrivateParticipantMetadata(registered);
+  });
+
+  it("provides compact channel envelope inspection for debugging", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    await call("appendChannelEnvelope", {
+      channelId: "channel-1",
+      envelopeId: "env-large",
+      from: { kind: "panel", id: "panel:user", participantId: "panel:user" },
+      payloadKind: "custom.kind",
+      payload: { value: "x".repeat(4096) },
+      metadata: { name: "User" },
+    });
+
+    const raw = await call<any[]>("listChannelEnvelopes", { channelId: "channel-1" });
+    const inspected = await call<{ rows: Array<Record<string, unknown>> }>(
+      "inspectChannelEnvelopes",
+      { channelId: "channel-1" }
+    );
+
+    expect(JSON.stringify(raw).length).toBeGreaterThan(4000);
+    expect(JSON.stringify(inspected).length).toBeLessThan(2000);
+    expect(inspected.rows[0]).toMatchObject({
+      envelopeId: "env-large",
+      payloadKind: "custom.kind",
+      bytes: { payload: expect.any(Number) },
+      payloadSummary: {
+        value: { type: "string", chars: 4096 },
+      },
     });
   });
 
@@ -688,13 +845,13 @@ describe("GadWorkspaceDO trajectory persistence", () => {
 
     const messages = await call<{ rows: Array<Record<string, unknown>> }>(
       "query",
-      "SELECT message_id, body_assembled, status FROM trajectory_messages WHERE branch_id = ?",
+      "SELECT message_id, role, status FROM trajectory_messages WHERE branch_id = ?",
       ["branch:channel:fork"]
     );
     expect(messages.rows).toEqual([
       expect.objectContaining({
         message_id: "msg-public",
-        body_assembled: "visible at fork point",
+        role: "assistant",
         status: "completed",
       }),
     ]);
@@ -795,7 +952,11 @@ describe("GadWorkspaceDO trajectory persistence", () => {
       "side-private-observation",
       "side-summary",
     ]);
-    expect(JSON.stringify(privateLineage.branchEvents)).toContain("keep this out of PubSub");
+    expect(JSON.stringify(privateLineage.branchEvents)).not.toContain("keep this out of PubSub");
+    expect(privateLineage.branchEvents[0].payload.details).toMatchObject({
+      protocol: "natstack.blob-ref.v1",
+      digest: "details-side",
+    });
 
     await call("appendTrajectoryBatch", {
       trajectoryId: "traj-main",
@@ -851,7 +1012,7 @@ describe("GadWorkspaceDO trajectory persistence", () => {
           event: event("invocation.completed", {
             turnId: "turn-1" as never,
             causality: { invocationId: "inv-1" as never },
-            payload: { protocol: AGENTIC_PROTOCOL_VERSION, result: "ok" },
+            payload: { protocol: AGENTIC_PROTOCOL_VERSION, result: blobRef("result-ok", "\"ok\"") },
           }),
         },
       ],
@@ -896,7 +1057,6 @@ describe("GadWorkspaceDO trajectory persistence", () => {
                 size: 42,
                 encoding: "json",
                 originalBytes: 42,
-                preview: '{"ok":true}',
               },
             },
           }),
@@ -935,6 +1095,71 @@ describe("GadWorkspaceDO trajectory persistence", () => {
         ],
       })
     ).rejects.toThrow(/unencoded stored values/u);
+  });
+
+  it("reports oversized storage rows through diagnostics and integrity checks", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    await call("appendChannelEnvelope", {
+      channelId: "channel-1",
+      envelopeId: "env-oversized",
+      from: { kind: "panel", id: "panel:user", participantId: "panel:user" },
+      payloadKind: "custom.kind",
+      payload: { value: "x".repeat(530 * 1024) },
+    });
+
+    const diagnostics = await call<{ rows: Array<Record<string, unknown>> }>(
+      "inspectStorageDiagnostics",
+      {}
+    );
+    expect(diagnostics.rows).toEqual([
+      expect.objectContaining({
+        scope: "channel_envelopes",
+        id: "env-oversized",
+      }),
+    ]);
+
+    const integrity = await call<{ ok: boolean; errors: Array<Record<string, unknown>> }>(
+      "checkGadIntegrity",
+      {}
+    );
+    expect(integrity.ok).toBe(false);
+    expect(integrity.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "storage-diagnostic",
+        scope: "channel_envelopes",
+        id: "env-oversized",
+      }),
+    ]));
+  });
+
+  it("flags private participant metadata if storage rows are corrupted", async () => {
+    const { call, sql } = await createTestDO(GadWorkspaceDO);
+    await call("appendChannelEnvelope", {
+      channelId: "channel-1",
+      envelopeId: "env-corrupt",
+      from: { kind: "panel", id: "panel:user", participantId: "panel:user" },
+      payloadKind: "custom.kind",
+      payload: { value: 1 },
+    });
+    sql.exec(
+      `UPDATE channel_envelopes SET from_json = ? WHERE envelope_id = ?`,
+      JSON.stringify({ kind: "panel", id: "panel:user", metadata: largeParticipantMetadata() }),
+      "env-corrupt"
+    );
+
+    const integrity = await call<{ ok: boolean; errors: Array<Record<string, unknown>> }>(
+      "checkGadIntegrity",
+      {}
+    );
+
+    expect(integrity.ok).toBe(false);
+    expect(integrity.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "channel-envelope-shape",
+        envelopeId: "env-corrupt",
+        field: "from_json",
+      }),
+    ]));
   });
 
   it("reports storage diagnostics and garbage-collects unreferenced blob metadata", async () => {
@@ -1108,13 +1333,13 @@ describe("GadWorkspaceDO trajectory persistence", () => {
     expect(replay.replayed).toBe(2);
     const messages = await call<{ rows: Array<Record<string, unknown>> }>(
       "query",
-      "SELECT message_id, body_assembled, status FROM trajectory_messages",
+      "SELECT message_id, role, status FROM trajectory_messages",
       []
     );
     expect(messages.rows).toEqual([
       expect.objectContaining({
         message_id: "msg-1",
-        body_assembled: "hello",
+        role: "assistant",
         status: "streaming",
       }),
     ]);

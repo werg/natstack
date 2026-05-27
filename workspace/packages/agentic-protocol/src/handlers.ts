@@ -23,6 +23,7 @@ export interface ProjectedMessage {
 
 export interface ProjectedInvocation {
   invocationId: InvocationId;
+  transportCallId?: string;
   actor: ActorRef;
   turnId?: TurnId;
   name?: string;
@@ -81,6 +82,7 @@ export interface ProjectedTurn {
   closedAt?: string;
   updatedAt?: string;
   summary?: string;
+  reason?: string;
 }
 
 export type MessageMap = Record<string, ProjectedMessage>;
@@ -218,6 +220,7 @@ export function applyInvocationEvent(
       ...invocations,
       [invocationId]: {
         ...existing,
+        transportCallId: existing.transportCallId ?? event.causality?.transportCallId,
         actor: existing.actor ?? event.actor,
         turnId: existing.turnId ?? event.turnId,
         name: existing.name ?? ("name" in payload ? payload.name : undefined),
@@ -238,6 +241,7 @@ export function applyInvocationEvent(
       ...invocations,
       [invocationId]: {
         ...existing,
+        transportCallId: existing.transportCallId ?? event.causality?.transportCallId,
         actor: event.actor,
         turnId: existing.turnId ?? event.turnId,
         status: "running",
@@ -262,6 +266,7 @@ export function applyInvocationEvent(
       ...invocations,
       [invocationId]: {
         ...existing,
+        transportCallId: existing.transportCallId ?? event.causality?.transportCallId,
         actor: event.actor,
         turnId: existing.turnId ?? event.turnId,
         status: "running",
@@ -280,6 +285,7 @@ export function applyInvocationEvent(
       ...invocations,
       [invocationId]: {
         ...existing,
+        transportCallId: existing.transportCallId ?? event.causality?.transportCallId,
         actor: existing.actor ?? event.actor,
         turnId: existing.turnId ?? event.turnId,
         name: existing.name ?? inferred.name,
@@ -301,6 +307,7 @@ export function applyInvocationEvent(
     ...invocations,
     [invocationId]: {
       ...existing,
+      transportCallId: existing.transportCallId ?? event.causality?.transportCallId,
       actor: existing.actor ?? event.actor,
       turnId: existing.turnId ?? event.turnId,
       name: existing.name ?? inferred.name,

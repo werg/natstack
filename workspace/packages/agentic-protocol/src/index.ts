@@ -52,6 +52,7 @@ export type {
   PayloadFor,
   SandboxSourcePayload,
   StatePayload,
+  StoredAgenticEvent,
   SystemPayload,
   TrajectoryEvent,
   TurnPayload,
@@ -66,13 +67,27 @@ export type {
   StoredValueRef,
 } from "./stored-values.js";
 export {
+  participantRefFromMetadata,
+  publicActorRef,
+  publicParticipantMetadata,
+  publicParticipantRef,
+  sanitizeAgenticEventParticipantRefs,
+} from "./participant-ref.js";
+export type {
+  PrivateParticipantMetadata,
+  PublicMethodSummary,
+  PublicParticipantMetadata,
+} from "./participant-ref.js";
+
+export {
   MAX_INLINE_TRAJECTORY_EVENT_BYTES,
   MAX_INLINE_TRAJECTORY_TEXT_BYTES,
   STORED_VALUE_REF_PROTOCOL,
-  TRAJECTORY_BLOB_PREVIEW_CHARS,
   assertEncodedAgenticEventFits,
   assertAgenticEventStoredValuesEncoded,
+  assertNoStoredValueRefs,
   collectStoredValueRefs,
+  encodeBoundedJsonForStorage,
   encodeChannelPayloadStoredValues,
   encodeAgenticEventStoredValues,
   findUnencodedAgenticEventStoredValues,
@@ -86,6 +101,7 @@ export type {
   ChannelRosterEntry,
   EphemeralSignal,
   EphemeralSignalKind,
+  StoredChannelEnvelope,
 } from "./envelopes.js";
 
 export {
@@ -98,6 +114,7 @@ export {
   eventKindSchemas,
   participantRefSchema,
   participantSelectorSchema,
+  storedAgenticEventSchema,
   trajectoryEventSchema,
 } from "./schemas.js";
 

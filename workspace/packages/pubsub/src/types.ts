@@ -13,6 +13,8 @@ import type { SandboxSource } from "./tracker-types.js";
  */
 export interface ChannelConfig {
   title?: string;
+  /** True when the title came from an explicit title command. */
+  titleExplicit?: boolean;
   approvalLevel?: 0 | 1 | 2;  // 0=Ask All, 1=Auto-Safe, 2=Full Auto (default)
 }
 

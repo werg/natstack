@@ -19,6 +19,7 @@ import {
   participantKey,
 } from "./handlers.js";
 import { agenticEventEnvelopeSchema } from "./schemas.js";
+import { assertNoStoredValueRefs } from "./stored-values.js";
 
 export interface ChannelTimelineEntry {
   envelopeId: string;
@@ -121,6 +122,7 @@ export function reduceChannelView(
   }
   const parsed = result.data;
   const event = parsed.payload as AgenticEvent;
+  assertNoStoredValueRefs(event, "channel view reducer input");
   const participantId = participantKey(parsed.from);
   let next: ChannelViewState = {
     ...state,
@@ -268,6 +270,7 @@ export function reduceChannelView(
     if (turnId) {
       const existing = next.turns[turnId];
       const summary = "summary" in event.payload ? event.payload.summary : existing?.summary;
+      const reason = "reason" in event.payload ? event.payload.reason : existing?.reason;
       next = {
         ...next,
         turns: {
@@ -280,6 +283,7 @@ export function reduceChannelView(
             ...(event.kind === "turn.closed" ? { closedAt: event.createdAt } : {}),
             updatedAt: event.createdAt,
             ...(summary ? { summary } : {}),
+            ...(reason ? { reason } : {}),
           },
         },
       };

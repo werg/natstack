@@ -666,6 +666,7 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
     args: unknown,
     options?: { signal?: AbortSignal; validateArgs?: z.ZodTypeAny; invocationId?: string; transportCallId?: string; turnId?: string; timeoutMs?: number }
   ): MethodCallHandle;
+  cancelMethodCall(callId: string): Promise<void>;
 
   // === Roster ===
   readonly roster: Record<string, Participant<T>>;
