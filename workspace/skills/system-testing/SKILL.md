@@ -98,6 +98,25 @@ if (fail.execution.snapshot) {
 }
 ```
 
+### Cleanup diagnostics
+
+Each headless test closes its session after capturing messages. Cleanup
+failures are surfaced instead of swallowed:
+
+```typescript
+if (fail.execution.cleanupErrors?.length) {
+  console.log("Cleanup errors:");
+  for (const err of fail.execution.cleanupErrors) console.log(`  ${err}`);
+}
+if (fail.execution.snapshot?.cleanupErrors.length) {
+  console.log(JSON.stringify(fail.execution.snapshot.cleanupErrors, null, 2));
+}
+```
+
+Treat cleanup errors as infrastructure failures. They can indicate that the
+headless agent was not unsubscribed/retired cleanly, which may otherwise show
+up later as recovery or stale-turn artifacts.
+
 ### Agent debug port
 
 If a test shows an open turn but no assistant message, tool call, or
@@ -162,7 +181,7 @@ Each test case:
 1. Spawns a fresh headless session (new channel + new AiChatWorker DO)
 2. Sends a natural-language prompt telling the test agent what to do
 3. Waits for the agent to become idle (debounce-based turn completion)
-4. Captures a full snapshot: messages, invocation diagnostics, debug events, participants
+4. Captures a full snapshot: messages, invocation diagnostics, debug events, cleanup diagnostics, participants
 5. Validates programmatically and returns structured results
 6. Closes the session
 

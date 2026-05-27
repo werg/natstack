@@ -61,6 +61,7 @@ export class TestRunner {
   async runOne(test: TestCase): Promise<{ result: TestResult; execution: TestExecutionResult }> {
     const startTime = Date.now();
     let session;
+    let outcome: { result: TestResult; execution: TestExecutionResult } | undefined;
     try {
       session = await this.runner.spawn();
 
@@ -75,25 +76,74 @@ export class TestRunner {
       const duration = Date.now() - startTime;
       const execution: TestExecutionResult = { messages, duration, snapshot };
       const result = test.validate(execution);
-      return { result, execution };
+      outcome = { result, execution };
     } catch (err) {
       const duration = Date.now() - startTime;
       const messages = session ? ([...session.messages] as ChatMessage[]) : [];
       let snapshot: SessionSnapshot | undefined;
-      try { snapshot = session?.snapshot(); } catch { /* session may be dead */ }
+      try {
+        snapshot = session?.snapshot();
+      } catch (snapshotErr) {
+        console.warn("[system-testing] Failed to snapshot failed headless session:", snapshotErr);
+      }
       const execution: TestExecutionResult = {
         messages,
         duration,
         error: err instanceof Error ? err.message : String(err),
         snapshot,
       };
-      return {
+      outcome = {
         result: { passed: false, reason: `Error: ${execution.error}` },
         execution,
       };
     } finally {
-      try { await session?.close(); } catch { /* best-effort cleanup */ }
+      try {
+        await session?.close();
+      } catch (cleanupErr) {
+        const message = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
+        console.warn("[system-testing] Failed to close headless session:", cleanupErr);
+        if (outcome) {
+          outcome.execution.cleanupErrors = [
+            ...(outcome.execution.cleanupErrors ?? []),
+            `close: ${message}`,
+          ];
+        }
+      }
+      let cleanupErrors: NonNullable<SessionSnapshot["cleanupErrors"]> = [];
+      try {
+        cleanupErrors = session?.snapshot().cleanupErrors ?? [];
+      } catch (snapshotErr) {
+        console.warn("[system-testing] Failed to snapshot headless cleanup diagnostics:", snapshotErr);
+      }
+      if (cleanupErrors.length > 0 && outcome) {
+        const messages = cleanupErrors.map((error) => `${error.phase}: ${error.message}`);
+        outcome.execution.cleanupErrors = [
+          ...(outcome.execution.cleanupErrors ?? []),
+          ...messages,
+        ];
+        outcome.execution.error ??= `Headless cleanup failed: ${messages.join("; ")}`;
+        outcome.execution.snapshot = session?.snapshot();
+        if (outcome.result.passed) {
+          outcome.result = {
+            passed: false,
+            reason: `Headless cleanup failed: ${messages.join("; ")}`,
+            details: { cleanupErrors: messages },
+          };
+        } else {
+          outcome.result = {
+            ...outcome.result,
+            details: {
+              ...(outcome.result.details ?? {}),
+              cleanupErrors: messages,
+            },
+          };
+        }
+      }
     }
+    if (!outcome) {
+      throw new Error("Test runner finished without producing a result");
+    }
+    return outcome;
   }
 
   private async withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {

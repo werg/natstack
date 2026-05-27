@@ -59,6 +59,49 @@ import {
   unsubscribeHeadlessAgent,
 } from "./channel.js";
 
+const SANDBOX_METHOD_TIMEOUT_MS = 20 * 60 * 1000;
+
+async function waitForMethodHandle<T>(
+  handle: { result: Promise<T>; cancel?: () => Promise<void> },
+  options?: { timeoutMs?: number; signal?: AbortSignal }
+): Promise<T> {
+  const timeoutMs = options?.timeoutMs ?? SANDBOX_METHOD_TIMEOUT_MS;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let abortCleanup: (() => void) | undefined;
+  const cancel = () => {
+    void handle.cancel?.().catch(() => undefined);
+  };
+  try {
+    const blockers: Array<Promise<never>> = [];
+    if (timeoutMs > 0) {
+      blockers.push(new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          cancel();
+          reject(new Error(`Method call timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }));
+    }
+    if (options?.signal) {
+      if (options.signal.aborted) {
+        cancel();
+        throw new Error("Method call aborted");
+      }
+      blockers.push(new Promise<never>((_, reject) => {
+        const onAbort = () => {
+          cancel();
+          reject(new Error("Method call aborted"));
+        };
+        options.signal!.addEventListener("abort", onAbort, { once: true });
+        abortCleanup = () => options.signal!.removeEventListener("abort", onAbort);
+      }));
+    }
+    return await Promise.race([handle.result, ...blockers]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    abortCleanup?.();
+  }
+}
+
 // ===========================================================================
 // Types
 // ===========================================================================
@@ -75,6 +118,7 @@ export interface SessionSnapshot {
     error?: string;
   }>;
   debugEvents: readonly (AgentDebugPayload & { ts: number })[];
+  cleanupErrors: readonly SessionCleanupError[];
   participants: Record<string, { name: string; type: string; handle: string; connected: boolean }>;
   connected: boolean;
   duration: number;
@@ -116,6 +160,12 @@ const DEFAULT_METADATA: ChatParticipantMetadata = {
   handle: "headless",
 };
 
+interface SessionCleanupError {
+  phase: string;
+  message: string;
+  at: number;
+}
+
 interface MessageListener {
   (msg: ChatMessage): void;
 }
@@ -140,6 +190,7 @@ export class HeadlessSession {
   private _hasIncomplete = false;
   private _participants: Record<string, Participant<ChatParticipantMetadata>> = {};
   private _debugEvents: Array<AgentDebugPayload & { ts: number }> = [];
+  private _cleanupErrors: SessionCleanupError[] = [];
   private _dirtyRepoWarnings = new Map<string, DirtyRepoDetails>();
   private _disposed = false;
   private _consumeAbort: AbortController | null = null;
@@ -315,16 +366,22 @@ export class HeadlessSession {
         if (!this._client) throw new Error("Not connected");
         return this._client.updateCustomMessage(messageId, update, options);
       },
-      callMethod: async (participantId: string, method: string, args: unknown) => {
+      callMethod: async (participantId: string, method: string, args: unknown, options?: { timeoutMs?: number; signal?: AbortSignal }) => {
         if (!this._client) throw new Error("Not connected");
-        const handle = this._client.callMethod(participantId, method, args);
-        const result = await (handle as { result: Promise<ChatMethodResult> }).result;
+        const handle = this._client.callMethod(participantId, method, args, options);
+        const result = await waitForMethodHandle(
+          handle as { result: Promise<ChatMethodResult>; cancel?: () => Promise<void> },
+          options
+        );
         return unwrapChatMethodResult(result);
       },
-      callMethodResult: async (participantId: string, method: string, args: unknown) => {
+      callMethodResult: async (participantId: string, method: string, args: unknown, options?: { timeoutMs?: number; signal?: AbortSignal }) => {
         if (!this._client) throw new Error("Not connected");
-        const handle = this._client.callMethod(participantId, method, args);
-        return (handle as { result: Promise<ChatMethodResult> }).result;
+        const handle = this._client.callMethod(participantId, method, args, options);
+        return waitForMethodHandle(
+          handle as { result: Promise<ChatMethodResult>; cancel?: () => Promise<void> },
+          options
+        );
       },
       participantByHandle: (rawHandle: string) => {
         if (!this._client) return null;
@@ -334,22 +391,28 @@ export class HeadlessSession {
           return typeof metadataHandle === "string" && metadataHandle === handle;
         }) ?? null;
       },
-      callMethodByHandle: async (rawHandle: string, method: string, args: unknown) => {
+      callMethodByHandle: async (rawHandle: string, method: string, args: unknown, options?: { timeoutMs?: number; signal?: AbortSignal }) => {
         if (!this._client) throw new Error("Not connected");
         const handle = rawHandle.startsWith("@") ? rawHandle.slice(1) : rawHandle;
         const participant = Object.values(this._client.roster).find((item) => item.metadata?.handle === handle);
         if (!participant) throw new Error(`No participant with handle @${handle}`);
-        const methodHandle = this._client.callMethod(participant.id, method, args);
-        const result = await (methodHandle as { result: Promise<ChatMethodResult> }).result;
+        const methodHandle = this._client.callMethod(participant.id, method, args, options);
+        const result = await waitForMethodHandle(
+          methodHandle as { result: Promise<ChatMethodResult>; cancel?: () => Promise<void> },
+          options
+        );
         return unwrapChatMethodResult(result);
       },
-      callMethodResultByHandle: async (rawHandle: string, method: string, args: unknown) => {
+      callMethodResultByHandle: async (rawHandle: string, method: string, args: unknown, options?: { timeoutMs?: number; signal?: AbortSignal }) => {
         if (!this._client) throw new Error("Not connected");
         const handle = rawHandle.startsWith("@") ? rawHandle.slice(1) : rawHandle;
         const participant = Object.values(this._client.roster).find((item) => item.metadata?.handle === handle);
         if (!participant) throw new Error(`No participant with handle @${handle}`);
-        const methodHandle = this._client.callMethod(participant.id, method, args);
-        return (methodHandle as { result: Promise<ChatMethodResult> }).result;
+        const methodHandle = this._client.callMethod(participant.id, method, args, options);
+        return waitForMethodHandle(
+          methodHandle as { result: Promise<ChatMethodResult>; cancel?: () => Promise<void> },
+          options
+        );
       },
       contextId: "",
       channelId: this._channelId,
@@ -515,11 +578,17 @@ export class HeadlessSession {
     }
     try {
       this._connection.disconnect();
-    } catch {
-      // best-effort
+    } catch (err) {
+      this.recordCleanupError("disconnect", err);
     }
     this._client = null;
     this._channelId = null;
+  }
+
+  private recordCleanupError(phase: string, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[HeadlessSession] ${phase} failed:`, error);
+    this._cleanupErrors.push({ phase, message, at: Date.now() });
   }
 
   dispose(): void {
@@ -538,11 +607,15 @@ export class HeadlessSession {
     this._agentTargetId = null;
     this._agentRpcCall = null;
     if (targetId && channelId && rpcCall) {
-      await unsubscribeHeadlessAgent({ rpcCall, targetId, channelId }).catch(() => {});
+      await unsubscribeHeadlessAgent({ rpcCall, targetId, channelId }).catch((err) => {
+        this.recordCleanupError("unsubscribeHeadlessAgent", err);
+      });
     }
     this.dispose();
     if (entityId && rpcCall) {
-      await retireHeadlessAgent({ rpcCall, entityId }).catch(() => {});
+      await retireHeadlessAgent({ rpcCall, entityId }).catch((err) => {
+        this.recordCleanupError("retireHeadlessAgent", err);
+      });
     }
   }
 
@@ -630,6 +703,7 @@ export class HeadlessSession {
       messages: this.messages,
       invocations,
       debugEvents: this._debugEvents,
+      cleanupErrors: [...this._cleanupErrors],
       participants,
       connected: this._connection.connected,
       duration: now - this._createdAt,
@@ -751,7 +825,7 @@ export class HeadlessSession {
         if (debounceTimer !== undefined) clearTimeout(debounceTimer);
         debounceTimer = setTimeout(() => {
           // Don't resolve while there are incomplete (streaming) messages
-          if (this._hasIncomplete) {
+          if (this._hasIncomplete || this.hasOpenAgentTurn()) {
             scheduleResolve();
             return;
           }
@@ -774,6 +848,12 @@ export class HeadlessSession {
       };
       this._messageListeners.add(listener);
     });
+  }
+
+  private hasOpenAgentTurn(): boolean {
+    return Object.values(this._channelView.turns).some(
+      (turn) => turn.status === "open" && turn.actor.kind === "agent"
+    );
   }
 
   async sendAndWait(text: string, opts?: { debounce?: number; timeoutMs?: number; signal?: AbortSignal }): Promise<ChatMessage> {

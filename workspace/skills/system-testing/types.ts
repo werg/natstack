@@ -18,6 +18,8 @@ export interface TestExecutionResult {
   duration: number;
   /** Transport/session-level error (if the session itself failed) */
   error?: string;
+  /** Cleanup errors from closing the headless session or retiring its agent */
+  cleanupErrors?: string[];
   /** Full diagnostic snapshot from the session (invocations, debug events, participants) */
   snapshot?: SessionSnapshot;
 }
