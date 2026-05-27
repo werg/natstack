@@ -53,25 +53,17 @@ when they are part of the workspace runtime:
 ```yaml
 apps:
   - source: apps/shell
-    target: electron
     ref: main
-    enabled: true
-    autostart: true
 ```
 
 Declaration fields:
 
 - `source`: repo path such as `apps/shell`, or the app package name when
   supported by the resolver.
-- `target`: target override. Prefer matching `package.json`.
 - `ref`: git ref to build. Defaults to `main` when omitted.
-- `enabled`: whether the app should be active.
-- `autostart`: target-specific startup hint. Electron host apps generally
-  autostart; terminal artifacts do not imply process launch today.
 
-Changing declared apps, target, source, ref, dependency EVs, external
-dependencies, capabilities, provider identity, or active build identity can
-re-gate approval.
+Changing declared apps, source, ref, dependency EVs, external dependencies,
+capabilities, provider identity, or active build identity can re-gate approval.
 
 ## Build Identity
 

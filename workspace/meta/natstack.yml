@@ -167,12 +167,11 @@ routes: []
 
 # =============================================================================
 # Declarative extension set. This list is the single source of truth for which
-# extensions the workspace uses and the only install/enable/disable/uninstall
-# surface. Editing it triggers one joint approval (at startup, or combined with
-# the meta-push prompt) before any newly-declared extension runs. Each entry:
+# extensions the workspace uses. Editing it triggers one joint approval (at
+# startup, or combined with the meta-push prompt) before any newly-declared
+# extension runs. Each entry:
 #   source:  repo path or package name (required)
 #   ref:     git ref to float to (default "main")
-#   enabled: whether it should run (default true)
 # =============================================================================
 extensions:
   - source: extensions/image-service
@@ -184,10 +183,5 @@ extensions:
 
 apps:
   - source: apps/shell
-    target: electron
   - source: apps/mobile
-    target: react-native
   - source: apps/remote-cli
-    target: terminal
-    enabled: true
-    autostart: false

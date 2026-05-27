@@ -60,8 +60,8 @@ already-loaded clients:
   with `Load update` and, when available, `Roll back`
 - mobile apps show a native prompt with `Install`, `Later`, and `Roll back`
   when rollback history exists
-- terminal apps restart automatically when they are already running or when
-  `autostart: true`; otherwise the new trusted build remains available until
+- terminal apps restart automatically when they are already running; otherwise
+  the new trusted build remains available until the host target is launched or
   `workspace.units.restart(appName)` starts it
 
 Clients can call `workspace.units.versions(appName)` to inspect the current and

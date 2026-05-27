@@ -39,9 +39,8 @@ from panels, workers, and extensions:
 5. Electron shell apps that manage panel layout must declare `panel-hosting`.
 6. React Native workspace apps are loaded by the shipped native host bootstrap;
    clean-install pairing must work before the workspace app bundle is available.
-7. Terminal apps run as supervised Node processes only after they are enabled
-   and either `autostart: true` or explicitly restarted through
-   `workspace.units.restart(appName)`.
+7. Terminal apps run as supervised Node processes only after they are selected
+   for launch or explicitly restarted through `workspace.units.restart(appName)`.
 
 ## Quick Start
 
@@ -51,9 +50,7 @@ Create an app repo under `apps/<name>` with package name
 ```yaml
 apps:
   - source: apps/my-app
-    target: electron
     ref: main
-    enabled: true
 ```
 
 Minimal Electron app package:

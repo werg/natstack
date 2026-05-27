@@ -126,8 +126,8 @@ Important behavior:
   `NATSTACK_TERMINAL_APP_GATEWAY_URL`,
   `NATSTACK_TERMINAL_APP_RPC_TOKEN`, and
   `NATSTACK_TERMINAL_APP_CONNECTION_ID`.
-- `autostart: true` starts the process after activation. `autostart: false`
-  keeps the build available until `workspace.units.restart(appName)` starts it.
+- Terminal builds remain available after activation until the host target is
+  launched or `workspace.units.restart(appName)` starts the process.
 - Push updates and rollback replace the process if it is already running.
 - stdout/stderr are available through `workspace.units.logs(appName)`.
 
@@ -184,7 +184,7 @@ target-specific meaning at the activation edge:
 | `building`         | The server is producing or validating the next build                     |
 | `available`        | A trusted build is active and launchable, but no process/view is running |
 | `running`          | The selected trusted build is currently hosted by its target runtime     |
-| `stopped`          | The app is disabled or was removed from declarations                     |
+| `stopped`          | The app process/view is not currently running                            |
 | `error`            | Build, validation, activation, or process supervision failed             |
 
 Target-specific notes:

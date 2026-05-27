@@ -17,7 +17,6 @@ function appEntry(overrides: Partial<ApprovedAppDistEntry> = {}): ApprovedAppDis
     source: { repo: "workspace/apps/shell", ref: "main" },
     activeEv: "ev-shell",
     activeBundleKey: "build-shell",
-    enabled: true,
     status: "running",
     ...overrides,
   };

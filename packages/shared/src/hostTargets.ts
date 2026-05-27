@@ -37,7 +37,6 @@ export interface HostTargetCandidate {
   displayName?: string;
   target: HostTarget;
   declared: boolean;
-  enabled?: boolean;
   status:
     | "not-built"
     | "pending-approval"

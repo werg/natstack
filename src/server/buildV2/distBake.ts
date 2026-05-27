@@ -13,7 +13,6 @@ export interface ApprovedAppDistEntry {
   source: { repo: string; ref: string };
   activeEv: string | null;
   activeBundleKey: string | null;
-  enabled: boolean;
   status: string;
 }
 
@@ -47,7 +46,7 @@ export function createAppDistBakeManifest(opts: {
   generatedAt?: string;
 }): AppDistBakeManifest {
   const buildKey = opts.buildKey ?? opts.entry.activeBundleKey;
-  if (!opts.entry.enabled || opts.entry.status !== "running") {
+  if (opts.entry.status !== "running") {
     throw new Error(`App ${opts.entry.name} is not running and cannot be baked into dist`);
   }
   if (!buildKey || buildKey !== opts.entry.activeBundleKey) {

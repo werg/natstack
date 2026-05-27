@@ -277,9 +277,6 @@ export class ExtensionHost {
       trustResolver: this.extensionTrustResolver,
       makePendingEntry: (node, decl, building) => this.pendingEntryFor(node, decl, building),
       applyTrusted: (node, decl) => this.applyDeclared(node, decl),
-      applyUntrustedDisabled: async (node) => {
-        if (this.processes.isRunning(node.name)) await this.processes.stop(node.name);
-      },
       removeUndeclared: async (entry) => {
         this.unregisterBuildProvidersFor(entry.name);
         try {
@@ -347,13 +344,13 @@ export class ExtensionHost {
 
   /**
    * Reconcile the registry against the declared extension set from
-   * `meta/natstack.yml`. This is the single entry point that installs, enables,
-   * disables, or removes extensions — there is no imperative path. Called at
-   * boot and after a meta push (post-receive). The declared set is
-   * authoritative: anything in the registry but not declared is removed.
+   * `meta/natstack.yml`. This is the single entry point that installs or
+   * removes extensions. Called at boot and after a meta push (post-receive).
+   * The declared set is authoritative: anything in the registry but not
+   * declared is removed.
    */
   async reconcileDeclared(
-    declared: Array<{ source: string; ref: string; enabled: boolean }>,
+    declared: Array<{ source: string; ref: string }>,
     opts: { trigger?: UnitReconcileTrigger } = {}
   ): Promise<void> {
     await this.unitHost.reconcileDeclared(this.normalizeDeclaredRefs(declared), opts);
@@ -367,7 +364,7 @@ export class ExtensionHost {
     await this.unitHost.whenSettled();
   }
 
-  /** Build/start (or stop) a single declared extension per its declaration. */
+  /** Build/start a single declared extension. */
   private async applyDeclared(
     node: ReturnType<ExtensionHost["findExtensionNode"]>,
     decl: UnitDeclaration
@@ -375,9 +372,6 @@ export class ExtensionHost {
     await this.unitHost.applyRuntimeDeclaration({
       node,
       decl,
-      stopDisabled: async () => {
-        if (this.processes.isRunning(node.name)) await this.processes.stop(node.name);
-      },
       validateBeforeActivateCurrent: () =>
         this.validateExtensionManifestAtPath(node.path, node.name),
       needsBuildRefresh: (entry) => this.needsBuildRefresh(entry, node),
@@ -397,7 +391,6 @@ export class ExtensionHost {
       version: this.readNodeVersion(node.path),
       sourceRepo: node.relativePath,
       ref: decl.ref,
-      enabled: decl.enabled,
       building,
     });
   }
@@ -505,11 +498,11 @@ export class ExtensionHost {
   ): Promise<unknown> {
     await this.whenSettled();
     const entry = this.lookupForInvoke(name);
-    if (!entry || !entry.enabled) {
+    if (!entry) {
       throw new ServiceError(
         "extensions",
         "invoke",
-        `Extension is not installed or enabled: ${name}`,
+        `Extension is not installed: ${name}`,
         "ENOEXT"
       );
     }
@@ -584,11 +577,11 @@ export class ExtensionHost {
   ): Promise<Response> {
     await this.whenSettled();
     const entry = this.lookupForInvoke(name);
-    if (!entry || !entry.enabled) {
+    if (!entry) {
       throw new ServiceError(
         "extensions",
         "invokeStream",
-        `Extension is not installed or enabled: ${name}`,
+        `Extension is not installed: ${name}`,
         "ENOEXT"
       );
     }
@@ -698,7 +691,7 @@ export class ExtensionHost {
   }
 
   /**
-   * Pure lookup for the invoke path — never installs, builds, or enables.
+   * Pure lookup for the invoke path — never installs or builds.
    * Returns the running-eligible registry entry, or null. Trust is granted at
    * declaration time (startup / meta-push reconcile), not at invocation.
    */
@@ -711,7 +704,7 @@ export class ExtensionHost {
       // a stale name still yields a clean ENOEXT rather than throwing here.
     }
     const entry = this.registry.get(resolvedName);
-    return entry?.enabled && entry.activeBundleKey ? entry : null;
+    return entry?.activeBundleKey ? entry : null;
   }
 
   async handleExtensionHttpRequest(
@@ -722,9 +715,9 @@ export class ExtensionHost {
     caller: VerifiedCaller
   ): Promise<void> {
     const entry = this.registry.get(name);
-    if (!entry || !entry.enabled) {
+    if (!entry) {
       res.writeHead(503, { "Content-Type": "text/plain" });
-      res.end(`Extension is not installed or enabled: ${name}`);
+      res.end(`Extension is not installed: ${name}`);
       return;
     }
 
@@ -985,7 +978,6 @@ export class ExtensionHost {
     kind: "extension";
     source: string;
     displayName: string;
-    enabled: boolean;
     status: RegistryEntry["status"];
     version: string;
     ev: string | null;
@@ -1019,7 +1011,7 @@ export class ExtensionHost {
             }
           : null;
       const availableUpdate =
-        entry.enabled && entry.activeBundleKey && this.needsBuildRefresh(entry, node)
+        entry.activeBundleKey && this.needsBuildRefresh(entry, node)
           ? { reason: "dependency" as const, checkedAt: Date.now() }
           : null;
       return {
@@ -1114,7 +1106,7 @@ export class ExtensionHost {
   }
 
   private normalizeDeclaredRefs(
-    declared: Array<{ source: string; ref: string; enabled: boolean }>
+    declared: Array<{ source: string; ref: string }>
   ): UnitDeclaration[] {
     return declared.map((decl) => {
       try {
@@ -1128,7 +1120,7 @@ export class ExtensionHost {
 
   private readDeclaredExtensionsFromCommit(
     commit: string
-  ): Array<{ source: string; ref: string; enabled: boolean }> {
+  ): Array<{ source: string; ref: string }> {
     const metaRepoDir = path.join(this.deps.workspacePath, "meta");
     try {
       const out = String(
@@ -1340,21 +1332,18 @@ export class ExtensionHost {
           activeDependencyEvs: previous.activeDependencyEvs,
           activeExternalDeps: previous.activeExternalDeps ?? {},
           activeRuntimeDepsKey: previous.activeRuntimeDepsKey,
-          enabled: previous.enabled,
           status: "error",
           lastError: message,
         });
-        if (previous.enabled) {
-          try {
-            await this.activate(node.name);
-          } catch (rollbackErr) {
-            this.registry.patch(node.name, {
-              status: "error",
-              lastError: `Activation failed: ${message}; rollback failed: ${
-                rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)
-              }`,
-            });
-          }
+        try {
+          await this.activate(node.name);
+        } catch (rollbackErr) {
+          this.registry.patch(node.name, {
+            status: "error",
+            lastError: `Activation failed: ${message}; rollback failed: ${
+              rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)
+            }`,
+          });
         }
       } else {
         this.registry.patch(node.name, {
@@ -1364,7 +1353,6 @@ export class ExtensionHost {
           activeDependencyEvs: previous?.activeDependencyEvs ?? {},
           activeExternalDeps: previous?.activeExternalDeps ?? {},
           activeRuntimeDepsKey: previous?.activeRuntimeDepsKey ?? null,
-          enabled: previous?.enabled ?? true,
           status: "error",
           lastError: message,
         });
@@ -1375,7 +1363,7 @@ export class ExtensionHost {
 
   private async handleSourceRebuilt(source: string): Promise<void> {
     const installed = this.unitHost.findInstalledByRepo(source);
-    if (!installed?.entry.enabled) return;
+    if (!installed) return;
     try {
       await this.buildAndActivate(installed.entry.name, installed.entry.source.ref);
     } catch (err) {
@@ -1781,7 +1769,6 @@ function extensionWorkspaceStatusFallback(
     kind: "extension",
     source: node.relativePath,
     displayName: node.manifest.displayName ?? entry.name,
-    enabled: entry.enabled,
     status: entry.status,
     version: entry.version,
     ev: entry.activeEv,

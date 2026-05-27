@@ -54,7 +54,6 @@ function entry(overrides: Partial<UnitRegistryEntryBase> = {}): UnitRegistryEntr
     activeDependencyEvs: {},
     activeExternalDeps: {},
     activeRuntimeDepsKey: null,
-    enabled: true,
     status: "pending-approval",
     lastError: null,
     ...overrides,
@@ -100,7 +99,6 @@ describe("UnitRegistry", () => {
       version: "1.0.0",
       sourceRepo: "workspace/apps/shell",
       ref: "main",
-      enabled: true,
       building: true,
       installedAt: 10,
     })).toMatchObject({
@@ -113,7 +111,6 @@ describe("UnitRegistry", () => {
       activeDependencyEvs: {},
       activeExternalDeps: {},
       activeRuntimeDepsKey: null,
-      enabled: true,
       status: "building",
       lastError: null,
     });
@@ -236,7 +233,6 @@ describe("workspace unit summaries", () => {
       kind: "extension",
       source: "extensions/display",
       displayName: "Display Name",
-      enabled: true,
       status: "running",
       version: "1.0.0",
       ev: "ev",
@@ -708,13 +704,11 @@ describe("UnitHost", () => {
       makePendingEntry: (n, decl, building) => entry({
         name: n.name,
         source: { kind: "internal-git", repo: n.relativePath, ref: decl.ref },
-        enabled: decl.enabled,
-        status: building ? "building" : decl.enabled ? "pending-approval" : "stopped",
+        status: building ? "building" : "pending-approval",
       }),
       applyTrusted: async (n) => {
         applied.push(n.name);
       },
-      applyUntrustedDisabled: async () => undefined,
       removeUndeclared: async (candidate) => {
         removed.push(candidate.name);
       },
@@ -735,10 +729,10 @@ describe("UnitHost", () => {
     return { host, registry, applied, removed, denied, requested, requestedTriggers, node };
   }
 
-  it("prompts once for untrusted enabled declarations and applies after approval", async () => {
+  it("prompts once for untrusted declarations and applies after approval", async () => {
     const { host, registry, applied, requested } = makeHarness();
 
-    await host.reconcileDeclared([{ source: "extensions/a", ref: "main", enabled: true }]);
+    await host.reconcileDeclared([{ source: "extensions/a", ref: "main" }]);
     await host.whenSettled();
 
     expect(registry.get("@workspace-extensions/a")).toMatchObject({
@@ -766,7 +760,7 @@ describe("UnitHost", () => {
     });
 
     await host.reconcileDeclared([
-      { source: "extensions/a", ref: "main", enabled: true },
+      { source: "extensions/a", ref: "main" },
     ]);
 
     expect(enqueued).toEqual([{ name: "@workspace-extensions/a", ref: "main" }]);
@@ -782,7 +776,7 @@ describe("UnitHost", () => {
     const { host, requestedTriggers } = makeHarness();
 
     await host.reconcileDeclared(
-      [{ source: "extensions/a", ref: "main", enabled: true }],
+      [{ source: "extensions/a", ref: "main" }],
       { trigger: "meta-push" },
     );
     await host.whenSettled();
@@ -801,20 +795,19 @@ describe("UnitHost", () => {
       externalDeps: {},
     })]);
 
-    await host.reconcileDeclared([{ source: node.relativePath, ref: "main", enabled: true }]);
+    await host.reconcileDeclared([{ source: node.relativePath, ref: "main" }]);
     await host.whenSettled();
 
     expect(requested).toEqual([]);
     expect(applied).toEqual([node.name]);
   });
 
-  it("collects approval entries and identity keys for untrusted enabled declarations", () => {
+  it("collects approval entries and identity keys for untrusted declarations", () => {
     const { host, node } = makeHarness();
 
     expect(host.approvalForDeclarations([
-      { source: node.relativePath, ref: "main", enabled: true },
-      { source: "extensions/missing", ref: "main", enabled: true },
-      { source: node.relativePath, ref: "dev", enabled: false },
+      { source: node.relativePath, ref: "main" },
+      { source: "extensions/missing", ref: "main" },
     ])).toEqual({
       entries: [{ name: node.name, ref: "main" }],
       identityKeys: [canonicalUnitBuildIdentity({
@@ -832,7 +825,7 @@ describe("UnitHost", () => {
     const { host, node } = makeHarness({ active: true });
 
     expect(host.approvalForDeclarations([
-      { source: node.relativePath, ref: "main", enabled: true },
+      { source: node.relativePath, ref: "main" },
     ])).toEqual({ entries: [], identityKeys: [] });
   });
 
@@ -842,7 +835,7 @@ describe("UnitHost", () => {
     });
 
     expect(host.approvalForDeclarations([
-      { source: node.relativePath, ref: "main", enabled: true },
+      { source: node.relativePath, ref: "main" },
     ])).toEqual({ entries: [], identityKeys: [] });
   });
 
@@ -852,12 +845,10 @@ describe("UnitHost", () => {
     expect(host.trustForDeclaration(node, {
       source: node.relativePath,
       ref: "main",
-      enabled: true,
     })).toMatchObject({ decision: "user-approved" });
     expect(host.trustForDeclaration(node, {
       source: node.relativePath,
       ref: "feature",
-      enabled: true,
     })).toMatchObject({ decision: "needs-approval" });
   });
 
@@ -868,7 +859,7 @@ describe("UnitHost", () => {
 
     await host.applyRuntimeDeclaration({
       node,
-      decl: { source: node.relativePath, ref: "main", enabled: true },
+      decl: { source: node.relativePath, ref: "main" },
       needsBuildRefresh: () => false,
       buildAndActivate: async () => {
         built.push("built");
@@ -882,7 +873,7 @@ describe("UnitHost", () => {
 
     await host.applyRuntimeDeclaration({
       node,
-      decl: { source: node.relativePath, ref: "main", enabled: true },
+      decl: { source: node.relativePath, ref: "main" },
       needsBuildRefresh: () => true,
       buildAndActivate: async (n) => {
         built.push(n.name);
@@ -897,7 +888,7 @@ describe("UnitHost", () => {
     registry.delete(node.name);
     await host.applyRuntimeDeclaration({
       node,
-      decl: { source: node.relativePath, ref: "main", enabled: true },
+      decl: { source: node.relativePath, ref: "main" },
       needsBuildRefresh: () => false,
       buildAndActivate: async (n) => {
         built.push(`missing:${n.name}`);
@@ -910,43 +901,13 @@ describe("UnitHost", () => {
     expect(built).toEqual([node.name, `missing:${node.name}`]);
   });
 
-  it("stops disabled runtime declarations and clears active build when source changes", async () => {
-    const { host, registry, node } = makeHarness({ active: true });
-    const stopped: string[] = [];
-    const afterDisabled: string[] = [];
-
-    await host.applyRuntimeDeclaration({
-      node,
-      decl: { source: node.relativePath, ref: "feature", enabled: false },
-      stopDisabled: async (entryValue) => {
-        if (entryValue) stopped.push(entryValue.name);
-      },
-      afterDisabled: async (entryValue) => {
-        if (entryValue) afterDisabled.push(entryValue.name);
-      },
-      needsBuildRefresh: () => false,
-      buildAndActivate: async () => undefined,
-      activateCurrent: async () => undefined,
-    });
-
-    expect(stopped).toEqual([node.name]);
-    expect(afterDisabled).toEqual([node.name]);
-    expect(registry.get(node.name)).toMatchObject({
-      enabled: false,
-      status: "stopped",
-      source: { repo: node.relativePath, ref: "feature" },
-      activeBundleKey: null,
-      activeEv: null,
-    });
-  });
-
   it("marks runtime declaration failures as registry errors", async () => {
     const { host, registry, node } = makeHarness({ active: true });
     const errors: string[] = [];
 
     await host.applyRuntimeDeclaration({
       node,
-      decl: { source: node.relativePath, ref: "main", enabled: true },
+      decl: { source: node.relativePath, ref: "main" },
       needsBuildRefresh: () => false,
       buildAndActivate: async () => undefined,
       activateCurrent: async () => {

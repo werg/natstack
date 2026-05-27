@@ -5,7 +5,6 @@ import * as path from "node:path";
 import {
   initWorkspace,
   loadWorkspaceConfig,
-  parseWorkspaceConfigContent,
   resolveDeclaredApps,
   resolveDeclaredExtensions,
 } from "./loader.js";
@@ -163,30 +162,6 @@ describe("loadWorkspaceConfig", () => {
     );
   });
 
-  it("rejects mistyped app declaration fields", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-loader-"));
-    tempRoots.push(root);
-    const sourceRoot = path.join(root, "workspace", "source");
-    writeConfig(
-      sourceRoot,
-      "apps:\n  - source: apps/shell\n    target: browser\n    autostart: yes\n"
-    );
-
-    expect(() => loadWorkspaceConfig(sourceRoot)).toThrow(/apps\[\]\.target/);
-  });
-
-  it("validates parsed workspace config content without reading from disk", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-loader-"));
-    tempRoots.push(root);
-    const sourceRoot = path.join(root, "workspace", "source");
-
-    expect(() =>
-      parseWorkspaceConfigContent(
-        "apps:\n  - source: apps/shell\n    target: browser\n",
-        sourceRoot
-      )
-    ).toThrow(/apps\[\]\.target/);
-  });
 });
 
 describe("resolveDeclaredExtensions", () => {
@@ -194,18 +169,18 @@ describe("resolveDeclaredExtensions", () => {
     expect(resolveDeclaredExtensions({ id: "ws" })).toEqual([]);
   });
 
-  it("applies ref and enabled defaults", () => {
+  it("applies ref defaults", () => {
     expect(
       resolveDeclaredExtensions({
         id: "ws",
         extensions: [
           { source: "extensions/a" },
-          { source: "@workspace-extensions/b", ref: "dev", enabled: false },
+          { source: "@workspace-extensions/b", ref: "dev" },
         ],
       })
     ).toEqual([
-      { source: "extensions/a", ref: "main", enabled: true },
-      { source: "@workspace-extensions/b", ref: "dev", enabled: false },
+      { source: "extensions/a", ref: "main" },
+      { source: "@workspace-extensions/b", ref: "dev" },
     ]);
   });
 });
@@ -215,29 +190,23 @@ describe("resolveDeclaredApps", () => {
     expect(resolveDeclaredApps({ id: "ws" })).toEqual([]);
   });
 
-  it("applies ref, enabled, and autostart defaults", () => {
+  it("applies ref defaults", () => {
     expect(
       resolveDeclaredApps({
         id: "ws",
         apps: [
-          { source: "apps/shell", target: "electron" },
+          { source: "apps/shell" },
           {
             source: "@workspace-apps/mobile",
-            target: "react-native",
             ref: "dev",
-            enabled: false,
-            autostart: false,
           },
         ],
       })
     ).toEqual([
-      { source: "apps/shell", target: "electron", ref: "main", enabled: true, autostart: true },
+      { source: "apps/shell", ref: "main" },
       {
         source: "@workspace-apps/mobile",
-        target: "react-native",
         ref: "dev",
-        enabled: false,
-        autostart: false,
       },
     ]);
   });
@@ -258,9 +227,7 @@ describe("initWorkspace", () => {
           "  - source: extensions/react-native",
           "apps:",
           "  - source: apps/shell",
-          "    target: electron",
           "  - source: apps/mobile",
-          "    target: react-native",
           "initPanels: []",
           "",
         ].join("\n")
@@ -337,17 +304,14 @@ describe("initWorkspace", () => {
       const config = loadWorkspaceConfig(sourceRoot);
 
       expect(resolveDeclaredApps(config)).toEqual([
-        { source: "apps/shell", target: "electron", ref: "main", enabled: true, autostart: true },
+        { source: "apps/shell", ref: "main" },
         {
           source: "apps/mobile",
-          target: "react-native",
           ref: "main",
-          enabled: true,
-          autostart: true,
         },
       ]);
       expect(resolveDeclaredExtensions(config)).toEqual([
-        { source: "extensions/react-native", ref: "main", enabled: true },
+        { source: "extensions/react-native", ref: "main" },
       ]);
       expect(fs.existsSync(path.join(sourceRoot, "apps", "shell", ".git"))).toBe(true);
       expect(fs.existsSync(path.join(sourceRoot, "apps", "mobile", ".git"))).toBe(true);

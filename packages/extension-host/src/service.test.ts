@@ -60,7 +60,6 @@ function makeHost(
     getContextIdForCaller?: (callerId: string) => string | null;
     gitDefaultBranch?: "main" | "master";
     installed?: boolean;
-    enabled?: boolean;
     status?: "running" | "stopped" | "building" | "error" | "pending-approval";
     activeBundleKey?: string | null;
   } = {}
@@ -213,7 +212,6 @@ function makeHost(
         overrides.activeRuntimeDepsKey === undefined
           ? "runtime-key"
           : overrides.activeRuntimeDepsKey,
-      enabled: overrides.enabled ?? true,
       status: overrides.status ?? "running",
       lastError: overrides.status === "error" ? "previous failure" : null,
     });
@@ -395,8 +393,8 @@ describe("ExtensionHost source push authorization", () => {
   });
 });
 
-const declare = (name: string, opts: { ref?: string; enabled?: boolean } = {}) => [
-  { source: name, ref: opts.ref ?? "main", enabled: opts.enabled ?? true },
+const declare = (name: string, opts: { ref?: string } = {}) => [
+  { source: name, ref: opts.ref ?? "main" },
 ];
 
 describe("ExtensionHost reconcileDeclared", () => {
@@ -444,7 +442,6 @@ describe("ExtensionHost reconcileDeclared", () => {
     expect(buildSystem.getBuild).toHaveBeenCalledWith(extensionNode.name, "main");
     expect(start).toHaveBeenCalledWith(expect.objectContaining({ name: extensionNode.name }));
     expect(host.registry.get(extensionNode.name)).toMatchObject({
-      enabled: true,
       activeBundleKey: "candidate-key",
     });
   });
@@ -522,39 +519,6 @@ describe("ExtensionHost reconcileDeclared", () => {
     expect(start).toHaveBeenCalledWith(expect.objectContaining({ name: extensionNode.name }));
   });
 
-  it("stops an approved declared extension when declared enabled:false", async () => {
-    const { host, approvalQueue, extensionNode } = makeHost();
-    const stop = vi.spyOn(host.processes, "stop").mockResolvedValue(undefined);
-    vi.spyOn(host.processes, "isRunning").mockReturnValue(true);
-
-    await host.reconcileDeclared(declare(extensionNode.name, { enabled: false }));
-
-    expect(approvalQueue.request).not.toHaveBeenCalled();
-    expect(stop).toHaveBeenCalledWith(extensionNode.name);
-    expect(host.registry.get(extensionNode.name)).toMatchObject({
-      enabled: false,
-      status: "stopped",
-    });
-  });
-
-  it("records a new disabled declaration without prompting or activating it", async () => {
-    const { host, approvalQueue, buildSystem, extensionNode } = makeHost({ installed: false });
-    const start = vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
-
-    await host.reconcileDeclared(declare(extensionNode.name, { enabled: false }));
-    await host.whenSettled();
-
-    expect(approvalQueue.request).not.toHaveBeenCalled();
-    expect(buildSystem.getBuild).not.toHaveBeenCalled();
-    expect(start).not.toHaveBeenCalled();
-    expect(host.registry.get(extensionNode.name)).toMatchObject({
-      enabled: false,
-      status: "stopped",
-      activeBundleKey: null,
-      source: { repo: extensionNode.relativePath, ref: "main" },
-    });
-  });
-
   it("removes a registry entry that is no longer declared", async () => {
     const { host, extensionNode } = makeHost();
     const stop = vi.spyOn(host.processes, "stop").mockResolvedValue(undefined);
@@ -614,7 +578,6 @@ describe("ExtensionHost reconcileDeclared", () => {
     );
     expect(buildSystem.getBuild).toHaveBeenCalledWith(extensionNode.name, "feature");
     expect(host.registry.get(extensionNode.name)).toMatchObject({
-      enabled: true,
       activeBundleKey: "candidate-key",
       source: { repo: extensionNode.relativePath, ref: "feature" },
     });
@@ -865,20 +828,7 @@ describe("ExtensionHost activation", () => {
     expect(extensionTransport.call).not.toHaveBeenCalled();
   });
 
-  it("fails with ENOEXT when invoking a disabled extension", async () => {
-    const { host, approvalQueue, extensionNode } = makeHost({
-      enabled: false,
-      status: "stopped",
-    });
-    vi.spyOn(host.processes, "isRunning").mockReturnValue(true);
-
-    await expect(
-      host.invoke(panelCtx("panel-1"), extensionNode.name, "blame", [])
-    ).rejects.toMatchObject({ code: "ENOEXT" });
-    expect(approvalQueue.request).not.toHaveBeenCalled();
-  });
-
-  it("fails with ENOTREADY when an enabled extension is not running", async () => {
+  it("fails with ENOTREADY when an extension is not running", async () => {
     const { host, extensionNode } = makeHost();
     vi.spyOn(host.processes, "isRunning").mockReturnValue(false);
 

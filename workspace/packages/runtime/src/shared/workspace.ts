@@ -15,14 +15,10 @@ export type WorkspaceAppTarget = "electron" | "react-native" | "terminal";
 export interface WorkspaceExtensionDecl {
     source: string;
     ref?: string;
-    enabled?: boolean;
 }
 export interface WorkspaceAppDecl {
     source: string;
-    target?: WorkspaceAppTarget;
     ref?: string;
-    enabled?: boolean;
-    autostart?: boolean;
 }
 export interface WorkspaceConfig {
     id: string;
@@ -38,7 +34,6 @@ export interface WorkspaceUnitStatus {
     kind: "panel" | "worker" | "extension" | "app";
     source: string;
     displayName?: string;
-    enabled?: boolean;
     status: "running" | "stopped" | "error" | "pending-approval" | "building" | "available";
     version?: string;
     ev?: string | null;

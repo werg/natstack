@@ -104,7 +104,6 @@ export interface UnitRegistryEntryBase {
   activeDependencyEvs: Record<string, string>;
   activeExternalDeps: Record<string, string>;
   activeRuntimeDepsKey: string | null;
-  enabled: boolean;
   status: UnitRegistryStatus;
   lastError: string | null;
 }
@@ -112,7 +111,6 @@ export interface UnitRegistryEntryBase {
 export interface UnitDeclaration {
   source: string;
   ref: string;
-  enabled: boolean;
 }
 
 export interface UnitGraphNode {
@@ -177,7 +175,6 @@ export interface UnitWorkspaceStatus<Kind extends UnitKind = UnitKind> {
   kind: Kind;
   source: string;
   displayName: string;
-  enabled: boolean;
   status: UnitRegistryStatus;
   version: string;
   ev: string | null;
@@ -279,8 +276,6 @@ export interface UnitRuntimeApplyOptions<
   decl: Decl;
   validateBeforeApply?: (node: Node, decl: Decl) => void;
   validateBeforeActivateCurrent?: (entry: Entry, node: Node, decl: Decl) => void;
-  stopDisabled?: (entry: Entry | null, node: Node, decl: Decl) => Promise<void> | void;
-  afterDisabled?: (entry: Entry | null, node: Node, decl: Decl) => Promise<void> | void;
   needsBuildRefresh: (entry: Entry, node: Node, decl: Decl) => boolean;
   buildAndActivate: (node: Node, decl: Decl) => Promise<void>;
   activateCurrent: (entry: Entry, node: Node, decl: Decl) => Promise<void>;
@@ -306,7 +301,6 @@ export interface UnitHostOptions<
   trustResolver?: UnitTrustResolver<Entry>;
   makePendingEntry(node: Node, decl: Decl, building?: boolean): Entry;
   applyTrusted(node: Node, decl: Decl): Promise<void>;
-  applyUntrustedDisabled(node: Node, decl: Decl, entry: Entry | null): Promise<void>;
   removeUndeclared(entry: Entry): Promise<void>;
   emitRemoved(entry: Entry): void;
   notifyUnresolved(sources: string[]): void;
@@ -653,7 +647,6 @@ export class UnitHost<
     const entries: ApprovalEntry[] = [];
     const identityKeys: string[] = [];
     for (const decl of declared) {
-      if (!decl.enabled) continue;
       let node: Node;
       try {
         node = this.opts.resolveNode(decl.source);
@@ -684,13 +677,6 @@ export class UnitHost<
     try {
       opts.validateBeforeApply?.(node, decl);
       const entry = this.opts.registry.get(node.name);
-      if (!decl.enabled) {
-        await opts.stopDisabled?.(entry, node, decl);
-        const stored = this.markDeclarationDisabled(node, decl, entry);
-        await opts.afterDisabled?.(stored, node, decl);
-        return;
-      }
-
       const trust = this.trustForDeclaration(node, decl);
       if (!entry || trust.decision !== "user-approved" || opts.needsBuildRefresh(entry, node, decl)) {
         if (!entry) {
@@ -720,7 +706,6 @@ export class UnitHost<
       activeDependencyEvs: opts.dependencyEvs,
       activeExternalDeps: opts.externalDeps,
       activeRuntimeDepsKey: opts.runtimeDepsKey ?? null,
-      enabled: true,
       status: opts.status ?? "running",
       lastError: null,
     } as Partial<Entry>);
@@ -839,12 +824,9 @@ export class UnitHost<
       });
       if (trust.decision !== "needs-approval") {
         await this.opts.applyTrusted(node, decl);
-      } else if (decl.enabled) {
-        if (!entry) this.opts.registry.upsert(this.opts.makePendingEntry(node, decl));
-        needsApproval.push({ node, decl });
       } else {
         if (!entry) this.opts.registry.upsert(this.opts.makePendingEntry(node, decl));
-        await this.opts.applyUntrustedDisabled(node, decl, entry);
+        needsApproval.push({ node, decl });
       }
     }
 
@@ -905,31 +887,6 @@ export class UnitHost<
     }
   }
 
-  private markDeclarationDisabled(node: Node, decl: Decl, entry: Entry | null): Entry {
-    if (!entry) {
-      const pending = this.opts.makePendingEntry(node, decl);
-      this.opts.registry.upsert(pending);
-      return pending;
-    }
-
-    const patch = {
-      enabled: false,
-      status: "stopped",
-      lastError: null,
-    } as Partial<Entry>;
-    if (!unitEntrySourceMatches(entry, node.relativePath, decl.ref)) {
-      Object.assign(patch, {
-        source: { kind: "internal-git" as const, repo: normalizeUnitRepoPath(node.relativePath), ref: decl.ref },
-        activeEv: null,
-        activeSha: null,
-        activeBundleKey: null,
-        activeDependencyEvs: {},
-        activeExternalDeps: {},
-        activeRuntimeDepsKey: null,
-      });
-    }
-    return this.opts.registry.patch(node.name, patch);
-  }
 }
 
 export function unitWorkspaceStatus<Entry extends UnitRegistryEntryBase>(
@@ -942,7 +899,6 @@ export function unitWorkspaceStatus<Entry extends UnitRegistryEntryBase>(
     kind,
     source: opts.source ?? entry.source.repo,
     displayName: opts.displayName ?? entry.name,
-    enabled: entry.enabled,
     status: entry.status,
     version: entry.version,
     ev: entry.activeEv,
@@ -975,7 +931,6 @@ export function createPendingUnitRegistryEntry<Kind extends UnitKind>(opts: {
   version: string;
   sourceRepo: string;
   ref: string;
-  enabled: boolean;
   building?: boolean;
   installedAt?: number;
 }): UnitRegistryEntryBase & { unitKind: Kind } {
@@ -991,8 +946,7 @@ export function createPendingUnitRegistryEntry<Kind extends UnitKind>(opts: {
     activeDependencyEvs: {},
     activeExternalDeps: {},
     activeRuntimeDepsKey: null,
-    enabled: opts.enabled,
-    status: opts.building ? "building" : opts.enabled ? "pending-approval" : "stopped",
+    status: opts.building ? "building" : "pending-approval",
     lastError: null,
   };
 }
@@ -1134,7 +1088,6 @@ export function isUnitRegistryEntry<Kind extends UnitKind>(
     && typeof entry.source.repo === "string"
     && typeof entry.source.ref === "string"
     && typeof entry.installedAt === "number"
-    && typeof entry.enabled === "boolean"
     && typeof entry.status === "string"
   );
 }

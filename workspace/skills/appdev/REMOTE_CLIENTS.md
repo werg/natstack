@@ -88,9 +88,9 @@ supervised app process. A terminal remote client should:
 
 The built-in `@workspace-apps/remote-cli` is the canonical terminal app shape:
 it connects as an app principal, lists workspace status, and can mint a pairing
-invite for another client. It is enabled in the template so it is available for
-server pairing/debugging, but `autostart: false` keeps it dormant until the
-shell UI or `workspace.units.restart("@workspace-apps/remote-cli")` starts it.
+invite for another client. It is declared in the template so it is available for
+server pairing/debugging, but it stays dormant until the shell UI or
+`workspace.units.restart("@workspace-apps/remote-cli")` starts it.
 
 Fresh workspaces created from the product template trust their initial declared
 app/extension set during startup. Later meta pushes, capability changes, source

@@ -210,7 +210,6 @@ function installApp(host: AppHost, graphNode: ReturnType<typeof makeHarness>["gr
     name: graphNode.name,
     version: "1.0.0",
     target: "electron",
-    autostart: true,
     capabilities: ["notifications"],
     source: { kind: "internal-git", repo: graphNode.relativePath, ref: "main" },
     installedAt: Date.now(),
@@ -220,7 +219,6 @@ function installApp(host: AppHost, graphNode: ReturnType<typeof makeHarness>["gr
     activeDependencyEvs: {},
     activeExternalDeps: {},
     activeRuntimeDepsKey: null,
-    enabled: true,
     status: "running",
     lastError: null,
     previousVersions: [],
@@ -271,6 +269,38 @@ function createAppGraphNode(
   };
 }
 
+function setAppManifestTarget(
+  node: ReturnType<typeof makeHarness>["graphNode"],
+  target: "electron" | "react-native" | "terminal",
+  capabilities: string[] = [...node.manifest.app.capabilities]
+): void {
+  node.manifest.app.target = target as never;
+  node.manifest.app.capabilities = capabilities as never;
+  const appBlock =
+    target === "terminal"
+      ? { target, entry: "index.ts", capabilities }
+      : target === "react-native"
+        ? {
+            target,
+            renderer: "index.tsx",
+            rnComponentName: "NatStackMobile",
+            rnHostAbi: "rn-host-1",
+            capabilities,
+          }
+        : { target, renderer: "index.tsx", capabilities };
+  fs.writeFileSync(
+    path.join(node.path, "package.json"),
+    JSON.stringify({
+      name: node.name,
+      version: "1.0.0",
+      natstack: {
+        displayName: node.manifest.displayName,
+        app: appBlock,
+      },
+    })
+  );
+}
+
 function installAppEntry(
   host: AppHost,
   node: {
@@ -302,7 +332,6 @@ function installAppEntry(
     name: node.name,
     version: "1.0.0",
     target,
-    autostart: true,
     capabilities: (opts.capabilities ?? node.manifest.app.capabilities) as never,
     source: { kind: "internal-git", repo: node.relativePath, ref: "main" },
     installedAt: Date.now(),
@@ -312,13 +341,11 @@ function installAppEntry(
     activeDependencyEvs: {},
     activeExternalDeps: {},
     activeRuntimeDepsKey: null,
-    enabled: true,
     status: target === "terminal" ? "available" : "running",
     lastError: null,
     previousVersions: (opts.previousVersions ?? []).map((version) => ({
       version: "1.0.0",
       target: version.target ?? target,
-      autostart: true,
       capabilities: (version.capabilities ??
         opts.capabilities ??
         node.manifest.app.capabilities) as never,
@@ -359,9 +386,7 @@ describe("AppHost", () => {
   it("approves, builds, registers, and emits available Electron apps", async () => {
     const { host, buildSystem, eventService, approvalQueue, entityCache } = makeHarness();
 
-    await host.reconcileDeclared([
-      { source: "apps/shell", target: "electron", ref: "main", enabled: true, autostart: true },
-    ]);
+    await host.reconcileDeclared([{ source: "apps/shell", ref: "main" }]);
     await host.whenSettled();
 
     expect(approvalQueue.request).toHaveBeenCalledWith(
@@ -624,9 +649,7 @@ describe("AppHost", () => {
     } as never);
 
     host.setHostTargetSelection("electron", { source: "apps/desktop-alt" });
-    await host.reconcileDeclared([
-      { source: "apps/shell", target: "electron", ref: "main", enabled: true, autostart: true },
-    ]);
+    await host.reconcileDeclared([{ source: "apps/shell", ref: "main" }]);
     await host.whenSettled();
 
     expect(eventService.emit).toHaveBeenCalledWith(
@@ -701,6 +724,60 @@ describe("AppHost", () => {
       effectiveVersion: "ev-field",
     });
     expect(host.registerReactNativeAppPrincipal("device-1")).toBe("app:apps/field-mobile:device-1");
+  });
+
+  it("records explicit host trust identity when activating a pinned commit", async () => {
+    const { host, buildSystem, graphNode, root } = makeHarness();
+    graphNode.manifest.app.capabilities = ["panel-hosting", "notifications"] as never;
+    const pinnedBuild = {
+      dir: path.join(root, "state", "builds", "pinned-commit-key"),
+      metadata: {
+        ev: "ev-pinned",
+        details: { kind: "app" as const, target: "electron" as const, integrity: "sha256-pinned" },
+      },
+      artifacts: [
+        {
+          path: "index.html",
+          role: "html",
+          contentType: "text/html; charset=utf-8",
+          encoding: "utf8",
+          content: "<!doctype html><div>pinned</div>",
+        },
+      ],
+    };
+    buildSystem.getBuild.mockResolvedValueOnce(pinnedBuild as never);
+
+    const result = await host.prepareHostTargetPinnedCommit(
+      "electron",
+      "apps/shell",
+      "0123456789abcdef"
+    );
+
+    expect(result).toMatchObject({
+      buildKey: "pinned-commit-key",
+      effectiveVersion: "ev-pinned",
+      appId: "@workspace-apps/shell",
+      source: "apps/shell",
+    });
+    const entry = host.registry.get("@workspace-apps/shell");
+    expect(entry).toMatchObject({
+      activeBundleKey: "pinned-commit-key",
+      activeEv: "ev-pinned",
+      source: { ref: "0123456789abcdef" },
+      activationTrust: {
+        decision: "host-target-pinned-commit",
+        actor: "shell-host",
+        reason: expect.stringContaining("explicit commit"),
+      },
+    });
+    const identity = JSON.parse(entry?.activationTrust?.identityKey ?? "{}");
+    expect(identity).toMatchObject({
+      unitKind: "app",
+      name: "@workspace-apps/shell",
+      source: { repo: "apps/shell", ref: "0123456789abcdef" },
+      effectiveVersion: "ev-pinned",
+      capabilities: ["notifications", "panel-hosting"],
+    });
   });
 
   it("keeps pinned host target builds active when a newer build is produced", async () => {
@@ -790,9 +867,7 @@ describe("AppHost", () => {
     fs.appendFileSync(path.join(appPath, "index.tsx"), "export const dirty = true;\n");
 
     try {
-      await host.reconcileDeclared([
-        { source: "apps/shell", target: "electron", ref: "main", enabled: true, autostart: true },
-      ]);
+      await host.reconcileDeclared([{ source: "apps/shell", ref: "main" }]);
       await host.whenSettled();
 
       expect(consoleInfo).toHaveBeenCalledWith(expect.stringContaining("@workspace-apps/shell"));
@@ -973,10 +1048,7 @@ describe("AppHost", () => {
     await host.reconcileDeclared([
       {
         source: graphNode.relativePath,
-        target: "terminal",
         ref: "main",
-        enabled: true,
-        autostart: false,
       },
     ]);
     await host.whenSettled();
@@ -1082,7 +1154,6 @@ describe("AppHost", () => {
       name: graphNode.name,
       version: "1.0.0",
       target: "terminal",
-      autostart: false,
       capabilities: ["connection-management"],
       source: { kind: "internal-git", repo: graphNode.relativePath, ref: "main" },
       installedAt: Date.now(),
@@ -1092,14 +1163,12 @@ describe("AppHost", () => {
       activeDependencyEvs: {},
       activeExternalDeps: {},
       activeRuntimeDepsKey: null,
-      enabled: true,
       status: "available",
       lastError: null,
       previousVersions: [
         {
           version: "1.0.0",
           target: "terminal",
-          autostart: false,
           capabilities: ["connection-management"],
           activeEv: "ev-terminal-1",
           activeSha: "sha-1",
@@ -1148,9 +1217,7 @@ describe("AppHost", () => {
   it("trusts exact product-seeded app source without an approval prompt", async () => {
     const { host, buildSystem, eventService, approvalQueue } = makeHarness({ seeded: true });
 
-    await host.reconcileDeclared([
-      { source: "apps/shell", target: "electron", ref: "main", enabled: true, autostart: true },
-    ]);
+    await host.reconcileDeclared([{ source: "apps/shell", ref: "main" }]);
     await host.whenSettled();
 
     expect(approvalQueue.request).not.toHaveBeenCalled();
@@ -1170,6 +1237,7 @@ describe("AppHost", () => {
 
   it("re-gates React Native apps when the active build provider changes", async () => {
     const { host, buildSystem, eventService, approvalQueue, graphNode } = makeHarness();
+    setAppManifestTarget(graphNode, "react-native", ["notifications"]);
     installApp(host, graphNode);
     host.registry.patch(graphNode.name, {
       target: "react-native",
@@ -1226,10 +1294,7 @@ describe("AppHost", () => {
     await host.reconcileDeclared([
       {
         source: graphNode.relativePath,
-        target: "react-native",
         ref: "main",
-        enabled: true,
-        autostart: true,
       },
     ]);
     await host.whenSettled();
@@ -1309,6 +1374,7 @@ describe("AppHost", () => {
 
   it("reconciles declared React Native apps when a build provider is registered", async () => {
     const { host, buildSystem, approvalQueue, graphNode, providerChangeCallbacks } = makeHarness();
+    setAppManifestTarget(graphNode, "react-native", ["notifications"]);
     installApp(host, graphNode);
     host.registry.patch(graphNode.name, {
       target: "react-native",
@@ -1332,10 +1398,7 @@ describe("AppHost", () => {
     buildSystem.getBuildProviderDetails.mockReturnValue(oldProvider);
     const declaration = {
       source: graphNode.relativePath,
-      target: "react-native" as const,
       ref: "main",
-      enabled: true,
-      autostart: true,
     };
 
     await host.reconcileDeclared([declaration]);
@@ -1577,6 +1640,7 @@ describe("AppHost", () => {
 
   it("fails closed before activating React Native builds without provider identity", async () => {
     const { host, buildSystem, eventService, graphNode } = makeHarness();
+    setAppManifestTarget(graphNode, "react-native", ["notifications"]);
     const rnBuild = {
       dir: path.join(
         path.dirname(graphNode.path),
@@ -1622,10 +1686,7 @@ describe("AppHost", () => {
     await host.reconcileDeclared([
       {
         source: graphNode.relativePath,
-        target: "react-native",
         ref: "main",
-        enabled: true,
-        autostart: true,
       },
     ]);
     await host.whenSettled();
@@ -1643,6 +1704,7 @@ describe("AppHost", () => {
 
   it("fails closed before activating React Native builds without platform-keyed primary artifacts", async () => {
     const { host, buildSystem, eventService, graphNode } = makeHarness();
+    setAppManifestTarget(graphNode, "react-native", ["notifications"]);
     const rnBuild = {
       dir: path.join(path.dirname(graphNode.path), "..", "..", "state", "builds", "rn-bad-key"),
       metadata: {
@@ -1670,10 +1732,7 @@ describe("AppHost", () => {
     await host.reconcileDeclared([
       {
         source: graphNode.relativePath,
-        target: "react-native",
         ref: "main",
-        enabled: true,
-        autostart: true,
       },
     ]);
     await host.whenSettled();
@@ -1691,6 +1750,7 @@ describe("AppHost", () => {
 
   it("activates React Native builds with a single platform primary artifact", async () => {
     const { host, buildSystem, graphNode } = makeHarness();
+    setAppManifestTarget(graphNode, "react-native", ["notifications"]);
     const rnBuild = {
       dir: path.join(
         path.dirname(graphNode.path),
@@ -1727,10 +1787,7 @@ describe("AppHost", () => {
     await host.reconcileDeclared([
       {
         source: graphNode.relativePath,
-        target: "react-native",
         ref: "main",
-        enabled: true,
-        autostart: true,
       },
     ]);
     await host.whenSettled();
@@ -1747,9 +1804,7 @@ describe("AppHost", () => {
       invalidManifest: true,
     });
 
-    await host.reconcileDeclared([
-      { source: "apps/shell", target: "electron", ref: "main", enabled: true, autostart: true },
-    ]);
+    await host.reconcileDeclared([{ source: "apps/shell", ref: "main" }]);
     await host.whenSettled();
 
     expect(approvalQueue.request).toHaveBeenCalled();

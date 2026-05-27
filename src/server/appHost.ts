@@ -16,8 +16,8 @@ import {
   normalizeUnitRepoPath as normalizeRepoPath,
   requestUnitBatchApproval,
   unitBuildIdentityFromRegistryEntry,
+  canonicalUnitBuildIdentity,
   type UnitBuildIdentity,
-  type UnitDeclaration,
   type UnitDescriptor,
   type UnitApprovalCoordinator,
   type UnitReconcileTrigger,
@@ -78,24 +78,23 @@ export interface AppUpdateErrorDiagnostic {
   source: string;
 }
 
-export interface WorkspaceAppDeclaration extends UnitDeclaration {
-  target?: WorkspaceAppTarget;
-  autostart?: boolean;
+export interface WorkspaceAppDeclaration {
+  source: string;
+  ref: string;
 }
 
 export interface AppRegistryEntry extends UnitRegistryEntryBase {
   unitKind: "app";
   target: WorkspaceAppTarget;
-  autostart: boolean;
   capabilities: AppCapability[];
   previousVersions: AppVersionRecord[];
   lastErrorDetails?: AppUpdateErrorDiagnostic | null;
+  activationTrust?: AppActivationTrustRecord | null;
 }
 
 export interface AppVersionRecord {
   version: string;
   target: WorkspaceAppTarget;
-  autostart: boolean;
   capabilities: AppCapability[];
   activeEv: string | null;
   activeSha: string | null;
@@ -104,6 +103,14 @@ export interface AppVersionRecord {
   activeExternalDeps: Record<string, string>;
   activeRuntimeDepsKey: string | null;
   activatedAt: number;
+}
+
+export interface AppActivationTrustRecord {
+  decision: "host-target-pinned-commit";
+  identityKey: string;
+  actor: "shell-host";
+  reason: string;
+  acceptedAt: number;
 }
 
 export interface ReactNativeAppBootstrap {
@@ -284,9 +291,9 @@ export class AppHost {
         activeDependencyEvs: entry.activeDependencyEvs ?? {},
         activeExternalDeps: entry.activeExternalDeps ?? {},
         capabilities: entry.capabilities ?? [],
-        autostart: entry.autostart ?? false,
         previousVersions: entry.previousVersions ?? [],
         lastErrorDetails: entry.lastErrorDetails ?? null,
+        activationTrust: entry.activationTrust ?? null,
       }),
     });
     this.sourcePushGrants = new UnitSourcePushGrantStore({ statePath: deps.statePath });
@@ -318,13 +325,6 @@ export class AppHost {
       trustResolver: this.trustResolver,
       makePendingEntry: (node, decl, building) => this.pendingEntryFor(node, decl, building),
       applyTrusted: (node, decl) => this.applyDeclared(node, decl),
-      applyUntrustedDisabled: async (node) => {
-        const entry = this.registry.get(node.name);
-        await this.stopTerminalApp(node.name);
-        if (entry) this.retireDeviceScopedAppEntities(entry);
-        this.retireAppEntity(node.name);
-        this.emitStatus(node.name, "stopped", null);
-      },
       removeUndeclared: async (entry) => {
         await this.stopTerminalApp(entry.name);
         this.retireDeviceScopedAppEntities(entry);
@@ -410,7 +410,6 @@ export class AppHost {
     kind: "app";
     source: string;
     displayName: string;
-    enabled: boolean;
     status: AppRegistryEntry["status"];
     version: string;
     ev: string | null;
@@ -463,10 +462,7 @@ export class AppHost {
       .filter(
         (node) => node.kind === "app" && normalizeRepoPath(node.relativePath).startsWith("apps/")
       )
-      .filter(
-        (node) =>
-          this.appTarget(node, { source: node.relativePath, ref: "main", enabled: true }) === target
-      )
+      .filter((node) => this.appTarget(node) === target)
       .map((node) => this.hostTargetCandidate(node, target, declaredNames.has(node.name)))
       .sort((a, b) => Number(b.declared) - Number(a.declared) || a.source.localeCompare(b.source));
   }
@@ -618,14 +614,28 @@ export class AppHost {
     if (!candidate) throw new Error(`No ${target} app candidate found for ${sourceOrName}`);
     const node = this.findAppNode(candidate.name);
     const previous = this.registry.get(candidate.name) ?? null;
-    const build = await this.deps.buildSystem.getBuild(candidate.name, commit);
-    this.validateBuildForTarget(candidate.name, target, build);
     const decl: WorkspaceAppDeclaration = {
       source: candidate.source,
       ref: commit,
-      target,
-      enabled: true,
     };
+    this.assertHostTargetMatchesManifest(node, target);
+    const build = await this.deps.buildSystem.getBuild(candidate.name, commit);
+    this.validateBuildForTarget(candidate.name, target, build);
+    const externalDeps = this.externalDepsForBuild(node, build.metadata, decl);
+    const dependencyEvs = this.currentDependencyEvs(node);
+    const trust = this.hostPinnedCommitTrustRecord(
+      createUnitBuildIdentity({
+        unitKind: "app",
+        name: node.name,
+        sourceRepo: node.relativePath,
+        ref: commit,
+        effectiveVersion: build.metadata.ev,
+        dependencyEvs,
+        externalDeps,
+        capabilities: this.appCapabilities(node),
+      })
+    );
+    if (!previous) this.registry.upsert(this.pendingEntryFor(node, decl, true));
     let entry = this.unitHost.activateBuild({
       name: node.name,
       version: readPackageVersion(node.path),
@@ -634,14 +644,14 @@ export class AppHost {
       buildDir: build.dir,
       effectiveVersion: build.metadata.ev,
       activeSha: commit,
-      dependencyEvs: this.currentDependencyEvs(node),
-      externalDeps: this.externalDepsForBuild(node, build.metadata, decl),
+      dependencyEvs,
+      externalDeps,
       runtimeDepsKey: null,
       status: appRegistryStatusForTarget(target),
       extra: {
         target,
-        autostart: false,
         capabilities: this.appCapabilities(node),
+        activationTrust: trust,
       },
     });
     const previousRecord =
@@ -655,9 +665,10 @@ export class AppHost {
           ...(previous?.previousVersions ?? []),
         ]),
         lastErrorDetails: null,
+        activationTrust: trust,
       });
     } else {
-      entry = this.registry.patch(entry.name, { lastErrorDetails: null });
+      entry = this.registry.patch(entry.name, { lastErrorDetails: null, activationTrust: trust });
     }
     this.activateAppEntity(entry);
     await this.syncTerminalRuntime(entry, previous);
@@ -727,7 +738,6 @@ export class AppHost {
     const updated = this.registry.patch(entry.name, {
       version: selected.version,
       target: selected.target,
-      autostart: selected.autostart,
       capabilities: selected.capabilities,
       activeEv: selected.activeEv,
       activeSha: selected.activeSha,
@@ -738,6 +748,7 @@ export class AppHost {
       status: appRegistryStatusForTarget(selected.target),
       lastError: null,
       lastErrorDetails: null,
+      activationTrust: null,
       previousVersions: current
         ? appVersionHistory([current, ...remaining])
         : appVersionHistory(remaining),
@@ -775,9 +786,7 @@ export class AppHost {
         return callerId.startsWith(`app:${source}:`);
       });
     return (
-      !!entry?.enabled &&
-      isCapabilityActiveStatus(entry.status) &&
-      entry.capabilities.includes(capability)
+      !!entry && isCapabilityActiveStatus(entry.status) && entry.capabilities.includes(capability)
     );
   }
 
@@ -847,9 +856,6 @@ export class AppHost {
                 ...this.buildBatchEntry(installed.node, {
                   source: installed.node.relativePath,
                   ref: installed.entry.source.ref,
-                  enabled: installed.entry.enabled,
-                  target: installed.entry.target,
-                  autostart: true,
                 }),
                 ev: installed.entry.activeEv,
               },
@@ -877,9 +883,8 @@ export class AppHost {
         .list()
         .some(
           (entry) =>
-            entry.enabled &&
-            (entry.activeBundleKey === buildKey ||
-              entry.previousVersions.some((version) => version.activeBundleKey === buildKey))
+            entry.activeBundleKey === buildKey ||
+            entry.previousVersions.some((version) => version.activeBundleKey === buildKey)
         )
     ) {
       res.writeHead(404, { "Content-Type": "text/plain" });
@@ -921,7 +926,6 @@ export class AppHost {
       .find(
         (candidate) =>
           candidate.target === "react-native" &&
-          candidate.enabled &&
           candidate.status === "running" &&
           normalizeRepoPath(candidate.source.repo) === normalizedSource &&
           candidate.activeBundleKey
@@ -991,7 +995,6 @@ export class AppHost {
       .find(
         (candidate) =>
           candidate.target === "react-native" &&
-          candidate.enabled &&
           candidate.status === "running" &&
           !!candidate.activeEv &&
           !!candidate.activeBundleKey &&
@@ -1015,12 +1018,6 @@ export class AppHost {
       node,
       decl,
       validateBeforeApply: () => this.validateAppManifestAtPath(node.path, node.name),
-      afterDisabled: async (entry) => {
-        await this.stopTerminalApp(node.name);
-        if (entry) this.retireDeviceScopedAppEntities(entry);
-        this.retireAppEntity(node.name);
-        this.emitStatus(node.name, "stopped", null);
-      },
       needsBuildRefresh: (entry) => this.needsBuildRefresh(entry, node, decl),
       buildAndActivate: (n, d) => this.buildAndActivate(n, d),
       validateBeforeActivateCurrent: (entry) => this.validateActiveBuild(entry),
@@ -1060,8 +1057,8 @@ export class AppHost {
         status: appRegistryStatusForTarget(target),
         extra: {
           target,
-          autostart: decl.autostart ?? false,
           capabilities,
+          activationTrust: null,
         },
       });
       const previousRecord =
@@ -1075,9 +1072,10 @@ export class AppHost {
             ...(previous?.previousVersions ?? []),
           ]),
           lastErrorDetails: null,
+          activationTrust: null,
         });
       } else {
-        entry = this.registry.patch(entry.name, { lastErrorDetails: null });
+        entry = this.registry.patch(entry.name, { lastErrorDetails: null, activationTrust: null });
       }
       const pinnedSelection = this.pinnedSelectionForEntry(entry);
       if (
@@ -1396,6 +1394,7 @@ export class AppHost {
       status: "error",
       lastError: message,
       lastErrorDetails: diagnostic,
+      activationTrust: previous.activationTrust ?? null,
     });
   }
 
@@ -1457,7 +1456,6 @@ export class AppHost {
       displayName: node.manifest.displayName ?? node.name,
       target,
       declared,
-      enabled: entry?.enabled,
       status: entry?.status ?? "not-built",
       activeEv: entry?.activeEv ?? null,
       activeBundleKey: entry?.activeBundleKey ?? null,
@@ -1516,10 +1514,7 @@ export class AppHost {
       .list()
       .filter(
         (entry) =>
-          entry.target === "react-native" &&
-          entry.enabled &&
-          entry.status === "running" &&
-          !!entry.activeBundleKey
+          entry.target === "react-native" && entry.status === "running" && !!entry.activeBundleKey
       );
     const canonicalMobile = activeEntries.find(
       (entry) => normalizeRepoPath(entry.source.repo) === "apps/mobile"
@@ -1638,11 +1633,9 @@ export class AppHost {
         version: readPackageVersion(node.path),
         sourceRepo: node.relativePath,
         ref: decl.ref,
-        enabled: decl.enabled,
         building,
       }),
       target: this.appTarget(node, decl),
-      autostart: decl.autostart ?? false,
       capabilities: this.appCapabilities(node),
       previousVersions: [],
     };
@@ -1738,15 +1731,12 @@ export class AppHost {
     const entry = this.registry
       .list()
       .find((candidate) => normalizeRepoPath(candidate.source.repo) === normalized);
-    if (!entry?.enabled) return;
+    if (!entry) return;
     const node = this.findAppNode(entry.name);
     try {
       await this.buildAndActivate(node, {
         source: node.relativePath,
         ref: entry.source.ref,
-        enabled: true,
-        target: entry.target,
-        autostart: entry.autostart,
       });
       this.emitDevStatusDiagnostic("source-rebuilt");
     } catch (err) {
@@ -1882,8 +1872,37 @@ export class AppHost {
     }
   }
 
-  private appTarget(node: AppGraphNode, decl: WorkspaceAppDeclaration): WorkspaceAppTarget {
-    return decl.target ?? node.manifest.app?.target ?? "electron";
+  private appTarget(node: AppGraphNode, _decl?: WorkspaceAppDeclaration): WorkspaceAppTarget {
+    const manifestTarget = node.manifest.app?.target;
+    if (!manifestTarget) {
+      throw new UnitManifestError(
+        `App ${node.name} manifest must declare natstack.app.target`,
+        "MANIFEST_APP_TARGET"
+      );
+    }
+    return manifestTarget;
+  }
+
+  private assertHostTargetMatchesManifest(node: AppGraphNode, target: WorkspaceAppTarget): void {
+    const manifestTarget = node.manifest.app?.target;
+    if (manifestTarget && target !== manifestTarget) {
+      throw new UnitManifestError(
+        `App ${node.name} host target "${target}" does not match package manifest target "${manifestTarget}"`,
+        "MANIFEST_APP_TARGET_MISMATCH"
+      );
+    }
+  }
+
+  private hostPinnedCommitTrustRecord(
+    identity: UnitBuildIdentity<"app">
+  ): AppActivationTrustRecord {
+    return {
+      decision: "host-target-pinned-commit",
+      identityKey: canonicalUnitBuildIdentity(identity),
+      actor: "shell-host",
+      reason: "Host target pinned to an explicit commit selected by a trusted shell/server caller",
+      acceptedAt: Date.now(),
+    };
   }
 
   private appCapabilities(node: AppGraphNode): AppCapability[] {
@@ -1957,7 +1976,7 @@ export class AppHost {
   ): Promise<void> {
     if (entry.target !== "terminal") return;
     const wasRunning = previous ? this.terminalRunner?.isRunning(previous.name) === true : false;
-    if (entry.autostart || wasRunning) {
+    if (wasRunning) {
       await this.startTerminalApp(entry);
     } else {
       await this.stopTerminalApp(entry.name);
@@ -1999,7 +2018,7 @@ export class AppHost {
   ): void {
     const entry = this.registry.get(appId);
     if (!entry || entry.target !== "terminal") return;
-    const nextStatus = status === "stopped" && entry.enabled ? "available" : status;
+    const nextStatus = status === "stopped" ? "available" : status;
     this.registry.patch(appId, { status: nextStatus, lastError: error });
     this.emitStatus(appId, nextStatus, error);
   }
@@ -2188,7 +2207,6 @@ function appVersionRecordFromEntry(entry: AppRegistryEntry): AppVersionRecord | 
   return {
     version: entry.version,
     target: entry.target,
-    autostart: entry.autostart,
     capabilities: [...entry.capabilities],
     activeEv: entry.activeEv,
     activeSha: entry.activeSha,

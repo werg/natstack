@@ -195,8 +195,8 @@ export type WorkspaceServiceDecl = {
 /**
  * Extension declaration in `workspace/meta/natstack.yml`. The declared list is
  * the single source of truth for which extensions a workspace uses and the only
- * install/enable/disable/uninstall surface — editing it (a gated meta write)
- * triggers the joint unit approval and registry reconciliation.
+ * install/remove surface. Editing it (a gated meta write) triggers the joint
+ * unit approval and registry reconciliation.
  */
 export interface WorkspaceExtensionDecl {
   /**
@@ -208,11 +208,6 @@ export interface WorkspaceExtensionDecl {
   source: string;
   /** Git ref the extension floats to. Defaults to `"main"`. */
   ref?: string;
-  /**
-   * Whether the extension should be running. Defaults to `true`. `false` keeps
-   * it installed/approved but stopped.
-   */
-  enabled?: boolean;
 }
 
 /**
@@ -227,17 +222,8 @@ export interface WorkspaceAppDecl {
    * (e.g. `"@workspace-apps/shell"`). Both resolve via the build graph.
    */
   source: string;
-  /**
-   * Optional declared host target. When present it must match the package
-   * manifest's natstack.app.target.
-   */
-  target?: WorkspaceAppTarget;
   /** Git ref the app floats to. Defaults to `"main"`. */
   ref?: string;
-  /** Whether the app should run. Defaults to `true`. */
-  enabled?: boolean;
-  /** Whether the host should start it automatically. Defaults to `true`. */
-  autostart?: boolean;
 }
 
 /** HTTP route declaration in `workspace/meta/natstack.yml`. */
@@ -286,9 +272,9 @@ export interface WorkspaceConfig {
   /**
    * Declarative extension set for this workspace — the single source of truth
    * for which extensions are in use. Editing this list is the only way to
-   * install/enable/disable/uninstall an extension; the edit is a gated meta
-   * write that triggers the joint approval and reconciliation. Absent or empty
-   * means no extensions (reconciliation removes any left in the registry).
+   * install or remove an extension; the edit is a gated meta write that
+   * triggers the joint approval and reconciliation. Absent or empty means no
+   * extensions (reconciliation removes any left in the registry).
    */
   extensions?: WorkspaceExtensionDecl[];
   /**

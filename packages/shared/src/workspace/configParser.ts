@@ -1,7 +1,6 @@
 import YAML from "yaml";
 import type {
   WorkspaceAppDecl,
-  WorkspaceAppTarget,
   WorkspaceConfig,
   WorkspaceExtensionDecl,
 } from "./types.js";
@@ -94,10 +93,6 @@ function validateDeclaredUnitList<Decl extends { source: string }>(
     if (ref !== undefined && (typeof ref !== "string" || ref.trim().length === 0)) {
       throw new Error(`meta/natstack.yml: \`${descriptor.section}[].ref\` must be a non-empty string when provided`);
     }
-    const enabled = (decl as { enabled?: unknown }).enabled;
-    if (enabled !== undefined && typeof enabled !== "boolean") {
-      throw new Error(`meta/natstack.yml: \`${descriptor.section}[].enabled\` must be a boolean when provided`);
-    }
     validateDeclaredUnitSource(decl.source, descriptor);
     descriptor.validate?.(decl);
     const key = normalizeDeclaredUnitSourceKey(decl.source, descriptor);
@@ -122,51 +117,33 @@ function validateDeclaredUnits(config: WorkspaceConfig): void {
     packageScope: "@workspace-apps/",
     singular: "app",
     values: config.apps,
-    validate: (decl) => {
-      if (
-        decl.target !== undefined
-        && decl.target !== "electron"
-        && decl.target !== "react-native"
-        && decl.target !== "terminal"
-      ) {
-        throw new Error("meta/natstack.yml: `apps[].target` must be \"electron\", \"react-native\", or \"terminal\" when provided");
-      }
-      if (decl.autostart !== undefined && typeof decl.autostart !== "boolean") {
-        throw new Error("meta/natstack.yml: `apps[].autostart` must be a boolean when provided");
-      }
-    },
   });
 }
 
 export function resolveDeclaredExtensions(
   config: WorkspaceConfig,
-): Array<{ source: string; ref: string; enabled: boolean }> {
+): Array<{ source: string; ref: string }> {
   return resolveDeclaredUnits(config.extensions ?? []).map((decl) => ({
     source: decl.source,
     ref: decl.ref,
-    enabled: decl.enabled,
   }));
 }
 
 export function resolveDeclaredApps(
   config: WorkspaceConfig,
-): Array<{ source: string; target?: WorkspaceAppTarget; ref: string; enabled: boolean; autostart: boolean }> {
-  return resolveDeclaredUnits(config.apps ?? []).map((decl) => ({
+): Array<{ source: string; ref: string }> {
+  return (config.apps ?? []).map((decl) => ({
     source: decl.source.trim(),
-    target: (decl as WorkspaceAppDecl).target,
-    ref: decl.ref,
-    enabled: decl.enabled,
-    autostart: (decl as WorkspaceAppDecl).autostart ?? true,
+    ref: (decl.ref ?? "main").trim(),
   }));
 }
 
-function resolveDeclaredUnits<Decl extends { source: string; ref?: string; enabled?: boolean }>(
+function resolveDeclaredUnits<Decl extends { source: string; ref?: string }>(
   declarations: Decl[],
-): Array<Decl & { source: string; ref: string; enabled: boolean }> {
+): Array<Decl & { source: string; ref: string }> {
   return declarations.map((decl) => ({
     ...decl,
     source: decl.source.trim(),
     ref: (decl.ref ?? "main").trim(),
-    enabled: decl.enabled ?? true,
   }));
 }
