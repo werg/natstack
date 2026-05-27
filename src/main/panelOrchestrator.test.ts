@@ -27,6 +27,7 @@ function createOrchestrator(
   opts: {
     panelRestorePolicy?: "focused" | "none";
     runtimeClient?: ConstructorParameters<typeof PanelOrchestrator>[0]["runtimeClient"];
+    workspaceConfig?: ConstructorParameters<typeof PanelOrchestrator>[0]["workspaceConfig"];
   } = {}
 ) {
   const closedIds: string[] = [];
@@ -46,7 +47,7 @@ function createOrchestrator(
   };
   const shellCore = {
     close: vi.fn(async (panelId: string) => ({ closedIds: [panelId, ...closedIds] })),
-    create: vi.fn(async () => ({
+    create: vi.fn(async (_source?: string, _options?: unknown) => ({
       panelId: "created-panel",
       title: "created-panel",
       contextId: "ctx-created-panel",
@@ -96,9 +97,11 @@ function createOrchestrator(
     gatewayPort: 1234,
     sendPanelEvent: vi.fn(),
     getPanelView: () => panelView as never,
-    workspaceConfig: opts.panelRestorePolicy
-      ? ({ id: "test", panelRestorePolicy: opts.panelRestorePolicy } as never)
-      : undefined,
+    workspaceConfig:
+      opts.workspaceConfig ??
+      (opts.panelRestorePolicy
+        ? ({ id: "test", panelRestorePolicy: opts.panelRestorePolicy } as never)
+        : undefined),
     runtimeClient: opts.runtimeClient,
   });
 
@@ -526,6 +529,48 @@ describe("PanelOrchestrator.recoverShellSnapshot", () => {
 
     expect(panelView.createViewForPanel).not.toHaveBeenCalled();
     expect(snapshot.focus).toMatchObject({ status: "focused", loaded: false });
+  });
+});
+
+describe("PanelOrchestrator.initializePanelTree", () => {
+  it("creates distinct root panels for duplicate init panel sources", async () => {
+    const registry = new PanelRegistry({ onTreeUpdated: vi.fn() });
+    const { orchestrator, shellCore } = createOrchestrator(registry, vi.fn(), {
+      workspaceConfig: {
+        id: "test",
+        panelRestorePolicy: "none",
+        initPanels: [
+          { source: "panels/chat", stateArgs: { initialPrompt: "first" } },
+          { source: "panels/chat", stateArgs: { initialPrompt: "second" } },
+        ],
+      } as never,
+    });
+    shellCore.create.mockImplementation(async (_source?: string, options?: unknown) => {
+      const createOptions = options as { stateArgs?: Record<string, unknown> } | undefined;
+      const index = registry.getRootPanels().length + 1;
+      const panel = makePanel(`chat-${index}`, [], {
+        title: `Chat ${index}`,
+        snapshot: {
+          source: "panels/chat",
+          contextId: `ctx-chat-${index}`,
+          options: {},
+          stateArgs: createOptions?.stateArgs,
+        },
+      });
+      registry.addPanel(panel, null, { addAsRoot: true });
+      return {
+        panelId: panel.id,
+        title: panel.title,
+        contextId: getCurrentSnapshot(panel).contextId,
+        source: "panels/chat",
+        options: {},
+      };
+    });
+
+    await orchestrator.initializePanelTree();
+
+    expect(shellCore.create).toHaveBeenCalledTimes(2);
+    expect(registry.getRootPanels().map((panel) => panel.id)).toEqual(["chat-1", "chat-2"]);
   });
 });
 

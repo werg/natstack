@@ -94,9 +94,12 @@ describe("createEntityTitleService", () => {
 
   it("mirrorCachedTitle updates the cache but does NOT call the DO", async () => {
     const { svc, dispatch } = svcWithDispatch();
+    const listener = vi.fn();
+    svc.onChanged(listener);
     svc.mirrorCachedTitle("panel:zzz", "Mirrored");
     expect(svc.getTitle("panel:zzz")).toBe("Mirrored");
     expect(dispatch.calls).toEqual([]);
+    expect(listener).toHaveBeenCalledWith("panel:zzz", "Mirrored", "mirror");
   });
 
   it("clear() drops the cache row and writes null to the DO", async () => {
@@ -117,6 +120,16 @@ describe("createEntityTitleService", () => {
     await svc.setTitle("panel:dup", "Same");
     await svc.setTitle("panel:dup", "Same");
     expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledWith("panel:dup", "Same", "set");
+  });
+
+  it("marks explicit clears distinctly", async () => {
+    const { svc } = svcWithDispatch();
+    await svc.setTitle("panel:clear", "Temporary");
+    const listener = vi.fn();
+    svc.onChanged(listener);
+    await svc.clear("panel:clear");
+    expect(listener).toHaveBeenCalledWith("panel:clear", undefined, "clear");
   });
 
   it("caps very long titles", async () => {

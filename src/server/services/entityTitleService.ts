@@ -22,6 +22,8 @@ import type { DODispatch, DORef } from "../doDispatch.js";
 
 export type { DODispatch, DORef };
 
+export type EntityTitleChangeOrigin = "set" | "mirror" | "clear";
+
 export interface EntityTitleService {
   /** Authoritative write: dispatches to WorkspaceDO and refreshes the cache. */
   setTitle(entityId: string, title: string | undefined | null): Promise<void>;
@@ -33,7 +35,9 @@ export interface EntityTitleService {
    */
   mirrorCachedTitle(entityId: string, title: string | undefined | null): void;
   /** Subscribe to cache changes (used to refresh in-flight approvals). */
-  onChanged(listener: (entityId: string, title: string | undefined) => void): () => void;
+  onChanged(
+    listener: (entityId: string, title: string | undefined, origin: EntityTitleChangeOrigin) => void
+  ): () => void;
   /** Drop a title — called when an entity retires. Writes through to the DO. */
   clear(entityId: string): Promise<void>;
   /**
@@ -77,19 +81,29 @@ export interface EntityTitleServiceOptions {
 export function createEntityTitleService(options: EntityTitleServiceOptions): EntityTitleService {
   const { getDoDispatch, workspaceRef } = options;
   const titles = new Map<string, string>();
-  const listeners = new Set<(entityId: string, title: string | undefined) => void>();
+  const listeners = new Set<
+    (entityId: string, title: string | undefined, origin: EntityTitleChangeOrigin) => void
+  >();
 
-  function notify(entityId: string, title: string | undefined): void {
+  function notify(
+    entityId: string,
+    title: string | undefined,
+    origin: EntityTitleChangeOrigin
+  ): void {
     for (const listener of listeners) {
       try {
-        listener(entityId, title);
+        listener(entityId, title, origin);
       } catch (error) {
         console.warn("[entityTitleService] listener failed:", error);
       }
     }
   }
 
-  function applyToCache(entityId: string, title: string | undefined): boolean {
+  function applyToCache(
+    entityId: string,
+    title: string | undefined,
+    origin: EntityTitleChangeOrigin
+  ): boolean {
     const prev = titles.get(entityId);
     if (title === prev) return false;
     if (title === undefined) {
@@ -97,7 +111,7 @@ export function createEntityTitleService(options: EntityTitleServiceOptions): En
     } else {
       titles.set(entityId, title);
     }
-    notify(entityId, title);
+    notify(entityId, title, origin);
     return true;
   }
 
@@ -120,7 +134,7 @@ export function createEntityTitleService(options: EntityTitleServiceOptions): En
   return {
     async setTitle(entityId, title) {
       const next = sanitizeTitle(title);
-      applyToCache(entityId, next);
+      applyToCache(entityId, next, "set");
       await writeThrough(entityId, next ?? null);
     },
 
@@ -130,7 +144,7 @@ export function createEntityTitleService(options: EntityTitleServiceOptions): En
 
     mirrorCachedTitle(entityId, title) {
       const next = sanitizeTitle(title);
-      applyToCache(entityId, next);
+      applyToCache(entityId, next, "mirror");
     },
 
     onChanged(listener) {
@@ -140,7 +154,7 @@ export function createEntityTitleService(options: EntityTitleServiceOptions): En
 
     async clear(entityId) {
       if (titles.delete(entityId)) {
-        notify(entityId, undefined);
+        notify(entityId, undefined, "clear");
       }
       await writeThrough(entityId, null);
     },

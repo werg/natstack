@@ -213,8 +213,8 @@ async function createServerPanelTreeBridge(
 
   let panelTreeLoaded = false;
   let panelTreeLoadPromise: Promise<void> | null = null;
-  const sync = async () => {
-    if (panelTreeLoaded) return;
+  const sync = async (options: { force?: boolean } = {}) => {
+    if (panelTreeLoaded && !options.force) return;
     panelTreeLoadPromise ??= panelManager
       .loadTree()
       .then(() => {
@@ -228,10 +228,11 @@ async function createServerPanelTreeBridge(
   const emitTreeSnapshot = () => {
     deps.eventService?.emit("panel-tree-updated", registry.getPanelTreeSnapshot());
   };
-  deps.registerEntityTitleListener?.(async (entityId, title) => {
+  deps.registerEntityTitleListener?.(async (entityId, title, origin) => {
+    if (origin === "mirror") return;
     const normalized = title?.trim();
     if (!normalized) return;
-    await sync();
+    await sync({ force: true });
     const target = await panelManager.resolveTitleTargetSlot(entityId);
     if (!target) return;
     const panel = registry.getPanel(target.slotId);
@@ -631,7 +632,11 @@ export interface CommonDeps {
   approvalQueue?: ApprovalQueue;
   getEffectiveVersion?: (source: string) => Promise<string | undefined>;
   registerEntityTitleListener?: (
-    listener: (entityId: string, title: string | undefined) => void | Promise<void>
+    listener: (
+      entityId: string,
+      title: string | undefined,
+      origin: "set" | "mirror" | "clear"
+    ) => void | Promise<void>
   ) => () => void;
 }
 

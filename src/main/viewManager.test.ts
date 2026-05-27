@@ -479,7 +479,7 @@ describe("ViewManager", () => {
       });
     });
 
-    it("refreshVisiblePanel does NOT cycle visibility (only refreshes bounds and z-order)", () => {
+    it("refreshVisiblePanel reasserts visible state without cycling visibility", () => {
       const view = vm.createView({
         id: "panel-1",
         type: "panel",
@@ -491,8 +491,9 @@ describe("ViewManager", () => {
 
       vm.refreshVisiblePanel();
 
-      // setVisible should NOT have been called (no visibility cycling)
-      expect(view.setVisible).not.toHaveBeenCalled();
+      // setVisible(true) is reasserted, but there is no false/true cycle.
+      expect(view.setVisible).toHaveBeenCalledTimes(1);
+      expect(view.setVisible).toHaveBeenCalledWith(true);
       // But bounds should have been refreshed
       expect(view.setBounds).toHaveBeenCalled();
     });

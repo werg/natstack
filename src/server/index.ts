@@ -2045,10 +2045,14 @@ async function main() {
     },
     approvalQueue,
     registerEntityTitleListener: (
-      listener: (entityId: string, title: string | undefined) => void | Promise<void>
+      listener: (
+        entityId: string,
+        title: string | undefined,
+        origin: "set" | "mirror" | "clear"
+      ) => void | Promise<void>
     ) =>
-      entityTitleService.onChanged((entityId, title) => {
-        void Promise.resolve(listener(entityId, title)).catch((error: unknown) => {
+      entityTitleService.onChanged((entityId, title, origin) => {
+        void Promise.resolve(listener(entityId, title, origin)).catch((error: unknown) => {
           console.warn(
             `[entityTitleService] panel title listener failed: ${
               error instanceof Error ? error.message : String(error)

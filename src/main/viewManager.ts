@@ -717,6 +717,11 @@ export class ViewManager {
     const bounds = this.calculatePanelBounds();
     managed.bounds = bounds;
     managed.view.setBounds(bounds);
+    if (this.shellOverlayActive) {
+      managed.view.setVisible(false);
+    } else {
+      managed.view.setVisible(true);
+    }
   }
 
   /**
@@ -787,11 +792,15 @@ export class ViewManager {
       return;
     }
 
-    // Refresh bounds and z-order (compositor recovery handled by stall detector
-    // and forceRepaint — not here, to avoid operating on the wrong panel during switches)
+    // Refresh bounds, raw visibility, and z-order. The tracked visible state can
+    // be true while Chromium has dropped the native layer; reasserting
+    // setVisible(true) recovers that case without a full visibility cycle.
     const bounds = this.calculatePanelBounds();
     managed.bounds = bounds;
     managed.view.setBounds(bounds);
+    if (!this.shellOverlayActive) {
+      managed.view.setVisible(true);
+    }
     this.bringToFront(this.visiblePanelId);
   }
 
