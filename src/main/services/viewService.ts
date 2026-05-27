@@ -64,6 +64,15 @@ export function createViewService(deps: { getViewManager: () => ViewManager }): 
             saveBarHeight: z.number().optional(),
             notificationBarHeight: z.number().optional(),
             consentBarHeight: z.number().optional(),
+            panelContentBounds: z
+              .object({
+                x: z.number(),
+                y: z.number(),
+                width: z.number(),
+                height: z.number(),
+              })
+              .nullable()
+              .optional(),
           }),
         ]),
       },
@@ -154,6 +163,12 @@ export function createViewService(deps: { getViewManager: () => ViewManager }): 
             saveBarHeight?: number;
             notificationBarHeight?: number;
             consentBarHeight?: number;
+            panelContentBounds?: {
+              x: number;
+              y: number;
+              width: number;
+              height: number;
+            } | null;
           };
           vm.updateLayout(layoutUpdate);
           return;

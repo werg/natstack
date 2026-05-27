@@ -101,6 +101,8 @@ export interface LayoutState {
   notificationBarHeight: number;
   /** Height of consent approval bar (0 when hidden) */
   consentBarHeight: number;
+  /** Exact content slot for the visible panel, measured in window coordinates. */
+  panelContentBounds: ViewBounds | null;
 }
 
 export class ViewManager {
@@ -119,6 +121,7 @@ export class ViewManager {
     saveBarHeight: 0,
     notificationBarHeight: 0,
     consentBarHeight: 0,
+    panelContentBounds: null,
   };
   /** ID of the currently visible panel (to apply bounds updates) */
   private visiblePanelId: string | null = null;
@@ -670,6 +673,16 @@ export class ViewManager {
    * Calculate the bounds for the panel content area based on current layout state.
    */
   private calculatePanelBounds(): ViewBounds {
+    if (this.layoutState.panelContentBounds) {
+      const bounds = this.layoutState.panelContentBounds;
+      return {
+        x: Math.max(0, Math.round(bounds.x)),
+        y: Math.max(0, Math.round(bounds.y)),
+        width: Math.max(0, Math.round(bounds.width)),
+        height: Math.max(0, Math.round(bounds.height)),
+      };
+    }
+
     const size = this.window.getContentSize();
     const windowWidth = size[0] ?? 0;
     const windowHeight = size[1] ?? 0;

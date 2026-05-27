@@ -322,6 +322,29 @@ describe("ViewManager", () => {
       });
     });
 
+    it("uses measured panel content bounds when the shell reports them", () => {
+      const panelView = vm.createView({
+        id: "panel-1",
+        type: "panel",
+      });
+
+      vm.setViewVisible("panel-1", true);
+      vm.updateLayout({
+        sidebarVisible: true,
+        sidebarWidth: 260,
+        titleBarHeight: 32,
+        consentBarHeight: 400,
+        panelContentBounds: { x: 274.4, y: 98.6, width: 900.2, height: 650.7 },
+      });
+
+      expect(panelView.setBounds).toHaveBeenLastCalledWith({
+        x: 274,
+        y: 99,
+        width: 900,
+        height: 651,
+      });
+    });
+
     it("ignores hiding a missing view", () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 

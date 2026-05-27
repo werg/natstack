@@ -37,6 +37,22 @@ describe("view service", () => {
     expect(vm.updateLayout).toHaveBeenCalledWith({ sidebarVisible: true });
   });
 
+  it("accepts measured panel content bounds from a panel-hosting workspace app", async () => {
+    const vm = makeViewManager(["panel-hosting"]);
+    const service = createViewService({ getViewManager: () => vm as never });
+    const panelContentBounds = { x: 260, y: 90, width: 900, height: 650 };
+
+    await expect(
+      service.handler(
+        { caller: createVerifiedCaller("@workspace-apps/shell", "app") },
+        "updateLayout",
+        [{ panelContentBounds }]
+      )
+    ).resolves.toBeUndefined();
+
+    expect(vm.updateLayout).toHaveBeenCalledWith({ panelContentBounds });
+  });
+
   it("rejects ordinary apps for host-wide view controls", async () => {
     const vm = makeViewManager([]);
     const service = createViewService({ getViewManager: () => vm as never });

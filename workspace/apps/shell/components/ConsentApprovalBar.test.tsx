@@ -226,6 +226,28 @@ describe("ConsentApprovalBar queue browsing", () => {
     expect(trustButton?.getAttribute("data-accent-color")).toBe("red");
   });
 
+  it("bounds the approval surface so large requests scroll inside the bar", async () => {
+    shellClient.listPending.mockResolvedValueOnce([
+      capabilityApproval({
+        approvalId: "cap-large",
+        title: "Large approval",
+      }),
+    ]);
+
+    render(
+      <Theme>
+        <ConsentApprovalBar />
+      </Theme>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Large approval")).toBeTruthy();
+    });
+    const bar = screen.getByText("Large approval").closest(".approval-bar") as HTMLElement | null;
+    expect(bar?.style.maxHeight).toBe("min(44dvh, 520px)");
+    expect(bar?.style.overflow).toBe("hidden");
+  });
+
   it("refreshes pending approvals from the server instead of trusting stale event payloads", async () => {
     shellClient.listPending.mockResolvedValueOnce([
       userlandApproval({ approvalId: "a1", title: "First approval" }),

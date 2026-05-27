@@ -270,10 +270,16 @@ export function ConsentApprovalBar() {
       ref={barRef}
       key={current.approvalId}
       className="approval-bar approval-bar-attention"
-      style={{ ...toneStyle, flexShrink: 0 }}
+      style={{
+        ...toneStyle,
+        flexShrink: 0,
+        display: "flex",
+        maxHeight: "min(44dvh, 520px)",
+        overflow: "hidden",
+      }}
     >
-      <Flex direction="column" gap="3" px="4" py="3">
-        <Flex align="start" gap="3">
+      <Flex direction="column" gap="3" px="4" py="3" style={{ flex: 1, minHeight: 0 }}>
+        <Flex align="start" gap="3" style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
           <Box className="approval-icon-box">
             {isUnitApproval ? (
               <ExclamationTriangleIcon width={18} height={18} />
@@ -379,7 +385,7 @@ export function ConsentApprovalBar() {
           </Flex>
         </Flex>
 
-        <Flex justify="end" wrap="wrap" gap="2">
+        <Flex justify="end" wrap="wrap" gap="2" style={{ flexShrink: 0 }}>
           {current.kind === "client-config" ? (
             <ClientConfigActions
               approval={current}
@@ -568,15 +574,23 @@ function UnitBatchActions({
   return (
     <Flex align="center" className="approval-actions" gap="2" wrap="wrap">
       <DecisionButton
-        label={isSourcePush ? "Approve push" : isManagement ? "Approve" : count > 0 ? "Approve all" : "Allow"}
+        label={
+          isSourcePush
+            ? "Approve push"
+            : isManagement
+              ? "Approve"
+              : count > 0
+                ? "Approve all"
+                : "Allow"
+        }
         description={
           isSourcePush
             ? `Allow this ${unitLabel} source push.`
             : isManagement
-            ? `Allow this ${unitLabel} management request.`
-            : count > 0
-            ? `Install and run ${count} ${unitLabel}${count === 1 ? "" : "s"}${hasExtensions ? " as native code" : ""}.`
-            : "Apply this workspace config change."
+              ? `Allow this ${unitLabel} management request.`
+              : count > 0
+                ? `Install and run ${count} ${unitLabel}${count === 1 ? "" : "s"}${hasExtensions ? " as native code" : ""}.`
+                : "Apply this workspace config change."
         }
         color="amber"
         variant="solid"
@@ -585,9 +599,11 @@ function UnitBatchActions({
       {approval.trigger === "meta-push" || isSourcePush ? (
         <DecisionButton
           label="Dev session"
-          description={isSourcePush
-            ? `Allow ${unitLabel} source pushes without asking for the next 4 hours.`
-            : "Allow workspace-config pushes without asking for the next 4 hours."}
+          description={
+            isSourcePush
+              ? `Allow ${unitLabel} source pushes without asking for the next 4 hours.`
+              : "Allow workspace-config pushes without asking for the next 4 hours."
+          }
           variant="surface"
           onClick={() => decide("session")}
         />
@@ -598,8 +614,10 @@ function UnitBatchActions({
           isSourcePush
             ? "Reject this source push."
             : isManagement
-            ? "Reject this management request."
-            : count > 0 ? `Do not install these ${unitLabel}${count === 1 ? "" : "s"}.` : "Reject this workspace config change."
+              ? "Reject this management request."
+              : count > 0
+                ? `Do not install these ${unitLabel}${count === 1 ? "" : "s"}.`
+                : "Reject this workspace config change."
         }
         color="red"
         icon={<CrossCircledIcon />}
@@ -1341,7 +1359,11 @@ function UnitBatchDetails({ approval }: { approval: PendingUnitBatchApproval }) 
                 value={<InlineCode>{entry.unitName}</InlineCode>}
               />
               {entry.target ? (
-                <Detail icon={<GearIcon />} label="Target" value={<InlineCode>{entry.target}</InlineCode>} />
+                <Detail
+                  icon={<GearIcon />}
+                  label="Target"
+                  value={<InlineCode>{entry.target}</InlineCode>}
+                />
               ) : null}
               <Detail
                 icon={<GlobeIcon />}
@@ -1352,13 +1374,19 @@ function UnitBatchDetails({ approval }: { approval: PendingUnitBatchApproval }) 
                 <Detail icon={<LockClosedIcon />} label="EV" value={<IdCode value={entry.ev} />} />
               ) : null}
               {entry.integrity ? (
-                <Detail icon={<LockClosedIcon />} label="Integrity" value={<IdCode value={entry.integrity} />} />
+                <Detail
+                  icon={<LockClosedIcon />}
+                  label="Integrity"
+                  value={<IdCode value={entry.integrity} />}
+                />
               ) : null}
               {entry.provider ? (
                 <Detail
                   icon={<GearIcon />}
                   label="Provider"
-                  value={<InlineCode>{`${entry.provider.name}@${entry.provider.activeEv ?? "unknown"}`}</InlineCode>}
+                  value={
+                    <InlineCode>{`${entry.provider.name}@${entry.provider.activeEv ?? "unknown"}`}</InlineCode>
+                  }
                 />
               ) : null}
               <Detail

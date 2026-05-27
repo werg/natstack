@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from "react";
 import { Cross2Icon } from "@radix-ui/react-icons";
 import { Box, Button, Card, Flex, Heading, IconButton, Spinner, Text } from "@radix-ui/themes";
 import { useIsMobile } from "@workspace/react/responsive";
@@ -131,6 +131,7 @@ export function PanelStack({
     typeof window === "undefined" ? 1024 : window.innerWidth
   );
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const panelContentRef = useRef<HTMLDivElement | null>(null);
   const resizePointerIdRef = useRef<number | null>(null);
   const isMobile = useIsMobile();
 
@@ -477,6 +478,11 @@ export function PanelStack({
 
   const previousVisiblePanelId = useRef<string | null>(null);
 
+  // Notify main process of layout changes (sidebar visibility and width)
+  const mobileSidebarWidth = Math.max(0, Math.min(360, viewportWidth - 48));
+  const effectiveSidebarWidth = isMobile ? mobileSidebarWidth : sidebarWidth;
+  const sidebarVisible = navigationMode === "tree";
+
   // Show/hide panel views when visible panel changes
   // Main process calculates bounds based on layout state
   useEffect(() => {
@@ -498,17 +504,26 @@ export function PanelStack({
     // can still be marked "building" while the panel is already loading and
     // able to render, so visibility is keyed to view existence, not readiness.
     if (shouldShowPanelView(visiblePanel?.artifacts)) {
-      // Show current panel's view - main process handles bounds calculation
-      void view
-        .setVisible(panelId, true)
-        .catch((err: unknown) => console.warn("[PanelStack] Failed to show panel:", err));
+      void (async () => {
+        try {
+          await view.setVisible(panelId, true);
+          await view.updateLayout({
+            sidebarVisible,
+            sidebarWidth: effectiveSidebarWidth,
+          });
+        } catch (err) {
+          console.warn("[PanelStack] Failed to show panel:", err);
+        }
+      })();
     }
-  }, [visiblePanel?.id, visiblePanel?.artifacts?.htmlPath, visiblePanel?.artifacts?.buildState]);
+  }, [
+    effectiveSidebarWidth,
+    sidebarVisible,
+    visiblePanel?.id,
+    visiblePanel?.artifacts?.htmlPath,
+    visiblePanel?.artifacts?.buildState,
+  ]);
 
-  // Notify main process of layout changes (sidebar visibility and width)
-  const mobileSidebarWidth = Math.max(0, Math.min(360, viewportWidth - 48));
-  const effectiveSidebarWidth = isMobile ? mobileSidebarWidth : sidebarWidth;
-  const sidebarVisible = navigationMode === "tree";
   useEffect(() => {
     void view
       .updateLayout({
@@ -517,6 +532,41 @@ export function PanelStack({
       })
       .catch((err: unknown) => console.warn("[PanelStack] Layout update failed:", err));
   }, [effectiveSidebarWidth, sidebarVisible]);
+
+  useLayoutEffect(() => {
+    const el = panelContentRef.current;
+    if (!el) {
+      void view.updateLayout({ panelContentBounds: null });
+      return;
+    }
+
+    const updatePanelBounds = () => {
+      const rect = el.getBoundingClientRect();
+      void view
+        .updateLayout({
+          panelContentBounds: {
+            x: rect.left,
+            y: rect.top,
+            width: rect.width,
+            height: rect.height,
+          },
+        })
+        .catch((err: unknown) => console.warn("[PanelStack] Content bounds update failed:", err));
+    };
+
+    updatePanelBounds();
+    const frame = window.requestAnimationFrame(updatePanelBounds);
+    const observer =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updatePanelBounds);
+    observer?.observe(el);
+    window.addEventListener("resize", updatePanelBounds);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer?.disconnect();
+      window.removeEventListener("resize", updatePanelBounds);
+      void view.updateLayout({ panelContentBounds: null });
+    };
+  }, [visiblePanel?.id, visiblePanel?.artifacts?.htmlPath]);
 
   // Send theme CSS to main process for injection into views
   useEffect(() => {
@@ -1039,7 +1089,7 @@ export function PanelStack({
               flexDirection: "column",
             }}
           >
-            <Box style={{ flex: 1, minHeight: 0, position: "relative" }}>
+            <Box ref={panelContentRef} style={{ flex: 1, minHeight: 0, position: "relative" }}>
               {renderPanelContent()}
             </Box>
           </Card>
