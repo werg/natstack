@@ -529,6 +529,47 @@ describe("PanelOrchestrator.recoverShellSnapshot", () => {
   });
 });
 
+describe("PanelOrchestrator.applyServerPanelTreeSnapshot", () => {
+  it("ignores server echo snapshots that match the optimistic local tree", async () => {
+    const registry = new PanelRegistry({ onTreeUpdated: vi.fn() });
+    const root = makePanel("root", [], {
+      title: "Runtime title",
+      artifacts: { buildState: "ready", htmlPath: "http://localhost/panels/root/" },
+    });
+    registry.addPanel(root, null, { addAsRoot: true });
+    const { orchestrator, serverClient } = createOrchestrator(registry);
+    const repopulate = vi.spyOn(registry, "repopulate");
+
+    await orchestrator.applyServerPanelTreeSnapshot({
+      revision: 1,
+      rootPanels: [
+        makePanel("root", [], {
+          title: "Runtime title",
+          artifacts: { buildState: "building", buildProgress: "Restoring..." },
+        }),
+      ],
+    });
+
+    expect(repopulate).not.toHaveBeenCalled();
+    expect(serverClient.call).not.toHaveBeenCalledWith("panelRuntime", "getSnapshot", []);
+  });
+
+  it("applies server snapshots when the semantic tree changes", async () => {
+    const registry = new PanelRegistry({ onTreeUpdated: vi.fn() });
+    registry.addPanel(makePanel("root", [], { title: "Old title" }), null, { addAsRoot: true });
+    const { orchestrator } = createOrchestrator(registry);
+    const repopulate = vi.spyOn(registry, "repopulate");
+
+    await orchestrator.applyServerPanelTreeSnapshot({
+      revision: 1,
+      rootPanels: [makePanel("root", [], { title: "New title" })],
+    });
+
+    expect(repopulate).toHaveBeenCalledOnce();
+    expect(registry.getPanel("root")?.title).toBe("New title");
+  });
+});
+
 describe("PanelOrchestrator.getBootstrapConfig", () => {
   it("returns the leased runtime connection id string", async () => {
     const registry = new PanelRegistry({ onTreeUpdated: vi.fn() });

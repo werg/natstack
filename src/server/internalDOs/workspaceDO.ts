@@ -45,6 +45,7 @@ interface DbSlotRow {
   slot_id: string;
   parent_slot_id: string | null;
   current_entity_id: string | null;
+  current_entity_title?: string | null;
   current_entry_key: string | null;
   position_id: string;
   created_at: number;
@@ -599,15 +600,27 @@ export class WorkspaceDO extends DurableObjectBase {
   }
 
   slotGet(slotId: string): DbSlotRow | null {
-    const row = this.sql.exec(`SELECT * FROM slots WHERE slot_id = ?`, slotId).toArray()[0] as
-      | DbSlotRow
-      | undefined;
+    const row = this.sql
+      .exec(
+        `SELECT s.*, e.display_title AS current_entity_title
+         FROM slots s
+         LEFT JOIN entities e ON s.current_entity_id = e.id
+         WHERE s.slot_id = ?`,
+        slotId
+      )
+      .toArray()[0] as DbSlotRow | undefined;
     return row ?? null;
   }
 
   slotListOpen(): DbSlotRow[] {
     return this.sql
-      .exec(`SELECT * FROM slots WHERE closed_at IS NULL ORDER BY position_id, created_at, slot_id`)
+      .exec(
+        `SELECT s.*, e.display_title AS current_entity_title
+         FROM slots s
+         LEFT JOIN entities e ON s.current_entity_id = e.id
+         WHERE s.closed_at IS NULL
+         ORDER BY s.position_id, s.created_at, s.slot_id`
+      )
       .toArray() as unknown as DbSlotRow[];
   }
 

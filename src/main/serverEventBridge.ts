@@ -1,5 +1,6 @@
 import type { EventService } from "@natstack/shared/eventsService";
 import { isValidEventName, type EventName } from "@natstack/shared/events";
+import type { PanelTreeSnapshot } from "@natstack/shared/types";
 import type { PanelRuntimeLeaseChangedEvent } from "@natstack/shared/panel/panelLease";
 import type { ServerClient } from "./serverClient.js";
 import type { PanelOrchestrator } from "./panelOrchestrator.js";
@@ -108,10 +109,10 @@ export function createServerEventBridge(deps: ServerEventBridgeDeps) {
 
     if (bareEvent === "panel-tree-updated") {
       void panelOrchestrator
-        ?.recoverShellSnapshot({ loadFocusedView: false })
+        ?.applyServerPanelTreeSnapshot(payload as PanelTreeSnapshot)
         .catch((err: unknown) => {
           deps.warn(
-            `[panelTree] failed to recover server tree snapshot: ${
+            `[panelTree] failed to apply server tree snapshot: ${
               err instanceof Error ? err.message : String(err)
             }`
           );

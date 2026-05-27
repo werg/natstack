@@ -33,6 +33,7 @@ export interface SlotRow {
   slot_id: PanelSlotId;
   parent_slot_id: PanelSlotId | null;
   current_entity_id: PanelEntityId | null;
+  current_entity_title?: string | null;
   current_entry_key: string | null;
   position_id: string;
   created_at: number;

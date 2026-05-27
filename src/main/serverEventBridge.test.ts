@@ -7,6 +7,7 @@ function createHarness() {
   const panelOrchestrator = {
     applyBuildComplete: vi.fn(),
     applyRuntimeLeaseChanged: vi.fn(async () => {}),
+    applyServerPanelTreeSnapshot: vi.fn(async () => undefined),
     createBrowserUrlPanel: vi.fn(async () => ({ id: "browser", title: "Browser" })),
     recoverShellSnapshot: vi.fn(async () => undefined),
   };
@@ -69,15 +70,15 @@ describe("createServerEventBridge", () => {
     });
   });
 
-  it("recovers the local panel tree when the server tree changes", async () => {
+  it("applies server panel tree snapshots without reloading the tree", async () => {
     const { handle, eventService, panelOrchestrator } = createHarness();
+    const snapshot = { revision: 2, rootPanels: [] };
 
-    handle("event:panel-tree-updated", { revision: 2, rootPanels: [], collapsedIds: [] });
+    handle("event:panel-tree-updated", snapshot);
     await Promise.resolve();
 
-    expect(panelOrchestrator.recoverShellSnapshot).toHaveBeenCalledWith({
-      loadFocusedView: false,
-    });
+    expect(panelOrchestrator.applyServerPanelTreeSnapshot).toHaveBeenCalledWith(snapshot);
+    expect(panelOrchestrator.recoverShellSnapshot).not.toHaveBeenCalled();
     expect(eventService.emit).not.toHaveBeenCalled();
   });
 

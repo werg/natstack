@@ -2044,6 +2044,18 @@ async function main() {
       return appHost?.launchHostTarget(target) ?? false;
     },
     approvalQueue,
+    registerEntityTitleListener: (
+      listener: (entityId: string, title: string | undefined) => void | Promise<void>
+    ) =>
+      entityTitleService.onChanged((entityId, title) => {
+        void Promise.resolve(listener(entityId, title)).catch((error: unknown) => {
+          console.warn(
+            `[entityTitleService] panel title listener failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        });
+      }),
     getEffectiveVersion: async (source: string) => {
       const buildSystem = container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");
       return buildSystem?.getEffectiveVersion(source) ?? undefined;

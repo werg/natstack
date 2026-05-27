@@ -674,6 +674,27 @@ export class PanelManager {
     this.registry.notifyPanelTreeUpdate();
   }
 
+  async resolveTitleTargetSlot(
+    entityId: string
+  ): Promise<{ slotId: PanelSlotId; titleIsAlreadyPersistedForSlot: boolean } | null> {
+    const slots = (await this.workspaceState.listSlots()).filter((slot) => slot.closed_at == null);
+    const direct = slots.find((slot) => slot.current_entity_id === entityId);
+    if (direct) {
+      return { slotId: direct.slot_id, titleIsAlreadyPersistedForSlot: true };
+    }
+
+    const entity = await this.workspaceState.resolveActiveEntity(entityId);
+    if (!entity) return null;
+    for (const slot of slots) {
+      if (!slot.current_entity_id) continue;
+      const current = await this.workspaceState.resolveActiveEntity(slot.current_entity_id);
+      if (current?.kind === "panel" && current.contextId === entity.contextId) {
+        return { slotId: slot.slot_id, titleIsAlreadyPersistedForSlot: false };
+      }
+    }
+    return null;
+  }
+
   async updatePanelState(slotId: PanelSlotId, state: PanelNavigationState): Promise<void> {
     const livePanel = this.registry.getPanel(slotId);
     if (!livePanel) return;
@@ -841,6 +862,7 @@ export class PanelManager {
       const title = this.titleFor(
         slot.slot_id,
         snapshot.source,
+        typeof slot.current_entity_title === "string" ? slot.current_entity_title : undefined,
         metadataBySource.get(snapshot.source)
       );
       return {
@@ -913,7 +935,14 @@ export class PanelManager {
     return idx >= 0 ? idx : null;
   }
 
-  private titleFor(slotId: PanelSlotId, source: string, metadata?: PanelMetadata): string {
+  private titleFor(
+    slotId: PanelSlotId,
+    source: string,
+    entityTitle?: string,
+    metadata?: PanelMetadata
+  ): string {
+    const trimmedEntityTitle = entityTitle?.trim();
+    if (trimmedEntityTitle) return trimmedEntityTitle;
     const manifest = this.tryResolveManifestForSource(source);
     if (manifest?.title) return manifest.title;
     if (metadata?.title) return metadata.title;

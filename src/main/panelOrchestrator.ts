@@ -9,10 +9,12 @@
 import { createDevLogger } from "@natstack/dev-log";
 import { randomUUID } from "crypto";
 import type {
+  Panel,
   PanelFocusResult,
   PanelNavigationState,
   PanelRecoverySnapshot,
   PanelSnapshot,
+  PanelTreeSnapshot,
 } from "@natstack/shared/types";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import type { EventService } from "@natstack/shared/eventsService";
@@ -117,6 +119,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
   private readonly stateArgsPushUnsubs = new Map<string, () => void>();
   private nextAgentRequestId = 1;
   private viewRevision = 0;
+  private lastAppliedServerPanelTreeRevision = 0;
   private readonly restorePolicy: PanelRestorePolicy;
 
   constructor(deps: PanelOrchestratorDeps) {
@@ -959,6 +962,57 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
       []
     )) as RuntimeLeaseSnapshot;
     this.registry.applyRuntimeLeaseSnapshot(snapshot);
+  }
+
+  async applyServerPanelTreeSnapshot(snapshot: PanelTreeSnapshot): Promise<void> {
+    if (snapshot.revision <= this.lastAppliedServerPanelTreeRevision) return;
+    this.lastAppliedServerPanelTreeRevision = snapshot.revision;
+    if (this.panelTreesMatchSemantically(this.registry.getRootPanels(), snapshot.rootPanels)) {
+      return;
+    }
+    this.registry.repopulate(snapshot.rootPanels);
+    await this.syncRuntimeLeaseSnapshot().catch((error: unknown) => {
+      log.warn(
+        `[applyServerPanelTreeSnapshot] Failed to sync runtime leases: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    });
+  }
+
+  private panelTreesMatchSemantically(
+    current: readonly Panel[],
+    incoming: readonly Panel[]
+  ): boolean {
+    if (current.length !== incoming.length) return false;
+    return current.every((panel, index) =>
+      this.panelsMatchSemantically(panel, assertPresent(incoming[index]))
+    );
+  }
+
+  private panelsMatchSemantically(current: Panel, incoming: Panel): boolean {
+    if (current.id !== incoming.id) return false;
+    if (current.title !== incoming.title) return false;
+    if ((current.positionId ?? null) !== (incoming.positionId ?? null)) return false;
+    if ((current.selectedChildId ?? null) !== (incoming.selectedChildId ?? null)) return false;
+    if (!this.panelSnapshotsMatchSemantically(current, incoming)) return false;
+    return this.panelTreesMatchSemantically(current.children, incoming.children);
+  }
+
+  private panelSnapshotsMatchSemantically(current: Panel, incoming: Panel): boolean {
+    try {
+      const currentSnapshot = getCurrentSnapshot(current);
+      const incomingSnapshot = getCurrentSnapshot(incoming);
+      return (
+        currentSnapshot.source === incomingSnapshot.source &&
+        currentSnapshot.contextId === incomingSnapshot.contextId &&
+        currentSnapshot.options.ref === incomingSnapshot.options.ref &&
+        JSON.stringify(currentSnapshot.stateArgs ?? null) ===
+          JSON.stringify(incomingSnapshot.stateArgs ?? null)
+      );
+    } catch {
+      return false;
+    }
   }
 
   async recoverShellSnapshot(

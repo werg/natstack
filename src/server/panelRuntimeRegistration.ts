@@ -228,6 +228,21 @@ async function createServerPanelTreeBridge(
   const emitTreeSnapshot = () => {
     deps.eventService?.emit("panel-tree-updated", registry.getPanelTreeSnapshot());
   };
+  deps.registerEntityTitleListener?.(async (entityId, title) => {
+    const normalized = title?.trim();
+    if (!normalized) return;
+    await sync();
+    const target = await panelManager.resolveTitleTargetSlot(entityId);
+    if (!target) return;
+    const panel = registry.getPanel(target.slotId);
+    if (panel?.title === normalized) return;
+    if (target.titleIsAlreadyPersistedForSlot) {
+      registry.updateTitle(target.slotId, normalized);
+    } else {
+      await panelManager.updateTitle(asPanelSlotId(target.slotId), normalized);
+    }
+    emitTreeSnapshot();
+  });
   const withRuntimeEntity = async <T extends { panelId: string }>(
     item: T
   ): Promise<T & { runtimeEntityId: string }> => ({
@@ -615,6 +630,9 @@ export interface CommonDeps {
   launchHostTarget?: (target: HostTarget) => Promise<boolean> | boolean;
   approvalQueue?: ApprovalQueue;
   getEffectiveVersion?: (source: string) => Promise<string | undefined>;
+  registerEntityTitleListener?: (
+    listener: (entityId: string, title: string | undefined) => void | Promise<void>
+  ) => () => void;
 }
 
 export async function registerPanelServices(deps: CommonDeps): Promise<void> {
