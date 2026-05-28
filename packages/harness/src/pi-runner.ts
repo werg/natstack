@@ -550,9 +550,13 @@ export class PiRunner {
   }
 
   getDebugState(): Record<string, unknown> {
+    const activeToolNames = this.extensionRuntime
+      ? this.computeActiveTools().map((tool) => tool.name)
+      : [];
     return {
       running: this.running,
       currentTurnId: this.currentTurnId,
+      activeToolNames,
       openInvocationIds: [...this.openInvocationIds],
       openToolInvocations: [...this.openToolInvocations.values()].map((invocation) => ({
         ...invocation,
@@ -1144,8 +1148,11 @@ export class PiRunner {
 
   private async refreshRuntimeTools(): Promise<void> {
     await this.extensionRuntime!.dispatch("session_start", { type: "session_start" });
+    const tools = this.computeActiveTools();
+    this.rememberCheckpoint("tools.refreshed", {
+      activeToolNames: tools.map((tool) => tool.name),
+    });
     if (this.harness) {
-      const tools = this.computeActiveTools();
       await this.harness.setTools(
         tools,
         tools.map((tool) => tool.name)

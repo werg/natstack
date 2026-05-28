@@ -374,6 +374,26 @@ describe("PiRunner", () => {
     runner.dispose();
   });
 
+  it("includes active channel tools in debug state", async () => {
+    const runner = new PiRunner(createOptions({
+      rosterCallback: () => [
+        {
+          participantHandle: "sandbox",
+          name: "eval",
+          description: "Run code in the panel sandbox",
+          parameters: { type: "object" },
+        },
+      ],
+    }));
+    await runner.init();
+
+    const debug = await runner.getDebugState();
+    expect(debug["activeToolNames"]).toEqual(expect.arrayContaining(["read", "eval"]));
+    expect(JSON.stringify(debug["phase"])).toContain("tools.refreshed");
+
+    runner.dispose();
+  });
+
   it("repairs an empty aborted assistant leaf before continuing", async () => {
     const runner = new PiRunner(createOptions());
     const internals = runner as unknown as {

@@ -85,9 +85,8 @@ Then repeat this eval until `remainingCategories` is `0`:
 
 Run this short orchestration snippet directly in eval. File-loaded eval remains
 preferred for substantive multi-line or multi-file code, but helper files should
-not be used merely to wrap this category loop. If a later eval call cannot be
-made, report the exact failed eval attempt and its exact error; unrelated
-`edit`, `write`, `read`, or helper-file errors do not mean eval is unavailable.
+not be used merely to wrap this category loop. If an operation fails, report the
+error you actually observed, verbatim, with the operation that produced it.
 
 ```
 eval({
