@@ -103,7 +103,7 @@ async function createGadBackedChannel(
       throw new Error(`unexpected rpc call ${target}.${method}`);
     }),
   };
-  return { gad, ...channel };
+  return { gad, blobs, ...channel };
 }
 
 describe("PubSubChannel", () => {
@@ -450,6 +450,61 @@ describe("PubSubChannel", () => {
         }),
       ])
     );
+  });
+
+  it("caps oversized method results before publishing terminal invocation events", async () => {
+    const { instance, gad, blobs } = await createGadBackedChannel();
+
+    setRpcCaller(instance, "panel:caller", "panel");
+    await instance.subscribe("panel:caller", { contextId: "ctx-1", name: "Caller", type: "panel" });
+    setRpcCaller(instance, "panel:provider", "panel");
+    await instance.subscribe("panel:provider", {
+      contextId: "ctx-1",
+      name: "Provider",
+      type: "panel",
+    });
+
+    setRpcCaller(instance, "panel:caller", "panel");
+    await instance.callMethod(
+      "panel:caller",
+      "panel:provider",
+      "transport-large",
+      "eval",
+      { code: "huge()" },
+      { invocationId: "invocation-large", transportCallId: "transport-large", turnId: "turn-large" }
+    );
+
+    await instance.handleMethodResult("transport-large", { text: "x".repeat(80 * 1024) }, false);
+
+    const rows = gad.sql
+      .exec(
+        `SELECT payload_ref_json FROM channel_envelopes WHERE payload_kind = ? ORDER BY seq ASC`,
+        AGENTIC_EVENT_PAYLOAD_KIND
+      )
+      .toArray();
+    const events = rows.map((row: Record<string, unknown>) =>
+      JSON.parse(row["payload_ref_json"] as string)
+    );
+    const completed = events.find(
+      (event: { kind?: string; causality?: { invocationId?: string } }) =>
+        event.kind === "invocation.completed" &&
+        event.causality?.invocationId === "invocation-large"
+    );
+    const resultRef = completed?.payload?.result as { digest?: string } | undefined;
+    expect(resultRef).toMatchObject({
+      protocol: "natstack.blob-ref.v1",
+      digest: expect.any(String),
+      encoding: "json",
+    });
+    const cappedResult = JSON.parse(blobs.get(resultRef!.digest!)!);
+    expect(cappedResult).toMatchObject({
+      omitted: true,
+      reason: "method result exceeds durable inline budget",
+      method: "eval",
+      transportCallId: "transport-large",
+      stored: expect.objectContaining({ digest: expect.any(String), encoding: "json" }),
+    });
+    expect(JSON.stringify(completed).length).toBeLessThan(1_000);
   });
 
   it("hydrates the message type registry from GAD instead of trusting a partial local cache", async () => {

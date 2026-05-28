@@ -53,6 +53,22 @@ const PARTICIPANT_STALE_MS = 5 * 60 * 1000; // 5 minutes
 const PARTICIPANT_CLEANUP_INTERVAL_MS = 60 * 1000; // 1 minute
 /** Default channel-envelope replay window. */
 const REPLAY_LIMIT = 50;
+const MAX_INLINE_METHOD_RESULT_BYTES = 64 * 1024;
+const METHOD_RESULT_PREVIEW_CHARS = 120;
+
+function jsonByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function summarizeOversizedResult(value: unknown): Record<string, unknown> {
+  if (Array.isArray(value)) {
+    return { type: "array", length: value.length };
+  }
+  if (value && typeof value === "object") {
+    return { type: "object", keys: Object.keys(value as Record<string, unknown>).slice(0, 50) };
+  }
+  return { type: typeof value };
+}
 
 function parseDOParticipantId(
   participantId: string
@@ -1040,6 +1056,7 @@ export class PubSubChannel extends DurableObjectBase {
           invocationId,
           transportCallId,
           turnId,
+          undefined,
           { error: errorMessage },
           true
         );
@@ -1579,6 +1596,7 @@ export class PubSubChannel extends DurableObjectBase {
         invocationId,
         transportCallId,
         turnId,
+        method,
         { error: `Target ${targetPid} not found` },
         true
       );
@@ -1605,6 +1623,7 @@ export class PubSubChannel extends DurableObjectBase {
             pending.invocationId,
             pending.transportCallId,
             pending.turnId,
+            pending.method,
             res.result,
             !!res.isError
           );
@@ -1617,6 +1636,7 @@ export class PubSubChannel extends DurableObjectBase {
             pending.invocationId,
             pending.transportCallId,
             pending.turnId,
+            pending.method,
             err instanceof Error ? err.message : String(err),
             true
           );
@@ -1648,6 +1668,7 @@ export class PubSubChannel extends DurableObjectBase {
       pending.invocationId,
       pending.transportCallId,
       pending.turnId,
+      pending.method,
       content,
       isError
     );
@@ -1721,6 +1742,7 @@ export class PubSubChannel extends DurableObjectBase {
     invocationId: string,
     transportCallId: string | undefined,
     turnId: string | undefined,
+    methodName: string | undefined,
     result: unknown,
     isError: boolean
   ): Promise<number | undefined> {
@@ -1729,12 +1751,17 @@ export class PubSubChannel extends DurableObjectBase {
 
     // Persist and broadcast the result as the single canonical invocation completion path.
     await this.ensureMethodRoot(invocationId, callerId, undefined, transportCallId, turnId);
+    const boundedResult = await this.boundMethodResultForDurableEvent(
+      methodName,
+      transportCallId,
+      result
+    );
     const payload = this.invocationResultPayload(
       callerId,
       invocationId,
       transportCallId,
       turnId,
-      result,
+      boundedResult,
       isError ?? false
     );
     const event = await this.appendLogEvent(AGENTIC_EVENT_PAYLOAD_KIND, payload, callerId);
@@ -1742,6 +1769,56 @@ export class PubSubChannel extends DurableObjectBase {
       broadcast(this.broadcastDeps, event, { kind: "log", phase: "live" }, callerId);
     }
     return event.id;
+  }
+
+  private async boundMethodResultForDurableEvent(
+    methodName: string | undefined,
+    transportCallId: string | undefined,
+    result: unknown
+  ): Promise<unknown> {
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(result);
+    } catch (err) {
+      return {
+        omitted: true,
+        reason: "method result is not JSON serializable",
+        method: methodName ?? null,
+        transportCallId: transportCallId ?? null,
+        error: err instanceof Error ? err.message : String(err),
+        preview: String(result).slice(0, METHOD_RESULT_PREVIEW_CHARS),
+        summary: summarizeOversizedResult(result),
+      };
+    }
+
+    const bytes = jsonByteLength(serialized);
+    if (bytes <= MAX_INLINE_METHOD_RESULT_BYTES) return result;
+
+    const capped: Record<string, unknown> = {
+      omitted: true,
+      reason: "method result exceeds durable inline budget",
+      method: methodName ?? null,
+      transportCallId: transportCallId ?? null,
+      bytes,
+      inlineLimitBytes: MAX_INLINE_METHOD_RESULT_BYTES,
+      summary: summarizeOversizedResult(result),
+    };
+    try {
+      const stored = await this.rpc.call<{ digest: string; size: number }>(
+        "main",
+        "blobstore.putText",
+        [serialized]
+      );
+      capped["stored"] = {
+        digest: stored.digest,
+        size: stored.size,
+        encoding: "json",
+      };
+    } catch (err) {
+      capped["storageError"] = err instanceof Error ? err.message : String(err);
+    }
+    capped["preview"] = serialized.slice(0, METHOD_RESULT_PREVIEW_CHARS);
+    return capped;
   }
 
   /**
