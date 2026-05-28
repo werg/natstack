@@ -51,13 +51,6 @@ process.on("unhandledRejection", (reason) => {
 dialog.showErrorBox = logSuppressedErrorDialog;
 
 app.setName(APP_NAME);
-if (!IS_HEADLESS_HOST && !app.requestSingleInstanceLock()) {
-  app.exit(0);
-  process.exit(0);
-}
-registerProtocol();
-installEarlyOpenUrlBuffer();
-enqueueFirstArgvLink(process.argv);
 
 import { PanelRegistry } from "@natstack/shared/panelRegistry";
 import { asPanelSlotId } from "@natstack/shared/panel/ids";
@@ -79,6 +72,7 @@ import { CentralDataManager } from "@natstack/shared/centralData";
 import {
   resolveStartupMode,
   resolveLocalStartupMode,
+  shouldRequestSingleInstanceLock,
   getRemoteUserDataDir,
   type StartupMode,
 } from "./startupMode.js";
@@ -159,6 +153,20 @@ try {
   app.quit();
   process.exit(1);
 }
+
+if (
+  shouldRequestSingleInstanceLock(startupMode, {
+    isHeadlessHost: IS_HEADLESS_HOST,
+    isDevelopment: isDev(),
+  }) &&
+  !app.requestSingleInstanceLock()
+) {
+  app.exit(0);
+  process.exit(0);
+}
+registerProtocol();
+installEarlyOpenUrlBuffer();
+enqueueFirstArgvLink(process.argv);
 
 if (startupMode.kind === "local") {
   workspaceId = startupMode.workspaceId;

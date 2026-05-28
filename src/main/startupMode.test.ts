@@ -201,3 +201,72 @@ describe("parseRemoteStartupMode priority", () => {
     expect(result.tls?.fingerprint).toBe("AB:CD:EF");
   });
 });
+
+describe("shouldRequestSingleInstanceLock", () => {
+  it("does not lock local development launches", async () => {
+    const mod = await import("./startupMode.js");
+
+    expect(
+      mod.shouldRequestSingleInstanceLock(
+        {
+          kind: "local",
+          wsDir: "/workspace",
+          workspaceId: "dev",
+          isEphemeral: true,
+          createdFromTemplate: false,
+        },
+        { isHeadlessHost: false, isDevelopment: true }
+      )
+    ).toBe(false);
+  });
+
+  it("keeps the lock for packaged local launches", async () => {
+    const mod = await import("./startupMode.js");
+
+    expect(
+      mod.shouldRequestSingleInstanceLock(
+        {
+          kind: "local",
+          wsDir: "/workspace",
+          workspaceId: "default",
+          isEphemeral: false,
+          createdFromTemplate: false,
+        },
+        { isHeadlessHost: false, isDevelopment: false }
+      )
+    ).toBe(true);
+  });
+
+  it("keeps the lock for remote development launches so deep links route to the active shell", async () => {
+    const mod = await import("./startupMode.js");
+
+    expect(
+      mod.shouldRequestSingleInstanceLock(
+        {
+          kind: "remote",
+          remoteUrl: new URL("https://server.example"),
+          bootstrap: "device",
+          deviceId: "device",
+          refreshToken: "refresh",
+        },
+        { isHeadlessHost: false, isDevelopment: true }
+      )
+    ).toBe(true);
+  });
+
+  it("does not lock headless hosts", async () => {
+    const mod = await import("./startupMode.js");
+
+    expect(
+      mod.shouldRequestSingleInstanceLock(
+        {
+          kind: "remote",
+          remoteUrl: new URL("https://server.example"),
+          bootstrap: "admin-token",
+          adminToken: "token",
+        },
+        { isHeadlessHost: true, isDevelopment: false }
+      )
+    ).toBe(false);
+  });
+});

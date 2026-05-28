@@ -16,6 +16,12 @@ export interface ServerPorts {
   shellToken?: string;
 }
 
+class ServerStartupExitError extends Error {
+  constructor(code: number | null) {
+    super(`Server exited during startup with code ${code}`);
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -81,7 +87,18 @@ export class ServerProcessManager {
       });
     }
 
-    const ports = await this.waitForReady(proc);
+    let ports: ServerPorts;
+    try {
+      ports = await this.waitForReady(proc);
+    } catch (error) {
+      if (!(error instanceof ServerStartupExitError)) {
+        await this.stopProcess(proc);
+      }
+      if (this.proc === proc) {
+        this.proc = null;
+      }
+      throw error;
+    }
     this.ports = ports;
 
     // Wire up crash handler after startup succeeds
@@ -143,23 +160,7 @@ export class ServerProcessManager {
     if (!proc) return;
     this.isShuttingDown = true;
 
-    // Send shutdown via IPC
-    proc.postMessage({ type: "shutdown" });
-
-    // Wait up to 5s for clean exit, then SIGKILL
-    let killTimer: ReturnType<typeof setTimeout> | null = null;
-    await Promise.race([
-      new Promise<void>((resolve) => proc.on("exit", () => resolve())),
-      new Promise<void>((resolve) => {
-        killTimer = setTimeout(() => {
-          proc.kill();
-          resolve();
-        }, 5000);
-      }),
-    ]);
-    if (killTimer) {
-      clearTimeout(killTimer);
-    }
+    await this.stopProcess(proc);
 
     if (this.proc === proc) {
       this.proc = null;
@@ -192,6 +193,28 @@ export class ServerProcessManager {
     } catch (error) {
       console.error("[ServerProcessManager] Restart failed:", error);
       this.config.onCrash(code);
+    }
+  }
+
+  private async stopProcess(proc: ProcessAdapter): Promise<void> {
+    try {
+      proc.postMessage({ type: "shutdown" });
+    } catch (error) {
+      console.warn("[ServerProcessManager] Failed to request server shutdown:", error);
+    }
+
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
+    await Promise.race([
+      new Promise<void>((resolve) => proc.on("exit", () => resolve())),
+      new Promise<void>((resolve) => {
+        killTimer = setTimeout(() => {
+          proc.kill();
+          resolve();
+        }, 5000);
+      }),
+    ]);
+    if (killTimer) {
+      clearTimeout(killTimer);
     }
   }
 
@@ -243,7 +266,7 @@ export class ServerProcessManager {
       });
 
       proc.on("exit", (code) => {
-        reject(new Error(`Server exited during startup with code ${code}`));
+        reject(new ServerStartupExitError(code));
       });
     });
   }

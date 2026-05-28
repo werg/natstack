@@ -46,6 +46,15 @@ export type StartupMode =
 
 export type LocalStartupMode = Extract<StartupMode, { kind: "local" }>;
 
+export function shouldRequestSingleInstanceLock(
+  mode: StartupMode,
+  opts: { isHeadlessHost: boolean; isDevelopment: boolean }
+): boolean {
+  if (opts.isHeadlessHost) return false;
+  if (opts.isDevelopment && mode.kind === "local") return false;
+  return true;
+}
+
 export function isTrustworthyRemoteOrigin(remoteUrl: URL): boolean {
   if (remoteUrl.protocol === "https:") {
     return true;
