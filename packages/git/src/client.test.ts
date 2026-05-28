@@ -5,8 +5,10 @@
  * so we focus on the exported GitAuthError class which is cleanly testable.
  */
 
-import type { HttpClient } from "isomorphic-git";
+import type { HttpClient, StatusRow } from "isomorphic-git";
+import git from "isomorphic-git";
 import { createRoutingHttpClient, GitAuthError } from "./client.js";
+import { GitClient, type FsPromisesLike } from "./client.js";
 
 describe("GitAuthError", () => {
   it("has correct name and message", () => {
@@ -82,5 +84,29 @@ describe("createRoutingHttpClient", () => {
 
     expect(internal.request).not.toHaveBeenCalled();
     expect(external.request).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("GitClient", () => {
+  const fs = {
+    readFile: vi.fn(),
+    writeFile: vi.fn(),
+    unlink: vi.fn(),
+    readdir: vi.fn(),
+    mkdir: vi.fn(),
+    rmdir: vi.fn(),
+    stat: vi.fn(),
+  } satisfies FsPromisesLike;
+
+  it("exposes the raw isomorphic-git status matrix", async () => {
+    const matrix: StatusRow[] = [["src/app.ts", 1, 2, 1]];
+    const statusMatrix = vi.spyOn(git, "statusMatrix").mockResolvedValueOnce(matrix);
+    const client = new GitClient(fs, { token: "test-token" });
+
+    await expect(client.statusMatrix("/repo")).resolves.toEqual(matrix);
+    expect(statusMatrix).toHaveBeenCalledWith({
+      fs: expect.any(Object),
+      dir: "/repo",
+    });
   });
 });

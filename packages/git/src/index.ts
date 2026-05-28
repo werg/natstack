@@ -51,6 +51,7 @@ export type {
   PushOptions,
   CommitOptions,
   FileStatus,
+  StatusMatrixRow,
   RepoStatus,
   StashEntry,
   FileDiff,

@@ -96,6 +96,17 @@ export interface FileStatus {
 }
 
 /**
+ * Raw isomorphic-git status matrix row: [filepath, HEAD, WORKDIR, STAGE].
+ *
+ * Matrix values are version markers:
+ * - 0: absent
+ * - 1: present and unchanged from HEAD
+ * - 2: present and different from HEAD
+ * - 3: staged content differs from both HEAD and workdir
+ */
+export type StatusMatrixRow = import("isomorphic-git").StatusRow;
+
+/**
  * Repository status
  */
 export interface RepoStatus {

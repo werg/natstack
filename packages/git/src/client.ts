@@ -9,6 +9,7 @@ import type {
   CommitOptions,
   RepoStatus,
   FileStatus,
+  StatusMatrixRow,
   StashEntry,
   FileDiff,
   Hunk,
@@ -1194,6 +1195,19 @@ export class GitClient {
       dirty,
       files: changedFiles,
     };
+  }
+
+  /**
+   * Get the raw isomorphic-git status matrix.
+   *
+   * Prefer status() for normal UI and agent workflows. Use this when the caller
+   * specifically needs isomorphic-git's HEAD/WORKDIR/STAGE matrix semantics.
+   */
+  async statusMatrix(dir: string): Promise<StatusMatrixRow[]> {
+    return git.statusMatrix({
+      fs: this.fs,
+      dir,
+    });
   }
 
   /**
