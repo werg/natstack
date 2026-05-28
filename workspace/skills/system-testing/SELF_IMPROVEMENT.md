@@ -18,26 +18,76 @@ Only after the infrastructure is solid should you adjust skills or test prompts.
 
 ## Phase 1: Run Tests
 
+Run the full suite one category at a time. This avoids putting the entire suite
+behind one eval invocation and preserves partial results if a category exposes a
+runner or panel failure.
+
+```
+eval({
+  code: `
+    import { allTests, testCategories } from "@workspace-skills/system-testing";
+    const tests = allTests();
+    scope.systemTestingQueue = testCategories(tests);
+    scope.results = {
+      total: 0,
+      passed: 0,
+      failed: 0,
+      errored: 0,
+      skipped: 0,
+      duration: 0,
+      results: [],
+    };
+    return { categories: scope.systemTestingQueue, testCount: tests.length };
+  `,
+})
+```
+
+Repeat this eval until `remaining` is `0`:
+
 ```
 eval({
   code: `
     import { HeadlessRunner, TestRunner, allTests } from "@workspace-skills/system-testing";
     import { contextId } from "@workspace/runtime";
 
+    const queue = scope.systemTestingQueue ?? [];
+    const category = queue.shift();
+    if (!category) return { done: true, results: scope.results };
+
     const runner = new HeadlessRunner(contextId);
     const tester = new TestRunner(runner, {
       onTestStart: (t) => console.log("  Running: " + t.name + "..."),
       onTestEnd: (t, r, ex) => console.log("  " + (r.passed ? "PASS" : "FAIL") + ": " + t.name + " (" + ex.duration + "ms)"),
+      testTimeoutMs: 20 * 60 * 1000,
     });
 
-    const results = await tester.runSuite(allTests());
-    scope.results = results;
+    const partial = await tester.runSuite(allTests(), { category });
+    const aggregate = scope.results ?? {
+      total: 0,
+      passed: 0,
+      failed: 0,
+      errored: 0,
+      skipped: 0,
+      duration: 0,
+      results: [],
+    };
+    aggregate.total += partial.total;
+    aggregate.passed += partial.passed;
+    aggregate.failed += partial.failed;
+    aggregate.errored += partial.errored;
+    aggregate.duration += partial.duration;
+    aggregate.results.push(...partial.results);
+    aggregate.skipped = allTests().length - aggregate.total;
+    scope.systemTestingQueue = queue;
+    scope.results = aggregate;
     return {
-      total: results.total,
-      passed: results.passed,
-      failed: results.failed,
-      errored: results.errored,
-      skipped: results.skipped,
+      category,
+      remaining: queue.length,
+      total: aggregate.total,
+      passed: aggregate.passed,
+      failed: aggregate.failed,
+      errored: aggregate.errored,
+      skipped: aggregate.skipped,
     };
   `,
 })

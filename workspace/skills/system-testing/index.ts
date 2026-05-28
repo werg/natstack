@@ -54,3 +54,7 @@ export function allTests(): TestCase[] {
     ..._projectLifecycle, ..._cdpGad, ..._harnessResilience, ..._docs,
   ];
 }
+
+export function testCategories(tests: TestCase[] = allTests()): string[] {
+  return [...new Set(tests.map((test) => test.category))];
+}

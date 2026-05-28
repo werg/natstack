@@ -45,6 +45,76 @@ eval({
 
 Workspace packages like `@workspace-skills/system-testing` are auto-resolved — the build system builds them on first import. No `imports` parameter needed.
 
+## Full Suite
+
+Run the full suite category-by-category, with one eval call per category. This
+keeps each tool invocation bounded and checkpoints partial results after every
+category.
+
+First initialize the queue:
+
+```
+eval({
+  code: `
+    import { allTests, testCategories } from "@workspace-skills/system-testing";
+    const tests = allTests();
+    scope.systemTestingQueue = testCategories(tests);
+    scope.results = {
+      total: 0,
+      passed: 0,
+      failed: 0,
+      errored: 0,
+      skipped: 0,
+      duration: 0,
+      results: [],
+    };
+    return { categories: scope.systemTestingQueue, testCount: tests.length };
+  `,
+})
+```
+
+Then repeat this eval until `remaining` is `0`:
+
+```
+eval({
+  code: `
+    import { HeadlessRunner, TestRunner, allTests } from "@workspace-skills/system-testing";
+    import { contextId } from "@workspace/runtime";
+    const queue = scope.systemTestingQueue ?? [];
+    const category = queue.shift();
+    if (!category) return { done: true, results: scope.results };
+
+    const runner = new HeadlessRunner(contextId);
+    const tester = new TestRunner(runner, {
+      onTestStart: (t) => console.log("Running: " + t.name + "..."),
+      onTestEnd: (t, r) => console.log((r.passed ? "PASS" : "FAIL") + ": " + t.name),
+      testTimeoutMs: 20 * 60 * 1000,
+    });
+
+    const partial = await tester.runSuite(allTests(), { category });
+    const aggregate = scope.results ?? {
+      total: 0,
+      passed: 0,
+      failed: 0,
+      errored: 0,
+      skipped: 0,
+      duration: 0,
+      results: [],
+    };
+    aggregate.total += partial.total;
+    aggregate.passed += partial.passed;
+    aggregate.failed += partial.failed;
+    aggregate.errored += partial.errored;
+    aggregate.duration += partial.duration;
+    aggregate.results.push(...partial.results);
+    aggregate.skipped = allTests().length - aggregate.total;
+    scope.systemTestingQueue = queue;
+    scope.results = aggregate;
+    return { category, remaining: queue.length, ...aggregate, results: undefined };
+  `,
+})
+```
+
 ## Inspecting Results
 
 Every test result includes full diagnostics. **After running a suite, always inspect failures in detail:**
@@ -211,7 +281,8 @@ if (fail.execution.snapshot) {
 | `harnessResilienceTests` | 5 | Eval errors, huge returns, visible timeouts, invalid args, post-tool follow-ups |
 | `docsProbeTests` | 10 | Scenario probes that require agents to apply relevant skills, not summarize docs |
 
-Use `allTests()` to get all 92 tests combined.
+Use `allTests()` to get all 92 tests combined. For full-suite execution, prefer
+the category queue above instead of a single `tester.runSuite(allTests())` eval.
 
 ## Expanded Regression Coverage
 

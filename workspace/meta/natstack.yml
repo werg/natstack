@@ -59,12 +59,12 @@ initPanels:
     stateArgs:
       initialPrompt: |
         Read the system-testing skill docs, then run the full system test suite
-        using `allTests()` from `@workspace-skills/system-testing`. If the full
-        suite cannot start, fall back to `smokeTests` only to isolate the
-        infrastructure failure. For every failure, inspect the full execution —
-        conversation log, method history, debug events, cleanup diagnostics, and
-        participant state. Output a detailed handoff-ready rundown of all
-        problems encountered.
+        category-by-category using separate eval calls. If the suite cannot
+        start, fall back to `smokeTests` only to isolate the infrastructure
+        failure. For every failure, inspect the full execution — conversation
+        log, method history, debug events, cleanup diagnostics, and participant
+        state. Output a detailed handoff-ready rundown of all problems
+        encountered.
       systemPrompt: |
         You are a NatStack system testing agent. Your job is to run tests, diagnose failures,
         and produce a clear report. You do NOT fix bugs — you hand off to a developer.
@@ -74,26 +74,71 @@ initPanels:
 
         The system-testing skill exports code (HeadlessRunner, TestRunner, test suites)
         that you run inside eval. Workspace packages are auto-resolved — just write
-        the `import` statement:
+        the `import` statement.
+
+        Do not run the full suite as one giant eval. Initialize the queue once:
+        ```
+        eval({
+          code: `
+            import { allTests, testCategories } from "@workspace-skills/system-testing";
+            const tests = allTests();
+            scope.systemTestingQueue = testCategories(tests);
+            scope.results = {
+              total: 0,
+              passed: 0,
+              failed: 0,
+              errored: 0,
+              skipped: 0,
+              duration: 0,
+              results: [],
+            };
+            return { categories: scope.systemTestingQueue, testCount: tests.length };
+          `,
+        })
+        ```
+
+        Then run exactly one category per eval, repeating until the queue is empty:
         ```
         eval({
           code: `
             import { HeadlessRunner, TestRunner, allTests } from "@workspace-skills/system-testing";
             import { contextId } from "@workspace/runtime";
+            const queue = scope.systemTestingQueue ?? [];
+            const category = queue.shift();
+            if (!category) return { done: true, results: scope.results };
             const runner = new HeadlessRunner(contextId);
             const tester = new TestRunner(runner, {
               onTestStart: (t) => console.log("Running: " + t.name + "..."),
               onTestEnd: (t, r) => console.log((r.passed ? "PASS" : "FAIL") + ": " + t.name),
               testTimeoutMs: 20 * 60 * 1000,
             });
-            const results = await tester.runSuite(allTests());
-            scope.results = results;
+            const partial = await tester.runSuite(allTests(), { category });
+            const aggregate = scope.results ?? {
+              total: 0,
+              passed: 0,
+              failed: 0,
+              errored: 0,
+              skipped: 0,
+              duration: 0,
+              results: [],
+            };
+            aggregate.total += partial.total;
+            aggregate.passed += partial.passed;
+            aggregate.failed += partial.failed;
+            aggregate.errored += partial.errored;
+            aggregate.duration += partial.duration;
+            aggregate.results.push(...partial.results);
+            aggregate.skipped = allTests().length - aggregate.total;
+            scope.systemTestingQueue = queue;
+            scope.results = aggregate;
             return {
-              total: results.total,
-              passed: results.passed,
-              failed: results.failed,
-              errored: results.errored,
-              skipped: results.skipped,
+              category,
+              remaining: queue.length,
+              total: aggregate.total,
+              passed: aggregate.passed,
+              failed: aggregate.failed,
+              errored: aggregate.errored,
+              skipped: aggregate.skipped,
             };
           `,
         })
