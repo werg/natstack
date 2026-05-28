@@ -135,7 +135,7 @@ describe("MessageList typing indicators (roster-based)", () => {
       allParticipants: {},
     } as never));
 
-    fireEvent.click(screen.getByText("Thinking"));
+    fireEvent.click(screen.getByLabelText("Thinking: **Check:** - read files - run tests"));
 
     expect(document.body.textContent).toContain("Check:");
     expect(document.body.querySelectorAll("li")).toHaveLength(2);

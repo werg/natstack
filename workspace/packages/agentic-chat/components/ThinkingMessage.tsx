@@ -32,11 +32,9 @@ const ThinkingPill = React.memo(function ThinkingPill({
         display: "inline-flex",
       }}
       tabIndex={0}
+      aria-label={preview ? `Thinking: ${preview}` : "Thinking"}
     >
       {isStreaming && <Spinner size="1" />}
-      <Text className="inline-pill-label" size="1" color="gray" weight="medium">
-        Thinking
-      </Text>
       {preview && (
         <Box className="inline-pill-summary inline-pill-markdown-preview" style={{ opacity: 0.85 }}>
           <MessageContent
@@ -89,7 +87,7 @@ const ExpandedThinking = React.memo(function ExpandedThinking({
   );
 });
 
-export const PREVIEW_MAX_LENGTH = 50;
+export const PREVIEW_MAX_LENGTH = 120;
 
 // Export sub-components for use in InlineGroup
 export { ThinkingPill, ExpandedThinking };
