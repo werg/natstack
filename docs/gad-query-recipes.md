@@ -1,197 +1,220 @@
-# Gad Query Recipes
+# GAD Query Recipes
 
-Gad uses canonical trajectory rows plus recursive queries. Do not add
-branch-local membership tables, precomputed tool-call tables, Pi message tables,
-file activity views, or blame segment caches to avoid these traversals.
+GAD uses the canonical agentic trajectory schema:
 
-## Branch Trajectory
+- `trajectory_branches`
+- `trajectory_events`
+- `trajectory_turns`
+- `trajectory_messages`
+- `trajectory_message_blocks`
+- `trajectory_invocations`
+- `trajectory_channel_publications`
+- `channel_envelopes`
+- `channel_roster`
+- `gad_*` worktree provenance tables
 
-Start from the branch head and walk `parent_id`:
+For agent-facing guidance, prefer `workspace/skills/gad-context/SKILL.md` and
+`workspace/skills/gad-context/DIAGNOSTICS.md`. This file is a developer-oriented
+SQL companion for the current schema.
 
-```sql
-WITH RECURSIVE branch_chain AS (
-  SELECT ti.*
-  FROM gad_branches b
-  JOIN gad_trajectory_items ti
-    ON ti.workspace_id = b.workspace_id
-   AND ti.id = b.head_trajectory_id
-  WHERE b.workspace_id = ?
-    AND b.id = ?
-    AND b.head_trajectory_id IS NOT NULL
+## Safe Inspection Order
 
-  UNION ALL
-
-  SELECT parent.*
-  FROM gad_trajectory_items parent
-  JOIN branch_chain child
-    ON parent.workspace_id = child.workspace_id
-   AND parent.id = child.parent_id
-)
-SELECT id AS trajectory_id, hash AS trajectory_hash, parent_hash,
-       introduced_on_branch_id, kind, actor, message_id, block_id,
-       tool_call_id, input_state_hash, output_state_hash, created_at
-FROM branch_chain
-ORDER BY trajectory_id;
-```
-
-`introduced_on_branch_id` is append-origin metadata. It is not membership.
-
-## Pi Messages
-
-Use the service API for runtime history:
+Start with bounded APIs:
 
 ```ts
-const { messages } = await gad.materializePiMessages({ branchId });
+await gad.inspectTurnState({ branchId });
+await gad.inspectInvocationState({ transportCallId });
+await gad.inspectPublicationIntegrity({ channelId, branchId });
+await gad.inspectChannelEnvelopes({ channelId, limit: 50 });
+await gad.inspectStorageDiagnostics({ rowByteLimit: 512 * 1024 });
 ```
 
-This folds the recursive branch trajectory and loads canonical payloads from
-`gad_payloads`. It is not backed by a stored Pi message projection.
+Use hydrated APIs only after identifying a specific envelope, event, digest, or
+state hash.
 
-## State Producer
-
-For branch-scoped state provenance, intersect `gad_state_transitions` with the
-branch chain:
+## Branch Head
 
 ```sql
-WITH RECURSIVE branch_chain AS (
-  SELECT ti.*
-  FROM gad_branches b
-  JOIN gad_trajectory_items ti
-    ON ti.workspace_id = b.workspace_id
-   AND ti.id = b.head_trajectory_id
-  WHERE b.workspace_id = ? AND b.id = ?
-  UNION ALL
-  SELECT parent.*
-  FROM gad_trajectory_items parent
-  JOIN branch_chain child
-    ON parent.workspace_id = child.workspace_id
-   AND parent.id = child.parent_id
-)
-SELECT st.*, bc.hash AS trajectory_hash, bc.kind, bc.actor,
-       bc.message_id, bc.block_id, bc.tool_call_id
-FROM gad_state_transitions st
-JOIN branch_chain bc
-  ON bc.workspace_id = st.workspace_id
- AND bc.id = st.trajectory_id
-WHERE st.output_state_hash = ?;
+SELECT trajectory_id, branch_id, head_event_id, head_event_hash,
+       head_state_hash, created_at, updated_at
+FROM trajectory_branches
+ORDER BY updated_at DESC;
 ```
 
-Non-mutating trajectory items have no state transition row.
-
-## Tool Provenance
-
-Tool calls are reconstructed from branch-chain rows sharing `tool_call_id`:
+## Recent Trajectory Events
 
 ```sql
-WITH RECURSIVE branch_chain AS (
-  SELECT ti.*
-  FROM gad_branches b
-  JOIN gad_trajectory_items ti
-    ON ti.workspace_id = b.workspace_id
-   AND ti.id = b.head_trajectory_id
-  WHERE b.workspace_id = ? AND b.id = ?
-  UNION ALL
-  SELECT parent.*
-  FROM gad_trajectory_items parent
-  JOIN branch_chain child
-    ON parent.workspace_id = child.workspace_id
-   AND parent.id = child.parent_id
-)
-SELECT bc.id AS trajectory_id, bc.hash AS trajectory_hash, bc.kind,
-       bc.message_id, bc.block_id, bc.tool_call_id, p.json AS payload_ref_json
-FROM branch_chain bc
-LEFT JOIN gad_payloads p
-  ON p.workspace_id = bc.workspace_id
- AND p.hash = bc.payload_hash
-WHERE bc.tool_call_id = ?
-ORDER BY bc.id;
+SELECT branch_id, seq, event_id, turn_id, kind,
+       causality_json, created_at
+FROM trajectory_events
+WHERE branch_id = ?
+ORDER BY seq DESC
+LIMIT 100;
 ```
 
-A healthy chain has a `tool_call_requested` before its
-`tool_result_observed`.
+`payload_ref_json` is the durable payload column. It may contain inline JSON or
+stored-value refs. There is no `payload_json` column.
 
-## File Lineage And Snippet Blame
+## Turn State
 
-Start from the file version at a state, then walk hunk lineage through
-`before_file_version_id`:
+Prefer `gad.inspectTurnState`, or use:
 
 ```sql
-WITH RECURSIVE file_lineage AS (
-  SELECT h.*, 0 AS depth
-  FROM gad_file_change_hunks h
-  WHERE h.workspace_id = ?
-    AND h.path = ?
-    AND h.after_file_version_id = ?
-
-  UNION ALL
-
-  SELECT parent.*, file_lineage.depth + 1 AS depth
-  FROM gad_file_change_hunks parent
-  JOIN file_lineage
-    ON parent.workspace_id = file_lineage.workspace_id
-   AND parent.path = file_lineage.path
-   AND parent.after_file_version_id = file_lineage.before_file_version_id
-)
-SELECT fl.*, ti.hash AS origin_trajectory_hash, ti.kind, ti.actor,
-       ti.message_id, ti.block_id, ti.tool_call_id
-FROM file_lineage fl
-JOIN gad_trajectory_items ti
-  ON ti.workspace_id = fl.workspace_id
- AND ti.id = fl.trajectory_id
-ORDER BY fl.depth;
+SELECT t.branch_id, t.turn_id, t.opened_at, t.closed_at,
+       COUNT(DISTINCT CASE WHEN m.status != 'completed' THEN m.message_id END)
+         AS streaming_messages,
+       COUNT(DISTINCT CASE WHEN i.status NOT IN
+         ('completed', 'failed', 'cancelled', 'abandoned')
+         THEN i.invocation_id END) AS nonterminal_invocations
+FROM trajectory_turns t
+LEFT JOIN trajectory_messages m ON m.branch_id = t.branch_id
+LEFT JOIN trajectory_invocations i ON i.branch_id = t.branch_id
+WHERE t.branch_id = ?
+GROUP BY t.branch_id, t.turn_id, t.opened_at, t.closed_at
+ORDER BY t.opened_at DESC;
 ```
 
-`gad.blameGadFileSnippet(...)` applies line-range translation over this lineage.
-If a requested range spans multiple independently edited regions, the current
-API returns the first overlapping hunk rather than split line-by-line blame.
-
-## Artifact To User Message
-
-Use this trace order:
-
-1. Find the artifact state, file version, hunk, tool call, or trajectory item.
-2. Join to `gad_trajectory_items`.
-3. If branch context matters, require the trajectory id to appear in the
-   recursive branch chain.
-4. Follow `tool_call_id` to request/result trajectory rows when present.
-5. Follow `message_id` and `block_id` to message trajectory rows and payloads.
-6. Prefer user `message_block_added` payloads as the grounding text.
-
-## Theory Updates And Contradictions
-
-Semantic sidecars point back to trajectory ids:
+Duplicate turn opens are invariant failures:
 
 ```sql
-SELECT tv.*, ti.hash AS trajectory_hash, ti.kind, ti.actor
-FROM gad_theory_versions tv
-JOIN gad_trajectory_items ti
-  ON ti.workspace_id = tv.workspace_id
- AND ti.id = tv.trajectory_id
-WHERE tv.workspace_id = ? AND tv.theory_id = ?
-ORDER BY tv.id;
+SELECT branch_id, turn_id, COUNT(*) AS count,
+       MIN(created_at) AS first_opened_at,
+       MAX(created_at) AS last_opened_at
+FROM trajectory_events
+WHERE kind = 'turn.opened' AND turn_id IS NOT NULL
+GROUP BY branch_id, turn_id
+HAVING COUNT(*) > 1;
 ```
+
+## Invocation State
+
+Prefer `gad.inspectInvocationState`, or use:
 
 ```sql
-SELECT c.*, ti.hash AS detected_trajectory_hash, ti.kind, ti.actor
-FROM gad_contradictions c
-JOIN gad_trajectory_items ti
-  ON ti.workspace_id = c.workspace_id
- AND ti.id = c.detected_trajectory_id
-WHERE c.workspace_id = ?
-ORDER BY c.id;
+SELECT i.branch_id, i.invocation_id, i.transport_call_id,
+       i.kind, i.status, i.started_event_id, i.completed_event_id,
+       COUNT(CASE WHEN e.kind = 'invocation.started' THEN 1 END)
+         AS started_events,
+       COUNT(CASE WHEN e.kind IN
+         ('invocation.completed', 'invocation.failed',
+          'invocation.cancelled', 'invocation.abandoned')
+         THEN 1 END) AS terminal_events
+FROM trajectory_invocations i
+LEFT JOIN trajectory_events e
+  ON e.branch_id = i.branch_id
+ AND json_extract(e.causality_json, '$.invocationId') = i.invocation_id
+WHERE i.transport_call_id = ?
+GROUP BY i.branch_id, i.invocation_id, i.transport_call_id, i.kind, i.status,
+         i.started_event_id, i.completed_event_id
+ORDER BY i.updated_at DESC;
 ```
 
-Use the same branch-chain intersection when reviewing semantic facts in a
-specific branch.
+## Publication Integrity
 
-## Integrity Checks
+Do not treat every unjoined channel envelope as a bug. Only publications declared
+by `external.envelope_published` require `trajectory_channel_publications` rows.
 
-Use the service API for graph validation:
+Declared publications:
 
-```ts
-const result = await gad.checkGadIntegrity({ branchId });
+```sql
+SELECT event_id, branch_id, payload_ref_json
+FROM trajectory_events
+WHERE kind = 'external.envelope_published'
+ORDER BY branch_id, seq;
 ```
 
-It reports structured errors for broken parent pointers, branch heads, state
-transition rows, file hunk lineage, and tool request/result chains. It does not
-repair data. Use `validateGadHashes` for hash recomputation and dirty clearing.
+Join row sanity:
+
+```sql
+SELECT p.event_id, p.channel_id, p.channel_seq, p.envelope_id,
+       te.event_id AS trajectory_event_id,
+       ce.envelope_id AS channel_envelope_id,
+       ce.seq AS actual_channel_seq
+FROM trajectory_channel_publications p
+LEFT JOIN trajectory_events te ON te.event_id = p.event_id
+LEFT JOIN channel_envelopes ce ON ce.envelope_id = p.envelope_id
+WHERE p.channel_id = ?
+ORDER BY p.channel_seq;
+```
+
+Expected channel-origin agentic envelopes without joins:
+
+```sql
+SELECT ce.channel_id, ce.seq, ce.envelope_id, ce.payload_kind
+FROM channel_envelopes ce
+LEFT JOIN trajectory_channel_publications p ON p.envelope_id = ce.envelope_id
+WHERE ce.payload_kind = 'agentic.trajectory.v1/event'
+  AND p.envelope_id IS NULL
+ORDER BY ce.seq;
+```
+
+## Channel Roster
+
+Presence envelopes project into `channel_roster`:
+
+```sql
+SELECT channel_id, participant_id, joined_at, left_at, roles_json
+FROM channel_roster
+WHERE channel_id = ?
+ORDER BY joined_at;
+```
+
+If this is empty while presence envelopes exist, inspect presence payload shape
+before assuming the participant never joined.
+
+## Storage Diagnostics
+
+Large payload fields should be stored as refs:
+
+```sql
+SELECT 'trajectory_events' AS scope, event_id AS id,
+       length(payload_ref_json) AS bytes
+FROM trajectory_events
+WHERE length(payload_ref_json) > 512 * 1024
+UNION ALL
+SELECT 'channel_envelopes' AS scope, envelope_id AS id,
+       length(payload_ref_json) AS bytes
+FROM channel_envelopes
+WHERE length(payload_ref_json) > 512 * 1024
+ORDER BY bytes DESC;
+```
+
+Stored refs:
+
+```sql
+SELECT 'trajectory' AS ref_scope, event_id AS owner_id,
+       field_path, digest, purpose, size, created_at
+FROM trajectory_blob_refs
+WHERE event_id = ?
+UNION ALL
+SELECT 'channel' AS ref_scope, envelope_id AS owner_id,
+       field_path, digest, purpose, size, created_at
+FROM channel_blob_refs
+WHERE envelope_id = ?;
+```
+
+## Worktree State
+
+Latest branch state:
+
+```sql
+SELECT branch_id, head_state_hash
+FROM trajectory_branches
+WHERE branch_id = ?;
+```
+
+Files at a state:
+
+```sql
+SELECT mn.path, fv.content_hash, fv.mode
+FROM gad_worktree_states ws
+JOIN gad_manifest_nodes root ON root.hash = ws.manifest_root_hash
+JOIN gad_manifest_entries me ON me.parent_hash = root.hash
+JOIN gad_file_versions fv ON fv.id = me.file_version_id
+JOIN gad_manifest_nodes mn ON mn.hash = me.child_hash
+WHERE ws.state_hash = ?
+ORDER BY mn.path;
+```
+
+Prefer runtime APIs such as `gad.listGadBranchFiles`, `gad.diffGadStates`, and
+`gad.readGadFileAtState` for agent-facing work.

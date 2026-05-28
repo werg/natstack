@@ -45,6 +45,15 @@ eval({ code: `
 
 `console.log/warn/error/info/debug` output streams to the agent in real-time as the code runs. The final console output is also included in the return value.
 
+## Large Return Values
+
+Durable eval results are capped at the channel-method boundary. If a return
+value is too large to inline safely, the terminal invocation event contains an
+omitted-result summary with byte count, preview, type/key summary, and a
+blobstore pointer to the full JSON. Store broad query results in `scope` and
+return compact summaries; fetch exact blobs or envelopes only after you know the
+artifact you need.
+
 ## Dynamic Imports
 
 ### Workspace packages — auto-resolved
@@ -275,6 +284,49 @@ eval({ code: `
   console.log("History:", log);
 ` })
 ```
+
+## Large Results And Diagnostics
+
+Do not return broad hydrated channel histories, full `scope.results`, large DOM
+dumps, or full GAD payloads from `eval`. Large values are intentionally stored as
+blob refs in trajectory/channel storage; broad hydrated reads can pull them back
+into the transcript and hide the useful part of the report.
+
+Prefer compact inspectors first:
+
+```ts
+import { gad } from "@workspace/runtime";
+
+return await gad.inspectChannelEnvelopes({ channelId, limit: 50 });
+return await gad.inspectTurnState({ branchId });
+return await gad.inspectInvocationState({ transportCallId });
+return await gad.inspectPublicationIntegrity({ channelId });
+```
+
+If you need a large artifact, return its digest, byte count, and a small head
+sample. Keep the full object in `scope` only for interactive follow-up.
+
+Preferred return shape for large artifacts:
+
+```ts
+const text = JSON.stringify(largeValue);
+scope.largeValue = largeValue;
+return {
+  omitted: true,
+  reason: "large diagnostic value retained in scope",
+  bytes: new TextEncoder().encode(text).byteLength,
+  type: Array.isArray(largeValue) ? "array" : typeof largeValue,
+  keys: largeValue && typeof largeValue === "object"
+    ? Object.keys(largeValue).slice(0, 20)
+    : [],
+  preview: text.slice(0, 1000),
+};
+```
+
+The method transport also caps oversized durable results and records a blob
+digest when storage is available. Agents should still return bounded summaries
+because compact results are easier to inspect and less likely to hide the
+important error message.
 
 For read-only queries, RPC shortcuts work too:
 

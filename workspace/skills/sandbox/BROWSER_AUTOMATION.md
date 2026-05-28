@@ -65,6 +65,13 @@ scope.browser = await openPanel("https://example.com");
 scope.page = await scope.browser.cdp.page();
 ```
 
+The CDP handle is Playwright-like but comes from the bundled runtime client. In
+some environments `url` is exposed as a property rather than a function; prefer
+`await scope.page.evaluate(() => location.href)` when you need a portable current
+URL. Panel handles expose methods under `.call` and `.cdp`; a parent handle does
+not have `parent.click()`. Use `const parent = getPanelHandle(parentId)` then
+`await parent.cdp.click(selector)` or `await parent.call.someMethod()`.
+
 ### Navigation
 
 ```typescript
@@ -72,7 +79,7 @@ await scope.page.goto(url)                              // navigate (waits for l
 await scope.page.goto(url, { waitUntil: "networkidle" }) // wait for network quiet
 await scope.page.goto(url, { waitUntil: "domcontentloaded" })
 await scope.page.goto(url)
-scope.page.url()                                         // current URL (sync)
+await scope.page.evaluate(() => location.href)           // current URL
 await scope.page.title()                                 // page title
 await scope.page.content()                               // full HTML source
 ```
@@ -200,7 +207,7 @@ eval({ code: `
   await scope.page.fill('input[name="password"]', 'secret');
   await scope.page.click('button[type="submit"]');
   await scope.page.waitForSelector(".dashboard");
-  console.log("Logged in, now at:", scope.page.url());
+  console.log("Logged in, now at:", await scope.page.evaluate(() => location.href));
 `
 })
 

@@ -84,3 +84,19 @@ eval({ code: `
 - Panel lifecycle operations (`openPanel`, `listPanels`, `focusPanel`, handle reload/close) require **panel context**.
 - Project scaffolding (`createProject`), git operations (`commitAndPush`), and typecheck work in **headless** sessions via eval + RPC.
 - `test.run` is restricted to server-origin callers; panel-side eval cannot run tests directly.
+
+## Provenance And Reloads
+
+Workspace runtime units are built from committed git state. If an agent edits a
+panel, worker, package, or skill and then observes unchanged runtime behavior,
+check provenance before changing the fix:
+
+- Was the edit made in the same context/worktree the runtime imports from?
+- Was it committed and pushed?
+- Did the build system rebuild that source?
+- Did the panel/worker reload after the build?
+- In dogfood mode, did the mirror apply or skip because the host checkout was dirty?
+
+Planned hardening: expose a runtime build-provenance API that reports source,
+context id, git SHA/ref, dirty state, build timestamp, and artifact id for a
+panel/worker/skill/package.

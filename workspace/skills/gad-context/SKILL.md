@@ -16,6 +16,9 @@ Use the `gad` runtime namespace. The storage model is canonical trajectory-first
 
 Use only the canonical tables above; older event/session table families do not exist in this schema.
 
+For live incident work, read [DIAGNOSTICS.md](DIAGNOSTICS.md) first. It explains
+the summary-first inspector APIs, current invariants, and context/worktree model.
+
 Useful APIs:
 
 - `gad.getTrajectoryBranchHead({ trajectoryId, branchId })`
@@ -23,6 +26,11 @@ Useful APIs:
 - `gad.appendTrajectoryBatch({ trajectoryId, branchId, owner, events })`
 - `gad.inspectChannelEnvelopes({ channelId, cursor, limit, payloadKind })` for normal debugging; it returns compact payload summaries, byte counts, and stored-ref digests.
 - `gad.listChannelEnvelopes({ channelId, cursor, limit, payloadKind })` only when code needs hydrated semantic envelopes. Do not use it for broad exploratory dumps inside an agent turn.
+- `gad.inspectPublicationIntegrity({ channelId, branchId })` to distinguish real missing trajectory publication joins from expected channel-origin envelopes.
+- `gad.inspectTurnState({ branchId, channelId })` to summarize open turns, streaming messages, pending invocations, and duplicate turn-open invariant failures.
+- `gad.inspectInvocationState({ branchId, invocationId, transportCallId })` to join projected invocation status with started/terminal trajectory events.
+- `gad.inspectChannelRoster({ channelId })` to read projected presence/roster state without raw SQL.
+- `gad.inspectAgentHealth({ channelId, branchId })` for a one-call bounded channel health report.
 - `gad.getChannelReplayWindow({ channelId, mode, sinceSeq, beforeSeq, limit })`
 - `gad.getTrajectoryForEnvelope({ envelopeId })`
 - `gad.listPublishedEnvelopesForTrajectory({ trajectoryId, branchId, eventId, turnId, channelId, limit })`
@@ -32,6 +40,22 @@ Useful APIs:
 - `gad.getGadStateProducer({ stateHash })`
 - `gad.blameGadFileSnippet({ stateHash, path })`
 - `gad.inspectStorageDiagnostics({ rowByteLimit, limit })`
+
+Current implemented hardening:
+
+- Duplicate `turn.opened` events are rejected at append time and should fail
+  projection loudly if corrupt data reaches the log.
+- `trajectory_turns.opened_at` is no longer silently overwritten by duplicate
+  opens.
+- Presence envelopes project into `channel_roster`.
+- `gad.query` accepts read-only CTEs and still rejects write CTEs.
+- Manifest/state hashes are synchronous SHA-256 over stable JSON.
+- Standard agent workers expose `inspectMethodSuspensions` to join local
+  suspension rows with GAD invocation state.
+- Oversized method/eval results are capped before durable terminal invocation
+  publication and replaced with an omitted-result summary plus blobstore pointer.
+- Inspector APIs return summaries and byte counts so agents do not need to dump
+  hydrated history into eval results.
 
 For SQL reads, prefer:
 
@@ -66,3 +90,13 @@ Keep the distinction clear:
 - `channel_envelopes` is the transmitted PubSub history.
 - `trajectory_channel_publications` makes the two queryable together without
   making them the same record.
+
+Large values are stored by reference. Do not run broad hydrated reads and return
+them from `eval`; use `inspect*` APIs first, then fetch one digest or envelope
+only when the exact artifact is needed. `payload_ref_json` is the durable column
+name even when the value is inline JSON; there is no `payload_json` column.
+
+Contexts behave like isolated workspace checkouts. A source edit affects the
+running app only after the relevant context commits/pushes and the runtime build
+reloads that artifact. When a fix appears ignored, inspect git status/remotes and
+runtime build provenance before assuming the code path is still broken.
