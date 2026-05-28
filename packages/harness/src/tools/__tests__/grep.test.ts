@@ -33,11 +33,21 @@ describe("createGrepTool", () => {
       files: { [`${CWD}/a.ts`]: "let x = 10;\nlet y = 20;\nconst z = 30;" },
     });
     const tool = createGrepTool(CWD, fs);
-    const result = await tool.execute("call-1", { pattern: "let \\w+ = \\d+" });
+    const result = await tool.execute("call-1", { pattern: "let \\w+ = \\d+", literal: false });
     const text = (result.content[0] as { text: string }).text;
     expect(text).toContain("a.ts:1");
     expect(text).toContain("a.ts:2");
     expect(text).not.toContain("a.ts:3");
+  });
+
+  it("defaults to literal search for regex-looking snippets", async () => {
+    const fs = new StubFs({
+      files: { [`${CWD}/a.ts`]: "eval({ path: 'tmp/demo.ts' });" },
+    });
+    const tool = createGrepTool(CWD, fs);
+    const result = await tool.execute("call-1", { pattern: "eval({ path" });
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("a.ts:1");
   });
 
   it("returns 'No matches found' when nothing matches", async () => {

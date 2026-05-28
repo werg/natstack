@@ -42,6 +42,19 @@ describe("createEditTool", () => {
     ).rejects.toThrow(/not found/i);
   });
 
+  it("treats no-op replacements as completed no-ops", async () => {
+    const fs = new StubFs({ files: { [`${CWD}/a.ts`]: "const x = 1;" } });
+    const tool = createEditTool(CWD, fs);
+    const result = await tool.execute("call-1", {
+      path: "a.ts",
+      oldText: "const x = 1;",
+      newText: "const x = 1;",
+    });
+
+    expect((result.content[0] as { text: string }).text).toContain("No changes made");
+    expect(result.details.diff).toBe("");
+  });
+
   it("uses fuzzy match for smart quotes", async () => {
     const fs = new StubFs({
       files: { [`${CWD}/a.ts`]: "say \u201chello\u201d world" },

@@ -77,6 +77,40 @@ describe("@workspace-extensions/file-tools", () => {
     expect(result.details).toBeUndefined();
   });
 
+  it("defaults grep to literal matching for regex-looking snippets", async () => {
+    const workspaceRoot = await makeTempRoot();
+    await fs.writeFile(path.join(workspaceRoot, "script.ts"), "eval({ path: 'tmp/demo.ts' });\n");
+
+    const api = await activate({
+      workspace: {
+        getInfo: async () => ({ path: workspaceRoot, contextsPath: path.join(workspaceRoot, ".contexts") }),
+      },
+      fs: { realpath: async () => workspaceRoot },
+      log: { info: vi.fn() },
+    });
+
+    const result = await api.grep({ pattern: "eval({ path", path: "." }) as TextToolResult;
+    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+    expect(text).toContain("script.ts:1:");
+  });
+
+  it("explains that grep path is a single root when a space-separated path is missing", async () => {
+    const workspaceRoot = await makeTempRoot();
+    const api = await activate({
+      workspace: {
+        getInfo: async () => ({ path: workspaceRoot, contextsPath: path.join(workspaceRoot, ".contexts") }),
+      },
+      fs: { realpath: async () => workspaceRoot },
+      log: { info: vi.fn() },
+    });
+
+    await expect(api.grep({
+      pattern: "console",
+      path: "packages workers panels",
+      glob: "*diagnostic*",
+    })).rejects.toThrow("not a space-separated list");
+  });
+
   it("finds files with ripgrep file listing", async () => {
     const workspaceRoot = await makeTempRoot();
     const contextsPath = path.join(workspaceRoot, ".contexts");
@@ -124,6 +158,23 @@ describe("@workspace-extensions/file-tools", () => {
     expect(text).toContain("line 3\nline 4");
     expect(text).toContain("Use offset=5");
     expect(text).not.toContain("line 5\n");
+    expect(result.details?.engine).toBe("node-file");
+  });
+
+  it("returns empty content when reading an empty file without an offset", async () => {
+    const workspaceRoot = await makeTempRoot();
+    await fs.writeFile(path.join(workspaceRoot, "empty.txt"), "");
+
+    const api = await activate({
+      workspace: {
+        getInfo: async () => ({ path: workspaceRoot, contextsPath: path.join(workspaceRoot, ".contexts") }),
+      },
+      fs: { realpath: async () => workspaceRoot },
+      log: { info: vi.fn() },
+    });
+
+    const result = await api.read({ path: "empty.txt" }) as TextToolResult;
+    expect(result.content).toEqual([{ type: "text", text: "" }]);
     expect(result.details?.engine).toBe("node-file");
   });
 

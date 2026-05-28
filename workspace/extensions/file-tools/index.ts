@@ -160,7 +160,10 @@ async function resolveSearchPath(ctx: ExtensionContextLike, req: {
   try {
     stat = await fs.stat(searchPath);
   } catch {
-    throw new Error(`Path not found: ${virtualPath}`);
+    const hint = /\s/.test(virtualPath.trim())
+      ? " The `path` argument accepts one directory or file, not a space-separated list. Run separate grep calls for multiple roots, or search from `.` with a narrower `glob`."
+      : "";
+    throw new Error(`Path not found: ${virtualPath}.${hint}`);
   }
   const realSearchPath = await realpathWithin(root, searchPath);
   return { root, searchPath: realSearchPath, isDirectory: stat.isDirectory() };
@@ -291,7 +294,7 @@ export async function activate(ctx: ExtensionContextLike) {
 
       const args = ["--json", "--line-number", "--color=never", "--hidden"];
       if (raw.ignoreCase) args.push("--ignore-case");
-      if (raw.literal) args.push("--fixed-strings");
+      if (raw.literal !== false) args.push("--fixed-strings");
       if (raw.glob) args.push("--glob", raw.glob);
       args.push(raw.pattern, searchPath);
 
@@ -501,6 +504,12 @@ export async function activate(ctx: ExtensionContextLike) {
 
       const startLine = raw.offset ? Math.max(1, Math.trunc(raw.offset)) : 1;
       const requestedLimit = raw.limit !== undefined ? Math.max(0, Math.trunc(raw.limit)) : undefined;
+      if (stat.size === 0 && startLine === 1) {
+        return {
+          content: [{ type: "text", text: "" }],
+          details: { path: raw.path, size: stat.size, engine: "node-file" },
+        };
+      }
       const stream = createReadStream(searchPath, { encoding: "utf8" });
       const rl = createInterface({ input: stream, crlfDelay: Infinity });
       const outputLines: string[] = [];
@@ -547,7 +556,7 @@ export async function activate(ctx: ExtensionContextLike) {
       }
 
       if (lineNumber < startLine && outputLines.length === 0) {
-        throw new Error(`Offset ${raw.offset} is beyond end of file (${lineNumber} lines total)`);
+        throw new Error(`Offset ${startLine} is beyond end of file (${lineNumber} lines total)`);
       }
 
       const truncated = truncatedBy !== null;

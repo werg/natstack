@@ -114,9 +114,15 @@ export function createEditTool(
         baseContent.substring(matchResult.index + matchResult.matchLength);
 
       if (baseContent === newContent) {
-        throw new Error(
-          `No changes made to ${path}. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected.`,
-        );
+        return {
+          content: [
+            {
+              type: "text",
+              text: `No changes made to ${path}. The replacement produced identical content.`,
+            },
+          ],
+          details: { diff: "" },
+        };
       }
 
       const finalContent = bom + restoreLineEndings(newContent, originalEnding);

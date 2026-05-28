@@ -141,10 +141,10 @@ export function compileUserRegex(source: string, flags: string): RegexLike {
 
 const grepSchema = Type.Object({
   pattern: Type.String({ description: "Search pattern (regex or literal string)" }),
-  path: Type.Optional(Type.String({ description: "Directory or file to search (default: current directory)" })),
+  path: Type.Optional(Type.String({ description: "Single directory or file to search (default: current directory). Do not pass a space-separated list; run separate grep calls for multiple roots." })),
   glob: Type.Optional(Type.String({ description: "Filter files by glob pattern, e.g. '*.ts' or '**/*.spec.ts'" })),
   ignoreCase: Type.Optional(Type.Boolean({ description: "Case-insensitive search (default: false)" })),
-  literal: Type.Optional(Type.Boolean({ description: "Treat pattern as literal string instead of regex (default: false)" })),
+  literal: Type.Optional(Type.Boolean({ description: "Treat pattern as literal string instead of regex (default: true; set false for regex)" })),
   context: Type.Optional(Type.Number({ description: "Number of lines to show before and after each match (default: 0)" })),
   limit: Type.Optional(Type.Number({ description: "Maximum number of matches to return (default: 100)" })),
 });
@@ -223,6 +223,7 @@ export function createGrepTool(
       onUpdate,
     ) => {
       const { pattern, path: searchDir, glob, ignoreCase, literal, context, limit } = input;
+      const literalSearch = literal !== false;
       if (typeof pattern !== "string") {
         throw new Error("grep requires pattern");
       }
@@ -238,7 +239,7 @@ export function createGrepTool(
             cwd,
             glob,
             ignoreCase,
-            literal,
+            literal: literalSearch,
             context,
             limit,
           })) as GrepToolResult;
@@ -266,10 +267,13 @@ export function createGrepTool(
         const stat = await fs.stat(searchPath);
         isDirectory = stat.isDirectory();
       } catch {
-        throw new Error(`Path not found: ${searchPath}`);
+        const hint = /\s/.test((searchDir || "").trim())
+          ? " The `path` argument accepts one directory or file, not a space-separated list. Run separate grep calls for multiple roots, or search from `.` with a narrower `glob`."
+          : "";
+        throw new Error(`Path not found: ${searchPath}.${hint}`);
       }
 
-      const regex = buildRegex(pattern, { literal: !!literal, ignoreCase: !!ignoreCase });
+      const regex = buildRegex(pattern, { literal: literalSearch, ignoreCase: !!ignoreCase });
       const globRegex = glob ? globToRegex(glob) : null;
 
       const formatPath = (filePath: string): string => {
