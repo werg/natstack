@@ -831,6 +831,7 @@ export class WorkerdManager {
       const bindings: object[] = [
         { name: "RPC_AUTH_TOKEN", text: instance.token },
         { name: "WORKER_ID", text: instance.name },
+        { name: "WORKER_SOURCE", text: instance.source },
         { name: "CONTEXT_ID", text: instance.contextId },
         { name: "GATEWAY_URL", text: this.deps.getServerUrl() },
       ];

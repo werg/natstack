@@ -122,6 +122,15 @@ export interface WorkspaceServiceDeps {
     name: string,
     opts?: { since?: number; level?: WorkspaceUnitLogRecord["level"]; limit?: number }
   ) => Promise<WorkspaceUnitLogRecord[]> | WorkspaceUnitLogRecord[];
+  unitDiagnostics?: (
+    name: string,
+    opts?: {
+      since?: number;
+      level?: WorkspaceUnitLogRecord["level"];
+      limit?: number;
+      errorLimit?: number;
+    }
+  ) => Promise<WorkspaceUnitDiagnostics> | WorkspaceUnitDiagnostics;
   /** Bake an active approved app build into the packaging payload directory. */
   bakeAppDist?: (sourceOrName: string, opts?: { outDir?: string }) => Promise<unknown> | unknown;
   /** List active and rollback-capable versions for an app unit. */
@@ -229,7 +238,21 @@ export interface WorkspaceUnitLogRecord {
   level: "debug" | "info" | "warn" | "error";
   message: string;
   fields?: Record<string, unknown>;
-  source?: "stdout" | "stderr" | "ctx.log" | "console";
+  source?: "stdout" | "stderr" | "ctx.log" | "console" | "lifecycle" | "system";
+}
+
+export interface WorkspaceUnitDiagnostics {
+  unit: WorkspaceUnitStatus | null;
+  logs: WorkspaceUnitLogRecord[];
+  errors: WorkspaceUnitLogRecord[];
+  dropped: {
+    entries: number;
+    errors: number;
+  };
+  capacity: {
+    entries: number;
+    errors: number;
+  };
 }
 
 type WorkspaceApprovalOperation =
@@ -503,6 +526,19 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
             .optional(),
         ]),
       },
+      "units.diagnostics": {
+        args: z.tuple([
+          z.string(),
+          z
+            .object({
+              since: z.number().optional(),
+              level: z.enum(["debug", "info", "warn", "error"]).optional(),
+              limit: z.number().int().positive().max(1000).optional(),
+              errorLimit: z.number().int().positive().max(500).optional(),
+            })
+            .optional(),
+        ]),
+      },
       "units.versions": {
         args: z.tuple([z.string()]),
       },
@@ -737,6 +773,39 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
             { since?: number; level?: WorkspaceUnitLogRecord["level"]; limit?: number } | undefined,
           ];
           return await deps.listUnitLogs(name, opts);
+        }
+
+        case "units.diagnostics": {
+          if (!deps.unitDiagnostics) {
+            const [name, opts] = args as [
+              string,
+              (
+                | { since?: number; level?: WorkspaceUnitLogRecord["level"]; limit?: number }
+                | undefined
+              ),
+            ];
+            const logs = deps.listUnitLogs ? await deps.listUnitLogs(name, opts) : [];
+            return {
+              unit: null,
+              logs,
+              errors: logs.filter((entry) => entry.level === "error"),
+              dropped: { entries: 0, errors: 0 },
+              capacity: { entries: 0, errors: 0 },
+            };
+          }
+          const [name, opts] = args as [
+            string,
+            (
+              | {
+                  since?: number;
+                  level?: WorkspaceUnitLogRecord["level"];
+                  limit?: number;
+                  errorLimit?: number;
+                }
+              | undefined
+            ),
+          ];
+          return await deps.unitDiagnostics(name, opts);
         }
 
         case "units.versions": {

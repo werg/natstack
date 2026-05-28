@@ -57,6 +57,7 @@ function makeHost(
     buildTargets?: string[];
     registerBuildProvider?: ReturnType<typeof vi.fn>;
     unregisterBuildProvider?: ReturnType<typeof vi.fn>;
+    recordUnitLog?: ReturnType<typeof vi.fn>;
     getContextIdForCaller?: (callerId: string) => string | null;
     gitDefaultBranch?: "main" | "master";
     installed?: boolean;
@@ -192,6 +193,7 @@ function makeHost(
     },
     registerBuildProvider: overrides.registerBuildProvider,
     unregisterBuildProvider: overrides.unregisterBuildProvider,
+    recordUnitLog: overrides.recordUnitLog,
   });
   if (overrides.installed !== false) {
     host.registry.upsert({
@@ -984,7 +986,8 @@ describe("ExtensionHost activation", () => {
   });
 
   it("accepts extension event, health, and log requests over RPC", async () => {
-    const { host, extensionNode, eventService } = makeHost();
+    const recordUnitLog = vi.fn();
+    const { host, extensionNode, eventService } = makeHost({ recordUnitLog });
     const service = host.createServiceDefinition();
     const extensionCtx = { caller: createVerifiedCaller(extensionNode.name, "extension") };
 
@@ -1020,6 +1023,13 @@ describe("ExtensionHost activation", () => {
         level: "warn",
         message: "Something happened",
         fields: { code: "TEST" },
+      })
+    );
+    expect(recordUnitLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        unitName: extensionNode.name,
+        level: "warn",
+        message: "Something happened",
       })
     );
   });

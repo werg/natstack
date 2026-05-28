@@ -23,6 +23,7 @@ import { UnitSourcePushGrantStore } from "@natstack/unit-host";
 import { formatPairUrlLine } from "./pairingBanner.js";
 import { getPublicUrl } from "./publicUrl.js";
 import { registerBuildProvider, unregisterBuildProvider } from "./buildV2/buildProviderRegistry.js";
+import { RuntimeDiagnosticsStore } from "./runtimeDiagnosticsStore.js";
 import {
   createWorkspaceMetaPushAuthorizer,
   createWorkspaceUnitPushAuthorizer,
@@ -980,6 +981,7 @@ async function main() {
   container.register(
     rpcService(createTestService({ contextFolderManager, workspacePath, panelTestSetupPath }))
   );
+  const runtimeDiagnostics = new RuntimeDiagnosticsStore({ statePath });
   // Per-worker-source ring buffer feeding `workspace.units.logs`. Same shape
   // as the extension log store: capped at 1000 records per source, FIFO drop.
   const workerUnitLogs = new Map<
@@ -1011,6 +1013,26 @@ async function main() {
               message: entry.message,
               source: "console",
             };
+            runtimeDiagnostics.record({
+              workspaceId: workspace.config.id,
+              entityId: entry.callerId,
+              kind: entry.callerId.startsWith("do:") ? "do" : "worker",
+              timestamp: entry.timestamp,
+              level: entry.level === "warn" ? "warn" : entry.level,
+              message: entry.message,
+              source: "console",
+              fields: entry.source ? { source: entry.source } : undefined,
+            });
+            runtimeDiagnostics.record({
+              workspaceId: workspace.config.id,
+              entityId: entry.source,
+              kind: "worker",
+              timestamp: entry.timestamp,
+              level: entry.level === "warn" ? "warn" : entry.level,
+              message: entry.message,
+              source: "console",
+              fields: { callerId: entry.callerId },
+            });
             workerUnitLogsAppend(entry.source, record);
             eventService.emit("workspace:unit-log", record);
           },
@@ -1489,6 +1511,18 @@ async function main() {
         eventService,
         approvalQueue,
         notificationService: notificationResult.internal,
+        recordUnitLog: (record) => {
+          runtimeDiagnostics.record({
+            workspaceId: record.workspaceId,
+            entityId: record.unitName,
+            kind: "extension",
+            timestamp: record.timestamp,
+            level: record.level,
+            message: record.message,
+            source: record.source ?? "ctx.log",
+            fields: record.fields,
+          });
+        },
         approvalCoordinator: unitApprovalCoordinator,
         getContextIdForCaller: (callerId) => entityCache.resolveContext(callerId),
         getGatewayUrl: () => {
@@ -1981,12 +2015,70 @@ async function main() {
       }
       if (kind === "worker") {
         const source = node?.relativePath ?? name;
+        const persisted = runtimeDiagnostics.history(source, {
+          since: opts?.since,
+          level: opts?.level,
+          limit: opts?.limit,
+        });
+        if (persisted.entries.length > 0) {
+          return persisted.entries.map((entry) => ({
+            workspaceId: entry.workspaceId ?? workspace.config.id,
+            unitName: source,
+            kind: "worker" as const,
+            timestamp: entry.timestamp,
+            level: entry.level,
+            message: entry.message,
+            fields: entry.fields,
+            source: entry.source === "system" ? "console" : entry.source,
+          }));
+        }
         const buffer = workerUnitLogs.get(source) ?? [];
         return filterUnitLogs(buffer, opts);
       }
       // Default and extension: the extension host has its own buffer and
       // also returns [] if the name is unknown.
       return extensionHostForGateway?.listWorkspaceUnitLogs(name, opts) ?? [];
+    },
+    unitDiagnostics: (
+      name: string,
+      opts?: {
+        since?: number;
+        level?: import("./services/workspaceService.js").WorkspaceUnitLogRecord["level"];
+        limit?: number;
+        errorLimit?: number;
+      }
+    ) => {
+      const units = commonDeps.listWorkspaceUnits();
+      const unit = units.find((row) => row.name === name || row.source === name) ?? null;
+      const entityId = unit?.kind === "worker" ? unit.source : (unit?.name ?? name);
+      const history = runtimeDiagnostics.history(entityId, {
+        since: opts?.since,
+        level: opts?.level,
+        limit: opts?.limit,
+        errorLimit: opts?.errorLimit,
+      });
+      const kind = unit?.kind ?? "worker";
+      const toLog = (
+        entry: import("./runtimeDiagnosticsStore.js").RuntimeDiagnosticRecord
+      ): import("./services/workspaceService.js").WorkspaceUnitLogRecord => ({
+        workspaceId: entry.workspaceId ?? workspace.config.id,
+        unitName: entityId,
+        kind,
+        timestamp: entry.timestamp,
+        level: entry.level,
+        message: entry.message,
+        fields: entry.fields,
+        source: entry.source,
+      });
+      const fallbackLogs = commonDeps.listWorkspaceUnitLogs(name, opts);
+      const logs = history.entries.length > 0 ? history.entries.map(toLog) : fallbackLogs;
+      return {
+        unit,
+        logs,
+        errors: history.errors.map(toLog),
+        dropped: history.dropped,
+        capacity: history.capacity,
+      };
     },
     bakeAppDist: (sourceOrName: string, opts?: { outDir?: string }) => {
       const appHost = appHostForGateway;

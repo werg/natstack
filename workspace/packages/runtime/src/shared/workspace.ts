@@ -80,7 +80,20 @@ export interface WorkspaceUnitLogRecord {
     level: "debug" | "info" | "warn" | "error";
     message: string;
     fields?: Record<string, unknown>;
-    source?: "stdout" | "stderr" | "ctx.log" | "console";
+    source?: "stdout" | "stderr" | "ctx.log" | "console" | "lifecycle" | "system";
+}
+export interface WorkspaceUnitDiagnostics {
+    unit: WorkspaceUnitStatus | null;
+    logs: WorkspaceUnitLogRecord[];
+    errors: WorkspaceUnitLogRecord[];
+    dropped: {
+        entries: number;
+        errors: number;
+    };
+    capacity: {
+        entries: number;
+        errors: number;
+    };
 }
 export interface WorkspaceUnitsClient {
     list(): Promise<WorkspaceUnitStatus[]>;
@@ -94,6 +107,12 @@ export interface WorkspaceUnitsClient {
         level?: WorkspaceUnitLogRecord["level"];
         limit?: number;
     }): Promise<WorkspaceUnitLogRecord[]>;
+    diagnostics(name: string, opts?: {
+        since?: number;
+        level?: WorkspaceUnitLogRecord["level"];
+        limit?: number;
+        errorLimit?: number;
+    }): Promise<WorkspaceUnitDiagnostics>;
     versions(name: string): Promise<WorkspaceAppVersions>;
     rollback(name: string, opts?: {
         buildKey?: string;
@@ -144,6 +163,7 @@ export function createWorkspaceClient(rpc: WorkspaceRpc): WorkspaceClient {
             inspector: (name) => rpc.call("main", "workspace.units.inspector", [name]),
             restart: (name) => rpc.call("main", "workspace.units.restart", [name]),
             logs: (name, opts) => rpc.call("main", "workspace.units.logs", [name, opts]),
+            diagnostics: (name, opts) => rpc.call("main", "workspace.units.diagnostics", [name, opts]),
             versions: (name) => rpc.call("main", "workspace.units.versions", [name]),
             rollback: (name, opts) => rpc.call("main", "workspace.units.rollback", [name, opts]),
         },

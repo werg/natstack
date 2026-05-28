@@ -184,7 +184,7 @@ export interface EventPayloads {
     level: "debug" | "info" | "warn" | "error";
     message: string;
     fields?: Record<string, unknown>;
-    source?: "stdout" | "stderr" | "ctx.log" | "console";
+    source?: "stdout" | "stderr" | "ctx.log" | "console" | "lifecycle" | "system";
   };
 }
 

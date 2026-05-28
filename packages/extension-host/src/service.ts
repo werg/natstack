@@ -190,6 +190,7 @@ export interface ExtensionHostDeps {
   eventService: EventService;
   approvalQueue: ApprovalQueueLike;
   notificationService?: NotificationServiceLike;
+  recordUnitLog?: (record: UnitLogRecord) => void;
   getContextIdForCaller?: (callerId: string) => string | null;
   getGatewayUrl(): string;
   /**
@@ -1564,6 +1565,7 @@ export class ExtensionHost {
       source,
     };
     this.recordUnitLog(record);
+    this.deps.recordUnitLog?.(record);
     this.deps.eventService.emit("workspace:unit-log", record);
   }
 }

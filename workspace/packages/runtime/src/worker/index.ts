@@ -167,6 +167,62 @@ export interface RuntimeGitApi {
 // Cache runtime per worker ID to avoid creating multiple bridges
 let cachedRuntime: WorkerRuntime | null = null;
 let cachedWorkerId: string | null = null;
+let workerConsoleBridgeInstalled = false;
+
+function installWorkerConsoleBridge(rpc: RpcBridge): void {
+  if (workerConsoleBridgeInstalled) return;
+  workerConsoleBridgeInstalled = true;
+  const original = {
+    log: console.log.bind(console),
+    info: console.info.bind(console),
+    warn: console.warn.bind(console),
+    error: console.error.bind(console),
+  };
+  let forwarding = false;
+  const forward = (
+    level: "log" | "info" | "warn" | "error",
+    args: unknown[],
+    source?: string
+  ): void => {
+    if (forwarding) return;
+    forwarding = true;
+    try {
+      const message = args
+        .map((arg) => {
+          if (typeof arg === "string") return arg;
+          if (arg instanceof Error) return arg.stack ?? `${arg.name}: ${arg.message}`;
+          try {
+            return JSON.stringify(arg);
+          } catch {
+            return String(arg);
+          }
+        })
+        .join(" ");
+      rpc.call("main", "workerLog.write", [level, message, source ? { source } : undefined]).catch((err) => {
+        original.warn("[console-bridge] forward failed:", err);
+      });
+    } finally {
+      forwarding = false;
+    }
+  };
+  const source = (globalThis as { __natstackWorkerSource?: string }).__natstackWorkerSource;
+  console.log = (...args: unknown[]) => {
+    original.log(...args);
+    forward("log", args, source);
+  };
+  console.info = (...args: unknown[]) => {
+    original.info(...args);
+    forward("info", args, source);
+  };
+  console.warn = (...args: unknown[]) => {
+    original.warn(...args);
+    forward("warn", args, source);
+  };
+  console.error = (...args: unknown[]) => {
+    original.error(...args);
+    forward("error", args, source);
+  };
+}
 export interface WorkerRuntime {
   readonly id: string;
   readonly rpc: RpcBridge;
@@ -254,6 +310,8 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
   }
 
   const selfId = `worker:${workerId}`;
+  (globalThis as { __natstackWorkerSource?: string }).__natstackWorkerSource =
+    typeof env["WORKER_SOURCE"] === "string" ? env["WORKER_SOURCE"] : undefined;
   const parentId = (env.PARENT_ID as string) || null;
   const parentEntityId = (env.PARENT_ENTITY_ID as string) || parentId;
   const parentKind = parseParentKind(env.PARENT_KIND);
@@ -262,6 +320,7 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
     serverUrl,
     authToken: env.RPC_AUTH_TOKEN,
   });
+  installWorkerConsoleBridge(rpc);
 
   const runtimeFs = _initFsWithRpc(rpc);
   const workers = helpfulNamespace("workers", createWorkerdClient(rpc, {

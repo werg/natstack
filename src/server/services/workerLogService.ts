@@ -33,6 +33,10 @@ export interface WorkerLogRecord {
   message: string;
 }
 
+interface WorkerLogFields {
+  source?: string;
+}
+
 export interface WorkerLogServiceDeps {
   /**
    * Optional structured-log sink. Called for every worker-emitted record in
@@ -70,12 +74,16 @@ export function createWorkerLogService(deps: WorkerLogServiceDeps = {}): Service
     policy: { allowed: ["shell", "panel", "app", "server", "worker", "do", "extension"] },
     methods: {
       write: {
-        args: z.tuple([z.enum(["log", "info", "warn", "error"]), z.string()]),
+        args: z.tuple([
+          z.enum(["log", "info", "warn", "error"]),
+          z.string(),
+          z.object({ source: z.string().optional() }).optional(),
+        ]),
       },
     },
     handler: async (ctx, method, args) => {
       if (method !== "write") throw new Error(`Unknown method: ${method}`);
-      const [level, message] = args as [Level, string];
+      const [level, message, fields] = args as [Level, string, WorkerLogFields | undefined];
       const prefix = `[${ctx.caller.runtime.id}]`;
       const normalizedLevel: WorkerLogRecord["level"] = level === "log" ? "info" : level;
       switch (level) {
@@ -92,7 +100,7 @@ export function createWorkerLogService(deps: WorkerLogServiceDeps = {}): Service
           break;
       }
       deps.onLog?.({
-        source: workerSourceFromCallerId(ctx.caller.runtime.id),
+        source: fields?.source ?? workerSourceFromCallerId(ctx.caller.runtime.id),
         callerId: ctx.caller.runtime.id,
         timestamp: Date.now(),
         level: normalizedLevel,
