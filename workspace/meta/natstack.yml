@@ -77,13 +77,13 @@ initPanels:
         that you run inside eval. Workspace packages are auto-resolved — just write
         the `import` statement.
 
-        Run one eval to initialize the category queue:
+        Run one eval to initialize category progress:
         ```
         eval({
           code: `
             import { allTests, testCategories } from "@workspace-skills/system-testing";
             const tests = allTests();
-            scope.systemTestingQueue = testCategories(tests);
+            scope.systemTestingCompletedCategories = [];
             scope.results = {
               total: 0,
               passed: 0,
@@ -93,21 +93,22 @@ initPanels:
               duration: 0,
               results: [],
             };
-            return { categories: scope.systemTestingQueue, testCount: tests.length };
+            return { categories: testCategories(tests), testCount: tests.length };
           `,
         })
         ```
 
-        Then run one category per eval, repeating until the queue is empty. Tests
-        inside the category run concurrently:
+        Then run one category per eval, repeating until all categories are complete.
+        Tests inside the category run concurrently:
         ```
         eval({
           code: `
-            import { HeadlessRunner, TestRunner, allTests } from "@workspace-skills/system-testing";
+            import { HeadlessRunner, TestRunner, allTests, testCategories } from "@workspace-skills/system-testing";
             import { contextId } from "@workspace/runtime";
             const tests = allTests();
-            const queue = scope.systemTestingQueue ?? [];
-            const category = queue.shift();
+            const categories = testCategories(tests);
+            const completed = new Set(scope.systemTestingCompletedCategories ?? []);
+            const category = categories.find((item) => !completed.has(item));
             if (!category) return { done: true, results: scope.results };
             const runner = new HeadlessRunner(contextId);
             const tester = new TestRunner(runner, {
@@ -135,11 +136,12 @@ initPanels:
             aggregate.duration += partial.duration;
             aggregate.results.push(...partial.results);
             aggregate.skipped = tests.length - aggregate.total;
-            scope.systemTestingQueue = queue;
+            completed.add(category);
+            scope.systemTestingCompletedCategories = [...completed];
             scope.results = aggregate;
             return {
               category,
-              remainingCategories: queue.length,
+              remainingCategories: categories.length - completed.size,
               total: aggregate.total,
               passed: aggregate.passed,
               failed: aggregate.failed,

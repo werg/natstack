@@ -27,7 +27,7 @@ eval({
   code: `
     import { allTests, testCategories } from "@workspace-skills/system-testing";
     const tests = allTests();
-    scope.systemTestingQueue = testCategories(tests);
+    scope.systemTestingCompletedCategories = [];
     scope.results = {
       total: 0,
       passed: 0,
@@ -37,7 +37,7 @@ eval({
       duration: 0,
       results: [],
     };
-    return { categories: scope.systemTestingQueue, testCount: tests.length };
+    return { categories: testCategories(tests), testCount: tests.length };
   `,
 })
 ```
@@ -47,11 +47,12 @@ Repeat this eval until `remainingCategories` is `0`:
 ```
 eval({
   code: `
-    import { HeadlessRunner, TestRunner, allTests } from "@workspace-skills/system-testing";
+    import { HeadlessRunner, TestRunner, allTests, testCategories } from "@workspace-skills/system-testing";
     import { contextId } from "@workspace/runtime";
     const tests = allTests();
-    const queue = scope.systemTestingQueue ?? [];
-    const category = queue.shift();
+    const categories = testCategories(tests);
+    const completed = new Set(scope.systemTestingCompletedCategories ?? []);
+    const category = categories.find((item) => !completed.has(item));
     if (!category) return { done: true, results: scope.results };
 
     const runner = new HeadlessRunner(contextId);
@@ -81,11 +82,12 @@ eval({
     aggregate.duration += partial.duration;
     aggregate.results.push(...partial.results);
     aggregate.skipped = tests.length - aggregate.total;
-    scope.systemTestingQueue = queue;
+    completed.add(category);
+    scope.systemTestingCompletedCategories = [...completed];
     scope.results = aggregate;
     return {
       category,
-      remainingCategories: queue.length,
+      remainingCategories: categories.length - completed.size,
       total: aggregate.total,
       passed: aggregate.passed,
       failed: aggregate.failed,
