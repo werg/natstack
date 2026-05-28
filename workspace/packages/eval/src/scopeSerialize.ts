@@ -7,6 +7,8 @@
  */
 
 const MAX_DEPTH = 20;
+const MAX_SCOPE_VALUE_JSON_CHARS = 128 * 1024;
+const MAX_SCOPE_JSON_CHARS = 384 * 1024;
 
 export interface SerializedScope {
   /** JSON string of serializable data */
@@ -42,6 +44,11 @@ function isTypeTagged(val: unknown): val is TypeTagged {
 // ---------------------------------------------------------------------------
 
 type DroppedEntry = { path: string; reason: string };
+type SerializedTopLevelEntry = {
+  key: string;
+  value: unknown;
+  jsonChars: number;
+};
 
 function isPlainObject(val: unknown): val is Record<string, unknown> {
   if (typeof val !== "object" || val === null) return false;
@@ -164,12 +171,36 @@ function serializeValue(
 
 export function serializeScope(scope: Map<string, unknown>): SerializedScope {
   const dropped: DroppedEntry[] = [];
-  const serialized: Record<string, unknown> = {};
+  const entries: SerializedTopLevelEntry[] = [];
 
   for (const [key, value] of scope) {
     const ser = serializeValue(value, key, dropped, new Set(), 0);
     if (ser !== undefined) {
-      serialized[key] = ser;
+      const jsonChars = serializedJsonChars(ser);
+      if (jsonChars > MAX_SCOPE_VALUE_JSON_CHARS) {
+        dropped.push({
+          path: key,
+          reason: `serialized value too large (${jsonChars} chars > ${MAX_SCOPE_VALUE_JSON_CHARS})`,
+        });
+      } else {
+        entries.push({ key, value: ser, jsonChars });
+      }
+    }
+  }
+
+  const serialized: Record<string, unknown> = {};
+  for (const entry of entries) serialized[entry.key] = entry.value;
+
+  let json = JSON.stringify(serialized);
+  if (json.length > MAX_SCOPE_JSON_CHARS) {
+    for (const entry of [...entries].sort((a, b) => b.jsonChars - a.jsonChars)) {
+      delete serialized[entry.key];
+      dropped.push({
+        path: entry.key,
+        reason: `dropped to keep serialized scope under ${MAX_SCOPE_JSON_CHARS} chars`,
+      });
+      json = JSON.stringify(serialized);
+      if (json.length <= MAX_SCOPE_JSON_CHARS) break;
     }
   }
 
@@ -192,11 +223,19 @@ export function serializeScope(scope: Map<string, unknown>): SerializedScope {
   }
 
   return {
-    json: JSON.stringify(serialized),
+    json,
     serializedKeys,
     droppedPaths: dropped,
     partialKeys,
   };
+}
+
+function serializedJsonChars(value: unknown): number {
+  try {
+    return JSON.stringify(value).length;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
 }
 
 // ---------------------------------------------------------------------------
