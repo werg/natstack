@@ -39,7 +39,7 @@ eval({
       testTimeoutMs: 20 * 60 * 1000,
     });
 
-    const results = await tester.runSuiteParallel(allTests(), { concurrency: 8 });
+    const results = await tester.runSuiteParallel(allTests(), { concurrency: 24 });
     scope.results = results;
     return {
       total: results.total,

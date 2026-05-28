@@ -5,6 +5,7 @@ import type { SessionSnapshot } from "@workspace/agentic-session";
 
 type MaybePromise<T> = T | Promise<T>;
 type RunSuiteFilter = { category?: string; name?: string; concurrency?: number };
+const DEFAULT_PARALLEL_CONCURRENCY = 24;
 
 export class TestRunner {
   constructor(
@@ -30,7 +31,7 @@ export class TestRunner {
   runSuiteParallel = (tests: TestCase[], opts?: RunSuiteFilter): Promise<TestSuiteResult> => {
     return this.runSuite(tests, {
       ...opts,
-      concurrency: opts?.concurrency ?? this.opts?.concurrency ?? 4,
+      concurrency: opts?.concurrency ?? this.opts?.concurrency ?? DEFAULT_PARALLEL_CONCURRENCY,
     });
   };
 
