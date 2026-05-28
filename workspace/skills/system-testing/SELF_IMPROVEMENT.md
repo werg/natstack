@@ -27,8 +27,9 @@ eval({
   code: `
     import { allTests, testCategories } from "@workspace-skills/system-testing";
     const tests = allTests();
-    scope.systemTestingCompletedCategories = [];
-    scope.results = {
+    const runId = crypto.randomUUID();
+    await scopes.push();
+    const results = {
       total: 0,
       passed: 0,
       failed: 0,
@@ -37,7 +38,14 @@ eval({
       duration: 0,
       results: [],
     };
-    return { categories: testCategories(tests), testCount: tests.length };
+    scope.systemTestingRun = {
+      runId,
+      categories: testCategories(tests),
+      completedCategories: [],
+      results,
+    };
+    scope.results = results;
+    return { runId, categories: scope.systemTestingRun.categories, testCount: tests.length };
   `,
 })
 ```
@@ -50,10 +58,14 @@ eval({
     import { HeadlessRunner, TestRunner, allTests, testCategories } from "@workspace-skills/system-testing";
     import { contextId } from "@workspace/runtime";
     const tests = allTests();
-    const categories = testCategories(tests);
-    const completed = new Set(scope.systemTestingCompletedCategories ?? []);
+    const run = scope.systemTestingRun;
+    if (!run || typeof run !== "object") {
+      throw new Error("No active systemTestingRun. Run the initialization eval first.");
+    }
+    const categories = Array.isArray(run.categories) ? run.categories : testCategories(tests);
+    const completed = new Set(Array.isArray(run.completedCategories) ? run.completedCategories : []);
     const category = categories.find((item) => !completed.has(item));
-    if (!category) return { done: true, results: scope.results };
+    if (!category) return { done: true, runId: run.runId, results: run.results ?? scope.results };
 
     const runner = new HeadlessRunner(contextId);
     const tester = new TestRunner(runner, {
@@ -66,7 +78,7 @@ eval({
     });
 
     const partial = await tester.runSuiteParallel(tests, { category, concurrency: 24 });
-    const aggregate = scope.results ?? {
+    const aggregate = run.results ?? scope.results ?? {
       total: 0,
       passed: 0,
       failed: 0,
@@ -83,9 +95,12 @@ eval({
     aggregate.results.push(...partial.results);
     aggregate.skipped = tests.length - aggregate.total;
     completed.add(category);
-    scope.systemTestingCompletedCategories = [...completed];
+    run.completedCategories = [...completed];
+    run.results = aggregate;
+    scope.systemTestingRun = run;
     scope.results = aggregate;
     return {
+      runId: run.runId,
       category,
       remainingCategories: categories.length - completed.size,
       total: aggregate.total,
