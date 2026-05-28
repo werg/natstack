@@ -32,6 +32,8 @@ import { getInternalDOBundle, isInternalDOSource } from "./internalDOs/internalD
 import { assertPresent } from "../lintHelpers";
 
 const log = createDevLogger("WorkerdManager");
+const DEFAULT_WORKERD_STARTUP_READY_TIMEOUT_MS = 15_000;
+const WORKERD_STARTUP_OUTPUT_LINES = 40;
 declare const __filename: string | undefined;
 
 // This file is bundled as both ESM (standalone server) and CJS (Electron
@@ -62,6 +64,11 @@ function computeWorkerdObjectIdHash(uniqueKey: string, objectName: string): stri
   const base = crypto.createHmac("sha256", key).update(objectName).digest().subarray(0, 16);
   const mac = crypto.createHmac("sha256", key).update(base).digest().subarray(0, 16);
   return Buffer.concat([base, mac]).toString("hex");
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
 }
 
 /** DO reference — matches DORef from @workspace/runtime/worker. */
@@ -173,6 +180,7 @@ export class WorkerdManager {
   private inspectorPort: number | null = null;
   private deps: ResolvedWorkerdManagerDeps;
   private workerdBinary: string | null = null;
+  private lastWorkerdStartupOutput: string[] = [];
 
   // DO support: shared services (one per source)
   /** Shared DO services — keyed by `${source}:${className}`. Source-scoped: two workers CAN have same className if different source. */
@@ -1139,10 +1147,14 @@ ${doBlock}${cases.join("\n")}
         return;
       } catch (err) {
         lastError = err;
-        log.warn(
-          `workerd startup attempt ${attempt} failed${attempt < 3 ? "; retrying with a fresh port" : ""}:`,
-          err
-        );
+        const detail = this.formatWorkerdStartupError(err);
+        if (attempt < 3) {
+          log.warn(
+            `workerd startup attempt ${attempt} did not become ready; retrying with a fresh port. ${detail}`
+          );
+        } else {
+          log.warn(`workerd startup attempt ${attempt} failed. ${detail}`);
+        }
         await this.stopWorkerd();
       }
     }
@@ -1171,15 +1183,22 @@ ${doBlock}${cases.join("\n")}
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env },
     });
+    this.lastWorkerdStartupOutput = [];
 
     this.process.stdout?.on("data", (data: Buffer) => {
       const line = data.toString().trim();
-      if (line) log.info(`[workerd] ${line}`);
+      if (line) {
+        this.rememberWorkerdStartupOutput(`stdout: ${line}`);
+        log.info(`[workerd] ${line}`);
+      }
     });
 
     this.process.stderr?.on("data", (data: Buffer) => {
       const line = data.toString().trim();
-      if (line) log.warn(`[workerd] ${line}`);
+      if (line) {
+        this.rememberWorkerdStartupOutput(`stderr: ${line}`);
+        log.warn(`[workerd] ${line}`);
+      }
     });
 
     // Wait for startup readiness, detecting early failures (ENOENT, bind
@@ -1194,7 +1213,11 @@ ${doBlock}${cases.join("\n")}
         this.process = null;
         if (!settled) {
           settled = true;
-          reject(new Error(`workerd exited immediately (code=${code}, signal=${signal})`));
+          reject(
+            new Error(
+              `workerd exited before accepting HTTP (code=${code}, signal=${signal})${this.recentWorkerdOutputSuffix()}`
+            )
+          );
         }
       };
 
@@ -1210,7 +1233,9 @@ ${doBlock}${cases.join("\n")}
       assertPresent(this.process).on("exit", onExit);
       assertPresent(this.process).on("error", onError);
 
-      this.waitForHttpReady(this.deps.workerdStartupReadyTimeoutMs ?? 5_000).then(
+      this.waitForHttpReady(
+        this.deps.workerdStartupReadyTimeoutMs ?? DEFAULT_WORKERD_STARTUP_READY_TIMEOUT_MS
+      ).then(
         () => {
           if (settled) return;
           settled = true;
@@ -1231,12 +1256,35 @@ ${doBlock}${cases.join("\n")}
         (err: unknown) => {
           if (settled) return;
           settled = true;
-          reject(err instanceof Error ? err : new Error(String(err)));
+          reject(
+            new Error(
+              `${errorMessage(err)}. binary=${binary} port=${this.port} config=${configPath}${this.recentWorkerdOutputSuffix()}`
+            )
+          );
         }
       );
     });
 
     log.info(`workerd started on port ${this.port} with ${this.instances.size} worker(s)`);
+  }
+
+  private rememberWorkerdStartupOutput(line: string): void {
+    this.lastWorkerdStartupOutput.push(line);
+    if (this.lastWorkerdStartupOutput.length > WORKERD_STARTUP_OUTPUT_LINES) {
+      this.lastWorkerdStartupOutput.splice(
+        0,
+        this.lastWorkerdStartupOutput.length - WORKERD_STARTUP_OUTPUT_LINES
+      );
+    }
+  }
+
+  private recentWorkerdOutputSuffix(): string {
+    if (this.lastWorkerdStartupOutput.length === 0) return "";
+    return `; recent workerd output:\n${this.lastWorkerdStartupOutput.join("\n")}`;
+  }
+
+  private formatWorkerdStartupError(err: unknown): string {
+    return errorMessage(err).replace(/\s+/gu, " ").slice(0, 1200);
   }
 
   private async stopWorkerd(): Promise<void> {
@@ -1421,9 +1469,11 @@ ${doBlock}${cases.join("\n")}
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    throw lastError instanceof Error
-      ? lastError
-      : new Error(`workerd did not accept HTTP on port ${this.port}`);
+    throw new Error(
+      `workerd did not accept HTTP on port ${this.port} within ${timeoutMs}ms; last readiness error: ${
+        lastError ? errorMessage(lastError) : "none"
+      }`
+    );
   }
 
   // =========================================================================
