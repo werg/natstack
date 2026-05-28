@@ -21,7 +21,7 @@
   - full-auto channel config (approval level 2)
   - automatic ScopeManager creation when sandbox provided
   - default eval + set_title method registration on the client
-  - convenience: createWithAgent() does subscribe + connect in one call
+  - convenience: createWithAgent() connects the headless client, then subscribes the agent
   - SandboxConfig factory: createRpcSandboxConfig (workers + Node servers)
   - Uses the same agent worker prompt and tool surface as panel sessions;
     UI tools naturally drop out because no panel is advertising them.

@@ -104,7 +104,7 @@ Thin wrapper over SessionManager with headless defaults.
 // Simple creation (call connect() separately)
 HeadlessSession.create(config: HeadlessSessionConfig): HeadlessSession
 
-// All-in-one: create channel + subscribe agent + connect
+// All-in-one: create channel + connect client + subscribe agent
 HeadlessSession.createWithAgent(config: HeadlessWithAgentConfig): Promise<HeadlessSession>
 ```
 

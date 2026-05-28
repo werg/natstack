@@ -11,7 +11,7 @@
  *
  * Public API:
  *   - `HeadlessSession.create()` — wire up a session, no agent yet
- *   - `HeadlessSession.createWithAgent()` — full setup: subscribe DO + connect
+ *   - `HeadlessSession.createWithAgent()` — full setup: connect client + subscribe DO
  *   - `send(text, opts)` — publish a user message
  *   - `waitForAgentMessage()` / `waitForIdle()` / `sendAndWait()` — test helpers
  *   - `messages`, `participants`, `connected`, `status` — getters
@@ -269,19 +269,6 @@ export class HeadlessSession {
     const objectKey = config.objectKey ?? `headless-${crypto.randomUUID()}`;
     const session = new HeadlessSession(config, channelId);
 
-    const subscription = await subscribeHeadlessAgent({
-      rpcCall: config.rpcCall,
-      source: config.source,
-      className: config.className,
-      objectKey,
-      channelId,
-      contextId: config.contextId,
-      extraConfig: config.extraConfig,
-    });
-    session._agentEntityId = subscription.entityId;
-    session._agentTargetId = subscription.targetId;
-    session._agentRpcCall = config.rpcCall;
-
     if (session._scopeManager) {
       await session._scopeManager.hydrate();
     }
@@ -302,6 +289,24 @@ export class HeadlessSession {
       contextId: config.contextId,
       methods,
     });
+
+    try {
+      const subscription = await subscribeHeadlessAgent({
+        rpcCall: config.rpcCall,
+        source: config.source,
+        className: config.className,
+        objectKey,
+        channelId,
+        contextId: config.contextId,
+        extraConfig: config.extraConfig,
+      });
+      session._agentEntityId = subscription.entityId;
+      session._agentTargetId = subscription.targetId;
+      session._agentRpcCall = config.rpcCall;
+    } catch (err) {
+      session.disconnect();
+      throw err;
+    }
 
     return session;
   }

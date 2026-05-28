@@ -180,6 +180,57 @@ describe("HeadlessSession", () => {
     warn.mockRestore();
   });
 
+  it("connects the headless client methods before subscribing the agent", async () => {
+    const order: string[] = [];
+    const originalConnect = HeadlessSession.prototype.connect;
+    const connect = vi
+      .spyOn(HeadlessSession.prototype, "connect")
+      .mockImplementation(async function (
+        this: HeadlessSession,
+        channelId: string,
+        options?: Parameters<HeadlessSession["connect"]>[1]
+      ) {
+        order.push(`connect:${channelId}:${Object.keys(options?.methods ?? {}).sort().join(",")}`);
+        (this as unknown as { _channelId: string; _client: unknown })._channelId = channelId;
+        (this as unknown as { _client: unknown })._client = { close: vi.fn() };
+      });
+    const rpcCall = vi.fn(async (target: string, method: string) => {
+      order.push(`rpc:${target}:${method}`);
+      if (target === "main" && method === "runtime.createEntity") {
+        return { id: "entity-1", targetId: "agent-target" };
+      }
+      if (target === "agent-target" && method === "subscribeChannel") {
+        return { ok: true, participantId: "do:agent" };
+      }
+      throw new Error(`unexpected RPC ${target}.${method}`);
+    });
+
+    try {
+      await HeadlessSession.createWithAgent({
+        config: createConfig(),
+        rpcCall,
+        source: "workers/agent-worker",
+        className: "AiChatWorker",
+        objectKey: "agent-1",
+        contextId: "ctx-1",
+        channelId: "headless-1",
+        sandbox: {
+          rpc: { call: vi.fn() },
+          loadImport: vi.fn(),
+        },
+      });
+    } finally {
+      connect.mockRestore();
+      HeadlessSession.prototype.connect = originalConnect;
+    }
+
+    expect(order).toEqual([
+      "connect:headless-1:eval,set_title",
+      "rpc:main:runtime.createEntity",
+      "rpc:agent-target:subscribeChannel",
+    ]);
+  });
+
   it("callMethod returns the provider payload and callMethodResult returns the full envelope", async () => {
     const session = HeadlessSession.create({
       config: createConfig(),
