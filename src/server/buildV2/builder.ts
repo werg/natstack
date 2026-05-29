@@ -2842,7 +2842,15 @@ async function doNpmBuild(
         platform: "browser",
         outfile: path.join(outdir, "bundle.js"),
         write: true,
-        external: externals,
+        // esbuild's "browser" platform does NOT auto-externalize Node built-ins
+        // (unlike "node"), so packages such as shelljs/glob that import
+        // path/util/assert/child_process would otherwise hard-fail with
+        // "Could not resolve". Mirror the worker bundle: builtins the sandbox
+        // runtime can satisfy stay external; the rest (child_process, os, …)
+        // are intercepted by createWorkerNodeStubPlugin and replaced with a
+        // throwing stub, so the bundle links and only throws if actually used.
+        external: [...externals, ...WORKER_NODE_BUILTIN_EXTERNALS],
+        plugins: [createWorkerNodeStubPlugin()],
         nodePaths,
         logLevel: "warning",
         tsconfigRaw: { compilerOptions: {} },

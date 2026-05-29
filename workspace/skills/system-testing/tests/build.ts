@@ -19,7 +19,10 @@ export const buildTests: TestCase[] = [
     name: "build-npm-package",
     description: "Build an npm package and get a bundle",
     category: "build",
-    prompt: "Exercise building or resolving an npm dependency. Finish with BUILD_NPM_OK.",
+    prompt:
+      "Exercise building or resolving a small pure-JavaScript npm dependency " +
+      "(e.g. left-pad) that does not rely on Node.js built-in modules like " +
+      "child_process/fs/os. Finish with BUILD_NPM_OK.",
     validate: (result) => checked(result, ["BUILD_NPM_OK"]),
   },
   {
