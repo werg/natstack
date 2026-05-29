@@ -5,10 +5,10 @@ import {
   StyleSheet,
   BackHandler,
   Platform,
-  Appearance,
   ActivityIndicator,
   Alert,
   ActionSheetIOS,
+  Pressable,
 } from "react-native";
 import { useNavigation, DrawerActions } from "@react-navigation/native";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
@@ -88,7 +88,6 @@ export function MainScreen() {
   const panelTree = useAtomValue(panelTreeAtom);
   const setPanelTree = useSetAtom(panelTreeAtom);
   const setActivePanelId = useSetAtom(activePanelIdAtom);
-  const setColorScheme = useSetAtom(colorSchemeAtom);
   const colorScheme = useAtomValue(colorSchemeAtom);
   const activePanelId = useAtomValue(activePanelIdAtom);
   const activePanelTitle = useAtomValue(activePanelTitleAtom);
@@ -145,16 +144,6 @@ export function MainScreen() {
       cancelled = true;
     };
   }, [shellClient]);
-  useEffect(() => {
-    const subscription = Appearance.addChangeListener(({ colorScheme: nextScheme }) => {
-      setColorScheme(nextScheme);
-      if (shellClient) {
-        const mode = nextScheme === "light" ? "light" : "dark";
-        void shellClient.panels.updateTheme(mode);
-      }
-    });
-    return () => subscription.remove();
-  }, [shellClient, setColorScheme]);
   const handleWebViewUnmount = useCallback(
     (panelId: string) => {
       webViewRefsMap.current.delete(panelId);
@@ -1191,12 +1180,19 @@ export function MainScreen() {
             <Text style={[styles.placeholderText, { color: colors.text }]}>
               Running on {activeRuntimeLease?.holderLabel ?? "another client"}
             </Text>
-            <Text
-              style={[styles.takeOverButton, { color: colors.primary }]}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Take over this panel"
+              hitSlop={8}
+              style={({ pressed }) => [
+                styles.takeOverButton,
+                { borderColor: colors.primary },
+                pressed && { opacity: 0.6 },
+              ]}
               onPress={takeOverActivePanel}
             >
-              Take Over
-            </Text>
+              <Text style={[styles.takeOverButtonText, { color: colors.primary }]}>Take Over</Text>
+            </Pressable>
           </View>
         )}
 
@@ -1320,8 +1316,17 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   takeOverButton: {
+    marginTop: 12,
+    minHeight: 44,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderWidth: 1,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  takeOverButtonText: {
     fontSize: 16,
     fontWeight: "600",
-    marginTop: 12,
   },
 });

@@ -19,6 +19,3 @@ export const isConnectingAtom = atom((get) => get(connectionStatusAtom) === "con
 
 /** Whether the device has network connectivity (updated by useAppLifecycle via NetInfo) */
 export const networkReachableAtom = atom<boolean>(true);
-
-/** Optional error message from the last connection failure */
-export const connectionErrorAtom = atom<string | null>(null);

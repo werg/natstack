@@ -12,7 +12,6 @@
       "rnHostAbi": "rn-host-1",
       "capabilities": [
         "notifications",
-        "camera",
         "keychain",
         "clipboard",
         "open-external"
