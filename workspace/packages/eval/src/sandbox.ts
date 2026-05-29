@@ -376,20 +376,23 @@ export async function executeSandbox(
 
     let validation = validateRequires(transformed.requires, requireFn);
     if (!validation.valid && options.loadImport) {
+      throwIfAborted(signal);
       // Auto-resolve: build missing workspace packages on-demand
       const moduleMap = getModuleMap();
       const missingModules = transformed.requires.filter((r) => !moduleMap[r]);
-      const autoImports = await inferImportsFromPackageJson(missingModules, {
+      const autoImports = await withAbort(inferImportsFromPackageJson(missingModules, {
         importerPath: options.sourcePath,
         loadSourceFile: options.loadSourceFile,
         explicitImports: options.imports,
-      });
+      }), signal);
       if (Object.keys(autoImports).length > 0) {
+        throwIfAborted(signal);
         options.onConsole?.(`[eval] Auto-loading: ${Object.keys(autoImports).join(", ")}...`);
         await withAbort(loadImports(autoImports, options.loadImport), signal);
         validation = validateRequires(transformed.requires, requireFn);
       }
     }
+    throwIfAborted(signal);
     if (!validation.valid) {
       const missing = validation.missingModule!;
       const moduleMap = getModuleMap();
@@ -401,11 +404,11 @@ export async function executeSandbox(
       const suggestedImports = Object.fromEntries(
         missingModules.map((m) => [m, m.startsWith("@workspace") || m.startsWith("@natstack/") ? "latest" : "npm:latest"]),
       );
-      const missingDeclarations = await getMissingPackageDeclarations(missingModules, {
+      const missingDeclarations = await withAbort(getMissingPackageDeclarations(missingModules, {
         importerPath: options.sourcePath,
         loadSourceFile: options.loadSourceFile,
         explicitImports: options.imports,
-      });
+      }), signal);
       const packageHint = missingDeclarations.length > 0
         ? `\nPackage context: ${missingDeclarations.join("; ")}.`
         : "";
@@ -461,6 +464,7 @@ export async function executeSandbox(
     const execution = journal
       ? await runtimeModule.withJournal(journal, runUserCode)
       : await runUserCode();
+    throwIfAborted(signal);
     const panelJournalFooter = journal
       ? await renderPanelJournalFooter(runtimeModule, journal).catch(() => undefined)
       : undefined;

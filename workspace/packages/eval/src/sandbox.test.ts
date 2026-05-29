@@ -48,4 +48,25 @@ describe("executeSandbox", () => {
       error: "User interrupted execution",
     });
   });
+
+  it("fails fast when the signal is already aborted before execution", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const result = await executeSandbox("return 21 + 21;", {
+      syntax: "typescript",
+      signal: controller.signal,
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toBeTruthy();
+  });
+
+  it("completes normally when an unaborted signal is provided", async () => {
+    const controller = new AbortController();
+    const result = await executeSandbox("return 1 + 2;", {
+      syntax: "typescript",
+      signal: controller.signal,
+    });
+    expect(result.success).toBe(true);
+    expect(result.returnValue).toBe(3);
+  });
 });
