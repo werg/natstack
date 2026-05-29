@@ -1556,6 +1556,107 @@ describe("AgentWorkerBase method suspension ledger", () => {
     expect(submitContinue).toHaveBeenCalledTimes(1);
   });
 
+  it("hydrates a spilled blob-ref ui prompt reply before replaying it into the resumed tool", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const appended: AgentMessage[] = [];
+    const submitContinue = vi.fn();
+    const rpcCall = vi.fn(async (_target: string, method: string, args: unknown[]) => {
+      if (method === "blobstore.getText" && args[0] === "ui-reply-digest") {
+        return JSON.stringify("approved-via-blob");
+      }
+      return null;
+    });
+    let replayed: unknown;
+    const worker = instance as unknown as {
+      _rpc: {
+        call: ReturnType<typeof vi.fn>;
+        streamCall: ReturnType<typeof vi.fn>;
+        emit: ReturnType<typeof vi.fn>;
+        onEvent: ReturnType<typeof vi.fn>;
+        handleIncomingPost: ReturnType<typeof vi.fn>;
+      };
+      runners: Map<string, { runner: unknown }>;
+      dispatchers: Map<string, unknown>;
+      dispatchUiPrompt(
+        channelId: string,
+        toolCallId: string,
+        kind: "confirm" | "input",
+        params: Record<string, unknown>
+      ): Promise<unknown>;
+      recoverDeliveredAndOrphanedSuspensions(channelId: string): Promise<void>;
+    };
+    worker._rpc = {
+      call: rpcCall,
+      streamCall: vi.fn(),
+      emit: vi.fn(),
+      onEvent: vi.fn(),
+      handleIncomingPost: vi.fn(),
+    };
+    const executeToolDirect = vi.fn(async () => {
+      replayed = await worker.dispatchUiPrompt("chat-1", "tool-1", "input", {
+        title: "Name?",
+      });
+      return {
+        content: [{ type: "text", text: `replayed=${String(replayed)}` }],
+      };
+    });
+    worker.runners.set("chat-1", {
+      runner: {
+        isInvocationOpen: () => true,
+        hasToolResult: async () => false,
+        isLeafDescendantOf: async () => true,
+        executeToolDirect,
+        appendToolResult: async (message: AgentMessage) => {
+          appended.push(message);
+          return "entry-ui";
+        },
+      },
+    });
+    worker.dispatchers.set("chat-1", {
+      submitContinue,
+      getDebugState: () => ({ busy: false }),
+    });
+    insertSuspension(sql, {
+      callId: "ui-call",
+      invocationId: "tool-1",
+      kind: "uiPrompt",
+      deliveryStatus: "pending",
+      terminalKind: "completed",
+      // The reply was spilled to the blobstore and the ledger keeps the raw
+      // ref inline (result-preserving). Recovery must hydrate it before
+      // replaying; otherwise the resumed tool receives a raw blob ref, which
+      // coerceUiPromptResult would JSON.stringify instead of yielding the value.
+      result: {
+        protocol: "natstack.blob-ref.v1",
+        digest: "ui-reply-digest",
+        size: 32,
+        encoding: "json",
+        originalBytes: 32,
+      },
+      createdAt: 100,
+      toolName: "custom_tool",
+      args: {
+        prompt: { kind: "input", title: "Name?" },
+        resumeToolInput: { value: 7 },
+      },
+    });
+
+    await worker.recoverDeliveredAndOrphanedSuspensions("chat-1");
+
+    expect(rpcCall).toHaveBeenCalledWith("main", "blobstore.getText", ["ui-reply-digest"]);
+    expect(replayed).toBe("approved-via-blob");
+    expect(appended).toHaveLength(1);
+    expect(appended[0]).toMatchObject({
+      role: "toolResult",
+      toolCallId: "tool-1",
+      toolName: "custom_tool",
+      content: [{ type: "text", text: "replayed=approved-via-blob" }],
+    });
+    expect(submitContinue).toHaveBeenCalledTimes(1);
+  });
+
   it("recovers multiple terminal tool calls in assistant block order", async () => {
     const { instance, sql } = await createTestDO(TestAgentWorker, {
       __objectKey: "agent-test",

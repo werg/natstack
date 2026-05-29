@@ -1837,6 +1837,126 @@ describe("GadWorkspaceDO trajectory persistence", () => {
     expect(head.rows[0]?.["head_state_hash"]).toBe(appendResult["headStateHash"]);
   });
 
+  it("rebuilds head_state_hash for every branch when replaying a forked trajectory", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    // Parent branch: a file mutation, a fork-point marker, then a second
+    // mutation that stays parent-only. Mutations omit inputStateHash so each
+    // branch's input state is derived from its own head during replay.
+    const parent = await call<Record<string, unknown>>("appendTrajectoryBatch", {
+      trajectoryId: "traj-parent",
+      branchId: "branch-parent",
+      owner,
+      events: [
+        {
+          eventId: "apply-a",
+          event: event("state.file_mutation_applied", {
+            causality: { invocationId: "inv-a" as never },
+            payload: {
+              protocol: AGENTIC_PROTOCOL_VERSION,
+              mutationId: "mut-a",
+              path: "a.ts",
+              operation: "write",
+              afterHash: "blob:a1",
+            } as never,
+          }),
+        },
+        {
+          eventId: "fork-point",
+          event: event("message.completed", {
+            turnId: "turn-1" as never,
+            causality: { messageId: "msg-fork" as never },
+            payload: { protocol: AGENTIC_PROTOCOL_VERSION, role: "assistant", content: "fork here" },
+          }),
+        },
+        {
+          eventId: "apply-b",
+          event: event("state.file_mutation_applied", {
+            causality: { invocationId: "inv-b" as never },
+            payload: {
+              protocol: AGENTIC_PROTOCOL_VERSION,
+              mutationId: "mut-b",
+              path: "b.ts",
+              operation: "write",
+              afterHash: "blob:b1",
+            } as never,
+          }),
+        },
+      ],
+    });
+
+    const forkPointHash = String(
+      (
+        await call<{ rows: Array<Record<string, unknown>> }>(
+          "query",
+          "SELECT event_hash FROM trajectory_events WHERE event_id = ?",
+          ["fork-point"]
+        )
+      ).rows[0]?.["event_hash"]
+    );
+
+    // Fork through the marker, copying apply-a (a file mutation) and the marker
+    // but NOT the parent-only apply-b. The fork's head is re-derived through
+    // projection, not copied from the parent.
+    const fork = await call<Record<string, unknown>>("forkTrajectoryBranch", {
+      fromTrajectoryId: "traj-parent",
+      fromBranchId: "branch-parent",
+      toTrajectoryId: "traj-fork",
+      toBranchId: "branch-fork",
+      throughEventHash: forkPointHash,
+      owner,
+    });
+    expect(fork["copied"]).toBe(2);
+    // The two branches diverge: the parent reflects both mutations, the fork
+    // only the copied one. If they were equal the test could not distinguish a
+    // correct per-branch rebuild from cross-branch contamination.
+    expect(String(parent["headStateHash"])).toMatch(/^state:/);
+    expect(String(fork["headStateHash"])).toMatch(/^state:/);
+    expect(parent["headStateHash"]).not.toBe(fork["headStateHash"]);
+
+    const headsQuery =
+      "SELECT branch_id, head_state_hash FROM trajectory_branches ORDER BY branch_id";
+    const headsBefore = await call<{ rows: Array<Record<string, unknown>> }>(
+      "query",
+      headsQuery,
+      []
+    );
+    expect(headsBefore.rows).toEqual([
+      { branch_id: "branch-fork", head_state_hash: fork["headStateHash"] },
+      { branch_id: "branch-parent", head_state_hash: parent["headStateHash"] },
+    ]);
+
+    // The state-transition chains (per event_id, across both branches) are the
+    // sensitive signal: heads can converge on an idempotent re-write even when
+    // intermediate input hashes are corrupted, so a non-reset replay would
+    // diverge here even where the heads do not.
+    const transitionsQuery =
+      "SELECT event_id, input_state_hash, output_state_hash, produced_by_mutation_id FROM gad_state_transitions ORDER BY event_id";
+    const transitionsBefore = await call<{ rows: Array<Record<string, unknown>> }>(
+      "query",
+      transitionsQuery,
+      []
+    );
+    expect(transitionsBefore.rows).toHaveLength(3);
+
+    // Replay rebuilds every branch from the empty state (3 parent events + the
+    // 2 copied fork events).
+    const replay = await call<{ replayed: number }>("rebuildTrajectoryProjections", {});
+    expect(replay.replayed).toBe(5);
+
+    const headsAfter = await call<{ rows: Array<Record<string, unknown>> }>(
+      "query",
+      headsQuery,
+      []
+    );
+    expect(headsAfter.rows).toEqual(headsBefore.rows);
+    const transitionsAfter = await call<{ rows: Array<Record<string, unknown>> }>(
+      "query",
+      transitionsQuery,
+      []
+    );
+    expect(transitionsAfter.rows).toEqual(transitionsBefore.rows);
+  });
+
   it("projects replayable knowledge events", async () => {
     const { call } = await createTestDO(GadWorkspaceDO);
     await call("appendTrajectoryBatch", {
