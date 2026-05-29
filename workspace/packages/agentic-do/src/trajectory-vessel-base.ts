@@ -1870,10 +1870,10 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     return {};
   }
 
-  private enqueueRecoveredUiPromptRepliesForInvocation(
+  private async enqueueRecoveredUiPromptRepliesForInvocation(
     channelId: string,
     invocationId: string
-  ): void {
+  ): Promise<void> {
     const rows = this.sql
       .exec(
         `SELECT * FROM agent_method_suspensions
@@ -1888,10 +1888,16 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       .toArray()
       .map((row) => this.methodSuspensionRow(row));
     for (const row of rows) {
+      // Results are stored ref-preserving in the ledger, so hydrate at this
+      // model/tool-visible boundary (mirroring composeRecoveredToolResult)
+      // before replaying the reply — otherwise a spilled UI-prompt reply
+      // would be fed back to the resumed tool as a raw blob ref.
       this.enqueueRecoveredUiPromptReply(
         channelId,
         invocationId,
-        this.parseSuspensionJson(row.resultJson, row.resultRefJson),
+        await this.hydrateStoredTransportValue(
+          this.parseSuspensionJson(row.resultJson, row.resultRefJson)
+        ),
         row.resultIsError === 1
       );
     }
@@ -1971,7 +1977,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       return this.composePromptRecoveryError(row, result);
     }
 
-    this.enqueueRecoveredUiPromptRepliesForInvocation(channelId, row.invocationId);
+    await this.enqueueRecoveredUiPromptRepliesForInvocation(channelId, row.invocationId);
     const controller = new AbortController();
     const untrack = this.trackRecoveryDirectAbort(channelId, controller);
     try {
