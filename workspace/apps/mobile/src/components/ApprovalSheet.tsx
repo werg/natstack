@@ -403,9 +403,6 @@ export function ApprovalSheet({
                   {copy.summary}
                 </Text>
                 {copy.warning ? <WarningBand message={copy.warning} /> : null}
-                {current.kind === "userland" ? (
-                  <IssuerPanel approval={current} caller={callerInfo} />
-                ) : null}
                 {current.kind === "device-code" ? <DeviceCodePanel approval={current} /> : null}
                 {error ? <InlineError message={error} /> : null}
                 {current.kind === "client-config" || current.kind === "credential-input" ? (
@@ -690,53 +687,6 @@ function InlineError({ message }: { message: string }) {
   );
 }
 
-function IssuerPanel({
-  approval,
-  caller,
-}: {
-  approval: PendingUserlandApproval;
-  caller: CallerInfo;
-}) {
-  const colors = useAtomValue(themeColorsAtom);
-  const issuer = approval.issuer;
-  const showIssuer =
-    issuer && (issuer.kind !== approval.callerKind || issuer.id !== approval.callerId);
-  return (
-    <View
-      style={[
-        styles.issuerPanel,
-        { backgroundColor: colors.background, borderColor: colors.border },
-      ]}
-    >
-      <View style={styles.issuerHeader}>
-        <User size={14} color={colors.textSecondary} />
-        <Text style={[styles.helperText, { color: colors.textSecondary }]}>
-          From {caller.kindLabel.toLowerCase()}{" "}
-          <Text style={[styles.helperEmphasis, { color: colors.text }]}>{caller.label}</Text>
-          {showIssuer && issuer
-            ? `  ·  on behalf of ${issuer.kind} ${issuer.label ?? prettifyId(issuer.id)}`
-            : null}
-        </Text>
-      </View>
-      <Text style={[styles.providerTitle, { color: colors.text }]}>{approval.title}</Text>
-      <Text style={[styles.helperText, { color: colors.textSecondary }]}>
-        Subject:{" "}
-        {approval.subject.label ? (
-          <Text style={[styles.helperEmphasis, { color: colors.text }]}>
-            {approval.subject.label}
-          </Text>
-        ) : (
-          <Text style={styles.codeText}>{truncateId(approval.subject.id)}</Text>
-        )}
-      </Text>
-      {approval.warning ? <WarningBand message={approval.warning} /> : null}
-      {approval.summary ? (
-        <Text style={[styles.providerSummary, { color: colors.text }]}>{approval.summary}</Text>
-      ) : null}
-    </View>
-  );
-}
-
 function SecretConfigFields({
   approval,
   values,
@@ -969,8 +919,19 @@ function CapabilityDetails({ approval }: { approval: PendingCapabilityApproval }
 }
 
 function UserlandDetails({ approval }: { approval: PendingUserlandApproval }) {
+  const issuer = approval.issuer;
+  const showIssuer =
+    issuer && (issuer.kind !== approval.callerKind || issuer.id !== approval.callerId);
   return (
     <>
+      {showIssuer && issuer ? (
+        <DetailRow
+          icon={User}
+          label="Asked by"
+          value={`${issuer.kind} · ${issuer.label ?? prettifyId(issuer.id)}`}
+          code
+        />
+      ) : null}
       <DetailRow icon={Lock} label="Subject" value={approval.subject.id} code />
       {approval.subject.label ? (
         <DetailRow icon={Lock} label="Label" value={approval.subject.label} code />
@@ -1693,22 +1654,6 @@ const styles = StyleSheet.create({
     marginTop: 14,
     padding: 12,
   },
-  issuerHeader: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: 6,
-  },
-  providerTitle: {
-    fontSize: 16,
-    fontWeight: "600",
-    lineHeight: 22,
-    marginTop: 10,
-  },
-  providerSummary: {
-    fontSize: 14,
-    lineHeight: 20,
-    marginTop: 8,
-  },
   helperText: {
     fontSize: 12,
     fontWeight: "400",
@@ -1785,9 +1730,6 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     fontSize: 11,
     lineHeight: 16,
-  },
-  helperEmphasis: {
-    fontWeight: "600",
   },
   codeText: {
     fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),

@@ -400,22 +400,23 @@ export function getApprovalCopy(
     };
   }
   if (approval.kind === "userland") {
-    // Header text is renderer-controlled. Provider-supplied title, summary,
-    // and warning render inside the "From <issuer>" framed body so they
-    // cannot impersonate the verified-issuer chrome.
-    const callerKindLabel = userlandCallerKindLabel(approval.callerKind);
+    // The provider-supplied title IS the headline: it's the decision the user
+    // actually needs to scan. The fact that a userland process is asking is
+    // demoted to trusted chrome around it — the "Requested by <caller>" row and
+    // the category label — so provider text can describe the request without
+    // ever occupying or impersonating the verified-issuer chrome.
     const issuer = approval.issuer;
-    const issuerDiffers = issuer && (issuer.kind !== approval.callerKind || issuer.id !== approval.callerId);
-    if (issuerDiffers && issuer) {
-      const issuerLabel = `${issuer.kind} ${truncateId(issuer.id)}`;
-      return {
-        title: `${callerKindLabel} requests your decision`,
-        summary: `${requester} is being asked by ${issuerLabel} about ${approval.subject.id}. Your choice will be remembered until revoked.`,
-      };
-    }
+    const issuerDiffers =
+      issuer && (issuer.kind !== approval.callerKind || issuer.id !== approval.callerId);
+    const subjectName = approval.subject.label ?? approval.subject.id;
+    const fallbackSummary =
+      issuerDiffers && issuer
+        ? `${requester}, on behalf of ${issuer.kind} ${issuer.label ?? truncateId(issuer.id)}, asks about ${subjectName}.`
+        : `${requester} asks about ${subjectName}.`;
     return {
-      title: `${callerKindLabel} requests your decision`,
-      summary: `${requester} is asking about ${approval.subject.id}. Your choice will be remembered until revoked.`,
+      title: approval.title,
+      summary: approval.summary ?? fallbackSummary,
+      warning: approval.warning,
     };
   }
   if (approval.kind === "device-code") {

@@ -369,9 +369,6 @@ export function ConsentApprovalBar() {
               caller={currentCaller}
               defaultOpen={shouldOpenApprovalDetails(current)}
             />
-            {current.kind === "userland" ? (
-              <UserlandApprovalBody approval={current} caller={currentCaller} />
-            ) : null}
             {current.kind === "device-code" ? <DeviceCodeBody approval={current} /> : null}
             {current.kind === "client-config" || current.kind === "credential-input" ? (
               <SecretConfigFields
@@ -781,73 +778,6 @@ function DecisionButton({
         {label}
       </Button>
     </Tooltip>
-  );
-}
-
-function UserlandApprovalBody({
-  approval,
-  caller,
-}: {
-  approval: PendingUserlandApproval;
-  caller: CallerInfo;
-}) {
-  return (
-    <Box
-      mt="1"
-      p="2"
-      style={{
-        border: "1px solid var(--gray-a6)",
-        borderRadius: 6,
-        backgroundColor: "var(--color-panel-translucent)",
-        maxWidth: 680,
-      }}
-    >
-      <Flex direction="column" gap="1">
-        <Text size="1" color="gray">
-          From {caller.kindLabel.toLowerCase()} <InlineCode>{caller.label}</InlineCode>
-          {approval.issuer &&
-          (approval.issuer.kind !== approval.callerKind ||
-            approval.issuer.id !== approval.callerId) ? (
-            <>
-              {" "}
-              · on behalf of {approval.issuer.kind}{" "}
-              <InlineCode>{approval.issuer.label ?? prettifyId(approval.issuer.id)}</InlineCode>
-            </>
-          ) : null}
-        </Text>
-        <Flex direction="column" gap="1">
-          <Text size="1" color="gray">
-            Request
-          </Text>
-          <Text size="2" weight="medium" style={{ lineHeight: 1.35, overflowWrap: "anywhere" }}>
-            {approval.title}
-          </Text>
-        </Flex>
-        <Flex align="center" gap="2" wrap="wrap">
-          <Text size="1" color="gray">
-            Subject
-          </Text>
-          {approval.subject.label ? (
-            <InlineCode>{approval.subject.label}</InlineCode>
-          ) : (
-            <IdCode value={approval.subject.id} />
-          )}
-        </Flex>
-        {approval.warning ? (
-          <Flex align="center" gap="1" style={{ color: "var(--red-11)" }}>
-            <ExclamationTriangleIcon width={13} height={13} />
-            <Text size="1" style={{ lineHeight: 1.35, overflowWrap: "anywhere" }}>
-              {approval.warning}
-            </Text>
-          </Flex>
-        ) : null}
-        {approval.summary ? (
-          <Text size="2" style={{ lineHeight: 1.35, overflowWrap: "anywhere" }}>
-            {approval.summary}
-          </Text>
-        ) : null}
-      </Flex>
-    </Box>
   );
 }
 

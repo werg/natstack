@@ -213,8 +213,8 @@ describe("approvalCopy", () => {
         options: [{ value: "allow", label: "Allow", tone: "primary" }],
       },
       category: "Worker request",
-      title: "Worker requests your decision",
-      summaryIncludes: "team-x:foo",
+      title: "Allow foo?",
+      summaryIncludes: "Team X is requesting access to foo.",
     },
     {
       name: "app userland",
@@ -231,8 +231,8 @@ describe("approvalCopy", () => {
         options: [{ value: "allow", label: "Allow", tone: "primary" }],
       },
       category: "App request",
-      title: "App requests your decision",
-      summaryIncludes: "native:notifications",
+      title: "Allow notifications?",
+      summaryIncludes: "notification access",
     },
     {
       name: "panel automate",

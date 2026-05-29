@@ -97,7 +97,7 @@ describe("ApprovalSheet", () => {
     [credential, "Connect service"],
     [clientConfig, "Configure service"],
     [credentialInput, "Add service"],
-    [userland, "Worker requests your decision"],
+    [userland, "Allow foo?"],
   ] as const)("renders %s", (approval, title) => {
     const { getByText } = renderSheet(approval);
     expect(getByText(title)).toBeTruthy();
