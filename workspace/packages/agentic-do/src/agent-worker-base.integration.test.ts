@@ -1940,27 +1940,27 @@ describe("AgentWorkerBase method suspension ledger", () => {
       sessionLeafBeforeCall: null,
     });
 
-    await worker.handleCompletedMethodResult(
-      "chat-1",
-      "call-1",
-      {
-        protocol: "natstack.blob-ref.v1",
-        digest: "stored-result-digest",
-        size: 128,
-        encoding: "json",
-        originalBytes: 128,
-      },
-      false
-    );
+    const storedRef = {
+      protocol: "natstack.blob-ref.v1",
+      digest: "stored-result-digest",
+      size: 128,
+      encoding: "json",
+      originalBytes: 128,
+    };
+    await worker.handleCompletedMethodResult("chat-1", "call-1", storedRef, false);
 
     expect(rpcCall).toHaveBeenCalledWith("main", "blobstore.getText", ["stored-result-digest"]);
     expect(appended).toHaveLength(1);
+    // The admitted tool result is hydrated for the model.
     expect(appended[0]).toMatchObject({
       role: "toolResult",
       toolCallId: "tool-1",
       content: [{ type: "text", text: "stored eval output" }],
       details: { bytes: 18 },
     });
+    // The suspension ledger keeps the blob ref, not the inlined payload, so
+    // large results stay in the blobstore rather than being hydrated and
+    // re-spilled into a duplicate blob by encodeSuspensionStorage.
     expect(
       sql
         .exec(
@@ -1971,7 +1971,7 @@ describe("AgentWorkerBase method suspension ledger", () => {
         )
         .toArray()[0]
     ).toMatchObject({
-      result_json: JSON.stringify(hydratedResult),
+      result_json: JSON.stringify(storedRef),
       delivery_status: "recovered",
     });
   });

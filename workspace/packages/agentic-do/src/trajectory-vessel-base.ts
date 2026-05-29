@@ -3860,16 +3860,23 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
 
     const invocationResult = this.channelInvocationResult(event);
     if (invocationResult) {
-      const content = await this.hydrateStoredTransportValue(invocationResult.content);
+      // Keep stored-value refs intact in the suspension ledger so large
+      // payloads (e.g. eval results) stay in the blobstore instead of being
+      // inlined into DO SQLite — the partial-update path (appendMethodSuspensionUpdate)
+      // has no spill of its own, so hydrating here would bloat it. Hydration
+      // happens only at the model/UI-visible boundaries: the live stream
+      // callback below, the live waiter resolution in handleCompletedMethodResult,
+      // and composeRecoveredToolResult during recovery.
+      const rawContent = invocationResult.content;
       if (!invocationResult.complete) {
-        this.appendMethodSuspensionUpdate(invocationResult.callId, content);
+        this.appendMethodSuspensionUpdate(invocationResult.callId, rawContent);
         const cb = this.streamCallbacks.get(invocationResult.callId);
-        if (cb) cb(content);
+        if (cb) cb(await this.hydrateStoredTransportValue(rawContent));
       } else {
         await this.handleCompletedMethodResult(
           channelId,
           invocationResult.callId,
-          content,
+          rawContent,
           invocationResult.isError,
           invocationResult.terminalKind ?? (invocationResult.isError ? "failed" : "completed"),
           invocationResult.eventId
@@ -5067,10 +5074,18 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       return;
     }
 
+    // Validate that stored-value refs resolve before committing a terminal:
+    // a missing blob must leave the suspension pending for retry rather than
+    // persisting an unhydratable ref. We still store the raw (ref-preserving)
+    // result so spilled payloads (e.g. large eval output) keep their original
+    // blobstore ref instead of being hydrated and re-spilled into a duplicate
+    // blob by encodeSuspensionStorage; the hydrated form is recomputed at the
+    // model-visible boundary — here for a live waiter, or in
+    // composeRecoveredToolResult during recovery.
     const hydratedResult = await this.hydrateStoredTransportValue(result);
     await this.markMethodSuspensionTerminal(callId, {
       terminalKind,
-      result: hydratedResult,
+      result,
       isError,
       eventId,
       waiterPresent: Boolean(waiter),

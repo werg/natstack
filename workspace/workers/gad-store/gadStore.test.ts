@@ -1396,6 +1396,64 @@ describe("GadWorkspaceDO trajectory persistence", () => {
     ).rejects.toThrow(/duplicate terminal invocation/u);
   });
 
+  it("enforces terminal approval idempotency at projection time", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    await call("appendTrajectoryBatch", {
+      trajectoryId: "traj-1",
+      branchId: "main",
+      owner,
+      events: [
+        {
+          eventId: "event-approval-request",
+          event: event("approval.requested", {
+            turnId: "turn-1" as never,
+            causality: { approvalId: "appr-1" as never, invocationId: "inv-1" as never },
+            payload: { protocol: AGENTIC_PROTOCOL_VERSION, question: "Run eval?" },
+          }),
+        },
+        {
+          eventId: "event-approval-grant",
+          event: event("approval.resolved", {
+            turnId: "turn-1" as never,
+            causality: { approvalId: "appr-1" as never, invocationId: "inv-1" as never },
+            payload: { protocol: AGENTIC_PROTOCOL_VERSION, granted: true, resolvedBy: owner },
+          }),
+        },
+      ],
+    });
+
+    // A second, different-content resolution (deny) carries a fresh event id,
+    // so it is NOT an idempotent retry and must be rejected at projection time
+    // rather than silently flipping the recorded decision.
+    await expect(
+      call("appendTrajectoryBatch", {
+        trajectoryId: "traj-1",
+        branchId: "main",
+        owner,
+        events: [
+          {
+            eventId: "event-approval-deny",
+            event: event("approval.resolved", {
+              turnId: "turn-1" as never,
+              causality: { approvalId: "appr-1" as never, invocationId: "inv-1" as never },
+              payload: { protocol: AGENTIC_PROTOCOL_VERSION, granted: false, resolvedBy: owner },
+            }),
+          },
+        ],
+      })
+    ).rejects.toThrow(/duplicate terminal approval/u);
+
+    const approval = await call<{ rows: Array<Record<string, unknown>> }>(
+      "query",
+      "SELECT status, resolved_event_id FROM trajectory_approvals WHERE approval_id = ?",
+      ["appr-1"]
+    );
+    expect(approval.rows[0]).toMatchObject({
+      status: "granted",
+      resolved_event_id: "event-approval-grant",
+    });
+  });
+
   it("indexes stored value references from trajectory payloads", async () => {
     const { call } = await createTestDO(GadWorkspaceDO);
     await call("appendTrajectoryBatch", {
@@ -1706,6 +1764,77 @@ describe("GadWorkspaceDO trajectory persistence", () => {
         status: "streaming",
       }),
     ]);
+  });
+
+  it("deterministically rebuilds state-transition chains for mutations without explicit state hashes", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    // The real producer (pi-runner) emits file_mutation_applied with only
+    // beforeHash/afterHash and no inputStateHash/outputStateHash, so the store
+    // derives input state from the branch head. Replay must seed from the
+    // empty state so the rebuilt chain matches the original append.
+    const appendResult = await call<Record<string, unknown>>("appendTrajectoryBatch", {
+      trajectoryId: "traj-1",
+      branchId: "main",
+      owner,
+      events: [
+        {
+          eventId: "apply-a",
+          event: event("state.file_mutation_applied", {
+            causality: { invocationId: "inv-a" as never },
+            payload: {
+              protocol: AGENTIC_PROTOCOL_VERSION,
+              mutationId: "mut-a",
+              path: "a.ts",
+              operation: "write",
+              afterHash: "blob:a1",
+            } as never,
+          }),
+        },
+        {
+          eventId: "apply-b",
+          event: event("state.file_mutation_applied", {
+            causality: { invocationId: "inv-b" as never },
+            payload: {
+              protocol: AGENTIC_PROTOCOL_VERSION,
+              mutationId: "mut-b",
+              path: "b.ts",
+              operation: "write",
+              afterHash: "blob:b1",
+            } as never,
+          }),
+        },
+      ],
+    });
+
+    const transitionsQuery =
+      "SELECT produced_by_mutation_id, input_state_hash, output_state_hash FROM gad_state_transitions ORDER BY event_id";
+    const before = await call<{ rows: Array<Record<string, unknown>> }>(
+      "query",
+      transitionsQuery,
+      []
+    );
+    expect(before.rows).toHaveLength(2);
+    // Chain is contiguous, and the first mutation's input is NOT the final head
+    // (it is the empty state). This is what a non-reset replay would corrupt.
+    expect(before.rows[1]?.["input_state_hash"]).toBe(before.rows[0]?.["output_state_hash"]);
+    expect(before.rows[0]?.["input_state_hash"]).not.toBe(appendResult["headStateHash"]);
+
+    const replay = await call<{ replayed: number }>("rebuildTrajectoryProjections", {});
+    expect(replay.replayed).toBe(2);
+
+    const after = await call<{ rows: Array<Record<string, unknown>> }>(
+      "query",
+      transitionsQuery,
+      []
+    );
+    expect(after.rows).toEqual(before.rows);
+
+    const head = await call<{ rows: Array<Record<string, unknown>> }>(
+      "query",
+      "SELECT head_state_hash FROM trajectory_branches WHERE branch_id = ?",
+      ["main"]
+    );
+    expect(head.rows[0]?.["head_state_hash"]).toBe(appendResult["headStateHash"]);
   });
 
   it("projects replayable knowledge events", async () => {

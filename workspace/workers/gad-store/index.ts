@@ -3165,6 +3165,25 @@ export class GadWorkspaceDO extends DurableObjectBase {
           ? "granted"
           : "denied"
         : "requested";
+    // Approvals resolve once. Reject a second terminal (`approval.resolved`)
+    // against an already-granted/denied approval at projection time, mirroring
+    // the invocation terminal guard, so a duplicate/out-of-order resolution
+    // cannot silently overwrite a recorded decision via the ON CONFLICT DO
+    // UPDATE below. (Identical-content retries never reach here — they are
+    // caught by appendTrajectoryBatch's idempotency layer before projection.)
+    if (event.kind === "approval.resolved") {
+      const existing = this.sql
+        .exec(
+          `SELECT status FROM trajectory_approvals WHERE branch_id = ? AND approval_id = ?`,
+          event.branchId,
+          approvalId
+        )
+        .toArray()[0] as JsonRecord | undefined;
+      const existingStatus = existing ? String(existing["status"]) : null;
+      if (existingStatus === "granted" || existingStatus === "denied") {
+        throw new Error(`duplicate terminal approval event for ${approvalId}`);
+      }
+    }
     this.sql.exec(
       `INSERT INTO trajectory_approvals (
          approval_id, branch_id, invocation_id, status, requested_by_json, resolved_by_json,
@@ -4300,6 +4319,17 @@ export class GadWorkspaceDO extends DurableObjectBase {
     this.sql.exec(`DELETE FROM gad_manifest_entries`);
     this.sql.exec(`DELETE FROM gad_manifest_nodes WHERE hash <> ?`, EMPTY_MANIFEST_HASH);
     this.sql.exec(`DELETE FROM gad_file_versions`);
+    // Reset worktree heads to the empty state so replay reconstructs each
+    // branch's state from scratch. Both appendTrajectoryBatch and
+    // forkTrajectory initialize head_state_hash to EMPTY_STATE_HASH and
+    // advance it only through file-mutation projections, so seeding replay
+    // from empty matches the write paths. Without this, projectFileMutation*
+    // would read the stale final head via latestStateHash() for the first
+    // mutation whose payload omits an explicit inputStateHash (the producer
+    // always omits it), diverging the rebuilt state-transition chain.
+    // head_event_id/head_event_hash are left intact: the event chain is not
+    // rewritten during replay.
+    this.sql.exec(`UPDATE trajectory_branches SET head_state_hash = ?`, EMPTY_STATE_HASH);
     this.ensureEmptyState();
   }
 
