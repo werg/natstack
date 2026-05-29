@@ -4512,6 +4512,20 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
           );
         }
       },
+      // The drain loop is started fire-and-forget from whichever inbound
+      // request enqueued the work; that request returns immediately, so
+      // workerd would otherwise bind the drain's promise continuations (and
+      // the in-flight method-result waiter created inside the turn) to an
+      // already-completed request context and cancel them on cross-request
+      // resolution ("A promise was resolved or rejected from a different
+      // request context..."). Anchoring the drain to ctx.waitUntil keeps a
+      // live context around for the warm turn. It is best-effort: a long
+      // suspension (e.g. askUser) that outlives the keep-alive window simply
+      // falls back to the durable suspension-recovery path on the next event.
+      // Optional-chained because some workerd builds / test stubs omit it.
+      keepAlive: (promise) => {
+        this.ctx.waitUntil?.(promise);
+      },
     });
     this.dispatchers.set(channelId, dispatcher);
     return dispatcher;

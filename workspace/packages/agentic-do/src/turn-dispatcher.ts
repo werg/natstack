@@ -53,6 +53,16 @@ export interface TurnDispatcherOptions {
     code: string,
     detail?: Record<string, unknown>
   ) => void | Promise<void>;
+  /**
+   * Anchor the detached drain promise to the DO's current request lifetime
+   * (typically `ctx.waitUntil`). The drain loop is started fire-and-forget
+   * from an inbound request handler that returns immediately; without an
+   * anchor, workerd binds the drain's promise continuations to that already
+   * -completed request context and cancels them ("A promise was resolved or
+   * rejected from a different request context..."). Registering the drain
+   * promise here keeps a live context around until the turn settles.
+   */
+  keepAlive?: (promise: Promise<unknown>) => void;
   log?: Pick<Console, "warn" | "error">;
 }
 
@@ -233,7 +243,7 @@ export class TurnDispatcher {
     if (this.draining) return;
     this.draining = true;
     const generation = ++this.drainGeneration;
-    void this.drainLoop(generation).catch((err) => {
+    const drained = this.drainLoop(generation).catch((err) => {
       if (generation !== this.drainGeneration) return;
       this.log.error("[TurnDispatcher] drainLoop crashed:", err);
       this.reportInvariant("dispatcher_drain_loop_crashed", {
@@ -242,6 +252,9 @@ export class TurnDispatcher {
       this.draining = false;
       this.notifyTyping();
     });
+    // Anchor the detached drain to a live request context so workerd does not
+    // cancel its cross-request promise continuations. See keepAlive docs.
+    this.opts.keepAlive?.(drained);
   }
 
   private async drainLoop(generation: number): Promise<void> {
