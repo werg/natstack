@@ -60,6 +60,14 @@ jest.mock("react-native-haptic-feedback", () => ({
   trigger: jest.fn(),
 }));
 
+jest.mock("@react-native-clipboard/clipboard", () => ({
+  __esModule: true,
+  default: {
+    setString: jest.fn(),
+    getString: jest.fn(async () => ""),
+  },
+}));
+
 const { NativeModules } = jest.requireActual("react-native");
 NativeModules.NatStackMobileHost = {
   clearCredentials: jest.fn(async () => undefined),
