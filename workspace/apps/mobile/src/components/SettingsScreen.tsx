@@ -1,5 +1,5 @@
 import React from "react";
-import { View, Text, StyleSheet, Pressable, SafeAreaView } from "react-native";
+import { View, Text, StyleSheet, Pressable, SafeAreaView, Alert } from "react-native";
 import type { StackNavigationProp } from "@react-navigation/stack";
 import { useAtomValue, useSetAtom } from "jotai";
 import type { RootStackParamList } from "../navigation/RootNavigator";
@@ -27,7 +27,7 @@ export function SettingsScreen({ navigation }: SettingsScreenProps) {
   const setActivePanelId = useSetAtom(activePanelIdAtom);
   const colors = useAtomValue(themeColorsAtom);
 
-  const handleDisconnect = async () => {
+  const performDisconnect = async () => {
     // Dispose the shell client (stops sync, disconnects transport)
     shellClient?.dispose();
     setShellClient(null);
@@ -35,10 +35,26 @@ export function SettingsScreen({ navigation }: SettingsScreenProps) {
     setActivePanelId(null);
 
     // Clear stored credentials
-    await clearCredentials();
-    setAuthenticated(false);
+    try {
+      await clearCredentials();
+    } catch (error) {
+      console.warn("[SettingsScreen] Failed to clear stored credentials:", error);
+    } finally {
+      setAuthenticated(false);
+      navigation.replace("Login");
+    }
+  };
 
-    navigation.replace("Login");
+  const handleDisconnect = () => {
+    Alert.alert(
+      "Disconnect this device?",
+      "This clears the stored pairing for this server. You'll need a new pairing code to reconnect.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Disconnect", style: "destructive", onPress: () => void performDisconnect() },
+      ],
+      { cancelable: true },
+    );
   };
 
   const handleBack = () => {
@@ -54,7 +70,7 @@ export function SettingsScreen({ navigation }: SettingsScreenProps) {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
-      <ConnectionBar />
+      <ConnectionBar onRepair={() => navigation.navigate("Login")} />
 
       <View style={styles.content}>
         <View style={styles.headerRow}>

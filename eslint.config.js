@@ -8,7 +8,7 @@ export default [
       "dist",
       "apps/mobile/*.config.js",
       "apps/mobile/index.js",
-      "apps/mobile/src/polyfills/*.js",
+      "workspace/apps/mobile/src/polyfills/*.js",
     ],
   },
   js.configs.recommended,
@@ -33,10 +33,12 @@ export default [
   },
   // Test files - more permissive rules
   {
-    files: ["**/*.test.ts", "**/*.spec.ts"],
+    files: ["**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts"],
     rules: {
       // Non-null assertions are common after test assertions
       "@typescript-eslint/no-non-null-assertion": "off",
+      // Test doubles are frequently modeled as empty/static-only stub classes
+      "@typescript-eslint/no-extraneous-class": "off",
     },
   },
 ];

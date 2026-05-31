@@ -9,6 +9,9 @@ export interface AppLifecyclePayload {
   source?: string;
   target?: string;
   buildKey?: string | null;
+  effectiveVersion?: string | null;
+  previousBuildKey?: string | null;
+  previousEffectiveVersion?: string | null;
   error?: string;
   canRollback?: boolean;
 }
@@ -64,14 +67,39 @@ function normalizeSource(value: string): string {
   return value.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
 }
 
+/**
+ * Build a version-aware update message. Surfaces the target version (and the
+ * version being replaced, when both are known) so the prompt isn't blind about
+ * what it's installing; falls back to generic copy when the server didn't
+ * report versions.
+ */
+function formatUpdateMessage(event: AppLifecyclePayload, appId: string): string {
+  const next = event.effectiveVersion?.trim();
+  const prev = event.previousEffectiveVersion?.trim();
+  if (next && prev && next !== prev) {
+    return `${appId} v${prev} → v${next} is ready to install.`;
+  }
+  if (next) {
+    return `${appId} v${next} is ready to install.`;
+  }
+  return `${appId} has a new trusted bundle ready to install.`;
+}
+
 function promptMobileUpdate(event: AppLifecyclePayload, deps: AppUpdatePromptDeps): void {
   const appId = event.appId ?? "apps/mobile";
+  // Version awareness: ignore no-op events where the "new" build is the one
+  // already running -- e.g. a lifecycle event re-emitted (on reconnect) for a
+  // build the user already installed. The server reports the build being
+  // replaced as previousBuildKey.
+  if (event.buildKey && event.previousBuildKey && event.buildKey === event.previousBuildKey) {
+    return;
+  }
   const promptKey = `${appId}:${event.buildKey ?? "unknown"}`;
   if (deps.prompted.has(promptKey)) return;
   deps.prompted.add(promptKey);
   const ensureBundle = deps.ensureBundle ?? ensureNativeWorkspaceAppBundle;
   const alert = deps.alert ?? Alert.alert;
-  alert("Mobile app update available", `${appId} has a new trusted bundle ready to install.`, [
+  alert("Mobile app update available", formatUpdateMessage(event, appId), [
     { text: "Later", style: "cancel" },
     ...(event.canRollback
       ? [

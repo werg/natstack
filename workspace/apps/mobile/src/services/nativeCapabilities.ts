@@ -1,4 +1,5 @@
-import { Clipboard, Linking } from "react-native";
+import { Linking } from "react-native";
+import Clipboard from "@react-native-clipboard/clipboard";
 import { requireApprovedAppCapability } from "./appCapabilities";
 
 export function copyToClipboard(value: string): void {

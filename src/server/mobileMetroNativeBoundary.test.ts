@@ -27,6 +27,12 @@ describe("mobile Metro native capability boundary", () => {
         path.join(workspaceAppRoot, "App.tsx")
       )
     ).toThrow(/capability-gated service wrapper/);
+    expect(() =>
+      boundary.guardNativeModuleImport(
+        "@react-native-clipboard/clipboard",
+        path.join(workspaceAppRoot, "src/components/MainScreen.tsx")
+      )
+    ).toThrow(/capability-gated service wrapper/);
   });
 
   it("permits the small host-owned wrapper files that perform capability checks", () => {
@@ -40,6 +46,12 @@ describe("mobile Metro native capability boundary", () => {
       boundary.guardNativeModuleImport(
         "@react-native-async-storage/async-storage",
         path.join(workspaceAppRoot, "src/shellCore/localViewState.ts")
+      )
+    ).not.toThrow();
+    expect(() =>
+      boundary.guardNativeModuleImport(
+        "@react-native-clipboard/clipboard",
+        path.join(workspaceAppRoot, "src/services/nativeCapabilities.ts")
       )
     ).not.toThrow();
   });

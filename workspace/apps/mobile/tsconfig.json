@@ -1,0 +1,6 @@
+{
+  "//": "Editor/ESLint project coverage for the workspace-owned mobile app. The shippable type-check still runs through apps/mobile/tsconfig.json (which supplies the React Native lib/types). This file only ensures typed-aware tooling can resolve these sources at their workspace location.",
+  "extends": "../../../apps/mobile/tsconfig.json",
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules"]
+}

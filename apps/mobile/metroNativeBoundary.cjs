@@ -4,6 +4,9 @@ const BLOCKED_NATIVE_IMPORTS = {
   "react-native-keychain": [
     "src/services/pushNotifications.ts",
   ],
+  "@react-native-clipboard/clipboard": [
+    "src/services/nativeCapabilities.ts",
+  ],
   "@react-native-firebase/messaging": [
     "src/services/backgroundHandlers.ts",
     "src/services/pushNotifications.ts",

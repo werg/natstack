@@ -1,4 +1,4 @@
-import { Linking, NativeModules } from "react-native";
+import { NativeModules } from "react-native";
 import type { ShellClient } from "./shellClient";
 import { openExternalUrl } from "./nativeCapabilities";
 export interface OAuthLoopbackHandoff {

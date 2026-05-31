@@ -72,6 +72,7 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
   const setShellClient = useSetAtom(shellClientAtom);
   const setPanelTree = useSetAtom(panelTreeAtom);
   const authLoading = useAtomValue(authLoadingAtom);
+  const authError = useAtomValue(authErrorAtom);
 
   // Reusable connect logic shared by auto-connect and manual button
   const connectWithCredentials = async (
@@ -324,6 +325,12 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
             <Text style={styles.buttonText}>Connect</Text>
           )}
         </Pressable>
+
+        {authError && !authLoading ? (
+          <Text style={[styles.errorText, { color: colors.danger }]} accessibilityRole="alert">
+            {authError}
+          </Text>
+        ) : null}
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -369,5 +376,12 @@ const styles = StyleSheet.create({
     color: "#e0e0e0",
     fontSize: 16,
     fontWeight: "600",
+  },
+  errorText: {
+    width: "100%",
+    marginTop: 16,
+    fontSize: 14,
+    lineHeight: 20,
+    textAlign: "center",
   },
 });

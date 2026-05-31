@@ -247,9 +247,15 @@ export async function reconcilePushNotifications(shellClient: ShellClient, notif
         const pendingIds = new Set(pending.map((approval) => approval.approvalId));
         const displayed = await notifee.getDisplayedNotifications?.() ?? [];
         for (const entry of displayed) {
-            const id = entry.notification?.id ?? entry.id;
-            if (id && !pendingIds.has(id)) {
-                await notifee.cancelNotification(id);
+            // Notifications are displayed under `cancelKey ?? approvalId`, but
+            // the approval identity lives in the payload. Match on the carried
+            // approvalId so a distinct cancelKey doesn't cause a still-pending
+            // approval's notification to be cancelled. Cancel by the actual
+            // display id.
+            const displayId = entry.notification?.id ?? entry.id;
+            const approvalId = readApprovalId(entry.notification);
+            if (displayId && approvalId && !pendingIds.has(approvalId)) {
+                await notifee.cancelNotification(displayId);
             }
         }
     }
@@ -359,12 +365,22 @@ export async function registerForPushNotifications(shellClient: ShellClient, cal
         if (nextState !== "active")
             return;
         void consumeStoredDeepLink(callbacks);
-        void reconcilePushNotifications(shellClient, notifee);
+        void reconcilePushNotifications(shellClient, notifee).catch((error) => {
+            console.error("[PushNotifications] Failed to reconcile after app activation:", error);
+        });
     });
     cleanupFunctions.push(() => appStateSub.remove());
-    cleanupFunctions.push(shellClient.transport.onReconnect(() => {
-        void reconcilePushNotifications(shellClient, notifee);
-    }));
+    // Drain queued offline decisions / reconcile on ANY recovery. onReconnect
+    // only fires for "resubscribe"; a server reboot or dirty session recovers
+    // via "cold-recover", which must also trigger a drain (matching how
+    // ShellClient registers both kinds for its panel tree).
+    const reconcileOnRecovery = () => {
+        void reconcilePushNotifications(shellClient, notifee).catch((error) => {
+            console.error("[PushNotifications] Failed to reconcile after recovery:", error);
+        });
+    };
+    cleanupFunctions.push(shellClient.transport.onRecovery("resubscribe", reconcileOnRecovery));
+    cleanupFunctions.push(shellClient.transport.onRecovery("cold-recover", reconcileOnRecovery));
     await consumeStoredDeepLink(callbacks);
     await reconcilePushNotifications(shellClient, notifee);
     return cleanupPushNotificationSubscriptions;

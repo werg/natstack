@@ -224,8 +224,10 @@ export function PanelDrawer({ onSelectPanel }: PanelDrawerProps) {
 
       {flatItems.length === 0 ? (
         <View style={styles.emptyContainer}>
+          <Text style={[styles.emptyTitle, { color: colors.text }]}>No panels open yet</Text>
           <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-            No panels yet.
+            Tap the address bar at the top of the screen and enter a URL or panel
+            source to open your first panel.
           </Text>
         </View>
       ) : (
@@ -280,6 +282,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     padding: 32,
+  },
+  emptyTitle: {
+    fontSize: 16,
+    fontWeight: "600",
+    textAlign: "center",
+    marginBottom: 8,
   },
   emptyText: {
     fontSize: 14,

@@ -12,20 +12,20 @@
  * host to our team-id + signing cert. Another app claiming the same host
  * cannot intercept.
  *
- * State binding: every pending flow registered via
- * `authCallbackRegistry.registerPendingFlow(state, …)` carries an
- * unguessable PKCE-bound `state`. We look up by state. No state match =>
- * we drop the URL with a `warn` (replay, slow finger on a stale
- * authorize URL, or out-of-band launch).
+ * State binding: every authorize URL the server builds carries an
+ * unguessable PKCE-bound `state`. The server owns the OAuth transaction
+ * end to end (`credentials.connect` runs the whole flow server-side and
+ * blocks awaiting this callback); the client's only job is to forward the
+ * callback to the server keyed by `state`, which the server matches to the
+ * pending transaction, exchanges the code, and resolves.
  *
  * Deduplication: iOS will sometimes deliver the same URL twice (cold
  * start via `getInitialURL` followed by a subsequent `url` event from
  * the same intent). We remember the last 32 states for 5 min and
- * silently swallow the duplicate so `consumePendingFlow` is called at
+ * silently swallow the duplicate so the callback is forwarded at
  * most once per state.
  */
 import { Linking, type EmitterSubscription } from "react-native";
-import { consumePendingFlow } from "./authCallbackRegistry";
 import type { ShellClient } from "./shellClient";
 const UNIVERSAL_LINK_HOST = "auth.snugenv.com";
 const OAUTH_PATH_PREFIX = "/oauth/callback/";
@@ -135,6 +135,9 @@ class StateDedupe {
         }
         this.seen.set(state, now);
     }
+    forget(state: string): void {
+        this.seen.delete(state);
+    }
 }
 const dedupe = new StateDedupe();
 function dispatch(shellClient: ShellClient, parsed: ParsedCallback): void {
@@ -144,21 +147,17 @@ function dispatch(shellClient: ShellClient, parsed: ParsedCallback): void {
         return;
     }
     dedupe.remember(parsed.state);
-    const entry = consumePendingFlow(parsed.state);
-    if (!entry) {
-        void shellClient.transport.call("main", "credentials.forwardOAuthCallback", [{
-                url: parsed.rawUrl,
-                state: parsed.state,
-            }]).catch((err: unknown) => {
-            console.warn(`[oauthHandler] Failed to forward OAuth callback for provider=${parsed.provider}:`, err);
-        });
-        return;
-    }
-    if (!parsed.code) {
-        entry.reject(new Error(`OAuth provider returned an error response`));
-        return;
-    }
-    entry.resolve({ code: parsed.code, state: parsed.state });
+    // Forward to the server, which owns the OAuth transaction and matches the
+    // callback to the pending flow by state. Error responses (empty code) are
+    // forwarded too so the server can fail the waiting flow instead of hanging;
+    // it parses the error out of the raw callback URL.
+    void shellClient.transport.call("main", "credentials.forwardOAuthCallback", [{
+            url: parsed.rawUrl,
+            state: parsed.state,
+        }]).catch((err: unknown) => {
+        dedupe.forget(parsed.state);
+        console.warn(`[oauthHandler] Failed to forward OAuth callback for provider=${parsed.provider}:`, err);
+    });
 }
 function handleUrl(shellClient: ShellClient, rawUrl: string | null): void {
     if (!rawUrl)
@@ -173,12 +172,10 @@ function handleUrl(shellClient: ShellClient, rawUrl: string | null): void {
  * session. Called from App.tsx once the shell client is available; the
  * returned cleanup detaches the listener on unmount / sign-out.
  *
- * The `_shellClient` is currently unused — universal-link OAuth is
- * authenticated by the AASA-bound app identity, not by the shell
- * session. The argument is kept so callers can switch to shell-mediated
- * code exchange (e.g. handing the code straight to the server) without
- * a breaking API change. Mark with `void` so eslint/no-unused stays
- * quiet without changing the signature.
+ * The callback delivery is authenticated by the AASA-bound app identity,
+ * but the code exchange is shell-mediated: `shellClient` is used to forward
+ * the callback to the server (`credentials.forwardOAuthCallback`), which
+ * owns the pending OAuth transaction and completes the exchange.
  */
 export function setupOAuthHandler(shellClient: ShellClient): () => void {
     // Cold-start path: if the OS launched the app *because* of a deep

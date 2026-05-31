@@ -9,12 +9,22 @@
  * - Disconnected: red, stays visible (server unreachable)
  */
 
-import React, { useEffect, useRef } from "react";
-import { View, Text, StyleSheet, Animated } from "react-native";
+import React, { useCallback, useEffect, useRef } from "react";
+import { View, Text, StyleSheet, Animated, Pressable, Alert } from "react-native";
 import { useAtomValue } from "jotai";
 import { connectionStatusAtom, networkReachableAtom } from "../state/connectionAtoms";
+import { shellClientAtom } from "../state/shellClientAtom";
 import { themeColorsAtom } from "../state/themeAtoms";
 import type { ConnectionStatus } from "../services/mobileTransport";
+
+interface ConnectionBarProps {
+  /**
+   * Invoked when the user chooses "Re-pair" from the disconnected bar.
+   * Screens that can route to the pairing flow (Main/Settings) pass this;
+   * when omitted, only an immediate reconnect is offered.
+   */
+  onRepair?: () => void;
+}
 
 interface StatusConfig {
   label: string;
@@ -46,10 +56,11 @@ function getDisplayConfig(status: ConnectionStatus, networkReachable: boolean, w
 /** Natural height of the bar: paddingVertical(4)*2 + dot(6) + fontSize(~12) ≈ 24 */
 const BAR_HEIGHT = 24;
 
-export function ConnectionBar() {
+export function ConnectionBar({ onRepair }: ConnectionBarProps = {}) {
   const status = useAtomValue(connectionStatusAtom);
   const networkReachable = useAtomValue(networkReachableAtom);
   const colors = useAtomValue(themeColorsAtom);
+  const shellClient = useAtomValue(shellClientAtom);
 
   // Track whether we've been connected before to distinguish
   // "Connecting..." (initial) from "Reconnecting..." (after disconnect)
@@ -110,14 +121,57 @@ export function ConnectionBar() {
     };
   }, [status, networkReachable, opacity, animatedHeight]);
 
+  // The bar is actionable whenever the connection is in a problem state
+  // (disconnected, or offline) so the user is never stuck without a way to
+  // retry or re-pair.
+  const isProblem = status === "disconnected" || !networkReachable;
+
+  const handlePress = useCallback(() => {
+    const reconnect = () => shellClient?.transport.reconnect();
+    const buttons: Parameters<typeof Alert.alert>[2] = [
+      { text: "Reconnect", onPress: reconnect },
+    ];
+    if (onRepair) {
+      buttons.push({ text: "Re-pair device", onPress: onRepair });
+    }
+    buttons.push({ text: "Cancel", style: "cancel" });
+    Alert.alert(
+      networkReachable ? "Connection lost" : "No network",
+      networkReachable
+        ? "NatStack isn't connected to your server."
+        : "Your device appears to be offline. Reconnect once your network is back.",
+      buttons,
+      { cancelable: true },
+    );
+  }, [networkReachable, onRepair, shellClient]);
+
   const config = getDisplayConfig(status, networkReachable, wasConnectedRef.current);
   const backgroundColor = colors[config.colorKey];
+  const label = isProblem ? `${config.label} — tap to fix` : config.label;
+  const accessibilityHint = onRepair
+    ? "Opens actions to reconnect or re-pair the device."
+    : "Opens actions to reconnect.";
 
-  return (
+  const content = (
     <Animated.View style={[styles.container, { backgroundColor, opacity, height: animatedHeight, overflow: "hidden" }]}>
       <View style={styles.dot} />
-      <Text style={styles.text}>{config.label}</Text>
+      <Text style={styles.text}>{label}</Text>
     </Animated.View>
+  );
+
+  if (!isProblem) {
+    return content;
+  }
+
+  return (
+    <Pressable
+      onPress={handlePress}
+      accessibilityRole="button"
+      accessibilityLabel={config.label}
+      accessibilityHint={accessibilityHint}
+    >
+      {content}
+    </Pressable>
   );
 }
 

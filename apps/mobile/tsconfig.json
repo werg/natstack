@@ -22,6 +22,8 @@
     "baseUrl": ".",
     "paths": {
       "@natstack/shared/*": ["../../packages/shared/src/*"],
+      "@natstack/dev-log": ["../../packages/dev-log/src/index.ts"],
+      "@natstack/env-paths": ["../../packages/env-paths/src/index.ts"],
       "@natstack/browser-data": ["../../packages/browser-data/src/index.ts"],
       "@natstack/browser-data/client": ["../../packages/browser-data/src/client.ts"],
       "@natstack/rpc": ["../../packages/rpc/src/index.ts"],
