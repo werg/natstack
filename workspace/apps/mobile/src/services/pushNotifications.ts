@@ -365,7 +365,9 @@ export async function registerForPushNotifications(shellClient: ShellClient, cal
         if (nextState !== "active")
             return;
         void consumeStoredDeepLink(callbacks);
-        void reconcilePushNotifications(shellClient, notifee);
+        void reconcilePushNotifications(shellClient, notifee).catch((error) => {
+            console.error("[PushNotifications] Failed to reconcile after app activation:", error);
+        });
     });
     cleanupFunctions.push(() => appStateSub.remove());
     // Drain queued offline decisions / reconcile on ANY recovery. onReconnect
@@ -373,7 +375,9 @@ export async function registerForPushNotifications(shellClient: ShellClient, cal
     // via "cold-recover", which must also trigger a drain (matching how
     // ShellClient registers both kinds for its panel tree).
     const reconcileOnRecovery = () => {
-        void reconcilePushNotifications(shellClient, notifee);
+        void reconcilePushNotifications(shellClient, notifee).catch((error) => {
+            console.error("[PushNotifications] Failed to reconcile after recovery:", error);
+        });
     };
     cleanupFunctions.push(shellClient.transport.onRecovery("resubscribe", reconcileOnRecovery));
     cleanupFunctions.push(shellClient.transport.onRecovery("cold-recover", reconcileOnRecovery));

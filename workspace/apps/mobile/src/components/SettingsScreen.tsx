@@ -35,10 +35,14 @@ export function SettingsScreen({ navigation }: SettingsScreenProps) {
     setActivePanelId(null);
 
     // Clear stored credentials
-    await clearCredentials();
-    setAuthenticated(false);
-
-    navigation.replace("Login");
+    try {
+      await clearCredentials();
+    } catch (error) {
+      console.warn("[SettingsScreen] Failed to clear stored credentials:", error);
+    } finally {
+      setAuthenticated(false);
+      navigation.replace("Login");
+    }
   };
 
   const handleDisconnect = () => {

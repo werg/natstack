@@ -135,6 +135,9 @@ class StateDedupe {
         }
         this.seen.set(state, now);
     }
+    forget(state: string): void {
+        this.seen.delete(state);
+    }
 }
 const dedupe = new StateDedupe();
 function dispatch(shellClient: ShellClient, parsed: ParsedCallback): void {
@@ -152,6 +155,7 @@ function dispatch(shellClient: ShellClient, parsed: ParsedCallback): void {
             url: parsed.rawUrl,
             state: parsed.state,
         }]).catch((err: unknown) => {
+        dedupe.forget(parsed.state);
         console.warn(`[oauthHandler] Failed to forward OAuth callback for provider=${parsed.provider}:`, err);
     });
 }

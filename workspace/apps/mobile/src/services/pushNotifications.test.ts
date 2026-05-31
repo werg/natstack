@@ -1,4 +1,5 @@
 import { AppState } from "react-native";
+import { waitFor } from "@testing-library/react-native";
 import { displayApprovalNotification, registerForPushNotifications, reconcilePushNotifications } from "./pushNotifications";
 import { handleBackgroundMessage, handleBackgroundNotifeeEvent } from "./backgroundHandlers";
 import {
@@ -282,12 +283,12 @@ describe("pushNotifications", () => {
       // Both recovery kinds must be wired -- onReconnect only covers
       // "resubscribe", but a server reboot recovers via "cold-recover".
       expect(mockListeners.recovery.has(kind)).toBe(true);
-      await mockListeners.recovery.get(kind)?.();
+      mockListeners.recovery.get(kind)?.();
 
-      expect(shellClient.transport.call).toHaveBeenCalledWith("main", "shellApproval.resolve", [
+      await waitFor(() => expect(shellClient.transport.call).toHaveBeenCalledWith("main", "shellApproval.resolve", [
         "approval-1",
         "session",
-      ]);
+      ]));
       expect(mockNotifee.cancelNotification).toHaveBeenCalledWith("approval-1");
       expect(mockStorage.has(backgroundActionQueueStorageKeys.ACTION_QUEUE_KEY)).toBe(false);
     }

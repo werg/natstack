@@ -148,6 +148,9 @@ export function ConnectionBar({ onRepair }: ConnectionBarProps = {}) {
   const config = getDisplayConfig(status, networkReachable, wasConnectedRef.current);
   const backgroundColor = colors[config.colorKey];
   const label = isProblem ? `${config.label} — tap to fix` : config.label;
+  const accessibilityHint = onRepair
+    ? "Opens actions to reconnect or re-pair the device."
+    : "Opens actions to reconnect.";
 
   const content = (
     <Animated.View style={[styles.container, { backgroundColor, opacity, height: animatedHeight, overflow: "hidden" }]}>
@@ -164,7 +167,8 @@ export function ConnectionBar({ onRepair }: ConnectionBarProps = {}) {
     <Pressable
       onPress={handlePress}
       accessibilityRole="button"
-      accessibilityLabel={`${config.label}. Tap to reconnect or re-pair.`}
+      accessibilityLabel={config.label}
+      accessibilityHint={accessibilityHint}
     >
       {content}
     </Pressable>

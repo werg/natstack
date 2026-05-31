@@ -60,13 +60,17 @@ jest.mock("react-native-haptic-feedback", () => ({
   trigger: jest.fn(),
 }));
 
-jest.mock("@react-native-clipboard/clipboard", () => ({
-  __esModule: true,
-  default: {
-    setString: jest.fn(),
-    getString: jest.fn(async () => ""),
-  },
-}));
+jest.mock(
+  "@react-native-clipboard/clipboard",
+  () => ({
+    __esModule: true,
+    default: {
+      setString: jest.fn(),
+      getString: jest.fn(async () => ""),
+    },
+  }),
+  { virtual: true },
+);
 
 const { NativeModules } = jest.requireActual("react-native");
 NativeModules.NatStackMobileHost = {
@@ -87,7 +91,7 @@ NativeModules.NatStackMobileHost = {
     appId: "@workspace-apps/mobile",
     buildKey: "rn-key",
     effectiveVersion: "ev-mobile",
-    capabilities: ["notifications", "keychain"],
+    capabilities: ["notifications", "keychain", "clipboard", "open-external"],
     rnHostAbi: "rn-host-1",
     integrity: "sha256-mobile",
     platform: "ios",
