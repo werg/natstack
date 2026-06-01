@@ -11,7 +11,7 @@ overrides:
 
 patchedDependencies:
   '@earendil-works/pi-agent-core@0.74.1':
-    hash: 32f33e2e043e208959b8a7d924f485846688677ad58695d584ab8f2802c7e5d7
+    hash: d45442dde004af92e3e86d4372cc1f0c6c7e3f191e9336f242f8069504081f95
     path: patches/@earendil-works__pi-agent-core@0.74.1.patch
   re2@1.24.0:
     hash: a4a166273fe3817fd493cfc042f1d966f4ada60f1234330cd306e798259b549b
@@ -32,7 +32,7 @@ importers:
         version: 3.2.2(react@19.0.0)
       '@earendil-works/pi-agent-core':
         specifier: ^0.74.1
-        version: 0.74.1(patch_hash=32f33e2e043e208959b8a7d924f485846688677ad58695d584ab8f2802c7e5d7)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
+        version: 0.74.1(patch_hash=d45442dde004af92e3e86d4372cc1f0c6c7e3f191e9336f242f8069504081f95)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
       '@earendil-works/pi-ai':
         specifier: ^0.74.1
         version: 0.74.1(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
@@ -1162,7 +1162,7 @@ importers:
     dependencies:
       '@earendil-works/pi-agent-core':
         specifier: ^0.74.1
-        version: 0.74.1(patch_hash=32f33e2e043e208959b8a7d924f485846688677ad58695d584ab8f2802c7e5d7)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
+        version: 0.74.1(patch_hash=d45442dde004af92e3e86d4372cc1f0c6c7e3f191e9336f242f8069504081f95)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
       '@workspace/agentic-protocol':
         specifier: workspace:*
         version: link:../agentic-protocol
@@ -12520,7 +12520,7 @@ snapshots:
       react: 19.0.0
       tslib: 2.8.1
 
-  '@earendil-works/pi-agent-core@0.74.1(patch_hash=32f33e2e043e208959b8a7d924f485846688677ad58695d584ab8f2802c7e5d7)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)':
+  '@earendil-works/pi-agent-core@0.74.1(patch_hash=d45442dde004af92e3e86d4372cc1f0c6c7e3f191e9336f242f8069504081f95)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)':
     dependencies:
       '@earendil-works/pi-ai': 0.74.1(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
       ignore: 7.0.5

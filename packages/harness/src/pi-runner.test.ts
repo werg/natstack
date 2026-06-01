@@ -19,6 +19,11 @@ import { PiRunner } from "./pi-runner.js";
 import type { HibernationResumableTool, PiRunnerOptions } from "./pi-runner.js";
 import type { RuntimeFs } from "./tools/runtime-fs.js";
 import { TrajectoryBackedSessionStorage } from "@workspace/pi-adapter";
+import {
+  runAgentLoop,
+  type AgentLoopConfig,
+  type AgentMessage,
+} from "@earendil-works/pi-agent-core";
 
 function deferred<T = void>(): {
   promise: Promise<T>;
@@ -122,6 +127,102 @@ function createOptions(overrides: Partial<PiRunnerOptions> = {}): PiRunnerOption
     ...overrides,
   };
 }
+
+describe("pi-agent-core steering integration", () => {
+  it("admits queued steering before next-turn preparation starts", async () => {
+    const order: string[] = [];
+    const steered: AgentMessage = {
+      role: "user",
+      content: "change direction",
+      timestamp: 2,
+    } as AgentMessage;
+    const steeringQueue: AgentMessage[] = [];
+    let modelCallCount = 0;
+    const tools: NonNullable<Parameters<typeof runAgentLoop>[1]["tools"]> = [
+      {
+        name: "probe",
+        label: "Probe",
+        description: "probe",
+        parameters: { type: "object", additionalProperties: false },
+        execute: vi.fn(async () => {
+          order.push("tool-finished");
+          steeringQueue.push(steered);
+          return { content: [{ type: "text" as const, text: "ok" }], details: {} };
+        }),
+      },
+    ];
+
+    const config: AgentLoopConfig = {
+      model: {
+        id: "gpt-5",
+        provider: "openai-codex",
+        modelId: "gpt-5",
+        api: "openai",
+      } as unknown as AgentLoopConfig["model"],
+      convertToLlm: (messages) => messages as never,
+      getSteeringMessages: async () => steeringQueue.splice(0),
+      prepareNextTurn: async () => {
+        order.push("prepare-next-turn");
+        return undefined;
+      },
+    } as AgentLoopConfig;
+
+    const streamFn = vi.fn(async () => {
+      const message =
+        modelCallCount++ === 0
+          ? {
+              role: "assistant",
+              content: [
+                {
+                  type: "toolCall",
+                  id: "call_1",
+                  name: "probe",
+                  arguments: {},
+                },
+              ],
+              timestamp: 3,
+            }
+          : {
+              role: "assistant",
+              content: [{ type: "text", text: "done" }],
+              stopReason: "stop",
+              timestamp: 4,
+            };
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield { type: "done" };
+        },
+        result: async () => message,
+      };
+    });
+
+    await runAgentLoop(
+      [{ role: "user", content: "start", timestamp: 1 } as AgentMessage],
+      { systemPrompt: "test", messages: [], tools },
+      config,
+      async (event) => {
+        if (event.type === "turn_end") order.push("turn-end");
+        if (
+          event.type === "message_start" &&
+          (event.message as { role?: string }).role === "user" &&
+          event.message === steered
+        ) {
+          order.push("steering-admitted");
+        }
+      },
+      undefined,
+      streamFn as never
+    );
+
+    expect(order).toEqual([
+      "tool-finished",
+      "turn-end",
+      "steering-admitted",
+      "prepare-next-turn",
+      "turn-end",
+    ]);
+  });
+});
 
 describe("PiRunner", () => {
   it("initializes a harness-backed session", async () => {

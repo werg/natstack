@@ -1,3 +1,67 @@
+diff --git a/dist/agent-loop.js b/dist/agent-loop.js
+index 9899c13e4993e9d4ce469e69980e6761ef1cc8ad..01adf4a40a634d90ca3db197dfe82214e7d4fc98 100644
+--- a/dist/agent-loop.js
++++ b/dist/agent-loop.js
+@@ -78,6 +78,7 @@ async function runLoop(initialContext, newMessages, initialConfig, signal, emit,
+     let currentContext = initialContext;
+     let config = initialConfig;
+     let firstTurn = true;
++    let nextTurnContext = undefined;
+     // Check for steering messages at start (user may have typed while waiting)
+     let pendingMessages = (await config.getSteeringMessages?.()) || [];
+     // Outer loop: continues when queued follow-up messages arrive after agent would stop
+@@ -101,6 +102,24 @@ async function runLoop(initialContext, newMessages, initialConfig, signal, emit,
+                 }
+                 pendingMessages = [];
+             }
++            if (nextTurnContext) {
++                nextTurnContext.context = currentContext;
++                nextTurnContext.newMessages = newMessages;
++                const nextTurnSnapshot = await config.prepareNextTurn?.(nextTurnContext);
++                nextTurnContext = undefined;
++                if (nextTurnSnapshot) {
++                    currentContext = nextTurnSnapshot.context ?? currentContext;
++                    config = {
++                        ...config,
++                        model: nextTurnSnapshot.model ?? config.model,
++                        reasoning: nextTurnSnapshot.thinkingLevel === undefined
++                            ? config.reasoning
++                            : nextTurnSnapshot.thinkingLevel === "off"
++                                ? undefined
++                                : nextTurnSnapshot.thinkingLevel,
++                    };
++                }
++            }
+             // Stream assistant response
+             const message = await streamAssistantResponse(currentContext, config, signal, emit, streamFn);
+             newMessages.push(message);
+@@ -123,25 +142,12 @@ async function runLoop(initialContext, newMessages, initialConfig, signal, emit,
+                 }
+             }
+             await emit({ type: "turn_end", message, toolResults });
+-            const nextTurnContext = {
++            nextTurnContext = {
+                 message,
+                 toolResults,
+                 context: currentContext,
+                 newMessages,
+             };
+-            const nextTurnSnapshot = await config.prepareNextTurn?.(nextTurnContext);
+-            if (nextTurnSnapshot) {
+-                currentContext = nextTurnSnapshot.context ?? currentContext;
+-                config = {
+-                    ...config,
+-                    model: nextTurnSnapshot.model ?? config.model,
+-                    reasoning: nextTurnSnapshot.thinkingLevel === undefined
+-                        ? config.reasoning
+-                        : nextTurnSnapshot.thinkingLevel === "off"
+-                            ? undefined
+-                            : nextTurnSnapshot.thinkingLevel,
+-                };
+-            }
+             if (await config.shouldStopAfterTurn?.({
+                 message,
+                 toolResults,
 diff --git a/dist/harness/agent-harness.d.ts b/dist/harness/agent-harness.d.ts
 index 24eafe939d2a0444dccf82f49b50d5e3d1b826e9..0602180d6d5a3d95765baf473aae7c46dffe4c50 100644
 --- a/dist/harness/agent-harness.d.ts
@@ -11,7 +75,7 @@ index 24eafe939d2a0444dccf82f49b50d5e3d1b826e9..0602180d6d5a3d95765baf473aae7c46
      promptFromTemplate(name: string, args?: string[]): Promise<AssistantMessage>;
      steer(text: string, options?: {
 diff --git a/dist/harness/agent-harness.js b/dist/harness/agent-harness.js
-index 923c5f7c4fb8c5d7f7d9b72aaf89ab2f653476f1..fc95f02b9ffac3d9edcb5a8f624903e6eade4cdf 100644
+index 923c5f7c4fb8c5d7f7d9b72aaf89ab2f653476f1..903613b45bc9ea6c35acfa54cfb0c3bca0ad7a9f 100644
 --- a/dist/harness/agent-harness.js
 +++ b/dist/harness/agent-harness.js
 @@ -1,5 +1,5 @@
@@ -21,7 +85,25 @@ index 923c5f7c4fb8c5d7f7d9b72aaf89ab2f653476f1..fc95f02b9ffac3d9edcb5a8f624903e6
  import { collectEntriesForBranchSummary, generateBranchSummary } from "./compaction/branch-summarization.js";
  import { compact, DEFAULT_COMPACTION_SETTINGS, prepareCompaction } from "./compaction/compaction.js";
  import { convertToLlm } from "./messages.js";
-@@ -531,6 +531,60 @@ export class AgentHarness {
+@@ -366,7 +366,9 @@ export class AgentHarness {
+                     : undefined;
+             },
+             prepareNextTurn: async () => {
++                const hadPendingMutations = this.pendingSessionWrites.length > 0;
+                 await this.flushPendingSessionWrites();
++                await this.emitOwn({ type: "save_point", hadPendingMutations });
+                 const nextTurnState = await this.createTurnState();
+                 setTurnState(nextTurnState);
+                 return {
+@@ -432,7 +434,6 @@ export class AgentHarness {
+             await this.flushPendingSessionWrites();
+             if (eventError)
+                 throw eventError;
+-            await this.emitOwn({ type: "save_point", hadPendingMutations });
+             return;
+         }
+         if (event.type === "agent_end") {
+@@ -531,6 +532,60 @@ export class AgentHarness {
              finishRunPromise();
          }
      }
