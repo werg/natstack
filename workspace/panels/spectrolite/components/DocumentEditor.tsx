@@ -64,7 +64,7 @@ import { LiveJsxEditor } from "../mdx/LiveJsxEditor";
 import { wikilinksFromJsx, wikilinksToJsx } from "../mdx/wikilink";
 import { DocStateContext, type DocStateContextValue, useDocState } from "../mdx/docState";
 import { parseFrontmatter, replaceFrontmatterState } from "../mdx/frontmatter";
-import { compileDocModule, type CompiledDocModule } from "../mdx/docModule";
+import { compileDocModule, hasDocExports, type CompiledDocModule } from "../mdx/docModule";
 import { DepsContext, runtimeNamespace } from "../mdx/runtimeNamespace";
 import { joinSafe, parentDir } from "../state/safePath";
 
@@ -365,12 +365,12 @@ export function DocumentEditor({
     if (docCompileTimerRef.current) clearTimeout(docCompileTimerRef.current);
     // Fast path: docs with no `export` declarations can't bring new
     // names into scope, so skip the compile entirely.
-    if (!/(^|\n)\s*export\s/.test(mdxSource)) {
+    if (!hasDocExports(mdxSource)) {
+      setDocCompileError(null);
       if (docExportNames.length > 0) {
         (globalThis as Record<string, unknown>)["__spectroliteDocExports__"] = {};
         setDocExportNames([]);
         setDocExportsVersion((v) => v + 1);
-        setDocCompileError(null);
       }
       return;
     }

@@ -32,6 +32,20 @@ export interface CompiledDocModule {
 
 const RESERVED_KEYS = new Set(["default", "MDXLayout"]);
 
+function maskFencedCodeBlocks(content: string): string {
+  // Whole-doc export detection should ignore examples in fenced code blocks.
+  // Preserve newlines so regex line anchors still map to source line starts.
+  return content.replace(/(^|\n)(```|~~~)[^\n]*\n[\s\S]*?(\n\2(?=\n|$))/g, (match) => match.replace(/[^\n]/g, " "));
+}
+
+function stripFrontmatter(content: string): string {
+  return content.replace(/^---\s*\n[\s\S]*?\n---(?=\n|$)/, "");
+}
+
+export function hasDocExports(content: string): boolean {
+  return exportNamesFromSource(content).length > 0;
+}
+
 export async function compileDocModule(content: string): Promise<CompiledDocModule | null> {
   let mdx: typeof import("@mdx-js/mdx");
   try {
@@ -69,10 +83,11 @@ export async function compileDocModule(content: string): Promise<CompiledDocModu
  *  bump a separate refresh counter. */
 export function exportNamesFromSource(content: string): string[] {
   const out: string[] = [];
+  const searchable = maskFencedCodeBlocks(stripFrontmatter(content));
   // `export const X` / `export function X` / `export async function X`
   const decl = /^\s*export\s+(?:const|let|var|async\s+function|function|class)\s+([A-Za-z_$][\w$]*)/gm;
   let m: RegExpExecArray | null;
-  while ((m = decl.exec(content)) !== null) {
+  while ((m = decl.exec(searchable)) !== null) {
     if (m[1]) out.push(m[1]);
   }
   return out;
