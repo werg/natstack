@@ -32,7 +32,7 @@ See the sandbox skill's [INTERACTION_PATTERNS.md](../sandbox/INTERACTION_PATTERN
 2. **NEVER use Bash** for git, file listing, or file creation — use the structured tools
 3. **Use filesystem tools for file edits** — Read, Edit, Write (not eval)
 4. **Use eval only for runtime operations** — project creation, git, typecheck, tests, launching panels
-5. **Static imports only in eval** — `import { rpc, openPanel } from "@workspace/runtime"` (NOT `await import(...)`)
+5. **Static imports in eval** — `import { rpc, openPanel } from "@workspace/runtime"`; dynamic `await import(...)` may work in some builds, but it is not the supported path for runtime or skill packages.
 
 ## Quick Start Workflow
 
@@ -65,7 +65,7 @@ eval({ code: `
 | Create project       | `eval` — `import { createProject } from "@workspace-skills/paneldev"` then `createProject({ projectType, name, title })`                             |
 | Fork panel           | `eval` — `import { forkProject } from "@workspace-skills/paneldev"` then `forkProject({ from: "panels/chat", to: "panels/chat-experiment", title })` |
 | Fork worker          | `eval` — run `forkProject({ from, to, title, dryRun: true })` first; pass `classMap` for multi-class workers                                         |
-| Commit & push        | `eval` — `import { commitAndPush } from "@workspace-skills/paneldev"` then `commitAndPush("panels/my-app", "message")`                               |
+| Commit & push        | `eval` — `import { commitAndPush } from "@workspace-skills/paneldev"` then `commitAndPush("panels/my-app", "message", { force?: true })`              |
 | Launch panel         | `eval` — `commitAndPush(...)` + `scope.handle = await openPanel(source)`                                                                             |
 | Launch worker        | `eval` — `workers.create({ source: "workers/my-worker", contextId })`                                                                                |
 | Read a file          | `Read({ file_path: "panels/my-app/index.tsx" })`                                                                                                     |
@@ -96,6 +96,11 @@ check provenance before changing the fix:
 - Did the build system rebuild that source?
 - Did the panel/worker reload after the build?
 - In dogfood mode, did the mirror apply or skip because the host checkout was dirty?
+
+Dirty state is context-local. A running panel can remain dirty in its own
+isolated context even after an agent committed and pushed the same repo path
+from another context. Check `contextId` when validating editor or git status
+symptoms.
 
 Planned hardening: expose a runtime build-provenance API that reports source,
 context id, git SHA/ref, dirty state, build timestamp, and artifact id for a

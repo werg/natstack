@@ -7,7 +7,7 @@ Your working directory is the **context folder** — an isolated copy of the wor
 - All file paths are **relative to your working directory** (e.g., `panels/my-app/index.tsx`)
 - **NEVER** use absolute paths (e.g., `/home/.../workspace/panels/...`)
 - **NEVER** use `Bash` for git operations, file listing, or file creation — use the structured tools
-- In eval, use **static imports** (`import { rpc } from "@workspace/runtime"`), NOT dynamic `await import(...)`
+- In eval, use **static imports** (`import { rpc } from "@workspace/runtime"`). Dynamic `await import(...)` may work in some builds, but it bypasses the loader's static dependency planning and is not the supported pattern.
 
 ---
 
@@ -92,7 +92,7 @@ Execute TypeScript/JavaScript code in the panel runtime. Runtime APIs are availa
 
 **IMPORTANT:**
 
-- Use static `import` syntax, NOT dynamic `await import(...)`.
+- Use static `import` syntax. Dynamic `await import(...)` is a fallback only for ordinary browser/ESM code; do not use it for `@workspace/runtime` or workspace skill packages.
 
 **Parameters:**
 | Name | Type | Required | Description |
@@ -210,7 +210,7 @@ eval({ code: `
 })
 ```
 
-**`commitAndPush(dir, message)`** — stages all changes, commits, and pushes. Auto-initializes git if the directory doesn't have `.git` yet.
+**`commitAndPush(dir, message, options?)`** — stages all changes, commits, and pushes. `options.force` passes through to `git.push({ force: true })` for deliberate non-fast-forward recovery. If a previous call already created the local commit but push failed, retrying `commitAndPush` on the clean repo pushes the current `HEAD` instead of returning "Nothing to commit".
 
 **`forkProject(options)`** — copies an existing workspace repo into a new repo, rewrites safe metadata, initializes git, and pushes it to the internal server.
 
@@ -234,13 +234,15 @@ console.log(workerPlan.warnings);
 
 Dry runs return the planned file list, metadata rewrites, and warnings without writing files or pushing. Worker forks rewrite package metadata, obvious worker file names, source strings, and Durable Object class names; pass `classMap` when a worker has more than one class.
 
+Dirty state is context-local. A running panel, a chat agent, and another panel may each have different isolated working trees even when they refer to the same repo path. Committing and pushing from one context updates the canonical git ref, but it does not reset another already-running context's worktree or editor buffers. If a panel still shows dirty after an agent push, check that panel's `contextId` and either commit/discard/pull in that context or reopen the panel in the context you just changed.
+
 New repos are synced into existing contexts after push. Existing context working trees are not reset after unrelated pushes; pull, fetch, rebase, or reset explicitly when you want a context to move.
 
 Git object storage is shared across contexts through a validated `.git/objects` symlink. Contexts may add immutable loose objects before push; approval gates canonical ref updates and source working tree changes.
 
 #### @workspace-extensions/typecheck-service.checkPanel (recommended)
 
-Type-check a panel. The extension infers the current eval/agent context and checks that context folder, not canonical workspace source. Pass `{ contextId }` only when intentionally checking a different context. Pass the panel source path, or omit it to auto-detect from a panel caller ID.
+Type-check a panel. The extension infers the current eval/agent context and checks that context folder, not canonical workspace source. Workspace package imports resolve through the same context tree, so context-local package edits are visible. Pass `{ contextId }` only when intentionally checking a different context. Pass the panel source path, or omit it to auto-detect from a panel caller ID.
 
 Returns `{ diagnostics, errorCount, warningCount }` where each diagnostic has `{ file, line, column, message, severity, code }`.
 
@@ -394,6 +396,8 @@ eval({ code: `
 `
 })
 ```
+
+When iterating on an already-open panel, reuse its handle from `scope` or rediscover it with `listPanels()` and prefer `handle.rebuildPanel()` followed by `handle.refresh()` when you only need fresh metadata. `handle.reload()` tears down the target renderer; reloading an ancestor of the panel running the eval can cancel that eval and its descendants.
 
 ---
 

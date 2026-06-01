@@ -34,9 +34,11 @@ making the automation surface unambiguous:
   `@workspace/playwright-client` wrapper. Use it only when you intentionally
   want the constrained surface.
 
-There is no silent fallback between clients. If `playwrightPage()` cannot load
-the vendored client, fix the context/build exposure or deliberately switch to
-`lightweightPage()` and accept the smaller API. There is no generic
+There is no silent fallback between clients. Some constrained eval/worker/DO
+contexts may not expose `@workspace/playwright-core`; in those contexts
+`playwrightPage()` fails with an explicit load error. Deliberately switch to
+`lightweightPage()` for basic diagnostics, or fix the runtime/build exposure if
+the fuller Playwright client is required. There is no generic
 `handle.cdp.page()` alias.
 
 API scope:
@@ -82,8 +84,10 @@ panel itself is building an automation tool. For agents and diagnostics, use
 `handle.cdp.playwrightPage()` so the client loads only when CDP is actually
 requested.
 
-`handle.reload()` is panel lifecycle reload. For Chromium page reloads, use
-`handle.cdp.reload()`.
+`handle.reload()` is panel lifecycle reload and tears down the target renderer.
+For Chromium page reloads, use `handle.cdp.reload()`. Reloading an ancestor of
+the panel currently executing eval can cancel that eval; run ancestor reloads
+from a stable/root context when possible.
 
 Tree relationships do not bypass approval. To drive a parent or sibling, obtain
 that target's handle and use the same `handle.cdp` namespace:

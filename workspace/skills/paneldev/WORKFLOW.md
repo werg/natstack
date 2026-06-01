@@ -34,6 +34,12 @@ await scope.myApp.reload();
 await scope.myApp.snapshot();
 ```
 
+`reload()` tears down the target renderer. If the eval is running from a
+descendant of the target being reloaded, the eval can be cancelled. For ancestor
+or parent panels, prefer running lifecycle operations from a stable panel/root
+context, or use `await handle.rebuildPanel(); await handle.refresh();` when you
+only need a rebuild plus fresh metadata before a later reload.
+
 5. Tune running state without reopening:
 
 ```ts
@@ -57,7 +63,10 @@ const children = await scope.myApp.children();
 await children[0]?.close();
 ```
 
-Do not open duplicate panels while iterating. If the source is already open, reuse the existing handle and call `reload()`.
+Do not open duplicate panels while iterating. If the source is already open,
+reuse the existing handle. Remember that handles carry metadata snapshots; call
+`await handle.refresh()` or rediscover with `listPanels()` after rebuild/reload
+transitions if the title/source looks like a placeholder slot id.
 
 ## Browser Panels
 

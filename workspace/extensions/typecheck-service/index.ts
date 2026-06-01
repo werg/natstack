@@ -1,6 +1,12 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { PANEL_PRINCIPAL_PREFIX } from "@natstack/shared/principalIds";
 import { typeCheckRpcMethods } from "@natstack/shared/typecheck/service";
+import {
+  discoverWorkspaceContext,
+  type WorkspaceContext,
+  type WorkspacePackageInfo,
+} from "@natstack/typecheck";
 
 interface ExtensionContextLike {
   workspace: {
@@ -71,6 +77,42 @@ async function validateFilePath(
   resolveWithin(path.join(info.contextsPath, contextId), filePath);
 }
 
+async function buildContextWorkspaceContext(
+  ctx: ExtensionContextLike,
+  contextId: string | undefined,
+): Promise<WorkspaceContext | undefined> {
+  if (!contextId) return undefined;
+  validateContextId(contextId);
+  const info = await ctx.workspace.getInfo();
+  const sourceContext = discoverWorkspaceContext(info.path);
+  if (!sourceContext) return undefined;
+
+  const contextRoot = path.join(info.contextsPath, contextId);
+  const packages = new Map<string, WorkspacePackageInfo>();
+  for (const [name, pkg] of sourceContext.packages) {
+    const relativeDir = path.relative(sourceContext.monorepoRoot, pkg.dir);
+    if (relativeDir.startsWith("..") || path.isAbsolute(relativeDir)) continue;
+
+    const contextDir = path.join(contextRoot, relativeDir);
+    const contextPackageJson = path.join(contextDir, "package.json");
+    if (fs.existsSync(contextPackageJson)) {
+      try {
+        packages.set(name, {
+          name,
+          dir: contextDir,
+          packageJson: JSON.parse(fs.readFileSync(contextPackageJson, "utf-8")),
+        });
+        continue;
+      } catch {
+        // Fall back to the source package below.
+      }
+    }
+    packages.set(name, pkg);
+  }
+
+  return { monorepoRoot: contextRoot, packages };
+}
+
 function currentCallerPanelPath(ctx: ExtensionContextLike): string | undefined {
   const callerId = ctx.invocation.current()?.caller.callerId;
   return callerId ? extractPanelSourceFromCallerId(callerId) : undefined;
@@ -108,7 +150,12 @@ export async function activate(ctx: ExtensionContextLike) {
       }
       const { contextId = currentInvocationContextId(ctx) } = normalizeCheckPanelOptions(options);
       const resolvedPath = await resolvePanelPath(ctx, source, contextId);
-      const result = await typeCheckRpcMethods["typecheck.check"](resolvedPath, undefined, undefined);
+      const result = await typeCheckRpcMethods["typecheck.check"](
+        resolvedPath,
+        undefined,
+        undefined,
+        { workspaceContext: await buildContextWorkspaceContext(ctx, contextId) },
+      );
       return {
         diagnostics: result.diagnostics,
         errorCount: result.diagnostics.filter((d) => d.severity === "error").length,
@@ -132,7 +179,12 @@ export async function activate(ctx: ExtensionContextLike) {
       const effectiveContextId = contextId ?? currentInvocationContextId(ctx);
       const resolvedPanelPath = await resolvePanelPath(ctx, source, effectiveContextId);
       await validateFilePath(ctx, filePath, effectiveContextId);
-      return typeCheckRpcMethods["typecheck.check"](resolvedPanelPath, filePath, fileContent);
+      return typeCheckRpcMethods["typecheck.check"](
+        resolvedPanelPath,
+        filePath,
+        fileContent,
+        { workspaceContext: await buildContextWorkspaceContext(ctx, effectiveContextId) },
+      );
     },
 
     async getTypeInfo(
@@ -152,6 +204,7 @@ export async function activate(ctx: ExtensionContextLike) {
         line,
         column,
         fileContent,
+        { workspaceContext: await buildContextWorkspaceContext(ctx, effectiveContextId) },
       );
     },
 
@@ -172,6 +225,7 @@ export async function activate(ctx: ExtensionContextLike) {
         line,
         column,
         fileContent,
+        { workspaceContext: await buildContextWorkspaceContext(ctx, effectiveContextId) },
       );
     },
   };

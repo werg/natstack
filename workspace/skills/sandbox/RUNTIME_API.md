@@ -162,7 +162,10 @@ await parent?.cdp.playwrightPage();
 ```
 
 Use `same.cdp.playwrightPage()` for the vendored Playwright-style client or
-`same.cdp.lightweightPage()` for the smaller wrapper. There is no generic
+`same.cdp.lightweightPage()` for the smaller wrapper. Some constrained eval,
+worker, or Durable Object contexts may not expose `@workspace/playwright-core`;
+if `playwrightPage()` fails with a load error, use `lightweightPage()` for
+basic diagnostics or fix that context's build exposure. There is no generic
 `same.cdp.page()` alias; the API exposes only named clients so the two scopes
 are not confused.
 
@@ -172,8 +175,6 @@ danger-tone approval. CDP transparently loads unloaded targets after approval;
 RPC and `_agent` introspection do not auto-load, so call `handle.ensureLoaded()`
 first when you need those against an unloaded target. A target held by a
 mobile/non-CDP host rejects CDP access rather than being taken over silently.
-Approval prompts time out if no shell decision arrives before the deadline; that
-is a consent UI timeout, not a model prompt timeout.
 
 ## Userland Approval Prompts
 

@@ -119,6 +119,80 @@ describe("@workspace-extensions/typecheck-service", () => {
     }
   });
 
+  it("resolves workspace packages from the context tree", async () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-typecheck-source-"));
+    const contextsPath = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-typecheck-contexts-"));
+    const contextRoot = path.join(contextsPath, "ctx-workspace");
+    const sourcePackage = path.join(workspaceRoot, "packages", "shared");
+    const contextPackage = path.join(contextRoot, "packages", "shared");
+    const panelPath = path.join(contextRoot, "panels", "my-app");
+
+    fs.mkdirSync(sourcePackage, { recursive: true });
+    fs.writeFileSync(path.join(workspaceRoot, "pnpm-workspace.yaml"), "packages:\n  - 'packages/*'\n");
+    fs.writeFileSync(
+      path.join(sourcePackage, "package.json"),
+      JSON.stringify({
+        name: "@workspace/shared",
+        version: "0.0.0",
+        exports: { ".": "./index.ts" },
+      }),
+    );
+    fs.writeFileSync(path.join(sourcePackage, "index.ts"), "export const fromShared = 1;\n");
+
+    fs.mkdirSync(contextPackage, { recursive: true });
+    fs.writeFileSync(
+      path.join(contextPackage, "package.json"),
+      JSON.stringify({
+        name: "@workspace/shared",
+        version: "0.0.0",
+        exports: { ".": "./index.ts" },
+      }),
+    );
+    fs.writeFileSync(path.join(contextPackage, "index.ts"), "export const fromShared = 1;\n");
+    fs.mkdirSync(panelPath, { recursive: true });
+    fs.writeFileSync(
+      path.join(panelPath, "package.json"),
+      JSON.stringify({
+        name: "@workspace-panels/my-app",
+        version: "0.0.0",
+        dependencies: { "@workspace/shared": "workspace:*" },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(panelPath, "index.ts"),
+      "import { fromShared } from '@workspace/shared';\nconst value: number = fromShared;\n",
+    );
+
+    const service = await activate({
+      workspace: {
+        async getInfo() {
+          return { path: workspaceRoot, contextsPath };
+        },
+      },
+      invocation: {
+        current: () => ({
+          caller: { callerId: "worker:agent" },
+          chainCaller: { contextId: "ctx-workspace" },
+        }),
+      },
+      log: { info: () => {} },
+    });
+
+    try {
+      const result = await service.checkPanel("panels/my-app");
+      expect(result.diagnostics).not.toContainEqual(
+        expect.objectContaining({
+          code: 2307,
+          message: expect.stringContaining("@workspace/shared"),
+        }),
+      );
+      expect(result.errorCount).toBe(0);
+    } finally {
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+      fs.rmSync(contextsPath, { recursive: true, force: true });
+    }
+  });
+
   it("auto-detects panel source from canonical panel ID", async () => {
     const service = await api("panel:tree/workspace~extensions~@workspace-extensions~typecheck-service/abc123");
 

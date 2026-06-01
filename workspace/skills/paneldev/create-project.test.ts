@@ -4,7 +4,16 @@ const mocks = vi.hoisted(() => {
   const files = new Map<string, string | Uint8Array>();
   const dirs = new Set<string>();
   const initAndPush = vi.fn();
-  return { files, dirs, initAndPush };
+  const gitClient = {
+    listRemotes: vi.fn(),
+    addRemote: vi.fn(),
+    addAll: vi.fn(),
+    status: vi.fn(),
+    getCurrentBranch: vi.fn(),
+    commit: vi.fn(),
+    push: vi.fn(),
+  };
+  return { files, dirs, initAndPush, gitClient };
 });
 
 function normalize(p: string): string {
@@ -27,7 +36,7 @@ function addFile(p: string, content: string | Uint8Array): void {
 
 vi.mock("@workspace/runtime", () => ({
   gitConfig: { serverUrl: "http://git.local", token: "token" },
-  git: { client: vi.fn(() => ({})), syncRepoToContexts: vi.fn() },
+  git: { client: vi.fn(() => mocks.gitClient), syncRepoToContexts: vi.fn() },
   fs: {
     async exists(p: string): Promise<boolean> {
       const normalized = normalize(p);
@@ -82,6 +91,51 @@ describe("forkProject", () => {
     mocks.files.clear();
     mocks.dirs.clear();
     mocks.initAndPush.mockReset();
+    for (const fn of Object.values(mocks.gitClient)) fn.mockReset();
+  });
+
+  it("commitAndPush supports force push", async () => {
+    mocks.gitClient.listRemotes.mockResolvedValue([{ remote: "origin", url: "panels/my-app" }]);
+    mocks.gitClient.status.mockResolvedValue({
+      branch: "main",
+      commit: "abc",
+      dirty: true,
+      files: [{ path: "index.tsx", status: "modified", staged: true, unstaged: false }],
+    });
+    mocks.gitClient.getCurrentBranch.mockResolvedValue("main");
+    mocks.gitClient.commit.mockResolvedValue("1234567890abcdef");
+
+    const { commitAndPush } = await import("./create-project.js");
+    const result = await commitAndPush("panels/my-app", "Update", { force: true });
+
+    expect(mocks.gitClient.push).toHaveBeenCalledWith({
+      dir: "panels/my-app",
+      ref: "main",
+      force: true,
+    });
+    expect(result).toBe("Committed 1234567 and pushed to origin/main");
+  });
+
+  it("commitAndPush pushes an existing clean commit on retry", async () => {
+    mocks.gitClient.listRemotes.mockResolvedValue([{ remote: "origin", url: "panels/my-app" }]);
+    mocks.gitClient.status.mockResolvedValue({
+      branch: "main",
+      commit: "abc",
+      dirty: false,
+      files: [],
+    });
+    mocks.gitClient.getCurrentBranch.mockResolvedValue("main");
+
+    const { commitAndPush } = await import("./create-project.js");
+    const result = await commitAndPush("panels/my-app", "Update");
+
+    expect(mocks.gitClient.commit).not.toHaveBeenCalled();
+    expect(mocks.gitClient.push).toHaveBeenCalledWith({
+      dir: "panels/my-app",
+      ref: "main",
+      force: false,
+    });
+    expect(result).toBe("No working-tree changes; pushed current HEAD to origin/main");
   });
 
   it("rewrites a single-class worker fork and preserves binary files", async () => {

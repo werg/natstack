@@ -27,6 +27,7 @@ import {
   loadSourceFiles,
   type TypeCheckDiagnostic,
   discoverWorkspaceContext,
+  type WorkspaceContext,
 } from "@natstack/typecheck";
 import { getUserDataPath } from "@natstack/env-paths";
 import { runNpmInstall } from "../npmInstaller.js";
@@ -34,6 +35,10 @@ import { runNpmInstall } from "../npmInstaller.js";
 /** Per-panel TypeCheckService cache — keyed by absolute panel path. */
 const typeCheckServiceCache = new Map<string, TypeCheckService>();
 const nodeModulesPathCache = new Map<string, string[]>();
+
+export interface TypeCheckRpcOptions {
+  workspaceContext?: WorkspaceContext | null;
+}
 
 interface PackageJson {
   name?: string;
@@ -122,12 +127,28 @@ async function ensureExternalDeps(
   }
 }
 
-async function resolveTypecheckNodeModulesPaths(panelPath: string): Promise<string[]> {
+function typecheckCacheKey(panelPath: string, options?: TypeCheckRpcOptions): string {
   const resolved = path.resolve(panelPath);
-  const cached = nodeModulesPathCache.get(resolved);
+  const workspaceKey =
+    options && "workspaceContext" in options
+      ? (options.workspaceContext?.monorepoRoot ?? "none")
+      : "auto";
+  return `${resolved}\0${workspaceKey}`;
+}
+
+async function resolveTypecheckNodeModulesPaths(
+  panelPath: string,
+  options?: TypeCheckRpcOptions
+): Promise<string[]> {
+  const resolved = path.resolve(panelPath);
+  const key = typecheckCacheKey(resolved, options);
+  const cached = nodeModulesPathCache.get(key);
   if (cached) return cached;
 
-  const workspaceContext = discoverWorkspaceContext(resolved);
+  const workspaceContext =
+    options && "workspaceContext" in options
+      ? options.workspaceContext
+      : discoverWorkspaceContext(resolved);
   const externals: Record<string, string> = {};
   const visited = new Set<string>();
 
@@ -159,7 +180,7 @@ async function resolveTypecheckNodeModulesPaths(panelPath: string): Promise<stri
   const externalNodeModules = await ensureExternalDeps(externals);
   if (externalNodeModules) paths.push(externalNodeModules);
 
-  nodeModulesPathCache.set(resolved, paths);
+  nodeModulesPathCache.set(key, paths);
   return paths;
 }
 
@@ -167,13 +188,23 @@ async function resolveTypecheckNodeModulesPaths(panelPath: string): Promise<stri
  * Build (or reuse) a `TypeCheckService` for the given panel/package path.
  * The service auto-discovers the monorepo context and reads files from disk.
  */
-async function getOrCreateTypeCheckService(panelPath: string): Promise<TypeCheckService> {
+async function getOrCreateTypeCheckService(
+  panelPath: string,
+  options?: TypeCheckRpcOptions
+): Promise<TypeCheckService> {
   const resolved = path.resolve(panelPath);
-  const cached = typeCheckServiceCache.get(resolved);
+  const key = typecheckCacheKey(resolved, options);
+  const cached = typeCheckServiceCache.get(key);
   if (cached) return cached;
 
-  const nodeModulesPaths = await resolveTypecheckNodeModulesPaths(resolved);
-  const service = new TypeCheckService({ panelPath: resolved, nodeModulesPaths });
+  const nodeModulesPaths = await resolveTypecheckNodeModulesPaths(resolved, options);
+  const service = new TypeCheckService({
+    panelPath: resolved,
+    nodeModulesPaths,
+    ...(options && "workspaceContext" in options
+      ? { workspaceContext: options.workspaceContext }
+      : {}),
+  });
 
   // Load initial files with absolute paths (consistent with all downstream
   // updateFile calls).
@@ -183,7 +214,7 @@ async function getOrCreateTypeCheckService(panelPath: string): Promise<TypeCheck
     service.updateFile(path.resolve(resolved, relPath), content);
   }
 
-  typeCheckServiceCache.set(resolved, service);
+  typeCheckServiceCache.set(key, service);
   return service;
 }
 
@@ -217,12 +248,13 @@ function serializeDiagnostics(diagnostics: TypeCheckDiagnostic[]): SerializedDia
 // =============================================================================
 
 export const typeCheckRpcMethods = {
-  "typecheck.check": async (
-    panelPath: string,
-    filePath?: string,
-    fileContent?: string
-  ): Promise<{ diagnostics: SerializedDiagnostic[]; checkedFiles: string[] }> => {
-    const service = await getOrCreateTypeCheckService(panelPath);
+	  "typecheck.check": async (
+	    panelPath: string,
+	    filePath?: string,
+	    fileContent?: string,
+	    options?: TypeCheckRpcOptions
+	  ): Promise<{ diagnostics: SerializedDiagnostic[]; checkedFiles: string[] }> => {
+	    const service = await getOrCreateTypeCheckService(panelPath, options);
     const resolved = path.resolve(panelPath);
 
     if (filePath) {
@@ -250,14 +282,15 @@ export const typeCheckRpcMethods = {
     };
   },
 
-  "typecheck.getTypeInfo": async (
-    panelPath: string,
-    filePath: string,
-    line: number,
-    column: number,
-    fileContent?: string
-  ): Promise<{ displayParts: string; documentation?: string; tags?: { name: string; text?: string }[] } | null> => {
-    const service = await getOrCreateTypeCheckService(panelPath);
+	  "typecheck.getTypeInfo": async (
+	    panelPath: string,
+	    filePath: string,
+	    line: number,
+	    column: number,
+	    fileContent?: string,
+	    options?: TypeCheckRpcOptions
+	  ): Promise<{ displayParts: string; documentation?: string; tags?: { name: string; text?: string }[] } | null> => {
+	    const service = await getOrCreateTypeCheckService(panelPath, options);
     const resolved = path.resolve(panelPath);
     const resolvedFile = path.resolve(resolved, filePath);
 
@@ -278,14 +311,15 @@ export const typeCheckRpcMethods = {
     };
   },
 
-  "typecheck.getCompletions": async (
-    panelPath: string,
-    filePath: string,
-    line: number,
-    column: number,
-    fileContent?: string
-  ): Promise<{ entries: { name: string; kind: string }[] } | null> => {
-    const service = await getOrCreateTypeCheckService(panelPath);
+	  "typecheck.getCompletions": async (
+	    panelPath: string,
+	    filePath: string,
+	    line: number,
+	    column: number,
+	    fileContent?: string,
+	    options?: TypeCheckRpcOptions
+	  ): Promise<{ entries: { name: string; kind: string }[] } | null> => {
+	    const service = await getOrCreateTypeCheckService(panelPath, options);
     const resolved = path.resolve(panelPath);
     const resolvedFile = path.resolve(resolved, filePath);
 

@@ -5,6 +5,10 @@ import { initAndPush, type GitClient } from "@natstack/git";
 // Shared git client helper
 // ---------------------------------------------------------------------------
 
+export interface CommitAndPushOptions {
+  force?: boolean;
+}
+
 function createGit(): GitClient {
   return git.client();
 }
@@ -18,25 +22,33 @@ function createGit(): GitClient {
  * Context folders include .git with shared object store, so this works on
  * any pre-existing repo. Adds the "origin" remote if not configured yet.
  */
-export async function commitAndPush(dir: string, message: string): Promise<string> {
-  const git = createGit();
+export async function commitAndPush(
+  dir: string,
+  message: string,
+  options: CommitAndPushOptions = {}
+): Promise<string> {
+  const gitClient = createGit();
 
   // Ensure remote is configured (context folders copy .git but workspace
   // repos don't have remotes — the remote path matches the repo path)
-  const remotes = await git.listRemotes(dir);
+  const remotes = await gitClient.listRemotes(dir);
   if (!remotes.some((r) => r.remote === "origin")) {
-    await git.addRemote(dir, "origin", dir);
+    await gitClient.addRemote(dir, "origin", dir);
   }
 
-  await git.addAll(dir);
+  await gitClient.addAll(dir);
 
-  const status = await git.status(dir);
+  const status = await gitClient.status(dir);
   const hasChanges = status.files.some((f) => f.status !== "unmodified" && f.status !== "ignored");
-  if (!hasChanges) return "Nothing to commit";
+  const branch = (await gitClient.getCurrentBranch(dir)) ?? "main";
 
-  const sha = await git.commit({ dir, message });
-  const branch = (await git.getCurrentBranch(dir)) ?? "main";
-  await git.push({ dir, ref: branch });
+  if (!hasChanges) {
+    await gitClient.push({ dir, ref: branch, force: options.force ?? false });
+    return `No working-tree changes; pushed current HEAD to origin/${branch}`;
+  }
+
+  const sha = await gitClient.commit({ dir, message });
+  await gitClient.push({ dir, ref: branch, force: options.force ?? false });
   return `Committed ${sha.slice(0, 7)} and pushed to origin/${branch}`;
 }
 
