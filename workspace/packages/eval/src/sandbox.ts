@@ -154,6 +154,26 @@ async function loadImports(
   }
 }
 
+function installLazyImportLoader(
+  loadImport: SandboxOptions["loadImport"] | undefined,
+): (() => void) | null {
+  if (!loadImport) return null;
+  const globals = globalThis as Record<string, unknown>;
+  const previous = globals["__natstackLoadImport__"];
+  globals["__natstackLoadImport__"] = async (specifier: string, refValue?: string) => {
+    const moduleMap = getModuleMap();
+    if (moduleMap[specifier]) return moduleMap[specifier];
+    const ref = refValue === "latest" ? undefined : refValue;
+    const bundleCode = await loadImport(specifier, ref, Object.keys(moduleMap));
+    loadLibraryBundle(specifier, bundleCode);
+    return moduleMap[specifier];
+  };
+  return () => {
+    if (previous === undefined) delete globals["__natstackLoadImport__"];
+    else globals["__natstackLoadImport__"] = previous;
+  };
+}
+
 async function ensureRequires(
   requires: string[],
   options: {
@@ -320,6 +340,7 @@ export async function executeSandbox(
   const trackingContext = tracking?.start();
 
   const capture = createConsoleCapture();
+  let restoreLazyImportLoader: (() => void) | null = null;
 
   // Pause tracking around onConsole so any promises created by the callback
   // (e.g. ctx.stream()) are not tracked by waitAll.
@@ -339,6 +360,7 @@ export async function executeSandbox(
 
   try {
     throwIfAborted(signal);
+    restoreLazyImportLoader = installLazyImportLoader(options.loadImport);
 
     // Load on-demand imports
     if (options.imports && Object.keys(options.imports).length > 0) {
@@ -487,6 +509,7 @@ export async function executeSandbox(
       error: errorMessage,
     };
   } finally {
+    restoreLazyImportLoader?.();
     unsubscribe();
     if (tracking && trackingContext) {
       tracking.stop(trackingContext);

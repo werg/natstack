@@ -37,6 +37,17 @@ async function loadPlaywrightClient(client: CdpClientKind): Promise<PlaywrightCl
       // fall through to the clearest environment-specific loader/error.
     }
   }
+  const runtimeLoadImport = (globalThis as Record<string, unknown>)["__natstackLoadImport__"] as
+    | ((id: string, ref?: string) => Promise<unknown>)
+    | undefined;
+  if (runtimeLoadImport) {
+    try {
+      const loaded = await runtimeLoadImport(moduleId, "latest");
+      if (isPlaywrightClientModule(loaded)) return loaded;
+    } catch {
+      // Fall through to the legacy async loader/dynamic import paths.
+    }
+  }
   const runtimeRequireAsync = (globalThis as Record<string, unknown>)[
     "__natstackRequireAsync__"
   ] as

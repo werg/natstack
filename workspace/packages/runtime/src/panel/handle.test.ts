@@ -80,6 +80,7 @@ describe("PanelHandle", () => {
     delete (globalThis as any).__natstackShell;
     delete (globalThis as any).__natstackRequire__;
     delete (globalThis as any).__natstackRequireAsync__;
+    delete (globalThis as any).__natstackLoadImport__;
   });
 
   it("returns a workspace handle from openPanel", async () => {
@@ -385,6 +386,37 @@ describe("PanelHandle", () => {
 
     expect((globalThis as any).__natstackRequire__).toHaveBeenCalledWith(
       "@workspace/playwright-core"
+    );
+    expect(connect).toHaveBeenCalledWith("ws://server/cdp/panel-1", {
+      isElectronWebview: true,
+      transportOptions: { authToken: "token-1" },
+    });
+  });
+
+  it("loads the explicit Playwright CDP client through the eval lazy import hook", async () => {
+    const page = { marker: "lazy-page" };
+    const connect = vi.fn(async () => ({
+      contexts: () => [{ pages: () => [page] }],
+    }));
+    (globalThis as any).__natstackRequire__ = vi.fn(() => {
+      throw new Error("not in map");
+    });
+    (globalThis as any).__natstackLoadImport__ = vi.fn(async (id: string, ref?: string) => {
+      if (id === "@workspace/playwright-core") return { BrowserImpl: { connect } };
+      throw new Error(`unexpected module: ${id}@${ref}`);
+    });
+    const rpcCall = vi.fn(async () => ({
+      wsEndpoint: "ws://server/cdp/panel-1",
+      token: "token-1",
+    }));
+    const { _initPanelHandleBridge, getPanelHandle } = await import("./handle.js");
+    _initPanelHandleBridge({ call: rpcCall, on: vi.fn() } as never);
+
+    await expect(getPanelHandle("panel-1").cdp.playwrightPage()).resolves.toBe(page);
+
+    expect((globalThis as any).__natstackLoadImport__).toHaveBeenCalledWith(
+      "@workspace/playwright-core",
+      "latest"
     );
     expect(connect).toHaveBeenCalledWith("ws://server/cdp/panel-1", {
       isElectronWebview: true,

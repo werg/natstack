@@ -294,13 +294,38 @@ describe("panelAccessPermission", () => {
     expect(approvalQueue.request).toHaveBeenCalledTimes(1);
   });
 
-  it("denies panel capabilities when the approval prompt times out", async () => {
+  it("does not add a timeout signal to panel capability prompts", async () => {
+    const approvalQueue = approvalQueueMock("session");
+
+    await expect(
+      requirePanelAccessPermission(
+        {
+          approvalQueue,
+          grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
+          hasApprovalSession: () => true,
+        },
+        panelCtx(),
+        "cdp",
+        { id: "target", title: "Target" }
+      )
+    ).resolves.toMatchObject({
+      allowed: true,
+      capability: PANEL_AUTOMATE_CAPABILITY,
+    });
+
+    expect(approvalQueue.request).toHaveBeenCalledWith(
+      expect.not.objectContaining({ signal: expect.anything() })
+    );
+  });
+
+  it("leaves pending panel capability prompts open until the queue resolves them", async () => {
     vi.useFakeTimers();
     const approvalQueue = approvalQueueMock("session");
+    let resolveApproval!: (decision: "deny") => void;
     vi.mocked(approvalQueue.request).mockImplementation(
-      (req) =>
+      () =>
         new Promise((resolve) => {
-          req.signal?.addEventListener("abort", () => resolve("deny"), { once: true });
+          resolveApproval = resolve;
         })
     );
 
@@ -309,19 +334,21 @@ describe("panelAccessPermission", () => {
         approvalQueue,
         grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
         hasApprovalSession: () => true,
-        approvalTimeoutMs: 25,
       },
       panelCtx(),
       "cdp",
       { id: "target", title: "Target" }
     );
 
-    await vi.advanceTimersByTimeAsync(25);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const sentinel = Symbol("still pending");
+    await expect(Promise.race([promise, Promise.resolve(sentinel)])).resolves.toBe(sentinel);
 
+    resolveApproval("deny");
     await expect(promise).resolves.toEqual({
       allowed: false,
       capability: PANEL_AUTOMATE_CAPABILITY,
-      reason: "Automate panel approval timed out for panel target",
+      reason: "cdp denied for panel target",
     });
   });
 

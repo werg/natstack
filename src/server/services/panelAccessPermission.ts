@@ -16,9 +16,6 @@ export interface PanelAccessPermissionTarget extends PanelAccessTarget {
 export interface PanelAccessPermissionDeps extends CapabilityPermissionDeps {
   resolveRequesterPanel?(caller: VerifiedCaller): Promise<PanelAccessPermissionTarget | null>;
   hasApprovalSession?(): boolean;
-  approvalTimeoutMs?: number;
-  setTimeoutFn?: typeof setTimeout;
-  clearTimeoutFn?: typeof clearTimeout;
 }
 
 export interface PanelAccessPermissionResult {
@@ -69,56 +66,34 @@ export async function requirePanelAccessPermission(
       reason: "No approval-capable shell is connected",
     };
   }
-  const timeoutMs = deps.approvalTimeoutMs;
-  const controller =
-    typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0
-      ? new AbortController()
-      : null;
-  const setTimeoutFn = deps.setTimeoutFn ?? setTimeout;
-  const clearTimeoutFn = deps.clearTimeoutFn ?? clearTimeout;
-  const timer = controller ? setTimeoutFn(() => controller.abort(), timeoutMs as number) : null;
-  let result: Awaited<ReturnType<typeof requestCapabilityPermission>>;
-  try {
-    result = await requestCapabilityPermission(deps, {
-      caller: ctx.caller,
-      capability: decision.capability,
-      severity: decision.severity,
-      signal: controller?.signal,
-      resource: {
-        type: "panel",
-        label: "Panel",
-        value: targetLabel,
-        key: resourceKey,
-      },
-      title: titleFor(op, targetLabel, decision.severity),
-      description: descriptionFor(op, targetLabel),
-      details: [
-        { label: "Operation", value: op },
-        { label: "Target panel", value: target.id },
-        ...(target.source ? [{ label: "Source", value: target.source }] : []),
-      ],
-      deniedReason: `${op} denied for panel ${target.id}`,
-    });
-  } finally {
-    if (timer) clearTimeoutFn(timer);
-  }
+  const result = await requestCapabilityPermission(deps, {
+    caller: ctx.caller,
+    capability: decision.capability,
+    severity: decision.severity,
+    resource: {
+      type: "panel",
+      label: "Panel",
+      value: targetLabel,
+      key: resourceKey,
+    },
+    title: titleFor(op, targetLabel, decision.severity),
+    description: descriptionFor(op, targetLabel),
+    details: [
+      { label: "Operation", value: op },
+      { label: "Target panel", value: target.id },
+      ...(target.source ? [{ label: "Source", value: target.source }] : []),
+    ],
+    deniedReason: `${op} denied for panel ${target.id}`,
+  });
 
   if (!result.allowed) {
-    const reason =
-      controller?.signal.aborted && result.reason === deniedReasonFor(op, target.id)
-        ? `${titleFor(op, targetLabel, decision.severity)} approval timed out for panel ${target.id}`
-        : result.reason;
-    return { allowed: false, capability: decision.capability, reason };
+    return { allowed: false, capability: decision.capability, reason: result.reason };
   }
   return {
     allowed: true,
     capability: decision.capability,
     prompted: result.decision !== undefined,
   };
-}
-
-function deniedReasonFor(op: PanelAccessOperation, targetId: string): string {
-  return `${op} denied for panel ${targetId}`;
 }
 
 function isSelfPanelTarget(

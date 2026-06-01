@@ -836,7 +836,6 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
           grantStore: assertPresent(deps.grantStore),
           resolveRequesterPanel: resolveRequesterPanelMetadataForServices,
           hasApprovalSession: () => shellPresence.internal.isAnyShellActive(),
-          approvalTimeoutMs: 30_000,
           getTarget: (panelId) => requestPanelMetadataForServices(panelId),
           getEndpoint: async (panelId, requesterEntityId) => {
             await ensureCdpTargetReady(panelId);
@@ -940,7 +939,6 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
           grantStore: assertPresent(deps.grantStore),
           resolveRequesterPanel: resolveRequesterPanelMetadataForServices,
           hasApprovalSession: () => shellPresence.internal.isAnyShellActive(),
-          approvalTimeoutMs: 30_000,
           bridge: await getPanelTreeBridge(),
         });
       },
