@@ -94,7 +94,7 @@ describe("TerminalAppRunner", () => {
         NATSTACK_TERMINAL_APP_RPC_TOKEN: "grant-token",
         NATSTACK_TERMINAL_APP_CONNECTION_ID: "terminal:@workspace-apps/remote-cli:build-cli",
       }),
-      { preferNode: true }
+      { preferNode: true, stdio: "pipe" }
     );
     expect(statuses).toContainEqual({
       appId: "@workspace-apps/remote-cli",

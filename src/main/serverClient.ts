@@ -190,6 +190,15 @@ export async function createServerClient(
       getWsUrl,
       reconnect: false,
       logPrefix: `ServerClient:${caller.callerId}`,
+      translateEvent: (event, payload, deliver) => {
+        deliver({
+          type: "event",
+          fromId: "main",
+          event,
+          payload,
+        });
+        return true;
+      },
       adapter: {
         now: () => Date.now(),
         getAuthToken: async () => grant.token,

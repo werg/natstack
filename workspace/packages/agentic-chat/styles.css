@@ -317,6 +317,21 @@
   background-color: var(--red-3);
 }
 
+.message-card-lifecycle {
+  background-color: var(--gray-2);
+  border-color: var(--gray-a6);
+}
+
+.message-lifecycle-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  color: var(--gray-11);
+}
+
 .message-card-body,
 .message-content,
 .message-prose {

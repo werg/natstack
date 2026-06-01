@@ -1,6 +1,6 @@
 import React, { useCallback } from "react";
 import { Badge, Box, Card, Code, Flex, IconButton, Text } from "@radix-ui/themes";
-import { CopyIcon, CheckIcon, ChatBubbleIcon } from "@radix-ui/react-icons";
+import { CopyIcon, CheckIcon, ChatBubbleIcon, ReloadIcon } from "@radix-ui/react-icons";
 import { CONTENT_TYPE_INLINE_UI, isClientParticipantType } from "@workspace/pubsub";
 import { TypingIndicator } from "./TypingIndicator";
 import { MessageContent } from "./MessageContent";
@@ -117,6 +117,47 @@ export const MessageCard = React.memo(function MessageCard({
           onFocusPanel={onFocusPanel}
           onReloadPanel={onReloadPanel}
         />
+      </Box>
+    );
+  }
+
+  if (msg.contentType === "lifecycle" && msg.lifecycle) {
+    const color = msg.lifecycle.status === "recovered"
+      ? "green"
+      : msg.lifecycle.status === "failed"
+        ? "red"
+        : "amber";
+    return (
+      <Box
+        key={key}
+        className="message-row message-row-system"
+      >
+        <Card className="message-card message-card-lifecycle">
+          <Flex align="start" gap="2">
+            <Box className="message-lifecycle-icon" aria-hidden="true">
+              <ReloadIcon />
+            </Box>
+            <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
+              <Flex align="center" gap="2" wrap="wrap">
+                <Badge color={color} size="1" variant="soft">
+                  {msg.lifecycle.status === "recovered"
+                    ? "Recovered"
+                    : msg.lifecycle.status === "failed"
+                      ? "Recovery failed"
+                      : "Interrupted"}
+                </Badge>
+                <Text size="2" weight="medium">
+                  {msg.lifecycle.title}
+                </Text>
+              </Flex>
+              {(msg.lifecycle.detail || msg.content) && (
+                <Text size="1" color="gray" style={{ whiteSpace: "pre-wrap" }}>
+                  {msg.lifecycle.detail ?? msg.content}
+                </Text>
+              )}
+            </Flex>
+          </Flex>
+        </Card>
       </Box>
     );
   }

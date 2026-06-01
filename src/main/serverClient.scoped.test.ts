@@ -27,6 +27,14 @@ async function startRpcHarness() {
         const msg = JSON.parse(data.toString()) as {
           type?: string;
           token?: string;
+          envelope?: {
+            message?: {
+              type?: string;
+              requestId?: string;
+              method?: string;
+              args?: unknown[];
+            };
+          };
           message?: {
             type?: string;
             requestId?: string;
@@ -61,8 +69,9 @@ async function startRpcHarness() {
           }
           return;
         }
-        if (msg.type !== "ws:rpc" || msg.message?.type !== "request") return;
-        const { requestId, method, args = [] } = msg.message;
+        const message = msg.envelope?.message ?? msg.message;
+        if (msg.type !== "ws:rpc" || message?.type !== "request") return;
+        const { requestId, method, args = [] } = message;
         if (callerKind === "shell" && method === "auth.grantConnection") {
           grantRequests.push(args);
           ws.send(

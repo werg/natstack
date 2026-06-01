@@ -265,11 +265,13 @@ describe("GmailAgentWorker", () => {
         error: "No URL-bound model credential is configured for model provider: openai-codex",
       },
     });
-    const inlineUi = worker.signals.find((signal) => signal.type === "inline_ui");
-    expect(inlineUi).toBeDefined();
-    expect(JSON.parse(inlineUi!.content).props).toMatchObject({
-      providerId: "openai-codex",
-      resumeAfterConnect: false,
+    const inlineUi = worker.published.find((entry) => entry.event.kind === "ui.inline_rendered");
+    expect(inlineUi?.event.payload).toMatchObject({
+      uiType: "inline",
+      props: expect.objectContaining({
+        providerId: "openai-codex",
+        resumeAfterConnect: false,
+      }),
     });
     expect(
       ((await worker.debug())["persisted"] as { modelCredentialInterruptions?: unknown[] })

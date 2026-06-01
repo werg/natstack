@@ -159,6 +159,36 @@ describe("MessageList typing indicators (roster-based)", () => {
     expect(document.body.querySelector(".rt-r-weight-bold")?.textContent).toBe("repo");
   });
 
+  it("renders lifecycle recovery notices as compact system status", () => {
+    render(React.createElement(MessageList, {
+      messages: [
+        makeMessage({
+          id: "recovery-1",
+          senderId: "agent-1",
+          contentType: "lifecycle",
+          kind: "system",
+          content: "The partial response was discarded because replay is not enabled for this agent.",
+          complete: true,
+          lifecycle: {
+            status: "interrupted",
+            title: "Restart interrupted the response",
+            detail: "The partial response was discarded because replay is not enabled for this agent.",
+          },
+        }),
+      ],
+      participants: {},
+      selfId: "user-1",
+      allParticipants: makeParticipant("agent-1", { handle: "ai-chat" }),
+    } as never));
+
+    expect(screen.getByText("Interrupted")).toBeTruthy();
+    expect(screen.getByText("Restart interrupted the response")).toBeTruthy();
+    expect(
+      screen.getByText("The partial response was discarded because replay is not enabled for this agent.")
+    ).toBeTruthy();
+    expect(document.body.querySelector(".message-card-lifecycle")).toBeTruthy();
+  });
+
   it("shows a cancel control for pending invocation pills", () => {
     const onCancelInvocation = vi.fn();
     render(React.createElement(MessageList, {

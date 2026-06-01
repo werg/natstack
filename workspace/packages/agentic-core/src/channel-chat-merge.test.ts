@@ -247,7 +247,7 @@ describe("chatMessagesFromChannelView", () => {
     ]);
   });
 
-  it("surfaces a closed agent turn that ended without an assistant response", () => {
+  it("surfaces runner-restart no-response turns as lifecycle notices", () => {
     const turnId = brandId<TurnId>("turn-no-response");
     const opened: AgenticEvent<"turn.opened"> = {
       kind: "turn.opened",
@@ -286,12 +286,55 @@ describe("chatMessagesFromChannelView", () => {
 
     expect(chatMessagesFromChannelView(state).map((message) => message.id)).toEqual([
       "invocation:inv-stalled",
-      "turn:turn-no-response:no-response",
+      "turn:turn-no-response:recovered",
     ]);
     expect(chatMessagesFromChannelView(state)[1]).toMatchObject({
-      content: "Agent turn closed without an assistant response. Recovered after runner restart; no assistant response was produced before the turn was closed.",
-      error: "Agent turn closed without an assistant response",
+      contentType: "lifecycle",
+      kind: "system",
+      lifecycle: {
+        status: "recovered",
+        title: "Recovered after restart",
+        detail: "The turn closed cleanly, but there was no assistant response to show.",
+      },
       complete: true,
+    });
+  });
+
+  it("projects restart diagnostics as lifecycle notices", () => {
+    const message: AgenticEvent<"message.completed"> = {
+      kind: "message.completed",
+      actor: {
+        ...agent,
+        metadata: {
+          natstackDiagnostic: {
+            type: "lifecycle_recovery",
+            status: "interrupted",
+            title: "Restart interrupted the response",
+            detail: "The partial response was discarded because replay is not enabled for this agent.",
+            reason: "runner_restarted_mid_model",
+          },
+        },
+      },
+      causality: { messageId: brandId<MessageId>("msg-restart") },
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        role: "assistant",
+        content: "Agent turn was interrupted during model generation.",
+      },
+      createdAt: "2026-05-20T12:00:00.000Z",
+    };
+
+    const state = [envelope(message, 1)].reduce(reduceChannelView, createInitialChannelViewState());
+
+    expect(chatMessagesFromChannelView(state)[0]).toMatchObject({
+      id: "msg-restart",
+      contentType: "lifecycle",
+      kind: "system",
+      lifecycle: {
+        status: "interrupted",
+        title: "Restart interrupted the response",
+        reason: "runner_restarted_mid_model",
+      },
     });
   });
 

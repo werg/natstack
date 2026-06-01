@@ -16,6 +16,7 @@ import type {
   ChatMessage,
   CustomMessageCardPayload,
   InlineUiCardPayload,
+  LifecycleNotice,
   MessageTypeDefinition,
   SandboxSource,
 } from "./derived-types.js";
@@ -164,11 +165,30 @@ function projectedClosedTurnWithoutResponseMessage(
   if (opts.hasAssistantMessage) return [];
   if (isExpectedNoAssistantClose(turn)) return [];
   if (!opts.hasInvocation && !turn.summary) return [];
-  const detail = turn.reason === "runner_restarted" ||
-    turn.summary === "runner_restarted" ||
-    turn.summary === "Runner restarted before turn closed"
-    ? " Recovered after runner restart; no assistant response was produced before the turn was closed."
-    : turn.summary ? ` ${turn.summary}` : "";
+  if (isRunnerRestartClose(turn)) {
+    const lifecycle: LifecycleNotice = {
+      status: "recovered",
+      title: "Recovered after restart",
+      detail: "The turn closed cleanly, but there was no assistant response to show.",
+      reason: turn.reason ?? turn.summary,
+    };
+    return [{
+      id: `turn:${turn.turnId}:recovered`,
+      senderId: turn.actor.id,
+      content: lifecycle.detail ?? lifecycle.title,
+      contentType: "lifecycle",
+      kind: "system",
+      complete: true,
+      lifecycle,
+      senderMetadata: {
+        name: turn.actor.displayName ?? turn.actor.id,
+        type: turn.actor.kind,
+        handle: turn.actor.id,
+      },
+      sortTime: Date.parse(turn.closedAt ?? turn.updatedAt ?? turn.openedAt) || 0,
+    } as ChatMessage & { sortTime: number }];
+  }
+  const detail = turn.summary ? ` ${turn.summary}` : "";
   return [{
     id: `turn:${turn.turnId}:no-response`,
     senderId: turn.actor.id,
@@ -185,6 +205,12 @@ function projectedClosedTurnWithoutResponseMessage(
   } as ChatMessage & { sortTime: number }];
 }
 
+function isRunnerRestartClose(turn: ProjectedTurn): boolean {
+  return turn.reason === "runner_restarted" ||
+    turn.summary === "runner_restarted" ||
+    turn.summary === "Runner restarted before turn closed";
+}
+
 function isExpectedNoAssistantClose(turn: ProjectedTurn): boolean {
   return turn.reason === "user_interrupted" ||
     turn.reason === "channel_unsubscribe" ||
@@ -194,6 +220,7 @@ function isExpectedNoAssistantClose(turn: ProjectedTurn): boolean {
 
 function projectedMessageToChatMessages(message: ProjectedMessage): ChatMessage[] {
   const sortTime = Date.parse(message.updatedAt ?? message.completedAt ?? message.startedAt ?? "") || 0;
+  const lifecycle = lifecycleNoticeFromMessage(message);
   const senderMetadata = {
     name: message.actor.displayName ?? message.actor.id,
     type: message.actor.kind,
@@ -217,6 +244,22 @@ function projectedMessageToChatMessages(message: ProjectedMessage): ChatMessage[
   const content = message.content.trim() || failureReason || message.content;
   const visibleContent = content.trim();
   if (!visibleContent) return thinking;
+  if (lifecycle) {
+    return [
+      ...thinking,
+      {
+        id: message.messageId,
+        senderId: message.actor.id,
+        content,
+        contentType: "lifecycle",
+        kind: "system",
+        complete: true,
+        lifecycle,
+        senderMetadata,
+        sortTime,
+      } as ChatMessage & { sortTime: number },
+    ];
+  }
   return [
     ...thinking,
     {
@@ -232,6 +275,60 @@ function projectedMessageToChatMessages(message: ProjectedMessage): ChatMessage[
       sortTime,
     } as ChatMessage & { sortTime: number },
   ];
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function lifecycleNoticeFromMessage(message: ProjectedMessage): LifecycleNotice | null {
+  const diagnostic = record(record(message.actor.metadata)["natstackDiagnostic"]);
+  if (diagnostic["type"] === "lifecycle_recovery") {
+    const status = diagnostic["status"];
+    if (status === "recovered" || status === "interrupted" || status === "failed") {
+      return {
+        status,
+        title: stringValue(diagnostic["title"]) ?? lifecycleTitleForStatus(status),
+        detail: stringValue(diagnostic["detail"]) ?? message.content,
+        reason: stringValue(diagnostic["reason"]),
+      };
+    }
+  }
+  if (message.content === "Agent turn was interrupted before model generation began.") {
+    return {
+      status: "interrupted",
+      title: "Restart interrupted the turn",
+      detail: "The agent restarted before it began responding. No tool work was replayed.",
+      reason: "runner_restarted_before_model",
+    };
+  }
+  if (message.content === "Agent turn was interrupted during model generation.") {
+    return {
+      status: "interrupted",
+      title: "Restart interrupted the response",
+      detail: "The partial response was discarded because replay is not enabled for this agent.",
+      reason: "runner_restarted_mid_model",
+    };
+  }
+  if (message.content.startsWith("Recovered tool result could not continue the agent:")) {
+    return {
+      status: "failed",
+      title: "Recovery could not continue",
+      detail: message.content.replace(/^Recovered tool result could not continue the agent:\s*/, ""),
+      reason: "recovery_continue_failed",
+    };
+  }
+  return null;
+}
+
+function lifecycleTitleForStatus(status: LifecycleNotice["status"]): string {
+  if (status === "recovered") return "Recovered after restart";
+  if (status === "failed") return "Recovery failed";
+  return "Restart interrupted the turn";
 }
 
 function hasVisibleMessageContent(message: ProjectedMessage): boolean {

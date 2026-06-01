@@ -118,6 +118,19 @@ export interface DirtyRepoDetails {
 }
 
 // ===========================================================================
+// Lifecycle / recovery notices
+// ===========================================================================
+
+export type LifecycleNoticeStatus = "recovered" | "interrupted" | "failed";
+
+export interface LifecycleNotice {
+  status: LifecycleNoticeStatus;
+  title: string;
+  detail?: string;
+  reason?: string;
+}
+
+// ===========================================================================
 // ChatMessage (derived from Pi AgentMessage for component rendering)
 // ===========================================================================
 
@@ -149,4 +162,5 @@ export interface ChatMessage {
   inlineUi?: InlineUiCardPayload;
   approval?: ApprovalCardPayload;
   custom?: CustomMessageCardPayload;
+  lifecycle?: LifecycleNotice;
 }
