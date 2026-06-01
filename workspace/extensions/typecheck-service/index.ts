@@ -8,6 +8,18 @@ import {
   type WorkspacePackageInfo,
 } from "@natstack/typecheck";
 
+const WORKSPACE_PACKAGE_ROOTS = [
+  "about",
+  "apps",
+  "extensions",
+  "packages",
+  "panels",
+  "projects",
+  "skills",
+  "templates",
+  "workers",
+] as const;
+
 interface ExtensionContextLike {
   workspace: {
     getInfo(): Promise<{ path: string; contextsPath: string }>;
@@ -60,9 +72,9 @@ async function resolvePanelPath(
   panelPath: string,
   contextId: string | undefined,
 ): Promise<string> {
-  if (!contextId) return panelPath;
-  validateContextId(contextId);
   const info = await ctx.workspace.getInfo();
+  if (!contextId) return path.isAbsolute(panelPath) ? panelPath : resolveWithin(info.path, panelPath);
+  validateContextId(contextId);
   return resolveWithin(path.join(info.contextsPath, contextId), panelPath);
 }
 
@@ -71,9 +83,13 @@ async function validateFilePath(
   filePath: string | undefined,
   contextId: string | undefined,
 ): Promise<void> {
-  if (!filePath || !contextId) return;
-  validateContextId(contextId);
+  if (!filePath) return;
   const info = await ctx.workspace.getInfo();
+  if (!contextId) {
+    if (!path.isAbsolute(filePath)) resolveWithin(info.path, filePath);
+    return;
+  }
+  validateContextId(contextId);
   resolveWithin(path.join(info.contextsPath, contextId), filePath);
 }
 
@@ -81,14 +97,17 @@ async function buildContextWorkspaceContext(
   ctx: ExtensionContextLike,
   contextId: string | undefined,
 ): Promise<WorkspaceContext | undefined> {
-  if (!contextId) return undefined;
-  validateContextId(contextId);
   const info = await ctx.workspace.getInfo();
-  const sourceContext = discoverWorkspaceContext(info.path);
+  const sourceContext =
+    discoverWorkspaceContext(info.path) ?? discoverWorkspaceSourceContext(info.path);
+  if (!contextId) return sourceContext ?? undefined;
   if (!sourceContext) return undefined;
+  validateContextId(contextId);
 
   const contextRoot = path.join(info.contextsPath, contextId);
   const packages = new Map<string, WorkspacePackageInfo>();
+  const contextContext =
+    discoverWorkspaceContext(contextRoot) ?? discoverWorkspaceSourceContext(contextRoot);
   for (const [name, pkg] of sourceContext.packages) {
     const relativeDir = path.relative(sourceContext.monorepoRoot, pkg.dir);
     if (relativeDir.startsWith("..") || path.isAbsolute(relativeDir)) continue;
@@ -109,8 +128,49 @@ async function buildContextWorkspaceContext(
     }
     packages.set(name, pkg);
   }
+  for (const [name, pkg] of contextContext?.packages ?? []) {
+    if (!packages.has(name)) packages.set(name, pkg);
+  }
 
   return { monorepoRoot: contextRoot, packages };
+}
+
+function discoverWorkspaceSourceContext(workspaceRoot: string): WorkspaceContext | null {
+  const packages = new Map<string, WorkspacePackageInfo>();
+  for (const root of WORKSPACE_PACKAGE_ROOTS) {
+    const dir = path.join(workspaceRoot, root);
+    for (const pkgDir of packageDirsUnder(dir)) {
+      const packageJsonPath = path.join(pkgDir, "package.json");
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      const parsedName = parsed["name"];
+      const name = typeof parsedName === "string" ? parsedName : "";
+      if (!name || packages.has(name)) continue;
+      packages.set(name, { name, dir: pkgDir, packageJson: parsed });
+    }
+  }
+  return packages.size > 0 ? { monorepoRoot: workspaceRoot, packages } : null;
+}
+
+function packageDirsUnder(root: string): string[] {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const dirs: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    const child = path.join(root, entry.name);
+    if (fs.existsSync(path.join(child, "package.json"))) dirs.push(child);
+    if (entry.name.startsWith("@")) dirs.push(...packageDirsUnder(child));
+  }
+  return dirs;
 }
 
 function currentCallerPanelPath(ctx: ExtensionContextLike): string | undefined {
