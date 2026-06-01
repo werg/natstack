@@ -16,7 +16,7 @@ mobile React Native, or terminal targets), use the `appdev` skill instead.
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [WORKFLOW.md](WORKFLOW.md)             | Canonical agent workflow: scaffold, open, inspect, edit, push, reload, close                                                                      |
 | [PANEL_API.md](PANEL_API.md)           | Runtime panel API reference                                                                                                                       |
-| [WORKERS.md](WORKERS.md)               | Workers & Durable Objects: AgentWorkerBase (@workspace/agentic-do), DurableObjectBase, PiRunner, approval continuations, runtime approval prompts |
+| [WORKERS.md](WORKERS.md)               | Workers & Durable Objects: AgentWorkerBase (@workspace/agentic-do), DurableObjectBase, PiRunner, custom shared-resource approval grants |
 | [RPC.md](RPC.md)                       | Typed parent-child contracts                                                                                                                      |
 | [BROWSER.md](BROWSER.md)               | Browser automation (Playwright/CDP)                                                                                                               |
 | [TOOLS.md](TOOLS.md)                   | Agent tools reference                                                                                                                             |

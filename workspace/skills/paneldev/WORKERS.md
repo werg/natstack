@@ -174,6 +174,12 @@ approval helpers. Use this when a worker exposes its own security-gated service
 to other userland callers and needs a human decision that NatStack cannot model
 as a built-in credential or capability permission.
 
+Do not call `requestApproval()` before actions the worker or agent can already
+take through normal runtime APIs. Context filesystem work, eval work, panel
+operations, browser automation, git/runtime APIs, external opens, and credential
+use are protected by the outer NatStack permission model where approval is
+required.
+
 ```ts
 import { createWorkerRuntime } from "@workspace/runtime/worker";
 
@@ -187,7 +193,7 @@ export default {
         label: "Team X calendar write access",
       },
       title: "Allow calendar writes?",
-      summary: "A caller wants this worker to create Team X calendar events.",
+      summary: "This custom calendar worker wants to let the caller create Team X events.",
       details: [
         { label: "Caller", value: request.headers.get("x-caller") ?? "unknown" },
         { label: "Operation", value: "Create calendar events" },
@@ -221,10 +227,11 @@ const grants = await runtime.listApprovals();
 Keep `subject.id` stable and provider-owned. It must be 1-128 chars using only
 letters/numbers/`._:/-`, and cannot start with `shell:`, `server:`, `system:`,
 or `@`. Options must have unique values; `dismiss` is reserved. Treat
-`requestApproval()` as a userland policy gate only. For host-mediated actions
-such as external browser opens, credentials, git writes, project imports, or
-webhooks, call the existing runtime API and let NatStack's built-in permission
-flow handle the prompt and trust scope.
+`requestApproval()` as a userland policy gate for custom shared resources only.
+For host-mediated actions such as external browser opens, credentials, git
+writes, project imports, or webhooks, call the existing runtime API and let
+NatStack's built-in permission flow handle the prompt and trust scope. For
+ordinary context file edits and test temp directories, do not prompt.
 
 ## Agent Debug Port
 

@@ -2,9 +2,17 @@ import type { RpcCaller } from "@natstack/rpc";
 import type { UserlandApprovalChoice, UserlandApprovalGrant, UserlandApprovalRequest, } from "@natstack/shared/approvals";
 export type { UserlandApprovalChoice, UserlandApprovalGrant, UserlandApprovalOption, UserlandApprovalRequest, UserlandApprovalSubject, } from "@natstack/shared/approvals";
 /**
- * Consumer contract: call this at every privileged-action boundary. Do not
- * cache the result. The host owns persistence, deduplication, scope, and
- * revocation. If you think you need a local allowlist, you are about to
+ * Consumer contract: use this only for custom userland services that expose a
+ * shared resource to other userland callers and need a user decision that
+ * NatStack cannot represent with a built-in permission.
+ *
+ * Do not call this before ordinary actions the caller can already perform:
+ * context filesystem work, eval work, panel operations, browser automation,
+ * git/runtime APIs, external opens, and credential use are protected by the
+ * outer host/runtime permission model where needed.
+ *
+ * Do not cache the result. The host owns persistence, deduplication, scope,
+ * and revocation. If you think you need a local allowlist, you are about to
  * introduce a bug.
  *
  * By default the host presents scoped allow choices: allow once, allow for this

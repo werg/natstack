@@ -185,11 +185,17 @@ eval({
 
 Works with any configured provider. Check `await credentials.listStoredCredentials()` to see what's available.
 
-## Ask for a Userland Approval
+## Request Access to a Custom Userland Resource
 
-Use `requestApproval()` for a domain-specific decision owned by your panel or
-worker. NatStack verifies the issuer, shows the user a shell consent prompt,
-and manages any remembered decision for the same issuer and `subject.id`.
+Use `requestApproval()` only when custom userland code owns a shared resource
+and needs to grant another panel, worker, DO, or extension access to it. NatStack
+verifies the issuer, shows the user a shell consent prompt, and manages any
+remembered decision for the same issuer and stable `subject.id`.
+
+Do not use this for normal agent work such as creating, editing, appending, or
+removing files in the caller's context. The outer runtime/host permission model
+already protects sensitive filesystem, browser, credential, git, and panel
+operations where approval is required.
 
 ```
 eval({
@@ -197,9 +203,9 @@ eval({
     import { requestApproval } from "@workspace/runtime";
 
     const decision = await requestApproval({
-      subject: { id: "demo:send-report", label: "Send report" },
-      title: "Send this report?",
-      summary: "This panel wants permission to send the generated report.",
+      subject: { id: "demo-report-service:send", label: "Report sending service" },
+      title: "Allow report service access?",
+      summary: "A custom report service wants to let this caller send reports through its shared backend.",
     });
 
     console.log(decision);
@@ -217,9 +223,9 @@ eval({
     import { requestApproval } from "@workspace/runtime";
 
     const decision = await requestApproval({
-      subject: { id: "demo:send-report", label: "Send report" },
-      title: "Send this report?",
-      summary: "This panel wants permission to send the generated report.",
+      subject: { id: "demo-report-service:send", label: "Report sending service" },
+      title: "Allow report service access?",
+      summary: "A custom report service wants to let this caller send reports through its shared backend.",
       promptOptions: "choices",
       options: [
         { value: "allow", label: "Send", tone: "primary" },
@@ -239,7 +245,7 @@ grant is stored. To forget a stored decision:
 eval({
   code: `
     import { revokeApproval } from "@workspace/runtime";
-    await revokeApproval("demo:send-report");
+    await revokeApproval("demo-report-service:send");
   `
 })
 ```

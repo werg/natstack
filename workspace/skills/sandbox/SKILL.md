@@ -17,7 +17,7 @@ How to use the chat panel's code execution sandbox — the eval tool, inline UI 
 | [CUSTOM_MESSAGES.md](CUSTOM_MESSAGES.md) | Custom message types — register a renderer, publish typed instances with reducer updates |
 | [MDX.md](MDX.md) | Normal rich chat messages — callouts, badges, tables, ActionButton |
 | [FEEDBACK.md](FEEDBACK.md) | Feedback forms — block until user responds |
-| [RUNTIME_API.md](RUNTIME_API.md) | Full runtime API reference — fs, db, workers, ai, git, browser data, userland approval prompts |
+| [RUNTIME_API.md](RUNTIME_API.md) | Full runtime API reference — fs, db, workers, ai, git, browser data, custom shared-resource approval grants |
 | [CHAT_API.md](CHAT_API.md) | Chat API — publish messages, call methods, interact with the conversation |
 | [BROWSER_AUTOMATION.md](BROWSER_AUTOMATION.md) | Browser automation — lazy Playwright-style API via CDP |
 | [PATTERNS.md](PATTERNS.md) | Common patterns and recipes |
@@ -48,7 +48,7 @@ These are pre-bundled with the panel and work as bare `import` statements:
 
 | Module | What it provides |
 |--------|-----------------|
-| `@workspace/runtime` | rpc, fs, db, workers, ai, workspace, contextId, panel navigation, `requestApproval` |
+| `@workspace/runtime` | rpc, fs, db, workers, ai, workspace, contextId, panel navigation, `requestApproval` for custom shared resources |
 | `@workspace/panel-browser` | Browser data import/export (cookies, passwords, bookmarks, history) |
 | `@workspace/playwright-core` | Vendored Playwright-style CDP client; loaded by `handle.cdp.playwrightPage()` |
 | `@workspace/playwright-client` | Explicit lightweight CDP client for constrained worker contexts |

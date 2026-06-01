@@ -4,7 +4,7 @@ Extensions have two distinct trust boundaries:
 
 1. **Install / update / source-push** — the *elevated* approval. Granted once by the user at install time (and again on dependency updates or accepted source pushes). After install, the extension has full Node access. The host does not gate individual `ctx.fs` or `node:fs` calls — that would be theatre.
 
-2. **Per-call approvals** — the *userland* approval, raised by the extension via `ctx.approvals.request(...)` against the original panel/worker that triggered the call. This is a **user-intent** mechanism, not a security boundary against the already-installed extension. Use it when the user should explicitly authorize an action the extension is about to take on their behalf.
+2. **Shared-resource approvals** — the *userland* approval, raised by the extension via `ctx.approvals.request(...)` against the original panel/worker that triggered the call. This is for custom resources owned by the extension that are made available to other userland code. It is not a general confirmation mechanism for actions the caller or extension can already take, and it is not a security boundary against the already-installed extension.
 
 This doc is about the second.
 
@@ -27,20 +27,19 @@ interface ExtensionInvocation {
 
 The host tracks the original panel/worker in a server-side active-invocation table. Extension-to-extension calls do not inherit upstream attribution; if there is no panel/worker to ask, `ctx.approvals.request(...)` returns `{ kind: "uncallable", reason: "no-user-context" }`.
 
-## Requesting per-call approval
+## Requesting shared-resource approval
 
 ```ts
 export async function activate(ctx: ExtensionContext) {
   return {
-    async deleteWorkspace(target: string) {
+    async sendTeamCalendarInvite(teamId: string, eventId: string) {
       const decision = await ctx.approvals.request({
-        subject: { id: `hello:delete:${target}`, label: target },
-        title: `Allow Hello to delete ${target}?`,
-        summary: "A caller asked this extension to delete a workspace.",
-        warning: "This permanently removes the workspace and its contexts.",
+        subject: { id: `hello-calendar:team:${teamId}:send-invite`, label: teamId },
+        title: "Allow calendar invite sending?",
+        summary: "A caller wants access to this extension's shared Team Calendar sender.",
+        warning: "Only allow callers that should send invites for this team.",
         options: [
-          { value: "allow", label: "Allow this once", tone: "primary" },
-          { value: "allow-session", label: "Allow for this session" },
+          { value: "allow", label: "Allow", tone: "primary" },
           { value: "deny", label: "Don't allow", tone: "danger" },
         ],
       });
@@ -54,7 +53,7 @@ export async function activate(ctx: ExtensionContext) {
         (err as NodeJS.ErrnoException).code = "EACCES";
         throw err;
       }
-      // ...perform the work...
+      // ...use the extension-owned shared calendar sender...
     },
   };
 }
@@ -86,24 +85,24 @@ Pass `promptOptions: "choices"` when you need a simple allow/deny prompt, or add
 
 Pick `subject.id` to scope the grant correctly:
 
-- **Per-resource** (`"hello:read:/etc/hosts"`): user grants access to one file. The next request for a different path re-prompts.
-- **Per-action** (`"hello:delete"`): user grants the action category. All future deletes auto-grant.
-- **Session-scoped feel**: include a per-session token in the id (`"hello:delete:${sessionId}"`); the grant survives only as long as the session id stays the same.
+- **Per shared resource** (`"hello-calendar:team:team-x:send-invite"`): user grants one caller access to one extension-owned resource.
+- **Per operation class** (`"hello-calendar:send-invite"`): user grants one caller access to an operation across the extension's resource set.
+- **Session-scoped resource**: include a per-session token only when the resource itself is session-scoped; do not include timestamps, temp paths, random ids, or per-call data unless you intentionally want every call to re-prompt.
 
 The host doesn't impose a model — pick what matches the user's mental model of "what did I agree to."
 
 ## When *not* to prompt
 
-`ctx.approvals.request` is for **user intent**, not access control. Don't use it as a fake security layer — the extension is already trusted to do whatever it wants via raw Node.
+`ctx.approvals.request` is for grants to extension-owned shared resources. Don't use it as a fake security layer or generic confirmation dialog — the extension is already trusted to do whatever it wants via raw Node, and the outer host/runtime permission model already protects sensitive host resources where needed.
 
 Prompt when:
-- The action has user-visible side effects (deleting data, sending a message, spending credits).
-- The action consumes user-owned credentials (and the credential system itself isn't already prompting).
-- The user might reasonably want to confirm a destructive or expensive operation per call.
+- The extension owns a shared service/resource and another panel, worker, DO, or extension asks to use it.
+- NatStack has no built-in permission model for that resource.
+- A remembered grant for a stable `subject.id` is meaningful to the user.
 
 Don't prompt when:
-- The call is read-only metadata that the user already authorized by calling the extension at all.
-- The work is internal bookkeeping (writing to `ctx.storage`, log records, health reports).
+- The caller or extension is doing ordinary filesystem, process, network, panel, git, browser, credential, or runtime work. Use the corresponding host/runtime API and let NatStack's built-in permission flow handle sensitive resources.
+- The work is internal bookkeeping such as writing to `ctx.storage`, log records, health reports, cache files, scratch files, or temporary test directories.
 - You're calling another extension that will do its own prompting (`extensions.use(...)` calls do not propagate upstream attribution).
 
 ## Prompt copy

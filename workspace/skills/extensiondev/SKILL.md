@@ -14,7 +14,7 @@ If you're calling an existing extension from a panel or worker, you don't need t
 | Document | Content |
 |----------|---------|
 | [AUTHORING.md](AUTHORING.md) | Workspace layout, `package.json`, `activate(ctx)`, the API contract, the `ctx.*` surface |
-| [APPROVALS.md](APPROVALS.md) | `ctx.invocation.current()`, `ctx.approvals.request(...)`, how extensions decide when to prompt |
+| [APPROVALS.md](APPROVALS.md) | `ctx.invocation.current()`, `ctx.approvals.request(...)`, shared-resource grants for extension-owned services |
 | [FETCH.md](FETCH.md) | Optional default-export `fetch` handler and the `/_r/ext/<name>/*` route |
 | [DEV_LOOP.md](DEV_LOOP.md) | Workspace git push as the dev signal, dev-session approval, inspector, log stream |
 | [MIGRATIONS.md](MIGRATIONS.md) | Migrating an in-host service into an extension (the canary pattern) |
@@ -32,7 +32,7 @@ If a worker (workerd isolate) is sufficient, prefer that — workers are cheaper
 1. **`workspace/extensions/<name>/`** is the location. The package must be `private: true` and `type: "module"`, and the `package.json` must have `natstack.extension` (validated at install **and** boot — bad manifests fail closed).
 2. **`activate(ctx)` returns a plain object.** Its own enumerable function properties become RPC methods. Inherited methods, `then`, and non-function properties are skipped.
 3. **`ctx.fs` for an extension is unrestricted** — it covers the whole host filesystem. This is not a sandbox; it exists for *auditable* writes. For silent ambient work, import `node:fs` directly. The install approval is the trust boundary.
-4. **Use `ctx.approvals.request(...)`** for any operation the user should explicitly authorize per call. The host derives the principal from the active invocation chain; you supply the local subject, copy, and options.
+4. **Use `ctx.approvals.request(...)` only for extension-owned shared resources exposed to other userland callers.** Do not use it as a generic confirmation prompt or wrapper around ordinary filesystem/process/network work; the host/runtime APIs own those permission boundaries.
 5. **Prefer ESM**. For external CommonJS packages, use default imports + destructure (`import pkg from "x"; const { fn } = pkg`). Named imports from CJS are blocked.
 6. **No `console.log` in production paths.** Use `ctx.log.{debug,info,warn,error}` so logs land in the workspace-unit stream (`workspace.units.logs(name)`). `console.*` is captured too, but as `source: "stdout"` / `"stderr"` instead of structured records.
 7. **Source pushes are the dev signal.** Push to the extension repo's `main` (or `master`) — the user gets an extension push approval and the manager rebuilds + replaces the running process. There is no `extensions.reload` for source changes.
@@ -92,7 +92,7 @@ The declared set in `meta/natstack.yml` is the single source of truth, reconcile
 |------|-----|
 | Scaffold a new extension | Copy from `docs/extensions/templates/{minimal,plain-js-dep,external-cjs,native-wasm}/` |
 | Read manifest rules | See [AUTHORING.md](AUTHORING.md) — `natstack.extension` shape, `dependencyMode` |
-| Decide when to prompt the user | See [APPROVALS.md](APPROVALS.md) — `ctx.approvals.request` + grant lookup |
+| Gate access to an extension-owned shared resource | See [APPROVALS.md](APPROVALS.md) — `ctx.approvals.request` + grant lookup |
 | Add an HTTP endpoint | See [FETCH.md](FETCH.md) — default-export `fetch` handler |
 | Push edits and pick up changes | See [DEV_LOOP.md](DEV_LOOP.md) — git push, dev-session, inspector |
 | Migrate from `src/server/services/*` | See [MIGRATIONS.md](MIGRATIONS.md) — canary pattern, `extensions.use(...)` codemod |

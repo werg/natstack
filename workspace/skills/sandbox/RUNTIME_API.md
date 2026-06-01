@@ -177,10 +177,17 @@ is a consent UI timeout, not a model prompt timeout.
 
 ## Userland Approval Prompts
 
-Use `requestApproval()` when panel code needs a human decision for a
-provider-defined action that NatStack does not understand as a built-in
-credential or capability grant. The shell verifies the issuer identity
-(`callerId`/`callerKind`) and shows the user a trusted consent prompt.
+Use `requestApproval()` only when custom userland code exposes a shared resource
+to other panels, workers, DOs, or extensions and needs a user decision that
+NatStack cannot represent as a built-in permission. The shell verifies the
+issuer identity (`callerId`/`callerKind`) and shows the user a trusted consent
+prompt for that custom resource.
+
+Do **not** call `requestApproval()` for ordinary actions the caller can already
+perform: context filesystem reads/writes/removes, eval work, panel operations,
+browser automation, git/runtime APIs, external opens, credential use, and other
+host-mediated capabilities are already protected by NatStack's outer permission
+systems where needed.
 
 ```ts
 import { requestApproval, revokeApproval, listApprovals } from "@workspace/runtime";
@@ -191,7 +198,7 @@ const result = await requestApproval({
     label: "Team X calendar write access",
   },
   title: "Allow calendar writes?",
-  summary: "Team X wants this worker to create events on its behalf.",
+  summary: "A custom calendar service wants to let this caller create Team X events.",
   warning: "Only allow this for teams you administer.",
   details: [
     { label: "Team", value: "Team X" },
@@ -242,6 +249,8 @@ letters/numbers/`._:/-`, and cannot start with `shell:`, `server:`,
 `system:`, or `@`. Option values must be unique, 1-40 chars, and use only
 letters/numbers/`_-`; `dismiss` is reserved.
 
-Do not use `requestApproval()` for host capabilities that already have a
-NatStack permission flow: use `openExternal()`, `credentials.*`, `git.*`, or
-other runtime APIs so the host can apply the right trust scope and audit model.
+Do not use `requestApproval()` as a general confirmation dialog or a defensive
+wrapper around actions the agent/runtime can already take. For host capabilities
+that already have a NatStack permission flow, use `openExternal()`,
+`credentials.*`, `git.*`, or the relevant runtime API so the host can apply the
+right trust scope and audit model.

@@ -141,7 +141,7 @@ Today's surface (mirrors what panels and workers see; will narrow as capabilitie
 | `ctx.webhooks` | Webhook ingress (`webhookIngress` service) |
 | `ctx.notifications` | `show`/`dismiss` notifications in the shell |
 | `ctx.extensions` | Call other extensions (`use`, `on`, `list`, management methods) |
-| `ctx.approvals.request(req)` | Prompt the *original panel/worker* (see [APPROVALS.md](APPROVALS.md)) |
+| `ctx.approvals.request(req)` | Ask the original panel/worker to grant access to an extension-owned shared resource (see [APPROVALS.md](APPROVALS.md)) |
 | `ctx.invocation.current()` | The current `ExtensionInvocation` envelope, including caller and chained `contextId` when invoked from userland (see [APPROVALS.md](APPROVALS.md)) |
 | `ctx.subscriptions` | Push `Disposable`s; auto-disposed LIFO on deactivate |
 | `ctx.log` | Structured logger (`debug`/`info`/`warn`/`error`) |
