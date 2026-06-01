@@ -3,6 +3,10 @@
 > Handoff plan for an implementing agent. NatStack is pre-release; prefer clean
 > architecture over backward compatibility. All file:line references are anchors, not
 > exact targets — re-confirm before editing.
+>
+> Current note (2026-06-01): RPC naming in runtime/userland has moved to the
+> unified `RpcClient` surface. Historical event-listener references in this plan
+> map to `on`, and exposed method registration maps to `expose`.
 
 ## 1. Context & problem
 
@@ -11,7 +15,7 @@ NatStack is an Electron tree-browser: the UI is a tree of "panels" (each an Elec
 sharing one userland runtime. Today's connectivity model is fragmented and restrictive:
 
 - **Two divergent handle types.** `ParentHandle` (`workspace/packages/runtime/src/core/types.ts:119-162`)
-  is RPC-only (`id/call/emit/onEvent`, with typed-contract generics). `PanelHandle`
+  is RPC-only (`id/call/emit/on`, with typed-contract generics). `PanelHandle`
   (`workspace/packages/runtime/src/panel/handle.ts:15-34`) is control/metadata/CDP only, with
   *no* RPC. A child can RPC its parent but can't CDP it; a parent can CDP a child but the two
   surfaces don't match.
@@ -55,7 +59,7 @@ targets) — and
 4. **Privilege is a severity input, not a wall.** `shell: true` targets are attachable, but
    gated ops on them require a **severe** (danger-tone) approval vs. a *standard* one.
 5. **Open (never prompts):** read/metadata, `ensureLoaded`/`focus`, and consensual RPC
-   `call`/`emit`/`onEvent` to methods the target *chose* to expose.
+   `call`/`emit`/`on` to methods the target *chose* to expose.
 6. **Approvals are always interactive.** We do **not** build a headless / non-interactive /
    pre-grant path. A human is present to approve; if no approver responds, the op is denied.
    Therefore "zero interactive clients" only means zero clients hosting/displaying the target;
@@ -136,7 +140,7 @@ accessDecision(op, requester, target) -> {
 
 - **Op classes:**
   - *open* (no capability): read/metadata, `ensureLoaded`, `focus`, consensual RPC
-    `call`/`emit`/`onEvent`.
+    `call`/`emit`/`on`.
   - *automate* (`panel.automate`): `cdp.*`, `navigate`, `reload`, `goBack`, `goForward`,
     `stop`.
   - *structural* (`panel.structural`): `archive`, `close`, `unload`, `movePanel`, `takeOver`,
@@ -251,7 +255,7 @@ Define one type in `workspace/packages/runtime/src/core/types.ts` (merging today
   `panelTree.get(id)` returns a handle with placeholder metadata (today's `getPanelHandle`
   pattern, `handle.ts:152`); fully-hydrated handles come from `list()`/`children()`. Add an
   async `refresh()` to (re)populate metadata for a bare handle.
-- **RPC:** `call: TypedCallProxy<Exposed>`, `emit`, `onEvent` — generalize
+- **RPC:** `call: TypedCallProxy<Exposed>`, `emit`, `on` — generalize
   `createParentHandle` (`workspace/packages/runtime/src/shared/handles.ts:10-31`) from
   `parentId` to any target id.
 - **Typed contracts:** `withContract(contract, role)` where `role` resolves which side of the

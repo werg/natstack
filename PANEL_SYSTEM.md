@@ -92,7 +92,7 @@ import {
   getTheme,              // Get current theme
   onThemeChange,         // Subscribe to theme changes
   onFocus,               // Subscribe to focus events
-  exposeMethod,          // Expose RPC methods
+  expose,                // Expose RPC methods
   onConnectionError,     // Subscribe to RPC connection errors
 
   // Git utilities
@@ -161,7 +161,7 @@ const handle = panelTree.get("panel-id");
 handle.id                         // Panel ID
 handle.call.method(args)          // Call exposed RPC method
 handle.emit("event", payload)     // Emit event to the panel
-handle.onEvent("event", handler)  // Listen for events from the panel
+handle.on("event", handler)       // Listen for events from the panel
 handle.cdp.page()                 // Approval-gated CDP page access
 handle.ensureLoaded()             // Explicit load for RPC/introspection
 handle.close()                    // Approval-gated structural operation

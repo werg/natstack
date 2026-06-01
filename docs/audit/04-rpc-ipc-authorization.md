@@ -4,11 +4,17 @@ Scope: `packages/rpc/`, `src/server/rpcServer*`, `src/server/wsServerTransport*`
 
 Date: 2026-04-23 · Branch: audit · Auditor: Claude (Opus 4.7 1M) · Mode: read-only.
 
+Current note (2026-06-01): this report is historical. The legacy bridge API it
+describes has since been replaced by the unified `RpcClient` API in
+`@natstack/rpc`, with envelope-based caller attribution and transport adapters
+shared across WebSocket, HTTP, Electron IPC, and in-process links. Historical
+findings below are retained for audit traceability.
+
 ---
 
 ## 1. Executive summary
 
-The RPC framework in `@natstack/rpc` is well-factored and deliberately minimal: a transport-agnostic bridge (`createRpcBridge`) dispatches `request`/`response`/`event` messages, argument validation is pushed into service definitions (`ServiceDispatcher`), and policy is a flat allow-list per service/method. Transport security is built into the WebSocket server: all connections must send `ws:auth` within 10 s carrying a bearer token; tokens are 32-byte random hex stored only in memory (`TokenManager`); the server distinguishes `admin`/`panel`/`shell`/`worker`/`server`/`harness` caller kinds.
+At audit time, the RPC framework in `@natstack/rpc` was a transport-agnostic bridge that dispatched `request`/`response`/`event` messages, pushed argument validation into service definitions (`ServiceDispatcher`), and used a flat allow-list per service/method. That bridge has since been removed in favor of `createRpcClient`, but the transport-authorization findings are retained below. Transport security is built into the WebSocket server: all connections must send `ws:auth` within 10 s carrying a bearer token; tokens are 32-byte random hex stored only in memory (`TokenManager`); the server distinguishes `admin`/`panel`/`shell`/`worker`/`server`/`harness` caller kinds.
 
 However, the implementation has substantive gaps between the declared policy model and the effective enforcement surface. The most important findings:
 
@@ -40,17 +46,20 @@ Nothing in this report is a panic-level remote code execution, but several items
 
 ## 2. Architecture overview (as implemented)
 
-### 2.1 Bridge core (`packages/rpc/`)
+### 2.1 RPC core (`packages/rpc/`)
 
-- `types.ts` defines three message kinds: `RpcRequest`, `RpcResponse` (ok or error), `RpcEvent`. Union `RpcMessage` is the wire type.
-- `bridge.ts::createRpcBridge({ selfId, transport })` exposes:
-  - `exposeMethod(name, handler)` and `expose(object)` — stored in a single `exposedMethods: Record<string, Fn>` map.
-  - `call(targetId, method, ...args)` — generates a UUID `requestId`, stores a resolver in `pendingRequests`, and delegates to `transport.send`.
-  - Incoming `request`: looks up handler, runs under `Promise.resolve().then(...)`, sends response.
-  - Incoming `response`: resolves/rejects the pending request; carries optional `errorCode` to preserve `NodeJS.ErrnoException.code` across boundaries.
-  - Incoming `event`: fan-out to `eventListeners` by event name.
-- `transport-helpers.ts::createHandlerRegistry` provides the shared `deliver`/`onMessage`/`onAnyMessage` fan-out used by every transport.
-- The bridge trusts the transport: it does not authenticate `sourceId` in `_handleMessage`. Upstream transports are expected to attribute messages correctly.
+- `types.ts` defines the RPC message kinds and transport contracts.
+- `envelope.ts` defines the caller/target envelope used to carry provenance consistently across transports.
+- `client.ts::createRpcClient({ selfId, transport })` exposes:
+  - `expose(name, handler)` and `expose(object)` — stored in one exposed method map.
+  - `call(targetId, method, ...args)` — generates a request id, stores a resolver in `pendingRequests`, and delegates to the envelope transport.
+  - `emit(targetId, event, ...args)` and `on(event, handler)` for event delivery.
+  - `stream(targetId, method, ...args)` for streaming RPC over the shared stream codec.
+  - Incoming `request`: looks up the exposed handler, runs under `Promise.resolve().then(...)`, and sends a response.
+  - Incoming `response`: resolves/rejects the pending request; optional error codes are preserved across boundaries.
+  - Incoming `event`: fan-out to event listeners by event name.
+- Transport adapters are centralized under `@natstack/rpc/transports/*`, with shared WebSocket protocol, stream framing, and recovery helpers under `@natstack/rpc/protocol/*`.
+- The client relies on the envelope transport for provenance. Server-side WebSocket and relay paths must stamp or verify caller identity before delivering envelopes.
 
 ### 2.2 Caller kinds and tokens (`packages/shared/src/`)
 
@@ -74,7 +83,7 @@ Each socket follows a state machine:
 2. The message must be `{ type: "ws:auth", token }`. Otherwise the socket is closed with code `4003/4004/4005`.
 3. `handleAuth` tries `validateAdminToken` first, then `validateToken`. Shell callers are re-suffixed with a UUID fragment so concurrent mobile shells don't clobber each other. Admin connections get a random `ws:<uuid>` callerId.
 4. For non-server kinds, a `callerToClient` entry may already exist; the old socket is closed with `4002 "Replaced by new connection"`.
-5. A per-client `RpcBridge` + `WsServerTransport` is created so the server can initiate calls back into the client.
+5. A per-client `RpcClient` + server WebSocket transport is created so the server can initiate calls back into the client.
 6. On a 3-second reconnect grace window, disconnect callbacks are deferred.
 
 Incoming `ws:rpc` requests are dispatched through `handleRpc`:

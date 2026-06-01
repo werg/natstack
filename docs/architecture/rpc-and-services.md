@@ -51,20 +51,18 @@ Response-based APIs work transparently.
 
 Some bits ARE shared and should stay shared:
 
-- **`@workspace/runtime` `RpcCaller` interface** — the credentials
-  client takes a `RpcCaller` (anything with `call` + `streamCall`).
-  Both rpc-based bridges and service-derived adapters can satisfy it.
-- **`@natstack/shared/credentials/streamFraming`** — the binary frame
+- **`@natstack/rpc` `RpcCaller` interface** — the credentials
+  client takes a `RpcCaller` (anything with `call` + `stream`).
+  Runtime clients and service-derived adapters can satisfy it.
+- **`@natstack/rpc/protocol/streamCodec`** — the binary frame
   codec (HEAD/DATA/END/ERROR). Used by rpc for HTTP `/rpc/stream` and
-  by `createRpcBridge.streamCall` over IPC/WS. Stateful service protocols
+  by `RpcClient.stream` over IPC/WS. Stateful service protocols
   can choose their own chunk shape.
 
 ## What does NOT need to change
 
-- **Duplicate base64 helpers** in `bridge.ts` and `rpc-client.ts`.
-  They're ~6 lines each and `@natstack/shared/credentials/streamFraming`
-  already exposes shared versions; the duplicates exist to keep tiny
-  packages dependency-light.
+- **Duplicate base64 helpers** should live in `@natstack/rpc/protocol/streamCodec`
+  or local transport internals only when the dependency boundary requires it.
 
 ## When unification becomes worth considering
 
@@ -85,9 +83,9 @@ and link this doc from any commit that touches the question.
 ```
 Are you routing point-to-point with a single caller/target?
 ├─ Yes
-│  ├─ Need a streaming response body? → rpc.streamCall
+│  ├─ Need a streaming response body? → rpc.stream
 │  ├─ Need a one-shot value?          → rpc.call
-│  └─ Need to expose a method?        → rpc.exposeMethod / exposeStreamingMethod
+│  └─ Need to expose a method?        → rpc.expose / exposeStreaming
 └─ No (one-to-many, or stateful conversation)
    ├─ Declare a workspace service protocol in natstack.yml
    ├─ Resolve it with workers.resolveService

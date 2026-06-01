@@ -3,7 +3,7 @@ import { createPanelSandboxConfig } from "@workspace/agentic-core";
 import type { ConnectionConfig } from "@workspace/agentic-core";
 import { gad, rpc, getStateArgs } from "@workspace/runtime";
 
-// The panel's rpc has the full interface (call, onEvent, selfId) that
+// The panel's rpc has the full interface (call, on, selfId) that
 // ConnectionConfig.rpc needs. Cast through the specific interface type.
 const rpcConfig = rpc as unknown as NonNullable<ConnectionConfig["rpc"]>;
 

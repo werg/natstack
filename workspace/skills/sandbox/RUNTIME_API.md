@@ -32,7 +32,7 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `getTheme` | value |  |  |
 | `onThemeChange` | value |  |  |
 | `onFocus` | value |  |  |
-| `exposeMethod` | value |  |  |
+| `expose` | value |  |  |
 | `contextId` | value |  |  |
 | `recoveryCoordinator` | value |  | Panel transport recovery phase coordinator. |
 | `parentId` | value |  |  |

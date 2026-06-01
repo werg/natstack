@@ -35,7 +35,7 @@ Generated from `runtimeSurface.worker.ts`. Use `await help()` at runtime for the
 | `requestApproval` | value |  |  |
 | `revokeApproval` | value |  |  |
 | `listApprovals` | value |  |  |
-| `exposeMethod` | value |  |  |
+| `expose` | value |  |  |
 | `getParent` | value |  |  |
 | `panelTree` | namespace | `self`, `get`, `list`, `roots`, `children`, `parent`, `open` |  |
 | `handleRpcPost` | value |  |  |

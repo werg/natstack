@@ -109,7 +109,7 @@ child.type; // "app" | "worker" | "browser"
 child.source; // Panel path or URL
 
 child.call.method(args); // Call exposed RPC method
-child.onEvent("event", handler); // Listen for events
+child.on("event", handler); // Listen for events
 child.emit("event", payload); // Emit event to child
 child.close(); // Close the panel
 ```
@@ -121,6 +121,6 @@ parent.id; // Parent's ID
 await parent.getInfo(); // Metadata: id/title/source/kind/parentId
 parent.call.method(args); // Call parent's RPC method
 parent.emit("event", payload); // Emit event to parent
-parent.onEvent("event", handler); // Listen for parent events
+parent.on("event", handler); // Listen for parent events
 await parent.click("button"); // CDP click convenience; prompts on first automation use
 ```
