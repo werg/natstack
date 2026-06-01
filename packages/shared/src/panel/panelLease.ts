@@ -1,6 +1,7 @@
 import type { PanelEntityId, PanelSlotId } from "./ids.js";
+import type { ClientPlatform } from "@natstack/rpc/protocol/wsProtocol";
 
-export type ClientPlatform = "desktop" | "headless" | "mobile";
+export type { ClientPlatform } from "@natstack/rpc/protocol/wsProtocol";
 
 export interface ClientSession {
   clientSessionId: string;

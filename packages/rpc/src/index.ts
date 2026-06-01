@@ -13,15 +13,29 @@ export type {
   RpcStreamCancel,
   RpcMessage,
   RpcTransport,
-  RpcBridge,
-  RpcBridgeConfig,
-  RpcBridgeInternal,
   RpcCallOptions,
   AuthenticatedCaller,
   ExposedMethods,
   RpcEventListener,
   RpcCaller,
   CallerKind,
+  RpcEnvelope,
+  EnvelopeRpcTransport,
+  RpcClient,
+  RpcClientConfig,
+  RpcRequestContext,
+  RpcEventContext,
+  RpcContextHandler,
+  RpcContextMethods,
+  RpcContextStreamingHandler,
+  RpcPeer,
+  RpcContract,
+  MethodMap,
+  EventMap,
+  TypedCallProxy,
+  RpcConnectionStatus,
+  TopologyAdapter,
+  AutomationAdapter,
   StreamingMethodHandler,
   StreamingMethodFrame,
   ParentPortEnvelope,
@@ -29,5 +43,12 @@ export type {
 } from "./types.js";
 
 export { isParentPortEnvelope, ELECTRON_LOCAL_SERVICE_NAMES } from "./types.js";
-export { createRpcBridge } from "./bridge.js";
+export { createRpcClient, defineContract } from "./client.js";
+export {
+  authenticatedCaller,
+  envelopeFromMessage,
+  originOfEnvelope,
+  responseEnvelopeFor,
+  retargetEnvelope,
+} from "./envelope.js";
 export { createHandlerRegistry } from "./transport-helpers.js";

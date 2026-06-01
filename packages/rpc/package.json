@@ -8,6 +8,42 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./protocol/wsProtocol": {
+      "types": "./dist/protocol/wsProtocol.d.ts",
+      "default": "./dist/protocol/wsProtocol.js"
+    },
+    "./protocol/wsAdapter": {
+      "types": "./dist/protocol/wsAdapter.d.ts",
+      "default": "./dist/protocol/wsAdapter.js"
+    },
+    "./protocol/recoveryCoordinator": {
+      "types": "./dist/protocol/recoveryCoordinator.d.ts",
+      "default": "./dist/protocol/recoveryCoordinator.js"
+    },
+    "./protocol/streamCodec": {
+      "types": "./dist/protocol/streamCodec.d.ts",
+      "default": "./dist/protocol/streamCodec.js"
+    },
+    "./transports/inProcess": {
+      "types": "./dist/transports/inProcess.d.ts",
+      "default": "./dist/transports/inProcess.js"
+    },
+    "./transports/compose": {
+      "types": "./dist/transports/compose.d.ts",
+      "default": "./dist/transports/compose.js"
+    },
+    "./transports/wsClient": {
+      "types": "./dist/transports/wsClient.d.ts",
+      "default": "./dist/transports/wsClient.js"
+    },
+    "./transports/httpClient": {
+      "types": "./dist/transports/httpClient.d.ts",
+      "default": "./dist/transports/httpClient.js"
+    },
+    "./transports/electronIpc": {
+      "types": "./dist/transports/electronIpc.d.ts",
+      "default": "./dist/transports/electronIpc.js"
     }
   },
   "files": [

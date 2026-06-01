@@ -2,7 +2,7 @@
  * Shared RPC types for panel/worker communication.
  *
  * This package is the single source of truth for the message protocol and
- * the in-process RPC bridge API (createRpcBridge).
+ * the unified RPC client API (createRpcClient).
  */
 
 /**
@@ -64,7 +64,7 @@ export interface RpcEvent {
  * body is delivered as a sequence of `RpcStreamFrameMessage` frames
  * (HEAD → DATA* → END | ERROR), tagged by `requestId`. The bridge
  * assembles those frames into a `ReadableStream<Uint8Array>` body for
- * the `Response` returned by `streamCall`.
+ * the `Response` returned by `stream`.
  */
 export interface RpcStreamRequest {
   type: "stream-request";
@@ -120,10 +120,6 @@ export type RpcMessage =
   | RpcStreamFrameMessage
   | RpcStreamCancel;
 
-/**
- * Internal type for method storage.
- * Use exposeMethod() for type-safe method registration.
- */
 export type ExposedMethods = Record<string, (...args: unknown[]) => unknown | Promise<unknown>>;
 
 /**
@@ -159,26 +155,11 @@ export interface RpcTransport {
   ): () => void;
 }
 
-export interface RpcBridgeConfig {
-  /** The canonical runtime ID of this endpoint. */
-  selfId: string;
-  /** The transport implementation */
-  transport: RpcTransport;
-  /**
-   * Idle timeout for in-flight streaming calls. If no frame arrives
-   * within this window the stream is errored and the bookkeeping
-   * entry removed — prevents leaks from peers that go silent without
-   * sending END or ERROR. Defaults to 90s. Use a smaller value in
-   * tests if you want to assert timeout behavior quickly.
-   */
-  streamIdleTimeoutMs?: number;
-}
-
 /**
  * The authenticated identity of an INBOUND caller — i.e. "who called me".
  *
  * This is the single, canonical inbound-caller shape across every layer:
- * - the point-to-point bridge passes it to `exposeMethodWithCaller` handlers;
+ * - the unified client passes it to `expose` handlers;
  * - `DurableObjectBase.caller` returns it (sourced from signed headers);
  * - the server's `VerifiedCaller.caller` exposes it (a thin view over its
  *   richer capability/code identity).
@@ -197,105 +178,6 @@ export interface AuthenticatedCaller {
   callerKind: CallerKind | "unknown";
 }
 
-/**
- * RPC bridge interface exposed to user code.
- */
-export interface RpcBridge {
-  readonly selfId: string;
-
-  /**
-   * Expose a method with full type safety.
-   *
-   * @example
-   * bridge.exposeMethod("notes.create", (title: string) => {
-   *   return notes.create(title);
-   * });
-   */
-  exposeMethod<TArgs extends unknown[], TReturn>(
-    method: string,
-    handler: (...args: TArgs) => TReturn | Promise<TReturn>
-  ): void;
-
-  /**
-   * Expose a method whose handler also receives the AUTHENTICATED caller.
-   *
-   * The `ctx.callerId` is the gateway-verified principal of the caller (the
-   * same `client.caller.runtime.id` the server stamps onto routed messages) —
-   * NOT the self-reported `RpcRequest.fromId`, which is untrusted. Use this for
-   * handlers that act on a resource named in the payload and must verify the
-   * caller owns it (e.g. session ownership, participant identity).
-   *
-   * @example
-   * bridge.exposeMethodWithCaller("terminal.onFrame", (ctx, frame) => {
-   *   if (ctx.callerId !== sessions.ownerOf(frame.sessionId)) return; // reject
-   *   sessions.onFrame(frame);
-   * });
-   */
-  exposeMethodWithCaller<TArgs extends unknown[], TReturn>(
-    method: string,
-    handler: (ctx: AuthenticatedCaller, ...args: TArgs) => TReturn | Promise<TReturn>
-  ): void;
-
-  /**
-   * Expose multiple methods at once from a methods object.
-   *
-   * @example
-   * rpc.expose({
-   *   async search(query: string) { return results; },
-   *   async getThread(id: string) { return thread; },
-   * });
-   */
-  expose(methods: Record<string, (...args: any[]) => any>): void;
-
-  /**
-   * Expose a streaming method handler. The handler receives the call
-   * args and a `sink` callback; it emits one HEAD frame, zero or
-   * more DATA frames, and exactly one END frame (or an ERROR frame
-   * on failure). The bridge serializes each frame and forwards it to
-   * the caller as a `stream-frame` message tagged with the matching
-   * `requestId`.
-   *
-   * The `abortSignal` fires when the caller cancels their end of the
-   * stream (consumer calls `response.body.cancel()` or aborts via
-   * AbortController). Handlers should propagate this to whatever
-   * upstream resource they're pulling from.
-   */
-  exposeStreamingMethod(
-    method: string,
-    handler: StreamingMethodHandler,
-  ): void;
-
-  call<T = unknown>(
-    targetId: string,
-    method: string,
-    args: unknown[],
-    options?: RpcCallOptions,
-  ): Promise<T>;
-  /**
-   * Streaming call. Returns a `Response` whose body is a real
-   * `ReadableStream<Uint8Array>`. See `RpcCaller.streamCall` for the
-   * contract — `RpcBridge` extends `RpcCaller` so this is required
-   * on every bridge implementation. Transports without protocol-
-   * level streaming wrap their buffered response in a synthetic
-   * stream; the caller's API surface is identical either way.
-   */
-  streamCall(
-    targetId: string,
-    method: string,
-    args: unknown[],
-    options?: { signal?: AbortSignal },
-  ): Promise<Response>;
-  emit(targetId: string, event: string, payload: unknown): Promise<void>;
-  onEvent(event: string, listener: RpcEventListener): () => void;
-}
-
-/**
- * Internal RPC bridge interface (for transport delivery).
- */
-export interface RpcBridgeInternal extends RpcBridge {
-  _handleMessage(sourceId: string, message: RpcMessage, callerKind?: CallerKind): void;
-}
-
 export type CallerKind =
   | "shell"
   | "shell-remote"
@@ -309,9 +191,9 @@ export type CallerKind =
 
 /**
  * Frame yielded by a streaming method handler. Mirrors the wire frame
- * format defined in `@natstack/shared/credentials/streamFraming` but
+ * format defined in `@natstack/rpc/protocol/streamCodec` but
  * uses runtime types (Uint8Array for DATA, structured objects for
- * HEAD/END/ERROR) — the bridge serializes them when sending across
+ * HEAD/END/ERROR) — the client serializes them when sending across
  * the wire.
  */
 export type StreamingMethodFrame =
@@ -335,6 +217,7 @@ export type StreamingMethodHandler = (
 export interface RpcCallOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
+  idempotencyKey?: string;
 }
 
 export interface RpcCaller {
@@ -356,12 +239,178 @@ export interface RpcCaller {
    * path; other methods continue to use `call` for their JSON
    * request/response shape.
    */
-  streamCall(
+  stream(
     targetId: string,
     method: string,
     args: unknown[],
     options?: { signal?: AbortSignal },
   ): Promise<Response>;
+}
+
+export interface RpcEnvelope {
+  from: string;
+  target: string;
+  delivery: {
+    caller: AuthenticatedCaller;
+    idempotencyKey?: string;
+  };
+  provenance: AuthenticatedCaller[];
+  message: RpcMessage;
+}
+
+export interface EnvelopeRpcTransport {
+  send(envelope: RpcEnvelope): Promise<void>;
+  onMessage(handler: (envelope: RpcEnvelope) => void): () => void;
+  status?: () => RpcConnectionStatus;
+  ready?: () => Promise<void>;
+  onStatusChange?: (handler: (status: RpcConnectionStatus) => void) => () => void;
+}
+
+export type RpcConnectionStatus = "connected" | "connecting" | "disconnected";
+
+export interface RpcRequestContext {
+  caller: AuthenticatedCaller;
+  origin: AuthenticatedCaller;
+  method: string;
+  args: unknown[];
+  signal: AbortSignal;
+  rpc: RpcClient;
+}
+
+export interface RpcEventContext {
+  caller: AuthenticatedCaller;
+  origin: AuthenticatedCaller;
+  event: string;
+  payload: unknown;
+}
+
+export type RpcContextHandler<TArgs extends unknown[] = unknown[], TReturn = unknown> = (
+  request: RpcRequestContext & { args: TArgs },
+) => TReturn | Promise<TReturn>;
+
+export type RpcContextMethods = Record<string, RpcContextHandler<any, any>>;
+
+export type RpcContextStreamingHandler = (
+  request: RpcRequestContext,
+  sink: (frame: StreamingMethodFrame) => Promise<void> | void,
+) => Promise<void>;
+
+export type MethodMap = Record<string, (...args: any[]) => any>;
+export type EventMap = Record<string, any>;
+
+export type TypedCallProxy<TMethods extends MethodMap> = {
+  [K in keyof TMethods & string]: (
+    ...args: Parameters<TMethods[K]>
+  ) => Promise<Awaited<ReturnType<TMethods[K]>>>;
+};
+
+export interface RpcPeer<
+  TMethods extends MethodMap = MethodMap,
+  TEvents extends EventMap = EventMap,
+  TEmitEvents extends EventMap = TEvents,
+> {
+  readonly id: string;
+  readonly call: TypedCallProxy<TMethods>;
+  on<K extends keyof TEvents & string>(
+    event: K,
+    listener: (event: RpcEventContext & { payload: TEvents[K] }) => void,
+  ): () => void;
+  emit<K extends keyof TEmitEvents & string>(event: K, payload: TEmitEvents[K]): Promise<void>;
+  withContract<C extends RpcContract, Role extends keyof C & string>(
+    contract: C,
+    role: Role,
+  ): RpcPeer<
+    C[Role] extends { methods: infer M extends MethodMap } ? M : MethodMap,
+    C[Role] extends { events: infer E extends EventMap } ? E : EventMap,
+    C[Role] extends { emits: infer EE extends EventMap } ? EE : EventMap
+  >;
+}
+
+export type RpcContract = Record<
+  string,
+  {
+    methods?: MethodMap;
+    events?: EventMap;
+    emits?: EventMap;
+  }
+>;
+
+export interface TopologyAdapter {
+  parent?(): Promise<string | null> | string | null;
+  children?(): Promise<string[]> | string[];
+  root?(): Promise<string | null> | string | null;
+  siblings?(): Promise<string[]> | string[];
+}
+
+export interface AutomationAdapter<TAutomation = unknown> {
+  automation(targetId: string): TAutomation;
+}
+
+export interface RpcClientConfig {
+  selfId: string;
+  transport: EnvelopeRpcTransport;
+  streamIdleTimeoutMs?: number;
+  callerKind?: CallerKind | "unknown";
+  provenance?: AuthenticatedCaller[];
+  topology?: TopologyAdapter;
+  automation?: AutomationAdapter;
+}
+
+export interface RpcTree {
+  root<TMethods extends MethodMap = MethodMap, TEvents extends EventMap = EventMap>(): Promise<
+    RpcPeer<TMethods, TEvents> | null
+  >;
+  self<TMethods extends MethodMap = MethodMap, TEvents extends EventMap = EventMap>(): RpcPeer<
+    TMethods,
+    TEvents
+  >;
+  siblings<TMethods extends MethodMap = MethodMap, TEvents extends EventMap = EventMap>(): Promise<
+    Array<RpcPeer<TMethods, TEvents>>
+  >;
+}
+
+export interface RpcClient {
+  readonly selfId: string;
+  expose<TArgs extends unknown[], TReturn>(
+    method: string,
+    handler: RpcContextHandler<TArgs, TReturn>,
+  ): void;
+  exposeAll(methods: RpcContextMethods): void;
+  exposeStreaming(method: string, handler: RpcContextStreamingHandler): void;
+  call<T = unknown>(
+    targetId: string,
+    method: string,
+    args: unknown[],
+    options?: RpcCallOptions,
+  ): Promise<T>;
+  stream(
+    targetId: string,
+    method: string,
+    args: unknown[],
+    options?: { signal?: AbortSignal; idempotencyKey?: string },
+  ): Promise<Response>;
+  emit(targetId: string, event: string, payload: unknown, options?: RpcCallOptions): Promise<void>;
+  on(event: string, listener: (event: RpcEventContext) => void): () => void;
+  peer<
+    TMethods extends MethodMap = MethodMap,
+    TEvents extends EventMap = EventMap,
+    TEmitEvents extends EventMap = TEvents,
+  >(
+    targetId: string,
+  ): RpcPeer<TMethods, TEvents, TEmitEvents>;
+  status(): RpcConnectionStatus;
+  ready(): Promise<void>;
+  onStatusChange(handler: (status: RpcConnectionStatus) => void): () => void;
+  parent<
+    TMethods extends MethodMap = MethodMap,
+    TEvents extends EventMap = EventMap,
+  >(): Promise<RpcPeer<TMethods, TEvents> | null>;
+  children<
+    TMethods extends MethodMap = MethodMap,
+    TEvents extends EventMap = EventMap,
+  >(): Promise<Array<RpcPeer<TMethods, TEvents>>>;
+  readonly tree: RpcTree;
+  automation<TAutomation = unknown>(targetId: string): TAutomation;
 }
 
 // =============================================================================

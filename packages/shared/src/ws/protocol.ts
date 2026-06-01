@@ -1,109 +1,16 @@
-/**
- * WebSocket RPC wire protocol types.
- *
- * Defines the message envelopes exchanged between WS clients (panels, workers,
- * shell, admin) and the RPC server. All types are pure data — no server state.
- *
- * Reuses RpcMessage from @workspace/rpc for the inner request/response payloads.
- */
-
-import type { CallerKind, RpcMessage } from "@natstack/rpc";
-import type { ToolExecutionResult } from "../types.js";
-import type { ClientPlatform } from "../panel/panelLease.js";
-
-// =============================================================================
-// Client → Server messages
-// =============================================================================
-
-export interface WsAuthMessage {
-  type: "ws:auth";
-  token: string;
-  connectionId?: string;
-  clientSessionId?: string;
-  clientLabel?: string;
-  clientPlatform?: ClientPlatform;
-}
-
-export interface WsRpcMessage {
-  type: "ws:rpc";
-  message: RpcMessage;
-}
-
-export interface WsToolResultMessage {
-  type: "ws:tool-result";
-  callId: string;
-  result: ToolExecutionResult;
-}
-
-/** Caller-to-caller routed message (panel→panel, worker→panel, etc.) */
-export interface WsRouteMessage {
-  type: "ws:route";
-  targetId: string;
-  message: RpcMessage;
-  targetConnectionId?: string;
-}
-
-export type WsClientMessage =
-  | WsAuthMessage
-  | WsRpcMessage
-  | WsToolResultMessage
-  | WsRouteMessage;
-
-// =============================================================================
-// Server → Client messages
-// =============================================================================
-
-export interface WsAuthResultMessage {
-  type: "ws:auth-result";
-  success: boolean;
-  callerId?: string;
-  callerKind?: string;
-  connectionId?: string;
-  serverBootId?: string;
-  sessionDirty?: boolean;
-  error?: string;
-}
-
-export interface WsRpcResponseMessage {
-  type: "ws:rpc";
-  message: RpcMessage;
-}
-
-export interface WsEventMessage {
-  type: "ws:event";
-  event: string;
-  payload: unknown;
-}
-
-/** Delivery of a routed caller-to-caller message */
-export interface WsRoutedMessage {
-  type: "ws:routed";
-  fromId: string;
-  /** Gateway-verified kind of the source caller (trusted; pairs with fromId). */
-  fromKind?: CallerKind;
-  message: RpcMessage;
-}
-
-export interface WsRoutedEventErrorMessage {
-  type: "ws:routed-event-error";
-  targetId: string;
-  event: string;
-  error: string;
-  errorCode?: string;
-}
-
-export interface WsRoutedResponseErrorMessage {
-  type: "ws:routed-response-error";
-  targetId: string;
-  requestId: string;
-  error: string;
-  errorCode?: string;
-}
-
-export type WsServerMessage =
-  | WsAuthResultMessage
-  | WsRpcResponseMessage
-  | WsEventMessage
-  | WsRoutedMessage
-  | WsRoutedEventErrorMessage
-  | WsRoutedResponseErrorMessage;
+export type {
+  ClientPlatform,
+  ToolExecutionResult,
+  WsAuthMessage,
+  WsRpcMessage,
+  WsToolResultMessage,
+  WsRouteMessage,
+  WsClientMessage,
+  WsAuthResultMessage,
+  WsRpcResponseMessage,
+  WsEventMessage,
+  WsRoutedMessage,
+  WsRoutedEventErrorMessage,
+  WsRoutedResponseErrorMessage,
+  WsServerMessage,
+} from "@natstack/rpc/protocol/wsProtocol";

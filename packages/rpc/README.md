@@ -1,286 +1,56 @@
-# @workspace/rpc
+# @natstack/rpc
 
-Unified RPC bridge for NatStack panels, workers, and shell. This package provides the core communication layer that enables all parts of the application to call methods and emit events using a consistent API.
+`@natstack/rpc` is NatStack's unified RPC SDK. It provides one client surface for in-process, WebSocket, HTTP, Electron IPC, worker, app, shell, extension, and server call paths.
 
-## Installation
+```ts
+import { createRpcClient } from "@natstack/rpc";
+import { wsClientTransport } from "@natstack/rpc/transports/wsClient";
 
-```bash
-pnpm add @workspace/rpc
-```
-
-## Overview
-
-The RPC system has three main components:
-
-1. **RpcBridge** - The high-level API for making calls and handling events
-2. **RpcTransport** - Abstraction for the underlying message delivery mechanism
-3. **Handler Registry** - Utility for routing messages to handlers
-
-## Quick Start
-
-```typescript
-import { createRpcBridge, createHandlerRegistry } from "@workspace/rpc";
-
-// 1. Create a transport (platform-specific)
-const registry = createHandlerRegistry();
-const transport = {
-  async send(targetId, message) {
-    // Send message to target via your platform's IPC mechanism
-  },
-  onMessage: registry.onMessage,
-  onAnyMessage: registry.onAnyMessage,
-};
-
-// 2. Create the bridge
-const rpc = createRpcBridge({
-  selfId: "my-panel",
-  transport,
+const rpc = createRpcClient({
+  selfId: "panel:abc",
+  callerKind: "panel",
+  transport: wsClientTransport({
+    selfId: "panel:abc",
+    getWsUrl: () => "ws://127.0.0.1:3000/rpc",
+    adapter,
+  }),
 });
 
-// 3. Expose methods that others can call
-rpc.exposeMethod("greet", (name: string) => `Hello, ${name}!`);
-rpc.exposeMethod("fetchData", async (id: string) => {
-  return await database.get(id);
+rpc.expose("notes.create", async (req) => {
+  const [title] = req.args as [string];
+  return { title, owner: req.caller.callerId };
 });
 
-// 4. Call methods on other endpoints
-const result = await rpc.call<string>("other-panel", "greet", "World");
-
-// 5. Emit events
-await rpc.emit("other-panel", "data-updated", { id: "123" });
-
-// 6. Listen for events
-const unsub = rpc.onEvent("data-updated", (fromId, payload) => {
-  console.log(`Got update from ${fromId}:`, payload);
-});
-```
-
-## API Reference
-
-### `createRpcBridge(config)`
-
-Create an RPC bridge instance.
-
-```typescript
-interface RpcBridgeConfig {
-  /** Unique runtime ID for this endpoint */
-  selfId: string;
-  /** Transport implementation for message delivery */
-  transport: RpcTransport;
-}
-```
-
-Pending calls have no built-in timeout — a call stays pending until the peer
-responds, the transport's `send` rejects, or the caller wraps the returned
-promise with its own deadline. Callers that care about a specific deadline
-(e.g. a health probe) should apply it at the call site; protocol-wide timeouts
-turn correct long-running interactions (user consent prompts, OAuth flows,
-agent/LLM work) into spurious failures.
-
-Returns an `RpcBridge` with these methods:
-
-#### `rpc.exposeMethod(method, handler)`
-
-Register a method that can be called by other endpoints.
-
-```typescript
-rpc.exposeMethod("methodName", (arg1: string, arg2: number) => result);
-rpc.exposeMethod("asyncMethod", async (arg: string) => await doWork(arg));
-```
-
-#### `rpc.call<T>(targetId, method, ...args)`
-
-Call a method on another endpoint. Returns a promise that resolves with the result, rejects if the peer reports an error, or rejects if the transport's `send` fails. It does not time out on its own.
-
-```typescript
-const result = await rpc.call<User>("auth-panel", "getUser", userId);
-```
-
-#### `rpc.exposeStreamingMethod(method, handler)`
-
-Register a method that returns a streaming `Response`. The handler receives the original args, a frame sink, and an `AbortSignal`.
-
-```typescript
-rpc.exposeStreamingMethod("logs.tail", async ([path], sink, signal) => {
-  await sink({ kind: "head", status: 200, statusText: "OK", headerPairs: [], finalUrl: "" });
-  for await (const bytes of tailFile(path, { signal })) {
-    await sink({ kind: "chunk", bytes });
-  }
-  await sink({ kind: "end", bytesIn: 0 });
-});
-```
-
-#### `rpc.streamCall(targetId, method, args, options?)`
-
-Call a streaming method. The returned promise resolves when the HEAD frame arrives, and the `Response.body` continues to drain as DATA frames arrive. Cancellation through `options.signal` or `response.body.cancel()` sends a `stream-cancel` message to the peer.
-
-```typescript
-const response = await rpc.streamCall("worker:logs", "logs.tail", ["/tmp/app.log"]);
-for await (const chunk of response.body!) {
-  processChunk(chunk);
-}
-```
-
-The frame protocol is HEAD, zero or more DATA frames, then END or ERROR. JSON transports carry DATA as base64 in `stream-frame` messages. HTTP `/rpc/stream` uses the same frame codec on a binary response stream and supports generic Response-returning service methods plus the dedicated `credentials.proxyFetch` fast path.
-
-#### `rpc.emit(targetId, event, payload)`
-
-Send a one-way event to another endpoint.
-
-```typescript
-await rpc.emit("dashboard-panel", "refresh", { reason: "data-changed" });
-```
-
-#### `rpc.onEvent(event, listener)`
-
-Listen for events from any endpoint. Returns an unsubscribe function.
-
-```typescript
-const unsub = rpc.onEvent("refresh", (fromId, payload) => {
-  console.log(`Refresh requested by ${fromId}`);
+const note = await rpc.call("main", "notes.create", ["hello"]);
+const response = await rpc.stream("main", "credentials.proxyFetch", [{ url: "https://example.com" }]);
+const unsubscribe = rpc.on("notes.changed", (event) => {
+  console.log(event.caller.callerId, event.payload);
 });
 
-// Later: stop listening
-unsub();
+await rpc.peer("panel:other").emit("notes.changed", { id: "n1" });
 ```
 
-### `createHandlerRegistry(options?)`
+## Core Concepts
 
-Create a handler registry for routing incoming messages.
+- `createRpcClient(config)` is the only high-level RPC API.
+- `RpcEnvelope` carries target, delivery caller, and provenance for every message.
+- `req.caller` is the gateway-verified immediate caller in exposed handlers.
+- `req.origin` is the first caller in the provenance chain.
+- `rpc.call(target, method, args)` performs JSON request/response calls.
+- `rpc.stream(target, method, args)` returns a `Response` with a real `ReadableStream` body.
+- `rpc.expose(method, handler)` registers handlers with full request context.
+- `rpc.exposeStreaming(method, handler)` registers streaming handlers.
+- `rpc.on(event, handler)` receives `RpcEventContext` with caller, origin, event, and payload.
+- `rpc.peer(id)` returns target-scoped typed call, emit, and event helpers.
 
-```typescript
-const registry = createHandlerRegistry({ context: "worker" });
+## Transports
 
-// Use in your transport
-const transport = {
-  onMessage: registry.onMessage,
-  onAnyMessage: registry.onAnyMessage,
-  // ...
-};
+Transport implementations live under `@natstack/rpc/transports/*`:
 
-// Deliver messages from your platform's IPC
-ipc.on("message", (sourceId, message) => {
-  registry.deliver(sourceId, message);
-});
-```
+- `wsClientTransport` for authenticated WebSocket clients with reconnect/recovery.
+- `httpClientTransport` for HTTP RPC calls.
+- `electronIpcTransport` for Electron IPC boundaries.
+- `inProcessTransport` / `createInProcessNetwork` for tests and local composition.
+- `composeTransports` for routing across multiple transports.
 
-## Transport Implementation
-
-The `RpcTransport` interface must be implemented for your platform:
-
-```typescript
-interface RpcTransport {
-  /** Send a message to a target endpoint */
-  send(targetId: string, message: RpcMessage): Promise<void>;
-
-  /** Listen for messages from a specific source */
-  onMessage(sourceId: string, handler: (message: RpcMessage) => void): () => void;
-
-  /** Listen for messages from any source */
-  onAnyMessage(handler: (sourceId: string, message: RpcMessage) => void): () => void;
-}
-```
-
-### Example: Worker Transport
-
-```typescript
-import { createHandlerRegistry, type RpcTransport } from "@workspace/rpc";
-
-export function createWorkerTransport(): RpcTransport {
-  const registry = createHandlerRegistry({ context: "worker" });
-
-  // Hook into worker's message receiver
-  globalThis.__rpcReceive = (fromId, message) => {
-    registry.deliver(fromId, message);
-  };
-
-  return {
-    async send(targetId, message) {
-      __rpcSend(targetId, message);
-    },
-    onMessage: registry.onMessage,
-    onAnyMessage: registry.onAnyMessage,
-  };
-}
-```
-
-## Message Protocol
-
-The RPC system uses three message types:
-
-### Request
-
-```typescript
-{
-  type: "request",
-  requestId: "uuid",
-  fromId: "sender-panel",
-  method: "methodName",
-  args: [arg1, arg2]
-}
-```
-
-### Response
-
-```typescript
-// Success
-{ type: "response", requestId: "uuid", result: value }
-
-// Error
-{ type: "response", requestId: "uuid", error: "error message" }
-```
-
-### Event
-
-```typescript
-{
-  type: "event",
-  fromId: "sender-panel",
-  event: "eventName",
-  payload: data
-}
-```
-
-## Usage in NatStack
-
-### Panels
-
-Panels access the RPC bridge via `@workspace/runtime`:
-
-```typescript
-import { rpc } from "@workspace/runtime";
-await rpc.call("main", "bridge.createChild", spec);
-```
-
-### Workers
-
-Workers also import from `@workspace/runtime`:
-
-```typescript
-import { rpc } from "@workspace/runtime";
-Use `this.sql` inside a Durable Object for persistent SQLite state.
-```
-
-### Shell
-
-The shell renderer uses RPC to communicate with main process services:
-
-```typescript
-import { rpc } from "@workspace/runtime";
-
-// Call main process services
-const info = await rpc.call<AppInfo>("main", "app.getInfo");
-const tree = await rpc.call<Panel[]>("main", "panel.getTree");
-
-// Subscribe to events
-await rpc.call("main", "events.subscribe", "panel-tree-updated");
-
-// Listen for events
-rpc.onEvent("event:panel-tree-updated", (fromId, payload) => {
-  console.log("Panel tree updated:", payload);
-});
-```
-
-The shell uses the same `@workspace/runtime` package. Environment detection (`__natstackKind === "shell"`) selects the shell transport which routes calls through `shell-rpc:call`.
-
-All three consumers (panels, workers, shell) use identical APIs - the transport implementation handles platform differences.
+Protocol helpers live under `@natstack/rpc/protocol/*`.
