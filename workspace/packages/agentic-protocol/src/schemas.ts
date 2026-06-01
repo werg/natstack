@@ -356,6 +356,7 @@ export const eventKindSchemas = {
   "branch.forked": eventSchema("branch.forked", branchPayloadSchema),
   "branch.head_changed": eventSchema("branch.head_changed", branchPayloadSchema),
   "turn.opened": eventSchema("turn.opened", turnPayloadSchema),
+  "turn.waiting": eventSchema("turn.waiting", turnPayloadSchema),
   "turn.closed": eventSchema("turn.closed", turnPayloadSchema),
   "system.event": eventSchema("system.event", systemPayloadSchema),
   "system.compaction_recorded": eventSchema("system.compaction_recorded", compactionPayloadSchema),

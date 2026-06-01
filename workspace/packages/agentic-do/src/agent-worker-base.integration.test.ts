@@ -499,6 +499,196 @@ describe("AgentWorkerBase method suspension ledger", () => {
     );
   });
 
+  it("surfaces runner errors that happen before model generation starts", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const worker = instance as unknown as {
+      subscriptions: { getParticipantId(channelId: string): string | null };
+      sendTurnLedgerDiagnostic(channelId: string, turnId: string, message: string): Promise<void>;
+    };
+    worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
+    worker.sendTurnLedgerDiagnostic = send;
+    const runner = {
+      getCurrentTurnId: () => "turn-starting",
+      repairDurableOpenState: vi.fn().mockResolvedValue(undefined),
+      session: null,
+    } as unknown as PiRunner;
+    (instance as unknown as { runners: Map<string, { runner: PiRunner }> }).runners.set("chat-1", {
+      runner,
+    });
+    insertTurnRun(sql, { turnId: "turn-starting", status: "starting" });
+
+    await instance.testHandleRunnerAgentEndEventForTurnLedger("chat-1", runner, {
+      type: "agent_end",
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "" }],
+          stopReason: "error",
+          errorMessage: "[credentials.resolveCredential] Credential approval denied",
+        },
+      ],
+      natstack: { turnId: "turn-starting", operationId: "op-1", lifecycleMatched: true },
+    } as never);
+
+    expect(turnStatus(sql, "turn-starting")).toMatchObject({
+      status: "failed",
+      failure_code: "runner_failed_before_model",
+      failure_message: "[credentials.resolveCredential] Credential approval denied",
+    });
+    expect(send).toHaveBeenCalledWith(
+      "chat-1",
+      "turn-starting",
+      "Agent turn failed before model generation began: [credentials.resolveCredential] Credential approval denied"
+    );
+  });
+
+  it("surfaces runner errors instead of closing running model turns", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const worker = instance as unknown as {
+      subscriptions: { getParticipantId(channelId: string): string | null };
+      sendTurnLedgerDiagnostic(channelId: string, turnId: string, message: string): Promise<void>;
+    };
+    worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
+    worker.sendTurnLedgerDiagnostic = send;
+    const runner = {
+      getCurrentTurnId: () => "turn-running",
+      repairDurableOpenState: vi.fn().mockResolvedValue(undefined),
+      session: null,
+    } as unknown as PiRunner;
+    (instance as unknown as { runners: Map<string, { runner: PiRunner }> }).runners.set("chat-1", {
+      runner,
+    });
+    insertTurnRun(sql, { turnId: "turn-running", status: "running_model" });
+
+    await instance.testHandleRunnerAgentEndEventForTurnLedger("chat-1", runner, {
+      type: "agent_end",
+      messages: [
+        {
+          role: "assistant",
+          content: [],
+          stopReason: "error",
+          errorMessage: "provider stream failed",
+        },
+      ],
+      natstack: { turnId: "turn-running", operationId: "op-1", lifecycleMatched: true },
+    } as never);
+
+    expect(turnStatus(sql, "turn-running")).toMatchObject({
+      status: "failed",
+      failure_code: "runner_failed",
+      failure_message: "provider stream failed",
+    });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("emits a reconnect credential card for expired model auth failures", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const emitCard = vi.fn();
+    const publishWaiting = vi.fn();
+    const worker = instance as unknown as {
+      subscriptions: { getParticipantId(channelId: string): string | null };
+      sendTurnLedgerDiagnostic(channelId: string, turnId: string, message: string): Promise<void>;
+      getModelProviderId(channelId: string): string;
+      getModelBaseUrl(channelId: string): string;
+      publishTurnWaitingEvent(
+        channelId: string,
+        turnId: string,
+        payload: { reason: string; summary: string }
+      ): void;
+      emitModelCredentialRequiredCard(
+        channelId: string,
+        providerId: string,
+        modelBaseUrl: string,
+        opts?: {
+          resumeAfterConnect?: boolean;
+          reason?: string;
+          diagnosticReason?: string;
+          failureCode?: string;
+          turnId?: string;
+        }
+      ): void;
+    };
+    worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
+    worker.sendTurnLedgerDiagnostic = send;
+    worker.getModelProviderId = vi.fn().mockReturnValue("openai-codex");
+    worker.getModelBaseUrl = vi.fn().mockReturnValue("https://chatgpt.com/backend-api/codex");
+    worker.emitModelCredentialRequiredCard = emitCard;
+    worker.publishTurnWaitingEvent = publishWaiting;
+    const runner = {
+      getCurrentTurnId: () => "turn-expired",
+      repairDurableOpenState: vi.fn().mockResolvedValue(undefined),
+      getStateSnapshot: vi.fn().mockResolvedValue({ messages: [] }),
+      session: null,
+    } as unknown as PiRunner;
+    (instance as unknown as { runners: Map<string, { runner: PiRunner }> }).runners.set("chat-1", {
+      runner,
+    });
+    insertTurnRun(sql, { turnId: "turn-expired", status: "running_model" });
+    const errorMessage = "Provided authentication token is expired. Please try signing in again.";
+
+    await instance.testHandleRunnerAgentEndEventForTurnLedger("chat-1", runner, {
+      type: "agent_end",
+      messages: [
+        {
+          role: "assistant",
+          content: [],
+          stopReason: "error",
+          code: "client_not_authorized",
+          errorMessage,
+        },
+      ],
+      natstack: { turnId: "turn-expired", operationId: "op-1", lifecycleMatched: true },
+    } as never);
+
+    expect(turnStatus(sql, "turn-expired")).toMatchObject({
+      status: "waiting_external",
+      failure_code: "model_credential_reconnect_required",
+      failure_message: errorMessage,
+    });
+    expect(emitCard).toHaveBeenCalledWith(
+      "chat-1",
+      "openai-codex",
+      "https://chatgpt.com/backend-api/codex",
+      {
+        resumeAfterConnect: true,
+        reason: "Your model sign-in needs to be refreshed before this turn can continue.",
+        diagnosticReason: errorMessage,
+        failureCode: "client_not_authorized",
+        turnId: "turn-expired",
+      }
+    );
+    expect(publishWaiting).toHaveBeenCalledWith("chat-1", "turn-expired", {
+      reason: "model_credential_reconnect_required",
+      summary: "Waiting for model credential refresh",
+    });
+    expect(
+      sql
+        .exec(
+          `SELECT provider_id, model_base_url, turn_id
+           FROM model_credential_interruptions
+           WHERE channel_id = ?`,
+          "chat-1"
+        )
+        .toArray()
+    ).toEqual([
+      {
+        provider_id: "openai-codex",
+        model_base_url: "https://chatgpt.com/backend-api/codex",
+        turn_id: "turn-expired",
+      },
+    ]);
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("ignores unmatched agent_end events for the active turn", async () => {
     const { instance, sql } = await createTestDO(TestAgentWorker, {
       __objectKey: "agent-test",
@@ -2677,6 +2867,58 @@ describe("AgentWorkerBase method suspension ledger", () => {
     expect(cancelCall).toHaveBeenCalledTimes(1);
   });
 
+  it("cancels stale tool dispatches after a turn was interrupted without leaking ledger errors", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const callMethod = vi.fn().mockResolvedValue(undefined);
+    const worker = instance as unknown as {
+      subscriptions: {
+        getParticipantId(channelId: string): string | null;
+      };
+      createChannelClient: ReturnType<typeof vi.fn>;
+      invokeChannelMethod(
+        channelId: string,
+        toolCallId: string,
+        participantHandle: string,
+        method: string,
+        args: unknown,
+        signal?: AbortSignal,
+        onStreamUpdate?: (content: unknown) => void,
+        turnId?: string
+      ): Promise<unknown>;
+    };
+    worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
+    worker.createChannelClient = vi.fn().mockReturnValue({
+      getParticipants: vi.fn().mockResolvedValue([
+        {
+          participantId: "panel:panel-1",
+          metadata: { handle: "user", type: "panel" },
+        },
+      ]),
+      callMethod,
+    });
+    insertTurnRun(sql, { turnId: "turn-interrupted-dispatch", status: "interrupted" });
+
+    await expect(
+      worker.invokeChannelMethod(
+        "chat-1",
+        "tool-interrupted",
+        "user",
+        "eval",
+        { code: "1" },
+        undefined,
+        undefined,
+        "turn-interrupted-dispatch"
+      )
+    ).rejects.toThrow("Agent turn was interrupted before tool dispatch.");
+
+    expect(callMethod).not.toHaveBeenCalled();
+    expect(sql.exec(`SELECT COUNT(*) AS count FROM agent_method_suspensions`).toArray()[0]).toEqual(
+      { count: 0 }
+    );
+  });
+
   it("activation cleanup clears stale typing for persisted subscriptions", async () => {
     const { instance, sql } = await createTestDO(TestAgentWorker, {
       __objectKey: "agent-test",
@@ -3733,10 +3975,12 @@ describe("AgentWorkerBase model credential resume", () => {
     const { instance } = await createTestDO(TestAgentWorker, {
       __objectKey: "agent-test",
     });
-    const sendSignal = vi.fn(() => new Promise<void>(() => undefined));
+    const publishAgenticEvent = vi.fn(
+      (_participantId: string, _event: unknown) => new Promise<void>(() => undefined)
+    );
     const channelClient = {
       getParticipants: vi.fn(() => new Promise(() => undefined)),
-      sendSignal,
+      publishAgenticEvent,
     };
     const worker = instance as unknown as {
       _rpc: {
@@ -3775,7 +4019,26 @@ describe("AgentWorkerBase model credential resume", () => {
 
     expect(worker.readRunnerMessages).toHaveBeenCalledWith("chat-1");
     expect(channelClient.getParticipants).not.toHaveBeenCalled();
-    expect(sendSignal).toHaveBeenCalledTimes(1);
+    expect(publishAgenticEvent).toHaveBeenCalledTimes(2);
+    expect(publishAgenticEvent.mock.calls[0]?.[1]).toMatchObject({
+      kind: "turn.waiting",
+      payload: {
+        reason: "model_credential_required",
+        summary: "Waiting for model credential connection",
+      },
+    });
+    expect(publishAgenticEvent.mock.calls[1]?.[1]).toMatchObject({
+      kind: "ui.inline_rendered",
+      payload: {
+        uiType: "inline",
+        source: { type: "code" },
+        props: {
+          providerId: "test",
+          modelBaseUrl: "https://model.example/v1",
+          resumeAfterConnect: true,
+        },
+      },
+    });
   });
 
   it("propagates user interruption to in-flight model credential resolution", async () => {

@@ -171,6 +171,7 @@ export interface PiRunnerOptions {
   publicationPolicy?: (input: { event: AgenticEvent; publishToChannel?: boolean }) => boolean;
   repairDurableOpenStateOnInit?: boolean;
   onTurnPhase?: (event: { turnId: string; phase: "model_start" }) => void | Promise<void>;
+  keepTurnOpenOnAgentEnd?: (event: AgentHarnessEvent) => boolean;
   extraTools?: AgentTool<any>[];
   toolFilter?: (toolName: string) => boolean;
   /**
@@ -411,6 +412,14 @@ function summarizeSessionEntry(entry: unknown): unknown {
       ? { message: summarizeAgentMessage(message as Record<string, unknown>) }
       : {}),
   };
+}
+
+function agentMessageFailureReason(message: AgentMessage): string | null {
+  const candidate = message as { role?: unknown; stopReason?: unknown; errorMessage?: unknown };
+  if (candidate.role !== "assistant" || candidate.stopReason !== "error") return null;
+  return typeof candidate.errorMessage === "string" && candidate.errorMessage.trim()
+    ? candidate.errorMessage
+    : "Assistant message failed.";
 }
 
 function providerPayloadToolNames(payload: unknown): string[] {
@@ -1579,7 +1588,14 @@ export class PiRunner {
             turnId: correlatedEvent.natstack.turnId ?? null,
           });
         } else {
-          await this.closeCurrentTurn();
+          if (this.options.keepTurnOpenOnAgentEnd?.(event)) {
+            this.rememberCheckpoint("agent.end.turn_kept_open", {
+              operationId: correlatedEvent.natstack?.operationId ?? null,
+              turnId: correlatedEvent.natstack?.turnId ?? null,
+            });
+          } else {
+            await this.closeCurrentTurn();
+          }
           this.running = false;
           this.awaitingProviderFirstEvent = false;
           this.options.uiCallbacks.setWorkingMessage(undefined);
@@ -1935,6 +1951,26 @@ export class PiRunner {
       eventId: this.semanticEntryEventId(messageEntryId, "message:completed", completedEvent),
       publishToChannel: this.shouldPublishMessageToChannel(role, content, trajectoryBlocks),
     });
+    const failureReason = agentMessageFailureReason(message);
+    if (failureReason) {
+      const failedEvent: AgenticEvent = {
+        kind: "message.failed",
+        actor: this.actorForMessageRole(role),
+        causality: { messageId: brandId<MessageId>(visibleMessageId) },
+        payload: {
+          protocol: "agentic.trajectory.v1",
+          reason: failureReason,
+          recoverable: true,
+        },
+        createdAt: this.messageTimestamp(message),
+      };
+      this.provenanceQueue.push({
+        event: failedEvent,
+        eventId: this.semanticEntryEventId(messageEntryId, "message:failed", failedEvent),
+        publishToChannel: role === "assistant" &&
+          this.shouldPublishMessageToChannel(role, content, trajectoryBlocks),
+      });
+    }
 
     for (const [blockIndex, block] of this.messageBlocks(message).entries()) {
       const toolCallId = this.toolCallIdFromBlock(block);

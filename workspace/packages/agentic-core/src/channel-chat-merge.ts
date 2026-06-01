@@ -43,10 +43,16 @@ export function chatMessagesFromChannelView(state: ChannelViewState): ChatMessag
       .filter((message) => message.turnId && message.role === "assistant" && (message.status === "started" || message.status === "streaming"))
       .map((message) => message.turnId as string),
   );
-  const assistantMessageTurnIds = new Set(
+  const visibleAssistantMessageTurnIds = new Set(
     Object.values(state.messages)
-      .filter((message) => message.turnId && message.role === "assistant")
+      .filter((message) => message.turnId && message.role === "assistant" && hasVisibleMessageContent(message))
       .map((message) => message.turnId as string),
+  );
+  const turnIdsWithInlineUi = new Set(
+    Object.values(state.inlineUi)
+      .flatMap((map) => Object.values(map))
+      .filter((item) => item.turnId)
+      .map((item) => item.turnId as string),
   );
   const turnIdsWithInvocations = new Set(
     Object.values(state.invocations)
@@ -58,7 +64,8 @@ export function chatMessagesFromChannelView(state: ChannelViewState): ChatMessag
     : projectedTurnToTypingMessage(turn));
   const silentClosedTurns = Object.values(state.turns).flatMap((turn) =>
     projectedClosedTurnWithoutResponseMessage(turn, {
-      hasAssistantMessage: assistantMessageTurnIds.has(turn.turnId),
+      hasAssistantMessage:
+        visibleAssistantMessageTurnIds.has(turn.turnId) || turnIdsWithInlineUi.has(turn.turnId),
       hasInvocation: turnIdsWithInvocations.has(turn.turnId),
     })
   );
@@ -182,8 +189,7 @@ function isExpectedNoAssistantClose(turn: ProjectedTurn): boolean {
   return turn.reason === "user_interrupted" ||
     turn.reason === "channel_unsubscribe" ||
     turn.summary === "Agent turn interrupted by user" ||
-    turn.summary === "Agent channel unsubscribed before turn closed" ||
-    turn.summary === "Agent turn completed";
+    turn.summary === "Agent channel unsubscribed before turn closed";
 }
 
 function projectedMessageToChatMessages(message: ProjectedMessage): ChatMessage[] {
@@ -207,23 +213,35 @@ function projectedMessageToChatMessages(message: ProjectedMessage): ChatMessage[
       sortTime: sortTime - 0.5 + index / 1000,
     } as ChatMessage & { sortTime: number }];
   });
-  const visibleContent = message.content.trim();
-  if (!visibleContent && thinking.length > 0) return thinking;
+  const failureReason = message.status === "failed" ? message.failureReason : undefined;
+  const content = message.content.trim() || failureReason || message.content;
+  const visibleContent = content.trim();
+  if (!visibleContent) return thinking;
   return [
     ...thinking,
     {
       id: message.messageId,
       senderId: message.actor.id,
-      content: message.content,
+      content,
       kind: "message",
       complete,
       replyTo: message.replyTo,
       mentions: message.mentions,
-      error: message.status === "failed" ? "Message failed" : undefined,
+      error: message.status === "failed" ? (failureReason ?? "Message failed") : undefined,
       senderMetadata,
       sortTime,
     } as ChatMessage & { sortTime: number },
   ];
+}
+
+function hasVisibleMessageContent(message: ProjectedMessage): boolean {
+  if (message.content.trim()) return true;
+  if (message.status === "failed" && message.failureReason?.trim()) return true;
+  return (message.blocks ?? []).some((block) => {
+    if (block.type === "thinking") return Boolean(block.content?.trim());
+    if (block.type === "text") return Boolean(block.content?.trim());
+    return block.type === "invocation" || block.type === "attachment" || block.type === "data";
+  });
 }
 
 function projectedApprovalToChatMessage(approval: ProjectedApproval): ChatMessage {
@@ -305,6 +323,7 @@ function projectedInlineUiToChatMessage(
   inlineUi: {
     id: string;
     actor: { id: string; kind: string; displayName?: string };
+    turnId?: string;
     source: InlineUiCardPayload["source"];
     imports?: Record<string, string>;
     props?: Record<string, unknown>;

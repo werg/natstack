@@ -18,6 +18,7 @@ export interface ProjectedMessage {
   startedAt?: string;
   completedAt?: string;
   failedAt?: string;
+  failureReason?: string;
   updatedAt?: string;
   usage?: UsagePayload;
 }
@@ -56,6 +57,7 @@ export interface ProjectedApproval {
 
 export interface ProjectedInlineUi {
   id: string;
+  turnId?: TurnId;
   actor: ActorRef;
   source: SandboxSourcePayload;
   imports?: Record<string, string>;
@@ -78,7 +80,7 @@ export interface ProjectedActionBar {
 export interface ProjectedTurn {
   turnId: TurnId;
   actor: ActorRef;
-  status: "open" | "closed";
+  status: "open" | "waiting" | "closed";
   openedAt: string;
   closedAt?: string;
   updatedAt?: string;
@@ -226,6 +228,7 @@ export function applyMessageEvent(messages: MessageMap, event: AgenticEvent<Extr
       turnId: existing.turnId ?? event.turnId,
       status: "failed",
       failedAt: event.createdAt,
+      failureReason: "reason" in event.payload ? event.payload.reason : existing.failureReason,
       updatedAt: event.createdAt,
     },
   };
@@ -421,6 +424,7 @@ export function applyUiEvent(
   if (event.kind === "ui.inline_rendered" && payload.uiType === "inline") {
     const item: ProjectedInlineUi = {
       id: payload.id,
+      turnId: event.turnId,
       actor: event.actor,
       source: payload.source,
       renderedAt: event.createdAt,

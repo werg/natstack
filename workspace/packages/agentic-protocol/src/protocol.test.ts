@@ -545,6 +545,44 @@ describe("@workspace/agentic-protocol reducers", () => {
     expect(channel.messages).toEqual(userVisibleTrajectoryProjection(trajectory).messages);
   });
 
+  it("keeps turns open but marked waiting when external input is required", async () => {
+    const turnOpened = await trajectoryEvent({
+      kind: "turn.opened",
+      actor: agent,
+      turnId: brandId<TurnId>("turn-wait"),
+      payload: { protocol: AGENTIC_PROTOCOL_VERSION, summary: "Running model" },
+      createdAt: "2026-05-20T12:00:00.000Z",
+    }, { eventId: brandId<EventId>("evt-turn"), seq: 0 });
+    const waiting = await trajectoryEvent({
+      kind: "turn.waiting",
+      actor: agent,
+      turnId: brandId<TurnId>("turn-wait"),
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        summary: "Waiting for model credential refresh",
+        reason: "model_credential_reconnect_required",
+      },
+      createdAt: "2026-05-20T12:00:01.000Z",
+    }, { eventId: brandId<EventId>("evt-waiting"), seq: 1, prevEventHash: turnOpened.eventHash });
+
+    const trajectory = [turnOpened, waiting].reduce(reduceTrajectory, createInitialTrajectoryState());
+    const channel = [turnOpened, waiting]
+      .map((event, index) => envelope(agenticSlice(event), index + 1))
+      .reduce(reduceChannelView, createInitialChannelViewState());
+
+    expect(trajectory.openTurnIdByBranch["branch-1"]).toBe("turn-wait");
+    expect(trajectory.turns["turn-wait"]).toMatchObject({
+      status: "waiting",
+      summary: "Waiting for model credential refresh",
+      reason: "model_credential_reconnect_required",
+    });
+    expect(channel.turns["turn-wait"]).toMatchObject({
+      status: "waiting",
+      summary: "Waiting for model credential refresh",
+      reason: "model_credential_reconnect_required",
+    });
+  });
+
   it("updates invocation cards when intermediate progress is missing", () => {
     const started: AgenticEvent<"invocation.started"> = {
       kind: "invocation.started",

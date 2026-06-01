@@ -92,6 +92,28 @@ export function reduceTrajectory(
       openTurnIdByBranch: { ...next.openTurnIdByBranch, [branchId]: event.turnId },
       turns: { ...next.turns, [event.turnId]: turn },
     };
+  } else if (event.kind === "turn.waiting") {
+    if (!event.turnId) throw new Error("turn.waiting requires turnId");
+    const existing = next.turns[event.turnId];
+    next = {
+      ...next,
+      openTurnIdByBranch: { ...next.openTurnIdByBranch, [branchId]: event.turnId },
+      turns: {
+        ...next.turns,
+        [event.turnId]: {
+          ...(existing ?? {
+            turnId: event.turnId,
+            actor: event.actor,
+            openedAt: event.createdAt,
+          }),
+          actor: existing?.actor ?? event.actor,
+          status: "waiting",
+          updatedAt: event.createdAt,
+          summary: "summary" in event.payload ? event.payload.summary : existing?.summary,
+          reason: "reason" in event.payload ? event.payload.reason : existing?.reason,
+        },
+      },
+    };
   } else if (event.kind === "turn.closed") {
     if (!event.turnId) throw new Error("turn.closed requires turnId");
     const existing = next.turns[event.turnId];

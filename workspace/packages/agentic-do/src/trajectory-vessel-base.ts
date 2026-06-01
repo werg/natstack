@@ -42,9 +42,11 @@ import type {
 import { isClientParticipantType } from "@workspace/pubsub";
 import {
   AGENTIC_EVENT_PAYLOAD_KIND,
+  AGENTIC_PROTOCOL_VERSION,
   assertNoStoredValueRefs,
   hydrateStoredValueRefs,
   publicParticipantMetadata,
+  type AgenticEvent,
 } from "@workspace/agentic-protocol";
 import {
   PiRunner,
@@ -280,6 +282,13 @@ export default function ModelCredentialRequiredCard({ props, chat }) {
   const providerId = props.providerId;
   const modelBaseUrl = props.modelBaseUrl;
   const flow = props.flow;
+  const reconnectReason = typeof props.reason === "string" && props.reason.trim() ? props.reason : "";
+  const diagnosticReason =
+    typeof props.diagnosticReason === "string" && props.diagnosticReason.trim()
+      ? props.diagnosticReason
+      : "";
+  const failureCode =
+    typeof props.failureCode === "string" && props.failureCode.trim() ? props.failureCode : "";
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState("");
 
@@ -329,11 +338,26 @@ export default function ModelCredentialRequiredCard({ props, chat }) {
     <Card variant="surface" size="2">
       <Flex direction="column" gap="3">
         <Box>
-          <Text as="div" size="2" weight="medium">Credential required for {providerId}</Text>
+          <Text as="div" size="2" weight="medium">
+            {reconnectReason ? "Credential needs refresh for " : "Credential required for "}{providerId}
+          </Text>
           <Text as="div" size="1" color="gray" mt="1">
-            Connect a URL-bound model credential for <Code size="1">{modelBaseUrl || providerId}</Code>.
+            {reconnectReason ? "Reconnect" : "Connect"} a URL-bound model credential for <Code size="1">{modelBaseUrl || providerId}</Code>.
           </Text>
         </Box>
+        {reconnectReason ? (
+          <Callout.Root color="amber" size="1">
+            <Callout.Text>{reconnectReason}</Callout.Text>
+          </Callout.Root>
+        ) : null}
+        {diagnosticReason || failureCode ? (
+          <Box>
+            <Text as="div" size="1" color="gray">Diagnostic</Text>
+            <Code size="1">
+              {failureCode ? failureCode + ": " : ""}{diagnosticReason || "No provider details available."}
+            </Code>
+          </Box>
+        ) : null}
         {unsupported ? (
           <Callout.Root color="amber" size="1">
             <Callout.Text>No built-in OAuth setup is available for this model provider.</Callout.Text>
@@ -354,7 +378,7 @@ export default function ModelCredentialRequiredCard({ props, chat }) {
         <Flex gap="2" wrap="wrap">
           <Button size="1" onClick={() => startOAuth("internal")} disabled={busy || unsupported || status === "done"}>
             {busy ? <Spinner size="1" /> : null}
-            {status === "done" ? "Connected" : status === "error" ? "Try Again" : "Internal Browser"}
+            {status === "done" ? "Connected" : status === "error" ? "Try Again" : reconnectReason ? "Reconnect" : "Internal Browser"}
           </Button>
           <Button size="1" variant="soft" onClick={() => startOAuth("external")} disabled={busy || unsupported || status === "done"}>
             External Browser
@@ -395,6 +419,60 @@ function credentialRequiredMessage(err: unknown): string | null {
     /^No URL-bound model credential is configured for model provider: /.test(message)
     ? message
     : null;
+}
+
+const MODEL_CREDENTIAL_RECONNECT_CODES = new Set([
+  "CREDENTIAL_EXPIRED",
+  "OAUTH_REFRESH_FAILED",
+  "credential-expired",
+  "credential_expired_reauth_required",
+  "client_not_authorized",
+  "invalid_grant",
+  "oauth-refresh-failed",
+]);
+
+interface AgentFailureInfo {
+  message: string;
+  code?: string;
+}
+
+function stringErrorCode(value: unknown): string | undefined {
+  return typeof value === "string" && MODEL_CREDENTIAL_RECONNECT_CODES.has(value)
+    ? value
+    : undefined;
+}
+
+function errorCodeFromUnknown(err: unknown): string | undefined {
+  if (!err || typeof err !== "object") return stringErrorCode(err);
+  const record = err as {
+    code?: unknown;
+    errorCode?: unknown;
+    errorMessage?: unknown;
+    error?: { code?: unknown } | unknown;
+    cause?: unknown;
+  };
+  return (
+    stringErrorCode(record.code) ??
+    stringErrorCode(record.errorCode) ??
+    stringErrorCode(record.errorMessage) ??
+    (record.error && typeof record.error === "object"
+      ? stringErrorCode((record.error as { code?: unknown }).code)
+      : undefined) ??
+    errorCodeFromUnknown(record.cause)
+  );
+}
+
+function modelCredentialReconnectFailure(err: unknown): AgentFailureInfo | null {
+  const missingCredential = credentialRequiredMessage(err);
+  if (missingCredential) return { message: missingCredential, code: "CREDENTIAL_REQUIRED" };
+  const code = errorCodeFromUnknown(err);
+  if (!code) return null;
+  const objectMessage =
+    err && typeof err === "object" && typeof (err as { message?: unknown }).message === "string"
+      ? (err as { message: string }).message
+      : undefined;
+  const message = err instanceof Error ? err.message : objectMessage ?? String(err);
+  return { message: message || code, code };
 }
 
 function shouldProxyUrlBoundModelFetch(url: URL, baseUrls: readonly string[]): boolean {
@@ -534,12 +612,12 @@ function trimTrailingEmptyAbortedAssistant(messages: AgentMessage[]): AgentMessa
 
 function isCredentialRequiredAssistantMessage(message: AgentMessage | undefined): boolean {
   const candidate = message as
-    | { role?: string; stopReason?: string; errorMessage?: string }
+    | { role?: string; stopReason?: string; errorMessage?: string; code?: unknown; errorCode?: unknown }
     | undefined;
   return (
     candidate?.role === "assistant" &&
     candidate.stopReason === "error" &&
-    !!credentialRequiredMessage(candidate.errorMessage ?? "")
+    !!modelCredentialReconnectFailure(candidate)
   );
 }
 
@@ -715,6 +793,27 @@ function abortedAgentEndMessage(event: RunnerEvent): string | null {
   } | null;
   if (!last || last.role !== "assistant" || last.stopReason !== "aborted") return null;
   return last.errorMessage ?? "Turn aborted.";
+}
+
+function failedAgentEndFailure(event: RunnerEvent | undefined): AgentFailureInfo | null {
+  if (!event || event.type !== "agent_end") return null;
+  const messages = (event as { messages?: unknown[] }).messages;
+  if (!Array.isArray(messages) || messages.length === 0) return null;
+  const last = messages[messages.length - 1] as {
+    role?: string;
+    stopReason?: string;
+    errorMessage?: unknown;
+    code?: unknown;
+    errorCode?: unknown;
+  } | null;
+  if (!last || last.role !== "assistant" || last.stopReason !== "error") return null;
+  const message = typeof last.errorMessage === "string" && last.errorMessage.trim()
+    ? last.errorMessage
+    : "Runner failed before model generation began.";
+  return {
+    message,
+    ...(errorCodeFromUnknown(last) ? { code: errorCodeFromUnknown(last) } : {}),
+  };
 }
 
 function runnerEventMetadata(event: RunnerEvent | undefined): {
@@ -2845,6 +2944,10 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
             channelId,
             this.currentTurnIdForChannel(channelId) ?? undefined
           );
+          this.publishTurnWaitingEvent(channelId, credentialTurnId, {
+            reason: "model_credential_required",
+            summary: "Waiting for model credential connection",
+          });
           this.queueModelCredentialInterruptionRecord(
             channelId,
             providerId,
@@ -2854,6 +2957,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
         }
         this.emitModelCredentialRequiredCard(channelId, providerId, modelBaseUrl, {
           resumeAfterConnect: shouldResumeCurrentTurn,
+          ...(shouldResumeCurrentTurn ? { turnId: this.currentTurnIdForChannel(channelId) ?? undefined } : {}),
         });
         throw new AgentWorkerError(
           "auth",
@@ -3205,8 +3309,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     if (event.type !== AGENTIC_EVENT_PAYLOAD_KIND) return false;
     const senderType = event.senderMetadata?.["type"] as string | undefined;
     if (!isClientParticipantType(senderType)) return false;
-    const agentic = this.agenticEventFromChannelEvent(event);
-    return agentic?.kind === "message.completed";
+    return this.agenticEventFromChannelEvent(event)?.kind === "message.completed";
   }
 
   protected getRespondPolicy(channelId: string): RespondPolicy {
@@ -4087,6 +4190,10 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
           "running_model"
         );
       },
+      keepTurnOpenOnAgentEnd: (event) => {
+        const failure = failedAgentEndFailure(event as RunnerEvent);
+        return !!failure && !!modelCredentialReconnectFailure(failure);
+      },
     });
 
     await runner.init();
@@ -4194,6 +4301,83 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     const row = this.loadTurnRun(turnId);
     if (!row) return;
     if (row.status === "closed" || row.status === "failed" || row.status === "interrupted") return;
+    const failure = failedAgentEndFailure(event);
+    if (failure) {
+      const reconnectFailure = modelCredentialReconnectFailure(failure);
+      if (reconnectFailure && row.status !== "closing") {
+        let reconnectPrompted = false;
+        try {
+          const providerId = this.getModelProviderId(channelId);
+          const modelBaseUrl = this.getModelBaseUrl(channelId);
+          this.queueModelCredentialInterruptionRecord(channelId, providerId, modelBaseUrl, turnId);
+          this.emitModelCredentialRequiredCard(channelId, providerId, modelBaseUrl, {
+            resumeAfterConnect: true,
+            reason: "Your model sign-in needs to be refreshed before this turn can continue.",
+            diagnosticReason: reconnectFailure.message,
+            failureCode: reconnectFailure.code,
+            turnId,
+          });
+          this.publishTurnWaitingEvent(channelId, turnId, {
+            reason: "model_credential_reconnect_required",
+            summary: "Waiting for model credential refresh",
+          });
+          reconnectPrompted = true;
+        } catch (err) {
+          this.recordLastError("turn_ledger.credential_reconnect_prompt_failed", err, channelId);
+          this.recordDebugPhase(channelId, "turn_ledger.credential_reconnect_prompt_failed", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        if (reconnectPrompted) {
+          const transitioned = this.transitionTurn(
+            turnId,
+            ["starting", "running_model", "continuing"],
+            "waiting_external",
+            {
+              failureCode: "model_credential_reconnect_required",
+              failureMessage: failure.message,
+            }
+          );
+          if (!transitioned) {
+            this.recordDebugPhase(channelId, "turn_ledger.credential_reconnect_wait_skipped", {
+              turnId,
+              status: this.loadTurnRun(turnId)?.status ?? "missing",
+            });
+          }
+          return;
+        }
+      }
+      const beforeModel = row.status === "starting";
+      const transitioned = this.transitionTurn(
+        turnId,
+        ["starting", "running_model", "continuing", "closing"],
+        "failed",
+        {
+          failureCode: beforeModel ? "runner_failed_before_model" : "runner_failed",
+          failureMessage: failure.message,
+        }
+      );
+      if (!transitioned) {
+        this.recordDebugPhase(channelId, "turn_ledger.agent_end_failure_skipped", {
+          turnId,
+          status: this.loadTurnRun(turnId)?.status ?? "missing",
+        });
+        return;
+      }
+      if (beforeModel) {
+        await this.enqueueTurnOutbox({
+          channelId,
+          turnId,
+          kind: "emit_diagnostic",
+          dedupKey: "starting-failed",
+          payload: {
+            message: `Agent turn failed before model generation began: ${failure.message}`,
+          },
+        });
+        await this.drainTurnOutbox(channelId, runner);
+      }
+      return;
+    }
     if (row.status === "starting") {
       this.transitionTurn(turnId, ["starting"], "interrupted", {
         failureCode: "runner_ended_before_model",
@@ -4255,6 +4439,19 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     }
     if (!row) throw new Error(`Could not create turn ledger row for ${id}`);
     if (row.status === "waiting_external") return id;
+    if (row.status === "interrupted") {
+      this.recordDebugPhase(channelId, "turn_ledger.external_wait_after_interrupt", {
+        turnId: id,
+      });
+      throw new Error("Agent turn was interrupted before tool dispatch.");
+    }
+    if (row.status === "closed" || row.status === "failed") {
+      this.recordDebugPhase(channelId, "turn_ledger.external_wait_after_terminal", {
+        turnId: id,
+        status: row.status,
+      });
+      throw new Error(`Agent turn is already ${row.status}; cannot dispatch tool call.`);
+    }
     if (
       !this.transitionTurn(
         id,
@@ -4262,9 +4459,16 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
         "waiting_external"
       )
     ) {
+      const latest = this.loadTurnRun(id);
+      if (latest?.status === "interrupted") {
+        this.recordDebugPhase(channelId, "turn_ledger.external_wait_interrupt_race", {
+          turnId: id,
+        });
+        throw new Error("Agent turn was interrupted before tool dispatch.");
+      }
       throw new Error(
         `Could not transition turn ${id} to waiting_external from ${
-          this.loadTurnRun(id)?.status ?? "missing"
+          latest?.status ?? "missing"
         }`
       );
     }
@@ -4733,6 +4937,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     }
     const callerId = this.subscriptions.getParticipantId(channelId);
     if (!callerId) throw new Error(`Not subscribed to channel ${channelId}`);
+    if (signal?.aborted) throw new Error("Agent turn was interrupted before tool dispatch.");
 
     const invocationId = toolCallId;
     const transportCallId = crypto.randomUUID();
@@ -4811,6 +5016,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     if (!panel) {
       throw new Error(`No panel participant in channel ${channelId} to ask`);
     }
+    if (signal?.aborted) throw new Error("Agent turn was interrupted before tool dispatch.");
 
     const invocationId = toolCallId || crypto.randomUUID();
     const transportCallId = crypto.randomUUID();
@@ -4949,7 +5155,13 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     channelId: string,
     providerId: string,
     modelBaseUrl: string,
-    opts?: { resumeAfterConnect?: boolean }
+    opts?: {
+      resumeAfterConnect?: boolean;
+      reason?: string;
+      diagnosticReason?: string;
+      failureCode?: string;
+      turnId?: string;
+    }
   ): void {
     const participantId = this.subscriptions.getParticipantId(channelId);
     if (!participantId) return;
@@ -4971,28 +5183,84 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       typeof panel?.metadata["hostPlatform"] === "string"
         ? (panel.metadata["hostPlatform"] as string)
         : undefined;
-    const messageId = crypto.randomUUID();
-    const content = JSON.stringify({
-      id: `model-credential-${providerId}-${messageId}`,
-      code: MODEL_CREDENTIAL_REQUIRED_CARD_TSX,
-      props: {
-        providerId,
-        modelBaseUrl,
-        agentParticipantId: participantId,
-        browserHandoffCallerId,
-        browserHandoffCallerKind: browserHandoffCallerId ? "panel" : undefined,
-        browserHandoffPlatform,
-        resumeAfterConnect: opts?.resumeAfterConnect,
-        ...(this.getModelCredentialSetupProps(providerId) ?? {}),
+    const cardId = `model-credential-${providerId}-${crypto.randomUUID()}`;
+    const props = {
+      providerId,
+      modelBaseUrl,
+      agentParticipantId: participantId,
+      browserHandoffCallerId,
+      browserHandoffCallerKind: browserHandoffCallerId ? "panel" : undefined,
+      browserHandoffPlatform,
+      resumeAfterConnect: opts?.resumeAfterConnect,
+      reason: opts?.reason,
+      diagnosticReason: opts?.diagnosticReason,
+      failureCode: opts?.failureCode,
+      ...(this.getModelCredentialSetupProps(providerId) ?? {}),
+    };
+    const event: AgenticEvent<"ui.inline_rendered"> = {
+      kind: "ui.inline_rendered",
+      actor: {
+        kind: "agent",
+        id: participantId,
+        displayName: participantId,
       },
-    });
-    void channel.sendSignal(participantId, content, "inline_ui").catch((err) => {
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        uiType: "inline",
+        id: cardId,
+        source: { type: "code", code: MODEL_CREDENTIAL_REQUIRED_CARD_TSX },
+        props,
+      },
+      ...(opts?.turnId ? { turnId: opts.turnId as never } : {}),
+      createdAt: new Date().toISOString(),
+    };
+    void channel.publishAgenticEvent(participantId, event, {
+      idempotencyKey: cardId,
+      senderMetadata: { type: "agent", name: participantId },
+    }).catch((err) => {
       console.error(
         `[TrajectoryVesselBase] Failed to emit model credential card for ${providerId}:`,
         err
       );
       this.credentialPromptCardsEmitted.delete(key);
     });
+  }
+
+  private publishTurnWaitingEvent(
+    channelId: string,
+    turnId: string,
+    payload: { reason: string; summary: string }
+  ): void {
+    const participantId = this.subscriptions.getParticipantId(channelId);
+    if (!participantId) return;
+    const event: AgenticEvent<"turn.waiting"> = {
+      kind: "turn.waiting",
+      actor: {
+        kind: "agent",
+        id: participantId,
+        displayName: participantId,
+      },
+      turnId: turnId as never,
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        summary: payload.summary,
+        reason: payload.reason,
+      },
+      createdAt: new Date().toISOString(),
+    };
+    void this.createChannelClient(channelId)
+      .publishAgenticEvent(participantId, event, {
+        idempotencyKey: `turn-waiting:${turnId}:${payload.reason}`,
+        senderMetadata: { type: "agent", name: participantId },
+      })
+      .catch((err) => {
+        this.recordLastError("turn_waiting.publish_failed", err, channelId);
+        this.recordDebugPhase(channelId, "turn_waiting.publish_failed", {
+          turnId,
+          reason: payload.reason,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
   }
 
   private createMethodResultWaiter(
@@ -5202,6 +5470,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       return t === "panel" || t === "client";
     });
     if (!panel) throw new Error(`No panel participant in channel ${channelId}`);
+    if (signal?.aborted) throw new Error("Agent turn was interrupted before tool dispatch.");
 
     const transportCallId = crypto.randomUUID();
     const turnId = this.currentTurnIdForChannel(channelId);
@@ -5548,6 +5817,18 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       this.lastUserInterruptAt.set(channelId, Date.now());
       await this.notifyDispatchesInterrupted(channelId);
       this.recordAbort(channelId, reason);
+      // Abort the active runner signal before moving the durable turn to a
+      // terminal state. Otherwise a just-started tool can race, try to record
+      // an external wait, and leak a ledger CAS failure as its tool result.
+      const abort = (entry.runner as { abort?: () => Promise<unknown> }).abort;
+      void abort?.call(entry.runner)?.catch((err) => {
+        this.recordLastError("runner.abort", err, channelId);
+        this.recordDebugPhase(channelId, "runner.abort.failed", {
+          reason,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        console.warn(`[TrajectoryVesselBase] runner abort failed for channel=${channelId}:`, err);
+      });
       const turnId =
         (entry.runner as { getCurrentTurnId?: () => string | null }).getCurrentTurnId?.() ??
         this.currentTurnRunForChannel(channelId)?.turnId;

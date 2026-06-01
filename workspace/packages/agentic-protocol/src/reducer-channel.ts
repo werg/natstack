@@ -265,7 +265,11 @@ export function reduceChannelView(
         },
       };
     }
-  } else if (event.kind === "turn.opened" || event.kind === "turn.closed") {
+  } else if (
+    event.kind === "turn.opened" ||
+    event.kind === "turn.waiting" ||
+    event.kind === "turn.closed"
+  ) {
     const turnId = event.turnId;
     if (turnId) {
       const existing = next.turns[turnId];
@@ -278,7 +282,12 @@ export function reduceChannelView(
           [turnId]: {
             turnId,
             actor: existing?.actor ?? event.actor,
-            status: event.kind === "turn.closed" ? "closed" : "open",
+            status:
+              event.kind === "turn.closed"
+                ? "closed"
+                : event.kind === "turn.waiting"
+                  ? "waiting"
+                  : "open",
             openedAt: existing?.openedAt ?? event.createdAt,
             ...(event.kind === "turn.closed" ? { closedAt: event.createdAt } : {}),
             updatedAt: event.createdAt,

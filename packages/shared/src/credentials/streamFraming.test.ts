@@ -131,9 +131,27 @@ describe("streamFraming", () => {
         controller.close();
       },
     });
+    await expect(decodeFramedResponseToStreaming(wireBody, "https://example.com/")).rejects.toThrow(
+      /upstream connection refused/
+    );
+  });
+
+  it("preserves a pre-HEAD ERROR frame code on the rejected error", async () => {
+    const { decodeFramedResponseToStreaming } = await import("./streamFraming.js");
+    const frame = encodeErrorFrame({
+      status: 403,
+      message: "client_not_authorized",
+      code: "client_not_authorized",
+    });
+    const wireBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(frame);
+        controller.close();
+      },
+    });
     await expect(
-      decodeFramedResponseToStreaming(wireBody, "https://example.com/"),
-    ).rejects.toThrow(/upstream connection refused/);
+      decodeFramedResponseToStreaming(wireBody, "https://example.com/")
+    ).rejects.toMatchObject({ message: "client_not_authorized", code: "client_not_authorized" });
   });
 
   it("parses an empty END frame as bytesIn=0", () => {

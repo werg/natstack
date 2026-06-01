@@ -17,6 +17,32 @@ interface StoredChannelSignal extends ChannelSignal {
   expiresAt: number;
 }
 
+function normalizeSignalContent(contentType: string | undefined, content: string): string | null {
+  if (contentType === "inline_ui") return null;
+  if (contentType !== "natstack-ext-working") return content;
+  try {
+    const parsed = JSON.parse(content) as { message?: unknown };
+    if (parsed.message == null || parsed.message === "") return null;
+    return typeof parsed.message === "string" ? parsed.message : JSON.stringify(parsed.message);
+  } catch {
+    return content.trim() || null;
+  }
+}
+
+function logSuppressedSignal(event: {
+  contentType?: string;
+  content?: string;
+  senderId?: string;
+  ts?: number;
+}): void {
+  console.debug("[useChannelSignals] suppressed transient signal", {
+    contentType: event.contentType,
+    senderId: event.senderId,
+    ts: event.ts,
+    content: event.content,
+  });
+}
+
 /**
  * Subscribe to live, non-durable channel signals and keep a small expiring
  * window for transient UI affordances.
@@ -44,12 +70,17 @@ export function useChannelSignals<T extends ParticipantMetadata = ParticipantMet
           if (cancelled) break;
           if (event.delivery !== "signal" || event.type !== "signal") continue;
           if (!event.content) continue;
+          const content = normalizeSignalContent(event.contentType, event.content);
+          if (content == null) {
+            logSuppressedSignal(event);
+            continue;
+          }
 
           const ts = event.ts ?? Date.now();
           const nextSignal: StoredChannelSignal = {
             id: `${ts}:${sequence++}`,
             ts,
-            content: event.content,
+            content,
             contentType: event.contentType,
             expiresAt: Date.now() + ttlMs,
           };

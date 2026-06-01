@@ -1809,10 +1809,12 @@ export class RpcServer {
       );
     } catch (err) {
       try {
+        const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
         await emitFrame({
           kind: "error",
           status: 502,
           message: err instanceof Error ? err.message : String(err),
+          code: typeof code === "string" ? code : undefined,
         });
       } catch {
         // Best-effort — connection may already be torn down.
@@ -1860,11 +1862,13 @@ export class RpcServer {
           await this.writeHttpStreamBytes(res, codec.encodeDataFrame(next.value));
         }
       } catch (err) {
+        const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
         await this.writeHttpStreamBytes(
           res,
           codec.encodeErrorFrame({
             status: 502,
             message: err instanceof Error ? err.message : String(err),
+            code: typeof code === "string" ? code : undefined,
           })
         );
         return;
@@ -1997,10 +2001,12 @@ export class RpcServer {
       );
     } catch (err) {
       try {
+        const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
         emitFrame({
           kind: "error",
           status: 502,
           message: err instanceof Error ? err.message : String(err),
+          code: typeof code === "string" ? code : undefined,
         });
       } catch {
         // Best-effort — client may already be gone.

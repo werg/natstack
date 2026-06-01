@@ -62,6 +62,7 @@ export type EventKind =
   | "branch.forked"
   | "branch.head_changed"
   | "turn.opened"
+  | "turn.waiting"
   | "turn.closed"
   | "system.event"
   | "system.compaction_recorded"

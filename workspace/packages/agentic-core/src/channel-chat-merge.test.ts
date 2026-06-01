@@ -208,6 +208,45 @@ describe("chatMessagesFromChannelView", () => {
     ]);
   });
 
+  it("projects published message.failed reasons as visible transcript errors", () => {
+    const messageId = brandId<MessageId>("msg-provider-failed");
+    const completed: AgenticEvent<"message.completed"> = {
+      kind: "message.completed",
+      actor: agent,
+      causality: { messageId },
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        role: "assistant",
+        content: "",
+        blocks: [],
+      },
+      createdAt: "2026-05-20T12:00:00.000Z",
+    };
+    const failed: AgenticEvent<"message.failed"> = {
+      kind: "message.failed",
+      actor: agent,
+      causality: { messageId },
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        reason: "provider stream failed",
+        recoverable: true,
+      },
+      createdAt: "2026-05-20T12:00:01.000Z",
+    };
+
+    const state = [envelope(completed, 1), envelope(failed, 2)]
+      .reduce(reduceChannelView, createInitialChannelViewState());
+
+    expect(chatMessagesFromChannelView(state)).toEqual([
+      expect.objectContaining({
+        id: "msg-provider-failed",
+        content: "provider stream failed",
+        error: "provider stream failed",
+        complete: true,
+      }),
+    ]);
+  });
+
   it("surfaces a closed agent turn that ended without an assistant response", () => {
     const turnId = brandId<TurnId>("turn-no-response");
     const opened: AgenticEvent<"turn.opened"> = {
@@ -254,6 +293,88 @@ describe("chatMessagesFromChannelView", () => {
       error: "Agent turn closed without an assistant response",
       complete: true,
     });
+  });
+
+  it("surfaces completed turns whose only assistant message is empty", () => {
+    const turnId = brandId<TurnId>("turn-empty-assistant");
+    const messageId = brandId<MessageId>("msg-empty-assistant");
+    const opened: AgenticEvent<"turn.opened"> = {
+      kind: "turn.opened",
+      actor: agent,
+      turnId,
+      payload: { protocol: AGENTIC_PROTOCOL_VERSION },
+      createdAt: "2026-05-20T12:00:00.000Z",
+    };
+    const completed: AgenticEvent<"message.completed"> = {
+      kind: "message.completed",
+      actor: agent,
+      turnId,
+      causality: { messageId },
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        role: "assistant",
+        content: "",
+        blocks: [],
+      },
+      createdAt: "2026-05-20T12:00:01.000Z",
+    };
+    const closed: AgenticEvent<"turn.closed"> = {
+      kind: "turn.closed",
+      actor: agent,
+      turnId,
+      payload: { protocol: AGENTIC_PROTOCOL_VERSION, summary: "Agent turn completed" },
+      createdAt: "2026-05-20T12:00:02.000Z",
+    };
+
+    const state = [opened, completed, closed]
+      .map((event, index) => envelope(event, index + 1))
+      .reduce(reduceChannelView, createInitialChannelViewState());
+
+    expect(chatMessagesFromChannelView(state).map((message) => message.id)).toEqual([
+      "turn:turn-empty-assistant:no-response",
+    ]);
+    expect(chatMessagesFromChannelView(state)[0]).toMatchObject({
+      content: "Agent turn closed without an assistant response. Agent turn completed",
+      error: "Agent turn closed without an assistant response",
+    });
+  });
+
+  it("does not add a no-response error when the turn produced inline UI", () => {
+    const turnId = brandId<TurnId>("turn-inline-ui");
+    const opened: AgenticEvent<"turn.opened"> = {
+      kind: "turn.opened",
+      actor: agent,
+      turnId,
+      payload: { protocol: AGENTIC_PROTOCOL_VERSION },
+      createdAt: "2026-05-20T12:00:00.000Z",
+    };
+    const inline: AgenticEvent<"ui.inline_rendered"> = {
+      kind: "ui.inline_rendered",
+      actor: agent,
+      turnId,
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        uiType: "inline",
+        id: "credential-refresh",
+        source: { type: "code", code: "export default function CredentialRefresh() { return null; }" },
+      },
+      createdAt: "2026-05-20T12:00:01.000Z",
+    };
+    const closed: AgenticEvent<"turn.closed"> = {
+      kind: "turn.closed",
+      actor: agent,
+      turnId,
+      payload: { protocol: AGENTIC_PROTOCOL_VERSION, summary: "Agent turn completed" },
+      createdAt: "2026-05-20T12:00:02.000Z",
+    };
+
+    const state = [opened, inline, closed]
+      .map((event, index) => envelope(event, index + 1))
+      .reduce(reduceChannelView, createInitialChannelViewState());
+
+    expect(chatMessagesFromChannelView(state).map((message) => message.id)).toEqual([
+      "inline-ui:participant-agent-1:credential-refresh",
+    ]);
   });
 
   it("does not surface user-interrupted agent turns as no-response errors", () => {

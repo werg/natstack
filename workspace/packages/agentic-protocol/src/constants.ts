@@ -33,5 +33,6 @@ export const TURN_SCOPED_OWNER_KINDS = [
   "approval.requested",
   "approval.resolved",
   "turn.opened",
+  "turn.waiting",
   "turn.closed",
 ] as const;

@@ -815,6 +815,109 @@ describe("EgressProxy", () => {
     expect(store.loadUrlBound("cred-1")?.accessToken).toBe("fresh-token");
   });
 
+  it("force-refreshes OAuth credentials and retries once after upstream 401", async () => {
+    const credential = createCredential({
+      accessToken: "stale-token",
+      refreshToken: "refresh-token",
+      expiresAt: Date.now() + 3_600_000,
+      metadata: { clientConfigId: "openai-codex", clientConfigVersion: "v1" },
+    });
+    const store = new MemoryCredentialStore(new Map([[credential.id!, credential]]));
+    const credentialLifecycle = {
+      refreshIfNeeded: vi.fn(),
+      refreshCredential: vi.fn(async (current: Credential & { id: string }) => {
+        const updated = {
+          ...current,
+          accessToken: "fresh-token",
+          expiresAt: Date.now() + 3_600_000,
+        };
+        store.saveUrlBound(updated);
+        return updated;
+      }),
+    };
+    const proxy = new EgressProxy({
+      credentialStore: store,
+      auditLog: new MemoryAuditLog() as never,
+      credentialLifecycle: credentialLifecycle as never,
+    });
+    const seenAuth: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        seenAuth.push(new Headers(init?.headers).get("authorization") ?? "");
+        return seenAuth.length === 1
+          ? new Response("expired", { status: 401, statusText: "Unauthorized" })
+          : new Response("ok", { status: 200, statusText: "OK" });
+      })
+    );
+
+    const response = await proxy.forwardProxyFetch({
+      caller: workerCaller("worker:test"),
+      credentialId: "cred-1",
+      url: "https://api.example.test/v1/items",
+      method: "GET",
+    });
+
+    expect(response.status).toBe(200);
+    expect(credentialLifecycle.refreshCredential).toHaveBeenCalledOnce();
+    expect(seenAuth).toEqual(["Bearer stale-token", "Bearer fresh-token"]);
+  });
+
+  it("force-refreshes OAuth credentials before committing a 401 streaming response", async () => {
+    const credential = createCredential({
+      accessToken: "stale-token",
+      refreshToken: "refresh-token",
+      expiresAt: Date.now() + 3_600_000,
+      metadata: { clientConfigId: "openai-codex", clientConfigVersion: "v1" },
+    });
+    const store = new MemoryCredentialStore(new Map([[credential.id!, credential]]));
+    const credentialLifecycle = {
+      refreshIfNeeded: vi.fn(),
+      refreshCredential: vi.fn(async (current: Credential & { id: string }) => {
+        const updated = {
+          ...current,
+          accessToken: "fresh-token",
+          expiresAt: Date.now() + 3_600_000,
+        };
+        store.saveUrlBound(updated);
+        return updated;
+      }),
+    };
+    const proxy = new EgressProxy({
+      credentialStore: store,
+      auditLog: new MemoryAuditLog() as never,
+      credentialLifecycle: credentialLifecycle as never,
+    });
+    const seenAuth: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        seenAuth.push(new Headers(init?.headers).get("authorization") ?? "");
+        return seenAuth.length === 1
+          ? new Response("expired", { status: 401, statusText: "Unauthorized" })
+          : new Response("stream-ok", { status: 200, statusText: "OK" });
+      })
+    );
+    const frames: string[] = [];
+
+    const result = await proxy.forwardProxyFetchStream(
+      {
+        caller: workerCaller("worker:test"),
+        credentialId: "cred-1",
+        url: "https://api.example.test/v1/items",
+        method: "GET",
+      },
+      (frame) => {
+        frames.push(frame.kind);
+      }
+    );
+
+    expect(result.status).toBe(200);
+    expect(credentialLifecycle.refreshCredential).toHaveBeenCalledOnce();
+    expect(seenAuth).toEqual(["Bearer stale-token", "Bearer fresh-token"]);
+    expect(frames).toEqual(["head", "chunk", "end"]);
+  });
+
   it("surfaces stable OAuth refresh errors from egress", async () => {
     const credential = createCredential({
       refreshToken: "refresh-token",

@@ -1004,5 +1004,73 @@ describe("RpcServer HTTP POST /rpc", () => {
         await server.stop();
       }
     });
+
+    it("preserves egress proxy error codes in HTTP stream error frames", async () => {
+      const tokenManager = new TokenManager();
+      const workerToken = tokenManager.ensureToken("do:test:Worker:obj1", "worker");
+      const error = Object.assign(new Error("client_not_authorized"), {
+        code: "client_not_authorized",
+      });
+      const stubEgress = {
+        forwardProxyFetchStream: vi.fn(async () => {
+          throw error;
+        }),
+      };
+      const dispatcher = {
+        dispatch: vi.fn(),
+        getPolicy: vi.fn((service: string) => {
+          if (service === "credentials") {
+            return { allowed: ["shell", "panel", "worker"] as CallerKind[] };
+          }
+          return undefined;
+        }),
+        getMethodPolicy: vi.fn(() => undefined),
+        initialized: true,
+      } as unknown as ServiceDispatcher;
+      const server = new RpcServer({
+        tokenManager,
+        dispatcher,
+        egressProxy: stubEgress,
+      });
+      server.initHandlers();
+      const gw = new Gateway({
+        tokenManager,
+        externalHost: "localhost",
+        getRpcHandler: () => server,
+      });
+      const p = await gw.start(0);
+      try {
+        const res = await fetch(`http://127.0.0.1:${p}/rpc/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${workerToken}`,
+          },
+          body: JSON.stringify({
+            targetId: "main",
+            method: "credentials.proxyFetch",
+            args: [{ url: "https://example.com/", method: "GET" }],
+          }),
+        });
+        expect(res.status).toBe(200);
+        const { FrameDecoder, FRAME_ERROR, parseErrorFrame } =
+          await import("../../packages/shared/src/credentials/streamFraming.js");
+        const frames: Array<{ type: number; payload: Uint8Array }> = [];
+        const decoder = new FrameDecoder((type, payload) => {
+          frames.push({ type, payload });
+        });
+        await decoder.push(new Uint8Array(await res.arrayBuffer()));
+
+        expect(frames.map((frame) => frame.type)).toEqual([FRAME_ERROR]);
+        expect(parseErrorFrame(frames[0]!.payload)).toMatchObject({
+          status: 502,
+          message: "client_not_authorized",
+          code: "client_not_authorized",
+        });
+      } finally {
+        await gw.stop();
+        await server.stop();
+      }
+    });
   });
 });

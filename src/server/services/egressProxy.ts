@@ -73,7 +73,7 @@ export interface EgressProxyDeps {
   approvalQueue?: ApprovalQueue;
   grantStore?: CapabilityGrantStore;
   sessionGrantStore?: CredentialSessionGrantStore;
-  credentialLifecycle?: Pick<CredentialLifecycle, "refreshIfNeeded">;
+  credentialLifecycle?: Pick<CredentialLifecycle, "refreshIfNeeded" | "refreshCredential">;
 }
 
 interface RequestAttribution extends ResolvedCodeIdentity {
@@ -102,7 +102,8 @@ class ForwardRejection extends Error {
   constructor(
     public readonly statusCode: number,
     message: string,
-    public readonly capabilityViolation?: string
+    public readonly capabilityViolation?: string,
+    public readonly code: string | undefined = capabilityViolation
   ) {
     super(message);
   }
@@ -342,13 +343,26 @@ export class EgressProxy {
       // entirely for the streaming path to keep the contract simple.
       replaySafe: false,
       maxRetries: 0,
-      execute: async (targetUrl, headers) => {
+      execute: async (targetUrl, headers, authorization) => {
         const upstream = await fetch(targetUrl.toString(), {
           method: params.method,
           headers: headers as HeadersInit,
           body: body as BodyInit | undefined,
           signal: abortSignal,
         });
+
+        if (upstream.status === 401 && this.canForceRefreshCredential(authorization.credential)) {
+          const responseBody = new Uint8Array(await upstream.arrayBuffer());
+          return {
+            statusCode: upstream.status,
+            bytesIn: responseBody.byteLength,
+            bytesOut,
+            payload: {
+              status: upstream.status,
+              bytesIn: responseBody.byteLength,
+            },
+          };
+        }
 
         await sink({
           kind: "head",
@@ -391,10 +405,12 @@ export class EgressProxy {
           // truncated body, and return 502 to the audit log along
           // with the bytes we did manage to forward.
           try {
+            const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
             await sink({
               kind: "error",
               status: 502,
               message: err instanceof Error ? err.message : String(err),
+              code: typeof code === "string" ? code : undefined,
             });
           } catch {
             // Best-effort — connection may already be torn down.
@@ -668,7 +684,11 @@ export class EgressProxy {
     initialBytesOut?: number;
     maxRetries?: number;
     replaySafe?: boolean;
-    execute: (targetUrl: URL, headers: OutgoingHttpHeaders) => Promise<RequestExecutionResult<T>>;
+    execute: (
+      targetUrl: URL,
+      headers: OutgoingHttpHeaders,
+      authorization: Authorization
+    ) => Promise<RequestExecutionResult<T>>;
   }): Promise<T> {
     const startedAt = Date.now();
     let authorization: Authorization | null = null;
@@ -689,13 +709,14 @@ export class EgressProxy {
         credentialUse: params.credentialUse ?? "fetch",
       });
       const executionKey = executionPolicyKey(authorization, params.targetUrl);
-      const maxAttempts =
+      let maxAttempts =
         (params.maxRetries !== undefined
           ? params.maxRetries
           : shouldRetryRequest(params.method, params.replaySafe)
             ? DEFAULT_RETRY_ATTEMPTS
             : 0) + 1;
       let lastError: unknown;
+      let refreshedAfterAuthFailure = false;
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         breakerState = getCircuitState(this.circuits, executionKey);
         if (breakerState === "open") {
@@ -711,10 +732,20 @@ export class EgressProxy {
         );
         targetUrl = prepared.targetUrl;
         try {
-          const result = await params.execute(targetUrl, prepared.headers);
+          const result = await params.execute(targetUrl, prepared.headers, authorization);
           statusCode = result.statusCode;
           bytesIn = result.bytesIn;
           bytesOut = result.bytesOut;
+          if (
+            statusCode === 401 &&
+            !refreshedAfterAuthFailure &&
+            (await this.forceRefreshAuthorizationCredential(authorization))
+          ) {
+            refreshedAfterAuthFailure = true;
+            retries += 1;
+            if (attempt === maxAttempts) maxAttempts += 1;
+            continue;
+          }
           if (isRetryableStatus(statusCode) && attempt < maxAttempts) {
             retries += 1;
             recordCircuitFailure(this.circuits, executionKey);
@@ -951,6 +982,37 @@ export class EgressProxy {
       return await this.deps.credentialLifecycle.refreshIfNeeded(
         credential as Credential & { id: string }
       );
+    } catch (error) {
+      if (error instanceof CredentialLifecycleError) {
+        throw new ForwardRejection(403, error.code, error.code);
+      }
+      throw new ForwardRejection(403, "oauth-refresh-failed", "oauth-refresh-failed");
+    }
+  }
+
+  private canForceRefreshCredential(
+    credential: Credential | null
+  ): credential is Credential & { id: string; refreshToken: string } {
+    return (
+      !!credential?.id &&
+      !!credential.refreshToken &&
+      typeof this.deps.credentialLifecycle?.refreshCredential === "function"
+    );
+  }
+
+  private async forceRefreshAuthorizationCredential(
+    authorization: Authorization
+  ): Promise<boolean> {
+    const credential = authorization.credential;
+    if (!this.canForceRefreshCredential(credential)) return false;
+    const lifecycle = this.deps.credentialLifecycle;
+    if (!lifecycle?.refreshCredential) return false;
+    try {
+      const refreshed = await lifecycle.refreshCredential(credential);
+      authorization.credential = refreshed;
+      authorization.connectionId = refreshed.id ?? refreshed.connectionId;
+      authorization.scopes = refreshed.scopes;
+      return true;
     } catch (error) {
       if (error instanceof CredentialLifecycleError) {
         throw new ForwardRejection(403, error.code, error.code);

@@ -379,6 +379,49 @@ describe("PiRunner", () => {
     runner.dispose();
   });
 
+  it("keeps a recoverable agent_end turn open when requested by the host", async () => {
+    const appendTrajectoryBatch = vi.fn(
+      async (_method: string, _input: { events?: Array<{ event: { kind: string } }> }) => ({
+        events: [],
+        published: [],
+      })
+    );
+    const runner = new PiRunner(
+      createOptions({
+        keepTurnOpenOnAgentEnd: (event) => {
+          const messages = (event as { messages?: Array<{ stopReason?: string }> }).messages ?? [];
+          return messages[messages.length - 1]?.stopReason === "error";
+        },
+      })
+    );
+    const internals = runner as unknown as {
+      options: PiRunnerOptions;
+      gad: { call: typeof appendTrajectoryBatch };
+      handleHarnessEvent(event: unknown): Promise<void>;
+    };
+    await runner.init();
+    internals.options.gad = {
+      trajectoryId: "trajectory:test",
+      branchId: "branch:test",
+      channelId: "channel:test",
+    };
+    internals.gad = { call: appendTrajectoryBatch };
+
+    await internals.handleHarnessEvent({ type: "agent_start" });
+    await internals.handleHarnessEvent({
+      type: "agent_end",
+      messages: [{ role: "assistant", stopReason: "error", errorMessage: "reauth required" }],
+    });
+
+    expect((await runner.getDebugState())["currentTurnId"]).toEqual(expect.any(String));
+    expect(
+      appendTrajectoryBatch.mock.calls.flatMap((call) =>
+        (call[1].events ?? []).map((item) => item.event.kind)
+      )
+    ).toEqual(["turn.opened"]);
+    runner.dispose();
+  });
+
   it("appends user messages through the session", async () => {
     const runner = new PiRunner(createOptions());
     await runner.init();
@@ -673,6 +716,78 @@ describe("PiRunner", () => {
       reason: "unsupported_last_role",
       lastRole: "assistant",
     });
+
+    runner.dispose();
+  });
+
+  it("keeps empty assistant error provenance private", async () => {
+    const runner = new PiRunner(createOptions()) as unknown as {
+      queueMessageProvenance(message: unknown, messageEntryId: string): void;
+      provenanceQueue: Array<{ event: { kind: string; payload: Record<string, unknown> }; publishToChannel?: boolean }>;
+      dispose(): void;
+    };
+
+    runner.queueMessageProvenance(
+      {
+        role: "assistant",
+        content: [],
+        stopReason: "error",
+        errorMessage: "Provided authentication token is expired. Please try signing in again.",
+        timestamp: 1,
+      },
+      "entry-error"
+    );
+
+    expect(runner.provenanceQueue).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            kind: "message.failed",
+            payload: expect.objectContaining({
+              reason: "Provided authentication token is expired. Please try signing in again.",
+              recoverable: true,
+            }),
+          }),
+          publishToChannel: false,
+        }),
+      ])
+    );
+
+    runner.dispose();
+  });
+
+  it("publishes failed assistant provenance when the assistant message has visible content", async () => {
+    const runner = new PiRunner(createOptions()) as unknown as {
+      queueMessageProvenance(message: unknown, messageEntryId: string): void;
+      provenanceQueue: Array<{ event: { kind: string; payload: Record<string, unknown> }; publishToChannel?: boolean }>;
+      dispose(): void;
+    };
+
+    runner.queueMessageProvenance(
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "I could not finish this request." }],
+        stopReason: "error",
+        errorMessage: "provider stream failed",
+        timestamp: 1,
+      },
+      "entry-error-visible"
+    );
+
+    expect(runner.provenanceQueue).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            kind: "message.failed",
+            payload: expect.objectContaining({
+              reason: "provider stream failed",
+              recoverable: true,
+            }),
+          }),
+          publishToChannel: true,
+        }),
+      ])
+    );
 
     runner.dispose();
   });
