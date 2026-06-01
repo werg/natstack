@@ -58,6 +58,10 @@ export function getApprovalCategoryLabel(approval: PendingApproval): string {
     return "Workspace setup";
   }
   if (approval.capability === "internal-git-write") {
+    const isWorkspaceSourcePush = approval.grantResourceKey?.startsWith("workspace-source-push:");
+    if (isWorkspaceSourcePush) {
+      return "Workspace source";
+    }
     return approval.resource?.value === "meta" ? "Config edit" : "Write request";
   }
   if (approval.capability === "workspace-shared-git-remote") {
@@ -165,6 +169,29 @@ export function getStandardActionCopy(
     };
   }
   if (approval.capability === "internal-git-write") {
+    const isWorkspaceSourcePush = approval.grantResourceKey?.startsWith("workspace-source-push:");
+    if (isWorkspaceSourcePush) {
+      const destination = approval.resource?.value ?? "this workspace source repo";
+      return {
+        once: {
+          label: "Push once",
+          description: "Allow this workspace source push once.",
+        },
+        session: {
+          label: "Push this session",
+          description: `Allow pushes to ${destination} until NatStack restarts.`,
+        },
+        version: {
+          label: "Trust version",
+          description: `Allow this code version to push to ${destination}.`,
+        },
+        repo: {
+          label: "Trust repo",
+          description: `Allow this workspace project to push to ${destination}.`,
+        },
+        denyDescription: "Do not allow this workspace source push.",
+      };
+    }
     const isMeta = approval.resource?.value === "meta";
     return {
       once: {
@@ -356,7 +383,9 @@ export function getApprovalCopy(
       ? approval.trigger === "management"
         ? `Manages ${count} workspace ${unitLabel.singular}${count === 1 ? "" : "s"}.`
         : approval.trigger === "source-push"
-        ? `Updates trusted workspace ${unitLabel.singular} source code.`
+        ? unitLabel.nativeCode
+          ? `Updates trusted native extension source code.`
+          : `Updates trusted workspace app source code.`
         : `Declares ${count} ${unitLabel.singular}${count === 1 ? "" : "s"} that need approval before they run.`
       : "Changes workspace configuration.";
     return {
@@ -375,6 +404,12 @@ export function getApprovalCopy(
   if (approval.kind === "capability") {
     if (approval.capability === "internal-git-write") {
       const destination = approval.resource?.value ?? "this repository";
+      if (approval.grantResourceKey?.startsWith("workspace-source-push:")) {
+        return {
+          title: `Push to ${destination}`,
+          summary: `Updates workspace source in ${destination}.`,
+        };
+      }
       if (destination === "meta") {
         return {
           title: "Edit workspace config",

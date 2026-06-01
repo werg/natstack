@@ -143,7 +143,7 @@ describe("gitService", () => {
     expect(porcelain).toContain("A  extra.ts");
   });
 
-  it("gates panel-created repositories through git write permission", async () => {
+  it("gates panel-created repositories through repo creation permission", async () => {
     const approvalQueue = createApprovalQueueMock();
     const service = createGitService({
       gitServer: {} as never,
@@ -155,7 +155,7 @@ describe("gitService", () => {
 
     await expect(
       service.handler({ caller: panelSourceCaller() }, "createRepo", ["panels/new"])
-    ).rejects.toThrow("Git write permission denied");
+    ).rejects.toThrow("Repository creation denied");
 
     expect(approvalQueue.request).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -190,7 +190,7 @@ describe("gitService", () => {
     expect(approvalQueue.request).not.toHaveBeenCalled();
   });
 
-  it("gates app-created repositories through git write permission", async () => {
+  it("gates app-created repositories through repo creation permission", async () => {
     const approvalQueue = createApprovalQueueMock();
     const service = createGitService({
       gitServer: {} as never,
@@ -202,7 +202,7 @@ describe("gitService", () => {
 
     await expect(
       service.handler({ caller: appSourceCaller() }, "createRepo", ["apps/new"])
-    ).rejects.toThrow("Git write permission denied");
+    ).rejects.toThrow("Repository creation denied");
 
     expect(approvalQueue.request).toHaveBeenCalledWith(
       expect.objectContaining({

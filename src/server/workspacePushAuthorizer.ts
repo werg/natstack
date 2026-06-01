@@ -12,7 +12,7 @@ import {
 import type { PendingUnitBatchApproval, UnitBatchEntry } from "@natstack/shared/approvals";
 import { execGitFileSync } from "@natstack/shared/gitRuntime";
 import type { VerifiedCaller } from "@natstack/shared/serviceDispatcher";
-import { INTERNAL_GIT_WRITE_CAPABILITY } from "./services/gitWritePermission.js";
+import { INTERNAL_GIT_WRITE_CAPABILITY } from "./services/gitCapabilities.js";
 import {
   requestCapabilityPermission,
   type CapabilityPermissionDeps,
@@ -39,7 +39,7 @@ export interface UnitMetaPushApprovalQueue {
   }): Promise<"once" | "session" | "version" | "repo" | "deny">;
 }
 
-export function createWorkspaceUnitPushAuthorizer(deps: {
+export function createWorkspacePushAuthorizer(deps: {
   targets: UnitPushTarget[];
   getMetaHandler(): UnitPushHandler | null | undefined;
   getFallbackHandler?(): UnitPushHandler | null | undefined;

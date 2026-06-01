@@ -43,20 +43,6 @@ export interface GitWatcherLike {
   on(event: string, callback: (repoPath: string) => void): () => void;
 }
 
-export interface GitWriteAuthorizationRequest {
-  caller: VerifiedCaller;
-  repoPath: string;
-}
-
-export interface GitWriteAuthorizationResult {
-  allowed: boolean;
-  reason?: string;
-}
-
-export type GitWriteAuthorizer = (
-  request: GitWriteAuthorizationRequest,
-) => Promise<GitWriteAuthorizationResult> | GitWriteAuthorizationResult;
-
 export interface GitPushAuthorizationRequest {
   caller: VerifiedCaller;
   repoPath: string;

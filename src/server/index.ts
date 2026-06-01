@@ -27,8 +27,8 @@ import { RuntimeDiagnosticsStore } from "./runtimeDiagnosticsStore.js";
 import {
   createWorkspaceRepoPushAuthorizer,
   createWorkspaceMetaPushAuthorizer,
-  createWorkspaceUnitPushAuthorizer,
-} from "./unitPushAuthorizer.js";
+  createWorkspacePushAuthorizer,
+} from "./workspacePushAuthorizer.js";
 import { assertPresent, deleteDynamicProperty } from "../lintHelpers";
 
 // __filename is available natively in CJS and via the esbuild banner shim in ESM.
@@ -752,7 +752,7 @@ async function main() {
       }
       return Array.from(origins);
     },
-    pushAuthorizer: createWorkspaceUnitPushAuthorizer({
+    pushAuthorizer: createWorkspacePushAuthorizer({
       targets: [
         { sourceRoot: "apps", getHandler: () => appHostForGateway },
         { sourceRoot: "extensions", getHandler: () => extensionHostForGateway },
@@ -831,7 +831,7 @@ async function main() {
         replaceWorkspaceConfig(workspaceConfig, nextConfig);
         // Reconcile declared workspace units after the combined meta-push gate.
         // Any newly trusted app/extension identities were preapproved by the
-        // unit push authorizer, so these reconciles activate without a second
+        // workspace push authorizer, so these reconciles activate without a second
         // prompt.
         void reconcileDeclaredWorkspaceUnits(nextConfig, "meta-push");
         syncDeclaredRemotesForSource()

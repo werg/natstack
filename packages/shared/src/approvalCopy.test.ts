@@ -95,6 +95,24 @@ describe("approvalCopy", () => {
       summaryIncludes: "github.com/acme/project",
     },
     {
+      name: "workspace source push",
+      approval: {
+        ...base,
+        kind: "capability",
+        capability: "internal-git-write",
+        grantResourceKey: "workspace-source-push:panels/spectrolite:main",
+        title: "Push workspace repo",
+        resource: {
+          type: "git-repo",
+          label: "Repository",
+          value: "panels/spectrolite",
+        },
+      },
+      category: "Workspace source",
+      title: "Push to panels/spectrolite",
+      summaryIncludes: "Updates workspace source",
+    },
+    {
       name: "client-config",
       approval: {
         ...base,
@@ -323,6 +341,8 @@ describe("approvalCopy", () => {
     const [capability, oauth, gitWrite] = fixtures.map((fixture) => fixture.approval);
     const severePanelAutomation = fixtures.find((fixture) => fixture.name === "panel automate")!
       .approval as Extract<PendingApproval, { kind: "capability" }>;
+    const workspaceSourcePush = fixtures.find((fixture) => fixture.name === "workspace source push")!
+      .approval as Extract<PendingApproval, { kind: "capability" }>;
     const severePanelStructural = {
       ...(fixtures.find((fixture) => fixture.name === "panel structural")!
         .approval as Extract<PendingApproval, { kind: "capability" }>),
@@ -339,6 +359,10 @@ describe("approvalCopy", () => {
       getStandardActionCopy(capability as Extract<PendingApproval, { kind: "capability" }>).once
         .label
     ).toBe("Open once");
+    expect(getStandardActionCopy(workspaceSourcePush).once.label).toBe("Push once");
+    expect(getStandardActionCopy(workspaceSourcePush).session.description).toContain(
+      "panels/spectrolite"
+    );
     expect(getStandardActionCopy(severePanelAutomation).once.label).toBe("Drive once");
     expect(getStandardActionCopy(severePanelAutomation).version.label).toBe("Trust and drive");
     expect(getStandardActionCopy(severePanelStructural).once.label).toBe("Change once");
@@ -346,11 +370,10 @@ describe("approvalCopy", () => {
   });
 
   it("formats low-level detail helpers", () => {
-    const credential = fixtures[1]?.approval as Extract<PendingApproval, { kind: "credential" }>;
-    const credentialInput = fixtures[4]?.approval as Extract<
-      PendingApproval,
-      { kind: "credential-input" }
-    >;
+    const credential = fixtures.find((fixture) => fixture.name === "credential OAuth")!
+      .approval as Extract<PendingApproval, { kind: "credential" }>;
+    const credentialInput = fixtures.find((fixture) => fixture.name === "credential-input")!
+      .approval as Extract<PendingApproval, { kind: "credential-input" }>;
 
     expect(formatAccount(credential)).toBe("me@example.com");
     expect(formatInjection(credential)).toBe("header Authorization");

@@ -379,7 +379,7 @@ describe("ExtensionHost source push authorization", () => {
     );
   });
 
-  it("leaves meta-push gating to the workspace unit push authorizer", async () => {
+  it("leaves meta-push gating to the workspace push authorizer", async () => {
     const { host, approvalQueue } = makeHost();
 
     await expect(

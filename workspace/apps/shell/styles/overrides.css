@@ -25,12 +25,12 @@ body,
   --app-approval-sky-border: var(--sky-a7);
   --app-approval-sky-stripe: var(--sky-9);
   --app-approval-sky-text: var(--sky-12);
-  /* Approval bar — amber (extensions / elevated warnings) */
+  /* Approval bar — amber (workspace apps / elevated warnings) */
   --app-approval-amber-bg: var(--amber-a4);
   --app-approval-amber-border: var(--amber-a7);
   --app-approval-amber-stripe: var(--amber-10);
   --app-approval-amber-text: var(--amber-12);
-  /* Approval bar — red (privileged panel automation / structural changes) */
+  /* Approval bar — red (native extensions / privileged panel automation / structural changes) */
   --app-approval-red-bg: var(--red-a4);
   --app-approval-red-border: var(--red-a7);
   --app-approval-red-stripe: var(--red-9);

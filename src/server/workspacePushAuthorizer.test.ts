@@ -10,11 +10,11 @@ import * as path from "node:path";
 import {
   createWorkspaceMetaPushAuthorizer,
   createWorkspaceRepoPushAuthorizer,
-  createWorkspaceUnitPushAuthorizer,
-} from "./unitPushAuthorizer.js";
+  createWorkspacePushAuthorizer,
+} from "./workspacePushAuthorizer.js";
 
 function tempStatePath(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "natstack-unit-push-"));
+  return fs.mkdtempSync(path.join(os.tmpdir(), "natstack-workspace-push-"));
 }
 
 function panelCaller(id = "panel:one") {
@@ -75,13 +75,13 @@ function createApprovalQueueMock(
   };
 }
 
-describe("createWorkspaceUnitPushAuthorizer", () => {
+describe("createWorkspacePushAuthorizer", () => {
   const caller = createVerifiedCaller("panel:one", "panel");
 
   it("routes app and extension pushes by normalized source root", async () => {
     const appHandler = { authorizeSourcePush: vi.fn(async () => ({ allowed: true })) };
     const extensionHandler = { authorizeSourcePush: vi.fn(async () => ({ allowed: true })) };
-    const authorize = createWorkspaceUnitPushAuthorizer({
+    const authorize = createWorkspacePushAuthorizer({
       targets: [
         { sourceRoot: "apps", getHandler: () => appHandler },
         { sourceRoot: "extensions", getHandler: () => extensionHandler },
@@ -120,7 +120,7 @@ describe("createWorkspaceUnitPushAuthorizer", () => {
     const metaHandler = {
       authorizeSourcePush: vi.fn(async () => ({ allowed: false, reason: "denied" })),
     };
-    const authorize = createWorkspaceUnitPushAuthorizer({
+    const authorize = createWorkspacePushAuthorizer({
       targets: [],
       getMetaHandler: () => metaHandler,
     });
@@ -138,7 +138,7 @@ describe("createWorkspaceUnitPushAuthorizer", () => {
 
   it("allows non-unit pushes without touching unit hosts", async () => {
     const appHandler = { authorizeSourcePush: vi.fn(async () => ({ allowed: false })) };
-    const authorize = createWorkspaceUnitPushAuthorizer({
+    const authorize = createWorkspacePushAuthorizer({
       targets: [{ sourceRoot: "apps", getHandler: () => appHandler }],
       getMetaHandler: () => null,
     });
@@ -157,7 +157,7 @@ describe("createWorkspaceUnitPushAuthorizer", () => {
   it("routes non-unit pushes to a fallback authorizer when configured", async () => {
     const appHandler = { authorizeSourcePush: vi.fn(async () => ({ allowed: false })) };
     const fallbackHandler = { authorizeSourcePush: vi.fn(async () => ({ allowed: true })) };
-    const authorize = createWorkspaceUnitPushAuthorizer({
+    const authorize = createWorkspacePushAuthorizer({
       targets: [{ sourceRoot: "apps", getHandler: () => appHandler }],
       getMetaHandler: () => null,
       getFallbackHandler: () => fallbackHandler,
@@ -182,7 +182,7 @@ describe("createWorkspaceUnitPushAuthorizer", () => {
   });
 
   it("fails closed for unit source pushes when the owning host is unavailable", async () => {
-    const authorize = createWorkspaceUnitPushAuthorizer({
+    const authorize = createWorkspacePushAuthorizer({
       targets: [{ sourceRoot: "apps", getHandler: () => null }],
       getMetaHandler: () => null,
     });
@@ -201,7 +201,7 @@ describe("createWorkspaceUnitPushAuthorizer", () => {
   });
 
   it("fails closed for meta pushes when the combined meta handler is unavailable", async () => {
-    const authorize = createWorkspaceUnitPushAuthorizer({
+    const authorize = createWorkspacePushAuthorizer({
       targets: [],
       getMetaHandler: () => null,
     });

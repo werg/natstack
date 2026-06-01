@@ -285,6 +285,58 @@ describe("ConsentApprovalBar queue browsing", () => {
     expect(secondUnitDetails?.open).toBe(false);
   });
 
+  it("uses distinct approval tones for app and extension source pushes", async () => {
+    const appApproval = unitBatchApproval({
+      approvalId: "app-source",
+      title: "Shell app source push",
+      trigger: "source-push",
+      units: [
+        {
+          unitKind: "app",
+          unitName: "@workspace-apps/shell",
+          displayName: "Shell",
+          version: "0.1.0",
+          target: "electron",
+          source: { kind: "internal-git", repo: "apps/shell", ref: "main" },
+          ev: "ev-app",
+          capabilities: ["notifications"],
+        },
+      ],
+    });
+    const extensionApproval = unitBatchApproval({
+      approvalId: "extension-source",
+      title: "Extension source push",
+      trigger: "source-push",
+    });
+
+    shellClient.listPending.mockResolvedValueOnce([appApproval, extensionApproval]);
+
+    render(
+      <Theme>
+        <ConsentApprovalBar />
+      </Theme>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Shell app source push")).toBeTruthy();
+    });
+    expect(
+      (
+        screen.getByText("Shell app source push").closest(".approval-bar") as HTMLElement | null
+      )?.style.getPropertyValue("--app-approval-stripe")
+    ).toBe("var(--app-approval-amber-stripe)");
+
+    fireEvent.click(screen.getByLabelText("Next approval"));
+    await waitFor(() => {
+      expect(screen.getByText("Extension source push")).toBeTruthy();
+    });
+    expect(
+      (
+        screen.getByText("Extension source push").closest(".approval-bar") as HTMLElement | null
+      )?.style.getPropertyValue("--app-approval-stripe")
+    ).toBe("var(--app-approval-red-stripe)");
+  });
+
   it("renders pending approvals directly from event payloads", async () => {
     shellClient.listPending.mockResolvedValueOnce([
       userlandApproval({ approvalId: "a1", title: "First approval" }),

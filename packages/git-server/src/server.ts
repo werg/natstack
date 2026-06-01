@@ -18,7 +18,6 @@ import type {
   GitWatcherLike,
   GitPushAuthorizationResult,
   GitPushAuthorizer,
-  GitWriteAuthorizer,
 } from "./types.js";
 import { GitAuthManager } from "./auth.js";
 import { WorkspaceTreeManager } from "./git/workspaceTree.js";
@@ -97,14 +96,9 @@ export interface GitServerConfig {
   /** Optional fallback mirror for repos without an explicit `devMirrors` entry. */
   defaultDevMirror?: DevMirrorConfig;
   /**
-   * Host permission gate for pushes. Authentication identifies the caller;
-   * this authorizer decides whether that caller may write this repo. Pushes
-   * fail closed when no authorizer is configured.
-   */
-  writeAuthorizer?: GitWriteAuthorizer;
-  /**
-   * Optional branch-aware gate for a concrete pushed ref. This runs after
-   * authentication/write permission but before receive-pack accepts the update.
+   * Branch-aware gate for a concrete pushed ref. This runs after authentication
+   * but before receive-pack accepts the update. Pushes fail closed when no
+   * authorizer is configured.
    */
   pushAuthorizer?: GitPushAuthorizer;
   /** Resolve source repo path for a caller id (workers/DOs). */
@@ -131,7 +125,6 @@ export class GitServer {
   private devMirrors: Map<string, DevMirrorConfig>;
   private defaultDevMirror: DevMirrorConfig | null;
   private devMirrorQueues = new Map<string, Promise<void>>();
-  private writeAuthorizer: GitWriteAuthorizer | null;
   private pushAuthorizer: GitPushAuthorizer | null;
 
   constructor(config?: GitServerConfig) {
@@ -139,7 +132,6 @@ export class GitServer {
     this.initPatterns = config?.initPatterns ?? ["panels/*", "packages/*", "projects/*"];
     this.devMirrors = new Map(Object.entries(config?.devMirrors ?? {}));
     this.defaultDevMirror = config?.defaultDevMirror ?? null;
-    this.writeAuthorizer = config?.writeAuthorizer ?? null;
     this.pushAuthorizer = config?.pushAuthorizer ?? null;
     this.authManager = new GitAuthManager(config?.getSourceForCaller);
     this.getAllowedOrigins = config?.getAllowedOrigins ?? (() => []);
@@ -209,44 +201,7 @@ export class GitServer {
             next();
             return;
           }
-          // A branch-aware authorizer can make a concrete decision with the
-          // pushed repo, ref, and commit. Avoid also asking the coarse
-          // pre-receive write gate, which would create broad grants that can
-          // unintentionally bypass push-specific prompts.
-          if (this.pushAuthorizer) {
-            next();
-            return;
-          }
-          if (!this.writeAuthorizer) {
-            next(new Error("Git write permission unavailable"));
-            return;
-          }
-
-          const repoPath = this.normalizePath(repo);
-          Promise.resolve(
-            this.writeAuthorizer({
-              caller: identity,
-              repoPath,
-            })
-          )
-            .then((authorization) => {
-              if (authorization.allowed) {
-                next();
-                return;
-              }
-              const reason = authorization.reason || "Git write permission denied";
-              log.verbose(
-                ` Write permission denied for ${identity.runtime.id} on ${repoPath}: ${reason}`
-              );
-              next(new Error(reason));
-            })
-            .catch((error: unknown) => {
-              const reason = error instanceof Error ? error.message : String(error);
-              log.verbose(
-                ` Write permission check failed for ${identity.runtime.id} on ${repoPath}: ${reason}`
-              );
-              next(new Error(reason || "Git write permission check failed"));
-            });
+          next();
         },
       }
     );
@@ -299,7 +254,10 @@ export class GitServer {
               commit: push.commit,
             })
           )
-        : Promise.resolve({ allowed: true } satisfies GitPushAuthorizationResult);
+        : Promise.resolve({
+            allowed: false,
+            reason: "Git push authorization unavailable",
+          } satisfies GitPushAuthorizationResult);
 
       runPushAuthorization
         .then((authorization) => {

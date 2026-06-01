@@ -261,8 +261,7 @@ export function ConsentApprovalBar() {
   const copy = getApprovalCopy(current);
   const attribution = getApprovalAttribution(current);
   const isUnitApproval = current.kind === "unit-batch";
-  const isSevereCapability = current.kind === "capability" && current.severity === "severe";
-  const accent = isSevereCapability ? "red" : isUnitApproval ? "amber" : "sky";
+  const accent = approvalAccent(current);
   // Drive the bar palette through CSS variables on a single class so the
   // light/dark overrides in overrides.css remain authoritative.
   const toneStyle = {
@@ -398,6 +397,15 @@ export function ConsentApprovalBar() {
       </Flex>
     </Box>
   );
+}
+
+function approvalAccent(approval: PendingApproval): "sky" | "amber" | "red" {
+  if (approval.kind === "capability" && approval.severity === "severe") return "red";
+  if (approval.kind === "unit-batch") {
+    if (approval.units.some((unit) => unit.unitKind === "extension")) return "red";
+    return "amber";
+  }
+  return "sky";
 }
 
 function QueueNavigator({

@@ -29,7 +29,7 @@ import type { ApprovalQueue } from "./approvalQueue.js";
 import type { CapabilityGrantStore } from "./capabilityGrantStore.js";
 import type { EgressProxy } from "./egressProxy.js";
 import { requestCapabilityPermission } from "./capabilityPermission.js";
-import { INTERNAL_GIT_WRITE_CAPABILITY } from "./gitWritePermission.js";
+import { INTERNAL_GIT_WRITE_CAPABILITY } from "./gitCapabilities.js";
 import { deleteDynamicProperty } from "../../lintHelpers";
 
 /**
@@ -217,7 +217,7 @@ export function createGitService(deps: GitServiceDeps): ServiceDefinition {
             if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
           }
 
-          await ensureGitWritePermission(ctx, deps, normalizedRepoPath, "create repo");
+          await ensureRepoCreatePermission(ctx, deps, normalizedRepoPath);
 
           await mkdir(absolutePath, { recursive: true });
           // Use execFileSync (no shell) for every git invocation. Even though
@@ -796,14 +796,13 @@ function displayRemoteUrl(value: string): string {
   return normalizeRemoteUrl(value).replace(/^https?:\/\//, "");
 }
 
-async function ensureGitWritePermission(
+async function ensureRepoCreatePermission(
   ctx: ServiceContext,
   deps: {
     approvalQueue?: ApprovalQueue;
     grantStore?: CapabilityGrantStore;
   },
-  repoPath: string,
-  operation: string
+  repoPath: string
 ): Promise<void> {
   if (ctx.caller.runtime.kind === "shell" || ctx.caller.runtime.kind === "server") {
     return;
@@ -814,10 +813,10 @@ async function ensureGitWritePermission(
     ctx.caller.runtime.kind !== "worker" &&
     ctx.caller.runtime.kind !== "do"
   ) {
-    throw new Error("Git write permission is unavailable for this caller");
+    throw new Error("Repository creation is unavailable for this caller");
   }
   if (!deps.approvalQueue || !deps.grantStore) {
-    throw new Error("Git write permission is unavailable");
+    throw new Error("Repository creation is unavailable");
   }
   const authorization = await requestCapabilityPermission(
     {
@@ -833,14 +832,14 @@ async function ensureGitWritePermission(
         label: "Repository",
         value: repoPath,
       },
-      title: "Write project files",
-      description: "Allow this code version to write to an internal git repository.",
-      details: [{ label: "Operation", value: operation }],
-      deniedReason: "Git write permission denied",
+      title: "Create workspace repo",
+      description: "Allow this code version to create this workspace repository.",
+      details: [{ label: "Operation", value: "create repo" }],
+      deniedReason: "Repository creation denied",
     }
   );
   if (!authorization.allowed) {
-    throw new Error(authorization.reason ?? "Git write permission denied");
+    throw new Error(authorization.reason ?? "Repository creation denied");
   }
 }
 
