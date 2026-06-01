@@ -75,16 +75,16 @@ scope and audit model.
 
 ## Git Writes
 
-Internal git writes use the `internal-git-write` capability. The git HTTP token
-only identifies the caller. Pushes fail closed unless the git server has either
-a coarse write authorizer or a branch-aware push authorizer configured.
+Internal git pushes use branch-aware push authorizers. The git HTTP token only
+identifies the caller; it does not authorize writes by itself. The workspace
+server intentionally does not install the coarse pre-receive git write gate for
+pushes, because that gate cannot see the concrete pushed ref and commit.
 
-The same gate is also used for RPC-created repositories.
+The same `internal-git-write` capability is also used for RPC-created
+repositories, keyed to the target repo path.
 
-When a branch-aware push authorizer is configured, it owns push consent instead
-of the coarse pre-receive write gate. This lets NatStack show approvals that are
-specific to the destination repo, branch, and commit. Generic workspace source
-repos such as `panels/*`, `workers/*`, `skills/*`, and `packages/*` use a
-push-specific `internal-git-write` resource key, so older broad git-write grants
-do not silently authorize concrete pushes. Unit repos (`apps/*`,
-`extensions/*`) and `meta` keep their richer unit/config approval flows.
+This lets NatStack show approvals that are specific to the destination repo,
+branch, and commit. Generic workspace source repos such as `panels/*`,
+`workers/*`, `skills/*`, and `packages/*` use a push-specific
+`internal-git-write` resource key. Unit repos (`apps/*`, `extensions/*`) and
+`meta` keep their richer unit/config approval flows.

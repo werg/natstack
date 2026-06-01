@@ -722,7 +722,6 @@ async function main() {
     getProviders: trustedUnitHosts,
   });
 
-  const { createGitWriteAuthorizer } = await import("./services/gitWritePermission.js");
   const { WORKSPACE_GIT_INIT_PATTERNS } = await import("@natstack/shared/workspace/sourceDirs");
   const workspaceRepoPushAuthorizer = createWorkspaceRepoPushAuthorizer({
     approvalQueue,
@@ -753,10 +752,6 @@ async function main() {
       }
       return Array.from(origins);
     },
-    writeAuthorizer: createGitWriteAuthorizer({
-      approvalQueue,
-      grantStore: capabilityGrantStore,
-    }),
     pushAuthorizer: createWorkspaceUnitPushAuthorizer({
       targets: [
         { sourceRoot: "apps", getHandler: () => appHostForGateway },
