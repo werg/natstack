@@ -7,6 +7,8 @@
  *      after restart their runtime resources are gone, so mark them complete.
  *   3. Safety GC sweep — hard-delete retired rows older than the grace window
  *      that no slot_history row references. Fires no hooks.
+ *   4. Optionally run lifecycle crash/server-restart recovery after WorkspaceDO
+ *      is reachable and entity metadata has been reconciled.
  *
  * Extracted from `src/server/index.ts` so both the boot path and tests can
  * call it without standing up the full container.
@@ -21,6 +23,7 @@ export interface StartupReconciliationDeps {
   entityCache: EntityCache;
   /** Optional safety-sweep grace window (ms). Default: DO's own DEFAULT_GRACE_MS. */
   gcGraceMs?: number;
+  recoverLifecycle?: () => Promise<void>;
   logger?: { warn: (msg: string, ...args: unknown[]) => void };
 }
 
@@ -28,6 +31,7 @@ export interface StartupReconciliationResult {
   hydratedCount: number;
   incompleteCleanupIds: string[];
   gcDeletedIds: string[];
+  lifecycleRecovered: boolean;
 }
 
 export async function runStartupReconciliation(
@@ -73,5 +77,15 @@ export async function runStartupReconciliation(
     log.warn("[Bootstrap] entityGc safety sweep failed:", err);
   }
 
-  return { hydratedCount, incompleteCleanupIds, gcDeletedIds };
+  let lifecycleRecovered = false;
+  if (deps.recoverLifecycle) {
+    try {
+      await deps.recoverLifecycle();
+      lifecycleRecovered = true;
+    } catch (err) {
+      log.warn("[Bootstrap] lifecycle startup recovery failed:", err);
+    }
+  }
+
+  return { hydratedCount, incompleteCleanupIds, gcDeletedIds, lifecycleRecovered };
 }

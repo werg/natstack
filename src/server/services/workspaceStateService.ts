@@ -39,6 +39,19 @@ const READ_POLICY: ServicePolicy = {
 const WRITE_POLICY: ServicePolicy = {
   allowed: ["shell", "app", "server"],
 };
+const LIFECYCLE_POLICY: ServicePolicy = {
+  allowed: ["server", "do"],
+};
+
+const LifecycleKeySchema = z.object({
+  source: z.string().min(1),
+  className: z.string().min(1),
+  objectKey: z.string().min(1),
+});
+
+const LifecycleLeaseSchema = LifecycleKeySchema.extend({
+  detail: z.unknown().optional(),
+});
 
 export interface WorkspaceStateServiceDeps {
   doDispatch: DODispatch;
@@ -165,6 +178,16 @@ export function createWorkspaceStateService(deps: WorkspaceStateServiceDeps): Se
         description: "Rebuild the panel-search index from active panel entities.",
         policy: WRITE_POLICY,
       },
+      lifecycleLeaseUpsert: {
+        args: z.tuple([LifecycleLeaseSchema]),
+        description: "Mark a Durable Object as having active checkpointable work.",
+        policy: LIFECYCLE_POLICY,
+      },
+      lifecycleLeaseClear: {
+        args: z.tuple([LifecycleKeySchema]),
+        description: "Clear a Durable Object active-work lease.",
+        policy: LIFECYCLE_POLICY,
+      },
     },
     handler: async (_ctx, method, args) => {
       switch (method) {
@@ -256,6 +279,16 @@ export function createWorkspaceStateService(deps: WorkspaceStateServiceDeps): Se
         }
         case "panel.rebuildIndex": {
           await dispatch<undefined>("panelRebuildIndex", []);
+          return;
+        }
+        case "lifecycleLeaseUpsert": {
+          const [input] = args as [unknown];
+          await dispatch<undefined>("lifecycleLeaseUpsert", [input]);
+          return;
+        }
+        case "lifecycleLeaseClear": {
+          const [input] = args as [unknown];
+          await dispatch<undefined>("lifecycleLeaseClear", [input]);
           return;
         }
         default:

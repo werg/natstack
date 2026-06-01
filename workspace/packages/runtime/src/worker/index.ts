@@ -110,7 +110,15 @@ export type {
 } from "../shared/extensions.js";
 export type * from "../shared/gad.js";
 export { DurableObjectBase } from "./durable-base.js";
-export type { DurableObjectContext, SqlStorage, SqlResult, DORef } from "./durable-base.js";
+export type {
+  DurableObjectContext,
+  SqlStorage,
+  SqlResult,
+  DORef,
+  LifecyclePrepareInput,
+  LifecyclePrepareResult,
+  LifecycleResumeInput,
+} from "./durable-base.js";
 export { fs } from "./fs.js";
 export { createGatewayFetch } from "../shared/gatewayFetch.js";
 export type { GatewayFetch } from "../shared/gatewayFetch.js";

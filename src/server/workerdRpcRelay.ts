@@ -8,7 +8,8 @@ export function doRefKey(ref: DORef): string {
 
 export function doRefUrl(ref: DORef, method: string): string {
   const sourcePath = ref.source.split("/").map(encodeURIComponent).join("/");
-  return `/_w/${sourcePath}/${encodeURIComponent(ref.className)}/${encodeURIComponent(ref.objectKey)}/${encodeURIComponent(method)}`;
+  const methodPath = method.split("/").map(encodeURIComponent).join("/");
+  return `/_w/${sourcePath}/${encodeURIComponent(ref.className)}/${encodeURIComponent(ref.objectKey)}/${methodPath}`;
 }
 
 export interface DurableObjectRelayDeps {

@@ -37,7 +37,9 @@ export function doRefKey(ref: DORef): string {
 
 /** Build the /_w/ URL path for a DO method call. */
 export function doRefUrl(ref: DORef, method: string): string {
-  return `/_w/${ref.source}/${encodeURIComponent(ref.className)}/${encodeURIComponent(ref.objectKey)}/${encodeURIComponent(method)}`;
+  const sourcePath = ref.source.split("/").map(encodeURIComponent).join("/");
+  const methodPath = method.split("/").map(encodeURIComponent).join("/");
+  return `/_w/${sourcePath}/${encodeURIComponent(ref.className)}/${encodeURIComponent(ref.objectKey)}/${methodPath}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -59,6 +61,12 @@ export interface PostToDOWithTokenDeps {
   dispatchSecret?: string;
 }
 
+export interface DOCallerEnvelope {
+  callerId: string;
+  callerKind: "server" | "worker" | "panel" | "do" | "shell" | "unknown";
+  callerPanelId?: string;
+}
+
 /**
  * Dispatch an RPC method call to a Durable Object via HTTP POST,
  * attaching a per-instance identity token (X-Instance-Token) and
@@ -71,7 +79,8 @@ export async function postToDOWithToken(
   method: string,
   args: unknown[],
   deps: PostToDOWithTokenDeps,
-  callerId?: string
+  callerId?: string,
+  caller?: DOCallerEnvelope
 ): Promise<unknown> {
   // 1. Build the instance ID for this DO: "do:{source}:{className}:{objectKey}"
   const instanceId = `do:${ref.source}:${ref.className}:${ref.objectKey}`;
@@ -89,6 +98,7 @@ export async function postToDOWithToken(
     __instanceToken: token,
     __instanceId: instanceId,
     __parentId: callerId ?? undefined,
+    __caller: caller ?? undefined,
   };
 
   const headers: Record<string, string> = {
@@ -122,6 +132,7 @@ export interface InstanceTokenEnvelope {
   __instanceToken?: unknown;
   __instanceId?: unknown;
   __parentId?: unknown;
+  __caller?: unknown;
 }
 
 export interface VerifyInstanceTokenResult {
@@ -321,6 +332,46 @@ export class DODispatch {
       }
       throw err;
     }
+  }
+
+  async dispatchLifecycle(ref: DORef, method: "prepare" | "resume", arg: unknown): Promise<unknown> {
+    const lifecycleMethod = `__lifecycle/${method}`;
+    await Promise.resolve(this.beforeDispatchFn?.(ref));
+
+    if (this.tokenManager && this.getWorkerdUrl && this.getWorkerdGatewayToken) {
+      const buildDeps = (): PostToDOWithTokenDeps => ({
+        tokenManager: assertPresent(this.tokenManager),
+        workerdUrl: assertPresent(this.getWorkerdUrl)(),
+        workerdGatewayToken: assertPresent(this.getWorkerdGatewayToken)(),
+        dispatchSecret: this.getDispatchSecret ? this.getDispatchSecret() : undefined,
+      });
+      const serverCaller: DOCallerEnvelope = { callerId: "main", callerKind: "server" };
+      try {
+        return await postToDOWithToken(ref, lifecycleMethod, [arg], buildDeps(), "main", serverCaller);
+      } catch (err) {
+        if (this.ensureDOFn && this.isRetryable(err)) {
+          console.warn(
+            `[DODispatch] ${doRefKey(ref)}.${lifecycleMethod} failed (${err instanceof Error ? err.message : String(err)}), calling ensureDO and retrying`
+          );
+          await this.ensureDOFn(ref.source, ref.className, ref.objectKey);
+          await Promise.resolve(this.beforeDispatchFn?.(ref));
+          return await postToDOWithToken(
+            ref,
+            lifecycleMethod,
+            [arg],
+            buildDeps(),
+            "main",
+            serverCaller
+          );
+        }
+        throw err;
+      }
+    }
+
+    if (!this.dispatcher) {
+      throw new Error("DODispatch: no dispatcher configured");
+    }
+    return await this.dispatcher(doRefUrl(ref, lifecycleMethod), [arg]);
   }
 
   private isRetryable(err: unknown): boolean {

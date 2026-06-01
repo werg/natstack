@@ -88,5 +88,39 @@ export class WorkspaceDOTestable extends WorkspaceDO {
         value TEXT NOT NULL
       )
     `);
+    sql.exec(`
+      CREATE TABLE IF NOT EXISTS lifecycle_epochs (
+        epoch_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        generation INTEGER NOT NULL,
+        status TEXT NOT NULL
+      )
+    `);
+    sql.exec(`
+      CREATE TABLE IF NOT EXISTS lifecycle_leases (
+        source TEXT NOT NULL,
+        class_name TEXT NOT NULL,
+        object_key TEXT NOT NULL,
+        detail TEXT,
+        created_at INTEGER NOT NULL,
+        refreshed_at INTEGER NOT NULL,
+        PRIMARY KEY (source, class_name, object_key)
+      )
+    `);
+    sql.exec(`
+      CREATE TABLE IF NOT EXISTS lifecycle_ops (
+        epoch_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        class_name TEXT NOT NULL,
+        object_key TEXT NOT NULL,
+        op_kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        detail TEXT,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (epoch_id, source, class_name, object_key, op_kind)
+      )
+    `);
   }
 }

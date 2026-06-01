@@ -5,9 +5,12 @@ import * as esbuild from "esbuild";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { TokenManager } from "../../packages/shared/src/tokenManager.js";
+import { DODispatch } from "./doDispatch.js";
 import { INTERNAL_DO_SOURCE } from "./internalDOs/internalDoLoader.js";
 import { postToDurableObject, type DORef } from "./workerdRpcRelay.js";
 import { WorkerdManager, type WorkerdManagerDeps } from "./workerdManager.js";
+import { LifecycleDriver } from "./services/lifecycleDriver.js";
+import type { BuildResult } from "./buildV2/buildStore.js";
 
 const workspaceAliasPlugin: esbuild.Plugin = {
   name: "workspace-alias",
@@ -66,7 +69,61 @@ function createWorkerdHarness(overrides: Partial<WorkerdManagerDeps> = {}) {
     });
   };
 
-  return { manager, callDurableObject };
+  return { manager, tokenManager, callDurableObject };
+}
+
+function createDODispatch(manager: WorkerdManager, tokenManager: TokenManager): DODispatch {
+  const dispatch = new DODispatch();
+  dispatch.setTokenManager(tokenManager);
+  dispatch.setGetWorkerdGatewayToken(() => manager.getWorkerdGatewayToken());
+  dispatch.setGetDispatchSecret(() => manager.getDispatchSecret());
+  dispatch.setGetWorkerdUrl(() => {
+    const port = manager.getPort();
+    if (!port) throw new Error("workerd port is not available");
+    return `http://127.0.0.1:${port}`;
+  });
+  dispatch.setEnsureDO((source, className, objectKey) =>
+    manager.ensureDO(source, className, objectKey)
+  );
+  return dispatch;
+}
+
+async function bundleWorker(source: string, entryPoint: string, ev: string): Promise<BuildResult> {
+  const result = await esbuild.build({
+    entryPoints: [entryPoint],
+    bundle: true,
+    platform: "browser",
+    target: "es2022",
+    format: "esm",
+    write: false,
+    conditions: ["worker", "browser"],
+    external: ["node:*", "electron"],
+    logLevel: "silent",
+  });
+  return buildResult(source, ev, result.outputFiles[0]!.text);
+}
+
+function buildResult(source: string, ev: string, bundle: string): BuildResult {
+  return {
+    dir: `/tmp/natstack-${ev}-build`,
+    metadata: {
+      kind: "worker",
+      name: source,
+      ev,
+      sourcemap: false,
+      details: { kind: "generic" },
+      builtAt: "2026-01-01T00:00:00.000Z",
+    },
+    artifacts: [
+      {
+        path: "worker.js",
+        role: "primary",
+        contentType: "text/javascript; charset=utf-8",
+        encoding: "utf8",
+        content: bundle,
+      },
+    ],
+  };
 }
 
 describe("internal storage DOs under workerd", () => {
@@ -124,6 +181,103 @@ describe("internal storage DOs under workerd", () => {
     await expect(
       harness.callDurableObject(ref, "entityResolveActive", record.id)
     ).resolves.toBeNull();
+  }, 30_000);
+
+  it("drives lifecycle prepare and resume through real workerd restart hooks", async () => {
+    const probeBuild = await bundleWorker(
+      "workers/lifecycle-probe",
+      "src/server/testFixtures/lifecycleProbeWorker.ts",
+      "lifecycle-probe-test"
+    );
+    const triggerBuild = buildResult(
+      "workers/restart-trigger",
+      "restart-trigger-test",
+      `export default { fetch() { return new Response("trigger"); } };`
+    );
+    const harness = createWorkerdHarness({
+      getBuild: async (source: string) => {
+        if (source === "workers/lifecycle-probe") return probeBuild;
+        if (source === "workers/restart-trigger") return triggerBuild;
+        throw new Error(`unexpected build source ${source}`);
+      },
+    });
+    manager = harness.manager;
+    const doDispatch = createDODispatch(manager, harness.tokenManager);
+    const lifecycleDriver = new LifecycleDriver({
+      workerdManager: manager,
+      doDispatch,
+      workspaceId: "workspace-lifecycle",
+      prepareDeadlineMs: 3_000,
+      concurrency: 2,
+    });
+    const workspaceRef = {
+      source: INTERNAL_DO_SOURCE,
+      className: "WorkspaceDO",
+      objectKey: "workspace-lifecycle",
+    };
+    const probeRef = {
+      source: "workers/lifecycle-probe",
+      className: "LifecycleProbeDO",
+      objectKey: "probe-1",
+    };
+
+    await manager.registerAllDOClasses([
+      { source: INTERNAL_DO_SOURCE, className: "WorkspaceDO" },
+      { source: "workers/lifecycle-probe", className: "LifecycleProbeDO" },
+    ]);
+    lifecycleDriver.start();
+    try {
+      await expect(
+        harness.callDurableObject(probeRef, "__lifecycle/prepare", {
+          epoch: "raw",
+          reason: "raw",
+          deadlineMs: 1_000,
+        })
+      ).rejects.toThrow("403");
+
+      await doDispatch.dispatch(workspaceRef, "lifecycleLeaseUpsert", {
+        source: probeRef.source,
+        className: probeRef.className,
+        objectKey: probeRef.objectKey,
+        detail: { test: "planned-restart" },
+      });
+
+      await manager.createInstance({
+        source: "workers/restart-trigger",
+        contextId: "ctx-lifecycle",
+        name: "restart-trigger",
+      });
+
+      expect(manager.getBootGeneration()).toBe(2);
+      await expect(doDispatch.dispatch(probeRef, "currentBootGeneration")).resolves.toBe("2");
+      await expect(doDispatch.dispatch(probeRef, "lifecycleEvents")).resolves.toMatchObject([
+        {
+          kind: "prepare",
+          input: expect.objectContaining({ reason: "planned" }),
+          bootGeneration: "1",
+        },
+        {
+          kind: "resume",
+          input: expect.objectContaining({
+            reason: "planned",
+            previousGeneration: 1,
+            currentGeneration: 2,
+          }),
+          bootGeneration: "2",
+        },
+      ]);
+
+      const leases = await doDispatch.dispatch(workspaceRef, "lifecycleListLeases");
+      expect(leases).toEqual([
+        expect.objectContaining({
+          source: probeRef.source,
+          className: probeRef.className,
+          objectKey: probeRef.objectKey,
+        }),
+      ]);
+    } finally {
+      lifecycleDriver.stop();
+    }
   }, 30_000);
 
   it("indexes panels into FTS5 and returns matches via WorkspaceDO.panelSearch under real workerd storage", async () => {

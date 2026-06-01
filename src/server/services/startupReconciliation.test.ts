@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import { vi } from "vitest";
 import { createTestDO } from "@workspace/runtime/worker/test-utils";
 
 import { WorkspaceDO } from "../internalDOs/workspaceDO.js";
@@ -81,6 +82,7 @@ describe("runStartupReconciliation", () => {
     const activeId = canonicalEntityId({ kind: "panel", key: "nav-active" });
     expect(entityCache.resolve(activeId)?.status).toBe("active");
     expect(result.hydratedCount).toBe(1);
+    expect(result.lifecycleRecovered).toBe(false);
 
     // 2. Incomplete cleanup is now marked complete in the DO.
     expect(result.incompleteCleanupIds).toContain(incompleteCleanup.id);
@@ -116,6 +118,40 @@ describe("runStartupReconciliation", () => {
     expect(result.hydratedCount).toBe(0);
     expect(result.incompleteCleanupIds).toEqual([]);
     expect(result.gcDeletedIds).toEqual([]);
+    expect(result.lifecycleRecovered).toBe(false);
     expect(warnings.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("runs lifecycle recovery after WorkspaceDO reconciliation when provided", async () => {
+    const entityCache = new EntityCache();
+    const recoverLifecycle = vi.fn().mockResolvedValue(undefined);
+
+    const result = await runStartupReconciliation({
+      dispatchWorkspaceDO,
+      entityCache,
+      recoverLifecycle,
+    });
+
+    expect(recoverLifecycle).toHaveBeenCalledTimes(1);
+    expect(result.lifecycleRecovered).toBe(true);
+  });
+
+  it("warns but does not fail when lifecycle recovery fails", async () => {
+    const entityCache = new EntityCache();
+    const warnings: Array<{ msg: string; args: unknown[] }> = [];
+
+    const result = await runStartupReconciliation({
+      dispatchWorkspaceDO,
+      entityCache,
+      recoverLifecycle: () => Promise.reject(new Error("recover failed")),
+      logger: {
+        warn: (msg, ...args) => warnings.push({ msg, args }),
+      },
+    });
+
+    expect(result.lifecycleRecovered).toBe(false);
+    expect(warnings).toEqual([
+      expect.objectContaining({ msg: "[Bootstrap] lifecycle startup recovery failed:" }),
+    ]);
   });
 });

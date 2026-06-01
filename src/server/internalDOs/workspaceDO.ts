@@ -63,6 +63,44 @@ interface DbSlotHistoryRow {
   recorded_at: number;
 }
 
+export interface LifecycleKey {
+  source: string;
+  className: string;
+  objectKey: string;
+}
+
+export interface LifecycleLeaseInput extends LifecycleKey {
+  detail?: unknown;
+}
+
+export interface LifecycleEpochInput {
+  kind: "planned" | "crash" | "server_restart";
+  reason: string;
+  generation: number;
+}
+
+export interface LifecycleOpInput {
+  epochId: string;
+  key: LifecycleKey;
+  opKind: "prepare" | "resume";
+  status: "pending" | "ready" | "timed_out" | "failed" | "resumed";
+  detail?: unknown;
+}
+
+export interface LifecycleLease extends LifecycleKey {
+  detail: unknown | null;
+  createdAt: number;
+  refreshedAt: number;
+}
+
+export interface LifecycleOp extends LifecycleKey {
+  epochId: string;
+  opKind: "prepare" | "resume";
+  status: "pending" | "ready" | "timed_out" | "failed" | "resumed";
+  detail: unknown | null;
+  updatedAt: number;
+}
+
 export interface EntityActivateInput {
   kind: EntityKind;
   source: { repoPath: string; effectiveVersion: string };
@@ -105,7 +143,7 @@ export interface GcOptions {
 const DEFAULT_GRACE_MS = 60 * 60 * 1000;
 
 export class WorkspaceDO extends DurableObjectBase {
-  static override schemaVersion = 9;
+  static override schemaVersion = 10;
 
   constructor(ctx: DurableObjectContext, env: unknown) {
     super(ctx, env);
@@ -243,6 +281,7 @@ export class WorkspaceDO extends DurableObjectBase {
         value TEXT NOT NULL
       )
     `);
+    this.createLifecycleTables();
   }
 
   protected override migrate(fromVersion: number, _toVersion: number): void {
@@ -261,6 +300,9 @@ export class WorkspaceDO extends DurableObjectBase {
     this.sql.exec(`DROP TABLE IF EXISTS slot_history`);
     this.sql.exec(`DROP TABLE IF EXISTS slots`);
     this.sql.exec(`DROP TABLE IF EXISTS entities`);
+    this.sql.exec(`DROP TABLE IF EXISTS lifecycle_ops`);
+    this.sql.exec(`DROP TABLE IF EXISTS lifecycle_leases`);
+    this.sql.exec(`DROP TABLE IF EXISTS lifecycle_epochs`);
   }
 
   getWorkspaceId(): string {
@@ -344,6 +386,13 @@ export class WorkspaceDO extends DurableObjectBase {
         now,
         id
       );
+      if (row.kind === "do" && row.class_name) {
+        this.lifecycleLeaseClear({
+          source: row.source_repo_path,
+          className: row.class_name,
+          objectKey: row.key,
+        });
+      }
       const updated = this.readEntityRow(id);
       return updated ? this.rowToEntity(updated) : null;
     });
@@ -426,6 +475,157 @@ export class WorkspaceDO extends DurableObjectBase {
     const row = this.readEntityRow(id);
     if (!row) return null;
     return { repoPath: row.source_repo_path, effectiveVersion: row.source_effective_version };
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // lifecycle.* operations
+  // ─────────────────────────────────────────────────────────────
+
+  lifecycleLeaseUpsert(input: LifecycleLeaseInput): void {
+    this.assertLifecycleKey(input);
+    const now = Date.now();
+    this.sql.exec(
+      `INSERT INTO lifecycle_leases (
+        source, class_name, object_key, detail, created_at, refreshed_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(source, class_name, object_key) DO UPDATE SET
+        detail = excluded.detail,
+        refreshed_at = excluded.refreshed_at`,
+      input.source,
+      input.className,
+      input.objectKey,
+      input.detail === undefined ? null : JSON.stringify(input.detail),
+      now,
+      now
+    );
+  }
+
+  lifecycleLeaseClear(input: LifecycleKey): void {
+    this.assertLifecycleKey(input);
+    this.sql.exec(
+      `DELETE FROM lifecycle_leases WHERE source = ? AND class_name = ? AND object_key = ?`,
+      input.source,
+      input.className,
+      input.objectKey
+    );
+  }
+
+  lifecycleListLeases(): LifecycleLease[] {
+    const rows = this.sql
+      .exec(
+        `SELECT source, class_name, object_key, detail, created_at, refreshed_at
+         FROM lifecycle_leases
+         ORDER BY refreshed_at, source, class_name, object_key`
+      )
+      .toArray() as Array<{
+      source: string;
+      class_name: string;
+      object_key: string;
+      detail: string | null;
+      created_at: number;
+      refreshed_at: number;
+    }>;
+    return rows.map((row) => ({
+      source: row.source,
+      className: row.class_name,
+      objectKey: row.object_key,
+      detail: this.parseJsonOrNull(row.detail),
+      createdAt: row.created_at,
+      refreshedAt: row.refreshed_at,
+    }));
+  }
+
+  lifecycleOpenEpoch(input: LifecycleEpochInput): string {
+    return this.ctx.storage.transactionSync(() => {
+      const seqRow = this.sql
+        .exec(
+          `SELECT COALESCE(MAX(CAST(substr(epoch_id, 7) AS INTEGER)), 0) + 1 AS seq
+           FROM lifecycle_epochs
+           WHERE epoch_id LIKE 'epoch-%'`
+        )
+        .toArray()[0] as { seq: number } | undefined;
+      const epochId = `epoch-${String(seqRow?.seq ?? 1).padStart(12, "0")}`;
+      const now = Date.now();
+      this.sql.exec(
+        `INSERT INTO lifecycle_epochs (epoch_id, kind, reason, created_at, generation, status)
+         VALUES (?, ?, ?, ?, ?, 'open')`,
+        epochId,
+        input.kind,
+        input.reason,
+        now,
+        input.generation
+      );
+      const leases = this.lifecycleListLeases();
+      for (const lease of leases) {
+        this.insertLifecycleOp(epochId, lease, "prepare", "pending", null, now);
+        this.insertLifecycleOp(epochId, lease, "resume", "pending", null, now);
+      }
+      return epochId;
+    });
+  }
+
+  lifecycleRecordOp(input: LifecycleOpInput): void {
+    this.assertLifecycleKey(input.key);
+    this.insertLifecycleOp(
+      input.epochId,
+      input.key,
+      input.opKind,
+      input.status,
+      input.detail === undefined ? null : JSON.stringify(input.detail),
+      Date.now()
+    );
+  }
+
+  lifecycleListOps(epochId: string): LifecycleOp[] {
+    const rows = this.sql
+      .exec(
+        `SELECT epoch_id, source, class_name, object_key, op_kind, status, detail, updated_at
+         FROM lifecycle_ops
+         WHERE epoch_id = ?
+         ORDER BY source, class_name, object_key, op_kind`,
+        epochId
+      )
+      .toArray() as Array<{
+      epoch_id: string;
+      source: string;
+      class_name: string;
+      object_key: string;
+      op_kind: "prepare" | "resume";
+      status: "pending" | "ready" | "timed_out" | "failed" | "resumed";
+      detail: string | null;
+      updated_at: number;
+    }>;
+    return rows.map((row) => ({
+      epochId: row.epoch_id,
+      source: row.source,
+      className: row.class_name,
+      objectKey: row.object_key,
+      opKind: row.op_kind,
+      status: row.status,
+      detail: this.parseJsonOrNull(row.detail),
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  lifecycleCompleteEpoch(epochId: string): void {
+    this.sql.exec(`UPDATE lifecycle_epochs SET status = 'completed' WHERE epoch_id = ?`, epochId);
+  }
+
+  lifecycleListResumeTargets(): LifecycleKey[] {
+    const rows = this.sql
+      .exec(
+        `SELECT source, class_name, object_key FROM lifecycle_leases
+         UNION
+         SELECT source, class_name, object_key FROM lifecycle_ops
+         WHERE op_kind = 'resume' AND status IN ('pending', 'ready', 'timed_out', 'failed')
+         ORDER BY source, class_name, object_key`
+      )
+      .toArray() as Array<{ source: string; class_name: string; object_key: string }>;
+    return rows.map((row) => ({
+      source: row.source,
+      className: row.class_name,
+      objectKey: row.object_key,
+    }));
   }
 
   /** Return all active entities (used by restart revival to re-attach runtime). */
@@ -917,6 +1117,90 @@ export class WorkspaceDO extends DurableObjectBase {
   // ─────────────────────────────────────────────────────────────
   // Helpers
   // ─────────────────────────────────────────────────────────────
+
+  private createLifecycleTables(): void {
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS lifecycle_epochs (
+        epoch_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        generation INTEGER NOT NULL,
+        status TEXT NOT NULL
+      )
+    `);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS lifecycle_leases (
+        source TEXT NOT NULL,
+        class_name TEXT NOT NULL,
+        object_key TEXT NOT NULL,
+        detail TEXT,
+        created_at INTEGER NOT NULL,
+        refreshed_at INTEGER NOT NULL,
+        PRIMARY KEY (source, class_name, object_key)
+      )
+    `);
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_lifecycle_leases_refreshed ON lifecycle_leases(refreshed_at)`);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS lifecycle_ops (
+        epoch_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        class_name TEXT NOT NULL,
+        object_key TEXT NOT NULL,
+        op_kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        detail TEXT,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (epoch_id, source, class_name, object_key, op_kind)
+      )
+    `);
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_lifecycle_ops_resume
+       ON lifecycle_ops(op_kind, status, source, class_name, object_key)`
+    );
+  }
+
+  private insertLifecycleOp(
+    epochId: string,
+    key: LifecycleKey,
+    opKind: "prepare" | "resume",
+    status: LifecycleOpInput["status"],
+    detail: string | null,
+    updatedAt: number
+  ): void {
+    this.sql.exec(
+      `INSERT INTO lifecycle_ops (
+        epoch_id, source, class_name, object_key, op_kind, status, detail, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(epoch_id, source, class_name, object_key, op_kind) DO UPDATE SET
+        status = excluded.status,
+        detail = excluded.detail,
+        updated_at = excluded.updated_at`,
+      epochId,
+      key.source,
+      key.className,
+      key.objectKey,
+      opKind,
+      status,
+      detail,
+      updatedAt
+    );
+  }
+
+  private assertLifecycleKey(key: LifecycleKey): void {
+    if (!key.source || !key.className || !key.objectKey) {
+      throw new Error("lifecycle key requires source, className, and objectKey");
+    }
+  }
+
+  private parseJsonOrNull(value: string | null): unknown | null {
+    if (value === null) return null;
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value;
+    }
+  }
 
   private entityRetireInTransaction(id: string): EntityRecord | null {
     const row = this.readEntityRow(id);

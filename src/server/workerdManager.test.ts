@@ -12,6 +12,8 @@ import { spawn } from "child_process";
 import { findServicePort } from "@natstack/port-utils";
 import type { BuildResult } from "./buildV2/buildStore.js";
 import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 
 // Mock child_process to prevent actual workerd spawning
 vi.mock("child_process", () => ({
@@ -536,6 +538,36 @@ describe("WorkerdManager", () => {
           Authorization: "Bearer mock-workerd-gateway-token",
         },
       });
+    });
+  });
+
+  describe("restart lifecycle hooks and boot generation", () => {
+    it("skips restart hooks on initial start but emits them for real restarts", async () => {
+      const statePath = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-workerd-test-"));
+      const mgr = new WorkerdManager(createMockDeps({ statePath }));
+      const begin = vi.fn();
+      const ready = vi.fn();
+      mgr.onRestartBegin(begin);
+      mgr.onRestartReady(ready);
+
+      await mgr.createInstance(defaultCreateOptions());
+      expect(begin).not.toHaveBeenCalled();
+      expect(ready).not.toHaveBeenCalled();
+      expect(mgr.getBootGeneration()).toBe(1);
+
+      await mgr.updateInstance("hello", { env: { UPDATED: "1" } });
+
+      expect(begin).toHaveBeenCalledTimes(1);
+      expect(ready).toHaveBeenCalledTimes(1);
+      expect(ready.mock.calls[0]?.[0]).toMatchObject({
+        generation: 2,
+        previousGeneration: 1,
+        reason: "planned",
+      });
+      expect(fs.readFileSync(path.join(statePath, ".boot-generation"), "utf8").trim()).toBe("2");
+
+      const nextMgr = new WorkerdManager(createMockDeps({ statePath }));
+      expect(nextMgr.getBootGeneration()).toBe(2);
     });
   });
 

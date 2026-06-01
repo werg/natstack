@@ -45,6 +45,22 @@ describe("workspaceStateService — title mirror hooks", () => {
     expect(svc.methods["slot.create"]?.policy?.allowed).toContain("app");
   });
 
+  it("exposes lifecycle lease methods to DO callers", async () => {
+    const { svc, calls } = makeService({});
+    const key = { source: "workers/agent", className: "AiChatWorker", objectKey: "ch-1" };
+
+    expect(svc.methods["lifecycleLeaseUpsert"]?.policy?.allowed).toContain("do");
+    expect(svc.methods["lifecycleLeaseClear"]?.policy?.allowed).toContain("do");
+
+    await svc.handler(makeCtx() as never, "lifecycleLeaseUpsert", [{ ...key, detail: "turn" }]);
+    await svc.handler(makeCtx() as never, "lifecycleLeaseClear", [key]);
+
+    expect(calls).toEqual([
+      { method: "lifecycleLeaseUpsert", args: [{ ...key, detail: "turn" }] },
+      { method: "lifecycleLeaseClear", args: [key] },
+    ]);
+  });
+
   it("fires onPanelTitleChanged with the DO-resolved entity id on panel.index", async () => {
     const onPanelTitleChanged = vi.fn();
     const { svc } = makeService({

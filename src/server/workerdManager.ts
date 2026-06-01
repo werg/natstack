@@ -78,6 +78,16 @@ interface DORef {
   objectKey: string;
 }
 
+export interface RestartBeginEvent {
+  correlationId: string;
+  generation: number;
+  reason: string;
+}
+
+export interface RestartReadyEvent extends RestartBeginEvent {
+  previousGeneration: number | null;
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -190,6 +200,11 @@ export class WorkerdManager {
   >();
   /** Session ID — generated once per WorkerdManager lifetime, used for restart detection in bootstrap. */
   private sessionId = crypto.randomUUID();
+  private bootGeneration: number;
+  private pendingBootGeneration: number | null = null;
+  private readonly bootGenerationFile: string;
+  private restartBeginHooks = new Set<(event: RestartBeginEvent) => Promise<void> | void>();
+  private restartReadyHooks = new Set<(event: RestartReadyEvent) => Promise<void> | void>();
   /** Per-manager secret required by the generated router for direct DO dispatch. */
   private readonly dispatchSecret = crypto.randomBytes(32).toString("hex");
 
@@ -197,6 +212,8 @@ export class WorkerdManager {
     this.deps = deps;
     this.configDir = path.join(os.tmpdir(), `natstack-workerd-${process.pid}`);
     fs.mkdirSync(this.configDir, { recursive: true });
+    this.bootGenerationFile = path.join(this.deps.statePath, ".boot-generation");
+    this.bootGeneration = this.readBootGeneration();
   }
 
   private ensureWorkerBearer(callerId: string): string {
@@ -685,6 +702,20 @@ export class WorkerdManager {
     return this.deps.getWorkerdGatewayToken();
   }
 
+  getBootGeneration(): number {
+    return this.bootGeneration;
+  }
+
+  onRestartBegin(fn: (event: RestartBeginEvent) => Promise<void> | void): () => void {
+    this.restartBeginHooks.add(fn);
+    return () => this.restartBeginHooks.delete(fn);
+  }
+
+  onRestartReady(fn: (event: RestartReadyEvent) => Promise<void> | void): () => void {
+    this.restartReadyHooks.add(fn);
+    return () => this.restartReadyHooks.delete(fn);
+  }
+
   getDispatchSecret(): string {
     return this.dispatchSecret;
   }
@@ -763,6 +794,7 @@ export class WorkerdManager {
         { name: "WORKER_CLASS_NAME", text: className },
         // Session ID for restart detection (changes on each WorkerdManager lifetime)
         { name: "WORKERD_SESSION_ID", text: this.sessionId },
+        { name: "WORKERD_BOOT_GENERATION", text: String(this.configBootGeneration()) },
       ];
 
       // Gateway URL for RPC bridge (DOs use HttpRpcBridge via POST /rpc)
@@ -843,6 +875,7 @@ export class WorkerdManager {
         { name: "WORKER_SOURCE", text: instance.source },
         { name: "CONTEXT_ID", text: instance.contextId },
         { name: "GATEWAY_URL", text: this.deps.getServerUrl() },
+        { name: "WORKERD_BOOT_GENERATION", text: String(this.configBootGeneration()) },
       ];
       if (instance.parentId) {
         bindings.push({ name: "PARENT_ID", text: instance.parentId });
@@ -1152,6 +1185,17 @@ ${doBlock}${cases.join("\n")}
   // =========================================================================
 
   private async restartWorkerd(): Promise<void> {
+    const correlationId = crypto.randomUUID();
+    const previousGeneration = this.bootGeneration === 0 ? null : this.bootGeneration;
+    const nextGeneration = this.bootGeneration + 1;
+    const hadRunningProcess = this.process !== null;
+    if (hadRunningProcess) {
+      await this.emitRestartBegin({
+        correlationId,
+        generation: nextGeneration,
+        reason: "planned",
+      });
+    }
     await this.stopWorkerd();
 
     if (this.instances.size === 0 && this.doServices.size === 0) return;
@@ -1159,10 +1203,23 @@ ${doBlock}${cases.join("\n")}
     let lastError: unknown;
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
+        this.pendingBootGeneration = nextGeneration;
         await this.startWorkerdOnce();
+        this.bootGeneration = nextGeneration;
+        this.pendingBootGeneration = null;
+        this.writeBootGeneration(this.bootGeneration);
+        if (hadRunningProcess) {
+          await this.emitRestartReady({
+            correlationId,
+            generation: this.bootGeneration,
+            previousGeneration,
+            reason: "planned",
+          });
+        }
         return;
       } catch (err) {
         lastError = err;
+        this.pendingBootGeneration = null;
         const detail = this.formatWorkerdStartupError(err);
         if (attempt < 3) {
           log.warn(
@@ -1176,6 +1233,48 @@ ${doBlock}${cases.join("\n")}
     }
 
     throw lastError instanceof Error ? lastError : new Error("workerd failed to start");
+  }
+
+  private configBootGeneration(): number {
+    return this.pendingBootGeneration ?? this.bootGeneration;
+  }
+
+  private readBootGeneration(): number {
+    try {
+      const text = fs.readFileSync(this.bootGenerationFile, "utf8").trim();
+      const parsed = Number.parseInt(text, 10);
+      return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        log.warn("Failed to read workerd boot generation:", err);
+      }
+      return 0;
+    }
+  }
+
+  private writeBootGeneration(generation: number): void {
+    fs.mkdirSync(path.dirname(this.bootGenerationFile), { recursive: true });
+    fs.writeFileSync(this.bootGenerationFile, `${generation}\n`);
+  }
+
+  private async emitRestartBegin(event: RestartBeginEvent): Promise<void> {
+    for (const hook of this.restartBeginHooks) {
+      try {
+        await hook(event);
+      } catch (err) {
+        log.warn("restart begin hook failed:", err);
+      }
+    }
+  }
+
+  private async emitRestartReady(event: RestartReadyEvent): Promise<void> {
+    for (const hook of this.restartReadyHooks) {
+      try {
+        await hook(event);
+      } catch (err) {
+        log.warn("restart ready hook failed:", err);
+      }
+    }
   }
 
   private async startWorkerdOnce(): Promise<void> {

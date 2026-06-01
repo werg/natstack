@@ -10,6 +10,25 @@ class EchoDO extends DurableObjectBase {
   }
 }
 
+class LifecycleProbeDO extends DurableObjectBase {
+  protected createTables(): void {}
+  prepared = false;
+  resumed = false;
+
+  override async prepareForRestart(): Promise<{ status: "ready" }> {
+    this.prepared = true;
+    return { status: "ready" };
+  }
+
+  override async resumeAfterRestart(): Promise<void> {
+    this.resumed = true;
+  }
+
+  callerKind(): string | null {
+    return this.caller?.callerKind ?? null;
+  }
+}
+
 /**
  * Test harness for the explicit-title flag. Exposes setOwnTitle and
  * setOwnTitleExplicitly publicly so we can drive them from tests, and
@@ -56,6 +75,57 @@ describe("DurableObjectBase request parsing", () => {
     await expect(call("echo", { args: ["not-an-envelope"] })).resolves.toEqual([
       { args: ["not-an-envelope"] },
     ]);
+  });
+});
+
+describe("DurableObjectBase lifecycle routing", () => {
+  it("accepts lifecycle calls only from the verified server envelope caller", async () => {
+    const { instance } = await createTestDO(LifecycleProbeDO);
+    const fetchable = instance as unknown as { fetch(request: Request): Promise<Response> };
+
+    const rejected = await fetchable.fetch(
+      new Request("http://test/test-key/__lifecycle/prepare", {
+        method: "POST",
+        body: JSON.stringify({ args: [{ epoch: "e1", reason: "test", deadlineMs: 1 }] }),
+      })
+    );
+    expect(rejected.status).toBe(403);
+
+    const accepted = await fetchable.fetch(
+      new Request("http://test/test-key/__lifecycle/prepare", {
+        method: "POST",
+        body: JSON.stringify({
+          args: [{ epoch: "e1", reason: "test", deadlineMs: 1 }],
+          __instanceToken: "token",
+          __instanceId: "do:internal/WorkspaceDO:test-key",
+          __caller: { callerId: "main", callerKind: "server" },
+        }),
+      })
+    );
+    expect(accepted.status).toBe(200);
+    expect(instance.prepared).toBe(true);
+  });
+
+  it("does not leak verified lifecycle caller into later ordinary calls", async () => {
+    const { instance } = await createTestDO(LifecycleProbeDO);
+    const fetchable = instance as unknown as { fetch(request: Request): Promise<Response> };
+
+    await fetchable.fetch(
+      new Request("http://test/test-key/__lifecycle/resume", {
+        method: "POST",
+        body: JSON.stringify({
+          args: [{ epoch: "e1", previousGeneration: null, currentGeneration: 1, reason: "planned" }],
+          __instanceToken: "token",
+          __instanceId: "do:internal/WorkspaceDO:test-key",
+          __caller: { callerId: "main", callerKind: "server" },
+        }),
+      })
+    );
+
+    const response = await fetchable.fetch(
+      new Request("http://test/test-key/callerKind", { method: "POST", body: "[]" })
+    );
+    await expect(response.json()).resolves.toBeNull();
   });
 });
 

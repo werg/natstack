@@ -10,9 +10,11 @@ describe("workerdRpcRelay", () => {
           className: "EventStore",
           objectKey: "ctx/tree:chat",
         },
-        "append.events"
+        "__lifecycle/prepare now"
       )
-    ).toBe("/_w/workspace/workers/gad%20store/EventStore/ctx%2Ftree%3Achat/append.events");
+    ).toBe(
+      "/_w/workspace/workers/gad%20store/EventStore/ctx%2Ftree%3Achat/__lifecycle/prepare%20now"
+    );
   });
 
   it("stamps the workerd dispatch secret on DO relay requests", async () => {

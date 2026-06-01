@@ -311,6 +311,85 @@ describe("WorkspaceDO entity reads", () => {
   });
 });
 
+describe("WorkspaceDO lifecycle registry", () => {
+  let instance: WorkspaceDO;
+  beforeEach(async () => {
+    ({ instance } = await createTestDO(WorkspaceDOTestable));
+  });
+
+  it("upserts, refreshes, lists, and clears active-work leases", () => {
+    const key = { source: "workers/agent", className: "AiChatWorker", objectKey: "ch-1" };
+    instance.lifecycleLeaseUpsert({ ...key, detail: { turnId: "turn-1" } });
+    instance.lifecycleLeaseUpsert({ ...key, detail: { turnId: "turn-2" } });
+
+    expect(instance.lifecycleListLeases()).toMatchObject([
+      { ...key, detail: { turnId: "turn-2" } },
+    ]);
+
+    instance.lifecycleLeaseClear(key);
+    expect(instance.lifecycleListLeases()).toEqual([]);
+  });
+
+  it("opens an epoch and snapshots live leases into prepare and resume ops", () => {
+    const key = { source: "workers/agent", className: "AiChatWorker", objectKey: "ch-1" };
+    instance.lifecycleLeaseUpsert(key);
+
+    const epochId = instance.lifecycleOpenEpoch({
+      kind: "planned",
+      reason: "restart",
+      generation: 2,
+    });
+    expect(epochId).toMatch(/^epoch-/);
+
+    const ops = instance.lifecycleListOps(epochId);
+    expect(ops).toHaveLength(2);
+    expect(ops).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ ...key, opKind: "prepare", status: "pending" }),
+        expect.objectContaining({ ...key, opKind: "resume", status: "pending" }),
+      ])
+    );
+  });
+
+  it("returns lease-only crash targets even when no epoch or op exists", () => {
+    const key = { source: "workers/agent", className: "AiChatWorker", objectKey: "ch-1" };
+    instance.lifecycleLeaseUpsert(key);
+
+    expect(instance.lifecycleListResumeTargets()).toEqual([key]);
+  });
+
+  it("includes unfinished resume ops after the lease has been cleared", () => {
+    const key = { source: "workers/agent", className: "AiChatWorker", objectKey: "ch-1" };
+    instance.lifecycleLeaseUpsert(key);
+    const epochId = instance.lifecycleOpenEpoch({
+      kind: "planned",
+      reason: "restart",
+      generation: 2,
+    });
+    instance.lifecycleLeaseClear(key);
+
+    expect(instance.lifecycleListResumeTargets()).toEqual([key]);
+
+    instance.lifecycleRecordOp({
+      epochId,
+      key,
+      opKind: "resume",
+      status: "resumed",
+    });
+    expect(instance.lifecycleListResumeTargets()).toEqual([]);
+  });
+
+  it("clears a DO lease when the matching entity is retired", () => {
+    const rec = instance.entityActivate(doInput());
+    const key = { source: SOURCE, className: "MyDO", objectKey: "k1" };
+    instance.lifecycleLeaseUpsert(key);
+
+    instance.entityRetire(rec.id);
+
+    expect(instance.lifecycleListLeases()).toEqual([]);
+  });
+});
+
 describe("WorkspaceDO panel search metadata (FTS5-free fallback)", () => {
   // sql.js (the test fixture) lacks FTS5, so the panel_fts virtual table is
   // omitted by WorkspaceDOTestable. These tests cover the metadata-only path

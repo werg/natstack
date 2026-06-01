@@ -163,6 +163,24 @@ type DurablePanelMetadataResult = {
   runtimeEntityId?: string | null;
 };
 
+export interface LifecyclePrepareInput {
+  epoch: string;
+  reason: string;
+  deadlineMs: number;
+}
+
+export interface LifecyclePrepareResult {
+  status: "ready" | "failed";
+  detail?: string;
+}
+
+export interface LifecycleResumeInput {
+  epoch: string;
+  previousGeneration: number | null;
+  currentGeneration: number;
+  reason: "planned" | "crash" | "server_restart";
+}
+
 export abstract class DurableObjectBase {
   protected ctx: DurableObjectContext;
   protected sql: SqlStorage;
@@ -173,6 +191,7 @@ export abstract class DurableObjectBase {
   protected _currentRpcCallerId: string | null = null;
   protected _currentRpcCallerKind: string | null = null;
   protected _currentRpcCallerPanelId: string | null = null;
+  private _currentVerifiedCaller: AuthenticatedCaller | null = null;
   private _panelMetadataCache = new Map<string, PanelHandleMetadata>();
   private _credentials: CredentialClient | null = null;
   private _notifications: NotificationClient | null = null;
@@ -245,7 +264,11 @@ export abstract class DurableObjectBase {
   }
 
   /** Parse a POST body into positional method arguments. */
-  protected parseRequestBody(body: string): { args: unknown[]; error?: string } {
+  protected parseRequestBody(body: string): {
+    args: unknown[];
+    error?: string;
+    caller?: AuthenticatedCaller | null;
+  } {
     const parsed = JSON.parse(body);
     if (Array.isArray(parsed)) {
       return { args: parsed };
@@ -256,6 +279,22 @@ export abstract class DurableObjectBase {
       ("__instanceToken" in parsed || "__instanceId" in parsed) &&
       Array.isArray((parsed as { args?: unknown }).args)
     ) {
+      const caller = (parsed as { __caller?: unknown }).__caller;
+      if (caller && typeof caller === "object") {
+        const record = caller as Record<string, unknown>;
+        if (typeof record["callerId"] === "string" && typeof record["callerKind"] === "string") {
+          return {
+            args: (parsed as { args: unknown[] }).args,
+            caller: {
+              callerId: record["callerId"],
+              callerKind: record["callerKind"] as AuthenticatedCaller["callerKind"],
+              ...(typeof record["callerPanelId"] === "string"
+                ? { callerPanelId: record["callerPanelId"] }
+                : {}),
+            } as AuthenticatedCaller,
+          };
+        }
+      }
       return { args: (parsed as { args: unknown[] }).args };
     }
     return { args: [parsed] };
@@ -332,6 +371,7 @@ export abstract class DurableObjectBase {
    * raw `rpcCallerId`/`rpcCallerKind` pair for authorization checks.
    */
   protected get caller(): AuthenticatedCaller | null {
+    if (this._currentVerifiedCaller) return this._currentVerifiedCaller;
     const callerId = this._currentRpcCallerId;
     if (!callerId) return null;
     return {
@@ -708,6 +748,7 @@ export abstract class DurableObjectBase {
 
     try {
       let args: unknown[] = [];
+      let verifiedCallerFromBody: AuthenticatedCaller | null = null;
       if (request.method === "POST") {
         const body = await request.text();
         if (body) {
@@ -719,6 +760,29 @@ export abstract class DurableObjectBase {
             });
           }
           args = result.args;
+          verifiedCallerFromBody = result.caller ?? null;
+        }
+      }
+
+      if (method === "__lifecycle/prepare" || method === "__lifecycle/resume") {
+        const previousVerifiedCaller = this._currentVerifiedCaller;
+        this._currentVerifiedCaller = verifiedCallerFromBody;
+        try {
+          if (this.caller?.callerKind !== "server") {
+            return new Response(JSON.stringify({ error: "Lifecycle calls require server caller" }), {
+              status: 403,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+          const result =
+            method === "__lifecycle/prepare"
+              ? await this.prepareForRestart(args[0] as LifecyclePrepareInput)
+              : await this.resumeAfterRestart(args[0] as LifecycleResumeInput);
+          return new Response(JSON.stringify(result ?? null), {
+            headers: { "Content-Type": "application/json" },
+          });
+        } finally {
+          this._currentVerifiedCaller = previousVerifiedCaller;
         }
       }
 
@@ -751,6 +815,8 @@ export abstract class DurableObjectBase {
       const previousCallerId = this._currentRpcCallerId;
       const previousCallerKind = this._currentRpcCallerKind;
       const previousCallerPanelId = this._currentRpcCallerPanelId;
+      const previousVerifiedCaller = this._currentVerifiedCaller;
+      this._currentVerifiedCaller = verifiedCallerFromBody;
       this._currentRpcCallerId = request.headers.get("X-Natstack-Rpc-Caller-Id");
       this._currentRpcCallerKind = request.headers.get("X-Natstack-Rpc-Caller-Kind");
       this._currentRpcCallerPanelId = request.headers.get("X-Natstack-Rpc-Caller-Panel-Id");
@@ -763,6 +829,7 @@ export abstract class DurableObjectBase {
         this._currentRpcCallerId = previousCallerId;
         this._currentRpcCallerKind = previousCallerKind;
         this._currentRpcCallerPanelId = previousCallerPanelId;
+        this._currentVerifiedCaller = previousVerifiedCaller;
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -776,6 +843,33 @@ export abstract class DurableObjectBase {
   /** Override in subclasses to accept WebSocket connections. */
   protected handleWebSocketUpgrade(_request: Request): Response {
     return new Response("WebSocket not supported", { status: 426 });
+  }
+
+  async prepareForRestart(_input: LifecyclePrepareInput): Promise<LifecyclePrepareResult> {
+    return { status: "ready" };
+  }
+
+  async resumeAfterRestart(_input: LifecycleResumeInput): Promise<void> {}
+
+  protected async markCheckpointableWorkActive(detail?: unknown): Promise<void> {
+    await this.rpc.call("main", "workspace-state.lifecycleLeaseUpsert", [
+      {
+        source: String(this.env["WORKER_SOURCE"] ?? ""),
+        className: String(this.env["WORKER_CLASS_NAME"] ?? this.constructor.name),
+        objectKey: this.objectKey,
+        detail,
+      },
+    ]);
+  }
+
+  protected async markCheckpointableWorkInactive(): Promise<void> {
+    await this.rpc.call("main", "workspace-state.lifecycleLeaseClear", [
+      {
+        source: String(this.env["WORKER_SOURCE"] ?? ""),
+        className: String(this.env["WORKER_CLASS_NAME"] ?? this.constructor.name),
+        objectKey: this.objectKey,
+      },
+    ]);
   }
 
   // --- Hibernation hooks ---

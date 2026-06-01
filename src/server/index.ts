@@ -1825,6 +1825,28 @@ async function main() {
     });
   }
 
+  {
+    container.registerManaged({
+      name: "lifecycleDriver",
+      dependencies: ["workerdManager", "doDispatch"],
+      async start(resolve) {
+        const { LifecycleDriver } = await import("./services/lifecycleDriver.js");
+        const driver = new LifecycleDriver({
+          workerdManager: assertPresent(
+            resolve<import("./workerdManager.js").WorkerdManager>("workerdManager")
+          ),
+          doDispatch: assertPresent(resolve<import("./doDispatch.js").DODispatch>("doDispatch")),
+          workspaceId: workspace.config.id,
+        });
+        driver.start();
+        return driver;
+      },
+      async stop(instance: import("./services/lifecycleDriver.js").LifecycleDriver | null) {
+        instance?.stop();
+      },
+    });
+  }
+
   // ===========================================================================
   // Panel services, workspace info, PanelHttpServer, FS RPC
   // (extracted to panelRuntimeRegistration.ts)
@@ -2491,9 +2513,12 @@ async function main() {
   // factored into `runStartupReconciliation` so both the boot path and tests
   // can call them.
   const { runStartupReconciliation } = await import("./services/startupReconciliation.js");
+  const lifecycleDriver =
+    container.get<import("./services/lifecycleDriver.js").LifecycleDriver>("lifecycleDriver");
   const reconciliation = await runStartupReconciliation({
     dispatchWorkspaceDO,
     entityCache,
+    recoverLifecycle: () => lifecycleDriver.recoverStartup("server_restart"),
     logger: { warn: (msg, ...args) => console.warn(msg, ...args) },
   });
   // Re-register bootstrap entries that don't have DO rows.
@@ -2822,15 +2847,26 @@ async function main() {
     isShuttingDown = true;
     console.log("[Server] Shutting down...");
 
+    const lifecycleDriver = container.get<import("./services/lifecycleDriver.js").LifecycleDriver>(
+      "lifecycleDriver"
+    );
+    const shutdownStartedAt = Date.now();
     const forceExit = setTimeout(() => {
       console.warn("[Server] Shutdown timeout — forcing exit");
       process.exit(1);
-    }, 5000);
+    }, 8000);
 
     cleanupReaper.stop();
     if (startupPairingExpiryTimer) {
       clearTimeout(startupPairingExpiryTimer);
       startupPairingExpiryTimer = null;
+    }
+
+    const prepareBudgetMs = Math.max(0, Math.min(2000, 8000 - (Date.now() - shutdownStartedAt)));
+    if (prepareBudgetMs > 0) {
+      await lifecycleDriver
+        .prepareForShutdown(prepareBudgetMs)
+        .catch((err) => console.warn("[Server] lifecycle shutdown prepare failed:", err));
     }
 
     await container

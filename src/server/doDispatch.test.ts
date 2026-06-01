@@ -50,17 +50,16 @@ describe("doRefUrl", () => {
     );
   });
 
-  it("encodes the method name", () => {
+  it("encodes method path segments while preserving method slashes", () => {
     const ref = makeRef();
-    const url = doRefUrl(ref, "some method");
-    expect(url).toContain(encodeURIComponent("some method"));
+    const url = doRefUrl(ref, "__lifecycle/some method");
+    expect(url).toBe("/_w/workers/agent-worker/AiChatWorker/ch-123/__lifecycle/some%20method");
   });
 
-  it("does not encode the source path segments", () => {
-    const ref = makeRef();
+  it("encodes source path segments while preserving source slashes", () => {
+    const ref = makeRef({ source: "workspace/workers/agent worker" });
     const url = doRefUrl(ref, "ping");
-    // source "workers/agent-worker" should keep its slash
-    expect(url.startsWith("/_w/workers/agent-worker/")).toBe(true);
+    expect(url).toBe("/_w/workspace/workers/agent%20worker/AiChatWorker/ch-123/ping");
   });
 });
 
@@ -184,6 +183,40 @@ describe("DODispatch", () => {
           }),
         })
       );
+    });
+
+    it("stamps verified server caller identity for lifecycle dispatch", async () => {
+      const tokenManager = new TokenManager();
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+
+      vi.stubGlobal("fetch", fetchMock);
+      dispatch.setTokenManager(tokenManager);
+      dispatch.setGetWorkerdUrl(() => "http://127.0.0.1:10001");
+      dispatch.setGetDispatchSecret(() => "dispatch-secret");
+      dispatch.setGetWorkerdGatewayToken(() => "workerd-gateway-token");
+
+      const ref = makeRef();
+      await expect(
+        dispatch.dispatchLifecycle(ref, "resume", {
+          epoch: "epoch-1",
+          previousGeneration: 1,
+          currentGeneration: 2,
+          reason: "planned",
+        })
+      ).resolves.toEqual({ ok: true });
+
+      const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      expect(fetchMock.mock.calls[0]?.[0]).toBe(
+        "http://127.0.0.1:10001/_w/workers/agent-worker/AiChatWorker/ch-123/__lifecycle/resume"
+      );
+      expect(body["__caller"]).toEqual({ callerId: "main", callerKind: "server" });
+      expect(body["__parentId"]).toBe("main");
     });
   });
 });
