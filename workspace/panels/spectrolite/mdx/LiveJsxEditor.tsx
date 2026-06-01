@@ -97,7 +97,13 @@ function wrapForSandbox(source: string, docExportNames: ReadonlyArray<string>): 
     : "";
   return `
 import * as React from "react";
-import { ${importList} } from "@workspace/agentic-chat";
+import { mdxComponents } from "@workspace/agentic-chat";
+
+// @workspace/agentic-chat exposes the MDX surface as a runtime map, not as
+// individual named exports. Destructure from that map so namespace-style
+// components such as <Callout.Icon> and <Icons.InfoCircledIcon> keep their
+// static properties intact in sandboxed inline JSX.
+const { ${importList} } = mdxComponents;
 
 function WikiLink({ target, children }) {
   return (
