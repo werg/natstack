@@ -807,6 +807,42 @@ describe("PanelManager", () => {
     expect(registry.getPanel(created.panelId)?.title).toBe("Runtime Chat Title");
   });
 
+  it("does not resolve non-panel entity titles to panels by shared context", async () => {
+    const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-panel-manager-"));
+    tempDirs.push(workspacePath);
+
+    const panelDir = path.join(workspacePath, "panels", "chat");
+    fs.mkdirSync(panelDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(panelDir, "package.json"),
+      JSON.stringify({ name: "chat", natstack: { title: "Chat Panel" } })
+    );
+
+    const registry = new PanelRegistry({});
+    const { mem, deps } = makeManagerDeps(workspacePath);
+    const manager = new PanelManager({ registry, ...deps });
+    const created = await manager.create("panels/chat", {
+      isRoot: true,
+      addAsRoot: true,
+      name: "chat-root",
+      contextId: "ctx-shared",
+    });
+    const worker = await deps.runtime.createEntity({
+      kind: "worker",
+      source: "workers/agent",
+      key: "agent",
+      contextId: "ctx-shared",
+    });
+    const panelEntityId = mem.state.slots.get(created.panelId)?.current_entity_id;
+    if (!panelEntityId) throw new Error("expected current panel entity id");
+
+    await expect(manager.resolveTitleTargetSlot(worker.id)).resolves.toBeNull();
+    await expect(manager.resolveTitleTargetSlot(panelEntityId)).resolves.toEqual({
+      slotId: created.panelId,
+      titleIsAlreadyPersistedForSlot: true,
+    });
+  });
+
   it("closes parent subtrees with one workspace close and retires every panel entity", async () => {
     const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-panel-manager-"));
     tempDirs.push(workspacePath);

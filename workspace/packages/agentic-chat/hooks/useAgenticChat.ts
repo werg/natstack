@@ -537,14 +537,28 @@ export function useAgenticChat({ config, channelName, channelConfig, contextId, 
                             if (!title)
                                 return { ok: false, error: "Missing title" };
                             document.title = title;
+                            const warnings: string[] = [];
+                            try {
+                                await config.rpc.call("main", "runtime.setTitle", [title, { explicit: true }]);
+                            }
+                            catch (err) {
+                                warnings.push(err instanceof Error ? err.message : String(err));
+                                console.warn("[useAgenticChat] runtime.setTitle failed:", err);
+                            }
                             const client = core.clientRef.current;
                             if (client) {
                                 try {
-                                    await client.updateChannelConfig({ title, titleExplicit: true });
+                                    // The explicit panel title is set through runtime.setTitle above. Keep the
+                                    // channel title as shared metadata, but do not let the channel entity drive
+                                    // the context-based panel-title mirror path.
+                                    await client.updateChannelConfig({ title, titleExplicit: false });
                                 }
-                                catch { /* best-effort */ }
+                                catch (err) {
+                                    warnings.push(err instanceof Error ? err.message : String(err));
+                                    console.warn("[useAgenticChat] channel title config update failed:", err);
+                                }
                             }
-                            return { ok: true };
+                            return warnings.length > 0 ? { ok: true, warnings } : { ok: true };
                         },
                     },
                     inline_ui: {

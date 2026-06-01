@@ -682,16 +682,6 @@ export class PanelManager {
     if (direct) {
       return { slotId: direct.slot_id, titleIsAlreadyPersistedForSlot: true };
     }
-
-    const entity = await this.workspaceState.resolveActiveEntity(entityId);
-    if (!entity) return null;
-    for (const slot of slots) {
-      if (!slot.current_entity_id) continue;
-      const current = await this.workspaceState.resolveActiveEntity(slot.current_entity_id);
-      if (current?.kind === "panel" && current.contextId === entity.contextId) {
-        return { slotId: slot.slot_id, titleIsAlreadyPersistedForSlot: false };
-      }
-    }
     return null;
   }
 
