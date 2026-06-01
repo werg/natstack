@@ -225,6 +225,40 @@ function getAuthFailureInfo(err: unknown): { statusCode: number; message: string
   return null;
 }
 
+function assertDirString(value: unknown, method: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new TypeError(`git.${method}: expected ${method}(dir: string)`);
+  }
+  return value;
+}
+
+function assertOptionsObject<T extends { dir?: unknown }>(
+  value: unknown,
+  method: string,
+  signature: string
+): T {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError(`git.${method}: expected ${signature}`);
+  }
+  const options = value as T;
+  if (typeof options.dir !== "string" || options.dir.length === 0) {
+    throw new TypeError(`git.${method}: expected ${signature} with a non-empty dir string`);
+  }
+  return options;
+}
+
+function describeGitOperationError(
+  method: string,
+  options: { dir: string; remote?: string; ref?: string; force?: boolean },
+  err: unknown
+): Error {
+  const detail = err instanceof Error ? err.message : String(err);
+  const remote = options.remote ?? "origin";
+  const ref = options.ref ?? "(current branch)";
+  const force = options.force ? ", force=true" : "";
+  return new Error(`git.${method} failed for ${options.dir} -> ${remote}/${ref}${force}: ${detail}`);
+}
+
 /**
  * Convert ReadableStream to AsyncIterableIterator
  */
@@ -801,6 +835,7 @@ export class GitClient {
   private http: HttpClient;
   private serverUrl: string;
   private author: { name: string; email: string };
+  public readonly methods: string[];
 
   constructor(fs: FsPromisesLike, options: GitClientOptions) {
     this.fs = wrapFsForGit(fs);
@@ -817,6 +852,9 @@ export class GitClient {
       name: "NatStack Panel",
       email: "panel@natstack.local",
     };
+    this.methods = Object.getOwnPropertyNames(GitClient.prototype).filter(
+      (name) => name !== "constructor" && typeof (this as unknown as Record<string, unknown>)[name] === "function"
+    );
   }
 
   /**
@@ -950,14 +988,27 @@ export class GitClient {
    * Fetch without merging
    */
   async fetch(options: { dir: string; remote?: string; ref?: string }): Promise<void> {
-    await git.fetch({
-      fs: this.fs,
-      http: this.http,
-      dir: options.dir,
-      remote: options.remote ?? "origin",
-      ref: options.ref,
-      singleBranch: true,
-    });
+    const checked = assertOptionsObject<{ dir: string; remote?: string; ref?: string }>(
+      options,
+      "fetch",
+      "fetch({ dir: string, remote?: string, ref?: string })"
+    );
+    try {
+      await git.fetch({
+        fs: this.fs,
+        http: this.http,
+        dir: checked.dir,
+        remote: checked.remote ?? "origin",
+        ref: checked.ref,
+        singleBranch: true,
+      });
+    } catch (err) {
+      const authFailure = getAuthFailureInfo(err);
+      if (authFailure) {
+        throw new GitAuthError(authFailure.message, authFailure.statusCode);
+      }
+      throw describeGitOperationError("fetch", checked, err);
+    }
   }
 
   /**
@@ -970,10 +1021,12 @@ export class GitClient {
   ): Promise<void> {
     const options: PushOptions = typeof dirOrOptions === "string"
       ? { dir: dirOrOptions, ...(extraOptions ?? {}) }
-      : dirOrOptions;
-    if (!options.dir) {
-      throw new Error("git.push: 'dir' is required");
-    }
+      : assertOptionsObject<PushOptions>(
+          dirOrOptions,
+          "push",
+          "push({ dir: string, remote?: string, ref?: string, force?: boolean })"
+        );
+    assertDirString(options.dir, "push");
 
     const onProgress = options.onProgress
       ? (progress: { phase?: string; loaded?: number; total?: number }) => {
@@ -1000,7 +1053,7 @@ export class GitClient {
       if (authFailure) {
         throw new GitAuthError(authFailure.message, authFailure.statusCode);
       }
-      throw err;
+      throw describeGitOperationError("push", options, err);
     }
   }
 
@@ -1090,6 +1143,7 @@ export class GitClient {
    * Get repository status
    */
   async status(dir: string): Promise<RepoStatus> {
+    dir = assertDirString(dir, "status");
     // Get current branch
     let branch: string | null = null;
     try {

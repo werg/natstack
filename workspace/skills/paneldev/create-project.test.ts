@@ -138,6 +138,25 @@ describe("forkProject", () => {
     expect(result).toBe("No working-tree changes; pushed current HEAD to origin/main");
   });
 
+  it("commitAndPush reports the local commit when push fails", async () => {
+    mocks.gitClient.listRemotes.mockResolvedValue([{ remote: "origin", url: "panels/my-app" }]);
+    mocks.gitClient.status.mockResolvedValue({
+      branch: "main",
+      commit: "abc",
+      dirty: true,
+      files: [{ path: "index.tsx", status: "modified", staged: true, unstaged: false }],
+    });
+    mocks.gitClient.getCurrentBranch.mockResolvedValue("main");
+    mocks.gitClient.commit.mockResolvedValue("1234567890abcdef");
+    mocks.gitClient.push.mockRejectedValue(new Error("Authentication failed: Forbidden"));
+
+    const { commitAndPush } = await import("./create-project.js");
+
+    await expect(commitAndPush("panels/my-app", "Update")).rejects.toThrow(
+      /Local commit 1234567890abcdef exists\.[\s\S]*Underlying error: Authentication failed: Forbidden/
+    );
+  });
+
   it("rewrites a single-class worker fork and preserves binary files", async () => {
     addDir("workers/source/.git");
     addFile(

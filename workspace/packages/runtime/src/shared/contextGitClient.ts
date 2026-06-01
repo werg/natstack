@@ -1,7 +1,8 @@
 import type { RpcClient } from "@natstack/rpc";
 import type { GitClient, RepoStatus } from "@natstack/git";
 
-function isWorkspaceRepoPath(dir: string): boolean {
+function isWorkspaceRepoPath(dir: unknown): dir is string {
+  if (typeof dir !== "string") return false;
   if (!dir || dir.startsWith("/") || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(dir)) return false;
   if (dir.includes("..") || dir.includes("\\")) return false;
   const segments = dir.split("/").filter(Boolean);

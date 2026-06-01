@@ -43,13 +43,40 @@ export async function commitAndPush(
   const branch = (await gitClient.getCurrentBranch(dir)) ?? "main";
 
   if (!hasChanges) {
-    await gitClient.push({ dir, ref: branch, force: options.force ?? false });
+    await pushWithContext(gitClient, {
+      dir,
+      branch,
+      force: options.force ?? false,
+      existingCommit: status.commit ?? (await gitClient.getCurrentCommit(dir)),
+    });
     return `No working-tree changes; pushed current HEAD to origin/${branch}`;
   }
 
   const sha = await gitClient.commit({ dir, message });
-  await gitClient.push({ dir, ref: branch, force: options.force ?? false });
+  await pushWithContext(gitClient, {
+    dir,
+    branch,
+    force: options.force ?? false,
+    existingCommit: sha,
+  });
   return `Committed ${sha.slice(0, 7)} and pushed to origin/${branch}`;
+}
+
+async function pushWithContext(
+  gitClient: GitClient,
+  opts: { dir: string; branch: string; force: boolean; existingCommit: string | null }
+): Promise<void> {
+  try {
+    await gitClient.push({ dir: opts.dir, ref: opts.branch, force: opts.force });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const commit = opts.existingCommit ? ` Local commit ${opts.existingCommit} exists.` : "";
+    throw new Error(
+      `Push failed for ${opts.dir} on ${opts.branch}.${commit} ` +
+        `Working tree changes may already be committed locally; retry commitAndPush to push the clean HEAD, or inspect git.status("${opts.dir}"). ` +
+        `Underlying error: ${detail}`
+    );
+  }
 }
 
 const TYPE_DIRS: Record<string, string> = {

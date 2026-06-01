@@ -62,4 +62,23 @@ describe("createContextAwareGitClient", () => {
     expect(originalStatusFn).toHaveBeenCalledWith("/tmp/repo");
     expect(originalAddAllFn).toHaveBeenCalledWith("/tmp/repo");
   });
+
+  it("leaves malformed status arguments on the original git client for validation", async () => {
+    const rpc = { call: vi.fn() } as unknown as Pick<RpcClient, "call"> & {
+      call: ReturnType<typeof vi.fn>;
+    };
+    const client = {
+      status: vi.fn(async () => makeStatus()),
+      addAll: vi.fn(async () => undefined),
+    } as unknown as GitClient;
+    const originalStatusFn = client.status as unknown as ReturnType<typeof vi.fn>;
+
+    const wrapped = createContextAwareGitClient(client, rpc);
+    const badArg = { dir: "panels/spectrolite" };
+
+    await wrapped.status(badArg as never);
+
+    expect(rpc.call).not.toHaveBeenCalled();
+    expect(originalStatusFn).toHaveBeenCalledWith(badArg);
+  });
 });

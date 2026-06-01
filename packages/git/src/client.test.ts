@@ -109,4 +109,25 @@ describe("GitClient", () => {
       dir: "/repo",
     });
   });
+
+  it("exposes a discoverable method list", () => {
+    const client = new GitClient(fs, { token: "test-token" });
+
+    expect(client.methods).toEqual(
+      expect.arrayContaining(["commit", "fetch", "push", "status", "statusMatrix"])
+    );
+  });
+
+  it("validates status and fetch argument shapes before calling isomorphic-git", async () => {
+    const client = new GitClient(fs, { token: "test-token" });
+    const statusMatrix = vi.spyOn(git, "statusMatrix");
+
+    await expect(client.status({ dir: "/repo" } as never)).rejects.toThrow(
+      "git.status: expected status(dir: string)"
+    );
+    await expect(client.fetch("/repo" as never)).rejects.toThrow(
+      "git.fetch: expected fetch({ dir: string, remote?: string, ref?: string })"
+    );
+    expect(statusMatrix).not.toHaveBeenCalled();
+  });
 });
