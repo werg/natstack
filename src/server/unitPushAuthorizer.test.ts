@@ -1,11 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
 import { createVerifiedCaller } from "@natstack/shared/serviceDispatcher";
 import type { UnitBatchEntry } from "@natstack/shared/approvals";
+import type { ApprovalQueue } from "./services/approvalQueue.js";
+import { CapabilityGrantStore } from "./services/capabilityGrantStore.js";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 
 import {
   createWorkspaceMetaPushAuthorizer,
+  createWorkspaceRepoPushAuthorizer,
   createWorkspaceUnitPushAuthorizer,
 } from "./unitPushAuthorizer.js";
+
+function tempStatePath(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "natstack-unit-push-"));
+}
 
 function panelCaller(id = "panel:one") {
   return createVerifiedCaller(id, "panel", {
@@ -40,6 +50,28 @@ function grantStore() {
     grant: vi.fn((key: string) => {
       active.add(key);
     }),
+  };
+}
+
+function createApprovalQueueMock(
+  decision: Awaited<ReturnType<ApprovalQueue["request"]>> = "session"
+): ApprovalQueue {
+  return {
+    request: vi.fn(async () => decision),
+    requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
+    requestCredentialInput: vi.fn(async () => ({ decision: "deny" as const })),
+    requestUserland: vi.fn(async () => ({ kind: "dismissed" as const })),
+    presentDeviceCode: vi.fn(() => ({
+      approvalId: "device-code-test",
+      cancelled: new AbortController().signal,
+      dispose: vi.fn(),
+    })),
+    resolve: vi.fn(),
+    resolveUserland: vi.fn(),
+    submitClientConfig: vi.fn(),
+    submitCredentialInput: vi.fn(),
+    listPending: vi.fn(() => []),
+    cancelForCaller: vi.fn(),
   };
 }
 
@@ -122,6 +154,33 @@ describe("createWorkspaceUnitPushAuthorizer", () => {
     expect(appHandler.authorizeSourcePush).not.toHaveBeenCalled();
   });
 
+  it("routes non-unit pushes to a fallback authorizer when configured", async () => {
+    const appHandler = { authorizeSourcePush: vi.fn(async () => ({ allowed: false })) };
+    const fallbackHandler = { authorizeSourcePush: vi.fn(async () => ({ allowed: true })) };
+    const authorize = createWorkspaceUnitPushAuthorizer({
+      targets: [{ sourceRoot: "apps", getHandler: () => appHandler }],
+      getMetaHandler: () => null,
+      getFallbackHandler: () => fallbackHandler,
+    });
+
+    await expect(
+      authorize({
+        caller,
+        repoPath: "panels/main",
+        branch: "refs/heads/main",
+        commit: "abc",
+      })
+    ).resolves.toEqual({ allowed: true });
+    expect(appHandler.authorizeSourcePush).not.toHaveBeenCalled();
+    expect(fallbackHandler.authorizeSourcePush).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repoPath: "panels/main",
+        branch: "refs/heads/main",
+        commit: "abc",
+      })
+    );
+  });
+
   it("fails closed for unit source pushes when the owning host is unavailable", async () => {
     const authorize = createWorkspaceUnitPushAuthorizer({
       targets: [{ sourceRoot: "apps", getHandler: () => null }],
@@ -158,6 +217,97 @@ describe("createWorkspaceUnitPushAuthorizer", () => {
       allowed: false,
       reason: "Workspace config push authorizer is unavailable",
     });
+  });
+});
+
+describe("createWorkspaceRepoPushAuthorizer", () => {
+  it("requests push-specific approval for generic workspace repos", async () => {
+    const approvalQueue = createApprovalQueueMock("session");
+    const grantStore = new CapabilityGrantStore({ statePath: tempStatePath() });
+    const authorizer = createWorkspaceRepoPushAuthorizer({ approvalQueue, grantStore });
+
+    await expect(
+      authorizer.authorizeSourcePush({
+        caller: panelCaller("panel-1"),
+        repoPath: "/panels/spectrolite.git",
+        branch: "refs/heads/main",
+        commit: "abcdef1234567890",
+      })
+    ).resolves.toEqual({ allowed: true });
+    await expect(
+      authorizer.authorizeSourcePush({
+        caller: panelCaller("panel-1"),
+        repoPath: "panels/spectrolite",
+        branch: "main",
+        commit: "fedcba0987654321",
+      })
+    ).resolves.toEqual({ allowed: true });
+
+    expect(approvalQueue.request).toHaveBeenCalledTimes(1);
+    expect(approvalQueue.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "capability",
+        capability: "internal-git-write",
+        callerId: "panel-1",
+        callerKind: "panel",
+        repoPath: "panels/test",
+        effectiveVersion: "ev-panel",
+        dedupKey: "workspace-source-push:panels/spectrolite:main:abcdef1234567890",
+        resource: {
+          type: "git-repo",
+          label: "Repository",
+          value: "panels/spectrolite",
+        },
+        grantResourceKey: "workspace-source-push:panels/spectrolite:main",
+        details: [
+          { label: "Operation", value: "git push" },
+          { label: "Branch", value: "main" },
+          { label: "Commit", value: "abcdef1234567890" },
+        ],
+      })
+    );
+  });
+
+  it("does not reuse broad internal git write grants for concrete pushes", async () => {
+    const approvalQueue = createApprovalQueueMock("once");
+    const grantStore = new CapabilityGrantStore({ statePath: tempStatePath() });
+    const caller = panelCaller("panel-1");
+    const identity = caller.code;
+    if (!identity) throw new Error("expected test caller identity");
+    grantStore.grant("internal-git-write", "panels/spectrolite", identity, "session");
+    const authorizer = createWorkspaceRepoPushAuthorizer({ approvalQueue, grantStore });
+
+    await expect(
+      authorizer.authorizeSourcePush({
+        caller,
+        repoPath: "panels/spectrolite",
+        branch: "main",
+        commit: "abcdef1234567890",
+      })
+    ).resolves.toEqual({ allowed: true });
+
+    expect(approvalQueue.request).toHaveBeenCalledOnce();
+  });
+
+  it("denies generic workspace pushes when the caller has no code identity", async () => {
+    const approvalQueue = createApprovalQueueMock("session");
+    const authorizer = createWorkspaceRepoPushAuthorizer({
+      approvalQueue,
+      grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
+    });
+
+    await expect(
+      authorizer.authorizeSourcePush({
+        caller: createVerifiedCaller("panel-unknown", "panel"),
+        repoPath: "panels/spectrolite",
+        branch: "main",
+        commit: "abcdef1234567890",
+      })
+    ).resolves.toEqual({
+      allowed: false,
+      reason: "Unknown capability caller: panel-unknown",
+    });
+    expect(approvalQueue.request).not.toHaveBeenCalled();
   });
 });
 

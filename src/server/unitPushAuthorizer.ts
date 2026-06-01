@@ -11,6 +11,12 @@ import {
 } from "@natstack/unit-host";
 import type { PendingUnitBatchApproval, UnitBatchEntry } from "@natstack/shared/approvals";
 import { execGitFileSync } from "@natstack/shared/gitRuntime";
+import type { VerifiedCaller } from "@natstack/shared/serviceDispatcher";
+import { INTERNAL_GIT_WRITE_CAPABILITY } from "./services/gitWritePermission.js";
+import {
+  requestCapabilityPermission,
+  type CapabilityPermissionDeps,
+} from "./services/capabilityPermission.js";
 
 export interface UnitMetaPushGrantStore {
   hasActive(key: string): boolean;
@@ -36,6 +42,7 @@ export interface UnitMetaPushApprovalQueue {
 export function createWorkspaceUnitPushAuthorizer(deps: {
   targets: UnitPushTarget[];
   getMetaHandler(): UnitPushHandler | null | undefined;
+  getFallbackHandler?(): UnitPushHandler | null | undefined;
 }): (request: UnitPushRequest) => Promise<UnitPushDecision> {
   return async (request) => {
     const repoPath = normalizeUnitRepoPath(request.repoPath);
@@ -52,7 +59,10 @@ export function createWorkspaceUnitPushAuthorizer(deps: {
       (candidate) =>
         repoPath === candidate.sourceRoot || repoPath.startsWith(`${candidate.sourceRoot}/`)
     );
-    if (!target) return { allowed: true };
+    if (!target) {
+      const fallback = deps.getFallbackHandler?.();
+      return fallback ? fallback.authorizeSourcePush(routedRequest) : { allowed: true };
+    }
     const handler = target.getHandler();
     if (!handler) {
       return {
@@ -61,6 +71,58 @@ export function createWorkspaceUnitPushAuthorizer(deps: {
       };
     }
     return handler.authorizeSourcePush(routedRequest);
+  };
+}
+
+export function createWorkspaceRepoPushAuthorizer(deps: CapabilityPermissionDeps): UnitPushHandler {
+  return {
+    async authorizeSourcePush(request) {
+      if (request.caller.runtime.kind === "shell" || request.caller.runtime.kind === "server") {
+        return { allowed: true };
+      }
+      const repoPath = normalizeUnitRepoPath(request.repoPath);
+      const branch = normalizeUnitRef(request.branch);
+      const callerKind = metaPushCallerKind(request.caller.runtime.kind);
+      if (!callerKind) {
+        return {
+          allowed: false,
+          reason: `Workspace repo pushes from ${request.caller.runtime.kind} callers are not supported`,
+        };
+      }
+      const identity = request.caller.code;
+      if (!identity || identity.callerKind !== request.caller.runtime.kind) {
+        return {
+          allowed: false,
+          reason: `Unknown capability caller: ${request.caller.runtime.id}`,
+        };
+      }
+      const authorization = await requestCapabilityPermission(deps, {
+        caller: request.caller as VerifiedCaller,
+        capability: INTERNAL_GIT_WRITE_CAPABILITY,
+        dedupKey: `workspace-source-push:${repoPath}:${branch}:${request.commit}`,
+        resource: {
+          type: "git-repo",
+          label: "Repository",
+          value: repoPath,
+          key: `workspace-source-push:${repoPath}:${branch}`,
+        },
+        title: "Push workspace repo",
+        description: "Allow this code version to push changes to a workspace source repository.",
+        details: [
+          { label: "Operation", value: "git push" },
+          { label: "Branch", value: branch },
+          { label: "Commit", value: request.commit },
+        ],
+        deniedReason: "Workspace repo push denied",
+      });
+      if (!authorization.allowed) {
+        return {
+          allowed: false,
+          reason: authorization.reason ?? "Workspace repo push denied",
+        };
+      }
+      return { allowed: true };
+    },
   };
 }
 

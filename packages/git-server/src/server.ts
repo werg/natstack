@@ -209,6 +209,14 @@ export class GitServer {
             next();
             return;
           }
+          // A branch-aware authorizer can make a concrete decision with the
+          // pushed repo, ref, and commit. Avoid also asking the coarse
+          // pre-receive write gate, which would create broad grants that can
+          // unintentionally bypass push-specific prompts.
+          if (this.pushAuthorizer) {
+            next();
+            return;
+          }
           if (!this.writeAuthorizer) {
             next(new Error("Git write permission unavailable"));
             return;

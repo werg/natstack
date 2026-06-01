@@ -25,6 +25,7 @@ import { getPublicUrl } from "./publicUrl.js";
 import { registerBuildProvider, unregisterBuildProvider } from "./buildV2/buildProviderRegistry.js";
 import { RuntimeDiagnosticsStore } from "./runtimeDiagnosticsStore.js";
 import {
+  createWorkspaceRepoPushAuthorizer,
   createWorkspaceMetaPushAuthorizer,
   createWorkspaceUnitPushAuthorizer,
 } from "./unitPushAuthorizer.js";
@@ -723,6 +724,10 @@ async function main() {
 
   const { createGitWriteAuthorizer } = await import("./services/gitWritePermission.js");
   const { WORKSPACE_GIT_INIT_PATTERNS } = await import("@natstack/shared/workspace/sourceDirs");
+  const workspaceRepoPushAuthorizer = createWorkspaceRepoPushAuthorizer({
+    approvalQueue,
+    grantStore: capabilityGrantStore,
+  });
   const gitServer = new GitServer({
     reposPath: workspacePath,
     initPatterns: [...WORKSPACE_GIT_INIT_PATTERNS],
@@ -758,6 +763,7 @@ async function main() {
         { sourceRoot: "extensions", getHandler: () => extensionHostForGateway },
       ],
       getMetaHandler: () => workspaceMetaPushAuthorizer,
+      getFallbackHandler: () => workspaceRepoPushAuthorizer,
     }),
   });
 
