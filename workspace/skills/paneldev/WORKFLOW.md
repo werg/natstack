@@ -1,6 +1,6 @@
 # Agent Panel Workflow
 
-Use one runtime concept: `PanelHandle`. `openPanel(source, options)` opens both workspace panels and URLs and returns a handle. In userland, opening a panel is a structural tree mutation and may prompt on first use for the requester entity and parent/root target. `listPanels()` rediscovers existing handles. Keep the handle and reload it after code changes.
+Use one runtime concept: `PanelHandle`. `openPanel(source, options)` opens both workspace panels and URLs and returns a handle. In userland, opening a panel is a structural tree mutation and may prompt on first use for the requester entity and parent/root target. `listPanels()` rediscovers existing handles. Keep the handle, rebuild it after committed code changes, then reload it to make the running renderer fetch the rebuilt bundle.
 
 ## Loop
 
@@ -24,21 +24,22 @@ scope.myApp = await openPanel("panels/my-app", { focus: true });
 await scope.myApp.snapshot();
 ```
 
-4. Iterate by reloading the same handle:
+4. Iterate by rebuilding and reloading the same handle:
 
 ```ts
 import { commitAndPush } from "@workspace-skills/paneldev";
 
 await commitAndPush("panels/my-app", "Fix layout");
+await scope.myApp.rebuildPanel();
 await scope.myApp.reload();
 await scope.myApp.snapshot();
 ```
 
-`reload()` tears down the target renderer. If the eval is running from a
-descendant of the target being reloaded, the eval can be cancelled. For ancestor
-or parent panels, prefer running lifecycle operations from a stable panel/root
-context, or use `await handle.rebuildPanel(); await handle.refresh();` when you
-only need a rebuild plus fresh metadata before a later reload.
+`rebuildPanel()` invalidates/rebuilds the named panel's workspace bundle. It is
+not recursive and does not rebuild/reload child panels. `reload()` is a
+browser-style reload of the named panel's current renderer; it does not rebuild
+code by itself. If the eval is running inside the target being reloaded, the eval
+can be cancelled after the reload command is sent.
 
 Before reloading a parent or ancestor, verify the target:
 
@@ -48,9 +49,9 @@ console.log(info.id, info.source, info.contextId, info.runtimeEntityId, info.eff
 ```
 
 `effectiveVersion` is the git/effective-version hash for the source currently
-running in that panel's active runtime entity. `reload()` reloads exactly the
-panel named by the handle's `id`. It must not unload the target's runtime lease
-or rebuild/reload the panel's descendants.
+running in that panel's active runtime entity. `rebuildPanel()` and `reload()`
+both target exactly the panel named by the handle's `id`. They must not unload
+the target's runtime lease or rebuild/reload the panel's descendants.
 
 5. Tune running state without reopening:
 

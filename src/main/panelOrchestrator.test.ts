@@ -467,6 +467,52 @@ describe("PanelOrchestrator.applyBuildComplete", () => {
   });
 });
 
+describe("PanelOrchestrator.retryBuild", () => {
+  it("forces a rebuild for the named panel without rebuilding child panels", async () => {
+    const registry = new PanelRegistry({ onTreeUpdated: vi.fn() });
+    const child = makePanel("child", [], {
+      snapshot: {
+        source: "panels/child",
+        contextId: "ctx-child",
+        options: {},
+      },
+      artifacts: { buildState: "ready", buildRevision: 7 },
+    });
+    const parent = makePanel("parent", [], {
+      snapshot: {
+        source: "panels/parent",
+        contextId: "ctx-parent",
+        options: {},
+      },
+      artifacts: { buildState: "ready", buildRevision: 3 },
+    });
+    registry.addPanel(parent, null, { addAsRoot: true });
+    registry.addPanel(child, parent.id);
+
+    const { orchestrator, panelView, panelHttpServer } = createOrchestrator(registry);
+    panelView.hasView.mockReturnValue(true);
+
+    await orchestrator.retryBuild(parent.id);
+
+    expect(panelHttpServer.invalidateBuild).toHaveBeenCalledWith("panels/parent");
+    expect(panelHttpServer.invalidateBuild).not.toHaveBeenCalledWith("panels/child");
+    expect(panelView.createViewForPanel).toHaveBeenCalledTimes(1);
+    expect(panelView.createViewForPanel).toHaveBeenCalledWith(
+      parent.id,
+      expect.stringContaining("/panels/parent/"),
+      "ctx-parent"
+    );
+    expect(registry.getPanel(parent.id)?.artifacts).toMatchObject({
+      buildState: "building",
+      buildProgress: "Rebuilding panel...",
+    });
+    expect(registry.getPanel(child.id)?.artifacts).toMatchObject({
+      buildState: "ready",
+      buildRevision: 7,
+    });
+  });
+});
+
 describe("PanelOrchestrator.recoverShellSnapshot", () => {
   it("syncs tree and leases, resolves focus, and publishes one normalized snapshot", async () => {
     const registry = new PanelRegistry({ onTreeUpdated: vi.fn() });

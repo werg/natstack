@@ -139,15 +139,16 @@ const shell = extensions.use<ShellApi>("@workspace-extensions/shell", {
 To check whether an extension is available before calling it, use `extensions.list()`:
 
 ```ts
-eval({ code: `
+eval({
+  code: `
   import { extensions } from "@workspace/runtime";
   const name = "@workspace-extensions/image-service";
   const entry = (await extensions.list()).find((e) => e.name === name);
   if (!entry || entry.status !== "running") {
     throw new Error(name + " is not available — declare it in meta/natstack.yml and approve it.");
   }
-`
-})
+`,
+});
 ```
 
 If an extension isn't declared, adding it to `meta/natstack.yml` raises a joint approval. If the user denies it, stop and report that the extension is required for the requested operation.
@@ -392,12 +393,14 @@ eval({ code: `
   import { commitAndPush } from "@workspace-skills/paneldev";
   import { openPanel } from "@workspace/runtime";
   await commitAndPush("panels/my-app", "Update");
-  await openPanel("panels/my-app");
+  const handle = await openPanel("panels/my-app");
+  await handle.rebuildPanel();
+  await handle.reload();
 `
 })
 ```
 
-When iterating on an already-open panel, reuse its handle from `scope` or rediscover it with `listPanels()` and prefer `handle.rebuildPanel()` followed by `handle.refresh()` when you only need fresh metadata. `handle.reload()` tears down the target renderer; reloading an ancestor of the panel running the eval can cancel that eval and its descendants.
+When iterating on an already-open panel after committed code changes, reuse its handle from `scope` or rediscover it with `listPanels()`, then call `handle.rebuildPanel()` followed by `handle.reload()`. `handle.rebuildPanel()` is target-only and does not recurse into children. `handle.reload()` is a browser-style renderer reload; it does not rebuild code by itself and can cancel an eval running inside that same target after the command is sent.
 
 ---
 

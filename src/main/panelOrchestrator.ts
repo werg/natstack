@@ -397,10 +397,10 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     }
   }
 
-  async rebuildUnloadedPanel(panelId: string): Promise<void> {
+  async rebuildUnloadedPanel(panelId: string, options: { force?: boolean } = {}): Promise<void> {
     const panel = this.registry.getPanel(panelId);
     if (!panel) throw new Error(`Panel not found: ${panelId}`);
-    if (panel.artifacts?.buildState !== "pending") return;
+    if (!options.force && panel.artifacts?.buildState !== "pending") return;
 
     // Re-registers the panel principal and issues a fresh connection grant.
     await this.shellCore.getPanelInit(asPanelSlotId(panelId));
@@ -463,7 +463,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
   }
 
   async retryBuild(panelId: string): Promise<void> {
-    await this.rebuildUnloadedPanel(panelId);
+    await this.rebuildUnloadedPanel(panelId, { force: true });
   }
 
   applyBuildComplete(source: string, error?: string): void {
