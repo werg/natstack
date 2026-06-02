@@ -93,6 +93,37 @@ const URL_BOUND_MODEL_CREDENTIAL_SENTINEL = "natstack-url-bound-model-credential
 const URL_BOUND_MODEL_CREDENTIAL_SENTINEL_CLAIM =
   "https://natstack.local/url-bound-model-credential";
 const IMAGE_SERVICE_EXTENSION = "@workspace-extensions/image-service";
+
+function imageBinaryToBuffer(value: unknown): Buffer {
+  if (typeof value === "string") return Buffer.from(value, "base64");
+  if (value instanceof Uint8Array) return Buffer.from(value);
+  if (value instanceof ArrayBuffer) return Buffer.from(value);
+  if (typeof SharedArrayBuffer !== "undefined" && value instanceof SharedArrayBuffer) {
+    return Buffer.from(value);
+  }
+  if (ArrayBuffer.isView(value)) {
+    return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+  }
+  if (Array.isArray(value)) return Buffer.from(value);
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    if (obj["__bin"] === true && typeof obj["data"] === "string") {
+      return Buffer.from(obj["data"], "base64");
+    }
+    if (obj["type"] === "Buffer" && Array.isArray(obj["data"])) {
+      return Buffer.from(obj["data"] as number[]);
+    }
+    if (Number.isSafeInteger(obj["length"])) {
+      return Buffer.from(value as ArrayLike<number>);
+    }
+  }
+  throw new TypeError("Expected image data to be base64 text or binary bytes");
+}
+
+function imageBinaryToBase64(value: unknown): string {
+  return typeof value === "string" ? value : imageBinaryToBuffer(value).toString("base64");
+}
+
 const DEBUG_RING_LIMIT = 80;
 const DEBUG_PREVIEW_LIMIT = 240;
 const DEBUG_COLLECTION_LIMIT = 16;
@@ -6075,8 +6106,10 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     const imageService = createExtensionsClient(this.rpc).use(IMAGE_SERVICE_EXTENSION);
     for (const att of attachments) {
       if (!att.mimeType?.startsWith("image/")) continue;
+      let originalBase64: string | undefined;
       try {
-        const bytes = Buffer.from(att.data, "base64");
+        originalBase64 = imageBinaryToBase64(att.data);
+        const bytes = Buffer.from(originalBase64, "base64");
         const resized = await imageService.resize(bytes, att.mimeType, {
           maxWidth: 2000,
           maxHeight: 2000,
@@ -6084,14 +6117,20 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
         images.push({
           type: "image",
           mimeType: resized.mimeType,
-          data: Buffer.from(resized.data).toString("base64"),
+          data: imageBinaryToBase64(resized.data),
         });
       } catch (err) {
         console.warn(
           `[TrajectoryVesselBase] image-service.resize failed for channel=${channelId}; passing original:`,
           err
         );
-        images.push({ type: "image", mimeType: att.mimeType, data: att.data });
+        try {
+          originalBase64 ??= imageBinaryToBase64(att.data);
+          images.push({ type: "image", mimeType: att.mimeType, data: originalBase64 });
+        } catch {
+          // The attachment reached this worker in an unsupported shape. We
+          // cannot safely forward it to the model as image content.
+        }
       }
     }
     return images.length > 0 ? images : undefined;
