@@ -93,11 +93,13 @@ export class LifecycleDriver {
     this.restartEpochs.delete(event.correlationId);
     const ops = await this.dispatchWorkspace<LifecycleOp[]>("lifecycleListOps", epoch);
     const targets = this.dedupe(
-      ops.filter((op) => op.opKind === "resume").map((op) => ({
-        source: op.source,
-        className: op.className,
-        objectKey: op.objectKey,
-      }))
+      ops
+        .filter((op) => op.opKind === "resume")
+        .map((op) => ({
+          source: op.source,
+          className: op.className,
+          objectKey: op.objectKey,
+        }))
     );
     await this.resumeTargets(epoch, targets, {
       previousGeneration: event.previousGeneration,
@@ -159,7 +161,11 @@ export class LifecycleDriver {
   private async resumeTargets(
     epoch: string,
     targets: LifecycleKey[],
-    input: { previousGeneration: number | null; currentGeneration: number; reason: "planned" | "crash" | "server_restart" }
+    input: {
+      previousGeneration: number | null;
+      currentGeneration: number;
+      reason: "planned" | "crash" | "server_restart";
+    }
   ): Promise<void> {
     await this.runPool(this.dedupe(targets), async (target) => {
       try {

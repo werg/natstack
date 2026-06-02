@@ -487,7 +487,7 @@ function porcelainLineToFileStatus(line: string): ContextRepoStatus["files"][num
   const index = line.slice(0, 1);
   const workingTree = line.slice(1, 2);
   const rawPath = line.slice(3).trim();
-  const path = rawPath.includes(" -> ") ? rawPath.split(" -> ").pop()!.trim() : rawPath;
+  const path = rawPath.includes(" -> ") ? (rawPath.split(" -> ").pop() ?? rawPath).trim() : rawPath;
 
   const staged = index !== " " && index !== "?";
   const unstaged = workingTree !== " " && workingTree !== "?";

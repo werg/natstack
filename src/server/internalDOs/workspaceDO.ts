@@ -1140,7 +1140,9 @@ export class WorkspaceDO extends DurableObjectBase {
         PRIMARY KEY (source, class_name, object_key)
       )
     `);
-    this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_lifecycle_leases_refreshed ON lifecycle_leases(refreshed_at)`);
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_lifecycle_leases_refreshed ON lifecycle_leases(refreshed_at)`
+    );
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS lifecycle_ops (
         epoch_id TEXT NOT NULL,

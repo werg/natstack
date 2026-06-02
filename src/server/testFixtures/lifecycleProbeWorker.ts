@@ -17,9 +17,7 @@ export class LifecycleProbeDO extends DurableObjectBase {
     `);
   }
 
-  override async prepareForRestart(
-    input: LifecyclePrepareInput
-  ): Promise<LifecyclePrepareResult> {
+  override async prepareForRestart(input: LifecyclePrepareInput): Promise<LifecyclePrepareResult> {
     this.record("prepare", input);
     return { status: "ready" };
   }
@@ -40,8 +38,7 @@ export class LifecycleProbeDO extends DurableObjectBase {
       .map((row) => ({
         kind: String(row["kind"]),
         input: JSON.parse(String(row["input_json"])),
-        bootGeneration:
-          typeof row["boot_generation"] === "string" ? row["boot_generation"] : null,
+        bootGeneration: typeof row["boot_generation"] === "string" ? row["boot_generation"] : null,
       }));
   }
 

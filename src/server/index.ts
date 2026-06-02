@@ -2847,9 +2847,8 @@ async function main() {
     isShuttingDown = true;
     console.log("[Server] Shutting down...");
 
-    const lifecycleDriver = container.get<import("./services/lifecycleDriver.js").LifecycleDriver>(
-      "lifecycleDriver"
-    );
+    const lifecycleDriver =
+      container.get<import("./services/lifecycleDriver.js").LifecycleDriver>("lifecycleDriver");
     const shutdownStartedAt = Date.now();
     const forceExit = setTimeout(() => {
       console.warn("[Server] Shutdown timeout — forcing exit");

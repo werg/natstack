@@ -14,7 +14,12 @@ function makeHarness(
 ) {
   let beginHook: ((event: RestartBeginEvent) => Promise<void> | void) | null = null;
   let readyHook: ((event: RestartReadyEvent) => Promise<void> | void) | null = null;
-  const calls: Array<{ kind: "workspace" | "lifecycle"; method: string; ref?: DORef; arg?: unknown }> = [];
+  const calls: Array<{
+    kind: "workspace" | "lifecycle";
+    method: string;
+    ref?: DORef;
+    arg?: unknown;
+  }> = [];
   const leases = opts.leases ?? [
     { source: "workers/agent", className: "AiChatWorker", objectKey: "ch-1" },
   ];
@@ -45,7 +50,12 @@ function makeHarness(
       }
       if (method === "lifecycleListLeases") return leases;
       if (method === "lifecycleListOps") {
-        return leases.map((lease) => ({ ...lease, epochId: epoch, opKind: "resume", status: "pending" }));
+        return leases.map((lease) => ({
+          ...lease,
+          epochId: epoch,
+          opKind: "resume",
+          status: "pending",
+        }));
       }
       return undefined;
     },
@@ -85,9 +95,9 @@ describe("LifecycleDriver", () => {
         expect.objectContaining({ kind: "workspace", method: "lifecycleRecordOp" }),
       ])
     );
-    expect(harness.calls.some((call) => call.kind === "lifecycle" && call.method === "resume")).toBe(
-      false
-    );
+    expect(
+      harness.calls.some((call) => call.kind === "lifecycle" && call.method === "resume")
+    ).toBe(false);
 
     await harness.fireReady({
       correlationId: "r1",

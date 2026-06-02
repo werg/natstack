@@ -156,7 +156,7 @@ export async function createServerClient(
       createSocket: (url) => new NodeWsLike(new WebSocket(url, createWsOptions(url, options?.tls))),
     },
   });
-  transport.onStatusChange!((status) => {
+  transport.onStatusChange?.((status) => {
     options?.onConnectionStatusChanged?.(status);
     if (status === "disconnected") options?.onDisconnect?.();
   });
@@ -211,7 +211,7 @@ export async function createServerClient(
       callerKind: caller.callerKind,
       transport: scopedTransport,
     });
-    scopedTransport.onStatusChange!((status) => {
+    scopedTransport.onStatusChange?.((status) => {
       if (status === "disconnected") scopedClients.delete(scopedKey(caller));
     });
     scopedTransport.onMessage((envelope) => {
@@ -232,7 +232,7 @@ export async function createServerClient(
     const existing = scopedClients.get(key);
     if (existing) {
       const client = await existing;
-      if (client.transport.status!() === "connected") return client;
+      if (client.transport.status?.() === "connected") return client;
       scopedClients.delete(key);
       void client.close();
     }
@@ -272,10 +272,10 @@ export async function createServerClient(
       };
     },
     isConnected(): boolean {
-      return transport.status!() === "connected";
+      return transport.status?.() === "connected";
     },
     getConnectionStatus(): ConnectionStatus {
-      return transport.status!();
+      return transport.status?.() ?? "disconnected";
     },
     async close(): Promise<void> {
       await Promise.allSettled(

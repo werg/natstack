@@ -334,7 +334,11 @@ export class DODispatch {
     }
   }
 
-  async dispatchLifecycle(ref: DORef, method: "prepare" | "resume", arg: unknown): Promise<unknown> {
+  async dispatchLifecycle(
+    ref: DORef,
+    method: "prepare" | "resume",
+    arg: unknown
+  ): Promise<unknown> {
     const lifecycleMethod = `__lifecycle/${method}`;
     await Promise.resolve(this.beforeDispatchFn?.(ref));
 
@@ -347,7 +351,14 @@ export class DODispatch {
       });
       const serverCaller: DOCallerEnvelope = { callerId: "main", callerKind: "server" };
       try {
-        return await postToDOWithToken(ref, lifecycleMethod, [arg], buildDeps(), "main", serverCaller);
+        return await postToDOWithToken(
+          ref,
+          lifecycleMethod,
+          [arg],
+          buildDeps(),
+          "main",
+          serverCaller
+        );
       } catch (err) {
         if (this.ensureDOFn && this.isRetryable(err)) {
           console.warn(
