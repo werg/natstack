@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { exportNamesFromSource, hasDocExports } from "./docModule";
+import { exportNamesFromSource, hasDocExports } from "./docExports";
 
 describe("doc module export detection", () => {
   it("detects top-level MDX exports", () => {

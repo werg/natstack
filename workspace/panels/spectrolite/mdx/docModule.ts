@@ -23,6 +23,11 @@ import * as runtime from "react/jsx-runtime";
 import { spectroliteMdxComponents } from "./components";
 import { runtimeNamespace } from "./runtimeNamespace";
 
+// Runtime-free source-parsing helpers live in `./docExports` so they can be
+// imported without pulling in the panel runtime. Re-exported here for callers
+// that already depend on `docModule` (e.g. DocumentEditor).
+export { exportNamesFromSource, hasDocExports } from "./docExports";
+
 export interface CompiledDocModule {
   /** Named exports (everything except `default` and `MDXLayout`). */
   exports: Record<string, unknown>;
@@ -31,20 +36,6 @@ export interface CompiledDocModule {
 }
 
 const RESERVED_KEYS = new Set(["default", "MDXLayout"]);
-
-function maskFencedCodeBlocks(content: string): string {
-  // Whole-doc export detection should ignore examples in fenced code blocks.
-  // Preserve newlines so regex line anchors still map to source line starts.
-  return content.replace(/(^|\n)(```|~~~)[^\n]*\n[\s\S]*?(\n\2(?=\n|$))/g, (match) => match.replace(/[^\n]/g, " "));
-}
-
-function stripFrontmatter(content: string): string {
-  return content.replace(/^---\s*\n[\s\S]*?\n---(?=\n|$)/, "");
-}
-
-export function hasDocExports(content: string): boolean {
-  return exportNamesFromSource(content).length > 0;
-}
 
 export async function compileDocModule(content: string): Promise<CompiledDocModule | null> {
   let mdx: typeof import("@mdx-js/mdx");
@@ -76,19 +67,3 @@ export async function compileDocModule(content: string): Promise<CompiledDocModu
   }
 }
 
-/** Cheap fingerprint of which top-level export NAMES are declared in the
- *  source — used by callers to detect when the wrapper code consumed by
- *  per-node compiles needs to change. Does NOT detect changes to export
- *  bodies; for those the caller should re-run `compileDocModule` and
- *  bump a separate refresh counter. */
-export function exportNamesFromSource(content: string): string[] {
-  const out: string[] = [];
-  const searchable = maskFencedCodeBlocks(stripFrontmatter(content));
-  // `export const X` / `export function X` / `export async function X`
-  const decl = /^\s*export\s+(?:const|let|var|async\s+function|function|class)\s+([A-Za-z_$][\w$]*)/gm;
-  let m: RegExpExecArray | null;
-  while ((m = decl.exec(searchable)) !== null) {
-    if (m[1]) out.push(m[1]);
-  }
-  return out;
-}
