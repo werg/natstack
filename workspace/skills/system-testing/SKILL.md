@@ -9,13 +9,13 @@ Spin up headless agentic sessions to systematically test every NatStack capabili
 
 ## Files
 
-| Document | Content |
-|----------|---------|
-| runner.ts | `HeadlessRunner` — spawn headless sessions from eval with one line |
-| test-runner.ts | `TestRunner` — orchestrate test suites, collect full diagnostics |
-| types.ts | `TestCase`, `TestResult`, `TestSuiteResult`, `TestExecutionResult` |
-| tests/ | 93 pre-built test cases across 19 categories |
-| [SELF_IMPROVEMENT.md](SELF_IMPROVEMENT.md) | Workflow for analyzing failures and pushing fixes |
+| Document                                   | Content                                                            |
+| ------------------------------------------ | ------------------------------------------------------------------ |
+| runner.ts                                  | `HeadlessRunner` — spawn headless sessions from eval with one line |
+| test-runner.ts                             | `TestRunner` — orchestrate test suites, collect full diagnostics   |
+| types.ts                                   | `TestCase`, `TestResult`, `TestSuiteResult`, `TestExecutionResult` |
+| tests/                                     | 94 pre-built test cases across 19 categories                       |
+| [SELF_IMPROVEMENT.md](SELF_IMPROVEMENT.md) | Workflow for analyzing failures and pushing fixes                  |
 
 ## Quick Start
 
@@ -189,7 +189,7 @@ for (const r of scope.results.results) {
 Every turn the test agent took is captured — messages, tool calls, thinking, errors:
 
 ```typescript
-const fail = scope.results.results.find(r => !r.result.passed);
+const fail = scope.results.results.find((r) => !r.result.passed);
 for (const m of fail.execution.messages) {
   const who = m.senderId === fail.execution.messages[0]?.senderId ? "USER" : "AGENT";
   const type = m.contentType ?? m.kind ?? "text";
@@ -314,29 +314,29 @@ if (fail.execution.snapshot) {
 
 ## Available Test Suites
 
-| Suite | Tests | What it covers |
-|-------|-------|---------------|
-| `smokeTests` | 4 | Basic sanity: eval, fs, package import, file tools |
-| `filesystemTests` | 9 | All fs operations: read/write, dirs, stats, symlinks, handles |
-| `gitTests` | 6 | init, branch, diff, log, stash, push |
-| `panelTests` | 6 | Open, browser panels, navigate, screenshot, evaluate, list sources |
-| `workerTests` | 6 | Create, list, unified RPC DO calls, destroy, env bindings, list sources |
-| `buildTests` | 4 | Workspace + npm builds, build at ref, eval imports |
-| `oauthTests` | 3 | List providers/connections, error on missing connection |
-| `workspaceTests` | 3 | List, active, config |
-| `notificationTests` | 2 | Show + dismiss |
-| `skillTests` | 4 | Load sandbox, paneldev, api-integrations, headless-sessions |
-| `agentCapabilityTests` | 6 | Multi-turn, error recovery, large output, dynamic import |
-| `rpcTests` | 2 | Cross-service calls |
-| `edgeCaseTests` | 3 | Invalid eval args, invalid imports, missing files |
-| `agenticRuntimeTests` | 7 | State args, routed git client, GAD conventions, bounded inspection, no-stall tool turns |
-| `interactionSurfaceTests` | 4 | MDX ActionButton, inline UI, action bar, custom messages |
-| `projectLifecycleTests` | 4 | Create, fork, commit, push, open, and inspect real workspace units |
-| `cdpGadDiagnosticTests` | 5 | CDP UI mutation, lightweight console/DOM inspection, historical console diagnostics, panel state args, GAD integrity/state diagnostics |
-| `harnessResilienceTests` | 5 | Eval errors, huge returns, visible timeouts, invalid args, post-tool follow-ups |
-| `docsProbeTests` | 10 | Scenario probes that require agents to apply relevant skills, not summarize docs |
+| Suite                     | Tests | What it covers                                                                                                                         |
+| ------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `smokeTests`              | 4     | Basic sanity: eval, fs, package import, file tools                                                                                     |
+| `filesystemTests`         | 9     | All fs operations: read/write, dirs, stats, symlinks, handles                                                                          |
+| `gitTests`                | 6     | init, branch, diff, log, stash, push                                                                                                   |
+| `panelTests`              | 6     | Open, browser panels, navigate, screenshot, evaluate, list sources                                                                     |
+| `workerTests`             | 6     | Create, list, unified RPC DO calls, destroy, env bindings, list sources                                                                |
+| `buildTests`              | 4     | Workspace + npm builds, build at ref, eval imports                                                                                     |
+| `oauthTests`              | 3     | List providers/connections, error on missing connection                                                                                |
+| `workspaceTests`          | 3     | List, active, config                                                                                                                   |
+| `notificationTests`       | 2     | Show + dismiss                                                                                                                         |
+| `skillTests`              | 4     | Load sandbox, workspace-dev, api-integrations, headless-sessions                                                                       |
+| `agentCapabilityTests`    | 6     | Multi-turn, error recovery, large output, dynamic import                                                                               |
+| `rpcTests`                | 2     | Cross-service calls                                                                                                                    |
+| `edgeCaseTests`           | 3     | Invalid eval args, invalid imports, missing files                                                                                      |
+| `agenticRuntimeTests`     | 8     | State args, routed git client, GAD conventions, bounded inspection, test-runner extension, no-stall tool turns                         |
+| `interactionSurfaceTests` | 4     | MDX ActionButton, inline UI, action bar, custom messages                                                                               |
+| `projectLifecycleTests`   | 4     | Create, fork, commit, push, open, and inspect real workspace units                                                                     |
+| `cdpGadDiagnosticTests`   | 5     | CDP UI mutation, lightweight console/DOM inspection, historical console diagnostics, panel state args, GAD integrity/state diagnostics |
+| `harnessResilienceTests`  | 5     | Eval errors, huge returns, visible timeouts, invalid args, post-tool follow-ups                                                        |
+| `docsProbeTests`          | 10    | Scenario probes that require agents to apply relevant skills, not summarize docs                                                       |
 
-Use `allTests()` to get all 93 tests combined. For full-suite execution, prefer
+Use `allTests()` to get all 94 tests combined. For full-suite execution, prefer
 the category-progress pattern above: one eval per category, with
 `tester.runSuiteParallel(allTests(), { category, concurrency: 4 })` inside each
 category eval.
@@ -387,6 +387,7 @@ await tester.runSuite(allTests(), { name: "fs-write-read" });
 ## How It Works
 
 Each test case:
+
 1. Spawns a fresh headless session (new channel + new AiChatWorker DO)
 2. Appends the shared system-test agent prompt from `runner.ts`
 3. Sends a short natural-language prompt telling the test agent what goal to accomplish
@@ -407,7 +408,7 @@ See `meta/natstack.yml` for the current testing agent configuration.
 
 ## Build Model
 
-**Workspace runtime units are built from git, not from the working tree.** When fixing bugs in workspace source files (`apps/`, `extensions/`, `packages/`, `panels/`, `workers/`, `skills/`), you must **commit and push** changes before they take effect. Editing a file alone does nothing — the build system extracts source from git commits.
+**Workspace runtime units are built from git refs, not from the working tree.** When fixing bugs in workspace source files (`apps/`, `extensions/`, `packages/`, `panels/`, `workers/`, `skills/`), you must publish the workspace repo before changes take effect. Use `git.publishWorkspaceRepo(repoPath, message)` or the workspace-dev `commitAndPush` wrapper. Editing a file or making a local/context commit alone does nothing — the build system extracts source from published workspace refs.
 
 For trusted app failures under `apps/`, read `skills/appdev/SKILL.md` before
 changing shell, mobile, or terminal app source. App bugs often involve approval
@@ -425,4 +426,4 @@ for the full workflow and the userland detection snippet.
 
 ## Environment Compatibility
 
-This skill requires a panel context (for PubSub connection via `rpc` and `db`). It cannot run headlessly itself — it's the testing *orchestrator* that spawns headless test sessions.
+This skill requires a panel context (for PubSub connection via `rpc` and `db`). It cannot run headlessly itself — it's the testing _orchestrator_ that spawns headless test sessions.

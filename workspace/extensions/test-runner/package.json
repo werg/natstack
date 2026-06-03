@@ -1,0 +1,19 @@
+{
+  "name": "@workspace-extensions/test-runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "displayName": "Workspace Test Runner",
+    "entry": "index.ts",
+    "sourcemap": true,
+    "extension": {
+      "activationEvents": [
+        "*"
+      ]
+    }
+  },
+  "dependencies": {
+    "vitest": "^3.2.2"
+  }
+}

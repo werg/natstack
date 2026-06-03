@@ -70,4 +70,25 @@ export const agenticRuntimeTests: TestCase[] = [
       return withNoPending(msg, result);
     },
   },
+  {
+    name: "workspace-test-runner-extension",
+    description: "Agent runs workspace unit tests through the scoped test-runner extension",
+    category: "agentic-runtime",
+    prompt:
+      "Use the supported workspace test runner extension from eval, not shell commands, to run the test file extensions/test-runner/index.test.ts. Report the structured result summary, passed count, failed count, and context id. Finish with WORKSPACE_TEST_RUNNER_OK and test-runner-extension.",
+    validate: (result) => {
+      const completed = completedToolNames(result);
+      if (!completed.has("eval")) {
+        return {
+          passed: false,
+          reason: `Expected a completed eval tool call; completed tools: ${[...completed].join(", ") || "(none)"}`,
+        };
+      }
+      const msg = finalMessageHasAll(result, [
+        "WORKSPACE_TEST_RUNNER_OK",
+        "test-runner-extension",
+      ]);
+      return withNoPending(msg, result);
+    },
+  },
 ];

@@ -813,7 +813,7 @@ async function main() {
       queueMicrotask(() => {
         gitServer.invalidateTreeCache();
         contextFolderManager
-          .syncRepoToContexts(event.repo)
+          .ensureRepoPresentInContexts(event.repo)
           .then(() => syncDeclaredRemotesForSource(event.repo))
           .then(() => contextFolderManager.syncDeclaredRemotes(event.repo))
           .catch((err: unknown) =>
@@ -915,18 +915,8 @@ async function main() {
   const { createPresenceService, createPresenceTracker } =
     await import("./services/presenceService.js");
   const { createGitService } = await import("./services/gitService.js");
-  const { createTestService } = await import("./services/testService.js");
   const { createWorkerService } = await import("./services/workerService.js");
   const { createModelCatalogService } = await import("./services/modelCatalogService.js");
-
-  // Resolve testSetup.ts relative to this module's location
-  const serverDir = path.dirname(__filename);
-  const setupCandidates = [
-    path.resolve(serverDir, "../main/services/testSetup.ts"),
-    path.resolve(serverDir, "../src/main/services/testSetup.ts"),
-  ];
-  const panelTestSetupPath: string =
-    setupCandidates.find((p) => fs.existsSync(p)) ?? assertPresent(setupCandidates[0]);
 
   {
     let buildSystemInstance: import("./buildV2/index.js").BuildSystemV2 | null = null;
@@ -985,9 +975,6 @@ async function main() {
       grantStore: capabilityGrantStore,
     }),
     ["gitServer"]
-  );
-  container.registerRpc(
-    createTestService({ contextFolderManager, workspacePath, panelTestSetupPath })
   );
   const runtimeDiagnostics = new RuntimeDiagnosticsStore({ statePath });
   // Per-worker-source ring buffer feeding `workspace.units.logs`. Same shape

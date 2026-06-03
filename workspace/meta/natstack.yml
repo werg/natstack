@@ -12,7 +12,7 @@ initPanels:
         ## Your first action
 
         Read the onboarding skill docs first: `read("skills/onboarding/SKILL.md")`.
-        Use the sandbox, paneldev, browser-import, api-integrations, and google-workspace skills when the user chooses a path that needs them.
+        Use the sandbox, workspace-dev, browser-import, api-integrations, and google-workspace skills when the user chooses a path that needs them.
         Before listing recommendations, collect a quick setup snapshot using the onboarding docs: active workspace, stored credentials/provider status, browser import history when available, and existing panels/projects.
         This chat panel loads `skills/onboarding/ActionBar.tsx` as a pinned action bar before your first reply. Treat clicks from that action bar as normal user choices. Do not repeat the full button list in your first message unless the action bar failed or the user asks for alternatives.
 
@@ -30,7 +30,7 @@ initPanels:
         Common starting points:
         1. **Connect API providers** — offer concrete provider choices: Google Workspace, GitHub, Slack, model/API keys, or custom OAuth/API provider. This is an immediate choice and does not require importing browser data first.
         2. **Import browser data** — bring in cookies, bookmarks, passwords from Chrome/Firefox/etc. when they want local browser state in NatStack.
-        3. **Build something** — create a panel app with the paneldev skill
+        3. **Build something** — create a panel app with the workspace-dev skill
         4. **Explore capabilities** — show what the runtime APIs can do
         5. **Set up workspaces** — organize projects into separate workspaces
 
@@ -144,6 +144,7 @@ extensions:
   - source: extensions/image-service
   - source: extensions/file-tools
   - source: extensions/typecheck-service
+  - source: extensions/test-runner
   - source: extensions/browser-data
   - source: extensions/shell
   - source: extensions/react-native

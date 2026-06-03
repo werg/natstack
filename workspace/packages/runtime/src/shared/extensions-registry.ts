@@ -9,4 +9,5 @@
 export type { Api as Ext_workspace_extensions_browser_data } from "@workspace-extensions/browser-data";
 export type { Api as Ext_workspace_extensions_file_tools } from "@workspace-extensions/file-tools";
 export type { Api as Ext_workspace_extensions_image_service } from "@workspace-extensions/image-service";
+export type { Api as Ext_workspace_extensions_react_native } from "@workspace-extensions/react-native";
 export type { Api as Ext_workspace_extensions_shell } from "@workspace-extensions/shell";

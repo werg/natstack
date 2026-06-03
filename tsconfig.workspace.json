@@ -127,11 +127,17 @@
       "@workspace-extensions/image-service": [
         "workspace/extensions/image-service/index.ts"
       ],
+      "@workspace-extensions/react-native": [
+        "workspace/extensions/react-native/index.ts"
+      ],
       "@workspace-extensions/browser-data": [
         "workspace/extensions/browser-data/index.ts"
       ],
       "@workspace-extensions/typecheck-service": [
         "workspace/extensions/typecheck-service/index.ts"
+      ],
+      "@workspace-extensions/test-runner": [
+        "workspace/extensions/test-runner/index.ts"
       ],
       "@workspace-panels/email": [
         "workspace/panels/email/index.tsx"
@@ -139,8 +145,8 @@
       "@workspace-panels/email/contract": [
         "workspace/panels/email/contract.ts"
       ],
-      "@workspace-skills/paneldev": [
-        "workspace/skills/paneldev/index.ts"
+      "@workspace-skills/workspace-dev": [
+        "workspace/skills/workspace-dev/index.ts"
       ],
       "@workspace-skills/google-workspace": [
         "workspace/skills/google-workspace/index.ts"
