@@ -21,7 +21,7 @@ function loadRuntimeSurface(relativePath, exportName) {
     .replace(/^import .*$/gm, "")
     .replace(
       new RegExp(`export const ${exportName}: RuntimeSurface =`),
-      "globalThis.__runtimeSurface =",
+      "globalThis.__runtimeSurface ="
     );
 
   const context = {
@@ -47,9 +47,7 @@ function renderSurfaceTable(surface) {
   ];
 
   for (const [name, entry] of Object.entries(surface.exports)) {
-    const members = entry.kind === "namespace"
-      ? `\`${entry.members.join("`, `")}\``
-      : "";
+    const members = entry.kind === "namespace" ? `\`${entry.members.join("`, `")}\`` : "";
     const description = entry.description ?? "";
     lines.push(`| \`${name}\` | ${entry.kind} | ${members} | ${description} |`);
   }
@@ -90,11 +88,11 @@ function updateDoc(relativePath, replacements, checkOnly) {
 
 const panelSurface = loadRuntimeSurface(
   "workspace/packages/runtime/src/shared/runtimeSurface.panel.ts",
-  "panelRuntimeSurface",
+  "panelRuntimeSurface"
 );
 const workerSurface = loadRuntimeSurface(
   "workspace/packages/runtime/src/shared/runtimeSurface.worker.ts",
-  "workerRuntimeSurface",
+  "workerRuntimeSurface"
 );
 
 const checkOnly = process.argv.includes("--check");
@@ -102,11 +100,11 @@ const checkOnly = process.argv.includes("--check");
 updateDoc(
   "workspace/skills/sandbox/RUNTIME_API.md",
   [["panel-runtime-surface", renderSurfaceTable(panelSurface)]],
-  checkOnly,
+  checkOnly
 );
 
 updateDoc(
-  "workspace/skills/paneldev/WORKERS.md",
+  "workspace/skills/workspace-dev/WORKERS.md",
   [["worker-runtime-surface", renderSurfaceTable(workerSurface)]],
-  checkOnly,
+  checkOnly
 );

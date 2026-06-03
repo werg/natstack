@@ -44,10 +44,10 @@ machines, no `MessageState`, no `MethodHistoryTracker`, no `StreamWriter`.
 
 The worker forwards Pi events as two ephemeral channel messages:
 
-| contentType | Payload | When |
-|---|---|---|
+| contentType               | Payload                                              | When                                                                                                                             |
+| ------------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `natstack-state-snapshot` | `{ messages: AgentMessage[]; isStreaming: boolean }` | After every meaningful Pi state change: `message_end`, `tool_execution_end`, `auto_compaction_end`, `auto_retry_end`, `turn_end` |
-| `natstack-text-delta` | `{ messageId: string; delta: string }` | For every Pi `message_update` text_delta event |
+| `natstack-text-delta`     | `{ messageId: string; delta: string }`               | For every Pi `message_update` text_delta event                                                                                   |
 
 Snapshots are idempotent — the consumer renders the latest one. Text deltas
 are purely cosmetic typing-indicator fodder; the next snapshot replaces them
@@ -64,14 +64,14 @@ Location: `workspace/packages/agentic-do/src/agent-worker-base.ts`
 
 ### Customization hooks (Pi-native)
 
-| Hook | Default | Purpose |
-|------|---------|---------|
-| `getDefaultModel()` | subclass override required; `AiChatWorker` uses `"openai-codex:gpt-5.5"` | Default model id in `provider:model` format; subscription config can override per channel |
-| `getDefaultThinkingLevel()` | `"medium"` | Default Pi thinking level; state/config can override per channel |
-| `getApprovalLevel(channelId)` | `2` (full auto) | 0 = ask all, 1 = auto safe tools, 2 = full auto |
-| `shouldProcess(event)` | Panel messages only | Filter incoming channel events |
-| `buildTurnInput(event)` | Extract content | Transform to TurnInput |
-| `getParticipantInfo()` | Generic agent | Channel identity + advertised methods |
+| Hook                          | Default                                                                  | Purpose                                                                                   |
+| ----------------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `getDefaultModel()`           | subclass override required; `AiChatWorker` uses `"openai-codex:gpt-5.5"` | Default model id in `provider:model` format; subscription config can override per channel |
+| `getDefaultThinkingLevel()`   | `"medium"`                                                               | Default Pi thinking level; state/config can override per channel                          |
+| `getApprovalLevel(channelId)` | `2` (full auto)                                                          | 0 = ask all, 1 = auto safe tools, 2 = full auto                                           |
+| `shouldProcess(event)`        | Panel messages only                                                      | Filter incoming channel events                                                            |
+| `buildTurnInput(event)`       | Extract content                                                          | Transform to TurnInput                                                                    |
+| `getParticipantInfo()`        | Generic agent                                                            | Channel identity + advertised methods                                                     |
 
 The final prompt is composed from the NatStack base prompt,
 `workspace/meta/AGENTS.md`, the generated skill index, and optional
@@ -80,13 +80,13 @@ and are discovered through the `workspace.*` RPC service.
 
 ### Durable Object SQL Tables
 
-| Table | Purpose |
-|-------|---------|
-| `state` | Key-value store (approval level per channel, fork metadata) |
-| `subscriptions` | Channel subscriptions + participant ID |
-| `pi_sessions` | Per-channel Pi session JSONL file path (for restart resume) |
-| `delivery_cursor` | Last-processed channel event id (dedup + gap detection) |
-| `pending_calls` | Promise continuations for tool callMethod and UI feedback_form awaits |
+| Table             | Purpose                                                               |
+| ----------------- | --------------------------------------------------------------------- |
+| `state`           | Key-value store (approval level per channel, fork metadata)           |
+| `subscriptions`   | Channel subscriptions + participant ID                                |
+| `pi_sessions`     | Per-channel Pi session JSONL file path (for restart resume)           |
+| `delivery_cursor` | Last-processed channel event id (dedup + gap detection)               |
+| `pending_calls`   | Promise continuations for tool callMethod and UI feedback_form awaits |
 
 That's it. Pi tracks turn state, message state, and session branching itself
 inside `AgentSession`. The previous architecture's `harnesses`, `active_turns`,
@@ -179,7 +179,7 @@ workspace/
 ├── meta/
 │   ├── AGENTS.md        # Workspace system prompt content
 │   └── natstack.yml     # Init panels and workspace config
-└── skills/              # Workspace skills (sandbox, paneldev, onboarding, etc.)
+└── skills/              # Workspace skills (sandbox, workspace-dev, onboarding, etc.)
     └── ...
 ```
 
@@ -190,20 +190,20 @@ NatStack-bound.
 
 ## Package map
 
-| Package | Location | Contents |
-|---------|----------|----------|
-| `@natstack/harness` | `packages/harness/` | `PiRunner`, `NatStackExtensionUIContext`, three extension factories, channel boundary types |
-| Channel client package | workspace package | Panel-side channel client and protocol types |
-| `@workspace/runtime` | `workspace/packages/runtime/` | DurableObjectBase, HttpRpcBridge |
-| `@workspace/agentic-do` | `workspace/packages/agentic-do/` | AgentWorkerBase, ChannelClient, ContinuationStore, SubscriptionManager |
-| `@workspace/agentic-core` | `workspace/packages/agentic-core/` | EphemeralEventEnvelope, derivePiSnapshot, derived UI types, ConnectionManager |
-| `@workspace/agentic-chat` | `workspace/packages/agentic-chat/` | usePiSessionSnapshot, usePiTextDeltas, useChatCore (Pi-native) |
-| `@workspace/agentic-session` | `workspace/packages/agentic-session/` | HeadlessSession (Pi-native programmatic interface) |
-| Workers | `workspace/workers/` | AiChatWorker, TestAgentWorker (both extend AgentWorkerBase) |
+| Package                      | Location                              | Contents                                                                                    |
+| ---------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `@natstack/harness`          | `packages/harness/`                   | `PiRunner`, `NatStackExtensionUIContext`, three extension factories, channel boundary types |
+| Channel client package       | workspace package                     | Panel-side channel client and protocol types                                                |
+| `@workspace/runtime`         | `workspace/packages/runtime/`         | DurableObjectBase, HttpRpcBridge                                                            |
+| `@workspace/agentic-do`      | `workspace/packages/agentic-do/`      | AgentWorkerBase, ChannelClient, ContinuationStore, SubscriptionManager                      |
+| `@workspace/agentic-core`    | `workspace/packages/agentic-core/`    | EphemeralEventEnvelope, derivePiSnapshot, derived UI types, ConnectionManager               |
+| `@workspace/agentic-chat`    | `workspace/packages/agentic-chat/`    | usePiSessionSnapshot, usePiTextDeltas, useChatCore (Pi-native)                              |
+| `@workspace/agentic-session` | `workspace/packages/agentic-session/` | HeadlessSession (Pi-native programmatic interface)                                          |
+| Workers                      | `workspace/workers/`                  | AiChatWorker, TestAgentWorker (both extend AgentWorkerBase)                                 |
 
 ## Further reading
 
 - **Pi-architecture deep dive**: `docs/pi-architecture.md`
 - **Pi SDK reference**: `node_modules/@mariozechner/pi-coding-agent/README.md`
 - **Worker authoring**: `workspace/workers/README.md`
-- **Paneldev skill**: `workspace/skills/paneldev/WORKERS.md`
+- **workspace-dev skill**: `workspace/skills/workspace-dev/WORKERS.md`

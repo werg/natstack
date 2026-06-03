@@ -72,7 +72,7 @@ Workspace packages (`@workspace/*`, `@workspace-skills/*`, `@natstack/*`) are **
 
 ```
 eval({ code: `
-  import { createProject } from "@workspace-skills/paneldev";
+  import { createProject } from "@workspace-skills/workspace-dev";
   await createProject({ projectType: "panel", name: "my-app", title: "My App" });
 `
 })
@@ -83,10 +83,10 @@ The first import triggers an on-demand build from git (a few seconds). Subsequen
 To pin a specific git ref (branch, tag, or commit SHA), use the `imports` parameter explicitly:
 
 ```
-eval({ code: `...`, imports: { "@workspace-skills/paneldev": "my-branch" } })
+eval({ code: `...`, imports: { "@workspace-skills/workspace-dev": "my-branch" } })
 ```
 
-**Important:** Workspace runtime units are built from git, not from the working tree. If you edit source files under `workspace/apps/`, `workspace/extensions/`, `workspace/packages/`, `workspace/panels/`, `workspace/workers/`, or `workspace/skills/`, you must **commit and push** before changes take effect. Use `commitAndPush` from the paneldev skill or the GitClient API.
+**Important:** Workspace runtime units are built from git refs, not from the working tree. If you edit source files under `apps/`, `extensions/`, `packages/`, `panels/`, `workers/`, or `skills/`, you must **publish the workspace repo** before changes take effect. Use `git.publishWorkspaceRepo(repoPath, message)` or the `commitAndPush` wrapper from the workspace-dev skill. A plain `git.client().commit()` only creates a local/context commit; it does not update the workspace source ref, trigger rebuilds, or mirror dev-mode changes back to the template.
 
 Context folders are isolated working trees with context-local refs, index, HEAD, config, and hooks. Only `.git/objects` is shared, through a validated symlink to the canonical source repo object store. Local commits can add immutable loose objects before push; approval gates canonical ref movement and source working tree updates. Do not manually edit `.git/objects`, and do not assume another context's push resets your current context. A dirty count shown by a running panel is the dirty state of that panel's own context, not a global workspace dirty state.
 
@@ -137,13 +137,13 @@ File-loaded code also supports package-local aliases declared through
 ```
 eval({
   code: `
-    import { createProject } from "@workspace-skills/paneldev";
+    import { createProject } from "@workspace-skills/workspace-dev";
     import Ajv from "ajv";
     const ajv = new Ajv();
     console.log("Ajv loaded:", typeof ajv.compile);
   `,
   imports: {
-    "@workspace-skills/paneldev": "latest",
+    "@workspace-skills/workspace-dev": "latest",
     "ajv": "npm:^8.12.0"
   }
 })
@@ -287,16 +287,11 @@ Use the routed `git.client()` helper from `@workspace/runtime` — do NOT use `n
 eval({ code: `
   import { fs, git } from "@workspace/runtime";
 
-  const client = git.client();
-  await client.init("/my-repo", "main");
-  await fs.writeFile("/my-repo/hello.txt", "Hello world");
-  await client.addAll("/my-repo");
-  const sha = await client.commit({ dir: "/my-repo", message: "Initial commit" });
-  console.log("Committed:", sha);
-  const status = await client.status("/my-repo");
+  await fs.writeFile("panels/my-panel/index.tsx", "...");
+  const published = await git.publishWorkspaceRepo("panels/my-panel", "Update panel");
+  console.log(published.message);
+  const status = await git.client().status("panels/my-panel");
   console.log("Changed files:", status.files);
-  const log = await client.log("/my-repo");
-  console.log("History:", log);
 ` })
 ```
 
@@ -308,6 +303,8 @@ Common signatures: `client.status(dir: string)`,
 `client.fetch({ dir, remote?, ref? })`, and
 `client.push({ dir, remote?, ref?, force? })`. `client.methods` lists the
 discoverable client methods when `Object.keys(client)` is too sparse.
+For normal workspace source edits, prefer `git.publishWorkspaceRepo()` over
+calling `client.commit()` and `client.push()` separately.
 
 ## Large Results And Diagnostics
 
@@ -342,9 +339,7 @@ return {
   digest: stored.digest,
   bytes: new TextEncoder().encode(text).byteLength,
   type: Array.isArray(largeValue) ? "array" : typeof largeValue,
-  keys: largeValue && typeof largeValue === "object"
-    ? Object.keys(largeValue).slice(0, 20)
-    : [],
+  keys: largeValue && typeof largeValue === "object" ? Object.keys(largeValue).slice(0, 20) : [],
   preview: text.slice(0, 1000),
 };
 ```
@@ -369,6 +364,22 @@ const typecheck = extensions.use("@workspace-extensions/typecheck-service");
 const result = await typecheck.checkPanel("panels/spectrolite").catch((error) => ({
   error: String(error),
 }));
+return result;
+```
+
+Run workspace unit tests through the scoped test-runner extension, not shell
+commands:
+
+```ts
+import { extensions } from "@workspace/runtime";
+
+const tests = extensions.use("@workspace-extensions/test-runner");
+const result = await tests
+  .run({
+    target: "packages/my-lib",
+    fileFilter: "src/index.test.ts",
+  })
+  .catch((error) => ({ error: String(error) }));
 return result;
 ```
 

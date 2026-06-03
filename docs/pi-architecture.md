@@ -38,7 +38,7 @@ workspace/
 ├── skills/          # Workspace skills (read via workspace RPC)
 │   ├── eval/
 │   ├── sandbox/
-│   ├── paneldev/
+│   ├── workspace-dev/
 │   └── ...
 └── ...              # Other workspace files
 ```
@@ -60,7 +60,7 @@ export function createApprovalGateExtension(deps: ApprovalGateDeps): ExtensionFa
   return (pi) => {
     pi.on("tool_call", async (event, ctx) => {
       const level = deps.getApprovalLevel();
-      if (level === 2) return undefined;                              // full auto
+      if (level === 2) return undefined; // full auto
       if (level === 1 && deps.safeToolNames.has(event.toolName)) return undefined;
       if (!ctx.hasUI) return { block: true, reason: "no UI for approval" };
       const allowed = await ctx.ui.confirm("Allow tool call?", `Tool: ${event.toolName}`);
@@ -115,18 +115,18 @@ Pi's `ExtensionUIContext` interface has primitives like `select`, `confirm`,
 implements them all (`packages/harness/src/natstack-extension-context.ts`)
 by routing to worker callbacks that send channel events:
 
-| Pi UI primitive | NatStack channel mapping |
-|---|---|
-| `select(title, options)` | `feedback_form` with segmented field, await result |
-| `confirm(title, message)` | `feedback_form` with yes/no buttons, await result |
-| `input(title, placeholder)` | `feedback_form` with textarea, await result |
-| `editor(title, prefill)` | `feedback_form` with multi-line textarea, await result |
-| `notify(message, type)` | Ephemeral message with `contentType: "notify:<type>"` |
-| `setStatus(key, text)` | Ephemeral with `contentType: "natstack-ext-status"` |
-| `setWidget(key, content)` | Ephemeral with `contentType: "natstack-ext-widget"` |
-| `setHeader/Footer/Title` | No-op (TUI-only) |
-| `custom(factory)` | Throws (TUI-only) |
-| Theme accessors | Stub returns (TUI-only) |
+| Pi UI primitive             | NatStack channel mapping                               |
+| --------------------------- | ------------------------------------------------------ |
+| `select(title, options)`    | `feedback_form` with segmented field, await result     |
+| `confirm(title, message)`   | `feedback_form` with yes/no buttons, await result      |
+| `input(title, placeholder)` | `feedback_form` with textarea, await result            |
+| `editor(title, prefill)`    | `feedback_form` with multi-line textarea, await result |
+| `notify(message, type)`     | Ephemeral message with `contentType: "notify:<type>"`  |
+| `setStatus(key, text)`      | Ephemeral with `contentType: "natstack-ext-status"`    |
+| `setWidget(key, content)`   | Ephemeral with `contentType: "natstack-ext-widget"`    |
+| `setHeader/Footer/Title`    | No-op (TUI-only)                                       |
+| `custom(factory)`           | Throws (TUI-only)                                      |
+| Theme accessors             | Stub returns (TUI-only)                                |
 
 The await primitives (`select`, `confirm`, `input`, `editor`) use the same
 continuation Promise plumbing as `callMethod`: send a `channel.callMethod`
@@ -157,6 +157,7 @@ A panel forks at a specific message. The chat panel calls
 `worker.canFork()` then `worker.postClone(parentObjectKey, newChannelId, oldChannelId, forkPointMessageId)`.
 
 The cloned worker:
+
 1. Inherits the parent's Durable Object SQL storage via cloneDO
 2. Migrates the parent's `pi_sessions` row from `oldChannelId` to `newChannelId`
 3. Resubscribes to the new channel

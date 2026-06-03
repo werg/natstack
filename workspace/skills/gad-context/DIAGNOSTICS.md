@@ -154,8 +154,8 @@ different HEAD, index, branch, and pushed state.
 When a source edit appears ignored:
 
 1. Inspect the context's git status and branch.
-2. Confirm the edit was committed and pushed from that context.
-3. Confirm the runtime build/reload consumed the pushed artifact.
+2. Confirm the workspace repo was published from that context.
+3. Confirm the runtime build/reload consumed the published artifact.
 4. Only then assume the running code path is still broken.
 
 The build system builds workspace units from git, not from uncommitted working

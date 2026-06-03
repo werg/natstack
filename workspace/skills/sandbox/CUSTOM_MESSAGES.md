@@ -26,18 +26,18 @@ last update wins.
 
 The compiled module may export:
 
-| Export | Purpose |
-|--------|---------|
+| Export    | Purpose                                                                                                                                                                                                |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `default` | Required. React component receiving `{ typeId, state, expanded, displayMode, chat, scope, scopes }`. Render compact inline content when `expanded` is false and the full view when `expanded` is true. |
-| `reduce` | Optional. `(state, update) => nextState`. Folds `custom.updated` payloads. Default: last update replaces state. |
-| `schema` | Optional. Reserved for validation metadata. |
+| `reduce`  | Optional. `(state, update) => nextState`. Folds `custom.updated` payloads. Default: last update replaces state.                                                                                        |
+| `schema`  | Optional. Reserved for validation metadata.                                                                                                                                                            |
 
 ### Display modes
 
-| Mode | Rendering |
-|------|-----------|
+| Mode       | Rendering                                                                                                           |
+| ---------- | ------------------------------------------------------------------------------------------------------------------- |
 | `"inline"` | Bead inside the sender's message group with `expanded: false`. Click to expand the full card with `expanded: true`. |
-| `"row"` | Full chat row, like a normal message. Card renders the component with `expanded: true`. |
+| `"row"`    | Full chat row, like a normal message. Card renders the component with `expanded: true`.                             |
 
 `displayMode` on the registration is the default. Each instance can override
 via `displayMode` on `publishCustomMessage` / `custom.started`.
@@ -84,6 +84,7 @@ const weather = await client.getMessageType("weather");
 ```
 
 See the working example in:
+
 - `workspace/panels/chat/examples/weather-message-type.tsx` — the renderer (default, `reduce`).
 - `workspace/panels/chat/examples/weather-message-demo.ts` — registers + publishes + updates.
 
@@ -155,19 +156,33 @@ registration, and file-loaded modules infer bare imports from the nearest
 // workspace/panels/chat/examples/weather-message-type.tsx
 import { Badge, Card, Flex, Text } from "@radix-ui/themes";
 
-interface WeatherState { city: string; tempF: number; condition: string }
+interface WeatherState {
+  city: string;
+  tempF: number;
+  condition: string;
+}
 type WeatherUpdate = Partial<WeatherState>;
 
 export function reduce(state: WeatherState, update: WeatherUpdate): WeatherState {
   return { ...state, ...update };
 }
 
-export default function WeatherMessage({ state, expanded }: { state: WeatherState; expanded: boolean }) {
+export default function WeatherMessage({
+  state,
+  expanded,
+}: {
+  state: WeatherState;
+  expanded: boolean;
+}) {
   if (!expanded) {
     return (
       <Flex align="center" gap="1">
-        <Text size="1" weight="medium">{state.city}</Text>
-        <Text size="1" color="gray">{state.tempF}F</Text>
+        <Text size="1" weight="medium">
+          {state.city}
+        </Text>
+        <Text size="1" color="gray">
+          {state.tempF}F
+        </Text>
       </Flex>
     );
   }
@@ -176,10 +191,16 @@ export default function WeatherMessage({ state, expanded }: { state: WeatherStat
     <Card>
       <Flex direction="column" gap="2">
         <Flex align="center" justify="between" gap="3">
-          <Text size="3" weight="bold">{state.city}</Text>
-          <Badge color="blue" variant="soft">{state.condition}</Badge>
+          <Text size="3" weight="bold">
+            {state.city}
+          </Text>
+          <Badge color="blue" variant="soft">
+            {state.condition}
+          </Badge>
         </Flex>
-        <Text size="6" weight="bold">{state.tempF}F</Text>
+        <Text size="6" weight="bold">
+          {state.tempF}F
+        </Text>
       </Flex>
     </Card>
   );
@@ -215,9 +236,10 @@ Rules:
 
 ## Caveats
 
-- Workspace source is built from git, not the working tree. If the module
-  lives under `workspace/`, **commit and push** before the channel can load
-  it. (Same constraint as eval imports — see SKILL.md.)
+- Workspace source is built from published git refs, not the working tree. If
+  the module lives in a workspace repo, call `git.publishWorkspaceRepo` or the
+  workspace-dev `commitAndPush` wrapper before the channel can load it. (Same
+  constraint as eval imports — see SKILL.md.)
 - Custom messages are panel-rendered. Headless sessions receive the events
   but won't materialize React output.
 - Don't reuse a `typeId` for unrelated shapes — registry updates are

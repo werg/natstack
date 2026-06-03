@@ -383,15 +383,18 @@ await fs.writeFile("projects/natstack/src/server/services/fsService.ts", fixedCo
 - [ ] The fix is in the service/infrastructure layer, not a workaround in caller code
 - [ ] Skill documentation matches the actual API after the fix
 
-## Phase 7: Commit, Push, then Verify
+## Phase 7: Publish, then Verify
 
-**Critical:** The build system builds from git, not from the working tree. Your edits have NO effect until you commit and push them. Always commit+push before verifying.
+**Critical:** The build system builds from workspace git refs, not from the working tree. Runtime-unit edits have no effect until you publish the workspace repo. A plain local commit is not enough.
 
 ```typescript
-// First: commit and push your changes
-await scope.git.addAll(scope.checkoutDir);
-await scope.git.commit(scope.checkoutDir, `fix: describe the change`);
-await scope.git.push(scope.checkoutDir, { remote: "origin", ref: branchName });
+// For workspace runtime repos, publish through the runtime API:
+await git.publishWorkspaceRepo(scope.checkoutDir, `fix: describe the change`);
+
+// For plain external project repos, use the normal GitClient flow:
+// await scope.git.addAll(scope.checkoutDir);
+// await scope.git.commit(scope.checkoutDir, `fix: describe the change`);
+// await scope.git.push(scope.checkoutDir, { remote: "origin", ref: branchName });
 
 // Then rebuild if the fix touched workspace runtime repos. Plain projects
 // such as projects/natstack are not Build V2 live inputs.
@@ -427,8 +430,8 @@ console.log(`Re-test: ${retest.result.passed ? "PASS" : "FAIL"}`);
 Before assuming a fix failed, verify provenance:
 
 - the checkout containing the edit is the context the test is using
-- the change is committed and pushed
-- the build/reload consumed the pushed commit
+- the workspace repo was published with `git.publishWorkspaceRepo` or `commitAndPush`
+- the build/reload consumed the published commit
 - dogfood mirror logs did not report `skipped-dirty`
 
 Planned hardening: expose a runtime build-provenance API with context id,
@@ -442,7 +445,7 @@ if (retest.result.passed) {
   console.log(`Fix verified on branch: ${branchName}`);
 } else {
   console.log("Fix didn't work. Iterating...");
-  // Go back to Phase 6 — edit, commit+push, rebuild, re-test
+  // Go back to Phase 6 — edit, publish, rebuild, re-test
 }
 ```
 
