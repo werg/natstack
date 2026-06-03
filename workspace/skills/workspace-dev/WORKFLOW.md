@@ -13,16 +13,16 @@ source.
 1. Scaffold with eval:
 
 ```ts
-import { createProject } from "@workspace-skills/paneldev";
+import { createProject } from "@workspace-skills/workspace-dev";
 await createProject({ projectType: "panel", name: "my-app", title: "My App" });
 ```
 
 2. Edit files with filesystem tools, not eval.
 
-3. Commit, push, and open once:
+3. Publish and open once:
 
 ```ts
-import { commitAndPush } from "@workspace-skills/paneldev";
+import { commitAndPush } from "@workspace-skills/workspace-dev";
 import { openPanel } from "@workspace/runtime";
 
 await commitAndPush("panels/my-app", "Initial launch");
@@ -33,7 +33,7 @@ await scope.myApp.snapshot();
 4. Iterate by rebuilding and reloading the same handle:
 
 ```ts
-import { commitAndPush } from "@workspace-skills/paneldev";
+import { commitAndPush } from "@workspace-skills/workspace-dev";
 
 await commitAndPush("panels/my-app", "Fix layout");
 const lifecycle = await scope.myApp.rebuildAndReload();
@@ -41,7 +41,10 @@ console.log(lifecycle);
 await scope.myApp.snapshot();
 ```
 
-`rebuildAndReload()` is the canonical operation after `commitAndPush()` when the
+`commitAndPush()` publishes through `git.publishWorkspaceRepo`; a bare
+`git.client().commit()` is not enough because it does not update the workspace
+source ref. `rebuildAndReload()` is the canonical operation after
+`commitAndPush()` when the
 panel is already open. It targets exactly the panel named by the handle's `id`.
 It does not unload the target's runtime lease and does not rebuild or reload
 child panels. If the eval is running inside the target being reloaded, the eval
@@ -134,7 +137,7 @@ Use `handle.snapshot()` for an agent-readable view of the running panel. Use `ha
 For panels, inspect the source, dry-run if the source is unfamiliar, then fork:
 
 ```ts
-import { forkProject } from "@workspace-skills/paneldev";
+import { forkProject } from "@workspace-skills/workspace-dev";
 
 await forkProject({
   from: "panels/source-panel",
@@ -146,7 +149,7 @@ await forkProject({
 For workers, always start with a dry run and review warnings because Durable Object class names and workspace config references may need explicit mapping:
 
 ```ts
-import { forkProject } from "@workspace-skills/paneldev";
+import { forkProject } from "@workspace-skills/workspace-dev";
 
 const plan = await forkProject({
   from: "workers/source-worker",

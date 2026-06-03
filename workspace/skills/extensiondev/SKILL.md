@@ -7,17 +7,17 @@ description: Author NatStack extensions — long-lived Node processes that expos
 
 NatStack extensions are workspace units that live alongside panels and workers but run in their own forked Node process with **full Node access** (`node:fs`, `child_process`, native addons). They are the canonical way to add a new RPC API, replace an in-host service, or wrap a long-running native dependency.
 
-If you're calling an existing extension from a panel or worker, you don't need this skill — see `paneldev/TOOLS.md` for `extensions.use(name)` patterns. This skill is for **writing** an extension.
+If you're calling an existing extension from a panel or worker, you don't need this skill — see `workspace-dev/TOOLS.md` for `extensions.use(name)` patterns. This skill is for **writing** an extension.
 
 ## Files
 
-| Document | Content |
-|----------|---------|
-| [AUTHORING.md](AUTHORING.md) | Workspace layout, `package.json`, `activate(ctx)`, the API contract, the `ctx.*` surface |
-| [APPROVALS.md](APPROVALS.md) | `ctx.invocation.current()`, `ctx.approvals.request(...)`, shared-resource grants for extension-owned services |
-| [FETCH.md](FETCH.md) | Optional default-export `fetch` handler and the `/_r/ext/<name>/*` route |
-| [DEV_LOOP.md](DEV_LOOP.md) | Workspace git push as the dev signal, dev-session approval, inspector, log stream |
-| [MIGRATIONS.md](MIGRATIONS.md) | Migrating an in-host service into an extension (the canary pattern) |
+| Document                       | Content                                                                                                       |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| [AUTHORING.md](AUTHORING.md)   | Workspace layout, `package.json`, `activate(ctx)`, the API contract, the `ctx.*` surface                      |
+| [APPROVALS.md](APPROVALS.md)   | `ctx.invocation.current()`, `ctx.approvals.request(...)`, shared-resource grants for extension-owned services |
+| [FETCH.md](FETCH.md)           | Optional default-export `fetch` handler and the `/_r/ext/<name>/*` route                                      |
+| [DEV_LOOP.md](DEV_LOOP.md)     | Workspace git push as the dev signal, dev-session approval, inspector, log stream                             |
+| [MIGRATIONS.md](MIGRATIONS.md) | Migrating an in-host service into an extension (the canary pattern)                                           |
 
 ## When to write an extension
 
@@ -31,7 +31,7 @@ If a worker (workerd isolate) is sufficient, prefer that — workers are cheaper
 
 1. **`workspace/extensions/<name>/`** is the location. The package must be `private: true` and `type: "module"`, and the `package.json` must have `natstack.extension` (validated at install **and** boot — bad manifests fail closed).
 2. **`activate(ctx)` returns a plain object.** Its own enumerable function properties become RPC methods. Inherited methods, `then`, and non-function properties are skipped.
-3. **`ctx.fs` for an extension is unrestricted** — it covers the whole host filesystem. This is not a sandbox; it exists for *auditable* writes. For silent ambient work, import `node:fs` directly. The install approval is the trust boundary.
+3. **`ctx.fs` for an extension is unrestricted** — it covers the whole host filesystem. This is not a sandbox; it exists for _auditable_ writes. For silent ambient work, import `node:fs` directly. The install approval is the trust boundary.
 4. **Use `ctx.approvals.request(...)` only for extension-owned shared resources exposed to other userland callers.** Do not use it as a generic confirmation prompt or wrapper around ordinary filesystem/process/network work; the host/runtime APIs own those permission boundaries.
 5. **Prefer ESM**. For external CommonJS packages, use default imports + destructure (`import pkg from "x"; const { fn } = pkg`). Named imports from CJS are blocked.
 6. **No `console.log` in production paths.** Use `ctx.log.{debug,info,warn,error}` so logs land in the workspace-unit stream (`workspace.units.logs(name)`). `console.*` is captured too, but as `source: "stdout"` / `"stderr"` instead of structured records.
@@ -80,7 +80,9 @@ Saving that change (a gated meta write) raises one **elevated, joint approval** 
 
 ```ts
 import { extensions } from "@workspace/runtime";
-const hello = extensions.use<{ greet(name: string): Promise<string> }>("@workspace-extensions/hello");
+const hello = extensions.use<{ greet(name: string): Promise<string> }>(
+  "@workspace-extensions/hello"
+);
 await hello.greet("world");
 ```
 
@@ -88,16 +90,16 @@ The declared set in `meta/natstack.yml` is the single source of truth, reconcile
 
 ## Common tasks
 
-| Task | How |
-|------|-----|
-| Scaffold a new extension | Copy from `docs/extensions/templates/{minimal,plain-js-dep,external-cjs,native-wasm}/` |
-| Read manifest rules | See [AUTHORING.md](AUTHORING.md) — `natstack.extension` shape, `dependencyMode` |
-| Gate access to an extension-owned shared resource | See [APPROVALS.md](APPROVALS.md) — `ctx.approvals.request` + grant lookup |
-| Add an HTTP endpoint | See [FETCH.md](FETCH.md) — default-export `fetch` handler |
-| Push edits and pick up changes | See [DEV_LOOP.md](DEV_LOOP.md) — git push, dev-session, inspector |
-| Migrate from `src/server/services/*` | See [MIGRATIONS.md](MIGRATIONS.md) — canary pattern, `extensions.use(...)` codemod |
-| Inspect an extension's status / health / logs | `workspace.units.list()`, `workspace.units.diagnostics(name)`, `workspace.units.logs(name)`, `workspace.units.inspector(name)` |
-| Force restart (no source change) | `extensions.reload(name)` — approval-gated, restarts the active approved build |
+| Task                                              | How                                                                                                                            |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Scaffold a new extension                          | Copy from `docs/extensions/templates/{minimal,plain-js-dep,external-cjs,native-wasm}/`                                         |
+| Read manifest rules                               | See [AUTHORING.md](AUTHORING.md) — `natstack.extension` shape, `dependencyMode`                                                |
+| Gate access to an extension-owned shared resource | See [APPROVALS.md](APPROVALS.md) — `ctx.approvals.request` + grant lookup                                                      |
+| Add an HTTP endpoint                              | See [FETCH.md](FETCH.md) — default-export `fetch` handler                                                                      |
+| Push edits and pick up changes                    | See [DEV_LOOP.md](DEV_LOOP.md) — git push, dev-session, inspector                                                              |
+| Migrate from `src/server/services/*`              | See [MIGRATIONS.md](MIGRATIONS.md) — canary pattern, `extensions.use(...)` codemod                                             |
+| Inspect an extension's status / health / logs     | `workspace.units.list()`, `workspace.units.diagnostics(name)`, `workspace.units.logs(name)`, `workspace.units.inspector(name)` |
+| Force restart (no source change)                  | `extensions.reload(name)` — approval-gated, restarts the active approved build                                                 |
 
 ## Reference material
 

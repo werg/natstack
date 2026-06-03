@@ -71,7 +71,7 @@ Supported types: `panel`, `package`, `skill`, `agent`, `worker`. Each scaffolds 
 
 ```
 eval({ code: `
-  import { createProject } from "@workspace-skills/paneldev";
+  import { createProject } from "@workspace-skills/workspace-dev";
   await createProject({ projectType: "panel", name: "my-app", title: "My App" });
 `
 })
@@ -114,7 +114,7 @@ Available via `import { ... } from "@workspace/runtime"` and `import { ... } fro
 
 ### Using extensions
 
-Extensions are **declared** in `meta/natstack.yml` under `extensions:`. That declaration is the only way to add or remove one, and invoking an extension never prompts. To start using an extension, add it to the `extensions:` list in `meta/natstack.yml`; saving that change (a gated meta write) raises one joint approval covering every newly-declared extension. Once approved and running, call it with `extensions.use(name)`.
+Extensions are **declared** in `meta/natstack.yml` under `extensions:`. That declaration is the only way to add or remove one. To start using an extension, add it to the `extensions:` list in `meta/natstack.yml`; saving that change (a gated meta write) raises one joint approval covering every newly-declared extension. Once approved and running, call it with `extensions.use(name)`. Individual extension methods can still request their own approvals when the operation needs one, such as running tests.
 
 `extensions.use(name)` is synchronous and returns a method proxy; do not `await`
 it and do not call `.catch(...)` on it. Catch the method call instead:
@@ -197,26 +197,36 @@ eval({ code: `
 
 Methods: `create(options)`, `destroy(name)`, `update(name, updates)`, `list()`, `status(name)`, `listInstanceSources()`, `getPort()`, `restartAll()`. See [WORKERS.md](WORKERS.md) for full API.
 
-#### Git (via `@workspace-skills/paneldev`)
+#### Git (via `@workspace-skills/workspace-dev`)
 
-Git operations use `@natstack/git` (isomorphic-git) through the skill package. All operations go directly to the git server over HTTP — no server-side RPC needed.
+Git operations use the runtime workspace publish path. For normal source edits,
+prefer `git.publishWorkspaceRepo(repoPath, message)` or this skill's
+`commitAndPush` wrapper. A plain `git.client().commit()` only creates a
+context/local commit; it does not publish the workspace source ref, trigger
+rebuilds, or mirror dev-mode changes back to the checked-in template.
 
 ```
 // Commit and push
 eval({ code: `
-  import { commitAndPush } from "@workspace-skills/paneldev";
+  import { commitAndPush } from "@workspace-skills/workspace-dev";
   const result = await commitAndPush("panels/my-app", "Update");
   console.log(result);
 `
 })
 ```
 
-**`commitAndPush(dir, message, options?)`** — stages all changes, commits, and pushes. `options.force` passes through to `git.push({ force: true })` for deliberate non-fast-forward recovery. If a previous call already created the local commit but push failed, retrying `commitAndPush` on the clean repo pushes the current `HEAD` instead of returning "Nothing to commit".
+**`commitAndPush(dir, message, options?)`** — workspace-dev wrapper around
+`git.publishWorkspaceRepo`. It stages all changes, commits when needed, and
+pushes through NatStack's internal Git server using a reserved internal remote.
+`options.force` passes through for deliberate non-fast-forward recovery. If a
+previous call already created the local commit but push failed, retrying
+`commitAndPush` on the clean repo pushes the current `HEAD` instead of returning
+"Nothing to commit".
 
 **`forkProject(options)`** — copies an existing workspace repo into a new repo, rewrites safe metadata, initializes git, and pushes it to the internal server.
 
 ```ts
-import { forkProject } from "@workspace-skills/paneldev";
+import { forkProject } from "@workspace-skills/workspace-dev";
 
 await forkProject({
   from: "panels/chat",
@@ -282,14 +292,35 @@ eval({ code: `
 })
 ```
 
-#### test.run
+#### @workspace-extensions/test-runner.run
 
-> **Note:** `test.run` is restricted to server-origin callers only. Panel and
-> worker agents cannot call it directly (access is denied with EACCES). This
-> restriction prevents arbitrary `*.test.ts` files in a panel's context folder
-> from being executed in the server process. If you need to trigger tests from
-> a panel, route the request through a dedicated server-side API that applies
-> proper sandboxing and approval gating.
+Run Vitest tests for a workspace unit from inside the workspace runtime. The
+extension infers the current eval/agent context and runs tests against that
+context folder. Test execution goes through the approval service because tests
+are code execution; the user can allow once, allow for the session, trust the
+current code version, or deny.
+
+```
+eval({ code: `
+  import { extensions } from "@workspace/runtime";
+  const tests = extensions.use("@workspace-extensions/test-runner");
+  const result = await tests.run("packages/my-lib").catch((error) => ({
+    error: String(error),
+  }));
+  console.log(result);
+`
+})
+```
+
+For a single file or test name:
+
+```
+await tests.run({
+  target: "packages/my-lib",
+  fileFilter: "src/index.test.ts",
+  testName: "handles empty input",
+});
+```
 
 ### Browser Data
 
@@ -378,7 +409,7 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { commitAndPush } from "@workspace-skills/paneldev";
+  import { commitAndPush } from "@workspace-skills/workspace-dev";
   import { openPanel } from "@workspace/runtime";
   await commitAndPush("panels/my-app", "Initial");
   await openPanel("panels/my-app");
@@ -390,7 +421,7 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { commitAndPush } from "@workspace-skills/paneldev";
+  import { commitAndPush } from "@workspace-skills/workspace-dev";
   import { openPanel } from "@workspace/runtime";
   await commitAndPush("panels/my-app", "Update");
   const handle = await openPanel("panels/my-app");

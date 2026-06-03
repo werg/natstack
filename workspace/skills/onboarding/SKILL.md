@@ -9,25 +9,25 @@ Guide new users through understanding NatStack and getting their workspace set u
 
 ## Files
 
-| Document | Content |
-|----------|---------|
-| [OVERVIEW.md](OVERVIEW.md) | What NatStack is, key concepts, architecture at a glance |
-| [WORKSPACE_STRUCTURE.md](WORKSPACE_STRUCTURE.md) | Workspace directory layout, meta/, context folders, template vs live |
-| [GETTING_STARTED.md](GETTING_STARTED.md) | First-time setup: API provider integrations, browser import, workspace setup, first panel |
-| [REMOTE_SERVER.md](REMOTE_SERVER.md) | Running the state server on a different machine (home server, VPS) and connecting desktop/mobile clients to it |
-| [ActionBar.tsx](ActionBar.tsx) | Pinned first-run action bar loaded by the onboarding chat panel |
+| Document                                         | Content                                                                                                        |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| [OVERVIEW.md](OVERVIEW.md)                       | What NatStack is, key concepts, architecture at a glance                                                       |
+| [WORKSPACE_STRUCTURE.md](WORKSPACE_STRUCTURE.md) | Workspace directory layout, meta/, context folders, template vs live                                           |
+| [GETTING_STARTED.md](GETTING_STARTED.md)         | First-time setup: API provider integrations, browser import, workspace setup, first panel                      |
+| [REMOTE_SERVER.md](REMOTE_SERVER.md)             | Running the state server on a different machine (home server, VPS) and connecting desktop/mobile clients to it |
+| [ActionBar.tsx](ActionBar.tsx)                   | Pinned first-run action bar loaded by the onboarding chat panel                                                |
 
 ## Related Skills
 
-| Skill | When to use |
-|-------|-------------|
-| `browser-import` | Importing cookies, passwords, bookmarks, history from existing browsers |
-| `api-integrations` | Connecting third-party APIs (Gmail, GitHub, Slack, etc.) via OAuth |
-| `agent-tuning` | Changing the default model/provider; tuning effort, approval, chattiness for a running chat agent |
-| `web-research` | Optional Tavily / Brave / Exa API key setup so `web_search` upgrades past DuckDuckGo |
-| `sandbox` | Learning the eval tool, inline UI, runtime APIs |
-| `paneldev` | Building and launching panels, workers, full development workflow |
-| `appdev` | Authoring trusted workspace apps under `apps/`: Electron shell, mobile React Native, terminal clients |
+| Skill              | When to use                                                                                           |
+| ------------------ | ----------------------------------------------------------------------------------------------------- |
+| `browser-import`   | Importing cookies, passwords, bookmarks, history from existing browsers                               |
+| `api-integrations` | Connecting third-party APIs (Gmail, GitHub, Slack, etc.) via OAuth                                    |
+| `agent-tuning`     | Changing the default model/provider; tuning effort, approval, chattiness for a running chat agent     |
+| `web-research`     | Optional Tavily / Brave / Exa API key setup so `web_search` upgrades past DuckDuckGo                  |
+| `sandbox`          | Learning the eval tool, inline UI, runtime APIs                                                       |
+| `workspace-dev`    | Building and launching panels, workers, full development workflow                                     |
+| `appdev`           | Authoring trusted workspace apps under `apps/`: Electron shell, mobile React Native, terminal clients |
 
 ## First: Detect User Experience Level
 
@@ -90,7 +90,7 @@ chosen setup path.
 2. **Recommend first actions** — Keep the first reply short and state-aware; rely on the pinned action bar for the initial setup choices
 3. **API integrations** — Highlight concrete provider choices: Google Workspace, GitHub, Slack, model/API keys, web-search providers (Tavily / Brave / Exa for `web_search`), or custom OAuth/API provider. Do not gate this on browser data import.
 4. **Import browser data** — Use the `browser-import` skill only when the user wants cookies, bookmarks, passwords, or local browser state
-5. **First project** — Use the `paneldev` skill to scaffold and launch a panel
+5. **First project** — Use the `workspace-dev` skill to scaffold and launch a panel
 6. **Explore** — Point to the `sandbox` skill for runtime API exploration
 
 ### Returning Users

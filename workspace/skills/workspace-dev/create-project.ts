@@ -14,69 +14,19 @@ function createGit(): GitClient {
 }
 
 // ---------------------------------------------------------------------------
-// commitAndPush — stage, commit, and push changes to the git server
+// commitAndPush — workspace-dev convenience wrapper around the runtime publish API
 // ---------------------------------------------------------------------------
 
 /**
  * Stage all changes in a repo directory, commit, and push to the git server.
- * Context folders include .git with shared object store, so this works on
- * any pre-existing repo. Adds the "origin" remote if not configured yet.
  */
 export async function commitAndPush(
   dir: string,
   message: string,
   options: CommitAndPushOptions = {}
 ): Promise<string> {
-  const gitClient = createGit();
-
-  // Ensure remote is configured (context folders copy .git but workspace
-  // repos don't have remotes — the remote path matches the repo path)
-  const remotes = await gitClient.listRemotes(dir);
-  if (!remotes.some((r) => r.remote === "origin")) {
-    await gitClient.addRemote(dir, "origin", dir);
-  }
-
-  await gitClient.addAll(dir);
-
-  const status = await gitClient.status(dir);
-  const hasChanges = status.files.some((f) => f.status !== "unmodified" && f.status !== "ignored");
-  const branch = (await gitClient.getCurrentBranch(dir)) ?? "main";
-
-  if (!hasChanges) {
-    await pushWithContext(gitClient, {
-      dir,
-      branch,
-      force: options.force ?? false,
-      existingCommit: status.commit ?? (await gitClient.getCurrentCommit(dir)),
-    });
-    return `No working-tree changes; pushed current HEAD to origin/${branch}`;
-  }
-
-  const sha = await gitClient.commit({ dir, message });
-  await pushWithContext(gitClient, {
-    dir,
-    branch,
-    force: options.force ?? false,
-    existingCommit: sha,
-  });
-  return `Committed ${sha.slice(0, 7)} and pushed to origin/${branch}`;
-}
-
-async function pushWithContext(
-  gitClient: GitClient,
-  opts: { dir: string; branch: string; force: boolean; existingCommit: string | null }
-): Promise<void> {
-  try {
-    await gitClient.push({ dir: opts.dir, ref: opts.branch, force: opts.force });
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    const commit = opts.existingCommit ? ` Local commit ${opts.existingCommit} exists.` : "";
-    throw new Error(
-      `Push failed for ${opts.dir} on ${opts.branch}.${commit} ` +
-        `Working tree changes may already be committed locally; retry commitAndPush to push the clean HEAD, or inspect git.status("${opts.dir}"). ` +
-        `Underlying error: ${detail}`
-    );
-  }
+  const result = await git.publishWorkspaceRepo(dir, message, options);
+  return result.message;
 }
 
 const TYPE_DIRS: Record<string, string> = {
@@ -477,7 +427,7 @@ export default {
     initialFiles: files,
     message: `Create ${projectType}: ${title}`,
   });
-  await syncRepoToContextsBestEffort(projectPath);
+  await ensureRepoPresentInContextsBestEffort(projectPath);
 
   return { created: projectPath, files: Object.keys(files) };
 }
@@ -754,7 +704,7 @@ export async function forkProject(options: ForkProjectOptions): Promise<ForkProj
     initialFiles,
     message: options.commitMessage ?? `Fork ${from} to ${to}`,
   });
-  await syncRepoToContextsBestEffort(to);
+  await ensureRepoPresentInContextsBestEffort(to);
   return {
     source: from,
     created: to,
@@ -796,9 +746,9 @@ export async function forkWorker(params: {
   });
 }
 
-async function syncRepoToContextsBestEffort(repoPath: string): Promise<void> {
+async function ensureRepoPresentInContextsBestEffort(repoPath: string): Promise<void> {
   try {
-    await git.syncRepoToContexts(repoPath);
+    await git.ensureRepoPresentInContexts(repoPath);
   } catch {
     // Older runtimes may not expose this helper; post-push server hooks still
     // sync new repos in supported hosts.

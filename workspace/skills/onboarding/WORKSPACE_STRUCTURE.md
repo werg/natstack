@@ -16,7 +16,7 @@ source/
     runtime/            ← (git repo) @workspace/runtime
   skills/               ← Agent skill definitions
     sandbox/            ← (git repo) Sandbox execution skill
-    paneldev/           ← (git repo) Panel development skill
+    workspace-dev/           ← (git repo) Workspace development skill
   agents/               ← Agent configurations
   workers/              ← Workerd Durable Object source
     agent-worker/       ← (git repo) Default AI chat worker
@@ -45,7 +45,7 @@ state/
 Like every other source directory, `meta/` is a git repo. This means:
 
 - It gets copied into each context folder by the context folder manager
-- Agents can commit and push changes back to the workspace source via the internal git server
+- Agents can publish changes back to the workspace source via the internal git server
 - Changes pushed to meta/ can trigger rebuilds and config reloads
 - Shared git remotes declared under `git.remotes` are materialized into repo
   `.git/config` for source repos and context folders. Prefer
@@ -62,7 +62,7 @@ When a panel or agent session starts, it gets a **context folder** — an isolat
 
 Context commits may add immutable loose objects to the shared object pool before a push. Push approval gates the canonical repository refs and source working tree update, not raw object admission. Object writes are no-overwrite and limited to loose object paths; packfile mutation through the context symlink is intentionally blocked.
 
-This means agents can freely read and write files in their context without affecting the workspace source or other contexts. To propagate changes back, agents commit and push through the internal git server. Existing contexts do not auto-reset when another context pushes; shared objects become visible immediately, but each context keeps its own refs and working tree until it explicitly fetches, pulls, rebases, or resets.
+This means agents can freely read and write files in their context without affecting the workspace source or other contexts. To propagate changes back, agents publish the repo through the internal git server, normally with `git.publishWorkspaceRepo(repoPath, message)` or the workspace-dev `commitAndPush` wrapper. A plain local `git.client().commit()` can create commit objects in the shared object store, but it does not move the workspace source ref, recompute effective versions, trigger rebuilds, or mirror changes back to the dev template. Existing contexts do not auto-reset when another context pushes; shared objects become visible immediately, but each context keeps its own refs and working tree until it explicitly fetches, pulls, rebases, or resets.
 
 Do not run destructive pruning on canonical source object stores unless the GC is context-aware. Context-only commits can be reachable from context refs even before their refs are pushed.
 
@@ -120,5 +120,7 @@ The `workspace/` directory in the NatStack source repo is a **template**, never 
 
 In dev mode (`pnpm dev`), an ephemeral workspace is created from the template
 each run. Accepted pushes from that generated workspace are mirrored back into
-the checked-in `workspace/` template, so committed workspace-unit edits made
-during a dev session persist into the source checkout.
+the checked-in `workspace/` template, so published workspace-unit edits made
+during a dev session persist into the source checkout. `git.ensureRepoPresentInContexts`
+is not this publish path; it only ensures newly-created repos are present in
+existing contexts.

@@ -1,10 +1,12 @@
 {
-  "name": "@workspace-skills/paneldev",
+  "name": "@workspace-skills/workspace-dev",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Learn NatStack panel development",
-  "exports": { ".": "./index.ts" },
+  "description": "Learn NatStack workspace development",
+  "exports": {
+    ".": "./index.ts"
+  },
   "dependencies": {
     "@workspace/runtime": "workspace:*",
     "@natstack/git": "workspace:*"

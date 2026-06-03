@@ -27,15 +27,17 @@ Skills have two parts: **documentation** (read via the read tool) and optionally
 To read a skill's docs: `read("skills/<name>/SKILL.md")`
 
 Some skills also export code you can use in eval. Workspace packages (`@workspace-skills/*`, `@workspace/*`, `@natstack/*`) are **auto-resolved** — just write the `import` and they're built on first use:
+
 ```
-eval({ code: `import { createProject } from "@workspace-skills/paneldev"; ...` })
+eval({ code: `import { createProject } from "@workspace-skills/workspace-dev"; ...` })
 ```
+
 npm packages require the `imports` parameter: `imports: { "lodash": "npm:4" }`
 
 Before using eval, read the **sandbox** skill — it has the complete API reference.
 
 - **sandbox** — **read this first** — eval patterns, complete runtime API reference, inline_ui, feedback forms, browser automation
-- **paneldev** — building panels, workers, Durable Objects; exports `createProject`, `commitAndPush`
+- **workspace-dev** — building panels, workers, Durable Objects; exports `createProject`, `commitAndPush`
 - **browser-import** — importing cookies, passwords, bookmarks, history from installed browsers
 - **api-integrations** — connecting to OAuth APIs (Gmail, GitHub, Slack, Notion, Linear)
 - **agent-tuning** — changing the host chat agent's model/provider defaults and live effort, approval, and chattiness

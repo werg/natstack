@@ -10,10 +10,12 @@ const mocks = vi.hoisted(() => {
     addAll: vi.fn(),
     status: vi.fn(),
     getCurrentBranch: vi.fn(),
+    getCurrentCommit: vi.fn(),
     commit: vi.fn(),
     push: vi.fn(),
   };
-  return { files, dirs, initAndPush, gitClient };
+  const publishWorkspaceRepo = vi.fn();
+  return { files, dirs, initAndPush, gitClient, publishWorkspaceRepo };
 });
 
 function normalize(p: string): string {
@@ -36,7 +38,11 @@ function addFile(p: string, content: string | Uint8Array): void {
 
 vi.mock("@workspace/runtime", () => ({
   gitConfig: { serverUrl: "http://git.local", token: "token" },
-  git: { client: vi.fn(() => mocks.gitClient), syncRepoToContexts: vi.fn() },
+  git: {
+    client: vi.fn(() => mocks.gitClient),
+    publishWorkspaceRepo: mocks.publishWorkspaceRepo,
+    ensureRepoPresentInContexts: vi.fn(),
+  },
   fs: {
     async exists(p: string): Promise<boolean> {
       const normalized = normalize(p);
@@ -91,64 +97,42 @@ describe("forkProject", () => {
     mocks.files.clear();
     mocks.dirs.clear();
     mocks.initAndPush.mockReset();
+    mocks.publishWorkspaceRepo.mockReset();
     for (const fn of Object.values(mocks.gitClient)) fn.mockReset();
   });
 
   it("commitAndPush supports force push", async () => {
-    mocks.gitClient.listRemotes.mockResolvedValue([{ remote: "origin", url: "panels/my-app" }]);
-    mocks.gitClient.status.mockResolvedValue({
-      branch: "main",
-      commit: "abc",
-      dirty: true,
-      files: [{ path: "index.tsx", status: "modified", staged: true, unstaged: false }],
+    mocks.publishWorkspaceRepo.mockResolvedValue({
+      message: "Committed 1234567 and pushed to __natstack/main",
     });
-    mocks.gitClient.getCurrentBranch.mockResolvedValue("main");
-    mocks.gitClient.commit.mockResolvedValue("1234567890abcdef");
 
     const { commitAndPush } = await import("./create-project.js");
     const result = await commitAndPush("panels/my-app", "Update", { force: true });
 
-    expect(mocks.gitClient.push).toHaveBeenCalledWith({
-      dir: "panels/my-app",
-      ref: "main",
+    expect(mocks.publishWorkspaceRepo).toHaveBeenCalledWith("panels/my-app", "Update", {
       force: true,
     });
-    expect(result).toBe("Committed 1234567 and pushed to origin/main");
+    expect(result).toBe("Committed 1234567 and pushed to __natstack/main");
   });
 
   it("commitAndPush pushes an existing clean commit on retry", async () => {
-    mocks.gitClient.listRemotes.mockResolvedValue([{ remote: "origin", url: "panels/my-app" }]);
-    mocks.gitClient.status.mockResolvedValue({
-      branch: "main",
-      commit: "abc",
-      dirty: false,
-      files: [],
+    mocks.publishWorkspaceRepo.mockResolvedValue({
+      message: "No working-tree changes; pushed current HEAD to __natstack/main",
     });
-    mocks.gitClient.getCurrentBranch.mockResolvedValue("main");
 
     const { commitAndPush } = await import("./create-project.js");
     const result = await commitAndPush("panels/my-app", "Update");
 
-    expect(mocks.gitClient.commit).not.toHaveBeenCalled();
-    expect(mocks.gitClient.push).toHaveBeenCalledWith({
-      dir: "panels/my-app",
-      ref: "main",
-      force: false,
-    });
-    expect(result).toBe("No working-tree changes; pushed current HEAD to origin/main");
+    expect(mocks.publishWorkspaceRepo).toHaveBeenCalledWith("panels/my-app", "Update", {});
+    expect(result).toBe("No working-tree changes; pushed current HEAD to __natstack/main");
   });
 
   it("commitAndPush reports the local commit when push fails", async () => {
-    mocks.gitClient.listRemotes.mockResolvedValue([{ remote: "origin", url: "panels/my-app" }]);
-    mocks.gitClient.status.mockResolvedValue({
-      branch: "main",
-      commit: "abc",
-      dirty: true,
-      files: [{ path: "index.tsx", status: "modified", staged: true, unstaged: false }],
-    });
-    mocks.gitClient.getCurrentBranch.mockResolvedValue("main");
-    mocks.gitClient.commit.mockResolvedValue("1234567890abcdef");
-    mocks.gitClient.push.mockRejectedValue(new Error("Authentication failed: Forbidden"));
+    mocks.publishWorkspaceRepo.mockRejectedValue(
+      new Error(
+        "Workspace publish failed for panels/my-app on main. Local commit 1234567890abcdef exists. Underlying error: Authentication failed: Forbidden"
+      )
+    );
 
     const { commitAndPush } = await import("./create-project.js");
 

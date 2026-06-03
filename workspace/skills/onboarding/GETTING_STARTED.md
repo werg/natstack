@@ -79,6 +79,7 @@ eval({ code: `
 ```
 
 Key directories:
+
 - `panels/` — panel apps (UI)
 - `packages/` — shared workspace packages
 - `workers/` — workerd workers and Durable Objects
@@ -229,6 +230,7 @@ eval({ code: `
 ```
 
 Then ask the user which browser/profile to import from and which data types they want. See the `browser-import` skill docs for:
+
 - [DISCOVERY.md](../browser-import/DISCOVERY.md) — browser detection and profile enumeration
 - [IMPORT.md](../browser-import/IMPORT.md) — running imports
 - [COOKIES.md](../browser-import/COOKIES.md) — cookie management and session sync
@@ -287,16 +289,17 @@ eval({ code: `
 
 ## Step 6: Create Your First Panel
 
-Use the **paneldev** skill to scaffold and launch a panel. See the `paneldev` skill for the full workflow:
-- [WORKFLOW.md](../paneldev/WORKFLOW.md) — step-by-step development process
-- [WORKFLOW.md](../paneldev/WORKFLOW.md) — agent panel workflow
-- [PANEL_API.md](../paneldev/PANEL_API.md) — runtime panel API reference
+Use the **workspace-dev** skill to scaffold and launch a panel. See the `workspace-dev` skill for the full workflow:
+
+- [WORKFLOW.md](../workspace-dev/WORKFLOW.md) — step-by-step development process
+- [WORKFLOW.md](../workspace-dev/WORKFLOW.md) — agent panel workflow
+- [PANEL_API.md](../workspace-dev/PANEL_API.md) — runtime panel API reference
 
 Quick version:
 
 ```
 eval({ code: `
-  import { createProject } from "@workspace-skills/paneldev";
+  import { createProject } from "@workspace-skills/workspace-dev";
   await createProject({ projectType: "panel", name: "hello", title: "Hello World" });
 `
 })
@@ -306,7 +309,7 @@ Then edit the generated files with Read/Edit/Write tools and launch:
 
 ```
 eval({ code: `
-  import { commitAndPush } from "@workspace-skills/paneldev";
+  import { commitAndPush } from "@workspace-skills/workspace-dev";
   import { openPanel } from "@workspace/runtime";
   await commitAndPush("panels/hello", "Initial launch");
   await openPanel("panels/hello");
@@ -317,6 +320,7 @@ eval({ code: `
 ## Step 7: Explore the Runtime
 
 Use the **sandbox** skill to learn what you can do from the chat panel:
+
 - [EVAL.md](../sandbox/EVAL.md) — running code in the sandbox
 - [INLINE_UI.md](../sandbox/INLINE_UI.md) — rendering interactive components in chat
 - [RUNTIME_API.md](../sandbox/RUNTIME_API.md) — full API reference (fs, db, ai, workers, etc.)
@@ -327,13 +331,13 @@ Use the **sandbox** skill to learn what you can do from the chat panel:
 
 Not every user needs every step. Tailor the walkthrough:
 
-| User goal | Steps to focus on |
-|-----------|-------------------|
-| "I want to browse the web with my logins" | Steps 1, 2, 4 (import cookies + sync) |
-| "I want to connect Gmail/Slack/GitHub" | Steps 1, 2, 3 (OAuth/API setup; no browser import required) |
-| "I want to build an app" | Steps 1, 2, 6 (scaffold + launch panel) |
-| "I want to organize my projects" | Steps 1, 2, 5 (workspace management) |
-| "I want to see what this can do" | Steps 1, 2, 7 (explore runtime APIs) |
-| "Set everything up" | All steps in order |
+| User goal                                 | Steps to focus on                                           |
+| ----------------------------------------- | ----------------------------------------------------------- |
+| "I want to browse the web with my logins" | Steps 1, 2, 4 (import cookies + sync)                       |
+| "I want to connect Gmail/Slack/GitHub"    | Steps 1, 2, 3 (OAuth/API setup; no browser import required) |
+| "I want to build an app"                  | Steps 1, 2, 6 (scaffold + launch panel)                     |
+| "I want to organize my projects"          | Steps 1, 2, 5 (workspace management)                        |
+| "I want to see what this can do"          | Steps 1, 2, 7 (explore runtime APIs)                        |
+| "Set everything up"                       | All steps in order                                          |
 
 Ask the user what they're most interested in and skip to the relevant section.

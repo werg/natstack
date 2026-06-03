@@ -16,7 +16,7 @@ enough.
    currently loaded build until you are ready.
 
 For context agents, this usually means using workspace git/runtime APIs rather
-than direct shell git commands. See `paneldev/TOOLS.md` for common git helper
+than direct shell git commands. See `workspace-dev/TOOLS.md` for common git helper
 patterns.
 
 In development, app reconciliation prints an app status diagnostic with source,

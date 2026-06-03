@@ -34,8 +34,9 @@ from panels, workers, and extensions:
    identity, not from a special filesystem path.
 3. App code is trusted client code. Add capabilities deliberately and keep the
    capability list no broader than the target needs.
-4. Workspace app builds come from committed git state. Editing a file has no
-   runtime effect until the app repo is committed and pushed.
+4. Workspace app builds come from published git refs. Editing a file or making
+   a local/context commit has no runtime effect until the app repo is published
+   with `git.publishWorkspaceRepo` or the workspace-dev `commitAndPush` wrapper.
 5. Electron shell apps that manage panel layout must declare `panel-hosting`.
 6. React Native workspace apps are loaded by the shipped native host bootstrap;
    clean-install pairing must work before the workspace app bundle is available.
@@ -84,7 +85,7 @@ before editing.
 
 ## Related Skills
 
-- Use `paneldev` for ordinary panels and workers.
+- Use `workspace-dev` for ordinary panels and workers.
 - Use `extensiondev` for trusted Node service units.
 - Use `system-testing` after app changes that affect startup, pairing, shell
   UX, mobile bootstrap, or client auth.

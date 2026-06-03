@@ -27,15 +27,15 @@ This is the one place the extension trust model loosens for ergonomics. Source p
 ## Pushing from a panel or worker
 
 ```ts
-import { commitAndPush } from "@workspace-skills/paneldev";
+import { commitAndPush } from "@workspace-skills/workspace-dev";
 
-await commitAndPush(
-  "extensions/hello",
-  "Add greet method",
-);
+await commitAndPush("extensions/hello", "Add greet method");
 ```
 
-`commitAndPush` from the `paneldev` skill works on extension repos the same way it works on panel/worker repos. The first push will prompt; subsequent pushes in a dev session auto-accept.
+`commitAndPush` from the `workspace-dev` skill delegates to
+`git.publishWorkspaceRepo` and works on extension repos the same way it works on
+panel/worker repos. The first push will prompt; subsequent pushes in a dev
+session auto-accept.
 
 ## Inspector (dev mode only)
 
@@ -73,22 +73,22 @@ Extension records from `ctx.log`, extension process stdout/stderr, worker/DO `co
 await extensions.reload("@workspace-extensions/hello");
 ```
 
-Approval-gated. Restarts the *currently active approved build* — does not pull dependency changes. Use this after editing in-process state (env vars, on-disk config) that the extension reads at `activate()` time.
+Approval-gated. Restarts the _currently active approved build_ — does not pull dependency changes. Use this after editing in-process state (env vars, on-disk config) that the extension reads at `activate()` time.
 
-To adopt dependency changes (a `@workspace/runtime` push, an `npm` version bump), the extension must rebuild — and rebuilds happen only on reconcile, at workspace startup or when `meta/natstack.yml` is pushed. `extensions.reload(name)` restarts the *active approved build* and does **not** rebuild, so it won't pick up dependency changes on its own, and dependency pushes don't auto-reload a running extension either.
+To adopt dependency changes (a `@workspace/runtime` push, an `npm` version bump), the extension must rebuild — and rebuilds happen only on reconcile, at workspace startup or when `meta/natstack.yml` is pushed. `extensions.reload(name)` restarts the _active approved build_ and does **not** rebuild, so it won't pick up dependency changes on its own, and dependency pushes don't auto-reload a running extension either.
 
 ## Common failure shapes
 
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| `MANIFEST_KIND` | `package.json` is missing `natstack.extension` (or has two kind blocks) | Add exactly one `natstack.extension` block |
-| `MANIFEST_ACTIVATION` | `activationEvents` is not `["*"]` | Lazy activation is future work — must be `["*"]` in v1 |
-| Stays in `error` after push | `activate()` threw | Check `lastError` on `workspace.units.list()`; look at the inspector log |
-| `Cannot find module ...` at runtime | Dep was externalized but missing from runtime install | Set `dependencyMode: "external"` and confirm the package is in `dependencies` |
-| `Named export ... not found` | ESM imported a named export from a CJS package | Use `import pkg from "x"; const { fn } = pkg;` |
-| `require is not defined` | Code crossed an ESM/CJS boundary in a bundled dep | Switch the dep to `dependencyMode: "external"` |
-| 503 from `/_r/ext/<name>/*` | Extension is `pending-approval`, `building`, or `error` | Approve the declaration/update or check `lastError` |
-| 413 from fetch endpoint | Request body exceeded 32 MB | Split the upload or stream to disk via `ctx.fs` |
+| Symptom                             | Cause                                                                   | Fix                                                                           |
+| ----------------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `MANIFEST_KIND`                     | `package.json` is missing `natstack.extension` (or has two kind blocks) | Add exactly one `natstack.extension` block                                    |
+| `MANIFEST_ACTIVATION`               | `activationEvents` is not `["*"]`                                       | Lazy activation is future work — must be `["*"]` in v1                        |
+| Stays in `error` after push         | `activate()` threw                                                      | Check `lastError` on `workspace.units.list()`; look at the inspector log      |
+| `Cannot find module ...` at runtime | Dep was externalized but missing from runtime install                   | Set `dependencyMode: "external"` and confirm the package is in `dependencies` |
+| `Named export ... not found`        | ESM imported a named export from a CJS package                          | Use `import pkg from "x"; const { fn } = pkg;`                                |
+| `require is not defined`            | Code crossed an ESM/CJS boundary in a bundled dep                       | Switch the dep to `dependencyMode: "external"`                                |
+| 503 from `/_r/ext/<name>/*`         | Extension is `pending-approval`, `building`, or `error`                 | Approve the declaration/update or check `lastError`                           |
+| 413 from fetch endpoint             | Request body exceeded 32 MB                                             | Split the upload or stream to disk via `ctx.fs`                               |
 
 ## Remove a Declaration
 
