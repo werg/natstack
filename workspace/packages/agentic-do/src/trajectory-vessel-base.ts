@@ -97,6 +97,25 @@ const URL_BOUND_MODEL_CREDENTIAL_SENTINEL_CLAIM =
   "https://natstack.local/url-bound-model-credential";
 const IMAGE_SERVICE_EXTENSION = "@workspace-extensions/image-service";
 
+function objectToNumericKeyBytes(obj: Record<string, unknown>): Buffer | undefined {
+  const keys = Object.keys(obj);
+  if (keys.length === 0) return undefined;
+  if (!keys.every((key) => /^(0|[1-9]\d*)$/.test(key))) return undefined;
+
+  const indexes = keys.map((key) => Number(key)).sort((a, b) => a - b);
+  if (indexes[0] !== 0 || indexes[indexes.length - 1] !== keys.length - 1) return undefined;
+
+  const bytes = new Uint8Array(keys.length);
+  for (const index of indexes) {
+    const byte = obj[String(index)];
+    if (typeof byte !== "number" || !Number.isInteger(byte) || byte < 0 || byte > 255) {
+      return undefined;
+    }
+    bytes[index] = byte;
+  }
+  return Buffer.from(bytes);
+}
+
 function imageBinaryToBuffer(value: unknown): Buffer {
   if (typeof value === "string") return Buffer.from(value, "base64");
   if (value instanceof Uint8Array) return Buffer.from(value);
@@ -119,6 +138,8 @@ function imageBinaryToBuffer(value: unknown): Buffer {
     if (Number.isSafeInteger(obj["length"])) {
       return Buffer.from(value as ArrayLike<number>);
     }
+    const bytes = objectToNumericKeyBytes(obj);
+    if (bytes) return bytes;
   }
   throw new TypeError("Expected image data to be base64 text or binary bytes");
 }

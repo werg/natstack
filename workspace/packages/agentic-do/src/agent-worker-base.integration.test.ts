@@ -3625,6 +3625,62 @@ describe("AgentWorkerBase typed transcript input", () => {
     ]);
   });
 
+  it("normalizes JSON-serialized Uint8Array image attachment data", async () => {
+    const { instance } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const original = Buffer.from([137, 80, 78, 71]);
+    const resized = Buffer.from([1, 2, 3]);
+    const call = vi.fn(async (_target: string, method: string, args: unknown[]) => {
+      if (method === "extensions.streamingMethods") return [];
+      if (method === "extensions.invoke") {
+        const [extensionName, functionName, invokeArgs] = args as [string, string, unknown[]];
+        expect(extensionName).toBe("@workspace-extensions/image-service");
+        expect(functionName).toBe("resize");
+        expect(Buffer.from(invokeArgs[0] as Uint8Array)).toEqual(original);
+        return {
+          data: resized,
+          mimeType: "image/png",
+        };
+      }
+      return null;
+    });
+    const worker = instance as unknown as {
+      _rpc: {
+        call: ReturnType<typeof vi.fn>;
+        stream: ReturnType<typeof vi.fn>;
+        emit: ReturnType<typeof vi.fn>;
+        on: ReturnType<typeof vi.fn>;
+        handleIncomingPost: ReturnType<typeof vi.fn>;
+      };
+      testResizeAttachments(
+        channelId: string,
+        attachments: ChannelEvent["attachments"]
+      ): Promise<unknown>;
+    };
+    worker._rpc = {
+      call,
+      stream: vi.fn(),
+      emit: vi.fn(),
+      on: vi.fn(),
+      handleIncomingPost: vi.fn(),
+    };
+
+    await expect(
+      worker.testResizeAttachments("chat-1", [
+        {
+          id: "att-1",
+          type: "image",
+          data: JSON.parse(JSON.stringify(original)) as unknown as string,
+          mimeType: "image/png",
+          size: original.byteLength,
+        },
+      ])
+    ).resolves.toEqual([
+      { type: "image", mimeType: "image/png", data: resized.toString("base64") },
+    ]);
+  });
+
   it("falls back to normalized original image data when resize fails", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { instance } = await createTestDO(TestAgentWorker, {
