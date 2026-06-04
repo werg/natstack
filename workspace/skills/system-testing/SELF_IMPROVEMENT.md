@@ -24,6 +24,10 @@ than three tests. Keep one eval call per stage, run as much concurrency inside
 that stage as is feasible, publish a concise user-visible report after each
 stage, then continue to the next selected stage.
 
+Store the full stage/run scaffold in `scope`; return only the compact control
+data needed to render the feedback form. Do not return `scope.systemTestingRun`,
+the full stage list, or test result arrays from eval calls.
+
 ```
 eval({
   code: `
@@ -56,9 +60,9 @@ eval({
     scope.results = results;
     return {
       runId,
-      stages: scope.systemTestingRun.stages,
       stageOptions,
       defaultStages: stageOptions.map((option) => option.value),
+      stageCount: stages.length,
       testCount: tests.length,
     };
   `,
@@ -67,9 +71,11 @@ eval({
 
 Before running any tests, show a feedback form populated from the initialization
 eval's `stageOptions` and `defaultStages`, then store the selected stage indexes
-on `scope.systemTestingRun.selectedStageIndexes`. Do not hard-code stage names
-or counts; they must come from the current system-testing skill exports. If the
-user cancels, stop and report that no tests were run.
+on `scope.systemTestingRun.selectedStageIndexes`. The selection eval should
+return only a compact selection summary, such as selected stage count and
+selected test count, while leaving the selected stage objects in `scope`. Do not
+hard-code stage names or counts; they must come from the current system-testing
+skill exports. If the user cancels, stop and report that no tests were run.
 
 Then run the next selected stage with this eval. This eval must be invoked once
 per stage and must not contain a `for`, `while`, or recursive loop over stages.
@@ -86,7 +92,7 @@ errors are separate setup failures.
 ```
 eval({
   code: `
-    import { HeadlessRunner, TestRunner, allTests, nextSelectedStage, summarizeFailures } from "@workspace-skills/system-testing";
+    import { HeadlessRunner, TestRunner, allTests, nextSelectedStage } from "@workspace-skills/system-testing";
     import { contextId } from "@workspace/runtime";
     const tests = allTests();
     const run = scope.systemTestingRun;
@@ -94,7 +100,18 @@ eval({
       throw new Error("No active systemTestingRun. Run the initialization eval first.");
     }
     const next = nextSelectedStage(tests, run);
-    if (!next) return { done: true, runId: run.runId, results: run.results ?? scope.results };
+    if (!next) {
+      const aggregate = run.results ?? scope.results;
+      return {
+        done: true,
+        runId: run.runId,
+        total: aggregate?.total ?? 0,
+        passed: aggregate?.passed ?? 0,
+        failed: aggregate?.failed ?? 0,
+        errored: aggregate?.errored ?? 0,
+        skipped: aggregate?.skipped ?? 0,
+      };
+    }
     const { stage, stagePosition, selectedStages } = next;
     const completed = new Set(Array.isArray(run.completedStages) ? run.completedStages : []);
 
@@ -129,6 +146,7 @@ eval({
     completed.add(stage.index);
     run.completedStages = [...completed];
     run.results = aggregate;
+    run.stageSummaries = Array.isArray(run.stageSummaries) ? run.stageSummaries : [];
     scope.systemTestingRun = run;
     scope.results = aggregate;
 
@@ -139,6 +157,22 @@ eval({
         return entry.test.name + ": " + reason.slice(0, 240);
       });
     const remainingStages = selectedStages.filter((item) => !completed.has(item.index)).length;
+    const stageSummary = {
+      index: stage.index,
+      name: stage.name,
+      position: stagePosition,
+      selectedStageCount: selectedStages.length,
+      total: partial.total,
+      passed: partial.passed,
+      failed: partial.failed,
+      errored: partial.errored,
+      durationMs: partial.duration,
+      concurrency,
+      failedTests: failedNames,
+    };
+    run.stageSummaries.push(stageSummary);
+    run.lastStageSummary = stageSummary;
+    scope.systemTestingRun = run;
     const reportLines = [
       "**System Test Stage " + stagePosition + "/" + selectedStages.length + ": " + stage.name + "**",
       "- Stage results: " + partial.passed + " passed, " + partial.failed + " failed, " + partial.errored + " errored",
@@ -158,13 +192,17 @@ eval({
       failed: aggregate.failed,
       errored: aggregate.errored,
       skipped: aggregate.skipped,
-      failureDiagnostics: partial.failed || partial.errored ? summarizeFailures(partial) : undefined,
+      failedTestCount: failedNames.length,
     };
   `,
 })
 ```
 
 ## Phase 2: Analyze Failures
+
+Full test state lives in `scope.results.results`, with compact per-stage
+summaries in `scope.systemTestingRun.stageSummaries`. Eval return values are
+only progress/control packets; do not use them as the diagnostic record.
 
 For each failed test, inspect **everything** — the conversation, every tool call and its result, harness lifecycle, and participant state. Never hand off only filenames or artifact paths. A useful report must say what the test agent did, where it diverged from the expected marker/behavior, what tool calls completed or errored, and whether the failure looks like runtime, docs, harness, or test validation.
 
@@ -277,7 +315,7 @@ For each failure, determine the root cause category and act accordingly:
 | Worker/DO issue             | `src/server/services/workerService.ts`, `workspace/packages/runtime/src/worker/`                   |
 | Panel lifecycle             | `src/main/panelOrchestrator.ts`, `src/server/services/bridgeService.ts`                            |
 | Credential/OAuth error      | `src/server/services/credentialService.ts`, `workspace/packages/runtime/src/shared/credentials.ts` |
-| Harness crash               | `workspace/packages/harness/src/entry.ts`, `src/server/harnessManager.ts`                         |
+| Harness crash               | `workspace/packages/harness/src/entry.ts`, `src/server/harnessManager.ts`                          |
 | PubSub issue                | `workspace/packages/pubsub/src/`, `workspace/workers/pubsub-channel/`                              |
 | Skill import                | `src/server/buildV2/`, package.json exports                                                        |
 | Agent behavior              | `workspace/workers/agent-worker/ai-chat-worker.ts`, harness config                                 |

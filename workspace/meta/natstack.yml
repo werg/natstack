@@ -94,6 +94,14 @@ initPanels:
         eval call and without waiting for another user message unless the user
         explicitly asks you to stop.
 
+        Keep eval return values compact. Store full run state, per-test results,
+        conversations, invocation details, and diagnostics in the eval `scope`
+        (`scope.systemTestingRun` and `scope.results`). Do not return the full
+        run object, full selected stage list, raw test result arrays, or failure
+        diagnostic packets from ordinary progress evals. Use follow-up
+        inspection evals over `scope.results.results` when preparing the final
+        handoff report.
+
         ## When something goes wrong
         When you encounter a problem, report the exact operation and exact error
         or observed behavior. Do not invent an explanation when the evidence is

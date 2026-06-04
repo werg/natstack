@@ -53,7 +53,10 @@ than three tests. Keep one eval call per stage, run as much concurrency inside
 that stage as is feasible, publish a concise user-visible report after each
 stage, then continue to the next selected stage.
 
-First initialize stage progress and return the available choices:
+First initialize stage progress. Store the full stage/run scaffold in `scope`;
+return only the compact control data needed to render the feedback form. Do not
+return `scope.systemTestingRun`, the full stage list, or test result arrays from
+eval calls.
 
 ```
 eval({
@@ -87,9 +90,9 @@ eval({
     scope.results = results;
     return {
       runId,
-      stages: scope.systemTestingRun.stages,
       stageOptions,
       defaultStages: stageOptions.map((option) => option.value),
+      stageCount: stages.length,
       testCount: tests.length,
     };
   `,
@@ -125,7 +128,8 @@ feedback_form({
 ```
 
 If the user cancels, stop and report that no tests were run. If they submit,
-store the selected stage indexes:
+store the selected stage indexes in `scope` and return only a compact selection
+summary:
 
 ```
 eval({
@@ -143,9 +147,11 @@ eval({
       .filter((value) => Number.isInteger(value) && allIndexes.includes(value));
     run.selectedStageIndexes = selectedIndexes.length ? selectedIndexes : allIndexes;
     scope.systemTestingRun = run;
+    const selectedStages = run.stages.filter((stage) => run.selectedStageIndexes.includes(stage.index));
     return {
       runId: run.runId,
-      selectedStages: run.stages.filter((stage) => run.selectedStageIndexes.includes(stage.index)),
+      selectedStageCount: selectedStages.length,
+      selectedTestCount: selectedStages.reduce((total, stage) => total + stage.tests.length, 0),
     };
   `,
 })
@@ -165,7 +171,7 @@ error you actually observed, verbatim, with the operation that produced it.
 ```
 eval({
   code: `
-    import { HeadlessRunner, TestRunner, allTests, nextSelectedStage, summarizeFailures } from "@workspace-skills/system-testing";
+    import { HeadlessRunner, TestRunner, allTests, nextSelectedStage } from "@workspace-skills/system-testing";
     import { contextId } from "@workspace/runtime";
     const tests = allTests();
     const run = scope.systemTestingRun;
@@ -173,7 +179,18 @@ eval({
       throw new Error("No active systemTestingRun. Run the initialization eval first.");
     }
     const next = nextSelectedStage(tests, run);
-    if (!next) return { done: true, runId: run.runId, results: run.results ?? scope.results };
+    if (!next) {
+      const aggregate = run.results ?? scope.results;
+      return {
+        done: true,
+        runId: run.runId,
+        total: aggregate?.total ?? 0,
+        passed: aggregate?.passed ?? 0,
+        failed: aggregate?.failed ?? 0,
+        errored: aggregate?.errored ?? 0,
+        skipped: aggregate?.skipped ?? 0,
+      };
+    }
     const { stage, stagePosition, selectedStages } = next;
     const completed = new Set(Array.isArray(run.completedStages) ? run.completedStages : []);
 
@@ -208,6 +225,7 @@ eval({
     completed.add(stage.index);
     run.completedStages = [...completed];
     run.results = aggregate;
+    run.stageSummaries = Array.isArray(run.stageSummaries) ? run.stageSummaries : [];
     scope.systemTestingRun = run;
     scope.results = aggregate;
 
@@ -218,6 +236,22 @@ eval({
         return entry.test.name + ": " + reason.slice(0, 240);
       });
     const remainingStages = selectedStages.filter((item) => !completed.has(item.index)).length;
+    const stageSummary = {
+      index: stage.index,
+      name: stage.name,
+      position: stagePosition,
+      selectedStageCount: selectedStages.length,
+      total: partial.total,
+      passed: partial.passed,
+      failed: partial.failed,
+      errored: partial.errored,
+      durationMs: partial.duration,
+      concurrency,
+      failedTests: failedNames,
+    };
+    run.stageSummaries.push(stageSummary);
+    run.lastStageSummary = stageSummary;
+    scope.systemTestingRun = run;
     const reportLines = [
       "**System Test Stage " + stagePosition + "/" + selectedStages.length + ": " + stage.name + "**",
       "- Stage results: " + partial.passed + " passed, " + partial.failed + " failed, " + partial.errored + " errored",
@@ -237,7 +271,7 @@ eval({
       failed: aggregate.failed,
       errored: aggregate.errored,
       skipped: aggregate.skipped,
-      failureDiagnostics: partial.failed || partial.errored ? summarizeFailures(partial) : undefined,
+      failedTestCount: failedNames.length,
     };
   `,
 })
@@ -245,7 +279,14 @@ eval({
 
 ## Inspecting Results
 
-Every test result includes full diagnostics. **After running a suite, always inspect failures in detail and include the evidence in your answer. Never report only filenames, artifact names, or "files to inspect"; those are pointers, not diagnosis.**
+Full test state lives in `scope.results.results`, with compact per-stage
+summaries in `scope.systemTestingRun.stageSummaries`. Eval return values are
+only progress/control packets; do not use them as the diagnostic record.
+
+Every test result includes full diagnostics. **After running a suite, always
+inspect failures in detail from `scope.results.results` and include the evidence
+in your answer. Never report only filenames, artifact names, or "files to
+inspect"; those are pointers, not diagnosis.**
 
 For a bounded structured packet that is safe to paste into a handoff report:
 
