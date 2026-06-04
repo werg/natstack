@@ -6,6 +6,7 @@ interface InvocationCardPayloadLike {
   arguments?: Record<string, unknown>;
   execution?: {
     status?: string;
+    terminalOutcome?: string;
     result?: unknown;
     isError?: boolean;
   };
@@ -126,5 +127,12 @@ export function completedToolNames(result: TestExecutionResult): Set<string> {
 }
 
 export function incompleteToolCalls(result: TestExecutionResult): InvocationCardPayloadLike[] {
-  return getToolCalls(result).filter((call) => call.execution?.status !== "complete");
+  return getToolCalls(result).filter((call) => !isSettledInvocation(call));
+}
+
+function isSettledInvocation(call: InvocationCardPayloadLike): boolean {
+  const execution = call.execution;
+  if (!execution) return false;
+  if (execution.status === "complete" || execution.status === "error") return true;
+  return typeof execution.terminalOutcome === "string" && execution.terminalOutcome.length > 0;
 }
