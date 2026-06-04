@@ -703,33 +703,28 @@ describe("connectViaRpc", () => {
         expect(executeFn).toHaveBeenCalled();
       });
 
-      // Wait for the result publish call
+      // Wait for the result submit call
       await vi.waitFor(() => {
-        const publishCalls = mockRpc.call.mock.calls.filter(
-          (c: unknown[]) =>
-            c[1] === "publish" && ((c[2] as unknown[])[1] as string) === AGENTIC_EVENT_PAYLOAD_KIND
+        const submitCalls = mockRpc.call.mock.calls.filter(
+          (c: unknown[]) => c[1] === "submitMethodResult"
         );
-        expect(publishCalls.length).toBeGreaterThanOrEqual(1);
+        expect(submitCalls.length).toBeGreaterThanOrEqual(1);
       });
 
-      // Find the invocation completion publish call.
+      // Find the terminal result submit call.
       const resultCall = mockRpc.call.mock.calls.find(
-        (c: unknown[]) =>
-          c[1] === "publish" && ((c[2] as unknown[])[1] as string) === AGENTIC_EVENT_PAYLOAD_KIND
+        (c: unknown[]) => c[1] === "submitMethodResult"
       );
       expect(resultCall).toBeDefined();
-      // Args: doTarget, "publish", pid, type, payload, opts
-      const resultPayload = (resultCall![2] as unknown[])[2] as {
-        kind?: string;
-        turnId?: string;
-        causality?: { invocationId?: string; transportCallId?: string };
-        payload?: { result?: unknown };
-      };
-      expect(resultPayload.kind).toBe("invocation.completed");
-      expect(resultPayload.causality?.invocationId).toBe(CALL_ID_1);
-      expect(resultPayload.causality?.transportCallId).toBe(TRANSPORT_ID_1);
-      expect(resultPayload.turnId).toBe("turn-1");
-      expect(resultPayload.payload?.result).toEqual({ answer: 42 });
+      // Args: doTarget, "submitMethodResult", pid, transportCallId, content, isError, opts
+      const resultArgs = resultCall![2] as unknown[];
+      expect(resultArgs[1]).toBe(TRANSPORT_ID_1);
+      expect(resultArgs[2]).toEqual({ answer: 42 });
+      expect(resultArgs[3]).toBe(false);
+      expect(resultArgs[4]).toMatchObject({
+        invocationId: CALL_ID_1,
+        turnId: "turn-1",
+      });
 
       client.close();
     });
@@ -820,33 +815,164 @@ describe("connectViaRpc", () => {
       await Promise.resolve();
 
       emit({
-        stream: "log",
-        phase: "live",
-        id: 202,
-        type: AGENTIC_EVENT_PAYLOAD_KIND,
-        payload: invocation(
-          "invocation.completed",
-          handle.invocationId,
-          {
-            result: {
-              protocol: "natstack.blob-ref.v1",
-              digest: "def456",
-              size: encodedResult.length,
-              encoding: "json",
-              originalBytes: encodedResult.length,
-            },
-          },
-          { transportCallId: handle.transportCallId }
-        ),
+        kind: "method-result",
+        callId: handle.transportCallId,
+        invocationId: handle.invocationId,
+        content: {
+          protocol: "natstack.blob-ref.v1",
+          digest: "def456",
+          size: encodedResult.length,
+          encoding: "json",
+          originalBytes: encodedResult.length,
+        },
+        isError: false,
+        terminalOutcome: "success",
+        terminalReasonCode: null,
+        contentType: "application/json",
         senderId: "provider-1",
         ts: Date.now(),
       });
 
       await expect(handle.result).resolves.toEqual({
         content: result,
-        attachments: undefined,
-        contentType: undefined,
+        contentType: "application/json",
       });
+
+      client.close();
+    });
+
+    it("applies method progress and terminal chunks in receive order", async () => {
+      const progress = { partial: "first" };
+      const encodedProgress = JSON.stringify(progress);
+      let releaseHydration: ((value: string) => void) | undefined;
+
+      const client = connectViaRpc({
+        rpc: mockRpc as any,
+        channel: CHANNEL,
+      });
+
+      await emitReplayAndReady(emit, []);
+      await client.ready();
+      mockRpc.call.mockClear();
+      mockRpc.call.mockImplementation(async (target: string, method: string) => {
+        if (target === "main" && method === "blobstore.getText") {
+          return await new Promise<string>((resolve) => {
+            releaseHydration = resolve;
+          });
+        }
+        return undefined;
+      });
+
+      const handle = client.callMethod("provider-1", "compute", {});
+      const chunks: unknown[] = [];
+      const streamDone = (async () => {
+        for await (const chunk of handle.stream) {
+          chunks.push(chunk.content);
+        }
+      })();
+      const resultSettled = vi.fn();
+      void handle.result.then(resultSettled);
+      await Promise.resolve();
+
+      emit({
+        kind: "method-progress",
+        callId: handle.transportCallId,
+        invocationId: handle.invocationId,
+        content: {
+          protocol: "natstack.blob-ref.v1",
+          digest: "progress",
+          size: encodedProgress.length,
+          encoding: "json",
+          originalBytes: encodedProgress.length,
+        },
+        senderId: "provider-1",
+        ts: Date.now(),
+      });
+      emit({
+        kind: "method-result",
+        callId: handle.transportCallId,
+        invocationId: handle.invocationId,
+        content: { done: true },
+        isError: false,
+        terminalOutcome: "success",
+        terminalReasonCode: null,
+        senderId: "provider-1",
+        ts: Date.now(),
+      });
+
+      await Promise.resolve();
+      await vi.waitFor(() => {
+        expect(releaseHydration).toBeDefined();
+      });
+      expect(resultSettled).not.toHaveBeenCalled();
+
+      releaseHydration!(encodedProgress);
+      await expect(handle.result).resolves.toEqual({ content: { done: true } });
+      await streamDone;
+      expect(chunks).toEqual([progress, { done: true }]);
+
+      client.close();
+    });
+
+    it("recovers pending method results from settled_results after resubscribe", async () => {
+      let recover!: () => Promise<void>;
+      const registerColdRecoverHandler = vi.fn(
+        (_id: string, handler: () => Promise<void>) => {
+          recover = handler;
+          return vi.fn();
+        }
+      );
+      mockRpc.call.mockImplementation(async (target: string, method: string) => {
+        if (target === "main" && method === "workers.resolveService") {
+          return { kind: "durable-object", targetId: DO_TARGET };
+        }
+        if (method === "subscribe") {
+          return {
+            ok: true,
+            envelope: {
+              mode: "after",
+              logEvents: [],
+              snapshots: [],
+              ready: {
+                contextId: "ctx-recovered",
+                totalCount: 0,
+                envelopeCount: 0,
+              },
+            },
+          };
+        }
+        if (method === "getSettledResult") {
+          return {
+            content: { answer: 42 },
+            isError: false,
+            terminalOutcome: "success",
+            terminalReasonCode: null,
+            contentType: "application/json",
+          };
+        }
+        return undefined;
+      });
+
+      const client = connectViaRpc({
+        rpc: mockRpc as any,
+        channel: CHANNEL,
+        recoveryCoordinator: { registerColdRecoverHandler },
+      });
+      await client.ready();
+      mockRpc.call.mockClear();
+
+      const handle = client.callMethod("provider-1", "compute", {});
+      await recover();
+
+      await expect(handle.result).resolves.toEqual({
+        content: { answer: 42 },
+        contentType: "application/json",
+      });
+      expect(mockRpc.call).toHaveBeenCalledWith(
+        DO_TARGET,
+        "getSettledResult",
+        [handle.transportCallId]
+      );
 
       client.close();
     });
@@ -971,7 +1097,50 @@ describe("connectViaRpc", () => {
       client.close();
     });
 
-    it("aborts the signal when invocation cancellation arrives", async () => {
+    it("keeps pause calls on normal method transport until the provider result arrives", async () => {
+      const client = connectViaRpc({ rpc: mockRpc as any, channel: CHANNEL });
+      await emitReplayAndReady(emit, []);
+      await client.ready();
+      mockRpc.call.mockClear();
+      mockRpc.call.mockResolvedValue(undefined);
+
+      const handle = client.callMethod("agent-1", "pause", {
+        reason: "User interrupted execution",
+      });
+
+      await Promise.resolve();
+      expect(handle.complete).toBe(false);
+      expect(mockRpc.call).toHaveBeenCalledWith(DO_TARGET, "callMethod", [
+        SELF_ID,
+        "agent-1",
+        handle.callId,
+        "pause",
+        { reason: "User interrupted execution" },
+        {
+          invocationId: handle.invocationId,
+          transportCallId: handle.transportCallId,
+        },
+      ]);
+
+      emit({
+        kind: "method-result",
+        callId: handle.transportCallId,
+        invocationId: handle.invocationId,
+        content: { paused: true },
+        isError: false,
+        terminalOutcome: "success",
+        terminalReasonCode: null,
+        senderId: "agent-1",
+        ts: Date.now(),
+      });
+
+      await expect(handle.result).resolves.toEqual({ content: { paused: true } });
+      expect(handle.complete).toBe(true);
+
+      client.close();
+    });
+
+    it("aborts the signal when method-cancel arrives", async () => {
       let capturedSignal: AbortSignal | null = null;
 
       const client = connectViaRpc({
@@ -1028,7 +1197,7 @@ describe("connectViaRpc", () => {
 
       expect(capturedSignal!.aborted).toBe(false);
 
-      // Send invocation cancellation
+      // Display-only invocation cancellation no longer controls provider abort.
       emit({
         stream: "log",
         phase: "live",
@@ -1038,8 +1207,17 @@ describe("connectViaRpc", () => {
         senderId: "caller-1",
         ts: Date.now(),
       });
+      expect(capturedSignal!.aborted).toBe(false);
 
-      // The signal should now be aborted
+      emit({
+        kind: "method-cancel",
+        callId: CALL_ID_SLOW,
+        invocationId: CALL_ID_SLOW,
+        reason: "cancelled",
+        senderId: "system",
+        ts: Date.now(),
+      });
+
       expect(capturedSignal!.aborted).toBe(true);
 
       client.close();
@@ -1112,20 +1290,14 @@ describe("connectViaRpc", () => {
       );
       expect(cancelCalls.length).toBe(0);
       await vi.waitFor(() => {
-        const publishCall = mockRpc.call.mock.calls.find(
-          (c: unknown[]) =>
-            c[1] === "publish" &&
-            ((c[2] as unknown[])[1] as string) === AGENTIC_EVENT_PAYLOAD_KIND
+        const submitCall = mockRpc.call.mock.calls.find(
+          (c: unknown[]) => c[1] === "submitMethodResult"
         );
-        const payload = (publishCall?.[2] as unknown[] | undefined)?.[2] as
-          | { kind?: string; payload?: { terminalOutcome?: string; terminalReasonCode?: string } }
-          | undefined;
-        expect(payload).toMatchObject({
-          kind: "invocation.cancelled",
-          payload: {
-            terminalOutcome: "cancelled",
-            terminalReasonCode: "cancelled",
-          },
+        const args = submitCall?.[2] as unknown[] | undefined;
+        expect(args).toEqual(expect.arrayContaining([TRANSPORT_ID_1, expect.anything(), true]));
+        expect(args?.[4]).toMatchObject({
+          terminalOutcome: "cancelled",
+          terminalReasonCode: "cancelled",
         });
       });
 

@@ -2,7 +2,7 @@
  * TrajectoryVesselBase — Pi-native agent DO base.
  *
  * Embeds `@earendil-works/pi-agent-core`'s `Agent` in-process via `PiRunner`
- * from `@natstack/harness`. One PiRunner per channel, owned by the DO for
+ * from `@workspace/harness`. One PiRunner per channel, owned by the DO for
  * the lifetime of the chat. The runner drives agent state (messages,
  * streaming, tool calls); durable transcript persistence lives in gad,
  * while this DO only keeps execution-local runner/cache state and forwards
@@ -41,8 +41,8 @@ import type {
   ParticipantDescriptor,
   TurnInput,
   UnsubscribeResult,
-} from "@natstack/harness/types";
-import { isClientParticipantType } from "@workspace/pubsub";
+} from "@workspace/harness/types";
+import { isClientParticipantType, type RpcChannelMessage } from "@workspace/pubsub";
 import {
   AGENT_INTERRUPTED_BEFORE_TOOL_DISPATCH,
   AGENTIC_EVENT_PAYLOAD_KIND,
@@ -70,7 +70,7 @@ import {
   type RunnerEvent,
   type RunnerTurnInput,
   type TurnSnapshot,
-} from "@natstack/harness";
+} from "@workspace/harness";
 import type { AgentMessage, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { getModel as getPiModel, type ImageContent } from "@earendil-works/pi-ai";
 
@@ -997,6 +997,8 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
 
   /** One PiRunner per channel — created lazily on first user message. */
   private runners = new Map<string, RunnerEntry>();
+  /** Pending runner factory promises, published before async init awaits. */
+  private runnerCreations = new Map<string, Promise<PiRunner>>();
   /**
    * Phase 1 shadow projection: the consolidated, channel-scoped run-state owner.
    * Driven from the durable transition chokepoints (`insertTurnRun` /
@@ -4224,57 +4226,6 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     return actor?.participantId === selfParticipantId || actor?.id === selfParticipantId;
   }
 
-  private channelInvocationResult(event: ChannelEvent): {
-    callId: string;
-    content: unknown;
-    complete: boolean;
-    isError: boolean;
-    terminalKind?: Exclude<MethodSuspensionTerminalKind, "none">;
-    eventId?: number;
-  } | null {
-    if (event.type !== AGENTIC_EVENT_PAYLOAD_KIND) return null;
-    const agentic = this.agenticEventFromChannelEvent(event);
-    if (!agentic?.kind?.startsWith("invocation.") || agentic.kind === "invocation.started") {
-      return null;
-    }
-    const callId = agentic.causality?.transportCallId;
-    if (!callId) return null;
-    const payload =
-      agentic.payload && typeof agentic.payload === "object"
-        ? (agentic.payload as Record<string, unknown>)
-        : {};
-    if (agentic.kind === "invocation.completed") {
-      return {
-        callId,
-        content: payload["result"],
-        complete: true,
-        isError: false,
-        terminalKind: "completed",
-        ...(event.id !== undefined ? { eventId: event.id } : {}),
-      };
-    }
-    if (
-      agentic.kind === "invocation.failed" ||
-      agentic.kind === "invocation.cancelled" ||
-      agentic.kind === "invocation.abandoned"
-    ) {
-      return {
-        callId,
-        content: payload["error"] ?? payload["reason"] ?? "Invocation failed",
-        complete: true,
-        isError: true,
-        terminalKind: agentic.kind === "invocation.cancelled" ? "cancelled" : "failed",
-        ...(event.id !== undefined ? { eventId: event.id } : {}),
-      };
-    }
-    return {
-      callId,
-      content: payload["output"] ?? payload["data"] ?? payload["message"],
-      complete: false,
-      isError: false,
-    };
-  }
-
   protected getParticipantInfo(_channelId: string, config?: unknown): ParticipantDescriptor {
     const cfg = config as Record<string, unknown> | undefined;
     return {
@@ -4432,6 +4383,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     if (dispatcher) {
       dispatcher.dispose();
       this.dispatchers.delete(channelId);
+      this.dispatcherRunners.delete(channelId);
     }
 
     const entry = this.runners.get(channelId);
@@ -4634,46 +4586,29 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
 
     if (await this.failIfTranscriptPoisoned(channelId)) return;
 
-    const invocationResult = this.channelInvocationResult(event);
-    if (invocationResult) {
-      // Keep stored-value refs intact in the suspension ledger so large
-      // payloads (e.g. eval results) stay in the blobstore instead of being
-      // inlined into DO SQLite — the partial-update path (appendMethodSuspensionUpdate)
-      // has no spill of its own, so hydrating here would bloat it. Hydration
-      // happens only at the model/UI-visible boundaries: the live stream
-      // callback below, the live waiter resolution in handleCompletedMethodResult,
-      // and composeRecoveredToolResult during recovery.
-      const rawContent = invocationResult.content;
-      if (!invocationResult.complete) {
-        this.appendMethodSuspensionUpdate(invocationResult.callId, rawContent);
-        const cb = this.streamCallbacks.get(invocationResult.callId);
-        if (cb) {
-          cb(
-            await this.hydrateStoredTransportValue(
-              rawContent,
-              `invocation payload channel=${channelId} call=${invocationResult.callId}`
-            )
-          );
-        }
-      } else {
-        await this.handleCompletedMethodResult(
-          channelId,
-          invocationResult.callId,
-          rawContent,
-          invocationResult.isError,
-          invocationResult.terminalKind ?? (invocationResult.isError ? "failed" : "completed"),
-          invocationResult.eventId
-        );
-      }
-      return;
-    }
-
     await this.processChannelEvent(channelId, event, opts);
   }
 
   // ── PiRunner lifecycle (one per channel, lazy) ──────────────────────────
 
   protected async getOrCreateRunner(channelId: string): Promise<PiRunner> {
+    const existing = this.runners.get(channelId);
+    if (existing) return existing.runner;
+    const pending = this.runnerCreations.get(channelId);
+    if (pending) return pending;
+
+    const creation = this.createRunnerForChannel(channelId);
+    this.runnerCreations.set(channelId, creation);
+    try {
+      return await creation;
+    } finally {
+      if (this.runnerCreations.get(channelId) === creation) {
+        this.runnerCreations.delete(channelId);
+      }
+    }
+  }
+
+  private async createRunnerForChannel(channelId: string): Promise<PiRunner> {
     await this.ensureAgentActivationReady();
     const existing = this.runners.get(channelId);
     if (existing) return existing.runner;
@@ -5400,10 +5335,12 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
 
   private recordAbort(channelId: string, reason: AgentAbortReason, detail?: string): void {
     this.abortContexts.set(channelId, { reason, detail, at: Date.now() });
-    console.log(
-      `[TrajectoryVesselBase] Agent abort requested on channel=${channelId}: ` +
-        `reason=${reason}${detail ? ` detail=${detail}` : ""}`
-    );
+    if (reason !== "channel-unsubscribe") {
+      console.log(
+        `[TrajectoryVesselBase] Agent abort requested on channel=${channelId}: ` +
+          `reason=${reason}${detail ? ` detail=${detail}` : ""}`
+      );
+    }
   }
 
   // ── Dispatch + typing (delegated to TurnDispatcher) ─────────────────────
@@ -5414,10 +5351,28 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
   // See `turn-dispatcher.ts` for the full state-machine doc.
 
   protected dispatchers = new Map<string, TurnDispatcher>();
+  protected dispatcherRunners = new Map<string, PiRunner>();
 
-  protected getOrCreateDispatcher(channelId: string, runner: PiRunner): TurnDispatcher {
+  protected getOrCreateDispatcher(channelId: string, requestedRunner: PiRunner): TurnDispatcher {
+    const canonicalRunner = this.runners.get(channelId)?.runner ?? requestedRunner;
     const existing = this.dispatchers.get(channelId);
-    if (existing) return existing;
+    if (existing) {
+      const existingRunner = this.dispatcherRunners.get(channelId);
+      if (!existingRunner) {
+        this.dispatcherRunners.set(channelId, canonicalRunner);
+        return existing;
+      }
+      if (existingRunner === canonicalRunner) return existing;
+      this.recordInvariantViolation(channelId, "dispatcher_runner_mismatch", {
+        hasExistingRunner: Boolean(existingRunner),
+        requestedRunnerIsCanonical: requestedRunner === canonicalRunner,
+        hasCanonicalRunner: Boolean(this.runners.get(channelId)?.runner),
+      });
+      existing.dispose();
+      this.dispatchers.delete(channelId);
+      this.dispatcherRunners.delete(channelId);
+    }
+    const runner = canonicalRunner;
     const dispatcher = new TurnDispatcher({
       runner,
       notifyTyping: (busy) => this.broadcastTyping(channelId, busy),
@@ -5503,6 +5458,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       },
     });
     this.dispatchers.set(channelId, dispatcher);
+    this.dispatcherRunners.set(channelId, runner);
     return dispatcher;
   }
 
@@ -6161,6 +6117,26 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     });
   }
 
+  private async handleMethodProgress(
+    channelId: string,
+    callId: string,
+    content: unknown
+  ): Promise<void> {
+    // Keep stored-value refs intact in the suspension ledger so large payloads
+    // stay in the blobstore instead of being inlined into DO SQLite. Hydration
+    // happens only at the live stream callback boundary.
+    this.appendMethodSuspensionUpdate(callId, content);
+    const cb = this.streamCallbacks.get(callId);
+    if (cb) {
+      cb(
+        await this.hydrateStoredTransportValue(
+          content,
+          `method progress channel=${channelId} call=${callId}`
+        )
+      );
+    }
+  }
+
   private async dispatchUiPrompt(
     channelId: string,
     toolCallId: string,
@@ -6283,7 +6259,6 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     this.abortRecoveryDirectExecutions(channelId, "user_interrupted");
     this.cancelMethodSuspensionsForChannel(channelId, "user_interrupted");
     this.rejectMethodWaitersForChannel(channelId, "Request was aborted");
-    const runner = this.runners.get(channelId)?.runner;
     for (const { callId, invocationId } of pendingCalls) {
       try {
         await this.cancelChannelMethodCall(channelId, callId);
@@ -6347,15 +6322,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
 
   async onChannelEnvelope(
     channelId: string,
-    envelope: {
-      kind: "log" | "control" | "signal";
-      phase?: "replay" | "live";
-      event?: ChannelEvent;
-      type?: string;
-      payload?: unknown;
-      senderId?: string;
-      ts?: number;
-    }
+    envelope: RpcChannelMessage
   ): Promise<void> {
     await this.ensureAgentActivationReady();
     if (envelope.kind === "control") {
@@ -6378,6 +6345,27 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
         senderId: envelope.senderId ?? "system",
         ts: envelope.ts ?? Date.now(),
       });
+      return;
+    }
+    if (envelope.kind === "method-result") {
+      await this.handleCompletedMethodResult(
+        channelId,
+        envelope.callId,
+        envelope.content,
+        envelope.isError,
+        this.terminalKindForSettledOutcome(envelope.terminalOutcome ?? null, envelope.isError)
+      );
+      return;
+    }
+    if (envelope.kind === "method-progress") {
+      await this.handleMethodProgress(channelId, envelope.callId, envelope.content);
+      return;
+    }
+    if (envelope.kind === "method-cancel") {
+      // Direct DO method execution has no generic execution AbortSignal here.
+      // The channel still emits this envelope so RPC providers no longer rely
+      // on invocation.cancelled log sniffing for abort control.
+      return;
     }
   }
 
@@ -6535,11 +6523,13 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
   /** Interrupt the in-flight Pi turn for a specific channel. */
   protected async interruptRunner(
     channelId: string,
-    reason: AgentAbortReason = "interrupt-channel"
+    reason: AgentAbortReason = "interrupt-channel",
+    detail?: string
   ): Promise<void> {
     await this.ensureAgentActivationReady();
     this.abortModelCredentialResolution(channelId, "Model credential resolution aborted by user");
     const entry = this.runners.get(channelId);
+    const dispatcher = this.dispatchers.get(channelId);
     if (entry) {
       // Drop any pending/steered messages AND suppress auto-continuation until
       // the next user message — interrupt means the user wants everything
@@ -6548,12 +6538,12 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       // `continue`, restarting the agent loop with a fresh (non-aborted) signal
       // so it keeps churning. `interrupt()` also clears pi-core's steering
       // queue and broadcasts typing=false (via reset()).
-      this.dispatchers.get(channelId)?.interrupt();
-      await this.notifyDispatchesInterrupted(channelId);
-      this.recordAbort(channelId, reason);
-      // Abort the active runner signal before moving the durable turn to a
-      // terminal state. Otherwise a just-started tool can race, try to record
-      // an external wait, and leak a ledger CAS failure as its tool result.
+      dispatcher?.interrupt();
+      this.recordAbort(channelId, reason, detail);
+      // Abort the active Pi run before manufacturing cancellation results for
+      // outstanding method dispatches. If the loop sees those cancelled tool
+      // results while its signal is still live, it can feed them back into the
+      // model and continue after the user pressed stop.
       const abort = (entry.runner as { abort?: () => Promise<unknown> }).abort;
       void abort?.call(entry.runner)?.catch((err) => {
         this.recordLastError("runner.abort", err, channelId);
@@ -6563,6 +6553,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
         });
         console.warn(`[TrajectoryVesselBase] runner abort failed for channel=${channelId}:`, err);
       });
+      await this.notifyDispatchesInterrupted(channelId);
       const turnId =
         (entry.runner as { getCurrentTurnId?: () => string | null }).getCurrentTurnId?.() ??
         this.currentTurnRunForChannel(channelId)?.turnId;
@@ -6687,6 +6678,8 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     // postClone is ever re-entered.
     for (const dispatcher of this.dispatchers.values()) dispatcher.dispose();
     this.dispatchers.clear();
+    this.dispatcherRunners.clear();
+    this.runnerCreations.clear();
     this.runners.clear();
 
     if (contextId) {
@@ -7061,6 +7054,17 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
           [...this.dispatchers.entries()]
             .filter(([id]) => !channelId || id === channelId)
             .map(([id, dispatcher]) => [id, dispatcher.getDebugState()])
+        ),
+        dispatcherBindings: Object.fromEntries(
+          [...this.dispatcherRunners.entries()]
+            .filter(([id]) => !channelId || id === channelId)
+            .map(([id, runner]) => [
+              id,
+              {
+                matchesCanonicalRunner: this.runners.get(id)?.runner === runner,
+                hasCanonicalRunner: this.runners.has(id),
+              },
+            ])
         ),
         streamCallbacks: [...this.streamCallbacks.keys()],
         methodResultWaiters: [...this.methodResultWaiters.entries()].map(([callId, waiter]) => ({

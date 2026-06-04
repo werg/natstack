@@ -4,7 +4,6 @@ import {
   AGENTIC_EVENT_PAYLOAD_KIND,
   AGENTIC_PROTOCOL_VERSION,
   invocationAbandonedPayload,
-  invocationCancelledPayload,
   invocationCompletedPayload,
 } from "@workspace/agentic-protocol";
 import { GadWorkspaceDO } from "../gad-store/index.js";
@@ -364,6 +363,72 @@ describe("PubSubChannel", () => {
     expect(schema.invariants.every((invariant) => invariant.ok)).toBe(true);
   });
 
+  it("routes pause method calls through visible method invocation transport", async () => {
+    const targetPid = "do:workers/agent-worker:AiChatWorker:agent-1";
+    const rpcCalls: Array<{ target: string; method: string; args: unknown[] }> = [];
+    const { instance, gad } = await createGadBackedChannel({
+      rpcCall: (target, method, args) => {
+        if (target === "main" && method === "workers.resolveDurableObject") return {};
+        if (target === targetPid && method === "onChannelEnvelope") return null;
+        if (target === targetPid && method === "onMethodCall") {
+          rpcCalls.push({ target, method, args });
+          return { result: { paused: true } };
+        }
+        return undefined;
+      },
+    });
+
+    setRpcCaller(instance, "panel:user", "panel");
+    await instance.subscribe("panel:user", { contextId: "ctx-1", name: "User", type: "panel" });
+    setRpcCaller(instance, targetPid, "durable-object");
+    await instance.subscribe(targetPid, { contextId: "ctx-1", name: "AI Chat", type: "agent" });
+
+    setRpcCaller(instance, "panel:user", "panel");
+    await instance.callMethod(
+      "panel:user",
+      targetPid,
+      "pause-call",
+      "pause",
+      { reason: "User interrupted execution" },
+      { invocationId: "pause-invocation", transportCallId: "pause-call" }
+    );
+
+    expect(rpcCalls).toEqual([
+      {
+        target: targetPid,
+        method: "onMethodCall",
+        args: [
+          "channel-1",
+          "pause-call",
+          "pause",
+          { reason: "User interrupted execution" },
+          { invocationId: "pause-invocation", turnId: undefined },
+        ],
+      },
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const events = gad.sql
+      .exec(
+        `SELECT payload_ref_json FROM channel_envelopes WHERE payload_kind = ? ORDER BY seq ASC`,
+        AGENTIC_EVENT_PAYLOAD_KIND
+      )
+      .toArray()
+      .map((row: Record<string, unknown>) => JSON.parse(row["payload_ref_json"] as string));
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "invocation.started",
+          causality: { invocationId: "pause-invocation", transportCallId: "pause-call" },
+        }),
+        expect.objectContaining({
+          kind: "invocation.completed",
+          causality: { invocationId: "pause-invocation", transportCallId: "pause-call" },
+        }),
+      ])
+    );
+  });
+
   it("uses GAD as the durable channel log backend without changing replay shape", async () => {
     const { instance, sql } = await createGadBackedChannel();
     setRpcCaller(instance, "panel:user", "panel");
@@ -541,9 +606,8 @@ describe("PubSubChannel", () => {
       })
     ).rejects.toThrow(/terminalOutcome/u);
 
-    // ...but the matching pending call must NOT be left hanging. A terminal we
-    // cannot trust means the call failed; settle it as an error so the caller
-    // fails fast instead of awaiting a result that can never be delivered.
+    // Invocation events are display/history only now; malformed terminal logs
+    // are rejected but no longer settle method transport.
     const pending = (
       instance as unknown as { sql: { exec: (...args: unknown[]) => { toArray(): unknown[] } } }
     ).sql
@@ -552,10 +616,10 @@ describe("PubSubChannel", () => {
         "transport-malformed"
       )
       .toArray();
-    expect(pending).toHaveLength(0);
+    expect(pending).toHaveLength(1);
   });
 
-  it("settles pending method calls from a valid terminal invocation event", async () => {
+  it("settles pending method calls from submitMethodResult", async () => {
     const { instance } = await createGadBackedChannel();
 
     setRpcCaller(instance, "panel:caller", "panel");
@@ -578,13 +642,10 @@ describe("PubSubChannel", () => {
     );
 
     setRpcCaller(instance, "panel:provider", "panel");
-    await instance.publish("panel:provider", AGENTIC_EVENT_PAYLOAD_KIND, {
-      kind: "invocation.completed",
-      actor: { kind: "panel", id: "panel:provider" },
+    await instance.submitMethodResult("panel:provider", "transport-ok", 2, false, {
+      invocationId: "invocation-ok",
       turnId: "turn-ok",
-      causality: { invocationId: "invocation-ok", transportCallId: "transport-ok" },
-      payload: invocationCompletedPayload({ result: 2 }),
-      createdAt: new Date().toISOString(),
+      terminalOutcome: "success",
     });
 
     const pending = (
@@ -596,6 +657,207 @@ describe("PubSubChannel", () => {
       )
       .toArray();
     expect(pending).toHaveLength(0);
+  });
+
+  it("broadcasts submitted method results as provider-sent method-result envelopes", async () => {
+    const emitted: unknown[] = [];
+    const { instance } = await createGadBackedChannel({ emitted });
+
+    setRpcCaller(instance, "panel:caller", "panel");
+    await instance.subscribe("panel:caller", { contextId: "ctx-1", name: "Caller", type: "panel" });
+    setRpcCaller(instance, "panel:provider", "panel");
+    await instance.subscribe("panel:provider", {
+      contextId: "ctx-1",
+      name: "Provider",
+      type: "panel",
+    });
+
+    setRpcCaller(instance, "panel:caller", "panel");
+    await instance.callMethod(
+      "panel:caller",
+      "panel:provider",
+      "transport-envelope",
+      "eval",
+      { code: "1 + 1" },
+      {
+        invocationId: "invocation-envelope",
+        transportCallId: "transport-envelope",
+        turnId: "turn-envelope",
+      }
+    );
+
+    setRpcCaller(instance, "panel:provider", "panel");
+    await instance.submitMethodResult("panel:provider", "transport-envelope", 2, false, {
+      invocationId: "invocation-envelope",
+      turnId: "turn-envelope",
+      terminalOutcome: "success",
+      contentType: "application/json",
+      attachments: [{ id: "att-1", data: "AA==", mimeType: "text/plain", size: 1 }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const methodResult = emitted
+      .map((payload) => (payload as { message?: unknown }).message)
+      .find(
+        (message): message is {
+          kind: "method-result";
+          callId: string;
+          senderId: string;
+          contentType?: string;
+        } =>
+          !!message &&
+          typeof message === "object" &&
+          (message as { kind?: string }).kind === "method-result"
+      );
+    expect(methodResult).toMatchObject({
+      kind: "method-result",
+      callId: "transport-envelope",
+      senderId: "panel:provider",
+      contentType: "application/json",
+    });
+    expect(instance.getSettledResult("transport-envelope")).toMatchObject({
+      content: 2,
+      contentType: "application/json",
+      attachmentsReplayable: false,
+    });
+  });
+
+  it("broadcasts dedicated method-cancel envelopes and counts duplicate terminal drops", async () => {
+    const emitted: unknown[] = [];
+    const { instance } = await createGadBackedChannel({ emitted });
+
+    setRpcCaller(instance, "panel:caller", "panel");
+    await instance.subscribe("panel:caller", { contextId: "ctx-1", name: "Caller", type: "panel" });
+    setRpcCaller(instance, "panel:provider", "panel");
+    await instance.subscribe("panel:provider", {
+      contextId: "ctx-1",
+      name: "Provider",
+      type: "panel",
+    });
+
+    setRpcCaller(instance, "panel:caller", "panel");
+    await instance.callMethod(
+      "panel:caller",
+      "panel:provider",
+      "transport-cancel-envelope",
+      "eval",
+      { code: "await forever()" },
+      {
+        invocationId: "invocation-cancel-envelope",
+        transportCallId: "transport-cancel-envelope",
+        turnId: "turn-cancel-envelope",
+      }
+    );
+
+    await instance.cancelMethodCall("transport-cancel-envelope");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const methodCancel = emitted
+      .map((payload) => (payload as { message?: unknown }).message)
+      .find(
+        (message): message is { kind: "method-cancel"; callId: string; reason?: string } =>
+          !!message &&
+          typeof message === "object" &&
+          (message as { kind?: string }).kind === "method-cancel"
+      );
+    expect(methodCancel).toMatchObject({
+      kind: "method-cancel",
+      callId: "transport-cancel-envelope",
+      targetId: "panel:provider",
+      reason: "cancelled",
+    });
+    const rpcEmit = (
+      instance as unknown as {
+        _rpc: { emit: ReturnType<typeof vi.fn> };
+      }
+    )._rpc.emit;
+    const cancelEmitCalls = rpcEmit.mock.calls.filter(
+      (call) =>
+        call[1] === "channel:message" &&
+        ((call[2] as { message?: { kind?: string } }).message?.kind === "method-cancel")
+    );
+    expect(cancelEmitCalls.map((call) => call[0])).toEqual(["panel:provider"]);
+
+    setRpcCaller(instance, "panel:provider", "panel");
+    await expect(
+      instance.submitMethodResult("panel:provider", "transport-cancel-envelope", "late", false)
+    ).resolves.toEqual({ id: undefined });
+    await expect(
+      instance.submitMethodProgress("panel:provider", "transport-cancel-envelope", "late progress")
+    ).resolves.toBeUndefined();
+
+    setRpcCaller(instance, "panel:intruder", "panel");
+    await expect(
+      instance.submitMethodResult("panel:intruder", "transport-cancel-envelope", "intrude", false)
+    ).rejects.toThrow(/not settled target/u);
+    await expect(
+      instance.submitMethodProgress("panel:intruder", "transport-cancel-envelope", "intrude")
+    ).rejects.toThrow(/not settled target/u);
+
+    const stats = (
+      instance as unknown as { getMethodTransportStats(): Record<string, number> }
+    ).getMethodTransportStats();
+    expect(stats["providerCancelBroadcasts"]).toBe(1);
+    expect(stats["resultBroadcasts"]).toBe(1);
+    expect(stats["duplicateTerminalDrops"]).toBe(1);
+    expect(stats["lateProgressDrops"]).toBe(1);
+    expect(stats["rejectedTerminalSubmissions"]).toBe(1);
+    expect(stats["rejectedProgressSubmissions"]).toBe(1);
+  });
+
+  it("rejects method result and progress submissions from non-target participants", async () => {
+    const { instance } = await createGadBackedChannel();
+
+    setRpcCaller(instance, "panel:caller", "panel");
+    await instance.subscribe("panel:caller", { contextId: "ctx-1", name: "Caller", type: "panel" });
+    setRpcCaller(instance, "panel:provider", "panel");
+    await instance.subscribe("panel:provider", {
+      contextId: "ctx-1",
+      name: "Provider",
+      type: "panel",
+    });
+    setRpcCaller(instance, "panel:intruder", "panel");
+    await instance.subscribe("panel:intruder", {
+      contextId: "ctx-1",
+      name: "Intruder",
+      type: "panel",
+    });
+
+    setRpcCaller(instance, "panel:caller", "panel");
+    await instance.callMethod(
+      "panel:caller",
+      "panel:provider",
+      "transport-guarded",
+      "eval",
+      { code: "1 + 1" },
+      {
+        invocationId: "invocation-guarded",
+        transportCallId: "transport-guarded",
+        turnId: "turn-guarded",
+      }
+    );
+
+    setRpcCaller(instance, "panel:intruder", "panel");
+    await expect(
+      instance.submitMethodResult("panel:intruder", "transport-guarded", 99, false)
+    ).rejects.toThrow(/not target/u);
+    await expect(
+      instance.submitMethodProgress("panel:intruder", "transport-guarded", "still working")
+    ).rejects.toThrow(/not target/u);
+
+    const stats = (
+      instance as unknown as { getMethodTransportStats(): Record<string, number> }
+    ).getMethodTransportStats();
+    expect(stats["rejectedTerminalSubmissions"]).toBe(1);
+    expect(stats["rejectedProgressSubmissions"]).toBe(1);
+
+    setRpcCaller(instance, "panel:provider", "panel");
+    await expect(
+      instance.submitMethodResult("panel:provider", "transport-guarded", 2, false, {
+        invocationId: "invocation-guarded",
+        turnId: "turn-guarded",
+      })
+    ).resolves.toEqual({ id: expect.any(Number) });
   });
 
   // Phase 2: the channel DO is the canonical, terminal-once recovery authority.
@@ -615,6 +877,7 @@ describe("PubSubChannel", () => {
         terminalOutcome: string | null;
         terminalReasonCode: string | null;
       } | null;
+      getMethodTransportStats(): Record<string, number>;
     };
 
     // A result with no live pending call is still recorded for replay.
@@ -635,6 +898,10 @@ describe("PubSubChannel", () => {
 
     // An unsettled call has no canonical record.
     expect(worker.getSettledResult("transport-never")).toBeNull();
+    expect(worker.getMethodTransportStats()).toMatchObject({
+      settledRecoveryHits: 2,
+      duplicateTerminalDrops: 1,
+    });
   });
 
   // Phase 2: a target leaving must record the canonical terminal so a hibernated
@@ -708,7 +975,7 @@ describe("PubSubChannel", () => {
     expect(forkWorker.getSettledResult("transport-parent")).toBeNull();
   });
 
-  it("settles pending method calls from abandoned invocation events", async () => {
+  it("settles pending method calls from abandoned method results", async () => {
     const { instance } = await createGadBackedChannel();
 
     setRpcCaller(instance, "panel:caller", "panel");
@@ -735,19 +1002,18 @@ describe("PubSubChannel", () => {
     );
 
     setRpcCaller(instance, "panel:provider", "panel");
-    const result = await instance.publish("panel:provider", AGENTIC_EVENT_PAYLOAD_KIND, {
-      kind: "invocation.abandoned",
-      actor: { kind: "panel", id: "panel:provider" },
-      turnId: "turn-abandoned",
-      causality: {
+    const result = await instance.submitMethodResult(
+      "panel:provider",
+      "transport-abandoned",
+      "runner restarted",
+      true,
+      {
         invocationId: "invocation-abandoned",
-        transportCallId: "transport-abandoned",
-      },
-      payload: invocationAbandonedPayload("runner restarted", {
+        turnId: "turn-abandoned",
+        terminalOutcome: "abandoned",
         terminalReasonCode: "runner_restarted_before_invocation_completed",
-      }),
-      createdAt: new Date().toISOString(),
-    });
+      }
+    );
 
     expect(result.id).toBeTypeOf("number");
     const pending = (
@@ -804,19 +1070,18 @@ describe("PubSubChannel", () => {
     );
 
     setRpcCaller(instance, "panel:provider", "panel");
-    const result = await instance.publish("panel:provider", AGENTIC_EVENT_PAYLOAD_KIND, {
-      kind: "invocation.cancelled",
-      actor: { kind: "panel", id: "panel:provider" },
-      turnId: "turn-cancelled",
-      causality: {
+    const result = await instance.submitMethodResult(
+      "panel:provider",
+      "transport-cancelled",
+      "cancelled",
+      true,
+      {
         invocationId: "invocation-cancelled",
-        transportCallId: "transport-cancelled",
-      },
-      payload: invocationCancelledPayload("cancelled", "cancelled", {
+        turnId: "turn-cancelled",
+        terminalOutcome: "cancelled",
         terminalReasonCode: "cancelled",
-      }),
-      createdAt: new Date().toISOString(),
-    });
+      }
+    );
 
     expect(result.id).toBeTypeOf("number");
     const events = (
@@ -880,8 +1145,8 @@ describe("PubSubChannel", () => {
             "panel:caller",
             targetPid,
             "transport-do",
-            "pause",
-            {},
+            "eval",
+            { code: "while (true) {}" },
             {
               invocationId: "invocation-do",
               transportCallId: "transport-do",
@@ -895,7 +1160,7 @@ describe("PubSubChannel", () => {
     await methodStarted;
 
     await instance.cancelMethodCall("transport-do");
-    resolveMethod({ result: { paused: true } });
+    resolveMethod({ result: { ok: true } });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     const events = gad.sql
@@ -1027,6 +1292,14 @@ describe("PubSubChannel", () => {
     });
     const cappedResult = JSON.parse(blobs.get(resultRef!.digest!)!);
     expect(cappedResult).toMatchObject({
+      omitted: true,
+      reason: "method result exceeds durable inline budget",
+      method: "eval",
+      transportCallId: "transport-large",
+      stored: expect.objectContaining({ digest: expect.any(String), encoding: "json" }),
+    });
+    const settled = instance.getSettledResult("transport-large");
+    expect(settled?.content).toMatchObject({
       omitted: true,
       reason: "method result exceeds durable inline budget",
       method: "eval",

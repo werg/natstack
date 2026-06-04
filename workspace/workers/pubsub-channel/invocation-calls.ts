@@ -106,9 +106,15 @@ export function cancelCall(sql: SqlStorage, transportCallId: string): {
 export function cancelCallsForTarget(
   sql: SqlStorage,
   targetId: string,
-): Array<{ transportCallId: string; invocationId: string; turnId?: string; callerId: string }> {
+): Array<{
+  transportCallId: string;
+  invocationId: string;
+  turnId?: string;
+  callerId: string;
+  targetId: string;
+}> {
   const rows = sql.exec(
-    `SELECT transport_call_id, invocation_id, turn_id, caller_id FROM pending_calls WHERE target_id = ?`, targetId,
+    `SELECT transport_call_id, invocation_id, turn_id, caller_id, target_id FROM pending_calls WHERE target_id = ?`, targetId,
   ).toArray();
   if (rows.length === 0) return [];
   sql.exec(`DELETE FROM pending_calls WHERE target_id = ?`, targetId);
@@ -117,5 +123,6 @@ export function cancelCallsForTarget(
     invocationId: r["invocation_id"] as string,
     turnId: r["turn_id"] ? r["turn_id"] as string : undefined,
     callerId: r["caller_id"] as string,
+    targetId: r["target_id"] as string,
   }));
 }

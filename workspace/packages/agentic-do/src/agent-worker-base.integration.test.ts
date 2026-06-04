@@ -6,8 +6,8 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { AgentWorkerBase } from "./agent-worker-base.js";
 import type { RespondPolicy, CustomMessageReducer } from "./trajectory-vessel-base.js";
 import type { TurnDispatcherRunner } from "./turn-dispatcher.js";
-import type { ChannelEvent } from "@natstack/harness/types";
-import type { PiRunner, PiRunnerOptions } from "@natstack/harness";
+import type { ChannelEvent } from "@workspace/harness/types";
+import type { PiRunner, PiRunnerOptions } from "@workspace/harness";
 import { AGENTIC_EVENT_PAYLOAD_KIND } from "@workspace/agentic-protocol";
 
 class TestAgentWorker extends AgentWorkerBase {
@@ -329,6 +329,63 @@ class RunnerInitGateTestWorker extends AgentWorkerBase {
   }
 }
 
+class SingleFlightRunnerInitTestWorker extends AgentWorkerBase {
+  public createRunnerCalls = 0;
+  private resolveInitStarted: () => void = () => undefined;
+  private resolveInitGate: () => void = () => undefined;
+
+  public readonly initStarted = new Promise<void>((resolve) => {
+    this.resolveInitStarted = resolve;
+  });
+
+  private readonly initGate = new Promise<void>((resolve) => {
+    this.resolveInitGate = resolve;
+  });
+
+  protected override getDefaultModel(): string {
+    return "test:model";
+  }
+
+  protected override createRunner(_channelId: string, _opts: PiRunnerOptions): PiRunner {
+    this.createRunnerCalls++;
+    return {
+      init: vi.fn(async () => {
+        this.resolveInitStarted();
+        await this.initGate;
+      }),
+      hooks: { on: vi.fn(() => vi.fn()) },
+      subscribe: vi.fn(() => vi.fn()),
+      repairDurableOpenState: vi.fn(async () => undefined),
+      getDebugState: vi.fn(() => ({})),
+      session: null,
+    } as unknown as PiRunner;
+  }
+
+  protected override createChannelClient(_channelId: string): never {
+    return {
+      getParticipants: vi.fn(async () => []),
+    } as never;
+  }
+
+  public releaseRunnerInit(): void {
+    this.resolveInitGate();
+  }
+
+  public testGetOrCreateRunner(channelId: string): Promise<PiRunner> {
+    return this.getOrCreateRunner(channelId);
+  }
+
+  public testDispatcher(channelId: string, runner: PiRunner): TurnDispatcherRunner {
+    return this.getOrCreateDispatcher(channelId, runner) as unknown as TurnDispatcherRunner;
+  }
+
+  public testDispatcherRunner(channelId: string): PiRunner | undefined {
+    return (this as unknown as { dispatcherRunners: Map<string, PiRunner> }).dispatcherRunners.get(
+      channelId
+    );
+  }
+}
+
 describe("AgentWorkerBase runner contract", () => {
   it("uses the clean AgentHarness-facing dispatcher surface", () => {
     const methods = [
@@ -371,6 +428,92 @@ describe("AgentWorkerBase runner contract", () => {
       })
     );
     error.mockRestore();
+  });
+
+  it("single-flights concurrent runner initialization for the same channel", async () => {
+    const { instance, sql } = await createTestDO(SingleFlightRunnerInitTestWorker, {
+      __objectKey: "agent-test",
+    });
+    sql.exec(
+      `INSERT INTO subscriptions (channel_id, context_id, subscribed_at, config, participant_id)
+       VALUES (?, ?, ?, ?, ?)`,
+      "chat-1",
+      "ctx-1",
+      Date.now(),
+      null,
+      "do:agent"
+    );
+
+    const first = instance.testGetOrCreateRunner("chat-1");
+    await instance.initStarted;
+    const second = instance.testGetOrCreateRunner("chat-1");
+
+    expect(instance.createRunnerCalls).toBe(1);
+
+    instance.releaseRunnerInit();
+    const [firstRunner, secondRunner] = await Promise.all([first, second]);
+    const thirdRunner = await instance.testGetOrCreateRunner("chat-1");
+
+    expect(firstRunner).toBe(secondRunner);
+    expect(thirdRunner).toBe(firstRunner);
+    expect(instance.testDispatcherRunner("chat-1")).toBe(firstRunner);
+    await expect(instance.getDebugState("chat-1")).resolves.toMatchObject({
+      volatile: {
+        dispatcherBindings: {
+          "chat-1": {
+            matchesCanonicalRunner: true,
+            hasCanonicalRunner: true,
+          },
+        },
+      },
+    });
+    expect(instance.createRunnerCalls).toBe(1);
+  });
+
+  it("rebinds a stale dispatcher to the canonical channel runner", async () => {
+    const { instance } = await createTestDO(SingleFlightRunnerInitTestWorker, {
+      __objectKey: "agent-test",
+    });
+    const staleUnsubscribe = vi.fn();
+    const staleRunner = {
+      subscribe: vi.fn(() => staleUnsubscribe),
+      clearSteeringQueue: vi.fn(async () => undefined),
+      getDebugState: vi.fn(() => ({})),
+    } as unknown as PiRunner;
+    const canonicalRunner = {
+      subscribe: vi.fn(() => vi.fn()),
+      clearSteeringQueue: vi.fn(async () => undefined),
+      getDebugState: vi.fn(() => ({})),
+    } as unknown as PiRunner;
+    const worker = instance as unknown as {
+      runners: Map<string, { runner: PiRunner }>;
+    };
+
+    const staleDispatcher = instance.testDispatcher("chat-1", staleRunner);
+    expect(instance.testDispatcherRunner("chat-1")).toBe(staleRunner);
+
+    worker.runners.set("chat-1", { runner: canonicalRunner });
+    const canonicalDispatcher = instance.testDispatcher("chat-1", staleRunner);
+
+    expect(canonicalDispatcher).not.toBe(staleDispatcher);
+    expect(staleUnsubscribe).toHaveBeenCalledTimes(1);
+    expect(instance.testDispatcherRunner("chat-1")).toBe(canonicalRunner);
+    await expect(instance.getDebugState("chat-1")).resolves.toMatchObject({
+      volatile: {
+        dispatcherBindings: {
+          "chat-1": {
+            matchesCanonicalRunner: true,
+            hasCanonicalRunner: true,
+          },
+        },
+        recentInvariantViolations: [
+          expect.objectContaining({
+            channelId: "chat-1",
+            code: "dispatcher_runner_mismatch",
+          }),
+        ],
+      },
+    });
   });
 });
 
@@ -3703,18 +3846,28 @@ describe("AgentWorkerBase interrupt recovery", () => {
     const { instance } = await createTestDO(InterruptTestAgentWorker, {
       __objectKey: "agent-test",
     });
-    const dispatcherInterrupt = vi.fn();
+    const order: string[] = [];
+    const dispatcherInterrupt = vi.fn(() => order.push("dispatcher_interrupt"));
+    const abort = vi.fn(() => {
+      order.push("runner_abort");
+      return new Promise<void>(() => {});
+    });
     const forceCloseCurrentTurn = vi.fn().mockResolvedValue(true);
     const interrupt = vi.fn(() => new Promise<void>(() => {}));
     const worker = instance as unknown as {
       runners: Map<string, unknown>;
       dispatchers: Map<string, unknown>;
       abortContexts: Map<string, { reason: string }>;
+      notifyDispatchesInterrupted(channelId: string): Promise<void>;
       testInterruptRunner(channelId: string): Promise<void>;
     };
+    worker.notifyDispatchesInterrupted = vi.fn(async () => {
+      order.push("notify_dispatches_interrupted");
+    });
 
     worker.runners.set("chat-1", {
       runner: {
+        abort,
         forceCloseCurrentTurn,
         interrupt,
         getDebugState: vi.fn(async () => ({})),
@@ -3725,6 +3878,12 @@ describe("AgentWorkerBase interrupt recovery", () => {
     await worker.testInterruptRunner("chat-1");
 
     expect(dispatcherInterrupt).toHaveBeenCalledTimes(1);
+    expect(abort).toHaveBeenCalledTimes(1);
+    expect(order.slice(0, 3)).toEqual([
+      "dispatcher_interrupt",
+      "runner_abort",
+      "notify_dispatches_interrupted",
+    ]);
     expect(forceCloseCurrentTurn).toHaveBeenCalledWith(
       "user_interrupted",
       "Turn closed after user interruption"
@@ -4438,6 +4597,7 @@ describe("AgentWorkerBase dispatched method results", () => {
       runners: Map<string, { runner: { abort: ReturnType<typeof vi.fn> } }>;
       createChannelClient: ReturnType<typeof vi.fn>;
       handleIncomingChannelEvent(channelId: string, event: unknown): Promise<void>;
+      onChannelEnvelope(channelId: string, envelope: unknown): Promise<void>;
       invokeChannelMethod(
         channelId: string,
         toolCallId: string,
@@ -4461,21 +4621,14 @@ describe("AgentWorkerBase dispatched method results", () => {
       callMethod: vi.fn(async (_callerId, _targetId, callId, _method, _args, opts) => {
         capturedCallId = callId;
         capturedOpts = opts;
-        await worker.handleIncomingChannelEvent("chat-1", {
-          id: 1,
-          messageId: "result-1",
-          type: AGENTIC_EVENT_PAYLOAD_KIND,
-          payload: {
-            kind: "invocation.completed",
-            actor: { kind: "panel", id: "panel:panel-1" },
-            causality: { invocationId: opts.invocationId, transportCallId: opts.transportCallId },
-            payload: {
-              protocol: "agentic.trajectory.v1",
-              result: { ok: true },
-              terminalOutcome: "success",
-            },
-            createdAt: new Date().toISOString(),
-          },
+        await worker.onChannelEnvelope("chat-1", {
+          kind: "method-result",
+          callId: opts.transportCallId,
+          invocationId: opts.invocationId,
+          content: { ok: true },
+          isError: false,
+          terminalOutcome: "success",
+          terminalReasonCode: null,
           senderId: "panel:panel-1",
           ts: Date.now(),
         });
@@ -4519,6 +4672,7 @@ describe("AgentWorkerBase dispatched method results", () => {
       };
       createChannelClient: ReturnType<typeof vi.fn>;
       handleIncomingChannelEvent(channelId: string, event: unknown): Promise<void>;
+      onChannelEnvelope(channelId: string, envelope: unknown): Promise<void>;
       invokeChannelMethod(
         channelId: string,
         toolCallId: string,
@@ -4540,23 +4694,14 @@ describe("AgentWorkerBase dispatched method results", () => {
         },
       ]),
       callMethod: vi.fn(async (_callerId, _targetId, _callId, _method, _args, opts) => {
-        await worker.handleIncomingChannelEvent("chat-1", {
-          id: 1,
-          messageId: "result-failed",
-          type: AGENTIC_EVENT_PAYLOAD_KIND,
-          payload: {
-            kind: "invocation.failed",
-            actor: { kind: "panel", id: "panel:panel-1" },
-            causality: { invocationId: opts.invocationId, transportCallId: opts.transportCallId },
-            payload: {
-              protocol: "agentic.trajectory.v1",
-              reason: "method failed",
-              error: { error: "Authentication failed for internal push" },
-              terminalOutcome: "tool_error",
-              terminalReasonCode: "method_failed",
-            },
-            createdAt: new Date().toISOString(),
-          },
+        await worker.onChannelEnvelope("chat-1", {
+          kind: "method-result",
+          callId: opts.transportCallId,
+          invocationId: opts.invocationId,
+          content: { error: "Authentication failed for internal push" },
+          isError: true,
+          terminalOutcome: "tool_error",
+          terminalReasonCode: "method_failed",
           senderId: "panel:panel-1",
           ts: Date.now(),
         });
@@ -4588,6 +4733,7 @@ describe("AgentWorkerBase dispatched method results", () => {
       };
       createChannelClient: ReturnType<typeof vi.fn>;
       handleIncomingChannelEvent(channelId: string, event: unknown): Promise<void>;
+      onChannelEnvelope(channelId: string, envelope: unknown): Promise<void>;
       invokeChannelMethod(
         channelId: string,
         toolCallId: string,
@@ -4609,22 +4755,14 @@ describe("AgentWorkerBase dispatched method results", () => {
         },
       ]),
       callMethod: vi.fn(async (_callerId, _targetId, _callId, _method, _args, opts) => {
-        await worker.handleIncomingChannelEvent("chat-1", {
-          id: 1,
-          messageId: "result-abandoned",
-          type: AGENTIC_EVENT_PAYLOAD_KIND,
-          payload: {
-            kind: "invocation.abandoned",
-            actor: { kind: "panel", id: "panel:panel-1" },
-            causality: { invocationId: opts.invocationId, transportCallId: opts.transportCallId },
-            payload: {
-              protocol: "agentic.trajectory.v1",
-              reason: "Runner restarted before invocation completed",
-              terminalOutcome: "abandoned",
-              terminalReasonCode: "runner_restarted_before_invocation_completed",
-            },
-            createdAt: new Date().toISOString(),
-          },
+        await worker.onChannelEnvelope("chat-1", {
+          kind: "method-result",
+          callId: opts.transportCallId,
+          invocationId: opts.invocationId,
+          content: "Runner restarted before invocation completed",
+          isError: true,
+          terminalOutcome: "abandoned",
+          terminalReasonCode: "runner_restarted_before_invocation_completed",
           senderId: "panel:panel-1",
           ts: Date.now(),
         });
@@ -4657,6 +4795,7 @@ describe("AgentWorkerBase dispatched method results", () => {
       };
       createChannelClient: ReturnType<typeof vi.fn>;
       handleIncomingChannelEvent(channelId: string, event: unknown): Promise<void>;
+      onChannelEnvelope(channelId: string, envelope: unknown): Promise<void>;
       runners: Map<string, unknown>;
     };
 
@@ -4665,23 +4804,14 @@ describe("AgentWorkerBase dispatched method results", () => {
       setTypingState,
     });
 
-    await worker.handleIncomingChannelEvent("chat-1", {
-      id: 1,
-      messageId: "orphan-result",
-      type: AGENTIC_EVENT_PAYLOAD_KIND,
-      payload: {
-        kind: "invocation.failed",
-        actor: { kind: "panel", id: "panel:panel-1" },
-        causality: { invocationId: "tool-1", transportCallId: "transport-lost" },
-        payload: {
-          protocol: "agentic.trajectory.v1",
-          reason: "method failed",
-          error: "Authentication failed",
-          terminalOutcome: "tool_error",
-          terminalReasonCode: "method_failed",
-        },
-        createdAt: new Date().toISOString(),
-      },
+    await worker.onChannelEnvelope("chat-1", {
+      kind: "method-result",
+      callId: "transport-lost",
+      invocationId: "tool-1",
+      content: "Authentication failed",
+      isError: true,
+      terminalOutcome: "tool_error",
+      terminalReasonCode: "method_failed",
       senderId: "panel:panel-1",
       ts: Date.now(),
     });

@@ -48,12 +48,67 @@ export interface RpcSignalMessage {
   ref?: number;
 }
 
+export interface RpcWireAttachment {
+  id: string;
+  data: string;
+  mimeType: string;
+  filename?: string;
+  name?: string;
+  size: number;
+  type?: string;
+}
+
+export interface RpcMethodResultMessage {
+  kind: "method-result";
+  callId: string;
+  invocationId?: string;
+  turnId?: string;
+  content: unknown;
+  isError: boolean;
+  terminalOutcome?: string | null;
+  terminalReasonCode?: string | null;
+  contentType?: string;
+  attachments?: RpcWireAttachment[];
+  senderId?: string;
+  ts: number;
+  ref?: number;
+}
+
+export interface RpcMethodProgressMessage {
+  kind: "method-progress";
+  callId: string;
+  invocationId?: string;
+  turnId?: string;
+  content: unknown;
+  progress?: number;
+  contentType?: string;
+  attachments?: RpcWireAttachment[];
+  senderId?: string;
+  ts: number;
+  ref?: number;
+}
+
+export interface RpcMethodCancelMessage {
+  kind: "method-cancel";
+  callId: string;
+  invocationId?: string;
+  turnId?: string;
+  targetId?: string;
+  reason?: string;
+  senderId?: string;
+  ts: number;
+  ref?: number;
+}
+
 export type RpcChannelMessage =
   | RpcLogMessage
   | RpcRosterSnapshotMessage
   | RpcReadyMessage
   | RpcErrorMessage
-  | RpcSignalMessage;
+  | RpcSignalMessage
+  | RpcMethodResultMessage
+  | RpcMethodProgressMessage
+  | RpcMethodCancelMessage;
 
 export function snapshotToRpcControl(snapshot: BootstrapSnapshot): RpcRosterSnapshotMessage {
   return {

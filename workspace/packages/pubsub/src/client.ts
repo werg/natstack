@@ -162,8 +162,8 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
   error(id: string, error: string, code?: string): Promise<number | undefined>;
 
   /**
-   * Call a method on a remote provider. Publishes a invocation-call message and
-   * tracks the result via invocation-result messages.
+   * Call a method on a remote provider. Publishes an invocation-call message and
+   * tracks progress/results via dedicated method transport envelopes.
    */
   callMethod(
     providerId: string,
@@ -180,8 +180,9 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
    * in-process, by firing the AbortController handed to the method's execution
    * context. Returns true if a matching in-flight execution was found and
    * aborted. Unlike `cancelMethodCall` (which round-trips through the channel
-   * DO and only aborts once the broadcast returns), this acts immediately on
-   * the local executor — use it to stop an eval running in this very panel.
+   * DO and aborts remote executors through a dedicated method-cancel envelope),
+   * this acts immediately on the local executor — use it to stop an eval
+   * running in this very panel.
    * `callId` is the transport call id.
    */
   abortExecutingMethod(callId: string): boolean;

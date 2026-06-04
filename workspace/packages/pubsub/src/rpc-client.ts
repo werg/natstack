@@ -29,7 +29,6 @@ import type {
   IncomingErrorMessage,
   IncomingSignalEvent,
   IncomingInvocationCallEvent,
-  IncomingInvocationResultEvent,
   IncomingPresenceEventWithType,
   IncomingAgenticEvent,
   IncomingAgentDebugEvent,
@@ -47,11 +46,7 @@ import {
   AGENTIC_EVENT_PAYLOAD_KIND,
   AGENTIC_PROTOCOL_VERSION,
   hydrateStoredValueRefs,
-  invocationCancelledPayload,
-  invocationCompletedPayload,
-  invocationFailedPayload,
   type AgenticEvent,
-  type InvocationId,
   type MessageId,
 } from "@workspace/agentic-protocol";
 import { AgenticError } from "./protocol-types.js";
@@ -315,6 +310,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     isError: boolean;
   }
   const methodCallStates = new Map<string, MethodCallState>();
+  const methodResultChains = new Map<string, Promise<void>>();
 
   // Stable for the lifetime of this client instance. Re-subscribe attempts
   // reuse it; a panel reload creates a new one.
@@ -467,60 +463,6 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       providerId,
       args: invocationPayload.request,
     } as IncomingInvocationCallEvent;
-  }
-
-  function invocationResultFromAgenticEvent(
-    event: IncomingAgenticEvent
-  ): IncomingInvocationResultEvent | null {
-    const payload = event.payload;
-    if (!payload.kind.startsWith("invocation.") || payload.kind === "invocation.started")
-      return null;
-    const invocationId = payload.causality?.invocationId;
-    if (typeof invocationId !== "string" || invocationId.length === 0) return null;
-    const transportCallId = payload.causality?.transportCallId ?? invocationId;
-
-    let content: unknown;
-    let complete = false;
-    let isError = false;
-    let progress: number | undefined;
-    if (payload.kind === "invocation.completed") {
-      content = "result" in payload.payload ? payload.payload.result : undefined;
-      complete = true;
-    } else if (payload.kind === "invocation.failed" || payload.kind === "invocation.cancelled") {
-      const p = payload.payload as Record<string, unknown>;
-      content = p["error"] ?? p["reason"] ?? "Invocation failed";
-      complete = true;
-      isError = true;
-    } else if (payload.kind === "invocation.progress") {
-      const p = payload.payload as Record<string, unknown>;
-      content = p["data"] ?? p["message"];
-      progress = typeof p["progress"] === "number" ? p["progress"] : undefined;
-    } else if (payload.kind === "invocation.output") {
-      content = "output" in payload.payload ? payload.payload.output : payload.payload;
-    } else if (payload.kind === "invocation.abandoned") {
-      const p = payload.payload as Record<string, unknown>;
-      content = p["reason"] ?? "Invocation abandoned";
-      complete = true;
-      isError = true;
-    }
-
-    return {
-      type: "invocation-result",
-      delivery: event.delivery,
-      phase: event.phase,
-      senderId: event.senderId,
-      ts: event.ts,
-      pubsubId: event.pubsubId,
-      senderMetadata: event.senderMetadata,
-      callId: transportCallId,
-      invocationId,
-      transportCallId,
-      content,
-      complete,
-      isError,
-      progress,
-      attachments: event.attachments,
-    } as IncomingInvocationResultEvent;
   }
 
   function replayDedupeKey(msg: ClientIngressMessage): string | null {
@@ -677,25 +619,6 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
             event.type === AGENTIC_EVENT_PAYLOAD_KIND
               ? invocationCallFromAgenticEvent(event)
               : null;
-          const invocationResultEvent =
-            event.type === AGENTIC_EVENT_PAYLOAD_KIND
-              ? invocationResultFromAgenticEvent(event)
-              : null;
-          if (
-            event.type === AGENTIC_EVENT_PAYLOAD_KIND &&
-            event.payload.kind === "invocation.cancelled" &&
-            event.phase !== "replay"
-          ) {
-            const callId =
-              event.payload.causality?.transportCallId ?? event.payload.causality?.invocationId;
-            if (callId) {
-              const controller = executingMethods.get(callId);
-              if (controller) {
-                controller.abort();
-                executingMethods.delete(callId);
-              }
-            }
-          }
 
           // Auto-execute method calls targeting this client
           if (invocationCallEvent && event.phase !== "replay") {
@@ -721,7 +644,6 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
           } else {
             // Emit live events
             eventsFanout.emit(event);
-            if (invocationResultEvent) eventsFanout.emit(invocationResultEvent);
           }
         }
 
@@ -770,61 +692,203 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     ingestReplayEnvelope(result.envelope, "ack");
   }
 
-  async function publishInvocationEvent(
+  async function applyMethodResultChunk(result: {
+    callId: string;
+    content: unknown;
+    complete: boolean;
+    isError: boolean;
+    progress?: number;
+    attachments?: Attachment[];
+    attachmentsReplayable?: boolean;
+    contentType?: string;
+  }): Promise<void> {
+    const state = methodCallStates.get(result.callId);
+    if (!state) return;
+
+    let content: unknown;
+    try {
+      content = await hydrateStoredTransportValue(result.content);
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      state.complete = true;
+      state.isError = true;
+      state.stream.close(error);
+      state.reject(new AgenticError(error.message, "execution-error", error));
+      methodCallStates.delete(result.callId);
+      return;
+    }
+
+    const chunk: MethodResultChunk = {
+      content,
+      ...(result.attachments ? { attachments: result.attachments } : {}),
+      ...(result.attachmentsReplayable !== undefined
+        ? { attachmentsReplayable: result.attachmentsReplayable }
+        : {}),
+      contentType: result.contentType,
+      complete: result.complete,
+      isError: result.isError,
+      progress: result.progress,
+    };
+
+    state.stream.emit(chunk);
+
+    if (!chunk.complete) return;
+
+    state.complete = true;
+    state.isError = chunk.isError;
+    state.stream.close();
+
+    if (chunk.isError) {
+      const content = chunk.content;
+      let errorMsg = "method execution failed";
+      if (
+        content &&
+        typeof content === "object" &&
+        typeof (content as Record<string, unknown>)["error"] === "string"
+      ) {
+        errorMsg = (content as Record<string, unknown>)["error"] as string;
+      } else if (typeof content === "string" && content.length > 0) {
+        errorMsg = content;
+      }
+      state.reject(new AgenticError(errorMsg, "execution-error", content));
+    } else {
+      state.resolve({
+        content: chunk.content,
+        ...(chunk.attachments ? { attachments: chunk.attachments } : {}),
+        ...(chunk.attachmentsReplayable !== undefined
+          ? { attachmentsReplayable: chunk.attachmentsReplayable }
+          : {}),
+        contentType: chunk.contentType,
+      });
+    }
+    methodCallStates.delete(result.callId);
+  }
+
+  function enqueueMethodResultChunk(
+    result: Parameters<typeof applyMethodResultChunk>[0]
+  ): Promise<void> {
+    const previous = methodResultChains.get(result.callId) ?? Promise.resolve();
+    const next = previous
+      .catch(() => undefined)
+      .then(() => applyMethodResultChunk(result));
+    methodResultChains.set(result.callId, next);
+    void next
+      .catch((err) => {
+        const error = err instanceof Error ? err : new Error(String(err));
+        console.warn(
+          `[PubSubClient] Failed to apply method result chunk for ${result.callId}:`,
+          error
+        );
+      })
+      .finally(() => {
+        if (methodResultChains.get(result.callId) === next) {
+          methodResultChains.delete(result.callId);
+        }
+      });
+    return next;
+  }
+
+  async function recoverSettledMethodCalls(): Promise<void> {
+    const pending = [...methodCallStates.values()].filter((state) => !state.complete);
+    for (const state of pending) {
+      try {
+        const settled = await callChannel<{
+          content: unknown;
+          isError: boolean;
+          terminalOutcome: string | null;
+          terminalReasonCode: string | null;
+          contentType?: string | null;
+          attachmentsReplayable?: boolean;
+        } | null>("getSettledResult", state.transportCallId);
+        if (!settled) continue;
+        await enqueueMethodResultChunk({
+          callId: state.callId,
+          content: settled.content,
+          complete: true,
+          isError: settled.isError,
+          ...(settled.attachmentsReplayable !== undefined
+            ? { attachmentsReplayable: settled.attachmentsReplayable }
+            : {}),
+          ...(settled.contentType ? { contentType: settled.contentType } : {}),
+        });
+      } catch (err) {
+        console.warn(
+          `[PubSubClient] Failed to recover settled method result for ${state.transportCallId}:`,
+          err
+        );
+      }
+    }
+  }
+
+  async function submitMethodResult(
     invocationId: string,
     transportCallId: string,
-    event: AgenticEvent,
-    attachments?: AttachmentInput[],
-    turnId?: string
+    content: unknown,
+    isError: boolean,
+    opts?: {
+      turnId?: string;
+      terminalOutcome?: string;
+      terminalReasonCode?: string;
+      attachments?: AttachmentInput[];
+      contentType?: string;
+    }
   ): Promise<void> {
     if (!pid) {
       throw new Error(
-        `Cannot publish ${event.kind} for invocation ${invocationId}: pubsub client is disconnected`
+        `Cannot submit result for invocation ${invocationId}: pubsub client is disconnected`
       );
     }
-    await callChannel(
-      "publish",
-      pid,
-      AGENTIC_EVENT_PAYLOAD_KIND,
-      {
-        ...event,
-        ...(event.turnId || !turnId ? {} : { turnId: turnId as never }),
-        causality: {
-          ...(event.causality ?? {}),
-          invocationId: invocationId as InvocationId,
-          transportCallId,
-        },
-      },
-      attachments ? { attachments: toStoredAttachments(attachments) } : {}
-    );
+    await callChannel("submitMethodResult", pid, transportCallId, content, isError, {
+      invocationId,
+      ...(opts?.turnId ? { turnId: opts.turnId } : {}),
+      ...(opts?.terminalOutcome ? { terminalOutcome: opts.terminalOutcome } : {}),
+      ...(opts?.terminalReasonCode ? { terminalReasonCode: opts.terminalReasonCode } : {}),
+      ...(opts?.attachments ? { attachments: toStoredAttachments(opts.attachments) } : {}),
+      ...(opts?.contentType ? { contentType: opts.contentType } : {}),
+    });
+  }
+
+  async function submitMethodProgress(
+    invocationId: string,
+    transportCallId: string,
+    content: unknown,
+    opts?: {
+      turnId?: string;
+      progress?: number;
+      attachments?: AttachmentInput[];
+      contentType?: string;
+    }
+  ): Promise<void> {
+    if (!pid) {
+      throw new Error(
+        `Cannot submit progress for invocation ${invocationId}: pubsub client is disconnected`
+      );
+    }
+    await callChannel("submitMethodProgress", pid, transportCallId, content, {
+      invocationId,
+      ...(opts?.turnId ? { turnId: opts.turnId } : {}),
+      ...(typeof opts?.progress === "number" ? { progress: opts.progress } : {}),
+      ...(opts?.attachments ? { attachments: toStoredAttachments(opts.attachments) } : {}),
+      ...(opts?.contentType ? { contentType: opts.contentType } : {}),
+    });
   }
 
   async function handleMethodCallExec(event: IncomingInvocationCallEvent): Promise<void> {
     if (!pid || event.providerId !== pid) return;
-    const localActor = { kind: "panel" as const, id: pid, metadata: subscribeMetadata };
 
     const methodDef = registeredMethods[event.methodName];
     if (!methodDef) {
       try {
-        await publishInvocationEvent(
+        await submitMethodResult(
           event.invocationId,
           event.transportCallId,
+          `Method "${event.methodName}" not registered on this client`,
+          true,
           {
-            kind: "invocation.failed",
-            actor: localActor,
-            causality: {
-              invocationId: event.invocationId as InvocationId,
-              transportCallId: event.transportCallId,
-            },
-            payload: invocationFailedPayload(
-              "tool_error",
-              `Method "${event.methodName}" not registered on this client`,
-              { terminalReasonCode: "method_not_registered" }
-            ),
-            createdAt: new Date().toISOString(),
-          },
-          undefined,
-          event.turnId
+            turnId: event.turnId,
+            terminalOutcome: "tool_error",
+            terminalReasonCode: "method_not_registered",
+          }
         );
       } catch {
         /* best effort */
@@ -841,21 +905,11 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       callerId: event.senderId,
       signal: abortController.signal,
       stream: async (content: unknown) => {
-        await publishInvocationEvent(
+        await submitMethodProgress(
           event.invocationId,
           event.transportCallId,
-          {
-            kind: "invocation.output",
-            actor: localActor,
-            causality: {
-              invocationId: event.invocationId as InvocationId,
-              transportCallId: event.transportCallId,
-            },
-            payload: { protocol: AGENTIC_PROTOCOL_VERSION, output: content },
-            createdAt: new Date().toISOString(),
-          },
-          undefined,
-          event.turnId
+          content,
+          { turnId: event.turnId }
         );
       },
       streamWithAttachments: async (
@@ -863,25 +917,15 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
         attachments: AttachmentInput[],
         streamOpts?: { contentType?: string }
       ) => {
-        await publishInvocationEvent(
+        await submitMethodProgress(
           event.invocationId,
           event.transportCallId,
+          content,
           {
-            kind: "invocation.output",
-            actor: localActor,
-            causality: {
-              invocationId: event.invocationId as InvocationId,
-              transportCallId: event.transportCallId,
-            },
-            payload: {
-              protocol: AGENTIC_PROTOCOL_VERSION,
-              output: content,
-              channel: streamOpts?.contentType ? "data" : undefined,
-            },
-            createdAt: new Date().toISOString(),
-          },
-          attachments,
-          event.turnId
+            turnId: event.turnId,
+            attachments,
+            contentType: streamOpts?.contentType,
+          }
         );
       },
       resultWithAttachments: <R>(
@@ -894,21 +938,11 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
         contentType: resultOpts?.contentType,
       }),
       progress: async (percent: number) => {
-        await publishInvocationEvent(
+        await submitMethodProgress(
           event.invocationId,
           event.transportCallId,
-          {
-            kind: "invocation.progress",
-            actor: localActor,
-            causality: {
-              invocationId: event.invocationId as InvocationId,
-              transportCallId: event.transportCallId,
-            },
-            payload: { protocol: AGENTIC_PROTOCOL_VERSION, progress: percent },
-            createdAt: new Date().toISOString(),
-          },
           undefined,
-          event.turnId
+          { turnId: event.turnId, progress: percent }
         );
       },
     };
@@ -921,23 +955,16 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
 
       const result = await methodDef.execute(args, ctx);
       if (abortController.signal.aborted) {
-        await publishInvocationEvent(
+        await submitMethodResult(
           event.invocationId,
           event.transportCallId,
+          "cancelled",
+          true,
           {
-            kind: "invocation.cancelled",
-            actor: localActor,
-            causality: {
-              invocationId: event.invocationId as InvocationId,
-              transportCallId: event.transportCallId,
-            },
-            payload: invocationCancelledPayload("cancelled", "cancelled", {
-              terminalReasonCode: "cancelled",
-            }),
-            createdAt: new Date().toISOString(),
-          },
-          undefined,
-          event.turnId
+            turnId: event.turnId,
+            terminalOutcome: "cancelled",
+            terminalReasonCode: "cancelled",
+          }
         );
         return;
       }
@@ -953,66 +980,41 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
           attachments: AttachmentInput[];
           contentType?: string;
         };
-        await publishInvocationEvent(
+        await submitMethodResult(
           event.invocationId,
           event.transportCallId,
+          withAttachments.content,
+          false,
           {
-            kind: "invocation.completed",
-            actor: localActor,
-            causality: {
-              invocationId: event.invocationId as InvocationId,
-              transportCallId: event.transportCallId,
-            },
-            payload: invocationCompletedPayload({ result: withAttachments.content }),
-            createdAt: new Date().toISOString(),
-          },
-          withAttachments.attachments,
-          event.turnId
+            turnId: event.turnId,
+            attachments: withAttachments.attachments,
+            contentType: withAttachments.contentType,
+          }
         );
       } else {
-        await publishInvocationEvent(
+        await submitMethodResult(
           event.invocationId,
           event.transportCallId,
-          {
-            kind: "invocation.completed",
-            actor: localActor,
-            causality: {
-              invocationId: event.invocationId as InvocationId,
-              transportCallId: event.transportCallId,
-            },
-            payload: invocationCompletedPayload({ result }),
-            createdAt: new Date().toISOString(),
-          },
-          undefined,
-          event.turnId
+          result,
+          false,
+          { turnId: event.turnId }
         );
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       const aborted = abortController.signal.aborted;
-      await publishInvocationEvent(
+      await submitMethodResult(
         event.invocationId,
         event.transportCallId,
+        errorMsg || (aborted ? "cancelled" : "method execution failed"),
+        true,
         {
-          kind: aborted ? "invocation.cancelled" : "invocation.failed",
-          actor: localActor,
-          causality: {
-            invocationId: event.invocationId as InvocationId,
-            transportCallId: event.transportCallId,
-          },
-          payload: aborted
-            ? invocationCancelledPayload("cancelled", errorMsg || "cancelled", {
-                terminalReasonCode: "cancelled",
-              })
-            : invocationFailedPayload("tool_error", errorMsg, {
-                terminalReasonCode: "eval_exception",
-              }),
-          createdAt: new Date().toISOString(),
-        },
-        undefined,
-        event.turnId
+          turnId: event.turnId,
+          terminalOutcome: aborted ? "cancelled" : "tool_error",
+          terminalReasonCode: aborted ? "cancelled" : "eval_exception",
+        }
       ).catch((e) =>
-        // If even this fallback terminal cannot be published, the caller's
+        // If even this fallback terminal cannot be submitted, the caller's
         // pending call would be stranded. The channel settles it on its side
         // when the event is malformed; log with enough context to trace a
         // transport-level failure here.
@@ -1102,6 +1104,38 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       if (raw.kind === "log" && raw.phase === "replay" && raw.event && !replayComplete) {
         if (replayMode === "skip") return;
         streamedReplayLogEvents.push(raw.event);
+        return;
+      }
+      if (raw.kind === "method-result") {
+        const attachments = convertWireAttachments(raw.attachments);
+        void enqueueMethodResultChunk({
+          callId: raw.callId,
+          content: raw.content,
+          complete: true,
+          isError: raw.isError,
+          attachments,
+          attachmentsReplayable: attachments ? true : undefined,
+          contentType: raw.contentType,
+        });
+        return;
+      }
+      if (raw.kind === "method-progress") {
+        const attachments = convertWireAttachments(raw.attachments);
+        void enqueueMethodResultChunk({
+          callId: raw.callId,
+          content: raw.content,
+          complete: false,
+          isError: false,
+          progress: raw.progress,
+          attachments,
+          attachmentsReplayable: attachments ? true : undefined,
+          contentType: raw.contentType,
+        });
+        return;
+      }
+      if (raw.kind === "method-cancel") {
+        if (raw.targetId && raw.targetId !== pid) return;
+        abortExecutingMethod(raw.callId);
         return;
       }
       const msg: ClientIngressMessage | null =
@@ -1214,6 +1248,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       const resubMeta = { ...subscribeMetadata, sinceId: lastSeenSeq, replay: true };
       const result = await callChannel<SubscribeResult | undefined>("subscribe", pid, resubMeta);
       applySubscribeAckFallback(result);
+      await recoverSettledMethodCalls();
       consecutiveTouchFailures = 0;
       reconnectAttempts = 0;
       reconnecting = false;
@@ -1263,71 +1298,6 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       rejectReady(pubsubError);
       handleError(pubsubError);
     });
-
-  // Subscribe to events fanout for invocation result tracking.
-  const invocationResultSource = eventsFanout.subscribe();
-  void (async () => {
-    try {
-      for await (const event of invocationResultSource) {
-        if (event.type !== "invocation-result") continue;
-        const result = event as IncomingInvocationResultEvent;
-        const state = methodCallStates.get(result.callId);
-        if (!state) continue;
-
-        let content: unknown;
-        try {
-          content = await hydrateStoredTransportValue(result.content);
-        } catch (err) {
-          const error = err instanceof Error ? err : new Error(String(err));
-          state.complete = true;
-          state.isError = true;
-          state.stream.close(error);
-          state.reject(new AgenticError(error.message, "execution-error", error));
-          methodCallStates.delete(result.callId);
-          continue;
-        }
-
-        const chunk: MethodResultChunk = {
-          content,
-          attachments: result.attachments,
-          contentType: result.contentType,
-          complete: result.complete,
-          isError: result.isError,
-          progress: result.progress,
-        };
-
-        state.stream.emit(chunk);
-
-        if (chunk.complete) {
-          state.complete = true;
-          state.isError = chunk.isError;
-          state.stream.close();
-
-          if (chunk.isError) {
-            const content = chunk.content;
-            let errorMsg = "method execution failed";
-            if (
-              content &&
-              typeof content === "object" &&
-              typeof (content as Record<string, unknown>)["error"] === "string"
-            ) {
-              errorMsg = (content as Record<string, unknown>)["error"] as string;
-            }
-            state.reject(new AgenticError(errorMsg, "execution-error", content));
-          } else {
-            state.resolve({
-              content: chunk.content,
-              attachments: chunk.attachments,
-              contentType: chunk.contentType,
-            });
-          }
-          methodCallStates.delete(result.callId);
-        }
-      }
-    } catch {
-      // Stream closed
-    }
-  })();
 
   // ── Public API ──────────────────────────────────────────────────────────
 
@@ -1561,11 +1531,8 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
   // The executing method (e.g. an eval running in this panel) was handed
   // `ctx.signal` from the controller stored in `executingMethods` keyed by the
   // inbound transport call id (see handleMethodCallExec). Firing it here stops
-  // the local execution immediately; the method's abort path publishes
-  // `invocation.cancelled`, which settles the caller's pending result. This avoids
-  // the cancel round-trip through the channel DO, which is fragile (the
-  // `pending_calls` row may already be consumed, so the DO emits no
-  // `invocation.cancelled` broadcast and the local abort never fires).
+  // the local execution immediately; the method's abort path submits a
+  // terminal method-result, which settles the caller's pending result.
   function abortExecutingMethod(callId: string): boolean {
     const controller = executingMethods.get(callId);
     if (!controller) return false;

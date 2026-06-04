@@ -150,12 +150,16 @@ export class ChannelClient {
         isError: boolean;
         terminalOutcome: string | null;
         terminalReasonCode: string | null;
+        contentType?: string | null;
+        attachmentsReplayable?: boolean;
     } | null> {
         return this.call("getSettledResult", callId) as Promise<{
             content: unknown;
             isError: boolean;
             terminalOutcome: string | null;
             terminalReasonCode: string | null;
+            contentType?: string | null;
+            attachmentsReplayable?: boolean;
         } | null>;
     }
     async timeoutCall(callId: string, reason?: string): Promise<void> {

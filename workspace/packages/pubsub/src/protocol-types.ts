@@ -144,7 +144,6 @@ export type IncomingEvent =
   | IncomingErrorMessage
   | IncomingSignalEvent
   | IncomingInvocationCallEvent
-  | IncomingInvocationResultEvent
   | IncomingPresenceEventWithType
   | IncomingAgenticEvent
   | IncomingAgentDebugEvent;
@@ -159,13 +158,6 @@ export interface IncomingAgenticEvent extends IncomingBase {
  */
 export interface IncomingInvocationCallEvent extends IncomingInvocationCall {
   type: "invocation-call";
-}
-
-/**
- * Invocation result/progress event derived from a typed agentic envelope.
- */
-export interface IncomingInvocationResultEvent extends IncomingInvocationResult {
-  type: "invocation-result";
 }
 
 /**
@@ -358,46 +350,6 @@ export interface IncomingInvocationCall {
 }
 
 /**
- * An incoming invocation result chunk.
- */
-export interface IncomingInvocationResult {
-  /** Transport stream that produced the event. */
-  delivery: "log" | "signal";
-  /** Log phase, present only for durable log events. */
-  phase?: "replay" | "live";
-  /** ID of the sender */
-  senderId: string;
-  /** Timestamp */
-  ts: number;
-  /** Server-assigned ID for checkpointing */
-  pubsubId?: number;
-  /** Sender metadata snapshot (if available) */
-  senderMetadata?: {
-    name?: string;
-    type?: string;
-    handle?: string;
-  };
-  /** Call ID for correlation */
-  callId: string;
-  /** Canonical invocation ID for transcript/provenance correlation */
-  invocationId?: string;
-  /** Transport-level dispatch ID for routing/abort correlation */
-  transportCallId?: string;
-  /** Result content */
-  content?: unknown;
-  /** MIME type for content (e.g., "application/json") */
-  contentType?: string;
-  /** Whether this is the final chunk */
-  complete: boolean;
-  /** Whether this chunk represents an error */
-  isError: boolean;
-  /** Progress percentage (0-100) */
-  progress?: number;
-  /** Binary attachments (optional) */
-  attachments?: Attachment[];
-}
-
-/**
  * Final value from a method call.
  */
 export interface MethodResultValue {
@@ -405,6 +357,8 @@ export interface MethodResultValue {
   content: unknown;
   /** Binary attachments */
   attachments?: Attachment[];
+  /** False when a recovered terminal result cannot replay ephemeral live attachments. */
+  attachmentsReplayable?: boolean;
   /** MIME type for content */
   contentType?: string;
 }

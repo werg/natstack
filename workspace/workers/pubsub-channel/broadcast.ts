@@ -9,9 +9,14 @@
 
 import type { SqlStorage } from "@workspace/runtime/worker";
 import type { RpcClient } from "@natstack/rpc";
-import type { ChannelEvent } from "@natstack/harness/types";
+import type { ChannelEvent } from "@workspace/harness/types";
 import type { BroadcastEnvelope } from "./types.js";
-import type { RpcChannelMessage } from "@workspace/pubsub";
+import type {
+  RpcChannelMessage,
+  RpcMethodCancelMessage,
+  RpcMethodProgressMessage,
+  RpcMethodResultMessage,
+} from "@workspace/pubsub";
 
 export interface BroadcastDeps {
   sql: SqlStorage;
@@ -132,6 +137,72 @@ export function broadcast(
       );
     }
   }
+}
+
+/**
+ * Broadcast a terminal method result over the live transport path without
+ * treating invocation log events as result transport.
+ */
+function broadcastMethodTransport(
+  deps: BroadcastDeps,
+  message: RpcMethodResultMessage | RpcMethodProgressMessage | RpcMethodCancelMessage,
+  senderId: string,
+  recipientId?: string,
+): void {
+  const participants = recipientId
+    ? deps.sql
+        .exec(`SELECT id, transport FROM participants WHERE id = ?`, recipientId)
+        .toArray()
+    : deps.sql.exec(`SELECT id, transport FROM participants`).toArray();
+
+  for (const p of participants) {
+    const pid = p["id"] as string;
+    const removeParticipantOnFatalDelivery = (err: { code?: string }) => {
+      const code = err?.code;
+      if (
+        code === "TARGET_NOT_REACHABLE" ||
+        code === "RECONNECT_GRACE_EXPIRED" ||
+        code === "DO_NOT_CREATED"
+      ) {
+        deps.sql.exec(`DELETE FROM participants WHERE id = ?`, pid);
+        cleanupDeliveryChain(pid);
+        return true;
+      }
+      return false;
+    };
+    const data = { channelId: deps.objectKey, message };
+
+    void queueEmit(deps, pid, data, removeParticipantOnFatalDelivery);
+
+    if (p["transport"] === "do") {
+      void queueDoEnvelope(deps, pid, message, removeParticipantOnFatalDelivery);
+    }
+  }
+}
+
+export function broadcastMethodResult(
+  deps: BroadcastDeps,
+  message: RpcMethodResultMessage,
+  senderId: string,
+): void {
+  broadcastMethodTransport(deps, message, senderId);
+}
+
+export function broadcastMethodProgress(
+  deps: BroadcastDeps,
+  message: RpcMethodProgressMessage,
+  senderId: string,
+): void {
+  broadcastMethodTransport(deps, message, senderId);
+}
+
+export function broadcastMethodCancel(
+  deps: BroadcastDeps,
+  message: RpcMethodCancelMessage,
+  senderId: string,
+  targetId?: string,
+): void {
+  broadcastMethodTransport(deps, message, senderId, targetId);
 }
 
 // ── ChannelEvent builders ────────────────────────────────────────────────────
