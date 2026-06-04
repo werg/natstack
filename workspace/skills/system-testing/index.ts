@@ -48,6 +48,30 @@ import { cdpGadDiagnosticTests as _cdpGad } from "./tests/cdp-gad-diagnostics.js
 import { harnessResilienceTests as _harnessResilience } from "./tests/harness-resilience.js";
 import type { TestCase } from "./types.js";
 
+export type TestStage = {
+  index: number;
+  name: string;
+  category: string;
+  tests: TestCase[];
+};
+
+export type TestStageChoice = {
+  value: string;
+  label: string;
+};
+
+export type TestStageRunState = {
+  selectedStageIndexes?: number[];
+  completedStages?: number[];
+};
+
+export type NextTestStage = {
+  stage: TestStage;
+  stagePosition: number;
+  selectedStages: TestStage[];
+  remainingStages: number;
+};
+
 export function allTests(): TestCase[] {
   return [
     ..._smoke, ..._fs, ..._git, ..._panels, ..._workers,
@@ -59,4 +83,64 @@ export function allTests(): TestCase[] {
 
 export function testCategories(tests: TestCase[] = allTests()): string[] {
   return [...new Set(tests.map((test) => test.category))];
+}
+
+export function testStages(tests: TestCase[] = allTests(), maxTestsPerStage?: number): TestStage[] {
+  const stages: TestStage[] = [];
+  for (const category of testCategories(tests)) {
+    const categoryTests = tests.filter((test) => test.category === category);
+    const stageSize = Number.isFinite(maxTestsPerStage)
+      ? Math.max(1, Math.floor(maxTestsPerStage!))
+      : Math.max(1, categoryTests.length);
+    const chunks = Math.ceil(categoryTests.length / stageSize);
+    for (let offset = 0; offset < categoryTests.length; offset += stageSize) {
+      const stageNumber = Math.floor(offset / stageSize) + 1;
+      stages.push({
+        index: stages.length,
+        name: chunks > 1 ? `${category} ${stageNumber}/${chunks}` : category,
+        category,
+        tests: categoryTests.slice(offset, offset + stageSize),
+      });
+    }
+  }
+  return stages;
+}
+
+export function testStageChoices(stages: TestStage[] = testStages()): TestStageChoice[] {
+  return stages.map((stage) => ({
+    value: String(stage.index),
+    label: `${stage.name} (${stage.tests.length} tests)`,
+  }));
+}
+
+export function selectedTestStages(
+  tests: TestCase[] = allTests(),
+  run?: TestStageRunState | null,
+): TestStage[] {
+  const stages = testStages(tests);
+  const allIndexes = stages.map((stage) => stage.index);
+  const selectedIndexes = new Set(
+    Array.isArray(run?.selectedStageIndexes) && run.selectedStageIndexes.length > 0
+      ? run.selectedStageIndexes.filter((value) => allIndexes.includes(value))
+      : allIndexes,
+  );
+  return stages.filter((stage) => selectedIndexes.has(stage.index));
+}
+
+export function nextSelectedStage(
+  tests: TestCase[] = allTests(),
+  run?: TestStageRunState | null,
+): NextTestStage | null {
+  const selectedStages = selectedTestStages(tests, run);
+  const completed = new Set(Array.isArray(run?.completedStages) ? run.completedStages : []);
+  const stage = selectedStages.find((item) => !completed.has(item.index));
+  if (!stage) return null;
+  const stagePosition = selectedStages.findIndex((item) => item.index === stage.index) + 1;
+  const remainingStages = selectedStages.filter((item) => !completed.has(item.index)).length;
+  return {
+    stage,
+    stagePosition,
+    selectedStages,
+    remainingStages,
+  };
 }

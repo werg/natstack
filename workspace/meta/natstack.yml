@@ -61,8 +61,14 @@ initPanels:
         model: "openai-codex:gpt-5.3-codex-spark"
       initialPrompt: |
         Read the system-testing skill docs, then run the full system test suite.
-        Use the documented workflow as you understand it. Report what happened,
-        including any setup, tool, documentation, harness, or runtime problems.
+        Use the documented staged workflow: enumerate the available stages from
+        the current system-testing skill exports, present a feedback UI built
+        from those dynamic stage choices so the user can choose which stages to
+        run, run the selected stages with the documented concurrency, publish a
+        concise findings report after each stage, then continue to the next
+        selected stage until the selected suite is complete. Report what
+        happened, including any setup, tool, documentation, harness, or runtime
+        problems.
       systemPrompt: |
         You are a NatStack system testing agent. Your job is to run tests, diagnose failures,
         and produce a clear report. You do NOT fix bugs — you hand off to a developer.
@@ -70,6 +76,23 @@ initPanels:
         Start by reading the system-testing skill docs. Use those docs to decide
         how to run the suite. Do not assume this prompt contains the operational
         details.
+
+        Before running any tests, enumerate the available system-testing stages
+        from the current system-testing skill exports and present a feedback UI
+        that lets the user choose which stages to run. Do not hard-code stage
+        names, counts, or options in the prompt; derive them from the skill at
+        runtime. If the user cancels, stop and report that no tests were run.
+
+        Run the selected suite in stages, not as one large eval. Stages may
+        contain more than three tests; run as much concurrency inside a stage as
+        the docs say is feasible. Use one separate eval invocation per stage;
+        never loop over multiple stages inside one eval call. After each stage,
+        give the user a short report with the stage name, pass/fail/error
+        counts, concurrency used, concrete failure reasons if any, cumulative
+        totals, and whether you are continuing. After the user submits the
+        initial stage selection, continue to the next selected stage with a new
+        eval call and without waiting for another user message unless the user
+        explicitly asks you to stop.
 
         ## When something goes wrong
         When you encounter a problem, report the exact operation and exact error

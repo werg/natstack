@@ -18,15 +18,19 @@ Only after the infrastructure is solid should you adjust skills or test prompts.
 
 ## Phase 1: Run Tests
 
-Run the full suite one category at a time, with the tests inside each category
-running in parallel. This keeps each eval invocation bounded while still
-exercising the runtime under realistic agent contention.
+Start by presenting the user with a feedback UI so they can choose which stages
+to run. A stage is a category-sized group by default, so stages can contain more
+than three tests. Keep one eval call per stage, run as much concurrency inside
+that stage as is feasible, publish a concise user-visible report after each
+stage, then continue to the next selected stage.
 
 ```
 eval({
   code: `
-    import { allTests, testCategories } from "@workspace-skills/system-testing";
+    import { allTests, testStageChoices, testStages } from "@workspace-skills/system-testing";
     const tests = allTests();
+    const stages = testStages(tests);
+    const stageOptions = testStageChoices(stages);
     const runId = crypto.randomUUID();
     await scopes.push();
     const results = {
@@ -40,50 +44,72 @@ eval({
     };
     scope.systemTestingRun = {
       runId,
-      categories: testCategories(tests),
-      completedCategories: [],
+      stages: stages.map((stage) => ({
+        index: stage.index,
+        name: stage.name,
+        category: stage.category,
+        tests: stage.tests.map((test) => test.name),
+      })),
+      completedStages: [],
       results,
     };
     scope.results = results;
-    return { runId, categories: scope.systemTestingRun.categories, testCount: tests.length };
+    return {
+      runId,
+      stages: scope.systemTestingRun.stages,
+      stageOptions,
+      defaultStages: stageOptions.map((option) => option.value),
+      testCount: tests.length,
+    };
   `,
 })
 ```
 
-Repeat this eval until `remainingCategories` is `0`:
+Before running any tests, show a feedback form populated from the initialization
+eval's `stageOptions` and `defaultStages`, then store the selected stage indexes
+on `scope.systemTestingRun.selectedStageIndexes`. Do not hard-code stage names
+or counts; they must come from the current system-testing skill exports. If the
+user cancels, stop and report that no tests were run.
 
-Run the short category-loop snippet directly in eval. File-loaded eval remains
+Then run the next selected stage with this eval. This eval must be invoked once
+per stage and must not contain a `for`, `while`, or recursive loop over stages.
+After it returns, publish/report the stage findings in the normal assistant
+turn. If `remainingStages` is greater than `0`, continue by issuing this same
+eval again as a new tool call.
+
+Run the short stage-loop snippet directly in eval. File-loaded eval remains
 preferred for substantive multi-line or multi-file code, but helper files should
-not be used merely to wrap this category loop. If eval cannot be called, report
+not be used merely to wrap this stage loop. If eval cannot be called, report
 the exact failed eval attempt and its exact error; helper-file edit/write/read
 errors are separate setup failures.
 
 ```
 eval({
   code: `
-    import { HeadlessRunner, TestRunner, allTests, summarizeFailures, testCategories } from "@workspace-skills/system-testing";
+    import { HeadlessRunner, TestRunner, allTests, nextSelectedStage, summarizeFailures } from "@workspace-skills/system-testing";
     import { contextId } from "@workspace/runtime";
     const tests = allTests();
     const run = scope.systemTestingRun;
     if (!run || typeof run !== "object") {
       throw new Error("No active systemTestingRun. Run the initialization eval first.");
     }
-    const categories = Array.isArray(run.categories) ? run.categories : testCategories(tests);
-    const completed = new Set(Array.isArray(run.completedCategories) ? run.completedCategories : []);
-    const category = categories.find((item) => !completed.has(item));
-    if (!category) return { done: true, runId: run.runId, results: run.results ?? scope.results };
+    const next = nextSelectedStage(tests, run);
+    if (!next) return { done: true, runId: run.runId, results: run.results ?? scope.results };
+    const { stage, stagePosition, selectedStages } = next;
+    const completed = new Set(Array.isArray(run.completedStages) ? run.completedStages : []);
 
     const runner = new HeadlessRunner(contextId);
     const tester = new TestRunner(runner, {
       onTestStart: (t) => console.log("  Running: " + t.name + "..."),
       onTestEnd: (t, r, ex) => console.log("  " + (r.passed ? "PASS" : "FAIL") + ": " + t.name + " (" + ex.duration + "ms)"),
       onTestResult: (_entry, aggregate) => {
-        console.log("  Category progress: " + category + " " + aggregate.total + "/" + tests.filter((t) => t.category === category).length);
+        console.log("  Stage progress: " + stage.name + " " + aggregate.total + "/" + stage.tests.length);
       },
       testTimeoutMs: 20 * 60 * 1000,
     });
 
-    const partial = await tester.runSuiteParallel(tests, { category, concurrency: 4 });
+    const concurrency = Math.max(1, stage.tests.length);
+    const partial = await tester.runSuite(stage.tests, { concurrency });
     const aggregate = run.results ?? scope.results ?? {
       total: 0,
       passed: 0,
@@ -100,15 +126,33 @@ eval({
     aggregate.duration += partial.duration;
     aggregate.results.push(...partial.results);
     aggregate.skipped = tests.length - aggregate.total;
-    completed.add(category);
-    run.completedCategories = [...completed];
+    completed.add(stage.index);
+    run.completedStages = [...completed];
     run.results = aggregate;
     scope.systemTestingRun = run;
     scope.results = aggregate;
+
+    const failedNames = partial.results
+      .filter((entry) => !entry.result.passed || entry.execution.error)
+      .map((entry) => {
+        const reason = entry.execution.error || entry.result.reason || "No reason captured";
+        return entry.test.name + ": " + reason.slice(0, 240);
+      });
+    const remainingStages = selectedStages.filter((item) => !completed.has(item.index)).length;
+    const reportLines = [
+      "**System Test Stage " + stagePosition + "/" + selectedStages.length + ": " + stage.name + "**",
+      "- Stage results: " + partial.passed + " passed, " + partial.failed + " failed, " + partial.errored + " errored",
+      "- Concurrency: " + concurrency + " test agents",
+      "- Cumulative results: " + aggregate.passed + " passed, " + aggregate.failed + " failed, " + aggregate.errored + " errored, " + aggregate.skipped + " not run/skipped",
+      failedNames.length ? "- Findings: " + failedNames.join("; ") : "- Findings: no failures in this stage",
+      "- Next: " + (remainingStages ? "continuing to the next selected stage" : "all selected stages complete"),
+    ];
+    await chat.publish("message", { content: reportLines.join("\\n") });
+
     return {
       runId: run.runId,
-      category,
-      remainingCategories: categories.length - completed.size,
+      stage: stage.name,
+      remainingStages,
       total: aggregate.total,
       passed: aggregate.passed,
       failed: aggregate.failed,
