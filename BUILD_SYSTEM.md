@@ -26,7 +26,7 @@ The build key is the full cache identity:
 build_key = hash(BUILD_CACHE_VERSION, unitName, ev, sourcemap)
 ```
 
-`BUILD_CACHE_VERSION` (currently `"10"`) is incremented when build logic changes (plugins, esbuild options, shims) to invalidate all cached builds. Unit name is included to prevent different units with identical EVs from sharing builds.
+`BUILD_CACHE_VERSION` (currently `"14"`) is incremented when build logic changes (plugins, esbuild options, shims) to invalidate all cached builds. Unit name is included to prevent different units with identical EVs from sharing builds.
 
 ### Runtime Provenance
 

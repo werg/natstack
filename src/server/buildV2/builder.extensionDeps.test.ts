@@ -90,14 +90,19 @@ describe("extension dependency diagnostics", () => {
 
   it("honors explicit bundle and external modes", () => {
     writePackage(nodeModules, "native-dep", { main: "index.js" }, { "build/addon.node": "" });
+    writePackage(
+      nodeModules,
+      "plain-esm",
+      { type: "module" },
+      { "index.js": "export default {};" }
+    );
+    const deps = { "native-dep": "1.0.0", "plain-esm": "1.0.0" };
 
+    expect(analyzeExtensionDependencies(deps, [nodeModules], "bundle").runtimeExternalDeps).toEqual(
+      {}
+    );
     expect(
-      analyzeExtensionDependencies({ "native-dep": "1.0.0" }, [nodeModules], "bundle")
-        .runtimeExternalDeps
-    ).toEqual({});
-    expect(
-      analyzeExtensionDependencies({ "native-dep": "1.0.0" }, [nodeModules], "external")
-        .runtimeExternalDeps
-    ).toEqual({ "native-dep": "1.0.0" });
+      analyzeExtensionDependencies(deps, [nodeModules], "external").runtimeExternalDeps
+    ).toEqual(deps);
   });
 });

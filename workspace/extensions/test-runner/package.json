@@ -8,6 +8,7 @@
     "entry": "index.ts",
     "sourcemap": true,
     "extension": {
+      "dependencyMode": "external",
       "activationEvents": [
         "*"
       ]
