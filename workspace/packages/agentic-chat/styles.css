@@ -162,6 +162,20 @@
   overflow-x: hidden;
 }
 
+/*
+ * The @-mention popover is rendered from inside the input card and opens
+ * upward over the transcript. Radix Card inherits the generic chat-surface
+ * overflow clipping above; if the x-axis is hidden, browsers compute the
+ * visible y-axis to auto, which clips the absolutely positioned popover at
+ * the card edge. Let the input card overflow and put it in a higher stacking
+ * layer so the popup can cover conversation history.
+ */
+.chat-input-card {
+  position: relative;
+  z-index: 30;
+  overflow: visible;
+}
+
 .message-list-card {
   border-radius: 0;
   background: transparent;

@@ -23,7 +23,7 @@ export function MentionAutocomplete({
         left: position ? Math.max(4, position.left) : 12,
         top: position ? Math.max(0, position.top - 6) : 0,
         transform: "translateY(-100%)",
-        zIndex: 20,
+        zIndex: 1000,
         width: 260,
         maxWidth: "calc(100vw - 32px)",
         border: "1px solid var(--gray-a6)",
