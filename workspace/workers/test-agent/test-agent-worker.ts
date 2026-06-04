@@ -1,5 +1,5 @@
 import { AgentWorkerBase } from "@workspace/agentic-do";
-import type { ChannelEvent, ParticipantDescriptor } from "@workspace/harness/types";
+import type { ChannelEvent, ParticipantDescriptor } from "@workspace/harness";
 import path from "node:path";
 import {
   AGENTIC_PROTOCOL_VERSION,

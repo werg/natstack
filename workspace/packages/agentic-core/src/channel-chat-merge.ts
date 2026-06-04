@@ -58,7 +58,9 @@ export function chatMessagesFromChannelView(state: ChannelViewState): ChatMessag
     Object.values(state.messages)
       .filter(
         (message) =>
-          message.turnId && message.role === "assistant" && hasVisibleMessageContent(message)
+          message.turnId &&
+          (message.role === "assistant" || message.actor.kind === "agent") &&
+          hasVisibleMessageContent(message)
       )
       .map((message) => message.turnId as string)
   );

@@ -19,7 +19,7 @@ import {
   type GmailThreadState,
 } from "@workspace/gmail/renderers/gmail-thread.reducer";
 import type { PiRunnerOptions } from "@workspace/harness";
-import type { ParticipantDescriptor } from "@workspace/harness/types";
+import type { ParticipantDescriptor } from "@workspace/harness";
 
 const DEFAULT_POLL_INTERVAL_MS = 5 * 60 * 1000;
 const METADATA_HEADERS = [

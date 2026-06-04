@@ -2,7 +2,7 @@
  * Types for the PubSub Channel DO.
  */
 
-import type { ChannelEvent, SendMessageOptions } from "@workspace/harness/types";
+import type { ChannelEvent, SendMessageOptions } from "@workspace/harness";
 import type { ChannelReplayEnvelope } from "@workspace/pubsub";
 
 /** Result from subscribing a DO participant. */

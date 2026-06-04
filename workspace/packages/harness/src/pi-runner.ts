@@ -2244,7 +2244,8 @@ export class PiRunner {
         eventId: this.semanticEntryEventId(messageEntryId, "message:failed", failedEvent),
         publishToChannel:
           role === "assistant" &&
-          this.shouldPublishMessageToChannel(role, content, trajectoryBlocks),
+          (this.shouldPublishMessageToChannel(role, content, trajectoryBlocks) ||
+            Boolean(failureReason.trim())),
       });
     }
 

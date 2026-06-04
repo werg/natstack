@@ -41,7 +41,7 @@ import type {
   ParticipantDescriptor,
   TurnInput,
   UnsubscribeResult,
-} from "@workspace/harness/types";
+} from "@workspace/harness";
 import { isClientParticipantType, type RpcChannelMessage } from "@workspace/pubsub";
 import {
   AGENT_INTERRUPTED_BEFORE_TOOL_DISPATCH,
@@ -604,14 +604,24 @@ function modelCredentialReconnectFailure(err: unknown): AgentFailureInfo | null 
     err && typeof err === "object" && typeof (err as { message?: unknown }).message === "string"
       ? (err as { message: string }).message
       : undefined;
-  const message = err instanceof Error ? err.message : (objectMessage ?? String(err));
+  const objectErrorMessage =
+    err &&
+    typeof err === "object" &&
+    typeof (err as { errorMessage?: unknown }).errorMessage === "string"
+      ? (err as { errorMessage: string }).errorMessage
+      : undefined;
+  const message =
+    err instanceof Error ? err.message : (objectMessage ?? objectErrorMessage ?? String(err));
   if (
     !code &&
     !MODEL_CREDENTIAL_RECONNECT_MESSAGE_PATTERNS.some((pattern) => pattern.test(message))
   ) {
     return null;
   }
-  return { message: message || code || "Unknown error", code };
+  return {
+    message: message || code || "Model credential reconnect required",
+    ...(code ? { code } : {}),
+  };
 }
 
 function shouldProxyUrlBoundModelFetch(url: URL, baseUrls: readonly string[]): boolean {
@@ -764,6 +774,16 @@ function isCredentialRequiredAssistantMessage(message: AgentMessage | undefined)
     candidate.stopReason === "error" &&
     !!modelCredentialReconnectFailure(candidate)
   );
+}
+
+function lastModelCredentialResumePrefix(messages: AgentMessage[]): AgentMessage[] {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const role = (messages[index] as { role?: unknown } | undefined)?.role;
+    if (role === "user" || role === "toolResult") {
+      return messages.slice(0, index + 1);
+    }
+  }
+  return [];
 }
 
 interface RunnerEntry {
@@ -959,15 +979,22 @@ function failedAgentEndFailure(event: RunnerEvent | undefined): AgentFailureInfo
     code?: unknown;
     errorCode?: unknown;
   } | null;
-  if (!last || last.role !== "assistant" || last.stopReason !== "error") return null;
+  if (!last || last.role !== "assistant") return null;
+  if (last.stopReason !== "error" && last.stopReason !== "aborted") return null;
   const message =
     typeof last.errorMessage === "string" && last.errorMessage.trim()
       ? last.errorMessage
-      : "Runner failed before model generation began.";
-  return {
+      : last.stopReason === "aborted"
+        ? "Runner aborted before model generation completed."
+        : "Runner failed before model generation began.";
+  const failure = {
     message,
     ...(errorCodeFromUnknown(last) ? { code: errorCodeFromUnknown(last) } : {}),
   };
+  if (last.stopReason === "aborted" && !modelCredentialReconnectFailure(failure)) {
+    return null;
+  }
+  return failure;
 }
 
 function runnerEventMetadata(event: RunnerEvent | undefined): {
@@ -6473,11 +6500,21 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       | { role?: string }
       | undefined;
     if (!resumeFrom || (resumeFrom.role !== "user" && resumeFrom.role !== "toolResult")) {
-      console.warn(
-        `[TrajectoryVesselBase] credential resume failed for channel=${channelId}: ` +
-          `resume cursor is ${String(resumeFrom?.role ?? "missing")}`
-      );
-      return false;
+      const rewound = lastModelCredentialResumePrefix(resumableMessages);
+      if (rewound.length === 0) {
+        console.warn(
+          `[TrajectoryVesselBase] credential resume failed for channel=${channelId}: ` +
+            `resume cursor is ${String(resumeFrom?.role ?? "missing")}`
+        );
+        return false;
+      }
+      this.recordDebugPhase(channelId, "model_credential.resume_cursor_rewound", {
+        providerId,
+        fromRole: resumeFrom?.role ?? "missing",
+        fromCount: resumableMessages.length,
+        toCount: rewound.length,
+      });
+      resumableMessages = rewound;
     }
 
     const messageEntries = (await entry.runner.session?.getEntries())?.filter(

@@ -11,7 +11,7 @@
 
 /// <reference path="../workerd.d.ts" />
 import { DurableObjectBase, type DurableObjectContext } from "@workspace/runtime/worker";
-import type { ChannelEvent } from "@workspace/harness/types";
+import type { ChannelEvent } from "@workspace/harness";
 import type {
   BootstrapSnapshot,
   ParticipantSnapshot,

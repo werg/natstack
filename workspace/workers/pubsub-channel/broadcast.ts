@@ -9,7 +9,7 @@
 
 import type { SqlStorage } from "@workspace/runtime/worker";
 import type { RpcClient } from "@natstack/rpc";
-import type { ChannelEvent } from "@workspace/harness/types";
+import type { ChannelEvent } from "@workspace/harness";
 import type { BroadcastEnvelope } from "./types.js";
 import type { RpcChannelMessage } from "@workspace/pubsub";
 

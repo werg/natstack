@@ -6,7 +6,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { AgentWorkerBase } from "./agent-worker-base.js";
 import type { RespondPolicy, CustomMessageReducer } from "./trajectory-vessel-base.js";
 import type { TurnDispatcherRunner } from "./turn-dispatcher.js";
-import type { ChannelEvent } from "@workspace/harness/types";
+import type { ChannelEvent } from "@workspace/harness";
 import type { PiRunner, PiRunnerOptions } from "@workspace/harness";
 import { AGENTIC_EVENT_PAYLOAD_KIND } from "@workspace/agentic-protocol";
 
@@ -1101,6 +1101,96 @@ describe("AgentWorkerBase method suspension ledger", () => {
       }
     );
     expect(publishWaiting).toHaveBeenCalledWith("chat-1", "turn-expired-message-only", {
+      reason: "model_credential_reconnect_required",
+      summary: "Waiting for model credential refresh",
+    });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("emits a reconnect credential card for aborted auth failures", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const emitCard = vi.fn();
+    const publishWaiting = vi.fn();
+    const worker = instance as unknown as {
+      subscriptions: { getParticipantId(channelId: string): string | null };
+      sendTurnLedgerDiagnostic(channelId: string, turnId: string, message: string): Promise<void>;
+      getModelProviderId(channelId: string): string;
+      getModelBaseUrl(channelId: string): string;
+      publishTurnWaitingEvent(
+        channelId: string,
+        turnId: string,
+        payload: { reason: string; summary: string }
+      ): void;
+      emitModelCredentialRequiredCard(
+        channelId: string,
+        providerId: string,
+        modelBaseUrl: string,
+        opts?: {
+          resumeAfterConnect?: boolean;
+          reason?: string;
+          diagnosticReason?: string;
+          failureCode?: string;
+          turnId?: string;
+        }
+      ): void;
+    };
+    worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
+    worker.sendTurnLedgerDiagnostic = send;
+    worker.getModelProviderId = vi.fn().mockReturnValue("openai-codex");
+    worker.getModelBaseUrl = vi.fn().mockReturnValue("https://chatgpt.com/backend-api/codex");
+    worker.emitModelCredentialRequiredCard = emitCard;
+    worker.publishTurnWaitingEvent = publishWaiting;
+    const runner = {
+      getCurrentTurnId: () => "turn-aborted-auth",
+      repairDurableOpenState: vi.fn().mockResolvedValue(undefined),
+      getStateSnapshot: vi.fn().mockResolvedValue({ messages: [] }),
+      session: null,
+    } as unknown as PiRunner;
+    (instance as unknown as { runners: Map<string, { runner: PiRunner }> }).runners.set("chat-1", {
+      runner,
+    });
+    insertTurnRun(sql, { turnId: "turn-aborted-auth", status: "running_model" });
+    const errorMessage = "client_not_authorized";
+
+    await instance.testHandleRunnerAgentEndEventForTurnLedger("chat-1", runner, {
+      type: "agent_end",
+      messages: [
+        {
+          role: "assistant",
+          content: [],
+          stopReason: "aborted",
+          code: "client_not_authorized",
+          errorMessage,
+        },
+      ],
+      natstack: {
+        turnId: "turn-aborted-auth",
+        operationId: "op-1",
+        lifecycleMatched: true,
+      },
+    } as never);
+
+    expect(turnStatus(sql, "turn-aborted-auth")).toMatchObject({
+      status: "waiting_external",
+      failure_code: "model_credential_reconnect_required",
+      failure_message: errorMessage,
+    });
+    expect(emitCard).toHaveBeenCalledWith(
+      "chat-1",
+      "openai-codex",
+      "https://chatgpt.com/backend-api/codex",
+      {
+        resumeAfterConnect: true,
+        reason: "Your model sign-in needs to be refreshed before this turn can continue.",
+        diagnosticReason: errorMessage,
+        failureCode: "client_not_authorized",
+        turnId: "turn-aborted-auth",
+      }
+    );
+    expect(publishWaiting).toHaveBeenCalledWith("chat-1", "turn-aborted-auth", {
       reason: "model_credential_reconnect_required",
       summary: "Waiting for model credential refresh",
     });
@@ -5262,7 +5352,8 @@ describe("AgentWorkerBase model credential resume", () => {
     await expect(worker.getApiKeyForChannel("chat-1")()).rejects.toThrow("client_not_authorized");
 
     expect(
-      sql.exec(`SELECT status FROM agent_turn_runs WHERE turn_id = ?`, "turn-refresh-failed")
+      sql
+        .exec(`SELECT status FROM agent_turn_runs WHERE turn_id = ?`, "turn-refresh-failed")
         .toArray()[0]
     ).toMatchObject({ status: "waiting_external" });
     expect(publishedEvents).toHaveLength(2);
@@ -5429,6 +5520,97 @@ describe("AgentWorkerBase model credential resume", () => {
 
     expect(moveTo).toHaveBeenCalledWith("entry-user");
     expect(submitContinue).toHaveBeenCalledTimes(1);
+    expect(submitContinue).toHaveBeenCalledWith({ turnId: "turn-credential" });
+  });
+
+  it("rewinds a credential resume cursor that was saved after an assistant error", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const userMessage = { role: "user", content: "hello", timestamp: 1 } as AgentMessage;
+    const assistantError = {
+      role: "assistant",
+      content: [],
+      timestamp: 2,
+      api: "openai",
+      provider: "test",
+      model: "model",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          total: 0,
+        },
+      },
+      stopReason: "error",
+      errorMessage: "model auth failed",
+    } as AgentMessage;
+    const moveTo = vi.fn().mockResolvedValue(undefined);
+    const submitContinue = vi.fn();
+    const worker = instance as unknown as {
+      subscriptions: {
+        getParticipantId(channelId: string): string | null;
+      };
+      runners: Map<string, unknown>;
+      createChannelClient: ReturnType<typeof vi.fn>;
+      getOrCreateDispatcher: ReturnType<typeof vi.fn>;
+      recordModelCredentialInterruption(
+        channelId: string,
+        providerId: string,
+        modelBaseUrl: string
+      ): Promise<void>;
+      resumeAfterModelCredentialConnected(
+        channelId: string,
+        opts?: { providerId?: string; modelBaseUrl?: string }
+      ): Promise<boolean>;
+    };
+
+    worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
+    worker.createChannelClient = vi.fn().mockReturnValue({
+      getParticipants: vi.fn().mockResolvedValue([]),
+    });
+    worker.runners.set("chat-1", {
+      runner: {
+        getCurrentTurnId: () => "turn-credential",
+        session: {
+          buildContext: vi.fn(async () => ({ messages: [userMessage, assistantError] })),
+          getEntries: vi.fn(async () => [
+            { id: "entry-user", type: "message" },
+            { id: "entry-assistant-error", type: "message" },
+          ]),
+          moveTo,
+        },
+      },
+    });
+    worker.getOrCreateDispatcher = vi.fn().mockReturnValue({ submitContinue });
+    sql.exec(
+      `INSERT INTO agent_turn_runs (
+         turn_id, channel_id, status, opened_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?)`,
+      "turn-credential",
+      "chat-1",
+      "waiting_external",
+      Date.now(),
+      Date.now()
+    );
+
+    await worker.recordModelCredentialInterruption("chat-1", "test", "https://model.example/v1");
+
+    await expect(
+      worker.resumeAfterModelCredentialConnected("chat-1", {
+        providerId: "test",
+        modelBaseUrl: "https://model.example/v1",
+      })
+    ).resolves.toBe(true);
+
+    expect(moveTo).toHaveBeenCalledWith("entry-user");
     expect(submitContinue).toHaveBeenCalledWith({ turnId: "turn-credential" });
   });
 });

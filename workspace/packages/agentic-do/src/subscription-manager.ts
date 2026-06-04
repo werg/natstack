@@ -7,7 +7,7 @@
 
 import type { SqlStorage } from "@workspace/runtime/worker";
 import type { AgentSubscriptionConfig } from "@workspace/agentic-core";
-import type { ParticipantDescriptor } from "@workspace/harness/types";
+import type { ParticipantDescriptor } from "@workspace/harness";
 import type { ChannelReplayEnvelope } from "@workspace/pubsub";
 import { PARTICIPANT_SESSION_METADATA_KEY } from "@workspace/pubsub/internal-constants";
 import type { DOIdentity } from "./identity.js";

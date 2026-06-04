@@ -9,7 +9,7 @@
 
 import type { DurableObjectContext } from "@workspace/runtime/worker";
 import type { ApprovalLevel, ThinkingLevel } from "@workspace/harness";
-import type { ParticipantDescriptor } from "@workspace/harness/types";
+import type { ParticipantDescriptor } from "@workspace/harness";
 
 import {
   TrajectoryVesselBase,

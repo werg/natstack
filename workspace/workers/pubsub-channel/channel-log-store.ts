@@ -1,4 +1,4 @@
-import type { ChannelEvent } from "@workspace/harness/types";
+import type { ChannelEvent } from "@workspace/harness";
 import { createGadServiceClient, type DurableObjectServiceClient } from "@workspace/runtime/workerd-client";
 import type { BootstrapSnapshot, ChannelReplayEnvelope, ServerLogEvent } from "@workspace/pubsub";
 import {

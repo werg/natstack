@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createTestDO } from "@workspace/runtime/worker/test-utils";
-import type { ParticipantDescriptor } from "@workspace/harness/types";
+import type { ParticipantDescriptor } from "@workspace/harness";
 
 import { AiChatWorker } from "./ai-chat-worker.js";
 import { GmailAgentWorker } from "../gmail-agent/gmail-agent-worker.js";

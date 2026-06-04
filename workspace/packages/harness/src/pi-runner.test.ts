@@ -1040,7 +1040,7 @@ describe("PiRunner", () => {
     runner.dispose();
   });
 
-  it("keeps empty assistant error provenance private", async () => {
+  it("publishes empty assistant error provenance when a failure reason is available", async () => {
     const runner = new PiRunner(createOptions()) as unknown as {
       queueMessageProvenance(message: unknown, messageEntryId: string): void;
       provenanceQueue: Array<{
@@ -1071,7 +1071,7 @@ describe("PiRunner", () => {
               recoverable: true,
             }),
           }),
-          publishToChannel: false,
+          publishToChannel: true,
         }),
       ])
     );
