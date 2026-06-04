@@ -49,10 +49,18 @@ function renderSurfaceTable(surface) {
   for (const [name, entry] of Object.entries(surface.exports)) {
     const members = entry.kind === "namespace" ? `\`${entry.members.join("`, `")}\`` : "";
     const description = entry.description ?? "";
-    lines.push(`| \`${name}\` | ${entry.kind} | ${members} | ${description} |`);
+    lines.push(
+      `| \`${name}\` | ${entry.kind} | ${escapeTableCell(members)} | ${escapeTableCell(
+        description
+      )} |`
+    );
   }
 
   return lines.join("\n");
+}
+
+function escapeTableCell(value) {
+  return value.replace(/\|/g, "\\|");
 }
 
 function replaceBlock(contents, marker, replacement) {

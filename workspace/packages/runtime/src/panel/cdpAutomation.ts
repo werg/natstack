@@ -1,7 +1,6 @@
 import type { RpcClient } from "@natstack/rpc";
 import type {
   CdpAutomation,
-  CdpClientKind,
   CdpEndpoint,
   PanelConsoleHistoryOptions,
   PanelConsoleHistoryResult,
@@ -13,25 +12,27 @@ type PlaywrightClientModule = {
   BrowserImpl: { connect(ws: string, opts: object): Promise<any> };
 };
 
-const CDP_CLIENT_MODULES: Record<CdpClientKind, string> = {
-  playwright: "@workspace/playwright-core",
-  lightweight: "@workspace/playwright-client",
-};
+const LIGHTWEIGHT_CDP_MODULE = "@workspace/playwright-client";
 
 function isPlaywrightClientModule(value: unknown): value is PlaywrightClientModule {
   return Boolean((value as PlaywrightClientModule | undefined)?.BrowserImpl?.connect);
 }
 
-async function loadPlaywrightClient(client: CdpClientKind): Promise<PlaywrightClientModule> {
-  const moduleId = CDP_CLIENT_MODULES[client];
+async function loadLightweightClient(): Promise<PlaywrightClientModule> {
+  const loadErrors: string[] = [];
+  const rememberLoadError = (source: string, error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    loadErrors.push(`${source}: ${message}`);
+  };
   const runtimeRequire = (globalThis as Record<string, unknown>)["__natstackRequire__"] as
     | ((id: string) => unknown)
     | undefined;
   if (runtimeRequire) {
     try {
-      const loaded = runtimeRequire(moduleId);
+      const loaded = runtimeRequire(LIGHTWEIGHT_CDP_MODULE);
       if (isPlaywrightClientModule(loaded)) return loaded;
-    } catch {
+    } catch (error) {
+      rememberLoadError("__natstackRequire__", error);
       // Panels can lazily import npm packages via __natstackRequireAsync__ below.
       // Workers only have the sync module map, so a missing map entry should
       // fall through to the clearest environment-specific loader/error.
@@ -42,9 +43,10 @@ async function loadPlaywrightClient(client: CdpClientKind): Promise<PlaywrightCl
     | undefined;
   if (runtimeLoadImport) {
     try {
-      const loaded = await runtimeLoadImport(moduleId, "latest");
+      const loaded = await runtimeLoadImport(LIGHTWEIGHT_CDP_MODULE, "latest");
       if (isPlaywrightClientModule(loaded)) return loaded;
-    } catch {
+    } catch (error) {
+      rememberLoadError("__natstackLoadImport__", error);
       // Fall through to the legacy async loader/dynamic import paths.
     }
   }
@@ -55,9 +57,10 @@ async function loadPlaywrightClient(client: CdpClientKind): Promise<PlaywrightCl
     | undefined;
   if (runtimeRequireAsync) {
     try {
-      const loaded = await runtimeRequireAsync(moduleId);
+      const loaded = await runtimeRequireAsync(LIGHTWEIGHT_CDP_MODULE);
       if (isPlaywrightClientModule(loaded)) return loaded;
-    } catch {
+    } catch (error) {
+      rememberLoadError("__natstackRequireAsync__", error);
       // Fall through to dynamic import for non-runtime test/node environments.
     }
   }
@@ -65,16 +68,16 @@ async function loadPlaywrightClient(client: CdpClientKind): Promise<PlaywrightCl
     id: string
   ) => Promise<PlaywrightClientModule>;
   try {
-    const loaded = await dynamicImport(moduleId);
+    const loaded = await dynamicImport(LIGHTWEIGHT_CDP_MODULE);
     if (isPlaywrightClientModule(loaded)) return loaded;
-  } catch {
+  } catch (error) {
+    rememberLoadError("dynamic import", error);
     // Throw the clearer message below.
   }
   throw new Error(
-    `Unable to load ${moduleId} for CDP automation. ` +
-      (client === "playwright"
-        ? `Call handle.cdp.playwrightPage() only from contexts that expose @workspace/playwright-core.`
-        : `Call handle.cdp.lightweightPage() only from contexts that expose @workspace/playwright-client.`)
+    `Unable to load ${LIGHTWEIGHT_CDP_MODULE} for CDP automation. ` +
+      `Call handle.cdp.lightweightPage() only from contexts that expose @workspace/playwright-client.` +
+      (loadErrors.length ? ` Last load error: ${loadErrors[loadErrors.length - 1]}` : "")
   );
 }
 
@@ -83,8 +86,8 @@ export function createCdpAutomation(rpc: Pick<RpcClient, "call">, id: string): C
     return rpc.call<CdpEndpoint>("main", "panelCdp.getCdpEndpoint", [id]);
   };
 
-  const connectPage = async (client: CdpClientKind): Promise<any> => {
-    const { BrowserImpl } = await loadPlaywrightClient(client);
+  const connectPage = async (): Promise<any> => {
+    const { BrowserImpl } = await loadLightweightClient();
     const endpoint = await getCdpEndpoint();
     const connectOptions: { isElectronWebview: boolean; transportOptions?: { authToken: string } } = {
       isElectronWebview: true,
@@ -97,8 +100,7 @@ export function createCdpAutomation(rpc: Pick<RpcClient, "call">, id: string): C
   };
 
   return {
-    playwrightPage: () => connectPage("playwright"),
-    lightweightPage: () => connectPage("lightweight"),
+    lightweightPage: connectPage,
     consoleHistory: (options?: PanelConsoleHistoryOptions) => {
       return rpc.call<PanelConsoleHistoryResult>("main", "panelCdp.consoleHistory", [id, options]);
     },
@@ -119,11 +121,11 @@ export function createCdpAutomation(rpc: Pick<RpcClient, "call">, id: string): C
       return rpc.call<void>("main", "panelCdp.stop", [id]);
     },
     click: async (selector) => {
-      const p = await connectPage("lightweight");
+      const p = await connectPage();
       await p.click(selector);
     },
     screenshot: async (options) => {
-      const p = await connectPage("lightweight");
+      const p = await connectPage();
       return p.screenshot(options);
     },
   };

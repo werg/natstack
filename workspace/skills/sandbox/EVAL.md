@@ -209,7 +209,7 @@ Scope is serialized per-property when persisted:
 
 - **Kept:** primitives, plain objects, arrays, Date, Map, Set, RegExp
 - **Dropped:** functions, symbols, class instances, WeakRef/WeakMap/WeakSet, circular refs, depth > 20
-- **Partial restoration:** if `scope.browser` is a panel handle, after reload `scope.browser.id` and `scope.browser.title` survive but function-valued fields such as `scope.browser.cdp.playwrightPage` are lost
+- **Partial restoration:** if `scope.browser` is a panel handle, after reload `scope.browser.id` and `scope.browser.title` survive but function-valued fields such as `scope.browser.cdp.lightweightPage` are lost
 
 On reload, a system message lists what was restored, partially restored, and lost.
 

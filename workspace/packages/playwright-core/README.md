@@ -1,251 +1,95 @@
-# 🎭 Playwright - Browser Client Library
+# @workspace/playwright-core
 
-> A minimal CDP client library for orchestrating Chrome browser sessions over WebSocket connections.
+Internal vendored Playwright CDP client used by NatStack browser automation.
 
-This is a stripped-down, browser-compatible version of Playwright that **only** includes the client-side CDP orchestration code. It requires an **existing Chrome/Chromium instance with CDP enabled** and connects to it via WebSocket.
+This package is not the recommended userland import. Panels, workers, eval
+snippets, and skills should import `@workspace/playwright-automation` and call
+`playwrightPage(handle)` instead:
 
-## ⚡ What's Different
+```ts
+import { openPanel } from "@workspace/runtime";
+import { playwrightPage } from "@workspace/playwright-automation";
 
-This is **NOT** the full Playwright framework. It's a minimal client library with:
+const handle = await openPanel("https://example.com", { focus: true });
+const page = await playwrightPage(handle);
 
-✅ **What's included:**
-- Browser instance management
-- Page/context/frame navigation
-- Element selection and interaction (Locators)
-- Network request interception
-- JavaScript execution context
-- Input simulation (keyboard, mouse, touch)
-- Direct CDP protocol access
-- Full TypeScript support
-
-❌ **What's NOT included:**
-- Browser launching or process management
-- Browser binary detection/installation
-- Test framework (@playwright/test)
-- CLI tools or commands
-- Trace recording to disk
-- HTML reports
-- Component testing
-- Android/Electron automation
-
-## 📦 Installation
-
-```bash
-npm install @workspace/playwright-core
+console.log(page.url(), await page.title());
+await page.locator("button").click();
 ```
 
-## 🚀 Quick Start
+Inline eval snippets must request the heavy package explicitly:
 
-```typescript
-import { connectOverCDP } from '@workspace/playwright-core';
+```ts
+eval({
+  imports: { "@workspace/playwright-automation": "latest" },
+  code: `
+    import { panelTree } from "@workspace/runtime";
+    import { playwrightPage } from "@workspace/playwright-automation";
 
-// Start Chrome with CDP enabled:
-// chromium --remote-debugging-port=9222
-
-// Connect to the running Chrome instance
-const browser = await connectOverCDP('ws://localhost:9222');
-
-// Use standard Playwright APIs
-const context = await browser.newContext();
-const page = await context.newPage();
-await page.goto('https://example.com');
-
-// Interact with the page
-await page.click('button');
-const title = await page.title();
-console.log(title);
-
-// Take a screenshot
-await page.screenshot({ path: 'screenshot.png' });
-
-await browser.close();
-```
-
-## 📝 Examples
-
-### Navigate and wait for elements
-
-```typescript
-const page = await context.newPage();
-await page.goto('https://example.com');
-await page.waitForSelector('h1');
-const heading = await page.textContent('h1');
-```
-
-### Element interaction with Locators
-
-```typescript
-// Find elements with locators
-const button = page.locator('button:has-text("Submit")');
-await button.click();
-
-// Fill form fields
-await page.locator('input[name="email"]').fill('test@example.com');
-```
-
-### Network interception
-
-```typescript
-// Route network requests
-await page.route('**/*.jpg', route => route.abort());
-await page.route('/api/**', async route => {
-  // Modify request
-  await route.continue();
+    const page = await playwrightPage(panelTree.self());
+    return { title: await page.title() };
+  `,
 });
 ```
 
-### JavaScript execution
+## Package Roles
 
-```typescript
-// Evaluate code in page context
-const result = await page.evaluate(() => {
-  return document.documentElement.innerHTML;
+| Package | Role |
+| --- | --- |
+| `@workspace/playwright-automation` | Public userland helper. Imports this package and exposes `connectPlaywright(endpoint)` plus `playwrightPage(handle)`. |
+| `@workspace/playwright-core` | Internal browser/workerd-compatible CDP client implementation. No browser launching, local process management, CLI, reports, or test runner. |
+| `@workspace/playwright-client` | Lightweight runtime-owned CDP wrapper used by `handle.cdp.lightweightPage()`. |
+
+## What This Package Supports
+
+`@workspace/playwright-core` connects to an existing CDP WebSocket endpoint and
+drives the already-running page. It is intentionally scoped to browser/workerd
+runtime use:
+
+- Connect to an existing CDP target over WebSocket.
+- Use the CDP-direct `BrowserImpl`, `BrowserContextImpl`, and `PageImpl`
+  implementation.
+- Use page helpers such as `url`, `title`, `goto`, `locator`,
+  `waitForSelector`, `waitForLoadState`, `evaluate`, and `screenshot`.
+
+It does not support Node-only Playwright features:
+
+- Launching or installing browsers.
+- Managing browser child processes.
+- Local filesystem artifacts such as traces, videos, reports, or downloads.
+- `@playwright/test`, CLI/codegen, Android automation, or Electron app
+  launching.
+
+The browser/workerd build stubs Node-only modules such as `fs`,
+`child_process`, `net`, `tls`, and `inspector` for Playwright internals. Those
+stubs are not a fallback implementation; if a Node-only code path is reached it
+throws a clear error.
+
+## Internal Direct Use
+
+Only package internals and tests should import this package directly:
+
+```ts
+import { BrowserImpl } from "@workspace/playwright-core";
+
+const browser = await BrowserImpl.connect(endpoint.wsEndpoint, {
+  isElectronWebview: true,
+  transportOptions: endpoint.token ? { authToken: endpoint.token } : undefined,
 });
-
-// Pass arguments to evaluated code
-const sum = await page.evaluate((a, b) => a + b, 1, 2);
 ```
 
-### Direct CDP access
+Userland code should prefer:
 
-```typescript
-// Get raw CDP session for advanced features
-const cdpSession = await page.context().cdpSession();
-
-// Send raw CDP commands
-await cdpSession.send('Network.clearBrowserCache');
+```ts
+import { playwrightPage } from "@workspace/playwright-automation";
 ```
 
-## 🏗️ Project Structure
-
-```
-packages/
-├── playwright-core/     (2.6 MB) - Main browser client library (@workspace/playwright-core)
-├── protocol/            (256 KB) - Protocol definitions (@workspace/playwright-protocol)
-├── injected/            (532 KB) - Browser-injected scripts (@workspace/playwright-injected)
-└── playwright-client/   (960 KB) - Thin wrapper (@workspace/playwright-client)
-```
-
-## 📚 API Surface
-
-### Browser Management
-- `Browser` - Browser instance
-- `BrowserContext` - Incognito profiles
-- `Page` - Web page
-- `Frame` - Page frame or iframe
-
-### Element Interaction
-- `Locator` - Element finder (recommended)
-- `ElementHandle` - Direct DOM element reference
-- `Keyboard`, `Mouse`, `Touchscreen` - Input simulation
-
-### Network & Requests
-- `Request`, `Response` - HTTP messages
-- `Route` - Request routing/interception
-- `WebSocket` - WebSocket connections
-
-### Advanced
-- `CDPSession` - Raw CDP protocol access
-- `JSHandle` - JavaScript value wrapper
-- `Dialog` - Alert/Confirm/Prompt handling
-- `Worker` - Web worker management
-
-## 🔌 Dependencies
-
-This library has **zero Node.js-specific dependencies**:
-
-- `ws` - WebSocket communication
-- `xml2js` - XML parsing
-- `yaml` - YAML parsing
-- `zod` - Schema validation
-- `chromium-bidi` - BiDi protocol support
-- `typescript` - Type checking
-
-## 📖 Documentation
-
-For detailed API documentation and examples, see [Playwright API Reference](https://playwright.dev/docs/api/class-playwright).
-
-Note: The full documentation at playwright.dev includes server-side features not available in this client-only library.
-
-## 🛠️ Available Commands
+## Build
 
 ```bash
-# Type check all packages
-npm run tsc
-
-# Generate protocol code (rarely needed)
-npm run generate-channels
-
-# Bundle injected scripts (rarely needed)
-npm run generate-injected
+pnpm --filter @workspace/playwright-core build
 ```
 
-## 🌐 Browser Setup
-
-### Chrome/Chromium
-
-```bash
-# macOS
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
-  --remote-debugging-port=9222 \
-  --user-data-dir=/tmp/chrome-data
-
-# Linux
-google-chrome \
-  --remote-debugging-port=9222 \
-  --user-data-dir=/tmp/chrome-data
-
-# Windows
-"C:\Program Files\Google\Chrome\Application\chrome.exe" ^
-  --remote-debugging-port=9222 ^
-  --user-data-dir=%temp%\chrome-data
-```
-
-### Puppeteer Server
-
-Or use Puppeteer server for automatic browser management:
-
-```bash
-npx @puppeteer/browsers launch chrome@stable --detach
-```
-
-Then connect to its CDP port.
-
-## 📋 Size & Performance
-
-- **Core library:** 2.6 MB
-- **All packages:** 4.3 MB
-- **Dependencies:** 8 npm packages (0 Node.js-specific)
-- **Browser compatible:** Yes
-- **Requires Node.js:** No (except for CLI tools)
-
-## 🔒 Security
-
-This library:
-- Connects only to **explicitly provided** CDP WebSocket URLs
-- Does **not** launch or control browser processes
-- Has **no file system access**
-- Cannot install browser binaries
-- Cannot run arbitrary commands
-
-## 📄 License
-
-Apache 2.0 - See LICENSE file
-
-## 🤝 Contributing
-
-This is a minimal client library extracted from [Playwright](https://github.com/microsoft/playwright) and maintained by [NatStack](https://github.com/natstack). For full Playwright development, see the original [Playwright repository](https://github.com/microsoft/playwright).
-
-## 📚 Resources
-
-- [Playwright Official Documentation](https://playwright.dev)
-- [CDP Specification](https://chromedevtools.github.io/devtools-protocol/)
-- [Original Playwright Repository](https://github.com/microsoft/playwright)
-
----
-
-**This library version is optimized for:**
-- Browser-based automation (e.g., running in a Node.js backend or Electron app)
-- Connecting to existing Chrome instances
-- Minimal dependencies and footprint
-- Full TypeScript support with complete types
+The normal NatStack panel, worker, and library builders also know how to bundle
+this package from source when it is pulled in through
+`@workspace/playwright-automation`.

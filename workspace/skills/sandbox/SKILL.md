@@ -50,14 +50,17 @@ These are pre-bundled with the panel and work as bare `import` statements:
 | ------------------------------ | --------------------------------------------------------------------------------------------------------------- |
 | `@workspace/runtime`           | rpc, fs, db, workers, ai, workspace, contextId, panel navigation, `requestApproval` for custom shared resources |
 | `@workspace/panel-browser`     | Browser data import/export (cookies, passwords, bookmarks, history)                                             |
-| `@workspace/playwright-core`   | Vendored Playwright-style CDP client; loaded by `handle.cdp.playwrightPage()`                                   |
-| `@workspace/playwright-client` | Explicit lightweight CDP client for constrained worker contexts                                                 |
+| `@workspace/playwright-client` | Explicit lightweight CDP client used by `handle.cdp.lightweightPage()`                                          |
 | `react`, `react/jsx-runtime`   | React hooks and component APIs                                                                                  |
 | `@radix-ui/themes`             | UI components (Button, Flex, Card, Table, etc.)                                                                 |
 | `@radix-ui/react-icons`        | Icon components                                                                                                 |
 | `isomorphic-git`               | Git operations (clone, fetch, checkout, etc.)                                                                   |
 
 ### On-demand imports (require `imports` parameter)
+
+Use `@workspace/playwright-automation` here for full Playwright panel
+automation, then call `playwrightPage(handle)`. This intentionally keeps full
+Playwright out of the default runtime bundle.
 
 These are built on first use. Pass them in the tool's `imports` parameter:
 

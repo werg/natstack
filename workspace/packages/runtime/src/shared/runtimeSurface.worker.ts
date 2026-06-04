@@ -1,6 +1,9 @@
 import type { RuntimeSurface } from "./runtimeSurface.js";
 import { namespaceEntry, valueEntry } from "./runtimeSurface.js";
 
+const panelTreeDescription =
+  "Return signatures: self(): PanelHandle; get(id): PanelHandle; list(): Promise<PanelHandle[]>; roots(): Promise<PanelHandle[]>; children(id): Promise<PanelHandle[]>; parent(id): PanelHandle | null; open(source, opts?): Promise<PanelHandle>. `self()` and `get()` are synchronous handle factories; catch errors on async handle methods like `refresh()` or `getInfo()`.";
+
 export const workerRuntimeSurface: RuntimeSurface = {
   target: "workerRuntime",
   description: "Properties available on the object returned by createWorkerRuntime(env).",
@@ -124,7 +127,10 @@ export const workerRuntimeSurface: RuntimeSurface = {
     listApprovals: valueEntry(),
     expose: valueEntry(),
     getParent: valueEntry(),
-    panelTree: namespaceEntry(["self", "get", "list", "roots", "children", "parent", "open"]),
+    panelTree: namespaceEntry(
+      ["self", "get", "list", "roots", "children", "parent", "open"],
+      panelTreeDescription
+    ),
     handleRpcPost: valueEntry(),
     destroy: valueEntry(),
   },

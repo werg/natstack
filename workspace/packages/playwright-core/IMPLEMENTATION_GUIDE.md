@@ -203,16 +203,16 @@ Once Page/Frame implementations are working:
 
 ```typescript
 // test/integration.test.ts
-import { Browser } from '@workspace/playwright-core';
+import { connectPlaywright } from '@workspace/playwright-automation';
 
 describe('Browser CDP Client', () => {
   it('should connect and navigate', async () => {
-    const browser = await Browser.connect(cdpEndpoint);
-    const page = await browser.newPage();
+    const browser = await connectPlaywright(cdpEndpoint);
+    const page = browser.contexts()[0]?.pages()[0];
+    if (!page) throw new Error('No page found in CDP target');
 
     await page.goto('https://example.com');
-    const button = await page.locator('button').first();
-    await button.click();
+    await page.locator('button').click();
 
     await browser.close();
   });

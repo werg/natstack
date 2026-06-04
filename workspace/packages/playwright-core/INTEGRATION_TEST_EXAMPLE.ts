@@ -1,66 +1,70 @@
 /**
- * Comprehensive Integration Test Examples for BrowserImpl
+ * Internal BrowserImpl smoke examples.
  *
- * This file demonstrates all features of the new CDP-direct implementation
- * for use in Electron panel applications like natstack.
+ * Userland code should import @workspace/playwright-automation and call
+ * playwrightPage(handle). This file stays inside @workspace/playwright-core to
+ * document the lower-level implementation path used by package internals.
  */
 
 import { BrowserImpl, validateBrowserEnvironment } from '@workspace/playwright-core';
 
-type CdpEndpoint = { wsEndpoint: string; token: string };
+type CdpEndpoint = { wsEndpoint: string; token?: string };
+type Browser = Awaited<ReturnType<typeof BrowserImpl.connect>>;
+type Page = ReturnType<Browser['contexts']>[number] extends infer Context
+  ? Context extends { pages(): Array<infer P> }
+    ? P
+    : never
+  : never;
 
-function connectBrowser(cdpEndpoint: CdpEndpoint) {
+async function connectBrowser(cdpEndpoint: CdpEndpoint): Promise<Browser> {
   return BrowserImpl.connect(cdpEndpoint.wsEndpoint, {
-    transportOptions: { authToken: cdpEndpoint.token },
+    isElectronWebview: true,
+    transportOptions: cdpEndpoint.token ? { authToken: cdpEndpoint.token } : undefined,
   });
 }
 
+function existingPage(browser: Browser): Page {
+  const page = browser.contexts()[0]?.pages()[0];
+  if (!page) throw new Error('No page found in CDP target');
+  return page;
+}
+
 /**
- * Test 1: Basic Connection and Navigation
+ * Test 1: connect to the existing Electron webview page and navigate it.
  */
 export async function testBasicNavigation(cdpEndpoint: CdpEndpoint) {
   console.log('Test 1: Basic Connection and Navigation');
 
   const browser = await connectBrowser(cdpEndpoint);
-  console.log(`✓ Connected to browser: ${browser.version()}`);
+  console.log(`Connected to browser: ${browser.version()}`);
 
-  const page = await browser.newPage();
-  console.log('✓ Created new page');
-
+  const page = existingPage(browser);
   await page.goto('https://example.com', { waitUntil: 'load' });
-  console.log(`✓ Navigated to: ${page.url()}`);
+  console.log(`Navigated to: ${page.url()}`);
 
   const title = await page.title();
-  console.log(`✓ Page title: "${title}"`);
+  console.log(`Page title: "${title}"`);
 
   await browser.close();
-  console.log('✓ Browser closed');
 }
 
 /**
- * Test 2: JavaScript Evaluation
+ * Test 2: evaluate JavaScript in the existing page.
  */
 export async function testJavaScriptEvaluation(cdpEndpoint: CdpEndpoint) {
   console.log('\nTest 2: JavaScript Evaluation');
 
   const browser = await connectBrowser(cdpEndpoint);
-  const page = await browser.newPage();
+  const page = existingPage(browser);
 
   await page.goto('https://example.com');
 
-  // Simple expression evaluation
-  const result = await page.evaluate(() => {
-    return document.title;
-  });
-  console.log(`✓ Evaluated expression: "${result}"`);
+  const result = await page.evaluate(() => document.title);
+  console.log(`Evaluated expression: "${result}"`);
 
-  // Evaluation with arguments
-  const sum = await page.evaluate((a, b) => {
-    return a + b;
-  }, 5, 10);
-  console.log(`✓ Evaluated with args: 5 + 10 = ${sum}`);
+  const sum = await page.evaluate((a, b) => a + b, 5, 10);
+  console.log(`Evaluated with args: 5 + 10 = ${sum}`);
 
-  // Complex data extraction
   const pageData = await page.evaluate(() => ({
     url: window.location.href,
     title: document.title,
@@ -68,36 +72,28 @@ export async function testJavaScriptEvaluation(cdpEndpoint: CdpEndpoint) {
     hasH1: !!document.querySelector('h1'),
     headingText: document.querySelector('h1')?.textContent || null,
   }));
-  console.log('✓ Extracted page data:', JSON.stringify(pageData, null, 2));
+  console.log('Extracted page data:', JSON.stringify(pageData, null, 2));
 
   await browser.close();
 }
 
 /**
- * Test 3: Element Selection and Interaction
+ * Test 3: selectors and form interaction on the existing page.
  */
 export async function testElementInteraction(cdpEndpoint: CdpEndpoint) {
   console.log('\nTest 3: Element Selection and Interaction');
 
   const browser = await connectBrowser(cdpEndpoint);
-  const page = await browser.newPage();
+  const page = existingPage(browser);
 
-  // Navigate to a page with forms
   await page.goto('https://httpbin.org/forms/post');
 
-  // Test querySelector
   const hasForm = await page.querySelector('form');
-  console.log(`✓ Found form element: ${hasForm}`);
+  console.log(`Found form element: ${hasForm}`);
 
-  // Test fill (input field)
   await page.fill('input[name="custname"]', 'Test User');
-  console.log('✓ Filled customer name input');
-
-  // Test type
   await page.type('input[name="custtel"]', '123-456-7890');
-  console.log('✓ Typed phone number');
 
-  // Verify the values were set
   const values = await page.evaluate(() => {
     const nameInput = document.querySelector('input[name="custname"]') as HTMLInputElement;
     const phoneInput = document.querySelector('input[name="custtel"]') as HTMLInputElement;
@@ -106,341 +102,180 @@ export async function testElementInteraction(cdpEndpoint: CdpEndpoint) {
       phone: phoneInput?.value,
     };
   });
-  console.log('✓ Verified input values:', values);
+  console.log('Verified input values:', values);
 
   await browser.close();
 }
 
 /**
- * Test 4: Wait for Selector
+ * Test 4: wait for selectors and expected selector failures.
  */
 export async function testWaitForSelector(cdpEndpoint: CdpEndpoint) {
   console.log('\nTest 4: Wait for Selector');
 
   const browser = await connectBrowser(cdpEndpoint);
-  const page = await browser.newPage();
+  const page = existingPage(browser);
 
   await page.goto('https://example.com');
 
-  // Wait for element to be visible
   const found = await page.waitForSelector('h1', {
     state: 'visible',
     timeout: 5000,
   });
-  console.log(`✓ Waited for h1 element: ${found}`);
+  console.log(`Waited for h1 element: ${found}`);
 
-  // Wait for element that doesn't exist (should timeout)
   try {
     await page.waitForSelector('.nonexistent-class', {
       state: 'visible',
       timeout: 1000,
     });
-    console.log('✗ Should have timed out');
-  } catch (error) {
-    console.log('✓ Correctly timed out for nonexistent element');
+    console.log('Should have timed out');
+  } catch {
+    console.log('Correctly timed out for nonexistent element');
   }
 
   await browser.close();
 }
 
 /**
- * Test 5: Screenshot Capture
+ * Test 5: screenshot capture from the existing page.
  */
 export async function testScreenshot(cdpEndpoint: CdpEndpoint) {
   console.log('\nTest 5: Screenshot Capture');
 
   const browser = await connectBrowser(cdpEndpoint);
-  const page = await browser.newPage();
+  const page = existingPage(browser);
 
   await page.goto('https://example.com');
 
-  // PNG screenshot
   const pngData = await page.screenshot({ format: 'png' });
-  console.log(`✓ Captured PNG screenshot: ${pngData.length} bytes`);
+  console.log(`Captured PNG screenshot: ${pngData.length} bytes`);
 
-  // JPEG screenshot with quality
   const jpegData = await page.screenshot({
     format: 'jpeg',
     quality: 80,
   });
-  console.log(`✓ Captured JPEG screenshot: ${jpegData.length} bytes`);
+  console.log(`Captured JPEG screenshot: ${jpegData.length} bytes`);
 
   await browser.close();
 }
 
 /**
- * Test 6: Multiple Pages
+ * Test 6: content and frame access on the existing page.
  */
-export async function testMultiplePages(cdpEndpoint: CdpEndpoint) {
-  console.log('\nTest 6: Multiple Pages');
+export async function testPageContentAndFrame(cdpEndpoint: CdpEndpoint) {
+  console.log('\nTest 6: Page Content and Frame Access');
 
   const browser = await connectBrowser(cdpEndpoint);
-
-  // Create multiple pages
-  const page1 = await browser.newPage();
-  const page2 = await browser.newPage();
-  const page3 = await browser.newPage();
-
-  console.log('✓ Created 3 pages');
-
-  // Navigate each to different URLs
-  await Promise.all([
-    page1.goto('https://example.com'),
-    page2.goto('https://httpbin.org/html'),
-    page3.goto('https://www.iana.org'),
-  ]);
-  console.log('✓ Navigated all pages in parallel');
-
-  // Get titles
-  const titles = await Promise.all([
-    page1.title(),
-    page2.title(),
-    page3.title(),
-  ]);
-  console.log('✓ Page titles:', titles);
-
-  // Verify URLs
-  console.log('✓ Page 1 URL:', page1.url());
-  console.log('✓ Page 2 URL:', page2.url());
-  console.log('✓ Page 3 URL:', page3.url());
-
-  await browser.close();
-}
-
-/**
- * Test 7: Browser Context
- */
-export async function testBrowserContext(cdpEndpoint: CdpEndpoint) {
-  console.log('\nTest 7: Browser Context');
-
-  const browser = await connectBrowser(cdpEndpoint);
-
-  // Default context
-  const defaultContext = browser.defaultContext();
-  console.log('✓ Got default context');
-
-  const page1 = await defaultContext.newPage();
-  await page1.goto('https://example.com');
-  console.log('✓ Created page in default context');
-
-  // New isolated context
-  const context2 = await browser.newContext();
-  console.log('✓ Created new isolated context');
-
-  const page2 = await context2.newPage();
-  await page2.goto('https://httpbin.org/html');
-  console.log('✓ Created page in isolated context');
-
-  // Verify contexts
-  const allContexts = browser.contexts();
-  console.log(`✓ Total contexts: ${allContexts.length}`);
-
-  // Close isolated context
-  await context2.close();
-  console.log('✓ Closed isolated context');
-
-  await browser.close();
-}
-
-/**
- * Test 8: Page Content Retrieval
- */
-export async function testPageContent(cdpEndpoint: CdpEndpoint) {
-  console.log('\nTest 8: Page Content Retrieval');
-
-  const browser = await connectBrowser(cdpEndpoint);
-  const page = await browser.newPage();
+  const page = existingPage(browser);
 
   await page.goto('https://example.com');
 
-  // Get full HTML content
   const html = await page.content();
-  console.log(`✓ Retrieved HTML content: ${html.length} characters`);
-  console.log(`✓ Content starts with: ${html.substring(0, 50)}...`);
+  console.log(`Retrieved HTML content: ${html.length} characters`);
 
-  // Get URL
-  const url = page.url();
-  console.log(`✓ Current URL: ${url}`);
-
-  // Get title
-  const title = await page.title();
-  console.log(`✓ Page title: "${title}"`);
-
-  await browser.close();
-}
-
-/**
- * Test 9: Frame Access
- */
-export async function testFrameAccess(cdpEndpoint: CdpEndpoint) {
-  console.log('\nTest 9: Frame Access');
-
-  const browser = await connectBrowser(cdpEndpoint);
-  const page = await browser.newPage();
-
-  await page.goto('https://example.com');
-
-  // Access main frame
   const frame = page.mainFrame();
-  console.log('✓ Got main frame');
-
-  // Evaluate in frame
-  const frameResult = await frame.evaluate(() => {
-    return {
-      url: window.location.href,
-      title: document.title,
-    };
-  });
-  console.log('✓ Evaluated in frame:', frameResult);
-
-  // Frame URL
-  const frameUrl = frame.url();
-  console.log(`✓ Frame URL: ${frameUrl}`);
+  const frameResult = await frame.evaluate(() => ({
+    url: window.location.href,
+    title: document.title,
+  }));
+  console.log('Evaluated in frame:', frameResult);
 
   await browser.close();
 }
 
 /**
- * Test 10: Error Handling
+ * Test 7: error handling on the existing page.
  */
 export async function testErrorHandling(cdpEndpoint: CdpEndpoint) {
-  console.log('\nTest 10: Error Handling');
+  console.log('\nTest 7: Error Handling');
 
   const browser = await connectBrowser(cdpEndpoint);
-  const page = await browser.newPage();
+  const page = existingPage(browser);
 
-  // Test navigation timeout
   try {
     await page.goto('https://httpbin.org/delay/10', { timeout: 2000 });
-    console.log('✗ Should have timed out');
-  } catch (error) {
-    console.log('✓ Navigation timeout handled correctly');
+    console.log('Should have timed out');
+  } catch {
+    console.log('Navigation timeout handled correctly');
   }
 
-  // Test invalid selector
   try {
     await page.waitForSelector('[[[invalid', { timeout: 1000 });
-    console.log('✗ Should have failed');
-  } catch (error) {
-    console.log('✓ Invalid selector handled correctly');
+    console.log('Should have failed');
+  } catch {
+    console.log('Invalid selector handled correctly');
   }
 
-  // Test evaluation error
   try {
     await page.evaluate(() => {
       throw new Error('Test error');
     });
-    console.log('✗ Should have thrown');
-  } catch (error) {
-    console.log('✓ Evaluation error handled correctly');
+    console.log('Should have thrown');
+  } catch {
+    console.log('Evaluation error handled correctly');
   }
 
   await browser.close();
 }
 
 /**
- * Test 11: Existing Page Connection
- */
-export async function testExistingPageConnection(cdpEndpoint: CdpEndpoint) {
-  console.log('\nTest 11: Existing Page Connection');
-
-  const browser = await connectBrowser(cdpEndpoint);
-  console.log('✓ Connected to browser');
-
-  // Get existing pages (from browser that was already open)
-  const context = browser.defaultContext();
-  const pages = context.pages();
-  console.log(`✓ Found ${pages.length} existing page(s)`);
-
-  if (pages.length > 0) {
-    const page = pages[0];
-    console.log(`✓ Using existing page: ${page.url()}`);
-
-    // Navigate existing page
-    await page.goto('https://example.com');
-    console.log('✓ Navigated existing page');
-
-    const title = await page.title();
-    console.log(`✓ Page title: "${title}"`);
-  }
-
-  await browser.close();
-}
-
-/**
- * Test 12: Comprehensive Real-World Workflow
+ * Test 8: comprehensive real-world workflow on the existing page.
  */
 export async function testRealWorldWorkflow(cdpEndpoint: CdpEndpoint) {
-  console.log('\nTest 12: Comprehensive Real-World Workflow');
+  console.log('\nTest 8: Comprehensive Real-World Workflow');
 
-  // Validate environment first
   validateBrowserEnvironment();
-  console.log('✓ Environment validated');
+  console.log('Environment validated');
 
   const browser = await connectBrowser(cdpEndpoint);
-  console.log(`✓ Connected: ${browser.version()}`);
+  console.log(`Connected: ${browser.version()}`);
 
-  const page = await browser.newPage();
+  const page = existingPage(browser);
   page.setDefaultTimeout(10000);
-  console.log('✓ Created page with 10s timeout');
 
-  // Navigate to test site
   await page.goto('https://httpbin.org/html');
-  console.log('✓ Navigated to test page');
+  console.log('Navigated to test page');
 
-  // Extract structured data
   const pageAnalysis = await page.evaluate(() => {
-    const headings = Array.from(document.querySelectorAll('h1, h2, h3'))
-      .map(el => ({
-        level: el.tagName.toLowerCase(),
-        text: el.textContent?.trim() || '',
-      }));
+    const headings = Array.from(document.querySelectorAll('h1, h2, h3')).map(el => ({
+      level: el.tagName.toLowerCase(),
+      text: el.textContent?.trim() || '',
+    }));
 
     const paragraphs = Array.from(document.querySelectorAll('p'))
       .map(el => el.textContent?.trim() || '')
       .filter(Boolean);
-
-    const links = Array.from(document.querySelectorAll('a'))
-      .map(el => ({
-        href: (el as HTMLAnchorElement).href,
-        text: el.textContent?.trim() || '',
-      }));
 
     return {
       url: window.location.href,
       title: document.title,
       headings,
       paragraphCount: paragraphs.length,
-      linkCount: links.length,
-      links: links.slice(0, 3), // First 3 links
     };
   });
 
-  console.log('✓ Page analysis complete:');
+  console.log('Page analysis complete:');
   console.log(JSON.stringify(pageAnalysis, null, 2));
 
-  // Take screenshot
   const screenshot = await page.screenshot({ format: 'png' });
-  console.log(`✓ Screenshot captured: ${screenshot.length} bytes`);
+  console.log(`Screenshot captured: ${screenshot.length} bytes`);
 
-  // Navigate to another page
   await page.goto('https://example.com');
-  console.log(`✓ Navigated to: ${page.url()}`);
+  console.log(`Navigated to: ${page.url()}`);
 
-  // Get final content
   const content = await page.content();
-  console.log(`✓ Retrieved content: ${content.length} characters`);
+  console.log(`Retrieved content: ${content.length} characters`);
 
   await browser.close();
-  console.log('✓ Workflow complete');
 }
 
 /**
- * Run all tests sequentially
+ * Run all tests sequentially.
  */
 export async function runAllTests(cdpEndpoint: CdpEndpoint) {
   console.log('='.repeat(60));
-  console.log('Running Comprehensive Integration Tests');
+  console.log('Running Internal BrowserImpl Smoke Tests');
   console.log('='.repeat(60));
 
   const tests = [
@@ -449,12 +284,8 @@ export async function runAllTests(cdpEndpoint: CdpEndpoint) {
     testElementInteraction,
     testWaitForSelector,
     testScreenshot,
-    testMultiplePages,
-    testBrowserContext,
-    testPageContent,
-    testFrameAccess,
+    testPageContentAndFrame,
     testErrorHandling,
-    testExistingPageConnection,
     testRealWorldWorkflow,
   ];
 
@@ -465,10 +296,10 @@ export async function runAllTests(cdpEndpoint: CdpEndpoint) {
     try {
       await test(cdpEndpoint);
       passed++;
-      console.log(`\n✅ ${test.name} PASSED\n`);
+      console.log(`\n${test.name} PASSED\n`);
     } catch (error) {
       failed++;
-      console.error(`\n❌ ${test.name} FAILED:`);
+      console.error(`\n${test.name} FAILED:`);
       console.error(error);
       console.log();
     }
@@ -480,16 +311,13 @@ export async function runAllTests(cdpEndpoint: CdpEndpoint) {
 }
 
 /**
- * Example usage in a NatStack panel:
+ * Example usage from a panel:
  *
- * ```typescript
- * import { runAllTests } from './INTEGRATION_TEST_EXAMPLE';
+ * ```ts
  * import { panelTree } from '@workspace/runtime';
+ * import { runAllTests } from './INTEGRATION_TEST_EXAMPLE';
  *
- * // In your panel component:
- * const runTests = async () => {
- *   const endpoint = await panelTree.self().cdp.getCdpEndpoint();
- *   await runAllTests(endpoint);
- * };
+ * const endpoint = await panelTree.self().cdp.getCdpEndpoint();
+ * await runAllTests(endpoint);
  * ```
  */

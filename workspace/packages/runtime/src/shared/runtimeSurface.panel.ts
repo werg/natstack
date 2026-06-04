@@ -1,6 +1,9 @@
 import type { RuntimeSurface } from "./runtimeSurface.js";
 import { namespaceEntry, valueEntry } from "./runtimeSurface.js";
 
+const panelTreeDescription =
+  "Return signatures: self(): PanelHandle; get(id): PanelHandle; list(): Promise<PanelHandle[]>; roots(): Promise<PanelHandle[]>; children(id): Promise<PanelHandle[]>; parent(id): PanelHandle | null; open(source, opts?): Promise<PanelHandle>. `self()` and `get()` are synchronous handle factories; catch errors on async handle methods like `refresh()` or `getInfo()`.";
+
 export const panelRuntimeSurface: RuntimeSurface = {
   target: "panel",
   description: "Top-level value exports available from @workspace/runtime in panel eval contexts.",
@@ -74,7 +77,10 @@ export const panelRuntimeSurface: RuntimeSurface = {
     openPanel: valueEntry(),
     listPanels: valueEntry(),
     getPanelHandle: valueEntry(),
-    panelTree: namespaceEntry(["self", "get", "list", "roots", "children", "parent", "open"]),
+    panelTree: namespaceEntry(
+      ["self", "get", "list", "roots", "children", "parent", "open"],
+      panelTreeDescription
+    ),
     agentApi: valueEntry(),
     Journal: valueEntry(),
     withJournal: valueEntry(),

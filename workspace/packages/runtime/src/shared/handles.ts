@@ -209,7 +209,6 @@ export function createPanelHandle<
 export function unavailableCdp(id: string): CdpAutomation {
   const unavailable = () => Promise.reject(new Error(`CDP is not available for panel ${id}`));
   return {
-    playwrightPage: unavailable,
     lightweightPage: unavailable,
     consoleHistory: unavailable,
     getCdpEndpoint: unavailable,

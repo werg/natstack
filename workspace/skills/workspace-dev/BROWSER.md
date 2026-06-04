@@ -7,9 +7,10 @@ per requester entity and parent/root target:
 
 ```ts
 import { openPanel, openExternal } from "@workspace/runtime";
+import { playwrightPage } from "@workspace/playwright-automation";
 
 const handle = await openPanel("https://example.com", { focus: true });
-const page = await handle.cdp.playwrightPage();
+const page = await playwrightPage(handle);
 
 await page.fill("input[name=query]", "NatStack");
 await page.click(".search-button");
@@ -42,29 +43,28 @@ try {
 }
 ```
 
-Choose one named CDP client explicitly. This keeps ordinary panel startup fast while
+Choose one CDP client explicitly. This keeps ordinary panel startup fast while
 making the automation surface unambiguous:
 
-- `await handle.cdp.playwrightPage()` loads vendored
-  `@workspace/playwright-core` and gives the fuller Playwright-style API. Use
-  this for eval diagnostics, UI tests, login flows, locators, waits, and
-  screenshots.
 - `await handle.cdp.lightweightPage()` loads the smaller
   `@workspace/playwright-client` wrapper. Use it only when you intentionally
   want the constrained surface.
+- `await playwrightPage(handle)` from `@workspace/playwright-automation` loads
+  vendored full Playwright through `@workspace/playwright-core`. Use this for UI
+  tests, login flows, locators, waits, and screenshots.
 
-There is no silent fallback between clients. Some constrained eval/worker/DO
-contexts may not expose `@workspace/playwright-core`; in those contexts
-`playwrightPage()` fails with an explicit load error. Deliberately switch to
-`lightweightPage()` for basic diagnostics, or fix the runtime/build exposure if
-the fuller Playwright client is required. There is no generic
-`handle.cdp.page()` alias.
+There is no runtime compatibility shim and no silent fallback between clients.
+Inline eval snippets that use the full client should pass
+`imports: { "@workspace/playwright-automation": "latest" }`; source-file code
+should declare the package dependency. Deliberately switch to
+`handle.cdp.lightweightPage()` only when the smaller API is sufficient. There is
+no generic `handle.cdp.page()` alias.
 
 API scope:
 
 | Client              | Entry point                    | Scope                                                                                                                                                                                              | Use when                                                                                                 |
 | ------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| Vendored Playwright | `handle.cdp.playwrightPage()`  | Fuller Playwright-style page/locator surface: `url`, `title`, `goto`, `locator`, locator `click/fill/innerText/textContent/count`, `waitForSelector`, `waitForLoadState`, `evaluate`, `screenshot` | Eval diagnostics, UI tests, browser workflows, login flows, anything where robust selectors/waits matter |
+| Full Playwright     | `playwrightPage(handle)` from `@workspace/playwright-automation` | Fuller Playwright-style page/locator surface: `url`, `title`, `goto`, `locator`, locator `click/fill/innerText/textContent/count`, `waitForSelector`, `waitForLoadState`, `evaluate`, `screenshot` | UI tests, browser workflows, login flows, anything where robust selectors/waits matter |
 | Lightweight CDP     | `handle.cdp.lightweightPage()` | Small CDP wrapper for basic `goto`, `click`, `fill`, `evaluate`, `waitForSelector`, `screenshot`, console event capture, DOM `inspect(selector)`, and simple locator helpers                       | Constrained worker/DO contexts or code paths where you intentionally avoid the vendored client           |
 
 Use historical console diagnostics for post-mortem panel debugging. CDP live
@@ -87,10 +87,12 @@ host-captured console history. Renderer lifecycle failures such as crashes,
 failed loads, and unresponsive renderers are recorded in the historical error
 buffer with `source: "lifecycle"`.
 
-Use the page object returned by `handle.cdp.playwrightPage()` for automation:
+Use the page object returned by `playwrightPage(handle)` for full Playwright automation:
 
 ```ts
-const page = await handle.cdp.playwrightPage();
+import { playwrightPage } from "@workspace/playwright-automation";
+
+const page = await playwrightPage(handle);
 console.log(page.url(), await page.title());
 await page.locator("button.submit").click();
 await page.locator(".status").innerText();
@@ -98,10 +100,13 @@ await page.waitForSelector(".ready");
 await page.waitForLoadState("networkidle");
 ```
 
-Do not eagerly import `@workspace/playwright-core` in panel UI code unless the
-panel itself is building an automation tool. For agents and diagnostics, use
-`handle.cdp.playwrightPage()` so the client loads only when CDP is actually
-requested.
+Do not import full Playwright in panel UI code unless the panel itself is
+building an automation tool. For agents and UI workflows, import
+`@workspace/playwright-automation` when the full Playwright-style locator/wait
+surface is needed. Full Playwright is loaded on demand and is intentionally
+heavier than the lightweight client; a load failure should expose the
+underlying build/load problem. For quick diagnostics and simple DOM inspection,
+`handle.cdp.lightweightPage()` is usually enough.
 
 `handle.reload()` is panel lifecycle reload for the named panel's renderer; it
 does not rebuild code and does not unload the panel's runtime lease. For
@@ -114,9 +119,10 @@ that target's handle and use the same `handle.cdp` namespace:
 
 ```ts
 import { panelTree } from "@workspace/runtime";
+import { playwrightPage } from "@workspace/playwright-automation";
 
 const parent = panelTree.self().parent();
-await parent?.cdp.playwrightPage();
+if (parent) await playwrightPage(parent);
 
 const sibling = panelTree.get("sibling-panel-id");
 await sibling.cdp.navigate("https://example.com/status");
@@ -131,7 +137,7 @@ introspection before calling `handle.call`, `handle.snapshot()`, `handle.tree()`
 
 | Method                                             | Description                                                              |
 | -------------------------------------------------- | ------------------------------------------------------------------------ |
-| `handle.cdp.playwrightPage()`                      | Load vendored Playwright CDP client and return the page                  |
+| `playwrightPage(handle)`                           | Load full Playwright CDP client and return the page                      |
 | `handle.cdp.lightweightPage()`                     | Load the smaller CDP wrapper and return the page                         |
 | `handle.cdp.consoleHistory({ limit, errorLimit })` | Read host-captured historical console logs and the separate error buffer |
 | `handle.diagnostics({ limit, errorLimit })`        | Read handle metadata plus host-captured console/lifecycle diagnostics    |

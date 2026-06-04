@@ -102,8 +102,6 @@ export interface CdpEndpoint {
   token?: string;
 }
 
-export type CdpClientKind = "playwright" | "lightweight";
-
 export type PanelConsoleHistoryLevel = "debug" | "info" | "warning" | "error" | "unknown";
 
 export interface PanelConsoleHistoryEntry {
@@ -146,8 +144,6 @@ export interface PanelDiagnosticsResult {
 }
 
 export interface CdpAutomation {
-  /** Explicit vendored @workspace/playwright-core page. */
-  playwrightPage(): Promise<any>;
   /** Explicit lightweight @workspace/playwright-client page. */
   lightweightPage(): Promise<any>;
   /**

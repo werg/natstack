@@ -7,12 +7,16 @@
  * the helpers shared by both panel and worker builds.
  */
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   generateModuleMapBootstrap,
   generateExposeModuleCode,
   generateWorkerEntry,
   generateForcedSplitEntry,
   injectHtmlTransforms,
+  resolveEntryPoint,
 } from "./builder.js";
 
 describe("generateModuleMapBootstrap (panel target)", () => {
@@ -95,16 +99,13 @@ describe("generateExposeModuleCode", () => {
     expect(code).toContain('import * as __mod0__ from "@workspace/runtime"');
   });
 
-  it("worker target preloads both explicit CDP clients when runtime handles are exposed", () => {
+  it("worker target preloads only the lightweight CDP client when runtime handles are exposed", () => {
     const code = generateExposeModuleCode(["@workspace/runtime"], "worker");
     expect(code).toContain('import * as __mod1__ from "@workspace/playwright-client"');
-    expect(code).toContain('import * as __mod2__ from "@workspace/playwright-core"');
     expect(code).toContain(
       'globalThis.__natstackModuleMap__["@workspace/playwright-client"] = __mod1__'
     );
-    expect(code).toContain(
-      'globalThis.__natstackModuleMap__["@workspace/playwright-core"] = __mod2__'
-    );
+    expect(code).not.toContain("@workspace/playwright-core");
   });
 
   it("worker target synthesizes fs shims from runtime exports", () => {
@@ -185,5 +186,33 @@ describe("injectHtmlTransforms", () => {
     );
 
     expect(html.match(/bundle\.css/g)).toHaveLength(1);
+  });
+});
+
+describe("resolveEntryPoint", () => {
+  it("honors package exports before stale root index.js files", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-entry-"));
+    try {
+      fs.mkdirSync(path.join(root, "src"), { recursive: true });
+      fs.writeFileSync(
+        path.join(root, "package.json"),
+        JSON.stringify({
+          name: "@workspace/test-lib",
+          type: "module",
+          exports: { ".": "./dist/index.js" },
+        })
+      );
+      fs.writeFileSync(path.join(root, "index.js"), "module.exports = require('./lib/missing');");
+      fs.writeFileSync(path.join(root, "src", "index.ts"), "export const ok = true;");
+
+      const entry = resolveEntryPoint(
+        { name: "@workspace/test-lib", manifest: {}, path: root } as never,
+        root
+      );
+
+      expect(entry).toBe(path.join(root, "src", "index.ts"));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

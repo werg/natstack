@@ -6,6 +6,22 @@ Panel handles are server-mediated APIs. Panels, workers, and Durable Objects can
 list, inspect, open, and mutate UI panels through `panelTree`; CDP is served by
 the Electron host that currently holds the target panel's runtime lease.
 
+`panelTree` return signatures:
+
+```ts
+panelTree.self(): PanelHandle
+panelTree.get(id): PanelHandle
+panelTree.list(): Promise<PanelHandle[]>
+panelTree.roots(): Promise<PanelHandle[]>
+panelTree.children(id): Promise<PanelHandle[]>
+panelTree.parent(id): PanelHandle | null
+panelTree.open(source, opts?): Promise<PanelHandle>
+```
+
+`self()` and `get()` are synchronous handle factories. Do not call `.catch()` on
+them; catch errors on async handle methods such as `await handle.refresh()` or
+`await handle.getInfo()`.
+
 ## Handles
 
 ```ts
@@ -105,13 +121,16 @@ target renderer should do a browser-style reload.
 Every runtime panel registers `_agent.snapshot`, `_agent.tree`, `_agent.state`, `_agent.routes`, and `_agent.setMode`. Agents should call these through a handle, not directly.
 
 Mobile hosts implement these methods through the WebView bridge. CDP access is
-served by CDP-capable Electron hosts through `handle.cdp.playwrightPage()`,
-or `handle.cdp.lightweightPage()`. Panels held by non-CDP hosts reject CDP
-access instead of being silently taken over.
-Use `handle.cdp.playwrightPage()` for the vendored `@workspace/playwright-core`
-client, or `handle.cdp.lightweightPage()` for the smaller wrapper. There is no
-silent fallback between them and no generic `handle.cdp.page()` alias. Use
-these APIs instead of eagerly importing Playwright in panel UI code.
+served by CDP-capable Electron hosts through `handle.cdp.lightweightPage()` and
+the direct `handle.cdp` navigation helpers. Panels held by non-CDP hosts reject
+CDP access instead of being silently taken over.
+Use `handle.cdp.lightweightPage()` for the runtime-owned smaller wrapper. For
+full Playwright, import `playwrightPage` from
+`@workspace/playwright-automation` and call `await playwrightPage(handle)`.
+Inline eval snippets that use full Playwright should pass
+`imports: { "@workspace/playwright-automation": "latest" }`. There is no silent
+fallback and no generic `handle.cdp.page()` alias. Use these APIs instead of
+eagerly importing Playwright in panel UI code.
 
 Approval-gated panel operations wait for a visible shell approval decision. If
 no decision arrives before the approval deadline, the request fails with an

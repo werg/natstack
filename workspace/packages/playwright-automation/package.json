@@ -1,0 +1,19 @@
+{
+  "name": "@workspace/playwright-automation",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Explicit full Playwright automation helpers for NatStack panel CDP targets",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "natstack-panel": "./src/index.ts",
+      "worker": "./src/index.ts",
+      "workerd": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "dependencies": {
+    "@workspace/playwright-core": "workspace:*"
+  }
+}

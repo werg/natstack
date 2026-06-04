@@ -183,12 +183,15 @@ require login, or apps that need client-side rendering, route the
 fetch through a real browser panel instead:
 
 ```
-eval({ code: `
+eval({
+  imports: { "@workspace/playwright-automation": "latest" },
+  code: `
   import { openPanel } from "@workspace/runtime";
+  import { playwrightPage } from "@workspace/playwright-automation";
   import { htmlToReadableMarkdown } from "@workspace/harness/web-extract";
 
   const browser = await openPanel("https://example.com/article");
-  const page = await browser.cdp.playwrightPage();
+  const page = await playwrightPage(browser);
   await page.waitForLoadState("networkidle");
   const html = await page.content();
   const { title, markdown } = htmlToReadableMarkdown(html, page.url());

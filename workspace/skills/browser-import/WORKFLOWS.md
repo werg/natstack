@@ -27,7 +27,9 @@ feedback_custom({
 ### Step 2: Import
 
 ```
-eval({ code: `
+eval({
+  imports: { "@workspace/playwright-automation": "latest" },
+  code: `
   import { browserData } from "@workspace/panel-browser";
 
   const results = await browserData.startImport({
@@ -51,10 +53,11 @@ Cookies were auto-synced during import — just open a browser panel and check.
 ```
 eval({ code: `
   import { openPanel } from "@workspace/runtime";
+  import { playwrightPage } from "@workspace/playwright-automation";
 
   // Open target site — imported cookies are already in the browser session
   const handle = await openPanel("https://github.com");
-  const page = await handle.cdp.playwrightPage();
+  const page = await playwrightPage(handle);
 
   const title = await page.title();
   console.log("Page title:", title);

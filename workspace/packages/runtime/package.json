@@ -29,7 +29,6 @@
     "@natstack/types": "workspace:*",
     "@workspace/agentic-protocol": "workspace:*",
     "@workspace/playwright-client": "workspace:*",
-    "@workspace/playwright-core": "workspace:*",
     "buffer": "^6.0.3",
     "zod": "^3.24.0"
   },

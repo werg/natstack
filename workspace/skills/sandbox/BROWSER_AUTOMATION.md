@@ -107,24 +107,25 @@ Choose one named CDP client explicitly:
 
 - `await handle.cdp.lightweightPage()` loads the smaller
   `@workspace/playwright-client` wrapper. Use this as the default for eval
-  diagnostics and simple panel inspection because it works in more constrained
-  contexts.
-- `await handle.cdp.playwrightPage()` loads vendored
-  `@workspace/playwright-core` and gives the fuller Playwright-style API. Use
-  this when you know the current context exposes `@workspace/playwright-core`
-  and the task needs its fuller locator/wait surface.
+  diagnostics and simple panel inspection.
+- `await playwrightPage(handle)` from `@workspace/playwright-automation` loads
+  vendored full Playwright through `@workspace/playwright-core`. It is a heavy
+  opt-in client. Use it for UI tests, browser workflows, login flows, and tasks
+  that need its fuller locator/wait surface.
 
-There is no silent fallback between clients. If `playwrightPage()` cannot load
-`@workspace/playwright-core`, fix the context/build exposure or deliberately
-switch to `lightweightPage()` and accept the smaller API. There is no
-`handle.cdp.page()` alias.
+There is no runtime compatibility shim and no silent fallback between clients.
+Inline eval snippets that use full Playwright should pass
+`imports: { "@workspace/playwright-automation": "latest" }`; source-file code
+should declare the package dependency. Deliberately switch to
+`handle.cdp.lightweightPage()` only when the smaller API is sufficient. There
+is no `handle.cdp.page()` alias.
 
 API scope:
 
 | Client | Entry point | Scope | Use when |
 |--------|-------------|-------|----------|
-| Lightweight CDP | `handle.cdp.lightweightPage()` | Small CDP wrapper for basic `goto`, `click`, `fill`, `evaluate`, `waitForSelector`, `screenshot`, console event capture, DOM `inspect(selector)`, and simple locator helpers | Default eval diagnostics and constrained contexts |
-| Vendored Playwright | `handle.cdp.playwrightPage()` | Fuller Playwright-style page/locator surface: `url`, `title`, `goto`, `locator`, locator `click/fill/innerText/textContent/count`, `waitForSelector`, `waitForLoadState`, `evaluate`, `screenshot` | UI tests, browser workflows, login flows, anything where robust selectors/waits matter and `@workspace/playwright-core` is exposed |
+| Lightweight CDP | `handle.cdp.lightweightPage()` | Small CDP wrapper for basic `goto`, `click`, `fill`, `evaluate`, `waitForSelector`, `screenshot`, console event capture, DOM `inspect(selector)`, and simple locator helpers | Default eval diagnostics and intentionally constrained contexts |
+| Full Playwright | `playwrightPage(handle)` from `@workspace/playwright-automation` | Fuller Playwright-style page/locator surface: `url`, `title`, `goto`, `locator`, locator `click/fill/innerText/textContent/count`, `waitForSelector`, `waitForLoadState`, `evaluate`, `screenshot` | UI tests, browser workflows, login flows, anything where robust selectors/waits matter |
 
 Historical console diagnostics are not a CDP page feature. CDP console events
 only include messages after the client connects. For "something already went
@@ -154,10 +155,10 @@ The same historical capture includes renderer lifecycle failures such as
 `render-process-gone`, failed main-frame loads, and unresponsive renderer
 events.
 
-Do not import `@workspace/playwright-core` eagerly in panel code just to inspect
-or automate a panel. Use `await handle.cdp.lightweightPage()` for routine
-inspection, or `await handle.cdp.playwrightPage()` only when the fuller client is
-available and needed.
+Do not import full Playwright in panel code just to inspect or automate a panel.
+Use `await handle.cdp.lightweightPage()` for routine inspection, or import
+`playwrightPage` from `@workspace/playwright-automation` only when the fuller
+client is needed.
 
 `page.url()` follows the Playwright shape. Use
 `await scope.page.evaluate(() => location.href)` only when you need the page to
@@ -248,7 +249,7 @@ The handle also has direct navigation methods (no Playwright needed):
 
 | Method | Description |
 |--------|-------------|
-| `handle.cdp.playwrightPage()` | Load vendored Playwright CDP client and return the page |
+| `playwrightPage(handle)` | Load full Playwright CDP client and return the page |
 | `handle.cdp.lightweightPage()` | Load the smaller CDP wrapper and return the page |
 | `handle.cdp.consoleHistory({ limit, errorLimit })` | Read host-captured historical console logs and the separate error buffer |
 | `handle.click(selector)` | Convenience wrapper for `handle.cdp.click(selector)` |

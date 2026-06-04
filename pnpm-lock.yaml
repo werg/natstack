@@ -1177,6 +1177,12 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.12)(@types/node@24.10.9)(jsdom@29.0.1)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.0)
 
+  workspace/packages/playwright-automation:
+    dependencies:
+      '@workspace/playwright-core':
+        specifier: workspace:*
+        version: link:../playwright-core
+
   workspace/packages/playwright-client:
     dependencies:
       '@workspace/playwright-core':
@@ -1310,9 +1316,6 @@ importers:
       '@workspace/playwright-client':
         specifier: workspace:*
         version: link:../playwright-client
-      '@workspace/playwright-core':
-        specifier: workspace:*
-        version: link:../playwright-core
       buffer:
         specifier: ^6.0.3
         version: 6.0.3
