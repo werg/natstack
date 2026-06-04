@@ -36,6 +36,7 @@ export const PI_ENTRY_TRAJECTORY_BRIDGES = {
   message: { storage: "interceptor", eventKind: "system.event" },
   model_change: { storage: "interceptor", eventKind: "system.event" },
   thinking_level_change: { storage: "interceptor", eventKind: "system.event" },
+  active_tools_change: { storage: "interceptor", eventKind: "system.event" },
   compaction: { storage: "interceptor", eventKind: "system.event" },
   branch_summary: { storage: "interceptor", eventKind: "system.event" },
   custom: { storage: "interceptor", eventKind: "system.event" },
@@ -164,6 +165,7 @@ function entryToAgenticEvent(entry: SessionTreeEntry, kind: EventKind): AgenticE
     case "leaf":
     case "model_change":
     case "thinking_level_change":
+    case "active_tools_change":
     case "branch_summary":
     case "custom":
     case "custom_message":

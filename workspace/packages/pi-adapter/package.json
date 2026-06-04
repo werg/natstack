@@ -10,7 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "^0.74.1",
+    "@earendil-works/pi-agent-core": "^0.78.0",
     "@workspace/agentic-protocol": "workspace:*"
   },
   "devDependencies": {

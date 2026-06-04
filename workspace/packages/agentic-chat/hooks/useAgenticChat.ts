@@ -892,7 +892,7 @@ Use package imports available to inline_ui plus relative imports for local helpe
             },
           },
           // ui_prompt — serves NatStackExtensionUIContext (select/confirm/input/editor)
-          // from packages/harness. The agent worker forwards extension UI calls
+          // from workspace/packages/harness. The agent worker forwards extension UI calls
           // via ui_prompt { kind, ...params }; we render them through the
           // existing feedback_form (ActiveFeedbackSchema) machinery and return
           // primitive results (string | boolean | undefined) directly.
