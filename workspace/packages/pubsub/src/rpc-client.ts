@@ -297,6 +297,20 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
   // Track AbortControllers for methods we're executing, keyed by callId.
   // When a caller cancels, we abort the controller so the handler sees signal.aborted.
   const executingMethods = new Map<string, AbortController>();
+  const submittedMethodTransportCallIds = new Set<string>();
+  const MAX_SUBMITTED_METHOD_TRANSPORT_CALL_IDS = 2000;
+
+  function rememberSubmittedMethodTransportCall(transportCallId: string): void {
+    submittedMethodTransportCallIds.add(transportCallId);
+    if (submittedMethodTransportCallIds.size <= MAX_SUBMITTED_METHOD_TRANSPORT_CALL_IDS) return;
+    const overflow =
+      submittedMethodTransportCallIds.size - MAX_SUBMITTED_METHOD_TRANSPORT_CALL_IDS;
+    const iter = submittedMethodTransportCallIds.values();
+    for (let i = 0; i < overflow; i++) {
+      const { value } = iter.next();
+      if (value !== undefined) submittedMethodTransportCallIds.delete(value);
+    }
+  }
 
   // Method call tracking
   interface MethodCallState {
@@ -912,6 +926,12 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
 
   async function handleMethodCallExec(event: IncomingInvocationCallEvent): Promise<void> {
     if (!pid || event.providerId !== pid) return;
+    if (
+      executingMethods.has(event.transportCallId) ||
+      submittedMethodTransportCallIds.has(event.transportCallId)
+    ) {
+      return;
+    }
 
     const methodDef = registeredMethods[event.methodName];
     if (!methodDef) {
@@ -934,7 +954,8 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     }
 
     const abortController = new AbortController();
-    executingMethods.set(event.callId, abortController);
+    executingMethods.set(event.transportCallId, abortController);
+    let terminalSubmitted = false;
     const ctx: MethodExecutionContext = {
       callId: event.callId,
       invocationId: event.invocationId,
@@ -991,6 +1012,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
             terminalReasonCode: "cancelled",
           }
         );
+        terminalSubmitted = true;
         return;
       }
 
@@ -1014,6 +1036,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
             attachments: withAttachments.attachments,
           }
         );
+        terminalSubmitted = true;
       } else {
         await submitMethodResult(
           event.invocationId,
@@ -1022,6 +1045,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
           false,
           { turnId: event.turnId }
         );
+        terminalSubmitted = true;
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -1036,19 +1060,24 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
           terminalOutcome: aborted ? "cancelled" : "tool_error",
           terminalReasonCode: aborted ? "cancelled" : "eval_exception",
         }
-      ).catch((e) =>
-        // If even this fallback terminal cannot be submitted, the caller's
-        // pending call would be stranded. The channel settles it on its side
-        // when the event is malformed; log with enough context to trace a
-        // transport-level failure here.
-        console.error(
-          `[PubSub] Failed to publish auto-execution error for ` +
-            `method=${event.methodName} transportCallId=${event.transportCallId}:`,
-          e
-        )
-      );
+      )
+        .then(() => {
+          terminalSubmitted = true;
+        })
+        .catch((e) =>
+          // If even this fallback terminal cannot be submitted, the caller's
+          // pending call would be stranded. The channel settles it on its side
+          // when the event is malformed; log with enough context to trace a
+          // transport-level failure here.
+          console.error(
+            `[PubSub] Failed to publish auto-execution error for ` +
+              `method=${event.methodName} transportCallId=${event.transportCallId}:`,
+            e
+          )
+        );
     } finally {
-      executingMethods.delete(event.callId);
+      executingMethods.delete(event.transportCallId);
+      if (terminalSubmitted) rememberSubmittedMethodTransportCall(event.transportCallId);
     }
   }
 

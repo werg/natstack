@@ -729,6 +729,87 @@ describe("connectViaRpc", () => {
       client.close();
     });
 
+    it("dedupes redelivered invocation starts for the same transport call", async () => {
+      let resolveWork!: (value: { answer: number }) => void;
+      const executeFn = vi.fn(
+        () =>
+          new Promise<{ answer: number }>((resolve) => {
+            resolveWork = resolve;
+          })
+      );
+
+      const client = connectViaRpc({
+        rpc: mockRpc as any,
+        channel: CHANNEL,
+        methods: {
+          compute: {
+            description: "compute something",
+            parameters: z.object({}),
+            execute: executeFn,
+          },
+        },
+      });
+
+      await emitReplayAndReady(emit, []);
+      await client.ready();
+      mockRpc.call.mockClear();
+      mockRpc.call.mockResolvedValue(undefined);
+
+      const emitInvocationStarted = (id: number) => {
+        emit({
+          stream: "log",
+          phase: "live",
+          id,
+          type: AGENTIC_EVENT_PAYLOAD_KIND,
+          payload: invocation(
+            "invocation.started",
+            CALL_ID_1,
+            {
+              name: "compute",
+              request: {},
+              transport: {
+                kind: "channel",
+                channelId: CHANNEL,
+                target: { kind: "panel", id: SELF_ID, participantId: SELF_ID },
+                transportCallId: TRANSPORT_ID_1,
+              },
+            },
+            { transportCallId: TRANSPORT_ID_1, turnId: "turn-1" }
+          ),
+          senderId: "caller-1",
+          ts: Date.now(),
+        });
+      };
+
+      emitInvocationStarted(201);
+      await vi.waitFor(() => {
+        expect(executeFn).toHaveBeenCalledTimes(1);
+      });
+
+      emitInvocationStarted(202);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(executeFn).toHaveBeenCalledTimes(1);
+
+      resolveWork({ answer: 42 });
+      await vi.waitFor(() => {
+        const submitCalls = mockRpc.call.mock.calls.filter(
+          (c: unknown[]) => c[1] === "submitMethodResult"
+        );
+        expect(submitCalls).toHaveLength(1);
+      });
+
+      emitInvocationStarted(203);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(executeFn).toHaveBeenCalledTimes(1);
+      expect(
+        mockRpc.call.mock.calls.filter((c: unknown[]) => c[1] === "submitMethodResult")
+      ).toHaveLength(1);
+
+      client.close();
+    });
+
     it("hydrates stored-value method arguments before validation", async () => {
       const executeFn = vi.fn().mockResolvedValue({ ok: true });
       const request = { x: 7 };
