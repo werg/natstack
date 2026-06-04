@@ -41,6 +41,7 @@ declare const __filename: string;
 interface IpcChannel {
   postMessage(msg: unknown): void;
   on(event: string, handler: (msg: unknown) => void): void;
+  onDisconnect(handler: () => void): void;
 }
 
 interface ElectronParentPort {
@@ -84,6 +85,14 @@ function detectServerIpcChannel(): IpcChannel | null {
           handler(record && "data" in record ? record["data"] : envelope);
         });
       },
+      onDisconnect: (handler: () => void) => {
+        (
+          parentPort as unknown as {
+            on(event: "close", handler: () => void): void;
+          }
+        ).on("close", handler);
+        process.on("disconnect", handler);
+      },
     };
   }
   // Node.js fork: process.send exists
@@ -92,6 +101,9 @@ function detectServerIpcChannel(): IpcChannel | null {
       postMessage: (msg: unknown) => assertPresent(process.send)(msg),
       on: (_event: string, handler: (msg: unknown) => void) => {
         process.on("message", handler);
+      },
+      onDisconnect: (handler: () => void) => {
+        process.on("disconnect", handler);
       },
     };
   }
@@ -2880,6 +2892,9 @@ async function main() {
       const record = asRecord(msg);
       if (record?.["type"] === "shutdown") void shutdown();
     });
+    ipcChannel.onDisconnect(() => void shutdown());
+    process.on("SIGTERM", () => void shutdown());
+    process.on("SIGINT", () => void shutdown());
   } else {
     if (startupPairingCodes.length > 0) {
       startupPairingExpiryTimer = setTimeout(() => {

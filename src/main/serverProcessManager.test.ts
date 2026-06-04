@@ -72,7 +72,7 @@ describe("ServerProcessManager", () => {
     const shutdown = manager.shutdown();
     proc.emit("exit", 0);
     await shutdown;
-    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(12_000);
 
     expect(proc.messages).toEqual([{ type: "shutdown" }]);
     expect(proc.kill).not.toHaveBeenCalled();
@@ -84,7 +84,7 @@ describe("ServerProcessManager", () => {
     const manager = createManager(proc);
 
     const shutdown = manager.shutdown();
-    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(12_000);
     await shutdown;
 
     expect(proc.kill).toHaveBeenCalledTimes(1);
@@ -105,7 +105,7 @@ describe("ServerProcessManager", () => {
       (error: unknown) => error
     );
     proc.emit("message", { type: "error", message: "Gateway port is already in use" });
-    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(12_000);
 
     await expect(start).resolves.toEqual(expect.any(Error));
     await expect(start).resolves.toMatchObject({
@@ -160,7 +160,7 @@ describe("ServerProcessManager", () => {
     );
     stderr.emit("data", Buffer.from("failure details"));
     proc.emit("message", { type: "error", message: "startup failed" });
-    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(12_000);
     await expect(start).resolves.toMatchObject({
       message: expect.stringContaining("startup failed"),
     });

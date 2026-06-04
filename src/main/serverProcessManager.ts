@@ -9,6 +9,8 @@ import { type ProcessAdapter } from "@natstack/process-adapter";
 import { shell, utilityProcess } from "electron";
 import { getEsbuildBinaryPath, getServerProcessEntryPath } from "./paths.js";
 
+const SERVER_SHUTDOWN_TIMEOUT_MS = 12_000;
+
 export interface ServerPorts {
   workerdPort?: number;
   gatewayPort: number;
@@ -210,7 +212,7 @@ export class ServerProcessManager {
         killTimer = setTimeout(() => {
           proc.kill();
           resolve();
-        }, 5000);
+        }, SERVER_SHUTDOWN_TIMEOUT_MS);
       }),
     ]);
     if (killTimer) {

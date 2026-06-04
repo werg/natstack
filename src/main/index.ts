@@ -25,6 +25,7 @@ import {
 
 const log = createDevLogger("App");
 const APP_NAME = "NatStack";
+const APP_SHUTDOWN_TIMEOUT_MS = 15_000;
 const IS_HEADLESS_HOST =
   process.env["NATSTACK_HEADLESS_HOST"] === "1" || process.argv.includes("--headless-host");
 
@@ -1975,7 +1976,7 @@ app.on("will-quit", (event) => {
     const shutdownTimeout = setTimeout(() => {
       console.warn("[App] Shutdown timeout - forcing exit");
       app.exit(1);
-    }, 5000);
+    }, APP_SHUTDOWN_TIMEOUT_MS);
 
     Promise.all(stopPromises).finally(() => {
       shellCore?.shutdown?.();

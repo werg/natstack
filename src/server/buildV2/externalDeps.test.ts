@@ -174,6 +174,41 @@ describe("collectTransitiveExternalDeps", () => {
     }
   });
 
+  it("does not install pnpm-patched app dependencies into npm external cache", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-extdeps-"));
+    const previousAppRoot = process.env["NATSTACK_APP_ROOT"];
+    try {
+      process.env["NATSTACK_APP_ROOT"] = root;
+      fs.writeFileSync(
+        path.join(root, "package.json"),
+        JSON.stringify({
+          pnpm: {
+            patchedDependencies: {
+              "@earendil-works/pi-agent-core@0.78.0": "patches/pi-agent-core.patch",
+            },
+          },
+        })
+      );
+
+      const graph = new PackageGraph();
+      const adapter = makeNode("@workspace/pi-adapter", {
+        "@earendil-works/pi-agent-core": "^0.78.0",
+        zod: "^3.25.0",
+      });
+      graph.addNode(adapter);
+
+      const deps = collectTransitiveExternalDeps(adapter, graph);
+      expect(deps).toEqual({ zod: "^3.25.0" });
+    } finally {
+      if (previousAppRoot === undefined) {
+        delete process.env["NATSTACK_APP_ROOT"];
+      } else {
+        process.env["NATSTACK_APP_ROOT"] = previousAppRoot;
+      }
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("skips workspace:* deps (they are internal)", () => {
     const graph = new PackageGraph();
     const a = makeNode("@workspace/a", {

@@ -33,6 +33,10 @@ export function collectTransitiveExternalDeps(
   packageRoots: string[] = []
 ): Record<string, string> {
   const externals: Record<string, string> = {};
+  const appProvidedPackages = new Set([
+    ...readWorkspacePatchedDependencyNames(),
+    ...readWorkspacePatchedDependencyNames(process.env["NATSTACK_APP_ROOT"]),
+  ]);
   const visited = new Set<string>();
   const visitedPackageJson = new Set<string>();
 
@@ -41,6 +45,10 @@ export function collectTransitiveExternalDeps(
     // install or the package graph. Their own npm deps are collected by walking
     // the package.json when available.
     if (version.startsWith("workspace:")) return;
+    // The external-deps cache is installed with npm, so it cannot apply pnpm
+    // patches. Let patched app dependencies resolve from the app node_modules
+    // instead of shadowing them with unpatched registry installs.
+    if (appProvidedPackages.has(name)) return;
     // External dependency — take higher version if conflict
     if (!externals[name] || compareVersions(version, assertPresent(externals[name])) > 0) {
       externals[name] = version;
@@ -271,7 +279,7 @@ function hashDeps(deps: Record<string, string>, overrides: Record<string, string
 }
 
 function readWorkspaceNpmOverrides(): Record<string, string> {
-  const pkgPath = path.join(process.cwd(), "package.json");
+  const pkgPath = path.join(process.env["NATSTACK_APP_ROOT"] ?? process.cwd(), "package.json");
   if (!fs.existsSync(pkgPath)) return {};
 
   try {
@@ -284,6 +292,25 @@ function readWorkspaceNpmOverrides(): Record<string, string> {
     };
   } catch {
     return {};
+  }
+}
+
+function readWorkspacePatchedDependencyNames(root = process.cwd()): string[] {
+  if (!root) return [];
+  const pkgPath = path.join(root, "package.json");
+  if (!fs.existsSync(pkgPath)) return [];
+
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as {
+      pnpm?: { patchedDependencies?: unknown };
+    };
+    const patchedDependencies = pkg.pnpm?.patchedDependencies;
+    if (!patchedDependencies || typeof patchedDependencies !== "object") return [];
+    return Object.keys(patchedDependencies as Record<string, unknown>).map((specifier) =>
+      specifier.replace(/@\d.*$/, "")
+    );
+  } catch {
+    return [];
   }
 }
 

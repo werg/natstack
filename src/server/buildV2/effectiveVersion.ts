@@ -424,7 +424,7 @@ export function computeEffectiveVersionsWithCache(
 // ---------------------------------------------------------------------------
 
 /** Increment when build logic changes (plugins, esbuild options, shims) to invalidate all cached builds. */
-const BUILD_CACHE_VERSION = "14";
+const BUILD_CACHE_VERSION = "15";
 const ROOT_DEPENDENCY_FINGERPRINT_FILES = [
   "package.json",
   "pnpm-lock.yaml",
