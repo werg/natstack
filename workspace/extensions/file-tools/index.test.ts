@@ -19,7 +19,9 @@ async function makeTempRoot(): Promise<string> {
 }
 
 afterEach(async () => {
-  await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+  await Promise.all(
+    tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true }))
+  );
 });
 
 describe("@workspace-extensions/file-tools", () => {
@@ -30,9 +32,16 @@ describe("@workspace-extensions/file-tools", () => {
     await fs.mkdir(path.join(contextRoot, "src"), { recursive: true });
     await fs.writeFile(
       path.join(contextRoot, "src", "entities.ts"),
-      ["const before = true;", "export const entity = createEntity({ id: 'a' });", "const after = true;"].join("\n"),
+      [
+        "const before = true;",
+        "export const entity = createEntity({ id: 'a' });",
+        "const after = true;",
+      ].join("\n")
     );
-    await fs.writeFile(path.join(contextRoot, "src", "notes.md"), "createEntity should not match this file\n");
+    await fs.writeFile(
+      path.join(contextRoot, "src", "notes.md"),
+      "createEntity should not match this file\n"
+    );
 
     const api = await activate({
       workspace: {
@@ -43,13 +52,13 @@ describe("@workspace-extensions/file-tools", () => {
       health: { healthy: vi.fn(), degraded: vi.fn() },
     });
 
-    const result = await api.grep({
+    const result = (await api.grep({
       pattern: "createEntity",
       path: ".",
       glob: "**/*.ts",
       context: 1,
       limit: 100,
-    }) as TextToolResult;
+    })) as TextToolResult;
 
     const text = result.content[0]?.type === "text" ? result.content[0].text : "";
     expect(text).toContain("src/entities.ts-1- const before = true;");
@@ -65,13 +74,20 @@ describe("@workspace-extensions/file-tools", () => {
 
     const api = await activate({
       workspace: {
-        getInfo: async () => ({ path: workspaceRoot, contextsPath: path.join(workspaceRoot, ".contexts") }),
+        getInfo: async () => ({
+          path: workspaceRoot,
+          contextsPath: path.join(workspaceRoot, ".contexts"),
+        }),
       },
       fs: { realpath: async () => workspaceRoot },
       log: { info: vi.fn() },
     });
 
-    const result = await api.grep({ pattern: "createEntity", path: ".", glob: "**/*.ts" }) as TextToolResult;
+    const result = (await api.grep({
+      pattern: "createEntity",
+      path: ".",
+      glob: "**/*.ts",
+    })) as TextToolResult;
 
     expect(result.content).toEqual([{ type: "text", text: "No matches found" }]);
     expect(result.details).toBeUndefined();
@@ -83,32 +99,64 @@ describe("@workspace-extensions/file-tools", () => {
 
     const api = await activate({
       workspace: {
-        getInfo: async () => ({ path: workspaceRoot, contextsPath: path.join(workspaceRoot, ".contexts") }),
+        getInfo: async () => ({
+          path: workspaceRoot,
+          contextsPath: path.join(workspaceRoot, ".contexts"),
+        }),
       },
       fs: { realpath: async () => workspaceRoot },
       log: { info: vi.fn() },
     });
 
-    const result = await api.grep({ pattern: "eval({ path", path: "." }) as TextToolResult;
+    const result = (await api.grep({ pattern: "eval({ path", path: "." })) as TextToolResult;
     const text = result.content[0]?.type === "text" ? result.content[0].text : "";
     expect(text).toContain("script.ts:1:");
+  });
+
+  it("gives actionable guidance for invalid regex grep patterns", async () => {
+    const workspaceRoot = await makeTempRoot();
+    await fs.writeFile(path.join(workspaceRoot, "script.ts"), "openPanel('panels/chat');\n");
+
+    const api = await activate({
+      workspace: {
+        getInfo: async () => ({
+          path: workspaceRoot,
+          contextsPath: path.join(workspaceRoot, ".contexts"),
+        }),
+      },
+      fs: { realpath: async () => workspaceRoot },
+      log: { info: vi.fn() },
+    });
+
+    await expect(
+      api.grep({
+        pattern: "openPanel(",
+        path: ".",
+        literal: false,
+      })
+    ).rejects.toThrow("Retry without `literal: false` or pass `literal: true`");
   });
 
   it("explains that grep path is a single root when a space-separated path is missing", async () => {
     const workspaceRoot = await makeTempRoot();
     const api = await activate({
       workspace: {
-        getInfo: async () => ({ path: workspaceRoot, contextsPath: path.join(workspaceRoot, ".contexts") }),
+        getInfo: async () => ({
+          path: workspaceRoot,
+          contextsPath: path.join(workspaceRoot, ".contexts"),
+        }),
       },
       fs: { realpath: async () => workspaceRoot },
       log: { info: vi.fn() },
     });
 
-    await expect(api.grep({
-      pattern: "console",
-      path: "packages workers panels",
-      glob: "*diagnostic*",
-    })).rejects.toThrow("not a space-separated list");
+    await expect(
+      api.grep({
+        pattern: "console",
+        path: "packages workers panels",
+        glob: "*diagnostic*",
+      })
+    ).rejects.toThrow("not a space-separated list");
   });
 
   it("finds files with ripgrep file listing", async () => {
@@ -127,11 +175,11 @@ describe("@workspace-extensions/file-tools", () => {
       log: { info: vi.fn() },
     });
 
-    const result = await api.find({
+    const result = (await api.find({
       pattern: "**/*.ts",
       path: ".",
       limit: 100,
-    }) as TextToolResult;
+    })) as TextToolResult;
 
     expect(result.content[0]).toEqual({ type: "text", text: "src/a.ts" });
     expect(result.details?.engine).toBe("ripgrep");
@@ -141,18 +189,21 @@ describe("@workspace-extensions/file-tools", () => {
     const workspaceRoot = await makeTempRoot();
     await fs.writeFile(
       path.join(workspaceRoot, "big.txt"),
-      Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join("\n"),
+      Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join("\n")
     );
 
     const api = await activate({
       workspace: {
-        getInfo: async () => ({ path: workspaceRoot, contextsPath: path.join(workspaceRoot, ".contexts") }),
+        getInfo: async () => ({
+          path: workspaceRoot,
+          contextsPath: path.join(workspaceRoot, ".contexts"),
+        }),
       },
       fs: { realpath: async () => workspaceRoot },
       log: { info: vi.fn() },
     });
 
-    const result = await api.read({ path: "big.txt", offset: 3, limit: 2 }) as TextToolResult;
+    const result = (await api.read({ path: "big.txt", offset: 3, limit: 2 })) as TextToolResult;
 
     const text = result.content[0]?.type === "text" ? result.content[0].text : "";
     expect(text).toContain("line 3\nline 4");
@@ -167,13 +218,16 @@ describe("@workspace-extensions/file-tools", () => {
 
     const api = await activate({
       workspace: {
-        getInfo: async () => ({ path: workspaceRoot, contextsPath: path.join(workspaceRoot, ".contexts") }),
+        getInfo: async () => ({
+          path: workspaceRoot,
+          contextsPath: path.join(workspaceRoot, ".contexts"),
+        }),
       },
       fs: { realpath: async () => workspaceRoot },
       log: { info: vi.fn() },
     });
 
-    const result = await api.read({ path: "empty.txt" }) as TextToolResult;
+    const result = (await api.read({ path: "empty.txt" })) as TextToolResult;
     expect(result.content).toEqual([{ type: "text", text: "" }]);
     expect(result.details?.engine).toBe("node-file");
   });
@@ -187,7 +241,10 @@ describe("@workspace-extensions/file-tools", () => {
 
     const api = await activate({
       workspace: {
-        getInfo: async () => ({ path: workspaceRoot, contextsPath: path.join(workspaceRoot, ".contexts") }),
+        getInfo: async () => ({
+          path: workspaceRoot,
+          contextsPath: path.join(workspaceRoot, ".contexts"),
+        }),
       },
       fs: { realpath: async () => workspaceRoot },
       log: { info: vi.fn() },

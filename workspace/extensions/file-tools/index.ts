@@ -142,10 +142,13 @@ function resolveVirtualPath(cwd: string | undefined, input: string | undefined):
   return joined === "." ? "/" : joined.startsWith("/") ? joined : `/${joined}`;
 }
 
-async function resolveSearchPath(ctx: ExtensionContextLike, req: {
-  path?: string;
-  cwd?: string;
-}): Promise<{
+async function resolveSearchPath(
+  ctx: ExtensionContextLike,
+  req: {
+    path?: string;
+    cwd?: string;
+  }
+): Promise<{
   root: string;
   searchPath: string;
   isDirectory: boolean;
@@ -167,6 +170,23 @@ async function resolveSearchPath(ctx: ExtensionContextLike, req: {
   }
   const realSearchPath = await realpathWithin(root, searchPath);
   return { root, searchPath: realSearchPath, isDirectory: stat.isDirectory() };
+}
+
+function formatRipgrepFailure(message: string, req: GrepRequest): string {
+  const trimmed = message.trim();
+  const base = trimmed || "ripgrep failed";
+  const regexMode = req.literal === false;
+  const looksLikeRegexParseError =
+    /\bregex parse error\b/i.test(base) ||
+    /\b(unclosed|unopened|unclosed group|unclosed character class)\b/i.test(base);
+  if (!regexMode || !looksLikeRegexParseError) return base;
+  return [
+    "Invalid grep regex pattern.",
+    "The grep tool searches literally by default; use literal search for code snippets, identifiers, function calls, paths, and punctuation.",
+    "Retry without `literal: false` or pass `literal: true` unless you intentionally need a valid regex.",
+    `Pattern: ${JSON.stringify(req.pattern)}`,
+    `ripgrep: ${base}`,
+  ].join(" ");
 }
 
 function truncateLine(line: string): { text: string; wasTruncated: boolean } {
@@ -230,14 +250,26 @@ function relativeTo(root: string, filePath: string): string {
 }
 
 function isLikelyImageHeader(header: Buffer): boolean {
-  if (header.length >= 8 && header.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+  if (
+    header.length >= 8 &&
+    header.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  ) {
     return true;
   }
-  if (header.length >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff) return true;
-  if (header.length >= 6 && (header.subarray(0, 6).toString("ascii") === "GIF87a" || header.subarray(0, 6).toString("ascii") === "GIF89a")) {
+  if (header.length >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff)
+    return true;
+  if (
+    header.length >= 6 &&
+    (header.subarray(0, 6).toString("ascii") === "GIF87a" ||
+      header.subarray(0, 6).toString("ascii") === "GIF89a")
+  ) {
     return true;
   }
-  if (header.length >= 12 && header.subarray(0, 4).toString("ascii") === "RIFF" && header.subarray(8, 12).toString("ascii") === "WEBP") {
+  if (
+    header.length >= 12 &&
+    header.subarray(0, 4).toString("ascii") === "RIFF" &&
+    header.subarray(8, 12).toString("ascii") === "WEBP"
+  ) {
     return true;
   }
   return false;
@@ -352,7 +384,11 @@ export async function activate(ctx: ExtensionContextLike) {
         child.on("close", async (code) => {
           rl.close();
           if (!killedDueToLimit && code !== 0 && code !== 1) {
-            reject(new Error(stderr.trim() || `ripgrep exited with code ${code}`));
+            reject(
+              new Error(
+                formatRipgrepFailure(stderr.trim() || `ripgrep exited with code ${code}`, raw)
+              )
+            );
             return;
           }
           if (matchCount === 0) {
@@ -368,8 +404,12 @@ export async function activate(ctx: ExtensionContextLike) {
               outputLines.push(`${relativePath}:${match.lineNumber}: (unable to read file)`);
               continue;
             }
-            const start = contextValue > 0 ? Math.max(1, match.lineNumber - contextValue) : match.lineNumber;
-            const end = contextValue > 0 ? Math.min(lines.length, match.lineNumber + contextValue) : match.lineNumber;
+            const start =
+              contextValue > 0 ? Math.max(1, match.lineNumber - contextValue) : match.lineNumber;
+            const end =
+              contextValue > 0
+                ? Math.min(lines.length, match.lineNumber + contextValue)
+                : match.lineNumber;
             for (let current = start; current <= end; current++) {
               const sanitized = (lines[current - 1] ?? "").replace(/\r/g, "");
               const { text, wasTruncated } = truncateLine(sanitized);
@@ -377,7 +417,7 @@ export async function activate(ctx: ExtensionContextLike) {
               outputLines.push(
                 current === match.lineNumber
                   ? `${relativePath}:${current}: ${text}`
-                  : `${relativePath}-${current}- ${text}`,
+                  : `${relativePath}-${current}- ${text}`
               );
             }
           }
@@ -388,7 +428,7 @@ export async function activate(ctx: ExtensionContextLike) {
           const notices: string[] = [];
           if (matchLimitReached) {
             notices.push(
-              `${effectiveLimit} matches limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`,
+              `${effectiveLimit} matches limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`
             );
             details.matchLimitReached = effectiveLimit;
           }
@@ -397,7 +437,9 @@ export async function activate(ctx: ExtensionContextLike) {
             details.truncation = truncation;
           }
           if (linesTruncated) {
-            notices.push(`Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines`);
+            notices.push(
+              `Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines`
+            );
             details.linesTruncated = true;
           }
           if (notices.length > 0) output += `\n\n[${notices.join(". ")}]`;
@@ -454,7 +496,10 @@ export async function activate(ctx: ExtensionContextLike) {
             return;
           }
           if (matches.length === 0) {
-            resolve({ content: [{ type: "text", text: "No files found matching pattern" }], details: undefined });
+            resolve({
+              content: [{ type: "text", text: "No files found matching pattern" }],
+              details: undefined,
+            });
             return;
           }
 
@@ -463,7 +508,9 @@ export async function activate(ctx: ExtensionContextLike) {
           const details: FindDetails = { engine: "ripgrep" };
           const notices: string[] = [];
           if (matches.length >= effectiveLimit) {
-            notices.push(`${effectiveLimit} results limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`);
+            notices.push(
+              `${effectiveLimit} results limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`
+            );
             details.resultLimitReached = effectiveLimit;
           }
           if (truncation.truncated) {
@@ -488,22 +535,22 @@ export async function activate(ctx: ExtensionContextLike) {
       const stat = await fs.stat(searchPath);
       if (!stat.isFile()) throw new Error(`Not a file: ${raw.path}`);
 
-      const header = await fs.open(searchPath, "r")
-        .then(async (handle) => {
-          try {
-            const buffer = Buffer.alloc(16);
-            const result = await handle.read(buffer, 0, buffer.length, 0);
-            return buffer.subarray(0, result.bytesRead);
-          } finally {
-            await handle.close();
-          }
-        });
+      const header = await fs.open(searchPath, "r").then(async (handle) => {
+        try {
+          const buffer = Buffer.alloc(16);
+          const result = await handle.read(buffer, 0, buffer.length, 0);
+          return buffer.subarray(0, result.bytesRead);
+        } finally {
+          await handle.close();
+        }
+      });
       if (isLikelyImageHeader(header)) {
         throw codedError("EIMAGE", "Image reads are handled by the image service path");
       }
 
       const startLine = raw.offset ? Math.max(1, Math.trunc(raw.offset)) : 1;
-      const requestedLimit = raw.limit !== undefined ? Math.max(0, Math.trunc(raw.limit)) : undefined;
+      const requestedLimit =
+        raw.limit !== undefined ? Math.max(0, Math.trunc(raw.limit)) : undefined;
       if (stat.size === 0 && startLine === 1) {
         return {
           content: [{ type: "text", text: "" }],
@@ -584,9 +631,10 @@ export async function activate(ctx: ExtensionContextLike) {
         if (truncated) {
           const endLine = startLine + outputLines.length - 1;
           const nextOffset = Math.max(startLine + 1, endLine + 1);
-          const reason = truncatedBy === "lines"
-            ? `${DEFAULT_READ_MAX_LINES} line limit`
-            : `${formatSize(DEFAULT_READ_MAX_BYTES)} limit`;
+          const reason =
+            truncatedBy === "lines"
+              ? `${DEFAULT_READ_MAX_LINES} line limit`
+              : `${formatSize(DEFAULT_READ_MAX_BYTES)} limit`;
           text += `\n\n[Showing lines ${startLine}-${endLine} (${reason}). Use offset=${nextOffset} to continue.]`;
         } else if (requestedLimit !== undefined && hasMore) {
           const nextOffset = startLine + outputLines.length;

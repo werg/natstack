@@ -95,19 +95,20 @@ function warnFallbackOnce(): void {
     "[harness/grep] `re2` native binding not available — falling back to V8 RegExp. " +
       "Pattern length is capped and structural ReDoS shapes are rejected, but matching is " +
       "no longer guaranteed linear-time. Install build tooling (python3, make, g++) and " +
-      "re-run `pnpm install` in workspace/packages/harness to enable RE2.",
+      "re-run `pnpm install` in workspace/packages/harness to enable RE2."
   );
 }
 
 function isFileToolsExtensionUnavailable(err: unknown): boolean {
-  const code = typeof err === "object" && err !== null
-    ? (err as { code?: unknown }).code
-    : undefined;
+  const code =
+    typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
   // ENOEXT = not installed/enabled; ENOTREADY = declared but not yet running.
   // Both mean the extension can't serve this call, so fall back to runtime-fs.
   if (code === "ENOEXT" || code === "ENOTREADY") return true;
   const message = err instanceof Error ? err.message : String(err);
-  return /Extension @workspace-extensions\/file-tools(?:\.\w+)? invocation failed: Extension is not installed|Extension is not running/.test(message);
+  return /Extension @workspace-extensions\/file-tools(?:\.\w+)? invocation failed: Extension is not installed|Extension is not running/.test(
+    message
+  );
 }
 
 /** Exposed for `find.ts` so it can apply the same RE2 / fallback policy. */
@@ -131,7 +132,7 @@ export function compileUserRegex(source: string, flags: string): RegexLike {
       // failure as a regular pattern error rather than crashing the tool.
       throw new Error(
         `RE2 could not compile pattern (likely uses unsupported features such as lookbehind or backreferences). ` +
-          `Rewrite the pattern using basic constructs.`,
+          `Rewrite the pattern using basic constructs.`
       );
     }
   }
@@ -140,13 +141,34 @@ export function compileUserRegex(source: string, flags: string): RegexLike {
 }
 
 const grepSchema = Type.Object({
-  pattern: Type.String({ description: "Search pattern (regex or literal string)" }),
-  path: Type.Optional(Type.String({ description: "Single directory or file to search (default: current directory). Do not pass a space-separated list; run separate grep calls for multiple roots." })),
-  glob: Type.Optional(Type.String({ description: "Filter files by glob pattern, e.g. '*.ts' or '**/*.spec.ts'" })),
-  ignoreCase: Type.Optional(Type.Boolean({ description: "Case-insensitive search (default: false)" })),
-  literal: Type.Optional(Type.Boolean({ description: "Treat pattern as literal string instead of regex (default: true; set false for regex)" })),
-  context: Type.Optional(Type.Number({ description: "Number of lines to show before and after each match (default: 0)" })),
-  limit: Type.Optional(Type.Number({ description: "Maximum number of matches to return (default: 100)" })),
+  pattern: Type.String({
+    description:
+      "Text to search for. Treated as a literal string by default; do not escape punctuation or set literal=false for code snippets like openPanel( unless you intentionally want a valid regex.",
+  }),
+  path: Type.Optional(
+    Type.String({
+      description:
+        "Single directory or file to search (default: current directory). Do not pass a space-separated list; run separate grep calls for multiple roots.",
+    })
+  ),
+  glob: Type.Optional(
+    Type.String({ description: "Filter files by glob pattern, e.g. '*.ts' or '**/*.spec.ts'" })
+  ),
+  ignoreCase: Type.Optional(
+    Type.Boolean({ description: "Case-insensitive search (default: false)" })
+  ),
+  literal: Type.Optional(
+    Type.Boolean({
+      description:
+        "Treat pattern as literal string instead of regex. Default: true. Leave unset/true for code, identifiers, function calls, paths, and punctuation. Set false only when pattern is a deliberate valid regex.",
+    })
+  ),
+  context: Type.Optional(
+    Type.Number({ description: "Number of lines to show before and after each match (default: 0)" })
+  ),
+  limit: Type.Optional(
+    Type.Number({ description: "Maximum number of matches to return (default: 100)" })
+  ),
 });
 
 export type GrepToolInput = Static<typeof grepSchema>;
@@ -206,7 +228,7 @@ const SKIP_DIRS = new Set([
 export function createGrepTool(
   cwd: string,
   fs: RuntimeFs,
-  deps?: GrepToolDeps,
+  deps?: GrepToolDeps
 ): AgentTool<typeof grepSchema, GrepToolDetails | undefined> {
   const fileTools = deps?.rpc
     ? createExtensionProxy<FileToolsApi>(deps.rpc, FILE_TOOLS_EXTENSION, () => false)
@@ -214,14 +236,9 @@ export function createGrepTool(
   return {
     name: "grep",
     label: "grep",
-    description: `Search file contents for a pattern. Returns matching lines with file paths and line numbers. Output is truncated to ${DEFAULT_LIMIT} matches or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Long lines are truncated to ${GREP_MAX_LINE_LENGTH} chars.`,
+    description: `Search file contents. Literal search is the default and should be used for code snippets, identifiers, paths, and punctuation; set literal=false only for intentional valid regex. Returns matching lines with file paths and line numbers. Output is truncated to ${DEFAULT_LIMIT} matches or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Long lines are truncated to ${GREP_MAX_LINE_LENGTH} chars.`,
     parameters: grepSchema,
-    execute: async (
-      _toolCallId,
-      input,
-      signal,
-      onUpdate,
-    ) => {
+    execute: async (_toolCallId, input, signal, onUpdate) => {
       const { pattern, path: searchDir, glob, ignoreCase, literal, context, limit } = input;
       const literalSearch = literal !== false;
       if (typeof pattern !== "string") {
@@ -396,7 +413,7 @@ export function createGrepTool(
 
       if (matchLimitReached) {
         notices.push(
-          `${effectiveLimit} matches limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`,
+          `${effectiveLimit} matches limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`
         );
         details.matchLimitReached = effectiveLimit;
       }
@@ -406,7 +423,7 @@ export function createGrepTool(
       }
       if (linesTruncated) {
         notices.push(
-          `Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines`,
+          `Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines`
         );
         details.linesTruncated = true;
       }
@@ -453,7 +470,7 @@ function rejectRedosShape(source: string): void {
     if (shape.test(source)) {
       throw new Error(
         `Refusing potentially catastrophic regex (matches structural shape ${shape.source}). ` +
-        `Rewrite the pattern or split it across multiple grep calls.`,
+          `Rewrite the pattern or split it across multiple grep calls.`
       );
     }
   }
@@ -462,12 +479,12 @@ function rejectRedosShape(source: string): void {
 /** Build a regex matcher from the user's pattern, honouring `literal` / `ignoreCase`. */
 function buildRegex(
   pattern: string,
-  { literal, ignoreCase }: { literal: boolean; ignoreCase: boolean },
+  { literal, ignoreCase }: { literal: boolean; ignoreCase: boolean }
 ): RegexLike {
   if (pattern.length > MAX_PATTERN_LENGTH) {
     throw new Error(
       `Pattern too long (${pattern.length} chars; max ${MAX_PATTERN_LENGTH}). ` +
-      `Long regexes are almost always pathological.`,
+        `Long regexes are almost always pathological.`
     );
   }
   const source = literal ? escapeRegex(pattern) : pattern;
@@ -533,7 +550,7 @@ async function walk(
   dir: string,
   out: string[],
   signal: AbortSignal | undefined,
-  shouldIncludeFile: (filePath: string) => boolean,
+  shouldIncludeFile: (filePath: string) => boolean
 ): Promise<void> {
   if (signal?.aborted) return;
   let entries: Dirent[];

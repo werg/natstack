@@ -52,11 +52,14 @@ Glob({ pattern: "panels/*/package.json" })
 
 ### Grep
 
-Search file contents with regex.
+Search file contents. Grep is literal by default; use that for code snippets,
+identifiers, function calls, paths, and punctuation. Set `literal: false` only
+when the pattern is an intentional valid regex.
 
 ```
 Grep({ pattern: "useState", path: "panels/my-app" })
-Grep({ pattern: "import.*runtime", type: "ts" })
+Grep({ pattern: "openPanel(", path: "packages/runtime" })
+Grep({ pattern: "import.*runtime", path: "panels/my-app", literal: false })
 ```
 
 ---
