@@ -259,14 +259,6 @@ describe("ViewManager", () => {
         height: 301,
       });
       expect(panelView.setVisible).toHaveBeenCalledWith(true);
-      expect(panelView.webContents.invalidate).toHaveBeenCalled();
-      const visibleCalls = (panelView.setVisible as Mock).mock.calls;
-      const falseIdx = visibleCalls.findIndex((c: unknown[]) => c[0] === false);
-      const trueAfterFalseIdx = visibleCalls.findIndex(
-        (c: unknown[], i: number) => i > falseIdx && c[0] === true
-      );
-      expect(falseIdx).toBeGreaterThanOrEqual(0);
-      expect(trueAfterFalseIdx).toBeGreaterThan(falseIdx);
       expect(panelView.webContents.focus).toHaveBeenCalled();
       expect(vm.isPanelSlotted("panel-1")).toBe(true);
     });

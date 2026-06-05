@@ -680,7 +680,6 @@ export class ViewManager {
     managed.visible = true;
     managed.view.setBounds(bounds);
     managed.view.setVisible(!this.shellOverlayActive);
-    this.wakeVisibleCompositor(managed);
 
     if (focused) {
       this.setFocusedNativePanelSlot(nativeSlotId);
@@ -996,7 +995,6 @@ export class ViewManager {
     const managed = this.views.get(slot.panelId);
     if (managed) {
       this.visiblePanelId = slot.panelId;
-      this.wakeVisibleCompositor(managed);
       this.focusVisibleView(managed);
     }
   }
@@ -1073,24 +1071,6 @@ export class ViewManager {
     this.lastVisibilityCycleTimeByView.set(managed.id, now);
     managed.view.setVisible(false);
     managed.view.setVisible(true);
-  }
-
-  /**
-   * Visible Electron child views can keep their renderer alive while Chromium's
-   * compositor surface is dropped under memory pressure. Reasserting visibility
-   * when we show or focus a panel gives the same recovery as switching away and
-   * back, without waiting for the slower capturePage stall detector.
-   */
-  private wakeVisibleCompositor(managed: ManagedView): void {
-    if (!managed.visible || this.shellOverlayActive || managed.view.webContents.isDestroyed()) {
-      return;
-    }
-    try {
-      managed.view.webContents.invalidate();
-      this.cycleCompositorVisibility(managed);
-    } catch {
-      // Best-effort compositor recovery only.
-    }
   }
 
   /**

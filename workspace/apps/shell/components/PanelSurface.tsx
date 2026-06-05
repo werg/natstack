@@ -38,13 +38,34 @@ export function PanelSurface({
   const lastBoundsRef = useRef<NativePanelSlotBounds | null>(null);
   const rafRef = useRef<number | null>(null);
   const retryTimerRef = useRef<number | null>(null);
+  const retryAttemptRef = useRef(0);
+  const syncSlotRef = useRef<(() => void) | null>(null);
 
   const clearRetry = useCallback(() => {
     if (retryTimerRef.current !== null) {
       window.clearTimeout(retryTimerRef.current);
       retryTimerRef.current = null;
     }
+    retryAttemptRef.current = 0;
   }, []);
+
+  const scheduleRetry = useCallback(
+    (reason: string) => {
+      if (retryTimerRef.current !== null) return;
+      const attempt = retryAttemptRef.current + 1;
+      retryAttemptRef.current = attempt;
+      if (attempt > 100) {
+        console.warn(`[PanelSurface] bind retry exhausted for ${panelId}: ${reason}`);
+        return;
+      }
+      const delayMs = Math.min(500, 50 * attempt);
+      retryTimerRef.current = window.setTimeout(() => {
+        retryTimerRef.current = null;
+        syncSlotRef.current?.();
+      }, delayMs);
+    },
+    [panelId]
+  );
 
   const clearSlot = useCallback(() => {
     if (!boundRef.current) return;
@@ -64,15 +85,14 @@ export function PanelSurface({
       lastBoundsRef.current = bounds;
       void view
         .bindNativePanelSlot({ nativeSlotId, panelId, bounds, focused })
+        .then(() => {
+          retryAttemptRef.current = 0;
+        })
         .catch((err: unknown) => {
           boundRef.current = false;
           const message = err instanceof Error ? err.message : String(err);
-          if (/Hosted shell is not ready/i.test(message)) {
-            clearRetry();
-            retryTimerRef.current = window.setTimeout(() => {
-              retryTimerRef.current = null;
-              syncSlot();
-            }, 50);
+          if (/Hosted shell is not ready|target is not a panel view/i.test(message)) {
+            scheduleRetry(message);
             return;
           }
           console.warn("[PanelSurface] bind failed:", err);
@@ -80,12 +100,15 @@ export function PanelSurface({
       return;
     }
 
+    retryAttemptRef.current = 0;
     if (sameBounds(lastBoundsRef.current, bounds)) return;
     lastBoundsRef.current = bounds;
     void view
       .updateNativePanelSlot({ nativeSlotId, bounds })
       .catch((err: unknown) => console.warn("[PanelSurface] bounds update failed:", err));
-  }, [clearRetry, focused, nativeSlotId, panelId]);
+  }, [focused, nativeSlotId, panelId, scheduleRetry]);
+
+  syncSlotRef.current = syncSlot;
 
   const scheduleSync = useCallback(() => {
     if (rafRef.current !== null) return;
