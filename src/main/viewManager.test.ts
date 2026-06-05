@@ -259,6 +259,14 @@ describe("ViewManager", () => {
         height: 301,
       });
       expect(panelView.setVisible).toHaveBeenCalledWith(true);
+      expect(panelView.webContents.invalidate).toHaveBeenCalled();
+      const visibleCalls = (panelView.setVisible as Mock).mock.calls;
+      const falseIdx = visibleCalls.findIndex((c: unknown[]) => c[0] === false);
+      const trueAfterFalseIdx = visibleCalls.findIndex(
+        (c: unknown[], i: number) => i > falseIdx && c[0] === true
+      );
+      expect(falseIdx).toBeGreaterThanOrEqual(0);
+      expect(trueAfterFalseIdx).toBeGreaterThan(falseIdx);
       expect(panelView.webContents.focus).toHaveBeenCalled();
       expect(vm.isPanelSlotted("panel-1")).toBe(true);
     });
@@ -845,6 +853,28 @@ describe("ViewManager", () => {
       // Third call after cooldown should cycle again
       vm.forceRepaint("cooldown-panel");
       expect(view.setVisible).toHaveBeenCalledTimes(2); // false + true
+    });
+
+    it("visibility cycle cooldown is scoped per view", () => {
+      const firstView = vm.createView({
+        id: "cooldown-panel-a",
+        type: "panel",
+      });
+      const secondView = vm.createView({
+        id: "cooldown-panel-b",
+        type: "panel",
+      });
+
+      vm.setViewVisible("cooldown-panel-a", true);
+      vm.setViewVisible("cooldown-panel-b", true);
+      (firstView.setVisible as Mock).mockClear();
+      (secondView.setVisible as Mock).mockClear();
+
+      vm.forceRepaint("cooldown-panel-a");
+      vm.forceRepaint("cooldown-panel-b");
+
+      expect(firstView.setVisible).toHaveBeenCalledTimes(2);
+      expect(secondView.setVisible).toHaveBeenCalledTimes(2);
     });
 
     it("forceRepaintVisiblePanel delegates to forceRepaint with visible panel ID", () => {

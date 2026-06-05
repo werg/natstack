@@ -1422,9 +1422,6 @@ importers:
       '@workspace/panel-browser':
         specifier: workspace:*
         version: link:../../packages/panel-browser
-      '@workspace/playwright-client':
-        specifier: workspace:*
-        version: link:../../packages/playwright-client
       '@workspace/pubsub':
         specifier: workspace:*
         version: link:../../packages/pubsub

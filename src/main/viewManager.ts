@@ -168,8 +168,8 @@ export class ViewManager {
   private compositorKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
   /** Timer for periodic compositor stall detection via capturePage */
   private compositorStallDetectorTimer: ReturnType<typeof setInterval> | null = null;
-  /** Timestamp of last visibility cycle, for cooldown to prevent feedback loops */
-  private lastVisibilityCycleTime = 0;
+  /** Timestamp of last visibility cycle per view, for cooldown to prevent feedback loops */
+  private lastVisibilityCycleTimeByView = new Map<string, number>();
 
   constructor(options: {
     window: BaseWindow;
@@ -554,6 +554,7 @@ export class ViewManager {
     }
 
     this.webContentsIdToViewId.delete(managed.view.webContents.id);
+    this.lastVisibilityCycleTimeByView.delete(id);
 
     // View destruction is a normal operation - no need to log
 
@@ -679,6 +680,7 @@ export class ViewManager {
     managed.visible = true;
     managed.view.setBounds(bounds);
     managed.view.setVisible(!this.shellOverlayActive);
+    this.wakeVisibleCompositor(managed);
 
     if (focused) {
       this.setFocusedNativePanelSlot(nativeSlotId);
@@ -994,6 +996,7 @@ export class ViewManager {
     const managed = this.views.get(slot.panelId);
     if (managed) {
       this.visiblePanelId = slot.panelId;
+      this.wakeVisibleCompositor(managed);
       this.focusVisibleView(managed);
     }
   }
@@ -1065,10 +1068,29 @@ export class ViewManager {
     // Cooldown: skip if called within the last 1000ms.
     // Breaks forceRepaint() → visibilitychange → forceRepaint() oscillation.
     const now = Date.now();
-    if (now - this.lastVisibilityCycleTime < 1000) return;
-    this.lastVisibilityCycleTime = now;
+    const lastCycleTime = this.lastVisibilityCycleTimeByView.get(managed.id) ?? 0;
+    if (now - lastCycleTime < 1000) return;
+    this.lastVisibilityCycleTimeByView.set(managed.id, now);
     managed.view.setVisible(false);
     managed.view.setVisible(true);
+  }
+
+  /**
+   * Visible Electron child views can keep their renderer alive while Chromium's
+   * compositor surface is dropped under memory pressure. Reasserting visibility
+   * when we show or focus a panel gives the same recovery as switching away and
+   * back, without waiting for the slower capturePage stall detector.
+   */
+  private wakeVisibleCompositor(managed: ManagedView): void {
+    if (!managed.visible || this.shellOverlayActive || managed.view.webContents.isDestroyed()) {
+      return;
+    }
+    try {
+      managed.view.webContents.invalidate();
+      this.cycleCompositorVisibility(managed);
+    } catch {
+      // Best-effort compositor recovery only.
+    }
   }
 
   /**
