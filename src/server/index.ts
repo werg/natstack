@@ -619,6 +619,8 @@ async function main() {
   const approvalQueue = createApprovalQueue({
     eventService,
     resolveTitle: (entityId) => entityTitleService.getTitle(entityId),
+    autoApprove:
+      process.env["NODE_ENV"] === "development" && process.env["NATSTACK_AUTO_APPROVE"] === "1",
   });
   const { ServerUnitApprovalCoordinator } = await import("./unitApprovalCoordinator.js");
   const unitApprovalCoordinator = new ServerUnitApprovalCoordinator({

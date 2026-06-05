@@ -5,7 +5,9 @@ import process from "node:process";
 const require = createRequire(import.meta.url);
 const electronBinary = require("electron");
 
-const extraArgs = process.argv.slice(2);
+const rawExtraArgs = process.argv.slice(2);
+const autoApprove = rawExtraArgs.includes("--auto-approve");
+const extraArgs = rawExtraArgs.filter((arg) => arg !== "--auto-approve");
 const args = [];
 
 const rendererMaxOldSpace = Number.parseInt(
@@ -24,6 +26,7 @@ const child = spawn(electronBinary, args, {
     ...process.env,
     // Increase Node.js memory limit for main process (3GB)
     NODE_OPTIONS: "--max-old-space-size=3072",
+    ...(autoApprove ? { NATSTACK_AUTO_APPROVE: "1" } : {}),
   },
 });
 

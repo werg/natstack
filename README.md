@@ -108,6 +108,7 @@ CLI and standalone server live from TypeScript. See [docs/cli.md](docs/cli.md).
 ## Scripts
 
 - `pnpm dev` - Build and start in development mode with DevTools
+- `pnpm dev -- --auto-approve` - Start dev mode and automatically approve decision-style approval prompts
 - `pnpm build` - Production build
 - `pnpm start` - Start the app (requires prior build)
 - `pnpm lint` - Run ESLint with strict rules

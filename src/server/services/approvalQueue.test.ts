@@ -122,6 +122,29 @@ describe("approvalQueue", () => {
     await expect(promise).resolves.toBe("once");
   });
 
+  it("auto-approves decision prompts without surfacing pending UI", async () => {
+    const emit = vi.fn();
+    const queue = createApprovalQueue({
+      eventService: { emit } as never,
+      autoApprove: true,
+    });
+
+    await expect(
+      queue.request({
+        kind: "capability",
+        callerId: "panel-1",
+        callerKind: "panel",
+        repoPath: "panels/example",
+        effectiveVersion: "hash-1",
+        capability: "external-browser-open",
+        title: "Open external browser",
+      })
+    ).resolves.toBe("once");
+
+    expect(queue.listPending()).toEqual([]);
+    expect(emit).not.toHaveBeenCalledWith("shell-approval:pending-changed", expect.anything());
+  });
+
   it("preserves severe capability approval tone in pending state", async () => {
     const { queue } = createQueue();
     const promise = queue.request({
@@ -621,6 +644,46 @@ describe("approvalQueue", () => {
       queue.resolveUserland(pending[0]!.approvalId, "allow");
       await expect(first).resolves.toEqual({ kind: "choice", choice: "allow" });
       await expect(second).resolves.toEqual({ kind: "choice", choice: "allow" });
+    });
+
+    it("auto-approves userland prompts using the primary option without surfacing pending UI", async () => {
+      const emit = vi.fn();
+      const queue = createApprovalQueue({
+        eventService: { emit } as never,
+        autoApprove: true,
+      });
+
+      await expect(queue.requestUserland(userlandRequest)).resolves.toEqual({
+        kind: "choice",
+        choice: "allow",
+      });
+
+      expect(queue.listPending()).toEqual([]);
+      expect(emit).not.toHaveBeenCalledWith("shell-approval:pending-changed", expect.anything());
+    });
+
+    it("auto-approves userland prompts with the first non-danger option when no primary exists", async () => {
+      const emit = vi.fn();
+      const queue = createApprovalQueue({
+        eventService: { emit } as never,
+        autoApprove: true,
+      });
+
+      await expect(
+        queue.requestUserland({
+          ...userlandRequest,
+          options: [
+            { value: "deny", label: "Deny", tone: "danger" },
+            { value: "allow_once", label: "Allow once", tone: "neutral" },
+          ],
+        })
+      ).resolves.toEqual({
+        kind: "choice",
+        choice: "allow_once",
+      });
+
+      expect(queue.listPending()).toEqual([]);
+      expect(emit).not.toHaveBeenCalledWith("shell-approval:pending-changed", expect.anything());
     });
 
     it("keeps different issuers with the same subject separate", () => {

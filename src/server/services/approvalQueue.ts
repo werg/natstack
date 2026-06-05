@@ -235,6 +235,10 @@ export interface ApprovalQueueWithListeners extends ApprovalQueue {
 
 export type SensitiveActionQueue = ApprovalQueue;
 
+export interface ApprovalQueueAutoApproveOptions {
+  decision?: GrantedDecision;
+}
+
 export function createApprovalQueue(deps: {
   eventService: EventService;
   /**
@@ -244,9 +248,12 @@ export function createApprovalQueue(deps: {
    * the UI.
    */
   resolveTitle?: (entityId: string) => string | undefined;
+  autoApprove?: ApprovalQueueAutoApproveOptions | boolean;
 }): ApprovalQueueWithListeners {
   const { eventService } = deps;
   const resolveTitle = deps.resolveTitle ?? (() => undefined);
+  const autoApproveDecision =
+    deps.autoApprove === true ? "once" : deps.autoApprove ? deps.autoApprove.decision : null;
   const entriesById = new Map<string, QueueEntry>();
   const entriesByDedupKey = new Map<string, QueueEntry>();
   const pendingListeners = new Set<(pending: PendingApproval[]) => void>();
@@ -619,8 +626,23 @@ export function createApprovalQueue(deps: {
     entry.deviceCodeWaiters.clear();
   }
 
+  function autoApproveUserlandChoice(options: UserlandApprovalOption[]): string {
+    const selected =
+      options.find((option) => option.tone === "primary") ??
+      options.find((option) => option.tone !== "danger") ??
+      options[0];
+    if (!selected) {
+      throw new Error("Cannot auto-approve a userland approval without options");
+    }
+    return selected.value;
+  }
+
   return {
     request(req) {
+      if (autoApproveDecision) {
+        return Promise.resolve(autoApproveDecision);
+      }
+
       const dedupKey = dedupKeyFor(req);
       let entry = entriesByDedupKey.get(dedupKey);
       let newEntry = false;
@@ -737,6 +759,13 @@ export function createApprovalQueue(deps: {
     },
 
     requestUserland(req) {
+      if (autoApproveDecision) {
+        return Promise.resolve({
+          kind: "choice",
+          choice: autoApproveUserlandChoice(req.options),
+        });
+      }
+
       const dedupKey = userlandDedupKeyFor(req);
       let entry = entriesByDedupKey.get(dedupKey);
       let newEntry = false;
