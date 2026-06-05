@@ -6,7 +6,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { PubSubClient, ParticipantMetadata } from "@workspace/pubsub";
+import type { Attachment, PubSubClient, ParticipantMetadata } from "@workspace/pubsub";
 import {
   actionBarPayloadFromChannelView,
   type ActionBarPayload,
@@ -61,6 +61,7 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
   const clientRef = useRef(client);
   const channelStateRef = useRef<ChannelViewState>(createInitialChannelViewState());
   const agenticMessageIdsRef = useRef(new Set<string>());
+  const attachmentsByMessageIdRef = useRef(new Map<string, Attachment[]>());
   const messageTypesSignatureRef = useRef("[]");
   const newestSeqRef = useRef<number | null>(null);
   clientRef.current = client;
@@ -101,7 +102,10 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
     const byId = byIdRef.current;
     const order = orderRef.current;
     const previousById = new Map(byId);
-    const projected = chatMessagesFromChannelView(channelStateRef.current);
+    const projected = chatMessagesFromChannelView(channelStateRef.current).map((message) => {
+      const attachments = attachmentsByMessageIdRef.current.get(message.id);
+      return attachments && attachments.length > 0 ? { ...message, attachments } : message;
+    });
     const projectedIds = new Set(projected.map((message) => message.id));
     for (const id of [...agenticMessageIdsRef.current]) {
       if (projectedIds.has(id)) continue;
@@ -139,6 +143,7 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
     newestSeqRef.current = null;
     channelStateRef.current = createInitialChannelViewState();
     agenticMessageIdsRef.current = new Set();
+    attachmentsByMessageIdRef.current = new Map();
     messageTypesSignatureRef.current = "[]";
     setMessageTypes([]);
     setHasMoreHistory(Boolean(client.hasMoreBefore));
@@ -156,10 +161,12 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
             pubsubId?: number;
             senderMetadata?: { name?: string; type?: string; handle?: string };
             ts?: number;
+            attachments?: WireAttachment[];
             payload?: AgenticEvent;
           };
 
           if (wire.type === AGENTIC_EVENT_PAYLOAD_KIND && wire.payload) {
+            rememberAttachments(attachmentsByMessageIdRef.current, wire.payload, wire.attachments);
             const envelope = pubsubAgenticEventToEnvelope(client.channelId, {
               pubsubId: wire.pubsubId,
               senderId: wire.senderId,
@@ -210,6 +217,7 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
         if (!payload) continue;
 
         if (raw.type === AGENTIC_EVENT_PAYLOAD_KIND && payload) {
+          rememberAttachments(attachmentsByMessageIdRef.current, payload as unknown as AgenticEvent, raw.attachments as WireAttachment[] | undefined);
           const envelope = pubsubAgenticEventToEnvelope(c.channelId, {
             pubsubId: raw.id,
             senderId: raw.senderId,
@@ -241,6 +249,7 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
       for (const raw of result.logEvents) {
         const payload = raw.payload as Record<string, unknown> | undefined;
         if (raw.type === AGENTIC_EVENT_PAYLOAD_KIND && payload) {
+          rememberAttachments(attachmentsByMessageIdRef.current, payload as unknown as AgenticEvent, raw.attachments as WireAttachment[] | undefined);
           const envelope = pubsubAgenticEventToEnvelope(c.channelId, {
             pubsubId: raw.id,
             senderId: raw.senderId,
@@ -262,6 +271,52 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
   return { messages, actionBar, messageTypes, hasMoreHistory, loadingMore, loadEarlierMessages, backfillAfterLocalPublish };
 }
 
+type WireAttachment = {
+  id?: string;
+  data?: string | Uint8Array;
+  mimeType: string;
+  filename?: string;
+  name?: string;
+  size?: number;
+};
+
+function rememberAttachments(
+  target: Map<string, Attachment[]>,
+  payload: AgenticEvent,
+  wireAttachments: WireAttachment[] | undefined
+): void {
+  const messageId = payload.causality?.messageId;
+  if (!messageId || !wireAttachments || wireAttachments.length === 0) return;
+  target.set(String(messageId), wireAttachments.map(wireAttachmentToAttachment));
+}
+
+function wireAttachmentToAttachment(attachment: WireAttachment): Attachment {
+  const data = typeof attachment.data === "string"
+    ? base64ToUint8Array(attachment.data)
+    : attachment.data instanceof Uint8Array
+      ? attachment.data
+      : new Uint8Array();
+  return {
+    id: attachment.id ?? "",
+    data,
+    mimeType: attachment.mimeType,
+    name: attachment.filename ?? attachment.name,
+  };
+}
+
+function base64ToUint8Array(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+function attachmentSignatures(attachments: Attachment[] | undefined): string[] {
+  return (attachments ?? []).map((attachment) =>
+    [attachment.id, attachment.mimeType, attachment.name, attachment.data.length].join(":")
+  );
+}
+
 function sameChatMessage(a: ChatMessage, b: ChatMessage): boolean {
   if (
     a.id !== b.id ||
@@ -277,6 +332,7 @@ function sameChatMessage(a: ChatMessage, b: ChatMessage): boolean {
     return false;
   }
   if (JSON.stringify(a.mentions ?? []) !== JSON.stringify(b.mentions ?? [])) return false;
+  if (JSON.stringify(attachmentSignatures(a.attachments)) !== JSON.stringify(attachmentSignatures(b.attachments))) return false;
   if (a.invocation !== b.invocation && JSON.stringify(a.invocation) !== JSON.stringify(b.invocation)) return false;
   if (a.approval !== b.approval && JSON.stringify(a.approval) !== JSON.stringify(b.approval)) return false;
   if (a.inlineUi !== b.inlineUi && JSON.stringify(a.inlineUi) !== JSON.stringify(b.inlineUi)) return false;

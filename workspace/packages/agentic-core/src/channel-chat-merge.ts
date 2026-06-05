@@ -292,8 +292,11 @@ function projectedMessageToChatMessages(message: ProjectedMessage): ChatMessage[
   });
   const failureReason = message.status === "failed" ? message.failureReason : undefined;
   const content = message.content.trim() || failureReason || message.content;
+  const hasRenderableBlocks = (message.blocks ?? []).some((block) =>
+    block.type === "attachment" || block.type === "data"
+  );
   const visibleContent = content.trim();
-  if (!visibleContent) return thinking;
+  if (!visibleContent && !hasRenderableBlocks) return thinking;
   if (lifecycle) {
     return [
       ...thinking,

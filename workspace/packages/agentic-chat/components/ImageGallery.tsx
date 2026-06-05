@@ -3,8 +3,8 @@
  */
 
 import { useState, useEffect, useMemo } from "react";
-import { Box, Dialog, Flex, IconButton, Text } from "@radix-ui/themes";
-import { Cross2Icon, DownloadIcon, ZoomInIcon } from "@radix-ui/react-icons";
+import { Box, Button, Dialog, Flex, IconButton, Text } from "@radix-ui/themes";
+import { Cross2Icon, DownloadIcon, ImageIcon, ZoomInIcon } from "@radix-ui/react-icons";
 import type { Attachment } from "@workspace/pubsub";
 import { formatBytes, createImagePreviewUrl, revokeImagePreviewUrl, isImageMimeType } from "../utils/imageUtils";
 
@@ -22,6 +22,7 @@ interface ImagePreview {
 export function ImageGallery({ attachments, maxVisible = 4 }: ImageGalleryProps) {
   const [selectedImage, setSelectedImage] = useState<ImagePreview | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   // Filter to only image attachments
   const imageAttachments = useMemo(
@@ -64,6 +65,20 @@ export function ImageGallery({ attachments, maxVisible = 4 }: ImageGalleryProps)
 
   return (
     <>
+      {!expanded ? (
+        <Flex mt="2">
+          <Button
+            size="1"
+            variant="soft"
+            color="gray"
+            onClick={() => setExpanded(true)}
+            title="Show attached images"
+          >
+            <ImageIcon />
+            {imageAttachments.length} attached image{imageAttachments.length > 1 ? "s" : ""}
+          </Button>
+        </Flex>
+      ) : (
       <Flex gap="2" wrap="wrap" mt="2">
         {visiblePreviews.map((preview, index) => (
           <Box
@@ -130,6 +145,7 @@ export function ImageGallery({ attachments, maxVisible = 4 }: ImageGalleryProps)
           </Flex>
         )}
       </Flex>
+      )}
 
       {/* Lightbox dialog */}
       <Dialog.Root open={selectedImage !== null} onOpenChange={(open) => !open && setSelectedImage(null)}>

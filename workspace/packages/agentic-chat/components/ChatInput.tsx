@@ -277,7 +277,7 @@ export function ChatInput() {
             </IconButton>
           </Flex>
         )}
-        <Flex align="end" gap="1">
+        <Flex align="stretch" gap="2">
           <Box style={{ position: "relative", flex: 1 }}>
             {mentions.open && (
               <MentionAutocomplete
@@ -310,22 +310,36 @@ export function ChatInput() {
               disabled={!connected}
             />
           </Box>
-          <Flex direction="column" gap="1">
+          <Flex className="chat-input-actions" direction="column" gap="1" align="center" justify="center">
             <IconButton
-              variant="ghost"
+              className="chat-input-action-button"
+              variant={showImageInput || pendingImages.length > 0 ? "soft" : "ghost"}
               size={iconButtonSize}
               onClick={toggleImageInput}
               disabled={!connected}
               color={pendingImages.length > 0 ? "blue" : "gray"}
-              title="Attach images"
+              title={pendingImages.length > 0 ? `${pendingImages.length} image${pendingImages.length > 1 ? "s" : ""} attached` : "Attach images"}
+              aria-label="Attach images"
             >
-              <ImageIcon />
+              <Box position="relative" asChild>
+                <span>
+                  <ImageIcon />
+                  {pendingImages.length > 0 && (
+                    <Text as="span" className="chat-input-attachment-count" size="1">
+                      {pendingImages.length}
+                    </Text>
+                  )}
+                </span>
+              </Box>
             </IconButton>
             <IconButton
+              className="chat-input-action-button chat-input-send-button"
               onClick={handleSendClick}
               disabled={!connected || (!input.trim() && pendingImages.length === 0)}
               size={iconButtonSize}
-              variant="soft"
+              variant="solid"
+              title="Send message"
+              aria-label="Send message"
             >
               <PaperPlaneIcon />
             </IconButton>
