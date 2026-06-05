@@ -847,6 +847,28 @@ describe("ViewManager", () => {
       expect(view.setVisible).toHaveBeenCalledTimes(2); // false + true
     });
 
+    it("visibility cycle cooldown is scoped per view", () => {
+      const firstView = vm.createView({
+        id: "cooldown-panel-a",
+        type: "panel",
+      });
+      const secondView = vm.createView({
+        id: "cooldown-panel-b",
+        type: "panel",
+      });
+
+      vm.setViewVisible("cooldown-panel-a", true);
+      vm.setViewVisible("cooldown-panel-b", true);
+      (firstView.setVisible as Mock).mockClear();
+      (secondView.setVisible as Mock).mockClear();
+
+      vm.forceRepaint("cooldown-panel-a");
+      vm.forceRepaint("cooldown-panel-b");
+
+      expect(firstView.setVisible).toHaveBeenCalledTimes(2);
+      expect(secondView.setVisible).toHaveBeenCalledTimes(2);
+    });
+
     it("forceRepaintVisiblePanel delegates to forceRepaint with visible panel ID", () => {
       const view = vm.createView({
         id: "visible-panel",

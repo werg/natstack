@@ -168,8 +168,8 @@ export class ViewManager {
   private compositorKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
   /** Timer for periodic compositor stall detection via capturePage */
   private compositorStallDetectorTimer: ReturnType<typeof setInterval> | null = null;
-  /** Timestamp of last visibility cycle, for cooldown to prevent feedback loops */
-  private lastVisibilityCycleTime = 0;
+  /** Timestamp of last visibility cycle per view, for cooldown to prevent feedback loops */
+  private lastVisibilityCycleTimeByView = new Map<string, number>();
 
   constructor(options: {
     window: BaseWindow;
@@ -554,6 +554,7 @@ export class ViewManager {
     }
 
     this.webContentsIdToViewId.delete(managed.view.webContents.id);
+    this.lastVisibilityCycleTimeByView.delete(id);
 
     // View destruction is a normal operation - no need to log
 
@@ -1065,8 +1066,9 @@ export class ViewManager {
     // Cooldown: skip if called within the last 1000ms.
     // Breaks forceRepaint() → visibilitychange → forceRepaint() oscillation.
     const now = Date.now();
-    if (now - this.lastVisibilityCycleTime < 1000) return;
-    this.lastVisibilityCycleTime = now;
+    const lastCycleTime = this.lastVisibilityCycleTimeByView.get(managed.id) ?? 0;
+    if (now - lastCycleTime < 1000) return;
+    this.lastVisibilityCycleTimeByView.set(managed.id, now);
     managed.view.setVisible(false);
     managed.view.setVisible(true);
   }
