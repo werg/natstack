@@ -18,7 +18,9 @@ export const RegisterMessageTypeArgsSchema = z.object({
   displayMode: z.enum(["inline", "row"]),
   source: SandboxSourceSchema,
   imports: z.record(z.string(), z.string()).optional(),
-  schemaSourceOrPath: z.unknown().optional(),
+  // A validator source: either a sandbox source (file/code) or a bare path string
+  // (sugar for { type: "file", path }). Compiled at the panel consume boundary.
+  schemaSourceOrPath: z.union([SandboxSourceSchema, z.string().min(1)]).optional(),
 }).strict();
 
 export const PublishCustomMessageArgsSchema = z.object({

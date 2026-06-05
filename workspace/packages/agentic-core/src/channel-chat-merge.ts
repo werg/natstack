@@ -149,7 +149,7 @@ export function messageTypeDefinitionsFromChannelView(
       definition.source = item.source;
     if (item.imports !== undefined) definition.imports = item.imports;
     if (item.schemaSourceOrPath !== undefined)
-      definition.schemaSourceOrPath = item.schemaSourceOrPath;
+      definition.schemaSourceOrPath = item.schemaSourceOrPath as SandboxSource | string;
     if (item.registeredBy !== undefined) definition.registeredBy = item.registeredBy;
     if (item.clearedAtSeq !== undefined) definition.clearedAtSeq = item.clearedAtSeq;
     return [definition];

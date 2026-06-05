@@ -29,8 +29,23 @@ The compiled module may export:
 | Export    | Purpose                                                                                                                                                                                                |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `default` | Required. React component receiving `{ typeId, state, expanded, displayMode, chat, scope, scopes }`. Render compact inline content when `expanded` is false and the full view when `expanded` is true. |
-| `reduce`  | Optional. `(state, update) => nextState`. Folds `custom.updated` payloads. Default: last update replaces state.                                                                                        |
-| `schema`  | Optional. Reserved for validation metadata.                                                                                                                                                            |
+| `Pill`    | Optional. A dedicated component for the collapsed inline view (`expanded === false`). When present it renders the bead and `default` only renders the expanded card. Same props as `default`.          |
+| `reduce`  | Optional. `(state, update) => nextState`. Folds `custom.updated` payloads. Default: last update replaces state. A throwing reducer is caught — the prior state is kept and folding continues.          |
+| `schema`  | Optional. A state validator: either a function `(state) => string[] \| string \| null` (return messages on failure, empty/null when valid) or a Zod-like object with `.safeParse(state)`.              |
+
+### Schema validation
+
+If the module exports `schema`, folded state is validated against it at the
+panel before the component renders. On failure the card shows a compact
+validation callout instead of handing bad state to the component (it never
+crashes the transcript). Validation runs at the render boundary only — never in
+the channel reducer — so it stays out of replay/fold determinism.
+
+The registration may instead carry `schemaSourceOrPath` (a `SandboxSource` or a
+bare file-path string) when the validator lives in its own module; it is
+compiled with the registration's `imports`, and the module's `schema` (or its
+default export) becomes the validator. A module-level `schema` export wins when
+both are present.
 
 ### Display modes
 
@@ -53,7 +68,7 @@ import type { PubSubClient } from "@workspace/pubsub";
 await client.registerMessageType({
   typeId: "weather",
   displayMode: "inline",
-  source: { type: "file", path: "workspace/panels/chat/examples/weather-message-type.tsx" },
+  source: { type: "file", path: "panels/chat/examples/weather-message-type.tsx" },
 });
 
 const { messageId } = await client.publishCustomMessage({
@@ -67,9 +82,19 @@ await client.updateCustomMessage(messageId, { tempF: 66, condition: "Clearing" }
 await client.clearMessageType("weather");
 ```
 
-The `source` is either `{ type: "file", path }` (context-relative) or
-`{ type: "code", code }` (inline TSX). `imports` accepts the same shape as
-`eval` / `inline_ui` (`{ "@pkg": "npm:^1.2.3" }` or workspace refs).
+The `source` is either `{ type: "file", path }` or `{ type: "code", code }`
+(inline TSX). `imports` accepts the same shape as `eval` / `inline_ui`
+(`{ "@pkg": "npm:^1.2.3" }` or workspace refs).
+
+File paths are **workspace-root-relative with no `workspace/` prefix** — the
+panel resolves them inside its context, whose root mirrors the workspace root
+(`skills/…`, `panels/…`, `packages/…`). Use `panels/chat/examples/foo.tsx`, not
+`workspace/panels/chat/examples/foo.tsx` (the latter resolves to a non-existent
+`<context>/workspace/…` and fails with ENOENT). This matches the action-bar file
+convention. The file must exist in the panel's context: it is copied from the
+working tree (uncommitted included) when the context is first created, so a file
+added to an already-open context's repo only appears in a freshly created
+context (or after the repo is re-synced).
 
 Cleared types are tombstoned at a sequence — re-registering re-activates the
 typeId without resurrecting previously cleared instances. Pagination and
@@ -90,58 +115,39 @@ See the working example in:
 
 ## From sandbox code (eval / inline_ui / action_bar / feedback_custom)
 
-The `chat` sandbox value exposes typed helpers for publishing and updating
-instances once the type is registered:
+The `chat` sandbox value exposes the same typed registry + instance helpers as a
+`PubSubClient`. Register once, then publish and update instances:
 
 ```ts
-const { messageId } = await chat.publishCustomMessage({
-  typeId: "weather",
-  initialState: { city: "San Francisco", tempF: 64, condition: "Cloudy" },
-  displayMode: "inline",
-});
-
-await chat.updateCustomMessage(messageId, { tempF: 66, condition: "Clearing" });
-```
-
-Registry operations still publish typed agentic events through
-`chat.publish("agentic.trajectory.v1/event", event)`:
-
-```ts
-import { AGENTIC_EVENT_PAYLOAD_KIND } from "@workspace/agentic-protocol";
-
 const typeId = "weather";
 
-// 1. Register the renderer (once per channel; safe to re-register).
-await chat.publish(AGENTIC_EVENT_PAYLOAD_KIND, {
-  kind: "messageType.registered",
-  actor: { kind: "agent", id: "agent" },
-  payload: {
-    protocol: "agentic.trajectory.v1",
-    typeId,
-    displayMode: "inline",
-    source: { type: "file", path: "workspace/panels/chat/examples/weather-message-type.tsx" },
-  },
-  createdAt: new Date().toISOString(),
+// 1. Register the renderer (once per channel; safe to re-register — a fresh
+//    registration bumps the seq and reloads the source).
+await chat.registerMessageType({
+  typeId,
+  displayMode: "inline",
+  source: { type: "file", path: "panels/chat/examples/weather-message-type.tsx" },
+  // imports: { "@radix-ui/themes": "npm:^3.2.1" }, // for file modules outside a radix package
 });
 
-// 2. Publish and update instances through the typed helpers.
+// 2. Publish and update instances.
 const { messageId } = await chat.publishCustomMessage({
   typeId,
   initialState: { city: "San Francisco", tempF: 64, condition: "Cloudy" },
+  displayMode: "inline",
 });
 await chat.updateCustomMessage(messageId, { tempF: 66, condition: "Clearing" });
+
+// 3. Look up or retire the type.
+const all = await chat.getMessageTypes();
+const weather = await chat.getMessageType(typeId);
+await chat.clearMessageType(typeId);
 ```
 
-Clearing a type:
-
-```ts
-await chat.publish(AGENTIC_EVENT_PAYLOAD_KIND, {
-  kind: "messageType.cleared",
-  actor: { kind: "agent", id: "agent" },
-  payload: { protocol: "agentic.trajectory.v1", typeId: "weather" },
-  createdAt: new Date().toISOString(),
-});
-```
+> Advanced: `registerMessageType` / `clearMessageType` are thin wrappers over
+> typed `messageType.registered` / `messageType.cleared` agentic events. You can
+> still hand-build those via `chat.publish(AGENTIC_EVENT_PAYLOAD_KIND, event)` if
+> you need full control, but prefer the helpers above.
 
 ## Authoring the renderer module
 
@@ -151,6 +157,13 @@ compilation pipeline as `inline_ui`. Imports follow the
 resolve, npm packages need `imports: { "pkg": "npm:^x.y.z" }` on the
 registration, and file-loaded modules infer bare imports from the nearest
 `package.json`.
+
+Relative imports work, so you can split a renderer across sibling files:
+`import { fmt } from "./helpers.js"` resolves to `helpers.ts`/`.tsx` (the
+written `.js` extension maps to the TS source), and `import type { Foo } from
+"./types.js"` is erased — the type-only module is never fetched into the
+context, so a shared types file needs no runtime presence. Value relative
+imports must exist in the panel's context like the renderer itself.
 
 ```tsx
 // workspace/panels/chat/examples/weather-message-type.tsx
@@ -224,6 +237,21 @@ Rules:
   events back to the channel.
 - The module is recompiled when `updatedAtSeq` advances (re-registration).
   Keep the module pure so identical re-registrations produce stable output.
+
+### `scope` / `scopes` semantics
+
+Each render receives the live panel REPL `scope` (shared mutable object) and the
+`scopes` persistence handle — the same ones `eval` and `inline_ui` see. Two
+rules follow:
+
+- **Authoritative, replayable data must live in the message `state`, not in
+  `scope`.** `scope` is panel-local and ephemeral: it is empty after reload and
+  on observer panels / replay, so a card that reads its data from `scope` will
+  render blank there. Embed what the card needs in `initialState` / updates
+  (bounded — the channel persists every byte). Use `scope` only for live,
+  best-effort enrichment that may be absent.
+- To persist interaction state across reloads, call `scopes.push()` (or publish
+  a `custom.updated`); do not keep authoritative state in component refs.
 
 ## Reducer semantics
 

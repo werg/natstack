@@ -307,6 +307,24 @@ export function useAgenticChat({
           idempotencyKey: opts?.idempotencyKey ?? crypto.randomUUID(),
         });
       },
+      registerMessageType: (input, opts) => {
+        return core.clientRef.current!.registerMessageType(
+          input,
+          opts?.idempotencyKey ? { idempotencyKey: opts.idempotencyKey } : undefined
+        );
+      },
+      clearMessageType: (typeId, opts) => {
+        return core.clientRef.current!.clearMessageType(
+          typeId,
+          opts?.idempotencyKey ? { idempotencyKey: opts.idempotencyKey } : undefined
+        );
+      },
+      getMessageType: (typeId) => {
+        return core.clientRef.current!.getMessageType(typeId);
+      },
+      getMessageTypes: () => {
+        return core.clientRef.current!.getMessageTypes();
+      },
       callMethod: async (
         pid: string,
         method: string,

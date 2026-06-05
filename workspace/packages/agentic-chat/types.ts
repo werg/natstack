@@ -208,7 +208,17 @@ export interface ChatContextValue {
 }
 
 export type MessageTypeRegistryEntry =
-  | { status: "ready"; definition: MessageTypeDefinition; module: import("@workspace/agentic-core").MessageTypeModule; cacheKey: string }
+  | {
+      status: "ready";
+      definition: MessageTypeDefinition;
+      module: import("@workspace/agentic-core").MessageTypeModule;
+      cacheKey: string;
+      /**
+       * Validator resolved at registration time. Prefers the module's own
+       * `schema` export; falls back to a compiled `schemaSourceOrPath`.
+       */
+      validator?: import("@workspace/agentic-core").CustomMessageValidator;
+    }
   | { status: "loading" }
   | { status: "error"; message: string };
 

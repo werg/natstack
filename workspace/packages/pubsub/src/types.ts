@@ -94,7 +94,7 @@ export interface MessageTypeDefinition {
   displayMode: CustomMessageDisplayMode;
   source: SandboxSource;
   imports?: Record<string, string>;
-  schemaSourceOrPath?: unknown;
+  schemaSourceOrPath?: SandboxSource | string;
   registeredBy?: { kind: string; id: string; displayName?: string; metadata?: Record<string, unknown> };
   updatedAtSeq: number;
   clearedAtSeq?: number;
@@ -105,7 +105,7 @@ export interface RegisterMessageTypeInput {
   displayMode: CustomMessageDisplayMode;
   source: SandboxSource;
   imports?: Record<string, string>;
-  schemaSourceOrPath?: unknown;
+  schemaSourceOrPath?: SandboxSource | string;
 }
 
 /**

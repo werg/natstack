@@ -12,8 +12,10 @@
 import type {
   ChatParticipantMetadata,
   CustomMessageDisplayMode,
+  MessageTypeDefinition,
   MethodDefinition,
   Participant,
+  RegisterMessageTypeInput,
 } from "@workspace/pubsub";
 import type { RecoveryCoordinator } from "@natstack/shared/shell/recoveryCoordinator";
 import type { ScopesApi } from "@workspace/eval";
@@ -112,6 +114,20 @@ export interface ChatSandboxValue {
     update: unknown,
     options?: { idempotencyKey?: string }
   ) => Promise<number | undefined>;
+  /** Register (or refresh) a custom message renderer on the channel. */
+  registerMessageType: (
+    input: RegisterMessageTypeInput,
+    options?: { idempotencyKey?: string }
+  ) => Promise<number | undefined>;
+  /** Retire a custom message renderer (tombstones the typeId at the current seq). */
+  clearMessageType: (
+    typeId: string,
+    options?: { idempotencyKey?: string }
+  ) => Promise<number | undefined>;
+  /** Look up a single registered message type (null when absent/cleared). */
+  getMessageType: (typeId: string) => Promise<MessageTypeDefinition | null>;
+  /** List all registered message types on the channel. */
+  getMessageTypes: () => Promise<MessageTypeDefinition[]>;
   /** Call a participant method and resolve to the provider's result payload. */
   callMethod: (
     participantId: string,

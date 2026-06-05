@@ -3,7 +3,7 @@ import { Badge, Box, Callout, Card, Flex, Spinner, Text } from "@radix-ui/themes
 import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
 import { EventErrorBoundary } from "@workspace/tool-ui/components/EventErrorBoundary";
 import type { CustomMessageCardPayload } from "@workspace/agentic-core";
-import { foldCustomMessageState } from "@workspace/agentic-core";
+import { foldCustomMessageState, validateCustomState } from "@workspace/agentic-core";
 import type { MessageTypeComponentEntry } from "../types";
 
 interface CustomRenderProps {
@@ -35,7 +35,18 @@ function CustomRenderer({
   scopes,
 }: ReadyCustomRenderProps) {
   const state = useFoldedState(payload, entry);
-  const Component = entry.module.default;
+  // Validate folded state against the registered schema (if any) before handing
+  // it to the component. Surface a clear error instead of crashing the renderer.
+  const validationErrors = useMemo(
+    () => validateCustomState(entry.validator ?? entry.module.schema, state),
+    [entry, state],
+  );
+  if (validationErrors) {
+    return <CustomMessageValidationError typeId={payload.typeId} errors={validationErrors} compact={!expanded} />;
+  }
+  // Prefer a dedicated `Pill` export for the collapsed inline view; otherwise the
+  // default component handles both states via `expanded`.
+  const Component = (!expanded && entry.module.Pill) || entry.module.default;
   if (!Component) {
     return <Text size="1" color="blue" weight="medium">{payload.typeId}</Text>;
   }
@@ -227,6 +238,38 @@ function CustomMessageErrorFallback({
         <Flex direction="column" gap="1">
           <Text size="1" weight="medium">Custom message error: {typeId}</Text>
           <Text size="1" color="red">{error.message || "Unknown error"}</Text>
+        </Flex>
+      </Text>
+    </Callout.Root>
+  );
+}
+
+function CustomMessageValidationError({
+  typeId,
+  errors,
+  compact = false,
+}: {
+  typeId: string;
+  errors: string[];
+  compact?: boolean;
+}) {
+  if (compact) {
+    return (
+      <Flex align="center" gap="1" title={errors.join("; ")}>
+        <Badge color="amber" size="1">Invalid</Badge>
+        <Text size="1" color="amber" weight="medium">{typeId}</Text>
+      </Flex>
+    );
+  }
+  return (
+    <Callout.Root color="amber" size="1">
+      <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
+      <Text as="div" size="2" className="rt-CalloutText">
+        <Flex direction="column" gap="1">
+          <Text size="1" weight="medium">Invalid {typeId} state</Text>
+          {errors.map((message, index) => (
+            <Text key={index} size="1" color="amber">{message}</Text>
+          ))}
         </Flex>
       </Text>
     </Callout.Root>

@@ -41,6 +41,7 @@ import type {
   AttachmentInput,
   AgentDebugPayload,
   IncomingEvent,
+  RegisterMessageTypeInput,
 } from "@workspace/pubsub";
 import {
   AGENTIC_EVENT_PAYLOAD_KIND,
@@ -371,6 +372,22 @@ export class HeadlessSession {
         if (!this._client) throw new Error("Not connected");
         return this._client.updateCustomMessage(messageId, update, options);
       },
+      registerMessageType: async (input: RegisterMessageTypeInput, options?: { idempotencyKey?: string }) => {
+        if (!this._client) throw new Error("Not connected");
+        return this._client.registerMessageType(input, options);
+      },
+      clearMessageType: async (typeId: string, options?: { idempotencyKey?: string }) => {
+        if (!this._client) throw new Error("Not connected");
+        return this._client.clearMessageType(typeId, options);
+      },
+      getMessageType: async (typeId: string) => {
+        if (!this._client) throw new Error("Not connected");
+        return this._client.getMessageType(typeId);
+      },
+      getMessageTypes: async () => {
+        if (!this._client) throw new Error("Not connected");
+        return this._client.getMessageTypes();
+      },
       callMethod: async (participantId: string, method: string, args: unknown, options?: { timeoutMs?: number; signal?: AbortSignal }) => {
         if (!this._client) throw new Error("Not connected");
         const handle = this._client.callMethod(participantId, method, args, options);
@@ -613,6 +630,7 @@ export class HeadlessSession {
     if (this._disposed) return;
     this._disposed = true;
     this.disconnect();
+    this._scopeManager?.dispose();
     this._messageListeners.clear();
   }
 

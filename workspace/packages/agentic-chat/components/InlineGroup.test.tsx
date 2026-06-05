@@ -109,12 +109,14 @@ describe("InlineGroup custom messages", () => {
     expect(screen.getByText("renderer exploded")).toBeTruthy();
   });
 
-  it("isolates reducer errors before custom renderers run", () => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
+  it("keeps prior state when a reducer throws instead of blanking the card", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
     const item = customItem();
     item.payload.updates = [{ seq: 2, update: { city: "Paris" } }];
     item.payload.lastSeq = 2;
     const entry = customEntry();
+    // Render the folded state's city so we can prove the prior state survived.
+    entry.module.default = ({ state }) => <span>city: {(state as { city?: string })?.city ?? "none"}</span>;
     entry.module.reduce = () => {
       throw new Error("reduce exploded");
     };
@@ -129,7 +131,49 @@ describe("InlineGroup custom messages", () => {
       />,
     );
 
-    expect(screen.getByText("Custom message error: weather")).toBeTruthy();
-    expect(screen.getByText("reduce exploded")).toBeTruthy();
+    // No error fallback; the seed state (Berlin) is preserved, Paris dropped.
+    expect(screen.queryByText("Custom message error: weather")).toBeNull();
+    expect(screen.getByText("city: Berlin")).toBeTruthy();
+  });
+
+  it("renders a dedicated Pill export for the collapsed inline view", () => {
+    const entry = customEntry();
+    entry.module.Pill = ({ expanded }) => <span>pill {expanded ? "open" : "closed"}</span>;
+
+    render(
+      <InlineGroup
+        items={[customItem()]}
+        messageTypeComponents={new Map([["weather", entry]])}
+      />,
+    );
+
+    // Collapsed bead uses Pill, not the default component.
+    expect(screen.getByText("pill closed")).toBeTruthy();
+    expect(screen.queryByText("collapsed inline")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    // Expanded view falls back to the default component.
+    expect(screen.getByText("expanded inline")).toBeTruthy();
+  });
+
+  it("surfaces a validation callout when the schema rejects state", () => {
+    const entry = customEntry();
+    entry.module.schema = (state: unknown) =>
+      (state as { city?: string })?.city ? null : ["missing city"];
+    const item = customItem();
+    item.payload.initialState = {}; // no city -> invalid
+
+    render(
+      <CustomMessageCard
+        payload={item.payload}
+        entry={entry}
+        chat={{}}
+        scope={{}}
+        scopes={{}}
+      />,
+    );
+
+    expect(screen.getByText("Invalid weather state")).toBeTruthy();
+    expect(screen.getByText("missing city")).toBeTruthy();
   });
 });

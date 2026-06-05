@@ -3,7 +3,9 @@ import type { PubSubClient } from "@workspace/pubsub";
 import {
   compileMessageTypeModule,
   type ChatMessage,
+  type CustomMessageValidator,
   type MessageTypeDefinition,
+  type MessageTypeModule,
 } from "@workspace/agentic-core";
 import type { LoadSourceFile, SandboxOptions } from "@workspace/eval";
 import type { MessageTypeComponentEntry } from "../../types";
@@ -108,6 +110,9 @@ export function useMessageTypeRegistry({
           loadSourceFile,
           loadImport,
         });
+        const validator = result.success && result.module
+          ? await resolveValidator(definition, result.module, { loadSourceFile, loadImport })
+          : undefined;
         if (cancelled) return;
         setEntries((prev) => {
           const next = new Map(prev);
@@ -117,6 +122,7 @@ export function useMessageTypeRegistry({
               definition,
               module: result.module,
               cacheKey: result.cacheKey ?? `${definition.typeId}:${definition.updatedAtSeq}`,
+              validator,
             });
           } else {
             next.set(definition.typeId, {
@@ -199,4 +205,38 @@ export function useMessageTypeRegistry({
   }, [client, messages]);
 
   return { messageTypeComponents: entries };
+}
+
+/**
+ * Resolve a state validator for a registered type. Prefers the module's own
+ * `schema` export; otherwise compiles the registration's `schemaSourceOrPath`
+ * (a SandboxSource or a bare file path) and uses its `schema`/default export.
+ */
+async function resolveValidator(
+  definition: MessageTypeDefinition,
+  module: MessageTypeModule,
+  opts: { loadSourceFile?: LoadSourceFile; loadImport?: SandboxOptions["loadImport"] },
+): Promise<CustomMessageValidator | undefined> {
+  if (module.schema) return module.schema as CustomMessageValidator;
+  const raw = definition.schemaSourceOrPath;
+  if (!raw) return undefined;
+  const schemaSource = typeof raw === "string" ? { type: "file" as const, path: raw } : raw;
+  try {
+    const code = schemaSource.type === "file"
+      ? await opts.loadSourceFile?.(schemaSource.path)
+      : schemaSource.code;
+    if (!code) return undefined;
+    const result = await compileMessageTypeModule(code, {
+      imports: definition.imports,
+      sourcePath: schemaSource.type === "file" ? schemaSource.path : undefined,
+      loadSourceFile: opts.loadSourceFile,
+      loadImport: opts.loadImport,
+    });
+    if (!result.success || !result.module) return undefined;
+    const validator = result.module.schema ?? result.module.default;
+    return validator as CustomMessageValidator | undefined;
+  } catch (err) {
+    console.warn(`[useMessageTypeRegistry] failed to compile schema for ${definition.typeId}:`, err);
+    return undefined;
+  }
 }

@@ -85,9 +85,11 @@ export type {
 export {
   compileMessageTypeModule,
   foldCustomMessageState,
+  validateCustomState,
 } from "./custom-message-types.js";
 export type {
   CustomMessageComponentProps,
+  CustomMessageValidator,
   MessageTypeModule,
 } from "./custom-message-types.js";
 

@@ -4,7 +4,7 @@ export async function registerWeatherMessageDemo(client: PubSubClient): Promise<
   await client.registerMessageType({
     typeId: "weather",
     displayMode: "inline",
-    source: { type: "file", path: "workspace/panels/chat/examples/weather-message-type.tsx" },
+    source: { type: "file", path: "panels/chat/examples/weather-message-type.tsx" },
   });
 
   const { messageId } = await client.publishCustomMessage({

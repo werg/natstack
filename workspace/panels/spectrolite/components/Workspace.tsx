@@ -340,6 +340,26 @@ export function Workspace({
       if (!c) throw new Error("Channel client not ready");
       return c.updateCustomMessage(messageId, update, options);
     },
+    registerMessageType: async (input, options) => {
+      const c = clientRef.current;
+      if (!c) throw new Error("Channel client not ready");
+      return c.registerMessageType(input, options);
+    },
+    clearMessageType: async (typeId, options) => {
+      const c = clientRef.current;
+      if (!c) throw new Error("Channel client not ready");
+      return c.clearMessageType(typeId, options);
+    },
+    getMessageType: async (typeId) => {
+      const c = clientRef.current;
+      if (!c) throw new Error("Channel client not ready");
+      return c.getMessageType(typeId);
+    },
+    getMessageTypes: async () => {
+      const c = clientRef.current;
+      if (!c) throw new Error("Channel client not ready");
+      return c.getMessageTypes();
+    },
     callMethod: async (pid, method, callArgs) => {
       const c = clientRef.current;
       if (!c) throw new Error("Channel client not ready");

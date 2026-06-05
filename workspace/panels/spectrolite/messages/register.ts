@@ -11,8 +11,8 @@ import type { PubSubClient } from "@workspace/pubsub";
 export const KB_USER_EDIT_TYPE = "kb.user_edit";
 export const KB_COMMIT_TYPE = "kb.commit";
 
-const KB_USER_EDIT_PATH = "workspace/panels/spectrolite/messages/kb-user-edit.tsx";
-const KB_COMMIT_PATH = "workspace/panels/spectrolite/messages/kb-commit.tsx";
+const KB_USER_EDIT_PATH = "panels/spectrolite/messages/kb-user-edit.tsx";
+const KB_COMMIT_PATH = "panels/spectrolite/messages/kb-commit.tsx";
 
 export async function registerSpectroliteMessageTypes(client: PubSubClient): Promise<void> {
   const existing = await client.getMessageTypes().catch(() => []);

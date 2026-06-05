@@ -37,7 +37,7 @@ export type CustomMessageDisplayMode = "inline" | "row";
 interface BaseMessageTypeDefinition {
   typeId: string;
   imports?: Record<string, string>;
-  schemaSourceOrPath?: unknown;
+  schemaSourceOrPath?: SandboxSource | string;
   registeredBy?: {
     kind: string;
     id: string;
