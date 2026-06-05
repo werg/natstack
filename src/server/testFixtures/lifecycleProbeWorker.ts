@@ -26,6 +26,18 @@ export class LifecycleProbeDO extends DurableObjectBase {
     this.record("resume", input);
   }
 
+  override async alarm(): Promise<void> {
+    await super.alarm();
+    this.record("alarm", { firedAt: "redacted" });
+  }
+
+  /** Schedule a server-driven alarm `delayMs` from now (negative = already due). */
+  scheduleAlarm(delayMs: number): { ok: true } {
+    this.ensureReady();
+    this.setAlarm(delayMs);
+    return { ok: true };
+  }
+
   lifecycleEvents(): Array<{ kind: string; input: unknown; bootGeneration: string | null }> {
     this.ensureReady();
     return this.sql
@@ -47,7 +59,7 @@ export class LifecycleProbeDO extends DurableObjectBase {
     return typeof value === "string" ? value : null;
   }
 
-  private record(kind: "prepare" | "resume", input: unknown): void {
+  private record(kind: "prepare" | "resume" | "alarm", input: unknown): void {
     this.ensureReady();
     this.sql.exec(
       `INSERT INTO lifecycle_probe_events (kind, input_json, boot_generation)

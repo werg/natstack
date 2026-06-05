@@ -16,6 +16,7 @@
 
 import { constantTimeStringEqual, type TokenManager } from "@natstack/shared/tokenManager";
 import { assertPresent } from "../lintHelpers";
+import { isInternalDOSource } from "./internalDOs/internalDoLoader.js";
 
 // ---------------------------------------------------------------------------
 // DORef — source-scoped Durable Object identity
@@ -35,10 +36,27 @@ export function doRefKey(ref: DORef): string {
   return `${ref.source}:${ref.className}/${ref.objectKey}`;
 }
 
-/** Build the /_w/ URL path for a DO method call. */
+/**
+ * Pack a userland DO ref into a single object key for the UniversalDO facet
+ * host: `source|className|userKey`, each segment `encodeURIComponent`-escaped
+ * (which escapes `|`), so the split back is unambiguous. Mirrored by the
+ * generated `universal-do` host's `decodeKey`.
+ */
+export function encodeUniversalKey(ref: DORef): string {
+  return [ref.source, ref.className, ref.objectKey].map(encodeURIComponent).join("|");
+}
+
+/**
+ * Build the workerd dispatch URL for a DO method call.
+ *  - Internal DOs (WorkspaceDO, …) keep static per-class namespaces: `/_w/…`.
+ *  - Userland DOs route through the UniversalDO facet host: `/_u/{packedKey}/…`.
+ */
 export function doRefUrl(ref: DORef, method: string): string {
-  const sourcePath = ref.source.split("/").map(encodeURIComponent).join("/");
   const methodPath = method.split("/").map(encodeURIComponent).join("/");
+  if (!isInternalDOSource(ref.source)) {
+    return `/_u/${encodeURIComponent(encodeUniversalKey(ref))}/${methodPath}`;
+  }
+  const sourcePath = ref.source.split("/").map(encodeURIComponent).join("/");
   return `/_w/${sourcePath}/${encodeURIComponent(ref.className)}/${encodeURIComponent(ref.objectKey)}/${methodPath}`;
 }
 
@@ -383,6 +401,40 @@ export class DODispatch {
       throw new Error("DODispatch: no dispatcher configured");
     }
     return await this.dispatcher(doRefUrl(ref, lifecycleMethod), [arg]);
+  }
+
+  /**
+   * Fire a server-driven `__alarm` on a DO. Mirrors `dispatchLifecycle`'s
+   * server-caller envelope (so the DO can gate `__alarm` to the server) and
+   * ensureDO-on-missing retry (a hibernated/cold DO is woken to handle it).
+   */
+  async dispatchAlarm(ref: DORef): Promise<unknown> {
+    await Promise.resolve(this.beforeDispatchFn?.(ref));
+
+    if (this.tokenManager && this.getWorkerdUrl && this.getWorkerdGatewayToken) {
+      const buildDeps = (): PostToDOWithTokenDeps => ({
+        tokenManager: assertPresent(this.tokenManager),
+        workerdUrl: assertPresent(this.getWorkerdUrl)(),
+        workerdGatewayToken: assertPresent(this.getWorkerdGatewayToken)(),
+        dispatchSecret: this.getDispatchSecret ? this.getDispatchSecret() : undefined,
+      });
+      const serverCaller: DOCallerEnvelope = { callerId: "main", callerKind: "server" };
+      try {
+        return await postToDOWithToken(ref, "__alarm", [], buildDeps(), "main", serverCaller);
+      } catch (err) {
+        if (this.ensureDOFn && this.isRetryable(err)) {
+          await this.ensureDOFn(ref.source, ref.className, ref.objectKey);
+          await Promise.resolve(this.beforeDispatchFn?.(ref));
+          return await postToDOWithToken(ref, "__alarm", [], buildDeps(), "main", serverCaller);
+        }
+        throw err;
+      }
+    }
+
+    if (!this.dispatcher) {
+      throw new Error("DODispatch: no dispatcher configured");
+    }
+    return await this.dispatcher(doRefUrl(ref, "__alarm"), []);
   }
 
   private isRetryable(err: unknown): boolean {

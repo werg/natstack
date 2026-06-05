@@ -29,9 +29,13 @@ import {
   getPlatformPackageBinaryPath,
 } from "@natstack/shared/runtimePaths";
 import { getInternalDOBundle, isInternalDOSource } from "./internalDOs/internalDoLoader.js";
+import { encodeUniversalKey } from "./doDispatch.js";
 import { assertPresent } from "../lintHelpers";
 
 const log = createDevLogger("WorkerdManager");
+/** uniqueKey of the single static namespace that hosts all userland DO facets.
+ *  workerd stores its facet SQLite under `<disk>/<this>/<hostHash>.*`. */
+const UNIVERSAL_DO_UNIQUE_KEY = "natstack:universal-do";
 const DEFAULT_WORKERD_STARTUP_READY_TIMEOUT_MS = 15_000;
 const WORKERD_STARTUP_OUTPUT_LINES = 40;
 declare const __filename: string | undefined;
@@ -92,10 +96,9 @@ export interface RestartReadyEvent extends RestartBeginEvent {
 // Types
 // ---------------------------------------------------------------------------
 
-export type WorkerBinding =
-  | { type: "service"; worker: string }
-  | { type: "text"; value: string }
-  | { type: "json"; value: unknown };
+// Worker→worker calls go through the RPC relay, not a live workerd capability,
+// so there is no `service` binding — only serializable data bindings.
+export type WorkerBinding = { type: "text"; value: string } | { type: "json"; value: unknown };
 
 export interface WorkerCreateOptions {
   source: string;
@@ -130,6 +133,11 @@ export interface WorkerInstance {
   buildKey?: string;
   /** Git ref this instance is built at (branch, tag, or commit SHA). */
   ref?: string;
+  /** Monotonic version bumped on every create/update. The dynamic worker host
+   *  keys its loader cache on `${name}@${codeVersion}`, so any change to code,
+   *  env, bindings, ref, or stateArgs forces a fresh isolate (old ones idle out).
+   *  This is what lets worker update/rebuild take effect with no workerd restart. */
+  codeVersion: number;
   status: "building" | "starting" | "running" | "stopped" | "error";
 }
 
@@ -159,6 +167,16 @@ export interface WorkerdManagerDeps {
   /** Singleton registry — joins routes' (source,className) to object keys. */
   singletonRegistry?: SingletonRegistry;
   getProxyPort: (caller: VerifiedCaller) => Promise<number | null> | number | null;
+  /** Shared attributed-by-header egress listener port for the dynamic worker
+   *  host. Identity travels in the `X-NatStack-Egress-Caller` header (stamped
+   *  by the host's EgressGateway from non-forgeable props), gated by
+   *  `egressSecret`. Distinct from `getProxyPort` (per-caller ports, still used
+   *  by static DO services). */
+  getSharedEgressPort: () => Promise<number>;
+  /** Register/unregister a live worker's VerifiedCaller so the shared egress
+   *  listener can resolve the header id → full caller for attribution. */
+  registerEgressCaller: (callerId: string, caller: VerifiedCaller) => void;
+  unregisterEgressCaller: (callerId: string) => void;
   getWorkerdGatewayToken: () => string;
   /** Override for tests; production uses the default router readiness window. */
   workerdStartupReadyTimeoutMs?: number;
@@ -216,6 +234,16 @@ export class WorkerdManager {
   private restartReadyHooks = new Set<(event: RestartReadyEvent) => Promise<void> | void>();
   /** Per-manager secret required by the generated router for direct DO dispatch. */
   private readonly dispatchSecret = crypto.randomBytes(32).toString("hex");
+  /** Per-process secret gating the loopback `/_workercode` + `/_workerversion`
+   *  endpoints. Bound only into the static worker-host service, so worker code +
+   *  per-instance env (RPC tokens, STATE_ARGS) are unreachable with ordinary
+   *  panel/worker credentials. */
+  private readonly loaderSecret = crypto.randomBytes(32).toString("hex");
+  /** Per-process secret the host's EgressGateway stamps on forwarded egress so
+   *  the shared egress listener trusts the `X-NatStack-Egress-Caller` header. */
+  private readonly egressSecret = crypto.randomBytes(32).toString("hex");
+  /** Resolved shared egress listener port (memoized after first start). */
+  private sharedEgressPort: number | null = null;
 
   constructor(deps: WorkerdManagerDeps) {
     this.deps = deps;
@@ -466,6 +494,7 @@ export class WorkerdManager {
       bindings: {},
       stateArgs,
       ref: args.ref,
+      codeVersion: 1,
       status: "building",
     };
 
@@ -476,7 +505,8 @@ export class WorkerdManager {
       instance.buildKey = buildResult.metadata.ev;
       instance.status = "starting";
 
-      await this.restartWorkerd();
+      this.registerEgressCaller(instance);
+      await this.ensureWorkerdRunning();
 
       instance.status = "running";
       log.info(`Worker entity "${targetId}" started (source: ${args.source})`);
@@ -495,6 +525,7 @@ export class WorkerdManager {
     } catch (error) {
       instance.status = "error";
       this.instances.delete(name);
+      this.deps.unregisterEgressCaller(callerId);
       this.revokeWorkerBearer(callerId);
       log.error(`Failed to start worker entity "${targetId}":`, error);
       throw error;
@@ -517,6 +548,7 @@ export class WorkerdManager {
       }
     }
 
+    this.deps.unregisterEgressCaller(callerId);
     this.revokeWorkerBearer(callerId);
     this.deps.fsService.closeHandlesForCaller(callerId);
     await this.deps.cleanupWebhookSubscriptions?.(callerId);
@@ -533,11 +565,11 @@ export class WorkerdManager {
     foundInstance.status = "stopped";
     this.instances.delete(foundName);
 
-    if (this.instances.size > 0 || this.doServices.size > 0) {
-      await this.restartWorkerd();
-    } else {
-      await this.stopWorkerd();
-    }
+    // No restart: the worker host is static and loads code on demand, so a
+    // destroyed worker simply stops being addressable (its `/_workerversion`
+    // 404s and its cached isolate idles out). Only stop workerd when nothing
+    // is left to serve.
+    await this.stopWorkerdIfIdle();
 
     log.info(`Worker entity "${callerId}" stopped`);
   }
@@ -584,6 +616,7 @@ export class WorkerdManager {
       bindings: options.bindings ?? {},
       stateArgs: options.stateArgs,
       ref: options.ref,
+      codeVersion: 1,
       status: "building",
     };
 
@@ -595,8 +628,11 @@ export class WorkerdManager {
       instance.buildKey = buildResult.metadata.ev;
       instance.status = "starting";
 
-      // Restart workerd process with updated config
-      await this.restartWorkerd();
+      // Register the worker for attributed egress, then ensure the dynamic
+      // worker host is up. The host loads this instance's code on demand via
+      // `/_workercode` — no per-worker config, no restart.
+      this.registerEgressCaller(instance);
+      await this.ensureWorkerdRunning();
 
       instance.status = "running";
       log.info(`Worker instance "${name}" started (source: ${options.source})`);
@@ -616,12 +652,38 @@ export class WorkerdManager {
       // Rollback: clean up token, context registration, and instance map entry
       instance.status = "error";
       this.instances.delete(name);
+      this.deps.unregisterEgressCaller(callerId);
       this.revokeWorkerBearer(callerId);
       log.error(`Failed to start worker "${name}":`, error);
       throw error;
     }
 
     return instance;
+  }
+
+  /**
+   * Build a VerifiedCaller for a live worker instance and register it for
+   * attributed egress through the shared listener. Called on create; matched by
+   * `unregisterEgressCaller(callerId)` on destroy.
+   */
+  private registerEgressCaller(instance: WorkerInstance): void {
+    const caller = createVerifiedCaller(instance.callerId, "worker", {
+      callerId: instance.callerId,
+      callerKind: "worker",
+      repoPath: instance.source,
+      effectiveVersion: instance.buildKey ?? "unknown",
+    });
+    this.deps.registerEgressCaller(instance.callerId, caller);
+  }
+
+  /**
+   * Start workerd if it isn't already running. Idempotent. Unlike
+   * `restartWorkerd`, this never tears down a live process — the worker host and
+   * router are static, so worker lifecycle never needs a restart.
+   */
+  private async ensureWorkerdRunning(): Promise<void> {
+    if (this.process && this.process.exitCode === null) return;
+    await this.restartWorkerd();
   }
 
   async destroyInstance(name: string): Promise<void> {
@@ -631,6 +693,7 @@ export class WorkerdManager {
     }
 
     // Cleanup
+    this.deps.unregisterEgressCaller(instance.callerId);
     this.revokeWorkerBearer(instance.callerId);
     this.deps.fsService.closeHandlesForCaller(instance.callerId);
     await this.deps.cleanupWebhookSubscriptions?.(instance.callerId);
@@ -646,14 +709,17 @@ export class WorkerdManager {
 
     instance.status = "stopped";
 
-    // Restart workerd if there are remaining instances or DO services
-    if (this.instances.size > 0 || this.doServices.size > 0) {
-      await this.restartWorkerd();
-    } else {
-      await this.stopWorkerd();
-    }
+    // No restart — see stopWorker. Only stop workerd when nothing remains.
+    await this.stopWorkerdIfIdle();
 
     log.info(`Worker instance "${name}" destroyed`);
+  }
+
+  /** Stop workerd only when no workers and no DO services remain to serve. */
+  private async stopWorkerdIfIdle(): Promise<void> {
+    if (this.instances.size === 0 && this.doServices.size === 0) {
+      await this.stopWorkerd();
+    }
   }
 
   async updateInstance(
@@ -670,10 +736,11 @@ export class WorkerdManager {
     if (updates.stateArgs !== undefined) instance.stateArgs = updates.stateArgs;
     if (updates.ref !== undefined) instance.ref = updates.ref || undefined;
 
-    // Restart workerd with new config
-    await this.restartWorkerd();
+    // Bump the loader-cache version so the host reloads fresh code+env on the
+    // next request. No workerd restart — the host is static.
+    instance.codeVersion += 1;
 
-    log.info(`Worker instance "${name}" updated`);
+    log.info(`Worker instance "${name}" updated (codeVersion ${instance.codeVersion})`);
     return instance;
   }
 
@@ -729,6 +796,88 @@ export class WorkerdManager {
     return this.dispatchSecret;
   }
 
+  /** Secret gating `/_workercode` + `/_workerversion`. The gateway validates
+   *  the inbound `X-NatStack-Loader-Secret` header against this. */
+  getLoaderSecret(): string {
+    return this.loaderSecret;
+  }
+
+  /** Secret the shared egress listener requires on attributed requests. */
+  getEgressSecret(): string {
+    return this.egressSecret;
+  }
+
+  /**
+   * Current loader-cache version for a worker instance, or null if no such
+   * instance exists. Served by `GET /_workerversion/{name}`; the host keys its
+   * loader id on `${name}@${version}` so update/rebuild forces a fresh isolate.
+   */
+  getWorkerVersion(name: string): number | null {
+    return this.instances.get(name)?.codeVersion ?? null;
+  }
+
+  /**
+   * Serializable code + env for a worker instance, for the dynamic worker host.
+   * Carries only data — capability bindings (globalOutbound) are attached by the
+   * host at load time. Returns null if no such instance exists.
+   */
+  async getWorkerCode(name: string): Promise<{
+    compatibilityDate: string;
+    compatibilityFlags: string[];
+    mainModule: string;
+    modules: Record<string, string>;
+    env: Record<string, unknown>;
+    callerId: string;
+  } | null> {
+    const instance = this.instances.get(name);
+    if (!instance) return null;
+
+    const buildResult = await this.deps.getBuild(instance.source, instance.ref);
+    instance.buildKey = buildResult.metadata.ev;
+    const bundleContent = primaryTextArtifactContent(buildResult);
+
+    // WorkerCode `env` (unlike the old capnp config) supports non-string values
+    // natively — so `json` bindings / STATE_ARGS / aliases keep their PARSED
+    // (object/array) shape, exactly as the old workerd `json` bindings exposed
+    // them. The /_workercode JSON round-trips them losslessly.
+    const env: Record<string, unknown> = {
+      RPC_AUTH_TOKEN: instance.token,
+      WORKER_ID: instance.name,
+      WORKER_SOURCE: instance.source,
+      CONTEXT_ID: instance.contextId,
+      GATEWAY_URL: this.deps.getServerUrl(),
+      WORKERD_BOOT_GENERATION: String(this.configBootGeneration()),
+    };
+    if (instance.parentId) env["PARENT_ID"] = instance.parentId;
+    if (instance.parentEntityId) env["PARENT_ENTITY_ID"] = instance.parentEntityId;
+    if (instance.parentKind) env["PARENT_KIND"] = instance.parentKind;
+    const gatewayAliases = this.deps.getServerAliasUrls?.() ?? [];
+    if (gatewayAliases.length > 0) {
+      env["GATEWAY_URL_ALIASES"] = [...gatewayAliases];
+    }
+    if (instance.stateArgs && Object.keys(instance.stateArgs).length > 0) {
+      env["STATE_ARGS"] = instance.stateArgs;
+    }
+    // User-defined env (text only).
+    for (const [key, value] of Object.entries(instance.env)) {
+      env[key] = value;
+    }
+    // Typed bindings are serializable data only — `text` is a string, `json`
+    // keeps its parsed object value; both pass through as-is.
+    for (const [key, binding] of Object.entries(instance.bindings)) {
+      env[key] = binding.value;
+    }
+
+    return {
+      compatibilityDate: "2024-01-01",
+      compatibilityFlags: ["nodejs_compat"],
+      mainModule: "worker.js",
+      modules: { "worker.js": bundleContent },
+      env,
+      callerId: instance.callerId,
+    };
+  }
+
   getDoCodeIdentity(
     source: string,
     className: string
@@ -743,39 +892,117 @@ export class WorkerdManager {
     };
   }
 
+  /**
+   * Current loader-cache version for a userland DO class (its build's effective
+   * version), or null if the class isn't registered. Served by
+   * `GET /_doversion/{source}/{className}`; the UniversalDO host keys its loader
+   * id on `source:className@version` so a rebuild forces a fresh isolate.
+   */
+  getDoVersion(source: string, className: string): string | null {
+    const svc = this.doServices.get(`${source}:${className}`);
+    if (!svc || isInternalDOSource(source)) return null;
+    return svc.buildKey;
+  }
+
+  /**
+   * Serializable code + env for a userland DO class, for the UniversalDO facet
+   * host. Mirrors the per-class DO service bindings the old static config
+   * generated. Capability bindings (globalOutbound) are attached by the host.
+   * Returns null if the class isn't a registered userland DO.
+   */
+  async getDoCode(
+    source: string,
+    className: string
+  ): Promise<{
+    compatibilityDate: string;
+    compatibilityFlags: string[];
+    mainModule: string;
+    modules: Record<string, string>;
+    /** Extra pre-compiled wasm modules, base64 (e.g. terminal/Ink `yoga.wasm`).
+     *  The UniversalDO host decodes these to ArrayBuffers for the loader. */
+    wasmModules?: Record<string, string>;
+    env: Record<string, string>;
+  } | null> {
+    const serviceKey = `${source}:${className}`;
+    const svc = this.doServices.get(serviceKey);
+    if (!svc || isInternalDOSource(source)) return null;
+
+    const buildResult = await this.deps.getBuild(source);
+    svc.buildKey = buildResult.metadata.ev;
+    const bundleContent = primaryTextArtifactContent(buildResult);
+    // Terminal (Ink) DOs import a pre-compiled `yoga.wasm` module — it must be
+    // loaded alongside the JS bundle (the only way to run WASM in workerd).
+    const wasmModules: Record<string, string> = {};
+    for (const artifact of buildResult.artifacts) {
+      if (artifact.role === "wasm") wasmModules[artifact.path] = artifact.content;
+    }
+
+    // Service-level token shared by all instances of this source:className —
+    // matches the old `do-service:*` workerd bearer (NOT an entity id).
+    const serviceCallerId = `do-service:${serviceKey}`;
+    const serviceToken = this.ensureWorkerBearer(serviceCallerId);
+    // Keep the egress attribution registered for this class identity.
+    this.registerDoEgressCaller(source, className, svc.buildKey);
+
+    const env: Record<string, string> = {
+      RPC_AUTH_TOKEN: serviceToken,
+      WORKER_SOURCE: source,
+      WORKER_CLASS_NAME: className,
+      WORKERD_SESSION_ID: this.sessionId,
+      WORKERD_BOOT_GENERATION: String(this.configBootGeneration()),
+      GATEWAY_URL: this.deps.getServerUrl(),
+    };
+    if (this.port) env["WORKERD_URL"] = `http://127.0.0.1:${this.port}`;
+    const gatewayAliases = this.deps.getServerAliasUrls?.() ?? [];
+    if (gatewayAliases.length > 0) {
+      env["GATEWAY_URL_ALIASES"] = JSON.stringify(gatewayAliases);
+    }
+
+    return {
+      compatibilityDate: "2025-12-01",
+      compatibilityFlags: ["nodejs_compat"],
+      mainModule: "worker.js",
+      modules: { "worker.js": bundleContent },
+      ...(Object.keys(wasmModules).length > 0 ? { wasmModules } : {}),
+      env,
+    };
+  }
+
+  /** Register a userland DO class's identity (`source:className`) for attributed
+   *  egress through the shared listener. The UniversalDO host stamps this id. */
+  private registerDoEgressCaller(source: string, className: string, buildKey: string): void {
+    const identity = `${source}:${className}`;
+    const caller = createVerifiedCaller(`do-service:${identity}`, "worker", {
+      callerId: `do-service:${identity}`,
+      callerKind: "worker",
+      repoPath: source,
+      effectiveVersion: buildKey,
+    });
+    this.deps.registerEgressCaller(identity, caller);
+  }
+
   // =========================================================================
   // Config generation
   // =========================================================================
 
   private async generateConfig(): Promise<object> {
     const services: object[] = [];
-    const instanceNames: string[] = [];
 
     // Collect DO service names that have been emitted (to avoid duplicating in regular loop)
     const doServiceNames = new Set<string>();
 
-    // ── DO services (one workerd service per source:className) ──
+    // ── Internal DO services (one workerd service per source:className) ──
+    // Userland DO classes do NOT get per-class services — they load
+    // dynamically into the static `universal-do` facet host (built below), so a
+    // new userland DO class needs no config change and no workerd restart.
+    // Internal DOs (WorkspaceDO, ScopeStoreDO, …) stay static (foundational).
     for (const [serviceKey, doService] of this.doServices) {
+      if (!isInternalDOSource(doService.source)) continue;
       const { className } = doService;
-      let bundleContent: string;
-      // Terminal (Ink) DOs ship a `yoga.wasm` artifact that workerd must load as
-      // a pre-compiled wasm module binding (the only way to run WASM in workerd).
-      let yogaWasmBase64: string | null = null;
-      try {
-        if (isInternalDOSource(doService.source)) {
-          const buildResult = getInternalDOBundle();
-          bundleContent = buildResult.bundle;
-          doService.buildKey = buildResult.buildKey;
-        } else {
-          const buildResult = await this.deps.getBuild(doService.source);
-          bundleContent = primaryTextArtifactContent(buildResult);
-          doService.buildKey = buildResult.metadata.ev;
-          yogaWasmBase64 = buildResult.artifacts.find((a) => a.role === "wasm")?.content ?? null;
-        }
-      } catch (err) {
-        log.warn(`Skipping DO service "${serviceKey}" — build not available:`, err);
-        continue;
-      }
+      // Internal DOs ship as a single pre-built bundle (no wasm artifacts).
+      const internalBundle = getInternalDOBundle();
+      const bundleContent = internalBundle.bundle;
+      doService.buildKey = internalBundle.buildKey;
 
       doServiceNames.add(doService.serviceName);
 
@@ -825,12 +1052,7 @@ export class WorkerdManager {
       }
 
       const workerDef: Record<string, unknown> = {
-        modules: [
-          { name: "worker.js", esModule: bundleContent },
-          // Pre-compiled wasm module binding for terminal (Ink/yoga) DOs. The
-          // worker bundle imports "yoga.wasm" and instantiates it synchronously.
-          ...(yogaWasmBase64 ? [{ name: "yoga.wasm", wasm: yogaWasmBase64 }] : []),
-        ],
+        modules: [{ name: "worker.js", esModule: bundleContent }],
         bindings,
         compatibilityDate: "2025-12-01",
         // `nodejs_compat` gives worker DOs access to the Node-compatible
@@ -862,107 +1084,10 @@ export class WorkerdManager {
       });
     }
 
-    // ── Regular (non-durable) worker services ──
-    for (const [name, instance] of this.instances) {
-      // Get the build for this instance (content-addressed — ref builds are cached).
-      let bundleContent: string;
-      try {
-        const buildResult = await this.deps.getBuild(instance.source, instance.ref);
-        bundleContent = primaryTextArtifactContent(buildResult);
-        instance.buildKey = buildResult.metadata.ev;
-      } catch (err) {
-        log.warn(`Skipping worker "${name}" — build not available:`, err);
-        continue;
-      }
-
-      instanceNames.push(name);
-
-      // Build bindings array
-      const bindings: object[] = [
-        { name: "RPC_AUTH_TOKEN", text: instance.token },
-        { name: "WORKER_ID", text: instance.name },
-        { name: "WORKER_SOURCE", text: instance.source },
-        { name: "CONTEXT_ID", text: instance.contextId },
-        { name: "GATEWAY_URL", text: this.deps.getServerUrl() },
-        { name: "WORKERD_BOOT_GENERATION", text: String(this.configBootGeneration()) },
-      ];
-      if (instance.parentId) {
-        bindings.push({ name: "PARENT_ID", text: instance.parentId });
-      }
-      if (instance.parentEntityId) {
-        bindings.push({ name: "PARENT_ENTITY_ID", text: instance.parentEntityId });
-      }
-      if (instance.parentKind) {
-        bindings.push({ name: "PARENT_KIND", text: instance.parentKind });
-      }
-      const gatewayAliases = this.deps.getServerAliasUrls?.() ?? [];
-      if (gatewayAliases.length > 0) {
-        bindings.push({ name: "GATEWAY_URL_ALIASES", json: JSON.stringify(gatewayAliases) });
-      }
-      // Inject stateArgs as a JSON binding so workers can access initial state
-      if (instance.stateArgs && Object.keys(instance.stateArgs).length > 0) {
-        bindings.push({ name: "STATE_ARGS", json: JSON.stringify(instance.stateArgs) });
-      }
-
-      // Add user-defined env as text bindings
-      for (const [key, value] of Object.entries(instance.env)) {
-        bindings.push({ name: key, text: value });
-      }
-
-      // Add typed bindings
-      for (const [key, binding] of Object.entries(instance.bindings)) {
-        switch (binding.type) {
-          case "service":
-            bindings.push({ name: key, service: { name: binding.worker } });
-            break;
-          case "text":
-            bindings.push({ name: key, text: binding.value });
-            break;
-          case "json":
-            bindings.push({ name: key, json: JSON.stringify(binding.value) });
-            break;
-        }
-      }
-
-      const networkServiceName = `${name}_network`;
-      const workerCaller = createVerifiedCaller(instance.callerId, "worker", {
-        callerId: instance.callerId,
-        callerKind: "worker",
-        repoPath: instance.source,
-        effectiveVersion: instance.buildKey ?? "unknown",
-      });
-      const proxyPort = await this.deps.getProxyPort(workerCaller);
-      if (!proxyPort) {
-        throw new Error("Egress proxy port not available");
-      }
-
-      // Build workerd service config.
-      //
-      // workerd's open-source config schema has no per-worker resource-limits
-      // field. If we want CPU/subrequest enforcement in this stack, it has to
-      // happen above workerd (for example via AbortSignal-based request guards),
-      // not in the generated worker config.
-      const workerDef: {
-        modules: object[];
-        bindings: object[];
-        compatibilityDate: string;
-        globalOutbound?: string;
-      } = {
-        modules: [{ name: "worker.js", esModule: bundleContent }],
-        bindings,
-        compatibilityDate: "2024-01-01",
-        globalOutbound: networkServiceName,
-      };
-
-      services.push({ name, worker: workerDef });
-      services.push({
-        name: networkServiceName,
-        external: {
-          address: `127.0.0.1:${proxyPort}`,
-          http: { forwardedProtoHeader: "X-Forwarded-Proto" },
-        },
-      });
-    }
+    // Regular (non-durable) workers are NOT services anymore. They load
+    // dynamically into the static `worker-host` service (built below) via
+    // `env.LOADER`, so worker create/update/destroy never regenerates config
+    // or restarts workerd. Per-instance code+env is served by `/_workercode`.
 
     // Collect DO class info for router generation (only those whose service was successfully built).
     // Each entry carries both the actual className (for workerd namespace binding) and the source
@@ -975,13 +1100,87 @@ export class WorkerdManager {
         serviceName: svc.serviceName,
       }));
 
-    // Auto-generate router worker
-    const hasAnyService = instanceNames.length > 0 || doClassNames.length > 0;
+    // Auto-generate router worker + the static dynamic-worker host.
+    const hasUserlandDOs = Array.from(this.doServices.values()).some(
+      (svc) => !isInternalDOSource(svc.source)
+    );
+    const hasAnyService = this.instances.size > 0 || doClassNames.length > 0 || hasUserlandDOs;
     if (hasAnyService) {
-      const routerBindings: object[] = instanceNames.map((name) => ({
-        name: `worker_${name.replace(/[^a-zA-Z0-9_]/g, "_")}`,
-        service: { name },
-      }));
+      // ── Static `worker-host` service: loads regular workers dynamically ──
+      // Always present whenever workerd runs, so worker create/destroy never
+      // restarts. Reached via the router's WORKER_HOST service binding.
+      const gatewayHost = new URL(this.deps.getServerUrl()).host;
+      const sharedEgressPort = await this.deps.getSharedEgressPort();
+      services.push({
+        name: "worker-host",
+        worker: {
+          modules: [{ name: "host.js", esModule: this.generateWorkerHostCode() }],
+          // `experimental` is required for `env.LOADER` (workerLoader) and
+          // `ctx.exports`. The host MUST carry it; loaded workers must NOT.
+          compatibilityFlags: ["nodejs_compat", "experimental"],
+          compatibilityDate: "2025-12-01",
+          bindings: [
+            { name: "LOADER", workerLoader: { id: "workers" } },
+            { name: "GATEWAY", service: { name: "worker-host-gateway" } },
+            { name: "EGRESS", service: { name: "worker-host-egress" } },
+            { name: "WORKERD_LOADER_SECRET", text: this.loaderSecret },
+            { name: "WORKERD_EGRESS_SECRET", text: this.egressSecret },
+          ],
+        },
+      });
+      services.push({
+        name: "worker-host-gateway",
+        external: { address: gatewayHost, http: {} },
+      });
+      services.push({
+        name: "worker-host-egress",
+        external: {
+          address: `127.0.0.1:${sharedEgressPort}`,
+          http: { forwardedProtoHeader: "X-Forwarded-Proto" },
+        },
+      });
+
+      // ── Static `universal-do` service: hosts ALL userland DO classes as
+      // durable facets, loaded dynamically via `env.LOADER`. A new userland DO
+      // class needs no config change and no workerd restart — just `/_docode`.
+      // Reuses the worker-host gateway + egress external services.
+      const universalDoStoragePath = path.join(
+        this.deps.statePath,
+        ".databases",
+        "workerd-universal-do"
+      );
+      fs.mkdirSync(universalDoStoragePath, { recursive: true });
+      services.push({
+        name: "universal-do",
+        worker: {
+          modules: [{ name: "udo.js", esModule: this.generateUniversalDOCode() }],
+          compatibilityFlags: ["nodejs_compat", "experimental"],
+          compatibilityDate: "2025-12-01",
+          bindings: [
+            { name: "LOADER", workerLoader: { id: "userland-dos" } },
+            { name: "GATEWAY", service: { name: "worker-host-gateway" } },
+            { name: "EGRESS", service: { name: "worker-host-egress" } },
+            { name: "WORKERD_LOADER_SECRET", text: this.loaderSecret },
+            { name: "WORKERD_EGRESS_SECRET", text: this.egressSecret },
+          ],
+          durableObjectNamespaces: [
+            { className: "UniversalDO", uniqueKey: UNIVERSAL_DO_UNIQUE_KEY, enableSql: true },
+          ],
+          durableObjectStorage: { localDisk: "universal-do-disk" },
+        },
+      });
+      services.push({
+        name: "universal-do-disk",
+        disk: { path: universalDoStoragePath, writable: true },
+      });
+
+      const routerBindings: object[] = [
+        { name: "WORKER_HOST", service: { name: "worker-host" } },
+        {
+          name: "UNIVERSAL_DO",
+          durableObjectNamespace: { className: "UniversalDO", serviceName: "universal-do" },
+        },
+      ];
 
       // Add DO namespace bindings for the router (durableObjectNamespace, not service).
       // Binding names are source-scoped to match the generated router lookup.
@@ -993,7 +1192,7 @@ export class WorkerdManager {
         });
       }
 
-      const routerCode = this.generateRouterCode(instanceNames, doClassNames);
+      const routerCode = this.generateRouterCode(doClassNames);
       routerBindings.push({
         name: "WORKERD_GATEWAY_TOKEN",
         text: this.deps.getWorkerdGatewayToken(),
@@ -1048,14 +1247,8 @@ export class WorkerdManager {
   }
 
   private generateRouterCode(
-    instanceNames: string[],
     doClassNames: { className: string; source: string; serviceName: string }[] = []
   ): string {
-    const cases = instanceNames.map((name) => {
-      const bindingName = `worker_${name.replace(/[^a-zA-Z0-9_]/g, "_")}`;
-      return `    if (prefix === ${JSON.stringify(name)}) return env.${bindingName}.fetch(new Request(newUrl, strippedRequest));`;
-    });
-
     // Build DO lookup map: "source:className" → binding name.
     // The lookup key combines source + className so same-named classes from different sources
     // dispatch to different workerd services.
@@ -1098,6 +1291,22 @@ ${doLookupEntries.join(",\n")}
 `;
     }
 
+    // /_u/{encodedKey}/{...method} — userland DO via the UniversalDO facet host.
+    // encodedKey already packs source|className|userKey (encoded by doDispatch),
+    // so there is no arbitrary-depth ambiguity here. The host decodes it.
+    const universalBlock = `
+    if (prefix === "_u") {
+      const encodedKey = parts[1] ? decodeURIComponent(parts[1]) : "";
+      if (!encodedKey) return new Response("Usage: /_u/{key}/{method}", { status: 400 });
+      const id = env.UNIVERSAL_DO.idFromName(encodedKey);
+      const stub = env.UNIVERSAL_DO.get(id);
+      const doRest = parts.slice(2);
+      const doUrl = new URL("/" + encodeURIComponent(encodedKey) + (doRest.length ? "/" + doRest.join("/") : ""), url.origin);
+      doUrl.search = url.search;
+      return stub.fetch(new Request(doUrl, strippedRequest));
+    }
+`;
+
     return `export default {
   async fetch(request, env) {
     const expectedAuth = "Bearer " + env.WORKERD_GATEWAY_TOKEN;
@@ -1116,16 +1325,195 @@ ${doLookupEntries.join(",\n")}
     if (prefix === "__natstack_workerd_ready") {
       return new Response(null, { status: 204 });
     }
-    if (prefix === "_w" && request.headers.get("X-NatStack-Dispatch-Secret") !== env.WORKERD_DISPATCH_SECRET) {
+    if ((prefix === "_w" || prefix === "_u") && request.headers.get("X-NatStack-Dispatch-Secret") !== env.WORKERD_DISPATCH_SECRET) {
       return new Response("Forbidden", { status: 403 });
     }
-    const rest = "/" + parts.slice(1).join("/");
-    const newUrl = new URL(rest, url.origin);
-    newUrl.search = url.search;
-${doBlock}${cases.join("\n")}
-    return new Response("Worker not found: " + prefix, { status: 404 });
+${doBlock}${universalBlock}
+    // All non-DO traffic → the static worker host, which loads the named
+    // worker dynamically. The host parses parts[0] as the instance name, so
+    // forward the full path (auth already stripped).
+    return env.WORKER_HOST.fetch(strippedRequest);
   }
 };
+`;
+  }
+
+  /**
+   * Generate the static `worker-host` module. It loads regular workers
+   * dynamically via `env.LOADER` (Cloudflare Worker Loaders), keyed on
+   * `${name}@${version}` so updates/rebuilds force a fresh isolate without a
+   * workerd restart. It attaches non-forgeable per-load egress identity via the
+   * `ctx.exports.EgressGateway` loopback binding (the dynamic worker never sees
+   * the props), and forwards outbound traffic through the shared attributed
+   * egress listener.
+   *
+   * This code is constant (no per-instance interpolation) — the only thing that
+   * changes per worker is the data served by `/_workercode` + `/_workerversion`.
+   */
+  private generateWorkerHostCode(): string {
+    return `import { WorkerEntrypoint } from "cloudflare:workers";
+
+// Static egress gateway. Identity arrives via non-forgeable per-load props and
+// is stamped onto every outbound subrequest; the dynamic worker cannot forge it
+// (its own ctx.props is empty). Forwards to the shared attributed egress proxy.
+export class EgressGateway extends WorkerEntrypoint {
+  async fetch(request) {
+    const id = (this.ctx.props && this.ctx.props.id) || "";
+    const headers = new Headers(request.headers);
+    headers.set("X-NatStack-Egress-Caller", id);
+    headers.set("X-NatStack-Egress-Secret", this.env.WORKERD_EGRESS_SECRET);
+    return this.env.EGRESS.fetch(new Request(request, { headers }));
+  }
+}
+
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    const parts = url.pathname.split("/").filter(Boolean);
+    const name = parts[0] ? decodeURIComponent(parts[0]) : "";
+    if (!name) return new Response("worker-host: missing instance name", { status: 400 });
+
+    const loaderHeaders = { "X-NatStack-Loader-Secret": env.WORKERD_LOADER_SECRET };
+
+    // Current loader-cache version (tiny). 404 → no such worker (destroyed or
+    // never created); a stale isolate, if any, is simply never re-addressed.
+    const vres = await env.GATEWAY.fetch(
+      new Request("http://gateway/_workerversion/" + encodeURIComponent(name), { headers: loaderHeaders })
+    );
+    if (vres.status === 404) return new Response("Worker not found: " + name, { status: 404 });
+    if (!vres.ok) return new Response("worker-host: version lookup failed (" + vres.status + ")", { status: 502 });
+    const version = (await vres.json()).version;
+
+    const stub = env.LOADER.get(name + "@" + version, async () => {
+      const cres = await env.GATEWAY.fetch(
+        new Request("http://gateway/_workercode/" + encodeURIComponent(name), { headers: loaderHeaders })
+      );
+      if (!cres.ok) throw new Error("worker-host: code fetch failed (" + cres.status + ")");
+      const code = await cres.json();
+      return {
+        compatibilityDate: code.compatibilityDate,
+        compatibilityFlags: code.compatibilityFlags,
+        mainModule: code.mainModule,
+        modules: code.modules,
+        env: code.env,
+        globalOutbound: ctx.exports.EgressGateway({ props: { id: code.callerId } }),
+      };
+    });
+
+    // Strip the instance-name prefix so the loaded worker sees /__rpc etc.
+    const rest = "/" + parts.slice(1).join("/");
+    const fwdUrl = new URL(rest, url.origin);
+    fwdUrl.search = url.search;
+    return stub.getEntrypoint().fetch(new Request(fwdUrl, request));
+  }
+};
+`;
+  }
+
+  /**
+   * Generate the static `universal-do` module. It hosts ALL userland DO classes
+   * as durable facets: per request it decodes `source|className|userKey` from
+   * the object key, dynamically loads the inner DO class via `env.LOADER`
+   * (keyed `source:className@version` for reload-on-change), runs it as a
+   * `ctx.facets` facet, and forwards the inner DO's existing `fetch` handler.
+   * One host object per `(source,className,userKey)` → one facet → 1:1 identity
+   * (alarms/websockets/storage). Egress is attributed per `source:className`
+   * via the `ctx.exports.EgressGateway` loopback (non-forgeable props).
+   */
+  private generateUniversalDOCode(): string {
+    return `import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+
+export class EgressGateway extends WorkerEntrypoint {
+  async fetch(request) {
+    const id = (this.ctx.props && this.ctx.props.id) || "";
+    const headers = new Headers(request.headers);
+    headers.set("X-NatStack-Egress-Caller", id);
+    headers.set("X-NatStack-Egress-Secret", this.env.WORKERD_EGRESS_SECRET);
+    return this.env.EGRESS.fetch(new Request(request, { headers }));
+  }
+}
+
+function decodeKey(encoded) {
+  const p = encoded.split("|");
+  return {
+    source: decodeURIComponent(p[0] || ""),
+    className: decodeURIComponent(p[1] || ""),
+    userKey: decodeURIComponent(p[2] || ""),
+  };
+}
+
+export class UniversalDO extends DurableObject {
+  constructor(ctx, env) { super(ctx, env); this.ctx = ctx; this.env = env; }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+    const parts = url.pathname.split("/").filter(Boolean);
+    const encodedKey = parts[0] ? decodeURIComponent(parts[0]) : "";
+    if (!encodedKey) return new Response("universal-do: missing key", { status: 400 });
+    const { source, className, userKey } = decodeKey(encodedKey);
+    if (!source || !className) return new Response("universal-do: bad key", { status: 400 });
+
+    const ctx = this.ctx;
+    const env = this.env;
+    const identity = source + ":" + className;
+    const loaderHeaders = { "X-NatStack-Loader-Secret": env.WORKERD_LOADER_SECRET };
+
+    const vres = await env.GATEWAY.fetch(new Request(
+      "http://gateway/_doversion/" + encodeURIComponent(source) + "/" + encodeURIComponent(className),
+      { headers: loaderHeaders }
+    ));
+    if (vres.status === 404) return new Response("DO class not found: " + identity, { status: 404 });
+    if (!vres.ok) return new Response("universal-do: version lookup failed (" + vres.status + ")", { status: 502 });
+    const version = (await vres.json()).version;
+
+    // Constant facet name (one logical DO per host object → 1:1). Keeping it
+    // constant makes the on-disk facet layout portable across host objects,
+    // which is what lets cloneDO/destroyDO copy/delete facet storage by host
+    // hash. The host object id already encodes (source,className,userKey).
+    const facet = this.ctx.facets.get("do", async () => {
+      const worker = env.LOADER.get(identity + "@" + version, async () => {
+        const cres = await env.GATEWAY.fetch(new Request(
+          "http://gateway/_docode/" + encodeURIComponent(source) + "/" + encodeURIComponent(className),
+          { headers: loaderHeaders }
+        ));
+        if (!cres.ok) throw new Error("universal-do: code fetch failed (" + cres.status + ")");
+        const code = await cres.json();
+        const modules = { ...code.modules };
+        // Decode any base64 wasm modules (e.g. terminal/Ink yoga.wasm) into the
+        // ArrayBuffer module shape the loader expects.
+        if (code.wasmModules) {
+          for (const name of Object.keys(code.wasmModules)) {
+            const bin = atob(code.wasmModules[name]);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            modules[name] = { wasm: bytes.buffer };
+          }
+        }
+        return {
+          compatibilityDate: code.compatibilityDate,
+          compatibilityFlags: code.compatibilityFlags,
+          mainModule: code.mainModule,
+          modules: modules,
+          env: code.env,
+          globalOutbound: ctx.exports.EgressGateway({ props: { id: identity } }),
+        };
+      });
+      return { class: worker.getDurableObjectClass(className) };
+    });
+
+    // Forward to the inner DO's existing fetch handler, which parses its own
+    // objectKey from the first path segment: /{userKey}/{method}.
+    const innerRest = parts.slice(1);
+    const innerUrl = new URL(
+      "/" + encodeURIComponent(userKey) + (innerRest.length ? "/" + innerRest.join("/") : ""),
+      url.origin
+    );
+    innerUrl.search = url.search;
+    return facet.fetch(new Request(innerUrl, request));
+  }
+}
+
+export default { fetch() { return new Response("universal-do host"); } };
 `;
   }
 
@@ -1344,6 +1732,9 @@ ${doBlock}${cases.join("\n")}
     }
     const args = [
       "serve",
+      // Required: the static worker-host uses `workerLoader` (env.LOADER) and
+      // `ctx.exports`, both gated behind workerd's experimental features.
+      "--experimental",
       ...(this.inspectorPort ? [`--inspector-addr=127.0.0.1:${this.inspectorPort}`] : []),
       configPath,
     ];
@@ -1520,7 +1911,7 @@ ${doBlock}${cases.join("\n")}
   async registerAllDOClasses(
     doClasses: Array<{ source: string; className: string }>
   ): Promise<void> {
-    let added = false;
+    let internalAdded = false;
     for (const { source, className } of doClasses) {
       const serviceKey = `${source}:${className}`;
       if (this.doServices.has(serviceKey)) continue;
@@ -1537,14 +1928,20 @@ ${doBlock}${cases.join("\n")}
           serviceName,
           source,
         });
-        if (!isInternalDOSource(source)) this.registerRoutesForDoClass(source, className);
-        added = true;
+        if (!isInternalDOSource(source)) {
+          this.registerRoutesForDoClass(source, className);
+          this.registerDoEgressCaller(source, className, buildKey);
+        } else {
+          internalAdded = true;
+        }
       } catch (err) {
         log.warn(`Skipping DO class ${source}:${className} — build failed:`, err);
       }
     }
 
-    if (added) {
+    // Only INTERNAL DO classes change the static config (and need a restart);
+    // userland classes load on demand into the static universal-do host.
+    if (internalAdded) {
       await this.restartWorkerd();
       log.info(`Pre-registered ${this.doServices.size} DO class(es)`);
     }
@@ -1570,7 +1967,8 @@ ${doBlock}${cases.join("\n")}
    */
   async ensureDOClass(source: string, className: string): Promise<void> {
     const serviceKey = `${source}:${className}`;
-    if (!this.doServices.has(serviceKey)) {
+    const isNew = !this.doServices.has(serviceKey);
+    if (isNew) {
       const sourceSegments = source.split("/").filter(Boolean);
       if (!isInternalDOSource(source) && sourceSegments.length !== 2) {
         throw new Error(`DO source path must be exactly 2 segments, got: "${source}"`);
@@ -1586,21 +1984,29 @@ ${doBlock}${cases.join("\n")}
         serviceName,
         source,
       });
-      if (!isInternalDOSource(source)) this.registerRoutesForDoClass(source, className);
-      await this.restartWorkerd();
+      if (!isInternalDOSource(source)) {
+        this.registerRoutesForDoClass(source, className);
+        this.registerDoEgressCaller(source, className, buildKey);
+      }
     }
 
-    if (!this.process || this.process.exitCode !== null) {
-      await this.restartWorkerd();
+    // Userland DO classes load dynamically into the static `universal-do` facet
+    // host — registering one needs NO config change and NO restart. Just make
+    // sure workerd is up so the host is serving.
+    if (!isInternalDOSource(source)) {
+      await this.ensureWorkerdRunning();
       return;
     }
 
-    // Do NOT probe-and-restart a live workerd. A missed HTTP health check within
-    // a couple seconds usually means workerd (or the server's own event loop) is
-    // momentarily busy — not that it crashed. Restarting on that false positive
-    // killed all DOs and triggered the relay/restart cascade that OOM'd the
-    // server. The relay path retries transient failures; only a *dead* process
-    // (handled above) warrants a restart.
+    // Internal DOs are static workerd services: a new one requires a config
+    // regeneration + restart (startup-rare, foundational classes only).
+    if (isNew) {
+      await this.restartWorkerd();
+    } else if (!this.process || this.process.exitCode !== null) {
+      await this.restartWorkerd();
+    }
+    // Do NOT probe-and-restart a live workerd (false positives killed all DOs
+    // and fed the relay/restart cascade). The relay path retries transients.
   }
 
   /**
@@ -1646,47 +2052,80 @@ ${doBlock}${cases.join("\n")}
   // DO cloning (filesystem-level SQLite copy)
   // =========================================================================
 
+  /** Directory holding the UniversalDO facet storage (per-host-object files). */
+  private universalDoStorageDir(): string {
+    return path.join(
+      this.deps.statePath,
+      ".databases",
+      "workerd-universal-do",
+      UNIVERSAL_DO_UNIQUE_KEY
+    );
+  }
+
+  /** workerd host-object storage hash for a userland DO ref (its facet lives in
+   *  `<dir>/<hash>.1.sqlite`, with `<hash>.sqlite`/`.facets` siblings). */
+  private universalHostHash(ref: DORef): string {
+    return computeWorkerdObjectIdHash(UNIVERSAL_DO_UNIQUE_KEY, encodeUniversalKey(ref));
+  }
+
   /**
-   * Clone a DO's SQLite storage to a new object key.
-   * The cloned DO starts with identical state. Used for channel forking.
+   * Clone a DO's storage to a new object key. The clone starts with identical
+   * state. Used for channel forking.
+   *
+   * Userland DOs run as facets of the static UniversalDO host: each host object
+   * owns one facet whose storage is the set of files prefixed by the host's id
+   * hash (`<hash>.sqlite`, `<hash>.1.sqlite`, `<hash>.facets`, + WAL/SHM). The
+   * facet name is constant, so the layout is portable across host objects —
+   * cloning copies every `<srcHash>.*` file to `<tgtHash>.*` (WAL/SHM included
+   * for a consistent snapshot).
    */
   async cloneDO(ref: DORef, newObjectKey: string): Promise<DORef> {
-    const uniqueKey = `${ref.source.replace(/\//g, "_")}:${ref.className}`;
-    const storagePath = path.join(this.deps.statePath, ".databases", "workerd-do", uniqueKey);
+    if (isInternalDOSource(ref.source)) {
+      throw new Error(`cloneDO is not supported for internal DO source "${ref.source}"`);
+    }
+    const dir = this.universalDoStorageDir();
+    const srcHash = this.universalHostHash(ref);
+    const tgtHash = this.universalHostHash({ ...ref, objectKey: newObjectKey });
 
-    const sourceHash = computeWorkerdObjectIdHash(uniqueKey, ref.objectKey);
-    const targetHash = computeWorkerdObjectIdHash(uniqueKey, newObjectKey);
-
-    const sourceFile = path.join(storagePath, `${sourceHash}.sqlite`);
-    const targetFile = path.join(storagePath, `${targetHash}.sqlite`);
-
-    if (!fs.existsSync(sourceFile)) {
+    const files = await fs.promises.readdir(dir).catch(() => [] as string[]);
+    const srcFiles = files.filter((f) => f.startsWith(`${srcHash}.`));
+    if (srcFiles.length === 0) {
       throw new Error(
-        `Source DO storage not found: ${ref.className}/${ref.objectKey} (expected ${sourceFile})`
+        `Source DO storage not found: ${ref.className}/${ref.objectKey} (no facet storage for host ${srcHash} under ${dir})`
       );
     }
-    fs.copyFileSync(sourceFile, targetFile);
-
+    await Promise.all(
+      srcFiles.map((f) =>
+        fs.promises.copyFile(
+          path.join(dir, f),
+          path.join(dir, `${tgtHash}${f.slice(srcHash.length)}`)
+        )
+      )
+    );
     return { source: ref.source, className: ref.className, objectKey: newObjectKey };
   }
 
   /**
-   * Destroy a DO's SQLite storage. Deletes the main .sqlite plus any
-   * WAL/SHM sidecar files. Used for cleaning up orphaned clones on fork failure.
+   * Destroy a userland DO's facet storage — every file prefixed by the host id
+   * hash (main + facet + index + WAL/SHM). Used to clean up orphaned clones on
+   * fork failure.
    */
   async destroyDO(ref: DORef): Promise<void> {
-    const uniqueKey = `${ref.source.replace(/\//g, "_")}:${ref.className}`;
-    const storagePath = path.join(this.deps.statePath, ".databases", "workerd-do", uniqueKey);
-    const hash = computeWorkerdObjectIdHash(uniqueKey, ref.objectKey);
-    const base = path.join(storagePath, hash);
-
-    for (const suffix of [".sqlite", ".sqlite-wal", ".sqlite-shm"]) {
-      try {
-        fs.unlinkSync(base + suffix);
-      } catch (err: unknown) {
-        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-      }
+    if (isInternalDOSource(ref.source)) {
+      throw new Error(`destroyDO is not supported for internal DO source "${ref.source}"`);
     }
+    const dir = this.universalDoStorageDir();
+    const hash = this.universalHostHash(ref);
+    const files = await fs.promises.readdir(dir).catch(() => [] as string[]);
+    await Promise.all(
+      files
+        .filter((f) => f.startsWith(`${hash}.`))
+        .map((f) =>
+          fs.promises.unlink(path.join(dir, f)).catch((err: NodeJS.ErrnoException) => {
+            if (err.code !== "ENOENT") throw err;
+          })
+        )
+    );
   }
 
   // =========================================================================
@@ -1738,60 +2177,61 @@ ${doBlock}${cases.join("\n")}
    * orphaned class bound forever.
    */
   async onSourceRebuilt(source: string, doClasses?: Array<{ className: string }>): Promise<void> {
-    let needsRestart = false;
+    // Dynamic loading makes a rebuild a loader-cache eviction, NOT a restart:
+    // workers bump `codeVersion` and DO facets bump `buildKey` (the version the
+    // hosts key their loader id on), so the next request loads fresh code. No
+    // workerd restart — concurrent agents keep running.
 
+    // Workers tracking HEAD (no pinned ref) reload on their next request.
     for (const instance of this.instances.values()) {
-      // Only auto-restart workers tracking HEAD (no ref set)
       if (instance.source === source && !instance.ref) {
-        instance.status = "starting";
-        needsRestart = true;
+        instance.codeVersion += 1;
       }
     }
 
-    // Also check DO services tracking this source
-    for (const [_serviceKey, doService] of this.doServices) {
-      if (doService.source === source) {
-        needsRestart = true;
+    // Refresh the build version for this source's userland DO classes so their
+    // facets reload. (Internal DOs aren't rebuilt through this push path.)
+    const tracksSource = Array.from(this.doServices.values()).some((s) => s.source === source);
+    let newBuildKey: string | null = null;
+    if (tracksSource || doClasses) {
+      try {
+        newBuildKey = (await this.deps.getBuild(source)).metadata.ev;
+      } catch (err) {
+        log.warn(`onSourceRebuilt: build not available for ${source}:`, err);
+      }
+    }
+    if (newBuildKey) {
+      for (const svc of this.doServices.values()) {
+        if (svc.source === source) {
+          svc.buildKey = newBuildKey;
+          this.registerDoEgressCaller(svc.source, svc.className, newBuildKey);
+        }
       }
     }
 
-    // Reconcile DO services for this source against the new manifest list.
+    // Reconcile DO classes for this source against the new manifest — add new,
+    // drop removed. All loader-cache changes; no restart.
     if (doClasses) {
       const newClassNames = new Set(doClasses.map((c) => c.className));
-
-      // 1. Remove stale DO services: entries for this source whose className
-      //    is no longer in the manifest.
       for (const [serviceKey, svc] of Array.from(this.doServices.entries())) {
-        if (svc.source !== source) continue;
-        if (newClassNames.has(svc.className)) continue;
+        if (svc.source !== source || newClassNames.has(svc.className)) continue;
         this.revokeWorkerBearer(`do-service:${serviceKey}`);
+        this.deps.unregisterEgressCaller(`${svc.source}:${svc.className}`);
         this.doServices.delete(serviceKey);
         this.deps.routeRegistry?.unregisterDoRoutes(source, svc.className);
-        needsRestart = true;
         log.info(`Unregistered stale DO class ${serviceKey} after manifest change`);
       }
-
-      // 2. Register newly-added DO classes.
       for (const { className } of doClasses) {
         const serviceKey = `${source}:${className}`;
-        if (!this.doServices.has(serviceKey)) {
-          try {
-            const buildResult = await this.deps.getBuild(source);
-            const sourceSanitized = source.replace(/[^a-zA-Z0-9_]/g, "_");
-            const serviceName = `do_${sourceSanitized}_${className.replace(/[^a-zA-Z0-9_]/g, "_")}`;
-            this.doServices.set(serviceKey, {
-              buildKey: buildResult.metadata.ev,
-              className,
-              serviceName,
-              source,
-            });
-            this.registerRoutesForDoClass(source, className);
-            needsRestart = true;
-            log.info(`Registered new DO class ${source}:${className} from push`);
-          } catch (err) {
-            log.warn(`Failed to register DO class ${source}:${className}:`, err);
-          }
-        }
+        if (this.doServices.has(serviceKey)) continue;
+        const buildKey = newBuildKey;
+        if (!buildKey) continue;
+        const sourceSanitized = source.replace(/[^a-zA-Z0-9_]/g, "_");
+        const serviceName = `do_${sourceSanitized}_${className.replace(/[^a-zA-Z0-9_]/g, "_")}`;
+        this.doServices.set(serviceKey, { buildKey, className, serviceName, source });
+        this.registerRoutesForDoClass(source, className);
+        this.registerDoEgressCaller(source, className, buildKey);
+        log.info(`Registered new DO class ${source}:${className} from push (no restart)`);
       }
     }
 
@@ -1815,25 +2255,6 @@ ${doBlock}${cases.join("\n")}
         hasCanonicalInstance ? canonical : null,
         this.deps.singletonRegistry
       );
-    }
-
-    if (needsRestart) {
-      log.info(`Restarting worker instances for rebuilt source: ${source}`);
-      try {
-        await this.restartWorkerd();
-        for (const instance of this.instances.values()) {
-          if (instance.source === source && !instance.ref && instance.status === "starting") {
-            instance.status = "running";
-          }
-        }
-      } catch (err) {
-        log.error(`Failed to restart workers for ${source}:`, err);
-        for (const instance of this.instances.values()) {
-          if (instance.source === source && !instance.ref && instance.status === "starting") {
-            instance.status = "error";
-          }
-        }
-      }
     }
   }
 }

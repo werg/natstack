@@ -51,6 +51,17 @@ const HOP_BY_HOP_REQUEST_HEADERS = new Set([
   "upgrade",
 ]);
 
+/** Internal headers the dynamic-worker egress path uses for attribution. They
+ *  are consumed by the shared listener and MUST be stripped before forwarding
+ *  upstream so they never leak to the destination. */
+const EGRESS_CALLER_HEADER = "x-natstack-egress-caller";
+const EGRESS_SECRET_HEADER = "x-natstack-egress-secret";
+const INTERNAL_EGRESS_HEADERS = new Set([
+  EGRESS_CALLER_HEADER,
+  EGRESS_SECRET_HEADER,
+  "x-forwarded-proto",
+]);
+
 const PASSTHROUGH_PROVIDER_ID = "passthrough";
 const PASSTHROUGH_CONNECTION_ID = "passthrough";
 const RPC_RUNTIME_ID_HEADER = "x-natstack-runtime-id";
@@ -138,9 +149,74 @@ export class EgressProxy {
   private readonly attributedServers = new Map<string, { server: Server; port: number }>();
   private readonly circuits = new Map<string, CircuitState>();
   private readonly sessionGrantStore: CredentialSessionGrantStore;
+  /** Shared attributed-by-header listener (dynamic worker host). One server for
+   *  all dynamically-loaded workers; identity travels in a trusted header
+   *  instead of a per-caller port. */
+  private sharedServer: { server: Server; port: number } | null = null;
+  private sharedSecret: string | null = null;
+  private callerResolver: ((callerId: string) => VerifiedCaller | null) | null = null;
 
   constructor(private readonly deps: EgressProxyDeps) {
     this.sessionGrantStore = deps.sessionGrantStore ?? new CredentialSessionGrantStore();
+  }
+
+  /** Wire the resolver that maps an egress-caller id (from the trusted header)
+   *  to the live worker's VerifiedCaller. Set by the server at startup. */
+  setCallerResolver(fn: (callerId: string) => VerifiedCaller | null): void {
+    this.callerResolver = fn;
+  }
+
+  /**
+   * Start (once) the shared attributed-by-header egress listener for the
+   * dynamic worker host. Requests carry `X-NatStack-Egress-Caller` (the worker
+   * identity, stamped non-forgeably by the host's EgressGateway) gated by
+   * `X-NatStack-Egress-Secret`. Returns the listener port (memoized).
+   */
+  async startShared(secret: string): Promise<number> {
+    if (this.sharedServer) return this.sharedServer.port;
+    this.sharedSecret = secret;
+
+    const server = createServer((req, res) => {
+      const caller = this.resolveAttributedCaller(req);
+      if (!caller) {
+        req.resume();
+        this.respondWithError(res, 403, "egress: unattributed request");
+        return;
+      }
+      void this.handleHttpRequest(req, res, caller);
+    });
+    server.on("connect", (req, socket, head) => {
+      const caller = this.resolveAttributedCaller(req);
+      if (!caller) {
+        (socket as Duplex).end();
+        return;
+      }
+      void this.handleConnect(req, socket as Duplex, head, caller);
+    });
+
+    return new Promise<number>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        server.off("error", reject);
+        const address = server.address() as AddressInfo | null;
+        if (!address) {
+          reject(new Error("Egress proxy failed to bind the shared listener"));
+          return;
+        }
+        this.sharedServer = { server, port: address.port };
+        resolve(address.port);
+      });
+    });
+  }
+
+  /** Resolve the trusted caller for a shared-listener request, or null if the
+   *  secret is missing/wrong or the caller id is unknown. */
+  private resolveAttributedCaller(req: IncomingMessage): VerifiedCaller | null {
+    const secret = this.readHeader(req, EGRESS_SECRET_HEADER);
+    if (!this.sharedSecret || !secret || secret !== this.sharedSecret) return null;
+    const callerId = this.readHeader(req, EGRESS_CALLER_HEADER);
+    if (!callerId) return null;
+    return this.callerResolver?.(callerId) ?? null;
   }
 
   async start(): Promise<number> {
@@ -205,10 +281,13 @@ export class EgressProxy {
   async stop(): Promise<void> {
     const server = this.server;
     this.server = null;
+    const shared = this.sharedServer;
+    this.sharedServer = null;
     const attributed = [...this.attributedServers.values()];
     this.attributedServers.clear();
     await Promise.all([
       ...(server ? [new Promise<void>((resolve) => server.close(() => resolve()))] : []),
+      ...(shared ? [new Promise<void>((resolve) => shared.server.close(() => resolve()))] : []),
       ...attributed.map(
         ({ server }) => new Promise<void>((resolve) => server.close(() => resolve()))
       ),
@@ -490,10 +569,11 @@ export class EgressProxy {
     const headers: OutgoingHttpHeaders = {};
 
     for (const [name, value] of this.iterateHeaders(inputHeaders)) {
-      if (HOP_BY_HOP_REQUEST_HEADERS.has(name.toLowerCase())) {
+      const lower = name.toLowerCase();
+      if (HOP_BY_HOP_REQUEST_HEADERS.has(lower) || INTERNAL_EGRESS_HEADERS.has(lower)) {
         continue;
       }
-      headers[name.toLowerCase()] = value;
+      headers[lower] = value;
     }
 
     const injection = binding?.injection ?? credential?.bindings?.[0]?.injection;

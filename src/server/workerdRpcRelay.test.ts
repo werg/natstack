@@ -1,19 +1,27 @@
 import { describe, expect, it, vi } from "vitest";
-import { doRefUrl, postToDurableObject } from "./workerdRpcRelay.js";
+import { doRefUrl, encodeUniversalKey, postToDurableObject } from "./workerdRpcRelay.js";
+import { INTERNAL_DO_SOURCE } from "./internalDOs/internalDoLoader.js";
 
 describe("workerdRpcRelay", () => {
-  it("encodes arbitrary-depth DO source paths segment by segment", () => {
+  it("routes userland DOs through the UniversalDO facet host (/_u/)", () => {
+    const ref = {
+      source: "workspace/workers/gad store",
+      className: "EventStore",
+      objectKey: "ctx/tree:chat",
+    };
+    expect(doRefUrl(ref, "__lifecycle/prepare now")).toBe(
+      `/_u/${encodeURIComponent(encodeUniversalKey(ref))}/__lifecycle/prepare%20now`
+    );
+  });
+
+  it("routes internal DOs through their static namespace (/_w/), encoding source segments", () => {
     expect(
       doRefUrl(
-        {
-          source: "workspace/workers/gad store",
-          className: "EventStore",
-          objectKey: "ctx/tree:chat",
-        },
+        { source: INTERNAL_DO_SOURCE, className: "WorkspaceDO", objectKey: "ctx/tree:chat" },
         "__lifecycle/prepare now"
       )
     ).toBe(
-      "/_w/workspace/workers/gad%20store/EventStore/ctx%2Ftree%3Achat/__lifecycle/prepare%20now"
+      `/_w/${INTERNAL_DO_SOURCE.split("/").map(encodeURIComponent).join("/")}/WorkspaceDO/ctx%2Ftree%3Achat/__lifecycle/prepare%20now`
     );
   });
 
@@ -40,7 +48,7 @@ describe("workerdRpcRelay", () => {
     ).resolves.toEqual({ ok: true });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8787/_w/workers/agent/AgentDO/channel-1/ping",
+      `http://127.0.0.1:8787/_u/${encodeURIComponent(encodeUniversalKey({ source: "workers/agent", className: "AgentDO", objectKey: "channel-1" }))}/ping`,
       expect.objectContaining({
         headers: expect.objectContaining({
           Authorization: "Bearer gateway-token",
@@ -73,7 +81,7 @@ describe("workerdRpcRelay", () => {
     );
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8787/_w/workers/agent/AgentDO/channel-1/ping",
+      `http://127.0.0.1:8787/_u/${encodeURIComponent(encodeUniversalKey({ source: "workers/agent", className: "AgentDO", objectKey: "channel-1" }))}/ping`,
       expect.objectContaining({
         headers: expect.objectContaining({
           "X-Natstack-Rpc-Caller-Id": "panel:parent-entity",

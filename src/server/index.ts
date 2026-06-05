@@ -1263,6 +1263,10 @@ async function main() {
     });
   }
 
+  // Server-driven DO alarms (workerd lacks SQLite/facet alarms). Created as a
+  // managed service below; the workspace-state `onAlarmChanged` hook pokes it.
+  let alarmDriverInstance: import("./services/alarmDriver.js").AlarmDriver | null = null;
+
   {
     const { createWorkspaceStateService } = await import("./services/workspaceStateService.js");
     let workspaceStateDefinition:
@@ -1291,6 +1295,7 @@ async function main() {
           onPanelTitleChanged: (entityId, title) => {
             entityTitleService.mirrorCachedTitle(entityId, title);
           },
+          onAlarmChanged: () => alarmDriverInstance?.notifyChanged(),
         });
       },
       getServiceDefinition() {
@@ -1686,6 +1691,12 @@ async function main() {
   // Workers POST back through the gateway. The gateway starts before
   // container.startAll(), so this URL is stable by the time workerd boots.
   let workerdManagerForGateway: import("./workerdManager.js").WorkerdManager | null = null;
+  // Live worker → VerifiedCaller registry for attributed egress through the
+  // shared listener. Populated by WorkerdManager on worker create/destroy.
+  const egressCallers = new Map<
+    string,
+    import("@natstack/shared/serviceDispatcher").VerifiedCaller
+  >();
   {
     let workerdManagerInstance: import("./workerdManager.js").WorkerdManager | null = null;
     let buildSystemForWorkerd: import("./buildV2/index.js").BuildSystemV2 | null = null;
@@ -1731,9 +1742,15 @@ async function main() {
           getManifestRoutes: (source) => workspaceDecls.routes.filter((r) => r.source === source),
           singletonRegistry: workspaceDecls.singletons,
           getProxyPort: (caller) => egressProxy.startForCaller(caller),
+          getSharedEgressPort: () =>
+            egressProxy.startShared(assertPresent(workerdManagerInstance).getEgressSecret()),
+          registerEgressCaller: (callerId, caller) => egressCallers.set(callerId, caller),
+          unregisterEgressCaller: (callerId) => egressCallers.delete(callerId),
           getWorkerdGatewayToken: () => workerdGatewayToken,
         });
         workerdManagerForGateway = workerdManagerInstance;
+        // Resolve attributed egress (shared listener) → live worker VerifiedCaller.
+        egressProxy.setCallerResolver((callerId) => egressCallers.get(callerId) ?? null);
 
         // Wire push trigger to restart workers on source rebuild.
         //
@@ -1844,6 +1861,27 @@ async function main() {
       },
       async stop(instance: import("./services/lifecycleDriver.js").LifecycleDriver | null) {
         instance?.stop();
+      },
+    });
+  }
+
+  {
+    container.registerManaged({
+      name: "alarmDriver",
+      dependencies: ["doDispatch"],
+      async start(resolve) {
+        const { AlarmDriver } = await import("./services/alarmDriver.js");
+        const driver = new AlarmDriver({
+          doDispatch: assertPresent(resolve<import("./doDispatch.js").DODispatch>("doDispatch")),
+          workspaceId: workspace.config.id,
+        });
+        alarmDriverInstance = driver;
+        driver.start();
+        return driver;
+      },
+      async stop(instance: import("./services/alarmDriver.js").AlarmDriver | null) {
+        instance?.stop();
+        alarmDriverInstance = null;
       },
     });
   }
@@ -2286,6 +2324,7 @@ async function main() {
     getExtensionHttpHandler: () => extensionHostForGateway,
     getAppArtifactHandler: () => appHostForGateway,
     getWorkerdPort: () => workerdManagerForGateway?.getPort() ?? null,
+    getWorkerHost: () => workerdManagerForGateway,
     externalHost: hostConfig.externalHost,
     bindHost: hostConfig.bindHost,
     tlsCert: hostConfig.tlsCert,
@@ -2522,6 +2561,14 @@ async function main() {
     recoverLifecycle: () => lifecycleDriver.recoverStartup("server_restart"),
     logger: { warn: (msg, ...args) => console.warn(msg, ...args) },
   });
+  // Re-arm server-driven DO alarms now that workerd is up and WorkspaceDO is
+  // reachable (the managed-service start() ran before workerd was ready).
+  try {
+    container.get<import("./services/alarmDriver.js").AlarmDriver>("alarmDriver").notifyChanged();
+  } catch (err) {
+    console.warn("[Bootstrap] alarm re-arm skipped:", err);
+  }
+
   // Re-register bootstrap entries that don't have DO rows.
   entityCache.registerBootstrap({ id: "server", kind: "server" });
   entityCache.registerBootstrap({ id: "electron-main", kind: "shell" });

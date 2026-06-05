@@ -210,6 +210,8 @@ eval({
 
     // Cap concurrency: each test is a full headless agent + channel, so running
     // a whole stage at once floods the DO relay and spikes server memory.
+    // (Worker create/destroy no longer restarts workerd — the dynamic worker
+    // host loads code in-place — so worker-lifecycle stages run concurrently.)
     const concurrency = Math.min(4, Math.max(1, stage.tests.length));
     const partial = await tester.runSuite(stage.tests, { concurrency });
     const aggregate = run.results ?? scope.results ?? {

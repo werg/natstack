@@ -1476,7 +1476,15 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     // Phase 1 shadow projection: a freshly-opened turn starts at `starting`.
     this.runControllerFor(channelId).projectNewTurn(turnId);
     const leaseActive = this.markCheckpointableWorkActive({ channelId, turnId }).catch((err) => {
+      // Persistent failure (after retries) means this turn is running UNLEASED —
+      // it won't get prepare/resume on a restart. Surface it loudly rather than
+      // swallowing silently, so it's visible instead of a silent recovery gap.
       this.recordLastError("lifecycle.lease_active", err, channelId);
+      console.warn(
+        `[TrajectoryVesselBase] lease registration failed for channel=${channelId} turn=${turnId} — ` +
+          `turn is running UNLEASED and will not recover across a restart: ` +
+          `${err instanceof Error ? err.message : String(err)}`
+      );
     });
     this.ctx.waitUntil?.(leaseActive);
     return leaseActive;

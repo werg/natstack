@@ -1,4 +1,5 @@
 import type { DORefParam } from "@natstack/shared/userlandServiceRpc";
+import { isInternalDOSource } from "./internalDOs/internalDoLoader.js";
 
 export type DORef = DORefParam;
 
@@ -6,9 +7,19 @@ export function doRefKey(ref: DORef): string {
   return `${ref.source}:${ref.className}/${ref.objectKey}`;
 }
 
+/** Pack a userland DO ref for the UniversalDO facet host (see doDispatch). */
+export function encodeUniversalKey(ref: DORef): string {
+  return [ref.source, ref.className, ref.objectKey].map(encodeURIComponent).join("|");
+}
+
 export function doRefUrl(ref: DORef, method: string): string {
-  const sourcePath = ref.source.split("/").map(encodeURIComponent).join("/");
   const methodPath = method.split("/").map(encodeURIComponent).join("/");
+  // Userland DOs route through the UniversalDO facet host; internal DOs keep
+  // their static per-class `/_w/` namespaces. Kept in sync with doDispatch.ts.
+  if (!isInternalDOSource(ref.source)) {
+    return `/_u/${encodeURIComponent(encodeUniversalKey(ref))}/${methodPath}`;
+  }
+  const sourcePath = ref.source.split("/").map(encodeURIComponent).join("/");
   return `/_w/${sourcePath}/${encodeURIComponent(ref.className)}/${encodeURIComponent(ref.objectKey)}/${methodPath}`;
 }
 

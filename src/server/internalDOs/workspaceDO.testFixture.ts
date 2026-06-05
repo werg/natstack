@@ -122,5 +122,14 @@ export class WorkspaceDOTestable extends WorkspaceDO {
         PRIMARY KEY (epoch_id, source, class_name, object_key, op_kind)
       )
     `);
+    sql.exec(`
+      CREATE TABLE IF NOT EXISTS do_alarms (
+        source TEXT NOT NULL,
+        class_name TEXT NOT NULL,
+        object_key TEXT NOT NULL,
+        wake_at INTEGER NOT NULL,
+        PRIMARY KEY (source, class_name, object_key)
+      )
+    `);
   }
 }

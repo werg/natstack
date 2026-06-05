@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { TokenManager } from "@natstack/shared/tokenManager";
-import { doRefKey, doRefUrl, DODispatch, type DORef } from "./doDispatch.js";
+import { doRefKey, doRefUrl, encodeUniversalKey, DODispatch, type DORef } from "./doDispatch.js";
+import { INTERNAL_DO_SOURCE } from "./internalDOs/internalDoLoader.js";
+
+/** Expected workerd path for a userland DO ref (UniversalDO facet host). */
+function userlandUrl(ref: DORef, methodPath: string): string {
+  return `/_u/${encodeURIComponent(encodeUniversalKey(ref))}/${methodPath}`;
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -28,38 +34,36 @@ describe("doRefKey", () => {
 });
 
 describe("doRefUrl", () => {
-  it("produces correct /_w/ URL path", () => {
+  it("routes a userland DO through the UniversalDO facet host (/_u/)", () => {
     const ref = makeRef();
-    expect(doRefUrl(ref, "onChannelEvent")).toBe(
-      "/_w/workers/agent-worker/AiChatWorker/ch-123/onChannelEvent"
+    expect(doRefUrl(ref, "onChannelEvent")).toBe(userlandUrl(ref, "onChannelEvent"));
+    // The packed key round-trips source|className|objectKey.
+    expect(encodeUniversalKey(ref)).toBe("workers%2Fagent-worker|AiChatWorker|ch-123");
+  });
+
+  it("routes an internal DO through its static namespace (/_w/)", () => {
+    const ref = makeRef({
+      source: INTERNAL_DO_SOURCE,
+      className: "WorkspaceDO",
+      objectKey: "ws-1",
+    });
+    expect(doRefUrl(ref, "lifecycleListLeases")).toBe(
+      `/_w/${INTERNAL_DO_SOURCE.split("/").map(encodeURIComponent).join("/")}/WorkspaceDO/ws-1/lifecycleListLeases`
     );
   });
 
-  it("encodes special characters in className", () => {
-    const ref = makeRef({ className: "My Worker" });
-    const url = doRefUrl(ref, "doSomething");
-    expect(url).toBe("/_w/workers/agent-worker/My%20Worker/ch-123/doSomething");
-    expect(url).toContain(encodeURIComponent("My Worker"));
-  });
-
-  it("encodes special characters in objectKey", () => {
-    const ref = makeRef({ objectKey: "key/with:special chars" });
+  it("escapes special characters in the packed userland key", () => {
+    const ref = makeRef({ className: "My Worker", objectKey: "key/with:special chars" });
     const url = doRefUrl(ref, "method");
-    expect(url).toBe(
-      `/_w/workers/agent-worker/AiChatWorker/${encodeURIComponent("key/with:special chars")}/method`
-    );
+    expect(url).toBe(userlandUrl(ref, "method"));
+    // The packed key is opaque-encoded; decoding the segment recovers it.
+    expect(decodeURIComponent(url.split("/")[2]!)).toBe(encodeUniversalKey(ref));
   });
 
   it("encodes method path segments while preserving method slashes", () => {
     const ref = makeRef();
     const url = doRefUrl(ref, "__lifecycle/some method");
-    expect(url).toBe("/_w/workers/agent-worker/AiChatWorker/ch-123/__lifecycle/some%20method");
-  });
-
-  it("encodes source path segments while preserving source slashes", () => {
-    const ref = makeRef({ source: "workspace/workers/agent worker" });
-    const url = doRefUrl(ref, "ping");
-    expect(url).toBe("/_w/workspace/workers/agent%20worker/AiChatWorker/ch-123/ping");
+    expect(url).toBe(userlandUrl(ref, "__lifecycle/some%20method"));
   });
 });
 
@@ -89,10 +93,10 @@ describe("DODispatch", () => {
       await dispatch.dispatch(ref, "onChannelEvent", "arg1", 42);
 
       expect(dispatcher).toHaveBeenCalledTimes(1);
-      expect(dispatcher).toHaveBeenCalledWith(
-        "/_w/workers/agent-worker/AiChatWorker/ch-123/onChannelEvent",
-        ["arg1", 42]
-      );
+      expect(dispatcher).toHaveBeenCalledWith(userlandUrl(makeRef(), "onChannelEvent"), [
+        "arg1",
+        42,
+      ]);
     });
 
     it("returns whatever the dispatcher returns", async () => {
@@ -170,12 +174,12 @@ describe("DODispatch", () => {
       expect(ensureDO).toHaveBeenCalledWith(ref.source, ref.className, ref.objectKey);
       expect(fetchMock).toHaveBeenNthCalledWith(
         1,
-        "http://127.0.0.1:10001/_w/workers/agent-worker/AiChatWorker/ch-123/ping",
+        `http://127.0.0.1:10001${userlandUrl(ref, "ping")}`,
         expect.any(Object)
       );
       expect(fetchMock).toHaveBeenNthCalledWith(
         2,
-        "http://127.0.0.1:10002/_w/workers/agent-worker/AiChatWorker/ch-123/ping",
+        `http://127.0.0.1:10002${userlandUrl(ref, "ping")}`,
         expect.objectContaining({
           headers: expect.objectContaining({
             Authorization: "Bearer workerd-gateway-token",
@@ -213,7 +217,7 @@ describe("DODispatch", () => {
       const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
       expect(fetchMock.mock.calls[0]?.[0]).toBe(
-        "http://127.0.0.1:10001/_w/workers/agent-worker/AiChatWorker/ch-123/__lifecycle/resume"
+        `http://127.0.0.1:10001${userlandUrl(ref, "__lifecycle/resume")}`
       );
       expect(body["__caller"]).toEqual({ callerId: "main", callerKind: "server" });
       expect(body["__parentId"]).toBe("main");

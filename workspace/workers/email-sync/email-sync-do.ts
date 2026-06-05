@@ -157,7 +157,7 @@ export class EmailSyncWorker extends DurableObjectBase {
         const status = this.getStatus();
         status.running = false;
         this.setStatus(status);
-        this.ctx.storage.deleteAlarm();
+        this.deleteAlarm();
         return { ok: true };
     }
     protected async syncNow(): Promise<{

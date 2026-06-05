@@ -143,7 +143,7 @@ export interface GcOptions {
 const DEFAULT_GRACE_MS = 60 * 60 * 1000;
 
 export class WorkspaceDO extends DurableObjectBase {
-  static override schemaVersion = 10;
+  static override schemaVersion = 11;
 
   constructor(ctx: DurableObjectContext, env: unknown) {
     super(ctx, env);
@@ -303,6 +303,7 @@ export class WorkspaceDO extends DurableObjectBase {
     this.sql.exec(`DROP TABLE IF EXISTS lifecycle_ops`);
     this.sql.exec(`DROP TABLE IF EXISTS lifecycle_leases`);
     this.sql.exec(`DROP TABLE IF EXISTS lifecycle_epochs`);
+    this.sql.exec(`DROP TABLE IF EXISTS do_alarms`);
   }
 
   getWorkspaceId(): string {
@@ -508,6 +509,70 @@ export class WorkspaceDO extends DurableObjectBase {
       input.className,
       input.objectKey
     );
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // do alarms (server-driven; see do_alarms table comment)
+  // ─────────────────────────────────────────────────────────────
+
+  /** Register/replace a DO's wake time (absolute epoch ms). */
+  alarmSet(input: LifecycleKey & { wakeAt: number }): void {
+    this.assertLifecycleKey(input);
+    this.sql.exec(
+      `INSERT INTO do_alarms (source, class_name, object_key, wake_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(source, class_name, object_key) DO UPDATE SET wake_at = excluded.wake_at`,
+      input.source,
+      input.className,
+      input.objectKey,
+      Math.round(input.wakeAt)
+    );
+  }
+
+  /** Clear a DO's pending alarm (no-op if none). */
+  alarmClear(input: LifecycleKey): void {
+    this.assertLifecycleKey(input);
+    this.sql.exec(
+      `DELETE FROM do_alarms WHERE source = ? AND class_name = ? AND object_key = ?`,
+      input.source,
+      input.className,
+      input.objectKey
+    );
+  }
+
+  /** Soonest pending wake time, or null when no alarms are scheduled. */
+  alarmNextWakeAt(): number | null {
+    const row = this.sql.exec(`SELECT MIN(wake_at) AS next FROM do_alarms`).toArray()[0] as
+      | { next: number | null }
+      | undefined;
+    return row && row.next !== null ? row.next : null;
+  }
+
+  /** Atomically return and delete all alarms due at/before `now`. Each fires once;
+   *  recurring DOs re-arm from inside their own `alarm()` handler. */
+  alarmTakeDue(now: number): Array<LifecycleKey & { wakeAt: number }> {
+    return this.ctx.storage.transactionSync(() => {
+      const rows = this.sql
+        .exec(
+          `SELECT source, class_name, object_key, wake_at FROM do_alarms WHERE wake_at <= ?`,
+          now
+        )
+        .toArray() as Array<{
+        source: string;
+        class_name: string;
+        object_key: string;
+        wake_at: number;
+      }>;
+      if (rows.length > 0) {
+        this.sql.exec(`DELETE FROM do_alarms WHERE wake_at <= ?`, now);
+      }
+      return rows.map((r) => ({
+        source: r.source,
+        className: r.class_name,
+        objectKey: r.object_key,
+        wakeAt: r.wake_at,
+      }));
+    });
   }
 
   lifecycleListLeases(): LifecycleLease[] {
@@ -1160,6 +1225,20 @@ export class WorkspaceDO extends DurableObjectBase {
       `CREATE INDEX IF NOT EXISTS idx_lifecycle_ops_resume
        ON lifecycle_ops(op_kind, status, source, class_name, object_key)`
     );
+    // Durable DO alarm schedule. workerd does not implement alarms for
+    // SQLite-backed DOs (and never for facets), so the server drives them: a DO
+    // registers its wake time here, and the AlarmDriver fires `__alarm` on
+    // schedule. Survives server/workerd restart (durable WorkspaceDO storage).
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS do_alarms (
+        source TEXT NOT NULL,
+        class_name TEXT NOT NULL,
+        object_key TEXT NOT NULL,
+        wake_at INTEGER NOT NULL,
+        PRIMARY KEY (source, class_name, object_key)
+      )
+    `);
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_do_alarms_wake ON do_alarms(wake_at)`);
   }
 
   private insertLifecycleOp(

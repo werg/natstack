@@ -53,6 +53,10 @@ const LifecycleLeaseSchema = LifecycleKeySchema.extend({
   detail: z.unknown().optional(),
 });
 
+const AlarmSetSchema = LifecycleKeySchema.extend({
+  wakeAt: z.number(),
+});
+
 export interface WorkspaceStateServiceDeps {
   doDispatch: DODispatch;
   workspaceId: string;
@@ -62,6 +66,11 @@ export interface WorkspaceStateServiceDeps {
    * succeeds.
    */
   onPanelTitleChanged?: (panelEntityId: string, title: string) => void;
+  /**
+   * Notify the server's AlarmDriver that a DO's wake schedule changed, so it
+   * can re-arm its timer. Called after `alarmSet`/`alarmClear` persist.
+   */
+  onAlarmChanged?: () => void;
 }
 
 export function createWorkspaceStateService(deps: WorkspaceStateServiceDeps): ServiceDefinition {
@@ -188,6 +197,16 @@ export function createWorkspaceStateService(deps: WorkspaceStateServiceDeps): Se
         description: "Clear a Durable Object active-work lease.",
         policy: LIFECYCLE_POLICY,
       },
+      alarmSet: {
+        args: z.tuple([AlarmSetSchema]),
+        description: "Register/replace a Durable Object's server-driven wake time.",
+        policy: LIFECYCLE_POLICY,
+      },
+      alarmClear: {
+        args: z.tuple([LifecycleKeySchema]),
+        description: "Clear a Durable Object's pending server-driven alarm.",
+        policy: LIFECYCLE_POLICY,
+      },
     },
     handler: async (_ctx, method, args) => {
       switch (method) {
@@ -289,6 +308,18 @@ export function createWorkspaceStateService(deps: WorkspaceStateServiceDeps): Se
         case "lifecycleLeaseClear": {
           const [input] = args as [unknown];
           await dispatch<undefined>("lifecycleLeaseClear", [input]);
+          return;
+        }
+        case "alarmSet": {
+          const [input] = args as [unknown];
+          await dispatch<undefined>("alarmSet", [input]);
+          deps.onAlarmChanged?.();
+          return;
+        }
+        case "alarmClear": {
+          const [input] = args as [unknown];
+          await dispatch<undefined>("alarmClear", [input]);
+          deps.onAlarmChanged?.();
           return;
         }
         default:

@@ -77,7 +77,7 @@ export class TerminalChatWorker extends DurableObjectBase {
       </Centered>,
     );
     this.ctx.waitUntil?.(this.instance.waitUntilExit());
-    this.ctx.storage.setAlarm(Date.now() + HEARTBEAT_MS);
+    this.setAlarm(HEARTBEAT_MS);
 
     try {
       const rpc = this.rpc;
@@ -174,7 +174,7 @@ export class TerminalChatWorker extends DurableObjectBase {
   }
 
   async alarm(): Promise<void> {
-    if (this.active) this.ctx.storage.setAlarm(Date.now() + HEARTBEAT_MS);
+    if (this.active) this.setAlarm(HEARTBEAT_MS);
   }
 }
 

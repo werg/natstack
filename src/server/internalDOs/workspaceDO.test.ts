@@ -330,6 +330,27 @@ describe("WorkspaceDO lifecycle registry", () => {
     expect(instance.lifecycleListLeases()).toEqual([]);
   });
 
+  it("sets, replaces, lists, and drains server-driven DO alarms", () => {
+    const a = { source: "workers/poller", className: "PollerDO", objectKey: "p-1" };
+    const b = { source: "workers/poller", className: "PollerDO", objectKey: "p-2" };
+
+    instance.alarmSet({ ...a, wakeAt: 5_000 });
+    instance.alarmSet({ ...b, wakeAt: 2_000 });
+    // Replace a's wake time.
+    instance.alarmSet({ ...a, wakeAt: 1_000 });
+
+    expect(instance.alarmNextWakeAt()).toBe(1_000);
+
+    // Drain only those due at/before the cutoff; the rest remain.
+    expect(instance.alarmTakeDue(1_500)).toEqual([{ ...a, wakeAt: 1_000 }]);
+    expect(instance.alarmNextWakeAt()).toBe(2_000);
+
+    // Clearing removes a pending alarm.
+    instance.alarmClear(b);
+    expect(instance.alarmNextWakeAt()).toBeNull();
+    expect(instance.alarmTakeDue(10_000)).toEqual([]);
+  });
+
   it("opens an epoch and snapshots live leases into prepare and resume ops", () => {
     const key = { source: "workers/agent", className: "AiChatWorker", objectKey: "ch-1" };
     instance.lifecycleLeaseUpsert(key);

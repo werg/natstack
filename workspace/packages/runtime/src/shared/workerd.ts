@@ -39,10 +39,9 @@ export type {
 // ---------------------------------------------------------------------------
 // Types (mirror server-side WorkerdManager types, minus internal fields)
 // ---------------------------------------------------------------------------
+// Worker→worker calls go through the RPC relay, not a live workerd capability,
+// so there is no `service` binding — only serializable data bindings.
 export type WorkerBindingDef = {
-    type: "service";
-    worker: string;
-} | {
     type: "text";
     value: string;
 } | {

@@ -97,6 +97,9 @@ function createMockDeps(overrides: Partial<WorkerdManagerDeps> = {}): WorkerdMan
     workspacePath: "/tmp/test-workspace",
     statePath: "/tmp/test-workspace-state",
     getProxyPort: () => 49444,
+    getSharedEgressPort: () => Promise.resolve(49555),
+    registerEgressCaller: () => {},
+    unregisterEgressCaller: () => {},
     getWorkerdGatewayToken: () => "mock-workerd-gateway-token",
     workerdStartupReadyTimeoutMs: 50,
     ...overrides,
@@ -160,17 +163,12 @@ describe("WorkerdManager", () => {
       expect(instance.parentId).toBe("panel-parent");
       expect(instance.parentEntityId).toBe("panel:parent-entity");
       expect(instance.parentKind).toBe("panel");
-      const spawnCalls = vi.mocked(spawn).mock.calls;
-      const spawnArgs = spawnCalls[spawnCalls.length - 1]?.[1] as string[] | undefined;
-      const configPath = spawnArgs?.[spawnArgs.length - 1];
-      expect(configPath).toBeTruthy();
-      const config = fs.readFileSync(configPath as string, "utf8");
-      expect(config).toContain('name = "PARENT_ID"');
-      expect(config).toContain('text = "panel-parent"');
-      expect(config).toContain('name = "PARENT_ENTITY_ID"');
-      expect(config).toContain('text = "panel:parent-entity"');
-      expect(config).toContain('name = "PARENT_KIND"');
-      expect(config).toContain('text = "panel"');
+      // Regular workers load dynamically — parent metadata travels in the
+      // per-instance env served by `/_workercode`, not the workerd config.
+      const code = await mgr.getWorkerCode("hello");
+      expect(code?.env["PARENT_ID"]).toBe("panel-parent");
+      expect(code?.env["PARENT_ENTITY_ID"]).toBe("panel:parent-entity");
+      expect(code?.env["PARENT_KIND"]).toBe("panel");
     });
 
     it("mints a bearer token for the worker callerId", async () => {
@@ -402,15 +400,18 @@ describe("WorkerdManager", () => {
   // onSourceRebuilt
   // -------------------------------------------------------------------------
   describe("onSourceRebuilt", () => {
-    it("restarts HEAD-tracking instances for matching source", async () => {
+    it("reloads HEAD-tracking instances via a codeVersion bump (no restart)", async () => {
       const deps = createMockDeps();
       const mgr = new WorkerdManager(deps);
 
       await mgr.createInstance(defaultCreateOptions());
+      const before = mgr.getWorkerVersion("hello");
       await mgr.onSourceRebuilt("workers/hello");
 
-      const status = mgr.getInstanceStatus("hello");
-      expect(status?.status).toBe("running");
+      // No restart — the worker host reloads on its next request because the
+      // loader-cache version bumped. The instance stays "running" throughout.
+      expect(mgr.getInstanceStatus("hello")?.status).toBe("running");
+      expect(mgr.getWorkerVersion("hello")).toBe((before ?? 0) + 1);
     });
 
     it("skips ref-targeted instances", async () => {
@@ -429,22 +430,18 @@ describe("WorkerdManager", () => {
       expect(deps.getBuild).toHaveBeenCalledTimes(callsBefore);
     });
 
-    it("sets status to error on restart failure", async () => {
+    it("does not restart workerd on a source rebuild", async () => {
       const deps = createMockDeps();
       const mgr = new WorkerdManager(deps);
 
       await mgr.createInstance(defaultCreateOptions());
+      const spawnsBefore = vi.mocked(spawn).mock.calls.length;
 
-      // Make getBuild fail on the second call (during config regeneration in restart)
-      vi.mocked(deps.getBuild)
-        .mockResolvedValueOnce(mockWorkerBuild("// ok"))
-        .mockRejectedValueOnce(new Error("build broken"));
-
-      // The restart itself might not throw (it catches internally)
-      // but instance status should reflect the failure
       await mgr.onSourceRebuilt("workers/hello");
-      // After source rebuild, if restart throws, status should be "error"
-      // Note: the restart may succeed if config generation skips the failed build
+
+      // Dynamic loading: a rebuild is a loader-cache eviction, never a restart.
+      expect(vi.mocked(spawn).mock.calls.length).toBe(spawnsBefore);
+      expect(mgr.getInstanceStatus("hello")?.status).toBe("running");
     });
 
     it("ignores unrelated sources", async () => {
@@ -517,6 +514,9 @@ describe("WorkerdManager", () => {
       const deps = createMockDeps();
       const mgr = new WorkerdManager(deps);
 
+      // Bring workerd up first (a worker create starts the static host); then
+      // register a userland DO class — which by itself never restarts.
+      await mgr.createInstance(defaultCreateOptions());
       await mgr.registerAllDOClasses([{ source: "workers/agent", className: "AgentDO" }]);
 
       const restartBegin = vi.fn();
@@ -524,7 +524,8 @@ describe("WorkerdManager", () => {
 
       // If ensureDO probed HTTP readiness, a rejecting fetch would (old behavior)
       // trigger a restart. The new contract: a live, registered process is left
-      // alone — no readiness fetch, no restart.
+      // alone — no readiness fetch, no restart. (Userland DO classes load into
+      // the static universal-do host, so they never restart regardless.)
       const fetchMock = vi.fn().mockRejectedValue(new TypeError("fetch failed"));
       vi.stubGlobal("fetch", fetchMock);
 
@@ -553,7 +554,10 @@ describe("WorkerdManager", () => {
       expect(ready).not.toHaveBeenCalled();
       expect(mgr.getBootGeneration()).toBe(1);
 
-      await mgr.updateInstance("hello", { env: { UPDATED: "1" } });
+      // Worker update no longer restarts (the host is static); a real restart
+      // (e.g. an explicit restartAll, or internal-config change) still emits the
+      // begin/ready hooks and bumps the boot generation.
+      await mgr.restartAll();
 
       expect(begin).toHaveBeenCalledTimes(1);
       expect(ready).toHaveBeenCalledTimes(1);
@@ -575,20 +579,16 @@ describe("WorkerdManager", () => {
       const code = (
         mgr as unknown as {
           generateRouterCode(
-            instanceNames: string[],
             doClassNames: { className: string; source: string; serviceName: string }[]
           ): string;
         }
-      ).generateRouterCode(
-        [],
-        [
-          {
-            source: "workspace/workers/gad-store",
-            className: "EventStore",
-            serviceName: "do_workspace_workers_gad_store_EventStore",
-          },
-        ]
-      );
+      ).generateRouterCode([
+        {
+          source: "workspace/workers/gad-store",
+          className: "EventStore",
+          serviceName: "do_workspace_workers_gad_store_EventStore",
+        },
+      ]);
       const router = new Function(`${code.replace("export default", "return")}`)() as {
         fetch(request: Request, env: Record<string, unknown>): Promise<Response>;
       };
@@ -632,20 +632,16 @@ describe("WorkerdManager", () => {
       const code = (
         mgr as unknown as {
           generateRouterCode(
-            instanceNames: string[],
             doClassNames: { className: string; source: string; serviceName: string }[]
           ): string;
         }
-      ).generateRouterCode(
-        [],
-        [
-          {
-            source: "workspace/workers/gad-store",
-            className: "EventStore",
-            serviceName: "do_workspace_workers_gad_store_EventStore",
-          },
-        ]
-      );
+      ).generateRouterCode([
+        {
+          source: "workspace/workers/gad-store",
+          className: "EventStore",
+          serviceName: "do_workspace_workers_gad_store_EventStore",
+        },
+      ]);
       const router = new Function(`${code.replace("export default", "return")}`)() as {
         fetch(request: Request, env: Record<string, unknown>): Promise<Response>;
       };

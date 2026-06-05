@@ -26,6 +26,8 @@ import { constantTimeStringEqual, type TokenManager } from "@natstack/shared/tok
 import type { ConnectionGrantService } from "@natstack/shared/connectionGrants";
 import { createVerifiedCaller, type VerifiedCaller } from "@natstack/shared/serviceDispatcher";
 import type { RouteRegistry, LookupResult } from "./routeRegistry.js";
+import { encodeUniversalKey } from "./doDispatch.js";
+import { isInternalDOSource } from "./internalDOs/internalDoLoader.js";
 import { assertPresent } from "../lintHelpers";
 import type { EntityCache } from "@natstack/shared/runtime/entityCache";
 import { resolveCodeIdentity } from "./services/principalIdentity.js";
@@ -109,6 +111,36 @@ export interface AppArtifactHandler {
   ): Promise<void> | void;
 }
 
+/** Subset of WorkerdManager the gateway needs to serve worker-host loader code.
+ *  These endpoints expose worker bundles + per-instance env (RPC tokens,
+ *  STATE_ARGS), so they are gated by the workerd-only `loaderSecret`. */
+export interface WorkerHostCodeProvider {
+  getLoaderSecret(): string;
+  getWorkerVersion(name: string): number | null;
+  getWorkerCode(name: string): Promise<{
+    compatibilityDate: string;
+    compatibilityFlags: string[];
+    mainModule: string;
+    modules: Record<string, string>;
+    env: Record<string, unknown>;
+    callerId: string;
+  } | null>;
+  /** Userland DO class version (build ev) for the UniversalDO facet host. */
+  getDoVersion(source: string, className: string): string | null;
+  /** Userland DO class code+env for the UniversalDO facet host. */
+  getDoCode(
+    source: string,
+    className: string
+  ): Promise<{
+    compatibilityDate: string;
+    compatibilityFlags: string[];
+    mainModule: string;
+    modules: Record<string, string>;
+    wasmModules?: Record<string, string>;
+    env: Record<string, string>;
+  } | null>;
+}
+
 export interface GatewayDeps {
   /** In-process RPC handler */
   rpcHandler?: RpcHandler;
@@ -132,6 +164,10 @@ export interface GatewayDeps {
   workerdGatewayToken?: string;
   /** Internal secret stamped onto gateway-authorized DO dispatches. */
   getWorkerdDispatchSecret?: () => string | null | undefined;
+  /** Dynamic worker-code provider for the loopback worker-host loader endpoints
+   *  (`/_workercode/{name}`, `/_workerversion/{name}`). The workerd manager
+   *  satisfies this; absent until workerd is wired. */
+  getWorkerHost?: () => WorkerHostCodeProvider | null | undefined;
   /** External hostname for generated public URLs and origin checks */
   externalHost: string;
   /** Current public URL for origin checks, including --public-url / NATSTACK_PUBLIC_URL overrides. */
@@ -208,8 +244,123 @@ export class Gateway {
         return;
       }
 
-      // /_w/ → workerd reverse proxy
-      if (url.startsWith("/_w/")) {
+      // /_workerversion/{name} and /_workercode/{name} → dynamic worker host
+      // loader endpoints. Loopback-only, gated by the workerd-only loader
+      // secret (NOT panel/worker credentials): they expose bundles + per-worker
+      // env including RPC tokens.
+      if (url.startsWith("/_workerversion/") || url.startsWith("/_workercode/")) {
+        const host = this.deps.getWorkerHost?.();
+        if (!host) {
+          res.writeHead(503, { "Content-Type": "text/plain" });
+          res.end("Worker host unavailable");
+          return;
+        }
+        const provided = req.headers["x-natstack-loader-secret"];
+        if (
+          typeof provided !== "string" ||
+          !constantTimeStringEqual(provided, host.getLoaderSecret())
+        ) {
+          res.writeHead(403, { "Content-Type": "text/plain" });
+          res.end("Forbidden");
+          return;
+        }
+        const isVersion = url.startsWith("/_workerversion/");
+        const prefix = isVersion ? "/_workerversion/" : "/_workercode/";
+        const rawName = url.slice(prefix.length).split("?")[0] ?? "";
+        const name = decodeURIComponent(rawName);
+        if (!name) {
+          res.writeHead(400, { "Content-Type": "text/plain" });
+          res.end("Missing worker name");
+          return;
+        }
+        if (isVersion) {
+          const version = host.getWorkerVersion(name);
+          if (version === null) {
+            res.writeHead(404, { "Content-Type": "text/plain" });
+            res.end("Worker not found");
+            return;
+          }
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ version }));
+          return;
+        }
+        void host
+          .getWorkerCode(name)
+          .then((code) => {
+            if (!code) {
+              res.writeHead(404, { "Content-Type": "text/plain" });
+              res.end("Worker not found");
+              return;
+            }
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify(code));
+          })
+          .catch((err: unknown) => {
+            res.writeHead(500, { "Content-Type": "text/plain" });
+            res.end(`Worker code error: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        return;
+      }
+
+      // /_doversion/{source}/{className} and /_docode/{source}/{className} →
+      // UniversalDO facet host loader endpoints (same loader-secret gate).
+      if (url.startsWith("/_doversion/") || url.startsWith("/_docode/")) {
+        const host = this.deps.getWorkerHost?.();
+        if (!host) {
+          res.writeHead(503, { "Content-Type": "text/plain" });
+          res.end("Worker host unavailable");
+          return;
+        }
+        const provided = req.headers["x-natstack-loader-secret"];
+        if (
+          typeof provided !== "string" ||
+          !constantTimeStringEqual(provided, host.getLoaderSecret())
+        ) {
+          res.writeHead(403, { "Content-Type": "text/plain" });
+          res.end("Forbidden");
+          return;
+        }
+        const isVersion = url.startsWith("/_doversion/");
+        const prefix = isVersion ? "/_doversion/" : "/_docode/";
+        const segs = (url.slice(prefix.length).split("?")[0] ?? "").split("/");
+        const source = decodeURIComponent(segs[0] ?? "");
+        const className = decodeURIComponent(segs[1] ?? "");
+        if (!source || !className) {
+          res.writeHead(400, { "Content-Type": "text/plain" });
+          res.end("Missing DO source/class");
+          return;
+        }
+        if (isVersion) {
+          const version = host.getDoVersion(source, className);
+          if (version === null) {
+            res.writeHead(404, { "Content-Type": "text/plain" });
+            res.end("DO class not found");
+            return;
+          }
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ version }));
+          return;
+        }
+        void host
+          .getDoCode(source, className)
+          .then((code) => {
+            if (!code) {
+              res.writeHead(404, { "Content-Type": "text/plain" });
+              res.end("DO class not found");
+              return;
+            }
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify(code));
+          })
+          .catch((err: unknown) => {
+            res.writeHead(500, { "Content-Type": "text/plain" });
+            res.end(`DO code error: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        return;
+      }
+
+      // /_w/ (internal DO) + /_u/ (userland DO facet host) → workerd reverse proxy
+      if (url.startsWith("/_w/") || url.startsWith("/_u/")) {
         if (
           !validateCallerBearer(
             req,
@@ -386,8 +537,8 @@ export class Gateway {
         return;
       }
 
-      // /_w/ → workerd WebSocket proxy
-      if (url.startsWith("/_w/")) {
+      // /_w/ (internal DO) + /_u/ (userland DO facet host) → workerd WS proxy
+      if (url.startsWith("/_w/") || url.startsWith("/_u/")) {
         if (
           !validateCallerBearer(
             req,
@@ -766,8 +917,9 @@ function enforceAuth(
 /**
  * Build the rewritten target path for a worker-route lookup.
  *
- * - DO-backed: `/_w/<source0>/<source1>/<className>/<objectKey>/<remainder>`
- * - Regular-worker: `/<instanceName>/<remainder>`
+ * - Userland DO-backed: `/_u/<packedKey>/<remainder>` (UniversalDO facet host)
+ * - Internal DO-backed:  `/_w/<source…>/<className>/<objectKey>/<remainder>`
+ * - Regular-worker:      `/<instanceName>/<remainder>` (worker host)
  *
  * Preserves the original query string.
  */
@@ -779,6 +931,14 @@ function buildWorkerTargetPath(
   const query = qIdx !== -1 ? originalUrl.slice(qIdx) : "";
   const remainder = lookup.remainder === "/" ? "" : lookup.remainder;
   if (lookup.kind === "worker-do") {
+    if (!isInternalDOSource(lookup.source)) {
+      const key = encodeUniversalKey({
+        source: lookup.source,
+        className: lookup.className,
+        objectKey: lookup.objectKey,
+      });
+      return `/_u/${encodeURIComponent(key)}${remainder}${query}`;
+    }
     return `/_w/${lookup.source}/${lookup.className}/${lookup.objectKey}${remainder}${query}`;
   }
   return `/${lookup.targetInstanceName}${remainder}${query}`;

@@ -717,10 +717,42 @@ export abstract class DurableObjectBase {
     throw new Error("objectKey not available — no request received yet and ctx.id.name not set");
   }
 
-  // --- Alarm (persists across workerd restarts) ---
+  // --- Alarm (server-driven; persists across workerd/server restarts) ---
+  //
+  // workerd does not implement alarms for SQLite-backed Durable Objects (and
+  // never for facets), so the wake time is registered durably with the server
+  // (WorkspaceDO `do_alarms`) and the server's AlarmDriver fires `__alarm` on
+  // schedule. These are fire-and-forget relay calls (matching the old sync
+  // `ctx.storage.setAlarm` signature); persistent failure is logged.
 
   protected setAlarm(delayMs: number): void {
-    this.ctx.storage.setAlarm(Date.now() + delayMs);
+    this.setAlarmAt(Date.now() + delayMs);
+  }
+
+  /** Schedule the alarm at an absolute epoch-ms time. */
+  protected setAlarmAt(timeMs: number): void {
+    void this.alarmRpc("workspace-state.alarmSet", { ...this.lifecycleKey(), wakeAt: timeMs });
+  }
+
+  /** Cancel any pending alarm for this DO. */
+  protected deleteAlarm(): void {
+    void this.alarmRpc("workspace-state.alarmClear", this.lifecycleKey());
+  }
+
+  private lifecycleKey(): { source: string; className: string; objectKey: string } {
+    return {
+      source: String(this.env["WORKER_SOURCE"] ?? ""),
+      className: String(this.env["WORKER_CLASS_NAME"] ?? this.constructor.name),
+      objectKey: this.objectKey,
+    };
+  }
+
+  private async alarmRpc(method: string, payload: unknown): Promise<void> {
+    try {
+      await this.rpc.call("main", method, [payload]);
+    } catch (err) {
+      console.warn(`[durable] ${method} failed:`, err instanceof Error ? err.message : err);
+    }
   }
 
   /** Override in subclasses for timed callbacks. Call super.alarm() first. */
@@ -807,6 +839,27 @@ export abstract class DurableObjectBase {
         }
       }
 
+      // Alarm endpoint — server-driven (workerd lacks SQLite/facet alarms).
+      // The AlarmDriver fires this on schedule; gate to the server caller.
+      if (method === "__alarm") {
+        const previousVerifiedCaller = this._currentVerifiedCaller;
+        this._currentVerifiedCaller = verifiedCallerFromBody;
+        try {
+          if (this.caller?.callerKind !== "server") {
+            return new Response(JSON.stringify({ error: "Alarm calls require server caller" }), {
+              status: 403,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+          await this.alarm();
+          return new Response(JSON.stringify({ result: "ok" }), {
+            headers: { "Content-Type": "application/json" },
+          });
+        } finally {
+          this._currentVerifiedCaller = previousVerifiedCaller;
+        }
+      }
+
       // Event endpoint — handle incoming events
       if (method === "__event") {
         if (args.length < 2) {
@@ -873,24 +926,26 @@ export abstract class DurableObjectBase {
   async resumeAfterRestart(_input: LifecycleResumeInput): Promise<void> {}
 
   protected async markCheckpointableWorkActive(detail?: unknown): Promise<void> {
-    await this.rpc.call("main", "workspace-state.lifecycleLeaseUpsert", [
-      {
-        source: String(this.env["WORKER_SOURCE"] ?? ""),
-        className: String(this.env["WORKER_CLASS_NAME"] ?? this.constructor.name),
-        objectKey: this.objectKey,
-        detail,
-      },
-    ]);
+    // The lease must be registered before the turn does real work — a turn that
+    // proceeds unleased won't get prepare/resume on a restart (unrecoverable).
+    // The upsert is a relay RPC that can transiently fail under load, so retry a
+    // few times; the caller surfaces persistent failure rather than swallowing.
+    const payload = { ...this.lifecycleKey(), detail };
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await this.rpc.call("main", "workspace-state.lifecycleLeaseUpsert", [payload]);
+        return;
+      } catch (err) {
+        lastErr = err;
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 100 * (attempt + 1)));
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
   }
 
   protected async markCheckpointableWorkInactive(): Promise<void> {
-    await this.rpc.call("main", "workspace-state.lifecycleLeaseClear", [
-      {
-        source: String(this.env["WORKER_SOURCE"] ?? ""),
-        className: String(this.env["WORKER_CLASS_NAME"] ?? this.constructor.name),
-        objectKey: this.objectKey,
-      },
-    ]);
+    await this.rpc.call("main", "workspace-state.lifecycleLeaseClear", [this.lifecycleKey()]);
   }
 
   // --- Hibernation hooks ---

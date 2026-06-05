@@ -113,8 +113,9 @@ describe("RouteRegistry × Gateway integration", () => {
     expect(body).toBe("pong");
   });
 
-  it("rewrites DO routes to /_w/{source}/{class}/{key}/{path}", async () => {
+  it("rewrites userland DO routes to /_u/{packedKey}/{path} (UniversalDO facet host)", async () => {
     const { SingletonRegistry } = await import("@natstack/shared/workspace/singletonRegistry");
+    const { encodeUniversalKey } = await import("./doDispatch.js");
     const singletons = new SingletonRegistry([
       { source: "workers/hello-test", className: "HelloDO", key: "singleton" },
     ]);
@@ -137,12 +138,19 @@ describe("RouteRegistry × Gateway integration", () => {
     );
     expect(status).toBe(200);
     expect(h.workerdPaths.length).toBe(before + 1);
+    const packed = encodeURIComponent(
+      encodeUniversalKey({
+        source: "workers/hello-test",
+        className: "HelloDO",
+        objectKey: "singleton",
+      })
+    );
     const seen = h.workerdPaths[h.workerdPaths.length - 1]!;
-    expect(seen).toBe("/_w/workers/hello-test/HelloDO/singleton/callback?q=1");
+    expect(seen).toBe(`/_u/${packed}/callback?q=1`);
     expect(h.workerdDispatchSecrets[h.workerdDispatchSecrets.length - 1]).toBe(
       "workerd-dispatch-secret"
     );
-    expect(body).toContain("/_w/workers/hello-test/HelloDO/singleton/callback");
+    expect(body).toContain(`/_u/${packed}/callback`);
   });
 
   it("rewrites regular-worker routes to /<instance>/<path>", async () => {
