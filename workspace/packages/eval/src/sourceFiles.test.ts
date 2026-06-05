@@ -17,20 +17,22 @@ describe("source file bundles", () => {
       if (id in moduleMap) return moduleMap[id];
       throw new Error(`Module not found: ${id}`);
     };
-    (globalThis as Record<string, unknown>)["__natstackPreloadModules__"] = async (ids: string[]) => (
+    (globalThis as Record<string, unknown>)["__natstackPreloadModules__"] = async (ids: string[]) =>
       ids.map((id) => {
         if (id in moduleMap) return moduleMap[id];
         throw new Error(`Module not found: ${id}`);
-      })
-    );
+      });
   });
 
   afterEach(() => {
-    if (originalModuleMap === undefined) delete (globalThis as Record<string, unknown>)["__natstackModuleMap__"];
+    if (originalModuleMap === undefined)
+      delete (globalThis as Record<string, unknown>)["__natstackModuleMap__"];
     else (globalThis as Record<string, unknown>)["__natstackModuleMap__"] = originalModuleMap;
-    if (originalRequire === undefined) delete (globalThis as Record<string, unknown>)["__natstackRequire__"];
+    if (originalRequire === undefined)
+      delete (globalThis as Record<string, unknown>)["__natstackRequire__"];
     else (globalThis as Record<string, unknown>)["__natstackRequire__"] = originalRequire;
-    if (originalPreload === undefined) delete (globalThis as Record<string, unknown>)["__natstackPreloadModules__"];
+    if (originalPreload === undefined)
+      delete (globalThis as Record<string, unknown>)["__natstackPreloadModules__"];
     else (globalThis as Record<string, unknown>)["__natstackPreloadModules__"] = originalPreload;
   });
 
@@ -219,6 +221,35 @@ describe("source file bundles", () => {
         "ui/App.tsx": code,
         "ui/labels.ts": `export const label = "ready";`,
       },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.Component?.()).toBe("ready");
+  });
+
+  it("resolves a .js specifier to its .ts/.tsx source sibling", async () => {
+    const code = `import { label } from "./labels.js"; export default function App() { return label; }`;
+    const result = await compileComponent<() => string>(code, {
+      sourcePath: "ui/App.tsx",
+      sourceFiles: {
+        "ui/App.tsx": code,
+        "ui/labels.ts": `export const label = "ready";`,
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.Component?.()).toBe("ready");
+  });
+
+  it("ignores type-only relative imports (erased, never fetched)", async () => {
+    const code = `import type { Label } from "./types.js";
+const label: Label = "ready";
+export default function App() { return label; }`;
+    // Note: "ui/types.ts" is intentionally absent from sourceFiles — a type-only
+    // import must not be fetched, so compilation should still succeed.
+    const result = await compileComponent<() => string>(code, {
+      sourcePath: "ui/App.tsx",
+      sourceFiles: { "ui/App.tsx": code },
     });
 
     expect(result.success).toBe(true);

@@ -26,7 +26,10 @@ export interface ExternalRequireContext {
   importerPath?: string;
 }
 
-type EnsureExternalRequires = (requires: string[], context?: ExternalRequireContext) => Promise<void>;
+type EnsureExternalRequires = (
+  requires: string[],
+  context?: ExternalRequireContext
+) => Promise<void>;
 
 const EXTENSIONS = [".tsx", ".ts", ".jsx", ".js"];
 const INDEX_FILES = EXTENSIONS.map((ext) => `/index${ext}`);
@@ -77,8 +80,25 @@ function parentDir(dirPath: string): string | null {
   return normalized.slice(0, index);
 }
 
+// TS/NodeNext lets a `.js`/`.jsx` specifier point at a `.ts`/`.tsx` source.
+// Map a written JS extension to the source extensions to try, in priority order.
+const SOURCE_EXTENSION_FALLBACKS: Record<string, string[]> = {
+  ".js": [".ts", ".tsx", ".js"],
+  ".jsx": [".tsx", ".jsx"],
+  ".mjs": [".mts", ".mjs"],
+  ".cjs": [".cts", ".cjs"],
+};
+
 function candidatePaths(specifier: string, importerPath?: string): string[] {
   const base = normalizeSourcePath(specifier, importerPath ? dirname(importerPath) : undefined);
+  // A written `.js`/`.jsx` (etc.) extension should also resolve its `.ts`/`.tsx`
+  // source sibling, so authors can use the standard TS import convention.
+  for (const [written, fallbacks] of Object.entries(SOURCE_EXTENSION_FALLBACKS)) {
+    if (base.endsWith(written)) {
+      const stem = base.slice(0, base.length - written.length);
+      return fallbacks.map((ext) => `${stem}${ext}`);
+    }
+  }
   if (hasKnownExtension(base)) return [base];
   return [
     base,
@@ -102,7 +122,12 @@ export function findRelativeSpecifiers(code: string): string[] {
 }
 
 export function getPackageSpecifier(specifier: string): string | null {
-  if (!specifier || isRelativeSpecifier(specifier) || specifier.startsWith("/") || specifier.startsWith("#")) {
+  if (
+    !specifier ||
+    isRelativeSpecifier(specifier) ||
+    specifier.startsWith("/") ||
+    specifier.startsWith("#")
+  ) {
     return null;
   }
   const parts = specifier.split("/");
@@ -126,13 +151,21 @@ interface TsConfigShape {
   };
 }
 
-function getPackageDependencyVersion(pkg: PackageJsonShape, packageName: string): string | undefined {
-  return pkg.dependencies?.[packageName]
-    ?? pkg.peerDependencies?.[packageName]
-    ?? pkg.optionalDependencies?.[packageName];
+function getPackageDependencyVersion(
+  pkg: PackageJsonShape,
+  packageName: string
+): string | undefined {
+  return (
+    pkg.dependencies?.[packageName] ??
+    pkg.peerDependencies?.[packageName] ??
+    pkg.optionalDependencies?.[packageName]
+  );
 }
 
-function normalizeDependencyRef(specifier: string, version: string | undefined): string | undefined {
+function normalizeDependencyRef(
+  specifier: string,
+  version: string | undefined
+): string | undefined {
   if (specifier.startsWith("@workspace") || specifier.startsWith("@natstack/")) {
     if (!version || version.startsWith("workspace:")) return "latest";
     return version;
@@ -146,7 +179,7 @@ function normalizeDependencyRef(specifier: string, version: string | undefined):
 
 export async function findNearestPackageJson(
   sourcePath: string | undefined,
-  loadSourceFile: LoadSourceFile | undefined,
+  loadSourceFile: LoadSourceFile | undefined
 ): Promise<{ path: string; dir: string; packageJson: PackageJsonShape } | null> {
   if (!sourcePath || !loadSourceFile) return null;
   let dir: string | null = dirname(sourcePath);
@@ -166,7 +199,7 @@ export async function findNearestPackageJson(
 
 async function findNearestTsConfig(
   sourcePath: string | undefined,
-  loadSourceFile: LoadSourceFile | undefined,
+  loadSourceFile: LoadSourceFile | undefined
 ): Promise<{ path: string; dir: string; tsconfig: TsConfigShape } | null> {
   if (!sourcePath || !loadSourceFile) return null;
   let dir: string | null = dirname(sourcePath);
@@ -190,7 +223,7 @@ export async function inferImportsFromPackageJson(
     importerPath?: string;
     loadSourceFile?: LoadSourceFile;
     explicitImports?: Record<string, string>;
-  },
+  }
 ): Promise<Record<string, string>> {
   const inferred: Record<string, string> = {};
   const packageJson = await findNearestPackageJson(context.importerPath, context.loadSourceFile);
@@ -198,7 +231,8 @@ export async function inferImportsFromPackageJson(
   for (const specifier of specifiers) {
     const packageName = getPackageSpecifier(specifier);
     if (!packageName) continue;
-    const explicitRef = context.explicitImports?.[specifier] ?? context.explicitImports?.[packageName];
+    const explicitRef =
+      context.explicitImports?.[specifier] ?? context.explicitImports?.[packageName];
     if (explicitRef) {
       inferred[specifier] = explicitRef;
       continue;
@@ -220,7 +254,7 @@ export async function getMissingPackageDeclarations(
     importerPath?: string;
     loadSourceFile?: LoadSourceFile;
     explicitImports?: Record<string, string>;
-  },
+  }
 ): Promise<string[]> {
   const packageJson = await findNearestPackageJson(context.importerPath, context.loadSourceFile);
   if (!packageJson) return [];
@@ -241,9 +275,11 @@ function extractConditionalTarget(value: unknown): string | undefined {
   if (Array.isArray(value)) return value.find((item): item is string => typeof item === "string");
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
-    return extractConditionalTarget(record["browser"])
-      ?? extractConditionalTarget(record["import"])
-      ?? extractConditionalTarget(record["default"]);
+    return (
+      extractConditionalTarget(record["browser"]) ??
+      extractConditionalTarget(record["import"]) ??
+      extractConditionalTarget(record["default"])
+    );
   }
   return undefined;
 }
@@ -267,7 +303,7 @@ function resolveConfigPath(baseDir: string, target: string): string {
 async function localAliasCandidates(
   specifier: string,
   importerPath: string | undefined,
-  loadSourceFile?: LoadSourceFile,
+  loadSourceFile?: LoadSourceFile
 ): Promise<string[]> {
   if (!importerPath || !loadSourceFile) return [];
   const candidates: string[] = [];
@@ -288,7 +324,10 @@ async function localAliasCandidates(
   const tsconfig = await findNearestTsConfig(importerPath, loadSourceFile);
   const paths = tsconfig?.tsconfig.compilerOptions?.paths;
   if (tsconfig && paths) {
-    const baseUrl = resolveConfigPath(tsconfig.dir, tsconfig.tsconfig.compilerOptions?.baseUrl ?? ".");
+    const baseUrl = resolveConfigPath(
+      tsconfig.dir,
+      tsconfig.tsconfig.compilerOptions?.baseUrl ?? "."
+    );
     for (const [pattern, targets] of Object.entries(paths)) {
       for (const target of targets) {
         const applied = applyPattern(pattern, target, specifier);
@@ -303,7 +342,10 @@ async function localAliasCandidates(
 
 export function findStaticSpecifiers(code: string): string[] {
   const patterns = [
-    /\b(?:import|export)\s+(?:[^"'`]*?\s+from\s+)?["']([^"']+)["']/g,
+    // Skip whole-statement type-only imports/exports (`import type ... from`,
+    // `export type ... from`) — they are erased by the transform and must not
+    // be fetched. Inline `import { type X, Y }` still matches (module is loaded).
+    /\b(?:import|export)\s+(?!type[\s{])(?:[^"'`]*?\s+from\s+)?["']([^"']+)["']/g,
     /\brequire\(\s*["']([^"']+)["']\s*\)/g,
   ];
   const specifiers: string[] = [];
@@ -320,15 +362,17 @@ async function resolveSourceFile(
   importerPath: string | undefined,
   files: Map<string, string>,
   loadSourceFile?: LoadSourceFile,
-  resolutions?: Map<string, string>,
+  resolutions?: Map<string, string>
 ): Promise<{ path: string; code: string }> {
   const candidates = !importerPath
     ? candidatePaths(specifier)
     : isRelativeSpecifier(specifier)
-    ? candidatePaths(specifier, importerPath)
-    : await localAliasCandidates(specifier, importerPath, loadSourceFile);
+      ? candidatePaths(specifier, importerPath)
+      : await localAliasCandidates(specifier, importerPath, loadSourceFile);
   if (candidates.length === 0) {
-    throw new Error(`Specifier "${specifier}" does not resolve to a source file from ${importerPath ?? "<inline source>"}`);
+    throw new Error(
+      `Specifier "${specifier}" does not resolve to a source file from ${importerPath ?? "<inline source>"}`
+    );
   }
   for (const candidate of candidates) {
     const normalized = normalizeSourcePath(candidate);
@@ -340,7 +384,9 @@ async function resolveSourceFile(
   }
 
   if (!loadSourceFile) {
-    throw new Error(`Relative import "${specifier}" could not be resolved from ${importerPath ?? "<inline source>"}`);
+    throw new Error(
+      `Relative import "${specifier}" could not be resolved from ${importerPath ?? "<inline source>"}`
+    );
   }
 
   const errors: string[] = [];
@@ -358,7 +404,7 @@ async function resolveSourceFile(
 
   throw new Error(
     `Relative import "${specifier}" could not be resolved from ${importerPath ?? "<inline source>"}. ` +
-    `Tried: ${candidates.map((candidate) => normalizeSourcePath(candidate)).join(", ")}. ${errors[errors.length - 1] ?? ""}`.trim(),
+      `Tried: ${candidates.map((candidate) => normalizeSourcePath(candidate)).join(", ")}. ${errors[errors.length - 1] ?? ""}`.trim()
   );
 }
 
@@ -367,7 +413,7 @@ async function tryResolveSourceFile(
   importerPath: string,
   files: Map<string, string>,
   loadSourceFile: LoadSourceFile | undefined,
-  resolutions: Map<string, string>,
+  resolutions: Map<string, string>
 ): Promise<{ path: string; code: string } | null> {
   if (!isRelativeSpecifier(specifier) && !specifier.startsWith("#")) {
     const aliasCandidates = await localAliasCandidates(specifier, importerPath, loadSourceFile);
@@ -384,13 +430,15 @@ async function tryResolveSourceFile(
 export async function loadSourceFileBundle(
   entryPath: string,
   loadSourceFile: LoadSourceFile,
-  entryCode?: string,
+  entryCode?: string
 ): Promise<SourceFileBundle> {
   const files = new Map<string, string>();
   const resolutions = new Map<string, string>();
-  const first = await resolveSourceFile(entryPath, undefined, files, async (path) => (
-    path === normalizeSourcePath(entryPath) && entryCode !== undefined ? entryCode : loadSourceFile(path)
-  ));
+  const first = await resolveSourceFile(entryPath, undefined, files, async (path) =>
+    path === normalizeSourcePath(entryPath) && entryCode !== undefined
+      ? entryCode
+      : loadSourceFile(path)
+  );
   const visiting = new Set<string>();
 
   async function visit(filePath: string): Promise<void> {
@@ -400,19 +448,29 @@ export async function loadSourceFileBundle(
     const code = files.get(normalized);
     if (code === undefined) throw new Error(`Source file missing from bundle: ${normalized}`);
     for (const specifier of findStaticSpecifiers(code)) {
-      const resolved = await tryResolveSourceFile(specifier, normalized, files, loadSourceFile, resolutions);
+      const resolved = await tryResolveSourceFile(
+        specifier,
+        normalized,
+        files,
+        loadSourceFile,
+        resolutions
+      );
       if (resolved) await visit(resolved.path);
     }
   }
 
   await visit(first.path);
-  return { entryPath: first.path, files: Object.fromEntries(files), resolutions: Object.fromEntries(resolutions) };
+  return {
+    entryPath: first.path,
+    files: Object.fromEntries(files),
+    resolutions: Object.fromEntries(resolutions),
+  };
 }
 
 function rewriteRelativeSpecifiers(
   code: string,
   importerPath: string,
-  resolutions: Map<string, string>,
+  resolutions: Map<string, string>
 ): string {
   function resolve(specifier: string): string {
     return resolutions.get(`${importerPath}\n${specifier}`) ?? specifier;
@@ -421,11 +479,13 @@ function rewriteRelativeSpecifiers(
   return code
     .replace(
       /(\b(?:import|export)\s+(?:[^"'`]*?\s+from\s+)?["'])([^"']+)(["'])/g,
-      (_match, prefix: string, specifier: string, suffix: string) => `${prefix}${resolve(specifier)}${suffix}`,
+      (_match, prefix: string, specifier: string, suffix: string) =>
+        `${prefix}${resolve(specifier)}${suffix}`
     )
     .replace(
       /(\brequire\(\s*["'])([^"']+)(["']\s*\))/g,
-      (_match, prefix: string, specifier: string, suffix: string) => `${prefix}${resolve(specifier)}${suffix}`,
+      (_match, prefix: string, specifier: string, suffix: string) =>
+        `${prefix}${resolve(specifier)}${suffix}`
     );
 }
 
@@ -443,12 +503,13 @@ async function loadLocalModules(
   files: Map<string, string>,
   resolutions: Map<string, string>,
   syntax: TransformOptions["syntax"],
-  ensureExternalRequires: EnsureExternalRequires,
+  ensureExternalRequires: EnsureExternalRequires
 ): Promise<void> {
   const localModuleIds = new Set(files.keys());
   const loadedContent = new Map<string, string>();
   const loading = new Set<string>();
-  const moduleMap = ((globalThis as Record<string, unknown>)["__natstackModuleMap__"] ??= {}) as Record<string, unknown>;
+  const moduleMap = ((globalThis as Record<string, unknown>)["__natstackModuleMap__"] ??=
+    {}) as Record<string, unknown>;
   const requireFn = getDefaultRequire();
   if (!requireFn) throw new Error("__natstackRequire__ not available. Build may be outdated.");
 
@@ -471,7 +532,9 @@ async function loadLocalModules(
       }
 
       const transformed = await transformCode(rewritten, { syntax });
-      const externalRequires = transformed.requires.filter((specifier) => !localModuleIds.has(specifier));
+      const externalRequires = transformed.requires.filter(
+        (specifier) => !localModuleIds.has(specifier)
+      );
       await ensureExternalRequires(externalRequires, { importerPath: normalized });
 
       const result = execute(transformed.code, { require: requireFn });
@@ -491,7 +554,7 @@ async function loadLocalModules(
 export async function prepareSourceCode(
   code: string,
   options: SourceFileOptions & { syntax: TransformOptions["syntax"] },
-  ensureExternalRequires: EnsureExternalRequires = defaultEnsureExternalRequires,
+  ensureExternalRequires: EnsureExternalRequires = defaultEnsureExternalRequires
 ): Promise<PreparedSource> {
   if (!options.sourcePath) {
     return { code, localModuleIds: new Set() };
@@ -513,7 +576,7 @@ export async function prepareSourceCode(
       }
       return options.loadSourceFile(normalized);
     },
-    code,
+    code
   );
 
   const files = new Map<string, string>();
@@ -522,10 +585,20 @@ export async function prepareSourceCode(
   }
   const resolutions = new Map(Object.entries(bundle.resolutions));
   const localModuleIds = new Set(files.keys());
-  await loadLocalModules(bundle.entryPath, files, resolutions, options.syntax, ensureExternalRequires);
+  await loadLocalModules(
+    bundle.entryPath,
+    files,
+    resolutions,
+    options.syntax,
+    ensureExternalRequires
+  );
 
   return {
-    code: rewriteRelativeSpecifiers(files.get(bundle.entryPath) ?? code, bundle.entryPath, resolutions),
+    code: rewriteRelativeSpecifiers(
+      files.get(bundle.entryPath) ?? code,
+      bundle.entryPath,
+      resolutions
+    ),
     entryPath: bundle.entryPath,
     sourceFiles: Object.fromEntries(files),
     localModuleIds,

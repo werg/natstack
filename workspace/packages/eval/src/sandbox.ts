@@ -27,12 +27,9 @@ import {
   type ExternalRequireContext,
   type LoadSourceFile,
 } from "./sourceFiles.js";
-import {
-  createConsoleCapture,
-  formatConsoleEntry,
-  formatConsoleOutput,
-} from "./consoleCapture.js";
+import { createConsoleCapture, formatConsoleEntry, formatConsoleOutput } from "./consoleCapture.js";
 import { getAsyncTracking } from "./asyncTracking.js";
+import { assertNoPreInjectedImports, assertNamedExportsExist } from "./importValidation.js";
 
 // =============================================================================
 // Types
@@ -111,7 +108,10 @@ export interface CompileComponentOptions {
 // =============================================================================
 
 function getModuleMap(): Record<string, unknown> {
-  return ((globalThis as Record<string, unknown>)["__natstackModuleMap__"] ??= {}) as Record<string, unknown>;
+  return ((globalThis as Record<string, unknown>)["__natstackModuleMap__"] ??= {}) as Record<
+    string,
+    unknown
+  >;
 }
 
 /** Tracks bundle content last loaded per specifier to skip re-execution */
@@ -125,7 +125,9 @@ function loadLibraryBundle(specifier: string, bundleCode: string): void {
   const moduleMap = getModuleMap();
   if (loadedBundleContent.get(specifier) === bundleCode && moduleMap[specifier]) return;
 
-  const requireFn = (globalThis as Record<string, unknown>)["__natstackRequire__"] as ((id: string) => unknown) | undefined;
+  const requireFn = (globalThis as Record<string, unknown>)["__natstackRequire__"] as
+    | ((id: string) => unknown)
+    | undefined;
   if (!requireFn) throw new Error("__natstackRequire__ not available");
 
   const exports: Record<string, unknown> = {};
@@ -142,7 +144,7 @@ function loadLibraryBundle(specifier: string, bundleCode: string): void {
  */
 async function loadImports(
   imports: Record<string, string>,
-  loadImport: (specifier: string, ref: string | undefined, externals: string[]) => Promise<string>,
+  loadImport: (specifier: string, ref: string | undefined, externals: string[]) => Promise<string>
 ): Promise<void> {
   const moduleMap = getModuleMap();
   for (const [specifier, refValue] of Object.entries(imports)) {
@@ -155,7 +157,7 @@ async function loadImports(
 }
 
 function installLazyImportLoader(
-  loadImport: SandboxOptions["loadImport"] | undefined,
+  loadImport: SandboxOptions["loadImport"] | undefined
 ): (() => void) | null {
   if (!loadImport) return null;
   const globals = globalThis as Record<string, unknown>;
@@ -177,12 +179,16 @@ function installLazyImportLoader(
 async function ensureRequires(
   requires: string[],
   options: {
-    loadImport?: (specifier: string, ref: string | undefined, externals: string[]) => Promise<string>;
+    loadImport?: (
+      specifier: string,
+      ref: string | undefined,
+      externals: string[]
+    ) => Promise<string>;
     loadSourceFile?: LoadSourceFile;
     sourcePath?: string;
     imports?: Record<string, string>;
   } = {},
-  context?: ExternalRequireContext,
+  context?: ExternalRequireContext
 ): Promise<void> {
   if (requires.length === 0) return;
   const requireFn = getDefaultRequire();
@@ -192,14 +198,11 @@ async function ensureRequires(
   if (!validation.valid && options.loadImport) {
     const moduleMap = getModuleMap();
     const missing = requires.filter((r) => !moduleMap[r]);
-    const inferredImports = await inferImportsFromPackageJson(
-      missing,
-      {
-        importerPath: context?.importerPath ?? options.sourcePath,
-        loadSourceFile: options.loadSourceFile,
-        explicitImports: options.imports,
-      },
-    );
+    const inferredImports = await inferImportsFromPackageJson(missing, {
+      importerPath: context?.importerPath ?? options.sourcePath,
+      loadSourceFile: options.loadSourceFile,
+      explicitImports: options.imports,
+    });
 
     if (Object.keys(inferredImports).length > 0) {
       await loadImports(inferredImports, options.loadImport);
@@ -221,7 +224,9 @@ async function ensureRequires(
       explicitImports: options.imports,
     });
     if (missingDeclarations.length > 0) {
-      throw new Error(`Package import not declared for file-loaded source: ${missingDeclarations.join("; ")}. Add it to package.json dependencies or pass the imports parameter.`);
+      throw new Error(
+        `Package import not declared for file-loaded source: ${missingDeclarations.join("; ")}. Add it to package.json dependencies or pass the imports parameter.`
+      );
     }
     throw new Error(validation.error ?? `Module "${validation.missingModule}" not available`);
   }
@@ -251,14 +256,19 @@ function safeSerialize(value: unknown, maxDepth = 10): unknown {
     if (val instanceof Date) return val.toISOString();
     if (val instanceof RegExp) return val.toString();
     if (val instanceof Error) return { name: val.name, message: val.message, stack: val.stack };
-    if (val instanceof Map) return { __type: "Map", entries: serialize(Array.from(val.entries()), depth + 1) };
-    if (val instanceof Set) return { __type: "Set", values: serialize(Array.from(val.values()), depth + 1) };
+    if (val instanceof Map)
+      return { __type: "Map", entries: serialize(Array.from(val.entries()), depth + 1) };
+    if (val instanceof Set)
+      return { __type: "Set", values: serialize(Array.from(val.values()), depth + 1) };
     if (ArrayBuffer.isView(val) || val instanceof ArrayBuffer) return `[${val.constructor.name}]`;
     if (Array.isArray(val)) return val.map((item) => serialize(item, depth + 1));
     const result: Record<string, unknown> = {};
     for (const key of Object.keys(val)) {
-      try { result[key] = serialize((val as Record<string, unknown>)[key], depth + 1); }
-      catch { result[key] = "[Unserializable]"; }
+      try {
+        result[key] = serialize((val as Record<string, unknown>)[key], depth + 1);
+      } catch {
+        result[key] = "[Unserializable]";
+      }
     }
     return result;
   }
@@ -277,9 +287,7 @@ function isPromise(value: unknown): value is Promise<unknown> {
 function createAbortError(signal: AbortSignal): Error {
   const reason = signal.reason;
   if (reason instanceof Error) return reason;
-  const message = typeof reason === "string" && reason.length > 0
-    ? reason
-    : "Eval interrupted";
+  const message = typeof reason === "string" && reason.length > 0 ? reason : "Eval interrupted";
   const error = new Error(message);
   error.name = "AbortError";
   return error;
@@ -307,7 +315,7 @@ function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
       (error) => {
         signal.removeEventListener("abort", onAbort);
         reject(error);
-      },
+      }
     );
   });
 }
@@ -331,7 +339,7 @@ function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
  */
 export async function executeSandbox(
   code: string,
-  options: SandboxOptions = {},
+  options: SandboxOptions = {}
 ): Promise<SandboxResult> {
   const { syntax = "tsx", bindings = {} } = options;
   const { signal } = options;
@@ -360,6 +368,8 @@ export async function executeSandbox(
 
   try {
     throwIfAborted(signal);
+    // (#1) Fail loudly if pre-injected globals are imported from the runtime.
+    assertNoPreInjectedImports(code);
     restoreLazyImportLoader = installLazyImportLoader(options.loadImport);
 
     // Load on-demand imports
@@ -370,17 +380,29 @@ export async function executeSandbox(
       await withAbort(loadImports(options.imports, options.loadImport), signal);
     }
 
-    const prepared = await withAbort(prepareSourceCode(code, {
-      syntax,
-      sourcePath: options.sourcePath,
-      sourceFiles: options.sourceFiles,
-      loadSourceFile: options.loadSourceFile,
-    }, (requires, context) => ensureRequires(requires, {
-      loadImport: options.loadImport,
-      loadSourceFile: options.loadSourceFile,
-      sourcePath: options.sourcePath,
-      imports: options.imports,
-    }, context)), signal);
+    const prepared = await withAbort(
+      prepareSourceCode(
+        code,
+        {
+          syntax,
+          sourcePath: options.sourcePath,
+          sourceFiles: options.sourceFiles,
+          loadSourceFile: options.loadSourceFile,
+        },
+        (requires, context) =>
+          ensureRequires(
+            requires,
+            {
+              loadImport: options.loadImport,
+              loadSourceFile: options.loadSourceFile,
+              sourcePath: options.sourcePath,
+              imports: options.imports,
+            },
+            context
+          )
+      ),
+      signal
+    );
     throwIfAborted(signal);
 
     const transformed = await withAbort(transformCode(prepared.code, { syntax }), signal);
@@ -402,11 +424,14 @@ export async function executeSandbox(
       // Auto-resolve: build missing workspace packages on-demand
       const moduleMap = getModuleMap();
       const missingModules = transformed.requires.filter((r) => !moduleMap[r]);
-      const autoImports = await withAbort(inferImportsFromPackageJson(missingModules, {
-        importerPath: options.sourcePath,
-        loadSourceFile: options.loadSourceFile,
-        explicitImports: options.imports,
-      }), signal);
+      const autoImports = await withAbort(
+        inferImportsFromPackageJson(missingModules, {
+          importerPath: options.sourcePath,
+          loadSourceFile: options.loadSourceFile,
+          explicitImports: options.imports,
+        }),
+        signal
+      );
       if (Object.keys(autoImports).length > 0) {
         throwIfAborted(signal);
         options.onConsole?.(`[eval] Auto-loading: ${Object.keys(autoImports).join(", ")}...`);
@@ -419,27 +444,36 @@ export async function executeSandbox(
       const missing = validation.missingModule!;
       const moduleMap = getModuleMap();
       const available = Object.keys(moduleMap);
-      const missingModules = transformed.requires.filter(
-        (r) => !moduleMap[r],
-      );
+      const missingModules = transformed.requires.filter((r) => !moduleMap[r]);
       // For npm packages, suggest the imports parameter
       const suggestedImports = Object.fromEntries(
-        missingModules.map((m) => [m, m.startsWith("@workspace") || m.startsWith("@natstack/") ? "latest" : "npm:latest"]),
+        missingModules.map((m) => [
+          m,
+          m.startsWith("@workspace") || m.startsWith("@natstack/") ? "latest" : "npm:latest",
+        ])
       );
-      const missingDeclarations = await withAbort(getMissingPackageDeclarations(missingModules, {
-        importerPath: options.sourcePath,
-        loadSourceFile: options.loadSourceFile,
-        explicitImports: options.imports,
-      }), signal);
-      const packageHint = missingDeclarations.length > 0
-        ? `\nPackage context: ${missingDeclarations.join("; ")}.`
-        : "";
+      const missingDeclarations = await withAbort(
+        getMissingPackageDeclarations(missingModules, {
+          importerPath: options.sourcePath,
+          loadSourceFile: options.loadSourceFile,
+          explicitImports: options.imports,
+        }),
+        signal
+      );
+      const packageHint =
+        missingDeclarations.length > 0
+          ? `\nPackage context: ${missingDeclarations.join("; ")}.`
+          : "";
       return {
         success: false,
         consoleOutput: "",
         error: `Module "${missing}" not available.${packageHint} For npm packages, add the imports parameter:\n  imports: ${JSON.stringify(suggestedImports)}\nCurrently loaded: ${available.join(", ")}`,
       };
     }
+
+    // (#2) Now that workspace modules are loaded, fail loudly on imports of
+    // names they do not export (instead of a silent `undefined`).
+    assertNamedExportsExist(code, (specifier) => getModuleMap()[specifier]);
 
     // Enter tracking context
     if (tracking && trackingContext) {
@@ -526,13 +560,19 @@ function tryRequireRuntimeModule(requireFn: (id: string) => unknown): any | null
 }
 
 function createRuntimeJournal(runtimeModule: any): any | null {
-  if (typeof runtimeModule?.Journal !== "function" || typeof runtimeModule?.withJournal !== "function") {
+  if (
+    typeof runtimeModule?.Journal !== "function" ||
+    typeof runtimeModule?.withJournal !== "function"
+  ) {
     return null;
   }
   return new runtimeModule.Journal();
 }
 
-async function renderPanelJournalFooter(runtimeModule: any, journal: any): Promise<string | undefined> {
+async function renderPanelJournalFooter(
+  runtimeModule: any,
+  journal: any
+): Promise<string | undefined> {
   const entries = Array.isArray(journal?.entries) ? journal.entries : [];
   if (entries.length === 0) return undefined;
   const operations = entries.map((entry: any) => {
@@ -549,9 +589,10 @@ async function renderPanelJournalFooter(runtimeModule: any, journal: any): Promi
         return String(entry.type ?? "panel operation");
     }
   });
-  const tree = typeof runtimeModule?.listPanels === "function"
-    ? formatPanelTree(await runtimeModule.listPanels())
-    : [];
+  const tree =
+    typeof runtimeModule?.listPanels === "function"
+      ? formatPanelTree(await runtimeModule.listPanels())
+      : [];
   return [
     "[panel] Operations:",
     ...operations.map((line: string) => `- ${line}`),
@@ -569,7 +610,9 @@ function formatPanelTree(handles: any[]): string[] {
   }
   const lines: string[] = [];
   const visit = (handle: any, depth: number) => {
-    lines.push(`${"  ".repeat(depth)}- #${handle.id} ${handle.kind ?? "panel"} ${handle.source ?? ""}`.trimEnd());
+    lines.push(
+      `${"  ".repeat(depth)}- #${handle.id} ${handle.kind ?? "panel"} ${handle.source ?? ""}`.trimEnd()
+    );
     for (const child of byParent.get(handle.id) ?? []) visit(child, depth + 1);
   };
   for (const root of byParent.get(null) ?? handles) visit(root, 0);
@@ -590,7 +633,7 @@ function formatPanelTree(handles: any[]): string[] {
  */
 export async function compileComponent<T = ComponentType<Record<string, unknown>>>(
   code: string,
-  options: CompileComponentOptions = {},
+  options: CompileComponentOptions = {}
 ): Promise<CompileResult<T>> {
   try {
     if (options.imports && Object.keys(options.imports).length > 0) {
@@ -600,17 +643,26 @@ export async function compileComponent<T = ComponentType<Record<string, unknown>
       await loadImports(options.imports, options.loadImport);
     }
 
-    const prepared = await prepareSourceCode(code, {
-      syntax: "tsx",
-      sourcePath: options.sourcePath,
-      sourceFiles: options.sourceFiles,
-      loadSourceFile: options.loadSourceFile,
-    }, (requires, context) => ensureRequires(requires, {
-      loadImport: options.loadImport,
-      loadSourceFile: options.loadSourceFile,
-      sourcePath: options.sourcePath,
-      imports: options.imports,
-    }, context));
+    const prepared = await prepareSourceCode(
+      code,
+      {
+        syntax: "tsx",
+        sourcePath: options.sourcePath,
+        sourceFiles: options.sourceFiles,
+        loadSourceFile: options.loadSourceFile,
+      },
+      (requires, context) =>
+        ensureRequires(
+          requires,
+          {
+            loadImport: options.loadImport,
+            loadSourceFile: options.loadSourceFile,
+            sourcePath: options.sourcePath,
+            imports: options.imports,
+          },
+          context
+        )
+    );
 
     const transformed = await transformCode(prepared.code, { syntax: "tsx" });
 
@@ -621,7 +673,7 @@ export async function compileComponent<T = ComponentType<Record<string, unknown>
         loadSourceFile: options.loadSourceFile,
         sourcePath: options.sourcePath,
         imports: options.imports,
-      },
+      }
     );
 
     const cacheKey = transformed.code;
@@ -644,7 +696,7 @@ export async function compileComponent<T = ComponentType<Record<string, unknown>
  */
 export async function compileModule<T extends Record<string, unknown> = Record<string, unknown>>(
   code: string,
-  options: CompileComponentOptions = {},
+  options: CompileComponentOptions = {}
 ): Promise<CompileModuleResult<T>> {
   try {
     if (options.imports && Object.keys(options.imports).length > 0) {
@@ -654,17 +706,26 @@ export async function compileModule<T extends Record<string, unknown> = Record<s
       await loadImports(options.imports, options.loadImport);
     }
 
-    const prepared = await prepareSourceCode(code, {
-      syntax: "tsx",
-      sourcePath: options.sourcePath,
-      sourceFiles: options.sourceFiles,
-      loadSourceFile: options.loadSourceFile,
-    }, (requires, context) => ensureRequires(requires, {
-      loadImport: options.loadImport,
-      loadSourceFile: options.loadSourceFile,
-      sourcePath: options.sourcePath,
-      imports: options.imports,
-    }, context));
+    const prepared = await prepareSourceCode(
+      code,
+      {
+        syntax: "tsx",
+        sourcePath: options.sourcePath,
+        sourceFiles: options.sourceFiles,
+        loadSourceFile: options.loadSourceFile,
+      },
+      (requires, context) =>
+        ensureRequires(
+          requires,
+          {
+            loadImport: options.loadImport,
+            loadSourceFile: options.loadSourceFile,
+            sourcePath: options.sourcePath,
+            imports: options.imports,
+          },
+          context
+        )
+    );
 
     const transformed = await transformCode(prepared.code, { syntax: "tsx" });
 
@@ -675,7 +736,7 @@ export async function compileModule<T extends Record<string, unknown> = Record<s
         loadSourceFile: options.loadSourceFile,
         sourcePath: options.sourcePath,
         imports: options.imports,
-      },
+      }
     );
 
     const cacheKey = transformed.code;
