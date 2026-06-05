@@ -8,17 +8,17 @@ import type {
 
 export type { CdpAutomation, CdpEndpoint };
 
-type PlaywrightClientModule = {
+type LightweightCdpClientModule = {
   BrowserImpl: { connect(ws: string, opts: object): Promise<any> };
 };
 
-const LIGHTWEIGHT_CDP_MODULE = "@workspace/playwright-client";
+const LIGHTWEIGHT_CDP_MODULE = "@workspace/cdp-client";
 
-function isPlaywrightClientModule(value: unknown): value is PlaywrightClientModule {
-  return Boolean((value as PlaywrightClientModule | undefined)?.BrowserImpl?.connect);
+function isLightweightCdpClientModule(value: unknown): value is LightweightCdpClientModule {
+  return Boolean((value as LightweightCdpClientModule | undefined)?.BrowserImpl?.connect);
 }
 
-async function loadLightweightClient(): Promise<PlaywrightClientModule> {
+async function loadLightweightClient(): Promise<LightweightCdpClientModule> {
   const loadErrors: string[] = [];
   const rememberLoadError = (source: string, error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -30,7 +30,7 @@ async function loadLightweightClient(): Promise<PlaywrightClientModule> {
   if (runtimeRequire) {
     try {
       const loaded = runtimeRequire(LIGHTWEIGHT_CDP_MODULE);
-      if (isPlaywrightClientModule(loaded)) return loaded;
+      if (isLightweightCdpClientModule(loaded)) return loaded;
     } catch (error) {
       rememberLoadError("__natstackRequire__", error);
       // Panels can lazily import npm packages via __natstackRequireAsync__ below.
@@ -44,7 +44,7 @@ async function loadLightweightClient(): Promise<PlaywrightClientModule> {
   if (runtimeLoadImport) {
     try {
       const loaded = await runtimeLoadImport(LIGHTWEIGHT_CDP_MODULE, "latest");
-      if (isPlaywrightClientModule(loaded)) return loaded;
+      if (isLightweightCdpClientModule(loaded)) return loaded;
     } catch (error) {
       rememberLoadError("__natstackLoadImport__", error);
       // Fall through to the legacy async loader/dynamic import paths.
@@ -52,13 +52,11 @@ async function loadLightweightClient(): Promise<PlaywrightClientModule> {
   }
   const runtimeRequireAsync = (globalThis as Record<string, unknown>)[
     "__natstackRequireAsync__"
-  ] as
-    | ((id: string) => Promise<unknown>)
-    | undefined;
+  ] as ((id: string) => Promise<unknown>) | undefined;
   if (runtimeRequireAsync) {
     try {
       const loaded = await runtimeRequireAsync(LIGHTWEIGHT_CDP_MODULE);
-      if (isPlaywrightClientModule(loaded)) return loaded;
+      if (isLightweightCdpClientModule(loaded)) return loaded;
     } catch (error) {
       rememberLoadError("__natstackRequireAsync__", error);
       // Fall through to dynamic import for non-runtime test/node environments.
@@ -66,17 +64,17 @@ async function loadLightweightClient(): Promise<PlaywrightClientModule> {
   }
   const dynamicImport = new Function("id", "return import(id)") as (
     id: string
-  ) => Promise<PlaywrightClientModule>;
+  ) => Promise<LightweightCdpClientModule>;
   try {
     const loaded = await dynamicImport(LIGHTWEIGHT_CDP_MODULE);
-    if (isPlaywrightClientModule(loaded)) return loaded;
+    if (isLightweightCdpClientModule(loaded)) return loaded;
   } catch (error) {
     rememberLoadError("dynamic import", error);
     // Throw the clearer message below.
   }
   throw new Error(
     `Unable to load ${LIGHTWEIGHT_CDP_MODULE} for CDP automation. ` +
-      `Call handle.cdp.lightweightPage() only from contexts that expose @workspace/playwright-client.` +
+      `Call handle.cdp.lightweightPage() only from contexts that expose @workspace/cdp-client.` +
       (loadErrors.length ? ` Last load error: ${loadErrors[loadErrors.length - 1]}` : "")
   );
 }
@@ -89,9 +87,10 @@ export function createCdpAutomation(rpc: Pick<RpcClient, "call">, id: string): C
   const connectPage = async (): Promise<any> => {
     const { BrowserImpl } = await loadLightweightClient();
     const endpoint = await getCdpEndpoint();
-    const connectOptions: { isElectronWebview: boolean; transportOptions?: { authToken: string } } = {
-      isElectronWebview: true,
-    };
+    const connectOptions: { isElectronWebview: boolean; transportOptions?: { authToken: string } } =
+      {
+        isElectronWebview: true,
+      };
     if (endpoint.token) connectOptions.transportOptions = { authToken: endpoint.token };
     const browser = await BrowserImpl.connect(endpoint.wsEndpoint, connectOptions);
     const resolvedPage = browser.contexts()[0]?.pages()[0];

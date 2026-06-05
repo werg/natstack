@@ -144,7 +144,7 @@ export interface PanelDiagnosticsResult {
 }
 
 export interface CdpAutomation {
-  /** Explicit lightweight @workspace/playwright-client page. */
+  /** Explicit lightweight @workspace/cdp-client page. */
   lightweightPage(): Promise<any>;
   /**
    * Historical console messages captured by the Electron host from panel

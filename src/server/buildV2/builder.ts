@@ -1388,7 +1388,7 @@ export function generateExposeModuleCode(
   let effectiveExposeModules = exposeModules;
   if (target === "worker" && exposeModules.includes("@workspace/runtime")) {
     effectiveExposeModules = [...exposeModules];
-    for (const specifier of ["@workspace/playwright-client"]) {
+    for (const specifier of ["@workspace/cdp-client"]) {
       if (!effectiveExposeModules.includes(specifier)) {
         effectiveExposeModules.push(specifier);
       }

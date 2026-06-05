@@ -117,7 +117,7 @@ function createRpcCall() {
 describe("PanelHandle", () => {
   beforeEach(() => {
     vi.resetModules();
-    vi.doUnmock("@workspace/playwright-client");
+    vi.doUnmock("@workspace/cdp-client");
     delete (globalThis as any).__natstackShell;
     delete (globalThis as any).__natstackRequire__;
     delete (globalThis as any).__natstackRequireAsync__;
@@ -403,7 +403,7 @@ describe("PanelHandle", () => {
       contexts: () => [{ pages: () => [page] }],
     }));
     (globalThis as any).__natstackRequireAsync__ = vi.fn(async (id: string) => {
-      if (id === "@workspace/playwright-client") return { BrowserImpl: { connect } };
+      if (id === "@workspace/cdp-client") return { BrowserImpl: { connect } };
       throw new Error(`unexpected module: ${id}`);
     });
     const rpcCall = vi.fn(async () => ({
@@ -418,7 +418,7 @@ describe("PanelHandle", () => {
     expect(rpcCall).toHaveBeenCalledWith("main", "panelCdp.getCdpEndpoint", ["panel-1"]);
     expect(click).toHaveBeenCalledWith("button.submit");
     expect((globalThis as any).__natstackRequireAsync__).toHaveBeenCalledWith(
-      "@workspace/playwright-client"
+      "@workspace/cdp-client"
     );
   });
 
@@ -431,7 +431,7 @@ describe("PanelHandle", () => {
       throw new Error("not in map");
     });
     (globalThis as any).__natstackRequireAsync__ = vi.fn(async (id: string) => {
-      if (id === "@workspace/playwright-client") return { BrowserImpl: { connect } };
+      if (id === "@workspace/cdp-client") return { BrowserImpl: { connect } };
       throw new Error(`unexpected module: ${id}`);
     });
     const rpcCall = vi.fn(async () => ({
@@ -445,7 +445,7 @@ describe("PanelHandle", () => {
 
     expect((globalThis as any).__natstackRequireAsync__).toHaveBeenNthCalledWith(
       1,
-      "@workspace/playwright-client"
+      "@workspace/cdp-client"
     );
   });
 

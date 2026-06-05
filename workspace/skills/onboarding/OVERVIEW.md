@@ -66,16 +66,16 @@ Workers are Cloudflare V8 isolates (via workerd) that run server-side logic. The
 
 All panels and sandbox code can import from `@workspace/runtime`:
 
-| API | What it provides |
-|-----|-----------------|
-| `fs` | Filesystem scoped to the context folder |
-| `db` | SQLite databases scoped to the workspace |
-| `ai` | Text generation and streaming (multiple model roles) |
-| `workers` | Create and manage workerd instances |
-| `workspace` | List, create, configure, switch workspaces |
-| `rpc` | Call services on the main process or other panels |
+| API         | What it provides                                     |
+| ----------- | ---------------------------------------------------- |
+| `fs`        | Filesystem scoped to the context folder              |
+| `db`        | SQLite databases scoped to the workspace             |
+| `ai`        | Text generation and streaming (multiple model roles) |
+| `workers`   | Create and manage workerd instances                  |
+| `workspace` | List, create, configure, switch workspaces           |
+| `rpc`       | Call services on the main process or other panels    |
 
-Additional packages: `@workspace/panel-browser` (browser data import/export), `@workspace/playwright-client` (explicit lightweight CDP client used by `handle.cdp.lightweightPage()`), `@workspace/playwright-automation` (full Playwright helper; import on demand and call `playwrightPage(handle)`).
+Additional packages: `@workspace/panel-browser` (browser data import/export), `@workspace/cdp-client` (runtime-internal lightweight CDP client used by `handle.cdp.lightweightPage()`), `@workspace/playwright-automation` (full Playwright helper; import on demand and call `playwrightPage(handle)`).
 
 ### Build System
 

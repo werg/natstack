@@ -37,6 +37,7 @@ eval({ code: `
 ```
 
 Two lines to get started:
+
 1. `scope.browser = await openPanel(url)` — opens a browser panel, stores handle in scope; may prompt on first structural use
 2. `scope.page = await scope.browser.cdp.lightweightPage()` — connects the lightweight CDP client, stores page in scope
 
@@ -105,9 +106,10 @@ scope.page = await scope.browser.cdp.lightweightPage();
 
 Choose one named CDP client explicitly:
 
-- `await handle.cdp.lightweightPage()` loads the smaller
-  `@workspace/playwright-client` wrapper. Use this as the default for eval
-  diagnostics and simple panel inspection.
+- `await handle.cdp.lightweightPage()` loads the standalone
+  `@workspace/cdp-client` internally. Use this as the default for eval
+  diagnostics and simple panel inspection; do not import the CDP client package
+  directly.
 - `await playwrightPage(handle)` from `@workspace/playwright-automation` loads
   vendored full Playwright through `@workspace/playwright-core`. It is a heavy
   opt-in client. Use it for UI tests, browser workflows, login flows, and tasks
@@ -122,9 +124,9 @@ is no `handle.cdp.page()` alias.
 
 API scope:
 
-| Client | Entry point | Scope | Use when |
-|--------|-------------|-------|----------|
-| Lightweight CDP | `handle.cdp.lightweightPage()` | Small CDP wrapper for basic `goto`, `click`, `fill`, `evaluate`, `waitForSelector`, `screenshot`, console event capture, DOM `inspect(selector)`, and simple locator helpers | Default eval diagnostics and intentionally constrained contexts |
+| Client          | Entry point                                                      | Scope                                                                                                                                                                                              | Use when                                                                               |
+| --------------- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Lightweight CDP | `handle.cdp.lightweightPage()`                                   | Small CDP wrapper for basic `goto`, `click`, `fill`, `evaluate`, `waitForSelector`, `screenshot`, console event capture, DOM `inspect(selector)`, and simple locator helpers                       | Default eval diagnostics and intentionally constrained contexts                        |
 | Full Playwright | `playwrightPage(handle)` from `@workspace/playwright-automation` | Fuller Playwright-style page/locator surface: `url`, `title`, `goto`, `locator`, locator `click/fill/innerText/textContent/count`, `waitForSelector`, `waitForLoadState`, `evaluate`, `screenshot` | UI tests, browser workflows, login flows, anything where robust selectors/waits matter |
 
 Historical console diagnostics are not a CDP page feature. CDP console events
@@ -171,33 +173,33 @@ describes the current runtime, not arbitrary handles.
 ### Navigation
 
 ```typescript
-await scope.page.goto(url)                              // navigate (waits for load)
-await scope.page.goto(url, { waitUntil: "networkidle" }) // wait for network quiet
-await scope.page.goto(url, { waitUntil: "domcontentloaded" })
-await scope.page.goto(url)
-await scope.page.evaluate(() => location.href)           // current URL
-await scope.page.title()                                 // page title
-await scope.page.content()                               // full HTML source
+await scope.page.goto(url); // navigate (waits for load)
+await scope.page.goto(url, { waitUntil: "networkidle" }); // wait for network quiet
+await scope.page.goto(url, { waitUntil: "domcontentloaded" });
+await scope.page.goto(url);
+await scope.page.evaluate(() => location.href); // current URL
+await scope.page.title(); // page title
+await scope.page.content(); // full HTML source
 ```
 
 ### Interaction
 
 ```typescript
-await scope.page.click("button.submit")
-await scope.page.fill('input[name="email"]', "user@example.com")
-await scope.page.type('input[name="search"]', "query")  // types character by character
+await scope.page.click("button.submit");
+await scope.page.fill('input[name="email"]', "user@example.com");
+await scope.page.type('input[name="search"]', "query"); // types character by character
 ```
 
 ### DOM Queries
 
 ```typescript
-await scope.page.waitForSelector(".loaded")              // wait for element to appear
-await scope.page.waitForSelector(".modal")
-await scope.page.querySelector(".result")                // check if element exists
-await scope.page.locator(".result").count()               // count matches
-await scope.page.locator(".result").innerText()           // visible text
-await scope.page.locator(".result").textContent()         // raw text content
-await scope.page.waitForLoadState("networkidle")          // wait for load lifecycle
+await scope.page.waitForSelector(".loaded"); // wait for element to appear
+await scope.page.waitForSelector(".modal");
+await scope.page.querySelector(".result"); // check if element exists
+await scope.page.locator(".result").count(); // count matches
+await scope.page.locator(".result").innerText(); // visible text
+await scope.page.locator(".result").textContent(); // raw text content
+await scope.page.waitForLoadState("networkidle"); // wait for load lifecycle
 ```
 
 ### Evaluate JavaScript in Page
@@ -210,7 +212,7 @@ const text = await scope.page.evaluate(() => document.querySelector("h1")?.textC
 
 // Get multiple elements
 const items = await scope.page.evaluate(() =>
-  Array.from(document.querySelectorAll(".item")).map(el => ({
+  Array.from(document.querySelectorAll(".item")).map((el) => ({
     title: el.querySelector("h3")?.textContent,
     href: el.querySelector("a")?.getAttribute("href"),
   }))
@@ -231,7 +233,7 @@ await scope.page.evaluate(() => {
 ### Screenshots
 
 ```typescript
-const screenshot = await scope.page.screenshot();                    // PNG Uint8Array
+const screenshot = await scope.page.screenshot(); // PNG Uint8Array
 const full = await scope.page.screenshot({ fullPage: true });
 const jpeg = await scope.page.screenshot({ format: "jpeg", quality: 80 });
 ```
@@ -239,26 +241,26 @@ const jpeg = await scope.page.screenshot({ format: "jpeg", quality: 80 });
 ### Close
 
 ```typescript
-await scope.page.close?.()     // close the CDP page/client if available
-await scope.browser.close()    // close the browser panel
+await scope.page.close?.(); // close the CDP page/client if available
+await scope.browser.close(); // close the browser panel
 ```
 
 ### PanelHandle Methods
 
 The handle also has direct navigation methods (no Playwright needed):
 
-| Method | Description |
-|--------|-------------|
-| `playwrightPage(handle)` | Load full Playwright CDP client and return the page |
-| `handle.cdp.lightweightPage()` | Load the smaller CDP wrapper and return the page |
+| Method                                             | Description                                                              |
+| -------------------------------------------------- | ------------------------------------------------------------------------ |
+| `playwrightPage(handle)`                           | Load full Playwright CDP client and return the page                      |
+| `handle.cdp.lightweightPage()`                     | Load the smaller CDP wrapper and return the page                         |
 | `handle.cdp.consoleHistory({ limit, errorLimit })` | Read host-captured historical console logs and the separate error buffer |
-| `handle.click(selector)` | Convenience wrapper for `handle.cdp.click(selector)` |
-| `handle.cdp.navigate(url)` | Load a URL |
-| `handle.cdp.goBack()` | Navigate back |
-| `handle.cdp.goForward()` | Navigate forward |
-| `handle.cdp.reload()` | Reload page |
-| `handle.cdp.stop()` | Stop loading |
-| `handle.close()` | Close browser panel |
+| `handle.click(selector)`                           | Convenience wrapper for `handle.cdp.click(selector)`                     |
+| `handle.cdp.navigate(url)`                         | Load a URL                                                               |
+| `handle.cdp.goBack()`                              | Navigate back                                                            |
+| `handle.cdp.goForward()`                           | Navigate forward                                                         |
+| `handle.cdp.reload()`                              | Reload page                                                              |
+| `handle.cdp.stop()`                                | Stop loading                                                             |
+| `handle.close()`                                   | Close browser panel                                                      |
 
 ## Examples
 

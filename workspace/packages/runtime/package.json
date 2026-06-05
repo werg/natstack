@@ -28,7 +28,7 @@
     "@natstack/rpc": "workspace:*",
     "@natstack/types": "workspace:*",
     "@workspace/agentic-protocol": "workspace:*",
-    "@workspace/playwright-client": "workspace:*",
+    "@workspace/cdp-client": "workspace:*",
     "buffer": "^6.0.3",
     "zod": "^3.24.0"
   },

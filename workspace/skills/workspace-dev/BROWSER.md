@@ -46,9 +46,9 @@ try {
 Choose one CDP client explicitly. This keeps ordinary panel startup fast while
 making the automation surface unambiguous:
 
-- `await handle.cdp.lightweightPage()` loads the smaller
-  `@workspace/playwright-client` wrapper. Use it only when you intentionally
-  want the constrained surface.
+- `await handle.cdp.lightweightPage()` loads the standalone
+  `@workspace/cdp-client` internally. Use it only when you intentionally want
+  the constrained surface; do not import the CDP client package directly.
 - `await playwrightPage(handle)` from `@workspace/playwright-automation` loads
   vendored full Playwright through `@workspace/playwright-core`. Use this for UI
   tests, login flows, locators, waits, and screenshots.
@@ -62,10 +62,10 @@ no generic `handle.cdp.page()` alias.
 
 API scope:
 
-| Client              | Entry point                    | Scope                                                                                                                                                                                              | Use when                                                                                                 |
-| ------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| Full Playwright     | `playwrightPage(handle)` from `@workspace/playwright-automation` | Fuller Playwright-style page/locator surface: `url`, `title`, `goto`, `locator`, locator `click/fill/innerText/textContent/count`, `waitForSelector`, `waitForLoadState`, `evaluate`, `screenshot` | UI tests, browser workflows, login flows, anything where robust selectors/waits matter |
-| Lightweight CDP     | `handle.cdp.lightweightPage()` | Small CDP wrapper for basic `goto`, `click`, `fill`, `evaluate`, `waitForSelector`, `screenshot`, console event capture, DOM `inspect(selector)`, and simple locator helpers                       | Constrained worker/DO contexts or code paths where you intentionally avoid the vendored client           |
+| Client          | Entry point                                                      | Scope                                                                                                                                                                                              | Use when                                                                                       |
+| --------------- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Full Playwright | `playwrightPage(handle)` from `@workspace/playwright-automation` | Fuller Playwright-style page/locator surface: `url`, `title`, `goto`, `locator`, locator `click/fill/innerText/textContent/count`, `waitForSelector`, `waitForLoadState`, `evaluate`, `screenshot` | UI tests, browser workflows, login flows, anything where robust selectors/waits matter         |
+| Lightweight CDP | `handle.cdp.lightweightPage()`                                   | Small CDP wrapper for basic `goto`, `click`, `fill`, `evaluate`, `waitForSelector`, `screenshot`, console event capture, DOM `inspect(selector)`, and simple locator helpers                       | Constrained worker/DO contexts or code paths where you intentionally avoid the vendored client |
 
 Use historical console diagnostics for post-mortem panel debugging. CDP live
 console events start only after a CDP client connects; they cannot recover

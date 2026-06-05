@@ -1,8 +1,8 @@
 {
-  "name": "@workspace/playwright-client",
+  "name": "@workspace/cdp-client",
   "version": "0.1.0-git.67fa4b3-dirty.41ae7e46b385",
   "type": "module",
-  "description": "Browser-compatible CDP client library - thin wrapper",
+  "description": "Standalone lightweight CDP client for NatStack panel targets",
   "license": "Apache-2.0",
   "exports": {
     ".": {
@@ -12,8 +12,5 @@
       "workerd": "./src/worker.ts",
       "default": "./src/index.ts"
     }
-  },
-  "dependencies": {
-    "@workspace/playwright-core": "workspace:*"
   }
 }

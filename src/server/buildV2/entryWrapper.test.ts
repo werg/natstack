@@ -83,6 +83,12 @@ describe("generateExposeModuleCode", () => {
     expect(code).toContain('globalThis.__natstackModuleMap__["zod"] = __mod1__');
   });
 
+  it("panel target does not preload the lightweight CDP client when runtime is exposed", () => {
+    const code = generateExposeModuleCode(["@workspace/runtime"], "panel");
+    expect(code).toContain('import * as __mod0__ from "@workspace/runtime"');
+    expect(code).not.toContain("@workspace/cdp-client");
+  });
+
   it("preserves the order of exposed modules in the generated code", () => {
     const code = generateExposeModuleCode(["a", "b", "c"]);
     const aIdx = code.indexOf("__mod0__");
@@ -101,10 +107,8 @@ describe("generateExposeModuleCode", () => {
 
   it("worker target preloads only the lightweight CDP client when runtime handles are exposed", () => {
     const code = generateExposeModuleCode(["@workspace/runtime"], "worker");
-    expect(code).toContain('import * as __mod1__ from "@workspace/playwright-client"');
-    expect(code).toContain(
-      'globalThis.__natstackModuleMap__["@workspace/playwright-client"] = __mod1__'
-    );
+    expect(code).toContain('import * as __mod1__ from "@workspace/cdp-client"');
+    expect(code).toContain('globalThis.__natstackModuleMap__["@workspace/cdp-client"] = __mod1__');
     expect(code).not.toContain("@workspace/playwright-core");
   });
 

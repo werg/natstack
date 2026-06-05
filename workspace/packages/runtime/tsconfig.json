@@ -12,7 +12,7 @@
       "@natstack/rpc": ["../../../packages/rpc/src/index.ts"],
       "@natstack/git": ["../../../packages/git/src/index.ts"],
       "@natstack/types": ["../../../packages/types/src/index.ts"],
-      "@workspace/playwright-client": ["../playwright-client/index.d.ts"]
+      "@workspace/cdp-client": ["../cdp-client/index.d.ts"]
     }
   },
   "include": ["src"]

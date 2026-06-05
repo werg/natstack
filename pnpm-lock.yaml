@@ -1183,11 +1183,7 @@ importers:
         specifier: workspace:*
         version: link:../playwright-core
 
-  workspace/packages/playwright-client:
-    dependencies:
-      '@workspace/playwright-core':
-        specifier: workspace:*
-        version: link:../playwright-core
+  workspace/packages/cdp-client: {}
 
   workspace/packages/playwright-core:
     dependencies:
@@ -1313,9 +1309,9 @@ importers:
       '@workspace/harness':
         specifier: workspace:*
         version: link:../harness
-      '@workspace/playwright-client':
+      '@workspace/cdp-client':
         specifier: workspace:*
-        version: link:../playwright-client
+        version: link:../cdp-client
       buffer:
         specifier: ^6.0.3
         version: 6.0.3
