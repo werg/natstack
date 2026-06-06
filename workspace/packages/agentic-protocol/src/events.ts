@@ -134,6 +134,39 @@ export interface MessageBlockInput {
   metadata?: Record<string, unknown>;
 }
 
+export type DiagnosticSeverity = "info" | "warning" | "error";
+
+/**
+ * Typed metadata carried by a `diagnostic` block. Written by the reducer when it
+ * synthesizes a diagnostic block (empty/failed messages) and read back by the
+ * projection. `MessageBlockInput.metadata` stays an open record on the wire;
+ * `readDiagnosticMetadata` is the single boundary that narrows it.
+ */
+export interface DiagnosticBlockMetadata {
+  code: string;
+  severity: DiagnosticSeverity;
+  reason?: string;
+  recoverable?: boolean;
+}
+
+export function readDiagnosticMetadata(
+  metadata: Record<string, unknown> | undefined
+): DiagnosticBlockMetadata {
+  const record = metadata && typeof metadata === "object" ? metadata : {};
+  const severity = record["severity"];
+  const reason = record["reason"];
+  const code = record["code"];
+  return {
+    code: typeof code === "string" ? code : "diagnostic",
+    severity:
+      severity === "error" || severity === "info" || severity === "warning"
+        ? severity
+        : "warning",
+    reason: typeof reason === "string" && reason.trim() ? reason : undefined,
+    recoverable: typeof record["recoverable"] === "boolean" ? record["recoverable"] : undefined,
+  };
+}
+
 export interface UsagePayload {
   inputTokens?: number;
   outputTokens?: number;

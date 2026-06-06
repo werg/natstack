@@ -1,6 +1,7 @@
 import type {
   ActorRef,
   AgenticEvent,
+  DiagnosticBlockMetadata,
   EventKind,
   MessageBlockInput,
   ParticipantRef,
@@ -141,13 +142,13 @@ function requireApprovalId(event: AgenticEvent): ApprovalId {
 function diagnosticBlock(
   blockId: string,
   content: string,
-  metadata: Record<string, unknown>
+  metadata: DiagnosticBlockMetadata
 ): MessageBlockInput {
   return {
     blockId: blockId as never,
     type: "diagnostic",
     content,
-    metadata,
+    metadata: { ...metadata },
   };
 }
 

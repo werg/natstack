@@ -76,6 +76,8 @@ export type {
   InvocationTerminalFailureOutcome,
   InvocationTerminalPayload,
   InvocationTransport,
+  DiagnosticBlockMetadata,
+  DiagnosticSeverity,
   KnowledgePayload,
   MessageBlockInput,
   MessagePayload,
@@ -99,6 +101,7 @@ export {
   invocationCancelledPayload,
   invocationCompletedPayload,
   invocationFailedPayload,
+  readDiagnosticMetadata,
 } from "./events.js";
 
 export type {

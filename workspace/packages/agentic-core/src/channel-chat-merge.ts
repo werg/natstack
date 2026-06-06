@@ -35,6 +35,7 @@ import {
   isStoredValueRef,
   isTurnReasonCode,
   messageDisplayText,
+  readDiagnosticMetadata,
   summarizeMessageBlocks,
 } from "@workspace/agentic-protocol";
 import type { InvocationCardPayload } from "./invocation-card-payload.js";
@@ -376,19 +377,16 @@ function diagnosticNoticeFromMessage(message: ProjectedMessage): DiagnosticNotic
   const summary = summarizeMessageBlocks(blocks.filter((block) => block.type !== "diagnostic"));
   if (!summary.isEmpty) return null;
   const block =
-    diagnosticBlocks.find((item) => record(item.metadata)["severity"] === "error") ??
+    diagnosticBlocks.find((item) => readDiagnosticMetadata(item.metadata).severity === "error") ??
     diagnosticBlocks[0]!;
-  const metadata = record(block.metadata);
-  const severity = metadata["severity"];
-  const normalizedSeverity: DiagnosticNotice["severity"] =
-    severity === "error" || severity === "info" || severity === "warning" ? severity : "warning";
+  const metadata = readDiagnosticMetadata(block.metadata);
   const content = block.content?.trim() || "Assistant message had no visible content.";
   return {
-    code: stringValue(metadata["code"]),
-    severity: normalizedSeverity,
-    title: normalizedSeverity === "error" ? "Message failed" : "No assistant response",
+    code: metadata.code,
+    severity: metadata.severity,
+    title: metadata.severity === "error" ? "Message failed" : "No assistant response",
     detail: content,
-    reason: stringValue(metadata["reason"]),
+    reason: metadata.reason,
   };
 }
 
