@@ -398,7 +398,7 @@ export default function BrowserController({ props, chat }) {
   const handleScrape = async () => {
     if (!pageRef.current) return;
     const text = await pageRef.current.evaluate(() => document.body.innerText);
-    chat.publish("message", { content: "Page text (" + text.length + " chars):\\n" + text.slice(0, 500) });
+    await chat.send("Page text (" + text.length + " chars):\\n" + text.slice(0, 500));
   };
 
   return (

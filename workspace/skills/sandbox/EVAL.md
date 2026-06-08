@@ -431,12 +431,23 @@ eval({ code: `
 
 ## Sending Messages to Chat
 
+Use `chat.send(...)` only when eval is deliberately simulating a user-authored
+follow-up prompt that should be fed back to the agent. In normal eval flows,
+return values or `console.log` output are better for agent-visible diagnostics,
+and agent acknowledgements should come from the agent's normal response path.
+`chat.send(...)` publishes a canonical `message.completed` agentic event and is
+rendered by `agentic-chat`.
+
 ```
 eval({ code: `
   // chat is pre-injected
-  await chat.publish("message", { content: "Hello from eval!" });
+  await chat.send("Hello from eval!");
 ` })
 ```
+
+Do **not** use `chat.publish("message", { content })` for ordinary chat text;
+that writes a legacy raw PubSub row which may be in the durable log but is not
+reduced into the current transcript UI.
 
 ## Build System
 
