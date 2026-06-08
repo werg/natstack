@@ -37,7 +37,7 @@
  *     by this layer — components should use try/catch in those cases.
  */
 
-import { Component, type ReactNode, type SyntheticEvent, createRef } from "react";
+import { Component, type ErrorInfo, type ReactNode, type SyntheticEvent, createRef } from "react";
 import { ensureTrackPromiseListener } from "../utils/trackAsyncErrors";
 
 // ---------------------------------------------------------------------------
@@ -124,7 +124,7 @@ function findBoundaryContaining(target: Element): EventErrorBoundary | null {
 export interface EventErrorBoundaryProps {
   children: ReactNode;
   /** Called when any error is caught — render-time or event-handler. */
-  onError?: (error: Error) => void;
+  onError?: (error: Error, info?: ErrorInfo) => void;
   /** Changing this value clears the error state (useful for retry). */
   resetKey?: string;
   /** Custom fallback UI.  When omitted a default red box is shown. */
@@ -159,8 +159,8 @@ export class EventErrorBoundary extends Component<
     return { prevResetKey: props.resetKey };
   }
 
-  componentDidCatch(error: Error): void {
-    this.props.onError?.(error);
+  componentDidCatch(error: Error, info: ErrorInfo): void {
+    this.props.onError?.(error, info);
   }
 
   // ── Lifecycle — manage the global listeners and boundary registry ────────

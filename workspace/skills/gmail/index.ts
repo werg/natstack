@@ -8,13 +8,13 @@ import { contextId as runtimeContextId, getStateArgs, rpc, setStateArgs } from "
 const GMAIL_AGENT_SOURCE = "workers/gmail-agent";
 const GMAIL_AGENT_CLASS = "GmailAgentWorker";
 const GMAIL_AGENT_HANDLE = "gmail";
-const GMAIL_ACTION_BAR_FILE = "workspace/skills/gmail/action-bar.tsx";
+const GMAIL_ACTION_BAR_FILE = "skills/gmail/action-bar.tsx";
 
 const GMAIL_RENDERERS = [
-  { typeId: "gmail.inbox", displayMode: "row" as const, path: "workspace/skills/gmail/renderers/gmail-inbox.tsx" },
-  { typeId: "gmail.category", displayMode: "row" as const, path: "workspace/skills/gmail/renderers/gmail-category.tsx" },
-  { typeId: "gmail.thread", displayMode: "row" as const, path: "workspace/skills/gmail/renderers/gmail-thread.tsx" },
-  { typeId: "gmail.compose", displayMode: "row" as const, path: "workspace/skills/gmail/renderers/gmail-compose.tsx" },
+  { typeId: "gmail.inbox", displayMode: "row" as const, path: "skills/gmail/renderers/gmail-inbox.tsx" },
+  { typeId: "gmail.category", displayMode: "row" as const, path: "skills/gmail/renderers/gmail-category.tsx" },
+  { typeId: "gmail.thread", displayMode: "row" as const, path: "skills/gmail/renderers/gmail-thread.tsx" },
+  { typeId: "gmail.compose", displayMode: "row" as const, path: "skills/gmail/renderers/gmail-compose.tsx" },
 ];
 
 export interface GmailAgentSetupStatus {

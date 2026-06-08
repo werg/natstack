@@ -1,4 +1,4 @@
-import React, { Suspense, useMemo } from "react";
+import React, { Suspense, useMemo, type ErrorInfo } from "react";
 import { Badge, Box, Callout, Card, Flex, Spinner, Text } from "@radix-ui/themes";
 import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
 import { EventErrorBoundary } from "@workspace/tool-ui/components/EventErrorBoundary";
@@ -94,6 +94,9 @@ export const CustomPill = React.memo(function CustomPill({
     );
   }
   const resetKey = customResetKey(payload, entry, expanded);
+  const reportError = (error: Error, info?: ErrorInfo) => {
+    void publishCustomRenderFailed({ payload, entry, error, info, expanded, compact: true, chat });
+  };
   const handleKeyDown = (event: React.KeyboardEvent) => {
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
@@ -112,6 +115,7 @@ export const CustomPill = React.memo(function CustomPill({
     >
       <EventErrorBoundary
         resetKey={resetKey}
+        onError={reportError}
         renderFallback={(error) => <CustomMessageErrorFallback error={error} typeId={payload.typeId} compact />}
       >
         <Suspense fallback={<Spinner size="1" />}>
@@ -152,6 +156,9 @@ export const ExpandedCustom = React.memo(function ExpandedCustom({
     return <CustomPlaceholder typeId={payload.typeId} status="error" message="Message type has no default export" />;
   }
   const resetKey = customResetKey(payload, entry, expanded);
+  const reportError = (error: Error, info?: ErrorInfo) => {
+    void publishCustomRenderFailed({ payload, entry, error, info, expanded, compact: false, chat });
+  };
   return (
     <Card className="message-card">
       {onCollapse && (
@@ -170,6 +177,7 @@ export const ExpandedCustom = React.memo(function ExpandedCustom({
       <Box>
         <EventErrorBoundary
           resetKey={resetKey}
+          onError={reportError}
           renderFallback={(error) => <CustomMessageErrorFallback error={error} typeId={payload.typeId} />}
         >
           <Suspense fallback={<Spinner size="1" />}>
@@ -212,6 +220,63 @@ function CustomPlaceholder({
       </Flex>
     </Card>
   );
+}
+
+async function publishCustomRenderFailed({
+  payload,
+  entry,
+  error,
+  info,
+  expanded,
+  compact,
+  chat,
+}: {
+  payload: CustomMessageCardPayload;
+  entry: Extract<MessageTypeComponentEntry, { status: "ready" }>;
+  error: Error;
+  info?: ErrorInfo;
+  expanded: boolean;
+  compact: boolean;
+  chat: Record<string, unknown>;
+}): Promise<void> {
+  const publish = chat["publish"];
+  if (typeof publish !== "function") return;
+  const source = entry.definition.source;
+  const sourcePath = source?.type === "file" ? source.path : undefined;
+  try {
+    await (publish as (kind: string, payload: unknown, options?: { idempotencyKey?: string }) => Promise<unknown>)(
+      "custom.render_failed",
+      {
+        protocol: "agentic.trajectory.v1",
+        typeId: payload.typeId,
+        messageId: payload.messageId,
+        displayMode: payload.displayMode,
+        expanded,
+        compact,
+        lastSeq: payload.lastSeq,
+        renderer: {
+          source,
+          sourcePath,
+          cacheKey: entry.cacheKey,
+          updatedAtSeq: entry.definition.updatedAtSeq,
+        },
+        error: {
+          name: error.name || "Error",
+          message: error.message || "Unknown error",
+          stack: error.stack,
+          componentStack: info?.componentStack,
+        },
+        userAgent: typeof navigator !== "undefined" ? navigator.userAgent : undefined,
+        url: typeof location !== "undefined" ? location.href : undefined,
+        createdAt: new Date().toISOString(),
+      },
+      {
+        idempotencyKey: `custom:render-failed:${payload.messageId}:${payload.lastSeq}:${expanded ? "expanded" : "collapsed"}:${entry.cacheKey}`,
+      },
+    );
+  } catch (publishError) {
+    console.warn("Failed to publish custom.render_failed diagnostic", publishError);
+  }
 }
 
 function CustomMessageErrorFallback({

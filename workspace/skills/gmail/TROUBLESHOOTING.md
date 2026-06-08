@@ -12,9 +12,10 @@ use the action bar/custom message controls.
 
 ## Pills Do Not Render
 
-Renderer sources under `workspace/skills/gmail/renderers/` must be committed
-and available to the channel build loader. Re-register the message type after
-editing renderer files.
+Renderer sources under `skills/gmail/renderers/` must be committed and
+available to the channel build loader. Custom message type paths are
+workspace-root-relative and should not include a `workspace/` prefix. Re-register
+the message type after editing renderer files.
 
 ## Unread Counts Look Stale
 

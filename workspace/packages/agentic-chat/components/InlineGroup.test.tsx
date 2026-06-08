@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import React from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InlineGroup, type InlineItem } from "./InlineGroup";
 import { CustomMessageCard } from "./CustomMessage";
@@ -107,6 +107,47 @@ describe("InlineGroup custom messages", () => {
 
     expect(screen.getByText("Custom message error: weather")).toBeTruthy();
     expect(screen.getByText("renderer exploded")).toBeTruthy();
+  });
+
+  it("publishes custom.render_failed diagnostics when a renderer crashes", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const publish = vi.fn().mockResolvedValue(undefined);
+    const entry = customEntry();
+    entry.definition.source = { type: "file", path: "panels/chat/examples/weather-message-type.tsx" };
+    entry.module.default = () => {
+      throw new Error("renderer exploded");
+    };
+
+    render(
+      <CustomMessageCard
+        payload={customItem().payload}
+        entry={entry}
+        chat={{ publish }}
+        scope={{}}
+        scopes={{}}
+      />,
+    );
+
+    await waitFor(() => expect(publish).toHaveBeenCalledWith(
+      "custom.render_failed",
+      expect.objectContaining({
+        typeId: "weather",
+        messageId: "custom-msg-1",
+        displayMode: "inline",
+        renderer: expect.objectContaining({
+          sourcePath: "panels/chat/examples/weather-message-type.tsx",
+          cacheKey: "weather:1",
+          updatedAtSeq: 1,
+        }),
+        error: expect.objectContaining({
+          message: "renderer exploded",
+          componentStack: expect.any(String),
+        }),
+      }),
+      expect.objectContaining({
+        idempotencyKey: expect.stringContaining("custom:render-failed:custom-msg-1:1:expanded:weather:1"),
+      }),
+    ));
   });
 
   it("keeps prior state when a reducer throws instead of blanking the card", () => {
