@@ -2008,6 +2008,14 @@ export class PiRunner {
     const currentTurnId = this.currentTurnId;
     if (!currentTurnId) return;
     if (requestedTurnId && currentTurnId !== requestedTurnId) return;
+    if (this.forceClosingTurnIds.has(currentTurnId)) {
+      this.rememberCheckpoint("turn.failed_suppressed_during_force_close", {
+        turnId: currentTurnId,
+        requestedTurnId: requestedTurnId ?? null,
+        reason,
+      });
+      return;
+    }
     if (!this.openedTurnIds.has(currentTurnId)) {
       this.currentTurnId = null;
       this.endActivation("turn_failed_unopened", { abort: false });
@@ -3550,7 +3558,15 @@ export class PiRunner {
     );
   }
 
-  async abort(): Promise<{ clearedSteer: AgentMessage[]; clearedFollowUp: AgentMessage[] }> {
+  async abort(
+    terminalReason?: Extract<
+      TurnReasonCode,
+      "user_interrupted" | "channel_unsubscribe" | "turn_superseded"
+    >
+  ): Promise<{ clearedSteer: AgentMessage[]; clearedFollowUp: AgentMessage[] }> {
+    if (terminalReason && this.currentTurnId) {
+      this.forceClosingTurnIds.add(this.currentTurnId);
+    }
     this.activation?.controller.abort(new Error("Agent run aborted"));
     if (!this.harness) {
       return { clearedSteer: [], clearedFollowUp: [] };

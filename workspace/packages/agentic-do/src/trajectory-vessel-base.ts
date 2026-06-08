@@ -7086,8 +7086,10 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       // outstanding method dispatches. If the loop sees those cancelled tool
       // results while its signal is still live, it can feed them back into the
       // model and continue after the user pressed stop.
-      const abort = (entry.runner as { abort?: () => Promise<unknown> }).abort;
-      void abort?.call(entry.runner)?.catch((err) => {
+      const abort = (
+        entry.runner as { abort?: (reason?: "user_interrupted") => Promise<unknown> }
+      ).abort;
+      void abort?.call(entry.runner, "user_interrupted")?.catch((err) => {
         this.recordLastError("runner.abort", err, channelId);
         this.recordDebugPhase(channelId, "runner.abort.failed", {
           reason,

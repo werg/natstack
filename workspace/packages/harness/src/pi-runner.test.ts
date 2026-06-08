@@ -1564,6 +1564,66 @@ describe("PiRunner", () => {
     });
   });
 
+  it("does not append a failed turn close while force close is in progress", async () => {
+    let releaseAppend!: () => void;
+    const appendGate = new Promise<void>((resolve) => {
+      releaseAppend = resolve;
+    });
+    const batches: Array<Array<{ event: { kind: string; turnId?: string; payload?: unknown } }>> =
+      [];
+    const appendTrajectoryBatch = vi.fn(
+      async (
+        _method: string,
+        input: { events: Array<{ event: { kind: string; turnId?: string; payload?: unknown } }> }
+      ) => {
+        batches.push(input.events);
+        await appendGate;
+        return { events: [], published: [] };
+      }
+    );
+    const runner = new PiRunner(createOptions()) as unknown as {
+      options: PiRunnerOptions;
+      gad: { call: typeof appendTrajectoryBatch };
+      currentTurnId: string | null;
+      running: boolean;
+      openedTurnIds: Set<string>;
+      forceCloseCurrentTurn(reason?: string, summary?: string): Promise<boolean>;
+      settleFailedOperationTurn(
+        requestedTurnId: string | undefined,
+        reason: "work_failed",
+        summary: string
+      ): Promise<void>;
+    };
+    runner.options.gad = {
+      trajectoryId: "trajectory:test",
+      branchId: "branch:test",
+      channelId: "channel:test",
+    };
+    runner.gad = { call: appendTrajectoryBatch };
+    runner.currentTurnId = "turn-open";
+    runner.running = true;
+    runner.openedTurnIds.add("turn-open");
+
+    const forceClose = runner.forceCloseCurrentTurn(
+      "user_interrupted",
+      "Turn closed after user interruption"
+    );
+    await runner.settleFailedOperationTurn(
+      "turn-open",
+      "work_failed",
+      "Agent turn failed before completion"
+    );
+    releaseAppend();
+    await forceClose;
+
+    const events = batches.flat().map((item) => item.event);
+    expect(events.map((event) => event.kind)).toEqual(["turn.closed"]);
+    expect(events[0]?.payload).toMatchObject({
+      reason: "user_interrupted",
+      summary: "Turn closed after user interruption",
+    });
+  });
+
   it("settles open invocations as infrastructure errors when operation failure closes a turn", async () => {
     const appendTrajectoryBatch = vi.fn(async () => undefined);
     const runner = new PiRunner(createOptions()) as unknown as {
