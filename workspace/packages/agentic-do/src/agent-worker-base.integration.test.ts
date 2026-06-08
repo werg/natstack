@@ -104,11 +104,17 @@ class TestAgentWorker extends AgentWorkerBase {
 
 class LifecycleRouteTestAgentWorker extends TestAgentWorker {
   resumed = false;
+  alarmed = false;
   inactiveMarks = 0;
 
   override async resumeAfterRestart(input: LifecycleResumeInput): Promise<void> {
     this.resumed = true;
     await super.resumeAfterRestart(input);
+  }
+
+  override async alarm(): Promise<void> {
+    this.alarmed = true;
+    await super.alarm();
   }
 
   protected override markCheckpointableWorkInactive(): Promise<void> {
@@ -301,6 +307,7 @@ class ExpectedToolGateTestWorker extends AgentWorkerBase {
       continueAgent: vi.fn(async () => undefined),
       steerMessage: vi.fn(async () => undefined),
       clearSteeringQueue: vi.fn(async () => undefined),
+      getCurrentTurnId: vi.fn(() => null),
     } as unknown as PiRunner;
     runners.set(channelId, { runner });
     this.getOrCreateDispatcher(channelId, runner);
@@ -373,6 +380,7 @@ class SingleFlightRunnerInitTestWorker extends AgentWorkerBase {
       subscribe: vi.fn(() => vi.fn()),
       repairDurableOpenState: vi.fn(async () => undefined),
       getDebugState: vi.fn(() => ({})),
+      getCurrentTurnId: vi.fn(() => null),
       session: null,
     } as unknown as PiRunner;
   }
@@ -432,6 +440,29 @@ describe("AgentWorkerBase runner contract", () => {
     expect(response.status).toBe(200);
     expect(worker.resumed).toBe(true);
     expect(worker.inactiveMarks).toBe(1);
+  });
+
+  it("routes server-driven alarm requests through the durable base handler", async () => {
+    const { instance } = await createTestDO(LifecycleRouteTestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const worker = instance as LifecycleRouteTestAgentWorker;
+    const fetchable = instance as unknown as { fetch(request: Request): Promise<Response> };
+
+    const response = await fetchable.fetch(
+      new Request("http://test/agent-test/__alarm", {
+        method: "POST",
+        body: JSON.stringify({
+          args: [],
+          __instanceToken: "token",
+          __instanceId: "do:workers/agent-worker:AiChatWorker:agent-test",
+          __caller: { callerId: "main", callerKind: "server" },
+        }),
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(worker.alarmed).toBe(true);
   });
 
   it("uses the clean AgentHarness-facing dispatcher surface", () => {
@@ -526,11 +557,13 @@ describe("AgentWorkerBase runner contract", () => {
       subscribe: vi.fn(() => staleUnsubscribe),
       clearSteeringQueue: vi.fn(async () => undefined),
       getDebugState: vi.fn(() => ({})),
+      getCurrentTurnId: vi.fn(() => null),
     } as unknown as PiRunner;
     const canonicalRunner = {
       subscribe: vi.fn(() => vi.fn()),
       clearSteeringQueue: vi.fn(async () => undefined),
       getDebugState: vi.fn(() => ({})),
+      getCurrentTurnId: vi.fn(() => null),
     } as unknown as PiRunner;
     const worker = instance as unknown as {
       runners: Map<string, { runner: PiRunner }>;
@@ -697,6 +730,7 @@ describe("AgentWorkerBase method suspension ledger", () => {
       continueAgent: vi.fn(async () => undefined),
       steerMessage: vi.fn(async () => undefined),
       clearSteeringQueue: vi.fn(async () => undefined),
+      getCurrentTurnId: vi.fn(() => null),
     };
 
     worker.testDispatcher("chat-1", runner).submit({ text: "hello" } as never);
@@ -1070,22 +1104,15 @@ describe("AgentWorkerBase method suspension ledger", () => {
       reason: "model_credential_reconnect_required",
       summary: "Waiting for model credential refresh",
     });
-    expect(
-      sql
-        .exec(
-          `SELECT provider_id, model_base_url, turn_id
-           FROM model_credential_interruptions
-           WHERE channel_id = ?`,
-          "chat-1"
-        )
-        .toArray()
-    ).toEqual([
-      {
-        provider_id: "openai-codex",
-        model_base_url: "https://chatgpt.com/backend-api/codex",
-        turn_id: "turn-expired",
-      },
-    ]);
+    const suspensionRows = sql
+      .exec(`SELECT turn_id, reason, payload_json FROM suspensions WHERE channel_id = ?`, "chat-1")
+      .toArray();
+    expect(suspensionRows).toHaveLength(1);
+    expect(suspensionRows[0]).toMatchObject({ turn_id: "turn-expired", reason: "credential" });
+    expect(JSON.parse(suspensionRows[0]!["payload_json"] as string)).toEqual({
+      providerId: "openai-codex",
+      modelBaseUrl: "https://chatgpt.com/backend-api/codex",
+    });
     expect(send).not.toHaveBeenCalled();
   });
 
@@ -1387,14 +1414,14 @@ describe("AgentWorkerBase method suspension ledger", () => {
     expect(worker.turnHasOpenExternalWait("turn-wait")).toBe(false);
 
     sql.exec(
-      `INSERT INTO model_credential_interruptions
-       (channel_id, provider_id, model_base_url, turn_id, resume_count, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO suspensions
+       (id, channel_id, turn_id, reason, status, resume_count, payload_json, created_at, updated_at)
+       VALUES (?, ?, ?, 'credential', 'suspended', 0, ?, ?, ?)`,
+      "credential:chat-1:provider",
       "chat-1",
-      "provider",
-      "https://model.example/v1",
       "turn-wait",
-      0,
+      JSON.stringify({ providerId: "provider", modelBaseUrl: "https://model.example/v1" }),
+      Date.now(),
       Date.now()
     );
     expect(worker.turnHasOpenExternalWait("turn-wait")).toBe(true);
@@ -1525,14 +1552,14 @@ describe("AgentWorkerBase method suspension ledger", () => {
     };
     insertTurnRun(sql, { turnId: "turn-start-credential", status: "starting" });
     sql.exec(
-      `INSERT INTO model_credential_interruptions
-       (channel_id, provider_id, model_base_url, turn_id, resume_count, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO suspensions
+       (id, channel_id, turn_id, reason, status, resume_count, payload_json, created_at, updated_at)
+       VALUES (?, ?, ?, 'credential', 'suspended', 0, ?, ?, ?)`,
+      "credential:chat-1:provider",
       "chat-1",
-      "provider",
-      "https://model.example/v1",
       "turn-start-credential",
-      0,
+      JSON.stringify({ providerId: "provider", modelBaseUrl: "https://model.example/v1" }),
+      Date.now(),
       Date.now()
     );
 
@@ -1627,7 +1654,14 @@ describe("AgentWorkerBase method suspension ledger", () => {
     // Replay re-delivers the terminal that settled while the agent was asleep.
     // (channelsInReplay defers the recovery continuation to the ready hook.)
     worker.channelsInReplay.add("chat-1");
-    await worker.handleCompletedMethodResult("chat-1", "missed-call", { ok: true }, false, "completed", 5);
+    await worker.handleCompletedMethodResult(
+      "chat-1",
+      "missed-call",
+      { ok: true },
+      false,
+      "completed",
+      5
+    );
 
     const row = sql
       .exec(
@@ -2204,10 +2238,7 @@ describe("AgentWorkerBase method suspension ledger", () => {
 
     await worker.supersedeOrphanedOpenTurn("chat-1", runner);
 
-    expect(forceCloseCurrentTurn).toHaveBeenCalledWith(
-      "turn_superseded",
-      expect.any(String)
-    );
+    expect(forceCloseCurrentTurn).toHaveBeenCalledWith("turn_superseded", expect.any(String));
     expect(openTurnId).toBeNull();
     expect(turnStatus(sql, "turn-parked")).toMatchObject({
       status: "interrupted",
@@ -2321,10 +2352,7 @@ describe("AgentWorkerBase method suspension ledger", () => {
 
     await worker.supersedeOrphanedOpenTurn("chat-1", runner);
 
-    expect(forceCloseCurrentTurn).toHaveBeenCalledWith(
-      "turn_superseded",
-      expect.any(String)
-    );
+    expect(forceCloseCurrentTurn).toHaveBeenCalledWith("turn_superseded", expect.any(String));
     expect(openTurnId).toBeNull();
     expect(turnStatus(sql, "turn-stopped")).toMatchObject({ status: "interrupted" });
   });
@@ -2362,10 +2390,7 @@ describe("AgentWorkerBase method suspension ledger", () => {
 
     await worker.supersedeOrphanedOpenTurn("chat-1", runner);
 
-    expect(forceCloseCurrentTurn).toHaveBeenCalledWith(
-      "turn_superseded",
-      expect.any(String)
-    );
+    expect(forceCloseCurrentTurn).toHaveBeenCalledWith("turn_superseded", expect.any(String));
     expect(openTurnId).toBeNull();
     expect(turnStatus(sql, "turn-terminal")).toMatchObject({
       status: "interrupted",
@@ -3057,6 +3082,7 @@ describe("AgentWorkerBase method suspension ledger", () => {
         emit: ReturnType<typeof vi.fn>;
         on: ReturnType<typeof vi.fn>;
         handleIncomingPost: ReturnType<typeof vi.fn>;
+        callDeferred?: ReturnType<typeof vi.fn>;
       };
       runners: Map<string, { runner: unknown }>;
       dispatchers: Map<string, unknown>;
@@ -3272,6 +3298,7 @@ describe("AgentWorkerBase method suspension ledger", () => {
         emit: ReturnType<typeof vi.fn>;
         on: ReturnType<typeof vi.fn>;
         handleIncomingPost: ReturnType<typeof vi.fn>;
+        callDeferred?: ReturnType<typeof vi.fn>;
       };
       createMethodResultWaiter(
         channelId: string,
@@ -3342,6 +3369,7 @@ describe("AgentWorkerBase method suspension ledger", () => {
         emit: ReturnType<typeof vi.fn>;
         on: ReturnType<typeof vi.fn>;
         handleIncomingPost: ReturnType<typeof vi.fn>;
+        callDeferred?: ReturnType<typeof vi.fn>;
       };
       createMethodResultWaiter(
         channelId: string,
@@ -3483,6 +3511,7 @@ describe("AgentWorkerBase method suspension ledger", () => {
         emit: ReturnType<typeof vi.fn>;
         on: ReturnType<typeof vi.fn>;
         handleIncomingPost: ReturnType<typeof vi.fn>;
+        callDeferred?: ReturnType<typeof vi.fn>;
       };
       runners: Map<string, { runner: unknown }>;
       dispatchers: Map<string, unknown>;
@@ -3569,6 +3598,7 @@ describe("AgentWorkerBase method suspension ledger", () => {
         emit: ReturnType<typeof vi.fn>;
         on: ReturnType<typeof vi.fn>;
         handleIncomingPost: ReturnType<typeof vi.fn>;
+        callDeferred?: ReturnType<typeof vi.fn>;
       };
       handleCompletedMethodResult(
         channelId: string,
@@ -4519,6 +4549,7 @@ describe("AgentWorkerBase typed transcript input", () => {
         emit: ReturnType<typeof vi.fn>;
         on: ReturnType<typeof vi.fn>;
         handleIncomingPost: ReturnType<typeof vi.fn>;
+        callDeferred?: ReturnType<typeof vi.fn>;
       };
       testResizeAttachments(
         channelId: string,
@@ -4575,6 +4606,7 @@ describe("AgentWorkerBase typed transcript input", () => {
         emit: ReturnType<typeof vi.fn>;
         on: ReturnType<typeof vi.fn>;
         handleIncomingPost: ReturnType<typeof vi.fn>;
+        callDeferred?: ReturnType<typeof vi.fn>;
       };
       testResizeAttachments(
         channelId: string,
@@ -4617,6 +4649,7 @@ describe("AgentWorkerBase typed transcript input", () => {
         emit: ReturnType<typeof vi.fn>;
         on: ReturnType<typeof vi.fn>;
         handleIncomingPost: ReturnType<typeof vi.fn>;
+        callDeferred?: ReturnType<typeof vi.fn>;
       };
       testResizeAttachments(
         channelId: string,
@@ -5226,7 +5259,11 @@ describe("AgentWorkerBase fork subscription state", () => {
 
 /** Build a {kind:"log"} channel envelope carrying a durable invocation.* terminal. */
 function invocationTerminalEnvelope(opts: {
-  terminal: "invocation.completed" | "invocation.failed" | "invocation.cancelled" | "invocation.abandoned";
+  terminal:
+    | "invocation.completed"
+    | "invocation.failed"
+    | "invocation.cancelled"
+    | "invocation.abandoned";
   invocationId: string;
   transportCallId: string;
   content: unknown;
@@ -5310,12 +5347,15 @@ describe("AgentWorkerBase dispatched method results", () => {
       callMethod: vi.fn(async (_callerId, _targetId, callId, _method, _args, opts) => {
         capturedCallId = callId;
         capturedOpts = opts;
-        await worker.onChannelEnvelope("chat-1", invocationTerminalEnvelope({
-          terminal: "invocation.completed",
-          invocationId: opts.invocationId,
-          transportCallId: opts.transportCallId,
-          content: { ok: true },
-        }));
+        await worker.onChannelEnvelope(
+          "chat-1",
+          invocationTerminalEnvelope({
+            terminal: "invocation.completed",
+            invocationId: opts.invocationId,
+            transportCallId: opts.transportCallId,
+            content: { ok: true },
+          })
+        );
       }),
     });
     const abort = vi.fn().mockResolvedValue(undefined);
@@ -5378,13 +5418,16 @@ describe("AgentWorkerBase dispatched method results", () => {
         },
       ]),
       callMethod: vi.fn(async (_callerId, _targetId, _callId, _method, _args, opts) => {
-        await worker.onChannelEnvelope("chat-1", invocationTerminalEnvelope({
-          terminal: "invocation.failed",
-          invocationId: opts.invocationId,
-          transportCallId: opts.transportCallId,
-          content: { error: "Authentication failed for internal push" },
-          terminalReasonCode: "method_failed",
-        }));
+        await worker.onChannelEnvelope(
+          "chat-1",
+          invocationTerminalEnvelope({
+            terminal: "invocation.failed",
+            invocationId: opts.invocationId,
+            transportCallId: opts.transportCallId,
+            content: { error: "Authentication failed for internal push" },
+            terminalReasonCode: "method_failed",
+          })
+        );
       }),
     });
 
@@ -5435,13 +5478,16 @@ describe("AgentWorkerBase dispatched method results", () => {
         },
       ]),
       callMethod: vi.fn(async (_callerId, _targetId, _callId, _method, _args, opts) => {
-        await worker.onChannelEnvelope("chat-1", invocationTerminalEnvelope({
-          terminal: "invocation.abandoned",
-          invocationId: opts.invocationId,
-          transportCallId: opts.transportCallId,
-          content: "Runner restarted before invocation completed",
-          terminalReasonCode: "runner_restarted_before_invocation_completed",
-        }));
+        await worker.onChannelEnvelope(
+          "chat-1",
+          invocationTerminalEnvelope({
+            terminal: "invocation.abandoned",
+            invocationId: opts.invocationId,
+            transportCallId: opts.transportCallId,
+            content: "Runner restarted before invocation completed",
+            terminalReasonCode: "runner_restarted_before_invocation_completed",
+          })
+        );
       }),
     });
 
@@ -5480,13 +5526,16 @@ describe("AgentWorkerBase dispatched method results", () => {
       setTypingState,
     });
 
-    await worker.onChannelEnvelope("chat-1", invocationTerminalEnvelope({
-      terminal: "invocation.failed",
-      invocationId: "tool-1",
-      transportCallId: "transport-lost",
-      content: "Authentication failed",
-      terminalReasonCode: "method_failed",
-    }));
+    await worker.onChannelEnvelope(
+      "chat-1",
+      invocationTerminalEnvelope({
+        terminal: "invocation.failed",
+        invocationId: "tool-1",
+        transportCallId: "transport-lost",
+        content: "Authentication failed",
+        terminalReasonCode: "method_failed",
+      })
+    );
 
     expect(setTypingState).toHaveBeenCalledWith("do:agent", false);
     expect(worker.runners.has("chat-1")).toBe(false);
@@ -5717,6 +5766,7 @@ describe("AgentWorkerBase model credential resume", () => {
         emit: ReturnType<typeof vi.fn>;
         on: ReturnType<typeof vi.fn>;
         handleIncomingPost: ReturnType<typeof vi.fn>;
+        callDeferred?: ReturnType<typeof vi.fn>;
       };
       subscriptions: {
         getParticipantId(channelId: string): string | null;
@@ -5732,6 +5782,8 @@ describe("AgentWorkerBase model credential resume", () => {
     worker.ctx.waitUntil = waitUntil;
     worker._rpc = {
       call: vi.fn(async () => null),
+      // resolveCredential resolves inline to "no credential" (missing).
+      callDeferred: vi.fn(async () => ({ status: "completed", result: null })),
       stream: vi.fn(),
       emit: vi.fn(),
       on: vi.fn(),
@@ -5794,6 +5846,7 @@ describe("AgentWorkerBase model credential resume", () => {
         emit: ReturnType<typeof vi.fn>;
         on: ReturnType<typeof vi.fn>;
         handleIncomingPost: ReturnType<typeof vi.fn>;
+        callDeferred?: ReturnType<typeof vi.fn>;
       };
       subscriptions: {
         getParticipantId(channelId: string): string | null;
@@ -5810,6 +5863,10 @@ describe("AgentWorkerBase model credential resume", () => {
 
     worker._rpc = {
       call: vi.fn(async () => {
+        throw refreshError;
+      }),
+      // resolveCredential rejects (refresh failure) — deferral surfaces the same error.
+      callDeferred: vi.fn(async () => {
         throw refreshError;
       }),
       stream: vi.fn(),
@@ -5854,15 +5911,14 @@ describe("AgentWorkerBase model credential resume", () => {
     });
   });
 
-  it("propagates user interruption to in-flight model credential resolution", async () => {
-    const { instance } = await createTestDO(TestAgentWorker, {
+  it("parks the turn keyed by the deferred requestId when credential approval is deferred", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
       __objectKey: "agent-test",
     });
-    let capturedSignal: AbortSignal | undefined;
-    let markCallStarted!: () => void;
-    const callStarted = new Promise<void>((resolve) => {
-      markCallStarted = resolve;
-    });
+    const channelClient = {
+      getParticipants: vi.fn(() => new Promise(() => undefined)),
+      publishAgenticEvent: vi.fn(() => new Promise<void>(() => undefined)),
+    };
     const worker = instance as unknown as {
       _rpc: {
         call: ReturnType<typeof vi.fn>;
@@ -5870,37 +5926,55 @@ describe("AgentWorkerBase model credential resume", () => {
         emit: ReturnType<typeof vi.fn>;
         on: ReturnType<typeof vi.fn>;
         handleIncomingPost: ReturnType<typeof vi.fn>;
+        callDeferred?: ReturnType<typeof vi.fn>;
       };
+      subscriptions: { getParticipantId(channelId: string): string | null };
+      runners: Map<string, unknown>;
+      createChannelClient: ReturnType<typeof vi.fn>;
       getModelBaseUrl(channelId: string): string;
       getApiKeyForChannel(channelId: string): () => Promise<string>;
-      interruptRunner(channelId: string): Promise<void>;
+      readRunnerMessages(channelId: string): Promise<AgentMessage[]>;
     };
 
+    // Server defers credential-use approval out-of-band.
+    const callDeferred = vi.fn(
+      async (
+        _target: string,
+        _method: string,
+        _args: unknown[],
+        opts?: { requestId?: string }
+      ) => ({ status: "deferred", requestId: opts?.requestId ?? "req" })
+    );
     worker._rpc = {
-      call: vi.fn((_target, _method, _args, opts?: { signal?: AbortSignal }) => {
-        capturedSignal = opts?.signal;
-        markCallStarted();
-        return new Promise((_resolve, reject) => {
-          opts?.signal?.addEventListener(
-            "abort",
-            () => reject(opts.signal?.reason ?? new Error("aborted")),
-            { once: true }
-          );
-        });
-      }),
+      call: vi.fn(),
+      callDeferred,
       stream: vi.fn(),
       emit: vi.fn(),
       on: vi.fn(),
       handleIncomingPost: vi.fn(),
     };
+    worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
+    worker.createChannelClient = vi.fn().mockReturnValue(channelClient);
     worker.getModelBaseUrl = vi.fn().mockReturnValue("https://model.example/v1");
+    worker.readRunnerMessages = vi.fn().mockResolvedValue([]);
+    worker.runners.set("chat-1", { runner: { getCurrentTurnId: () => "turn-deferred" } });
 
-    const pending = worker.getApiKeyForChannel("chat-1")();
-    await callStarted;
-    await worker.interruptRunner("chat-1");
+    await expect(worker.getApiKeyForChannel("chat-1")()).rejects.toThrow(
+      /Waiting for model credential approval/
+    );
 
-    expect(capturedSignal?.aborted).toBe(true);
-    await expect(pending).rejects.toThrow(/aborted/i);
+    // The turn parks, and the wait is keyed by the requestId we deferred on, so a
+    // later onDeferredResult can match it.
+    expect(
+      sql.exec(`SELECT status FROM agent_turn_runs WHERE turn_id = ?`, "turn-deferred").toArray()[0]
+    ).toMatchObject({ status: "waiting_external" });
+    const deferredRequestId = callDeferred.mock.calls[0]?.[3]?.requestId as string;
+    expect(deferredRequestId).toBeTruthy();
+    expect(
+      sql
+        .exec(`SELECT request_id, status FROM suspensions WHERE channel_id = ?`, "chat-1")
+        .toArray()[0]
+    ).toMatchObject({ request_id: deferredRequestId, status: "suspended" });
   });
 
   it("resumes from the saved interruption cursor after an assistant error is appended", async () => {
@@ -6086,5 +6160,345 @@ describe("AgentWorkerBase model credential resume", () => {
 
     expect(moveTo).toHaveBeenCalledWith("entry-user");
     expect(submitContinue).toHaveBeenCalledWith({ turnId: "turn-credential" });
+  });
+
+  // ── North star: the full deferred round-trip ──────────────────────────────
+  // Park on a deferred credential-use approval, then deliver the approval as an
+  // out-of-band `onDeferredResult` POST (the inbound wake that revives a
+  // hibernated DO) and assert the SAME open turn auto-continues. This is the
+  // entire reason for the deferral machinery: the agent picks work back up on
+  // its own once credentials are approved, however long that takes.
+  it("auto-resumes the parked turn when onDeferredResult delivers the approval", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+
+    const userMessage = { role: "user", content: "onboard me", timestamp: 1 } as AgentMessage;
+    // What pi-agent-core appends when getApiKey throws the park: an assistant
+    // message carrying the park text. Resume must rewind past it.
+    const parkErrorMessage = {
+      role: "assistant",
+      content: [],
+      timestamp: 2,
+      api: "openai",
+      provider: "test",
+      model: "model",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "error",
+      errorMessage: "Waiting for model credential approval for provider: test",
+    } as AgentMessage;
+
+    let transcript: AgentMessage[] = [userMessage];
+    const moveTo = vi.fn().mockResolvedValue(undefined);
+    const submitContinue = vi.fn();
+    const dispatcher = { submitContinue, getDebugState: () => ({ busy: false }) };
+
+    const callDeferred = vi.fn(
+      async (
+        _target: string,
+        _method: string,
+        _args: unknown[],
+        opts?: { requestId?: string }
+      ) => ({
+        status: "deferred" as const,
+        requestId: opts?.requestId ?? "req",
+      })
+    );
+
+    const worker = instance as unknown as {
+      _rpc: Record<string, ReturnType<typeof vi.fn>>;
+      _currentVerifiedCaller: { callerId: string; callerKind: string } | null;
+      subscriptions: { getParticipantId(channelId: string): string | null };
+      runners: Map<string, unknown>;
+      dispatchers: Map<string, unknown>;
+      createChannelClient: ReturnType<typeof vi.fn>;
+      getOrCreateDispatcher: ReturnType<typeof vi.fn>;
+      getModelBaseUrl(channelId: string): string;
+      getApiKeyForChannel(channelId: string): () => Promise<string>;
+      readRunnerMessages(channelId: string): Promise<AgentMessage[]>;
+      onDeferredResult(payload: {
+        requestId: string;
+        result: unknown;
+        isError: boolean;
+      }): Promise<{ ok: boolean }>;
+    };
+
+    worker._rpc = {
+      call: vi.fn(),
+      callDeferred,
+      stream: vi.fn(),
+      emit: vi.fn(),
+      on: vi.fn(),
+      handleIncomingPost: vi.fn(),
+    };
+    worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
+    worker.createChannelClient = vi.fn().mockReturnValue({
+      getParticipants: vi.fn().mockResolvedValue([]),
+      publishAgenticEvent: vi.fn(async () => undefined),
+    });
+    worker.getModelBaseUrl = vi.fn().mockReturnValue("https://model.example/v1");
+    worker.readRunnerMessages = vi.fn(async () => transcript);
+    worker.runners.set("chat-1", {
+      runner: {
+        getCurrentTurnId: () => "turn-deferred",
+        session: {
+          getEntries: vi.fn(async () => [
+            { id: "entry-user", type: "message" },
+            { id: "entry-assistant-error", type: "message" },
+          ]),
+          moveTo,
+        },
+      },
+    });
+    worker.dispatchers.set("chat-1", dispatcher);
+    worker.getOrCreateDispatcher = vi.fn().mockReturnValue(dispatcher);
+
+    // 1) Park: server defers the credential-use approval.
+    await expect(worker.getApiKeyForChannel("chat-1")()).rejects.toThrow(
+      /Waiting for model credential approval/
+    );
+    const requestId = callDeferred.mock.calls[0]?.[3]?.requestId as string;
+    expect(requestId).toBeTruthy();
+    expect(
+      sql.exec(`SELECT status FROM agent_turn_runs WHERE turn_id = ?`, "turn-deferred").toArray()[0]
+    ).toMatchObject({ status: "waiting_external" });
+
+    // pi-agent-core has now appended the park error message to the transcript.
+    transcript = [userMessage, parkErrorMessage];
+
+    // 2) Approval arrives later as a server-origin onDeferredResult POST
+    //    (the gate requires callerKind === "server").
+    worker._currentVerifiedCaller = { callerId: "server", callerKind: "server" };
+    await expect(
+      worker.onDeferredResult({ requestId, result: { id: "cred-1" }, isError: false })
+    ).resolves.toEqual({ ok: true });
+
+    // 3) The agent auto-continued the SAME open turn — north star.
+    //    Rewound past the park error message (proves the approval-pending
+    //    rewind matcher recognizes it) and continued, not re-prompted.
+    expect(moveTo).toHaveBeenCalledWith("entry-user");
+    expect(submitContinue).toHaveBeenCalledWith({ turnId: "turn-deferred" });
+    expect(
+      sql.exec(`SELECT * FROM suspensions WHERE channel_id = ?`, "chat-1").toArray()
+    ).toHaveLength(0);
+
+    // 4) Idempotent: a duplicate delivery (retried POST, or a restart redrive
+    //    racing the push) must NOT resume a second time. The suspension was
+    //    atomically claimed + resolved, so the second onDeferredResult is a no-op.
+    submitContinue.mockClear();
+    await worker
+      .onDeferredResult({ requestId, result: { id: "cred-1" }, isError: false })
+      .catch(() => undefined);
+    expect(submitContinue).not.toHaveBeenCalled();
+    expect(
+      sql.exec(`SELECT status FROM agent_turn_runs WHERE turn_id = ?`, "turn-deferred").toArray()[0]
+    ).toMatchObject({ status: "continuing" });
+  });
+
+  it("does not let a stale model credential card resume a different model-base suspension", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const submitContinue = vi.fn();
+    const worker = instance as unknown as {
+      subscriptions: { getParticipantId(channelId: string): string | null };
+      runners: Map<string, unknown>;
+      createChannelClient: ReturnType<typeof vi.fn>;
+      getOrCreateDispatcher: ReturnType<typeof vi.fn>;
+      recordModelCredentialInterruption(
+        channelId: string,
+        providerId: string,
+        modelBaseUrl: string,
+        turnId?: string,
+        requestId?: string
+      ): void;
+      resumeAfterModelCredentialConnected(
+        channelId: string,
+        opts?: { providerId?: string; modelBaseUrl?: string }
+      ): Promise<boolean>;
+    };
+
+    worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
+    worker.createChannelClient = vi.fn().mockReturnValue({
+      getParticipants: vi.fn().mockResolvedValue([]),
+    });
+    worker.runners.set("chat-1", {
+      runner: {
+        getCurrentTurnId: () => "turn-current",
+        session: {
+          buildContext: vi.fn(async () => ({ messages: [] })),
+          getEntries: vi.fn(async () => []),
+          moveTo: vi.fn(),
+        },
+      },
+    });
+    worker.getOrCreateDispatcher = vi.fn().mockReturnValue({
+      submitContinue,
+      getDebugState: () => ({ busy: false }),
+    });
+    sql.exec(
+      `INSERT INTO agent_turn_runs (
+         turn_id, channel_id, status, opened_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?)`,
+      "turn-current",
+      "chat-1",
+      "waiting_external",
+      Date.now(),
+      Date.now()
+    );
+    worker.recordModelCredentialInterruption(
+      "chat-1",
+      "test",
+      "https://new-model.example/v1",
+      "turn-current",
+      "req-current"
+    );
+
+    await expect(
+      worker.resumeAfterModelCredentialConnected("chat-1", {
+        providerId: "test",
+        modelBaseUrl: "https://old-model.example/v1",
+      })
+    ).resolves.toBe(false);
+
+    expect(submitContinue).not.toHaveBeenCalled();
+    expect(sql.exec(`SELECT request_id FROM suspensions`).toArray()[0]).toEqual({
+      request_id: "req-current",
+    });
+    expect(
+      sql.exec(`SELECT status FROM agent_turn_runs WHERE turn_id = ?`, "turn-current").toArray()[0]
+    ).toMatchObject({ status: "waiting_external" });
+  });
+
+  it("drops a deferred credential approval that arrives after the turn was interrupted", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const submitContinue = vi.fn();
+    const worker = instance as unknown as {
+      _currentVerifiedCaller: { callerId: string; callerKind: string } | null;
+      subscriptions: { getParticipantId(channelId: string): string | null };
+      runners: Map<string, unknown>;
+      createChannelClient: ReturnType<typeof vi.fn>;
+      getOrCreateDispatcher: ReturnType<typeof vi.fn>;
+      recordModelCredentialInterruption(
+        channelId: string,
+        providerId: string,
+        modelBaseUrl: string,
+        turnId?: string,
+        requestId?: string
+      ): void;
+      onDeferredResult(payload: {
+        requestId: string;
+        result: unknown;
+        isError: boolean;
+      }): Promise<{ ok: boolean }>;
+    };
+
+    worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
+    worker.createChannelClient = vi.fn().mockReturnValue({
+      getParticipants: vi.fn().mockResolvedValue([]),
+    });
+    worker.runners.set("chat-1", {
+      runner: {
+        getCurrentTurnId: () => "turn-interrupted",
+        session: {
+          buildContext: vi.fn(async () => ({ messages: [] })),
+          getEntries: vi.fn(async () => []),
+          moveTo: vi.fn(),
+        },
+      },
+    });
+    worker.getOrCreateDispatcher = vi.fn().mockReturnValue({
+      submitContinue,
+      getDebugState: () => ({ busy: false }),
+    });
+    sql.exec(
+      `INSERT INTO agent_turn_runs (
+         turn_id, channel_id, status, opened_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?)`,
+      "turn-interrupted",
+      "chat-1",
+      "interrupted",
+      Date.now(),
+      Date.now()
+    );
+    worker.recordModelCredentialInterruption(
+      "chat-1",
+      "test",
+      "https://model.example/v1",
+      "turn-interrupted",
+      "req-interrupted"
+    );
+
+    worker._currentVerifiedCaller = { callerId: "server", callerKind: "server" };
+    await expect(
+      worker.onDeferredResult({
+        requestId: "req-interrupted",
+        result: { id: "cred-1" },
+        isError: false,
+      })
+    ).resolves.toEqual({ ok: true });
+
+    expect(submitContinue).not.toHaveBeenCalled();
+    expect(sql.exec(`SELECT * FROM suspensions`).toArray()).toHaveLength(0);
+    expect(
+      sql
+        .exec(`SELECT status FROM agent_turn_runs WHERE turn_id = ?`, "turn-interrupted")
+        .toArray()[0]
+    ).toMatchObject({ status: "interrupted" });
+  });
+
+  it("keeps a denied deferred credential wait parked without redriving it", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const worker = instance as unknown as {
+      _currentVerifiedCaller: { callerId: string; callerKind: string } | null;
+      recordModelCredentialInterruption(
+        channelId: string,
+        providerId: string,
+        modelBaseUrl: string,
+        turnId?: string,
+        requestId?: string
+      ): void;
+      onDeferredResult(payload: {
+        requestId: string;
+        result: unknown;
+        isError: boolean;
+      }): Promise<{ ok: boolean }>;
+    };
+
+    worker.recordModelCredentialInterruption(
+      "chat-1",
+      "test",
+      "https://model.example/v1",
+      "turn-denied",
+      "req-denied"
+    );
+    expect(sql.exec(`SELECT request_id FROM suspensions`).toArray()[0]).toEqual({
+      request_id: "req-denied",
+    });
+
+    worker._currentVerifiedCaller = { callerId: "server", callerKind: "server" };
+    await expect(
+      worker.onDeferredResult({
+        requestId: "req-denied",
+        result: { message: "Credential approval denied" },
+        isError: true,
+      })
+    ).resolves.toEqual({ ok: true });
+
+    expect(sql.exec(`SELECT status, request_id FROM suspensions`).toArray()[0]).toEqual({
+      status: "suspended",
+      request_id: null,
+    });
   });
 });

@@ -30,6 +30,10 @@ export interface DurableObjectRelayDeps {
   callerId?: string;
   callerKind?: string;
   callerPanelId?: string;
+  /** Correlation id for this call; lets the DO match a later deferred reply. */
+  requestId?: string;
+  /** Optional dedup key, propagated so reissued calls collapse server-side. */
+  idempotencyKey?: string;
 }
 
 export async function postToDurableObject(
@@ -49,6 +53,8 @@ export async function postToDurableObject(
       ...(deps.callerId ? { "X-Natstack-Rpc-Caller-Id": deps.callerId } : {}),
       ...(deps.callerKind ? { "X-Natstack-Rpc-Caller-Kind": deps.callerKind } : {}),
       ...(deps.callerPanelId ? { "X-Natstack-Rpc-Caller-Panel-Id": deps.callerPanelId } : {}),
+      ...(deps.requestId ? { "X-Natstack-Rpc-Request-Id": deps.requestId } : {}),
+      ...(deps.idempotencyKey ? { "X-Natstack-Rpc-Idempotency-Key": deps.idempotencyKey } : {}),
     },
     body: JSON.stringify(args),
   });

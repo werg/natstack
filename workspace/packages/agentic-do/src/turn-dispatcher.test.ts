@@ -1,11 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 
 import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
+import { TurnSuspensionSignal } from "@workspace/harness";
 
-import {
-  TurnDispatcher,
-  type TurnDispatcherRunner,
-} from "./turn-dispatcher.js";
+import { TurnDispatcher, type TurnDispatcherRunner } from "./turn-dispatcher.js";
 import type { RunnerTurnInput } from "@workspace/harness";
 
 // ─── Fakes ───────────────────────────────────────────────────────────────────
@@ -38,6 +36,9 @@ interface FakeRunnerState {
   steerCalls: Array<AgentMessage & RunnerTurnInput>;
   clearSteerCount: number;
   unsubscribed: boolean;
+  /** The runner's "open turn" — drives steer-vs-fresh-prompt. Tests set it to
+   *  simulate a parked/suspended (or hibernation-restored) open turn. */
+  currentTurnId: string | null;
 }
 
 function makeRunner(): FakeRunnerState {
@@ -48,6 +49,7 @@ function makeRunner(): FakeRunnerState {
     steerCalls: [],
     clearSteerCount: 0,
     unsubscribed: false,
+    currentTurnId: null,
     runner: null as unknown as TurnDispatcherRunner,
     emit: (event) => listener?.(event),
   };
@@ -79,6 +81,9 @@ function makeRunner(): FakeRunnerState {
     clearSteeringQueue() {
       state.clearSteerCount++;
       return Promise.resolve();
+    },
+    getCurrentTurnId() {
+      return state.currentTurnId;
     },
   };
   return state;
@@ -161,7 +166,7 @@ describe("TurnDispatcher — idle submission", () => {
     expect(typing).toEqual([true, false]);
   });
 
-  it("processes multiple idle submits serially", async () => {
+  it("steers auto submits that arrive behind a queued prompt before it starts", async () => {
     const runner = makeRunner();
     const d = new TurnDispatcher({
       runner: runner.runner,
@@ -174,6 +179,26 @@ describe("TurnDispatcher — idle submission", () => {
     d.submit(a);
     d.submit(b);
     d.submit(c);
+    await flush();
+
+    expect(runner.runTurnCalls).toHaveLength(1);
+    expect(runner.runTurnCalls[0]!.msg).toBe(a);
+    expect(runner.steerCalls).toEqual([b, c]);
+  });
+
+  it("processes multiple explicit sequential submits serially", async () => {
+    const runner = makeRunner();
+    const d = new TurnDispatcher({
+      runner: runner.runner,
+      notifyTyping: () => {},
+    });
+
+    const a = makeMsg("a");
+    const b = makeMsg("b");
+    const c = makeMsg("c");
+    d.submit(a, { mode: "sequential" });
+    d.submit(b, { mode: "sequential" });
+    d.submit(c, { mode: "sequential" });
     await flush();
 
     // Only one runTurn in flight.
@@ -1021,20 +1046,20 @@ describe("TurnDispatcher — race scenarios", () => {
     const afterEnd = makeMsg("afterEnd");
     d.submit(afterEnd);
 
-    // Finish the first turn so drainLoop can pick up `mid` and `afterEnd`.
+    // Finish the first turn so drainLoop can pick up `mid`.
     runner.runTurnCalls[0]!.deferred.resolve();
     await flush();
 
-    // `mid` is now in-flight as a fresh turn; finish it so drain picks afterEnd.
+    // `mid` is now in-flight as a fresh turn. The later `afterEnd` submit was
+    // steered behind it, so pi-core consumes it during this run rather than
+    // letting it become a competing third prompt.
     expect(runner.runTurnCalls[1]!.msg).toBe(mid);
-    emitRunLifecycle(runner, [mid]);
+    emitRunLifecycle(runner, [mid, afterEnd]);
     runner.runTurnCalls[1]!.deferred.resolve();
     await flush();
 
-    // Both the swept `mid` and the new `afterEnd` ran as fresh turns.
-    expect(runner.runTurnCalls.slice(1).map((c) => c.msg)).toEqual([mid, afterEnd]);
-    // `afterEnd` was NOT steered (it arrived post-agent_end).
-    expect(runner.steerCalls).toEqual([mid]);
+    expect(runner.runTurnCalls.slice(1).map((c) => c.msg)).toEqual([mid]);
+    expect(runner.steerCalls).toEqual([mid, afterEnd]);
   });
 
   it("rapid-fire submits stay serialized (no concurrent runTurns)", async () => {
@@ -1089,5 +1114,176 @@ describe("TurnDispatcher — interrupt gating", () => {
     d.submitContinue({ turnId: "turn-2" });
     await flush();
     expect(runner.continueCalls).toHaveLength(1);
+  });
+});
+
+describe("TurnDispatcher — open (parked/suspended) turn steering", () => {
+  it("keeps steered input attached to a turn that parks during the same run", async () => {
+    const runner = makeRunner();
+    const warn = vi.fn();
+    const d = new TurnDispatcher({
+      runner: runner.runner,
+      notifyTyping: () => {},
+      log: { warn, error: vi.fn() },
+    });
+
+    const first = makeMsg("onboard me");
+    d.submit(first);
+    await flush();
+    expect(runner.runTurnCalls).toHaveLength(1);
+
+    runner.emit(agentStart());
+    runner.currentTurnId = "turn-parked";
+    const second = makeMsg("also read the skill");
+    d.submit(second);
+    await flush();
+    expect(runner.steerCalls).toHaveLength(1);
+
+    runner.emit(agentEnd());
+    runner.runTurnCalls[0]!.deferred.reject(
+      new TurnSuspensionSignal({
+        reason: "credential",
+        message: "Waiting for model credential approval",
+      })
+    );
+    await flush();
+
+    expect(runner.runTurnCalls).toHaveLength(1);
+    expect(runner.clearSteerCount).toBe(0);
+    expect(warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("prompt failed"),
+      expect.anything()
+    );
+  });
+
+  it("treats a suspension rejection without agent_end as a parked turn, not a work failure", async () => {
+    const runner = makeRunner();
+    const warn = vi.fn();
+    const onWorkFailure = vi.fn();
+    const d = new TurnDispatcher({
+      runner: runner.runner,
+      notifyTyping: () => {},
+      onWorkFailure,
+      log: { warn, error: vi.fn() },
+    });
+
+    const first = makeMsg("onboard me");
+    d.submit(first);
+    await flush();
+    runner.currentTurnId = "turn-parked";
+    runner.runTurnCalls[0]!.deferred.reject(
+      new TurnSuspensionSignal({
+        reason: "credential",
+        message: "Waiting for model credential approval",
+      })
+    );
+    await flush();
+
+    expect(onWorkFailure).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("prompt failed"),
+      expect.anything()
+    );
+  });
+
+  it("converts an already queued prompt into a steer when the prior turn parks open", async () => {
+    const runner = makeRunner();
+    const d = new TurnDispatcher({ runner: runner.runner, notifyTyping: () => {} });
+
+    const first = makeMsg("first startup prompt");
+    const second = makeMsg("second startup prompt");
+    d.submit(first, { mode: "sequential" });
+    d.submit(second, { mode: "sequential" });
+    await flush();
+
+    expect(runner.runTurnCalls).toHaveLength(1);
+    expect(runner.runTurnCalls[0]!.msg).toBe(first);
+
+    runner.currentTurnId = "turn-parked";
+    runner.runTurnCalls[0]!.deferred.reject(
+      new TurnSuspensionSignal({
+        reason: "credential",
+        message: "Waiting for model credential approval",
+      })
+    );
+    await flush();
+
+    expect(runner.runTurnCalls).toHaveLength(1);
+    expect(runner.steerCalls).toEqual([second]);
+  });
+
+  it("steers a concurrent message into an open turn instead of starting a fresh prompt", async () => {
+    const runner = makeRunner();
+    const d = new TurnDispatcher({ runner: runner.runner, notifyTyping: () => {} });
+
+    // Turn parks at model-init (e.g. deferred credential approval): the work
+    // item RESOLVES (the model error is captured as the assistant message) but
+    // the turn stays OPEN in the runner — getCurrentTurnId() reports it.
+    const first = makeMsg("onboard me");
+    d.submit(first);
+    await flush();
+    expect(runner.runTurnCalls).toHaveLength(1);
+    emitRunLifecycle(runner, [first]);
+    runner.currentTurnId = "turn-parked"; // runner still holds the open turn
+    runner.runTurnCalls[0]!.deferred.resolve();
+    await flush();
+
+    // A second message must NOT open a competing turn (which would collide on
+    // adoptTurnId) — it steers into the open turn.
+    const second = makeMsg("also read the skill");
+    d.submit(second);
+    await flush();
+
+    expect(runner.runTurnCalls).toHaveLength(1); // no fresh prompt
+    expect(runner.steerCalls).toHaveLength(1);
+    expect(runner.steerCalls[0]!.content).toBe("also read the skill");
+  });
+
+  it("steers into a hibernation-restored open turn even on a fresh dispatcher (P0-2)", async () => {
+    // After hibernation, a brand-new dispatcher is created whose runner has
+    // restored its open turn from durable trajectory. There is no in-memory park
+    // flag to rely on — the steer decision comes purely from getCurrentTurnId().
+    const runner = makeRunner();
+    runner.currentTurnId = "turn-restored";
+    const d = new TurnDispatcher({ runner: runner.runner, notifyTyping: () => {} });
+
+    const msg = makeMsg("second onboarding message");
+    d.submit(msg);
+    await flush();
+
+    expect(runner.runTurnCalls).toHaveLength(0); // never a colliding fresh prompt
+    expect(runner.steerCalls).toHaveLength(1);
+    expect(runner.steerCalls[0]!.content).toBe("second onboarding message");
+  });
+
+  it("resumes the open turn via submitContinue; once it closes, new input is a fresh prompt", async () => {
+    const runner = makeRunner();
+    const d = new TurnDispatcher({ runner: runner.runner, notifyTyping: () => {} });
+
+    const first = makeMsg("onboard me");
+    d.submit(first);
+    await flush();
+    emitRunLifecycle(runner, [first]);
+    runner.currentTurnId = "turn-parked";
+    runner.runTurnCalls[0]!.deferred.resolve();
+    await flush();
+
+    // Credential approved → resume continues the same open turn.
+    d.submitContinue({ turnId: "turn-parked" });
+    await flush();
+    expect(runner.continueCalls).toHaveLength(1);
+
+    // The resumed turn finishes and the runner closes it (currentTurnId → null);
+    // a later idle submit is a fresh prompt again (not a steer).
+    emitRunLifecycle(runner, []);
+    runner.continueCalls[0]!.resolve();
+    runner.currentTurnId = null;
+    await flush();
+
+    const next = makeMsg("new request");
+    d.submit(next);
+    await flush();
+    expect(runner.runTurnCalls).toHaveLength(2);
+    expect(runner.steerCalls).toHaveLength(0);
   });
 });

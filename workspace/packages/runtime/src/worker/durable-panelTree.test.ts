@@ -114,6 +114,9 @@ describe("DurableObjectBase panelTree handles", () => {
         method: string;
         args: unknown[];
       };
+      // Strip the opaque transport requestId/idempotencyKey; these tests assert routing.
+      delete (body as Record<string, unknown>)["requestId"];
+      delete (body as Record<string, unknown>)["idempotencyKey"];
       calls.push(body);
       if (body.method === "panelTree.getRuntimeLease") {
         return new Response(JSON.stringify({ result: { leased: true } }));
@@ -158,6 +161,9 @@ describe("DurableObjectBase panelTree handles", () => {
         method: string;
         args: unknown[];
       };
+      // Strip the opaque transport requestId/idempotencyKey; these tests assert routing.
+      delete (body as Record<string, unknown>)["requestId"];
+      delete (body as Record<string, unknown>)["idempotencyKey"];
       calls.push(body);
       if (body.method === "panelTree.list" && body.args[0] === null) {
         return new Response(
@@ -286,6 +292,9 @@ describe("DurableObjectBase panelTree handles", () => {
         method: string;
         args: unknown[];
       };
+      // Strip the opaque transport requestId/idempotencyKey; these tests assert routing.
+      delete (body as Record<string, unknown>)["requestId"];
+      delete (body as Record<string, unknown>)["idempotencyKey"];
       calls.push(body);
       return new Response(JSON.stringify({ result: { wsEndpoint: "ws://cdp.test" } }));
     }) as typeof fetch;

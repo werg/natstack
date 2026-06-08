@@ -52,7 +52,12 @@ import {
   normalizeCredentialInjection,
   normalizeUrlAudiences,
 } from "../../../packages/shared/src/credentials/urlAudience.js";
-import type { CallerKind, ServiceContext } from "../../../packages/shared/src/serviceDispatcher.js";
+import type {
+  CallerKind,
+  ServiceContext,
+  DeferredResult,
+} from "../../../packages/shared/src/serviceDispatcher.js";
+import { deferIfNeeded } from "../../../packages/shared/src/serviceDispatcher.js";
 import type { ServiceDefinition } from "../../../packages/shared/src/serviceDefinition.js";
 import type { EgressProxy } from "./egressProxy.js";
 import type { ApprovalQueue, GrantedDecision } from "./approvalQueue.js";
@@ -75,6 +80,18 @@ const identifierSchema = z
     IDENTIFIER_REGEX,
     "Invalid identifier (must be a safe path component matching /^[a-zA-Z0-9][a-zA-Z0-9._@+=:-]{0,127}$/)"
   );
+/** Connect flows that block on a human (browser auth / device code) — eligible
+ * for out-of-band deferral. Machine flows (client-credentials, jwt-bearer,
+ * api-key, etc.) complete inline. */
+const INTERACTIVE_CONNECT_FLOWS = new Set<string>([
+  "oauth2-auth-code-pkce",
+  "oauth2-auth-code",
+  "oauth2-device-code",
+  "oauth1a",
+  "browser-cookie-session",
+  "saml-browser-session",
+]);
+
 const PENDING_OAUTH_TTL_MS = 10 * 60 * 1000;
 const OAUTH_USERINFO_TIMEOUT_MS = 15_000;
 const DEFAULT_LOOPBACK_HOST = "127.0.0.1";
@@ -827,6 +844,7 @@ interface SessionCredentialCapture {
     completionUrlPattern?: string;
     maxTtlSeconds?: number;
     browser?: "internal" | "external";
+    signal?: AbortSignal;
   }): Promise<{
     cookieHeader: string;
     cookieSession?: Credential["cookieSession"];
@@ -846,6 +864,7 @@ interface SessionCredentialCapture {
     completionUrlPattern?: string;
     maxTtlSeconds?: number;
     browser?: "internal" | "external";
+    signal?: AbortSignal;
   }): Promise<{
     cookieHeader?: string;
     cookieSession?: Credential["cookieSession"];
@@ -1422,37 +1441,57 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   async function connectCredential(
     ctx: ServiceContext,
     params: ConnectCredentialParams
-  ): Promise<StoredCredentialSummary> {
+  ): Promise<StoredCredentialSummary | DeferredResult> {
     const parsedParams = connectCredentialParamsSchema.parse(params);
     const { request, handoffTarget } = normalizeConnectInvocation(ctx, parsedParams);
-    switch (request.flow.type) {
-      case "oauth2-auth-code-pkce":
-        return connectOAuth2AuthCode(ctx, normalizePkceConnectRequest(request), handoffTarget);
-      case "oauth2-auth-code":
-        return connectOAuth2AuthCode(ctx, normalizeAuthCodeConnectRequest(request), handoffTarget);
-      case "oauth2-device-code":
-        return connectOAuthDeviceCode(ctx, request);
-      case "oauth2-client-credentials":
-        return connectOAuthClientCredentials(ctx, request);
-      case "oauth2-jwt-bearer":
-        return connectOAuthJwtBearer(ctx, request);
-      case "oauth2-token-exchange":
-        return connectOAuthTokenExchange(ctx, request);
-      case "oauth1a":
-        return connectOAuth1a(ctx, request, handoffTarget);
-      case "aws-sigv4":
-        return connectAwsSigV4(ctx, request);
-      case "ssh-key":
-        return connectSshKey(ctx, request);
-      case "browser-cookie-session":
-        return connectBrowserCookieSession(ctx, request);
-      case "saml-browser-session":
-        return connectSamlBrowserSession(ctx, request);
-      case "api-key":
-        return connectApiKey(ctx, request);
-      default:
-        throw new OAuthConnectionError("unsupported_flow");
-    }
+    const dispatch = (signal?: AbortSignal): Promise<StoredCredentialSummary> => {
+      switch (request.flow.type) {
+        case "oauth2-auth-code-pkce":
+          return connectOAuth2AuthCode(
+            ctx,
+            normalizePkceConnectRequest(request),
+            handoffTarget,
+            signal
+          );
+        case "oauth2-auth-code":
+          return connectOAuth2AuthCode(
+            ctx,
+            normalizeAuthCodeConnectRequest(request),
+            handoffTarget,
+            signal
+          );
+        case "oauth2-device-code":
+          return connectOAuthDeviceCode(ctx, request, signal);
+        case "oauth2-client-credentials":
+          return connectOAuthClientCredentials(ctx, request);
+        case "oauth2-jwt-bearer":
+          return connectOAuthJwtBearer(ctx, request);
+        case "oauth2-token-exchange":
+          return connectOAuthTokenExchange(ctx, request);
+        case "oauth1a":
+          return connectOAuth1a(ctx, request, handoffTarget, signal);
+        case "aws-sigv4":
+          return connectAwsSigV4(ctx, request);
+        case "ssh-key":
+          return connectSshKey(ctx, request);
+        case "browser-cookie-session":
+          return connectBrowserCookieSession(ctx, request, signal);
+        case "saml-browser-session":
+          return connectSamlBrowserSession(ctx, request, signal);
+        case "api-key":
+          return connectApiKey(ctx, request);
+        default:
+          throw new OAuthConnectionError("unsupported_flow");
+      }
+    };
+    // Interactive flows block on a human (browser auth / device code). For a
+    // deferrable DO caller, complete them out-of-band so the DO need not hold the
+    // request open through the handshake. The delivered result is the credential
+    // *summary* — submitted secrets are consumed server-side and never persisted
+    // in any deferred-result store. Non-interactive (machine) flows run inline.
+    return deferIfNeeded(ctx, INTERACTIVE_CONNECT_FLOWS.has(request.flow.type), (signal) =>
+      dispatch(signal)
+    );
   }
 
   function normalizeConnectInvocation(
@@ -2151,8 +2190,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function connectBrowserCookieSession(
     ctx: ServiceContext,
-    request: ConnectCredentialRequest
+    request: ConnectCredentialRequest,
+    signal?: AbortSignal
   ): Promise<StoredCredentialSummary> {
+    throwIfAborted(signal);
     if (request.flow.type !== "browser-cookie-session") {
       throw new OAuthConnectionError("unsupported_flow");
     }
@@ -2179,6 +2220,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       ),
       scopes: request.credential.scopes ?? [],
       identity,
+      signal,
       metadata: {
         ...(request.credential.metadata ?? {}),
         flowType: request.flow.type,
@@ -2186,6 +2228,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         capturedCookieNames: request.flow.capture.cookies.join(","),
       },
     });
+    throwIfAborted(signal);
     const captured = await sessionCredentialCapture.captureCookies({
       signInUrl: request.flow.signInUrl,
       origins: request.flow.capture.origins,
@@ -2193,6 +2236,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       completionUrlPattern: request.flow.completionUrlPattern,
       maxTtlSeconds: request.flow.maxTtlSeconds,
       browser: request.browser ?? "internal",
+      signal,
     });
     if (!captured.cookieHeader) {
       throw new OAuthConnectionError("session_capture_failed");
@@ -2236,8 +2280,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function connectSamlBrowserSession(
     ctx: ServiceContext,
-    request: ConnectCredentialRequest
+    request: ConnectCredentialRequest,
+    signal?: AbortSignal
   ): Promise<StoredCredentialSummary> {
+    throwIfAborted(signal);
     if (request.flow.type !== "saml-browser-session") {
       throw new OAuthConnectionError("unsupported_flow");
     }
@@ -2267,6 +2313,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       ),
       scopes: request.credential.scopes ?? [],
       identity,
+      signal,
       metadata: {
         ...(request.credential.metadata ?? {}),
         flowType: request.flow.type,
@@ -2275,6 +2322,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         capturedCookieNames: request.flow.capture.cookies?.join(",") ?? "",
       },
     });
+    throwIfAborted(signal);
     const captured = await sessionCredentialCapture.captureSamlSession({
       signInUrl: request.flow.signInUrl,
       spAudience: request.flow.spAudience,
@@ -2283,6 +2331,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       completionUrlPattern: request.flow.completionUrlPattern,
       maxTtlSeconds: request.flow.maxTtlSeconds,
       browser: request.browser ?? "internal",
+      signal,
     });
     if (!captured.cookieHeader && !captured.assertion) {
       throw new OAuthConnectionError("saml_assertion_failed");
@@ -2329,8 +2378,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function connectOAuthDeviceCode(
     ctx: ServiceContext,
-    request: ConnectCredentialRequest
+    request: ConnectCredentialRequest,
+    signal?: AbortSignal
   ): Promise<StoredCredentialSummary> {
+    throwIfAborted(signal);
     if (request.flow.type !== "oauth2-device-code") {
       throw new OAuthConnectionError("unsupported_flow");
     }
@@ -2364,12 +2415,14 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       ),
       scopes: request.credential.scopes ?? request.flow.scopes ?? [],
       identity,
+      signal,
       metadata: {
         ...(request.credential.metadata ?? {}),
         flowType: request.flow.type,
         oauthTokenOrigin: new URL(request.flow.tokenUrl).origin,
       },
     });
+    throwIfAborted(signal);
     const device = await requestDeviceAuthorization({
       deviceAuthorizationUrl: request.flow.deviceAuthorizationUrl,
       clientId,
@@ -2379,6 +2432,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       keyAlgorithm: config?.fields["algorithm"]?.value,
       tokenAuth,
       scopes: request.flow.scopes,
+      signal,
     });
     const verificationUrl = device.verificationUriComplete ?? device.verificationUri;
     if (!eventService || !verificationUrl) {
@@ -2432,7 +2486,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         intervalSeconds: request.flow.pollIntervalSeconds ?? device.intervalSeconds,
         expiresInSeconds: request.flow.expiresInSeconds ?? device.expiresInSeconds,
         persistRefreshToken: request.flow.persistRefreshToken,
-        cancelSignal: presentation?.cancelled,
+        cancelSignal: anySignal([presentation?.cancelled, signal]),
       });
     } finally {
       presentation?.dispose();
@@ -2479,8 +2533,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   async function connectOAuth1a(
     ctx: ServiceContext,
     request: ConnectCredentialRequest,
-    handoffTarget?: { callerId: string; callerKind: BrowserHandoffCallerKind }
+    handoffTarget?: { callerId: string; callerKind: BrowserHandoffCallerKind },
+    signal?: AbortSignal
   ): Promise<StoredCredentialSummary> {
+    throwIfAborted(signal);
     if (request.flow.type !== "oauth1a") {
       throw new OAuthConnectionError("unsupported_flow");
     }
@@ -2514,6 +2570,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
           port: redirect.port ?? 0,
           callbackPath: redirect.callbackPath ?? DEFAULT_CALLBACK_PATH,
           allowDynamicPortFallback: redirect.fallback === "dynamic-port",
+          signal,
         });
         redirectUri = callback.redirectUri;
       } else if (redirectStrategy === "public") {
@@ -2547,12 +2604,14 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         ),
         scopes: request.credential.scopes ?? [],
         identity,
+        signal,
         metadata: {
           ...(request.credential.metadata ?? {}),
           flowType: request.flow.type,
           oauthAuthorizeOrigin: new URL(request.flow.authorizeUrl).origin,
         },
       });
+      throwIfAborted(signal);
       await transitionOAuthTransaction(tx, "approved");
       const requestToken = await exchangeOAuth1RequestToken({
         requestTokenUrl: request.flow.requestTokenUrl,
@@ -2579,10 +2638,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       }
       await transitionOAuthTransaction(tx, "handoff_requested");
       if (callback) {
-        const callbackResult = await callback.wait;
+        const callbackResult = await abortable(callback.wait, signal, () => callback?.close());
         await receiveOAuthCallback(tx, callbackResult);
       }
-      const result = await tx.wait;
+      const result = await abortable(tx.wait, signal);
       await transitionOAuthTransaction(tx, "exchanging");
       const access = await exchangeOAuth1AccessToken({
         accessTokenUrl: request.flow.accessTokenUrl,
@@ -2641,8 +2700,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   async function connectOAuth2AuthCode(
     ctx: ServiceContext,
     request: AuthCodeConnectRequest,
-    explicitHandoffTarget?: { callerId: string; callerKind: BrowserHandoffCallerKind }
+    explicitHandoffTarget?: { callerId: string; callerKind: BrowserHandoffCallerKind },
+    signal?: AbortSignal
   ): Promise<StoredCredentialSummary> {
+    throwIfAborted(signal);
     const redirect = request.redirect ?? {};
     const redirectStrategy = resolveDefaultRedirectStrategy(redirect.type);
     let callback: HostOAuthCallback | null = null;
@@ -2657,6 +2718,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
           port: redirect.port ?? 0,
           callbackPath: redirect.callbackPath ?? DEFAULT_CALLBACK_PATH,
           allowDynamicPortFallback: redirect.fallback === "dynamic-port",
+          signal,
         });
         redirectUri = callback.redirectUri;
       } else if (redirectStrategy === "public") {
@@ -2703,8 +2765,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         ),
         scopes: oauthRequest.credential.scopes ?? oauthRequest.flow.scopes ?? [],
         identity,
+        signal,
         metadata,
       });
+      throwIfAborted(signal);
       await transitionOAuthTransaction(tx, "approved");
       const started = createOAuthAuthorizeRequest(oauthRequest, stateParam);
       callback?.expectState(started.state);
@@ -2762,10 +2826,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       }
       await transitionOAuthTransaction(tx, "browser_open_requested");
       if (callback) {
-        const callbackResult = await callback.wait;
+        const callbackResult = await abortable(callback.wait, signal, () => callback?.close());
         await receiveOAuthCallback(tx, callbackResult);
       }
-      const result = await tx.wait;
+      const result = await abortable(tx.wait, signal);
       await transitionOAuthTransaction(tx, "exchanging");
       const token = await exchangeOAuthCode(oauthRequest, result.code, started.codeVerifier);
       await transitionOAuthTransaction(tx, "validating_account");
@@ -3183,6 +3247,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     keyAlgorithm?: string;
     tokenAuth: "none" | "client_secret_post" | "client_secret_basic" | "private_key_jwt";
     scopes?: string[];
+    signal?: AbortSignal;
   }): Promise<{
     deviceCode: string;
     userCode?: string;
@@ -3211,7 +3276,12 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     if (params.clientSecret && params.tokenAuth === "client_secret_basic") {
       headers["authorization"] = basicAuthHeader(params.clientId, params.clientSecret);
     }
-    const response = await fetch(params.deviceAuthorizationUrl, { method: "POST", headers, body });
+    const response = await fetch(params.deviceAuthorizationUrl, {
+      method: "POST",
+      headers,
+      body,
+      signal: params.signal,
+    });
     const text = await response.text();
     const data = parseJsonObject(text, { strict: response.ok });
     if (!response.ok || typeof data?.["error"] === "string") {
@@ -3262,7 +3332,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       if (params.cancelSignal?.aborted) {
         throw new OAuthConnectionError("approval_denied");
       }
-      await delay(intervalMs);
+      await delay(intervalMs, params.cancelSignal);
       if (params.cancelSignal?.aborted) {
         throw new OAuthConnectionError("approval_denied");
       }
@@ -3280,7 +3350,12 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       if (params.clientSecret && params.tokenAuth === "client_secret_basic") {
         headers["authorization"] = basicAuthHeader(params.clientId, params.clientSecret);
       }
-      const response = await fetch(params.tokenUrl, { method: "POST", headers, body });
+      const response = await fetch(params.tokenUrl, {
+        method: "POST",
+        headers,
+        body,
+        signal: params.cancelSignal,
+      });
       const text = await response.text();
       const data = parseJsonObject(text, { strict: response.ok });
       const error = data?.["error"];
@@ -3452,21 +3527,41 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   async function resolveCredential(
     ctx: ServiceContext,
     params: ResolveCredentialParams
-  ): Promise<StoredCredentialSummary | null> {
+  ): Promise<StoredCredentialSummary | null | DeferredResult> {
     const request = params as ResolveUrlBoundCredentialRequest;
     const use = request.use ?? "fetch";
+    let credential: Credential;
+    let usage: CredentialUseContext;
     if (request.credentialId) {
-      const credential = await loadActiveCredential(request.credentialId);
-      const usage = credentialUseContext(credential, new URL(request.url), use);
-      if (!usage) {
+      credential = await loadActiveCredential(request.credentialId);
+      const matched = credentialUseContext(credential, new URL(request.url), use);
+      if (!matched) {
         throw new Error("Credential audience does not match requested URL");
       }
-      await authorizeCredentialUse(ctx, credential, usage);
+      usage = matched;
+    } else {
+      const found = await findUrlBoundCredentialForUrl(new URL(request.url), use);
+      if (!found) return null;
+      credential = found.credential;
+      usage = found.usage;
+    }
+
+    // Already permitted — summarize inline (fast path, unchanged).
+    if (canCallerUseStoredCredential(ctx, credential, usage)) {
       return summarizeUrlBoundCredential(credential);
     }
 
-    const credential = await resolveCredentialForUrl(ctx, new URL(request.url), use);
-    return credential ? summarizeUrlBoundCredential(credential) : null;
+    // Approval needed. A hibernatable DO caller defers so it need not hold its
+    // inbound request open across the (human) approval wait — the summary is
+    // delivered out-of-band via onDeferredResult once the user decides.
+    const produce = async (signal?: AbortSignal): Promise<StoredCredentialSummary> => {
+      await authorizeCredentialUse(ctx, credential, usage, signal);
+      return summarizeUrlBoundCredential(credential);
+    };
+    if (ctx.deferral?.canDefer) {
+      return ctx.deferral.run(produce);
+    }
+    return produce();
   }
 
   async function proxyFetch(
@@ -3716,8 +3811,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       identity: { repoPath: string; effectiveVersion: string };
       metadata?: Record<string, string>;
       replacementCredentialLabel?: string;
+      signal?: AbortSignal;
     }
   ): Promise<Exclude<GrantedDecision, "deny">> {
+    throwIfAborted(params.signal);
     if (!approvalQueue || !isUserlandRuntimeCaller(ctx)) {
       return "session";
     }
@@ -3725,6 +3822,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     const oauthTokenOrigin = params.metadata?.["oauthTokenOrigin"];
     const oauthUserinfoOrigin = params.metadata?.["oauthUserinfoOrigin"];
     const decision = await approvalQueue.request({
+      ...(params.signal ? { signal: params.signal } : {}),
       callerId: ctx.caller.runtime.id,
       callerKind: ctx.caller.runtime.kind,
       repoPath: params.identity.repoPath,
@@ -3750,31 +3848,29 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     return decision;
   }
 
-  async function resolveCredentialForUrl(
-    ctx: ServiceContext,
+  /**
+   * Locate the single URL-bound credential matching `targetUrl` (lookup only —
+   * authorization is applied by the caller, so the call can be deferred). Throws
+   * on ambiguity; returns null when nothing matches.
+   */
+  async function findUrlBoundCredentialForUrl(
     targetUrl: URL,
     use: CredentialBindingUse = "fetch"
-  ): Promise<Credential | null> {
+  ): Promise<{ credential: Credential; usage: CredentialUseContext } | null> {
     const credentials = (await credentialStore.listUrlBound()).filter(
       (credential) => !credential.revokedAt && !!findCredentialBinding(credential, targetUrl, use)
     );
-    if (credentials.length === 1) {
-      const credential = credentials[0] ?? null;
-      if (credential) {
-        const active = credential.id ? await loadActiveCredential(credential.id) : credential;
-        const usage = credentialUseContext(active, targetUrl, use);
-        if (!usage) {
-          throw new Error("Credential audience does not match requested URL");
-        }
-        await authorizeCredentialUse(ctx, active, usage);
-        return active;
-      }
-      return credential;
-    }
     if (credentials.length > 1) {
       throw new Error("Multiple credentials match requested URL; choose an explicit credential");
     }
-    return null;
+    const credential = credentials[0] ?? null;
+    if (!credential) return null;
+    const active = credential.id ? await loadActiveCredential(credential.id) : credential;
+    const usage = credentialUseContext(active, targetUrl, use);
+    if (!usage) {
+      throw new Error("Credential audience does not match requested URL");
+    }
+    return { credential: active, usage };
   }
 
   async function findReplacementCandidate(
@@ -3832,7 +3928,8 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   async function authorizeCredentialUse(
     ctx: ServiceContext,
     credential: Credential,
-    usage: CredentialUseContext
+    usage: CredentialUseContext,
+    signal?: AbortSignal
   ): Promise<void> {
     if (canCallerUseStoredCredential(ctx, credential, usage)) {
       return;
@@ -3851,6 +3948,9 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     }
     const identity = resolveApprovalIdentity(ctx);
     const decision = await approvalQueue.request({
+      // When the caller deferred, this signal is aborted on TTL expiry so the
+      // pending approval is cancelled cleanly instead of leaking a waiter.
+      ...(signal ? { signal } : {}),
       callerId: ctx.caller.runtime.id,
       callerKind: ctx.caller.runtime.kind,
       repoPath: identity.repoPath,
@@ -4359,8 +4459,72 @@ function oauthPercentEncode(value: string): string {
   );
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function connectionAbortError(): OAuthConnectionError {
+  return new OAuthConnectionError("approval_denied", "Credential connection cancelled");
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw connectionAbortError();
+  }
+}
+
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal, onAbort?: () => void): Promise<T> {
+  if (!signal) return promise;
+  throwIfAborted(signal);
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => {
+      onAbort?.();
+      reject(connectionAbortError());
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (err) => {
+        signal.removeEventListener("abort", abort);
+        reject(err);
+      }
+    );
+  });
+}
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    const abort = () => {
+      clearTimeout(timer);
+      reject(connectionAbortError());
+    };
+    signal.addEventListener("abort", abort, { once: true });
+  });
+}
+
+function anySignal(signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
+  const active = signals.filter((signal): signal is AbortSignal => Boolean(signal));
+  if (active.length === 0) return undefined;
+  if (active.length === 1) return active[0];
+  const controller = new AbortController();
+  const abort = () => {
+    if (!controller.signal.aborted) controller.abort();
+  };
+  for (const signal of active) {
+    if (signal.aborted) {
+      abort();
+      break;
+    }
+    signal.addEventListener("abort", abort, { once: true });
+  }
+  return controller.signal;
 }
 
 function isSameConfigTrustScope(
@@ -4754,12 +4918,14 @@ async function createLoopbackOAuthCallback(opts: {
   port: number;
   callbackPath: string;
   allowDynamicPortFallback: boolean;
+  signal?: AbortSignal;
 }): Promise<HostOAuthCallback> {
   try {
     return await bindLoopbackOAuthCallback(
       opts.host,
       opts.port,
-      normalizeCallbackPath(opts.callbackPath)
+      normalizeCallbackPath(opts.callbackPath),
+      opts.signal
     );
   } catch (error) {
     if (
@@ -4768,7 +4934,12 @@ async function createLoopbackOAuthCallback(opts: {
       error instanceof Error &&
       /address in use|EADDRINUSE|already in use/i.test(error.message)
     ) {
-      return bindLoopbackOAuthCallback(opts.host, 0, normalizeCallbackPath(opts.callbackPath));
+      return bindLoopbackOAuthCallback(
+        opts.host,
+        0,
+        normalizeCallbackPath(opts.callbackPath),
+        opts.signal
+      );
     }
     if (error instanceof Error && /address in use|EADDRINUSE|already in use/i.test(error.message)) {
       throw new Error("redirect_unavailable");
@@ -4780,7 +4951,8 @@ async function createLoopbackOAuthCallback(opts: {
 async function bindLoopbackOAuthCallback(
   host: string,
   port: number,
-  callbackPath: string
+  callbackPath: string,
+  signal?: AbortSignal
 ): Promise<HostOAuthCallback> {
   let expectedState: string | undefined;
   let settled = false;
@@ -4838,8 +5010,20 @@ async function bindLoopbackOAuthCallback(
     server.once("error", rejectListen);
     server.listen(port, host, resolveListen);
   });
+  const abort = () => {
+    if (settled) return;
+    settled = true;
+    reject(oauthConnectionError("approval_denied", "Credential connection cancelled"));
+    server.close();
+  };
+  if (signal?.aborted) {
+    abort();
+  } else {
+    signal?.addEventListener("abort", abort, { once: true });
+  }
   const address = server.address();
   if (!address || typeof address === "string") {
+    signal?.removeEventListener("abort", abort);
     server.close();
     throw new Error("Failed to bind OAuth callback server");
   }
@@ -4854,6 +5038,7 @@ async function bindLoopbackOAuthCallback(
   wait
     .finally(() => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
       server.close();
     })
     .catch(() => undefined);
@@ -4865,6 +5050,7 @@ async function bindLoopbackOAuthCallback(
     },
     close() {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
       server.close();
     },
   };

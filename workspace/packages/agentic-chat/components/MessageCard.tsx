@@ -127,6 +127,14 @@ export const MessageCard = React.memo(function MessageCard({
       : msg.lifecycle.status === "failed"
         ? "red"
         : "amber";
+    const badgeLabel =
+      msg.lifecycle.status === "recovered"
+        ? "Recovered"
+        : msg.lifecycle.status === "failed"
+          ? "Recovery failed"
+          : msg.lifecycle.status === "waiting"
+            ? "Waiting"
+            : "Interrupted";
     return (
       <Box
         key={key}
@@ -140,11 +148,7 @@ export const MessageCard = React.memo(function MessageCard({
             <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
               <Flex align="center" gap="2" wrap="wrap">
                 <Badge color={color} size="1" variant="soft">
-                  {msg.lifecycle.status === "recovered"
-                    ? "Recovered"
-                    : msg.lifecycle.status === "failed"
-                      ? "Recovery failed"
-                      : "Interrupted"}
+                  {badgeLabel}
                 </Badge>
                 <Text size="2" weight="medium">
                   {msg.lifecycle.title}

@@ -644,6 +644,39 @@ describe("@workspace/agentic-protocol stored values", () => {
 });
 
 describe("@workspace/agentic-protocol reducers", () => {
+  it("does not let a stale (lower-seq) turn event resurrect a closed turn", () => {
+    const turnId = brandId<TurnId>("turn-seq");
+    const opened: AgenticEvent<"turn.opened"> = {
+      kind: "turn.opened",
+      actor: agent,
+      turnId,
+      payload: { protocol: AGENTIC_PROTOCOL_VERSION },
+      createdAt: "2026-05-20T12:00:00.000Z",
+    };
+    const closed: AgenticEvent<"turn.closed"> = {
+      kind: "turn.closed",
+      actor: agent,
+      turnId,
+      payload: { protocol: AGENTIC_PROTOCOL_VERSION, summary: "done" },
+      createdAt: "2026-05-20T12:00:02.000Z",
+    };
+    // A late/replayed turn.waiting at a LOWER seq than the close must be ignored.
+    const staleWaiting: AgenticEvent<"turn.waiting"> = {
+      kind: "turn.waiting",
+      actor: agent,
+      turnId,
+      payload: { protocol: AGENTIC_PROTOCOL_VERSION, reason: "model_credential_required" },
+      createdAt: "2026-05-20T12:00:01.000Z",
+    };
+
+    const state = [envelope(opened, 1), envelope(closed, 5), envelope(staleWaiting, 3)].reduce(
+      reduceChannelView,
+      createInitialChannelViewState()
+    );
+
+    expect(state.turns[turnId]?.status).toBe("closed");
+  });
+
   it("supports replacement assistant message deltas", () => {
     const started: AgenticEvent<"message.started"> = {
       kind: "message.started",

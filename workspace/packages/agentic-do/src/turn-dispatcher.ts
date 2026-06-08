@@ -7,7 +7,12 @@
  */
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { RunnerEvent, RunnerTurnInput, RunnerTurnOptions } from "@workspace/harness";
+import {
+  isTurnSuspensionSignal,
+  type RunnerEvent,
+  type RunnerTurnInput,
+  type RunnerTurnOptions,
+} from "@workspace/harness";
 
 export interface TurnDispatcherRunner {
   subscribe(listener: (event: RunnerEvent) => void): () => void;
@@ -16,6 +21,16 @@ export interface TurnDispatcherRunner {
   continueAgent(opts?: RunnerTurnOptions): Promise<void>;
   steerMessage(message: AgentMessage): Promise<void>;
   clearSteeringQueue(): Promise<void>;
+  /**
+   * The turn currently open in the runner, or null if idle. Reconstructed from
+   * durable trajectory state on every activation, so it is the authoritative,
+   * hibernation-surviving signal for "is this channel occupied" — a turn that is
+   * running OR parked/suspended is open. The dispatcher steers new input into an
+   * open turn rather than starting a competing one (which would collide on the
+   * single-open-turn invariant). This replaces the old in-memory `parkedTurnId`,
+   * which was lost on hibernation and let a post-revival message collide.
+   */
+  getCurrentTurnId(): string | null;
 }
 
 export type WorkItem =
@@ -51,11 +66,9 @@ export interface TurnDispatcherOptions {
   notifyTyping: (busy: boolean) => void;
   onWorkStart?: (work: WorkItem) => string | undefined | Promise<string | undefined>;
   onWorkFailure?: (work: WorkItem, error: unknown, turnId?: string) => void | Promise<void>;
-  onInvariantViolation?: (
-    code: string,
-    detail?: Record<string, unknown>
-  ) => void | Promise<void>;
+  onInvariantViolation?: (code: string, detail?: Record<string, unknown>) => void | Promise<void>;
   onSteeredMessageObserved?: (steeringId: string) => void | Promise<void>;
+  diagnosticContext?: () => Record<string, unknown>;
   /**
    * Anchor the detached drain promise to the DO's current request lifetime
    * (typically `ctx.waitUntil`). The drain loop is started fire-and-forget
@@ -91,33 +104,22 @@ export class TurnDispatcher {
     this.unsub = opts.runner.subscribe((event) => this.handleEvent(event));
   }
 
-  submit(input: RunnerTurnInput, opts?: { mode?: "auto" | "sequential"; steeringId?: string }): void {
+  submit(
+    input: RunnerTurnInput,
+    opts?: { mode?: "auto" | "sequential"; steeringId?: string }
+  ): void {
     if (this.disposed) return;
     // A fresh user message re-engages the agent after an interrupt.
     this.interrupted = false;
     if (opts?.steeringId && this.hasInFlightSteeringId(opts.steeringId)) return;
     const sequential = opts?.mode === "sequential";
-    if (!sequential && this.running) {
-      const message = this.opts.runner.buildUserMessage(input);
-      const pending: PendingSteer = {
-        input,
-        message,
-        ...(opts?.steeringId ? { steeringId: opts.steeringId } : {}),
-      };
-      this.pendingSteered.push(pending);
-      this.notifyTyping();
-      void this.opts.runner.steerMessage(message).catch((err) => {
-        this.log.warn("[TurnDispatcher] steer failed; routing as fresh prompt:", err);
-        this.pendingSteered = this.pendingSteered.filter(
-          (candidate) => candidate.message !== message
-        );
-        this.pending.push({
-          kind: "prompt",
-          input,
-          ...(pending.steeringId ? { steeringId: pending.steeringId } : {}),
-        });
-        this.ensureDrain();
-      });
+    // Steer into any OPEN turn — running OR parked/suspended. The runner's
+    // current turn id is reconstructed from durable trajectory on activation, so
+    // this holds even after a hibernation that happened mid-park: a fresh prompt
+    // would collide on `adoptTurnId`, so we steer the message into the open turn,
+    // which the resume (`submitContinue`) drains. (Fixes the P0-2 collision.)
+    if (!sequential && this.shouldSteerAutoSubmit()) {
+      this.enqueueSteer(input, opts);
       return;
     }
     this.pending.push({
@@ -152,8 +154,13 @@ export class TurnDispatcher {
     this.pendingSteered.push(pending);
     this.notifyTyping();
     void this.opts.runner.steerMessage(message).catch((err) => {
-      this.log.warn("[TurnDispatcher] steer into active turn failed; routing as fresh prompt:", err);
-      this.pendingSteered = this.pendingSteered.filter((candidate) => candidate.message !== message);
+      this.log.warn(
+        "[TurnDispatcher] steer into active turn failed; routing as fresh prompt:",
+        err
+      );
+      this.pendingSteered = this.pendingSteered.filter(
+        (candidate) => candidate.message !== message
+      );
       this.pending.push({
         kind: "prompt",
         input,
@@ -247,6 +254,7 @@ export class TurnDispatcher {
       pendingSteeredCount: this.pendingSteered.length,
       running: this.running,
       draining: this.draining,
+      openTurnId: this.opts.runner.getCurrentTurnId(),
       drainGeneration: this.drainGeneration,
       lastTypingOn: this.lastTypingOn,
       disposed: this.disposed,
@@ -259,6 +267,39 @@ export class TurnDispatcher {
     return this.running || this.pending.length > 0 || this.pendingSteered.length > 0;
   }
 
+  private shouldSteerAutoSubmit(): boolean {
+    return (
+      this.running ||
+      this.draining ||
+      this.pending.length > 0 ||
+      this.pendingSteered.length > 0 ||
+      this.opts.runner.getCurrentTurnId() !== null
+    );
+  }
+
+  private enqueueSteer(input: RunnerTurnInput, opts?: { steeringId?: string }): void {
+    const message = this.opts.runner.buildUserMessage(input);
+    const pending: PendingSteer = {
+      input,
+      message,
+      ...(opts?.steeringId ? { steeringId: opts.steeringId } : {}),
+    };
+    this.pendingSteered.push(pending);
+    this.notifyTyping();
+    void this.opts.runner.steerMessage(message).catch((err) => {
+      this.log.warn("[TurnDispatcher] steer failed; routing as fresh prompt:", err);
+      this.pendingSteered = this.pendingSteered.filter(
+        (candidate) => candidate.message !== message
+      );
+      this.pending.push({
+        kind: "prompt",
+        input,
+        ...(pending.steeringId ? { steeringId: pending.steeringId } : {}),
+      });
+      this.ensureDrain();
+    });
+  }
+
   private notifyTyping(): void {
     const on = this.busy;
     if (on === this.lastTypingOn) return;
@@ -268,6 +309,25 @@ export class TurnDispatcher {
     } catch (err) {
       this.log.warn("[TurnDispatcher] notifyTyping threw:", err);
     }
+  }
+
+  private diagnosticContext(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    let base: Record<string, unknown> = {};
+    try {
+      base = this.opts.diagnosticContext?.() ?? {};
+    } catch (err) {
+      base = { diagnosticContextError: err instanceof Error ? err.message : String(err) };
+    }
+    return {
+      ...base,
+      running: this.running,
+      draining: this.draining,
+      pendingCount: this.pending.length,
+      pendingSteeredCount: this.pendingSteered.length,
+      openTurnId: this.opts.runner.getCurrentTurnId(),
+      activeWork: this.activeWork ? this.activeWorkDebugState(this.activeWork) : null,
+      ...extra,
+    };
   }
 
   private notifySteeringObserved(steeringId: string): void {
@@ -332,7 +392,8 @@ export class TurnDispatcher {
         }
         if (active) active.sawAgentEnd = true;
         this.running = false;
-        if (this.pendingSteered.length > 0) {
+        const openTurnId = this.opts.runner.getCurrentTurnId();
+        if (this.pendingSteered.length > 0 && openTurnId === null) {
           const stranded = this.pendingSteered;
           this.pendingSteered = [];
           void this.opts.runner.clearSteeringQueue().catch((err) => {
@@ -377,6 +438,20 @@ export class TurnDispatcher {
     try {
       while (!this.disposed && generation === this.drainGeneration && this.pending.length > 0) {
         const work = this.pending.shift()!;
+        if (work.kind === "prompt" && this.opts.runner.getCurrentTurnId() !== null) {
+          this.log.warn(
+            "[TurnDispatcher] queued prompt found open runner turn; converting to steer",
+            this.diagnosticContext({
+              workKind: work.kind,
+              steeringId: work.steeringId ?? null,
+            })
+          );
+          this.enqueueSteer(
+            work.input,
+            work.steeringId ? { steeringId: work.steeringId } : undefined
+          );
+          continue;
+        }
         this.running = true;
         const active = this.beginActiveWork(generation, work);
         this.notifyTyping();
@@ -385,8 +460,20 @@ export class TurnDispatcher {
         if (generation !== this.drainGeneration || completion.status === "invalidated") return;
         if (completion.status === "failed") {
           if (generation !== this.drainGeneration) return;
+          if (isTurnSuspensionSignal(completion.error)) {
+            this.running = false;
+            this.notifyTyping();
+            continue;
+          }
           this.log.warn(
             `[TurnDispatcher] ${work.kind === "continue" ? "continueAgent" : "prompt"} failed:`,
+            this.diagnosticContext({
+              workKind: work.kind,
+              turnId: active.turnId ?? null,
+              sawAgentStart: active.sawAgentStart,
+              sawAgentEnd: active.sawAgentEnd,
+              runnerSettled: active.runnerSettled,
+            }),
             completion.error
           );
           try {

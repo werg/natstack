@@ -294,8 +294,14 @@ export function reduceChannelView(
     event.kind === "turn.closed"
   ) {
     const turnId = event.turnId;
-    if (turnId) {
-      const existing = next.turns[turnId];
+    // Seq-monotonic turn lifecycle: ignore a stale/out-of-order status event
+    // (lower seq than already applied) so a replayed turn.opened or a late
+    // turn.waiting can never resurrect a closed turn.
+    const existingTurn = turnId ? next.turns[turnId] : undefined;
+    const staleTurnEvent =
+      existingTurn?.lastSeq !== undefined && parsed.seq < existingTurn.lastSeq;
+    if (turnId && !staleTurnEvent) {
+      const existing = existingTurn;
       const summary = "summary" in event.payload ? event.payload.summary : existing?.summary;
       const reason = "reason" in event.payload ? event.payload.reason : existing?.reason;
       next = {
@@ -314,6 +320,7 @@ export function reduceChannelView(
             openedAt: existing?.openedAt ?? event.createdAt,
             ...(event.kind === "turn.closed" ? { closedAt: event.createdAt } : {}),
             updatedAt: event.createdAt,
+            lastSeq: parsed.seq,
             ...(summary ? { summary } : {}),
             ...(reason ? { reason } : {}),
           },

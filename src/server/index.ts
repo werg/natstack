@@ -141,19 +141,30 @@ if (ipcChannel) {
 function ipcRequest<T = unknown>(
   type: string,
   payload?: Record<string, unknown>,
-  timeoutMs: number = 5_000
+  timeoutMs: number = 5_000,
+  signal?: AbortSignal
 ): Promise<T | null> {
   if (!ipcChannel) return Promise.resolve(null);
+  if (signal?.aborted) return Promise.resolve(null);
   const id = randomBytes(8).toString("hex");
   return new Promise<T | null>((resolve) => {
-    const timeout = setTimeout(() => {
+    let settled = false;
+    const finish = (value: T | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
       pendingIpcResponses.delete(id);
-      resolve(null);
+      resolve(value);
+    };
+    const onAbort = () => finish(null);
+    const timeout = setTimeout(() => {
+      finish(null);
     }, timeoutMs);
     pendingIpcResponses.set(id, (response: unknown) => {
-      clearTimeout(timeout);
-      resolve(response as T);
+      finish(response as T);
     });
+    signal?.addEventListener("abort", onAbort, { once: true });
     ipcChannel.postMessage({ type, id, ...(payload ?? {}) });
   });
 }
@@ -1140,12 +1151,14 @@ async function main() {
     const { createCredentialService } = await import("./services/credentialService.js");
     const { serviceWithHttpRoutes } = await import("./serviceWithHttpRoutes.js");
     const captureSessionCredential = async <T extends Record<string, unknown>>(
-      payload: Record<string, unknown>
+      payload: Record<string, unknown>,
+      signal?: AbortSignal
     ): Promise<T> => {
       const response = await ipcRequest<T & { error?: unknown }>(
         "credential-session-capture-request",
         payload,
-        300_000
+        300_000,
+        signal
       );
       if (!response) {
         throw new Error("Session credential capture timed out or is unavailable");
@@ -1178,15 +1191,18 @@ async function main() {
             };
             expiresAt?: number;
             accountIdentity?: Record<string, string>;
-          }>({
-            kind: "cookies",
-            signInUrl: params.signInUrl,
-            origins: params.origins,
-            cookieNames: params.cookieNames,
-            completionUrlPattern: params.completionUrlPattern,
-            maxTtlSeconds: params.maxTtlSeconds,
-            browser: params.browser,
-          });
+          }>(
+            {
+              kind: "cookies",
+              signInUrl: params.signInUrl,
+              origins: params.origins,
+              cookieNames: params.cookieNames,
+              completionUrlPattern: params.completionUrlPattern,
+              maxTtlSeconds: params.maxTtlSeconds,
+              browser: params.browser,
+            },
+            params.signal
+          );
           if (!response.cookieHeader) {
             throw new Error("Session credential capture returned no cookies");
           }
@@ -1207,16 +1223,19 @@ async function main() {
             assertion?: string;
             expiresAt?: number;
             accountIdentity?: Record<string, string>;
-          }>({
-            kind: "saml",
-            signInUrl: params.signInUrl,
-            spAudience: params.spAudience,
-            cookieNames: params.cookieNames,
-            assertion: params.assertion,
-            completionUrlPattern: params.completionUrlPattern,
-            maxTtlSeconds: params.maxTtlSeconds,
-            browser: params.browser,
-          });
+          }>(
+            {
+              kind: "saml",
+              signInUrl: params.signInUrl,
+              spAudience: params.spAudience,
+              cookieNames: params.cookieNames,
+              assertion: params.assertion,
+              completionUrlPattern: params.completionUrlPattern,
+              maxTtlSeconds: params.maxTtlSeconds,
+              browser: params.browser,
+            },
+            params.signal
+          );
           return {
             cookieHeader: response.cookieHeader,
             cookieSession: response.cookieSession as never,

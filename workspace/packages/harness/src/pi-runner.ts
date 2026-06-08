@@ -41,6 +41,7 @@ import {
   loadNatStackResources,
 } from "./resource-loader.js";
 import { composeSystemPrompt, type SystemPromptMode } from "./system-prompt.js";
+import { isTurnSuspensionSignal, type TurnSuspensionSignal } from "./turn-suspension.js";
 import { PiExtensionRuntime } from "./pi-extension-runtime.js";
 import {
   createReadTool,
@@ -629,6 +630,10 @@ export class PiRunner {
   private awaitingProviderFirstEvent = false;
   private providerRequestCount = 0;
   private credentialRequestCount = 0;
+  /** Set when getApiKey threw a typed suspension for the in-flight turn. Drives
+   *  keep-turn-open + channel-publish suppression of the resulting failure
+   *  message. Cleared when the next prompt/continue adopts the turn. */
+  private pendingSuspension: TurnSuspensionSignal | null = null;
   private restoredTrajectoryState: TrajectoryState | null = null;
   private activeAssistantMessage: {
     messageId: string;
@@ -889,10 +894,7 @@ export class PiRunner {
   }
 
   private async cancelCurrentTurn(
-    reason: Extract<
-      TurnReasonCode,
-      "user_interrupted" | "channel_unsubscribe" | "turn_superseded"
-    >,
+    reason: Extract<TurnReasonCode, "user_interrupted" | "channel_unsubscribe" | "turn_superseded">,
     summary: string
   ): Promise<boolean> {
     if (!this.options.gad || !this.currentTurnId) return false;
@@ -1115,6 +1117,10 @@ export class PiRunner {
             credentialRequestCount: this.credentialRequestCount,
             error: err instanceof Error ? err.message : String(err),
           });
+          // A typed suspension (e.g. a deferred credential approval) is a PAUSE,
+          // not a failure: stash it so the turn stays open and the resulting
+          // failure message is never published to the channel as a red error.
+          if (isTurnSuspensionSignal(err)) this.pendingSuspension = err;
           throw err;
         }
       },
@@ -1832,10 +1838,13 @@ export class PiRunner {
             turnId: correlatedEvent.natstack.turnId ?? null,
           });
         } else {
-          if (this.options.keepTurnOpenOnAgentEnd?.(event)) {
+          // A pending typed suspension keeps the turn open natively — no string
+          // matching needed. The option remains for any other keep-open cases.
+          if (this.pendingSuspension || this.options.keepTurnOpenOnAgentEnd?.(event)) {
             this.rememberCheckpoint("agent.end.turn_kept_open", {
               operationId: correlatedEvent.natstack?.operationId ?? null,
               turnId: correlatedEvent.natstack?.turnId ?? null,
+              suspended: this.pendingSuspension?.reason ?? null,
             });
           } else {
             await this.closeCurrentTurn();
@@ -1972,9 +1981,18 @@ export class PiRunner {
   private adoptTurnId(turnId?: string): boolean {
     if (!turnId) return false;
     if (this.currentTurnId && this.currentTurnId !== turnId) {
+      const channelId = this.options.gad?.channelId ?? "unknown";
+      const workerRef = this.options.gad?.metadata?.["workerRef"];
+      const worker =
+        workerRef && typeof workerRef === "object"
+          ? JSON.stringify(workerRef)
+          : workerRef != null
+            ? String(workerRef)
+            : "unknown";
       throw new AgentWorkerError(
         "invalid_state",
-        `Cannot adopt turn ${turnId}; turn ${this.currentTurnId} is already open`
+        `Cannot adopt turn ${turnId}; turn ${this.currentTurnId} is already open ` +
+          `(channel=${channelId}, worker=${worker})`
       );
     }
     const adoptedFromIdle = this.currentTurnId == null;
@@ -2274,7 +2292,11 @@ export class PiRunner {
       this.provenanceQueue.push({
         event: failedEvent,
         eventId: this.semanticEntryEventId(messageEntryId, "message:failed", failedEvent),
-        publishToChannel: this.shouldPublishMessageToChannel(role),
+        // A suspended turn's failure is a PAUSE, not an error: keep the trajectory
+        // record (resume reads it from the session) but never broadcast it to the
+        // channel, so the panel never renders it as a red error. The turn.waiting
+        // event the worker emits is the user-facing "waiting" signal.
+        publishToChannel: !this.pendingSuspension && this.shouldPublishMessageToChannel(role),
       });
     }
 
@@ -3170,9 +3192,9 @@ export class PiRunner {
             ? record["text"]
             : typeof record?.["content"] === "string"
               ? record["content"]
-            : typeof block === "string"
-              ? block
-              : "",
+              : typeof block === "string"
+                ? block
+                : "",
         metadata: record ?? undefined,
       };
     });
@@ -3247,6 +3269,7 @@ export class PiRunner {
   async prompt(input: RunnerTurnInput, opts: RunnerTurnOptions = {}): Promise<void> {
     if (!this.harness) throw new AgentWorkerError("invalid_state", "PiRunner not initialized");
     this.adoptTurnId(opts.turnId);
+    this.pendingSuspension = null; // a new operation supersedes any prior suspension
     const operationId = uuidv7();
     this.activeOperationId = operationId;
     this.activeOperationSawAgentStart = false;
@@ -3275,12 +3298,20 @@ export class PiRunner {
       this.assertOperationLifecycleComplete("prompt", operationId);
       this.rememberCheckpoint("prompt.harness.ok");
     } catch (err) {
-      await this.settleFailedOperationTurn(
-        opts.turnId,
-        "work_failed",
-        "Agent turn failed before completion"
-      );
-      this.rememberError("prompt", err);
+      const suspension = isTurnSuspensionSignal(err) ? err : this.pendingSuspension;
+      if (suspension) {
+        this.rememberCheckpoint("prompt.suspended", {
+          reason: suspension.reason,
+          turnId: this.currentTurnId ?? null,
+        });
+      } else {
+        await this.settleFailedOperationTurn(
+          opts.turnId,
+          "work_failed",
+          "Agent turn failed before completion"
+        );
+        this.rememberError("prompt", err);
+      }
       this.rememberCheckpoint("prompt.error", {
         error: err instanceof Error ? err.message : String(err),
       });
@@ -3352,6 +3383,7 @@ export class PiRunner {
   async continueAgent(opts: RunnerTurnOptions = {}): Promise<void> {
     if (!this.harness) throw new AgentWorkerError("invalid_state", "PiRunner not initialized");
     this.adoptTurnId(opts.turnId);
+    this.pendingSuspension = null; // resuming the turn clears its suspension
     const operationId = uuidv7();
     this.activeOperationId = operationId;
     this.activeOperationSawAgentStart = false;
@@ -3376,12 +3408,20 @@ export class PiRunner {
       this.assertOperationLifecycleComplete("continue", operationId);
       this.rememberCheckpoint("continue.harness.ok");
     } catch (err) {
-      await this.settleFailedOperationTurn(
-        opts.turnId,
-        "work_failed",
-        "Agent turn failed before completion"
-      );
-      this.rememberError("continue", err);
+      const suspension = isTurnSuspensionSignal(err) ? err : this.pendingSuspension;
+      if (suspension) {
+        this.rememberCheckpoint("continue.suspended", {
+          reason: suspension.reason,
+          turnId: this.currentTurnId ?? null,
+        });
+      } else {
+        await this.settleFailedOperationTurn(
+          opts.turnId,
+          "work_failed",
+          "Agent turn failed before completion"
+        );
+        this.rememberError("continue", err);
+      }
       this.rememberCheckpoint("continue.error", {
         error: err instanceof Error ? err.message : String(err),
       });

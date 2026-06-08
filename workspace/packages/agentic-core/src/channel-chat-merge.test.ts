@@ -744,6 +744,43 @@ describe("chatMessagesFromChannelView", () => {
     expect(chatMessagesFromChannelView(state)).toEqual([]);
   });
 
+  it("projects a waiting (parked) turn as a first-class 'Waiting' lifecycle notice", () => {
+    const turnId = brandId<TurnId>("turn-waiting-credential");
+    const opened: AgenticEvent<"turn.opened"> = {
+      kind: "turn.opened",
+      actor: agent,
+      turnId,
+      payload: { protocol: AGENTIC_PROTOCOL_VERSION },
+      createdAt: "2026-05-20T12:00:00.000Z",
+    };
+    const waiting: AgenticEvent<"turn.waiting"> = {
+      kind: "turn.waiting",
+      actor: agent,
+      turnId,
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        reason: "model_credential_required",
+        summary: "Waiting for model credential approval",
+      },
+      createdAt: "2026-05-20T12:00:01.000Z",
+    };
+
+    const state = [opened, waiting]
+      .map((event, index) => envelope(event, index + 1))
+      .reduce(reduceChannelView, createInitialChannelViewState());
+
+    const card = chatMessagesFromChannelView(state).find(
+      (m) => m.id === "turn:turn-waiting-credential:waiting"
+    );
+    expect(card).toMatchObject({
+      contentType: "lifecycle",
+      content: "Waiting for model credential approval",
+      lifecycle: { status: "waiting", title: "Waiting for model credential approval" },
+    });
+    // It is a waiting indicator, not an error.
+    expect(card?.error).toBeUndefined();
+  });
+
   it("does not surface user-interrupted agent turns as no-response errors", () => {
     const turnId = brandId<TurnId>("turn-interrupted");
     const opened: AgenticEvent<"turn.opened"> = {

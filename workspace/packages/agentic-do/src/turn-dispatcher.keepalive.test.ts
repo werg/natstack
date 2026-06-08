@@ -29,6 +29,9 @@ function createFakeRunner(): TurnDispatcherRunner & { resolvePrompt: () => void 
     clearSteeringQueue() {
       return Promise.resolve();
     },
+    getCurrentTurnId() {
+      return null;
+    },
     resolvePrompt() {
       pendingResolve?.();
     },

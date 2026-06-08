@@ -23,15 +23,47 @@ export interface HttpRpcClientConfig {
   authToken: string;
 }
 
-export function createHttpRpcClient(config: HttpRpcClientConfig): RpcClient & {
+/**
+ * Outcome of a deferrable call. `completed` carries the inline result for the
+ * fast path; `deferred` means the result will arrive later via an inbound
+ * `onDeferredResult(requestId, ...)` POST — the caller must persist whatever it
+ * needs to resume, keyed by `requestId`, before relying on this.
+ */
+export type DeferredCallAck =
+  | { status: "deferred"; requestId: string }
+  | { status: "completed"; result: unknown };
+
+/** Extra methods the HTTP bridge exposes beyond the standard `RpcClient`. */
+export interface HttpRpcExtensions {
   handleIncomingPost(body: unknown): Promise<unknown>;
-} {
+  /**
+   * Issue a call that may complete out-of-band. Use for human-gated server
+   * methods (approvals, credential use) where holding an inbound request open
+   * across a hibernation would lose the continuation.
+   */
+  callDeferred(
+    targetId: string,
+    method: string,
+    args: unknown[],
+    options?: { requestId?: string; idempotencyKey?: string },
+  ): Promise<DeferredCallAck>;
+}
+
+export type HttpRpcClient = RpcClient & HttpRpcExtensions;
+
+export function createHttpRpcClient(config: HttpRpcClientConfig): HttpRpcClient {
   const { selfId, serverUrl, authToken } = config;
   const selfCaller: AuthenticatedCaller = { callerId: selfId, callerKind: "unknown" };
   const methodHandlers = new Map<string, (request: RpcRequestContext) => Promise<unknown>>();
   const eventListeners = new Map<string, Set<(event: RpcEventContext) => void>>();
 
-  async function postToServer(payload: object): Promise<unknown> {
+  // Returns the raw `/rpc` JSON envelope. The envelope is one of:
+  //   { result }                  — normal completion
+  //   { error, errorCode? }       — failure
+  //   { deferred: true, requestId } — parked; result arrives via onDeferredResult
+  // Callers decide how to interpret it (`call` unwraps result; `callDeferred`
+  // inspects `deferred`).
+  async function postToServer(payload: object): Promise<Record<string, unknown>> {
     const maxRetries = 3;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       let res: Response;
@@ -59,18 +91,26 @@ export function createHttpRpcClient(config: HttpRpcClientConfig): RpcClient & {
       }
       if (res.status === 401) throw new Error("RPC authentication failed");
 
-      const json = (await res.json()) as Record<string, unknown>;
-      if (json["error"]) {
-        const err = new Error(json["error"] as string);
-        if (json["errorCode"]) (err as Error & { code?: unknown }).code = json["errorCode"];
-        throw err;
-      }
-      return json["result"];
+      return (await res.json()) as Record<string, unknown>;
     }
     throw new Error("RPC request failed after retries");
   }
 
-  const client: RpcClient & { handleIncomingPost(body: unknown): Promise<unknown> } = {
+  function throwIfError(json: Record<string, unknown>): void {
+    if (json["error"]) {
+      const err = new Error(json["error"] as string);
+      if (json["errorCode"]) (err as Error & { code?: unknown }).code = json["errorCode"];
+      throw err;
+    }
+  }
+
+  async function callAndUnwrap<T>(payload: object): Promise<T> {
+    const json = await postToServer(payload);
+    throwIfError(json);
+    return json["result"] as T;
+  }
+
+  const client: HttpRpcClient = {
     selfId,
 
     expose<TArgs extends unknown[], TReturn>(
@@ -113,7 +153,17 @@ export function createHttpRpcClient(config: HttpRpcClientConfig): RpcClient & {
         }) as Promise<T>;
       }
 
-      const request = postToServer({ type: "call", targetId, method, args }) as Promise<T>;
+      // Blanket requestId on every wire call (correlation key for deferred replies,
+      // dedup, and tracing). Caller-generated so the caller knows it before any reply.
+      const requestId = crypto.randomUUID();
+      const request = callAndUnwrap<T>({
+        type: "call",
+        requestId,
+        targetId,
+        method,
+        args,
+        ...(options?.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {}),
+      });
       if (!options?.timeoutMs && !options?.signal) return request;
 
       return new Promise<T>((resolve, reject) => {
@@ -148,9 +198,10 @@ export function createHttpRpcClient(config: HttpRpcClientConfig): RpcClient & {
       targetId: string,
       method: string,
       args: unknown[],
-      options?: { signal?: AbortSignal },
+      options?: { signal?: AbortSignal; idempotencyKey?: string },
     ): Promise<Response> {
       if (targetId === selfId) throw new Error("stream is not supported for local dispatch");
+      const requestId = crypto.randomUUID();
       const wireResponse = await rpcFetch(`${serverUrl}/rpc/stream`, {
         method: "POST",
         headers: {
@@ -158,7 +209,13 @@ export function createHttpRpcClient(config: HttpRpcClientConfig): RpcClient & {
           Authorization: `Bearer ${authToken}`,
           [RPC_RUNTIME_ID_HEADER]: selfId,
         },
-        body: JSON.stringify({ targetId, method, args }),
+        body: JSON.stringify({
+          requestId,
+          targetId,
+          method,
+          args,
+          ...(options?.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {}),
+        }),
         signal: options?.signal,
       });
       if (wireResponse.status === 401) {
@@ -177,7 +234,34 @@ export function createHttpRpcClient(config: HttpRpcClientConfig): RpcClient & {
     },
 
     async emit(targetId: string, event: string, payload: unknown): Promise<void> {
-      await postToServer({ type: "emit", targetId, event, payload });
+      throwIfError(await postToServer({ type: "emit", targetId, event, payload }));
+    },
+
+    async callDeferred(
+      targetId: string,
+      method: string,
+      args: unknown[],
+      options?: { requestId?: string; idempotencyKey?: string },
+    ): Promise<DeferredCallAck> {
+      // Caller-provided requestId lets a DO persist its continuation before the
+      // reply can arrive; otherwise generate one.
+      const requestId = options?.requestId ?? crypto.randomUUID();
+      const json = await postToServer({
+        type: "call",
+        requestId,
+        // Explicit opt-in: only callDeferred callers may be completed out-of-band.
+        // Plain `call` never sets this, so the server keeps holding it inline.
+        deferrable: true,
+        targetId,
+        method,
+        args,
+        ...(options?.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {}),
+      });
+      if (json["deferred"] === true) {
+        return { status: "deferred", requestId: (json["requestId"] as string) ?? requestId };
+      }
+      throwIfError(json);
+      return { status: "completed", result: json["result"] };
     },
 
     on(event: string, listener: (event: RpcEventContext) => void): () => void {

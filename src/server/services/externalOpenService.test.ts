@@ -1,4 +1,8 @@
-import { createVerifiedCaller } from "@natstack/shared/serviceDispatcher";
+import {
+  createVerifiedCaller,
+  DEFERRED_RESULT,
+  isDeferredResult,
+} from "@natstack/shared/serviceDispatcher";
 import { describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -117,6 +121,65 @@ describe("externalOpenService", () => {
       callerKind: "panel",
     });
     expect(result).toEqual({ approvalDecision: "session" });
+  });
+
+  it("defers the open for a deferrable DO caller and opens only after approval", async () => {
+    const eventService = new EventService();
+    const emit = vi.spyOn(eventService, "emit");
+    const approvalQueue = createApprovalQueueMock();
+    const grantStore = new CapabilityGrantStore({ statePath: tempStatePath() });
+    const service = createExternalOpenService({ eventService, approvalQueue, grantStore });
+
+    let capturedWork: ((signal: AbortSignal) => Promise<unknown>) | null = null;
+    const ctx = {
+      caller: doCaller(),
+      requestId: "req-open-1",
+      deferral: {
+        canDefer: true,
+        run: (work: (signal: AbortSignal) => Promise<unknown>) => {
+          capturedWork = work;
+          return { [DEFERRED_RESULT]: true as const, requestId: "req-open-1" };
+        },
+      },
+    };
+
+    const outcome = await service.handler(ctx, "openExternal", ["https://example.com/x"]);
+    // Acked as deferred; no approval prompt and no browser open happened inline.
+    expect(isDeferredResult(outcome)).toBe(true);
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalledWith("external-open:open", expect.anything());
+    expect(capturedWork).toBeTypeOf("function");
+
+    // Running the deferred work approves, then opens the browser.
+    const result = await capturedWork!(new AbortController().signal);
+    expect(approvalQueue.request).toHaveBeenCalledTimes(1);
+    expect(emit).toHaveBeenCalledWith(
+      "external-open:open",
+      expect.objectContaining({ url: "https://example.com/x" })
+    );
+    expect(result).toEqual({ approvalDecision: "session" });
+  });
+
+  it("runs inline (no deferral) when a grant already exists for a deferrable caller", async () => {
+    const eventService = new EventService();
+    const approvalQueue = createApprovalQueueMock();
+    const grantStore = new CapabilityGrantStore({ statePath: tempStatePath() });
+    const service = createExternalOpenService({ eventService, approvalQueue, grantStore });
+
+    // First open establishes a session grant for this DO caller.
+    await service.handler({ caller: doCaller() }, "openExternal", ["https://example.com/a"]);
+    approvalQueue.request = vi.fn(async () => "session" as const) as never;
+
+    const run = vi.fn();
+    const ctx = {
+      caller: doCaller(),
+      requestId: "req-open-2",
+      deferral: { canDefer: true, run },
+    };
+    // Same origin is already granted → fast path runs inline, never defers.
+    const result = await service.handler(ctx, "openExternal", ["https://example.com/b"]);
+    expect(run).not.toHaveBeenCalled();
+    expect(isDeferredResult(result)).toBe(false);
   });
 
   it("reuses grants for the same origin", async () => {

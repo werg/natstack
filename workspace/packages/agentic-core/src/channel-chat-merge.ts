@@ -89,6 +89,7 @@ export function chatMessagesFromChannelView(state: ChannelViewState): ChatMessag
   const turns = Object.values(state.turns).flatMap((turn) =>
     activeStreamingTurns.has(turn.turnId) ? [] : projectedTurnToTypingMessage(turn)
   );
+  const waitingTurns = Object.values(state.turns).flatMap(projectedWaitingTurnMessage);
   const silentClosedTurns = Object.values(state.turns).flatMap((turn) =>
     projectedClosedTurnWithoutResponseMessage(turn, {
       hasAssistantMessage:
@@ -116,6 +117,7 @@ export function chatMessagesFromChannelView(state: ChannelViewState): ChatMessag
     ...invocations,
     ...approvals,
     ...turns,
+    ...waitingTurns,
     ...silentClosedTurns,
     ...inlineUi,
     ...custom,
@@ -200,6 +202,40 @@ function projectedTurnToTypingMessage(turn: ProjectedTurn): ChatMessage[] {
       contentType: "typing",
       kind: "message",
       complete: false,
+      senderMetadata: {
+        name: turn.actor.displayName ?? turn.actor.id,
+        type: turn.actor.kind,
+        handle: turn.actor.id,
+      },
+      sortTime: Date.parse(turn.updatedAt ?? turn.openedAt) || 0,
+    } as ChatMessage & { sortTime: number },
+  ];
+}
+
+/**
+ * A turn that parked on an out-of-band wait (e.g. a deferred model-credential
+ * approval) projects to a first-class "Waiting" lifecycle notice — the agent's
+ * failure message for the pause is suppressed upstream, so this is the user's
+ * "waiting for approval" signal (with the right call-to-action via the reason).
+ */
+function projectedWaitingTurnMessage(turn: ProjectedTurn): ChatMessage[] {
+  if (turn.status !== "waiting") return [];
+  if (turn.actor.kind !== "agent") return [];
+  const title = turn.summary ?? "Waiting for input";
+  const lifecycle: LifecycleNotice = {
+    status: "waiting",
+    title,
+    ...(turn.reason ? { reason: lifecycleReasonValue(turn.reason) } : {}),
+  };
+  return [
+    {
+      id: `turn:${turn.turnId}:waiting`,
+      senderId: turn.actor.id,
+      content: title,
+      contentType: "lifecycle",
+      kind: "system",
+      complete: false,
+      lifecycle,
       senderMetadata: {
         name: turn.actor.displayName ?? turn.actor.id,
         type: turn.actor.kind,

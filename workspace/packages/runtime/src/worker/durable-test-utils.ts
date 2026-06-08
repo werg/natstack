@@ -32,6 +32,10 @@ interface AcceptedWebSocket {
 interface TestDOResult<T> {
   instance: T;
   sql: { exec(query: string, ...bindings: unknown[]): SqlResult };
+  /** The raw in-memory database. Pass it to a second `createTestDO` (via
+   *  `opts.db`) to simulate hibernation: a fresh DO instance — empty in-memory
+   *  state — backed by the SAME durable storage. */
+  db: Database;
   /** Alarms scheduled via ctx.storage.setAlarm(). Inspectable in tests. */
   alarms: number[];
   /** WebSockets accepted via ctx.acceptWebSocket(). Inspectable in tests. */
@@ -93,6 +97,17 @@ function createSqlProxy(db: Database) {
   };
 }
 
+/**
+ * Standalone in-memory SQL storage (sql.js / WASM) matching `ctx.storage.sql`.
+ * For unit-testing stores in isolation without spinning up a full DO.
+ */
+export async function createInMemorySql(): Promise<{
+  exec(query: string, ...bindings: unknown[]): SqlResult;
+}> {
+  const SQL = await getSqlJs();
+  return createSqlProxy(new SQL.Database());
+}
+
 /** Default env stubs so AgentWorkerBase subclasses don't crash during construction.
  *  The HTTP clients are created but never called in unit tests. */
 const AGENTIC_ENV_DEFAULTS: Record<string, string> = {
@@ -116,9 +131,11 @@ export async function createTestDO<T>(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   DOClass: new (ctx: any, env: any) => T,
   env?: Record<string, unknown>,
+  opts?: { db?: Database },
 ): Promise<TestDOResult<T>> {
   const SQL = await getSqlJs();
-  const db = new SQL.Database();
+  // Reuse an existing db to simulate hibernation (fresh DO, same durable storage).
+  const db = opts?.db ?? new SQL.Database();
   const sqlProxy = createSqlProxy(db);
 
   const alarms: number[] = [];
@@ -192,5 +209,5 @@ export async function createTestDO<T>(
     return (text ? JSON.parse(text) : undefined) as R;
   };
 
-  return { instance, sql: sqlProxy, alarms, acceptedWebSockets, call };
+  return { instance, sql: sqlProxy, db, alarms, acceptedWebSockets, call };
 }

@@ -25,12 +25,14 @@ import { createDevLogger } from "@natstack/dev-log";
 import {
   parseServiceMethod,
   createVerifiedCaller,
+  isDeferredResult,
   ServiceDispatcher,
   type CallerKind,
   type ServiceContext,
   type WsClientInfo,
   type VerifiedCaller,
 } from "@natstack/shared/serviceDispatcher";
+import { DeferralRegistry } from "./services/deferralRegistry.js";
 import { checkServiceAccess } from "@natstack/shared/servicePolicy";
 import type { TokenManager } from "@natstack/shared/tokenManager";
 import { WsEventSession, type EventService } from "@natstack/shared/eventsService";
@@ -322,6 +324,17 @@ export class RpcServer {
     | ((source: string, className: string, objectKey: string) => Promise<void>)
     | null = null;
 
+  /**
+   * Tracks DO/worker-initiated service calls that complete out-of-band. Settled
+   * results are delivered back via `callTarget(..., "onDeferredResult", ...)`.
+   */
+  private readonly deferrals = new DeferralRegistry({
+    deliver: (callerId, requestId, result, isError) =>
+      this.callTarget(callerId, "onDeferredResult", { requestId, result, isError }).then(
+        () => undefined
+      ),
+    logger: console,
+  });
   private connections = new ConnectionRegistry();
   private pendingToolCalls = new Map<string, PendingToolCall>();
   private disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -1459,7 +1472,12 @@ export class RpcServer {
     try {
       const result = await this.handleHttpRpc(callerId, callerKind, body);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ result }));
+      if (isDeferredResult(result)) {
+        // Handler parked the call; ack now and deliver later via onDeferredResult.
+        res.end(JSON.stringify({ deferred: true, requestId: result.requestId }));
+      } else {
+        res.end(JSON.stringify({ result }));
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const errorCode = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
@@ -1477,6 +1495,8 @@ export class RpcServer {
     const targetId = body["targetId"] as string | undefined;
     const method = body["method"] as string;
     const args = (body["args"] as unknown[]) ?? [];
+    const requestId = body["requestId"] as string | undefined;
+    const idempotencyKey = body["idempotencyKey"] as string | undefined;
 
     // Direct service dispatch (no type or targetId === "main")
     if (!type || targetId === "main") {
@@ -1485,7 +1505,28 @@ export class RpcServer {
 
       checkServiceAccess(parsed.service, callerKind, this.dispatcher, parsed.method);
 
-      const ctx = this.serviceContextFor(callerId, callerKind);
+      // A handler may complete out-of-band only when the caller explicitly opted
+      // in (via callDeferred → `deferrable`), stamped a requestId, and can receive
+      // an inbound onDeferredResult (DO/worker). Plain `call` callers never defer.
+      const canDefer =
+        body["deferrable"] === true &&
+        !!requestId &&
+        (callerKind === "do" || callerKind === "worker");
+      const deferredRequestId = canDefer ? requestId : undefined;
+      const deferral = deferredRequestId
+        ? this.deferrals.createApi({
+            callerId,
+            requestId: deferredRequestId,
+            ...(idempotencyKey ? { idempotencyKey } : {}),
+            service: parsed.service,
+            method: parsed.method,
+          })
+        : undefined;
+      const ctx = this.serviceContextFor(callerId, callerKind, {
+        ...(requestId ? { requestId } : {}),
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+        ...(deferral ? { deferral } : {}),
+      });
       return await this.dispatcher.dispatch(ctx, parsed.service, parsed.method, args);
     }
 
@@ -1494,7 +1535,10 @@ export class RpcServer {
       if (!targetId) throw new Error("Missing targetId for relay call");
       const auth = this.checkRelayAuth(callerId, callerKind, targetId);
       if (!auth.ok) throw new Error(auth.reason);
-      return await this.relayCall(callerId, callerKind, targetId, method, args);
+      return await this.relayCall(callerId, callerKind, targetId, method, args, undefined, {
+        ...(requestId ? { requestId } : {}),
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+      });
     }
 
     // Relay event to a target
@@ -2108,7 +2152,8 @@ export class RpcServer {
     targetId: string,
     method: string,
     args: unknown[],
-    targetConnectionId?: string
+    targetConnectionId?: string,
+    meta?: { requestId?: string; idempotencyKey?: string }
   ): Promise<unknown> {
     const isPanelOrShellTarget = !targetId.startsWith("do:") && !targetId.startsWith("worker:");
     if (isPanelOrShellTarget) {
@@ -2153,7 +2198,7 @@ export class RpcServer {
     }
 
     if (targetId.startsWith("do:")) {
-      return await this.relayToDO(callerId, callerKind, targetId, method, args);
+      return await this.relayToDO(callerId, callerKind, targetId, method, args, meta);
     }
 
     if (targetId.startsWith("worker:")) {
@@ -2186,7 +2231,8 @@ export class RpcServer {
     callerKind: CallerKind,
     targetId: string,
     method: string,
-    args: unknown[]
+    args: unknown[],
+    meta?: { requestId?: string; idempotencyKey?: string }
   ): Promise<unknown> {
     const ref = parseDOTarget(targetId);
     // Assertion-only: the concrete DO entity must exist before dispatch.
@@ -2224,6 +2270,8 @@ export class RpcServer {
         callerId,
         callerKind,
         ...(callerPanelId ? { callerPanelId } : {}),
+        ...(meta?.requestId ? { requestId: meta.requestId } : {}),
+        ...(meta?.idempotencyKey ? { idempotencyKey: meta.idempotencyKey } : {}),
       });
       return result;
     };

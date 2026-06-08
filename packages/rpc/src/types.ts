@@ -243,7 +243,7 @@ export interface RpcCaller {
     targetId: string,
     method: string,
     args: unknown[],
-    options?: { signal?: AbortSignal },
+    options?: { signal?: AbortSignal; idempotencyKey?: string },
   ): Promise<Response>;
 }
 

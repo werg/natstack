@@ -12,10 +12,7 @@
 /// <reference path="../workerd.d.ts" />
 import { DurableObjectBase, type DurableObjectContext } from "@workspace/runtime/worker";
 import type { ChannelEvent } from "@workspace/harness";
-import type {
-  BootstrapSnapshot,
-  ParticipantSnapshot,
-} from "@workspace/pubsub";
+import type { BootstrapSnapshot, ParticipantSnapshot } from "@workspace/pubsub";
 import {
   AGENTIC_EVENT_PAYLOAD_KIND,
   AGENTIC_PROTOCOL_VERSION,
@@ -81,6 +78,7 @@ export class PubSubChannel extends DurableObjectBase {
   private _channelLog: ChannelLogStore | null = null;
   private _registryHydrated = false;
   private _registryHydrationPromise: Promise<void> | null = null;
+  private readonly publishDedupInFlight = new Map<string, Promise<ChannelEvent>>();
 
   constructor(ctx: DurableObjectContext, env: unknown) {
     super(ctx, env);
@@ -1153,8 +1151,14 @@ export class PubSubChannel extends DurableObjectBase {
       const existing = this.sql
         .exec(`SELECT result_id FROM dedup_keys WHERE key = ?`, idempotencyKey)
         .toArray();
+      const existingId = existing[0]?.["result_id"] as number | null | undefined;
+      if (existingId != null) return { id: existingId };
+      const inFlight = this.publishDedupInFlight.get(idempotencyKey);
+      if (inFlight) return { id: (await inFlight).id };
       if (existing.length > 0) {
-        return { id: existing[0]!["result_id"] as number | undefined };
+        // A previous publish reserved the key but failed or the DO restarted
+        // before storing a result. Let this request become the new owner.
+        this.sql.exec(`DELETE FROM dedup_keys WHERE key = ? AND result_id IS NULL`, idempotencyKey);
       }
     }
 
@@ -1180,43 +1184,65 @@ export class PubSubChannel extends DurableObjectBase {
       throw new Error(`Invalid registry payload for ${(payload as AgenticEvent).kind}`);
     }
     if (registryMutation) {
-      const event = await this.appendRegistryEvent(
-        type,
-        payload as AgenticEvent,
-        participantId,
-        senderMetadata,
-        registryMutation
+      const event = await this.runDedupedPublish(idempotencyKey, async () =>
+        this.appendRegistryEvent(
+          type,
+          payload as AgenticEvent,
+          participantId,
+          senderMetadata,
+          registryMutation
+        )
       );
-      if (idempotencyKey) {
-        this.sql.exec(
-          `INSERT OR IGNORE INTO dedup_keys (key, result_id, created_at) VALUES (?, ?, ?)`,
-          idempotencyKey,
-          event.id,
-          Date.now()
-        );
-        this.scheduleDedupCleanup();
-      }
       broadcast(this.broadcastDeps, event, { kind: "log", phase: "live", ref }, participantId);
       return { id: event.id };
     }
 
-    const event = await this.appendLogEvent(type, payload, participantId, senderMetadata, {
-      messageId: undefined,
-      attachments,
-    });
-
-    if (idempotencyKey) {
-      this.sql.exec(
-        `INSERT OR IGNORE INTO dedup_keys (key, result_id, created_at) VALUES (?, ?, ?)`,
-        idempotencyKey,
-        event.id,
-        Date.now()
-      );
-      this.scheduleDedupCleanup();
-    }
+    const event = await this.runDedupedPublish(idempotencyKey, async () =>
+      this.appendLogEvent(type, payload, participantId, senderMetadata, {
+        messageId: undefined,
+        attachments,
+      })
+    );
 
     broadcast(this.broadcastDeps, event, { kind: "log", phase: "live", ref }, participantId);
     return { id: event.id };
+  }
+
+  private async runDedupedPublish(
+    idempotencyKey: string | undefined,
+    append: () => Promise<ChannelEvent>
+  ): Promise<ChannelEvent> {
+    if (!idempotencyKey) return append();
+
+    let promise!: Promise<ChannelEvent>;
+    promise = (async () => {
+      this.sql.exec(
+        `INSERT OR IGNORE INTO dedup_keys (key, result_id, created_at) VALUES (?, NULL, ?)`,
+        idempotencyKey,
+        Date.now()
+      );
+      try {
+        const event = await append();
+        this.sql.exec(
+          `UPDATE dedup_keys SET result_id = ?, created_at = ? WHERE key = ?`,
+          event.id,
+          Date.now(),
+          idempotencyKey
+        );
+        this.scheduleDedupCleanup();
+        return event;
+      } catch (err) {
+        this.sql.exec(`DELETE FROM dedup_keys WHERE key = ? AND result_id IS NULL`, idempotencyKey);
+        throw err;
+      } finally {
+        if (this.publishDedupInFlight.get(idempotencyKey) === promise) {
+          this.publishDedupInFlight.delete(idempotencyKey);
+        }
+      }
+    })();
+
+    this.publishDedupInFlight.set(idempotencyKey, promise);
+    return promise;
   }
 
   /**
@@ -1761,9 +1787,15 @@ export class PubSubChannel extends DurableObjectBase {
       pending.turnId,
       content
     );
-    const event = await this.appendLogEvent(AGENTIC_EVENT_PAYLOAD_KIND, payload, pending.callerId, undefined, {
-      ...(opts?.attachments ? { attachments: opts.attachments } : {}),
-    });
+    const event = await this.appendLogEvent(
+      AGENTIC_EVENT_PAYLOAD_KIND,
+      payload,
+      pending.callerId,
+      undefined,
+      {
+        ...(opts?.attachments ? { attachments: opts.attachments } : {}),
+      }
+    );
     broadcast(this.broadcastDeps, event, { kind: "log", phase: "live" }, pending.callerId);
   }
 
@@ -1924,9 +1956,15 @@ export class PubSubChannel extends DurableObjectBase {
       terminalOutcome,
       terminalReasonCode
     );
-    const event = await this.appendLogEvent(AGENTIC_EVENT_PAYLOAD_KIND, payload, callerId, undefined, {
-      ...(attachments ? { attachments } : {}),
-    });
+    const event = await this.appendLogEvent(
+      AGENTIC_EVENT_PAYLOAD_KIND,
+      payload,
+      callerId,
+      undefined,
+      {
+        ...(attachments ? { attachments } : {}),
+      }
+    );
     if (callerPresent) {
       broadcast(this.broadcastDeps, event, { kind: "log", phase: "live" }, callerId);
     }

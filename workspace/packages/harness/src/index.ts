@@ -14,6 +14,10 @@ export type {
   HibernationResumableTool,
 } from "./pi-runner.js";
 
+// TurnSuspensionSignal — typed "pause this turn" signal thrown from getApiKey.
+export { TurnSuspensionSignal, isTurnSuspensionSignal } from "./turn-suspension.js";
+export type { TurnSuspensionInit } from "./turn-suspension.js";
+
 // TurnSnapshot (Phase 2) — surfaced via `onPrepareNextTurn`.
 export { buildTurnSnapshot } from "./turn-snapshot.js";
 export type { TurnSnapshot, BuildTurnSnapshotInput } from "./turn-snapshot.js";

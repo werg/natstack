@@ -12,6 +12,7 @@ import type {
 import type { ClientConfigRecord } from "../../../packages/shared/src/credentials/clientConfigStore.js";
 import { createCredentialService } from "./credentialService.js";
 import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
+import { DEFERRED_RESULT, isDeferredResult } from "@natstack/shared/serviceDispatcher";
 import { CredentialSessionGrantStore } from "./credentialSessionGrants.js";
 import { createApprovalQueue } from "./approvalQueue.js";
 
@@ -486,6 +487,126 @@ describe("credentialService", () => {
     ).rejects.toThrow(/not authorized to revoke/);
 
     expect((await store.loadUrlBound(stored.id))?.revokedAt).toBeUndefined();
+  });
+
+  it("defers resolveCredential approval for a deferrable DO caller instead of awaiting inline", async () => {
+    const store = new MemoryCredentialStore();
+    const approvalQueue = {
+      request: vi.fn(async () => "session" as const),
+      resolve: vi.fn(),
+      listPending: vi.fn(() => []),
+    };
+    const service = createCredentialService({
+      credentialStore: store as never,
+      approvalQueue: approvalQueue as never,
+      sessionGrantStore: new CredentialSessionGrantStore(),
+    });
+
+    const stored = (await service.handler(
+      { caller: verifiedTestCaller("worker:first", "worker") },
+      "storeCredential",
+      [
+        {
+          label: "Example API",
+          audience: [{ url: "https://api.example.test/", match: "origin" }],
+          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+          material: { type: "bearer-token", token: "secret-token" },
+        },
+      ]
+    )) as StoredCredentialSummary;
+    approvalQueue.request.mockClear();
+
+    let capturedWork: ((signal: AbortSignal) => Promise<unknown>) | null = null;
+    const ctx: ServiceContext = {
+      caller: verifiedTestCaller("do:workers/agent-worker:AiChatWorker:first", "do"),
+      requestId: "req-defer-1",
+      deferral: {
+        canDefer: true,
+        run: (work) => {
+          capturedWork = work;
+          return { [DEFERRED_RESULT]: true, requestId: "req-defer-1" } as const;
+        },
+      },
+    };
+
+    const outcome = await service.handler(ctx, "resolveCredential", [
+      { url: "https://api.example.test/v1" },
+    ]);
+
+    // Returns the deferral sentinel, NOT the summary — approval is not awaited inline.
+    expect(isDeferredResult(outcome)).toBe(true);
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+    expect(capturedWork).toBeTypeOf("function");
+
+    // Running the deferred work performs the approval and yields the summary.
+    const result = await capturedWork!(new AbortController().signal);
+    expect(approvalQueue.request).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ id: stored.id });
+  });
+
+  it("passes the deferral abort signal into interactive connect approvals", async () => {
+    const store = new MemoryCredentialStore();
+    let capturedWork: ((signal: AbortSignal) => Promise<unknown>) | null = null;
+    let requestStarted!: () => void;
+    const requestStartedPromise = new Promise<void>((resolve) => {
+      requestStarted = resolve;
+    });
+    let approvalSignal: AbortSignal | undefined;
+    const approvalQueue = {
+      request: vi.fn(
+        (req: { signal?: AbortSignal }) =>
+          new Promise<"deny">((resolve) => {
+            approvalSignal = req.signal;
+            requestStarted();
+            req.signal?.addEventListener("abort", () => resolve("deny"), { once: true });
+          })
+      ),
+      resolve: vi.fn(),
+      listPending: vi.fn(() => []),
+    };
+    const service = createCredentialService({
+      credentialStore: store as never,
+      approvalQueue: approvalQueue as never,
+    });
+    const controller = new AbortController();
+    const ctx: ServiceContext = {
+      caller: verifiedTestCaller("do:workers/agent-worker:AiChatWorker:first", "do"),
+      requestId: "req-connect-1",
+      deferral: {
+        canDefer: true,
+        run: (work) => {
+          capturedWork = work;
+          return { [DEFERRED_RESULT]: true, requestId: "req-connect-1" } as const;
+        },
+      },
+    };
+
+    const outcome = await service.handler(ctx, "connect", [
+      {
+        flow: {
+          type: "oauth2-device-code",
+          deviceAuthorizationUrl: "https://auth.example.test/device",
+          tokenUrl: "https://auth.example.test/token",
+          clientId: "client-1",
+        },
+        credential: {
+          label: "Device API",
+          audience: [{ url: "https://api.example.test/", match: "origin" }],
+          injection: { type: "header", name: "authorization", valueTemplate: "Bearer {token}" },
+        },
+      },
+    ]);
+
+    expect(isDeferredResult(outcome)).toBe(true);
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+    expect(capturedWork).toBeTypeOf("function");
+
+    const workPromise = capturedWork!(controller.signal);
+    await requestStartedPromise;
+    expect(approvalSignal).toBe(controller.signal);
+
+    controller.abort();
+    await expect(workPromise).rejects.toThrow(/Credential approval denied/);
   });
 
   it("keeps session approvals process-local and scoped to the concrete caller", async () => {

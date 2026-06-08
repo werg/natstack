@@ -125,7 +125,7 @@ export interface DirtyRepoDetails {
 // Lifecycle / recovery notices
 // ===========================================================================
 
-export type LifecycleNoticeStatus = "recovered" | "interrupted" | "failed";
+export type LifecycleNoticeStatus = "recovered" | "interrupted" | "failed" | "waiting";
 
 export interface LifecycleNotice {
   status: LifecycleNoticeStatus;

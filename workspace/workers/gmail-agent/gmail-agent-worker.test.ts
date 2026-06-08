@@ -87,7 +87,13 @@ class TestGmailAgentWorker extends GmailAgentWorker {
   );
 
   protected override get rpc(): never {
-    return { call: this.rpcCall } as never;
+    return {
+      call: this.rpcCall,
+      callDeferred: async (...args: unknown[]) => ({
+        status: "completed" as const,
+        result: await this.rpcCall(...args),
+      }),
+    } as never;
   }
 
   protected override createGmailClient(): GmailClient {
@@ -274,8 +280,7 @@ describe("GmailAgentWorker", () => {
       }),
     });
     expect(
-      ((await worker.debug())["persisted"] as { modelCredentialInterruptions?: unknown[] })
-        .modelCredentialInterruptions
+      ((await worker.debug())["persisted"] as { suspensions?: unknown[] }).suspensions
     ).toEqual([]);
   });
 

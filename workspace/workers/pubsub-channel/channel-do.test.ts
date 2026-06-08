@@ -11,6 +11,20 @@ import { PubSubChannel } from "./channel-do.js";
 
 type TestDO<T> = Awaited<ReturnType<typeof createTestDO<T>>>;
 
+function deferred<T = void>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (err: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (err: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function setRpcCaller(
   instance: PubSubChannel,
   callerId: string | null,
@@ -150,6 +164,53 @@ describe("PubSubChannel", () => {
       kind: "message.completed",
     });
     expect(JSON.parse(rows[1]!["metadata_json"] as string)).toMatchObject({ name: "User" });
+  });
+
+  it("dedupes concurrent publishes with the same idempotency key before append settles", async () => {
+    const appendEntered = deferred();
+    const releaseAppend = deferred();
+    let appendCalls = 0;
+    let blockAppend = false;
+    const gad = await createTestDO(GadWorkspaceDO, { __objectKey: "workspace-gad" });
+    const { instance } = await createGadBackedChannel({
+      gad,
+      rpcCall: async (target, method, args) => {
+        if (
+          target === "do:workers/gad-store:GadWorkspaceDO:workspace-gad" &&
+          method === "appendChannelEnvelope" &&
+          blockAppend
+        ) {
+          appendCalls += 1;
+          appendEntered.resolve();
+          await releaseAppend.promise;
+          const callable = gad.instance as unknown as Record<
+            string,
+            (...methodArgs: unknown[]) => unknown
+          >;
+          return await callable[method]!(...args);
+        }
+        return undefined;
+      },
+    });
+    setRpcCaller(instance, "panel:user", "panel");
+    await instance.subscribe("panel:user", { contextId: "ctx-1", name: "User", type: "panel" });
+    blockAppend = true;
+
+    const first = instance.publish("panel:user", AGENTIC_EVENT_PAYLOAD_KIND, agenticEvent(), {
+      idempotencyKey: "initial-prompt:chat-race",
+    });
+    await appendEntered.promise;
+    const second = instance.publish("panel:user", AGENTIC_EVENT_PAYLOAD_KIND, agenticEvent(), {
+      idempotencyKey: "initial-prompt:chat-race",
+    });
+    await Promise.resolve();
+
+    expect(appendCalls).toBe(1);
+    releaseAppend.resolve();
+    await expect(Promise.all([first, second])).resolves.toEqual([{ id: 2 }, { id: 2 }]);
+
+    const rows = gad.sql.exec(`SELECT seq FROM channel_envelopes ORDER BY seq ASC`).toArray();
+    expect(rows).toHaveLength(2);
   });
 
   it("does not persist full method schemas in durable participant metadata", async () => {
@@ -710,9 +771,7 @@ describe("PubSubChannel", () => {
     // The canonical terminal is a durable invocation.completed log event,
     // carrying the result and the attachment on the envelope.
     const envelopes = gad.sql
-      .exec(
-        `SELECT payload_ref_json, attachments_json FROM channel_envelopes ORDER BY seq ASC`
-      )
+      .exec(`SELECT payload_ref_json, attachments_json FROM channel_envelopes ORDER BY seq ASC`)
       .toArray();
     const completed = envelopes.find(
       (row) =>
@@ -770,7 +829,13 @@ describe("PubSubChannel", () => {
     const cancelled = gad.sql
       .exec(`SELECT payload_ref_json FROM channel_envelopes ORDER BY seq ASC`)
       .toArray()
-      .map((row) => JSON.parse(row["payload_ref_json"] as string) as { kind?: string; causality?: { transportCallId?: string } })
+      .map(
+        (row) =>
+          JSON.parse(row["payload_ref_json"] as string) as {
+            kind?: string;
+            causality?: { transportCallId?: string };
+          }
+      )
       .find((ev) => ev.kind === "invocation.cancelled");
     expect(cancelled).toMatchObject({
       kind: "invocation.cancelled",
@@ -807,7 +872,11 @@ describe("PubSubChannel", () => {
       "transport-output",
       "eval",
       { code: "stream()" },
-      { invocationId: "invocation-output", transportCallId: "transport-output", turnId: "turn-output" }
+      {
+        invocationId: "invocation-output",
+        transportCallId: "transport-output",
+        turnId: "turn-output",
+      }
     );
 
     setRpcCaller(instance, "panel:provider", "panel");
@@ -816,7 +885,14 @@ describe("PubSubChannel", () => {
     const output = gad.sql
       .exec(`SELECT payload_ref_json FROM channel_envelopes ORDER BY seq ASC`)
       .toArray()
-      .map((row) => JSON.parse(row["payload_ref_json"] as string) as { kind?: string; causality?: { transportCallId?: string }; payload?: { output?: unknown } })
+      .map(
+        (row) =>
+          JSON.parse(row["payload_ref_json"] as string) as {
+            kind?: string;
+            causality?: { transportCallId?: string };
+            payload?: { output?: unknown };
+          }
+      )
       .find((ev) => ev.kind === "invocation.output");
     // A small progress chunk stays inline on the durable event (no blob write).
     expect(output).toMatchObject({
@@ -908,7 +984,12 @@ describe("PubSubChannel", () => {
     const orphan = gad.sql
       .exec(`SELECT payload_ref_json FROM channel_envelopes ORDER BY seq ASC`)
       .toArray()
-      .map((row) => JSON.parse(row["payload_ref_json"] as string) as { causality?: { transportCallId?: string } })
+      .map(
+        (row) =>
+          JSON.parse(row["payload_ref_json"] as string) as {
+            causality?: { transportCallId?: string };
+          }
+      )
       .find((ev) => ev.causality?.transportCallId === "transport-orphan");
     expect(orphan).toBeUndefined();
   });
@@ -947,8 +1028,17 @@ describe("PubSubChannel", () => {
     const abandoned = gad.sql
       .exec(`SELECT payload_ref_json FROM channel_envelopes ORDER BY seq ASC`)
       .toArray()
-      .map((row) => JSON.parse(row["payload_ref_json"] as string) as { kind?: string; causality?: { transportCallId?: string } })
-      .find((ev) => ev.kind === "invocation.abandoned" && ev.causality?.transportCallId === "transport-left");
+      .map(
+        (row) =>
+          JSON.parse(row["payload_ref_json"] as string) as {
+            kind?: string;
+            causality?: { transportCallId?: string };
+          }
+      )
+      .find(
+        (ev) =>
+          ev.kind === "invocation.abandoned" && ev.causality?.transportCallId === "transport-left"
+      );
     expect(abandoned).toBeDefined();
   });
 
@@ -1003,9 +1093,9 @@ describe("PubSubChannel", () => {
       .toArray();
     expect(pending).toHaveLength(0);
 
-    const events = (
-      await instance.getReplayAfter(0)
-    ).logEvents.map((event) => event.payload as { kind?: string; payload?: unknown });
+    const events = (await instance.getReplayAfter(0)).logEvents.map(
+      (event) => event.payload as { kind?: string; payload?: unknown }
+    );
     expect(events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -1061,9 +1151,9 @@ describe("PubSubChannel", () => {
     );
 
     expect(result.id).toBeTypeOf("number");
-    const events = (
-      await instance.getReplayAfter(0)
-    ).logEvents.map((event) => event.payload as { kind?: string; payload?: unknown });
+    const events = (await instance.getReplayAfter(0)).logEvents.map(
+      (event) => event.payload as { kind?: string; payload?: unknown }
+    );
     expect(events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

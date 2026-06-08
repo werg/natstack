@@ -1,10 +1,14 @@
 import { z } from "zod";
 
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
-import { ServiceError, type ServiceContext } from "@natstack/shared/serviceDispatcher";
+import {
+  ServiceError,
+  type ServiceContext,
+  type DeferredResult,
+} from "@natstack/shared/serviceDispatcher";
 import type { ApprovalQueue, GrantedDecision } from "./approvalQueue.js";
 import type { CapabilityGrantStore } from "./capabilityGrantStore.js";
-import { requestCapabilityPermission } from "./capabilityPermission.js";
+import { withCapability } from "./capabilityPermission.js";
 
 const SERVICE_NAME = "corsApproval";
 const CAPABILITY = "cors-response-read";
@@ -29,7 +33,7 @@ export function createCorsApprovalService(deps: {
   async function authorize(
     ctx: ServiceContext,
     rawRequest: z.infer<typeof authorizeCorsSchema>
-  ): Promise<CorsApprovalResult> {
+  ): Promise<CorsApprovalResult | DeferredResult> {
     if (
       ctx.caller.runtime.kind !== "panel" &&
       ctx.caller.runtime.kind !== "app" &&
@@ -50,13 +54,13 @@ export function createCorsApprovalService(deps: {
       return { allowed: false, reason: "CORS target must be an http(s) URL" };
     }
 
-    const authorization = await requestCapabilityPermission(
+    return withCapability(
       {
         approvalQueue: deps.approvalQueue,
         grantStore: deps.grantStore,
       },
+      ctx,
       {
-        caller: ctx.caller,
         capability: CAPABILITY,
         dedupKey: `cors:${ctx.caller.runtime.id}:${target.origin}`,
         resource: {
@@ -72,12 +76,12 @@ export function createCorsApprovalService(deps: {
           { label: "Target origin", value: target.origin },
         ],
         deniedReason: "Cross-origin response access denied",
-      }
+      },
+      async (authorization): Promise<CorsApprovalResult> =>
+        authorization.allowed
+          ? { allowed: true, decision: authorization.decision }
+          : { allowed: false, reason: authorization.reason }
     );
-
-    return authorization.allowed
-      ? { allowed: true, decision: authorization.decision }
-      : { allowed: false, reason: authorization.reason };
   }
 
   return {

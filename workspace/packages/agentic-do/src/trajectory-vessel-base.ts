@@ -69,6 +69,7 @@ import {
   type ThinkingLevel,
   type SystemPromptMode,
   AgentWorkerError,
+  TurnSuspensionSignal,
   type RunnerEvent,
   type RunnerTurnInput,
   type TurnSnapshot,
@@ -80,6 +81,7 @@ import { DOIdentity } from "./identity.js";
 import { SubscriptionManager } from "./subscription-manager.js";
 import { ChannelClient } from "./channel-client.js";
 import { TurnDispatcher } from "./turn-dispatcher.js";
+import { SuspensionStore, credentialSuspensionId } from "./suspension-store.js";
 import { RunController, isTerminalRunPhase } from "./run-controller.js";
 import {
   createGadServiceClient,
@@ -543,6 +545,39 @@ function credentialRequiredMessage(err: unknown): string | null {
     : null;
 }
 
+/**
+ * Message prefix of the credential-use-approval park (getApiKeyForChannel throws
+ * this when resolveCredential is deferred pending a human approval). Like the
+ * missing/reconnect cases, the turn must be kept OPEN so the credential resume
+ * continues it instead of re-opening (which the GAD store rejects as a duplicate
+ * turn.opened). Kept as a shared prefix so the throw and the keep-open predicate
+ * can't drift.
+ */
+const MODEL_CREDENTIAL_APPROVAL_PENDING_PREFIX = "Waiting for model credential approval";
+
+/** How long after a credential park to fire the durable liveness backstop alarm. */
+const CREDENTIAL_BACKSTOP_ALARM_MS = 2 * 60 * 1000;
+
+function isModelCredentialApprovalPendingFailure(err: unknown): boolean {
+  if (err instanceof Error) {
+    return err.message.startsWith(MODEL_CREDENTIAL_APPROVAL_PENDING_PREFIX);
+  }
+  // Also match the assistant-message shape (stopReason "error"), which carries
+  // the text under `message` OR `errorMessage` — the form `resolveAfter...`'s
+  // rewind matcher inspects.
+  if (err && typeof err === "object") {
+    const candidate = err as { message?: unknown; errorMessage?: unknown };
+    const text =
+      typeof candidate.message === "string"
+        ? candidate.message
+        : typeof candidate.errorMessage === "string"
+          ? candidate.errorMessage
+          : null;
+    if (text) return text.startsWith(MODEL_CREDENTIAL_APPROVAL_PENDING_PREFIX);
+  }
+  return String(err).startsWith(MODEL_CREDENTIAL_APPROVAL_PENDING_PREFIX);
+}
+
 const MODEL_CREDENTIAL_RECONNECT_CODES = new Set([
   "CREDENTIAL_EXPIRED",
   "OAUTH_REFRESH_FAILED",
@@ -774,7 +809,8 @@ function isCredentialRequiredAssistantMessage(message: AgentMessage | undefined)
   return (
     candidate?.role === "assistant" &&
     candidate.stopReason === "error" &&
-    !!modelCredentialReconnectFailure(candidate)
+    (!!modelCredentialReconnectFailure(candidate) ||
+      isModelCredentialApprovalPendingFailure(candidate))
   );
 }
 
@@ -942,13 +978,6 @@ interface AgentInvariantViolation {
   visible: boolean;
 }
 
-interface ModelCredentialInterruption {
-  providerId: string;
-  modelBaseUrl?: string;
-  resumeCount: number;
-  createdAt: number;
-}
-
 type AgentAbortReason = "channel-unsubscribe" | "interrupt-all" | "interrupt-channel";
 
 interface AgentAbortContext {
@@ -1041,6 +1070,8 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
   static override schemaVersion = 15;
 
   protected identity: DOIdentity;
+  /** The single durable spine for parked-turn ("suspended") state. */
+  protected suspensions: SuspensionStore;
   protected subscriptions: SubscriptionManager;
 
   /** One PiRunner per channel — created lazily on first user message. */
@@ -1081,6 +1112,16 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
   /** Dedup inline credential prompts per channel/provider while this DO is alive. */
   private credentialPromptCardsEmitted = new Set<string>();
   private modelCredentialResolutionAbortControllers = new Map<string, AbortController>();
+  /**
+   * Credential-deferral requestIds issued but whose interruption row isn't written
+   * yet (same activation). Lets onDeferredResult tell a credential deferral from a
+   * generic one before the row exists. In-memory is sufficient: if the DO
+   * hibernates, getApiKey's init has already completed and written the row, so the
+   * row path catches the delivery on wake.
+   */
+  private inFlightCredentialDeferrals = new Set<string>();
+  /** Credential deliveries that arrived before their interruption row was written. */
+  private bufferedCredentialDeliveries = new Map<string, { isError: boolean }>();
 
   /** Channels currently receiving replay envelopes. Replay dispatch stays
    * sequential so recovered turns do not collapse into a single live steer. */
@@ -1159,6 +1200,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     this.gad = createGadServiceClient(lazyRpc);
 
     this.identity = new DOIdentity(this.sql);
+    this.suspensions = new SuspensionStore(this.sql);
     this.subscriptions = new SubscriptionManager(
       this.sql,
       (channelId) => new ChannelClient(lazyRpc, channelId),
@@ -1660,15 +1702,8 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       )
       .toArray();
     if (suspension.length > 0) return true;
-    const credential = this.sql
-      .exec(
-        `SELECT 1 FROM model_credential_interruptions
-         WHERE turn_id = ?
-         LIMIT 1`,
-        turnId
-      )
-      .toArray();
-    return credential.length > 0;
+    // A credential wait keeps the turn parked too; it lives on the suspension spine.
+    return this.suspensions.hasOpenSuspensionForTurn(turnId);
   }
 
   private latestResolvedSuspensionEntryId(turnId: string): string | null {
@@ -1797,7 +1832,12 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
             turnId: row.turnId,
           });
           if (this.recordResumeAttemptOnce(row.turnId, this.identity.bootGeneration, "ledger")) {
-            this.submitRecoveryContinue(channelId, runner, "ledger_continuing_recovered", row.turnId);
+            this.submitRecoveryContinue(
+              channelId,
+              runner,
+              "ledger_continuing_recovered",
+              row.turnId
+            );
             submittedContinue = true;
           } else {
             this.recordDebugPhase(channelId, "turn_ledger.continuing_duplicate_resume_skipped", {
@@ -2619,7 +2659,6 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     return next;
   }
 
-
   private async recoverDeliveredAndOrphanedSuspensions(channelId: string): Promise<boolean> {
     if (this.transcriptPoisonedChannels.has(channelId)) {
       this.recordDebugPhase(channelId, "channel_method.recovery.skipped_poisoned");
@@ -3292,6 +3331,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
 
   protected createTables(): void {
     this.identity.createTables();
+    this.suspensions.createTables();
     this.subscriptions.createTables();
     // Delivery cursor for event dedup + gap repair.
     this.sql.exec(`
@@ -3300,18 +3340,6 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
         last_delivered_seq INTEGER NOT NULL
       )
     `);
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS model_credential_interruptions (
-        channel_id TEXT NOT NULL,
-        provider_id TEXT NOT NULL,
-        model_base_url TEXT,
-        turn_id TEXT,
-        resume_count INTEGER NOT NULL,
-        created_at INTEGER NOT NULL,
-        PRIMARY KEY (channel_id, provider_id)
-      )
-    `);
-    this.ensureColumn("model_credential_interruptions", "turn_id", "TEXT");
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS agent_turn_runs (
         turn_id TEXT PRIMARY KEY,
@@ -3520,8 +3548,62 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     for (const channelId of channels) {
       await this.getOrCreateRunner(channelId);
     }
+    // Re-drive credential deferrals whose server-side wait was lost on restart
+    // (the DeferralRegistry is in-memory). Reissue resolves inline if the grant
+    // persisted, else re-registers the approval.
+    await this.redrivePendingCredentialInterruptions();
     if (channels.length === 0) {
       await this.markCheckpointableWorkInactive();
+    }
+  }
+
+  /**
+   * Reissue every parked credential deferral by its request_id. On a server/DO
+   * restart the in-memory DeferralRegistry entry is gone, so without this a turn
+   * could sit in waiting_external forever. Reissue with the same requestId: the
+   * server resolves inline when the grant persisted (resume, no re-prompt) or
+   * re-registers the approval (a future onDeferredResult resumes via the row).
+   */
+  private async redrivePendingCredentialInterruptions(): Promise<void> {
+    for (const suspension of this.suspensions.listRedrivable("credential")) {
+      const channelId = suspension.channelId;
+      const requestId = suspension.requestId;
+      if (!requestId) continue;
+      const providerId = (suspension.payload["providerId"] as string | undefined) ?? "";
+      const modelBaseUrl =
+        (suspension.payload["modelBaseUrl"] as string | undefined) ??
+        this.getModelBaseUrl(channelId);
+      try {
+        const ack = await this.rpc.callDeferred(
+          "main",
+          "credentials.resolveCredential",
+          [{ url: modelBaseUrl }],
+          { requestId }
+        );
+        if (ack.status === "completed" && ack.result) {
+          await this.resolveDeferredModelCredential({ channelId, providerId, modelBaseUrl }, false);
+        }
+      } catch (err) {
+        console.warn(
+          `[TrajectoryVesselBase] credential re-drive failed for ${channelId}/${providerId}:`,
+          err
+        );
+      }
+    }
+  }
+
+  /**
+   * Durable liveness backstop. Fired by the server-driven alarm armed when a
+   * turn parks on a credential wait. Redrives pending credential suspensions
+   * (idempotent) so a wait resumes even with no other activity, then re-arms
+   * while any remain — so a long human approval is still covered.
+   */
+  override async alarm(): Promise<void> {
+    await super.alarm();
+    await this.ensureAgentActivationReady().catch(() => undefined);
+    await this.redrivePendingCredentialInterruptions();
+    if (this.suspensions.listRedrivable("credential").length > 0) {
+      this.setAlarm(CREDENTIAL_BACKSTOP_ALARM_MS);
     }
   }
 
@@ -3598,15 +3680,25 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       });
       this.installUrlBoundModelFetchProxy(channelId, modelBaseUrl);
       const signal = this.getModelCredentialResolutionSignal(channelId);
-      let credential: ModelCredentialSummary | null;
+      // Issue resolveCredential as a deferrable call: when the server needs
+      // (human) credential-use approval it returns `deferred` immediately
+      // instead of holding this request open across a possible hibernation.
+      const credentialRequestId = crypto.randomUUID();
+      // Mark in-flight *before* issuing, so a delivery that races ahead of the
+      // interruption-row write is recognized as ours and buffered (see
+      // onDeferredResult), not dropped.
+      this.inFlightCredentialDeferrals.add(credentialRequestId);
+      let ack: { status: "completed"; result: unknown } | { status: "deferred"; requestId: string };
       try {
-        credential = await this.rpc.call<ModelCredentialSummary | null>(
+        ack = await this.rpc.callDeferred(
           "main",
           "credentials.resolveCredential",
           [{ url: modelBaseUrl }],
-          { signal }
+          { requestId: credentialRequestId }
         );
       } catch (err) {
+        this.inFlightCredentialDeferrals.delete(credentialRequestId);
+        this.bufferedCredentialDeliveries.delete(credentialRequestId);
         this.recordLastError("model_credential.resolve", err, channelId);
         this.recordDebugPhase(channelId, "model_credential.resolve.error", {
           providerId,
@@ -3614,6 +3706,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
           error: err instanceof Error ? err.message : String(err),
         });
         const reconnectFailure = modelCredentialReconnectFailure(err);
+        let reconnectSuspended = false;
         if (reconnectFailure) {
           const shouldResumeCurrentTurn = opts?.resumeCurrentTurnOnMissingCredential !== false;
           if (shouldResumeCurrentTurn) {
@@ -3625,12 +3718,13 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
               reason: "model_credential_reconnect_required",
               summary: "Waiting for model credential refresh",
             });
-            this.queueModelCredentialInterruptionRecord(
+            this.recordModelCredentialInterruption(
               channelId,
               providerId,
               modelBaseUrl,
               credentialTurnId
             );
+            reconnectSuspended = true;
           }
           this.emitModelCredentialRequiredCard(channelId, providerId, modelBaseUrl, {
             resumeAfterConnect: shouldResumeCurrentTurn,
@@ -3642,6 +3736,15 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
               : {}),
           });
         }
+        // A parked reconnect is a pause: throw a typed suspension (carrying the
+        // reconnect message so the resume path still recognizes it) so pi-runner
+        // keeps the turn open and never publishes it as a red error.
+        if (reconnectSuspended) {
+          throw new TurnSuspensionSignal({
+            reason: "credential",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
         throw err;
       } finally {
         const controller = this.modelCredentialResolutionAbortControllers.get(channelId);
@@ -3649,6 +3752,58 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
           this.modelCredentialResolutionAbortControllers.delete(channelId);
         }
       }
+      if (ack.status === "deferred") {
+        // Approval is pending server-side. Park the turn keyed by the deferred
+        // requestId; it resumes when onDeferredResult arrives (revives the DO if
+        // hibernated). The approval prompt itself is the user-facing UI.
+        this.recordDebugPhase(channelId, "model_credential.resolve.deferred", {
+          providerId,
+          modelBaseUrl,
+        });
+        const shouldResumeCurrentTurn = opts?.resumeCurrentTurnOnMissingCredential !== false;
+        if (shouldResumeCurrentTurn) {
+          const credentialTurnId = await this.transitionCurrentTurnToWaiting(
+            channelId,
+            this.currentTurnIdForChannel(channelId) ?? undefined
+          );
+          this.publishTurnWaitingEvent(channelId, credentialTurnId, {
+            reason: "model_credential_required",
+            summary: "Waiting for model credential approval",
+          });
+          this.recordModelCredentialInterruption(
+            channelId,
+            providerId,
+            modelBaseUrl,
+            credentialTurnId,
+            credentialRequestId
+          );
+          // The row now exists. If a delivery raced ahead of it (e.g. auto-approve),
+          // apply it now — scheduled, so it runs after this init unwinds and the
+          // turn is fully parked.
+          const buffered = this.bufferedCredentialDeliveries.get(credentialRequestId);
+          if (buffered) {
+            void this.resolveDeferredModelCredential(
+              { channelId, providerId, modelBaseUrl },
+              buffered.isError
+            );
+          }
+        }
+        this.inFlightCredentialDeferrals.delete(credentialRequestId);
+        this.bufferedCredentialDeliveries.delete(credentialRequestId);
+        const approvalMessage = `${MODEL_CREDENTIAL_APPROVAL_PENDING_PREFIX} for provider: ${providerId}`;
+        // A parked turn pauses (typed suspension → no red error); a non-resuming
+        // caller (e.g. a secondary credential) gets a plain auth failure.
+        throw shouldResumeCurrentTurn
+          ? new TurnSuspensionSignal({
+              reason: "credential",
+              message: approvalMessage,
+              requestId: credentialRequestId,
+            })
+          : new AgentWorkerError("auth", approvalMessage);
+      }
+      this.inFlightCredentialDeferrals.delete(credentialRequestId);
+      this.bufferedCredentialDeliveries.delete(credentialRequestId);
+      const credential = ack.result as ModelCredentialSummary | null;
       if (!credential) {
         this.recordDebugPhase(channelId, "model_credential.resolve.missing", {
           providerId,
@@ -3664,7 +3819,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
             reason: "model_credential_required",
             summary: "Waiting for model credential connection",
           });
-          this.queueModelCredentialInterruptionRecord(
+          this.recordModelCredentialInterruption(
             channelId,
             providerId,
             modelBaseUrl,
@@ -3677,10 +3832,10 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
             ? { turnId: this.currentTurnIdForChannel(channelId) ?? undefined }
             : {}),
         });
-        throw new AgentWorkerError(
-          "auth",
-          `No URL-bound model credential is configured for model provider: ${providerId}`
-        );
+        const missingMessage = `No URL-bound model credential is configured for model provider: ${providerId}`;
+        throw shouldResumeCurrentTurn
+          ? new TurnSuspensionSignal({ reason: "credential", message: missingMessage })
+          : new AgentWorkerError("auth", missingMessage);
       }
       this.recordDebugPhase(channelId, "model_credential.resolve.ok", {
         providerId,
@@ -4742,7 +4897,14 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
         : kind === "invocation.failed"
           ? "failed"
           : "cancelled";
-    await this.handleCompletedMethodResult(channelId, callId, result, isError, terminalKind, event.id);
+    await this.handleCompletedMethodResult(
+      channelId,
+      callId,
+      result,
+      isError,
+      terminalKind,
+      event.id
+    );
     return true;
   }
 
@@ -4899,7 +5061,11 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       },
       keepTurnOpenOnAgentEnd: (event) => {
         const failure = failedAgentEndFailure(event as RunnerEvent);
-        return !!failure && !!modelCredentialReconnectFailure(failure);
+        if (!failure) return false;
+        return (
+          !!modelCredentialReconnectFailure(failure) ||
+          isModelCredentialApprovalPendingFailure(failure)
+        );
       },
     });
 
@@ -5145,7 +5311,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
         try {
           const providerId = this.getModelProviderId(channelId);
           const modelBaseUrl = this.getModelBaseUrl(channelId);
-          this.queueModelCredentialInterruptionRecord(channelId, providerId, modelBaseUrl, turnId);
+          this.recordModelCredentialInterruption(channelId, providerId, modelBaseUrl, turnId);
           this.emitModelCredentialRequiredCard(channelId, providerId, modelBaseUrl, {
             resumeAfterConnect: true,
             reason: "Your model sign-in needs to be refreshed before this turn can continue.",
@@ -5440,117 +5606,142 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     return [];
   }
 
-  private async recordModelCredentialInterruption(
+  /**
+   * Record a credential wait on the suspension spine. The resume cursor (message
+   * count) is computed up front and written ONCE — no detached second writer, so
+   * there is no orphan-row resurrection race (P1-2). `requestId` is set for a
+   * deferred wait (so an inbound onDeferredResult matches); absent for the
+   * reconnect/missing waits resumed by the UI credential-connected callback.
+   */
+  private recordModelCredentialInterruption(
     channelId: string,
     providerId: string,
-    modelBaseUrl: string
-  ): Promise<void> {
-    // Tolerate a missing runner (this method can be called before the
-    // runner is constructed); pass count = 0 in that case.
-    let resumeCount = 0;
+    modelBaseUrl: string,
+    turnId?: string,
+    requestId?: string
+  ): void {
+    const resolvedTurnId = turnId ?? this.currentTurnIdForChannel(channelId);
+    if (!resolvedTurnId) return; // no turn to suspend
+    const id = credentialSuspensionId(channelId, providerId);
+    // Write the row SYNCHRONOUSLY (cursor 0) so the park never blocks on a model
+    // round-trip before throwing, and a racing delivery always finds a complete
+    // row. Refine the resume cursor out-of-band via a CONDITIONAL update that
+    // can't resurrect a resolved row (P1-2). In the common case the resume keys
+    // off the credential-required assistant message anyway, so cursor 0 is fine.
+    this.suspensions.record({
+      id,
+      channelId,
+      turnId: resolvedTurnId,
+      reason: "credential",
+      ...(requestId ? { requestId } : {}),
+      resumeCount: 0,
+      payload: { providerId, modelBaseUrl },
+    });
     if (this.runners.has(channelId)) {
-      try {
-        const messages = await this.readRunnerMessages(channelId);
-        resumeCount = messages.length;
-      } catch (err) {
-        // If the read fails (e.g. transcript poisoned), fall back to 0.
-        console.warn(
-          `[TrajectoryVesselBase] recordModelCredentialInterruption: readRunnerMessages failed:`,
-          err
+      void this.readRunnerMessages(channelId)
+        .then((messages) => this.suspensions.setResumeCountIfSuspended(id, messages.length))
+        .catch((err) =>
+          console.warn(
+            `[TrajectoryVesselBase] recordModelCredentialInterruption: readRunnerMessages failed:`,
+            err
+          )
         );
-      }
     }
-    this.recordModelCredentialInterruptionCursor(
-      channelId,
-      providerId,
-      modelBaseUrl,
-      resumeCount,
-      this.currentTurnIdForChannel(channelId) ?? undefined
-    );
+    // Durable liveness backstop: arm a server-driven alarm so the wait resumes
+    // even if the onDeferredResult push is lost and the DO is otherwise idle
+    // (e.g. evicted between approval-request and approval). The alarm redrives;
+    // delivery is idempotent, so a redundant fire after a successful push is a
+    // no-op (P1-4).
+    this.setAlarm(CREDENTIAL_BACKSTOP_ALARM_MS);
   }
 
-  private recordModelCredentialInterruptionCursor(
-    channelId: string,
-    providerId: string,
-    modelBaseUrl: string,
-    resumeCount: number,
-    turnId?: string
-  ): void {
-    this.sql.exec(
-      `INSERT OR REPLACE INTO model_credential_interruptions
-        (channel_id, provider_id, model_base_url, turn_id, resume_count, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      channelId,
-      providerId,
-      modelBaseUrl,
-      turnId ?? null,
-      resumeCount,
-      Date.now()
-    );
-  }
-
-  private queueModelCredentialInterruptionRecord(
-    channelId: string,
-    providerId: string,
-    modelBaseUrl: string,
-    turnId?: string
-  ): void {
-    this.recordModelCredentialInterruptionCursor(channelId, providerId, modelBaseUrl, 0, turnId);
-    if (!this.runners.has(channelId)) return;
-
-    void (async () => {
-      try {
-        const messages = await this.readRunnerMessages(channelId);
-        this.recordModelCredentialInterruptionCursor(
-          channelId,
-          providerId,
-          modelBaseUrl,
-          messages.length,
-          turnId
-        );
-      } catch (err) {
-        console.warn(
-          `[TrajectoryVesselBase] queueModelCredentialInterruptionRecord: readRunnerMessages failed:`,
-          err
-        );
-      }
-    })();
-  }
-
-  private getModelCredentialInterruption(
-    channelId: string,
-    providerId: string,
-    modelBaseUrl?: string
-  ): ModelCredentialInterruption | null {
-    const rows = this.sql
-      .exec(
-        `SELECT provider_id, model_base_url, resume_count, created_at
-       FROM model_credential_interruptions
-       WHERE channel_id = ? AND provider_id = ?`,
-        channelId,
-        providerId
-      )
-      .toArray();
-    if (rows.length === 0) return null;
-    const row = rows[0]!;
-    const storedModelBaseUrl = row["model_base_url"] as string | null;
-    if (modelBaseUrl && storedModelBaseUrl && storedModelBaseUrl !== modelBaseUrl) {
-      return null;
-    }
+  private findModelCredentialInterruptionByRequestId(
+    requestId: string
+  ): { channelId: string; providerId: string; modelBaseUrl?: string } | null {
+    const row = this.suspensions.findByRequestId(requestId);
+    if (!row || row.reason !== "credential") return null;
+    const providerId = (row.payload["providerId"] as string | undefined) ?? "";
+    const modelBaseUrl = (row.payload["modelBaseUrl"] as string | undefined) ?? undefined;
     return {
-      providerId: row["provider_id"] as string,
-      ...(storedModelBaseUrl ? { modelBaseUrl: storedModelBaseUrl } : {}),
-      resumeCount: Number(row["resume_count"]),
-      createdAt: Number(row["created_at"]),
+      channelId: row.channelId,
+      providerId,
+      ...(modelBaseUrl ? { modelBaseUrl } : {}),
     };
   }
 
   private clearModelCredentialInterruption(channelId: string, providerId: string): void {
-    this.sql.exec(
-      `DELETE FROM model_credential_interruptions WHERE channel_id = ? AND provider_id = ?`,
-      channelId,
-      providerId
-    );
+    this.suspensions.resolve(credentialSuspensionId(channelId, providerId));
+  }
+
+  /**
+   * Inbound delivery of a settled deferred server call. Routes a deferred
+   * credentials.resolveCredential resolution (credential-use approval) back to
+   * the parked model-acquisition; anything else falls through to the generic
+   * DurableObjectBase handler.
+   */
+  override async onDeferredResult(payload: {
+    requestId: string;
+    result: unknown;
+    isError: boolean;
+  }): Promise<{ ok: boolean }> {
+    if (this.caller?.callerKind !== "server") {
+      throw new Error("onDeferredResult requires a server caller");
+    }
+    const requestId = payload && typeof payload.requestId === "string" ? payload.requestId : null;
+    const interruption = requestId
+      ? this.findModelCredentialInterruptionByRequestId(requestId)
+      : null;
+    if (interruption) {
+      await this.resolveDeferredModelCredential(interruption, Boolean(payload.isError));
+      return { ok: true };
+    }
+    // A credential deferral whose interruption row isn't written yet (raced ahead
+    // of getApiKey's park). Buffer it; the deferred branch applies it after writing
+    // the row. (Distinguished from generic deferred calls, which always persist
+    // their row before issuing, so super finds them.)
+    if (requestId && this.inFlightCredentialDeferrals.has(requestId)) {
+      this.bufferedCredentialDeliveries.set(requestId, { isError: Boolean(payload.isError) });
+      return { ok: true };
+    }
+    return super.onDeferredResult(payload);
+  }
+
+  private async resolveDeferredModelCredential(
+    interruption: { channelId: string; providerId: string; modelBaseUrl?: string },
+    isError: boolean
+  ): Promise<void> {
+    const { channelId, providerId } = interruption;
+    const modelBaseUrl = interruption.modelBaseUrl ?? this.getModelBaseUrl(channelId);
+    if (isError) {
+      // Approval was declined / errored — surface the credential card so the
+      // user can reconnect or retry. The wait stays parked, but it is no longer
+      // redrivable by requestId; otherwise the backstop alarm would re-prompt
+      // the same denied approval on every wake.
+      this.suspensions.clearRequestIdIfSuspended(credentialSuspensionId(channelId, providerId));
+      this.recordDebugPhase(channelId, "model_credential.deferred.denied", {
+        providerId,
+        modelBaseUrl,
+      });
+      this.emitModelCredentialRequiredCard(channelId, providerId, modelBaseUrl, {
+        resumeAfterConnect: true,
+        reason: "Model credential approval was declined.",
+        ...(this.currentTurnIdForChannel(channelId)
+          ? { turnId: this.currentTurnIdForChannel(channelId) ?? undefined }
+          : {}),
+      });
+      return;
+    }
+    this.recordDebugPhase(channelId, "model_credential.deferred.approved", {
+      providerId,
+      modelBaseUrl,
+    });
+    // Re-probe + rewind: resolveCredential now succeeds (grant persisted, or the
+    // approval applies to this resume), and the turn continues. This clears the
+    // interruption on success.
+    await this.resumeAfterModelCredentialConnected(channelId, {
+      providerId,
+      ...(interruption.modelBaseUrl ? { modelBaseUrl: interruption.modelBaseUrl } : {}),
+    });
   }
 
   private async ensureChannelContext(channelId: string): Promise<void> {
@@ -5635,9 +5826,16 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       },
       onWorkFailure: async (work, error, workTurnId) => {
         const turnId = workTurnId ?? (work.kind === "continue" ? work.turnId : undefined);
-        if (turnId && modelCredentialReconnectFailure(error)) {
+        if (
+          turnId &&
+          (modelCredentialReconnectFailure(error) || isModelCredentialApprovalPendingFailure(error))
+        ) {
           const row = this.loadTurnRun(turnId);
           if (row?.status === "waiting_external") {
+            // A credential wait (reconnect or approval-pending) parked this turn;
+            // it stays open for the resume. Don't fail the ledger or surface a
+            // work-failure diagnostic — the open turn keeps the dispatcher
+            // steering new input in, and the resume continues the turn.
             this.recordDebugPhase(channelId, "turn_dispatcher.credential_wait_failure_suppressed", {
               turnId,
               workKind: work.kind,
@@ -5668,6 +5866,13 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       onSteeredMessageObserved: async (steeringId) => {
         this.markPendingSteeringObserved(steeringId);
       },
+      diagnosticContext: () => ({
+        channelId,
+        objectKey: this.objectKey,
+        participantId: this.subscriptions.getParticipantId(channelId),
+        subscriptions: this.subscriptions.listAll(),
+        runnerOpenTurnId: runner.getCurrentTurnId?.() ?? null,
+      }),
       onInvariantViolation: async (code, detail) => {
         this.recordInvariantViolation(channelId, code, detail);
         if (
@@ -6599,7 +6804,10 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
         : undefined);
     const dispatcherBusy = Boolean(dispatcherState?.busy);
     const hasExternalWait = openTurnId ? this.turnHasOpenExternalWait(openTurnId) : false;
-    if (openTurnId && (hasExternalWait || (!opts || opts.mode !== "sequential") && dispatcherBusy)) {
+    if (
+      openTurnId &&
+      (hasExternalWait || ((!opts || opts.mode !== "sequential") && dispatcherBusy))
+    ) {
       const steeringId = this.durableSteeringId(channelId, event);
       if (!this.persistPendingSteering(channelId, openTurnId, steeringId, turnInput)) {
         return;
@@ -6614,10 +6822,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     dispatcher.submit(turnInput, opts);
   }
 
-  async onChannelEnvelope(
-    channelId: string,
-    envelope: RpcChannelMessage
-  ): Promise<void> {
+  async onChannelEnvelope(channelId: string, envelope: RpcChannelMessage): Promise<void> {
     await this.ensureAgentActivationReady();
     if (envelope.kind === "control") {
       if (envelope.type === "ready") {
@@ -6720,30 +6925,67 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     }
 
     const providerId = opts?.providerId ?? this.getModelProviderId(channelId);
-    const interruption = this.getModelCredentialInterruption(
-      channelId,
-      providerId,
-      opts?.modelBaseUrl
-    );
+    const suspensionId = credentialSuspensionId(channelId, providerId);
+    const suspension = this.suspensions.findById(suspensionId);
+    if (suspension) {
+      const storedModelBaseUrl =
+        (suspension.payload["modelBaseUrl"] as string | undefined) ?? undefined;
+      if (opts?.modelBaseUrl && storedModelBaseUrl && storedModelBaseUrl !== opts.modelBaseUrl) {
+        this.recordDebugPhase(channelId, "model_credential.resume_model_base_mismatch", {
+          providerId,
+          requestedModelBaseUrl: opts.modelBaseUrl,
+          storedModelBaseUrl,
+        });
+        return false;
+      }
+      const row = this.loadTurnRun(suspension.turnId);
+      if (
+        row?.status === "closed" ||
+        row?.status === "failed" ||
+        row?.status === "interrupted" ||
+        this.runControllerFor(channelId).isResumeBlocked(suspension.turnId)
+      ) {
+        this.suspensions.resolve(suspensionId);
+        this.recordDebugPhase(channelId, "model_credential.resume_terminal_turn_dropped", {
+          providerId,
+          turnId: suspension.turnId,
+          status: row?.status ?? "missing",
+        });
+        return false;
+      }
+    }
+    // Idempotent resume: atomically claim the suspension. A concurrent trigger
+    // (duplicate onDeferredResult, restart redrive, UI credential-connected) that
+    // already claimed turns this into a no-op — the single guard that kills the
+    // double-resume race (P1-1). No row ⇒ a legacy last-message-driven resume.
+    if (suspension) {
+      if (suspension.reason !== "credential" || !this.suspensions.claimResume(suspensionId)) {
+        this.recordDebugPhase(channelId, "model_credential.resume_already_claimed", { providerId });
+        return false;
+      }
+    }
+    // Re-arm the claim if we bail before continuing, so a later trigger can retry.
+    const bail = (): false => {
+      if (suspension) this.suspensions.releaseClaim(suspensionId);
+      return false;
+    };
+
+    const resumeCount = suspension?.resumeCount ?? 0;
     const messages = await this.readRunnerMessages(channelId);
     const last = messages[messages.length - 1];
     let resumableMessages: AgentMessage[];
     if (isCredentialRequiredAssistantMessage(last)) {
       resumableMessages = messages.slice(0, -1);
-    } else if (
-      interruption &&
-      interruption.resumeCount > 0 &&
-      messages.length >= interruption.resumeCount
-    ) {
-      resumableMessages = messages.slice(0, interruption.resumeCount);
+    } else if (suspension && resumeCount > 0 && messages.length >= resumeCount) {
+      resumableMessages = messages.slice(0, resumeCount);
     } else {
       console.warn(
         `[TrajectoryVesselBase] credential resume failed for channel=${channelId}: ` +
           `no resumable turn provider=${providerId} messages=${messages.length} ` +
-          `interruptionCount=${interruption?.resumeCount ?? "none"} lastRole=${String((last as { role?: unknown } | undefined)?.role ?? "none")} ` +
+          `resumeCount=${resumeCount} lastRole=${String((last as { role?: unknown } | undefined)?.role ?? "none")} ` +
           `lastStop=${String((last as { stopReason?: unknown } | undefined)?.stopReason ?? "none")}`
       );
-      return false;
+      return bail();
     }
 
     const resumeFrom = resumableMessages[resumableMessages.length - 1] as
@@ -6756,7 +6998,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
           `[TrajectoryVesselBase] credential resume failed for channel=${channelId}: ` +
             `resume cursor is ${String(resumeFrom?.role ?? "missing")}`
         );
-        return false;
+        return bail();
       }
       this.recordDebugPhase(channelId, "model_credential.resume_cursor_rewound", {
         providerId,
@@ -6776,19 +7018,27 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
         `[TrajectoryVesselBase] credential resume failed for channel=${channelId}: ` +
           `session entry missing for messageIndex=${resumableMessages.length - 1} entries=${messageEntries?.length ?? 0}`
       );
-      return false;
+      return bail();
+    }
+    const turnId = suspension?.turnId;
+    if (turnId) {
+      const latest = this.loadTurnRun(turnId);
+      if (
+        latest?.status === "closed" ||
+        latest?.status === "failed" ||
+        latest?.status === "interrupted" ||
+        this.runControllerFor(channelId).isResumeBlocked(turnId)
+      ) {
+        this.suspensions.resolve(suspensionId);
+        this.recordDebugPhase(channelId, "model_credential.resume_terminal_turn_dropped", {
+          providerId,
+          turnId,
+          status: latest?.status ?? "missing",
+        });
+        return false;
+      }
     }
     await entry.runner.session?.moveTo(target.id);
-    const turnId = interruption
-      ? (this.sql
-          .exec(
-            `SELECT turn_id FROM model_credential_interruptions
-             WHERE channel_id = ? AND provider_id = ?`,
-            channelId,
-            providerId
-          )
-          .toArray()[0]?.["turn_id"] as string | undefined)
-      : undefined;
     if (turnId) {
       this.transitionTurn(turnId, ["waiting_external", "starting"], "continuing", {
         resumeCursorEntryId: target.id,
@@ -6801,8 +7051,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     this.credentialPromptCardsEmitted.delete(
       `${channelId}::model-credential::${providerId}::connect-only`
     );
-    const dispatcher = this.getOrCreateDispatcher(channelId, entry.runner);
-    dispatcher.submitContinue(turnId ? { turnId } : undefined);
+    this.submitRecoveryContinue(channelId, entry.runner, "model_credential_connected", turnId);
     return true;
   }
 
@@ -6855,6 +7104,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
         // turn so every resume path drops intrinsically (in addition to the
         // durable terminal `interrupted` status written just below).
         this.runControllerFor(channelId).gateInterrupt(turnId);
+        this.suspensions.clearForTurn(channelId, turnId);
         this.transitionTurn(
           turnId,
           ["starting", "running_model", "waiting_external", "continuing", "closing"],
@@ -7185,7 +7435,11 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     }
     const method = segments.slice(1).join("/") || "getState";
 
-    if (method === "__lifecycle/prepare" || method === "__lifecycle/resume") {
+    if (
+      method === "__lifecycle/prepare" ||
+      method === "__lifecycle/resume" ||
+      method === "__alarm"
+    ) {
       return super.fetch(request);
     }
 
@@ -7335,7 +7589,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
         doIdentity: readTable("do_identity"),
         subscriptions: subscriptionRows,
         deliveryCursor: readTable("delivery_cursor"),
-        modelCredentialInterruptions: readTable("model_credential_interruptions"),
+        suspensions: readTable("suspensions"),
         methodSuspensions: this.summarizeMethodSuspensionRows(channelId),
         methodSuspensionUpdates: this.summarizeMethodSuspensionUpdateRows(),
       },

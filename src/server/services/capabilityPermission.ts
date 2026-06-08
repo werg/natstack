@@ -3,7 +3,12 @@ import {
   PANEL_AUTOMATE_CAPABILITY,
   PANEL_STRUCTURAL_CAPABILITY,
 } from "@natstack/shared/panelAccessPolicy";
-import type { VerifiedCaller } from "@natstack/shared/serviceDispatcher";
+import type {
+  VerifiedCaller,
+  ServiceContext,
+  DeferredResult,
+} from "@natstack/shared/serviceDispatcher";
+import { deferIfNeeded } from "@natstack/shared/serviceDispatcher";
 import type { ApprovalQueue, GrantedDecision } from "./approvalQueue.js";
 import type { CapabilityGrantStore } from "./capabilityGrantStore.js";
 
@@ -124,6 +129,46 @@ export async function requestCapabilityPermission(
     }
   }
   return { allowed: true, decision };
+}
+
+/**
+ * True if a non-prompting grant already covers this capability/resource for the
+ * caller — the cheap pre-check that lets {@link withCapability} keep the fast
+ * path inline (no deferral round-trip) when no human approval is needed.
+ */
+export function capabilityAlreadyGranted(
+  deps: CapabilityPermissionDeps,
+  caller: VerifiedCaller,
+  capability: string,
+  resource: CapabilityPermissionResource
+): boolean {
+  const identity = caller.code;
+  if (!identity) return false;
+  const resourceKey = resource.key ?? resource.value;
+  return deps.grantStore.hasGrant(capability, resourceKey, identity);
+}
+
+/**
+ * Run a capability-gated action, deferring the whole approve-then-act
+ * continuation out-of-band when the caller opted into deferral (callDeferred)
+ * and an approval is actually pending. When a grant already exists, or the
+ * caller can't defer, it runs inline — so existing callers see identical UX.
+ *
+ * The `continuation` receives the authorization result and owns the
+ * allowed/denied handling (each call site keeps its own behavior).
+ */
+export function withCapability<T>(
+  deps: CapabilityPermissionDeps,
+  ctx: ServiceContext,
+  request: Omit<CapabilityPermissionRequest, "caller" | "signal">,
+  continuation: (authorization: CapabilityPermissionResult) => Promise<T>
+): Promise<T> | DeferredResult {
+  const granted = capabilityAlreadyGranted(deps, ctx.caller, request.capability, request.resource);
+  return deferIfNeeded(ctx, !granted, async (signal) =>
+    continuation(
+      await requestCapabilityPermission(deps, { ...request, caller: ctx.caller, signal })
+    )
+  );
 }
 
 export function normalizeCallerKind(kind: string): "panel" | "app" | "worker" | "do" | null {

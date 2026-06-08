@@ -106,6 +106,63 @@ export interface WsClientInfo {
   authenticated: boolean;
 }
 
+/**
+ * Sentinel a service handler returns (via `ctx.deferral.run`) to signal that
+ * the call will complete out-of-band: the transport sends a `{deferred,requestId}`
+ * ack instead of a response body, and the eventual result is delivered to the
+ * caller through `onDeferredResult`. Used for human-gated calls (approvals,
+ * credential use) so a hibernatable DO caller need not hold an inbound request open.
+ */
+export const DEFERRED_RESULT: unique symbol = Symbol.for("natstack.rpc.deferredResult");
+
+export interface DeferredResult {
+  readonly [DEFERRED_RESULT]: true;
+  readonly requestId: string;
+}
+
+export function isDeferredResult(value: unknown): value is DeferredResult {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<PropertyKey, unknown>)[DEFERRED_RESULT] === true
+  );
+}
+
+export interface DeferralApi {
+  /**
+   * True when this call can complete out-of-band — the caller stamped a
+   * `requestId` and is a principal that can receive an inbound `onDeferredResult`
+   * (a DO/worker). Handlers must check this before calling `run`.
+   */
+  readonly canDefer: boolean;
+  /**
+   * Park the call: run `work` detached and deliver its eventual result (or error)
+   * to the caller via `onDeferredResult`. Returns the sentinel the handler must
+   * return so the transport sends a deferred ack instead of a body. Reissued or
+   * concurrent calls sharing an `idempotencyKey` collapse onto one `work` run.
+   */
+  run(work: (signal: AbortSignal) => Promise<unknown>): DeferredResult;
+}
+
+/**
+ * Run `produce` inline, or — when the caller opted into deferral and the call
+ * would otherwise block on a human — park it via `ctx.deferral.run` and return
+ * the sentinel for the transport to ack. `needsApproval` is the cheap pre-check
+ * that decides; when false (e.g. a grant already exists) the fast path runs
+ * inline with no extra round-trip. This keeps UX identical for the common case
+ * and only changes the hold-open behavior when an approval is actually pending.
+ */
+export function deferIfNeeded<T>(
+  ctx: ServiceContext,
+  needsApproval: boolean,
+  produce: (signal: AbortSignal) => Promise<T>,
+): Promise<T> | DeferredResult {
+  if (needsApproval && ctx.deferral?.canDefer) {
+    return ctx.deferral.run(produce);
+  }
+  return produce(new AbortController().signal);
+}
+
 export type ServiceContext = {
   /** Canonical verified identity. Boundary code constructs this once. */
   caller: VerifiedCaller;
@@ -119,6 +176,15 @@ export type ServiceContext = {
   connectionId?: string;
   /** WS client state when caller connected via WebSocket */
   wsClient?: WsClientInfo;
+  /** Correlation id stamped by the caller; present on deferrable calls. */
+  requestId?: string;
+  /** Dedup key stamped by the caller, when provided. */
+  idempotencyKey?: string;
+  /**
+   * Out-of-band completion controller, present only when the caller can receive
+   * a deferred reply. Handlers gate on `deferral?.canDefer` before deferring.
+   */
+  deferral?: DeferralApi;
 };
 
 export type ServiceHandler = (

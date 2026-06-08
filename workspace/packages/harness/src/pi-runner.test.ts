@@ -16,6 +16,7 @@ vi.mock("@earendil-works/pi-ai", async (importOriginal) => {
 });
 
 import { PiRunner } from "./pi-runner.js";
+import { TurnSuspensionSignal } from "./turn-suspension.js";
 import type { HibernationResumableTool, PiRunnerOptions } from "./pi-runner.js";
 import type { RuntimeFs } from "./tools/runtime-fs.js";
 import { TrajectoryBackedSessionStorage } from "@workspace/pi-adapter";
@@ -304,6 +305,66 @@ describe("pi-agent-core steering integration", () => {
 });
 
 describe("PiRunner", () => {
+  it("presents the first prompt to the LLM context exactly once", async () => {
+    const runner = new PiRunner(createOptions());
+    const contexts: AgentMessage[][] = [];
+    runner.onTransformContext((messages) => {
+      contexts.push(messages);
+      return messages;
+    });
+    await runner.init();
+
+    await runner.prompt({ content: "Read the onboarding docs" });
+
+    expect(contexts).toHaveLength(1);
+    expect(
+      contexts[0]!.filter(
+        (message) =>
+          message.role === "user" &&
+          JSON.stringify(message.content).includes("Read the onboarding docs")
+      )
+    ).toHaveLength(1);
+    runner.dispose();
+  });
+
+  it("records but never channel-publishes a suspended turn's failure message", () => {
+    // P2: when getApiKey throws a typed TurnSuspensionSignal, the resulting
+    // assistant-error message must NOT be broadcast to the channel (no red
+    // error), but must stay in the trajectory so the resume path can read it.
+    const runner = new PiRunner(createOptions());
+    const internals = runner as unknown as {
+      pendingSuspension: TurnSuspensionSignal | null;
+      provenanceQueue: Array<{ event: { kind: string }; publishToChannel: boolean }>;
+      queueMessageProvenance(message: AgentMessage, messageEntryId: string): void;
+    };
+    const failed = {
+      role: "assistant",
+      content: [],
+      stopReason: "error",
+      errorMessage: "Waiting for model credential approval for provider: x",
+      timestamp: 1,
+    } as unknown as AgentMessage;
+
+    // Baseline: a plain failure IS published to the channel.
+    internals.queueMessageProvenance(failed, "entry-1");
+    expect(
+      internals.provenanceQueue.find((i) => i.event.kind === "message.failed")?.publishToChannel
+    ).toBe(true);
+
+    // With a pending suspension: recorded in the trajectory, NOT published.
+    internals.provenanceQueue.length = 0;
+    internals.pendingSuspension = new TurnSuspensionSignal({
+      reason: "credential",
+      message: "Waiting for model credential approval for provider: x",
+    });
+    internals.queueMessageProvenance(failed, "entry-2");
+    const suspended = internals.provenanceQueue.find((i) => i.event.kind === "message.failed");
+    expect(suspended).toBeDefined();
+    expect(suspended?.publishToChannel).toBe(false);
+
+    runner.dispose();
+  });
+
   it("initializes a harness-backed session", async () => {
     const runner = new PiRunner(createOptions());
     await runner.init();
@@ -615,6 +676,31 @@ describe("PiRunner", () => {
         ],
       })
     );
+    runner.dispose();
+  });
+
+  it("keeps a typed suspension open instead of settling the turn as failed", async () => {
+    const runner = new PiRunner(createOptions());
+    const suspension = new TurnSuspensionSignal({
+      reason: "credential",
+      message: "Waiting for model credential approval for provider: x",
+    });
+    const internals = runner as unknown as {
+      harness: { prompt: (content: string) => Promise<void> };
+      settleFailedOperationTurn: ReturnType<typeof vi.fn>;
+    };
+    await runner.init();
+    internals.harness.prompt = vi.fn(async () => {
+      throw suspension;
+    });
+    internals.settleFailedOperationTurn = vi.fn(async () => undefined);
+
+    await expect(runner.prompt({ content: "hello" }, { turnId: "turn-suspended" })).rejects.toBe(
+      suspension
+    );
+
+    expect(internals.settleFailedOperationTurn).not.toHaveBeenCalled();
+    expect((await runner.getDebugState())["currentTurnId"]).toBe("turn-suspended");
     runner.dispose();
   });
 
