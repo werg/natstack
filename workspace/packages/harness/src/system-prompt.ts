@@ -13,7 +13,6 @@ NatStack is a local workspace with stackable panels, browser automation, workflo
 
 ## Response UI
 
-- Use concise Markdown for ordinary conversational replies.
 - Use MDX in normal assistant messages when it improves scanability: compact summaries, status callouts, comparison tables, checklists, and small groups of links or actions.
 - MDX supports standard Markdown (**bold**, *italic*, \`code\`, lists, headings, tables) plus JSX components.
 - Available MDX components include Radix-style components such as Badge, Box, Button, Callout, Card, Code, Flex, Heading, Link, Table, Text, Icons, and ActionButton.
@@ -29,7 +28,6 @@ NatStack is a local workspace with stackable panels, browser automation, workflo
 
 ## Tool Use
 
-- Prefer the runtime tools advertised in the channel over describing work manually.
 - Read relevant workspace skill docs before using specialized APIs.
 - When UI tools are unavailable, fall back to clear Markdown responses.`;
 

@@ -3188,7 +3188,15 @@ export class PiRunner {
         return {
           blockId,
           type: "thinking",
-          content: typeof record?.["thinking"] === "string" ? record["thinking"] : "",
+          content: this.extractGeneratedText(record, [
+            "thinking",
+            "text",
+            "content",
+            "summary",
+            "reasoning_content",
+            "reasoning",
+            "reasoning_text",
+          ]),
           metadata: record ?? undefined,
         };
       }
@@ -3196,13 +3204,8 @@ export class PiRunner {
         blockId,
         type: "text",
         content:
-          typeof record?.["text"] === "string"
-            ? record["text"]
-            : typeof record?.["content"] === "string"
-              ? record["content"]
-              : typeof block === "string"
-                ? block
-                : "",
+          this.extractGeneratedText(record, ["text", "content", "output_text", "refusal"]) ||
+          (typeof block === "string" ? block : ""),
         metadata: record ?? undefined,
       };
     });
@@ -3211,10 +3214,35 @@ export class PiRunner {
   private classifyBlock(block: unknown): "text" | "thinking" | "invocation" {
     if (!block || typeof block !== "object") return "text";
     const type = (block as { type?: unknown }).type;
-    if (type === "thinking") return "thinking";
+    if (type === "thinking" || type === "reasoning") return "thinking";
     const camelToolBlockType = "tool" + "Call";
     if (type === camelToolBlockType || type === "tool_call") return "invocation";
     return "text";
+  }
+
+  private extractGeneratedText(
+    record: Record<string, unknown> | null,
+    keys: readonly string[]
+  ): string {
+    if (!record) return "";
+    for (const key of keys) {
+      const text = this.extractTextValue(record[key]);
+      if (text) return text;
+    }
+    return "";
+  }
+
+  private extractTextValue(value: unknown): string {
+    if (typeof value === "string") return value;
+    if (Array.isArray(value)) {
+      return value
+        .map((item) => this.extractTextValue(item))
+        .filter((item) => item.length > 0)
+        .join("\n\n");
+    }
+    const record = this.asJsonRecord(value);
+    if (!record) return "";
+    return this.extractGeneratedText(record, ["text", "content", "thinking", "refusal"]);
   }
 
   private toolCallIdFromBlock(block: unknown): string | null {

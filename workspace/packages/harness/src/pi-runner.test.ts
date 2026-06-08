@@ -2109,6 +2109,96 @@ describe("PiRunner", () => {
     );
   });
 
+  it("preserves thinking blocks that use text or content aliases", () => {
+    const runner = new PiRunner(createOptions()) as unknown as {
+      provenanceQueue: Array<Record<string, unknown>>;
+      queueMessageProvenance(message: unknown, messageEntryId: string): void;
+    };
+    runner.provenanceQueue = [];
+
+    runner.queueMessageProvenance(
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", text: "Checking repository state." },
+          { type: "thinking", content: "Reading current prompt config." },
+          { type: "thinking", reasoning_content: "Reviewing completion reasoning." },
+          { type: "thinking", reasoning_text: "Checking compatible endpoint fields." },
+        ],
+      },
+      "entry-thinking-aliases"
+    );
+
+    expect(runner.provenanceQueue).toContainEqual(
+      expect.objectContaining({
+        event: expect.objectContaining({
+          kind: "message.completed",
+          payload: expect.objectContaining({
+            role: "assistant",
+            blocks: [
+              expect.objectContaining({
+                type: "thinking",
+                content: "Checking repository state.",
+              }),
+              expect.objectContaining({
+                type: "thinking",
+                content: "Reading current prompt config.",
+              }),
+              expect.objectContaining({
+                type: "thinking",
+                content: "Reviewing completion reasoning.",
+              }),
+              expect.objectContaining({
+                type: "thinking",
+                content: "Checking compatible endpoint fields.",
+              }),
+            ],
+            outcome: "completed",
+          }),
+        }),
+      })
+    );
+  });
+
+  it("classifies raw reasoning blocks as thinking and preserves summary text", () => {
+    const runner = new PiRunner(createOptions()) as unknown as {
+      provenanceQueue: Array<Record<string, unknown>>;
+      queueMessageProvenance(message: unknown, messageEntryId: string): void;
+    };
+    runner.provenanceQueue = [];
+
+    runner.queueMessageProvenance(
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "reasoning",
+            summary: [{ text: "Inspect event flow." }, { text: "Check UI projection." }],
+          },
+        ],
+      },
+      "entry-reasoning"
+    );
+
+    expect(runner.provenanceQueue).toContainEqual(
+      expect.objectContaining({
+        event: expect.objectContaining({
+          kind: "message.completed",
+          payload: expect.objectContaining({
+            role: "assistant",
+            blocks: [
+              expect.objectContaining({
+                type: "thinking",
+                content: "Inspect event flow.\n\nCheck UI projection.",
+              }),
+            ],
+            outcome: "completed",
+          }),
+        }),
+      })
+    );
+  });
+
   it("publishes provider text blocks that use content instead of text", () => {
     const runner = new PiRunner(createOptions()) as unknown as {
       provenanceQueue: Array<Record<string, unknown>>;
@@ -2119,7 +2209,10 @@ describe("PiRunner", () => {
     runner.queueMessageProvenance(
       {
         role: "assistant",
-        content: [{ type: "text", content: "Checking the replay pipeline." }],
+        content: [
+          { type: "text", content: "Checking the replay pipeline." },
+          { type: "text", refusal: "I cannot comply with that request." },
+        ],
       },
       "entry-content-text"
     );
@@ -2135,6 +2228,10 @@ describe("PiRunner", () => {
               expect.objectContaining({
                 type: "text",
                 content: "Checking the replay pipeline.",
+              }),
+              expect.objectContaining({
+                type: "text",
+                content: "I cannot comply with that request.",
               }),
             ],
             outcome: "completed",
