@@ -1,5 +1,5 @@
 import type { HeadlessSession, ChatMessage } from "@workspace/agentic-session";
-import { PROVIDER_CONNECT_PRESETS, toPanelConnectRequest } from "@natstack/shared/models/providerConnect";
+import { PROVIDER_CONNECT_PRESETS, toPanelConnectRequest } from "@workspace/model-catalog/providerConnect";
 
 /**
  * Terminal view-model over the shared headless chat core.

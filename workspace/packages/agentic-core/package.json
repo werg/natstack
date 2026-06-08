@@ -7,8 +7,10 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@natstack/shared": "workspace:*",
     "@workspace/agentic-protocol": "workspace:*",
-    "@workspace/pubsub": "workspace:*",
-    "@workspace/eval": "workspace:*"
+    "@workspace/eval": "workspace:*",
+    "@workspace/model-catalog": "workspace:*",
+    "@workspace/pubsub": "workspace:*"
   }
 }

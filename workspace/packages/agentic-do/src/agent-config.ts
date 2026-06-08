@@ -2,8 +2,8 @@ import type { ApprovalLevel, ThinkingLevel } from "@workspace/harness";
 import {
   listProviderConnectPresets,
   toAgentCredentialSetup,
-} from "@natstack/shared/models/providerConnect";
-import { DEFAULT_AGENT_MODEL_REF } from "@natstack/shared/models/catalog";
+} from "@workspace/model-catalog/providerConnect";
+import { DEFAULT_AGENT_MODEL_REF } from "@workspace/model-catalog/catalog";
 
 import type { ModelCredentialSetupProps } from "./trajectory-vessel-base.js";
 
@@ -21,7 +21,7 @@ export const DEFAULT_RESPOND_POLICY = "all" as const;
 
 /**
  * Agent-side model credential connect setups. Derived from the shared provider
- * connect presets (`@natstack/shared/models/providerConnect`) so the panel
+ * connect presets (`@workspace/model-catalog/providerConnect`) so the panel
  * picker and the agent share one source. Any provider in the shared preset list
  * can be connected from first-run onboarding, the model picker, or a mid-turn
  * credential prompt.

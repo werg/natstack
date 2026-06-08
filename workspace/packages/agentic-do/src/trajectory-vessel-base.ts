@@ -91,7 +91,7 @@ import {
   createGadServiceClient,
   type DurableObjectServiceClient,
 } from "@natstack/shared/userlandServiceRpc";
-import { pickRecommendedModelId } from "@natstack/shared/models/modelRecommendations";
+import { pickRecommendedModelId } from "@workspace/model-catalog/modelRecommendations";
 
 const HARNESS_MODEL_REPLAY_TOOL_SAFETY: ReadonlyMap<string, ReplayToolSafety> = new Map([
   ["read", "pure-read"],

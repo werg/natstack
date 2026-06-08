@@ -946,12 +946,18 @@ importers:
 
   workspace/packages/agentic-core:
     dependencies:
+      '@natstack/shared':
+        specifier: workspace:*
+        version: link:../../../packages/shared
       '@workspace/agentic-protocol':
         specifier: workspace:*
         version: link:../agentic-protocol
       '@workspace/eval':
         specifier: workspace:*
         version: link:../eval
+      '@workspace/model-catalog':
+        specifier: workspace:*
+        version: link:../model-catalog
       '@workspace/pubsub':
         specifier: workspace:*
         version: link:../pubsub
@@ -973,6 +979,9 @@ importers:
       '@workspace/harness':
         specifier: workspace:*
         version: link:../harness
+      '@workspace/model-catalog':
+        specifier: workspace:*
+        version: link:../model-catalog
       '@workspace/pubsub':
         specifier: workspace:*
         version: link:../pubsub
@@ -1184,6 +1193,16 @@ importers:
       '@workspace/runtime':
         specifier: workspace:*
         version: link:../runtime
+
+  workspace/packages/model-catalog:
+    dependencies:
+      '@natstack/shared':
+        specifier: workspace:*
+        version: link:../../../packages/shared
+    devDependencies:
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.12)(@types/node@24.10.9)(jsdom@29.0.1)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.0)
 
   workspace/packages/panel-browser:
     dependencies:
@@ -1441,6 +1460,9 @@ importers:
 
   workspace/panels/chat:
     dependencies:
+      '@natstack/shared':
+        specifier: workspace:*
+        version: link:../../../packages/shared
       '@radix-ui/react-icons':
         specifier: ^1.3.2
         version: 1.3.2(react@19.2.4)
@@ -1453,6 +1475,9 @@ importers:
       '@workspace/eval':
         specifier: workspace:*
         version: link:../../packages/eval
+      '@workspace/model-catalog':
+        specifier: workspace:*
+        version: link:../../packages/model-catalog
       '@workspace/panel-browser':
         specifier: workspace:*
         version: link:../../packages/panel-browser
@@ -1669,9 +1694,9 @@ importers:
       '@earendil-works/pi-ai':
         specifier: ^0.78.0
         version: 0.78.0(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
-      '@natstack/shared':
+      '@workspace/model-catalog':
         specifier: workspace:*
-        version: link:../../../packages/shared
+        version: link:../../packages/model-catalog
       '@workspace/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
@@ -1716,12 +1741,12 @@ importers:
 
   workspace/workers/terminal-chat:
     dependencies:
-      '@natstack/shared':
-        specifier: workspace:*
-        version: link:../../../packages/shared
       '@workspace/agentic-session':
         specifier: workspace:*
         version: link:../../packages/agentic-session
+      '@workspace/model-catalog':
+        specifier: workspace:*
+        version: link:../../packages/model-catalog
       '@workspace/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
@@ -16556,9 +16581,7 @@ snapshots:
       metro-runtime: 0.82.5
     transitivePeerDependencies:
       - '@babel/core'
-      - bufferutil
       - supports-color
-      - utf-8-validate
 
   '@react-native/normalize-colors@0.79.7': {}
 

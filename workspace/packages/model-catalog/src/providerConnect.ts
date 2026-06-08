@@ -20,8 +20,8 @@ import type {
   ConnectCredentialRequest,
   CredentialFlowSpec,
   OAuthLoopbackRedirectStrategy,
-} from "../credentials/types.js";
-import type { CredentialInjection } from "../credentials/urlAudience.js";
+} from "@natstack/shared/credentials/types";
+import type { CredentialInjection } from "@natstack/shared/credentials/urlAudience";
 
 export interface ProviderConnectPreset {
   providerId: string;

@@ -244,6 +244,9 @@
       "@workspace/integrations/providers": [
         "workspace/packages/integrations/src/providers.ts"
       ],
+      "@workspace/model-catalog/*": [
+        "workspace/packages/model-catalog/src/*.ts"
+      ],
       "@workspace/gmail": [
         "workspace/packages/gmail/src/index.ts"
       ],

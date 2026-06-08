@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createTestDO } from "@workspace/runtime/worker/test-utils";
 import type { WorkspaceConfig } from "@workspace/runtime/worker";
-import type { ModelCatalog } from "@natstack/shared/models/catalog";
+import type { ModelCatalog } from "@workspace/model-catalog/catalog";
 import { ModelSettingsDO } from "./index.js";
 
 const CATALOG: ModelCatalog = {

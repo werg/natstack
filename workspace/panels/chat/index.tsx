@@ -14,12 +14,12 @@ import { AgenticChat, ErrorBoundary } from "@workspace/agentic-chat";
 import type { ConnectionConfig, AgenticChatActions, ToolProvider, ToolProviderDeps } from "@workspace/agentic-chat";
 import { createPanelSandboxConfig, buildEvalTool } from "@workspace/agentic-core";
 import type { AvailableAgent, ModelCatalog, AgentSubscriptionConfig, ConnectProviderResult } from "@workspace/agentic-core";
-import { toPanelConnectRequest } from "@natstack/shared/models/providerConnect";
+import { toPanelConnectRequest } from "@workspace/model-catalog/providerConnect";
 import {
   DEFAULT_AGENT_MODEL_REF,
   MODEL_SETTINGS_SERVICE_PROTOCOL,
   type ModelSettingsSnapshot,
-} from "@natstack/shared/models/catalog";
+} from "@workspace/model-catalog/catalog";
 import { findMatchingUrlAudience } from "@natstack/shared/credentials/urlAudience";
 import type { UrlAudience } from "@natstack/shared/credentials/urlAudience";
 import type { DurableObjectServiceClient } from "@workspace/runtime";

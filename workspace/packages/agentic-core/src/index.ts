@@ -32,7 +32,7 @@ export type {
   ModelCatalog,
   ModelCatalogEntry,
   ModelCatalogProvider,
-} from "@natstack/shared/models/catalog";
+} from "@workspace/model-catalog/catalog";
 export type {
   AgentApprovalLevel,
   AgentRespondPolicy,

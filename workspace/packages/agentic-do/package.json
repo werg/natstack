@@ -13,6 +13,7 @@
     "@workspace/runtime": "workspace:*",
     "@workspace/agentic-protocol": "workspace:*",
     "@workspace/harness": "workspace:*",
+    "@workspace/model-catalog": "workspace:*",
     "@workspace/pubsub": "workspace:*",
     "@natstack/shared": "workspace:*"
   },

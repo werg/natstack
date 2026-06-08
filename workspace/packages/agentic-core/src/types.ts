@@ -22,7 +22,7 @@ import type { ScopesApi } from "@workspace/eval";
 import type { SandboxOptions, SandboxResult } from "@workspace/eval";
 import type { ChatMethodResult } from "./invocation-result.js";
 import type { AgentSubscriptionConfig } from "./agent-subscription-config.js";
-import type { ModelCatalog } from "@natstack/shared/models/catalog";
+import type { ModelCatalog } from "@workspace/model-catalog/catalog";
 
 // The canonical participant metadata shape lives in @workspace/pubsub so that
 // lower-level packages (like @workspace/agentic-do, which can't depend on

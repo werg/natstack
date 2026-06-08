@@ -15,7 +15,7 @@
     "exposeModules": ["@workspace/runtime"]
   },
   "dependencies": {
-    "@natstack/shared": "workspace:*",
+    "@workspace/model-catalog": "workspace:*",
     "@workspace/runtime": "workspace:*",
     "@workspace/agentic-session": "workspace:*",
     "@workspace/terminal-shim": "workspace:*",

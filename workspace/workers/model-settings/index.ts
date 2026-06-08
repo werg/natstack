@@ -8,13 +8,13 @@ import {
   type ModelCatalogEntry,
   type ModelCatalogProvider,
   type ModelSettingsSnapshot,
-} from "@natstack/shared/models/catalog";
+} from "@workspace/model-catalog/catalog";
 import {
   isTemplatedBaseUrl,
   modelIsConnectable,
   providerIsConnectable,
-} from "@natstack/shared/models/providerConnect";
-import { pickRecommendedModelId } from "@natstack/shared/models/modelRecommendations";
+} from "@workspace/model-catalog/providerConnect";
+import { pickRecommendedModelId } from "@workspace/model-catalog/modelRecommendations";
 
 const AGENT_THINKING_LEVELS = new Set<string>(["minimal", "low", "medium", "high"]);
 
