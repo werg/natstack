@@ -1,5 +1,5 @@
 import { DurableObjectBase, type DurableObjectContext } from "@natstack/durable";
-import { BROWSER_DATA_SCHEMA } from "../../../packages/browser-data/src/storage/schema.js";
+import { BROWSER_DATA_SCHEMA } from "@natstack/browser-data";
 import type {
   ImportedAutofillEntry,
   ImportedBookmark,
@@ -11,7 +11,7 @@ import type {
   ImportedSearchEngine,
   RecordHistoryVisitRequest,
   UpdateHistoryTitleRequest,
-} from "../../../packages/browser-data/src/types.js";
+} from "@natstack/browser-data";
 import { assertPresent } from "../../lintHelpers";
 
 const BATCH_SIZE = 1000;

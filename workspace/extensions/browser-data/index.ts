@@ -6,8 +6,8 @@ import {
   exportNetscapeBookmarks,
   exportNetscapeCookies,
   runImportPipeline,
-  resolveProfilePath,
-} from "@natstack/browser-data";
+} from "@workspace/browser-data";
+import { resolveProfilePath } from "@natstack/browser-data";
 import type {
   ImportDataType,
   ImportRequest,

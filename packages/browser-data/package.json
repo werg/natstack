@@ -1,7 +1,7 @@
 {
   "name": "@natstack/browser-data",
   "version": "0.1.0",
-  "description": "Browser data import/export and storage for NatStack",
+  "description": "Shared browser data contracts, storage schema, and shell RPC client for NatStack",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -13,6 +13,10 @@
     "./client": {
       "types": "./dist/client.d.ts",
       "default": "./dist/client.js"
+    },
+    "./storage": {
+      "types": "./dist/storage/index.d.ts",
+      "default": "./dist/storage/index.js"
     }
   },
   "scripts": {
@@ -21,18 +25,12 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "bplist-parser": "^0.3.2",
-    "sql.js": "^1.14.0"
+    "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4",
-    "zod": "^3.24.1",
-    "@types/sql.js": "^1.4.11"
-  },
-  "peerDependencies": {
-    "zod": "^3.24.1"
+    "vitest": "^3.2.4"
   },
   "files": [
     "dist"

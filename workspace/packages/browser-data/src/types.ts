@@ -30,7 +30,7 @@ export type {
   SameSiteValue,
   SourceScheme,
   ImportPhase,
-} from "./types.js";
+} from "@natstack/browser-data";
 
 export {
   BrowserNameSchema,
@@ -49,24 +49,4 @@ export {
   BROWSER_FAMILIES,
   IMPORT_DATA_TYPES,
   resolveProfilePath,
-} from "./types.js";
-
-export { BrowserDataError } from "./errors.js";
-export type { BrowserDataErrorCode } from "./errors.js";
-
-export { createBrowserDataRpcClient } from "./client/browserDataRpcClient.js";
-export type { BrowserDataClient } from "./client/browserDataRpcClient.js";
-export { BROWSER_DATA_SCHEMA } from "./storage/index.js";
-export type {
-  StoredBookmark,
-  StoredHistory,
-  StoredVisit,
-  StoredPassword,
-  StoredCookie,
-  StoredAutofill,
-  StoredSearchEngine,
-  StoredFavicon,
-  StoredPermission,
-  StoredImportLog,
-  ImportLogEntry,
-} from "./storage/index.js";
+} from "@natstack/browser-data";

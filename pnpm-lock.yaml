@@ -467,28 +467,19 @@ importers:
 
   packages/browser-data:
     dependencies:
-      bplist-parser:
-        specifier: ^0.3.2
-        version: 0.3.2
-      sql.js:
-        specifier: ^1.14.0
-        version: 1.14.1
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^24.10.1
         version: 24.10.9
-      '@types/sql.js':
-        specifier: ^1.4.11
-        version: 1.4.11
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.12)(@types/node@24.10.9)(jsdom@29.0.1)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.0)
-      zod:
-        specifier: ^3.24.1
-        version: 3.25.76
 
   packages/dev-log:
     devDependencies:
@@ -847,6 +838,9 @@ importers:
       '@natstack/browser-data':
         specifier: workspace:*
         version: link:../../../packages/browser-data
+      '@workspace/browser-data':
+        specifier: workspace:*
+        version: link:../../packages/browser-data
 
   workspace/extensions/file-tools:
     dependencies:
@@ -1013,6 +1007,28 @@ importers:
       zod:
         specifier: ^3.24.1
         version: 3.25.76
+
+  workspace/packages/browser-data:
+    dependencies:
+      '@natstack/browser-data':
+        specifier: workspace:*
+        version: link:../../../packages/browser-data
+      bplist-parser:
+        specifier: ^0.3.2
+        version: 0.3.2
+      sql.js:
+        specifier: ^1.14.0
+        version: 1.14.1
+    devDependencies:
+      '@types/node':
+        specifier: ^24.10.1
+        version: 24.10.9
+      '@types/sql.js':
+        specifier: ^1.4.11
+        version: 1.4.11
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.12)(@types/node@24.10.9)(jsdom@29.0.1)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.0)
 
   workspace/packages/cdp-client: {}
 
@@ -16540,9 +16556,7 @@ snapshots:
       metro-runtime: 0.82.5
     transitivePeerDependencies:
       - '@babel/core'
-      - bufferutil
       - supports-color
-      - utf-8-validate
 
   '@react-native/normalize-colors@0.79.7': {}
 

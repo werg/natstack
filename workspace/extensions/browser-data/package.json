@@ -12,6 +12,7 @@
     }
   },
   "dependencies": {
-    "@natstack/browser-data": "workspace:*"
+    "@natstack/browser-data": "workspace:*",
+    "@workspace/browser-data": "workspace:*"
   }
 }

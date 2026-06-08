@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("@natstack/browser-data", async () => {
-  const actual = await vi.importActual<typeof import("@natstack/browser-data")>("@natstack/browser-data");
+vi.mock("@workspace/browser-data", async () => {
+  const actual = await vi.importActual<typeof import("@workspace/browser-data")>("@workspace/browser-data");
   return {
     ...actual,
     detectBrowsers: vi.fn(() => []),
