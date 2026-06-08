@@ -125,6 +125,30 @@ export const PROVIDER_CONNECT_PRESETS: Record<string, ProviderConnectPreset> = {
   }),
 };
 
+export const MODEL_PROVIDER_CONNECT_ORDER = [
+  "openai-codex",
+  "openai",
+  "anthropic",
+  "google",
+  "openrouter",
+  "groq",
+  "xai",
+  "deepseek",
+  "mistral",
+] as const;
+
+export function listProviderConnectPresets(): ProviderConnectPreset[] {
+  const ordered = MODEL_PROVIDER_CONNECT_ORDER.flatMap((providerId) => {
+    const preset = PROVIDER_CONNECT_PRESETS[providerId];
+    return preset ? [preset] : [];
+  });
+  const orderedIds = new Set(ordered.map((preset) => preset.providerId));
+  return [
+    ...ordered,
+    ...Object.values(PROVIDER_CONNECT_PRESETS).filter((preset) => !orderedIds.has(preset.providerId)),
+  ];
+}
+
 export function getProviderConnectPreset(providerId: string): ProviderConnectPreset | null {
   return PROVIDER_CONNECT_PRESETS[providerId] ?? null;
 }
@@ -185,6 +209,9 @@ export function toAgentCredentialSetup(providerId: string): Record<string, unkno
   return {
     flow: preset.flow,
     credentialLabel: preset.credentialLabel,
+    credential: {
+      injection: preset.injection,
+    },
     ...(preset.redirect ? { redirect: preset.redirect } : {}),
     ...(preset.clientLoopbackRedirect
       ? { clientLoopbackRedirect: preset.clientLoopbackRedirect }

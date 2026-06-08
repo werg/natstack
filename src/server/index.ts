@@ -941,7 +941,6 @@ async function main() {
     await import("./services/presenceService.js");
   const { createGitService } = await import("./services/gitService.js");
   const { createWorkerService } = await import("./services/workerService.js");
-  const { createModelCatalogService } = await import("./services/modelCatalogService.js");
 
   {
     let buildSystemInstance: import("./buildV2/index.js").BuildSystemV2 | null = null;
@@ -960,7 +959,6 @@ async function main() {
   }
   const presence = createPresenceTracker({ eventService });
   container.registerRpc(createPresenceService({ presence }));
-  container.registerRpc(createModelCatalogService());
 
   {
     let tokensDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null =

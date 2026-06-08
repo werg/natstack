@@ -726,7 +726,7 @@ function resolveWorkspaceCreationOpts(opts?: { templateDir?: string; forkFrom?: 
 export function createWorkspaceConfigManager(configPath: string, config: WorkspaceConfig) {
   return {
     get: () => config,
-    set(key: "initPanels", value: unknown): void {
+    set(key: keyof WorkspaceConfig | string, value: unknown): void {
       // Write disk first — if I/O fails, in-memory config stays consistent
       const content = fs.readFileSync(configPath, "utf-8");
       const onDisk = (YAML.parse(content) as Record<string, unknown>) ?? {};

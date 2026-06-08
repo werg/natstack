@@ -1,12 +1,16 @@
 import type { ApprovalLevel, ThinkingLevel } from "@workspace/harness";
-import { toAgentCredentialSetup } from "@natstack/shared/models/providerConnect";
+import {
+  listProviderConnectPresets,
+  toAgentCredentialSetup,
+} from "@natstack/shared/models/providerConnect";
+import { DEFAULT_AGENT_MODEL_REF } from "@natstack/shared/models/catalog";
 
 import type { ModelCredentialSetupProps } from "./trajectory-vessel-base.js";
 
 export const OPENAI_CODEX_ACCOUNT_CLAIM = "https://api.openai.com/auth";
 
 /** Default model in "provider:modelId" form. pi-ai owns the provider registry. */
-export const DEFAULT_MODEL = "openai-codex:gpt-5.5";
+export const DEFAULT_MODEL = DEFAULT_AGENT_MODEL_REF;
 
 export const DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium";
 
@@ -18,13 +22,19 @@ export const DEFAULT_RESPOND_POLICY = "all" as const;
 /**
  * Agent-side model credential connect setups. Derived from the shared provider
  * connect presets (`@natstack/shared/models/providerConnect`) so the panel
- * picker and the agent share one source. Today only `openai-codex` is wired for
- * agent-initiated (mid-turn) connect; api-key providers are connected ahead of
- * time via the panel model picker, then merely resolved here.
+ * picker and the agent share one source. Any provider in the shared preset list
+ * can be connected from first-run onboarding, the model picker, or a mid-turn
+ * credential prompt.
  */
 export const PROVIDER_CREDENTIAL_SETUPS: Record<string, ModelCredentialSetupProps> = (() => {
   const setups: Record<string, ModelCredentialSetupProps> = {};
-  const codex = toAgentCredentialSetup("openai-codex");
-  if (codex) setups["openai-codex"] = codex;
+  for (const preset of listProviderConnectPresets()) {
+    const setup = toAgentCredentialSetup(preset.providerId);
+    if (setup) setups[preset.providerId] = setup;
+  }
   return setups;
 })();
+
+export const MODEL_CREDENTIAL_PROVIDER_IDS = Object.freeze(
+  listProviderConnectPresets().map((preset) => preset.providerId)
+);

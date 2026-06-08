@@ -12,6 +12,7 @@ const STANDARD_METHODS = [
   "resume",
   "credentialConnected",
   "connectModelCredential",
+  "setModel",
   "setThinkingLevel",
   "setApprovalLevel",
   "setRespondPolicy",

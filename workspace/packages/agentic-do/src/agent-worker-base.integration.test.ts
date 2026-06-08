@@ -5813,7 +5813,10 @@ describe("AgentWorkerBase model credential resume", () => {
       kind: "ui.inline_rendered",
       payload: {
         uiType: "inline",
-        source: { type: "code" },
+        source: {
+          type: "file",
+          path: "workspace/packages/agentic-chat/components/ModelCredentialRequiredCard.tsx",
+        },
         props: {
           providerId: "test",
           modelBaseUrl: "https://model.example/v1",

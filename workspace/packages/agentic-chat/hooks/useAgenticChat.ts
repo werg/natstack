@@ -678,8 +678,10 @@ export function useAgenticChat({
   // --- Stable refs for connection effect (avoids unstable object deps) ---
   const feedbackRef = useRef(feedback);
   const chatToolsRef = useRef(chatTools);
+  const actionsRef = useRef(actions);
   feedbackRef.current = feedback;
   chatToolsRef.current = chatTools;
+  actionsRef.current = actions;
   // --- Connect to channel on mount ---
   useEffect(() => {
     if (!channelName || !config.rpc) return;
@@ -721,6 +723,26 @@ export function useAgenticChat({
                 }
               }
               return warnings.length > 0 ? { ok: true, warnings } : { ok: true };
+            },
+          },
+          persist_agent_model: {
+            description: "Persist an agent model choice for panel reload/recovery",
+            parameters: z.object({
+              participantId: z.string().describe("Agent participant id"),
+              model: z.string().describe("Model in provider:model format"),
+            }),
+            execute: async (args: unknown) => {
+              const { participantId, model } = args as { participantId?: unknown; model?: unknown };
+              if (typeof participantId !== "string" || participantId.length === 0) {
+                return { ok: false, error: "Missing participantId" };
+              }
+              if (typeof model !== "string" || model.length === 0) {
+                return { ok: false, error: "Missing model" };
+              }
+              const persist = actionsRef.current?.onPersistAgentModel;
+              if (!persist) return { ok: false, error: "Persist agent model is not available" };
+              await persist(channelName, participantId, model);
+              return { ok: true };
             },
           },
           inline_ui: {
@@ -1146,6 +1168,7 @@ Use package imports available to inline_ui plus relative imports for local helpe
   const onConnectProvider = actions?.onConnectProvider ? handleConnectProvider : undefined;
   const availableAgents = actions?.availableAgents;
   const modelCatalog = actions?.modelCatalog;
+  const defaultModelRef = actions?.defaultModelRef;
   const connectedModelRefs = actions?.connectedModelRefs;
   const onRemoveAgent = actions?.onRemoveAgent ? handleRemoveAgent : undefined;
   const onFocusPanel = actions?.onFocusPanel;
@@ -1194,6 +1217,7 @@ Use package imports available to inline_ui plus relative imports for local helpe
       onConnectProvider,
       availableAgents,
       modelCatalog,
+      defaultModelRef,
       connectedModelRefs,
       onRemoveAgent,
       onFocusPanel,
@@ -1237,6 +1261,7 @@ Use package imports available to inline_ui plus relative imports for local helpe
       onConnectProvider,
       availableAgents,
       modelCatalog,
+      defaultModelRef,
       connectedModelRefs,
       onRemoveAgent,
       onFocusPanel,

@@ -75,7 +75,11 @@ import {
   type TurnSnapshot,
 } from "@workspace/harness";
 import type { AgentMessage, AgentToolResult } from "@earendil-works/pi-agent-core";
-import { getModel as getPiModel, type ImageContent } from "@earendil-works/pi-ai";
+import {
+  getModel as getPiModel,
+  getModels as getPiModels,
+  type ImageContent,
+} from "@earendil-works/pi-ai";
 
 import { DOIdentity } from "./identity.js";
 import { SubscriptionManager } from "./subscription-manager.js";
@@ -87,6 +91,7 @@ import {
   createGadServiceClient,
   type DurableObjectServiceClient,
 } from "@natstack/shared/userlandServiceRpc";
+import { pickRecommendedModelId } from "@natstack/shared/models/modelRecommendations";
 
 const HARNESS_MODEL_REPLAY_TOOL_SAFETY: ReadonlyMap<string, ReplayToolSafety> = new Map([
   ["read", "pure-read"],
@@ -375,10 +380,22 @@ type ModelCredentialRedirectPolicy = "loopback-required";
 
 interface ConnectModelCredentialOAuthArgs {
   providerId?: unknown;
+  modelBaseUrl?: unknown;
+  modelRef?: unknown;
   browserOpenMode?: unknown;
   browserHandoffCallerId?: unknown;
   browserHandoffCallerKind?: unknown;
   browserHandoffPlatform?: unknown;
+}
+
+interface ModelCredentialProviderOption {
+  providerId: string;
+  providerLabel: string;
+  modelRef: string;
+  modelName: string;
+  modelBaseUrl: string;
+  flow: ModelCredentialConnectFlow;
+  credentialLabel: string;
 }
 
 function isThinkingLevel(value: unknown): value is ThinkingLevel {
@@ -398,121 +415,8 @@ function isRespondPolicy(value: unknown): value is RespondPolicy {
   );
 }
 
-const MODEL_CREDENTIAL_REQUIRED_CARD_TSX = `
-import { useState } from "react";
-import { Box, Button, Callout, Card, Code, Flex, Spinner, Text } from "@radix-ui/themes";
-
-export default function ModelCredentialRequiredCard({ props, chat }) {
-  const providerId = props.providerId;
-  const modelBaseUrl = props.modelBaseUrl;
-  const flow = props.flow;
-  const reconnectReason = typeof props.reason === "string" && props.reason.trim() ? props.reason : "";
-  const diagnosticReason =
-    typeof props.diagnosticReason === "string" && props.diagnosticReason.trim()
-      ? props.diagnosticReason
-      : "";
-  const failureCode =
-    typeof props.failureCode === "string" && props.failureCode.trim() ? props.failureCode : "";
-  const [status, setStatus] = useState("idle");
-  const [error, setError] = useState("");
-
-  const resolveBrowserHandoffPlatform = () => {
-    if (props.browserHandoffPlatform) return props.browserHandoffPlatform;
-    if (globalThis.__natstackHostPlatform === "mobile") return "mobile";
-    if (typeof navigator !== "undefined" && /\\bNatStack-Mobile\\//.test(navigator.userAgent)) return "mobile";
-    return undefined;
-  };
-
-  const startOAuth = async (openMode) => {
-    if (!flow || !modelBaseUrl) return;
-    setStatus("starting");
-    setError("");
-    try {
-      if (!props.agentParticipantId) {
-        throw new Error("Missing agent participant for credential setup");
-      }
-      setStatus("waiting");
-      await chat.callMethod(props.agentParticipantId, "connectModelCredential", {
-        providerId,
-        browserOpenMode: openMode,
-        browserHandoffCallerId: props.browserHandoffCallerId,
-        browserHandoffCallerKind: props.browserHandoffCallerKind,
-        browserHandoffPlatform: resolveBrowserHandoffPlatform(),
-      });
-      if (props.resumeAfterConnect !== false && props.agentParticipantId) {
-        const result = await chat.callMethod(props.agentParticipantId, "credentialConnected", {
-          providerId,
-          modelBaseUrl,
-        });
-        if (!result?.resumed) {
-          throw new Error("Credential connected, but there was no interrupted turn to continue.");
-        }
-      }
-      setStatus("done");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setStatus("error");
-    }
-  };
-
-  const busy = status === "starting" || status === "waiting" || status === "approval";
-  const unsupported = !flow || !modelBaseUrl;
-
-  return (
-    <Card variant="surface" size="2">
-      <Flex direction="column" gap="3">
-        <Box>
-          <Text as="div" size="2" weight="medium">
-            {reconnectReason ? "Credential needs refresh for " : "Credential required for "}{providerId}
-          </Text>
-          <Text as="div" size="1" color="gray" mt="1">
-            {reconnectReason ? "Reconnect" : "Connect"} a URL-bound model credential for <Code size="1">{modelBaseUrl || providerId}</Code>.
-          </Text>
-        </Box>
-        {reconnectReason ? (
-          <Callout.Root color="amber" size="1">
-            <Callout.Text>{reconnectReason}</Callout.Text>
-          </Callout.Root>
-        ) : null}
-        {diagnosticReason || failureCode ? (
-          <Box>
-            <Text as="div" size="1" color="gray">Diagnostic</Text>
-            <Code size="1">
-              {failureCode ? failureCode + ": " : ""}{diagnosticReason || "No provider details available."}
-            </Code>
-          </Box>
-        ) : null}
-        {unsupported ? (
-          <Callout.Root color="amber" size="1">
-            <Callout.Text>No built-in OAuth setup is available for this model provider.</Callout.Text>
-          </Callout.Root>
-        ) : null}
-        {status === "done" ? (
-          <Callout.Root color="green" size="1">
-            <Callout.Text>
-              {props.resumeAfterConnect === false ? "Credential connected." : "Credential connected. Continuing..."}
-            </Callout.Text>
-          </Callout.Root>
-        ) : null}
-        {error ? (
-          <Callout.Root color="red" size="1">
-            <Callout.Text>{error}</Callout.Text>
-          </Callout.Root>
-        ) : null}
-        <Flex gap="2" wrap="wrap">
-          <Button size="1" onClick={() => startOAuth("internal")} disabled={busy || unsupported || status === "done"}>
-            {busy ? <Spinner size="1" /> : null}
-            {status === "done" ? "Connected" : status === "error" ? "Try Again" : reconnectReason ? "Reconnect" : "Internal Browser"}
-          </Button>
-          <Button size="1" variant="soft" onClick={() => startOAuth("external")} disabled={busy || unsupported || status === "done"}>
-            External Browser
-          </Button>
-        </Flex>
-      </Flex>
-    </Card>
-  );
-}
-`.trim();
+const MODEL_CREDENTIAL_REQUIRED_CARD_PATH =
+  "workspace/packages/agentic-chat/components/ModelCredentialRequiredCard.tsx";
 
 function base64UrlJson(value: unknown): string {
   return btoa(JSON.stringify(value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
@@ -3648,6 +3552,22 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       : this.getDefaultModel();
   }
 
+  protected async setModel(channelId: string, model: string): Promise<void> {
+    this.resolveModelRef(model);
+    const previousProviderId = this.getModelProviderId(channelId);
+    this.subscriptions.patchConfig(channelId, { model });
+    const nextProviderId = this.getModelProviderId(channelId);
+    const nextModelBaseUrl = this.getModelBaseUrl(channelId);
+    this.retargetModelCredentialInterruption(
+      channelId,
+      previousProviderId,
+      nextProviderId,
+      nextModelBaseUrl
+    );
+    const entry = this.runners.get(channelId);
+    if (entry) await entry.runner.setModel(model);
+  }
+
   protected getThinkingLevel(channelId: string): ThinkingLevel {
     const stateValue = this.getStateValue(`thinkingLevel:${channelId}`);
     if (isThinkingLevel(stateValue)) return stateValue;
@@ -3671,8 +3591,8 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     channelId: string,
     opts?: { resumeCurrentTurnOnMissingCredential?: boolean }
   ): () => Promise<string> {
-    const providerId = this.getModelProviderId(channelId);
     return async () => {
+      const providerId = this.getModelProviderId(channelId);
       const modelBaseUrl = this.getModelBaseUrl(channelId);
       this.recordDebugPhase(channelId, "model_credential.resolve.start", {
         providerId,
@@ -3868,6 +3788,10 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     return null;
   }
 
+  protected getModelCredentialProviderIds(): readonly string[] {
+    return [];
+  }
+
   protected getModelCredentialTokenClaims(
     _providerId: string,
     _credential: ModelCredentialSummary
@@ -3894,7 +3818,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
   }
 
   private getModelCredentialConnectSpec(
-    channelId: string,
+    _channelId: string,
     providerId: string
   ): {
     flow: ModelCredentialConnectFlow;
@@ -3906,9 +3830,6 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     accountIdentityJwtClaimRoot: string;
     accountIdentityJwtClaimField: string;
   } {
-    if (providerId !== this.getModelProviderId(channelId)) {
-      throw new Error(`Model credential provider mismatch: ${providerId}`);
-    }
     const setup = this.getModelCredentialSetupProps(providerId);
     const flow = setup?.["flow"];
     if (!isModelCredentialConnectFlow(flow)) {
@@ -3940,6 +3861,135 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     };
   }
 
+  private concreteProviderModels(providerId: string): Array<{
+    id: string;
+    name?: string;
+    baseUrl: string;
+  }> {
+    return (getPiModels(providerId as never) as Array<{ id: string; name?: string; baseUrl?: string }>)
+      .filter(
+        (model): model is { id: string; name?: string; baseUrl: string } =>
+          typeof model.id === "string" &&
+          typeof model.baseUrl === "string" &&
+          model.baseUrl.length > 0 &&
+          !/\{[^}]+\}/.test(model.baseUrl)
+      );
+  }
+
+  private providerLabel(providerId: string): string {
+    const labels: Record<string, string> = {
+      "openai-codex": "ChatGPT",
+      openai: "OpenAI",
+      anthropic: "Anthropic",
+      google: "Google AI",
+      openrouter: "OpenRouter",
+      groq: "Groq",
+      xai: "xAI",
+      deepseek: "DeepSeek",
+      mistral: "Mistral",
+    };
+    return labels[providerId] ?? providerId;
+  }
+
+  private findModelCredentialProviderOption(
+    providerId: string,
+    preferred?: { modelRef?: string; modelBaseUrl?: string }
+  ): ModelCredentialProviderOption | null {
+    let setup: {
+      flow: ModelCredentialConnectFlow;
+      credentialLabel: string;
+    };
+    try {
+      setup = this.getModelCredentialConnectSpec("", providerId);
+    } catch {
+      return null;
+    }
+    if (!isModelCredentialConnectFlow(setup.flow)) return null;
+    const models = this.concreteProviderModels(providerId);
+    if (models.length === 0) return null;
+    const preferredModel =
+      (preferred?.modelRef
+        ? (() => {
+            try {
+              const ref = this.resolveModelRef(preferred.modelRef);
+              if (ref.providerId !== providerId) return null;
+              return models.find((model) => model.id === ref.modelId) ?? null;
+            } catch {
+              return null;
+            }
+          })()
+        : null) ??
+      (preferred?.modelBaseUrl
+        ? models.find((model) => model.baseUrl === preferred.modelBaseUrl) ?? null
+        : null);
+    const recommendedId = pickRecommendedModelId(providerId, models);
+    const model = preferredModel ?? models.find((candidate) => candidate.id === recommendedId) ?? models[0]!;
+    return {
+      providerId,
+      providerLabel: this.providerLabel(providerId),
+      modelRef: `${providerId}:${model.id}`,
+      modelName: model.name ?? model.id,
+      modelBaseUrl: model.baseUrl,
+      flow: setup.flow,
+      credentialLabel: setup.credentialLabel,
+    };
+  }
+
+  private getModelCredentialProviderOptions(
+    channelId: string,
+    currentProviderId: string,
+    currentModelBaseUrl: string
+  ): ModelCredentialProviderOption[] {
+    const currentModelRef = this.getModel(channelId);
+    const providerIds = [
+      currentProviderId,
+      ...this.getModelCredentialProviderIds().filter((providerId) => providerId !== currentProviderId),
+    ];
+    const options: ModelCredentialProviderOption[] = [];
+    const seen = new Set<string>();
+    for (const providerId of providerIds) {
+      if (seen.has(providerId)) continue;
+      seen.add(providerId);
+      const option = this.findModelCredentialProviderOption(providerId, {
+        modelRef: providerId === currentProviderId ? currentModelRef : undefined,
+        modelBaseUrl: providerId === currentProviderId ? currentModelBaseUrl : undefined,
+      });
+      if (option) options.push(option);
+    }
+    return options;
+  }
+
+  private resolveCredentialConnectTarget(
+    channelId: string,
+    providerId: string,
+    args: ConnectModelCredentialOAuthArgs
+  ): { modelRef?: string; modelBaseUrl: string } {
+    if (typeof args.modelRef === "string" && args.modelRef.length > 0) {
+      const ref = this.resolveModelRef(args.modelRef);
+      if (ref.providerId !== providerId) {
+        throw new Error(`Model ${args.modelRef} does not belong to provider ${providerId}`);
+      }
+      const baseUrl = ref.model.baseUrl;
+      if (typeof args.modelBaseUrl === "string" && args.modelBaseUrl !== baseUrl) {
+        throw new Error(`Model base URL mismatch for ${args.modelRef}`);
+      }
+      return { modelRef: args.modelRef, modelBaseUrl: baseUrl };
+    }
+    if (typeof args.modelBaseUrl === "string" && args.modelBaseUrl.length > 0) {
+      const option = this.findModelCredentialProviderOption(providerId, {
+        modelBaseUrl: args.modelBaseUrl,
+      });
+      if (!option || option.modelBaseUrl !== args.modelBaseUrl) {
+        throw new Error(`Model base URL is not connectable for provider ${providerId}`);
+      }
+      return { modelRef: option.modelRef, modelBaseUrl: option.modelBaseUrl };
+    }
+    if (providerId !== this.getModelProviderId(channelId)) {
+      throw new Error(`connectModelCredential requires modelRef or modelBaseUrl for ${providerId}`);
+    }
+    return { modelRef: this.getModel(channelId), modelBaseUrl: this.getModelBaseUrl(channelId) };
+  }
+
   private async connectModelCredential(
     channelId: string,
     args: ConnectModelCredentialOAuthArgs
@@ -3953,8 +4003,9 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     const browserHandoffCallerKind = args.browserHandoffCallerKind === "shell" ? "shell" : "panel";
     const browserHandoffPlatform =
       typeof args.browserHandoffPlatform === "string" ? args.browserHandoffPlatform : undefined;
-    const modelBaseUrl = this.getModelBaseUrl(channelId);
     const setup = this.getModelCredentialConnectSpec(channelId, args.providerId);
+    const target = this.resolveCredentialConnectTarget(channelId, args.providerId, args);
+    const modelBaseUrl = target.modelBaseUrl;
     const redirect =
       (browserOpenMode === "external" || browserHandoffPlatform === "mobile") &&
       setup.clientLoopbackRedirect
@@ -4038,17 +4089,29 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     ].join(".");
   }
 
-  private getModelBaseUrl(channelId: string): string {
-    const model = this.getModel(channelId);
+  private resolveModelRef(model: string): {
+    providerId: string;
+    modelId: string;
+    model: NonNullable<ReturnType<typeof getPiModel>>;
+  } {
     const colonIdx = model.indexOf(":");
     if (colonIdx < 0) {
       throw new Error(`Model must be "provider:model", got: ${model}`);
     }
-    const provider = model.slice(0, colonIdx);
+    const providerId = model.slice(0, colonIdx);
     const modelId = model.slice(colonIdx + 1);
-    const resolved = getPiModel(provider as never, modelId as never);
+    const resolved = getPiModel(providerId as never, modelId as never);
+    if (!resolved) {
+      throw new Error(`No model metadata found for model: ${model}`);
+    }
+    return { providerId, modelId, model: resolved };
+  }
+
+  private getModelBaseUrl(channelId: string): string {
+    const { providerId, model, modelId } = this.resolveModelRef(this.getModel(channelId));
+    const resolved = model;
     if (!resolved?.baseUrl) {
-      throw new Error(`No model metadata found for model provider: ${provider}`);
+      throw new Error(`No model metadata found for model provider: ${providerId}:${modelId}`);
     }
     return resolved.baseUrl;
   }
@@ -5048,7 +5111,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     const runner = this.createRunner(channelId, {
       ...runnerOptions,
       onPrepareNextTurn: async (snapshot) => {
-        await this.prepareNextTurnHook(channelId, snapshot);
+        return this.prepareNextTurnHook(channelId, snapshot);
       },
       onTurnPhase: async ({ turnId, phase }) => {
         if (phase !== "model_start") return;
@@ -5497,13 +5560,21 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
    * thinking-level. The hook receives the current `TurnSnapshot` but the
    * default implementation only needs `channelId`. Subclasses may override.
    */
-  protected async prepareNextTurnHook(channelId: string, _snapshot: TurnSnapshot): Promise<void> {
+  protected async prepareNextTurnHook(
+    channelId: string,
+    snapshot: TurnSnapshot
+  ): Promise<TurnSnapshot | void> {
     await this.refreshRoster(channelId);
-    // Re-evaluating `getModel`/`getThinkingLevel` is implicit: the runner
-    // picks up new values via the standard getters on its next prompt.
-    // Subclasses that cache may override this hook to invalidate.
-    void this.getModel(channelId);
-    void this.getThinkingLevel(channelId);
+    const model = this.resolveModelRef(this.getModel(channelId)).model;
+    const thinkingLevel = this.getThinkingLevel(channelId);
+    if (model !== snapshot.model || thinkingLevel !== snapshot.thinkingLevel) {
+      return {
+        ...snapshot,
+        model,
+        thinkingLevel,
+      };
+    }
+    return undefined;
   }
 
   private transcriptShapeErrorMessage(error: unknown): string {
@@ -5671,6 +5742,33 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
 
   private clearModelCredentialInterruption(channelId: string, providerId: string): void {
     this.suspensions.resolve(credentialSuspensionId(channelId, providerId));
+  }
+
+  private retargetModelCredentialInterruption(
+    channelId: string,
+    previousProviderId: string,
+    nextProviderId: string,
+    nextModelBaseUrl: string
+  ): void {
+    if (previousProviderId === nextProviderId) return;
+    const previousId = credentialSuspensionId(channelId, previousProviderId);
+    const existing = this.suspensions.findById(previousId);
+    if (!existing || existing.reason !== "credential" || existing.status !== "suspended") return;
+    this.suspensions.record({
+      id: credentialSuspensionId(channelId, nextProviderId),
+      channelId,
+      turnId: existing.turnId,
+      reason: "credential",
+      resumeCount: existing.resumeCount,
+      payload: { providerId: nextProviderId, modelBaseUrl: nextModelBaseUrl },
+    });
+    this.suspensions.resolve(previousId);
+    this.credentialPromptCardsEmitted.delete(
+      `${channelId}::model-credential::${previousProviderId}::resume-turn`
+    );
+    this.credentialPromptCardsEmitted.delete(
+      `${channelId}::model-credential::${previousProviderId}::connect-only`
+    );
   }
 
   /**
@@ -6301,9 +6399,12 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
         ? (panel.metadata["hostPlatform"] as string)
         : undefined;
     const cardId = `model-credential-${providerId}-${crypto.randomUUID()}`;
+    const providerOptions = this.getModelCredentialProviderOptions(channelId, providerId, modelBaseUrl);
     const props = {
       providerId,
+      modelRef: this.getModel(channelId),
       modelBaseUrl,
+      providerOptions,
       agentParticipantId: participantId,
       browserHandoffCallerId,
       browserHandoffCallerKind: browserHandoffCallerId ? "panel" : undefined,
@@ -6325,7 +6426,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
         protocol: AGENTIC_PROTOCOL_VERSION,
         uiType: "inline",
         id: cardId,
-        source: { type: "code", code: MODEL_CREDENTIAL_REQUIRED_CARD_TSX },
+        source: { type: "file", path: MODEL_CREDENTIAL_REQUIRED_CARD_PATH },
         props,
       },
       ...(opts?.turnId ? { turnId: opts.turnId as never } : {}),

@@ -21,6 +21,7 @@ import {
   DEFAULT_MODEL,
   DEFAULT_RESPOND_POLICY,
   DEFAULT_THINKING_LEVEL,
+  MODEL_CREDENTIAL_PROVIDER_IDS,
   OPENAI_CODEX_ACCOUNT_CLAIM,
   PROVIDER_CREDENTIAL_SETUPS,
 } from "./agent-config.js";
@@ -32,6 +33,7 @@ type StandardAgentMethodName =
   | "resume"
   | "credentialConnected"
   | "connectModelCredential"
+  | "setModel"
   | "setThinkingLevel"
   | "setApprovalLevel"
   | "setRespondPolicy"
@@ -75,6 +77,10 @@ export abstract class AgentWorkerBase extends TrajectoryVesselBase {
     return PROVIDER_CREDENTIAL_SETUPS[providerId] ?? null;
   }
 
+  protected override getModelCredentialProviderIds(): readonly string[] {
+    return MODEL_CREDENTIAL_PROVIDER_IDS;
+  }
+
   protected override getModelCredentialTokenClaims(
     providerId: string,
     credential: ModelCredentialSummary
@@ -95,6 +101,10 @@ export abstract class AgentWorkerBase extends TrajectoryVesselBase {
       {
         name: "connectModelCredential",
         description: "Connect a model credential for the current provider",
+      },
+      {
+        name: "setModel",
+        description: "Set the live model in provider:model format",
       },
       {
         name: "setThinkingLevel",
@@ -152,6 +162,17 @@ export abstract class AgentWorkerBase extends TrajectoryVesselBase {
             ),
           },
         };
+      case "setModel": {
+        const model = (args as { model?: unknown } | null)?.model;
+        if (typeof model !== "string" || model.length === 0) {
+          return {
+            result: { error: "setModel requires model in provider:model format" },
+            isError: true,
+          };
+        }
+        await this.setModel(channelId, model);
+        return { result: this.getAgentSettings(channelId) };
+      }
       case "setThinkingLevel": {
         const level = (args as { level?: unknown } | null)?.level;
         if (level !== "minimal" && level !== "low" && level !== "medium" && level !== "high") {

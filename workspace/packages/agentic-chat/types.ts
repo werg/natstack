@@ -197,6 +197,8 @@ export interface ChatContextValue {
   availableAgents?: AvailableAgent[];
   /** Static pi model catalog; connection status merged in the UI. */
   modelCatalog?: ModelCatalog | null;
+  /** Workspace default model ref ("provider:modelId") for new agents. */
+  defaultModelRef?: string | null;
   /** Model refs ("provider:modelId") with a usable credential (panel-scoped). */
   connectedModelRefs?: string[];
   onRemoveAgent?: (handle: string) => void;

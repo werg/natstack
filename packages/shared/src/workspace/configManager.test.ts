@@ -85,6 +85,19 @@ describe("createWorkspaceConfigManager", () => {
     expect(onDisk["initPanels"]).toEqual(entries);
   });
 
+  it("set() can set the workspace default agent model", () => {
+    const onDisk: Record<string, unknown> = { id: "test-ws" };
+    mockFs.readFileSync.mockReturnValue("yaml");
+    mockYAML.parse.mockReturnValue(onDisk);
+    mockYAML.stringify.mockReturnValue("out");
+
+    const mgr = createWorkspaceConfigManager(configPath, config);
+    mgr.set("defaultAgentModel", "anthropic:claude-opus-4-1");
+
+    expect(config.defaultAgentModel).toBe("anthropic:claude-opus-4-1");
+    expect(onDisk["defaultAgentModel"]).toBe("anthropic:claude-opus-4-1");
+  });
+
   it("set() clears a field by setting undefined", () => {
     const onDisk: Record<string, unknown> = { id: "test-ws", initPanels: [{ source: "panels/old" }] };
     mockFs.readFileSync.mockReturnValue("yaml");

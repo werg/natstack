@@ -138,6 +138,20 @@ describe("AiChatWorker model credential defaults", () => {
     expect(worker.tokenClaims("openai-codex", "acct-1")).toEqual({
       "https://api.openai.com/auth": { chatgpt_account_id: "acct-1" },
     });
+    expect(worker.setupProps("anthropic")).toMatchObject({
+      credentialLabel: "Anthropic API key",
+      credential: {
+        injection: {
+          type: "header",
+          name: "x-api-key",
+          valueTemplate: "{token}",
+        },
+      },
+      flow: {
+        type: "api-key",
+        title: "Anthropic API key",
+      },
+    });
     expect(worker.setupProps("other-provider")).toBeNull();
     expect(worker.tokenClaims("other-provider", "acct-1")).toEqual({});
 
@@ -207,6 +221,71 @@ describe("AiChatWorker model credential defaults", () => {
             port: 1455,
             callbackPath: "/auth/callback",
           },
+        }),
+      }),
+    ]);
+  });
+
+  it("connects non-default provider credentials against an explicit model target", async () => {
+    const { instance } = await createTestDO(TestAiChatWorker);
+    const worker = instance as TestAiChatWorker;
+
+    await worker.onMethodCall("ch-1", "call-anthropic", "connectModelCredential", {
+      providerId: "anthropic",
+      modelRef: "anthropic:claude-3-5-sonnet-20241022",
+    });
+
+    expect(worker.rpcCall).toHaveBeenCalledWith("main", "credentials.connect", [
+      expect.objectContaining({
+        flow: expect.objectContaining({
+          type: "api-key",
+          title: "Anthropic API key",
+        }),
+        credential: expect.objectContaining({
+          label: "Anthropic API key",
+          audience: [{ url: "https://api.anthropic.com", match: "path-prefix" }],
+          injection: {
+            type: "header",
+            name: "x-api-key",
+            valueTemplate: "{token}",
+            stripIncoming: ["x-api-key", "authorization"],
+          },
+          metadata: expect.objectContaining({
+            modelProviderId: "anthropic",
+          }),
+        }),
+      }),
+    ]);
+  });
+
+  it("persists a live model switch and uses it for later credential setup", async () => {
+    const { instance } = await createTestDO(TestAiChatWorker);
+    const worker = instance as TestAiChatWorker;
+    worker.insertSubscriptionConfig("ch-1", {});
+
+    await worker.onMethodCall("ch-1", "call-model", "setModel", {
+      model: "anthropic:claude-3-5-sonnet-20241022",
+    });
+
+    expect(worker.model()).toBe("anthropic:claude-3-5-sonnet-20241022");
+    expect(worker.modelBaseUrl()).toBe("https://api.anthropic.com");
+    expect(
+      (await worker.onMethodCall("ch-1", "call-settings", "getAgentSettings", {})).result
+    ).toMatchObject({
+      model: { value: "anthropic:claude-3-5-sonnet-20241022", source: "config" },
+    });
+
+    await worker.onMethodCall("ch-1", "call-connect", "connectModelCredential", {
+      providerId: "anthropic",
+    });
+
+    expect(worker.rpcCall).toHaveBeenCalledWith("main", "credentials.connect", [
+      expect.objectContaining({
+        credential: expect.objectContaining({
+          audience: [{ url: "https://api.anthropic.com", match: "path-prefix" }],
+          metadata: expect.objectContaining({
+            modelProviderId: "anthropic",
+          }),
         }),
       }),
     ]);
@@ -309,10 +388,15 @@ describe("AiChatWorker model credential defaults", () => {
       activeToolNames: new Set<string>(),
     } as unknown as TurnSnapshot;
 
-    expect(await worker.prepare("ch-1", snapshot)).toBeUndefined();
+    const initial = await worker.prepare("ch-1", snapshot);
+    expect(initial).toMatchObject({
+      thinkingLevel: "medium",
+    });
 
     await worker.onMethodCall("ch-1", "call-thinking", "setThinkingLevel", { level: "high" });
-    await expect(worker.prepare("ch-1", snapshot)).resolves.toBeUndefined();
+    await expect(worker.prepare("ch-1", snapshot)).resolves.toMatchObject({
+      thinkingLevel: "high",
+    });
     expect(
       (await worker.onMethodCall("ch-1", "call-settings", "getAgentSettings", {})).result
     ).toMatchObject({

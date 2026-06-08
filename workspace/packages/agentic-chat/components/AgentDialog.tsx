@@ -16,9 +16,14 @@ export interface AgentDialogProps {
 
 type Mode = "add" | "switch" | "edit";
 
-function pickDefaultModel(catalog: ModelCatalog | null, connected: ReadonlySet<string>): string {
+function pickDefaultModel(
+  catalog: ModelCatalog | null,
+  connected: ReadonlySet<string>,
+  defaultModelRef?: string | null
+): string {
   const models = catalog?.models ?? [];
   return (
+    (defaultModelRef && models.some((m) => m.ref === defaultModelRef) ? defaultModelRef : null) ??
     models.find((m) => m.recommended && connected.has(m.ref))?.ref ??
     models.find((m) => connected.has(m.ref))?.ref ??
     models.find((m) => m.recommended)?.ref ??
@@ -28,7 +33,8 @@ function pickDefaultModel(catalog: ModelCatalog | null, connected: ReadonlySet<s
 }
 
 function draftToConfig(draft: AgentConfigDraft): AgentSubscriptionConfig {
-  const config: AgentSubscriptionConfig = { model: draft.model };
+  const config: AgentSubscriptionConfig = {};
+  if (draft.model) config.model = draft.model;
   if (draft.thinkingLevel) config.thinkingLevel = draft.thinkingLevel;
   if (draft.approvalLevel !== undefined) config.approvalLevel = draft.approvalLevel;
   if (draft.respondPolicy) config.respondPolicy = draft.respondPolicy;
@@ -45,6 +51,7 @@ export function AgentDialog({ open, onOpenChange, editParticipantId }: AgentDial
     participants,
     availableAgents = [],
     modelCatalog = null,
+    defaultModelRef,
     connectedModelRefs,
     onAddAgent,
     onReplaceAgent,
@@ -85,6 +92,7 @@ export function AgentDialog({ open, onOpenChange, editParticipantId }: AgentDial
   const [agentId, setAgentId] = useState<string | undefined>(availableAgents[0]?.id);
   const [step, setStep] = useState<"type" | "config">(showGallery ? "type" : "config");
   const [draft, setDraft] = useState<AgentConfigDraft>({ model: "" });
+  const [modelTouched, setModelTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -95,10 +103,11 @@ export function AgentDialog({ open, onOpenChange, editParticipantId }: AgentDial
     setBusy(false);
     setStep(showGallery ? "type" : "config");
     setAgentId(availableAgents[0]?.id);
+    setModelTouched(false);
 
     if (mode === "add") {
       setDraft({
-        model: pickDefaultModel(modelCatalog, connectedRefs),
+        model: pickDefaultModel(modelCatalog, connectedRefs, defaultModelRef),
         approvalLevel: 2,
         respondPolicy: showReactiveness ? "mentioned" : undefined,
         handle: availableAgents[0]?.proposedHandle,
@@ -141,6 +150,15 @@ export function AgentDialog({ open, onOpenChange, editParticipantId }: AgentDial
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  useEffect(() => {
+    if (!open || mode !== "add" || modelTouched) return;
+    const nextModel = pickDefaultModel(modelCatalog, connectedRefs, defaultModelRef);
+    if (!nextModel) return;
+    setDraft((current) =>
+      current.model === nextModel ? current : { ...current, model: nextModel }
+    );
+  }, [open, mode, modelTouched, modelCatalog, connectedRefs, defaultModelRef]);
 
   const selectedModel = useMemo(
     () => modelCatalog?.models.find((m) => m.ref === draft.model) ?? null,
@@ -296,7 +314,10 @@ export function AgentDialog({ open, onOpenChange, editParticipantId }: AgentDial
               catalog={modelCatalog}
               connectedRefs={connectedRefs}
               value={draft}
-              onChange={setDraft}
+              onChange={(next) => {
+                if (next.model !== draft.model) setModelTouched(true);
+                setDraft(next);
+              }}
               modelEditable={mode !== "edit"}
               showReactiveness={showReactiveness}
               showHandle={showHandle}

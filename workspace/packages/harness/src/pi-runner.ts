@@ -666,6 +666,14 @@ export class PiRunner {
     return this.currentTurnId;
   }
 
+  async setModel(modelName: string): Promise<void> {
+    const model = resolveModel(modelName);
+    this.resolvedModel = model;
+    if (this.harness && model !== this.harness.getModel()) {
+      await this.harness.setModel(model);
+    }
+  }
+
   private rememberCheckpoint(phase: string, detail?: Record<string, unknown>): void {
     pushBounded(this.phaseCheckpoints, {
       phase,

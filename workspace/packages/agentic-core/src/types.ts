@@ -91,9 +91,16 @@ export interface AgenticChatActions {
     modelBaseUrl: string,
     opts?: { browser?: "internal" | "external" }
   ) => Promise<ConnectProviderResult>;
+  onPersistAgentModel?: (
+    channelName: string,
+    participantId: string,
+    model: string
+  ) => Promise<void>;
   availableAgents?: AvailableAgent[];
   /** Static pi model catalog; connection status is merged panel-side. */
   modelCatalog?: ModelCatalog | null;
+  /** Workspace default model ref ("provider:modelId") for new agents. */
+  defaultModelRef?: string | null;
   /** Model refs ("provider:modelId") the panel has a usable credential for. */
   connectedModelRefs?: string[];
   onFocusPanel?: (panelId: string) => void;

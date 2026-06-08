@@ -1,6 +1,8 @@
 # NatStack Workspace Configuration
 # This file configures the workspace for development
 
+defaultAgentModel: openai-codex:gpt-5.5
+
 initPanels:
   - source: panels/chat
     stateArgs:
@@ -147,6 +149,10 @@ singletonObjects:
     className: GadWorkspaceDO
     key: workspace-gad
 
+  - source: workers/model-settings
+    className: ModelSettingsDO
+    key: workspace-model-settings
+
 # =============================================================================
 # Userland services. Resolved by `name` or by any entry in `protocols`.
 # A `durableObject.className` entry without a matching singletonObjects row
@@ -172,6 +178,16 @@ services:
       allowed: [panel, shell, server, worker, do, extension, harness]
     durableObject:
       className: PubSubChannel
+
+  - source: workers/model-settings
+    name: models
+    title: Workspace Model Settings
+    protocols:
+      - natstack.models.v1
+    policy:
+      allowed: [panel, shell, server, worker, do, extension, harness]
+    durableObject:
+      className: ModelSettingsDO
 
 # =============================================================================
 # HTTP routes exposed under `/_r/w/<source>/...`.

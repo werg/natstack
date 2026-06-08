@@ -28,6 +28,8 @@ export interface WorkspaceConfig {
     git?: {
         remotes?: Record<string, Record<string, Record<string, string | null | undefined> | undefined> | undefined>;
     };
+    /** Workspace-wide default agent model ref ("provider:modelId"). */
+    defaultAgentModel?: string;
 }
 export interface WorkspaceUnitStatus {
     name: string;

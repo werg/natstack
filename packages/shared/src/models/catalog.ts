@@ -1,11 +1,15 @@
 /**
  * Model catalog shared types.
  *
- * The server (`models.listCatalog`) returns the STATIC pi catalog described
+ * The workspace model-settings service returns the STATIC pi catalog described
  * here — no credentials, no connection state. Connection status is computed
  * panel-side from the panel's own `credentials.listStoredCredentials()` so it
- * stays scoped to that caller's identity (see modelCatalogService for why).
+ * stays scoped to that caller's identity.
  */
+
+export const MODEL_SETTINGS_SERVICE_PROTOCOL = "natstack.models.v1";
+export const WORKSPACE_DEFAULT_MODEL_FIELD = "defaultAgentModel";
+export const DEFAULT_AGENT_MODEL_REF = "openai-codex:gpt-5.5";
 
 /** Effort levels the agent harness accepts (subset of pi's ModelThinkingLevel). */
 export type AgentThinkingLevel = "minimal" | "low" | "medium" | "high";
@@ -15,6 +19,8 @@ export interface ModelCatalogProvider {
   label: string;
   /** Distinct base URLs across this provider's models (can be >1). */
   baseUrls: string[];
+  /** Recommended onboarding/default model for this provider, when known. */
+  recommendedModelRef: string | null;
   /**
    * Summary only: a connect preset exists AND at least one non-templated model
    * baseUrl. The per-model `connectable` flag is authoritative for the UI.
@@ -47,4 +53,11 @@ export interface ModelCatalogEntry {
 export interface ModelCatalog {
   providers: ModelCatalogProvider[];
   models: ModelCatalogEntry[];
+}
+
+export interface ModelSettingsSnapshot {
+  catalog: ModelCatalog;
+  defaultModel: string;
+  defaultModelSource: "workspace" | "fallback";
+  invalidDefaultModel?: string;
 }

@@ -132,6 +132,20 @@ export class SubscriptionManager {
     return parsed && typeof parsed === "object" ? (parsed as AgentSubscriptionConfig) : null;
   }
 
+  patchConfig(channelId: string, patch: Record<string, unknown>): AgentSubscriptionConfig {
+    const current = this.getConfig(channelId) ?? {};
+    if (!this.getParticipantId(channelId)) {
+      throw new Error(`No subscription for channel ${channelId}`);
+    }
+    const next: Record<string, unknown> = { ...current, ...patch };
+    this.sql.exec(
+      `UPDATE subscriptions SET config = ? WHERE channel_id = ?`,
+      JSON.stringify(next),
+      channelId
+    );
+    return next as AgentSubscriptionConfig;
+  }
+
   listAll(): Array<{ channelId: string; participantId: string | null }> {
     return this.sql
       .exec(`SELECT channel_id, participant_id FROM subscriptions`)
