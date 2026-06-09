@@ -13,17 +13,29 @@ export function createAdblockService(deps: { adBlockManager: AdBlockManager }): 
       setListEnabled: { args: z.tuple([z.string(), z.boolean()]) },
       addCustomList: { args: z.tuple([z.string()]) },
       removeCustomList: { args: z.tuple([z.string()]) },
-      addToWhitelist: { args: z.tuple([z.string()]) },
-      removeFromWhitelist: { args: z.tuple([z.string()]) },
-      getStats: { args: z.tuple([]) },
+      addToWhitelist: { args: z.tuple([z.string()]), policy: { allowed: ["shell", "panel"] } },
+      removeFromWhitelist: {
+        args: z.tuple([z.string()]),
+        policy: { allowed: ["shell", "panel"] },
+      },
+      getStats: { args: z.tuple([]), policy: { allowed: ["shell", "panel"] } },
       resetStats: { args: z.tuple([]) },
       rebuildEngine: { args: z.tuple([]) },
-      isActive: { args: z.tuple([]) },
-      getStatsForPanel: { args: z.tuple([z.number()]) },
-      isEnabledForPanel: { args: z.tuple([z.number()]) },
-      setEnabledForPanel: { args: z.tuple([z.number(), z.boolean()]) },
-      resetStatsForPanel: { args: z.tuple([z.number()]) },
-      getPanelUrl: { args: z.tuple([z.number()]) },
+      isActive: { args: z.tuple([]), policy: { allowed: ["shell", "panel"] } },
+      getStatsForPanel: { args: z.tuple([z.number()]), policy: { allowed: ["shell", "panel"] } },
+      isEnabledForPanel: {
+        args: z.tuple([z.number()]),
+        policy: { allowed: ["shell", "panel"] },
+      },
+      setEnabledForPanel: {
+        args: z.tuple([z.number(), z.boolean()]),
+        policy: { allowed: ["shell", "panel"] },
+      },
+      resetStatsForPanel: {
+        args: z.tuple([z.number()]),
+        policy: { allowed: ["shell", "panel"] },
+      },
+      getPanelUrl: { args: z.tuple([z.number()]), policy: { allowed: ["shell", "panel"] } },
     },
     handler: async (_ctx, method, args) => {
       const manager = deps.adBlockManager;
