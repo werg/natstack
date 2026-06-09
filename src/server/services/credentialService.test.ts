@@ -544,6 +544,63 @@ describe("credentialService", () => {
     expect(result).toMatchObject({ id: stored.id });
   });
 
+  it("promotes deferrable one-shot credential approvals so resumed callers do not re-prompt", async () => {
+    const store = new MemoryCredentialStore();
+    const approvalQueue = {
+      request: vi.fn(async () => "once" as const),
+      resolve: vi.fn(),
+      listPending: vi.fn(() => []),
+    };
+    const service = createCredentialService({
+      credentialStore: store as never,
+      approvalQueue: approvalQueue as never,
+      sessionGrantStore: new CredentialSessionGrantStore(),
+    });
+
+    const stored = (await service.handler(
+      { caller: verifiedTestCaller("worker:first", "worker") },
+      "storeCredential",
+      [
+        {
+          label: "Example API",
+          audience: [{ url: "https://api.example.test/", match: "origin" }],
+          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+          material: { type: "bearer-token", token: "secret-token" },
+        },
+      ]
+    )) as StoredCredentialSummary;
+    approvalQueue.request.mockClear();
+
+    let capturedWork: ((signal: AbortSignal) => Promise<unknown>) | null = null;
+    const caller = verifiedTestCaller("do:workers/agent-worker:AiChatWorker:first", "do");
+    const ctx: ServiceContext = {
+      caller,
+      requestId: "req-defer-once",
+      deferral: {
+        canDefer: true,
+        run: (work) => {
+          capturedWork = work;
+          return { [DEFERRED_RESULT]: true, requestId: "req-defer-once" } as const;
+        },
+      },
+    };
+
+    const outcome = await service.handler(ctx, "resolveCredential", [
+      { url: "https://api.example.test/v1" },
+    ]);
+    expect(isDeferredResult(outcome)).toBe(true);
+
+    await expect(capturedWork!(new AbortController().signal)).resolves.toMatchObject({
+      id: stored.id,
+    });
+    expect(approvalQueue.request).toHaveBeenCalledTimes(1);
+
+    await expect(
+      service.handler({ caller }, "resolveCredential", [{ url: "https://api.example.test/v1" }])
+    ).resolves.toMatchObject({ id: stored.id });
+    expect(approvalQueue.request).toHaveBeenCalledTimes(1);
+  });
+
   it("passes the deferral abort signal into interactive connect approvals", async () => {
     const store = new MemoryCredentialStore();
     let capturedWork: ((signal: AbortSignal) => Promise<unknown>) | null = null;

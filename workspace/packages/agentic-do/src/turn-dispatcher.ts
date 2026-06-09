@@ -460,7 +460,10 @@ export class TurnDispatcher {
         if (generation !== this.drainGeneration || completion.status === "invalidated") return;
         if (completion.status === "failed") {
           if (generation !== this.drainGeneration) return;
-          if (isTurnSuspensionSignal(completion.error)) {
+          if (
+            isTurnSuspensionSignal(completion.error) ||
+            isStaleDispatchSignal(completion.error)
+          ) {
             this.running = false;
             this.notifyTyping();
             continue;
@@ -656,6 +659,15 @@ export class TurnDispatcher {
 function eventMetadata(event: RunnerEvent): { turnId?: string; lifecycleMatched?: boolean } {
   return ((event as { natstack?: { turnId?: string; lifecycleMatched?: boolean } }).natstack ??
     {}) as { turnId?: string; lifecycleMatched?: boolean };
+}
+
+function isStaleDispatchSignal(error: unknown): boolean {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      (error as { name?: unknown }).name === "AgentLifecycleError" &&
+      (error as { outcome?: unknown }).outcome === "stale_dispatch"
+  );
 }
 
 function isUserMessage(value: unknown): value is AgentMessage {

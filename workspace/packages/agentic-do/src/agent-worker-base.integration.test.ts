@@ -272,6 +272,16 @@ class MentionedTestAgentWorker extends TestAgentWorker {
   }
 }
 
+class MentionedOrFollowupTestAgentWorker extends TestAgentWorker {
+  protected override getRespondPolicy(_channelId: string): RespondPolicy {
+    return "mentioned-or-followup";
+  }
+
+  public testShouldRespond(channelId: string, event: ChannelEvent) {
+    return this.shouldRespond(channelId, event);
+  }
+}
+
 class CustomMessageIndexTestAgentWorker extends TestAgentWorker {
   public testIndexOwnCustomMessages(
     channelId: string,
@@ -977,6 +987,120 @@ describe("AgentWorkerBase method suspension ledger", () => {
       "turn-starting",
       "Agent turn failed before model generation began: [credentials.resolveCredential] Credential approval denied"
     );
+  });
+
+  it("parks credential approval agent_end markers instead of failing the turn", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const publishWaiting = vi.fn();
+    const worker = instance as unknown as {
+      subscriptions: { getParticipantId(channelId: string): string | null };
+      sendTurnLedgerDiagnostic(channelId: string, turnId: string, message: string): Promise<void>;
+      getModelProviderId(channelId: string): string;
+      getModelBaseUrl(channelId: string): string;
+      publishTurnWaitingEvent(
+        channelId: string,
+        turnId: string,
+        payload: { reason: string; summary: string }
+      ): void;
+    };
+    worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
+    worker.sendTurnLedgerDiagnostic = send;
+    worker.getModelProviderId = vi.fn().mockReturnValue("openai-codex");
+    worker.getModelBaseUrl = vi.fn().mockReturnValue("https://chatgpt.com/backend-api/codex");
+    worker.publishTurnWaitingEvent = publishWaiting;
+    const runner = {
+      getCurrentTurnId: () => "turn-approval",
+      repairDurableOpenState: vi.fn().mockResolvedValue(undefined),
+      getStateSnapshot: vi.fn().mockResolvedValue({ messages: [] }),
+      session: null,
+    } as unknown as PiRunner;
+    (instance as unknown as { runners: Map<string, { runner: PiRunner }> }).runners.set("chat-1", {
+      runner,
+    });
+    insertTurnRun(sql, { turnId: "turn-approval", status: "running_model" });
+    const errorMessage = "Waiting for model credential approval for provider: openai-codex";
+
+    await instance.testHandleRunnerAgentEndEventForTurnLedger("chat-1", runner, {
+      type: "agent_end",
+      messages: [
+        {
+          role: "assistant",
+          content: [],
+          stopReason: "error",
+          errorMessage,
+        },
+      ],
+      natstack: { turnId: "turn-approval", operationId: "op-1", lifecycleMatched: true },
+    } as never);
+
+    expect(turnStatus(sql, "turn-approval")).toMatchObject({
+      status: "waiting_external",
+      failure_code: "model_credential_required",
+      failure_message: errorMessage,
+    });
+    expect(publishWaiting).toHaveBeenCalledWith("chat-1", "turn-approval", {
+      reason: "model_credential_required",
+      summary: "Waiting for model credential approval",
+    });
+    const suspensionRows = sql
+      .exec(`SELECT turn_id, reason, payload_json FROM suspensions WHERE channel_id = ?`, "chat-1")
+      .toArray();
+    expect(suspensionRows).toHaveLength(1);
+    expect(suspensionRows[0]).toMatchObject({ turn_id: "turn-approval", reason: "credential" });
+    expect(JSON.parse(suspensionRows[0]!["payload_json"] as string)).toEqual({
+      providerId: "openai-codex",
+      modelBaseUrl: "https://chatgpt.com/backend-api/codex",
+    });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("ignores stale credential approval agent_end markers after approval resume begins", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const publishWaiting = vi.fn();
+    const worker = instance as unknown as {
+      subscriptions: { getParticipantId(channelId: string): string | null };
+      publishTurnWaitingEvent(
+        channelId: string,
+        turnId: string,
+        payload: { reason: string; summary: string }
+      ): void;
+    };
+    worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
+    worker.publishTurnWaitingEvent = publishWaiting;
+    const runner = {
+      getCurrentTurnId: () => "turn-approval-resumed",
+      repairDurableOpenState: vi.fn().mockResolvedValue(undefined),
+      session: null,
+    } as unknown as PiRunner;
+    (instance as unknown as { runners: Map<string, { runner: PiRunner }> }).runners.set("chat-1", {
+      runner,
+    });
+    insertTurnRun(sql, { turnId: "turn-approval-resumed", status: "continuing" });
+
+    await instance.testHandleRunnerAgentEndEventForTurnLedger("chat-1", runner, {
+      type: "agent_end",
+      messages: [
+        {
+          role: "assistant",
+          content: [],
+          stopReason: "error",
+          errorMessage: "Waiting for model credential approval for provider: openai-codex",
+        },
+      ],
+      natstack: { turnId: "turn-approval-resumed", operationId: "op-1", lifecycleMatched: true },
+    } as never);
+
+    expect(turnStatus(sql, "turn-approval-resumed")).toMatchObject({
+      status: "continuing",
+      failure_code: null,
+      failure_message: null,
+    });
+    expect(publishWaiting).not.toHaveBeenCalled();
   });
 
   it("surfaces runner errors instead of closing running model turns", async () => {
@@ -1817,7 +1941,7 @@ describe("AgentWorkerBase method suspension ledger", () => {
   // at `submitRecoveryContinue`, so a late suspension result cannot resurrect a
   // stopped agent.
   it("gates a recovery continue for an interrupted turn at the single chokepoint", async () => {
-    const { instance } = await createTestDO(TestAgentWorker, {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
       __objectKey: "agent-test",
     });
     const submitContinue = vi.fn();
@@ -1834,6 +1958,7 @@ describe("AgentWorkerBase method suspension ledger", () => {
     worker.dispatchers.set("chat-1", { submitContinue, getDebugState: () => ({ busy: false }) });
 
     // Not gated yet → the continue is admitted.
+    insertTurnRun(sql, { turnId: "turn-x", status: "continuing" });
     worker.submitRecoveryContinue("chat-1", {} as never, "test", "turn-x");
     expect(submitContinue).toHaveBeenCalledTimes(1);
 
@@ -1841,6 +1966,66 @@ describe("AgentWorkerBase method suspension ledger", () => {
     worker.runControllerFor("chat-1").gateInterrupt("turn-x");
     worker.submitRecoveryContinue("chat-1", {} as never, "late-result", "turn-x");
     expect(submitContinue).toHaveBeenCalledTimes(1);
+  });
+
+  it("gates a recovery continue for a terminal durable turn", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const submitContinue = vi.fn();
+    const worker = instance as unknown as {
+      submitRecoveryContinue(
+        channelId: string,
+        runner: unknown,
+        reason: string,
+        turnId?: string
+      ): void;
+      dispatchers: Map<string, unknown>;
+    };
+    worker.dispatchers.set("chat-1", { submitContinue, getDebugState: () => ({ busy: false }) });
+    insertTurnRun(sql, { turnId: "turn-failed", status: "failed" });
+
+    worker.submitRecoveryContinue("chat-1", {} as never, "late-result", "turn-failed");
+
+    expect(submitContinue).not.toHaveBeenCalled();
+  });
+
+  it("drops a queued continue when the durable turn became terminal before dequeue", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const continueAgent = vi.fn(async () => undefined);
+    const runner: TurnDispatcherRunner = {
+      subscribe: vi.fn(() => () => undefined),
+      getCurrentTurnId: vi.fn(() => null),
+      continueAgent,
+      prompt: vi.fn(async () => undefined),
+      buildUserMessage: vi.fn(
+        (input) =>
+          ({
+            role: "user",
+            content: input.content,
+            timestamp: Date.now(),
+          }) as AgentMessage
+      ),
+      steerMessage: vi.fn(async () => undefined),
+      clearSteeringQueue: vi.fn(async () => undefined),
+    };
+    const worker = instance as unknown as {
+      getOrCreateDispatcher(channelId: string, runner: unknown): {
+        submitContinue(opts?: { turnId?: string }): void;
+        getDebugState(): { busy?: boolean; pendingCount?: number };
+      };
+    };
+    insertTurnRun(sql, { turnId: "turn-terminal-before-dequeue", status: "failed" });
+    const dispatcher = worker.getOrCreateDispatcher("chat-1", runner);
+
+    dispatcher.submitContinue({ turnId: "turn-terminal-before-dequeue" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(continueAgent).not.toHaveBeenCalled();
+    expect(dispatcher.getDebugState()).toMatchObject({ busy: false, pending: [] });
   });
 
   it("fails waiting_external turns whose child waits resolved without a cursor", async () => {
@@ -4981,6 +5166,69 @@ describe("TrajectoryVesselBase respond policy", () => {
     ).resolves.toBe(true);
   });
 
+  it("mentioned-or-followup responds to mentions and the next user message after its own message", async () => {
+    const { instance } = await createTestDO(MentionedOrFollowupTestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+    const submit = vi.fn();
+    const worker = instance as unknown as {
+      subscriptions: { getParticipantId(channelId: string): string | null };
+      getOrCreateDispatcher: ReturnType<typeof vi.fn>;
+      processChannelEvent(channelId: string, event: ChannelEvent): Promise<void>;
+    };
+    worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
+    worker.getOrCreateDispatcher = vi.fn().mockReturnValue({
+      submit,
+      getDebugState: () => ({ busy: false, activeWork: null }),
+    });
+
+    const message = (
+      id: number,
+      senderId: string,
+      senderType: string,
+      content: string,
+      mentions?: string[]
+    ) =>
+      ({
+        id,
+        messageId: `msg-${id}`,
+        type: AGENTIC_EVENT_PAYLOAD_KIND,
+        senderId,
+        senderMetadata: { type: senderType },
+        payload: {
+          kind: "message.completed",
+          actor: { kind: senderType === "agent" ? "agent" : "panel", id: senderId },
+          payload: {
+            protocol: "agentic.trajectory.v1",
+            role: senderType === "agent" ? "assistant" : "user",
+            blocks: [{ blockId: `msg-${id}:block:0`, type: "text", content }],
+            outcome: "completed",
+            mentions,
+          },
+        },
+        ts: Date.now(),
+      }) satisfies ChannelEvent;
+
+    await worker.processChannelEvent("chat-1", message(1, "panel:user", "panel", "hello"));
+    expect(submit).not.toHaveBeenCalled();
+
+    await worker.processChannelEvent("chat-1", message(2, "do:agent", "agent", "What should I watch?"));
+    expect(submit).not.toHaveBeenCalled();
+
+    await worker.processChannelEvent("chat-1", message(3, "panel:user", "panel", "Invoices"));
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(submit).toHaveBeenLastCalledWith({ content: "Invoices" }, undefined);
+
+    await worker.processChannelEvent("chat-1", message(4, "panel:user", "panel", "And receipts"));
+    expect(submit).toHaveBeenCalledTimes(1);
+
+    await worker.processChannelEvent(
+      "chat-1",
+      message(5, "panel:user", "panel", "@agent still there?", ["do:agent"])
+    );
+    expect(submit).toHaveBeenCalledTimes(2);
+  });
+
   it("covers multi-agent gating for custom updates and mention combinations", async () => {
     const { instance: chatInstance } = await createTestDO(MentionedTestAgentWorker, {
       __objectKey: "chat-agent",
@@ -6303,6 +6551,130 @@ describe("AgentWorkerBase model credential resume", () => {
     expect(
       sql.exec(`SELECT status FROM agent_turn_runs WHERE turn_id = ?`, "turn-deferred").toArray()[0]
     ).toMatchObject({ status: "continuing" });
+  });
+
+  it("replays a fast auto-approved credential delivery after the turn is fully parked", async () => {
+    const { instance, sql } = await createTestDO(TestAgentWorker, {
+      __objectKey: "agent-test",
+    });
+
+    const userMessage = { role: "user", content: "onboard me", timestamp: 1 } as AgentMessage;
+    const parkErrorMessage = {
+      role: "assistant",
+      content: [],
+      timestamp: 2,
+      api: "openai",
+      provider: "test",
+      model: "model",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "error",
+      errorMessage: "Waiting for model credential approval for provider: test",
+    } as AgentMessage;
+
+    let transcript: AgentMessage[] = [];
+    let requestId = "";
+    let deliveredDuringPark = false;
+    const moveTo = vi.fn().mockResolvedValue(undefined);
+    const submitContinue = vi.fn();
+    const dispatcher = { submitContinue, getDebugState: () => ({ busy: false }) };
+
+    const callDeferred = vi.fn(
+      async (
+        _target: string,
+        _method: string,
+        _args: unknown[],
+        opts?: { requestId?: string }
+      ) => {
+        requestId = opts?.requestId ?? "req-fast";
+        return {
+          status: "deferred" as const,
+          requestId,
+        };
+      }
+    );
+
+    const worker = instance as unknown as {
+      _rpc: Record<string, ReturnType<typeof vi.fn>>;
+      _currentVerifiedCaller: { callerId: string; callerKind: string } | null;
+      subscriptions: { getParticipantId(channelId: string): string | null };
+      runners: Map<string, unknown>;
+      dispatchers: Map<string, unknown>;
+      createChannelClient: ReturnType<typeof vi.fn>;
+      getOrCreateDispatcher: ReturnType<typeof vi.fn>;
+      getModelBaseUrl(channelId: string): string;
+      getApiKeyForChannel(channelId: string): () => Promise<string>;
+      readRunnerMessages(channelId: string): Promise<AgentMessage[]>;
+      onDeferredResult(payload: {
+        requestId: string;
+        result: unknown;
+        isError: boolean;
+      }): Promise<{ ok: boolean }>;
+    };
+
+    worker._rpc = {
+      call: vi.fn(),
+      callDeferred,
+      stream: vi.fn(),
+      emit: vi.fn(),
+      on: vi.fn(),
+      handleIncomingPost: vi.fn(),
+    };
+    worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
+    worker.createChannelClient = vi.fn().mockReturnValue({
+      getParticipants: vi.fn().mockResolvedValue([]),
+      publishAgenticEvent: vi.fn(async () => undefined),
+    });
+    worker.getModelBaseUrl = vi.fn().mockReturnValue("https://model.example/v1");
+    worker.readRunnerMessages = vi.fn(async () => {
+      if (requestId && !deliveredDuringPark) {
+        deliveredDuringPark = true;
+        worker._currentVerifiedCaller = { callerId: "server", callerKind: "server" };
+        await worker.onDeferredResult({ requestId, result: { id: "cred-1" }, isError: false });
+        worker._currentVerifiedCaller = null;
+      }
+      return transcript;
+    });
+    worker.runners.set("chat-1", {
+      runner: {
+        getCurrentTurnId: () => "turn-fast-credential",
+        session: {
+          getEntries: vi.fn(async () => [
+            { id: "entry-user", type: "message" },
+            { id: "entry-assistant-error", type: "message" },
+          ]),
+          moveTo,
+        },
+      },
+    });
+    worker.dispatchers.set("chat-1", dispatcher);
+    worker.getOrCreateDispatcher = vi.fn().mockReturnValue(dispatcher);
+
+    await expect(worker.getApiKeyForChannel("chat-1")()).rejects.toThrow(
+      /Waiting for model credential approval/
+    );
+    expect(deliveredDuringPark).toBe(true);
+    expect(submitContinue).not.toHaveBeenCalled();
+
+    transcript = [userMessage, parkErrorMessage];
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(moveTo).toHaveBeenCalledWith("entry-user");
+    expect(submitContinue).toHaveBeenCalledWith({ turnId: "turn-fast-credential" });
+    expect(
+      sql.exec(`SELECT status FROM agent_turn_runs WHERE turn_id = ?`, "turn-fast-credential")
+        .toArray()[0]
+    ).toMatchObject({ status: "continuing" });
+    expect(
+      sql.exec(`SELECT * FROM suspensions WHERE channel_id = ?`, "chat-1").toArray()
+    ).toHaveLength(0);
   });
 
   it("does not let a stale model credential card resume a different model-base suspension", async () => {

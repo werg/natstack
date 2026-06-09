@@ -15,6 +15,7 @@ import {
   TrajectoryVesselBase,
   type ModelCredentialSetupProps,
   type ModelCredentialSummary,
+  type RespondPolicy,
 } from "./trajectory-vessel-base.js";
 import {
   DEFAULT_APPROVAL_LEVEL,
@@ -63,11 +64,7 @@ export abstract class AgentWorkerBase extends TrajectoryVesselBase {
     return DEFAULT_APPROVAL_LEVEL;
   }
 
-  protected override getDefaultRespondPolicy():
-    | "all"
-    | "mentioned"
-    | "mentioned-strict"
-    | "from-participants" {
+  protected override getDefaultRespondPolicy(): RespondPolicy {
     return DEFAULT_RESPOND_POLICY;
   }
 
@@ -202,12 +199,13 @@ export abstract class AgentWorkerBase extends TrajectoryVesselBase {
           policy !== "all" &&
           policy !== "mentioned" &&
           policy !== "mentioned-strict" &&
+          policy !== "mentioned-or-followup" &&
           policy !== "from-participants"
         ) {
           return {
             result: {
               error:
-                "setRespondPolicy requires policy: all, mentioned, mentioned-strict, or from-participants",
+                "setRespondPolicy requires policy: all, mentioned, mentioned-strict, mentioned-or-followup, or from-participants",
             },
             isError: true,
           };

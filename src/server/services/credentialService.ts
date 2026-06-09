@@ -3975,10 +3975,19 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     if (decision === "deny") {
       throw new Error("Credential approval denied");
     }
+    const now = Date.now();
     if (decision === "once") {
+      if (!ctx.deferral?.canDefer) {
+        return;
+      }
+      // A deferrable caller cannot consume a one-shot grant inline: it parks,
+      // returns to the runner, then resolves credentials again during resume.
+      // Treat that deferred one-shot approval as a session grant for the same
+      // caller/resource so the approved turn can actually continue.
+      grantSessionCredentialUse(credential.id, identity, usage.sessionResource);
+      resolvePendingCredentialUseGrants(credential.id, identity, "session", usage);
       return;
     }
-    const now = Date.now();
     if (decision === "session") {
       grantSessionCredentialUse(credential.id, identity, usage.sessionResource);
       resolvePendingCredentialUseGrants(credential.id, identity, decision, usage);

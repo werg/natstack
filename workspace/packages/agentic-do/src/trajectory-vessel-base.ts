@@ -170,7 +170,12 @@ const MAX_INLINE_SUSPENSION_RESULT_BYTES = 256 * 1024;
 const EXPECTED_CHANNEL_TOOL_READY_TIMEOUT_MS = 5_000;
 const EXPECTED_CHANNEL_TOOL_READY_POLL_MS = 100;
 const CLAIM_LOST = Symbol("CLAIM_LOST");
-export type RespondPolicy = "all" | "mentioned" | "mentioned-strict" | "from-participants";
+export type RespondPolicy =
+  | "all"
+  | "mentioned"
+  | "mentioned-strict"
+  | "mentioned-or-followup"
+  | "from-participants";
 type CachedParticipant = Awaited<ReturnType<ChannelClient["getParticipants"]>>[number];
 type AgentSettingSource = "state" | "config" | "default";
 export type CustomMessageReducer = (state: unknown, update: unknown) => unknown;
@@ -411,6 +416,7 @@ function isRespondPolicy(value: unknown): value is RespondPolicy {
     value === "all" ||
     value === "mentioned" ||
     value === "mentioned-strict" ||
+    value === "mentioned-or-followup" ||
     value === "from-participants"
   );
 }
@@ -806,6 +812,15 @@ interface AgentTurnRunRow {
   updatedAt: number;
   closedAt: number | null;
 }
+
+type ResumeAdmission =
+  | { ok: true; row: AgentTurnRunRow | null }
+  | {
+      ok: false;
+      reason: "missing" | "wrong_channel" | "terminal" | "run_controller_blocked";
+      row: AgentTurnRunRow | null;
+      detail?: Record<string, unknown>;
+    };
 
 interface MethodSuspensionRow {
   transportCallId: string;
@@ -3165,6 +3180,69 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     return submitted;
   }
 
+  private resumeAdmissionForTurn(
+    channelId: string,
+    turnId: string,
+    opts: { allowMissingRow?: boolean } = {}
+  ): ResumeAdmission {
+    const controller = this.runControllerFor(channelId);
+    const row = this.loadTurnRun(turnId);
+    if (!row) {
+      if (!controller.isResumeBlocked(turnId) && opts.allowMissingRow) {
+        return { ok: true, row: null };
+      }
+      return { ok: false, reason: "missing", row: null };
+    }
+    if (row.channelId !== channelId) {
+      return {
+        ok: false,
+        reason: "wrong_channel",
+        row,
+        detail: { rowChannelId: row.channelId },
+      };
+    }
+    if (isTerminalRunPhase(row.status)) {
+      return {
+        ok: false,
+        reason: "terminal",
+        row,
+        detail: { status: row.status },
+      };
+    }
+
+    if (controller.isResumeBlocked(turnId)) {
+      return {
+        ok: false,
+        reason: "run_controller_blocked",
+        row,
+        detail: { phase: controller.phase, trackedTurnId: controller.trackedTurnId },
+      };
+    }
+    // During cold recovery the controller may not have projected this durable
+    // row yet. Once it has a tracked run, require the in-memory gate to agree;
+    // this catches stale queued continues after a new turn or terminal
+    // projection.
+    if (controller.trackedTurnId && !controller.mayResume(turnId)) {
+      return {
+        ok: false,
+        reason: "run_controller_blocked",
+        row,
+        detail: { phase: controller.phase, trackedTurnId: controller.trackedTurnId },
+      };
+    }
+
+    return { ok: true, row };
+  }
+
+  private resumeAdmissionDebug(admission: Exclude<ResumeAdmission, { ok: true }>) {
+    return {
+      admissionReason: admission.reason,
+      status: admission.row?.status ?? null,
+      rowChannelId: admission.row?.channelId ?? null,
+      ...(admission.detail ?? {}),
+    };
+  }
+
   private submitRecoveryContinue(
     channelId: string,
     runner: PiRunner,
@@ -3178,10 +3256,14 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     // Consolidated admission gate: a recovery continue for a user-interrupted or
     // terminal turn is dropped here, at the single resume chokepoint, so a late
     // suspension result can never resurrect a stopped agent.
-    if (this.runControllerFor(channelId).isResumeBlocked(resumeTurnId)) {
+    const admission = this.resumeAdmissionForTurn(channelId, resumeTurnId, {
+      allowMissingRow: true,
+    });
+    if (!admission.ok) {
       this.recordDebugPhase(channelId, "channel_method.recovery_continue.gated", {
         reason,
         turnId: resumeTurnId,
+        ...this.resumeAdmissionDebug(admission),
       });
       return;
     }
@@ -3697,14 +3779,15 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
             credentialTurnId,
             credentialRequestId
           );
-          // The row now exists. If a delivery raced ahead of it (e.g. auto-approve),
-          // apply it now — scheduled, so it runs after this init unwinds and the
-          // turn is fully parked.
+          // The row now exists. If a delivery raced ahead of the parking
+          // window (e.g. dev auto-approve), replay it after this request yields
+          // so the active turn has fully observed the credential suspension.
           const buffered = this.bufferedCredentialDeliveries.get(credentialRequestId);
           if (buffered) {
-            void this.resolveDeferredModelCredential(
+            this.scheduleDeferredModelCredentialResolution(
               { channelId, providerId, modelBaseUrl },
-              buffered.isError
+              buffered.isError,
+              "buffered_while_parking"
             );
           }
         }
@@ -4366,12 +4449,24 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     const meta = this.extractMessageMeta(event);
     if (meta.mentions?.includes(selfParticipantId)) return true;
     if (policy === "mentioned-strict") return false;
+    if (policy === "mentioned-or-followup") {
+      return this.getLastCompletedMessageSender(channelId) === selfParticipantId;
+    }
 
     const participants = this.cachedParticipants.get(channelId) ?? [];
     const nonSenders = participants.filter(
       (participant) => participant.participantId !== event.senderId
     );
     return nonSenders.length === 1 && nonSenders[0]?.participantId === selfParticipantId;
+  }
+
+  private getLastCompletedMessageSender(channelId: string): string | null {
+    return this.getStateValue(`lastCompletedMessageSender:${channelId}`);
+  }
+
+  private rememberCompletedMessageSender(channelId: string, event: ChannelEvent): void {
+    if (this.agenticEventFromChannelEvent(event)?.kind !== "message.completed") return;
+    this.setStateValue(`lastCompletedMessageSender:${channelId}`, event.senderId);
   }
 
   private extractMessageMeta(event: ChannelEvent): { mentions?: string[]; replyTo?: string } {
@@ -4666,6 +4761,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     config?: unknown;
     replay?: boolean;
   }): Promise<{ ok: boolean; participantId: string }> {
+    this.ensureBootstrapped();
     await this.ensureAgentActivationReady();
     // Security: a buggy or malicious caller can hand us any string for
     // opts.contextId. Before subscribing, verify that the requested contextId
@@ -5368,6 +5464,53 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     if (row.status === "closed" || row.status === "failed" || row.status === "interrupted") return;
     const failure = failedAgentEndFailure(event);
     if (failure) {
+      if (isModelCredentialApprovalPendingFailure(failure)) {
+        let openWait = this.turnHasOpenExternalWait(turnId);
+        let fallbackWaitRecorded = false;
+        if (!openWait && row.status !== "continuing" && row.status !== "closing") {
+          try {
+            const providerId = this.getModelProviderId(channelId);
+            const modelBaseUrl = this.getModelBaseUrl(channelId);
+            this.recordModelCredentialInterruption(channelId, providerId, modelBaseUrl, turnId);
+            this.publishTurnWaitingEvent(channelId, turnId, {
+              reason: "model_credential_required",
+              summary: "Waiting for model credential approval",
+            });
+            fallbackWaitRecorded = true;
+            openWait = true;
+          } catch (err) {
+            this.recordLastError("turn_ledger.credential_approval_wait_failed", err, channelId);
+            this.recordDebugPhase(channelId, "turn_ledger.credential_approval_wait_failed", {
+              turnId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+        if (openWait && row.status !== "waiting_external" && row.status !== "closing") {
+          const transitioned = this.transitionTurn(
+            turnId,
+            ["starting", "running_model", "continuing"],
+            "waiting_external",
+            {
+              failureCode: "model_credential_required",
+              failureMessage: failure.message,
+            }
+          );
+          if (!transitioned) {
+            this.recordDebugPhase(channelId, "turn_ledger.credential_approval_wait_skipped", {
+              turnId,
+              status: this.loadTurnRun(turnId)?.status ?? "missing",
+            });
+          }
+        }
+        this.recordDebugPhase(channelId, "turn_ledger.credential_approval_wait_preserved", {
+          turnId,
+          status: row.status,
+          openWait,
+          fallbackWaitRecorded,
+        });
+        return;
+      }
       const reconnectFailure = modelCredentialReconnectFailure(failure);
       if (reconnectFailure && row.status !== "closing") {
         let reconnectPrompted = false;
@@ -5786,6 +5929,15 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       throw new Error("onDeferredResult requires a server caller");
     }
     const requestId = payload && typeof payload.requestId === "string" ? payload.requestId : null;
+    // A credential deferral can complete before the caller has fully parked its
+    // active turn. This includes both "row not written yet" and "row written,
+    // but getApiKey has not thrown the suspension back into the runner yet".
+    // Buffer across the whole in-flight window; the deferred branch replays it
+    // after yielding, when the suspension is the durable source of truth.
+    if (requestId && this.inFlightCredentialDeferrals.has(requestId)) {
+      this.bufferedCredentialDeliveries.set(requestId, { isError: Boolean(payload.isError) });
+      return { ok: true };
+    }
     const interruption = requestId
       ? this.findModelCredentialInterruptionByRequestId(requestId)
       : null;
@@ -5793,15 +5945,33 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       await this.resolveDeferredModelCredential(interruption, Boolean(payload.isError));
       return { ok: true };
     }
-    // A credential deferral whose interruption row isn't written yet (raced ahead
-    // of getApiKey's park). Buffer it; the deferred branch applies it after writing
-    // the row. (Distinguished from generic deferred calls, which always persist
-    // their row before issuing, so super finds them.)
-    if (requestId && this.inFlightCredentialDeferrals.has(requestId)) {
-      this.bufferedCredentialDeliveries.set(requestId, { isError: Boolean(payload.isError) });
-      return { ok: true };
-    }
     return super.onDeferredResult(payload);
+  }
+
+  private scheduleDeferredModelCredentialResolution(
+    interruption: { channelId: string; providerId: string; modelBaseUrl?: string },
+    isError: boolean,
+    reason: string
+  ): void {
+    const channelId = interruption.channelId;
+    this.recordDebugPhase(channelId, "model_credential.deferred.schedule", {
+      providerId: interruption.providerId,
+      reason,
+      isError,
+    });
+    const delivery = (async () => {
+      await sleep(0);
+      await this.runOnChannelRecoveryChain(channelId, async () => {
+        await this.resolveDeferredModelCredential(interruption, isError);
+      });
+    })().catch((err) => {
+      this.recordLastError("model_credential.deferred.scheduled_resolution", err, channelId);
+      this.recordDebugPhase(channelId, "model_credential.deferred.scheduled_resolution_failed", {
+        providerId: interruption.providerId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+    this.ctx.waitUntil?.(delivery);
   }
 
   private async resolveDeferredModelCredential(
@@ -5897,13 +6067,23 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
           if (!turnId) {
             throw new Error("Cannot continue without an existing agent turn");
           }
-          const row = this.loadTurnRun(turnId);
-          if (!row) {
-            throw new Error(`Cannot continue unknown agent turn ${turnId}`);
+          const admission = this.resumeAdmissionForTurn(channelId, turnId);
+          if (!admission.ok) {
+            this.recordDebugPhase(channelId, "turn_ledger.continue_gated", {
+              turnId,
+              workKind: work.kind,
+              ...this.resumeAdmissionDebug(admission),
+            });
+            throw new AgentLifecycleError(
+              `Cannot continue turn ${turnId}: ${admission.reason}.`,
+              "stale_dispatch",
+              "aborted_before_dispatch"
+            );
           }
           this.recordDebugPhase(channelId, "turn_ledger.continuing", {
             turnId,
             workKind: work.kind,
+            status: admission.row?.status ?? null,
           });
           return turnId;
         }
@@ -6003,6 +6183,27 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     this.dispatchers.set(channelId, dispatcher);
     this.dispatcherRunners.set(channelId, runner);
     return dispatcher;
+  }
+
+  /**
+   * Start a normal model turn from subclass/platform intent rather than from a
+   * user-authored channel event. The turn still uses the same runner,
+   * dispatcher, ledger, typing, tool roster, credential handling, and lifecycle
+   * gates as `processChannelEvent`.
+   */
+  protected async submitAgentInitiatedTurn(
+    channelId: string,
+    input: RunnerTurnInput,
+    opts?: { mode?: "auto" | "sequential"; steeringId?: string }
+  ): Promise<void> {
+    await this.ensureAgentActivationReady();
+    await this.refreshRoster(channelId);
+    const runner = await this.getOrCreateRunner(channelId);
+    const dispatcher = this.getOrCreateDispatcher(channelId, runner);
+    dispatcher.submit(
+      this.turnInputForAdmission(input, `agent-initiated turn input channel=${channelId}`),
+      opts
+    );
   }
 
   /** Signal setTypingState broadcast. Fire-and-forget; errors logged. */
@@ -6859,9 +7060,14 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     opts?: { mode?: "auto" | "sequential" }
   ): Promise<void> {
     await this.ensureAgentActivationReady();
-    if (!this.shouldProcess(event)) return;
+    if (!this.shouldProcess(event)) {
+      this.rememberCompletedMessageSender(channelId, event);
+      return;
+    }
     await this.refreshRoster(channelId);
-    if (!(await this.shouldRespond(channelId, event))) return;
+    const shouldRespond = await this.shouldRespond(channelId, event);
+    this.rememberCompletedMessageSender(channelId, event);
+    if (!shouldRespond) return;
     await this.getOrCreateRunner(channelId);
 
     const runner = this.runners.get(channelId)!.runner;
