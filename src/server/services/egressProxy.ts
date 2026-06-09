@@ -72,6 +72,7 @@ const DEFAULT_RETRY_INITIAL_DELAY_MS = 100;
 const DEFAULT_RETRY_MAX_DELAY_MS = 1_000;
 const CIRCUIT_FAILURE_THRESHOLD = 5;
 const CIRCUIT_OPEN_MS = 30_000;
+const WEBSOCKET_DIAGNOSTIC_BODY_LIMIT = 512;
 
 export interface CredentialStore {
   loadUrlBound(id: string): Promise<Credential | null> | Credential | null;
@@ -1367,11 +1368,22 @@ export class EgressProxy {
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Invalid NatStack WebSocket metadata";
+      this.logWebSocketUpgradeDiagnostic("reject", {
+        reason: "invalid_metadata",
+        statusCode: 400,
+        message,
+        target: resolvedTargetUrl ? diagnosticWebSocketTarget(resolvedTargetUrl) : undefined,
+      });
       this.rejectUpgrade(socket, 400, message);
       return;
     }
     const targetUrl = metadata?.targetUrl ?? null;
     if (!caller || !targetUrl) {
+      this.logWebSocketUpgradeDiagnostic("reject", {
+        reason: !caller ? "missing_attributed_caller" : "missing_target_url",
+        statusCode: 403,
+        target: targetUrl ? diagnosticWebSocketTarget(targetUrl) : undefined,
+      });
       this.rejectUpgrade(socket, 403, "WebSocket egress requires an attributed workerd service");
       return;
     }
@@ -1379,6 +1391,11 @@ export class EgressProxy {
 
     const policyUrl = websocketPolicyUrlFor(targetUrl);
     if (!policyUrl) {
+      this.logWebSocketUpgradeDiagnostic("reject", {
+        reason: "invalid_target_protocol",
+        statusCode: 400,
+        target: diagnosticWebSocketTarget(targetUrl),
+      });
       this.rejectUpgrade(socket, 400, "WebSocket egress target URL is invalid");
       return;
     }
@@ -1408,6 +1425,15 @@ export class EgressProxy {
       if (!socket.destroyed) {
         const status = error instanceof ForwardRejection ? error.statusCode : 502;
         const message = error instanceof Error ? error.message : "WebSocket egress failed";
+        this.logWebSocketUpgradeDiagnostic("reject", {
+          reason:
+            error instanceof ForwardRejection
+              ? (error.code ?? "authorization_rejected")
+              : "forward_failed",
+          statusCode: status,
+          message,
+          target: diagnosticWebSocketTarget(targetUrl),
+        });
         this.rejectUpgrade(socket, status, message);
       }
     }
@@ -1418,6 +1444,14 @@ export class EgressProxy {
     preparedHeaders: OutgoingHttpHeaders
   ): OutgoingHttpHeaders {
     const headers: OutgoingHttpHeaders = { ...preparedHeaders };
+    for (const headerName of [
+      "sec-websocket-key",
+      "sec-websocket-version",
+      "sec-websocket-protocol",
+      "sec-websocket-extensions",
+    ]) {
+      deleteDynamicProperty(headers, headerName);
+    }
     headers.connection = "Upgrade";
     headers.upgrade = "websocket";
 
@@ -1425,7 +1459,6 @@ export class EgressProxy {
       "sec-websocket-key",
       "sec-websocket-version",
       "sec-websocket-protocol",
-      "sec-websocket-extensions",
     ]) {
       const value = inputHeaders[headerName];
       if (value !== undefined) {
@@ -1447,6 +1480,7 @@ export class EgressProxy {
       const requestUrl = websocketHttpUrlFor(targetUrl);
       const requestFn = requestUrl.protocol === "https:" ? httpsRequest : httpRequest;
       const defaultPort = requestUrl.protocol === "https:" ? 443 : 80;
+      const requestHeaders = diagnosticWebSocketRequestHeaders(headers);
       let settled = false;
 
       const settle = (result: ForwardResult) => {
@@ -1480,16 +1514,47 @@ export class EgressProxy {
 
       upstreamRequest.on("response", (upstreamResponse) => {
         const statusCode = upstreamResponse.statusCode ?? 502;
-        socket.write(serializeRawHttpResponseHead(statusCode, upstreamResponse.headers));
-        upstreamResponse.on("data", (chunk: Buffer | string) => socket.write(chunk));
+        let diagnosticBodyBytes = 0;
+        const diagnosticBodyChunks: Buffer[] = [];
+        socket.write(
+          serializeRawHttpResponseHead(
+            statusCode,
+            websocketNonUpgradeResponseHeaders(upstreamResponse.headers)
+          )
+        );
+        upstreamResponse.on("data", (chunk: Buffer | string) => {
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          if (diagnosticBodyBytes < WEBSOCKET_DIAGNOSTIC_BODY_LIMIT) {
+            const remaining = WEBSOCKET_DIAGNOSTIC_BODY_LIMIT - diagnosticBodyBytes;
+            diagnosticBodyChunks.push(buffer.subarray(0, remaining));
+            diagnosticBodyBytes += Math.min(buffer.byteLength, remaining);
+          }
+          socket.write(chunk);
+        });
         upstreamResponse.on("end", () => {
+          this.logWebSocketUpgradeDiagnostic("upstream_response", {
+            reason: "upstream_non_upgrade_response",
+            statusCode,
+            target: diagnosticWebSocketTarget(targetUrl),
+            requestHeaders,
+            responseHeaders: diagnosticResponseHeaders(upstreamResponse.headers),
+            body: Buffer.concat(diagnosticBodyChunks).toString("utf8"),
+          });
           socket.end();
           settle({ statusCode, bytesIn: 0, bytesOut: 0 });
         });
         upstreamResponse.on("error", reject);
       });
 
-      upstreamRequest.on("error", reject);
+      upstreamRequest.on("error", (error) => {
+        this.logWebSocketUpgradeDiagnostic("upstream_error", {
+          reason: "upstream_request_error",
+          target: diagnosticWebSocketTarget(targetUrl),
+          requestHeaders,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        reject(error);
+      });
       socket.on("error", () => {
         upstreamRequest.destroy();
       });
@@ -1502,6 +1567,13 @@ export class EgressProxy {
     socket.end(
       `HTTP/1.1 ${statusCode} ${httpStatusText(statusCode)}\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`
     );
+  }
+
+  private logWebSocketUpgradeDiagnostic(
+    phase: "reject" | "upstream_response" | "upstream_error",
+    details: Record<string, unknown>
+  ): void {
+    console.warn("[EgressProxy] WebSocket upgrade failed", { phase, ...details });
   }
 
   private async forwardHttpRequest(
@@ -1745,8 +1817,12 @@ function mergeWebSocketMetadataHeaders(
   inputHeaders: IncomingHttpHeaders,
   metadataHeaderPairs: Array<[string, string]>
 ): IncomingHttpHeaders {
-  if (metadataHeaderPairs.length === 0) return inputHeaders;
   const headers: IncomingHttpHeaders = { ...inputHeaders };
+  // Strip any Origin created by the local WebSocket hop to this proxy. If the
+  // model provider intended an Origin header, it arrives through metadata and is
+  // restored below.
+  delete headers.origin;
+  if (metadataHeaderPairs.length === 0) return headers;
   for (const [name, value] of metadataHeaderPairs) {
     if (isBlockedNatStackWebSocketMetadataHeader(name)) continue;
     headers[name] = value;
@@ -1784,6 +1860,85 @@ function websocketHttpUrlFor(upstreamUrl: URL): URL {
     requestUrl.protocol = "http:";
   }
   return requestUrl;
+}
+
+function diagnosticWebSocketTarget(targetUrl: URL): string {
+  return `${targetUrl.protocol}//${targetUrl.host}${targetUrl.pathname}`;
+}
+
+function diagnosticResponseHeaders(headers: IncomingHttpHeaders): Record<string, string> {
+  const safeHeaders: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    const lower = name.toLowerCase();
+    if (
+      lower === "authorization" ||
+      lower === "proxy-authorization" ||
+      lower === "set-cookie" ||
+      lower === "cookie"
+    ) {
+      continue;
+    }
+    if (Array.isArray(value)) {
+      safeHeaders[lower] = value.join(", ");
+    } else if (value !== undefined) {
+      safeHeaders[lower] = value;
+    }
+  }
+  return safeHeaders;
+}
+
+function diagnosticWebSocketRequestHeaders(headers: OutgoingHttpHeaders): Record<string, string> {
+  const safeHeaders: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (value === undefined) continue;
+    const lower = name.toLowerCase();
+    if (lower === "authorization" || lower === "proxy-authorization") {
+      safeHeaders[lower] = diagnosticAuthorizationHeader(value);
+      continue;
+    }
+    if (lower === "cookie") {
+      safeHeaders[lower] = diagnosticCookieHeader(value);
+      continue;
+    }
+    if (
+      lower === "sec-websocket-key" ||
+      lower === "chatgpt-account-id" ||
+      lower === "x-api-key" ||
+      lower === "api-key"
+    ) {
+      safeHeaders[lower] = "[redacted]";
+      continue;
+    }
+    safeHeaders[lower] = diagnosticHeaderValue(value);
+  }
+  return safeHeaders;
+}
+
+function diagnosticAuthorizationHeader(value: number | string | string[]): string {
+  const normalized = diagnosticHeaderValue(value).trim();
+  const scheme = normalized.match(/^([A-Za-z][A-Za-z0-9._~-]*)\s+/)?.[1];
+  return scheme ? `${scheme} [redacted]` : "[redacted]";
+}
+
+function diagnosticCookieHeader(value: number | string | string[]): string {
+  const normalized = diagnosticHeaderValue(value);
+  const names = normalized
+    .split(";")
+    .map((item) => item.trim().split("=")[0]?.trim())
+    .filter((name) => !!name);
+  return names.length > 0 ? names.join("; ") : "[redacted]";
+}
+
+function diagnosticHeaderValue(value: number | string | string[]): string {
+  if (Array.isArray(value)) return value.join(", ");
+  return String(value);
+}
+
+function websocketNonUpgradeResponseHeaders(headers: IncomingHttpHeaders): IncomingHttpHeaders {
+  const forwarded: IncomingHttpHeaders = { ...headers };
+  delete forwarded["transfer-encoding"];
+  forwarded.connection = "close";
+  return forwarded;
 }
 
 function serializeRawHttpResponseHead(statusCode: number, headers: IncomingHttpHeaders): string {
