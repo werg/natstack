@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import type { TestExecutionResult } from "../types.js";
-import { finalMessageHasMarkerCount, incompleteToolCalls } from "./_helpers.js";
+import {
+  failedToolCalls,
+  finalMessageHasField,
+  finalMessageHasMarkerCount,
+  finalMessageHasNumericField,
+  incompleteToolCalls,
+} from "./_helpers.js";
 
 function executionWithInvocation(status: string, terminalOutcome?: string): TestExecutionResult {
   return {
@@ -24,6 +30,39 @@ function executionWithInvocation(status: string, terminalOutcome?: string): Test
           execution: {
             status,
             terminalOutcome,
+          },
+        }),
+      },
+    ],
+  } as TestExecutionResult;
+}
+
+function executionWithInvocationResult(
+  status: string,
+  result: unknown,
+  isError?: boolean
+): TestExecutionResult {
+  return {
+    duration: 0,
+    messages: [
+      {
+        kind: "message",
+        senderId: "user",
+        complete: true,
+        content: "prompt",
+      },
+      {
+        kind: "message",
+        senderId: "agent",
+        complete: true,
+        contentType: "invocation",
+        content: JSON.stringify({
+          id: "call-1",
+          name: "eval",
+          execution: {
+            status,
+            result,
+            isError,
           },
         }),
       },
@@ -61,17 +100,17 @@ describe("system-testing validation helpers", () => {
   });
 
   it("classifies pending invocations as incomplete", () => {
-    expect(incompleteToolCalls(executionWithInvocation("pending")).map((call) => call.name)).toEqual([
-      "grep",
-    ]);
+    expect(
+      incompleteToolCalls(executionWithInvocation("pending")).map((call) => call.name)
+    ).toEqual(["grep"]);
   });
 
   it("accepts marker followed by numeric count", () => {
     expect(
       finalMessageHasMarkerCount(
         executionWithFinalAgentMessage("WORKER_LIST_OK: 0"),
-        "WORKER_LIST_OK",
-      ),
+        "WORKER_LIST_OK"
+      )
     ).toEqual({
       passed: true,
       reason: undefined,
@@ -82,11 +121,40 @@ describe("system-testing validation helpers", () => {
     expect(
       finalMessageHasMarkerCount(
         executionWithFinalAgentMessage("WORKER_SOURCES_OK count 30"),
-        "WORKER_SOURCES_OK",
-      ),
+        "WORKER_SOURCES_OK"
+      )
     ).toEqual({
       passed: true,
       reason: undefined,
     });
+  });
+
+  it("accepts explicit field values in final messages", () => {
+    expect(
+      finalMessageHasField(executionWithFinalAgentMessage("PANEL_OPEN_OK handle=slot-1"), "handle")
+    ).toEqual({
+      passed: true,
+      reason: undefined,
+    });
+  });
+
+  it("accepts explicit numeric fields in final messages", () => {
+    expect(
+      finalMessageHasNumericField(
+        executionWithFinalAgentMessage("PANEL_SCREENSHOT_OK bytes=135731"),
+        "bytes"
+      )
+    ).toEqual({
+      passed: true,
+      reason: undefined,
+    });
+  });
+
+  it("reports failed invocation cards even when a final marker exists", () => {
+    expect(
+      failedToolCalls(
+        executionWithInvocationResult("error", { error: "No CDP-capable host is available" }, true)
+      ).map((call) => call.name)
+    ).toEqual(["eval"]);
   });
 });

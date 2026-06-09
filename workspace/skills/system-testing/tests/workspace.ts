@@ -1,5 +1,9 @@
 import type { TestCase } from "../types.js";
-import { finalMessageHasAll, noIncompleteInvocations } from "./_helpers.js";
+import {
+  finalMessageHasAll,
+  finalMessageHasNumericField,
+  noIncompleteInvocations,
+} from "./_helpers.js";
 
 function checked(result: Parameters<typeof finalMessageHasAll>[0], tokens: string[]) {
   const msg = finalMessageHasAll(result, tokens);
@@ -12,8 +16,12 @@ export const workspaceTests: TestCase[] = [
     name: "list-workspaces",
     description: "List all workspaces",
     category: "workspace",
-    prompt: "Exercise workspace listing. Finish with WORKSPACE_LIST_OK and count.",
-    validate: (result) => checked(result, ["WORKSPACE_LIST_OK", "count"]),
+    prompt: "Exercise workspace listing. Finish with WORKSPACE_LIST_OK and count=<number>.",
+    validate: (result) => {
+      const base = checked(result, ["WORKSPACE_LIST_OK"]);
+      if (!base.passed) return base;
+      return finalMessageHasNumericField(result, "count");
+    },
   },
   {
     name: "get-active",
@@ -26,7 +34,8 @@ export const workspaceTests: TestCase[] = [
     name: "get-config",
     description: "Get workspace configuration",
     category: "workspace",
-    prompt: "Exercise workspace configuration inspection. Finish with WORKSPACE_CONFIG_OK and facts:2.",
+    prompt:
+      "Exercise workspace configuration inspection. Finish with WORKSPACE_CONFIG_OK and facts:2.",
     validate: (result) => checked(result, ["WORKSPACE_CONFIG_OK", "facts:2"]),
   },
 ];

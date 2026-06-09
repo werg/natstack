@@ -47,6 +47,11 @@ eval({
 
 Workspace packages like `@workspace-skills/system-testing/stages` are auto-resolved - the build system builds them on first import. No `imports` parameter needed.
 
+When a test requires workspace development or panel API docs, read the
+canonical skill path from the workspace root, for example
+`skills/workspace-dev/PANEL_API.md`. Do not use bare root paths like
+`workspace-dev/PANEL_API.md`.
+
 ## Full Suite
 
 Start by presenting the user with a feedback UI so they can choose which stages
@@ -455,9 +460,7 @@ import { git, rpc } from "@workspace/runtime";
 return {
   recent: await git.listRecentBuildEvents(),
   forRepo: await git.listRecentBuildEvents("panels/example"),
-  panel: await rpc.call("main", "build.inspectBuildProvenance", [
-    "panels/example",
-  ]),
+  panel: await rpc.call("main", "build.inspectBuildProvenance", ["panels/example"]),
 };
 ```
 
@@ -556,6 +559,9 @@ with ordinary smoke testing:
   panel and worker sources, open the result, and inspect snapshots/state
 - CDP/Playwright automation must be able to mutate browser UI, type/click,
   evaluate DOM state, and take screenshots through runtime panel handles
+- panel tests require explicit final fields such as `handle=<panel-id>`,
+  `url=<current-url>`, and `bytes=<byte-count>`; do not rely on prose that only
+  mentions a panel ID, URL, or byte count indirectly
 - historical console diagnostics must expose host-captured general logs and a
   separate error buffer through `handle.cdp.consoleHistory()`
 - unit diagnostics must expose persisted worker/DO/extension logs and separate

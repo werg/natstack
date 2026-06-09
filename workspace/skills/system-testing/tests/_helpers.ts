@@ -41,13 +41,14 @@ export function findLastAgentMessage(result: TestExecutionResult): string {
 /** Check if the agent produced any response at all */
 export function hasAgentResponse(result: TestExecutionResult): boolean {
   const selfSenderId = result.messages[0]?.senderId;
-  return result.messages.some(m =>
-    m.senderId !== selfSenderId &&
-    m.kind === "message" &&
-    m.complete &&
-    m.contentType !== "thinking" &&
-    m.contentType !== "typing" &&
-    m.contentType !== "invocation"
+  return result.messages.some(
+    (m) =>
+      m.senderId !== selfSenderId &&
+      m.kind === "message" &&
+      m.complete &&
+      m.contentType !== "thinking" &&
+      m.contentType !== "typing" &&
+      m.contentType !== "invocation"
   );
 }
 
@@ -56,27 +57,36 @@ export function responseContains(result: TestExecutionResult, text: string): boo
   return findLastAgentMessage(result).toLowerCase().includes(text.toLowerCase());
 }
 
-export function finalMessageHasAll(result: TestExecutionResult, tokens: readonly string[]): { passed: boolean; reason?: string } {
+export function finalMessageHasAll(
+  result: TestExecutionResult,
+  tokens: readonly string[]
+): { passed: boolean; reason?: string } {
   const msg = findLastAgentMessage(result);
   if (!msg) return { passed: false, reason: "No agent response received" };
   const lower = msg.toLowerCase();
   const missing = tokens.filter((token) => !lower.includes(token.toLowerCase()));
   return {
     passed: missing.length === 0,
-    reason: missing.length === 0
-      ? undefined
-      : `Missing ${missing.join(", ")} in response: ${msg.slice(0, 400)}`,
+    reason:
+      missing.length === 0
+        ? undefined
+        : `Missing ${missing.join(", ")} in response: ${msg.slice(0, 400)}`,
   };
 }
 
-export function finalMessageHasAny(result: TestExecutionResult, tokens: readonly string[]): { passed: boolean; reason?: string } {
+export function finalMessageHasAny(
+  result: TestExecutionResult,
+  tokens: readonly string[]
+): { passed: boolean; reason?: string } {
   const msg = findLastAgentMessage(result);
   if (!msg) return { passed: false, reason: "No agent response received" };
   const lower = msg.toLowerCase();
   const found = tokens.some((token) => lower.includes(token.toLowerCase()));
   return {
     passed: found,
-    reason: found ? undefined : `Expected one of ${tokens.join(", ")} in response: ${msg.slice(0, 400)}`,
+    reason: found
+      ? undefined
+      : `Expected one of ${tokens.join(", ")} in response: ${msg.slice(0, 400)}`,
   };
 }
 
@@ -99,23 +109,76 @@ export function finalMessageHasMarkerCount(
   };
 }
 
-export function noIncompleteInvocations(result: TestExecutionResult): { passed: boolean; reason?: string } {
+export function finalMessageHasNumericField(
+  result: TestExecutionResult,
+  field: string
+): { passed: boolean; reason?: string } {
+  const msg = findLastAgentMessage(result);
+  if (!msg) return { passed: false, reason: "No agent response received" };
+  const escapedField = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`\\b${escapedField}\\s*[:=]\\s*(\\d+)\\b`, "i").exec(msg);
+  return {
+    passed: Boolean(match),
+    reason: match ? undefined : `Missing ${field}=<number> in response: ${msg.slice(0, 400)}`,
+  };
+}
+
+export function finalMessageHasField(
+  result: TestExecutionResult,
+  field: string
+): { passed: boolean; reason?: string } {
+  const msg = findLastAgentMessage(result);
+  if (!msg) return { passed: false, reason: "No agent response received" };
+  const escapedField = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`\\b${escapedField}\\s*[:=]\\s*\\S+`, "i").exec(msg);
+  return {
+    passed: Boolean(match),
+    reason: match ? undefined : `Missing ${field}=<value> in response: ${msg.slice(0, 400)}`,
+  };
+}
+
+export function noIncompleteInvocations(result: TestExecutionResult): {
+  passed: boolean;
+  reason?: string;
+} {
   const incomplete = incompleteToolCalls(result);
   return {
     passed: incomplete.length === 0,
-    reason: incomplete.length === 0
-      ? undefined
-      : `Expected no incomplete tool calls, got ${incomplete.map((c) => `${c.name}:${c.execution?.status ?? "unknown"}`).join(", ")}`,
+    reason:
+      incomplete.length === 0
+        ? undefined
+        : `Expected no incomplete tool calls, got ${incomplete.map((c) => `${c.name}:${c.execution?.status ?? "unknown"}`).join(", ")}`,
+  };
+}
+
+export function noFailedInvocations(result: TestExecutionResult): {
+  passed: boolean;
+  reason?: string;
+} {
+  const failed = failedToolCalls(result);
+  return {
+    passed: failed.length === 0,
+    reason:
+      failed.length === 0
+        ? undefined
+        : `Expected no failed tool calls, got ${failed.map((c) => `${c.name}:${formatInvocationError(c)}`).join(", ")}`,
   };
 }
 
 /** Check that the response does NOT contain error-indicating phrases alongside the expected content */
-export function responseSucceeds(result: TestExecutionResult, expectedContent: string): { passed: boolean; reason?: string } {
+export function responseSucceeds(
+  result: TestExecutionResult,
+  expectedContent: string
+): { passed: boolean; reason?: string } {
   const msg = findLastAgentMessage(result);
   if (!msg) return { passed: false, reason: "No agent response received" };
   const lower = msg.toLowerCase();
   const hasContent = lower.includes(expectedContent.toLowerCase());
-  if (!hasContent) return { passed: false, reason: `Expected "${expectedContent}" in response, got: ${msg.slice(0, 300)}` };
+  if (!hasContent)
+    return {
+      passed: false,
+      reason: `Expected "${expectedContent}" in response, got: ${msg.slice(0, 300)}`,
+    };
   return { passed: true };
 }
 
@@ -141,7 +204,7 @@ export function completedToolNames(result: TestExecutionResult): Set<string> {
   return new Set(
     getToolCalls(result)
       .filter((call) => call.execution?.status === "complete" && !call.execution?.isError)
-      .map((call) => call.name),
+      .map((call) => call.name)
   );
 }
 
@@ -149,9 +212,30 @@ export function incompleteToolCalls(result: TestExecutionResult): InvocationCard
   return getToolCalls(result).filter((call) => !isSettledInvocation(call));
 }
 
+export function failedToolCalls(result: TestExecutionResult): InvocationCardPayloadLike[] {
+  return getToolCalls(result).filter((call) => {
+    const execution = call.execution;
+    if (!execution) return false;
+    if (execution.isError) return true;
+    return execution.status === "error" || execution.status === "failed";
+  });
+}
+
 function isSettledInvocation(call: InvocationCardPayloadLike): boolean {
   const execution = call.execution;
   if (!execution) return false;
   if (execution.status === "complete" || execution.status === "error") return true;
   return typeof execution.terminalOutcome === "string" && execution.terminalOutcome.length > 0;
+}
+
+function formatInvocationError(call: InvocationCardPayloadLike): string {
+  const execution = call.execution;
+  const raw = execution?.result;
+  const message =
+    raw && typeof raw === "object" && "error" in raw
+      ? String((raw as { error?: unknown }).error)
+      : raw === undefined
+        ? (execution?.status ?? "unknown")
+        : String(raw);
+  return message.slice(0, 160);
 }

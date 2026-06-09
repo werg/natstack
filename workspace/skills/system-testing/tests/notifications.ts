@@ -12,8 +12,9 @@ export const notificationTests: TestCase[] = [
     name: "show-notification",
     description: "Show a notification and confirm it appeared",
     category: "notifications",
-    prompt: "Exercise showing a notification. Finish with NOTIFICATION_SHOW_OK and marker.",
-    validate: (result) => checked(result, ["NOTIFICATION_SHOW_OK", "marker"]),
+    prompt:
+      "Exercise showing a notification. Finish with NOTIFICATION_SHOW_OK and notification-show-marker.",
+    validate: (result) => checked(result, ["NOTIFICATION_SHOW_OK", "notification-show-marker"]),
   },
   {
     name: "show-with-actions",
