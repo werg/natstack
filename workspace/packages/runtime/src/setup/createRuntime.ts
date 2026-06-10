@@ -115,7 +115,10 @@ export function createRuntime(deps: RuntimeDeps) {
     createPanelHandle({
       rpc: base.rpc,
       metadata,
-      cdp: createCdpAutomation(base.rpc, metadata.id),
+      cdp: createCdpAutomation(base.rpc, metadata.id, {
+        kind: metadata.kind,
+        requesterPanelId: slotId,
+      }),
       ops: panelHandleOps,
     });
   const panelHandleOps: PanelHandleHostOps = {
@@ -170,7 +173,10 @@ export function createRuntime(deps: RuntimeDeps) {
             parentId: null,
             rpcTargetId: parentRuntimeId,
           },
-          cdp: createCdpAutomation(base.rpc, parentSlotId),
+          cdp: createCdpAutomation(base.rpc, parentSlotId, {
+            kind: "workspace",
+            requesterPanelId: slotId,
+          }),
           ops: panelHandleOps,
         });
       })()

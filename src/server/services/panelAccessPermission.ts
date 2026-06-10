@@ -14,6 +14,7 @@ import {
 export interface PanelAccessPermissionTarget extends PanelAccessTarget {
   title?: string;
   source?: string;
+  kind?: "workspace" | "browser" | string;
   runtimeEntityId?: string;
 }
 

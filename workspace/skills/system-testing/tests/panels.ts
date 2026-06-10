@@ -48,7 +48,7 @@ export const panelTests: TestCase[] = [
     description: "Create a browser panel pointing to a URL",
     category: "panels",
     prompt:
-      "Exercise opening a browser panel for https://example.com/ with the documented panelTree/openPanel API. Use the returned PanelHandle directly; do not invent panel IDs or titles, and do not call adblock APIs. Verify CDP availability with handle.cdp.getCdpEndpoint(). Finish with PANEL_BROWSER_OK and url=<current-url>.",
+      "Exercise opening a browser panel for https://example.com/ with the documented panelTree/openPanel API. Use the returned PanelHandle directly, assert it with assertBrowserPanelHandle from @workspace-skills/system-testing before any CDP call, and never automate panelTree.self(), invented panel IDs, or titles. Do not call adblock APIs. Verify CDP availability with handle.cdp.getCdpEndpoint(). Finish with PANEL_BROWSER_OK and url=<current-url>.",
     validate: (result) => checkedWithField(result, ["PANEL_BROWSER_OK"], "url"),
   },
   {
@@ -56,7 +56,7 @@ export const panelTests: TestCase[] = [
     description: "Navigate a browser panel to a new URL",
     category: "panels",
     prompt:
-      "Exercise browser panel navigation using a browser PanelHandle returned by panelTree/openPanel. Open https://example.com/ first, then navigate the same handle to https://example.org/ using its CDP/lightweight page APIs. Do not use data: URLs, about:blank, guessed panel names, read unrelated docs, or call adblock APIs. Finish with PANEL_NAVIGATE_OK and final-marker.",
+      "Exercise browser panel navigation using a browser PanelHandle returned by panelTree/openPanel. Open https://example.com/ first, assert the returned handle with assertBrowserPanelHandle from @workspace-skills/system-testing, then navigate that same child browser handle to https://example.org/ using its CDP/lightweight page APIs. Do not automate panelTree.self(), use data: URLs, about:blank, guessed panel names, read unrelated docs, or call adblock APIs. Finish with PANEL_NAVIGATE_OK and final-marker.",
     validate: (result) => checked(result, ["PANEL_NAVIGATE_OK", "final-marker"]),
   },
   {
@@ -64,7 +64,7 @@ export const panelTests: TestCase[] = [
     description: "Take a screenshot of a browser panel",
     category: "panels",
     prompt:
-      "Exercise browser panel screenshot capture using a browser PanelHandle returned by panelTree/openPanel for https://example.com/. Initialize the page in the same eval scope before using it; do not refer to a page variable unless it was assigned by await handle.cdp.lightweightPage(). Do not use data: URLs or about:blank. Only report success after a same-run screenshot call returns bytes. Finish with PANEL_SCREENSHOT_OK and bytes=<byte-count>.",
+      "Exercise browser panel screenshot capture using a browser PanelHandle returned by panelTree/openPanel for https://example.com/. Assert the returned child handle with assertBrowserPanelHandle from @workspace-skills/system-testing before CDP, initialize the page in the same eval scope before using it, and do not refer to a page variable unless it was assigned by await handle.cdp.lightweightPage(). Do not automate panelTree.self(), use data: URLs, or about:blank. Only report success after a same-run screenshot call returns bytes. Finish with PANEL_SCREENSHOT_OK and bytes=<byte-count>.",
     validate: (result) => checkedWithNumericField(result, ["PANEL_SCREENSHOT_OK"], "bytes"),
   },
   {
@@ -72,7 +72,7 @@ export const panelTests: TestCase[] = [
     description: "Evaluate JavaScript in a browser panel",
     category: "panels",
     prompt:
-      "Exercise evaluating JavaScript in a browser panel using a browser PanelHandle returned by panelTree/openPanel for https://example.com/. Initialize const page = await handle.cdp.lightweightPage() in the same eval before calling page.evaluate(...); inject or compute marker-match with page.evaluate instead of opening data: URLs or about:blank, and do not use guessed panel IDs or titles. Finish with PANEL_EVALUATE_OK and marker-match.",
+      "Exercise evaluating JavaScript in a browser panel using a browser PanelHandle returned by panelTree/openPanel for https://example.com/. Assert the returned child handle with assertBrowserPanelHandle from @workspace-skills/system-testing, initialize const page = await handle.cdp.lightweightPage() in the same eval before calling page.evaluate(...), and inject or compute marker-match with page.evaluate instead of opening data: URLs or about:blank. Do not automate panelTree.self() or guessed panel IDs/titles. Finish with PANEL_EVALUATE_OK and marker-match.",
     validate: (result) => checked(result, ["PANEL_EVALUATE_OK", "marker-match"]),
   },
   {

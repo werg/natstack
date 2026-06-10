@@ -656,6 +656,16 @@ export abstract class DurableObjectBase {
     };
   }
 
+  private cdpForPanelMetadata(metadata: PanelHandleMetadata) {
+    return createCdpAutomation(this.rpc, metadata.id, {
+      kind: metadata.kind,
+      requesterPanelId:
+        this._currentRpcCallerKind === "panel"
+          ? (this._currentRpcCallerPanelId ?? this._currentRpcCallerId)
+          : null,
+    });
+  }
+
   private panelOps(): PanelHandleHostOps {
     return {
       refresh: async (id) => {
@@ -703,10 +713,11 @@ export abstract class DurableObjectBase {
     id: string,
     metadata: Partial<PanelHandleMetadata> = {}
   ): PanelHandle {
+    const resolvedMetadata = this.metadataForPanelId(id, metadata);
     return createPanelHandle({
       rpc: this.rpc,
-      metadata: this.metadataForPanelId(id, metadata),
-      cdp: createCdpAutomation(this.rpc, id),
+      metadata: resolvedMetadata,
+      cdp: this.cdpForPanelMetadata(resolvedMetadata),
       ops: this.panelOps(),
     });
   }
@@ -726,10 +737,11 @@ export abstract class DurableObjectBase {
   }
 
   private hydratePanelListItem(item: DurablePanelListItem): PanelHandle {
+    const metadata = this.panelListItemToMetadata(item);
     return createPanelHandle({
       rpc: this.rpc,
-      metadata: this.panelListItemToMetadata(item),
-      cdp: createCdpAutomation(this.rpc, item.panelId),
+      metadata,
+      cdp: this.cdpForPanelMetadata(metadata),
       ops: this.panelOps(),
     });
   }

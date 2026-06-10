@@ -6,6 +6,7 @@
   "exports": {
     ".": "./index.ts",
     "./diagnostics": "./diagnostics.ts",
+    "./panel-guards": "./panel-guards.ts",
     "./report": "./messages/report.ts",
     "./runner": "./runner.ts",
     "./stages": "./stages.ts",

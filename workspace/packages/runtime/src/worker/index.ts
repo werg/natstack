@@ -562,6 +562,11 @@ function createWorkerPanelTree(
       parentId: null,
       ...(metadataCache.get(id) ?? {}),
     });
+  const cdpForMetadata = (metadata: PanelHandleMetadata) =>
+    createCdpAutomation(rpc, metadata.id, {
+      kind: metadata.kind,
+      requesterPanelId: parentKind === "panel" ? parentId : null,
+    });
   const metadataFromResult = (id: string, meta: PanelMetadataResult): PanelHandleMetadata => ({
     id,
     title: meta.title,
@@ -622,13 +627,15 @@ function createWorkerPanelTree(
     snapshot: (id) => callPanel("snapshot", [id]),
     callAgent: (id, method, args) => callPanel("callAgent", [id, method, args]),
   };
-  const hydrate = (item: PanelListItem): PanelHandle =>
-    createPanelHandle({
+  const hydrate = (item: PanelListItem): PanelHandle => {
+    const metadata = toMetadata(item);
+    return createPanelHandle({
       rpc,
-      metadata: toMetadata(item),
-      cdp: createCdpAutomation(rpc, item.panelId),
+      metadata,
+      cdp: cdpForMetadata(metadata),
       ops,
     });
+  };
   const flatten = (items: PanelListItem[]): PanelListItem[] => {
     const out: PanelListItem[] = [];
     const visit = (item: PanelListItem) => {
@@ -646,13 +653,15 @@ function createWorkerPanelTree(
         parent: () =>
           createWorkerParentPanelHandle(panelTree, parentId, parentEntityId, parentKind),
       }),
-    get: (id) =>
-      createPanelHandle({
+    get: (id) => {
+      const metadata = metadataForId(id);
+      return createPanelHandle({
         rpc,
-        metadata: metadataForId(id),
-        cdp: createCdpAutomation(rpc, id),
+        metadata,
+        cdp: cdpForMetadata(metadata),
         ops,
-      }),
+      });
+    },
     async list() {
       return flatten(await callPanel<PanelListItem[]>("list", [null])).map(hydrate);
     },

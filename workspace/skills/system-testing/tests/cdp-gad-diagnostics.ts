@@ -12,14 +12,14 @@ export const cdpGadDiagnosticTests: TestCase[] = [
     name: "cdp-lightweight-click-type-evaluate",
     description: "Automate a browser page with the lightweight CDP client",
     category: "cdp-gad-diagnostics",
-    prompt: "Automate a tiny disposable browser page with handle.cdp.lightweightPage(). Finish with CDP_LIGHTWEIGHT_INTERACTION_OK, clicked, evaluated, and screenshot.",
+    prompt: "Open a tiny disposable browser child panel, assert the returned handle with assertBrowserPanelHandle from @workspace-skills/system-testing, then automate it with handle.cdp.lightweightPage(). Do not automate panelTree.self(). Finish with CDP_LIGHTWEIGHT_INTERACTION_OK, clicked, evaluated, and screenshot.",
     validate: (result) => checked(result, ["CDP_LIGHTWEIGHT_INTERACTION_OK", "clicked", "evaluated", "screenshot"]),
   },
   {
     name: "cdp-lightweight-console-dom-inspection",
     description: "Exercise explicit lightweight CDP inspection and host historical console APIs",
     category: "cdp-gad-diagnostics",
-    prompt: "Open a tiny disposable browser page, explicitly use handle.cdp.lightweightPage(), trigger console.log and console.error from the page, inspect DOM with the lightweight page/locator inspection helpers, read host historical console history with handle.cdp.consoleHistory({ limit: 20, errorLimit: 20 }), and finish with CDP_LIGHTWEIGHT_OK, console-events, console-history, console-errors, dom-inspect, visible, and lightweightPage.",
+    prompt: "Open a tiny disposable browser child panel, assert the returned handle with assertBrowserPanelHandle from @workspace-skills/system-testing, explicitly use handle.cdp.lightweightPage(), trigger console.log and console.error from the page, inspect DOM with the lightweight page/locator inspection helpers, read host historical console history with handle.cdp.consoleHistory({ limit: 20, errorLimit: 20 }), and finish with CDP_LIGHTWEIGHT_OK, console-events, console-history, console-errors, dom-inspect, visible, and lightweightPage.",
     validate: (result) => checked(result, ["CDP_LIGHTWEIGHT_OK", "console-events", "console-history", "console-errors", "dom-inspect", "visible", "lightweightPage"]),
   },
   {

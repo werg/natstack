@@ -198,7 +198,10 @@ export function hydratePanelHandle(item: PanelListItem): PanelHandle {
   return createPanelHandle({
     rpc,
     metadata,
-    cdp: createCdpAutomation(rpc, metadata.id),
+    cdp: createCdpAutomation(rpc, metadata.id, {
+      kind: metadata.kind,
+      requesterPanelId: _selfId,
+    }),
     ops,
   });
 }
@@ -255,11 +258,15 @@ export function getPanelHandle(
   id: string,
   kind: "workspace" | "browser" = "workspace"
 ): PanelHandle {
+  const rpc = getRpc();
   const metadata = metadataForId(id, { kind });
   return createPanelHandle({
-    rpc: getRpc(),
+    rpc,
     metadata,
-    cdp: createCdpAutomation(getRpc(), id),
+    cdp: createCdpAutomation(rpc, metadata.id, {
+      kind: metadata.kind,
+      requesterPanelId: _selfId,
+    }),
     ops,
   });
 }
@@ -267,8 +274,9 @@ export function getPanelHandle(
 export const panelTree: PanelTreeApi = {
   self() {
     if (!_selfId) throw new Error("panelTree.self() is not available before runtime init");
+    const rpc = getRpc();
     return createPanelHandle({
-      rpc: getRpc(),
+      rpc,
       metadata: {
         id: _selfId,
         title: _selfId,
@@ -277,7 +285,10 @@ export const panelTree: PanelTreeApi = {
         parentId: _parentId,
         rpcTargetId: _selfRpcTargetId ?? _selfId,
       },
-      cdp: createCdpAutomation(getRpc(), _selfId),
+      cdp: createCdpAutomation(rpc, _selfId, {
+        kind: "workspace",
+        requesterPanelId: _selfId,
+      }),
       ops,
     });
   },

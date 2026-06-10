@@ -1,6 +1,7 @@
 export { HeadlessRunner } from "./runner.js";
 export { TestRunner } from "./test-runner.js";
 export { summarizeFailures, summarizeEntry } from "./diagnostics.js";
+export { assertBrowserPanelHandle, refreshBrowserPanelHandle } from "./panel-guards.js";
 export type { FailureDiagnostic, FailureReport, DiagnosticLimits } from "./diagnostics.js";
 export type { TestCase, TestResult, TestSuiteResult, TestExecutionResult } from "./types.js";
 export type { SessionSnapshot } from "@workspace/agentic-session";

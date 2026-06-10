@@ -7,6 +7,7 @@
 
 import { randomUUID } from "crypto";
 import { z } from "zod";
+import { createDevLogger } from "@natstack/dev-log";
 import type { ServiceContainer } from "@natstack/shared/serviceContainer";
 import {
   createVerifiedCaller,
@@ -52,6 +53,8 @@ import type {
   PanelSearchIndex,
   PanelSearchResult,
 } from "@natstack/shared/panelSearchTypes";
+
+const log = createDevLogger("PanelRuntimeRegistration");
 
 type PanelAccessMetadata =
   import("./services/panelAccessPermission.js").PanelAccessPermissionTarget;
@@ -885,6 +888,20 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
             return bridge.sendHostCommand(panelId, "consoleHistory", [options ?? {}]) as Promise<
               import("./services/panelCdpService.js").PanelConsoleHistoryResult
             >;
+          },
+          logAccess: (event) => {
+            const message = event.denied ? "Panel CDP access denied" : "Panel CDP access";
+            const payload = {
+              method: event.method,
+              requesterId: event.requesterId,
+              requesterKind: event.requesterKind,
+              targetId: event.targetId,
+              targetKind: event.targetKind,
+              targetSource: event.targetSource,
+              ...(event.reason ? { reason: event.reason } : {}),
+            };
+            if (event.denied) log.warn(message, payload);
+            else log.info(message, payload);
           },
         });
 

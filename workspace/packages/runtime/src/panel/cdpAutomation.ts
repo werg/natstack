@@ -14,6 +14,11 @@ type LightweightCdpClientModule = {
 
 const LIGHTWEIGHT_CDP_MODULE = "@workspace/cdp-client";
 
+interface CdpAutomationOptions {
+  kind?: "workspace" | "browser";
+  requesterPanelId?: string | null;
+}
+
 function isLightweightCdpClientModule(value: unknown): value is LightweightCdpClientModule {
   return Boolean((value as LightweightCdpClientModule | undefined)?.BrowserImpl?.connect);
 }
@@ -79,12 +84,31 @@ async function loadLightweightClient(): Promise<LightweightCdpClientModule> {
   );
 }
 
-export function createCdpAutomation(rpc: Pick<RpcClient, "call">, id: string): CdpAutomation {
+export function createCdpAutomation(
+  rpc: Pick<RpcClient, "call">,
+  id: string,
+  options: CdpAutomationOptions = {}
+): CdpAutomation {
+  const assertBrowserAutomationTarget = (operation: string) => {
+    if (options.kind === "browser") return;
+    const selfHint =
+      options.requesterPanelId && options.requesterPanelId === id
+        ? " This handle is the current panel; open a browser panel and use that returned handle instead."
+        : "";
+    throw new Error(
+      `Refusing to ${operation} workspace panel ${id} through CDP.${selfHint} ` +
+        `Use panelTree.open("https://...") / openPanel("https://...") to create a browser panel, ` +
+        `then automate the returned browser handle.`
+    );
+  };
+
   const getCdpEndpoint = async (): Promise<CdpEndpoint> => {
+    assertBrowserAutomationTarget("connect to CDP for");
     return rpc.call<CdpEndpoint>("main", "panelCdp.getCdpEndpoint", [id]);
   };
 
   const connectPage = async (): Promise<any> => {
+    assertBrowserAutomationTarget("open a lightweight page for");
     const { BrowserImpl } = await loadLightweightClient();
     const endpoint = await getCdpEndpoint();
     const connectOptions: { isElectronWebview: boolean; transportOptions?: { authToken: string } } =
@@ -105,18 +129,23 @@ export function createCdpAutomation(rpc: Pick<RpcClient, "call">, id: string): C
     },
     getCdpEndpoint,
     navigate: (url) => {
+      assertBrowserAutomationTarget("navigate");
       return rpc.call<void>("main", "panelCdp.navigate", [id, url]);
     },
     goBack: () => {
+      assertBrowserAutomationTarget("go back in");
       return rpc.call<void>("main", "panelCdp.goBack", [id]);
     },
     goForward: () => {
+      assertBrowserAutomationTarget("go forward in");
       return rpc.call<void>("main", "panelCdp.goForward", [id]);
     },
     reload: () => {
+      assertBrowserAutomationTarget("reload");
       return rpc.call<void>("main", "panelCdp.reload", [id]);
     },
     stop: () => {
+      assertBrowserAutomationTarget("stop loading in");
       return rpc.call<void>("main", "panelCdp.stop", [id]);
     },
     click: async (selector) => {

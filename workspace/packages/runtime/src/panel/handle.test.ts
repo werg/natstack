@@ -136,9 +136,11 @@ describe("PanelHandle", () => {
       source: "panels/example",
       kind: "workspace",
     });
-    await expect(handle.cdp.getCdpEndpoint()).resolves.toEqual({
-      wsEndpoint: "ws://localhost",
-      token: "t",
+    await expect(handle.cdp.getCdpEndpoint()).rejects.toThrow(
+      "Refusing to connect to CDP for workspace panel panel-1 through CDP"
+    );
+    await expect(handle.cdp.consoleHistory()).resolves.toMatchObject({
+      capacity: { entries: 1000, errors: 500 },
     });
   });
 
@@ -203,12 +205,13 @@ describe("PanelHandle", () => {
     expect(typedChild.id).toBe("child-1");
     await (typedChild.call as Record<string, () => Promise<unknown>>)["ping"]!();
     await typedChild.emit("ready", { ok: true });
-    await typedChild.cdp.getCdpEndpoint();
+    await expect(typedChild.cdp.getCdpEndpoint()).rejects.toThrow(
+      "Refusing to connect to CDP for workspace panel child-1 through CDP"
+    );
     await typedChild.stateArgs.set({ mode: "live" });
 
     expect(rpcCall).toHaveBeenCalledWith("panel:child-entity", "ping", []);
     expect(rpcEmit).toHaveBeenCalledWith("panel:child-entity", "ready", { ok: true });
-    expect(rpcCall).toHaveBeenCalledWith("main", "panelCdp.getCdpEndpoint", ["child-1"]);
     expect(rpcCall).toHaveBeenCalledWith("main", "panelTree.setStateArgs", [
       "child-1",
       { mode: "live" },
@@ -339,7 +342,7 @@ describe("PanelHandle", () => {
     const { _initPanelHandleBridge, getPanelHandle } = await import("./handle.js");
     _initPanelHandleBridge({ call: rpcCall, on: vi.fn() } as never);
 
-    await expect(getPanelHandle("panel-1").cdp.getCdpEndpoint()).resolves.toEqual({
+    await expect(getPanelHandle("panel-1", "browser").cdp.getCdpEndpoint()).resolves.toEqual({
       wsEndpoint: "ws://server/cdp/panel-1",
       token: "t",
     });
@@ -352,7 +355,7 @@ describe("PanelHandle", () => {
     const { _initPanelHandleBridge, getPanelHandle } = await import("./handle.js");
     _initPanelHandleBridge({ call: rpcCall, on: vi.fn() } as never);
 
-    await getPanelHandle("panel-1").cdp.navigate("https://example.com");
+    await getPanelHandle("panel-1", "browser").cdp.navigate("https://example.com");
 
     expect(rpcCall).toHaveBeenCalledWith("main", "panelCdp.navigate", [
       "panel-1",
@@ -413,7 +416,7 @@ describe("PanelHandle", () => {
     const { _initPanelHandleBridge, getPanelHandle } = await import("./handle.js");
     _initPanelHandleBridge({ call: rpcCall, on: vi.fn() } as never);
 
-    await getPanelHandle("panel-1").click("button.submit");
+    await getPanelHandle("panel-1", "browser").click("button.submit");
 
     expect(rpcCall).toHaveBeenCalledWith("main", "panelCdp.getCdpEndpoint", ["panel-1"]);
     expect(click).toHaveBeenCalledWith("button.submit");
@@ -441,12 +444,32 @@ describe("PanelHandle", () => {
     const { _initPanelHandleBridge, getPanelHandle } = await import("./handle.js");
     _initPanelHandleBridge({ call: rpcCall, on: vi.fn() } as never);
 
-    await expect(getPanelHandle("panel-1").cdp.lightweightPage()).resolves.toBe(page);
+    await expect(getPanelHandle("panel-1", "browser").cdp.lightweightPage()).resolves.toBe(page);
 
     expect((globalThis as any).__natstackRequireAsync__).toHaveBeenNthCalledWith(
       1,
       "@workspace/cdp-client"
     );
+  });
+
+  it("refuses destructive CDP operations for workspace and self handles", async () => {
+    const rpcCall = createRpcCall();
+    const { _initPanelHandleBridge, getPanelHandle, panelTree } = await import("./handle.js");
+    _initPanelHandleBridge({ call: rpcCall, on: vi.fn() } as never, {
+      selfId: "panel-self",
+    });
+
+    expect(() => getPanelHandle("workspace-1").cdp.navigate("https://example.com")).toThrow(
+      "Refusing to navigate workspace panel workspace-1 through CDP"
+    );
+    await expect(getPanelHandle("workspace-1").cdp.getCdpEndpoint()).rejects.toThrow(
+      "Refusing to connect to CDP for workspace panel workspace-1 through CDP"
+    );
+    expect(() => panelTree.self().cdp.reload()).toThrow("This handle is the current panel");
+
+    expect(rpcCall).not.toHaveBeenCalledWith("main", "panelCdp.navigate", expect.any(Array));
+    expect(rpcCall).not.toHaveBeenCalledWith("main", "panelCdp.reload", expect.any(Array));
+    expect(rpcCall).not.toHaveBeenCalledWith("main", "panelCdp.getCdpEndpoint", expect.any(Array));
   });
 
   it("hydrates direct children from the host each call", async () => {

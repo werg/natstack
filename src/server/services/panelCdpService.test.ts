@@ -64,7 +64,7 @@ describe("panelCdpService", () => {
     const service = createPanelCdpService({
       approvalQueue,
       grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
-      getTarget: () => ({ id: "target", title: "Target" }),
+      getTarget: () => ({ id: "target", title: "Target", kind: "browser" }),
       getEndpoint,
     });
 
@@ -85,7 +85,7 @@ describe("panelCdpService", () => {
     const service = createPanelCdpService({
       approvalQueue,
       grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
-      getTarget: () => ({ id: "target", title: "Target" }),
+      getTarget: () => ({ id: "target", title: "Target", kind: "browser" }),
       getEndpoint,
     });
 
@@ -114,7 +114,7 @@ describe("panelCdpService", () => {
     const service = createPanelCdpService({
       approvalQueue: approvalQueueMock("deny"),
       grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
-      getTarget: () => ({ id: "target", title: "Target" }),
+      getTarget: () => ({ id: "target", title: "Target", kind: "browser" }),
       getEndpoint,
     });
 
@@ -130,7 +130,7 @@ describe("panelCdpService", () => {
     const service = createPanelCdpService({
       approvalQueue: approvalQueueMock("deny"),
       grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
-      getTarget: () => ({ id: "target", title: "Target" }),
+      getTarget: () => ({ id: "target", title: "Target", kind: "browser" }),
       getEndpoint,
     });
 
@@ -192,7 +192,7 @@ describe("panelCdpService", () => {
     const service = createPanelCdpService({
       approvalQueue,
       grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
-      getTarget: () => ({ id: "shell", title: "Shell", privileged: true }),
+      getTarget: () => ({ id: "shell", title: "Shell", privileged: true, kind: "browser" }),
       getEndpoint: vi.fn(async () => ({ wsEndpoint: "ws://server/cdp/shell", token: "t" })),
     });
 
@@ -213,7 +213,7 @@ describe("panelCdpService", () => {
     const service = createPanelCdpService({
       approvalQueue,
       grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
-      getTarget: () => ({ id: "target", title: "Target" }),
+      getTarget: () => ({ id: "target", title: "Target", kind: "browser" }),
       getEndpoint: vi.fn(async () => ({ wsEndpoint: "ws://server/cdp/target", token: "t" })),
       drive,
     });
@@ -228,6 +228,84 @@ describe("panelCdpService", () => {
     expect(drive).toHaveBeenCalledWith("target", "panel:requester", "navigate", [
       "https://example.com",
     ]);
+  });
+
+  it("rejects panel caller drive verbs against workspace panels before prompting", async () => {
+    const approvalQueue = approvalQueueMock("session");
+    const drive = vi.fn(async () => undefined);
+    const logAccess = vi.fn();
+    const service = createPanelCdpService({
+      approvalQueue,
+      grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
+      getTarget: () => ({
+        id: "chat-panel",
+        title: "Chat",
+        source: "panels/chat",
+        kind: "workspace",
+      }),
+      getEndpoint: vi.fn(async () => ({ wsEndpoint: "ws://server/cdp/target", token: "t" })),
+      drive,
+      logAccess,
+    });
+
+    await expect(
+      service.handler(ctx(), "navigate", ["chat-panel", "https://example.com"])
+    ).rejects.toThrow("Refusing to navigate workspace panel chat-panel through CDP");
+
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+    expect(drive).not.toHaveBeenCalled();
+    expect(logAccess).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "navigate",
+        requesterId: "panel:requester",
+        requesterKind: "panel",
+        targetId: "chat-panel",
+        targetKind: "workspace",
+        targetSource: "panels/chat",
+        denied: true,
+      })
+    );
+  });
+
+  it("rejects panel caller raw CDP endpoints against workspace panels before prompting", async () => {
+    const approvalQueue = approvalQueueMock("session");
+    const getEndpoint = vi.fn(async () => ({ wsEndpoint: "ws://server/cdp/chat", token: "t" }));
+    const service = createPanelCdpService({
+      approvalQueue,
+      grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
+      getTarget: () => ({
+        id: "chat-panel",
+        title: "Chat",
+        source: "panels/chat",
+        kind: "workspace",
+      }),
+      getEndpoint,
+    });
+
+    await expect(service.handler(ctx(), "getCdpEndpoint", ["chat-panel"])).rejects.toThrow(
+      "Refusing to open raw CDP for workspace panel chat-panel through CDP"
+    );
+
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+    expect(getEndpoint).not.toHaveBeenCalled();
+  });
+
+  it("allows non-panel callers to drive workspace panels", async () => {
+    const approvalQueue = approvalQueueMock("session");
+    const drive = vi.fn(async () => undefined);
+    const service = createPanelCdpService({
+      approvalQueue,
+      grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
+      getTarget: () => ({ id: "target", title: "Target", kind: "workspace" }),
+      getEndpoint: vi.fn(async () => ({ wsEndpoint: "ws://server/cdp/target", token: "t" })),
+      drive,
+    });
+
+    await expect(
+      service.handler(runtimeCtx("worker", "worker:agent"), "reload", ["target"])
+    ).resolves.toBeUndefined();
+
+    expect(drive).toHaveBeenCalledWith("target", "worker:agent", "reload", []);
   });
 
   it("gates historical console access with the same automation capability", async () => {
