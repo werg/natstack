@@ -159,10 +159,12 @@ describe("pair-server runner", () => {
         invocation: { command: string; args: string[] };
       }) {
         expect(serverArgs[0]).toBe("src/server/index.ts");
-        expect(invocation).toMatchObject({
-          command: "pnpm",
-          args: ["exec", "tsx", ...serverArgs],
-        });
+        const pnpmExecutable =
+          invocation.command === process.execPath ? invocation.args[0] : invocation.command;
+        expect(path.basename(pnpmExecutable ?? "")).toMatch(/^pnpm(\.(cmd|cjs|js|mjs))?$/);
+        const pnpmArgs =
+          invocation.command === process.execPath ? invocation.args.slice(1) : invocation.args;
+        expect(pnpmArgs).toEqual(["exec", "tsx", ...serverArgs]);
         setTimeout(() => child.emit("exit", 0, null), 10);
         return child;
       },
