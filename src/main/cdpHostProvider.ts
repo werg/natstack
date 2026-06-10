@@ -632,11 +632,13 @@ export class CdpHostProvider {
         }
         return contents.debugger.sendCommand(method, params, sessionId);
       });
-    const tail = run.finally(() => {
-      if (this.debuggerCommandQueues.get(targetId) === tail) {
-        this.debuggerCommandQueues.delete(targetId);
-      }
-    });
+    const tail = run
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.debuggerCommandQueues.get(targetId) === tail) {
+          this.debuggerCommandQueues.delete(targetId);
+        }
+      });
     this.debuggerCommandQueues.set(targetId, tail);
     return run;
   }

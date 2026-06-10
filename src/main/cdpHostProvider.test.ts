@@ -198,6 +198,45 @@ describe("CdpHostProvider", () => {
     });
   });
 
+  it("swallows rejected queue tails while still reporting command errors", async () => {
+    const { provider, socket, debuggerApi } = createHarness();
+    provider.registerTarget("panel-1", 42);
+    provider.start();
+    socket.emit("open");
+    socket.emit("message", JSON.stringify({ type: "natstack:cdp-auth-ok" }));
+    debuggerApi.sendCommand
+      .mockRejectedValueOnce(new Error("target closed while handling command"))
+      .mockResolvedValueOnce({ ok: true });
+
+    await provider.handleProviderMessageForTest({
+      type: "cdp:command",
+      targetId: "panel-1",
+      requestId: "r1",
+      method: "Runtime.evaluate",
+    });
+    await Promise.resolve();
+
+    await provider.handleProviderMessageForTest({
+      type: "cdp:command",
+      targetId: "panel-1",
+      requestId: "r2",
+      method: "Runtime.evaluate",
+    });
+
+    expect(socket.sent.map((entry) => JSON.parse(entry))).toContainEqual({
+      type: "cdp:error",
+      targetId: "panel-1",
+      requestId: "r1",
+      error: "target closed while handling command",
+    });
+    expect(socket.sent.map((entry) => JSON.parse(entry))).toContainEqual({
+      type: "cdp:result",
+      targetId: "panel-1",
+      requestId: "r2",
+      result: { ok: true },
+    });
+  });
+
   it("supports host-side accessibility snapshots with debugger cleanup", async () => {
     const { provider, debuggerApi } = createHarness();
     provider.registerTarget("panel-1", 42);
