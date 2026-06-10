@@ -37,6 +37,24 @@ export const SEND_TOOL_SCHEMA = {
     threadId: { type: "string" },
     messageId: { type: "string" },
     sourceThreadId: { type: "string" },
+    toCandidates: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          email: { type: "string" },
+          displayName: { type: "string" },
+          sentTo: { type: "number" },
+          receivedFrom: { type: "number" },
+          lastInteractionAt: { type: "number" },
+          youReplied: { type: "boolean" },
+          source: { type: "string" },
+          score: { type: "number" },
+        },
+        required: ["email"],
+        additionalProperties: false,
+      },
+    },
   },
   required: ["body"],
   additionalProperties: false,
@@ -66,6 +84,16 @@ export const LIST_THREADS_TOOL_SCHEMA = {
   properties: {
     limit: { type: "number", minimum: 1, maximum: 25 },
   },
+  additionalProperties: false,
+} as const;
+
+export const RESOLVE_CONTACT_TOOL_SCHEMA = {
+  type: "object",
+  properties: {
+    name: { type: "string", minLength: 1 },
+    limit: { type: "number", minimum: 1, maximum: 10 },
+  },
+  required: ["name"],
   additionalProperties: false,
 } as const;
 
@@ -106,7 +134,8 @@ export const GMAIL_TOOLS: GmailToolSpec[] = [
     name: "gmail_search",
     description:
       'Search Gmail with a Gmail query (e.g. "in:inbox newer_than:1d", "from:alice@example.com"). ' +
-      "Returns { query, count, results: [{ threadId, subject, from, snippet, unread, date }] } — act on the " +
+      "Returns { query, count, results: [{ threadId, subject, from, fromEmail, snippet, unread, date }] } " +
+      "(from is the display header, fromEmail the parsed bare address) — act on the " +
       "returned results directly; they are also mirrored into the inbox card's search section. " +
       "Parameters: { q: string, limit?: number (max 25) }.",
     schema: SEARCH_TOOL_SCHEMA,
@@ -135,9 +164,21 @@ export const GMAIL_TOOLS: GmailToolSpec[] = [
   {
     name: "gmail_saveDraft",
     description:
-      "Save a Gmail draft. Parameters: { to: string, cc?: string, bcc?: string, subject: string, body: string, threadId?: string, messageId?: string }.",
+      "Save a Gmail draft. Parameters: { to?: string, cc?: string, bcc?: string, subject?: string, body: string, threadId?: string, messageId?: string, toCandidates?: array }. " +
+      "Missing recipient or subject is NOT an error: the draft is parked on a compose card in drafting state (with toCandidates offered for one-click selection) until the user or gmail_resolveContact fills it in.",
     schema: SEND_TOOL_SCHEMA,
     run: (handlers, channelId, args) => handlers.saveDraft(channelId, args),
+  },
+  {
+    name: "gmail_resolveContact",
+    description:
+      "Resolve a person's name to email candidates with interaction evidence (how often you write to them, recency, whether you replied). " +
+      "Use BEFORE drafting when the user names a recipient without an address. One high-confidence candidate → use it; " +
+      "multiple plausible ones → ask the user or put candidates on the compose card via toCandidates. Never invent addresses. " +
+      "Returns { query, candidates: [{ email, displayName?, sentTo, receivedFrom, lastInteractionAt?, youReplied, source, score }] }. " +
+      "Parameters: { name: string, limit?: number (max 10) }.",
+    schema: RESOLVE_CONTACT_TOOL_SCHEMA,
+    run: (handlers, channelId, args) => handlers.resolveContact(channelId, args),
   },
   {
     name: "gmail_archiveThread",

@@ -4,6 +4,7 @@ import type {
 } from "@workspace/runtime/credentials";
 
 const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
+const PEOPLE_API_BASE = "https://people.googleapis.com/v1";
 
 export type GmailApiErrorCode =
   | "auth-expired"
@@ -85,6 +86,7 @@ const googleWorkspaceCredential = {
   audiences: [
     { url: "https://gmail.googleapis.com/", match: "origin" as const },
     { url: "https://www.googleapis.com/", match: "origin" as const },
+    { url: "https://people.googleapis.com/", match: "origin" as const },
   ],
 };
 
@@ -248,6 +250,39 @@ export interface GmailSyncDiff {
   threads: GmailThreadDiff[];
 }
 
+/** Normalized People API search result (person flattened per email address). */
+export interface GoogleContact {
+  email: string;
+  displayName?: string;
+}
+
+export interface SearchContactsOptions {
+  pageSize?: number;
+}
+
+interface PeopleSearchResponse {
+  results?: Array<{
+    person?: {
+      names?: Array<{ displayName?: string }>;
+      emailAddresses?: Array<{ value?: string }>;
+    };
+  }>;
+}
+
+function normalizeContactResults(data: PeopleSearchResponse): GoogleContact[] {
+  const seen = new Map<string, GoogleContact>();
+  for (const result of data.results ?? []) {
+    const person = result.person ?? {};
+    const displayName = person.names?.find((name) => name.displayName)?.displayName;
+    for (const address of person.emailAddresses ?? []) {
+      if (!address.value) continue;
+      const email = address.value.toLowerCase();
+      if (!seen.has(email)) seen.set(email, { email, ...(displayName ? { displayName } : {}) });
+    }
+  }
+  return [...seen.values()];
+}
+
 export interface GmailClient {
   handle(): Promise<UrlCredentialHandle>;
   getProfile(): Promise<GmailProfile>;
@@ -262,6 +297,8 @@ export interface GmailClient {
   createDraft(params: CreateDraftParams): Promise<GmailDraft>;
   sendDraft(draftId: string): Promise<GmailMessage>;
   modifyLabels(params: ModifyLabelsParams): Promise<GmailMessage | GmailThread>;
+  searchContacts(query: string, opts?: SearchContactsOptions): Promise<GoogleContact[]>;
+  searchOtherContacts(query: string, opts?: SearchContactsOptions): Promise<GoogleContact[]>;
 }
 
 function toQueryParams(params?: Record<string, string | number | string[] | undefined>): string {
@@ -415,8 +452,12 @@ export function createGmailClient(
     return handlePromise;
   };
 
-  const apiFetch = async <T>(path: string, init?: RequestInit): Promise<T> => {
-    const resource = resourceFromPath(path);
+  // Absolute-URL fetch shared by the Gmail and People API surfaces.
+  const fetchJson = async <T>(
+    url: string,
+    init?: RequestInit,
+    resource?: GmailResourceKind
+  ): Promise<T> => {
     let auth: UrlCredentialHandle;
     try {
       auth = await handle();
@@ -434,7 +475,7 @@ export function createGmailClient(
     }
     let response: Response;
     try {
-      response = await auth.fetch(`${GMAIL_API_BASE}${path}`, { ...init, headers });
+      response = await auth.fetch(url, { ...init, headers });
     } catch (err) {
       throw new GmailApiError(
         `Gmail API request failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -461,6 +502,38 @@ export function createGmailClient(
       );
     }
     return (await response.json()) as T;
+  };
+
+  const apiFetch = <T>(path: string, init?: RequestInit): Promise<T> =>
+    fetchJson<T>(`${GMAIL_API_BASE}${path}`, init, resourceFromPath(path));
+
+  // The People search endpoints need a warmup request (empty query) to prime
+  // the search cache per Google docs; fire it once per client, best-effort.
+  let peopleWarmupPromise: Promise<void> | null = null;
+  const warmupPeopleSearch = (): Promise<void> => {
+    if (!peopleWarmupPromise) {
+      peopleWarmupPromise = Promise.allSettled([
+        fetchJson(`${PEOPLE_API_BASE}/people:searchContacts${toQueryParams({ query: "", readMask: "names,emailAddresses" })}`),
+        fetchJson(`${PEOPLE_API_BASE}/otherContacts:search${toQueryParams({ query: "", readMask: "names,emailAddresses" })}`),
+      ]).then(() => undefined);
+    }
+    return peopleWarmupPromise;
+  };
+
+  const searchPeople = async (
+    endpoint: "people:searchContacts" | "otherContacts:search",
+    query: string,
+    opts?: SearchContactsOptions
+  ): Promise<GoogleContact[]> => {
+    await warmupPeopleSearch();
+    const data = await fetchJson<PeopleSearchResponse>(
+      `${PEOPLE_API_BASE}/${endpoint}${toQueryParams({
+        query,
+        readMask: "names,emailAddresses",
+        pageSize: opts?.pageSize ?? 10,
+      })}`
+    );
+    return normalizeContactResults(data);
   };
 
   const listHistory = async (opts: ListHistoryOptions): Promise<GmailHistoryResponse> => {
@@ -582,5 +655,7 @@ export function createGmailClient(
         }),
       });
     },
+    searchContacts: (query, opts) => searchPeople("people:searchContacts", query, opts),
+    searchOtherContacts: (query, opts) => searchPeople("otherContacts:search", query, opts),
   };
 }

@@ -14,6 +14,7 @@ const GMAIL_TABLES = [
   "gmail_attention_turns",
   "gmail_attention_queue",
   "gmail_wake_turns",
+  "gmail_people",
   // Legacy tables from earlier schema generations.
   "gmail_categories",
 ];
@@ -44,7 +45,8 @@ export function createGmailTables(sql: SqlStorage): void {
       sync_state TEXT NOT NULL DEFAULT 'ok',
       rate_limited_until INTEGER,
       backoff_ms INTEGER,
-      last_setup_json TEXT
+      last_setup_json TEXT,
+      people_api_status TEXT
     )
   `);
   sql.exec(`
@@ -121,6 +123,18 @@ export function createGmailTables(sql: SqlStorage): void {
     CREATE TABLE IF NOT EXISTS gmail_wake_turns (
       channel_id TEXT NOT NULL,
       started_at INTEGER NOT NULL
+    )
+  `);
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS gmail_people (
+      channel_id TEXT,
+      email TEXT,
+      display_name TEXT,
+      sent_to_count INTEGER DEFAULT 0,
+      received_from_count INTEGER DEFAULT 0,
+      last_interaction_at INTEGER,
+      you_replied INTEGER DEFAULT 0,
+      PRIMARY KEY (channel_id, email)
     )
   `);
 }

@@ -30,6 +30,7 @@ import {
   type GmailChannelState,
 } from "./types.js";
 import { AttentionEngine } from "./attention/attention-engine.js";
+import { PeopleStore } from "./people/people-store.js";
 import type { GmailAttentionEvent } from "./attention/rules.js";
 import { WAKE_DEBOUNCE_MS, WakeQueue, buildWakeDigestPrompt } from "./attention/wake.js";
 import { SyncEngine } from "./sync/sync-engine.js";
@@ -61,12 +62,13 @@ type GmailTool = NonNullable<PiRunnerOptions["extraTools"]>[number];
 export class GmailAgentWorker extends AgentWorkerBase {
   // Gmail tables are versioned by drop-and-recreate (see schema.ts); bump
   // past the base version so existing dev objects re-run migrate().
-  static override schemaVersion = AgentWorkerBase.schemaVersion + 2;
+  static override schemaVersion = AgentWorkerBase.schemaVersion + 3;
 
   private gmailClients = new Map<string, GmailClient>();
   private recoveredChannels = new Set<string>();
 
   private readonly attention: AttentionEngine;
+  private readonly people: PeopleStore;
   private readonly wake: WakeQueue;
   private readonly gmailCards: GmailCards;
   private readonly syncEngine: SyncEngine;
@@ -77,12 +79,14 @@ export class GmailAgentWorker extends AgentWorkerBase {
     super(ctx, env);
     void this.setOwnTitle("Gmail");
     this.attention = new AttentionEngine({ sql: this.sql });
+    this.people = new PeopleStore({ sql: this.sql });
     this.wake = new WakeQueue({ sql: this.sql });
     this.gmailCards = new GmailCards({ cards: this.cards, sql: this.sql });
     this.syncEngine = new SyncEngine({
       sql: this.sql,
       gmailFor: (channelId) => this.gmailForChannel(channelId),
       attention: this.attention,
+      people: this.people,
       cards: this.gmailCards,
       getChannelState: (channelId) => this.getChannelState(channelId),
       saveChannelState: (state) => this.saveChannelState(state),
@@ -96,6 +100,7 @@ export class GmailAgentWorker extends AgentWorkerBase {
       gmailFor: (channelId) => this.gmailForChannel(channelId),
       sync: this.syncEngine,
       attention: this.attention,
+      people: this.people,
       cards: this.gmailCards,
       getChannelState: (channelId) => this.getChannelState(channelId),
       saveChannelState: (state) => this.saveChannelState(state),
@@ -182,14 +187,20 @@ export class GmailAgentWorker extends AgentWorkerBase {
       rateLimitedUntil: (row["rate_limited_until"] as number | null) ?? undefined,
       backoffMs: (row["backoff_ms"] as number | null) ?? undefined,
       lastSetupJson: (row["last_setup_json"] as string | null) ?? undefined,
+      peopleApiStatus:
+        row["people_api_status"] === "ok"
+          ? "ok"
+          : row["people_api_status"] === "unavailable"
+            ? "unavailable"
+            : undefined,
     };
   }
 
   private saveChannelState(state: GmailChannelState): void {
     this.sql.exec(
       `INSERT OR REPLACE INTO gmail_channel_state
-       (channel_id, history_id, email_address, credential_id, poll_interval_ms, last_sync_at, last_error, last_overview_json, last_search_query, last_search_json, setup_status, setup_prompted_at, configured_at, setup_summary, sync_state, rate_limited_until, backoff_ms, last_setup_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (channel_id, history_id, email_address, credential_id, poll_interval_ms, last_sync_at, last_error, last_overview_json, last_search_query, last_search_json, setup_status, setup_prompted_at, configured_at, setup_summary, sync_state, rate_limited_until, backoff_ms, last_setup_json, people_api_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       state.channelId,
       state.historyId ?? null,
       state.emailAddress ?? null,
@@ -207,7 +218,8 @@ export class GmailAgentWorker extends AgentWorkerBase {
       state.syncState,
       state.rateLimitedUntil ?? null,
       state.backoffMs ?? null,
-      state.lastSetupJson ?? null
+      state.lastSetupJson ?? null,
+      state.peopleApiStatus ?? null
     );
   }
 
@@ -283,6 +295,15 @@ export class GmailAgentWorker extends AgentWorkerBase {
         { name: "listActionableThreads", description: "Return current actionable Gmail threads" },
         { name: "setPollInterval", description: "Configure Gmail polling interval" },
         { name: "getThread", description: "Fetch sanitized Gmail thread contents" },
+        {
+          name: "resolveContact",
+          description:
+            "Resolve a person name to email candidates with interaction evidence (history first, Google contacts fallback)",
+        },
+        {
+          name: "contactSuggest",
+          description: "Fast typeahead over the derived address book (no network)",
+        },
         { name: "openThread", description: "Publish or focus a Gmail thread card" },
         { name: "reconnect", description: "Re-verify the Google credential and report auth status" },
         {
@@ -295,6 +316,11 @@ export class GmailAgentWorker extends AgentWorkerBase {
         {
           name: "gmail_requestDraft",
           description: "Agent API: prepare a compose card in review state (never sends)",
+        },
+        {
+          name: "gmail_resolveContact",
+          description:
+            "Agent API: resolve a person name to email candidates with interaction evidence (read-only)",
         },
         ...this.getStandardAgentMethods(),
       ],
@@ -460,6 +486,11 @@ export class GmailAgentWorker extends AgentWorkerBase {
           return { result: this.handlers.setPollInterval(channelId, record(args)) };
         case "getThread":
           return wrap(await this.handlers.getThread(channelId, record(args)));
+        case "resolveContact":
+          await this.ensureRecovered(channelId);
+          return { result: await this.handlers.resolveContact(channelId, record(args)) };
+        case "contactSuggest":
+          return { result: this.handlers.contactSuggest(channelId, record(args)) };
         case "openThread":
           await this.ensureRecovered(channelId);
           return wrap(await this.handlers.openThread(channelId, record(args)));
@@ -481,6 +512,9 @@ export class GmailAgentWorker extends AgentWorkerBase {
         case "gmail_requestDraft":
           await this.ensureRecovered(channelId);
           return wrap(await this.participantApi.requestDraft(channelId, record(args)));
+        case "gmail_resolveContact":
+          await this.ensureRecovered(channelId);
+          return { result: await this.participantApi.resolveContact(channelId, record(args)) };
         default:
           return { result: { error: `unknown method: ${methodName}` }, isError: true };
       }
@@ -755,6 +789,15 @@ export class GmailAgentWorker extends AgentWorkerBase {
       pollIntervalMs: state.pollIntervalMs,
       ...(state.lastSyncAt ? { lastSyncAt: new Date(state.lastSyncAt).toISOString() } : {}),
       ...(state.lastError ? { lastError: state.lastError } : {}),
+      addressBook: {
+        knownPeople: this.people.count(channelId),
+        googleContacts:
+          state.peopleApiStatus === "ok"
+            ? "available"
+            : state.peopleApiStatus === "unavailable"
+              ? "unavailable"
+              : "unknown",
+      },
     };
     const setupJson = JSON.stringify(payload);
     if (state.lastSetupJson === setupJson) return;

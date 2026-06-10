@@ -1,9 +1,22 @@
-import { Badge, Button, Callout, Flex, Text, TextArea, TextField } from "@radix-ui/themes";
-import { ExclamationTriangleIcon, PaperPlaneIcon } from "@radix-ui/react-icons";
-import { useEffect, useState } from "react";
-import type { GmailComposeCardState } from "@workspace/gmail/card-types";
+import { Badge, Button, Callout, Flex, Text, TextArea } from "@radix-ui/themes";
+import { Cross2Icon, ExclamationTriangleIcon, PaperPlaneIcon, PersonIcon } from "@radix-ui/react-icons";
+import { useEffect, useRef, useState } from "react";
+import type { GmailComposeCardState, GmailContactCandidate } from "@workspace/gmail/card-types";
 
 type GmailComposeState = Partial<GmailComposeCardState>;
+
+interface GmailChat {
+  callMethodByHandle: (handle: string, method: string, args: unknown) => Promise<unknown>;
+}
+
+const EMAIL_RE = /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i;
+
+function splitRecipients(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(/[,;]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
 
 export function reduce(state: GmailComposeState, update: Partial<GmailComposeState>): GmailComposeState {
   return { ...state, ...update };
@@ -19,6 +32,179 @@ export function Pill({ state }: { state: GmailComposeState }) {
   );
 }
 
+/** Chip-style recipient input with derived-address-book typeahead. */
+function RecipientField({
+  label,
+  chips,
+  setChips,
+  disabled,
+  chat,
+}: {
+  label: string;
+  chips: string[];
+  setChips: (next: string[]) => void;
+  disabled: boolean;
+  chat: GmailChat;
+}) {
+  const [text, setText] = useState("");
+  const [invalid, setInvalid] = useState(false);
+  const [suggestions, setSuggestions] = useState<GmailContactCandidate[]>([]);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const requestSeq = useRef(0);
+
+  function addChip(raw: string): boolean {
+    const value = raw.trim().replace(/,$/, "");
+    if (!value) return true;
+    if (!EMAIL_RE.test(value)) {
+      setInvalid(true);
+      return false;
+    }
+    if (!chips.includes(value.toLowerCase())) setChips([...chips, value.toLowerCase()]);
+    return true;
+  }
+
+  function commit(raw: string) {
+    if (addChip(raw)) {
+      setText("");
+      setSuggestions([]);
+    }
+  }
+
+  function onTextChange(value: string) {
+    setText(value);
+    setInvalid(false);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    const prefix = value.trim();
+    if (prefix.length < 2) {
+      setSuggestions([]);
+      return;
+    }
+    debounceRef.current = setTimeout(() => {
+      const seq = ++requestSeq.current;
+      chat
+        .callMethodByHandle("gmail", "contactSuggest", { prefix })
+        .then((result) => {
+          if (seq !== requestSeq.current) return;
+          const candidates = (result as { candidates?: GmailContactCandidate[] })?.candidates ?? [];
+          setSuggestions(candidates.filter((candidate) => !chips.includes(candidate.email)));
+        })
+        .catch(() => setSuggestions([]));
+    }, 200);
+  }
+
+  return (
+    <Flex direction="column" gap="1" style={{ position: "relative" }}>
+      <Flex
+        align="center"
+        gap="1"
+        wrap="wrap"
+        style={{
+          border: `1px solid var(${invalid ? "--red-a8" : "--gray-a7"})`,
+          borderRadius: 6,
+          padding: "4px 8px",
+          minHeight: 32,
+          background: "var(--color-surface)",
+        }}
+      >
+        <Text size="1" color="gray" style={{ minWidth: 24 }}>{label}</Text>
+        {chips.map((chip) => (
+          <Badge key={chip} size="1" variant="soft">
+            {chip}
+            {disabled ? null : (
+              <Cross2Icon
+                width={10}
+                height={10}
+                style={{ cursor: "pointer", marginLeft: 2 }}
+                onClick={() => setChips(chips.filter((existing) => existing !== chip))}
+              />
+            )}
+          </Badge>
+        ))}
+        <input
+          value={text}
+          disabled={disabled}
+          placeholder={chips.length === 0 ? "name or address" : ""}
+          onChange={(event) => onTextChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === ",") {
+              event.preventDefault();
+              commit(text);
+            } else if (event.key === "Backspace" && !text && chips.length > 0) {
+              setChips(chips.slice(0, -1));
+            }
+          }}
+          onBlur={() => {
+            // Delay so suggestion clicks land before the dropdown closes.
+            setTimeout(() => setSuggestions([]), 200);
+            if (text.trim() && EMAIL_RE.test(text.trim())) commit(text);
+          }}
+          style={{
+            flex: "1 1 120px",
+            minWidth: 80,
+            border: "none",
+            outline: "none",
+            background: "transparent",
+            font: "inherit",
+            fontSize: 13,
+            color: "var(--gray-12)",
+          }}
+        />
+      </Flex>
+      {invalid ? (
+        <Text size="1" color="red">Enter a bare email address (name@example.com)</Text>
+      ) : null}
+      {suggestions.length > 0 ? (
+        <Flex
+          direction="column"
+          style={{
+            position: "absolute",
+            top: "100%",
+            left: 0,
+            right: 0,
+            zIndex: 10,
+            background: "var(--color-panel-solid)",
+            border: "1px solid var(--gray-a7)",
+            borderRadius: 6,
+            boxShadow: "var(--shadow-3)",
+            overflow: "hidden",
+          }}
+        >
+          {suggestions.slice(0, 6).map((candidate) => (
+            <Flex
+              key={candidate.email}
+              align="center"
+              justify="between"
+              gap="2"
+              style={{ padding: "6px 10px", cursor: "pointer" }}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                setChips([...chips, candidate.email]);
+                setText("");
+                setSuggestions([]);
+              }}
+            >
+              <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+                <PersonIcon />
+                <Text size="1" weight="medium">{candidate.displayName ?? candidate.email}</Text>
+                {candidate.displayName ? (
+                  <Text size="1" color="gray" truncate>{candidate.email}</Text>
+                ) : null}
+              </Flex>
+              <Text size="1" color="gray">
+                {candidate.sentTo > 0
+                  ? `${candidate.sentTo} sent`
+                  : candidate.receivedFrom > 0
+                    ? `${candidate.receivedFrom} received`
+                    : ""}
+              </Text>
+            </Flex>
+          ))}
+        </Flex>
+      ) : null}
+    </Flex>
+  );
+}
+
 export default function GmailCompose({
   state,
   expanded,
@@ -28,11 +214,11 @@ export default function GmailCompose({
   state: GmailComposeState;
   expanded: boolean;
   messageId: string;
-  chat: { callMethodByHandle: (handle: string, method: string, args: unknown) => Promise<unknown> };
+  chat: GmailChat;
 }) {
-  const [to, setTo] = useState(state.to ?? "");
-  const [cc, setCc] = useState(state.cc ?? "");
-  const [bcc, setBcc] = useState(state.bcc ?? "");
+  const [to, setTo] = useState<string[]>(splitRecipients(state.to));
+  const [cc, setCc] = useState<string[]>(splitRecipients(state.cc));
+  const [bcc, setBcc] = useState<string[]>(splitRecipients(state.bcc));
   const [subject, setSubject] = useState(state.subject ?? "");
   const [body, setBody] = useState(state.body ?? "");
   const [reviewingSend, setReviewingSend] = useState(false);
@@ -40,9 +226,9 @@ export default function GmailCompose({
   const [localError, setLocalError] = useState<string | null>(null);
 
   useEffect(() => {
-    setTo(state.to ?? "");
-    setCc(state.cc ?? "");
-    setBcc(state.bcc ?? "");
+    setTo(splitRecipients(state.to));
+    setCc(splitRecipients(state.cc));
+    setBcc(splitRecipients(state.bcc));
     setSubject(state.subject ?? "");
     setBody(state.body ?? "");
   }, [state.to, state.cc, state.bcc, state.subject, state.body]);
@@ -55,11 +241,12 @@ export default function GmailCompose({
     state.status === "sent" ||
     state.status === "discarded";
 
+  // Wire-compat with the compose handler: recipients stay comma-joined strings.
   const payload = {
     messageId,
-    to,
-    cc,
-    bcc,
+    to: to.join(", "),
+    cc: cc.join(", "),
+    bcc: bcc.join(", "),
     subject,
     body,
     threadId: state.threadId,
@@ -77,6 +264,11 @@ export default function GmailCompose({
       setBusy(null);
     }
   }
+
+  const candidates = (state.toCandidates ?? []).filter(
+    (candidate) => candidate.email && !to.includes(candidate.email)
+  );
+  const hasTo = to.length > 0;
 
   return (
     <Flex direction="column" gap="2">
@@ -99,33 +291,47 @@ export default function GmailCompose({
           <Callout.Text>{state.error ?? localError}</Callout.Text>
         </Callout.Root>
       ) : null}
-      <TextField.Root
-        value={to}
-        onChange={(event) => setTo(event.target.value)}
-        placeholder="To"
-        disabled={disabled}
-      />
+      <RecipientField label="To" chips={to} setChips={setTo} disabled={disabled} chat={chat} />
+      {!hasTo && candidates.length > 0 ? (
+        <Flex gap="1" wrap="wrap" align="center">
+          <Text size="1" color="gray">Suggested:</Text>
+          {candidates.slice(0, 5).map((candidate) => (
+            <Button
+              key={candidate.email}
+              size="1"
+              variant="soft"
+              disabled={disabled}
+              onClick={() => setTo([...to, candidate.email])}
+            >
+              <PersonIcon />
+              {candidate.displayName ? `${candidate.displayName} <${candidate.email}>` : candidate.email}
+              {candidate.sentTo > 0 ? ` · ${candidate.sentTo} sent` : ""}
+            </Button>
+          ))}
+        </Flex>
+      ) : null}
       <Flex gap="2" wrap="wrap">
-        <TextField.Root
-          value={cc}
-          onChange={(event) => setCc(event.target.value)}
-          placeholder="Cc"
-          disabled={disabled}
-          style={{ flex: "1 1 180px" }}
-        />
-        <TextField.Root
-          value={bcc}
-          onChange={(event) => setBcc(event.target.value)}
-          placeholder="Bcc"
-          disabled={disabled}
-          style={{ flex: "1 1 180px" }}
-        />
+        <div style={{ flex: "1 1 180px" }}>
+          <RecipientField label="Cc" chips={cc} setChips={setCc} disabled={disabled} chat={chat} />
+        </div>
+        <div style={{ flex: "1 1 180px" }}>
+          <RecipientField label="Bcc" chips={bcc} setChips={setBcc} disabled={disabled} chat={chat} />
+        </div>
       </Flex>
-      <TextField.Root
+      <input
         value={subject}
         onChange={(event) => setSubject(event.target.value)}
         placeholder="Subject"
         disabled={disabled}
+        style={{
+          border: "1px solid var(--gray-a7)",
+          borderRadius: 6,
+          padding: "6px 8px",
+          font: "inherit",
+          fontSize: 13,
+          background: "var(--color-surface)",
+          color: "var(--gray-12)",
+        }}
       />
       <TextArea
         value={body}
@@ -139,13 +345,13 @@ export default function GmailCompose({
           <Callout.Root color="amber" size="1" style={{ width: "100%" }}>
             <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
             <Callout.Text>
-              Sending to {to || "(missing recipient)"} with subject {subject || "(no subject)"}.
+              Sending to {payload.to || "(missing recipient)"} with subject {subject || "(no subject)"}.
             </Callout.Text>
           </Callout.Root>
         ) : null}
         <Button
           size="1"
-          disabled={disabled || !to.trim() || !subject.trim() || !body.trim()}
+          disabled={disabled || !hasTo || !subject.trim() || !body.trim()}
           title="Send"
           onClick={() => {
             // A review-state card is already the review step; Send is the
@@ -169,7 +375,7 @@ export default function GmailCompose({
         <Button
           size="1"
           variant="soft"
-          disabled={disabled || !to.trim() || !subject.trim() || !body.trim()}
+          disabled={disabled || !body.trim()}
           onClick={() => void call("saveDraft", payload, "draft")}
         >
           {busy === "draft" ? "Saving" : state.status === "saved" ? "Saved" : "Save draft"}

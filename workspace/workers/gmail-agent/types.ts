@@ -22,6 +22,7 @@ export interface GmailChannelState {
   rateLimitedUntil?: number;
   backoffMs?: number;
   lastSetupJson?: string;
+  peopleApiStatus?: "ok" | "unavailable";
 }
 
 export interface GmailThreadStateRow {

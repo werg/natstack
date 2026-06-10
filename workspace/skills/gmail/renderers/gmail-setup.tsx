@@ -93,6 +93,18 @@ export default function GmailSetup({
         {pollMinutes ? ` - polls every ${pollMinutes} min` : ""}
       </Text>
 
+      {state.addressBook ? (
+        <Text size="1" color="gray">
+          Address book: history-derived ({state.addressBook.knownPeople} people) - Google
+          contacts:{" "}
+          {state.addressBook.googleContacts === "available"
+            ? "available"
+            : state.addressBook.googleContacts === "unavailable"
+              ? "unavailable — reconnect Google to enable it"
+              : "not checked yet"}
+        </Text>
+      ) : null}
+
       {reconnectResult ? <Text size="1" color="gray">{reconnectResult}</Text> : null}
       {state.lastError || error ? (
         <Callout.Root color="red" size="1">

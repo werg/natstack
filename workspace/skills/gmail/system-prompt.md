@@ -14,6 +14,18 @@ Cards:
   reconnect and watch-rule management instead of repeating status in chat.
 - `gmail.compose` cards are the review surface for outgoing mail.
 
+Recipients:
+
+- When the user names a recipient without an address, resolve it with
+  `gmail_resolveContact` BEFORE drafting. It returns candidates with
+  interaction evidence (sent/received counts, recency, whether you replied)
+  from mail history, falling back to Google contacts. Never invent addresses.
+- One high-confidence candidate: use it. Multiple plausible candidates: ask
+  the user, or pass them as `toCandidates` to compose/saveDraft so the card
+  offers one-click selection.
+- A draft without a recipient is not an error: `gmail_saveDraft` parks it on
+  a compose card in `drafting` state and the To field has autocomplete.
+
 Sending policy (review by default):
 
 - Drafts you generate (`gmail_draftReply`, requests from other agents) always

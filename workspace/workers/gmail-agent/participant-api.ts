@@ -3,7 +3,7 @@ import type { GmailThreadCardState } from "@workspace/gmail/card-types";
 import type { failureResult } from "./errors.js";
 import type { GmailHandlers } from "./agent/handlers.js";
 import type { SyncEngine } from "./sync/sync-engine.js";
-import { threadCardFromRow } from "./sync/thread-model.js";
+import { normalizeEmailAddress, threadCardFromRow } from "./sync/thread-model.js";
 import { numberArg, stringArg, type GmailChannelState, type GmailThreadStateRow } from "./types.js";
 
 export interface GmailParticipantApiDeps {
@@ -109,12 +109,20 @@ export class GmailParticipantApi {
   requestDraft(channelId: string, args: Record<string, unknown>) {
     return this.deps.handlers.requestDraft(channelId, args);
   }
+
+  /** Read-only contact resolution for other agents (same handler surface). */
+  resolveContact(channelId: string, args: Record<string, unknown>) {
+    return this.deps.handlers.resolveContact(channelId, args);
+  }
 }
 
 export interface GmailQueryResult {
   threadId: string;
   subject: string;
+  /** Raw From header display string. */
   from?: string;
+  /** Parsed bare address from the From header. */
+  fromEmail?: string;
   snippet: string;
   unread: boolean;
   date?: string;
@@ -125,6 +133,7 @@ function summarizeThreadCard(card: GmailThreadCardState): GmailQueryResult {
     threadId: card.threadId,
     subject: card.subject,
     ...(card.from ? { from: card.from } : {}),
+    ...(normalizeEmailAddress(card.from) ? { fromEmail: normalizeEmailAddress(card.from) } : {}),
     snippet: card.lastSnippet,
     unread: card.unreadCount > 0,
     date: new Date(card.updatedAt).toISOString(),

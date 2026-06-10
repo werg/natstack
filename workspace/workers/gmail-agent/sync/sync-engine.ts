@@ -5,6 +5,8 @@ import { handleGmailError, type GmailFailure } from "../errors.js";
 import type { AttentionEngine } from "../attention/attention-engine.js";
 import { evaluateAttentionRules, type GmailAttentionEvent } from "../attention/rules.js";
 import type { GmailCards } from "../cards/cards.js";
+import { parseAddressEntries } from "../people/address.js";
+import type { PeopleStore } from "../people/people-store.js";
 import {
   DEFAULT_POLL_INTERVAL_MS,
   INITIAL_THREAD_LOAD_LIMIT,
@@ -14,7 +16,6 @@ import {
 import {
   METADATA_HEADERS,
   attentionEventFromThread,
-  parseAddressList,
   header,
   threadCardFromRow,
   threadCardState,
@@ -32,6 +33,7 @@ export interface SyncEngineDeps {
   sql: SqlStorage;
   gmailFor: (channelId: string) => GmailClient;
   attention: AttentionEngine;
+  people: PeopleStore;
   cards: GmailCards;
   getChannelState: (channelId: string) => GmailChannelState;
   saveChannelState: (state: GmailChannelState) => void;
@@ -188,10 +190,35 @@ export class SyncEngine {
       metadataHeaders: ["To", "Cc", "Bcc"],
     });
     for (const message of result.messages) {
+      const at = Number(message.internalDate ?? 0) || this.now();
       for (const headerName of ["To", "Cc", "Bcc"]) {
-        for (const email of parseAddressList(header(message, headerName))) {
-          this.deps.attention.recordRepliedSender(channelId, email, email, "sent-mail");
+        const entries = parseAddressEntries(header(message, headerName));
+        // The same sent-mail pass backfills the derived people store.
+        if (headerName !== "Bcc") this.deps.people.recordOutgoing(channelId, entries, at);
+        for (const entry of entries) {
+          this.deps.attention.recordRepliedSender(channelId, entry.email, entry.email, "sent-mail");
+          this.deps.people.markReplied(channelId, entry.email);
         }
+      }
+    }
+  }
+
+  /** Feed message headers into the derived people store during sync. */
+  private harvestPeople(channelId: string, thread: GmailThread, userEmail?: string): void {
+    const user = userEmail?.toLowerCase();
+    for (const message of thread.messages ?? []) {
+      const at = Number(message.internalDate ?? 0) || this.now();
+      const from = parseAddressEntries(header(message, "From"))[0];
+      const outgoing =
+        (message.labelIds ?? []).includes("SENT") || (user !== undefined && from?.email === user);
+      if (outgoing) {
+        const recipients = [
+          ...parseAddressEntries(header(message, "To")),
+          ...parseAddressEntries(header(message, "Cc")),
+        ].filter((entry) => entry.email !== user);
+        this.deps.people.recordOutgoing(channelId, recipients, at);
+      } else if (from && from.email !== user) {
+        this.deps.people.recordIncoming(channelId, { email: from.email, name: from.name, at });
       }
     }
   }
@@ -232,6 +259,7 @@ export class SyncEngine {
       });
       return archived;
     }
+    this.harvestPeople(channelId, thread, userEmail);
     const event = attentionEventFromThread(thread, userEmail);
     if (event) {
       event.priorReplyToSender = this.deps.attention.hasRepliedToSender(channelId, event.from);

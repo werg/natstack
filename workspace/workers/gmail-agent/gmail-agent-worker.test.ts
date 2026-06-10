@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createTestDO } from "@workspace/runtime/worker/test-utils";
-import type { GmailClient, GmailMessage, GmailThread } from "@workspace/gmail";
+import { GmailApiError, type GmailClient, type GmailMessage, type GmailThread } from "@workspace/gmail";
 import { AGENTIC_EVENT_PAYLOAD_KIND } from "@workspace/agentic-protocol";
 import { AgentWorkerBase } from "@workspace/agentic-do";
 
@@ -99,6 +99,13 @@ class TestGmailAgentWorker extends GmailAgentWorker {
     ],
   };
   sent = vi.fn(async (params: unknown) => ({ id: "sent-1", threadId: "thr-1", params }));
+  searchContacts = vi.fn(async (_query: string, _opts?: unknown) => [
+    { email: "zelda@hyrule.example", displayName: "Zelda Hyrule" },
+  ]);
+  searchOtherContacts = vi.fn(
+    async (_query: string, _opts?: unknown) => [] as Array<{ email: string }>
+  );
+  createDraft = vi.fn(async () => ({ id: "draft-1", message: { id: "m", threadId: "t" } }));
   draftBodies = vi.fn(async () => "Thanks for the context. I will follow up shortly.");
   useBaseDraftGeneration = false;
   rpcCall = vi.fn(async (_target: string, method: string): Promise<unknown> => {
@@ -134,9 +141,11 @@ class TestGmailAgentWorker extends GmailAgentWorker {
       getMessage: vi.fn() as never,
       getThread: vi.fn(async () => this.fakeThread),
       sendMessage: this.sent as never,
-      createDraft: vi.fn() as never,
+      createDraft: this.createDraft as never,
       sendDraft: vi.fn() as never,
       modifyLabels: vi.fn(async () => ({})) as never,
+      searchContacts: this.searchContacts as never,
+      searchOtherContacts: this.searchOtherContacts as never,
     };
   }
 
@@ -848,6 +857,167 @@ describe("GmailAgentWorker", () => {
             directiveId: "investor-domain",
             directiveName: "Investor domain",
           }),
+        }),
+      ],
+    });
+  });
+
+  it("harvests synced senders into the people store and resolves them from history", async () => {
+    const { instance } = await createTestDO(TestGmailAgentWorker);
+    const worker = instance as TestGmailAgentWorker;
+    worker.seedSubscription();
+    worker.fakeThread = {
+      id: "thr-1",
+      messages: [
+        message("msg-1", "thr-1", {
+          Subject: "Hi",
+          From: "Alice Smith <alice@example.com>",
+          To: "me@example.com",
+          Date: "Fri, 22 May 2026 10:00:00 +0000",
+        }),
+      ],
+    };
+
+    await worker.onMethodCall("ch-1", "call-1", "checkNow", {});
+    await worker.onMethodCall("ch-1", "call-2", "checkNow", {});
+
+    const resolved = await worker.onMethodCall("ch-1", "call-3", "resolveContact", {
+      name: "alice",
+    });
+    expect(resolved.result).toMatchObject({
+      query: "alice",
+      candidates: [
+        expect.objectContaining({
+          email: "alice@example.com",
+          displayName: "Alice Smith",
+          source: "history",
+        }),
+      ],
+    });
+    expect(worker.searchContacts).not.toHaveBeenCalled();
+
+    const suggested = await worker.onMethodCall("ch-1", "call-4", "contactSuggest", {
+      prefix: "ali",
+    });
+    expect(suggested.result).toMatchObject({
+      candidates: [expect.objectContaining({ email: "alice@example.com" })],
+    });
+  });
+
+  it("falls back to the Google People API when history has no candidates", async () => {
+    const { instance } = await createTestDO(TestGmailAgentWorker);
+    const worker = instance as TestGmailAgentWorker;
+    worker.seedSubscription();
+
+    const result = await worker.onMethodCall("ch-1", "call-1", "resolveContact", {
+      name: "zelda",
+    });
+    expect(worker.searchContacts).toHaveBeenCalledWith("zelda", { pageSize: 5 });
+    expect(result.result).toMatchObject({
+      candidates: [
+        {
+          email: "zelda@hyrule.example",
+          displayName: "Zelda Hyrule",
+          source: "google-contacts",
+          sentTo: 0,
+          receivedFrom: 0,
+          youReplied: false,
+          score: 0,
+        },
+      ],
+    });
+    expect(worker.channelStateRow("ch-1")).toMatchObject({ people_api_status: "ok" });
+  });
+
+  it("degrades gracefully when the People API is forbidden (missing scopes)", async () => {
+    const { instance } = await createTestDO(TestGmailAgentWorker);
+    const worker = instance as TestGmailAgentWorker;
+    worker.seedSubscription();
+    worker.searchContacts.mockRejectedValue(
+      new GmailApiError("missing scope", "forbidden", { status: 403 })
+    );
+
+    const result = await worker.onMethodCall("ch-1", "call-1", "resolveContact", {
+      name: "zelda",
+    });
+    expect(result.isError).toBeUndefined();
+    expect(result.result).toMatchObject({ query: "zelda", candidates: [] });
+    expect(worker.channelStateRow("ch-1")).toMatchObject({ people_api_status: "unavailable" });
+
+    // Subsequent resolves skip the API entirely.
+    await worker.onMethodCall("ch-1", "call-2", "resolveContact", { name: "zelda" });
+    expect(worker.searchContacts).toHaveBeenCalledTimes(1);
+
+    const setup = [...worker.published]
+      .reverse()
+      .find((entry) => JSON.stringify(entry.event.payload ?? {}).includes("addressBook"));
+    expect(JSON.stringify(setup?.event.payload)).toContain('"googleContacts":"unavailable"');
+  });
+
+  it("parks recipient-less saveDraft on a drafting compose card instead of erroring", async () => {
+    const { instance } = await createTestDO(TestGmailAgentWorker);
+    const worker = instance as TestGmailAgentWorker;
+    worker.seedSubscription();
+
+    const result = await worker.onMethodCall("ch-1", "call-1", "saveDraft", {
+      subject: "Quarterly numbers",
+      body: "Draft body",
+      toCandidates: [{ email: "alice@example.com", displayName: "Alice" }],
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.result).toMatchObject({
+      ok: true,
+      cardCreated: true,
+      note: expect.stringContaining("gmail_resolveContact"),
+    });
+    expect(worker.createDraft).not.toHaveBeenCalled();
+    const compose = worker.published.find(
+      (entry) => (entry.event.payload as { typeId?: string }).typeId === "gmail.compose"
+    );
+    expect(compose?.event.payload).toMatchObject({
+      initialState: {
+        status: "drafting",
+        subject: "Quarterly numbers",
+        body: "Draft body",
+        toCandidates: [expect.objectContaining({ email: "alice@example.com" })],
+      },
+    });
+
+    // A complete draft still saves to Gmail.
+    const saved = await worker.onMethodCall("ch-1", "call-2", "saveDraft", {
+      to: "alice@example.com",
+      subject: "Quarterly numbers",
+      body: "Draft body",
+    });
+    expect(saved.result).toMatchObject({ saved: true, draftId: "draft-1" });
+  });
+
+  it("includes parsed fromEmail alongside the display from in query results", async () => {
+    const { instance } = await createTestDO(TestGmailAgentWorker);
+    const worker = instance as TestGmailAgentWorker;
+    worker.seedSubscription();
+    worker.fakeThread = {
+      id: "thr-1",
+      messages: [
+        message("msg-1", "thr-1", {
+          Subject: "Hello",
+          From: "Alice Smith <alice@example.com>",
+          To: "me@example.com",
+          Date: "Fri, 22 May 2026 10:00:00 +0000",
+        }),
+      ],
+    };
+    await worker.onMethodCall("ch-1", "call-1", "checkNow", {});
+    await worker.onMethodCall("ch-1", "call-2", "checkNow", {});
+
+    const result = await worker.onMethodCall("ch-1", "call-3", "gmail_query", { q: "Hello" });
+    expect(result.result).toMatchObject({
+      source: "cache",
+      results: [
+        expect.objectContaining({
+          from: "Alice Smith <alice@example.com>",
+          fromEmail: "alice@example.com",
         }),
       ],
     });

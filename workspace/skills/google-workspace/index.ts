@@ -12,10 +12,13 @@ const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/calendar",
   "https://www.googleapis.com/auth/drive.file",
   "https://www.googleapis.com/auth/userinfo.email",
+  "https://www.googleapis.com/auth/contacts.readonly",
+  "https://www.googleapis.com/auth/contacts.other.readonly",
 ] as const;
 const GOOGLE_AUDIENCE_ORIGINS = new Set([
   "https://gmail.googleapis.com",
   "https://www.googleapis.com",
+  "https://people.googleapis.com",
 ]);
 
 type RuntimeCredentials = typeof credentials;
@@ -434,6 +437,7 @@ export async function connectGoogle(
           audience: [
             { url: "https://gmail.googleapis.com/", match: "origin" },
             { url: "https://www.googleapis.com/", match: "origin" },
+            { url: "https://people.googleapis.com/", match: "origin" },
           ],
           injection: {
             type: "header",

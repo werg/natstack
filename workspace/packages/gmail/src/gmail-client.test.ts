@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { CredentialClient, UrlCredentialHandle } from "@workspace/runtime/credentials";
 
-import { createGmailClient } from "./gmail-client.js";
+import { GmailApiError, createGmailClient } from "./gmail-client.js";
 
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(body), {
@@ -141,5 +141,52 @@ describe("Gmail client", () => {
     await expect(client.sendDraft("d1")).resolves.toEqual({ id: "sent-draft", threadId: "t1" });
     await expect(client.modifyLabels({ messageId: "m1", removeLabelIds: ["UNREAD"] })).resolves.toMatchObject({ id: "m1" });
     await expect(client.modifyLabels({ threadId: "t1", addLabelIds: ["STARRED"] })).resolves.toMatchObject({ id: "t1" });
+  });
+
+  it("searches People API contacts with a best-effort warmup and normalizes results", async () => {
+    const { client, fetch } = createClient({
+      // Warmup (empty query) routes are intentionally absent: the 404 must be swallowed.
+      "GET /v1/people:searchContacts?query=ada&readMask=names%2CemailAddresses&pageSize=10": {
+        results: [
+          {
+            person: {
+              names: [{ displayName: "Ada Lovelace" }],
+              emailAddresses: [{ value: "Ada@Math.example" }, { value: "ada@home.example" }],
+            },
+          },
+          { person: { emailAddresses: [{ value: "ada@math.example" }] } },
+        ],
+      },
+      "GET /v1/otherContacts:search?query=ada&readMask=names%2CemailAddresses&pageSize=3": {
+        results: [{ person: { emailAddresses: [{ value: "other@x.example" }] } }],
+      },
+    });
+
+    await expect(client.searchContacts("ada")).resolves.toEqual([
+      { email: "ada@math.example", displayName: "Ada Lovelace" },
+      { email: "ada@home.example", displayName: "Ada Lovelace" },
+    ]);
+    await expect(client.searchOtherContacts("ada", { pageSize: 3 })).resolves.toEqual([
+      { email: "other@x.example" },
+    ]);
+    // Two warmup requests fired exactly once (per client), then the two searches.
+    const warmups = fetch.mock.calls.filter(([url]) => String(url).includes("query=&"));
+    expect(warmups).toHaveLength(2);
+  });
+
+  it("maps People API 403 to a forbidden GmailApiError", async () => {
+    const fetch = vi.fn(async (url: string | URL) => {
+      const parsed = new URL(String(url));
+      if (parsed.searchParams.get("query") === "") return jsonResponse({});
+      return new Response("missing scope", { status: 403, statusText: "Forbidden" });
+    });
+    const credentials = {
+      forAudience: vi.fn(async () => ({ credentialId: "cred-1", fetch }) as UrlCredentialHandle),
+    } as unknown as CredentialClient;
+    const client = createGmailClient(credentials);
+
+    const error = await client.searchContacts("ada").catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(GmailApiError);
+    expect((error as GmailApiError).code).toBe("forbidden");
   });
 });

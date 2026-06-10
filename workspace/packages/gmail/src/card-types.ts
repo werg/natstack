@@ -105,6 +105,18 @@ export type GmailComposeStatus =
   | "error"
   | "discarded";
 
+/** Resolved recipient candidate (from resolveContact/contactSuggest). */
+export interface GmailContactCandidate {
+  email: string;
+  displayName?: string;
+  sentTo: number;
+  receivedFrom: number;
+  lastInteractionAt?: number;
+  youReplied: boolean;
+  source: "history" | "google-contacts";
+  score: number;
+}
+
 export interface GmailComposeCardState {
   to?: string;
   cc?: string;
@@ -116,6 +128,8 @@ export interface GmailComposeCardState {
   sourceThreadId?: string;
   status: GmailComposeStatus;
   error?: string;
+  /** Recipient candidates the agent resolved; renderer offers one-click pick. */
+  toCandidates?: GmailContactCandidate[];
 }
 
 export interface GmailInboxAuthState {
@@ -133,6 +147,13 @@ export interface GmailSetupRuleSummary {
   priority: number;
 }
 
+export interface GmailSetupAddressBookState {
+  /** People known from synced mail history. */
+  knownPeople: number;
+  /** Google contacts (People API) availability for fallback resolution. */
+  googleContacts: "available" | "unavailable" | "unknown";
+}
+
 export interface GmailSetupState {
   status: "onboarding" | "configured";
   auth: GmailSetupAuthState;
@@ -142,6 +163,7 @@ export interface GmailSetupState {
   pollIntervalMs: number;
   lastSyncAt?: string;
   lastError?: string;
+  addressBook?: GmailSetupAddressBookState;
 }
 
 export interface GmailInboxCardState {
@@ -273,6 +295,14 @@ export const GMAIL_SETUP_STATE_SCHEMA: Record<string, unknown> = {
     pollIntervalMs: { type: "number" },
     lastSyncAt: { type: "string" },
     lastError: { type: "string" },
+    addressBook: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        knownPeople: { type: "number" },
+        googleContacts: { enum: ["available", "unavailable", "unknown"] },
+      },
+    },
   },
   required: ["status", "auth", "attentionRules", "pollIntervalMs"],
 };
@@ -291,6 +321,20 @@ export const GMAIL_COMPOSE_STATE_SCHEMA: Record<string, unknown> = {
     sourceThreadId: { type: "string" },
     status: { enum: ["drafting", "review", "sending", "sent", "saved", "error", "discarded"] },
     error: { type: "string" },
+    toCandidates: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: true,
+        properties: {
+          email: { type: "string" },
+          displayName: { type: "string" },
+          source: { type: "string" },
+          score: { type: "number" },
+        },
+        required: ["email"],
+      },
+    },
   },
   required: ["status"],
 };

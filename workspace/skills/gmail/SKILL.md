@@ -103,7 +103,9 @@ These methods are callable on the Gmail participant via
 | `compose` | `{ to?, subject?, body?, threadId? }` | New compose card (`drafting`) |
 | `draftReply` | `{ threadId }` | Agent-drafted reply card in `review` state |
 | `send` | compose payload + `messageId` | Send; user Send click or explicit user request only |
-| `saveDraft` / `discardCompose` | compose payload / `{ messageId }` | Save to Gmail drafts / discard |
+| `saveDraft` / `discardCompose` | compose payload / `{ messageId }` | Save to Gmail drafts / discard. Forgiving: with no resolvable recipient/subject it does NOT error — it parks the draft on a compose card in `drafting` state and returns `{ ok, composeId, cardCreated, note }` |
+| `resolveContact` | `{ name, limit? }` | Resolve a name to email candidates (history first, Google contacts fallback) |
+| `contactSuggest` | `{ prefix, limit? }` | Fast typeahead over the derived address book (no network) — backs the compose card's To/Cc/Bcc autocomplete |
 | `archiveThread` / `markRead` / `categorize` | `{ threadId, ... }` | Triage operations |
 | `listActionableThreads` | `{ limit? }` | Current actionable threads |
 | `setPollInterval` | `{ pollIntervalMs }` | Configure polling |
@@ -114,14 +116,50 @@ Other agents in the channel get a read-mostly surface (same dispatch):
 
 | Method | Args | Purpose |
 |--------|------|---------|
-| `gmail_query` | `{ q, maxResults? }` | `{ source, query, count, results: [{ threadId, subject, from, snippet, unread, date }] }` — cache-first with API fallback |
+| `gmail_query` | `{ q, maxResults? }` | `{ source, query, count, results: [{ threadId, subject, from, fromEmail, snippet, unread, date }] }` — cache-first with API fallback; `from` is the raw display header, `fromEmail` the parsed bare address |
 | `gmail_getThread` | `{ threadId }` | Sanitized thread messages |
 | `gmail_getOverview` | `{}` | Dashboard snapshot: counts, auth status, actionable list |
 | `gmail_requestDraft` | `{ threadId?, to?, subject?, intent }` | Compose card in `review` state |
+| `gmail_resolveContact` | `{ name, limit? }` | Read-only contact resolution (same shape as `resolveContact`) |
 
 Agents can prepare mail but never send it: only the user's Send click on the
 compose card (or an explicit user instruction to the Gmail agent) sends.
 Attention-rule writes remain gated to user-facing callers; reads are open.
+
+## Contact Resolution
+
+`resolveContact` / `gmail_resolveContact` return:
+
+```typescript
+{
+  query: string,
+  candidates: Array<{
+    email: string;
+    displayName?: string;
+    sentTo: number;          // times the user sent mail to this address
+    receivedFrom: number;    // times mail arrived from this address
+    lastInteractionAt?: number;
+    youReplied: boolean;
+    source: "history" | "google-contacts";
+    score: number;           // sentTo*3 + receivedFrom + youReplied*10 + recency bonus
+  }>
+}
+```
+
+Candidates come from a derived per-channel people store harvested during sync
+(From on incoming mail, To/Cc on sent mail). When history yields nothing, the
+worker falls back to the Google People API (`people:searchContacts`, then
+`otherContacts:search`).
+
+People API fallback requires the `contacts.readonly` and
+`contacts.other.readonly` scopes (added to the google-workspace skill's
+default scope list). Credentials connected before that addition get a 403;
+the worker remembers this per channel, stops calling the API, and surfaces
+"Google contacts: unavailable — reconnect Google to enable it" on the
+`gmail.setup` card. History-based resolution keeps working regardless.
+
+Compose flows accept `toCandidates` (the candidate array) and store it on the
+compose card so the renderer offers one-click recipient selection.
 
 ## Wake Batching
 
