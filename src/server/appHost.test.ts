@@ -37,6 +37,7 @@ function makeHarness(
     invalidManifest?: boolean;
     approvalDecision?: "once" | "session" | "version" | "repo" | "deny";
     approvalCoordinator?: AppHostDeps["approvalCoordinator"];
+    reactNativeBootstrapUrl?: string;
   } = {}
 ) {
   const root = tempRoot();
@@ -173,6 +174,7 @@ function makeHarness(
     approvalCoordinator: opts.approvalCoordinator,
     entityCache,
     getGatewayUrl: () => "http://127.0.0.1:1234",
+    getReactNativeBootstrapUrl: () => opts.reactNativeBootstrapUrl ?? "http://127.0.0.1:1234",
   });
   return {
     host,
@@ -1649,7 +1651,9 @@ describe("AppHost", () => {
   });
 
   it("produces React Native bootstrap for platform-specific mobile builds", async () => {
-    const { host, buildSystem, graphNode } = makeHarness();
+    const { host, buildSystem, graphNode } = makeHarness({
+      reactNativeBootstrapUrl: "https://host.tailnet.ts.net",
+    });
     installApp(host, graphNode);
     host.registry.patch(graphNode.name, {
       target: "react-native",
@@ -1701,6 +1705,7 @@ describe("AppHost", () => {
           path: "index.android.bundle",
           platform: "android",
           integrity: "sha256-android",
+          url: "https://host.tailnet.ts.net/_a/rn-android-only-key/index.android.bundle",
         }),
       ],
     });

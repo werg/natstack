@@ -21,7 +21,7 @@ import { createHash, randomBytes } from "crypto";
 import { canonicalEntityId, type EntityRecord } from "@natstack/shared/runtime/entitySpec";
 import { normalizeUnitRepoPath, UnitSourcePushGrantStore } from "@natstack/unit-host";
 import { formatPairUrlLine } from "./pairingBanner.js";
-import { getPublicUrl } from "./publicUrl.js";
+import { getPublicUrl, isPublicUrlVerified } from "./publicUrl.js";
 import { registerBuildProvider, unregisterBuildProvider } from "./buildV2/buildProviderRegistry.js";
 import { RuntimeDiagnosticsStore } from "./runtimeDiagnosticsStore.js";
 import {
@@ -1510,6 +1510,31 @@ async function main() {
   }
   tokenManager.setAdminToken(adminToken);
   let gatewayPortResolved: number | null = null;
+  function getResolvedGatewayPort(context: string): number {
+    if (!gatewayPortResolved) {
+      throw new Error(`Gateway port not finalized before ${context}`);
+    }
+    return gatewayPortResolved;
+  }
+  function gatewayProtocol(): "http" | "https" {
+    return hostConfig.tlsCert && hostConfig.tlsKey ? "https" : "http";
+  }
+  function getLocalGatewayUrl(context: string): string {
+    return `${gatewayProtocol()}://127.0.0.1:${getResolvedGatewayPort(context)}`;
+  }
+  function getExternalGatewayUrl(context: string): string {
+    return `${gatewayProtocol()}://${hostConfig.externalHost}:${getResolvedGatewayPort(context)}`;
+  }
+  function getConfiguredPublicUrl(): string | null {
+    const explicitPublicUrl = args.publicUrl ?? process.env["NATSTACK_PUBLIC_URL"];
+    if (explicitPublicUrl) return explicitPublicUrl;
+    return isPublicUrlVerified() ? getPublicUrl() : null;
+  }
+  // Single advertised origin for QR/deep-link pairing, auth connection info, and
+  // native React Native bundle bootstrap. Keep these in lockstep.
+  function getConnectUrl(context: string): string {
+    return getConfiguredPublicUrl() ?? getExternalGatewayUrl(context);
+  }
   const { PanelRuntimeCoordinator } = await import("./panelRuntimeCoordinator.js");
   const panelRuntimeCoordinator = new PanelRuntimeCoordinator({ eventService });
   panelRuntimeCoordinatorForCleanup = panelRuntimeCoordinator;
@@ -1597,13 +1622,7 @@ async function main() {
         },
         approvalCoordinator: unitApprovalCoordinator,
         getContextIdForCaller: (callerId) => entityCache.resolveContext(callerId),
-        getGatewayUrl: () => {
-          if (!gatewayPortResolved) {
-            throw new Error("Gateway port not finalized before extension startup");
-          }
-          const isTls = !!(hostConfig.tlsCert && hostConfig.tlsKey);
-          return `${isTls ? "https" : "http"}://127.0.0.1:${gatewayPortResolved}`;
-        },
+        getGatewayUrl: () => getLocalGatewayUrl("extension startup"),
         extensionTransport: {
           call(name, method, ...args) {
             const rpcServer = rpcServerForGateway;
@@ -1655,13 +1674,8 @@ async function main() {
         approvalCoordinator: unitApprovalCoordinator,
         entityCache,
         connectionGrants,
-        getGatewayUrl: () => {
-          if (!gatewayPortResolved) {
-            throw new Error("Gateway port not finalized before app startup");
-          }
-          const isTls = !!(hostConfig.tlsCert && hostConfig.tlsKey);
-          return `${isTls ? "https" : "http"}://127.0.0.1:${gatewayPortResolved}`;
-        },
+        getGatewayUrl: () => getLocalGatewayUrl("app startup"),
+        getReactNativeBootstrapUrl: () => getConnectUrl("React Native bootstrap"),
       });
       appHostForGateway = host;
       return host;
@@ -2330,23 +2344,14 @@ async function main() {
           getServerBootId: () => serverBootId,
           getWorkspaceId: () => workspace.config.id,
           getConnectionInfo: () => {
-            if (!gatewayPortResolved) {
-              throw new Error("Gateway is not ready");
-            }
-            const isTls = !!(hostConfig.tlsCert && hostConfig.tlsKey);
-            const protocol = isTls ? "https" : "http";
-            let publicUrl: string | null = null;
-            try {
-              publicUrl = getPublicUrl();
-            } catch {
-              publicUrl = null;
-            }
+            const gatewayPort = getResolvedGatewayPort("auth connection info");
+            const protocol = gatewayProtocol();
             return {
-              serverUrl: `${protocol}://${hostConfig.externalHost}:${gatewayPortResolved}`,
-              publicUrl,
+              serverUrl: getExternalGatewayUrl("auth connection info"),
+              publicUrl: getConfiguredPublicUrl(),
               protocol,
               externalHost: hostConfig.externalHost,
-              gatewayPort: gatewayPortResolved,
+              gatewayPort,
             };
           },
           connectionGrants,
@@ -2769,10 +2774,7 @@ async function main() {
     const proto = isTls ? "https" : "http";
     const wsProto = isTls ? "wss" : "ws";
     const explicitPublicUrl = args.publicUrl ?? process.env["NATSTACK_PUBLIC_URL"];
-    const pairingTargetUrl =
-      explicitPublicUrl ??
-      (publicUrlVerified ? detectedVpn?.url : undefined) ??
-      `${proto}://${hostConfig.externalHost}:${gatewayPort}`;
+    const pairingTargetUrl = getConnectUrl("readiness pairing URL");
     console.log("natstack-server ready:");
     console.log(`  Workspace:   ${workspaceName}${workspaceIsEphemeral ? " (ephemeral dev)" : ""}`);
     console.log(`  Gateway:     ${proto}://${hostConfig.externalHost}:${gatewayPort}`);

@@ -272,6 +272,7 @@ export interface AppHostDeps {
   entityCache?: Pick<EntityCache, "resolve" | "listActive" | "_onActivate" | "_onRetire">;
   connectionGrants?: Pick<ConnectionGrantService, "grant" | "revokeForPrincipal">;
   getGatewayUrl(): string;
+  getReactNativeBootstrapUrl(): string;
 }
 
 export class AppHost {
@@ -985,7 +986,7 @@ export class AppHost {
     ) {
       return null;
     }
-    const baseUrl = `${this.deps.getGatewayUrl()}/_a/${encodeURIComponent(entry.activeBundleKey)}`;
+    const baseUrl = `${this.deps.getReactNativeBootstrapUrl()}/_a/${encodeURIComponent(entry.activeBundleKey)}`;
     const primaryArtifacts = (build.artifacts ?? []).filter(
       (artifact) => artifact.role === "primary"
     );

@@ -16,12 +16,18 @@ import { useSetAtom, useAtomValue } from "jotai";
 import type { RootStackParamList } from "../navigation/RootNavigator";
 import {
   completePairing,
+  getCredentials,
   StoredCredentialsNeedRepairError,
   type Credentials,
 } from "../services/auth";
 import { ensureNativeWorkspaceAppBundle } from "../services/appBootstrap";
 import { getConnectionBootstrap } from "../services/connectionBootstrap";
 import { ShellClient } from "../services/shellClient";
+import {
+  consumeConnectLinkReplay,
+  isConnectLinkForStoredServer,
+  markConnectLinkConsumed,
+} from "../services/connectLinkReplayGuard";
 import {
   serverUrlAtom,
   isAuthenticatedAtom,
@@ -121,12 +127,15 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
   const pairAndConnect = async (
     targetUrl: string,
     code: string,
-    options?: { showAlert?: boolean; mobileAppSource?: string | null }
+    options?: { showAlert?: boolean; mobileAppSource?: string | null; connectLinkUrl?: string }
   ): Promise<boolean> => {
     setAuthLoading(true);
     setAuthError(null);
     try {
       const credentials = await completePairing(targetUrl, code, options?.mobileAppSource ?? null);
+      if (options?.connectLinkUrl) {
+        await markConnectLinkConsumed(options.connectLinkUrl);
+      }
       if ((await ensureNativeWorkspaceAppBundle(options?.mobileAppSource ?? null)).reloading) {
         setAuthLoading(false);
         return true;
@@ -155,15 +164,31 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
         }
         return false;
       }
+      if (
+        (await consumeConnectLinkReplay(rawUrl)) ||
+        (await connectLinkMatchesStoredServer(result.serverUrl))
+      ) {
+        return false;
+      }
       const confirmed = await confirmConnectDeepLink(result.serverUrl);
       if (!confirmed) return false;
       setServerUrl(result.serverUrl);
       setPairingCode(result.pairingCode);
       const connected = await pairAndConnect(result.serverUrl, result.pairingCode, {
         showAlert: true,
+        connectLinkUrl: rawUrl,
       });
       consumedDeepLink = connected;
       return connected;
+    };
+
+    const connectLinkMatchesStoredServer = async (targetServerUrl: string): Promise<boolean> => {
+      try {
+        const credentials = await getCredentials();
+        return isConnectLinkForStoredServer(targetServerUrl, credentials?.serverUrl ?? null);
+      } catch {
+        return false;
+      }
     };
 
     const subscription = Linking.addEventListener("url", (event: { url: string }) => {
