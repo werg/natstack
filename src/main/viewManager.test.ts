@@ -53,9 +53,18 @@ vi.mock("electron", () => {
     getBounds: vi.fn().mockReturnValue({ x: 0, y: 0, width: 100, height: 100 }),
   });
 
+  const children: unknown[] = [];
   const mockContentView = {
-    addChildView: vi.fn(),
-    removeChildView: vi.fn(),
+    children,
+    addChildView: vi.fn((view: unknown) => {
+      const index = children.indexOf(view);
+      if (index !== -1) children.splice(index, 1);
+      children.push(view);
+    }),
+    removeChildView: vi.fn((view: unknown) => {
+      const index = children.indexOf(view);
+      if (index !== -1) children.splice(index, 1);
+    }),
   };
 
   const mockBaseWindow = {
@@ -444,6 +453,172 @@ describe("ViewManager", () => {
       expect(hostView.setVisible).toHaveBeenLastCalledWith(false);
       expect(vm.isPanelSlotted("panel-1")).toBe(false);
       expect(vm.getVisibleHostChromeAppId()).toBeNull();
+    });
+
+    it("keeps active slots when the hosted shell reasserts readiness", () => {
+      const panelView = vm.createView({ id: "panel-1", type: "panel" });
+      vm.createView({
+        id: "@workspace-apps/shell",
+        type: "app",
+        hostChrome: true,
+        appCapabilities: ["panel-hosting"],
+      });
+
+      vm.setHostedShellReady("@workspace-apps/shell", true);
+      vm.bindPanelSlot("@workspace-apps/shell", {
+        nativeSlotId: "panel-stack:primary",
+        panelId: "panel-1",
+        bounds: { x: 10, y: 20, width: 300, height: 200 },
+      });
+
+      (panelView.setVisible as Mock).mockClear();
+      vm.setHostedShellReady("@workspace-apps/shell", true);
+
+      expect(vm.isPanelSlotted("panel-1")).toBe(true);
+      expect(panelView.setVisible).toHaveBeenLastCalledWith(true);
+    });
+
+    it("restacks slotted panels above the hosted shell when it is re-shown", () => {
+      const panelView = vm.createView({ id: "panel-1", type: "panel" });
+      const hostView = vm.createView({
+        id: "@workspace-apps/shell",
+        type: "app",
+        hostChrome: true,
+        appCapabilities: ["panel-hosting"],
+      });
+
+      vm.setHostedShellReady("@workspace-apps/shell", true);
+      vm.bindPanelSlot("@workspace-apps/shell", {
+        nativeSlotId: "panel-stack:primary",
+        panelId: "panel-1",
+        bounds: { x: 10, y: 20, width: 300, height: 200 },
+      });
+
+      // Late app-update mount re-shows the hosted shell (bringToFront).
+      vm.setViewVisible("@workspace-apps/shell", true);
+
+      const children = mockWindow.contentView.children as unknown[];
+      expect(children.indexOf(panelView)).toBeGreaterThan(children.indexOf(hostView));
+    });
+
+    it("keepalive restacks a slotted panel occluded by the hosted shell", () => {
+      vi.useFakeTimers();
+      try {
+        const localVm = new ViewManager({
+          window: mockWindow,
+          shellPreload: "/path/to/preload.js",
+          shellHtmlPath: "/path/to/index.html",
+        });
+        const panelView = localVm.createView({ id: "panel-1", type: "panel" });
+        const hostView = localVm.createView({
+          id: "@workspace-apps/shell",
+          type: "app",
+          hostChrome: true,
+          appCapabilities: ["panel-hosting"],
+        });
+
+        localVm.setHostedShellReady("@workspace-apps/shell", true);
+        localVm.bindPanelSlot("@workspace-apps/shell", {
+          nativeSlotId: "panel-stack:primary",
+          panelId: "panel-1",
+          bounds: { x: 10, y: 20, width: 300, height: 200 },
+        });
+
+        // Simulate something stacking the shell above the slotted panel.
+        localVm.bringToFront("@workspace-apps/shell");
+        const children = mockWindow.contentView.children as unknown[];
+        expect(children.indexOf(panelView)).toBeLessThan(children.indexOf(hostView));
+
+        vi.advanceTimersByTime(5000);
+
+        expect(children.indexOf(panelView)).toBeGreaterThan(children.indexOf(hostView));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("restores the slot binding when a panel view is recreated", () => {
+      vm.createView({ id: "panel-1", type: "panel" });
+      vm.createView({
+        id: "@workspace-apps/shell",
+        type: "app",
+        hostChrome: true,
+        appCapabilities: ["panel-hosting"],
+      });
+
+      vm.setHostedShellReady("@workspace-apps/shell", true);
+      vm.bindPanelSlot("@workspace-apps/shell", {
+        nativeSlotId: "panel-stack:primary",
+        panelId: "panel-1",
+        bounds: { x: 10, y: 20, width: 300, height: 200 },
+        focused: true,
+      });
+
+      vm.destroyView("panel-1");
+      expect(vm.isPanelSlotted("panel-1")).toBe(false);
+
+      const recreated = vm.createView({ id: "panel-1", type: "panel" });
+
+      expect(vm.isPanelSlotted("panel-1")).toBe(true);
+      expect(recreated.setBounds).toHaveBeenLastCalledWith({
+        x: 10,
+        y: 20,
+        width: 300,
+        height: 200,
+      });
+      expect(recreated.setVisible).toHaveBeenLastCalledWith(true);
+      expect(recreated.webContents.focus).toHaveBeenCalled();
+    });
+
+    it("does not restore a slot the shell explicitly cleared", () => {
+      vm.createView({ id: "panel-1", type: "panel" });
+      vm.createView({
+        id: "@workspace-apps/shell",
+        type: "app",
+        hostChrome: true,
+        appCapabilities: ["panel-hosting"],
+      });
+
+      vm.setHostedShellReady("@workspace-apps/shell", true);
+      vm.bindPanelSlot("@workspace-apps/shell", {
+        nativeSlotId: "panel-stack:primary",
+        panelId: "panel-1",
+        bounds: { x: 10, y: 20, width: 300, height: 200 },
+      });
+
+      vm.destroyView("panel-1");
+      vm.clearPanelSlot("@workspace-apps/shell", "panel-stack:primary");
+
+      const recreated = vm.createView({ id: "panel-1", type: "panel" });
+
+      expect(vm.isPanelSlotted("panel-1")).toBe(false);
+      expect(recreated.setVisible).not.toHaveBeenCalledWith(true);
+    });
+
+    it("does not restore a slot across a hosted shell generation change", () => {
+      vm.createView({ id: "panel-1", type: "panel" });
+      vm.createView({
+        id: "@workspace-apps/shell",
+        type: "app",
+        hostChrome: true,
+        appCapabilities: ["panel-hosting"],
+      });
+
+      vm.setHostedShellReady("@workspace-apps/shell", true);
+      vm.bindPanelSlot("@workspace-apps/shell", {
+        nativeSlotId: "panel-stack:primary",
+        panelId: "panel-1",
+        bounds: { x: 10, y: 20, width: 300, height: 200 },
+      });
+
+      vm.destroyView("panel-1");
+      vm.setHostedShellReady("@workspace-apps/shell", false);
+      vm.setHostedShellReady("@workspace-apps/shell", true);
+
+      const recreated = vm.createView({ id: "panel-1", type: "panel" });
+
+      expect(vm.isPanelSlotted("panel-1")).toBe(false);
+      expect(recreated.setVisible).not.toHaveBeenCalledWith(true);
     });
 
     it("captures display diagnostics for slotted panels", async () => {
