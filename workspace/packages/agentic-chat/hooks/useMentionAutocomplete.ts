@@ -70,7 +70,11 @@ export function useMentionAutocomplete(
     setTriggerStart(at);
     setQuery(token);
     setSelectedIndex(0);
-    setCaretPosition(measureCaretPosition(textArea, at));
+    // Viewport coordinates: the popover renders in a portal with
+    // position:fixed so no ancestor overflow clipping can cut it off.
+    const local = measureCaretPosition(textArea, at);
+    const rect = textArea.getBoundingClientRect();
+    setCaretPosition({ left: rect.left + local.left, top: rect.top + local.top });
   }, [close]);
 
   return {

@@ -18,7 +18,7 @@ export function Pill({ state }: { state: GmailSetupCardState }) {
       <Badge size="1" color={auth === "ok" ? "green" : auth === "reconnect-required" ? "red" : "gray"}>
         {auth === "ok" ? "Connected" : auth === "reconnect-required" ? "Reconnect" : "Unknown"}
       </Badge>
-      {state.status === "onboarding" ? <Badge size="1" color="amber">Setup needed</Badge> : null}
+      {state.status === "onboarding" ? <Badge size="1" color="blue">Default rules</Badge> : null}
     </Flex>
   );
 }
@@ -49,6 +49,13 @@ export default function GmailSetup({
     } finally {
       setBusy(null);
     }
+  }
+
+  const keepingDefaults = busy === "keep-defaults";
+  async function keepDefaults() {
+    await run("keep-defaults", "markConfigured", {
+      summary: "Using the default watch rule (unread inbox mail from people you have replied to).",
+    });
   }
 
   async function reconnect() {
@@ -114,11 +121,24 @@ export default function GmailSetup({
       ) : null}
 
       {state.status === "onboarding" ? (
-        <Callout.Root color="amber" size="1">
-          <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
+        <Callout.Root color="blue" size="1">
+          <Callout.Icon><GearIcon /></Callout.Icon>
           <Callout.Text>
-            First-run setup is not finished. Tell the Gmail agent what kinds of incoming mail it
-            should watch for, or pick a watch rule from the inbox card.
+            <Flex direction="column" gap="2" align="start">
+              <Text size="1">
+                Watching with the default rule (unread inbox mail from people you have replied
+                to). Tell the Gmail agent what else to watch for, add a rule on the inbox card —
+                or keep the default.
+              </Text>
+              <Button
+                size="1"
+                variant="soft"
+                disabled={keepingDefaults}
+                onClick={() => void keepDefaults()}
+              >
+                {keepingDefaults ? "Saving…" : "Keep the default"}
+              </Button>
+            </Flex>
           </Callout.Text>
         </Callout.Root>
       ) : null}

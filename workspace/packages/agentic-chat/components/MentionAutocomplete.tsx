@@ -1,9 +1,13 @@
+import { createPortal } from "react-dom";
 import { Box, Flex, Text } from "@radix-ui/themes";
 import type { MentionCandidate } from "../hooks/useMentionAutocomplete";
+
+const POPOVER_WIDTH = 260;
 
 interface MentionAutocompleteProps {
   candidates: MentionCandidate[];
   selectedIndex: number;
+  /** Viewport coordinates of the @ trigger (see useMentionAutocomplete). */
   position: { left: number; top: number } | null;
   onSelect: (candidate: MentionCandidate) => void;
   onHighlight: (index: number) => void;
@@ -16,15 +20,20 @@ export function MentionAutocomplete({
   onSelect,
   onHighlight,
 }: MentionAutocompleteProps) {
-  return (
+  // Portal + fixed positioning: the input lives inside several
+  // overflow-clipping surfaces (chat root, input card); rendering in-place
+  // gets the popover cut off at the message-box edge.
+  return createPortal(
     <Box
       style={{
-        position: "absolute",
-        left: position ? Math.max(4, position.left) : 12,
-        top: position ? Math.max(0, position.top - 6) : 0,
+        position: "fixed",
+        left: position
+          ? Math.min(Math.max(4, position.left), window.innerWidth - POPOVER_WIDTH - 8)
+          : 12,
+        top: position ? Math.max(8, position.top - 6) : 0,
         transform: "translateY(-100%)",
         zIndex: 1000,
-        width: 260,
+        width: POPOVER_WIDTH,
         maxWidth: "calc(100vw - 32px)",
         border: "1px solid var(--gray-a6)",
         borderRadius: 8,
@@ -64,6 +73,7 @@ export function MentionAutocomplete({
           </Text>
         </Flex>
       ))}
-    </Box>
+    </Box>,
+    document.body
   );
 }
