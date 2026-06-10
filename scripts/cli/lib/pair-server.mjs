@@ -6,7 +6,7 @@ import path from "node:path";
 import { pickMobileHost, printConnectBanner } from "./connect-utils.mjs";
 import { createServerInvocation, serverEntryArg, serverEntryDescription } from "./server-entry.mjs";
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
 function parsePort(value, label) {
   const port = Number(value);

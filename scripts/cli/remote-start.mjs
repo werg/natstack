@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parseConnectLink, parseConnectServerUrl } from "./lib/connect-utils.mjs";
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 function credentialPath() {
   return path.join(os.homedir(), ".config", "natstack", "cli-credentials.json");

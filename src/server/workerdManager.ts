@@ -39,6 +39,7 @@ const UNIVERSAL_DO_UNIQUE_KEY = "natstack:universal-do";
 const DEFAULT_WORKERD_STARTUP_READY_TIMEOUT_MS = 15_000;
 const WORKERD_STARTUP_OUTPUT_LINES = 40;
 declare const __filename: string | undefined;
+declare const __dirname: string | undefined;
 
 // This file is bundled as both ESM (standalone server) and CJS (Electron
 // utility process). build.mjs injects __filename into the ESM bundle, while
@@ -48,6 +49,7 @@ const requireFromUrl: string =
   typeof __filename !== "undefined" && __filename
     ? pathToFileURL(__filename).href
     : pathToFileURL(process.cwd() + "/").href;
+const moduleDir: string = typeof __dirname !== "undefined" && __dirname ? __dirname : process.cwd();
 
 const require = createRequire(requireFromUrl);
 
@@ -354,7 +356,7 @@ export class WorkerdManager {
         `workerd${maybeExeExtension}`
       ),
       path.join(
-        __dirname,
+        moduleDir,
         "..",
         "..",
         "node_modules",
@@ -364,7 +366,7 @@ export class WorkerdManager {
         `workerd${maybeExeExtension}`
       ),
       path.join(
-        __dirname,
+        moduleDir,
         "..",
         "..",
         "node_modules",
@@ -374,7 +376,7 @@ export class WorkerdManager {
         `workerd${maybeExeExtension}`
       ),
       path.join(
-        __dirname,
+        moduleDir,
         "..",
         "..",
         "node_modules",
@@ -384,7 +386,7 @@ export class WorkerdManager {
         `workerd${maybeExeExtension}`
       ),
       path.join(
-        __dirname,
+        moduleDir,
         "..",
         "..",
         "node_modules",
@@ -394,7 +396,7 @@ export class WorkerdManager {
         `workerd${maybeExeExtension}`
       ),
       path.join(
-        __dirname,
+        moduleDir,
         "..",
         "..",
         "node_modules",

@@ -26,19 +26,33 @@ const log = createDevLogger("PanelHttpServer");
  * management API has no large-payload endpoints today.
  */
 const MANAGEMENT_MAX_BODY_BYTES = 4 * 1024 * 1024;
+declare const __dirname: string | undefined;
 
 // ---------------------------------------------------------------------------
 // Pre-compiled browser transport + context bootstrap
 // ---------------------------------------------------------------------------
 
 function loadBrowserTransport(): string {
-  const transportPath = path.join(__dirname, "browserTransport.js");
+  const transportCandidates = [
+    typeof __dirname !== "undefined" && __dirname
+      ? path.join(__dirname, "browserTransport.js")
+      : null,
+    path.join(process.cwd(), "dist", "browserTransport.js"),
+    path.join(process.cwd(), "src", "server", "browserTransport.js"),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  for (const transportPath of transportCandidates) {
+    try {
+      return fs.readFileSync(transportPath, "utf-8");
+    } catch {
+      // Try the next runtime layout.
+    }
+  }
+
   try {
-    return fs.readFileSync(transportPath, "utf-8");
+    return fs.readFileSync(transportCandidates[0] ?? "browserTransport.js", "utf-8");
   } catch {
-    log.info(
-      `[PanelHttpServer] Browser transport not found at ${transportPath}, using inline stub`
-    );
+    log.info(`[PanelHttpServer] Browser transport not found, using inline stub`);
     return `console.warn("[NatStack] Browser transport not available — panel RPC will not work.");`;
   }
 }

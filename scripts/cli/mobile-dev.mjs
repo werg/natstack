@@ -5,9 +5,10 @@ import process from "process";
 import net from "net";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
+import { createPnpmInvocation } from "./lib/package-manager.mjs";
 import { createServerInvocation, serverEntryArg, serverEntryDescription } from "./lib/server-entry.mjs";
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const mobileDir = path.join(repoRoot, "apps", "mobile");
 const androidDir = path.join(mobileDir, "android");
 const appPackage = "com.natstack.mobile";
@@ -120,7 +121,32 @@ function spawnManaged(command, args, options = {}) {
     ...options,
   });
   pipeChildOutput(child, options.label ?? command);
+  child.once("error", (error) => {
+    prefixAndWrite(options.label ?? command, `Failed to start ${command}: ${error.message}`, process.stderr);
+  });
   return child;
+}
+
+function waitForSpawn(child, command, args, timeoutMs = 1_000) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.off("spawn", onSpawn);
+      child.off("error", onError);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onSpawn = () => finish();
+    const onError = (error) => finish(error);
+    const timer = setTimeout(() => finish(), timeoutMs);
+    child.once("spawn", onSpawn);
+    child.once("error", onError);
+    if (child.pid) finish();
+    if (child.exitCode != null) finish(new Error(`${command} ${args.join(" ")} exited before startup`));
+  });
 }
 
 function waitForChildExit(child, timeoutMs = 8_000) {
@@ -300,7 +326,8 @@ async function main() {
       if (await isPortOpen("127.0.0.1", metroPort)) {
         console.log(`[mobile-dev] Reusing Metro on port ${metroPort}`);
       } else {
-        metroChild = spawnManaged("pnpm", ["start"], {
+        const pnpmStart = createPnpmInvocation(["start"]);
+        metroChild = spawnManaged(pnpmStart.command, pnpmStart.args, {
           cwd: mobileDir,
           env: {
             ...process.env,
@@ -308,6 +335,7 @@ async function main() {
           },
           label: "metro",
         });
+        await waitForSpawn(metroChild, pnpmStart.command, pnpmStart.args);
         startedChildren.push(metroChild);
         await sleep(3000);
       }
@@ -335,6 +363,7 @@ async function main() {
       },
       label: "server",
     });
+    await waitForSpawn(serverChild, serverInvocation.command, serverInvocation.args);
     startedChildren.push(serverChild);
 
     const ready = await waitForServerReady(readyFilePath, serverChild);
