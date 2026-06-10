@@ -5,6 +5,7 @@ import { AGENTIC_EVENT_PAYLOAD_KIND } from "@workspace/agentic-protocol";
 import { AgentWorkerBase } from "@workspace/agentic-do";
 
 import { GmailAgentWorker } from "./gmail-agent-worker.js";
+import { GMAIL_MESSAGE_TYPES } from "./cards/cards.js";
 
 function message(
   id: string,
@@ -175,6 +176,16 @@ class TestGmailAgentWorker extends GmailAgentWorker {
       sendSignal: async (participantId: string, content: string, type?: string) => {
         this.signals.push({ participantId, content, type });
       },
+      getMessageType: async (typeId: string) => {
+        const spec = GMAIL_MESSAGE_TYPES.find((entry) => entry.typeId === typeId);
+        if (!spec) return null;
+        return {
+          typeId: spec.typeId,
+          displayMode: spec.displayMode,
+          stateSchema: spec.stateSchema,
+          ...(spec.updateSchema ? { updateSchema: spec.updateSchema } : {}),
+        };
+      },
     } as never;
   }
 
@@ -244,6 +255,10 @@ class TestGmailAgentWorker extends GmailAgentWorker {
     return this.getDebugState(channelId);
   }
 
+  drainWake(now = Date.now()) {
+    return this.processWakeQueues(now);
+  }
+
   channelStateRow(channelId = "ch-1") {
     return this.sql
       .exec(`SELECT * FROM gmail_channel_state WHERE channel_id = ?`, channelId)
@@ -252,8 +267,8 @@ class TestGmailAgentWorker extends GmailAgentWorker {
 }
 
 describe("GmailAgentWorker", () => {
-  it("inherits the base vessel schema version so base-table migrations run", () => {
-    expect(GmailAgentWorker.schemaVersion).toBe(AgentWorkerBase.schemaVersion);
+  it("bumps the base vessel schema version so base + gmail migrations run", () => {
+    expect(GmailAgentWorker.schemaVersion).toBeGreaterThan(AgentWorkerBase.schemaVersion);
   });
 
   it("advertises Gmail and standard agent methods with mention-or-followup policy", async () => {
@@ -368,10 +383,14 @@ describe("GmailAgentWorker", () => {
       "messageType.registered",
       "messageType.registered",
       "ui.action_bar.updated",
+      "custom.started",
     ]);
     expect(
       worker.published.map((entry) => (entry.event.payload as { typeId?: string }).typeId)
-    ).toEqual(["gmail.inbox", "gmail.category", "gmail.thread", "gmail.compose", undefined]);
+    ).toEqual(["gmail.setup", "gmail.inbox", "gmail.thread", "gmail.compose", undefined, "gmail.setup"]);
+    expect(worker.published[0]?.event.payload).toMatchObject({
+      stateSchema: { type: "object" },
+    });
     expect(worker.published[0]?.event.payload).toMatchObject({
       imports: {
         react: "latest",
@@ -402,7 +421,7 @@ describe("GmailAgentWorker", () => {
     expect(worker.agentInitiatedTurns).toHaveLength(1);
   });
 
-  it("starts an attention turn only for incoming mail from a sender already replied to", async () => {
+  it("batches attention hits into one debounced digest turn with per-message dedup", async () => {
     const { instance } = await createTestDO(TestGmailAgentWorker, {
       WORKERD_SESSION_ID: "test-session",
       WORKERD_BOOT_GENERATION: "1",
@@ -411,16 +430,26 @@ describe("GmailAgentWorker", () => {
     worker.seedSubscription();
 
     await worker.onMethodCall("ch-1", "call-1", "checkNow", {});
+    await worker.drainWake(Date.now() + 91_000);
     expect(worker.agentInitiatedTurns).toEqual([]);
 
     worker.seedRepliedSender("ch-1", "a@example.com");
     await worker.onMethodCall("ch-1", "call-2", "checkNow", {});
+    // The hit is queued, not turned into an immediate per-message turn.
+    expect(worker.agentInitiatedTurns).toEqual([]);
+    await worker.drainWake(Date.now());
+    expect(worker.agentInitiatedTurns).toEqual([]); // debounce window still open
+    await worker.drainWake(Date.now() + 91_000);
     expect(worker.agentInitiatedTurns).toHaveLength(1);
+    expect(worker.agentInitiatedTurns[0]?.content).toContain("matched your attention rules");
     expect(worker.agentInitiatedTurns[0]?.content).toContain(
       "senders you have replied to before"
     );
+    expect(worker.agentInitiatedTurns[0]?.content).toContain("single concise digest");
 
+    // The same message does not re-enqueue (gmail_attention_turns dedup).
     await worker.onMethodCall("ch-1", "call-3", "checkNow", {});
+    await worker.drainWake(Date.now() + 200_000);
     expect(worker.agentInitiatedTurns).toHaveLength(1);
   });
 
@@ -440,16 +469,20 @@ describe("GmailAgentWorker", () => {
       },
     });
 
-    await worker.onMethodCall("ch-1", "call-2", "checkNow", {});
+    const setup = worker.published.find(
+      (entry) => (entry.event.payload as { typeId?: string }).typeId === "gmail.setup"
+    );
+    expect(setup?.event.payload).toMatchObject({
+      initialState: {
+        status: "configured",
+        setupSummary: "Watching invoices and scheduling mail.",
+        auth: { status: "unknown" },
+      },
+    });
     const inbox = worker.published.find(
       (entry) => (entry.event.payload as { typeId?: string }).typeId === "gmail.inbox"
     );
-    expect(inbox?.event.payload).toMatchObject({
-      initialState: {
-        setupStatus: "configured",
-        setupSummary: "Watching invoices and scheduling mail.",
-      },
-    });
+    expect(JSON.stringify(inbox?.event.payload ?? {})).not.toContain("setupStatus");
   });
 
   it("emits a connect-only credential card for one-shot draft generation without entering external wait", async () => {
@@ -561,7 +594,8 @@ describe("GmailAgentWorker", () => {
         subject: "Re: Question",
         body: "Thanks for the context. I will follow up shortly.",
         threadId: "thr-1",
-        status: "draft",
+        // Agent-generated drafts always land in review; only the user sends.
+        status: "review",
       },
     });
   });
@@ -574,7 +608,11 @@ describe("GmailAgentWorker", () => {
     await expect(worker.onMethodCall("ch-1", "call-1", "checkNow", {})).resolves.toMatchObject({
       result: { ok: true, historyId: "h1", threadsUpdated: 0 },
     });
-    expect(worker.published.map((entry) => entry.event.kind)).toEqual(["custom.started"]);
+    // Routine syncs only publish/update cards in place — no chat messages.
+    expect(worker.published.map((entry) => entry.event.kind)).toEqual([
+      "custom.started",
+      "custom.started",
+    ]);
     expect(worker.published[0]!.event.payload).toMatchObject({
       typeId: "gmail.inbox",
       initialState: {
@@ -591,7 +629,7 @@ describe("GmailAgentWorker", () => {
       worker.published
         .map((entry) => (entry.event.payload as { typeId?: string }).typeId)
         .filter(Boolean)
-    ).toEqual(["gmail.inbox"]);
+    ).toEqual(["gmail.inbox", "gmail.setup"]);
 
     const beforeCategorize = worker.published.length;
     await expect(

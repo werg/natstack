@@ -1144,6 +1144,18 @@ export class GitClient {
    */
   async status(dir: string): Promise<RepoStatus> {
     dir = assertDirString(dir, "status");
+    // Fail fast when `dir` is not a repo root. Without this, statusMatrix
+    // walks the entire directory tree (file-by-file over RPC for sandboxed
+    // callers) before git ever notices there is no .git — passing "." from a
+    // context root that holds dozens of repos looks like a hang.
+    try {
+      await this.fsPromises.stat(`${dir.replace(/\/+$/, "")}/.git`);
+    } catch {
+      throw new Error(
+        `"${dir}" is not a git repository root (no .git directory). ` +
+          `Each workspace repo is its own repository — pass its path, e.g. "panels/my-app" or "workers/my-agent".`
+      );
+    }
     // Get current branch
     let branch: string | null = null;
     try {

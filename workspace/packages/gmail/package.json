@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./gmail-client": "./src/gmail-client.ts",
+    "./card-types": "./src/card-types.ts",
     "./renderers/gmail-thread.reducer": "./src/renderers/gmail-thread.reducer.ts"
   },
   "dependencies": {

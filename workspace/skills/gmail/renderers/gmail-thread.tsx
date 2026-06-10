@@ -1,8 +1,52 @@
 import { Badge, Button, Flex, Text, TextArea } from "@radix-ui/themes";
 import { useState } from "react";
-import { reduce, type GmailThreadState } from "@workspace/gmail/renderers/gmail-thread.reducer";
+import type {
+  GmailThreadState,
+  GmailThreadUpdate,
+} from "@workspace/gmail/renderers/gmail-thread.reducer";
 
-export { reduce };
+// Inlined copy of @workspace/gmail's gmail-thread reducer. Sandbox renderers
+// must be self-contained at runtime: a value import of a workspace package
+// forces a build-service round trip on every card compile (type-only imports
+// are erased and free). Keep in sync with
+// packages/gmail/src/renderers/gmail-thread.reducer.ts — GMAIL_THREAD_UPDATE_SCHEMA
+// validates the update shapes on both sides.
+export function reduce(state: GmailThreadState, update: GmailThreadUpdate): GmailThreadState {
+  if (!("kind" in update) || typeof update.kind !== "string") {
+    return { ...state, ...update };
+  }
+  switch (update.kind) {
+    case "newMessage": {
+      const messages = [...(state.messages ?? []), update.message];
+      return {
+        ...state,
+        messages,
+        lastSnippet: update.lastSnippet ?? update.message.snippet ?? state.lastSnippet,
+        unreadCount: update.unreadCount ?? state.unreadCount + 1,
+        status: state.status === "archived" ? "open" : state.status,
+      };
+    }
+    case "labelChange":
+      return {
+        ...state,
+        labelIds: update.labelIds,
+        unreadCount: update.unreadCount ?? state.unreadCount,
+        category: update.category ?? state.category,
+      };
+    case "draftSet":
+      return {
+        ...state,
+        hasDraft: Boolean(update.draftBody),
+      };
+    case "statusChange":
+      return {
+        ...state,
+        status: update.status,
+      };
+    default:
+      return state;
+  }
+}
 
 interface ThreadBody {
   messages: Array<{ id: string; from?: string; date?: string; snippet?: string; bodyText?: string }>;

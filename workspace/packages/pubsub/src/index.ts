@@ -88,8 +88,8 @@ export {
   type UpdateCustomMessageArgs,
 } from "./protocol-schemas.js";
 
-// JSON Schema to Zod conversion
-export { jsonSchemaToZod, jsonSchemaToZodRawShape, isRecord } from "./json-schema-to-zod.js";
+// JSON Schema to Zod conversion (canonical home: agentic-protocol)
+export { jsonSchemaToZod, jsonSchemaToZodRawShape, isRecord } from "@workspace/agentic-protocol";
 
 // Image processing utilities
 export {

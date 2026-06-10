@@ -149,6 +149,11 @@ async function loadImports(
 ): Promise<void> {
   const moduleMap = getModuleMap();
   for (const [specifier, refValue] of Object.entries(imports)) {
+    // Host-provided modules (panel exposeModules: react, react/jsx-runtime,
+    // @radix-ui/*, …) never go through the build service. Asking it for
+    // "react" can even resolve to an unrelated workspace unit via basename
+    // matching (workspace/packages/react) and build that instead.
+    if (moduleMap[specifier]) continue;
     const ref = refValue === "latest" ? undefined : refValue;
     // Recompute externals each iteration so earlier imports are externalized
     const externals = Object.keys(moduleMap);

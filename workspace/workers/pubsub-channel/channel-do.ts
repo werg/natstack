@@ -61,6 +61,10 @@ const PARTICIPANT_CLEANUP_INTERVAL_MS = 60 * 1000; // 1 minute
 /** Default channel-envelope replay window. */
 const REPLAY_LIMIT = 50;
 
+function isJsonSchemaRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
 function parseDOParticipantId(
   participantId: string
 ): { source: string; className: string; objectKey: string } | null {
@@ -398,8 +402,10 @@ export class PubSubChannel extends DurableObjectBase {
       ) {
         row.row.imports = body["imports"] as Record<string, string>;
       }
-      if (body["schemaSourceOrPath"] !== undefined)
-        row.row.schemaSourceOrPath = body["schemaSourceOrPath"];
+      if (isJsonSchemaRecord(body["stateSchema"]))
+        row.row.stateSchema = body["stateSchema"] as Record<string, unknown>;
+      if (isJsonSchemaRecord(body["updateSchema"]))
+        row.row.updateSchema = body["updateSchema"] as Record<string, unknown>;
       if (
         body["registeredBy"] &&
         typeof body["registeredBy"] === "object" &&
@@ -467,8 +473,10 @@ export class PubSubChannel extends DurableObjectBase {
         updatedAtSeq: seq,
       };
       if (mutation.row.imports !== undefined) definition.imports = mutation.row.imports;
-      if (mutation.row.schemaSourceOrPath !== undefined)
-        definition.schemaSourceOrPath = mutation.row.schemaSourceOrPath;
+      if (mutation.row.stateSchema !== undefined)
+        definition.stateSchema = mutation.row.stateSchema;
+      if (mutation.row.updateSchema !== undefined)
+        definition.updateSchema = mutation.row.updateSchema;
       if (mutation.row.registeredBy !== undefined)
         definition.registeredBy = mutation.row.registeredBy;
       this.sql.exec(
@@ -1168,6 +1176,7 @@ export class PubSubChannel extends DurableObjectBase {
         const message = agenticPayload.error.issues[0]?.message ?? "invalid agentic event payload";
         throw new Error(message);
       }
+      this.stampAgentHops(payload as Record<string, unknown>);
     }
 
     const senderMetadata = this.getSenderMetadata(participantId) ?? opts?.senderMetadata;
@@ -1204,8 +1213,78 @@ export class PubSubChannel extends DurableObjectBase {
       })
     );
 
+    if (type === AGENTIC_EVENT_PAYLOAD_KIND) {
+      this.recordConversationState(participantId, payload, event.id);
+    }
+
     broadcast(this.broadcastDeps, event, { kind: "log", phase: "live", ref }, participantId);
     return { id: event.id };
+  }
+
+  // ── Durable conversation state ────────────────────────────────────────────
+  //
+  // The channel is the single durable owner of "who spoke last" and of the
+  // consecutive-agent-reply counter. Agents read this via getConversationState()
+  // instead of each keeping a lossy in-memory copy.
+
+  /**
+   * Stamp `causality.agentHops` on agent-authored message.completed events:
+   * the count of consecutive agent-authored completed messages including this
+   * one. The addressing resolver uses it as a loop breaker.
+   */
+  private stampAgentHops(payload: Record<string, unknown>): void {
+    if (payload["kind"] !== "message.completed") return;
+    const actor = payload["actor"] as Record<string, unknown> | undefined;
+    if (actor?.["kind"] !== "agent") return;
+    const streak = Number(this.getStateValue("conversation:agentStreak") ?? 0);
+    const causality = (payload["causality"] ?? {}) as Record<string, unknown>;
+    if (causality["agentHops"] === undefined) causality["agentHops"] = streak + 1;
+    payload["causality"] = causality;
+  }
+
+  private recordConversationState(participantId: string, payload: unknown, seq?: number): void {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return;
+    const event = payload as Record<string, unknown>;
+    if (event["kind"] !== "message.completed") return;
+    const actor = event["actor"] as Record<string, unknown> | undefined;
+    const senderIsAgent = actor?.["kind"] === "agent";
+    // Keep the previous slot too: a recipient deciding whether to respond to
+    // the JUST-recorded message needs the sender before it (the channel
+    // records on publish, before broadcast reaches any subscriber).
+    const currentSender = this.getStateValue("conversation:lastCompletedSender");
+    const currentSeq = this.getStateValue("conversation:lastCompletedSeq");
+    if (currentSender != null) {
+      this.setStateValue("conversation:previousCompletedSender", currentSender);
+      if (currentSeq != null) this.setStateValue("conversation:previousCompletedSeq", currentSeq);
+    }
+    this.setStateValue("conversation:lastCompletedSender", participantId);
+    if (seq !== undefined) this.setStateValue("conversation:lastCompletedSeq", String(seq));
+    this.setStateValue("conversation:lastCompletedAt", new Date().toISOString());
+    this.setStateValue(
+      "conversation:agentStreak",
+      senderIsAgent ? String(Number(this.getStateValue("conversation:agentStreak") ?? 0) + 1) : "0"
+    );
+  }
+
+  /** Durable conversation state for addressing decisions. */
+  async getConversationState(): Promise<{
+    lastCompletedSender: string | null;
+    lastCompletedSeq: number | null;
+    lastCompletedAt: string | null;
+    previousCompletedSender: string | null;
+    previousCompletedSeq: number | null;
+    agentStreak: number;
+  }> {
+    const seq = this.getStateValue("conversation:lastCompletedSeq");
+    const prevSeq = this.getStateValue("conversation:previousCompletedSeq");
+    return {
+      lastCompletedSender: this.getStateValue("conversation:lastCompletedSender"),
+      lastCompletedSeq: seq != null ? Number(seq) : null,
+      lastCompletedAt: this.getStateValue("conversation:lastCompletedAt"),
+      previousCompletedSender: this.getStateValue("conversation:previousCompletedSender"),
+      previousCompletedSeq: prevSeq != null ? Number(prevSeq) : null,
+      agentStreak: Number(this.getStateValue("conversation:agentStreak") ?? 0),
+    };
   }
 
   private async runDedupedPublish(
@@ -1408,6 +1487,10 @@ export class PubSubChannel extends DurableObjectBase {
   /**
    * Update channel config.
    */
+  async getConfig(): Promise<ChannelConfig | null> {
+    return this.getChannelConfig();
+  }
+
   async updateConfig(config: Partial<ChannelConfig>): Promise<ChannelConfig> {
     const newConfig = { ...this.getChannelConfig(), ...config };
     this.setStateValue("config", JSON.stringify(newConfig));
@@ -1926,6 +2009,42 @@ export class PubSubChannel extends DurableObjectBase {
       "system"
     );
     broadcast(this.broadcastDeps, event, { kind: "log", phase: "live" }, "system");
+    // Tell the target agent its call rotted — the caller already got a
+    // terminal, but the agent otherwise never learns it failed to respond.
+    await this.publishMethodCallFeedback(
+      cancelled.targetId,
+      cancelled.transportCallId,
+      cancelled.method,
+      reason ?? "method call deadline expired"
+    );
+  }
+
+  /** Publish a ui.feedback event targeted at a participant (best effort). */
+  private async publishMethodCallFeedback(
+    targetId: string,
+    transportCallId: string,
+    method: string,
+    message: string
+  ): Promise<void> {
+    try {
+      const event: AgenticEvent<"ui.feedback"> = {
+        kind: "ui.feedback",
+        actor: { kind: "system", id: "channel" },
+        payload: {
+          protocol: AGENTIC_PROTOCOL_VERSION,
+          target: this.participantRef(targetId),
+          category: "method_call_failed",
+          refs: { callId: transportCallId },
+          error: { message: `${method}: ${message}` },
+          occurrenceKey: `method_call_failed:${transportCallId}`,
+        },
+        createdAt: new Date().toISOString(),
+      };
+      const logged = await this.appendLogEvent(AGENTIC_EVENT_PAYLOAD_KIND, event, "system");
+      broadcast(this.broadcastDeps, logged, { kind: "log", phase: "live" }, "system");
+    } catch (err) {
+      console.warn(`[Channel] failed to publish method-call feedback for ${transportCallId}:`, err);
+    }
   }
 
   private async deliverCallResult(
@@ -2120,6 +2239,13 @@ export class PubSubChannel extends DurableObjectBase {
     this.sql.exec(`DELETE FROM pending_calls`);
     // Clear dedup keys
     this.sql.exec(`DELETE FROM dedup_keys`);
+    // Conversation state may reference trimmed envelopes; reset it.
+    this.deleteStateValue("conversation:lastCompletedSender");
+    this.deleteStateValue("conversation:lastCompletedSeq");
+    this.deleteStateValue("conversation:lastCompletedAt");
+    this.deleteStateValue("conversation:previousCompletedSender");
+    this.deleteStateValue("conversation:previousCompletedSeq");
+    this.deleteStateValue("conversation:agentStreak");
   }
 
   // ── State introspection ─────────────────────────────────────────────────

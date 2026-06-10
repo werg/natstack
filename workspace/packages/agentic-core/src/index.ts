@@ -89,9 +89,20 @@ export {
   foldCustomMessageState,
   validateCustomState,
 } from "./custom-message-types.js";
+export { DEFAULT_HOST_MODULES, lintRendererSource } from "./renderer-lint.js";
+export type { RendererLintIssue } from "./renderer-lint.js";
+export {
+  assertMessageTypesHealthy,
+  installDoctorHostModules,
+  runMessageTypeDoctor,
+} from "./message-type-doctor.js";
+export type {
+  MessageTypeDoctorIssue,
+  MessageTypeDoctorOptions,
+  MessageTypeDoctorSpec,
+} from "./message-type-doctor.js";
 export type {
   CustomMessageComponentProps,
-  CustomMessageValidator,
   MessageTypeModule,
 } from "./custom-message-types.js";
 

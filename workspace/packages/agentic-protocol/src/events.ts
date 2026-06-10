@@ -49,6 +49,7 @@ export type EventKind =
   | "approval.resolved"
   | "ui.inline_rendered"
   | "ui.action_bar.updated"
+  | "ui.feedback"
   | "messageType.registered"
   | "messageType.cleared"
   | "custom.started"
@@ -87,6 +88,12 @@ export interface EventCausality {
   transportCallId?: string;
   approvalId?: ApprovalId;
   modelToolCallId?: string;
+  /**
+   * Number of consecutive agent-authored messages in this causal chain.
+   * Incremented by each agent reply; the addressing resolver refuses to
+   * respond past the channel's hop cap so agents cannot loop forever.
+   */
+  agentHops?: number;
 }
 
 export type MessageRole = "user" | "assistant" | "system" | "tool" | "panel";
@@ -102,6 +109,7 @@ export type MessagePayload =
       blocks?: MessageBlockInput[];
       mentions?: string[];
       replyTo?: MessageId;
+      to?: ParticipantSelector[];
     }
   | {
       // Streaming content update. Deltas stream incremental text/thinking content
@@ -123,6 +131,7 @@ export type MessagePayload =
       usage?: UsagePayload;
       mentions?: string[];
       replyTo?: MessageId;
+      to?: ParticipantSelector[];
     }
   | { protocol: "agentic.trajectory.v1"; reason: string; recoverable?: boolean };
 
@@ -326,7 +335,19 @@ export interface MessageTypeRegisteredPayload {
   displayMode: CustomMessageDisplayMode;
   source: SandboxSourcePayload;
   imports?: Record<string, string>;
-  schemaSourceOrPath?: unknown;
+  /**
+   * JSON Schema for the card's full state. Schemas are data, not code: both
+   * the emitting agent (at publish time) and the rendering panel (at fold
+   * time) validate against this same document, fetched from the channel's
+   * message-type registry.
+   */
+  stateSchema?: Record<string, unknown>;
+  /**
+   * JSON Schema for incremental updates. Required when the renderer module
+   * exports a `reduce` function (updates are patches, not full states);
+   * without it, emission-time validation of updates is impossible.
+   */
+  updateSchema?: Record<string, unknown>;
   registeredBy?: ActorRef;
 }
 
@@ -348,6 +369,39 @@ export interface CustomUpdatedPayload {
   protocol: "agentic.trajectory.v1";
   messageId: MessageId;
   update: unknown;
+  /** Marks the card as failed; the UI renders a standard failed-card frame. */
+  status?: "failed";
+  error?: { message: string; details?: unknown };
+}
+
+export type UiFeedbackCategory =
+  | "render_failed"
+  | "state_invalid"
+  | "type_not_registered"
+  | "method_call_failed"
+  | "suspension_timeout"
+  /** A registered type's renderer never became ready (fetch/load/compile stalled). */
+  | "load_stalled";
+
+/**
+ * UI-to-agent feedback: the panel (or channel infrastructure) telling the
+ * owning agent that something it published is broken. The harness ingests
+ * events targeting itself and injects them into the agent's context; these
+ * events never trigger conversational responses.
+ */
+export interface UiFeedbackPayload {
+  protocol: "agentic.trajectory.v1";
+  target: ParticipantRef;
+  category: UiFeedbackCategory;
+  refs?: {
+    messageId?: MessageId;
+    typeId?: string;
+    callId?: string;
+    turnId?: TurnId;
+  };
+  error: { name?: string; message: string; stack?: string; componentStack?: string };
+  /** Dedupe key — repeated occurrences of the same failure collapse to one. */
+  occurrenceKey: string;
 }
 
 export type UiPayload =
@@ -484,8 +538,10 @@ export type PayloadFor<K extends EventKind> = K extends `message.${string}`
     ? InvocationPayloadFor<K>
     : K extends `approval.${string}`
       ? ApprovalPayload
-      : K extends `ui.${string}`
-        ? UiPayload
+      : K extends "ui.feedback"
+        ? UiFeedbackPayload
+        : K extends `ui.${string}`
+          ? UiPayload
         : K extends "messageType.registered"
           ? MessageTypeRegisteredPayload
           : K extends "messageType.cleared"

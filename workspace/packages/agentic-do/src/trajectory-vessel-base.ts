@@ -53,11 +53,18 @@ import {
   lifecycleRecoveryNoticeForMessage,
   messageDisplayText,
   publicParticipantMetadata,
+  resolveShouldRespond,
+  isRespondPolicy as isProtocolRespondPolicy,
+  isConversationPolicy,
+  type ActorRef,
   type AgenticEvent,
   type MessageBlockInput,
   type InvocationOutcome,
   type LifecycleMessageReasonCode,
+  type ParticipantSelector,
+  type RespondPolicy as ProtocolRespondPolicy,
   type TurnReasonCode,
+  type UiFeedbackPayload,
 } from "@workspace/agentic-protocol";
 import {
   PiRunner,
@@ -88,6 +95,8 @@ import { SubscriptionManager } from "./subscription-manager.js";
 import { ChannelClient } from "./channel-client.js";
 import { TurnDispatcher } from "./turn-dispatcher.js";
 import { SuspensionStore, credentialSuspensionId } from "./suspension-store.js";
+import { CardManager } from "./custom-cards.js";
+import { FeedbackIngest } from "./feedback-ingest.js";
 import { RunController, isTerminalRunPhase } from "./run-controller.js";
 import {
   createGadServiceClient,
@@ -175,12 +184,7 @@ const CHANNEL_CONTEXT_REPLAY_WINDOW = 100;
 const CHANNEL_CONTEXT_RECENT_ACTIVITY_LIMIT = 8;
 const CHANNEL_CONTEXT_SUMMARY_LIMIT = 240;
 const CLAIM_LOST = Symbol("CLAIM_LOST");
-export type RespondPolicy =
-  | "all"
-  | "mentioned"
-  | "mentioned-strict"
-  | "mentioned-or-followup"
-  | "from-participants";
+export type RespondPolicy = ProtocolRespondPolicy;
 type CachedParticipant = Awaited<ReturnType<ChannelClient["getParticipants"]>>[number];
 type AgentSettingSource = "state" | "config" | "default";
 export type CustomMessageReducer = (state: unknown, update: unknown) => unknown;
@@ -417,13 +421,7 @@ function isApprovalLevel(value: unknown): value is ApprovalLevel {
 }
 
 function isRespondPolicy(value: unknown): value is RespondPolicy {
-  return (
-    value === "all" ||
-    value === "mentioned" ||
-    value === "mentioned-strict" ||
-    value === "mentioned-or-followup" ||
-    value === "from-participants"
-  );
+  return isProtocolRespondPolicy(value);
 }
 
 const MODEL_CREDENTIAL_REQUIRED_CARD_PATH =
@@ -472,6 +470,9 @@ const MODEL_CREDENTIAL_APPROVAL_PENDING_PREFIX = "Waiting for model credential a
 
 /** How long after a credential park to fire the durable liveness backstop alarm. */
 const CREDENTIAL_BACKSTOP_ALARM_MS = 2 * 60 * 1000;
+/** How long a turn may park on a credential wait before it fails with a
+ *  diagnostic instead of hanging forever. */
+const CREDENTIAL_SUSPENSION_TIMEOUT_MS = 15 * 60 * 1000;
 
 function isModelCredentialApprovalPendingFailure(err: unknown): boolean {
   if (err instanceof Error) {
@@ -1193,6 +1194,26 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     );
     this.ensureReady();
     this.identity.restore();
+    this.feedback = new FeedbackIngest(this.sql);
+    this.cards = new CardManager({
+      sql: this.sql,
+      createChannelClient: (channelId) => this.createChannelClient(channelId),
+      getParticipantId: (channelId) => this.subscriptions.getParticipantId(channelId),
+      getActor: (channelId) => this.cardActor(channelId),
+      getAgentId: () => this.objectKey,
+    });
+  }
+
+  /** Typed, durable card API for this agent (see custom-cards.ts). */
+  protected readonly cards: CardManager;
+  private readonly feedback: FeedbackIngest;
+
+  private cardActor(channelId: string): ActorRef {
+    const participantId = this.subscriptions.getParticipantId(channelId);
+    return {
+      kind: "agent",
+      id: participantId ?? this.objectKey,
+    };
   }
 
   private recordDebugPhase(
@@ -1464,6 +1485,22 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     );
   }
 
+  /** Turn runs that are actively executing or parked — excludes `closing`,
+   *  which is a finished turn waiting for its projection close. */
+  private channelHasLiveTurnRuns(channelId: string): boolean {
+    return (
+      this.sql
+        .exec(
+          `SELECT 1 FROM agent_turn_runs
+           WHERE channel_id = ?
+             AND status IN ('starting', 'running_model', 'executing_tools', 'waiting_external', 'continuing')
+           LIMIT 1`,
+          channelId
+        )
+        .toArray().length > 0
+    );
+  }
+
   private hasAnyNonTerminalTurnRuns(): boolean {
     return (
       this.sql
@@ -1513,6 +1550,14 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
         `[TrajectoryVesselBase] lease registration failed for channel=${channelId} turn=${turnId} — ` +
           `turn is running UNLEASED and will not recover across a restart: ` +
           `${err instanceof Error ? err.message : String(err)}`
+      );
+      // Make the recovery gap user-visible: if the process restarts mid-turn,
+      // this turn will not resume, and silence here turns that into a mystery.
+      void this.emitInfrastructureDiagnostic(
+        channelId,
+        "turn_unleased",
+        "This response is running without restart protection; if the agent restarts mid-turn it will not resume automatically.",
+        { turnId }
       );
     });
     this.ctx.waitUntil?.(leaseActive);
@@ -3112,7 +3157,19 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
           );
         } else if (kind === "close_turn_projection") {
           if (!runner) throw new Error("close_turn_projection requires a runner");
-          await runner.repairDurableOpenState({ closeOpenTurns: true });
+          // Same protection as the runner-creation repair: method calls still
+          // in flight on the suspension ledger survive a restart and are
+          // recovered there. Without this, recovering one stale `closing` turn
+          // on wake-up blanket-abandoned every pre-hibernation invocation —
+          // including a live, recoverable eval parked in another turn.
+          await runner.repairDurableOpenState({
+            // Don't force-close open turn projections while another turn run
+            // is still live (running or parked on an external wait). A turn in
+            // `closing` — the very thing this outbox item finishes — must not
+            // block its own close.
+            closeOpenTurns: !this.channelHasLiveTurnRuns(channelId),
+            recoverableInvocationIds: this.recoverableSuspensionInvocationIds(channelId),
+          });
         } else {
           throw new Error(`unknown turn outbox kind: ${kind}`);
         }
@@ -3657,8 +3714,55 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     await super.alarm();
     await this.ensureAgentActivationReady().catch(() => undefined);
     await this.redrivePendingCredentialInterruptions();
+    await this.failExpiredSuspensions();
+    const nextExpiry = this.suspensions.nextExpiry();
     if (this.suspensions.listRedrivable("credential").length > 0) {
       this.setAlarm(CREDENTIAL_BACKSTOP_ALARM_MS);
+    } else if (nextExpiry !== null) {
+      this.setAlarm(Math.max(nextExpiry - Date.now(), 1000));
+    }
+  }
+
+  /**
+   * Claim and fail every suspension past its expiry: the parked turn fails
+   * with a visible diagnostic and the agent gets a feedback note for its next
+   * turn, instead of waiting forever on an approval that will never arrive.
+   */
+  private async failExpiredSuspensions(): Promise<void> {
+    const expired = this.suspensions.expireOverdue();
+    for (const row of expired) {
+      try {
+        const detail =
+          row.reason === "credential"
+            ? `Credential approval for ${String(row.payload["providerId"] ?? "the model provider")} timed out`
+            : `External wait ${row.id} timed out`;
+        this.suspensions.resolve(row.id);
+        this.transitionTurn(row.turnId, ["waiting_external", "starting", "running_model"], "failed", {
+          failureCode: "suspension_timeout",
+          failureMessage: detail,
+        });
+        await this.enqueueTurnOutbox({
+          channelId: row.channelId,
+          turnId: row.turnId,
+          kind: "emit_diagnostic",
+          dedupKey: `suspension-timeout:${row.id}`,
+          payload: {
+            message: `${detail}. Reconnect the provider and send a new message to retry.`,
+          },
+        });
+        const runner = await this.getOrCreateRunner(row.channelId);
+        await this.drainTurnOutbox(row.channelId, runner);
+        this.feedback.enqueue(
+          row.channelId,
+          `[ui-feedback] ${detail}. The waiting turn was failed; ask the user to reconnect and retry.`
+        );
+        this.recordDebugPhase(row.channelId, "suspension.expired", {
+          id: row.id,
+          turnId: row.turnId,
+        });
+      } catch (err) {
+        this.recordLastError("suspension.expire", err, row.channelId);
+      }
     }
   }
 
@@ -4556,41 +4660,80 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     };
   }
 
+  /**
+   * Single addressing decision, delegated to the shared pure resolver in
+   * @workspace/agentic-protocol. Durable conversation state (last completed
+   * sender) comes from the channel DO — never from in-memory bookkeeping —
+   * and the decision's `reason` is recorded for debuggability.
+   */
   protected async shouldRespond(channelId: string, event: ChannelEvent): Promise<boolean> {
-    const policy = this.getRespondPolicy(channelId);
-    if (policy === "all") return true;
-    if (policy === "from-participants")
-      return this.getRespondFrom(channelId).includes(event.senderId);
-
     const selfParticipantId = this.subscriptions.getParticipantId(channelId);
     if (!selfParticipantId) return false;
-    const meta = this.extractMessageMeta(event);
-    if (meta.mentions?.includes(selfParticipantId)) return true;
-    if (policy === "mentioned-strict") return false;
-    if (policy === "mentioned-or-followup") {
-      return this.getLastCompletedMessageSender(channelId) === selfParticipantId;
+    const policy = this.getRespondPolicy(channelId);
+
+    const agentic = this.agenticEventFromChannelEvent(event);
+    const payload = (agentic?.payload ?? {}) as {
+      mentions?: string[];
+      replyTo?: string;
+      to?: ParticipantSelector[];
+    };
+    const causality = (agentic?.causality ?? {}) as { agentHops?: number };
+    const senderKind =
+      (agentic?.actor as { kind?: string } | undefined)?.kind ??
+      ((event.senderMetadata?.["type"] as string | undefined) === "agent" ? "agent" : "user");
+
+    const channel = this.createChannelClient(channelId);
+    let lastCompletedSender: string | null = null;
+    let conversationPolicy: "open" | "directed" | "moderated" | undefined;
+    let agentHopLimit: number | undefined;
+    try {
+      const [conversation, config] = await Promise.all([
+        channel.getConversationState(),
+        channel.getConfig(),
+      ]);
+      // The channel records a message at publish time, before delivery — so
+      // when deciding for the just-delivered message itself, the relevant
+      // "who spoke last" is the previous slot.
+      lastCompletedSender =
+        conversation.lastCompletedSeq != null && conversation.lastCompletedSeq === event.id
+          ? conversation.previousCompletedSender
+          : conversation.lastCompletedSender;
+      if (isConversationPolicy(config?.["conversationPolicy"])) {
+        conversationPolicy = config["conversationPolicy"];
+      }
+      if (typeof config?.["agentHopLimit"] === "number") {
+        agentHopLimit = config["agentHopLimit"];
+      }
+    } catch (err) {
+      this.recordLastError("shouldRespond.conversationState", err, channelId);
     }
 
     const participants = this.cachedParticipants.get(channelId) ?? [];
-    const nonSenders = participants.filter(
-      (participant) => participant.participantId !== event.senderId
-    );
-    return nonSenders.length === 1 && nonSenders[0]?.participantId === selfParticipantId;
-  }
-
-  private getLastCompletedMessageSender(channelId: string): string | null {
-    return this.getStateValue(`lastCompletedMessageSender:${channelId}`);
-  }
-
-  private rememberCompletedMessageSender(channelId: string, event: ChannelEvent): void {
-    if (this.agenticEventFromChannelEvent(event)?.kind !== "message.completed") return;
-    this.setStateValue(`lastCompletedMessageSender:${channelId}`, event.senderId);
-  }
-
-  private extractMessageMeta(event: ChannelEvent): { mentions?: string[]; replyTo?: string } {
-    const agentic = this.agenticEventFromChannelEvent(event);
-    const payload = (agentic?.payload ?? {}) as { mentions?: string[]; replyTo?: string };
-    return { mentions: payload.mentions, replyTo: payload.replyTo };
+    const decision = resolveShouldRespond({
+      event: {
+        senderParticipantId: event.senderId,
+        senderKind,
+        mentions: payload.mentions,
+        replyTo: payload.replyTo,
+        to: payload.to,
+        agentHops: causality.agentHops,
+      },
+      self: { participantId: selfParticipantId },
+      policy,
+      respondFrom: this.getRespondFrom(channelId),
+      participantIds: participants
+        .map((participant) => participant.participantId)
+        .filter((id): id is string => typeof id === "string"),
+      lastCompletedSender,
+      conversationPolicy,
+      agentHopLimit,
+    });
+    this.recordDebugPhase(channelId, "shouldRespond", {
+      respond: decision.respond,
+      reason: decision.reason,
+      sender: event.senderId,
+    });
+    return decision.respond;
   }
 
   protected buildTurnInput(event: ChannelEvent): TurnInput {
@@ -5391,16 +5534,20 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
   }
 
   /**
-   * Invocation ids of method-call suspensions that are still in flight (no
-   * durable terminal yet). These survive a runner restart and are recovered
-   * through the suspension ledger, so trajectory repair must not abandon them.
+   * Invocation ids of method-call suspensions the ledger still owns: either
+   * no durable terminal yet, OR a terminal that arrived but has not been
+   * folded into the trajectory (delivery_status still pending — the result
+   * landed while the DO was hibernated, with no live waiter to consume it).
+   * Both survive a runner restart through suspension recovery, so trajectory
+   * repair must not abandon them. Without the second case, a slow method call
+   * whose result raced the wake-up was abandoned WITH its real result already
+   * recorded on the row.
    */
   private recoverableSuspensionInvocationIds(channelId: string): Set<string> {
     const rows = this.sql
       .exec(
         `SELECT DISTINCT invocation_id FROM agent_method_suspensions
          WHERE channel_id = ?
-           AND terminal_kind = 'none'
            AND delivery_status IN ('pending', 'delivered_live', 'recovering')`,
         channelId
       )
@@ -5969,6 +6116,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       ...(requestId ? { requestId } : {}),
       resumeCount: 0,
       payload: { providerId, modelBaseUrl },
+      expiresAt: Date.now() + CREDENTIAL_SUSPENSION_TIMEOUT_MS,
     });
     if (this.runners.has(channelId)) {
       void this.readRunnerMessages(channelId)
@@ -6023,6 +6171,7 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
       reason: "credential",
       resumeCount: existing.resumeCount,
       payload: { providerId: nextProviderId, modelBaseUrl: nextModelBaseUrl },
+      expiresAt: existing.expiresAt ?? Date.now() + CREDENTIAL_SUSPENSION_TIMEOUT_MS,
     });
     this.suspensions.resolve(previousId);
     this.credentialPromptCardsEmitted.delete(
@@ -6179,6 +6328,9 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     const dispatcher = new TurnDispatcher({
       runner,
       notifyTyping: (busy) => this.broadcastTyping(channelId, busy),
+      onDiagnostic: (code, message, detail) => {
+        void this.emitInfrastructureDiagnostic(channelId, `dispatcher_${code}`, message, detail);
+      },
       onWorkStart: async (work) => {
         await this.ensureExpectedChannelToolsAvailable(channelId, `turn_dispatcher.${work.kind}`);
         if (work.kind === "continue") {
@@ -6469,9 +6621,11 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
   ): Promise<ChannelContextSnapshot> {
     const participants = this.cachedParticipants.get(channelId) ?? [];
     const selfParticipantId = this.subscriptions.getParticipantId(channelId) ?? undefined;
-    const meta = this.extractMessageMeta(event);
+    const agenticPayload = (this.agenticEventFromChannelEvent(event)?.payload ?? {}) as {
+      mentions?: string[];
+    };
     const participantById = this.participantLookup(participants);
-    const mentionedParticipantIds = meta.mentions ?? [];
+    const mentionedParticipantIds = agenticPayload.mentions ?? [];
     const mentionedHandles = mentionedParticipantIds.map((id) =>
       this.participantLabel(participantById.get(id) ?? null, id)
     );
@@ -7400,6 +7554,39 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     }
   }
 
+  /**
+   * Intercept `ui.feedback` events targeting this agent. Returns true when the
+   * event was a feedback event (whether ingested or deduped) — feedback never
+   * flows into the conversational pipeline. Also invalidates the card manager's
+   * type cache on `messageType.registered` (but lets the event flow on).
+   */
+  private ingestUiFeedback(channelId: string, event: ChannelEvent): boolean {
+    const agentic = this.agenticEventFromChannelEvent(event);
+    if (agentic?.kind === "messageType.registered") {
+      const typeId = (agentic.payload as { typeId?: string } | undefined)?.typeId;
+      if (typeId) this.cards.invalidateType(channelId, typeId);
+      return false;
+    }
+    if (agentic?.kind !== "ui.feedback") return false;
+    const payload = agentic.payload as UiFeedbackPayload | undefined;
+    if (!payload || typeof payload.occurrenceKey !== "string") return true;
+    const selfParticipantId = this.subscriptions.getParticipantId(channelId);
+    if (!selfParticipantId) return true;
+    const target = payload.target as { id?: string; participantId?: string } | undefined;
+    if (target?.id !== selfParticipantId && target?.participantId !== selfParticipantId) {
+      return true; // someone else's problem
+    }
+    const note = this.feedback.ingest(channelId, payload);
+    if (note) {
+      this.feedback.enqueue(channelId, note);
+      this.recordDebugPhase(channelId, "ui_feedback.queued", {
+        category: payload.category,
+        occurrenceKey: payload.occurrenceKey,
+      });
+    }
+    return true;
+  }
+
   // ── Default channel event handler ────────────────────────────────────────
   //
   // Subclasses MAY override this for custom routing, but the default behavior
@@ -7412,19 +7599,22 @@ export abstract class TrajectoryVesselBase extends DurableObjectBase {
     opts?: { mode?: "auto" | "sequential" }
   ): Promise<void> {
     await this.ensureAgentActivationReady();
-    if (!this.shouldProcess(event)) {
-      this.rememberCompletedMessageSender(channelId, event);
-      return;
-    }
+    if (this.ingestUiFeedback(channelId, event)) return;
+    if (!this.shouldProcess(event)) return;
     await this.refreshRoster(channelId);
     const shouldRespond = await this.shouldRespond(channelId, event);
-    this.rememberCompletedMessageSender(channelId, event);
     if (!shouldRespond) return;
     await this.prepareChannelContextSnapshot(channelId, event);
     await this.getOrCreateRunner(channelId);
 
     const runner = this.runners.get(channelId)!.runner;
     const input = this.buildTurnInput(event);
+    // Pending UI feedback (render failures, expired calls, …) rides into the
+    // next turn as a diagnostic preamble — never as its own turn.
+    const feedbackNotes = this.feedback.consume(channelId);
+    if (feedbackNotes.length > 0) {
+      input.content = [...feedbackNotes, input.content].filter(Boolean).join("\n\n");
+    }
     // Fall back to the first user message as the display title when no
     // explicit (tool-driven) title has been set and no in-activation title
     // is in flight yet. Heuristic-only — doesn't persist a flag, so a

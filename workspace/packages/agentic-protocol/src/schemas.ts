@@ -44,6 +44,7 @@ export const causalitySchema = z
     transportCallId: z.string().optional(),
     approvalId: idSchema.optional(),
     modelToolCallId: z.string().optional(),
+    agentHops: z.number().int().nonnegative().optional(),
   })
   .strict();
 
@@ -89,6 +90,7 @@ const messageStartedPayloadSchema = z
     blocks: z.array(messageBlockInputSchema).optional(),
     mentions: z.array(idSchema).optional(),
     replyTo: idSchema.optional(),
+    to: z.array(participantSelectorSchema).optional(),
   })
   .strict();
 
@@ -111,6 +113,7 @@ const messageCompletedPayloadSchema = z
     usage: usagePayloadSchema.optional(),
     mentions: z.array(idSchema).optional(),
     replyTo: idSchema.optional(),
+    to: z.array(participantSelectorSchema).optional(),
   })
   .strict();
 
@@ -260,7 +263,8 @@ const messageTypeRegisteredPayloadSchema = z
     displayMode: customMessageDisplayModeSchema,
     source: sandboxSourceSchema,
     imports: z.record(z.string()).optional(),
-    schemaSourceOrPath: z.unknown().optional(),
+    stateSchema: z.record(z.unknown()).optional(),
+    updateSchema: z.record(z.unknown()).optional(),
     registeredBy: actorRefSchema.optional(),
   })
   .strict();
@@ -288,6 +292,44 @@ const customUpdatedPayloadSchema = z
     protocol: protocolSchema,
     messageId: idSchema,
     update: z.unknown(),
+    status: z.literal("failed").optional(),
+    error: z
+      .object({ message: z.string().min(1), details: z.unknown().optional() })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+const uiFeedbackPayloadSchema = z
+  .object({
+    protocol: protocolSchema,
+    target: participantRefSchema,
+    category: z.enum([
+      "render_failed",
+      "state_invalid",
+      "type_not_registered",
+      "method_call_failed",
+      "suspension_timeout",
+      "load_stalled",
+    ]),
+    refs: z
+      .object({
+        messageId: idSchema.optional(),
+        typeId: z.string().optional(),
+        callId: z.string().optional(),
+        turnId: idSchema.optional(),
+      })
+      .strict()
+      .optional(),
+    error: z
+      .object({
+        name: z.string().optional(),
+        message: z.string().min(1),
+        stack: z.string().optional(),
+        componentStack: z.string().optional(),
+      })
+      .strict(),
+    occurrenceKey: z.string().min(1),
   })
   .strict();
 
@@ -441,6 +483,7 @@ export const eventKindSchemas = {
   "approval.resolved": eventSchema("approval.resolved", approvalResolvedPayloadSchema),
   "ui.inline_rendered": eventSchema("ui.inline_rendered", uiInlineRenderedPayloadSchema),
   "ui.action_bar.updated": eventSchema("ui.action_bar.updated", uiActionBarUpdatedPayloadSchema),
+  "ui.feedback": eventSchema("ui.feedback", uiFeedbackPayloadSchema),
   "messageType.registered": eventSchema(
     "messageType.registered",
     messageTypeRegisteredPayloadSchema
@@ -739,6 +782,21 @@ export const storedAgenticEventSchema = z
         "source",
         (value) => sandboxSourceSchema.safeParse(value).success,
         "ui.inline_rendered requires payload.source"
+      );
+    } else if (event.kind === "ui.feedback") {
+      requireStoredPayloadField(
+        payload,
+        ctx,
+        "target",
+        (value) => participantRefSchema.safeParse(value).success,
+        "ui.feedback requires payload.target"
+      );
+      requireStoredPayloadField(
+        payload,
+        ctx,
+        "occurrenceKey",
+        (value) => typeof value === "string" && value.length > 0,
+        "ui.feedback requires payload.occurrenceKey"
       );
     } else if (event.kind === "custom.started" || event.kind === "custom.updated") {
       requireStoredPayloadField(

@@ -98,7 +98,8 @@ export async function resolveGmailAgentWorker(channelId: string): Promise<{ targ
   ]);
 }
 
-export async function callGmailAttention<T = unknown>(
+/** Call any public Gmail agent DO method (attention rules, reads, etc.). */
+export async function callGmailAgent<T = unknown>(
   channelId: string,
   method: string,
   args: unknown = {}

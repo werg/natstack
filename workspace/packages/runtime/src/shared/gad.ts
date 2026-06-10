@@ -131,7 +131,8 @@ export interface ChannelMessageTypeDefinition {
   displayMode: "inline" | "row";
   source: { type: "code"; code: string } | { type: "file"; path: string };
   imports?: Record<string, string>;
-  schemaSourceOrPath?: unknown;
+  stateSchema?: Record<string, unknown>;
+  updateSchema?: Record<string, unknown>;
   registeredBy?: Record<string, unknown>;
   updatedAtSeq: number;
   clearedAtSeq?: number;

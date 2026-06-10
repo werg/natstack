@@ -235,7 +235,8 @@ export interface ChannelMessageTypeDefinition {
   displayMode: "inline" | "row";
   source: { type: "code"; code: string } | { type: "file"; path: string };
   imports?: Record<string, string>;
-  schemaSourceOrPath?: unknown;
+  stateSchema?: Record<string, unknown>;
+  updateSchema?: Record<string, unknown>;
   registeredBy?: Record<string, unknown>;
   updatedAtSeq: number;
   clearedAtSeq?: number;
@@ -3651,8 +3652,12 @@ export class GadWorkspaceDO extends DurableObjectBase {
         mutation.row.displayMode,
         JSON.stringify(mutation.row.source),
         mutation.row.imports ? JSON.stringify(mutation.row.imports) : null,
-        mutation.row.schemaSourceOrPath !== undefined
-          ? JSON.stringify(mutation.row.schemaSourceOrPath)
+        // schema_json holds both JSON Schema documents for the type.
+        mutation.row.stateSchema !== undefined || mutation.row.updateSchema !== undefined
+          ? JSON.stringify({
+              stateSchema: mutation.row.stateSchema,
+              updateSchema: mutation.row.updateSchema,
+            })
           : null,
         mutation.row.registeredBy ? JSON.stringify(mutation.row.registeredBy) : null,
         seq
@@ -3681,7 +3686,16 @@ export class GadWorkspaceDO extends DurableObjectBase {
     };
     if (row["imports_json"])
       result.imports = parseRecord(asString(row["imports_json"])) as Record<string, string>;
-    if (row["schema_json"]) result.schemaSourceOrPath = parseJson(asString(row["schema_json"]));
+    if (row["schema_json"]) {
+      const schemas = parseJson(asString(row["schema_json"])) as {
+        stateSchema?: Record<string, unknown>;
+        updateSchema?: Record<string, unknown>;
+      } | null;
+      if (schemas && typeof schemas === "object") {
+        if (schemas.stateSchema) result.stateSchema = schemas.stateSchema;
+        if (schemas.updateSchema) result.updateSchema = schemas.updateSchema;
+      }
+    }
     if (row["registered_by_json"])
       result.registeredBy = parseRecord(asString(row["registered_by_json"]));
     if (row["cleared_at_seq"] !== null && row["cleared_at_seq"] !== undefined) {

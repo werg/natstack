@@ -1,104 +1,34 @@
-import { Badge, Box, Button, Checkbox, Flex, Separator, Text, TextField } from "@radix-ui/themes";
+import { Badge, Box, Button, Callout, Checkbox, Flex, Separator, Text, TextField } from "@radix-ui/themes";
 import {
   ArchiveIcon,
   CheckIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
   EnvelopeClosedIcon,
+  ExclamationTriangleIcon,
   MagnifyingGlassIcon,
   Pencil1Icon,
   ReloadIcon,
 } from "@radix-ui/react-icons";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
-interface GmailThreadCardState {
-  threadId: string;
-  subject: string;
-  from?: string;
-  snippet?: string;
-  participants?: string[];
-  lastSnippet?: string;
-  unreadCount?: number;
-  category?: string;
-  status?: "unread" | "open" | "archived";
-  actionable?: boolean;
-  attention?: GmailAttentionDecision;
-}
+import type {
+  GmailAttentionAction,
+  GmailAttentionCondition,
+  GmailAttentionDirective,
+  GmailAttentionMatcher,
+  GmailAttentionScope,
+  GmailInboxCardState,
+  GmailThreadCardState as SharedGmailThreadCardState,
+} from "@workspace/gmail/card-types";
 
-type GmailAttentionAction = "surface" | "summarize" | "draft" | "archive" | "markRead";
-type GmailAttentionScope = "metadata" | "snippet" | "full-thread-on-wake";
+type GmailThreadCardState = Partial<SharedGmailThreadCardState> & { threadId: string };
 
-interface GmailAttentionCondition {
-  field?: string;
-  op?: string;
-  value?: string;
-}
-
-interface GmailAttentionMatcher {
-  any?: GmailAttentionCondition[];
-  all?: GmailAttentionCondition[];
-  not?: GmailAttentionCondition[];
-}
-
-interface GmailAttentionDecision {
-  wake: boolean;
-  directiveId?: string;
-  directiveName?: string;
-  reason?: string;
-  actions?: GmailAttentionAction[];
-}
-
-interface GmailAttentionDirective {
-  id: string;
-  name: string;
-  description?: string;
-  enabled: boolean;
-  scope: GmailAttentionScope;
-  priority: number;
-  match: GmailAttentionMatcher;
-  actions: GmailAttentionAction[];
-}
-
-interface GmailAttentionRuleSet {
-  version: 1;
-  directives: GmailAttentionDirective[];
-}
-
-interface GmailAttentionHit {
-  threadId: string;
-  directiveId: string;
-  directiveName: string;
-  reason: string;
-  actions: GmailAttentionAction[];
-  matchedAt: number;
-}
-
-interface GmailInboxState {
-  email?: string;
+type GmailInboxState = Partial<Omit<GmailInboxCardState, "actionable" | "searchResults">> & {
   unread: number;
-  inbox?: number;
-  urgent: number;
-  draftCount: number;
-  perCategory?: Record<string, number>;
   actionable?: GmailThreadCardState[];
-  setupStatus?: "needs-user-preferences" | "configured";
-  setupSummary?: string;
-  attentionRules?: GmailAttentionRuleSet;
-  attentionHits?: GmailAttentionHit[];
-  searchQuery?: string;
   searchResults?: GmailThreadCardState[];
-  lastSyncedAt?: string;
-  lastError?: string;
-}
-
-interface ThreadBody {
-  threadId: string;
-  messages: Array<{
-    id: string;
-    from?: string;
-    date?: string;
-    snippet?: string;
-    bodyText?: string;
-  }>;
-}
+};
 
 interface GmailChat {
   callMethodByHandle: (handle: string, method: string, args: unknown) => Promise<unknown>;
@@ -141,17 +71,11 @@ export default function GmailInbox({
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [query, setQuery] = useState(state.searchQuery ?? "");
-  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
-  const [thread, setThread] = useState<ThreadBody | null>(null);
+  const [searchCollapsed, setSearchCollapsed] = useState(false);
   const [watchInstruction, setWatchInstruction] = useState("");
   const [selectedThreadIds, setSelectedThreadIds] = useState<Set<string>>(() => new Set());
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  const activeThread = useMemo(() => {
-    const all = [...(state.actionable ?? []), ...(state.searchResults ?? [])];
-    return all.find((item) => item.threadId === activeThreadId) ?? null;
-  }, [activeThreadId, state.actionable, state.searchResults]);
 
   async function run<T>(key: string, method: string, args: unknown = {}): Promise<T | undefined> {
     setBusy(key);
@@ -194,12 +118,8 @@ export default function GmailInbox({
   }
 
   async function openThread(item: GmailThreadCardState) {
-    setActiveThreadId(item.threadId);
-    setThread(null);
-    const result = await run<ThreadBody>(`open:${item.threadId}`, "getThread", {
-      threadId: item.threadId,
-    });
-    if (result?.threadId === item.threadId && Array.isArray(result.messages)) setThread(result);
+    // Publishes (or refreshes) a standalone gmail.thread card in the channel.
+    await run(`open:${item.threadId}`, "openThread", { threadId: item.threadId });
   }
 
   async function installWatchInstruction() {
@@ -282,21 +202,41 @@ export default function GmailInbox({
             <Badge color={state.lastError ? "red" : "green"} variant="soft">
               {state.lastError ? "Sync issue" : "Live"}
             </Badge>
-            {state.setupStatus === "needs-user-preferences" ? (
-              <Badge color="amber" variant="soft">Setup needed</Badge>
-            ) : null}
           </Flex>
           <Text size="1" color="gray">{state.email ?? "Gmail account"} - {lastSynced}</Text>
-          {state.setupSummary ? <Text size="1" color="gray">{state.setupSummary}</Text> : null}
         </Flex>
         <Flex gap="1" wrap="wrap">
           <Badge color="blue" variant="soft">{state.unread} unread</Badge>
           <Badge color="gray" variant="soft">{state.inbox ?? 0} inbox</Badge>
-          {state.urgent > 0 ? <Badge color="red" variant="soft">{state.urgent} urgent</Badge> : null}
+          <Badge color="orange" variant="soft">{actionable.length} actionable</Badge>
+          {(state.urgent ?? 0) > 0 ? <Badge color="red" variant="soft">{state.urgent} urgent</Badge> : null}
+          {(state.needsAttentionCount ?? 0) > 0 ? (
+            <Badge color="amber" variant="soft">{state.needsAttentionCount} awaiting digest</Badge>
+          ) : null}
         </Flex>
       </Flex>
 
-      {state.lastError ? <Text size="1" color="red">{state.lastError}</Text> : null}
+      {state.lastError || (state.rateLimitedUntil && state.rateLimitedUntil > Date.now()) ? (
+        <Callout.Root color={state.lastError ? "red" : "amber"} size="1">
+          <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
+          <Callout.Text>
+            <Flex align="center" gap="2" wrap="wrap">
+              <span>
+                {state.lastError ??
+                  `Rate limited until ${new Date(state.rateLimitedUntil!).toLocaleTimeString()}.`}
+              </span>
+              <Button
+                size="1"
+                variant="soft"
+                disabled={busy !== null}
+                onClick={() => void run("check", "checkNow")}
+              >
+                <ReloadIcon /> Retry now
+              </Button>
+            </Flex>
+          </Callout.Text>
+        </Callout.Root>
+      ) : null}
       {error ? <Text size="1" color="red">{error}</Text> : null}
       {status && !error ? <Text size="1" color="gray">{status}</Text> : null}
 
@@ -365,7 +305,7 @@ export default function GmailInbox({
           </Button>
         </Flex>
 
-        {state.setupStatus === "needs-user-preferences" ? (
+        {directives.length === 0 ? (
           <Flex direction="column" gap="2">
             <Text size="2" weight="medium">Choose what Gmail should wake up for</Text>
             <Flex gap="1" wrap="wrap">
@@ -449,7 +389,16 @@ export default function GmailInbox({
         <>
           <Separator size="4" />
           <Flex align="center" justify="between" gap="2">
-            <Text size="2" weight="medium">Search: {state.searchQuery}</Text>
+            <Button
+              size="1"
+              variant="ghost"
+              onClick={() => setSearchCollapsed((collapsed) => !collapsed)}
+            >
+              {searchCollapsed ? <ChevronRightIcon /> : <ChevronDownIcon />}
+              <Text size="2" weight="medium">
+                Search: {state.searchQuery} ({searchResults.length})
+              </Text>
+            </Button>
             <Button
               size="1"
               variant="ghost"
@@ -459,6 +408,7 @@ export default function GmailInbox({
               Clear
             </Button>
           </Flex>
+          {searchCollapsed ? null : (
           <ThreadList
             title=""
             empty="No matching messages."
@@ -473,17 +423,7 @@ export default function GmailInbox({
             onArchive={(threadId) => void run(`archive:${threadId}`, "archiveThread", { threadId })}
             onRead={(threadId) => void run(`read:${threadId}`, "markRead", { threadId })}
           />
-        </>
-      ) : null}
-
-      {activeThread ? (
-        <>
-          <Separator size="4" />
-          <ThreadPreview
-            thread={activeThread}
-            body={thread}
-            loading={busy === `open:${activeThread.threadId}`}
-          />
+          )}
         </>
       ) : null}
     </Flex>
@@ -805,27 +745,3 @@ function formatCondition(condition: GmailAttentionCondition): string {
   return `${field} ${op} ${condition.value ?? ""}`.trim();
 }
 
-function ThreadPreview({
-  thread,
-  body,
-  loading,
-}: {
-  thread: GmailThreadCardState;
-  body: ThreadBody | null;
-  loading: boolean;
-}) {
-  return (
-    <Flex direction="column" gap="2">
-      <Text size="2" weight="medium">{thread.subject}</Text>
-      {loading ? <Text size="2" color="gray">Loading thread...</Text> : null}
-      {body?.messages.map((message) => (
-        <Flex key={message.id} direction="column" gap="1">
-          <Text size="1" color="gray">{message.from} {message.date}</Text>
-          <Text size="2" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-            {message.bodyText || message.snippet || ""}
-          </Text>
-        </Flex>
-      ))}
-    </Flex>
-  );
-}

@@ -94,6 +94,8 @@ export type {
   SystemPayload,
   TrajectoryEvent,
   TurnPayload,
+  UiFeedbackCategory,
+  UiFeedbackPayload,
   UsagePayload,
 } from "./events.js";
 export {
@@ -199,6 +201,24 @@ export type {
   ProjectedMessageTypeDefinition,
 } from "./reducer-channel.js";
 export { createInitialChannelViewState, reduceChannelView } from "./reducer-channel.js";
+
+export {
+  CONVERSATION_POLICIES,
+  DEFAULT_AGENT_HOP_LIMIT,
+  RESPOND_POLICIES,
+  isConversationPolicy,
+  isRespondPolicy,
+  resolveShouldRespond,
+} from "./addressing.js";
+export type {
+  AddressedMessage,
+  ConversationPolicy,
+  ResolveShouldRespondInput,
+  RespondPolicy,
+  ShouldRespondDecision,
+} from "./addressing.js";
+
+export { jsonSchemaToZod, jsonSchemaToZodRawShape, isRecord } from "./json-schema-to-zod.js";
 
 export {
   canonicalJson,

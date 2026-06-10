@@ -109,7 +109,7 @@ describe("InlineGroup custom messages", () => {
     expect(screen.getByText("renderer exploded")).toBeTruthy();
   });
 
-  it("publishes custom.render_failed diagnostics when a renderer crashes", async () => {
+  it("publishes ui.feedback targeted at the card owner when a renderer crashes", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const publish = vi.fn().mockResolvedValue(undefined);
     const entry = customEntry();
@@ -117,10 +117,12 @@ describe("InlineGroup custom messages", () => {
     entry.module.default = () => {
       throw new Error("renderer exploded");
     };
+    const item = customItem();
+    item.payload.by = { kind: "agent", id: "weather-agent" };
 
     render(
       <CustomMessageCard
-        payload={customItem().payload}
+        payload={item.payload}
         entry={entry}
         chat={{ publish }}
         scope={{}}
@@ -129,23 +131,19 @@ describe("InlineGroup custom messages", () => {
     );
 
     await waitFor(() => expect(publish).toHaveBeenCalledWith(
-      "custom.render_failed",
+      "agentic.trajectory.v1/event",
       expect.objectContaining({
-        typeId: "weather",
-        messageId: "custom-msg-1",
-        displayMode: "inline",
-        renderer: expect.objectContaining({
-          sourcePath: "panels/chat/examples/weather-message-type.tsx",
-          cacheKey: "weather:1",
-          updatedAtSeq: 1,
-        }),
-        error: expect.objectContaining({
-          message: "renderer exploded",
-          componentStack: expect.any(String),
+        kind: "ui.feedback",
+        payload: expect.objectContaining({
+          target: expect.objectContaining({ kind: "agent", id: "weather-agent" }),
+          category: "render_failed",
+          refs: expect.objectContaining({ messageId: "custom-msg-1", typeId: "weather" }),
+          error: expect.objectContaining({ message: "renderer exploded" }),
+          occurrenceKey: "render_failed:custom-msg-1:1",
         }),
       }),
       expect.objectContaining({
-        idempotencyKey: expect.stringContaining("custom:render-failed:custom-msg-1:1:expanded:weather:1"),
+        idempotencyKey: "ui-feedback:render_failed:custom-msg-1:1",
       }),
     ));
   });
@@ -197,10 +195,41 @@ describe("InlineGroup custom messages", () => {
     expect(screen.getByText("expanded inline")).toBeTruthy();
   });
 
+  it("expands a stuck-loading pill into an inspectable diagnostic card", () => {
+    const loadingEntry: MessageTypeComponentEntry = {
+      status: "loading",
+      stage: "loading-source",
+      startedAt: Date.now() - 5000,
+      definition: {
+        typeId: "weather",
+        displayMode: "inline",
+        source: { type: "file", path: "skills/weather/renderer.tsx" },
+        updatedAtSeq: 7,
+        cleared: false,
+      },
+    };
+    render(
+      <InlineGroup
+        items={[customItem()]}
+        messageTypeComponents={new Map([["weather", loadingEntry]])}
+      />,
+    );
+
+    // The spinner pill is clickable and self-describing.
+    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    expect(screen.getByText(/Loading renderer source file/)).toBeTruthy();
+    expect(screen.getByText("Copy details")).toBeTruthy();
+    fireEvent.click(screen.getByText(/Details/));
+    expect(screen.getByText("skills/weather/renderer.tsx")).toBeTruthy();
+  });
+
   it("surfaces a validation callout when the schema rejects state", () => {
     const entry = customEntry();
-    entry.module.schema = (state: unknown) =>
-      (state as { city?: string })?.city ? null : ["missing city"];
+    entry.definition.stateSchema = {
+      type: "object",
+      properties: { city: { type: "string" } },
+      required: ["city"],
+    };
     const item = customItem();
     item.payload.initialState = {}; // no city -> invalid
 
@@ -215,6 +244,6 @@ describe("InlineGroup custom messages", () => {
     );
 
     expect(screen.getByText("Invalid weather state")).toBeTruthy();
-    expect(screen.getByText("missing city")).toBeTruthy();
+    expect(screen.getByText("city: Required")).toBeTruthy();
   });
 });

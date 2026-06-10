@@ -31,21 +31,23 @@ The compiled module may export:
 | `default` | Required. React component receiving `{ typeId, state, expanded, displayMode, chat, scope, scopes }`. Render compact inline content when `expanded` is false and the full view when `expanded` is true. |
 | `Pill`    | Optional. A dedicated component for the collapsed inline view (`expanded === false`). When present it renders the bead and `default` only renders the expanded card. Same props as `default`.          |
 | `reduce`  | Optional. `(state, update) => nextState`. Folds `custom.updated` payloads. Default: last update replaces state. A throwing reducer is caught — the prior state is kept and folding continues.          |
-| `schema`  | Optional. A state validator: either a function `(state) => string[] \| string \| null` (return messages on failure, empty/null when valid) or a Zod-like object with `.safeParse(state)`.              |
-
 ### Schema validation
 
-If the module exports `schema`, folded state is validated against it at the
-panel before the component renders. On failure the card shows a compact
-validation callout instead of handing bad state to the component (it never
-crashes the transcript). Validation runs at the render boundary only — never in
-the channel reducer — so it stays out of replay/fold determinism.
+Schemas are **data, not code**: the registration carries `stateSchema` (and
+`updateSchema` for types that export `reduce`, since their updates are patches)
+as plain JSON Schema documents. The same document is enforced in two places:
 
-The registration may instead carry `schemaSourceOrPath` (a `SandboxSource` or a
-bare file-path string) when the validator lives in its own module; it is
-compiled with the registration's `imports`, and the module's `schema` (or its
-default export) becomes the validator. A module-level `schema` export wins when
-both are present.
+- **At emission time** — an agent publishing through its `cards` handle
+  (`CardManager` in `@workspace/agentic-do`) gets a typed `CardValidationError`
+  for state that fails the schema, which surfaces as a tool error the model can
+  react to immediately.
+- **At the render boundary** — the panel validates folded state before handing
+  it to the component. On failure the card shows a compact validation callout
+  instead of crashing the transcript, and publishes a `ui.feedback` event
+  targeted at the card owner so the agent hears about the divergence.
+
+Validation never runs in the channel reducer, so it stays out of replay/fold
+determinism.
 
 ### Display modes
 
@@ -273,3 +275,99 @@ rules follow:
 - Don't reuse a `typeId` for unrelated shapes — registry updates are
   latest-write-wins on `typeId`, and old instances will re-render through the
   new module.
+
+## Operations & debugging
+
+### Renderer load lifecycle
+
+When a custom message arrives, the panel takes its type through these stages
+(visible in the card's diagnostic view and as `[useMessageTypeRegistry]`
+console traces):
+
+| Stage | What is happening | Stuck here means |
+| --- | --- | --- |
+| `fetching-definition` | `getMessageType(typeId)` from the channel registry | registration never happened, or the channel RPC is failing |
+| `loading-source` | `fs.readFile` of the registered source file | bad path, or the file is missing from this context |
+| `compiling` | sandbox compile of the renderer module | an import needs the build service (see lint below), or a compile-pipeline bug |
+
+A type that fails any stage shows an error pill/card with a **Retry** button.
+A stage that exceeds ~30s publishes a `ui.feedback` event with category
+`load_stalled` to the owning agent, so the agent learns its card never
+rendered without the user reporting it.
+
+### Self-containment rule (and lint)
+
+Every **value** import in a renderer must come from the panel's host-exposed
+modules (`react`, `react/jsx-runtime`, `@radix-ui/themes`,
+`@radix-ui/react-icons`, …), the registration's `imports` map, or a relative
+file. Anything else triggers a build-service round trip on every compile — at
+best slow, at worst misresolved and permanently stuck. `import type` is always
+free (erased at compile time).
+
+Use `lintRendererSource(code, { imports })` from `@workspace/agentic-core`
+(re-exported by `@workspace/agentic-do`) at registration time and refuse to
+register on issues — the gmail agent's `installChannelUi` is the reference
+implementation.
+
+### Message-type doctor (test harness)
+
+Any agent that registers renderers should run the doctor in its test suite —
+it exercises the exact pipeline the panel runs (registration event → channel
+reducer → projection → lint → compile with the build service forbidden) and
+reports issues per stage:
+
+```ts
+// @vitest-environment jsdom
+import { assertMessageTypesHealthy, installDoctorHostModules } from "@workspace/agentic-core";
+
+installDoctorHostModules({
+  react: await import("react"),
+  "react/jsx-runtime": await import("react/jsx-runtime"),
+  "react/jsx-dev-runtime": await import("react/jsx-dev-runtime"),
+  "@radix-ui/themes": await import("@radix-ui/themes"),
+  "@radix-ui/react-icons": await import("@radix-ui/react-icons"),
+});
+await assertMessageTypesHealthy(MY_MESSAGE_TYPES, {
+  loadSourceFile: (p) => fs.readFile(path.join(REPO_ROOT, p), "utf8"),
+});
+```
+
+Reference usage: `workspace/skills/gmail/renderers/pipeline-repro.test.ts`.
+A type that fails the doctor would have shipped as a stuck spinner or a
+build-service stall in users' panels.
+
+### Failure states, from the user's perspective
+
+| State | UI | How it got there |
+| --- | --- | --- |
+| Owner-declared failure | red "failed" frame with the error message | the agent called `card.fail({ message })` (protocol: `custom.updated` with `status: "failed"`); a later successful `update()` clears it |
+| Invalid state | amber validation callout | folded state failed the registered `stateSchema`; also publishes `ui.feedback` (`state_invalid`) to the owner |
+| Render crash | red error callout with report status | the component threw; publishes `ui.feedback` (`render_failed`) and shows whether the report reached the agent |
+| Load stuck/failed | diagnostic card with stage, elapsed, metadata, Retry | see lifecycle table above |
+
+### Inspecting a card
+
+- **User**: every expanded card has **Copy details** (full JSON: payload,
+  registry status, definition metadata) and an **Inspect** toggle showing
+  metadata plus the per-update fold history (each `custom.updated` payload and
+  the state it produced — a reducer bug reads as "state went wrong at seq N").
+  Loading/error pills are clickable and expand into the same diagnostic view.
+- **Agent**: call the chat panel's `inspect_card` method with
+  `{ messageId }` — it returns exactly what Copy details shows, plus a list of
+  known cards when the id is wrong. Reach it like any participant method
+  (the panel advertises it alongside `eval`/`set_title`).
+
+### Emission guarantees (CardManager)
+
+- `cards.getOrCreate(channelId, typeId, naturalKey, state)` is durable and
+  idempotent: the same natural key returns the same card across agent
+  restarts; idempotency keys are deterministic (`custom:{agent}:{msg}:{seq}`),
+  so retried publishes dedupe instead of double-applying.
+- State (and updates, for reducing types) are validated against the
+  registered JSON Schemas **at emission** — failures throw
+  `CardValidationError`, which surfaces as a tool error the model can react
+  to. Unregistered types throw `CardTypeNotRegisteredError`.
+- `ui.feedback` events targeting the agent (render failures, invalid state,
+  expired method calls, load stalls) are deduplicated by `occurrenceKey` and
+  prepended to the agent's next turn as a diagnostic note — they never start
+  a turn by themselves.

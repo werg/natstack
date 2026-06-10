@@ -68,6 +68,12 @@ export interface TurnDispatcherOptions {
   onWorkFailure?: (work: WorkItem, error: unknown, turnId?: string) => void | Promise<void>;
   onInvariantViolation?: (code: string, detail?: Record<string, unknown>) => void | Promise<void>;
   onSteeredMessageObserved?: (steeringId: string) => void | Promise<void>;
+  /**
+   * User-relevant degradations the dispatcher would otherwise only log
+   * (steer fallback, queue-clear failures). The vessel turns these into
+   * channel diagnostics so failures are visible instead of console-only.
+   */
+  onDiagnostic?: (code: string, message: string, detail?: Record<string, unknown>) => void;
   diagnosticContext?: () => Record<string, unknown>;
   /**
    * Anchor the detached drain promise to the DO's current request lifetime
@@ -158,6 +164,11 @@ export class TurnDispatcher {
         "[TurnDispatcher] steer into active turn failed; routing as fresh prompt:",
         err
       );
+      this.opts.onDiagnostic?.(
+        "steer_fallback",
+        "Your message could not join the running turn; it will start a new one instead.",
+        { error: err instanceof Error ? err.message : String(err) }
+      );
       this.pendingSteered = this.pendingSteered.filter(
         (candidate) => candidate.message !== message
       );
@@ -207,6 +218,11 @@ export class TurnDispatcher {
     this.invalidateActiveWork();
     void this.opts.runner.clearSteeringQueue().catch((err) => {
       this.log.warn("[TurnDispatcher] clearSteeringQueue during reset failed:", err);
+      this.opts.onDiagnostic?.(
+        "steering_queue_clear_failed",
+        "Queued messages may not have been fully cleared during reset.",
+        { error: err instanceof Error ? err.message : String(err) }
+      );
     });
     this.notifyTyping();
   }

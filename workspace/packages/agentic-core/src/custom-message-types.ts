@@ -1,4 +1,5 @@
 import type { ComponentType } from "react";
+import { jsonSchemaToZod } from "@workspace/agentic-protocol";
 import { compileModule, type CompileComponentOptions } from "@workspace/eval";
 
 export interface CustomMessageComponentProps {
@@ -12,20 +13,11 @@ export interface CustomMessageComponentProps {
   scopes: Record<string, unknown>;
 }
 
-/**
- * A `schema` export may be either a validation function returning error
- * messages (empty/null = valid) or a Zod-like object exposing `.safeParse`.
- */
-export type CustomMessageValidator =
-  | ((state: unknown) => string[] | string | null | undefined | void)
-  | { safeParse: (state: unknown) => { success: boolean; error?: unknown } };
-
 export interface MessageTypeModule {
   default?: ComponentType<CustomMessageComponentProps>;
   /** Optional compact renderer for the collapsed inline view (expanded === false). */
   Pill?: ComponentType<CustomMessageComponentProps>;
   reduce?: (state: unknown, update: unknown) => unknown;
-  schema?: CustomMessageValidator | unknown;
   [key: string]: unknown;
 }
 
@@ -57,51 +49,25 @@ export function foldCustomMessageState(
 }
 
 /**
- * Validate folded state against an optional module `schema` export. Returns a
- * list of human-readable error messages, or null when valid / no validator.
- * Runs at the panel consume boundary (the only place the compiled module
- * exists) — never in the channel reducer.
+ * Validate state against a registered JSON Schema document. Schemas are data
+ * carried in the message-type registration, so the same document is enforced
+ * at agent emission time and at the panel render boundary. Returns a list of
+ * human-readable error messages, or null when valid / no schema.
  */
 export function validateCustomState(
-  validator: CustomMessageValidator | unknown,
+  schema: Record<string, unknown> | undefined,
   state: unknown,
 ): string[] | null {
-  if (!validator) return null;
+  if (!schema) return null;
   try {
-    if (typeof validator === "function") {
-      const result = (validator as (s: unknown) => unknown)(state);
-      if (result == null || result === true) return null;
-      if (typeof result === "string") return result ? [result] : null;
-      if (Array.isArray(result)) return result.length ? result.map(String) : null;
-      return null;
-    }
-    if (typeof validator === "object" && typeof (validator as { safeParse?: unknown }).safeParse === "function") {
-      const parsed = (validator as { safeParse: (s: unknown) => { success: boolean; error?: unknown } }).safeParse(state);
-      if (parsed.success) return null;
-      return [formatValidatorError(parsed.error)];
-    }
+    const parsed = jsonSchemaToZod(schema).safeParse(state);
+    if (parsed.success) return null;
+    const issues = parsed.error.issues.map((issue) => {
+      const path = issue.path.length ? `${issue.path.join(".")}: ` : "";
+      return `${path}${issue.message}`;
+    });
+    return issues.length ? issues : ["schema validation failed"];
   } catch (err) {
     return [`schema validation threw: ${err instanceof Error ? err.message : String(err)}`];
-  }
-  return null;
-}
-
-function formatValidatorError(error: unknown): string {
-  if (!error) return "schema validation failed";
-  if (typeof error === "string") return error;
-  if (error instanceof Error) return error.message;
-  const issues = (error as { issues?: Array<{ path?: unknown[]; message?: string }> }).issues;
-  if (Array.isArray(issues) && issues.length) {
-    return issues
-      .map((issue) => {
-        const path = Array.isArray(issue.path) && issue.path.length ? `${issue.path.join(".")}: ` : "";
-        return `${path}${issue.message ?? "invalid"}`;
-      })
-      .join("; ");
-  }
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return String(error);
   }
 }

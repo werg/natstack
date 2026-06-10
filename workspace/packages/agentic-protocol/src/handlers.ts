@@ -502,7 +502,7 @@ export function applyApprovalEvent(
 export function applyUiEvent(
   inlineUi: InlineUiMap,
   actionBar: ProjectedActionBar | undefined,
-  event: AgenticEvent<Extract<EventKind, `ui.${string}`>>
+  event: AgenticEvent<"ui.inline_rendered" | "ui.action_bar.updated">
 ): { inlineUi: InlineUiMap; actionBar?: ProjectedActionBar } {
   const payload = event.payload;
   if (event.kind === "ui.inline_rendered" && payload.uiType === "inline") {

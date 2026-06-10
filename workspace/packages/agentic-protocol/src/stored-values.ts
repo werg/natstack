@@ -53,7 +53,6 @@ const DEFAULT_FORCE_JSON_REF_PATHS = new Set([
   "$.payload.initialState",
   "$.payload.props",
   "$.payload.imports",
-  "$.payload.schemaSourceOrPath",
   "$.payload.source",
 ]);
 const REQUIRED_STORED_PAYLOAD_PATHS = DEFAULT_FORCE_JSON_REF_PATHS;

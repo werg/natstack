@@ -306,6 +306,9 @@
       ],
       "@workspace/tool-ui/*": [
         "workspace/packages/tool-ui/src/*"
+      ],
+      "@workspace/gmail/card-types": [
+        "workspace/packages/gmail/src/card-types.ts"
       ]
     }
   },

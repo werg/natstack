@@ -42,6 +42,12 @@ export interface SuspensionRecordInput {
   resumeCount?: number;
   /** Reason-specific payload (e.g. { providerId, modelBaseUrl }). */
   payload?: Record<string, unknown>;
+  /**
+   * Absolute expiry timestamp (ms). After this, `expireOverdue` claims the
+   * suspension and the vessel fails the wait with a clear diagnostic instead
+   * of letting the turn hang forever.
+   */
+  expiresAt?: number;
 }
 
 export interface SuspensionRow {
@@ -56,6 +62,7 @@ export interface SuspensionRow {
   payload: Record<string, unknown>;
   createdAt: number;
   updatedAt: number;
+  expiresAt: number | null;
 }
 
 export class SuspensionStore {
@@ -77,7 +84,8 @@ export class SuspensionStore {
         resume_count INTEGER NOT NULL DEFAULT 0,
         payload_json TEXT,
         created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
+        updated_at INTEGER NOT NULL,
+        expires_at INTEGER
       )
     `);
     this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_suspensions_request ON suspensions(request_id)`);
@@ -97,8 +105,8 @@ export class SuspensionStore {
     this.sql.exec(
       `INSERT OR REPLACE INTO suspensions
         (id, channel_id, turn_id, reason, request_id, idempotency_key,
-         status, resume_count, payload_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'suspended', ?, ?, ?, ?)`,
+         status, resume_count, payload_json, created_at, updated_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'suspended', ?, ?, ?, ?, ?)`,
       input.id,
       input.channelId,
       input.turnId,
@@ -108,8 +116,43 @@ export class SuspensionStore {
       input.resumeCount ?? 0,
       input.payload ? JSON.stringify(input.payload) : null,
       ts,
-      ts
+      ts,
+      input.expiresAt ?? null
     );
+  }
+
+  /**
+   * Atomically claim every overdue suspension (suspended past its expires_at)
+   * and return the claimed rows. The claim uses the same `suspended`→`resuming`
+   * transition as a normal resume, so an expiry can never race a real resume —
+   * whichever flips the status first wins.
+   */
+  expireOverdue(now: number = this.now()): SuspensionRow[] {
+    const rows = this.sql
+      .exec(
+        `SELECT * FROM suspensions
+         WHERE status = 'suspended' AND expires_at IS NOT NULL AND expires_at <= ?`,
+        now
+      )
+      .toArray();
+    const claimed: SuspensionRow[] = [];
+    for (const raw of rows) {
+      const row = this.toRow(raw);
+      if (this.claimResume(row.id)) claimed.push(row);
+    }
+    return claimed;
+  }
+
+  /** Soonest expires_at across still-suspended rows, or null. */
+  nextExpiry(): number | null {
+    const rows = this.sql
+      .exec(
+        `SELECT MIN(expires_at) AS next FROM suspensions
+         WHERE status = 'suspended' AND expires_at IS NOT NULL`
+      )
+      .toArray();
+    const next = rows[0]?.["next"];
+    return typeof next === "number" ? next : null;
   }
 
   findById(id: string): SuspensionRow | null {
@@ -256,6 +299,7 @@ export class SuspensionStore {
       payload: payloadJson ? (JSON.parse(payloadJson) as Record<string, unknown>) : {},
       createdAt: Number(row["created_at"]),
       updatedAt: Number(row["updated_at"]),
+      expiresAt: typeof row["expires_at"] === "number" ? row["expires_at"] : null,
     };
   }
 }

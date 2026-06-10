@@ -37,7 +37,10 @@ export type CustomMessageDisplayMode = "inline" | "row";
 interface BaseMessageTypeDefinition {
   typeId: string;
   imports?: Record<string, string>;
-  schemaSourceOrPath?: SandboxSource | string;
+  /** JSON Schema for the card's full state (validated on emit and render). */
+  stateSchema?: Record<string, unknown>;
+  /** JSON Schema for incremental updates (required when the module reduces). */
+  updateSchema?: Record<string, unknown>;
   registeredBy?: {
     kind: string;
     id: string;
@@ -76,6 +79,11 @@ export interface CustomMessageCardPayload {
   initialState?: unknown;
   updates: CustomMessageUpdatePayload[];
   lastSeq: number;
+  /** Card owner — the target for ui.feedback published by the renderer. */
+  by?: { kind: string; id: string; displayName?: string };
+  /** Owner-published terminal failure; the UI renders a failed-card frame. */
+  failed?: boolean;
+  error?: { message: string; details?: unknown };
 }
 
 export interface ApprovalCardPayload {

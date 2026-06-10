@@ -125,4 +125,30 @@ describe("SuspensionStore", () => {
     store.clearForTurn("chat-1", "turn-1");
     expect(store.findById(ID)).toBeNull();
   });
+
+  it("expireOverdue claims only suspensions past their expiry", async () => {
+    const store = await makeStore();
+    store.record({ id: ID, channelId: "chat-1", turnId: "turn-1", reason: "credential", expiresAt: 5000 });
+    const id2 = credentialSuspensionId("chat-1", "anthropic");
+    store.record({ id: id2, channelId: "chat-1", turnId: "turn-2", reason: "credential", expiresAt: 9000 });
+    const id3 = credentialSuspensionId("chat-1", "no-expiry");
+    store.record({ id: id3, channelId: "chat-1", turnId: "turn-3", reason: "credential" });
+
+    expect(store.nextExpiry()).toBe(5000);
+    const expired = store.expireOverdue(6000);
+    expect(expired.map((row) => row.id)).toEqual([ID]);
+    // Claimed via the resume transition — a real resume can no longer race it.
+    expect(store.claimResume(ID)).toBe(false);
+    // Untouched rows remain suspended and resumable.
+    expect(store.claimResume(id2)).toBe(true);
+    expect(store.nextExpiry()).toBeNull();
+    expect(store.findById(id3)?.status).toBe("suspended");
+  });
+
+  it("expireOverdue never claims a suspension that already resumed", async () => {
+    const store = await makeStore();
+    store.record({ id: ID, channelId: "chat-1", turnId: "turn-1", reason: "credential", expiresAt: 5000 });
+    expect(store.claimResume(ID)).toBe(true);
+    expect(store.expireOverdue(6000)).toEqual([]);
+  });
 });

@@ -26,6 +26,10 @@ export interface ChannelConfig {
   /** True when the title came from an explicit title command. */
   titleExplicit?: boolean;
   approvalLevel?: number;
+  /** Multi-agent conversation policy: "open" | "directed" | "moderated". */
+  conversationPolicy?: string;
+  /** Cap on consecutive agent-to-agent replies in one causal chain. */
+  agentHopLimit?: number;
   [key: string]: unknown;
 }
 

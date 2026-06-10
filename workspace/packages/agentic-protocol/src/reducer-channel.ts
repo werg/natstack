@@ -41,7 +41,8 @@ export interface ProjectedMessageTypeDefinition {
   displayMode?: CustomMessageDisplayMode;
   source?: SandboxSourcePayload;
   imports?: Record<string, string>;
-  schemaSourceOrPath?: unknown;
+  stateSchema?: Record<string, unknown>;
+  updateSchema?: Record<string, unknown>;
   registeredBy?: ActorRef;
   updatedAtSeq: number;
   clearedAtSeq?: number;
@@ -63,6 +64,9 @@ export interface ProjectedCustomMessage {
   updatedAt?: string;
   updates: ProjectedCustomMessageUpdate[];
   lastSeq: number;
+  /** Set when the owner published a terminal failure for this card. */
+  failed?: true;
+  error?: { message: string; details?: unknown };
 }
 
 export interface ChannelViewState {
@@ -173,6 +177,9 @@ export function reduceChannelView(
       ...next,
       approvals: applyApprovalEvent(next.approvals, event as never),
     };
+  } else if (event.kind === "ui.feedback") {
+    // Feedback is for the targeted agent's harness, not the channel view;
+    // it lands in the timeline only.
   } else if (event.kind.startsWith("ui.")) {
     const inlineUi = next.inlineUi[participantId] ?? {};
     const { inlineUi: nextInlineUi, actionBar } = applyUiEvent(
@@ -205,7 +212,8 @@ export function reduceChannelView(
             displayMode: payload.displayMode,
             source: payload.source,
             imports: payload.imports,
-            schemaSourceOrPath: payload.schemaSourceOrPath,
+            stateSchema: payload.stateSchema,
+            updateSchema: payload.updateSchema,
             registeredBy: payload.registeredBy,
             updatedAtSeq: parsed.seq,
             ...(clearedAtSeq !== undefined ? { clearedAtSeq } : {}),
@@ -275,16 +283,28 @@ export function reduceChannelView(
       const updates = [...existing.updates, { update: payload.update, seq: parsed.seq }].sort(
         (a, b) => a.seq - b.seq
       );
+      const isNewest = parsed.seq >= existing.lastSeq;
+      const updated: ProjectedCustomMessage = {
+        ...existing,
+        updates,
+        updatedAt: isNewest ? event.createdAt : existing.updatedAt,
+        lastSeq: Math.max(existing.lastSeq, parsed.seq),
+      };
+      // A failure marks the card; a newer successful update clears it.
+      if (isNewest) {
+        if (payload.status === "failed") {
+          updated.failed = true;
+          updated.error = payload.error ?? { message: "card failed" };
+        } else {
+          delete updated.failed;
+          delete updated.error;
+        }
+      }
       next = {
         ...next,
         customMessages: {
           ...next.customMessages,
-          [payload.messageId]: {
-            ...existing,
-            updates,
-            updatedAt: parsed.seq >= existing.lastSeq ? event.createdAt : existing.updatedAt,
-            lastSeq: Math.max(existing.lastSeq, parsed.seq),
-          },
+          [payload.messageId]: updated,
         },
       };
     }

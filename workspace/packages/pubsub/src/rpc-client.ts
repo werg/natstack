@@ -1392,6 +1392,8 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       attachments?: AttachmentInput[];
       contentType?: string;
       mentions?: string[];
+      /** Explicit direction: only the selected participants should respond. */
+      to?: Array<{ kind: "all" | "role" | "participant"; role?: string; participantId?: string }>;
       metadata?: Record<string, unknown>;
       idempotencyKey?: string;
     }
@@ -1424,6 +1426,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
         outcome: "completed",
         mentions: sendOptions?.mentions,
         replyTo: sendOptions?.replyTo as never,
+        to: sendOptions?.to,
       },
       createdAt: new Date().toISOString(),
     };
@@ -1670,8 +1673,8 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       createdAt: new Date().toISOString(),
     };
     if (input.imports !== undefined) event.payload.imports = input.imports;
-    if (input.schemaSourceOrPath !== undefined)
-      event.payload.schemaSourceOrPath = input.schemaSourceOrPath;
+    if (input.stateSchema !== undefined) event.payload.stateSchema = input.stateSchema;
+    if (input.updateSchema !== undefined) event.payload.updateSchema = input.updateSchema;
     return publish(
       AGENTIC_EVENT_PAYLOAD_KIND,
       event,
@@ -1724,7 +1727,11 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
   async function updateCustomMessage(
     messageId: string,
     update: unknown,
-    options?: { idempotencyKey?: string }
+    options?: {
+      idempotencyKey?: string;
+      status?: "failed";
+      error?: { message: string; details?: unknown };
+    }
   ): Promise<number | undefined> {
     const event: AgenticEvent<"custom.updated"> = {
       kind: "custom.updated",
@@ -1737,6 +1744,8 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       },
       createdAt: new Date().toISOString(),
     };
+    if (options?.status !== undefined) event.payload.status = options.status;
+    if (options?.error !== undefined) event.payload.error = options.error;
     return publish(AGENTIC_EVENT_PAYLOAD_KIND, event, {
       idempotencyKey:
         options?.idempotencyKey ?? `custom:update:${messageId}:${crypto.randomUUID()}`,

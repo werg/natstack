@@ -109,3 +109,18 @@ describe("publishWorkspaceRepo", () => {
     );
   });
 });
+
+describe("publishWorkspaceRepo path validation", () => {
+  it("rejects '/' and scope-only paths with actionable guidance", async () => {
+    const git = createGitClientMock();
+    await expect(publishWorkspaceRepo(git, "/", "msg")).rejects.toThrow(
+      /not a workspace repo path.*workers\/my-agent/s
+    );
+    await expect(publishWorkspaceRepo(git, "panels", "msg")).rejects.toThrow(
+      /not a workspace repo path/
+    );
+    await expect(publishWorkspaceRepo(git, "../escape/repo", "msg")).rejects.toThrow(
+      /escapes the workspace/
+    );
+  });
+});

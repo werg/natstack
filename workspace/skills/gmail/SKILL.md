@@ -24,7 +24,7 @@ rules from the Gmail desk without enabling model work over every message.
 
 ```typescript
 import {
-  callGmailAttention,
+  callGmailAgent,
   getGmailAgentSetupStatus,
   resolveGmailAgentWorker,
   setupGmailAgent,
@@ -60,9 +60,9 @@ Rule writes are accepted from user-facing callers such as the chat panel; DO
 callers may inspect rules but cannot silently rewrite them.
 
 ```typescript
-import { callGmailAttention } from "@workspace-skills/gmail";
+import { callGmailAgent } from "@workspace-skills/gmail";
 
-await callGmailAttention(chat.channelId, "upsertAttentionRule", {
+await callGmailAgent(chat.channelId, "upsertAttentionRule", {
   rule: {
     id: "vip-domain",
     name: "VIP domain",
@@ -86,6 +86,50 @@ The public rule methods are:
 | `clearAttentionRules(channelId)` | Quiet mode: remove all wake rules |
 | `resetAttentionRules(channelId)` | Restore the default prior-reply rule |
 
+## Channel Method Surface
+
+These methods are callable on the Gmail participant via
+`chat.callMethodByHandle("gmail", method, args)` (and from cards/action bar):
+
+| Method | Args | Purpose |
+|--------|------|---------|
+| `checkNow` | `{}` | Sync now and refresh cards |
+| `markConfigured` | `{ summary? }` | Finish first-run setup |
+| `reconnect` | `{}` | Re-verify the Google credential; returns `{ ok, auth }` |
+| `setAttentionRuleEnabled` | `{ id, enabled }` | Toggle one wake rule (setup card) |
+| `search` / `clearSearch` | `{ q, limit? }` | Update the inbox card search section in place |
+| `getThread` | `{ threadId }` | Sanitized thread contents (transient) |
+| `openThread` | `{ threadId }` | Publish/focus a standalone `gmail.thread` card |
+| `compose` | `{ to?, subject?, body?, threadId? }` | New compose card (`drafting`) |
+| `draftReply` | `{ threadId }` | Agent-drafted reply card in `review` state |
+| `send` | compose payload + `messageId` | Send; user Send click or explicit user request only |
+| `saveDraft` / `discardCompose` | compose payload / `{ messageId }` | Save to Gmail drafts / discard |
+| `archiveThread` / `markRead` / `categorize` | `{ threadId, ... }` | Triage operations |
+| `listActionableThreads` | `{ limit? }` | Current actionable threads |
+| `setPollInterval` | `{ pollIntervalMs }` | Configure polling |
+
+## Multi-Agent Participant API
+
+Other agents in the channel get a read-mostly surface (same dispatch):
+
+| Method | Args | Purpose |
+|--------|------|---------|
+| `gmail_query` | `{ q, maxResults? }` | `{ source, query, count, results: [{ threadId, subject, from, snippet, unread, date }] }` — cache-first with API fallback |
+| `gmail_getThread` | `{ threadId }` | Sanitized thread messages |
+| `gmail_getOverview` | `{}` | Dashboard snapshot: counts, auth status, actionable list |
+| `gmail_requestDraft` | `{ threadId?, to?, subject?, intent }` | Compose card in `review` state |
+
+Agents can prepare mail but never send it: only the user's Send click on the
+compose card (or an explicit user instruction to the Gmail agent) sends.
+Attention-rule writes remain gated to user-facing callers; reads are open.
+
+## Wake Batching
+
+Attention hits are queued and debounced (~90s) into one digest turn covering
+all queued hits, capped at 4 wake turns per hour per channel. Overflow hits
+stay queued and surface as `needsAttentionCount` on the inbox card until the
+next allowed digest.
+
 Use workspace code edits for behavior that cannot be expressed as static rule
 state. The default static fields are sender, sender domain, recipients,
 subject, snippet, label, category, attachments, prior-reply sender, and wake-all.
@@ -96,8 +140,8 @@ The skill ships four renderer modules:
 
 | Type | Renderer |
 |------|----------|
+| `gmail.setup` | `renderers/gmail-setup.tsx` |
 | `gmail.inbox` | `renderers/gmail-inbox.tsx` |
-| `gmail.category` | `renderers/gmail-category.tsx` |
 | `gmail.thread` | `renderers/gmail-thread.tsx` |
 | `gmail.compose` | `renderers/gmail-compose.tsx` |
 
@@ -112,8 +156,9 @@ It calls the Gmail agent by handle with `chat.callMethodByHandle("gmail", ...)`.
 The worker publishes this action bar as channel UI during subscription, so both
 manual agent launch and onboarding-driven setup get the same controls.
 
-Compose cards use a review step before sending, support Cc/Bcc, can save Gmail
-drafts, and can be discarded. Thread and inbox cards expose read/archive/draft
+Compose cards default to review-before-send: agent-generated drafts arrive in
+`review` state and only the user's Send button sends them. Cards support
+Cc/Bcc, can save Gmail drafts, and can be discarded. Thread and inbox cards expose read/archive/draft
 triage actions; the inbox card supports bulk mark-read/archive for selected
 threads.
 

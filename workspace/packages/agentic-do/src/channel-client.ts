@@ -15,6 +15,8 @@ interface ChannelSendOptions {
     senderMetadata?: Record<string, unknown>;
     replyTo?: string;
     mentions?: string[];
+    /** Explicit direction: only the selected participants should respond. */
+    to?: Array<{ kind: "all" | "role" | "participant"; role?: string; participantId?: string }>;
     idempotencyKey?: string;
     attachments?: Array<{ id?: string; data: string; mimeType: string; name?: string; size?: number }>;
 }
@@ -60,6 +62,7 @@ export class ChannelClient {
                 outcome: "completed",
                 mentions: opts?.mentions,
                 replyTo: opts?.replyTo as never,
+                to: opts?.to,
             },
             createdAt: new Date().toISOString(),
         };
@@ -145,7 +148,34 @@ export class ChannelClient {
     async getReplayAfter(sinceId: number): Promise<ChannelReplayEnvelope> {
         return this.call("getReplayAfter", sinceId) as Promise<ChannelReplayEnvelope>;
     }
+    async getMessageType(typeId: string): Promise<Record<string, unknown> | null> {
+        return this.call("getMessageType", typeId) as Promise<Record<string, unknown> | null>;
+    }
+    async getMessageTypes(): Promise<Record<string, unknown>[]> {
+        return this.call("getMessageTypes") as Promise<Record<string, unknown>[]>;
+    }
+    /** Durable conversation state (last completed sender, agent streak). */
+    async getConversationState(): Promise<{
+        lastCompletedSender: string | null;
+        lastCompletedSeq: number | null;
+        lastCompletedAt: string | null;
+        previousCompletedSender: string | null;
+        previousCompletedSeq: number | null;
+        agentStreak: number;
+    }> {
+        return this.call("getConversationState") as Promise<{
+            lastCompletedSender: string | null;
+            lastCompletedSeq: number | null;
+            lastCompletedAt: string | null;
+            previousCompletedSender: string | null;
+            previousCompletedSeq: number | null;
+            agentStreak: number;
+        }>;
+    }
     async updateConfig(config: Record<string, unknown>): Promise<Record<string, unknown>> {
         return this.call("updateConfig", config) as Promise<Record<string, unknown>>;
+    }
+    async getConfig(): Promise<Record<string, unknown> | null> {
+        return this.call("getConfig") as Promise<Record<string, unknown> | null>;
     }
 }

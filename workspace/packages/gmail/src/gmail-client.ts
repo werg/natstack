@@ -5,6 +5,80 @@ import type {
 
 const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 
+export type GmailApiErrorCode =
+  | "auth-expired"
+  | "credential-missing"
+  | "forbidden"
+  | "not-found"
+  | "rate-limited"
+  | "invalid-request"
+  | "network"
+  | "server";
+
+export type GmailResourceKind = "thread" | "message" | "draft" | "history" | "label" | "profile";
+
+/**
+ * Typed Gmail API failure. Every Gmail call failure surfaces as one of these
+ * so callers branch on `code` (pause polling on auth-expired, back off on
+ * rate-limited, reconcile caches on not-found) instead of regex-matching
+ * error strings.
+ */
+export class GmailApiError extends Error {
+  constructor(
+    message: string,
+    public readonly code: GmailApiErrorCode,
+    public readonly opts: {
+      status?: number;
+      retryAfterMs?: number;
+      resource?: GmailResourceKind;
+    } = {}
+  ) {
+    super(message);
+    this.name = "GmailApiError";
+  }
+
+  get status(): number | undefined {
+    return this.opts.status;
+  }
+  get retryAfterMs(): number | undefined {
+    return this.opts.retryAfterMs;
+  }
+  get resource(): GmailResourceKind | undefined {
+    return this.opts.resource;
+  }
+}
+
+export function isGmailApiError(err: unknown, code?: GmailApiErrorCode): err is GmailApiError {
+  return err instanceof GmailApiError && (code === undefined || err.code === code);
+}
+
+function resourceFromPath(path: string): GmailResourceKind | undefined {
+  if (path.startsWith("/threads")) return "thread";
+  if (path.startsWith("/messages")) return "message";
+  if (path.startsWith("/drafts")) return "draft";
+  if (path.startsWith("/history")) return "history";
+  if (path.startsWith("/labels")) return "label";
+  if (path.startsWith("/profile")) return "profile";
+  return undefined;
+}
+
+function classifyHttpFailure(
+  status: number,
+  bodyText: string
+): { code: GmailApiErrorCode; retryAfterMs?: number } {
+  if (status === 401) return { code: "auth-expired" };
+  if (status === 403) {
+    // Gmail reports quota problems as 403 with a rateLimitExceeded reason.
+    return /rateLimitExceeded|userRateLimitExceeded|quota/i.test(bodyText)
+      ? { code: "rate-limited" }
+      : { code: "forbidden" };
+  }
+  if (status === 404) return { code: "not-found" };
+  if (status === 429) return { code: "rate-limited" };
+  if (status >= 500) return { code: "server" };
+  return { code: "invalid-request" };
+}
+
 const googleWorkspaceCredential = {
   id: "google-workspace",
   displayName: "Google Workspace",
@@ -342,17 +416,48 @@ export function createGmailClient(
   };
 
   const apiFetch = async <T>(path: string, init?: RequestInit): Promise<T> => {
-    const auth = await handle();
+    const resource = resourceFromPath(path);
+    let auth: UrlCredentialHandle;
+    try {
+      auth = await handle();
+    } catch (err) {
+      throw new GmailApiError(
+        `Gmail credential unavailable: ${err instanceof Error ? err.message : String(err)}`,
+        "credential-missing",
+        { ...(resource ? { resource } : {}) }
+      );
+    }
     const headers = new Headers(init?.headers);
     headers.set("Accept", "application/json");
     if (init?.body && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
     }
-    const response = await auth.fetch(`${GMAIL_API_BASE}${path}`, { ...init, headers });
+    let response: Response;
+    try {
+      response = await auth.fetch(`${GMAIL_API_BASE}${path}`, { ...init, headers });
+    } catch (err) {
+      throw new GmailApiError(
+        `Gmail API request failed: ${err instanceof Error ? err.message : String(err)}`,
+        "network",
+        { ...(resource ? { resource } : {}) }
+      );
+    }
     if (!response.ok) {
       const bodyText = await response.text();
-      throw new Error(
-        `Gmail API request failed: ${response.status} ${response.statusText}${bodyText ? ` - ${bodyText}` : ""}`,
+      const { code } = classifyHttpFailure(response.status, bodyText);
+      const retryAfterHeader = response.headers.get("Retry-After");
+      const retryAfterMs =
+        code === "rate-limited" && retryAfterHeader && Number.isFinite(Number(retryAfterHeader))
+          ? Number(retryAfterHeader) * 1000
+          : undefined;
+      throw new GmailApiError(
+        `Gmail API request failed: ${response.status} ${response.statusText}${bodyText ? ` - ${bodyText.slice(0, 500)}` : ""}`,
+        code,
+        {
+          status: response.status,
+          ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+          ...(resource ? { resource } : {}),
+        }
       );
     }
     return (await response.json()) as T;

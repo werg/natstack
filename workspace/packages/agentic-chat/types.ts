@@ -209,19 +209,37 @@ export interface ChatContextValue {
   toolApproval?: ToolApprovalProps;
 }
 
+/** Which await a loading message type is currently parked on. */
+export type MessageTypeLoadingStage =
+  | "fetching-definition"
+  | "loading-source"
+  | "compiling";
+
 export type MessageTypeRegistryEntry =
   | {
       status: "ready";
       definition: MessageTypeDefinition;
       module: import("@workspace/agentic-core").MessageTypeModule;
       cacheKey: string;
-      /**
-       * Validator resolved at registration time. Prefers the module's own
-       * `schema` export; falls back to a compiled `schemaSourceOrPath`.
-       */
-      validator?: import("@workspace/agentic-core").CustomMessageValidator;
     }
-  | { status: "loading" }
-  | { status: "error"; message: string };
+  | {
+      status: "loading";
+      /** Stage the load is parked on — makes an endless spinner self-describing. */
+      stage?: MessageTypeLoadingStage;
+      /** Epoch ms when this stage started. */
+      startedAt?: number;
+      /** Definition being compiled, when known (absent while fetching it). */
+      definition?: MessageTypeDefinition;
+    }
+  | {
+      status: "error";
+      message: string;
+      /** Registration seq the failure corresponds to (newer seqs recompile). */
+      updatedAtSeq?: number;
+      /** Definition that failed, when known. */
+      definition?: MessageTypeDefinition;
+      /** Re-attempt the fetch/compile that produced this error. */
+      retry?: () => void;
+    };
 
 export type MessageTypeComponentEntry = MessageTypeRegistryEntry;

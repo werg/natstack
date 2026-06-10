@@ -42,6 +42,8 @@ import type {
   ChatInputContextValue,
   ActionBarData,
 } from "../types";
+import type { MessageTypeComponentEntry } from "../types";
+import { customInspectorPayload } from "../components/CustomMessage";
 import { unwrapChatMethodResult } from "@workspace/agentic-core";
 import type { ChatMethodResult, AgentSubscriptionConfig } from "@workspace/agentic-core";
 /** Installed agent info passed from the host panel. */
@@ -682,6 +684,16 @@ export function useAgenticChat({
   feedbackRef.current = feedback;
   chatToolsRef.current = chatTools;
   actionsRef.current = actions;
+  // Live snapshot for the inspect_card method: agents debug a card by reading
+  // the same data the UI's "Copy details" produces.
+  const cardInspectionRef = useRef<{
+    messages: typeof core.messages;
+    registry: Map<string, MessageTypeComponentEntry>;
+  }>({ messages: [], registry: new Map() });
+  cardInspectionRef.current = {
+    messages: core.messages,
+    registry: messageTypes.messageTypeComponents,
+  };
   // --- Connect to channel on mount ---
   useEffect(() => {
     if (!channelName || !config.rpc) return;
@@ -723,6 +735,41 @@ export function useAgenticChat({
                 }
               }
               return warnings.length > 0 ? { ok: true, warnings } : { ok: true };
+            },
+          },
+          inspect_card: {
+            description:
+              "Inspect a custom message card in this conversation: wire payload, renderer registry status " +
+              "(ready / load stage / error), definition metadata, and full update history. Use this when a " +
+              "card you published is not rendering, looks wrong, or a user reports a stuck spinner — it " +
+              "returns exactly what the user's 'Copy details' button shows. Parameters: { messageId: string }.",
+            parameters: z.object({
+              messageId: z.string().describe("The custom message id (custom.started messageId)"),
+            }),
+            execute: async (args: unknown) => {
+              const { messageId } = args as { messageId?: string };
+              if (!messageId) return { ok: false, error: "Missing messageId" };
+              const snapshot = cardInspectionRef.current;
+              const message = snapshot.messages.find(
+                (item) => item.custom?.messageId === messageId
+              );
+              if (!message?.custom) {
+                const known = snapshot.messages
+                  .filter((item) => item.custom)
+                  .map((item) => `${item.custom!.typeId}:${item.custom!.messageId}`);
+                return {
+                  ok: false,
+                  error: `No custom message "${messageId}" in this channel view.`,
+                  knownCards: known,
+                };
+              }
+              return {
+                ok: true,
+                details: customInspectorPayload(
+                  message.custom,
+                  snapshot.registry.get(message.custom.typeId)
+                ),
+              };
             },
           },
           persist_agent_model: {

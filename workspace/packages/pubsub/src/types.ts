@@ -16,6 +16,10 @@ export interface ChannelConfig {
   /** True when the title came from an explicit title command. */
   titleExplicit?: boolean;
   approvalLevel?: 0 | 1 | 2;  // 0=Ask All, 1=Auto-Safe, 2=Full Auto (default)
+  /** Multi-agent conversation policy: "open" | "directed" | "moderated". */
+  conversationPolicy?: "open" | "directed" | "moderated";
+  /** Cap on consecutive agent-to-agent replies in one causal chain. */
+  agentHopLimit?: number;
 }
 
 /**
@@ -94,7 +98,8 @@ export interface MessageTypeDefinition {
   displayMode: CustomMessageDisplayMode;
   source: SandboxSource;
   imports?: Record<string, string>;
-  schemaSourceOrPath?: SandboxSource | string;
+  stateSchema?: Record<string, unknown>;
+  updateSchema?: Record<string, unknown>;
   registeredBy?: { kind: string; id: string; displayName?: string; metadata?: Record<string, unknown> };
   updatedAtSeq: number;
   clearedAtSeq?: number;
@@ -105,7 +110,10 @@ export interface RegisterMessageTypeInput {
   displayMode: CustomMessageDisplayMode;
   source: SandboxSource;
   imports?: Record<string, string>;
-  schemaSourceOrPath?: SandboxSource | string;
+  /** JSON Schema for the card's full state. */
+  stateSchema?: Record<string, unknown>;
+  /** JSON Schema for incremental updates (when the module exports `reduce`). */
+  updateSchema?: Record<string, unknown>;
 }
 
 /**

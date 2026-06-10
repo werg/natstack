@@ -37,6 +37,7 @@ export async function publishWorkspaceRepo(
   message: string,
   options: PublishWorkspaceRepoOptions = {}
 ): Promise<PublishWorkspaceRepoResult> {
+  assertWorkspaceRepoPath(repoPath);
   await ensureInternalRemote(gitClient, repoPath);
   await gitClient.addAll(repoPath);
 
@@ -85,6 +86,30 @@ export async function publishWorkspaceRepo(
       ? `Committed ${commit?.slice(0, 7) ?? "unknown"} and pushed to ${INTERNAL_REMOTE}/${branch}`
       : `No working-tree changes; pushed current HEAD to ${INTERNAL_REMOTE}/${branch}`,
   };
+}
+
+/**
+ * Each workspace repo is its own git repository under a scope directory
+ * (panels/x, workers/x, packages/x, skills/x, …). Catch the common misuse of
+ * passing "/" or a scope dir up front with guidance, instead of letting git's
+ * .git discovery walk out of the sandbox and fail with "Path traversal
+ * detected".
+ */
+function assertWorkspaceRepoPath(repoPath: string): void {
+  const normalized = buildEventRepoPath(repoPath.replace(/^\/+/, ""));
+  const segments = normalized.split("/").filter(Boolean);
+  if (segments.some((segment) => segment === "..")) {
+    throw new Error(
+      `publishWorkspaceRepo: "${repoPath}" escapes the workspace. Pass a repo-relative path like "workers/my-agent".`
+    );
+  }
+  if (segments.length < 2) {
+    throw new Error(
+      `publishWorkspaceRepo: "${repoPath}" is not a workspace repo path. ` +
+        `Each repo lives under a scope directory — pass e.g. "panels/my-app", "workers/my-agent", ` +
+        `"packages/my-lib", or "skills/my-skill" (one call per repo; there is no whole-workspace publish).`
+    );
+  }
 }
 
 function buildEventRepoPath(repoPath: string): string {

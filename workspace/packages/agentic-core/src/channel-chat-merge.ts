@@ -161,8 +161,8 @@ export function messageTypeDefinitionsFromChannelView(
     if (item.source !== undefined && definition.cleared && !isStoredValueRef(item.source))
       definition.source = item.source;
     if (item.imports !== undefined) definition.imports = item.imports;
-    if (item.schemaSourceOrPath !== undefined)
-      definition.schemaSourceOrPath = item.schemaSourceOrPath as SandboxSource | string;
+    if (item.stateSchema !== undefined) definition.stateSchema = item.stateSchema;
+    if (item.updateSchema !== undefined) definition.updateSchema = item.updateSchema;
     if (item.registeredBy !== undefined) definition.registeredBy = item.registeredBy;
     if (item.clearedAtSeq !== undefined) definition.clearedAtSeq = item.clearedAtSeq;
     return [definition];
@@ -620,6 +620,17 @@ function projectedCustomMessageToChatMessage(
     updates: custom.updates,
     lastSeq: custom.lastSeq,
   };
+  if (custom.by) {
+    payload.by = {
+      kind: custom.by.kind,
+      id: custom.by.id,
+      ...(custom.by.displayName ? { displayName: custom.by.displayName } : {}),
+    };
+  }
+  if (custom.failed) {
+    payload.failed = true;
+    payload.error = custom.error ?? { message: "card failed" };
+  }
   return [
     {
       id: `custom:${custom.messageId}`,

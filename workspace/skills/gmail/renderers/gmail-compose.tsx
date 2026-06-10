@@ -1,19 +1,9 @@
 import { Badge, Button, Callout, Flex, Text, TextArea, TextField } from "@radix-ui/themes";
 import { ExclamationTriangleIcon, PaperPlaneIcon } from "@radix-ui/react-icons";
 import { useEffect, useState } from "react";
+import type { GmailComposeCardState } from "@workspace/gmail/card-types";
 
-interface GmailComposeState {
-  to?: string;
-  cc?: string;
-  bcc?: string;
-  subject?: string;
-  body?: string;
-  draftId?: string;
-  threadId?: string;
-  sourceThreadId?: string;
-  status?: "draft" | "saved" | "discarded" | "sending" | "sent" | "error";
-  error?: string;
-}
+type GmailComposeState = Partial<GmailComposeCardState>;
 
 export function reduce(state: GmailComposeState, update: Partial<GmailComposeState>): GmailComposeState {
   return { ...state, ...update };
@@ -94,6 +84,15 @@ export default function GmailCompose({
         <Text size="3" weight="bold">{state.threadId ? "Reply" : "Compose"}</Text>
         {state.status ? <StatusBadge status={state.status} /> : null}
       </Flex>
+      {state.status === "review" ? (
+        <Callout.Root color="amber" size="1">
+          <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
+          <Callout.Text>
+            Agent-drafted mail — review the recipient, subject, and body before sending. Nothing
+            is sent until you click Send.
+          </Callout.Text>
+        </Callout.Root>
+      ) : null}
       {state.error || localError ? (
         <Callout.Root color="red" size="1">
           <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
@@ -149,14 +148,23 @@ export default function GmailCompose({
           disabled={disabled || !to.trim() || !subject.trim() || !body.trim()}
           title="Send"
           onClick={() => {
-            if (!reviewingSend) {
+            // A review-state card is already the review step; Send is the
+            // user's authorization. Manual composes keep the two-click confirm.
+            if (state.status !== "review" && !reviewingSend) {
               setReviewingSend(true);
               return;
             }
             void call("send", payload, "send");
           }}
         >
-          <PaperPlaneIcon /> {busy === "send" || state.status === "sending" ? "Sending" : reviewingSend ? "Confirm send" : "Review send"}
+          <PaperPlaneIcon />{" "}
+          {busy === "send" || state.status === "sending"
+            ? "Sending"
+            : state.status === "review"
+              ? "Send"
+              : reviewingSend
+                ? "Confirm send"
+                : "Review send"}
         </Button>
         <Button
           size="1"

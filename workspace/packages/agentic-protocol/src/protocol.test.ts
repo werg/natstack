@@ -543,7 +543,6 @@ describe("@workspace/agentic-protocol stored values", () => {
       "initialState",
       "props",
       "imports",
-      "schemaSourceOrPath",
       "source",
     ];
 

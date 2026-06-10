@@ -896,7 +896,10 @@ describe("AgentWorkerBase method suspension ledger", () => {
 
     await instance.testHandleRunnerAgentEndForTurnLedger("chat-1", runner);
 
-    expect(repairDurableOpenState).toHaveBeenCalledWith({ closeOpenTurns: true });
+    expect(repairDurableOpenState).toHaveBeenCalledWith({
+      closeOpenTurns: true,
+      recoverableInvocationIds: expect.any(Set),
+    });
     expect(turnStatus(sql, "turn-final")).toMatchObject({ status: "closed" });
     expect(
       sql
@@ -2424,7 +2427,10 @@ describe("AgentWorkerBase method suspension ledger", () => {
       repairDurableOpenState,
     } as unknown as PiRunner);
 
-    expect(repairDurableOpenState).toHaveBeenCalledWith({ closeOpenTurns: true });
+    expect(repairDurableOpenState).toHaveBeenCalledWith({
+      closeOpenTurns: true,
+      recoverableInvocationIds: expect.any(Set),
+    });
     expect(turnStatus(sql, "turn-closing")).toMatchObject({ status: "closed" });
     expect(
       sql.exec(`SELECT status FROM agent_turn_outbox WHERE turn_id = ?`, "turn-closing").toArray()
@@ -2464,7 +2470,7 @@ describe("AgentWorkerBase method suspension ledger", () => {
     });
   });
 
-  it("reports only in-flight method-call invocations as recoverable", async () => {
+  it("reports ledger-owned method-call invocations as recoverable", async () => {
     const { instance, sql } = await createTestDO(TestAgentWorker, {
       __objectKey: "agent-test",
     });
@@ -2484,13 +2490,22 @@ describe("AgentWorkerBase method suspension ledger", () => {
       deliveryStatus: "recovering",
       terminalKind: "none",
     });
-    // Already-terminal (its result arrived) — not in-flight, repair may abandon
-    // the trajectory invocation harmlessly since the result is admitted.
+    // Terminal recorded while hibernated (no live waiter consumed it): the
+    // recovery continue folds this result on wake, so repair must NOT abandon
+    // it — abandoning loses the race against the queued continue and discards
+    // a real result that already arrived.
     insertSuspension(sql, {
       callId: "call-done",
       invocationId: "inv-done",
       deliveryStatus: "pending",
       terminalKind: "completed",
+    });
+    // No longer ledger-owned: handled by its own failure path.
+    insertSuspension(sql, {
+      callId: "call-cancelled",
+      invocationId: "inv-cancelled",
+      deliveryStatus: "cancelled",
+      terminalKind: "cancelled",
     });
     // A suspension on a different channel must not leak in.
     insertSuspension(sql, {
@@ -2503,7 +2518,7 @@ describe("AgentWorkerBase method suspension ledger", () => {
 
     const ids = worker.recoverableSuspensionInvocationIds("chat-1");
 
-    expect([...ids].sort()).toEqual(["inv-pending", "inv-recovering"]);
+    expect([...ids].sort()).toEqual(["inv-done", "inv-pending", "inv-recovering"]);
   });
 
   it("does not supersede a turn parked on a live external wait", async () => {
@@ -5207,6 +5222,7 @@ describe("TrajectoryVesselBase respond policy", () => {
     const worker = instance as unknown as {
       subscriptions: { getParticipantId(channelId: string): string | null };
       getOrCreateDispatcher: ReturnType<typeof vi.fn>;
+      createChannelClient: (channelId: string) => unknown;
       processChannelEvent(channelId: string, event: ChannelEvent): Promise<void>;
     };
     worker.subscriptions.getParticipantId = vi.fn().mockReturnValue("do:agent");
@@ -5214,6 +5230,32 @@ describe("TrajectoryVesselBase respond policy", () => {
       submit,
       getDebugState: () => ({ busy: false, activeWork: null }),
     });
+    // The durable last-completed sender lives in the channel DO; mirror what
+    // it would have recorded for each already-published message we deliver
+    // (latest = the delivered message itself, previous = the one before it).
+    let lastCompletedSender: string | null = null;
+    let lastCompletedSeq: number | null = null;
+    let previousCompletedSender: string | null = null;
+    let previousCompletedSeq: number | null = null;
+    worker.createChannelClient = () => ({
+      getConversationState: async () => ({
+        lastCompletedSender,
+        lastCompletedSeq,
+        lastCompletedAt: null,
+        previousCompletedSender,
+        previousCompletedSeq,
+        agentStreak: 0,
+      }),
+      getConfig: async () => null,
+      getParticipants: async () => [],
+      setTypingState: async () => undefined,
+    });
+    const recordPublished = (id: number, senderId: string) => {
+      previousCompletedSender = lastCompletedSender;
+      previousCompletedSeq = lastCompletedSeq;
+      lastCompletedSender = senderId;
+      lastCompletedSeq = id;
+    };
 
     const message = (
       id: number,
@@ -5242,26 +5284,25 @@ describe("TrajectoryVesselBase respond policy", () => {
         ts: Date.now(),
       }) satisfies ChannelEvent;
 
-    await worker.processChannelEvent("chat-1", message(1, "panel:user", "panel", "hello"));
+    const deliver = async (event: ChannelEvent) => {
+      recordPublished(event.id, event.senderId);
+      await worker.processChannelEvent("chat-1", event);
+    };
+
+    await deliver(message(1, "panel:user", "panel", "hello"));
     expect(submit).not.toHaveBeenCalled();
 
-    await worker.processChannelEvent(
-      "chat-1",
-      message(2, "do:agent", "agent", "What should I watch?")
-    );
+    await deliver(message(2, "do:agent", "agent", "What should I watch?"));
     expect(submit).not.toHaveBeenCalled();
 
-    await worker.processChannelEvent("chat-1", message(3, "panel:user", "panel", "Invoices"));
+    await deliver(message(3, "panel:user", "panel", "Invoices"));
     expect(submit).toHaveBeenCalledTimes(1);
     expect(submit).toHaveBeenLastCalledWith({ content: "Invoices" }, undefined);
 
-    await worker.processChannelEvent("chat-1", message(4, "panel:user", "panel", "And receipts"));
+    await deliver(message(4, "panel:user", "panel", "And receipts"));
     expect(submit).toHaveBeenCalledTimes(1);
 
-    await worker.processChannelEvent(
-      "chat-1",
-      message(5, "panel:user", "panel", "@agent still there?", ["do:agent"])
-    );
+    await deliver(message(5, "panel:user", "panel", "@agent still there?", ["do:agent"]));
     expect(submit).toHaveBeenCalledTimes(2);
   });
 

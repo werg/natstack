@@ -21,3 +21,14 @@ export type { CustomMessageReducer, RespondPolicy } from "./trajectory-vessel-ba
 export { DOIdentity } from "./identity.js";
 export { SubscriptionManager } from "./subscription-manager.js";
 export { ChannelClient } from "./channel-client.js";
+export {
+  CardManager,
+  CardTypeNotRegisteredError,
+  CardValidationError,
+} from "./custom-cards.js";
+export type { CustomMessageHandle } from "./custom-cards.js";
+export { FeedbackIngest, formatFeedbackNote } from "./feedback-ingest.js";
+// Registration-time renderer lint (re-exported so agent workers don't need a
+// direct agentic-core dependency just for this).
+export { DEFAULT_HOST_MODULES, lintRendererSource } from "@workspace/agentic-core";
+export type { RendererLintIssue } from "@workspace/agentic-core";
