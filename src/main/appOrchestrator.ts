@@ -89,6 +89,14 @@ export class AppOrchestrator {
       log.verbose(`Queued app update for ${event.appId}: ${event.url}`);
       return;
     }
+    if (!isNewBuild && hasLoadedView) {
+      // Availability is emitted at-least-once (host launch, workspace
+      // rediscovery). Remounting an already-loaded identical build would
+      // re-show the view and restack it over slotted panels.
+      log.verbose(`App ${event.appId} already mounted at ${appAvailableIdentity(event)}; skipping`);
+      this.adopted.set(event.appId, event);
+      return;
+    }
     await this.mountApp(event);
   }
 

@@ -67,6 +67,50 @@ describe("AppOrchestrator", () => {
     expect(panelView.setViewVisible).toHaveBeenCalledWith("@workspace-apps/shell", true);
   });
 
+  it("does not remount an already-loaded app for a duplicate identical availability event", async () => {
+    const panelView = createPanelView();
+    const orchestrator = new AppOrchestrator({ getPanelView: () => panelView });
+    const event = {
+      appId: "@workspace-apps/shell",
+      source: "apps/shell",
+      target: "electron" as const,
+      url: "http://localhost/app",
+      buildKey: "build-1",
+      capabilities: ["panel-hosting"] as const,
+    };
+
+    await orchestrator.applyAppAvailable(event);
+    (panelView.hasView as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    await orchestrator.applyAppAvailable({ ...event });
+
+    expect(panelView.createViewForApp).toHaveBeenCalledTimes(1);
+    expect(panelView.setViewVisible).toHaveBeenCalledTimes(1);
+  });
+
+  it("remounts when a duplicate availability event carries a new build", async () => {
+    const panelView = createPanelView();
+    const orchestrator = new AppOrchestrator({ getPanelView: () => panelView });
+    const event = {
+      appId: "@workspace-apps/shell",
+      source: "apps/shell",
+      target: "electron" as const,
+      url: "http://localhost/app",
+      buildKey: "build-1",
+      capabilities: ["panel-hosting"] as const,
+    };
+
+    await orchestrator.applyAppAvailable(event);
+    (panelView.hasView as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    await orchestrator.applyAppAvailable({
+      ...event,
+      url: "http://localhost/app-v2",
+      buildKey: "build-2",
+    });
+
+    expect(panelView.createViewForApp).toHaveBeenCalledTimes(2);
+    expect(panelView.setViewVisible).toHaveBeenCalledTimes(2);
+  });
+
   it("queues desktop app updates instead of navigating an already loaded app view", async () => {
     const panelView = createPanelView();
     (panelView.hasView as ReturnType<typeof vi.fn>).mockReturnValue(true);
