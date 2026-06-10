@@ -14,7 +14,7 @@ patchedDependencies:
     hash: bc0be24fd55ea1946ed7b83e4bd45059163068d06da67fadd75804657c83b768
     path: workspace/packages/harness/patches/@earendil-works__pi-agent-core@0.78.0.patch
   '@earendil-works/pi-ai@0.78.0':
-    hash: 54dd65e3ed0d308a22c85dce9c1f0eae3153e243f97278261710166654ebf48d
+    hash: 367203b290408f63f8cbe00450609aeb78788095d27d45d7f626c1f5b6be53eb
     path: workspace/packages/harness/patches/@earendil-works__pi-ai@0.78.0.patch
   re2@1.24.0:
     hash: a4a166273fe3817fd493cfc042f1d966f4ada60f1234330cd306e798259b549b
@@ -38,7 +38,7 @@ importers:
         version: 0.78.0(patch_hash=bc0be24fd55ea1946ed7b83e4bd45059163068d06da67fadd75804657c83b768)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
       '@earendil-works/pi-ai':
         specifier: ^0.78.0
-        version: 0.78.0(patch_hash=54dd65e3ed0d308a22c85dce9c1f0eae3153e243f97278261710166654ebf48d)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
+        version: 0.78.0(patch_hash=367203b290408f63f8cbe00450609aeb78788095d27d45d7f626c1f5b6be53eb)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
       '@ghostery/adblocker':
         specifier: ^2.13.4
         version: 2.13.4
@@ -969,7 +969,7 @@ importers:
     dependencies:
       '@earendil-works/pi-ai':
         specifier: ^0.78.0
-        version: 0.78.0(patch_hash=54dd65e3ed0d308a22c85dce9c1f0eae3153e243f97278261710166654ebf48d)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
+        version: 0.78.0(patch_hash=367203b290408f63f8cbe00450609aeb78788095d27d45d7f626c1f5b6be53eb)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
       '@natstack/shared':
         specifier: workspace:*
         version: link:../../../packages/shared
@@ -1148,7 +1148,7 @@ importers:
     dependencies:
       '@earendil-works/pi-ai':
         specifier: ^0.78.0
-        version: 0.78.0(patch_hash=54dd65e3ed0d308a22c85dce9c1f0eae3153e243f97278261710166654ebf48d)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
+        version: 0.78.0(patch_hash=367203b290408f63f8cbe00450609aeb78788095d27d45d7f626c1f5b6be53eb)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
       '@mozilla/readability':
         specifier: ^0.6.0
         version: 0.6.0
@@ -1663,7 +1663,7 @@ importers:
     dependencies:
       '@earendil-works/pi-ai':
         specifier: ^0.78.0
-        version: 0.78.0(patch_hash=54dd65e3ed0d308a22c85dce9c1f0eae3153e243f97278261710166654ebf48d)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
+        version: 0.78.0(patch_hash=367203b290408f63f8cbe00450609aeb78788095d27d45d7f626c1f5b6be53eb)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
       '@workspace/agentic-do':
         specifier: workspace:*
         version: link:../../packages/agentic-do
@@ -1696,7 +1696,7 @@ importers:
     dependencies:
       '@earendil-works/pi-ai':
         specifier: ^0.78.0
-        version: 0.78.0(patch_hash=54dd65e3ed0d308a22c85dce9c1f0eae3153e243f97278261710166654ebf48d)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
+        version: 0.78.0(patch_hash=367203b290408f63f8cbe00450609aeb78788095d27d45d7f626c1f5b6be53eb)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
       '@workspace/model-catalog':
         specifier: workspace:*
         version: link:../../packages/model-catalog
@@ -12252,7 +12252,7 @@ snapshots:
 
   '@earendil-works/pi-agent-core@0.78.0(patch_hash=bc0be24fd55ea1946ed7b83e4bd45059163068d06da67fadd75804657c83b768)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)':
     dependencies:
-      '@earendil-works/pi-ai': 0.78.0(patch_hash=54dd65e3ed0d308a22c85dce9c1f0eae3153e243f97278261710166654ebf48d)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
+      '@earendil-works/pi-ai': 0.78.0(patch_hash=367203b290408f63f8cbe00450609aeb78788095d27d45d7f626c1f5b6be53eb)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
       ignore: 7.0.5
       typebox: 1.1.38
       yaml: 2.9.0
@@ -12264,7 +12264,7 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-ai@0.78.0(patch_hash=54dd65e3ed0d308a22c85dce9c1f0eae3153e243f97278261710166654ebf48d)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)':
+  '@earendil-works/pi-ai@0.78.0(patch_hash=367203b290408f63f8cbe00450609aeb78788095d27d45d7f626c1f5b6be53eb)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)':
     dependencies:
       '@anthropic-ai/sdk': 0.91.1(zod@3.25.76)
       '@aws-sdk/client-bedrock-runtime': 3.1048.0
