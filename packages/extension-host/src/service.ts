@@ -365,6 +365,17 @@ export class ExtensionHost {
     await this.unitHost.whenSettled();
   }
 
+  async whenReconciled(): Promise<void> {
+    await this.unitHost.whenReconciled();
+  }
+
+  preapproveDeclarations(
+    declared: Array<{ source: string; ref: string }>
+  ): { units: UnitBatchEntry[]; identityKeys: string[] } {
+    const approval = this.unitHost.preapproveDeclarations(this.normalizeDeclaredRefs(declared));
+    return { units: approval.entries, identityKeys: approval.identityKeys };
+  }
+
   /** Build/start a single declared extension. */
   private async applyDeclared(
     node: ReturnType<ExtensionHost["findExtensionNode"]>,

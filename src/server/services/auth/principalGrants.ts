@@ -15,13 +15,21 @@ export interface PrincipalGrantResponse {
   workspaceId: string;
 }
 
-export function refreshPrincipalGrantResponse(
+export async function refreshPrincipalGrantResponse(
   deps: {
     deviceAuthStore: DeviceAuthStore;
     getServerBootId: () => string;
     getWorkspaceId: () => string;
     connectionGrants?: ConnectionGrantService;
-    registerMobileAppPrincipal?: (deviceId: string, source?: string | null) => string | null;
+    ensureMobileAppReady?: (source?: string | null) => Promise<{
+      ready: boolean;
+      reason?: string;
+      details?: string[];
+    }>;
+    registerMobileAppPrincipal?: (
+      deviceId: string,
+      source?: string | null
+    ) => string | null | Promise<string | null>;
   },
   body: {
     deviceId: string;
@@ -29,7 +37,7 @@ export function refreshPrincipalGrantResponse(
     principal?: PrincipalGrantTarget | string;
     source?: string | null;
   }
-): PrincipalGrantResponse {
+): Promise<PrincipalGrantResponse> {
   if (!deps.connectionGrants) {
     throw authError(
       "PRINCIPAL_GRANTS_UNAVAILABLE",
@@ -46,7 +54,18 @@ export function refreshPrincipalGrantResponse(
     );
   }
   const device = deps.deviceAuthStore.validateRefresh(body.deviceId, body.refreshToken);
-  const callerId = deps.registerMobileAppPrincipal?.(body.deviceId, body.source ?? null);
+  const readiness = await deps.ensureMobileAppReady?.(body.source ?? null);
+  if (readiness && !readiness.ready) {
+    throw authError(
+      "PRINCIPAL_UNAVAILABLE",
+      [
+        readiness.reason ?? "No active React Native workspace app principal is available",
+        ...(readiness.details?.length ? readiness.details : []),
+      ].join(": "),
+      503
+    );
+  }
+  const callerId = await deps.registerMobileAppPrincipal?.(body.deviceId, body.source ?? null);
   if (!callerId) {
     throw authError(
       "PRINCIPAL_UNAVAILABLE",

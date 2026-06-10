@@ -616,7 +616,7 @@ export class UnitHost<
 > {
   private reconciling: Promise<void> | null = null;
   private backgroundFlow: Promise<void> | null = null;
-  private preapprovedTrust: { version: string; keys: Set<string> } | null = null;
+  private preapprovedTrust: { version: string | null; keys: Set<string> } | null = null;
   private readonly trustResolver: UnitTrustResolver<Entry>;
 
   constructor(private readonly opts: UnitHostOptions<Entry, Decl, Node, ApprovalEntry>) {
@@ -643,6 +643,10 @@ export class UnitHost<
     await this.backgroundFlow;
   }
 
+  async whenReconciled(): Promise<void> {
+    await this.reconciling;
+  }
+
   approvalForDeclarations(declared: Decl[]): { entries: ApprovalEntry[]; identityKeys: string[] } {
     const entries: ApprovalEntry[] = [];
     const identityKeys: string[] = [];
@@ -661,6 +665,15 @@ export class UnitHost<
       identityKeys.push(trust.identityKey);
     }
     return { entries, identityKeys };
+  }
+
+  preapproveDeclarations(declared: Decl[]): { entries: ApprovalEntry[]; identityKeys: string[] } {
+    const approval = this.approvalForDeclarations(declared);
+    const version = this.opts.currentDeclarationVersion();
+    if (approval.identityKeys.length > 0) {
+      this.preapprovedTrust = { version, keys: new Set(approval.identityKeys) };
+    }
+    return approval;
   }
 
   trustForDeclaration(node: Node, decl: Decl): UnitTrustResolution {

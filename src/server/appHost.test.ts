@@ -8,6 +8,7 @@ import { execGitFileSync } from "@natstack/shared/gitRuntime";
 import { writeProductSeedSourceRecord } from "@natstack/shared/productSeedTrust";
 import { EntityCache } from "@natstack/shared/runtime/entityCache";
 import { AppHost } from "./appHost.js";
+import type { AppHostDeps } from "./appHost.js";
 
 const roots: string[] = [];
 const originalAppDevStatus = process.env["NATSTACK_APP_DEV_STATUS"];
@@ -35,6 +36,7 @@ function makeHarness(
     seeded?: boolean;
     invalidManifest?: boolean;
     approvalDecision?: "once" | "session" | "version" | "repo" | "deny";
+    approvalCoordinator?: AppHostDeps["approvalCoordinator"];
   } = {}
 ) {
   const root = tempRoot();
@@ -168,6 +170,7 @@ function makeHarness(
     eventService: eventService as never,
     approvalQueue,
     notificationService,
+    approvalCoordinator: opts.approvalCoordinator,
     entityCache,
     getGatewayUrl: () => "http://127.0.0.1:1234",
   });
@@ -1473,6 +1476,129 @@ describe("AppHost", () => {
       })
     );
     expect(host.registry.get(graphNode.name)?.activeBundleKey).toBe("rn-provider-change-key");
+  });
+
+  it("ensures React Native readiness by rebuilding an errored app after provider startup", async () => {
+    const { host, buildSystem, graphNode } = makeHarness();
+    setAppManifestTarget(graphNode, "react-native", ["notifications"]);
+
+    await host.reconcileDeclared([{ source: graphNode.relativePath, ref: "main" }]);
+    await host.whenSettled();
+    expect(host.registry.get(graphNode.name)).toMatchObject({
+      status: "error",
+    });
+
+    const provider = {
+      name: "@workspace-extensions/react-native",
+      activeEv: "ev-provider",
+      activeBuildKey: "provider-build",
+      contractVersion: "natstack-build-provider-v1",
+    };
+    const rnBuild = {
+      dir: path.join(path.dirname(graphNode.path), "..", "..", "state", "builds", "rn-ready-key"),
+      metadata: {
+        ev: "ev-app",
+        details: {
+          kind: "app",
+          target: "react-native",
+          integrity: "sha256-rn-app",
+          rnHostAbi: "rn-host-1",
+          provider,
+        },
+      },
+      artifacts: [
+        {
+          path: "index.android.bundle",
+          role: "primary",
+          contentType: "application/javascript; charset=utf-8",
+          encoding: "utf8",
+          platform: "android",
+          integrity: "sha256-android",
+          content: "android bundle",
+        },
+      ],
+    };
+    buildSystem.getBuildProviderDetails.mockReturnValue(provider);
+    buildSystem.getBuild.mockResolvedValueOnce(rnBuild as never);
+    buildSystem.getBuildByKey.mockImplementation((key: string) =>
+      key === "rn-ready-key" ? (rnBuild as never) : null
+    );
+
+    const readiness = await host.ensureReactNativeReady();
+
+    expect(readiness).toMatchObject({
+      ready: true,
+      source: graphNode.relativePath,
+      appId: graphNode.name,
+      buildKey: "rn-ready-key",
+    });
+    expect(host.registry.get(graphNode.name)).toMatchObject({
+      status: "running",
+      activeBundleKey: "rn-ready-key",
+    });
+  });
+
+  it("waits for delayed React Native approval work before reporting readiness", async () => {
+    const approvalCoordinator = {
+      enqueue: vi.fn(async (request) => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 5));
+        await request.applyApproved();
+      }),
+    } satisfies NonNullable<AppHostDeps["approvalCoordinator"]>;
+    const { host, buildSystem, graphNode } = makeHarness({ approvalCoordinator });
+    setAppManifestTarget(graphNode, "react-native", ["notifications"]);
+
+    await host.reconcileDeclared([{ source: graphNode.relativePath, ref: "main" }]);
+    await host.whenSettled();
+    expect(host.registry.get(graphNode.name)).toMatchObject({
+      status: "error",
+    });
+
+    const provider = {
+      name: "@workspace-extensions/react-native",
+      activeEv: "ev-provider",
+      activeBuildKey: "provider-build",
+      contractVersion: "natstack-build-provider-v1",
+    };
+    const rnBuild = {
+      dir: path.join(path.dirname(graphNode.path), "..", "..", "state", "builds", "rn-delayed-key"),
+      metadata: {
+        ev: "ev-app",
+        details: {
+          kind: "app",
+          target: "react-native",
+          integrity: "sha256-rn-app",
+          rnHostAbi: "rn-host-1",
+          provider,
+        },
+      },
+      artifacts: [
+        {
+          path: "index.android.bundle",
+          role: "primary",
+          contentType: "application/javascript; charset=utf-8",
+          encoding: "utf8",
+          platform: "android",
+          integrity: "sha256-android",
+          content: "android bundle",
+        },
+      ],
+    };
+    buildSystem.getBuildProviderDetails.mockReturnValue(provider);
+    buildSystem.getBuild.mockResolvedValueOnce(rnBuild as never);
+    buildSystem.getBuildByKey.mockImplementation((key: string) =>
+      key === "rn-delayed-key" ? (rnBuild as never) : null
+    );
+
+    const readiness = await host.ensureReactNativeReady();
+
+    expect(approvalCoordinator.enqueue).toHaveBeenCalledTimes(2);
+    expect(readiness).toMatchObject({
+      ready: true,
+      source: graphNode.relativePath,
+      appId: graphNode.name,
+      buildKey: "rn-delayed-key",
+    });
   });
 
   it("does not produce React Native bootstrap for platformless primary artifacts", async () => {

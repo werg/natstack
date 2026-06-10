@@ -160,7 +160,7 @@ export function runPairServer(config, argv = process.argv.slice(2), hooks = {}) 
   const requirePublicUrl = options.requirePublicUrl || options.host === "tailscale";
   let serverArgs = hooks.buildServerArgs
     ? hooks.buildServerArgs(options, selectedHost.address)
-    : buildServerArgs(options, selectedHost.address);
+    : buildServerArgs(options, selectedHost.address, config);
   let ownedReadyDir = null;
   let readyFile = readyFileFromServerArgs(serverArgs);
   if (!readyFile) {
@@ -540,7 +540,7 @@ export function runPairServer(config, argv = process.argv.slice(2), hooks = {}) 
   }
 }
 
-function buildServerArgs(options, host) {
+function buildServerArgs(options, host, config = {}) {
   const args = [
     serverEntryArg(),
     "--host",
@@ -559,6 +559,7 @@ function buildServerArgs(options, host) {
   if (options.workspaceDir) args.push("--workspace-dir", options.workspaceDir);
   if (options.appRoot) args.push("--app-root", options.appRoot);
   if (options.publicUrl) args.push("--public-url", options.publicUrl);
+  if (config.requireMobileReady) args.push("--require-mobile-ready");
   args.push(...options.serverArgs);
   return args;
 }

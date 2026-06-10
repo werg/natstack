@@ -19,7 +19,7 @@ import * as path from "path";
 import * as fs from "fs";
 import { createHash, randomBytes } from "crypto";
 import { canonicalEntityId, type EntityRecord } from "@natstack/shared/runtime/entitySpec";
-import { UnitSourcePushGrantStore } from "@natstack/unit-host";
+import { normalizeUnitRepoPath, UnitSourcePushGrantStore } from "@natstack/unit-host";
 import { formatPairUrlLine } from "./pairingBanner.js";
 import { getPublicUrl } from "./publicUrl.js";
 import { registerBuildProvider, unregisterBuildProvider } from "./buildV2/buildProviderRegistry.js";
@@ -192,6 +192,7 @@ interface CliArgs {
   printCredentials?: boolean;
   publicUrl?: string;
   requirePublicUrl?: boolean;
+  requireMobileReady?: boolean;
   noVpnDetect?: boolean;
   help?: boolean;
 }
@@ -230,6 +231,8 @@ Options:
                            URL — register <public-url>/_r/s/credentials/oauth/callback
                            with each OAuth provider as the allowed redirect URI.
   --require-public-url     Fail startup unless the advertised public URL is verified reachable.
+  --require-mobile-ready   Fail startup unless the workspace React Native app can be
+                           built and served to native mobile clients.
   --no-vpn-detect          Skip auto-detection and auto-configuration of the VPN-based
                            public URL (Tailscale today). Useful if you manage
                            tailscale serve yourself or use --public-url.
@@ -324,6 +327,7 @@ function parseArgs(argv: string[]): CliArgs {
     "print-credentials",
     "public-url",
     "require-public-url",
+    "require-mobile-ready",
     "no-vpn-detect",
     "help",
   ]);
@@ -334,6 +338,7 @@ function parseArgs(argv: string[]): CliArgs {
     "init",
     "print-credentials",
     "require-public-url",
+    "require-mobile-ready",
     "no-vpn-detect",
     "help",
   ]);
@@ -431,6 +436,9 @@ function parseArgs(argv: string[]): CliArgs {
         break;
       case "require-public-url":
         args.requirePublicUrl = true;
+        break;
+      case "require-mobile-ready":
+        args.requireMobileReady = true;
         break;
       case "no-vpn-detect":
         args.noVpnDetect = true;
@@ -634,6 +642,8 @@ async function main() {
       process.env["NODE_ENV"] === "development" && process.env["NATSTACK_AUTO_APPROVE"] === "1",
   });
   const { ServerUnitApprovalCoordinator } = await import("./unitApprovalCoordinator.js");
+  const requireMobileReady =
+    args.requireMobileReady || process.env["NATSTACK_REQUIRE_MOBILE_READY"] === "1";
   const unitApprovalCoordinator = new ServerUnitApprovalCoordinator({
     approvalQueue,
     autoApproveStartup: workspaceCreatedFromTemplate,
@@ -804,19 +814,49 @@ async function main() {
     nextConfig: ReturnType<typeof loadWorkspaceConfig>,
     trigger: "startup" | "meta-push"
   ): Promise<void> => {
-    const extensionTask = extensionHostForGateway
-      ?.reconcileDeclared(resolveDeclaredExtensions(nextConfig), { trigger })
-      .then(() => import("@natstack/shared/workspace/extensionRegistry"))
-      .then(({ writeExtensionRegistry }) => writeExtensionRegistry(workspacePath))
-      .catch((err: unknown) =>
-        console.warn("[Extensions] Failed to reconcile declared workspace units:", err)
+    if (trigger === "startup" && requireMobileReady) {
+      const reactNativeDeclarations = resolveDeclaredExtensions(nextConfig).filter(
+        (decl) => normalizeUnitRepoPath(decl.source) === "extensions/react-native"
       );
-    const appTask = appHostForGateway
-      ?.reconcileDeclared(resolveDeclaredApps(nextConfig), { trigger })
-      .catch((err: unknown) =>
-        console.warn("[Apps] Failed to reconcile declared workspace units:", err)
+      const extensionApproval =
+        extensionHostForGateway?.preapproveDeclarations(reactNativeDeclarations);
+      const approvedCount = extensionApproval?.identityKeys.length ?? 0;
+      if (approvedCount > 0) {
+        console.log(
+          `[Mobile] Preapproved ${approvedCount} React Native provider startup unit${approvedCount === 1 ? "" : "s"} for pairing`
+        );
+      }
+    }
+    if (extensionHostForGateway) {
+      await extensionHostForGateway
+        .reconcileDeclared(resolveDeclaredExtensions(nextConfig), { trigger })
+        .then(() => extensionHostForGateway?.whenReconciled())
+        .then(() => import("@natstack/shared/workspace/extensionRegistry"))
+        .then(({ writeExtensionRegistry }) => writeExtensionRegistry(workspacePath))
+        .catch((err: unknown) =>
+          console.warn("[Extensions] Failed to reconcile declared workspace units:", err)
+        );
+    }
+    if (trigger === "startup" && requireMobileReady) {
+      const appApproval = appHostForGateway?.preapproveHostTargetDeclarations(
+        "react-native",
+        resolveDeclaredApps(nextConfig)
       );
-    await Promise.all([extensionTask ?? Promise.resolve(), appTask ?? Promise.resolve()]);
+      const approvedCount = appApproval?.identityKeys.length ?? 0;
+      if (approvedCount > 0) {
+        console.log(
+          `[Mobile] Preapproved ${approvedCount} React Native app startup unit${approvedCount === 1 ? "" : "s"} for pairing`
+        );
+      }
+    }
+    if (appHostForGateway) {
+      await appHostForGateway
+        .reconcileDeclared(resolveDeclaredApps(nextConfig), { trigger })
+        .then(() => appHostForGateway?.whenReconciled())
+        .catch((err: unknown) =>
+          console.warn("[Apps] Failed to reconcile declared workspace units:", err)
+        );
+    }
   };
   const skippedDeclaredRemoteRepoWarnings = new Set<string>();
   const syncDeclaredRemotesForSource = async (repoPath?: string): Promise<void> => {
@@ -2313,8 +2353,17 @@ async function main() {
           auditLog,
           hasAppCapability: (callerId, capability) =>
             appHostForGateway?.hasAppCapability(callerId, capability) ?? false,
-          getMobileAppBootstrap: (source) =>
-            appHostForGateway?.getReactNativeBootstrap(source) ?? null,
+          ensureMobileAppReady: async (source) =>
+            appHostForGateway?.ensureReactNativeReady(source) ?? {
+              ready: false,
+              reason: "App host is not available",
+              details: [],
+            },
+          getMobileAppBootstrap: async (source) => {
+            const readiness = await appHostForGateway?.ensureReactNativeReady(source);
+            if (readiness?.ready) return readiness.bootstrap;
+            return appHostForGateway?.getReactNativeBootstrap(source) ?? null;
+          },
           registerMobileAppPrincipal: (deviceId, source) =>
             appHostForGateway?.registerReactNativeAppPrincipal(deviceId, source) ?? null,
           retireMobileAppPrincipal: (deviceId) => {
@@ -2665,6 +2714,28 @@ async function main() {
   cleanupReaper.start();
 
   await reconcileDeclaredWorkspaceUnits(workspaceConfig, "startup");
+
+  if (requireMobileReady) {
+    const appHost = container.get<import("./appHost.js").AppHost>("appHost");
+    const readiness = await appHost.ensureReactNativeReady();
+    if (!readiness?.ready) {
+      printReadinessActionBlock("React Native mobile app is not ready", [
+        "This server was started with mobile pairing enabled, but the",
+        "workspace-owned React Native app is not ready to serve to the native host.",
+        "",
+        readiness?.reason ?? "App host is not available",
+        ...(readiness?.source ? [`Source: ${readiness.source}`] : []),
+        ...(readiness?.appId ? [`App: ${readiness.appId}`] : []),
+        ...(readiness?.details?.length ? ["", ...readiness.details] : []),
+        "",
+        "Fix the blocking app/extension build above, then restart this command.",
+      ]);
+      process.exit(1);
+    }
+    console.log(
+      `[Mobile] React Native app ready: ${readiness.appId} (${readiness.source}) build ${readiness.buildKey}`
+    );
+  }
 
   // ===========================================================================
   // Report ready

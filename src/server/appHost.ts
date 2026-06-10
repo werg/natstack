@@ -134,6 +134,22 @@ export interface ReactNativeAppBootstrap {
   provider?: AppBuildProviderDetails | null;
 }
 
+export type ReactNativeHostReadiness =
+  | {
+      ready: true;
+      source: string;
+      appId: string;
+      buildKey: string;
+      bootstrap: ReactNativeAppBootstrap;
+    }
+  | {
+      ready: false;
+      source: string | null;
+      appId?: string | null;
+      reason: string;
+      details: string[];
+    };
+
 interface BuildSystemLike {
   getBuild(
     unitPath: string,
@@ -399,12 +415,28 @@ export class AppHost {
     await this.unitHost.whenSettled();
   }
 
+  async whenReconciled(): Promise<void> {
+    await this.unitHost.whenReconciled();
+  }
+
   async shutdown(): Promise<void> {
     await this.terminalRunner?.stopAll();
   }
 
   acceptPreapprovedTrust(version: string, keys: Iterable<string>): void {
     this.unitHost.acceptPreapprovedTrust(version, keys);
+  }
+
+  preapproveHostTargetDeclarations(
+    target: HostTarget,
+    declared: WorkspaceAppDeclaration[]
+  ): { units: UnitBatchEntry[]; identityKeys: string[] } {
+    const targetDeclarations = declared.filter((decl) => {
+      const node = this.tryFindAppNode(decl.source);
+      return node ? this.appTarget(node, decl) === target : false;
+    });
+    const approval = this.unitHost.preapproveDeclarations(targetDeclarations);
+    return { units: approval.entries, identityKeys: approval.identityKeys };
   }
 
   listWorkspaceUnits(): Array<{
@@ -985,6 +1017,127 @@ export class AppHost {
       integrity,
       artifacts,
       provider: details.provider,
+    };
+  }
+
+  async ensureReactNativeReady(source?: string | null): Promise<ReactNativeHostReadiness> {
+    await this.whenReconciled();
+
+    const first = this.reactNativeReadinessSnapshot(source);
+    if (first.ready) return first;
+
+    const provider = this.deps.buildSystem.getBuildProviderDetails?.("react-native") ?? null;
+    if (!provider) {
+      return {
+        ...first,
+        reason: "React Native build provider is not active",
+        details: [
+          ...first.details,
+          "The declared extensions must start extensions/react-native before apps/mobile can build.",
+        ],
+      };
+    }
+
+    const resolvedSource = first.source ?? source ?? this.getSelectedReactNativeSource();
+    if (!resolvedSource) return first;
+    const candidate = this.listHostTargetCandidates("react-native").find(
+      (item) =>
+        item.source === normalizeRepoPath(resolvedSource) ||
+        item.name === resolvedSource ||
+        item.name === first.appId
+    );
+    if (!candidate) return first;
+    const declared = this.lastDeclared.find((decl) => {
+      const node = this.tryFindAppNode(decl.source);
+      return (
+        normalizeRepoPath(decl.source) === normalizeRepoPath(candidate.source) ||
+        node?.name === candidate.name
+      );
+    });
+    if (!declared) {
+      return {
+        ready: false,
+        source: candidate.source,
+        appId: candidate.name,
+        reason: "React Native app is not declared in meta/natstack.yml",
+        details: [`Declare ${candidate.source} under apps: before mobile clients can pair.`],
+      };
+    }
+
+    await this.reconcileDeclared(this.lastDeclared, { trigger: "startup" });
+    await this.whenSettled();
+    return this.reactNativeReadinessSnapshot(candidate.source);
+  }
+
+  private reactNativeReadinessSnapshot(source?: string | null): ReactNativeHostReadiness {
+    const resolvedSource = source ?? this.getSelectedReactNativeSource();
+    const candidates = this.listHostTargetCandidates("react-native");
+    if (!resolvedSource) {
+      return {
+        ready: false,
+        source: null,
+        reason: "No React Native workspace app is selected",
+        details:
+          candidates.length > 0
+            ? candidates.map(
+                (candidate) =>
+                  `${candidate.source}: ${candidate.status}${
+                    candidate.compatibility.reasons.length > 0
+                      ? ` (${candidate.compatibility.reasons.join("; ")})`
+                      : ""
+                  }`
+              )
+            : ["No apps with natstack.app.target: react-native were found."],
+      };
+    }
+    const normalizedSource = normalizeRepoPath(resolvedSource);
+    const candidate = candidates.find(
+      (item) => item.source === normalizedSource || item.name === resolvedSource
+    );
+    const bootstrap = this.getReactNativeBootstrap(normalizedSource);
+    if (bootstrap) {
+      return {
+        ready: true,
+        source: normalizedSource,
+        appId: bootstrap.appId,
+        buildKey: bootstrap.buildKey,
+        bootstrap,
+      };
+    }
+    const entry = this.registry
+      .list()
+      .find(
+        (item) =>
+          item.target === "react-native" && normalizeRepoPath(item.source.repo) === normalizedSource
+      );
+    const details: string[] = [];
+    if (candidate) {
+      details.push(`${candidate.name} (${candidate.source}) status: ${candidate.status}`);
+      if (candidate.compatibility.reasons.length > 0) {
+        details.push(...candidate.compatibility.reasons);
+      }
+    }
+    if (entry?.lastError) details.push(entry.lastError);
+    if (entry?.lastErrorDetails) {
+      details.push(
+        `Last failure phase: ${entry.lastErrorDetails.phase}${
+          entry.lastErrorDetails.target ? ` (${entry.lastErrorDetails.target})` : ""
+        }`
+      );
+      if (entry.lastErrorDetails.buildKey) {
+        details.push(`Last build key: ${entry.lastErrorDetails.buildKey}`);
+      }
+    }
+    if (!entry) details.push("No active registry entry exists for the selected React Native app.");
+    else if (!entry.activeBundleKey)
+      details.push("The selected React Native app has no active build.");
+    else details.push("The selected React Native app build is not bootstrap-ready.");
+    return {
+      ready: false,
+      source: normalizedSource,
+      appId: candidate?.name ?? entry?.name ?? null,
+      reason: "React Native workspace app is not ready",
+      details,
     };
   }
 
@@ -1702,6 +1855,7 @@ export class AppHost {
     node: AppGraphNode,
     decl: WorkspaceAppDeclaration
   ): boolean {
+    if (entry.status === "error") return true;
     return this.unitHost.needsBuildRefresh(entry, {
       sourceRepo: node.relativePath,
       ref: decl.ref,

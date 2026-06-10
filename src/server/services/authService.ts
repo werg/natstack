@@ -96,8 +96,16 @@ export function createAuthService(deps: {
   auditLog?: Pick<AuditLog, "append">;
   hasAppCapability?: (callerId: string, capability: AppCapability) => boolean;
   capabilityAuthorizer?: CapabilityAuthorizer;
-  getMobileAppBootstrap?: (source?: string | null) => unknown | null;
-  registerMobileAppPrincipal?: (deviceId: string, source?: string | null) => string | null;
+  ensureMobileAppReady?: (source?: string | null) => Promise<{
+    ready: boolean;
+    reason?: string;
+    details?: string[];
+  }>;
+  getMobileAppBootstrap?: (source?: string | null) => unknown | null | Promise<unknown | null>;
+  registerMobileAppPrincipal?: (
+    deviceId: string,
+    source?: string | null
+  ) => string | null | Promise<string | null>;
   retireMobileAppPrincipal?: (deviceId: string) => void;
 }): ServiceWithRoutes {
   const capabilityAuthorizer =
@@ -269,7 +277,7 @@ export function createAuthService(deps: {
       handler: async (req, res) => {
         try {
           const body = RefreshAppGrantBodySchema.parse(await readJson(req));
-          sendJson(res, 200, refreshPrincipalGrantResponse(deps, body), {
+          sendJson(res, 200, await refreshPrincipalGrantResponse(deps, body), {
             Deprecation: "true",
             "X-NatStack-Deprecated-Route": "/_r/s/auth/refresh-principal-grant",
             Warning: '299 - "refresh-app-grant is deprecated; use refresh-principal-grant"',
@@ -287,7 +295,7 @@ export function createAuthService(deps: {
       handler: async (req, res) => {
         try {
           const body = RefreshPrincipalGrantBodySchema.parse(await readJson(req));
-          sendJson(res, 200, refreshPrincipalGrantResponse(deps, body));
+          sendJson(res, 200, await refreshPrincipalGrantResponse(deps, body));
         } catch (error) {
           sendAuthError(res, error, 401);
         }
@@ -309,7 +317,18 @@ export function createAuthService(deps: {
           }
           const body = MobileAppBootstrapBodySchema.parse(await readJson(req));
           deps.deviceAuthStore.validateRefresh(body.deviceId, body.refreshToken);
-          const bootstrap = deps.getMobileAppBootstrap(body.source ?? null);
+          const readiness = await deps.ensureMobileAppReady?.(body.source ?? null);
+          if (readiness && !readiness.ready) {
+            sendJson(res, 503, {
+              error: [
+                readiness.reason ?? "No approved React Native workspace app is available",
+                ...(readiness.details?.length ? readiness.details : []),
+              ].join(": "),
+              code: "MOBILE_APP_UNAVAILABLE",
+            });
+            return;
+          }
+          const bootstrap = await deps.getMobileAppBootstrap(body.source ?? null);
           if (!bootstrap) {
             sendJson(res, 404, {
               error: "No approved React Native workspace app is available",

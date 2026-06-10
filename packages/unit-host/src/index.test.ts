@@ -648,6 +648,7 @@ describe("UnitHost", () => {
     active?: boolean;
     productSeedTrust?: (identity: UnitBuildIdentity) => boolean;
     approvalCoordinator?: UnitApprovalCoordinator<TestApproval>;
+    declarationVersion?: string | null;
   } = {}) {
     const root = tempRoot();
     const registry = new UnitRegistry<UnitRegistryEntryBase>({
@@ -685,7 +686,8 @@ describe("UnitHost", () => {
         seedTrustEligible: true,
       },
       registry,
-      currentDeclarationVersion: () => "meta-head",
+      currentDeclarationVersion: () =>
+        opts.declarationVersion === undefined ? "meta-head" : opts.declarationVersion,
       resolveNode: (source) => {
         if (source !== node.relativePath && source !== node.name) throw new Error("missing");
         return node;
@@ -795,6 +797,38 @@ describe("UnitHost", () => {
       externalDeps: {},
     })]);
 
+    await host.reconcileDeclared([{ source: node.relativePath, ref: "main" }]);
+    await host.whenSettled();
+
+    expect(requested).toEqual([]);
+    expect(applied).toEqual([node.name]);
+  });
+
+  it("preapproves declaration trust for the current declaration version", async () => {
+    const { host, applied, requested, node } = makeHarness();
+
+    const approval = host.preapproveDeclarations([{ source: node.relativePath, ref: "main" }]);
+
+    expect(approval.identityKeys).toEqual([canonicalUnitBuildIdentity({
+      unitKind: "extension",
+      name: node.name,
+      source: { kind: "internal-git", repo: node.relativePath, ref: "main" },
+      effectiveVersion: "ev",
+      dependencyEvs: {},
+      externalDeps: {},
+    })]);
+
+    await host.reconcileDeclared([{ source: node.relativePath, ref: "main" }]);
+    await host.whenSettled();
+
+    expect(requested).toEqual([]);
+    expect(applied).toEqual([node.name]);
+  });
+
+  it("preapproves declaration trust for non-git declaration sources", async () => {
+    const { host, applied, requested, node } = makeHarness({ declarationVersion: null });
+
+    host.preapproveDeclarations([{ source: node.relativePath, ref: "main" }]);
     await host.reconcileDeclared([{ source: node.relativePath, ref: "main" }]);
     await host.whenSettled();
 
