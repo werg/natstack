@@ -28,17 +28,17 @@ export function createStartRemotePairCommand(gatewayUrl, pairingCode) {
 
 export function parseConnectLink(rawUrl) {
   if (typeof rawUrl !== "string") return { kind: "error", reason: "Deep link must be a string" };
-  let deepLink;
-  try {
-    deepLink = new URL(rawUrl);
-  } catch {
-    return { kind: "error", reason: "Deep link is not a valid URL" };
-  }
-  if (deepLink.protocol !== "natstack:" || deepLink.hostname !== "connect") {
+  if (!rawUrl.startsWith("natstack://connect")) {
     return { kind: "error", reason: "Not a natstack://connect link" };
   }
-  const serverUrlRaw = deepLink.searchParams.get("url");
-  const code = deepLink.searchParams.get("code");
+  const queryStart = rawUrl.indexOf("?");
+  if (queryStart < 0) {
+    return { kind: "error", reason: "Deep link is missing `url` or `code`" };
+  }
+  const params = parseQuery(rawUrl.slice(queryStart + 1));
+  if (params.kind === "error") return params;
+  const serverUrlRaw = params.values.get("url");
+  const code = params.values.get("code");
   if (!serverUrlRaw || !code) {
     return { kind: "error", reason: "Deep link is missing `url` or `code`" };
   }
@@ -48,6 +48,30 @@ export function parseConnectLink(rawUrl) {
     return { kind: "error", reason: "Pairing code has an unexpected format" };
   }
   return { kind: "ok", url: parsedUrl.url, code };
+}
+
+function parseQuery(raw) {
+  const values = new Map();
+  for (const part of raw.split("&")) {
+    if (!part) continue;
+    const separator = part.indexOf("=");
+    const key = separator >= 0 ? part.slice(0, separator) : part;
+    const value = separator >= 0 ? part.slice(separator + 1) : "";
+    const decodedKey = decodeQueryComponent(key);
+    const decodedValue = decodeQueryComponent(value);
+    if (decodedKey.kind === "error") return decodedKey;
+    if (decodedValue.kind === "error") return decodedValue;
+    values.set(decodedKey.value, decodedValue.value);
+  }
+  return { kind: "ok", values };
+}
+
+function decodeQueryComponent(raw) {
+  try {
+    return { kind: "ok", value: decodeURIComponent(raw.replace(/\+/g, " ")) };
+  } catch {
+    return { kind: "error", reason: "Deep link is not a valid URL" };
+  }
 }
 
 export function parseConnectServerUrl(rawUrl) {

@@ -35,17 +35,35 @@ function missingNativeHostError() {
 }
 
 function parseConnectDeepLink(rawUrl) {
+  if (typeof rawUrl !== "string" || !rawUrl.startsWith("natstack://connect")) return null;
+  const queryStart = rawUrl.indexOf("?");
+  if (queryStart < 0) throw new Error("Connect link is missing url or code");
+  const params = parseQuery(rawUrl.slice(queryStart + 1));
+  const serverUrl = params.get("url");
+  const code = params.get("code");
+  if (!serverUrl || !code) {
+    throw new Error("Connect link is missing url or code");
+  }
+  return { serverUrl, code };
+}
+
+function parseQuery(query) {
+  const params = new Map();
+  for (const part of query.split("&")) {
+    if (!part) continue;
+    const separator = part.indexOf("=");
+    const rawKey = separator >= 0 ? part.slice(0, separator) : part;
+    const rawValue = separator >= 0 ? part.slice(separator + 1) : "";
+    params.set(decodeQueryComponent(rawKey), decodeQueryComponent(rawValue));
+  }
+  return params;
+}
+
+function decodeQueryComponent(value) {
   try {
-    const url = new URL(rawUrl);
-    if (url.protocol !== "natstack:" || url.hostname !== "connect") return null;
-    const serverUrl = url.searchParams.get("url");
-    const code = url.searchParams.get("code");
-    if (!serverUrl || !code) {
-      throw new Error("Connect link is missing url or code");
-    }
-    return { serverUrl, code };
-  } catch (error) {
-    throw new Error(error instanceof Error ? error.message : "Connect link is invalid");
+    return decodeURIComponent(value.replace(/\+/g, " "));
+  } catch {
+    throw new Error("Connect link is invalid");
   }
 }
 

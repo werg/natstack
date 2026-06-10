@@ -5,6 +5,10 @@ export const PAIRING_CODE_PATTERN = /^[A-Za-z0-9_-]{16,512}$/;
 export type ConnectLink =
   | { kind: "ok"; url: string; code: string }
   | { kind: "error"; reason: string };
+type QueryParseResult =
+  | { kind: "ok"; values: Map<string, string> }
+  | { kind: "error"; reason: string };
+type QueryDecodeResult = { kind: "ok"; value: string } | { kind: "error"; reason: string };
 
 export function createConnectDeepLink(url: string, code: string): string {
   return `natstack://connect?url=${encodeURIComponent(url)}&code=${encodeURIComponent(code)}`;
@@ -15,22 +19,20 @@ export function parseConnectLink(raw: string): ConnectLink {
     return { kind: "error", reason: "Deep link must be a string" };
   }
 
-  let deepLink: URL;
-  try {
-    deepLink = new URL(raw);
-  } catch {
-    return { kind: "error", reason: "Deep link is not a valid URL" };
-  }
-
-  if (
-    deepLink.protocol !== CONNECT_DEEP_LINK_SCHEME ||
-    deepLink.hostname !== CONNECT_DEEP_LINK_HOST
-  ) {
+  const prefix = `${CONNECT_DEEP_LINK_SCHEME}//${CONNECT_DEEP_LINK_HOST}`;
+  if (!raw.startsWith(prefix)) {
     return { kind: "error", reason: "Not a natstack://connect link" };
   }
 
-  const serverUrl = deepLink.searchParams.get("url");
-  const code = deepLink.searchParams.get("code");
+  const queryStart = raw.indexOf("?");
+  if (queryStart < 0) {
+    return { kind: "error", reason: "Deep link is missing `url` or `code`" };
+  }
+  const params = parseQuery(raw.slice(queryStart + 1));
+  if (params.kind === "error") return params;
+
+  const serverUrl = params.values.get("url");
+  const code = params.values.get("code");
   if (!serverUrl || !code) {
     return { kind: "error", reason: "Deep link is missing `url` or `code`" };
   }
@@ -43,6 +45,30 @@ export function parseConnectLink(raw: string): ConnectLink {
   }
 
   return { kind: "ok", url: parsedUrl.url, code };
+}
+
+function parseQuery(raw: string): QueryParseResult {
+  const values = new Map<string, string>();
+  for (const part of raw.split("&")) {
+    if (!part) continue;
+    const separator = part.indexOf("=");
+    const key = separator >= 0 ? part.slice(0, separator) : part;
+    const value = separator >= 0 ? part.slice(separator + 1) : "";
+    const decodedKey = decodeQueryComponent(key);
+    const decodedValue = decodeQueryComponent(value);
+    if (decodedKey.kind === "error") return decodedKey;
+    if (decodedValue.kind === "error") return decodedValue;
+    values.set(decodedKey.value, decodedValue.value);
+  }
+  return { kind: "ok", values };
+}
+
+function decodeQueryComponent(raw: string): QueryDecodeResult {
+  try {
+    return { kind: "ok", value: decodeURIComponent(raw.replace(/\+/g, " ")) };
+  } catch {
+    return { kind: "error", reason: "Deep link is not a valid URL" };
+  }
 }
 
 export function parseConnectServerUrl(raw: string): { kind: "ok"; url: string } | ConnectLink {
@@ -71,7 +97,10 @@ export function parseConnectServerUrl(raw: string): { kind: "ok"; url: string } 
     server.search ||
     server.hash
   ) {
-    return { kind: "error", reason: "Server URL must be an origin without a path, query, or fragment" };
+    return {
+      kind: "error",
+      reason: "Server URL must be an origin without a path, query, or fragment",
+    };
   }
 
   if (server.protocol === "http:" && !isTrustedCleartextHost(server.hostname)) {

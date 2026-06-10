@@ -27,6 +27,24 @@ describe("connect deep links", () => {
     });
   });
 
+  it("does not rely on URL support for the natstack custom scheme", () => {
+    const RealURL = URL;
+    const urlSpy = vi.fn((input: string | URL, base?: string | URL) => {
+      if (String(input).startsWith("natstack:")) {
+        throw new Error("URL protocol is not implemented");
+      }
+      return base === undefined ? new RealURL(input) : new RealURL(input, base);
+    });
+    vi.stubGlobal("URL", urlSpy);
+
+    const link = createConnectDeepLink("https://host.tailnet.ts.net", "A".repeat(24));
+    expect(parseConnectLink(link)).toEqual({
+      kind: "ok",
+      url: "https://host.tailnet.ts.net",
+      code: "A".repeat(24),
+    });
+  });
+
   it("rejects public cleartext HTTP", () => {
     expect(parseConnectLink(createConnectDeepLink("http://example.com", "A".repeat(24)))).toEqual({
       kind: "error",
@@ -36,11 +54,15 @@ describe("connect deep links", () => {
   });
 
   it("rejects server URLs that are not plain origins", () => {
-    expect(parseConnectLink(createConnectDeepLink("https://host.tailnet.ts.net/base", "A".repeat(24)))).toEqual({
+    expect(
+      parseConnectLink(createConnectDeepLink("https://host.tailnet.ts.net/base", "A".repeat(24)))
+    ).toEqual({
       kind: "error",
       reason: "Server URL must be an origin without a path, query, or fragment",
     });
-    expect(parseConnectLink(createConnectDeepLink("https://user@host.tailnet.ts.net", "A".repeat(24)))).toEqual({
+    expect(
+      parseConnectLink(createConnectDeepLink("https://user@host.tailnet.ts.net", "A".repeat(24)))
+    ).toEqual({
       kind: "error",
       reason: "Server URL must be an origin without a path, query, or fragment",
     });
@@ -81,9 +103,7 @@ describe("connect deep links", () => {
     expect(script.createConnectDeepLink("https://host.tailnet.ts.net", "A".repeat(24))).toBe(
       createConnectDeepLink("https://host.tailnet.ts.net", "A".repeat(24))
     );
-    expect(
-      script.createStartRemotePairCommand("https://host.tailnet.ts.net", "A".repeat(24))
-    ).toBe(
+    expect(script.createStartRemotePairCommand("https://host.tailnet.ts.net", "A".repeat(24))).toBe(
       `natstack remote start --pair '${createConnectDeepLink(
         "https://host.tailnet.ts.net",
         "A".repeat(24)
