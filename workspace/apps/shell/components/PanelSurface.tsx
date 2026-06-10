@@ -6,6 +6,7 @@ import { view, type NativePanelSlotBounds, type NativePanelSlotSyncResult } from
 interface PanelSurfaceProps {
   nativeSlotId: string;
   panelId: string;
+  bindingKey?: string;
   focused: boolean;
   className?: string;
   onPointerDown?: (event: React.PointerEvent<HTMLDivElement>) => void;
@@ -29,12 +30,14 @@ function readBounds(el: HTMLElement | null): NativePanelSlotBounds | null {
 export function PanelSurface({
   nativeSlotId,
   panelId,
+  bindingKey,
   focused,
   className,
   onPointerDown,
 }: PanelSurfaceProps) {
   const elementRef = useRef<HTMLDivElement | null>(null);
   const boundRef = useRef(false);
+  const bindingKeyRef = useRef<string | undefined>(bindingKey);
   const lastBoundsRef = useRef<NativePanelSlotBounds | null>(null);
   const rafRef = useRef<number | null>(null);
   const retryTimerRef = useRef<number | null>(null);
@@ -128,6 +131,14 @@ export function PanelSurface({
       syncSlot();
     });
   }, [syncSlot]);
+
+  useEffect(() => {
+    if (bindingKeyRef.current === bindingKey) return;
+    bindingKeyRef.current = bindingKey;
+    boundRef.current = false;
+    lastBoundsRef.current = null;
+    scheduleSync();
+  }, [bindingKey, scheduleSync]);
 
   useLayoutEffect(() => {
     scheduleSync();

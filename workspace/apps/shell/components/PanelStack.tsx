@@ -893,6 +893,14 @@ export function PanelStack({
         key={visiblePanel.id}
         nativeSlotId="panel-stack:primary"
         panelId={visiblePanel.id}
+        bindingKey={[
+          visiblePanel.id,
+          visiblePanel.path ?? "",
+          visiblePanel.contextId,
+          artifacts.htmlPath ?? "",
+          artifacts.buildRevision ?? "",
+          artifacts.buildState ?? "",
+        ].join("|")}
         focused
         onPointerDown={(event) => {
           void view.forwardMouseClick(visiblePanel.id, {

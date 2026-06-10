@@ -120,4 +120,29 @@ describe("PanelSurface", () => {
       bounds: { x: 20, y: 30, width: 400, height: 300 },
     });
   });
+
+  it("rebinds the same panel slot when the native view binding key changes", async () => {
+    const { rerender } = render(
+      <PanelSurface nativeSlotId="slot-1" panelId="panel-1" bindingKey="view-1" focused />
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(shellClient.bindNativePanelSlot).toHaveBeenCalledTimes(1);
+
+    rerender(<PanelSurface nativeSlotId="slot-1" panelId="panel-1" bindingKey="view-2" focused />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(shellClient.bindNativePanelSlot).toHaveBeenCalledTimes(2);
+    expect(shellClient.bindNativePanelSlot).toHaveBeenLastCalledWith({
+      nativeSlotId: "slot-1",
+      panelId: "panel-1",
+      focused: true,
+      bounds: { x: 20, y: 30, width: 400, height: 300 },
+    });
+  });
 });
