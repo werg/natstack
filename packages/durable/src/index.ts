@@ -123,8 +123,8 @@ export abstract class DurableObjectBase {
     const row = this.sql.exec(`SELECT value FROM state WHERE key = 'schema_version'`).toArray();
     if (row.length > 0) currentVersion = parseInt(String(row[0]!["value"]), 10) || 0;
     const targetVersion = (this.constructor as typeof DurableObjectBase).schemaVersion;
+    this.createTables();
     if (currentVersion < targetVersion) {
-      this.createTables();
       this.migrate(currentVersion, targetVersion);
       // Migrations may drop legacy tables; rebuild the current schema before stamping success.
       this.createTables();

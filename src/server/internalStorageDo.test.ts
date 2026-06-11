@@ -110,4 +110,18 @@ describe("DurableObjectBase migration hook", () => {
       value: "2",
     });
   });
+
+  it("repairs a current-version schema that is missing idempotent tables", async () => {
+    const SQL = await initSqlJs();
+    const db = new SQL.Database();
+    db.run(`CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    db.run(`INSERT INTO state (key, value) VALUES ('schema_version', ?)`, ["2"]);
+
+    const { call, sql } = await createTestDO(DestructiveMigrationProbeDO, undefined, { db });
+
+    expect(await call("hasRequiredTable")).toBe(true);
+    expect(sql.exec(`SELECT value FROM state WHERE key = 'schema_version'`).one()).toEqual({
+      value: "2",
+    });
+  });
 });
