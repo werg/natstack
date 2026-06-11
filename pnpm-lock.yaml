@@ -1635,15 +1635,6 @@ importers:
         specifier: ^3.24.0
         version: 3.25.76
 
-  workspace/workers/email-sync:
-    dependencies:
-      '@workspace/gmail':
-        specifier: workspace:*
-        version: link:../../packages/gmail
-      '@workspace/runtime':
-        specifier: workspace:*
-        version: link:../../packages/runtime
-
   workspace/workers/fork:
     dependencies:
       '@workspace/runtime':
