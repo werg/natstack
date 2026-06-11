@@ -112,6 +112,119 @@ describe("ServerUnitApprovalCoordinator", () => {
     expect(deny).not.toHaveBeenCalled();
   });
 
+  it("uses an interactive startup prompt before falling back to the shell approval queue", async () => {
+    const approvalQueue = {
+      request: vi.fn(async () => "deny" as const),
+    };
+    const startupPrompt = {
+      request: vi.fn(async () => "once" as const),
+    };
+    const coordinator = new ServerUnitApprovalCoordinator({
+      approvalQueue,
+      startupPrompt,
+      delayMs: 1,
+    });
+    const applyExtension = vi.fn(async () => undefined);
+    const applyApp = vi.fn(async () => undefined);
+
+    await Promise.all([
+      coordinator.enqueue({
+        trigger: "startup",
+        entries: [unit("extension", "image-service")],
+        applyApproved: applyExtension,
+        applyDenied: vi.fn(),
+      }),
+      coordinator.enqueue({
+        trigger: "startup",
+        entries: [unit("app", "shell")],
+        applyApproved: applyApp,
+        applyDenied: vi.fn(),
+      }),
+    ]);
+
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+    expect(startupPrompt.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Approve workspace units",
+        units: [
+          expect.objectContaining({ unitKind: "extension", unitName: "image-service" }),
+          expect.objectContaining({ unitKind: "app", unitName: "shell" }),
+        ],
+      })
+    );
+    expect(applyExtension).toHaveBeenCalledOnce();
+    expect(applyApp).toHaveBeenCalledOnce();
+  });
+
+  it("auto-approves startup app batches before interactive startup approval", async () => {
+    const approvalQueue = {
+      request: vi.fn(async () => "deny" as const),
+    };
+    const startupPrompt = {
+      request: vi.fn(async () => "once" as const),
+    };
+    const coordinator = new ServerUnitApprovalCoordinator({
+      approvalQueue,
+      startupPrompt,
+      autoApproveStartup: true,
+      delayMs: 1,
+    });
+    const apply = vi.fn(async () => undefined);
+
+    await coordinator.enqueue({
+      trigger: "startup",
+      entries: [unit("app", "shell")],
+      applyApproved: apply,
+      applyDenied: vi.fn(),
+    });
+
+    expect(startupPrompt.request).not.toHaveBeenCalled();
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+    expect(apply).toHaveBeenCalledOnce();
+  });
+
+  it("prompts only for unresolved startup extension batches when app startup is auto-approved", async () => {
+    const approvalQueue = {
+      request: vi.fn(async () => "deny" as const),
+    };
+    const startupPrompt = {
+      request: vi.fn(async () => "once" as const),
+    };
+    const coordinator = new ServerUnitApprovalCoordinator({
+      approvalQueue,
+      startupPrompt,
+      autoApproveStartup: true,
+      delayMs: 1,
+    });
+    const applyExtension = vi.fn(async () => undefined);
+    const applyApp = vi.fn(async () => undefined);
+
+    await Promise.all([
+      coordinator.enqueue({
+        trigger: "startup",
+        entries: [unit("extension", "image-service")],
+        applyApproved: applyExtension,
+        applyDenied: vi.fn(),
+      }),
+      coordinator.enqueue({
+        trigger: "startup",
+        entries: [unit("app", "shell")],
+        applyApproved: applyApp,
+        applyDenied: vi.fn(),
+      }),
+    ]);
+
+    expect(applyApp).toHaveBeenCalledOnce();
+    expect(startupPrompt.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Approve workspace extensions",
+        units: [expect.objectContaining({ unitKind: "extension", unitName: "image-service" })],
+      })
+    );
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+    expect(applyExtension).toHaveBeenCalledOnce();
+  });
+
   it("still prompts for startup extension batches when template app startup is auto-approved", async () => {
     const approvalQueue = {
       request: vi.fn(async () => "once" as const),

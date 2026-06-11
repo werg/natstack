@@ -293,10 +293,15 @@ function createWorkspaceResolvePlugin(
 
         if (target) {
           const resolved = path.resolve(sourcePath, target);
+
+          // Build-output exports are generated artifacts. Prefer source even
+          // when a stale dist/lib/build/out file exists in the extracted tree.
+          const srcFallback = resolveSourceFallback(sourcePath, target);
+          if (isBuildOutputTarget(target) && srcFallback) return { path: srcFallback };
+
           if (fs.existsSync(resolved)) return { path: resolved };
 
           // dist/ not in git-extracted source — map to TypeScript source
-          const srcFallback = resolveSourceFallback(sourcePath, target);
           if (srcFallback) return { path: srcFallback };
         }
 
@@ -318,6 +323,10 @@ const SOURCE_ENTRY_CANDIDATES = ["src/index.ts", "src/index.tsx", "index.ts", "i
 
 /** Common build output directories that tsc/other compilers write to (gitignored). */
 const BUILD_OUTPUT_DIRS = ["dist", "lib", "build", "out"];
+
+function isBuildOutputTarget(target: string): boolean {
+  return BUILD_OUTPUT_DIRS.some((dir) => target === `./${dir}` || target.startsWith(`./${dir}/`));
+}
 
 /**
  * Map a build-output export target to its TypeScript source equivalent.

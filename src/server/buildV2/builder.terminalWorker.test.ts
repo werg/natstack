@@ -119,4 +119,71 @@ describe("buildUnit terminal worker builds", () => {
     const bundle = result.artifacts.find((a) => a.role === "primary")?.content ?? "";
     expect(bundle).toContain("yoga.wasm");
   }, 60_000);
+
+  it("prefers workspace package source over stale build-output exports", async () => {
+    const pkgDir = path.join(workspaceRoot, "packages", "stale-dist-lib");
+    fs.mkdirSync(path.join(pkgDir, "src"), { recursive: true });
+    fs.mkdirSync(path.join(pkgDir, "dist"), { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "@workspace/stale-dist-lib",
+        version: "0.1.0",
+        type: "module",
+        exports: {
+          ".": "./dist/index.js",
+        },
+      })
+    );
+    fs.writeFileSync(
+      path.join(pkgDir, "src", "index.ts"),
+      'export const freshWorkerSymbol = "fresh-source-export";\n'
+    );
+    fs.writeFileSync(
+      path.join(pkgDir, "dist", "index.js"),
+      'export const staleWorkerSymbol = "stale-dist-export";\n'
+    );
+    commit(pkgDir, "stale dist lib");
+
+    const workerDir = path.join(workspaceRoot, "workers", "stale-dist-worker");
+    fs.mkdirSync(workerDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(workerDir, "package.json"),
+      JSON.stringify({
+        name: "@workspace-workers/stale-dist-worker",
+        version: "0.1.0",
+        private: true,
+        type: "module",
+        natstack: {
+          entry: "worker.ts",
+          durable: { classes: [{ className: "StaleDistWorker" }] },
+        },
+        dependencies: { "@workspace/stale-dist-lib": "workspace:*" },
+      })
+    );
+    fs.writeFileSync(
+      path.join(workerDir, "worker.ts"),
+      [
+        'import { freshWorkerSymbol } from "@workspace/stale-dist-lib";',
+        "export class StaleDistWorker {",
+        "  async fetch() {",
+        "    return new Response(freshWorkerSymbol);",
+        "  }",
+        "}",
+      ].join("\n")
+    );
+    commit(workerDir, "stale dist worker");
+
+    const graph = discoverPackageGraph(workspaceRoot);
+    const result = await buildUnit(
+      graph.get("@workspace-workers/stale-dist-worker"),
+      "ev-stale-dist-worker",
+      graph,
+      workspaceRoot
+    );
+
+    const bundle = result.artifacts.find((a) => a.role === "primary")?.content ?? "";
+    expect(bundle).toContain("fresh-source-export");
+    expect(bundle).not.toContain("stale-dist-export");
+  });
 });

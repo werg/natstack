@@ -1,5 +1,6 @@
 import type { UnitApprovalCoordinator } from "@natstack/unit-host";
 import type { PendingUnitBatchApproval, UnitBatchEntry } from "@natstack/shared/approvals";
+import type { GrantedDecision } from "./services/approvalQueue.js";
 
 export interface UnitApprovalQueueLike {
   request(req: {
@@ -15,6 +16,14 @@ export interface UnitApprovalQueueLike {
     units: PendingUnitBatchApproval["units"];
     configWrite?: PendingUnitBatchApproval["configWrite"];
   }): Promise<"once" | "session" | "version" | "repo" | "deny">;
+}
+
+export interface StartupUnitApprovalPrompt {
+  request(req: {
+    title: string;
+    description: string;
+    units: PendingUnitBatchApproval["units"];
+  }): Promise<GrantedDecision>;
 }
 
 interface PendingRequest {
@@ -39,6 +48,7 @@ export class ServerUnitApprovalCoordinator implements UnitApprovalCoordinator<Un
       approvalQueue: UnitApprovalQueueLike;
       delayMs?: number;
       autoApproveStartup?: boolean;
+      startupPrompt?: StartupUnitApprovalPrompt;
     }
   ) {}
 
@@ -85,6 +95,21 @@ export class ServerUnitApprovalCoordinator implements UnitApprovalCoordinator<Un
         if (requests.length === 0) return;
       }
       const units = requests.flatMap((request) => request.entries);
+      if (trigger === "startup" && this.deps.startupPrompt && units.length > 0) {
+        const decision = await this.deps.startupPrompt.request({
+          title: unitBatchTitle(units, trigger),
+          description: unitBatchDescription(units),
+          units,
+        });
+        if (decision === "deny") {
+          for (const request of requests) request.applyDenied();
+        } else {
+          for (const request of requests) await request.applyApproved();
+        }
+        for (const request of requests) request.resolve();
+        return;
+      }
+      const queuedUnits = requests.flatMap((request) => request.entries);
       const decision = await this.deps.approvalQueue.request({
         kind: "unit-batch",
         callerId: "system:units",
@@ -92,9 +117,9 @@ export class ServerUnitApprovalCoordinator implements UnitApprovalCoordinator<Un
         repoPath: "meta",
         effectiveVersion: "",
         trigger,
-        title: unitBatchTitle(units, trigger),
-        description: unitBatchDescription(units),
-        units,
+        title: unitBatchTitle(queuedUnits, trigger),
+        description: unitBatchDescription(queuedUnits),
+        units: queuedUnits,
         configWrite: null,
       });
       if (decision === "deny") {

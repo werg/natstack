@@ -559,7 +559,9 @@ function buildServerArgs(options, host, config = {}) {
   if (options.workspaceDir) args.push("--workspace-dir", options.workspaceDir);
   if (options.appRoot) args.push("--app-root", options.appRoot);
   if (options.publicUrl) args.push("--public-url", options.publicUrl);
+  if (config.interactiveStartupApproval) args.push("--interactive-startup-approval");
   if (config.requireMobileReady) args.push("--require-mobile-ready");
+  if (config.requireElectronReady) args.push("--require-electron-ready");
   args.push(...options.serverArgs);
   return args;
 }

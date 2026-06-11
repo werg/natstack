@@ -193,6 +193,8 @@ interface CliArgs {
   publicUrl?: string;
   requirePublicUrl?: boolean;
   requireMobileReady?: boolean;
+  requireElectronReady?: boolean;
+  interactiveStartupApproval?: boolean;
   noVpnDetect?: boolean;
   help?: boolean;
 }
@@ -233,6 +235,11 @@ Options:
   --require-public-url     Fail startup unless the advertised public URL is verified reachable.
   --require-mobile-ready   Fail startup unless the workspace React Native app can be
                            built and served to native mobile clients.
+  --require-electron-ready Fail startup unless the workspace Electron shell app can be
+                           built and served to desktop clients.
+  --interactive-startup-approval
+                           Prompt in the server terminal for unapproved startup
+                           workspace apps/extensions before reporting ready.
   --no-vpn-detect          Skip auto-detection and auto-configuration of the VPN-based
                            public URL (Tailscale today). Useful if you manage
                            tailscale serve yourself or use --public-url.
@@ -328,6 +335,8 @@ function parseArgs(argv: string[]): CliArgs {
     "public-url",
     "require-public-url",
     "require-mobile-ready",
+    "require-electron-ready",
+    "interactive-startup-approval",
     "no-vpn-detect",
     "help",
   ]);
@@ -339,6 +348,8 @@ function parseArgs(argv: string[]): CliArgs {
     "print-credentials",
     "require-public-url",
     "require-mobile-ready",
+    "require-electron-ready",
+    "interactive-startup-approval",
     "no-vpn-detect",
     "help",
   ]);
@@ -439,6 +450,12 @@ function parseArgs(argv: string[]): CliArgs {
         break;
       case "require-mobile-ready":
         args.requireMobileReady = true;
+        break;
+      case "require-electron-ready":
+        args.requireElectronReady = true;
+        break;
+      case "interactive-startup-approval":
+        args.interactiveStartupApproval = true;
         break;
       case "no-vpn-detect":
         args.noVpnDetect = true;
@@ -644,9 +661,17 @@ async function main() {
   const { ServerUnitApprovalCoordinator } = await import("./unitApprovalCoordinator.js");
   const requireMobileReady =
     args.requireMobileReady || process.env["NATSTACK_REQUIRE_MOBILE_READY"] === "1";
+  const requireElectronReady =
+    args.requireElectronReady || process.env["NATSTACK_REQUIRE_ELECTRON_READY"] === "1";
+  const interactiveStartupApproval =
+    args.interactiveStartupApproval || process.env["NATSTACK_INTERACTIVE_STARTUP_APPROVAL"] === "1";
+  const startupPrompt = interactiveStartupApproval
+    ? (await import("./startupApprovalPrompt.js")).createTerminalStartupApprovalPrompt()
+    : undefined;
   const unitApprovalCoordinator = new ServerUnitApprovalCoordinator({
     approvalQueue,
     autoApproveStartup: workspaceCreatedFromTemplate,
+    startupPrompt,
   });
   const credentialLifecycle = new CredentialLifecycle({
     credentialStore,
@@ -830,7 +855,11 @@ async function main() {
     if (extensionHostForGateway) {
       await extensionHostForGateway
         .reconcileDeclared(resolveDeclaredExtensions(nextConfig), { trigger })
-        .then(() => extensionHostForGateway?.whenReconciled())
+        .then(() =>
+          interactiveStartupApproval
+            ? extensionHostForGateway?.whenSettled()
+            : extensionHostForGateway?.whenReconciled()
+        )
         .then(() => import("@natstack/shared/workspace/extensionRegistry"))
         .then(({ writeExtensionRegistry }) => writeExtensionRegistry(workspacePath))
         .catch((err: unknown) =>
@@ -849,10 +878,26 @@ async function main() {
         );
       }
     }
+    if (trigger === "startup" && requireElectronReady) {
+      const appApproval = appHostForGateway?.preapproveHostTargetDeclarations(
+        "electron",
+        resolveDeclaredApps(nextConfig)
+      );
+      const approvedCount = appApproval?.identityKeys.length ?? 0;
+      if (approvedCount > 0) {
+        console.log(
+          `[Desktop] Preapproved ${approvedCount} Electron app startup unit${approvedCount === 1 ? "" : "s"} for pairing`
+        );
+      }
+    }
     if (appHostForGateway) {
       await appHostForGateway
         .reconcileDeclared(resolveDeclaredApps(nextConfig), { trigger })
-        .then(() => appHostForGateway?.whenReconciled())
+        .then(() =>
+          interactiveStartupApproval || requireElectronReady
+            ? appHostForGateway?.whenSettled()
+            : appHostForGateway?.whenReconciled()
+        )
         .catch((err: unknown) =>
           console.warn("[Apps] Failed to reconcile declared workspace units:", err)
         );
@@ -1419,6 +1464,9 @@ async function main() {
             approvalQueue,
             grantStore: capabilityGrantStore,
           },
+          canCreateCrossContextEntity: (caller, spec) =>
+            spec.kind === "panel" &&
+            appHostForGateway?.hasAppCapability(caller.runtime.id, "panel-hosting") === true,
           setEntityTitle: (entityId, title, options) =>
             entityTitleService.setTitle(entityId, title, options),
         });
@@ -2739,6 +2787,27 @@ async function main() {
     }
     console.log(
       `[Mobile] React Native app ready: ${readiness.appId} (${readiness.source}) build ${readiness.buildKey}`
+    );
+  }
+  if (requireElectronReady) {
+    const appHost = container.get<import("./appHost.js").AppHost>("appHost");
+    const readiness = await appHost.ensureElectronReady();
+    if (!readiness.ready) {
+      printReadinessActionBlock("Electron desktop shell app is not ready", [
+        "This server was started with desktop pairing enabled, but the",
+        "workspace-owned Electron shell app is not ready to serve to desktop clients.",
+        "",
+        readiness.reason ?? "App host is not available",
+        ...(readiness.source ? [`Source: ${readiness.source}`] : []),
+        ...(readiness.appId ? [`App: ${readiness.appId}`] : []),
+        ...(readiness.details.length ? ["", ...readiness.details] : []),
+        "",
+        "Fix the blocking app build above, then restart this command.",
+      ]);
+      process.exit(1);
+    }
+    console.log(
+      `[Desktop] Electron shell app ready: ${readiness.appId} (${readiness.source}) build ${readiness.buildKey}`
     );
   }
 

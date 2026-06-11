@@ -641,6 +641,23 @@ describe("AppHost", () => {
     );
   });
 
+  it("ensures the selected Electron shell has an active HTML build before desktop pairing", async () => {
+    const { host, buildSystem, graphNode } = makeHarness();
+    graphNode.manifest.app.capabilities = ["panel-hosting"] as never;
+
+    await host.reconcileDeclared([{ source: "apps/shell", ref: "main" }]);
+    const readiness = await host.ensureElectronReady();
+
+    expect(readiness).toMatchObject({
+      ready: true,
+      source: "apps/shell",
+      appId: "@workspace-apps/shell",
+      buildKey: "app-key",
+      url: "http://127.0.0.1:1234/_a/app-key/index.html",
+    });
+    expect(buildSystem.getBuild).toHaveBeenCalledWith("@workspace-apps/shell", "main");
+  });
+
   it("marks unselected Electron app availability events for the host to ignore", async () => {
     const { host, buildSystem, eventService, graphNode, workspacePath } = makeHarness();
     graphNode.manifest.app.capabilities = ["panel-hosting"] as never;
@@ -718,7 +735,7 @@ describe("AppHost", () => {
       target: "react-native",
       activeBundleKey: "field-key",
       activeEv: "ev-field",
-      capabilities: ["notifications"],
+      capabilities: ["notifications", "panel-hosting"],
     });
 
     host.setHostTargetSelection("react-native", { source: "apps/field-mobile" });
@@ -729,6 +746,8 @@ describe("AppHost", () => {
       effectiveVersion: "ev-field",
     });
     expect(host.registerReactNativeAppPrincipal("device-1")).toBe("app:apps/field-mobile:device-1");
+    expect(host.hasAppCapability("app:apps/field-mobile:device-1", "panel-hosting")).toBe(true);
+    expect(host.hasAppCapability("app:apps/mobile:device-1", "panel-hosting")).toBe(false);
   });
 
   it("records explicit host trust identity when activating a pinned commit", async () => {

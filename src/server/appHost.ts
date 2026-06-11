@@ -150,6 +150,23 @@ export type ReactNativeHostReadiness =
       details: string[];
     };
 
+export type ElectronHostReadiness =
+  | {
+      ready: true;
+      source: string;
+      appId: string;
+      buildKey: string;
+      url: string;
+      details: string[];
+    }
+  | {
+      ready: false;
+      source: string | null;
+      appId?: string | null;
+      reason: string;
+      details: string[];
+    };
+
 interface BuildSystemLike {
   getBuild(
     unitPath: string,
@@ -1070,6 +1087,124 @@ export class AppHost {
     return this.reactNativeReadinessSnapshot(candidate.source);
   }
 
+  async ensureElectronReady(source?: string | null): Promise<ElectronHostReadiness> {
+    await this.whenReconciled();
+
+    const first = this.electronReadinessSnapshot(source);
+    if (first.ready) return first;
+
+    const resolvedSource = first.source ?? source ?? this.getSelectedElectronSource();
+    if (!resolvedSource) return first;
+    const candidate = this.listHostTargetCandidates("electron").find(
+      (item) =>
+        item.source === normalizeRepoPath(resolvedSource) ||
+        item.name === resolvedSource ||
+        item.name === first.appId
+    );
+    if (!candidate) return first;
+    const declared = this.lastDeclared.find((decl) => {
+      const node = this.tryFindAppNode(decl.source);
+      return (
+        normalizeRepoPath(decl.source) === normalizeRepoPath(candidate.source) ||
+        node?.name === candidate.name
+      );
+    });
+    if (!declared) {
+      return {
+        ready: false,
+        source: candidate.source,
+        appId: candidate.name,
+        reason: "Electron app is not declared in meta/natstack.yml",
+        details: [`Declare ${candidate.source} under apps: before desktop clients can pair.`],
+      };
+    }
+
+    await this.reconcileDeclared(this.lastDeclared, { trigger: "startup" });
+    await this.whenSettled();
+    return this.electronReadinessSnapshot(candidate.source);
+  }
+
+  private electronReadinessSnapshot(source?: string | null): ElectronHostReadiness {
+    const resolvedSource = source ?? this.getSelectedElectronSource();
+    const candidates = this.listHostTargetCandidates("electron");
+    if (!resolvedSource) {
+      return {
+        ready: false,
+        source: null,
+        reason: "No Electron workspace app is selected",
+        details:
+          candidates.length > 0
+            ? candidates.map(
+                (candidate) =>
+                  `${candidate.source}: ${candidate.status}${
+                    candidate.compatibility.reasons.length > 0
+                      ? ` (${candidate.compatibility.reasons.join("; ")})`
+                      : ""
+                  }`
+              )
+            : ["No apps with natstack.app.target: electron were found."],
+      };
+    }
+
+    const normalizedSource = normalizeRepoPath(resolvedSource);
+    const candidate = candidates.find(
+      (item) => item.source === normalizedSource || item.name === resolvedSource
+    );
+    if (!candidate) {
+      return {
+        ready: false,
+        source: normalizedSource,
+        reason: "Selected Electron app is not available",
+        details:
+          candidates.length > 0
+            ? candidates.map((item) => `${item.source}: ${item.status}`)
+            : ["No Electron app candidates were found."],
+      };
+    }
+    if (!candidate.compatibility.selectable) {
+      return {
+        ready: false,
+        source: candidate.source,
+        appId: candidate.name,
+        reason: "Selected Electron app is not compatible",
+        details: candidate.compatibility.reasons,
+      };
+    }
+
+    const entry = this.registry
+      .list()
+      .find(
+        (item) =>
+          item.target === "electron" &&
+          item.status === "running" &&
+          normalizeRepoPath(item.source.repo) === normalizeRepoPath(candidate.source) &&
+          item.activeBundleKey
+      );
+    const build = entry?.activeBundleKey
+      ? this.deps.buildSystem.getBuildByKey?.(entry.activeBundleKey)
+      : null;
+    const htmlArtifact = build?.artifacts?.find((artifact) => artifact.role === "html");
+    if (!entry?.activeBundleKey || !build || !htmlArtifact) {
+      return {
+        ready: false,
+        source: candidate.source,
+        appId: candidate.name,
+        reason: "Selected Electron app does not have an active HTML build",
+        details: [`${candidate.source}: ${candidate.status}`],
+      };
+    }
+
+    const baseUrl = `${this.deps.getGatewayUrl()}/_a/${encodeURIComponent(entry.activeBundleKey)}`;
+    return {
+      ready: true,
+      source: candidate.source,
+      appId: entry.name,
+      buildKey: entry.activeBundleKey,
+      url: `${baseUrl}/${encodeArtifactPath(htmlArtifact.path)}`,
+      details: [],
+    };
+  }
+
   private reactNativeReadinessSnapshot(source?: string | null): ReactNativeHostReadiness {
     const resolvedSource = source ?? this.getSelectedReactNativeSource();
     const candidates = this.listHostTargetCandidates("react-native");
@@ -1684,6 +1819,35 @@ export class AppHost {
     const candidates = this.listHostTargetCandidates("react-native").filter(
       (candidate) => candidate.compatibility.selectable
     );
+    const onlyCandidate = candidates[0];
+    if (candidates.length === 1 && onlyCandidate) return onlyCandidate.source;
+    return null;
+  }
+
+  private getSelectedElectronSource(): string | null {
+    const current = this.getHostTargetSelection("electron");
+    if (current.valid && current.selection) return current.selection.source;
+    const activeEntries = this.registry
+      .list()
+      .filter(
+        (entry) =>
+          entry.target === "electron" && entry.status === "running" && !!entry.activeBundleKey
+      );
+    const canonicalShell = activeEntries.find(
+      (entry) => normalizeRepoPath(entry.source.repo) === "apps/shell"
+    );
+    if (canonicalShell) return normalizeRepoPath(canonicalShell.source.repo);
+    const onlyActiveEntry = activeEntries[0];
+    if (activeEntries.length === 1 && onlyActiveEntry) {
+      return normalizeRepoPath(onlyActiveEntry.source.repo);
+    }
+    const candidates = this.listHostTargetCandidates("electron").filter(
+      (candidate) => candidate.compatibility.selectable
+    );
+    const canonicalCandidate = candidates.find(
+      (candidate) => normalizeRepoPath(candidate.source) === "apps/shell"
+    );
+    if (canonicalCandidate) return canonicalCandidate.source;
     const onlyCandidate = candidates[0];
     if (candidates.length === 1 && onlyCandidate) return onlyCandidate.source;
     return null;
