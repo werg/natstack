@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import initSqlJs from "sql.js";
 
 import { DurableObjectBase } from "@natstack/durable";
 import { createTestDO } from "@natstack/durable/test-utils";
@@ -63,12 +64,48 @@ class MigrationProbeDO extends DurableObjectBase {
   }
 }
 
+class DestructiveMigrationProbeDO extends DurableObjectBase {
+  static override schemaVersion = 2;
+
+  protected createTables(): void {
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS required_table (id TEXT PRIMARY KEY)`);
+  }
+
+  protected override migrate(fromVersion: number, _toVersion: number): void {
+    if (fromVersion > 0) this.sql.exec(`DROP TABLE IF EXISTS required_table`);
+  }
+
+  hasRequiredTable(): boolean {
+    return (
+      this.sql
+        .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'required_table'`)
+        .toArray().length === 1
+    );
+  }
+}
+
 describe("DurableObjectBase migration hook", () => {
   it("runs migrate before recording the target schema version and skips after readiness", async () => {
     const { call, sql } = await createTestDO(MigrationProbeDO);
 
     expect(await call("countMigrations")).toBe(1);
     expect(await call("countMigrations")).toBe(1);
+    expect(sql.exec(`SELECT value FROM state WHERE key = 'schema_version'`).one()).toEqual({
+      value: "2",
+    });
+  });
+
+  it("recreates current tables after a destructive migration before recording readiness", async () => {
+    const SQL = await initSqlJs();
+    const db = new SQL.Database();
+    db.run(`CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    db.run(`INSERT INTO state (key, value) VALUES ('schema_version', ?)`, ["1"]);
+
+    const { call, sql } = await createTestDO(DestructiveMigrationProbeDO, undefined, { db });
+
+    expect(await call("hasRequiredTable")).toBe(true);
+    sql.exec(`INSERT INTO required_table (id) VALUES ('row-1')`);
+    expect(sql.exec(`SELECT id FROM required_table`).one()).toEqual({ id: "row-1" });
     expect(sql.exec(`SELECT value FROM state WHERE key = 'schema_version'`).one()).toEqual({
       value: "2",
     });

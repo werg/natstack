@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import initSqlJs from "sql.js";
 
 import { createTestDO } from "@natstack/durable/test-utils";
 import {
@@ -10,6 +11,15 @@ import { WorkspaceDOTestable } from "./workspaceDO.testFixture.js";
 
 const SOURCE = "panels/example";
 const VERSION = "v1";
+const WORKSPACE_TABLES = ["entities", "slots", "slot_history", "lifecycle_ops", "do_alarms"];
+
+async function createDbAtSchemaVersion(schemaVersion: number) {
+  const SQL = await initSqlJs();
+  const db = new SQL.Database();
+  db.run(`CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+  db.run(`INSERT INTO state (key, value) VALUES ('schema_version', ?)`, [String(schemaVersion)]);
+  return db;
+}
 
 function panelInput(overrides: Partial<Parameters<WorkspaceDO["entityActivate"]>[0]> = {}) {
   return {
@@ -31,6 +41,22 @@ function doInput(overrides: Partial<Parameters<WorkspaceDO["entityActivate"]>[0]
     ...overrides,
   };
 }
+
+describe("WorkspaceDO schema migration", () => {
+  it("recreates current tables after destructive pre-release migrations", async () => {
+    const db = await createDbAtSchemaVersion(10);
+    const { sql } = await createTestDO(WorkspaceDOTestable, undefined, { db });
+
+    for (const table of WORKSPACE_TABLES) {
+      expect(
+        sql.exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).one()
+      ).toEqual({ name: table });
+    }
+    expect(sql.exec(`SELECT value FROM state WHERE key = 'schema_version'`).one()).toEqual({
+      value: "11",
+    });
+  });
+});
 
 describe("WorkspaceDO.entityActivate", () => {
   let instance: WorkspaceDO;

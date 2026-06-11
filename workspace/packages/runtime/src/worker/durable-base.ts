@@ -255,6 +255,8 @@ export abstract class DurableObjectBase {
     if (currentVersion < targetVersion) {
       this.createTables();
       this.migrate(currentVersion, targetVersion);
+      // Migrations may drop legacy tables; rebuild the current schema before stamping success.
+      this.createTables();
       this.sql.exec(
         `INSERT OR REPLACE INTO state (key, value) VALUES ('schema_version', ?)`,
         String(targetVersion)
