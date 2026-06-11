@@ -53,12 +53,6 @@ export interface ActivatePreparedAppBundleResult {
   activated: boolean;
 }
 
-export const CANONICAL_MOBILE_APP_CALLER_PREFIX = "app:apps/mobile:";
-
-export function isCanonicalMobileAppCallerId(callerId: string): boolean {
-  return callerId.startsWith(CANONICAL_MOBILE_APP_CALLER_PREFIX);
-}
-
 export function isWorkspaceMobileAppCallerId(callerId: string, deviceId?: string): boolean {
   if (!callerId.startsWith("app:apps/")) return false;
   if (deviceId && !callerId.endsWith(`:${deviceId}`)) return false;

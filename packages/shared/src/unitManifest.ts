@@ -80,6 +80,7 @@ export const APP_CAPABILITIES_BY_TARGET = {
     "fs-write",
     "clipboard",
     "open-external",
+    "panel-hosting",
     "connection-management",
   ],
   terminal: [

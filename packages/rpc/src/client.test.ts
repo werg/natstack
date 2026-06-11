@@ -96,6 +96,26 @@ describe("createRpcClient", () => {
     await expect(peer.call.sum(10, 32)).resolves.toBe(42);
   });
 
+  it("generates request ids when crypto.randomUUID is unavailable", async () => {
+    const cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+    Object.defineProperty(globalThis, "crypto", { configurable: true, value: {} });
+    try {
+      const network = createInProcessNetwork();
+      const a = createRpcClient({ selfId: "a", transport: inProcessTransport("a", network) });
+      const b = createRpcClient({ selfId: "b", transport: inProcessTransport("b", network) });
+
+      b.expose("ping", () => "pong");
+
+      await expect(a.call("b", "ping", [])).resolves.toBe("pong");
+    } finally {
+      if (cryptoDescriptor) {
+        Object.defineProperty(globalThis, "crypto", cryptoDescriptor);
+      } else {
+        Reflect.deleteProperty(globalThis, "crypto");
+      }
+    }
+  });
+
   it("round-trips streaming responses", async () => {
     const network = createInProcessNetwork();
     const a = createRpcClient({ selfId: "a", transport: inProcessTransport("a", network) });

@@ -32,7 +32,8 @@ const FRAME_END = 0x03;
 const FRAME_ERROR = 0x04;
 
 function generateRequestId(): string {
-  return crypto.randomUUID();
+  if (typeof globalThis.crypto?.randomUUID === "function") return globalThis.crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {

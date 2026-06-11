@@ -2,6 +2,7 @@
 // side to be initialized before anything renders. The drawer navigator and the
 // panel-tree swipe gestures depend on it.
 import "react-native-gesture-handler";
+import "./src/setupGlobals";
 import React, { useEffect } from "react";
 import { AppRegistry, Appearance, StatusBar } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";

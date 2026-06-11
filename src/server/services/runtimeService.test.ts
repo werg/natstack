@@ -77,6 +77,9 @@ interface BuildDepsOptions {
     Parameters<typeof createRuntimeService>[0]["hooks"]
   >["resolveAppEffectiveVersion"];
   setEntityTitle?: Parameters<typeof createRuntimeService>[0]["setEntityTitle"];
+  canCreateCrossContextEntity?: Parameters<
+    typeof createRuntimeService
+  >[0]["canCreateCrossContextEntity"];
 }
 
 async function buildDeps(opts: BuildDepsOptions = {}) {
@@ -116,6 +119,7 @@ async function buildDeps(opts: BuildDepsOptions = {}) {
     capability: { approvalQueue, grantStore },
     entityCache,
     setEntityTitle: opts.setEntityTitle,
+    canCreateCrossContextEntity: opts.canCreateCrossContextEntity,
   });
 
   return {
@@ -149,6 +153,17 @@ const appCaller = (id = "app:apps/shell:desktop", _contextId = "ctx-caller") =>
     effectiveVersion: "v1",
   });
 
+const panelHostAppCaller = (
+  id = "app:apps/field-mobile:device-1",
+  repoPath = "apps/field-mobile"
+) =>
+  createVerifiedCaller(id, "app", {
+    callerId: id,
+    callerKind: "app",
+    repoPath,
+    effectiveVersion: "v-host",
+  });
+
 const shellCaller = createVerifiedCaller("shell:main", "shell");
 const serverCaller = createVerifiedCaller("server:main", "server");
 
@@ -159,6 +174,15 @@ const doCreateSpec = (
   source: "workers/example",
   className: "MyDO",
   key: "k1",
+  ...overrides,
+});
+
+const panelCreateSpec = (
+  overrides: Partial<Extract<RuntimeEntityCreateSpec, { kind: "panel" }>> = {}
+): RuntimeEntityCreateSpec => ({
+  kind: "panel",
+  source: "panels/example",
+  key: "p1",
   ...overrides,
 });
 
@@ -385,6 +409,22 @@ describe("runtimeService.createEntity context policy", () => {
       doCreateSpec({ contextId: "ctx-other" }),
     ])) as { contextId: string };
     expect(handle.contextId).toBe("ctx-other");
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+  });
+
+  it("bypasses approval for app callers trusted by the host policy", async () => {
+    const canCreateCrossContextEntity = vi.fn(() => true);
+    const { service, approvalQueue } = await buildDeps({ canCreateCrossContextEntity });
+    const caller = panelHostAppCaller();
+
+    const handle = (await service.handler({ caller }, "createEntity", [
+      panelCreateSpec({ contextId: "ctx-target" }),
+    ])) as { contextId: string };
+    expect(handle.contextId).toBe("ctx-target");
+    expect(canCreateCrossContextEntity).toHaveBeenCalledWith(
+      caller,
+      expect.objectContaining({ kind: "panel", source: "panels/example" })
+    );
     expect(approvalQueue.request).not.toHaveBeenCalled();
   });
 

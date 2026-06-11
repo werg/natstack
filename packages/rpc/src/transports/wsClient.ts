@@ -205,7 +205,24 @@ export function wsClientTransport(config: WsClientTransportConfig): EnvelopeRpcT
       return;
     }
 
-    const nextSocket = config.adapter.createSocket(config.getWsUrl());
+    let nextSocket: WsLike;
+    try {
+      nextSocket = config.adapter.createSocket(config.getWsUrl());
+    } catch (error) {
+      console.warn(`[${prefix}] Failed to create WebSocket:`, error);
+      if (!hasConnectedBefore) {
+        closed = true;
+        setStatus("disconnected");
+        firstConnectReject?.(
+          error instanceof Error ? error : new Error("Failed to create WebSocket")
+        );
+        firstConnectReject = null;
+        firstConnectResolve = null;
+        return;
+      }
+      scheduleReconnect(socketGeneration);
+      return;
+    }
     socket = nextSocket;
     nextSocket.onopen = () => {
       if (socketGeneration !== generation || socket !== nextSocket) return;

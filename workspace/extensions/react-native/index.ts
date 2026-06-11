@@ -134,6 +134,9 @@ async function runReactNativeBundle(
     cwd: path.join(repoRoot, "apps", "mobile"),
     env: {
       ...process.env,
+      // Provider builds are one-shot bundles. Keep Metro out of watch mode so
+      // local mobile smoke tests do not depend on the host inotify limit.
+      CI: "1",
       NATSTACK_WORKSPACE_APP_ROOT: input.sourcePath,
     },
   });

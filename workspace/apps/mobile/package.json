@@ -14,7 +14,8 @@
         "notifications",
         "keychain",
         "clipboard",
-        "open-external"
+        "open-external",
+        "panel-hosting"
       ]
     }
   },

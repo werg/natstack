@@ -671,7 +671,11 @@ export class UnitHost<
     const approval = this.approvalForDeclarations(declared);
     const version = this.opts.currentDeclarationVersion();
     if (approval.identityKeys.length > 0) {
-      this.preapprovedTrust = { version, keys: new Set(approval.identityKeys) };
+      const keys =
+        this.preapprovedTrust && this.preapprovedTrust.version === version
+          ? new Set([...this.preapprovedTrust.keys, ...approval.identityKeys])
+          : new Set(approval.identityKeys);
+      this.preapprovedTrust = { version, keys };
     }
     return approval;
   }

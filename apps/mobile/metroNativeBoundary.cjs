@@ -18,6 +18,7 @@ const BLOCKED_NATIVE_IMPORTS = {
   ],
   "@react-native-async-storage/async-storage": [
     "src/services/backgroundActionQueue.ts",
+    "src/services/connectLinkReplayGuard.ts",
     "src/services/pushNotifications.ts",
     "src/shellCore/localViewState.ts",
   ],

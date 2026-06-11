@@ -649,6 +649,7 @@ describe("UnitHost", () => {
     productSeedTrust?: (identity: UnitBuildIdentity) => boolean;
     approvalCoordinator?: UnitApprovalCoordinator<TestApproval>;
     declarationVersion?: string | null;
+    extraNode?: TestNode;
   } = {}) {
     const root = tempRoot();
     const registry = new UnitRegistry<UnitRegistryEntryBase>({
@@ -667,6 +668,7 @@ describe("UnitHost", () => {
       relativePath: "extensions/a",
       version: "1.0.0",
     };
+    const nodes = [node, ...(opts.extraNode ? [opts.extraNode] : [])];
     const applied: string[] = [];
     const removed: string[] = [];
     const denied: string[][] = [];
@@ -689,8 +691,11 @@ describe("UnitHost", () => {
       currentDeclarationVersion: () =>
         opts.declarationVersion === undefined ? "meta-head" : opts.declarationVersion,
       resolveNode: (source) => {
-        if (source !== node.relativePath && source !== node.name) throw new Error("missing");
-        return node;
+        const match = nodes.find(
+          (candidate) => source === candidate.relativePath || source === candidate.name,
+        );
+        if (!match) throw new Error("missing");
+        return match;
       },
       candidateIdentity: (n, decl) => ({
         unitKind: "extension",
@@ -823,6 +828,27 @@ describe("UnitHost", () => {
 
     expect(requested).toEqual([]);
     expect(applied).toEqual([node.name]);
+  });
+
+  it("merges multiple preapproval calls for the same declaration version", async () => {
+    const extraNode: TestNode = {
+      name: "@workspace-extensions/b",
+      relativePath: "extensions/b",
+      version: "1.0.0",
+    };
+    const { host, applied, requested, node } = makeHarness({ extraNode });
+
+    host.preapproveDeclarations([{ source: node.relativePath, ref: "main" }]);
+    host.preapproveDeclarations([{ source: extraNode.relativePath, ref: "main" }]);
+
+    await host.reconcileDeclared([
+      { source: node.relativePath, ref: "main" },
+      { source: extraNode.relativePath, ref: "main" },
+    ]);
+    await host.whenSettled();
+
+    expect(requested).toEqual([]);
+    expect(applied).toEqual([node.name, extraNode.name]);
   });
 
   it("preapproves declaration trust for non-git declaration sources", async () => {

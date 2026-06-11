@@ -43,7 +43,7 @@ object NatStackBundleStore {
             .putString(ACTIVE_LOCAL_PATH, file.absolutePath)
             .putString(ACTIVE_BUILD_KEY, buildKey)
             .putString(ACTIVE_INTEGRITY, integrity)
-            .apply()
+            .commit()
         return changed
     }
 

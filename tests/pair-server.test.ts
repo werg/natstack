@@ -114,6 +114,59 @@ describe("pair-server runner", () => {
     }
   });
 
+  it("passes remote-serve readiness gates through to the server and prints connectUrl", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const child = new FakeChild();
+    let readyFile = "";
+
+    runPairServer(
+      {
+        ...config,
+        commandName: "natstack remote serve",
+        requireMobileReady: true,
+        requireElectronReady: true,
+        interactiveStartupApproval: true,
+      },
+      ["--host", "127.0.0.1", "--port", "3456", "--", "--no-vpn-detect"],
+      {
+        spawnServer({ serverArgs }: { serverArgs: string[] }) {
+          expect(serverArgs).toContain("--require-mobile-ready");
+          expect(serverArgs).toContain("--require-electron-ready");
+          expect(serverArgs).toContain("--interactive-startup-approval");
+          expect(serverArgs).toContain("--no-vpn-detect");
+          const readyIndex = serverArgs.indexOf("--ready-file");
+          readyFile = serverArgs[readyIndex + 1] ?? "";
+          setTimeout(() => {
+            fs.writeFileSync(
+              readyFile,
+              JSON.stringify({
+                gatewayUrl: "http://127.0.0.1:3456",
+                connectUrl: "https://host.tailnet.ts.net",
+                pairingCode: "PAIRING_REMOTE_CODE_123",
+                qrPairingCode: "PAIRING_REMOTE_QR_123",
+              })
+            );
+          }, 10);
+          return child;
+        },
+        onChildExit: () => true,
+      }
+    );
+
+    await waitFor(() => logText(logSpy).includes("PAIRING_REMOTE_CODE_123"));
+    const output = logText(logSpy);
+    expect(output).toContain("Gateway:    https://host.tailnet.ts.net");
+    expect(output).toContain(
+      "natstack://connect?url=https%3A%2F%2Fhost.tailnet.ts.net&code=PAIRING_REMOTE_CODE_123"
+    );
+    expect(output).toContain(
+      "natstack://connect?url=https%3A%2F%2Fhost.tailnet.ts.net&code=PAIRING_REMOTE_QR_123"
+    );
+
+    child.emit("exit", 0, null);
+  });
+
   it("waits briefly for a QR-specific pairing code when reading stdout", async () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);

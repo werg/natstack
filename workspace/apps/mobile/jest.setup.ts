@@ -91,7 +91,7 @@ NativeModules.NatStackMobileHost = {
     appId: "@workspace-apps/mobile",
     buildKey: "rn-key",
     effectiveVersion: "ev-mobile",
-    capabilities: ["notifications", "keychain", "clipboard", "open-external"],
+    capabilities: ["notifications", "keychain", "clipboard", "open-external", "panel-hosting"],
     rnHostAbi: "rn-host-1",
     integrity: "sha256-mobile",
     platform: "ios",

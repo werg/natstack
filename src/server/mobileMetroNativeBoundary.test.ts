@@ -45,6 +45,12 @@ describe("mobile Metro native capability boundary", () => {
     expect(() =>
       boundary.guardNativeModuleImport(
         "@react-native-async-storage/async-storage",
+        path.join(workspaceAppRoot, "src/services/connectLinkReplayGuard.ts")
+      )
+    ).not.toThrow();
+    expect(() =>
+      boundary.guardNativeModuleImport(
+        "@react-native-async-storage/async-storage",
         path.join(workspaceAppRoot, "src/shellCore/localViewState.ts")
       )
     ).not.toThrow();

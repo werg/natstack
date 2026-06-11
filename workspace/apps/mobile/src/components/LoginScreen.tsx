@@ -69,7 +69,6 @@ interface LoginScreenProps {
 export function LoginScreen({ navigation }: LoginScreenProps) {
   const [serverUrl, setServerUrl] = React.useState("");
   const [pairingCode, setPairingCode] = React.useState("");
-  const [mobileAppSource, setMobileAppSource] = React.useState("");
   const [bootstrapPending, setBootstrapPending] = React.useState(true);
   const [autoConnecting, setAutoConnecting] = React.useState(false);
   const colors = useAtomValue(themeColorsAtom);
@@ -132,17 +131,17 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
   const pairAndConnect = async (
     targetUrl: string,
     code: string,
-    options?: { showAlert?: boolean; mobileAppSource?: string | null; connectLinkUrl?: string }
+    options?: { showAlert?: boolean; connectLinkUrl?: string }
   ): Promise<boolean> => {
     setAuthLoading(true);
     setAuthError(null);
     try {
-      const credentials = await completePairing(targetUrl, code, options?.mobileAppSource ?? null);
+      const credentials = await completePairing(targetUrl, code);
       smokePhase("workspace-pairing-complete");
       if (options?.connectLinkUrl) {
         await markConnectLinkConsumed(options.connectLinkUrl);
       }
-      if ((await ensureNativeWorkspaceAppBundle(options?.mobileAppSource ?? null)).reloading) {
+      if ((await ensureNativeWorkspaceAppBundle()).reloading) {
         smokePhase("workspace-bundle-reloading");
         setAuthLoading(false);
         return true;
@@ -254,15 +253,8 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
       return;
     }
 
-    const selectedSource = mobileAppSource.trim() || null;
-    if (selectedSource && !selectedSource.startsWith("apps/")) {
-      Alert.alert("Invalid app source", "Mobile app sources must be under apps/.");
-      return;
-    }
-
     await pairAndConnect(trimmedUrl, trimmedCode, {
       showAlert: true,
-      mobileAppSource: selectedSource,
     });
   };
 
@@ -326,20 +318,6 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
           autoCapitalize="none"
           autoCorrect={false}
           secureTextEntry
-          editable={!authLoading}
-        />
-
-        <TextInput
-          style={[
-            styles.input,
-            { borderColor: colors.border, color: colors.text, backgroundColor: colors.surface },
-          ]}
-          placeholder="Mobile app source (optional, e.g. apps/mobile)"
-          placeholderTextColor={colors.textSecondary}
-          value={mobileAppSource}
-          onChangeText={setMobileAppSource}
-          autoCapitalize="none"
-          autoCorrect={false}
           editable={!authLoading}
         />
 

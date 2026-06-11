@@ -391,34 +391,46 @@ function unescapeXmlAttribute(value) {
     .replace(/&amp;/g, "&");
 }
 
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function shellCommand(args) {
+  return args.map(shellQuote).join(" ");
+}
+
 async function startConnectIntent(device, packageName, activityName, link) {
   const packageResult = await adbCapture(
     device,
     "shell",
-    "am",
-    "start",
-    "-W",
-    "-a",
-    "android.intent.action.VIEW",
-    "-d",
-    link,
-    "-p",
-    packageName
+    shellCommand([
+      "am",
+      "start",
+      "-W",
+      "-a",
+      "android.intent.action.VIEW",
+      "-d",
+      link,
+      "-p",
+      packageName,
+    ])
   ).catch((error) => error);
   if (!(packageResult instanceof Error)) return;
 
   await adb(
     device,
     "shell",
-    "am",
-    "start",
-    "-W",
-    "-a",
-    "android.intent.action.VIEW",
-    "-d",
-    link,
-    "-n",
-    `${packageName}/${activityName}`
+    shellCommand([
+      "am",
+      "start",
+      "-W",
+      "-a",
+      "android.intent.action.VIEW",
+      "-d",
+      link,
+      "-n",
+      `${packageName}/${activityName}`,
+    ])
   );
 }
 

@@ -33,6 +33,7 @@ import { createMobileShellCore } from "../shellCore/createMobileShellCore";
 import type { Credentials } from "./auth";
 import { issueConnectionGrant } from "./auth";
 import { drainWorkspaceMutationQueue } from "./backgroundActionQueue";
+
 export interface ShellClientConfig {
   credentials: Credentials;
   onTreeUpdated?: (tree: Panel[]) => void;
@@ -387,6 +388,7 @@ export class ShellClient {
   private statusUnsub: (() => void) | null = null;
   private navigationListeners = new Set<(panelId: string) => void>();
   private periodicSyncTimer: ReturnType<typeof setInterval> | null = null;
+  private panelRecoveryUnsubs: Array<() => void> | null = null;
   constructor(config: ShellClientConfig) {
     this.credentials = config.credentials;
     this.serverUrl = config.credentials.serverUrl;
@@ -415,14 +417,6 @@ export class ShellClient {
     this.transport.on("event:panel:runtimeLeaseChanged", (event) => {
       this.panels.applyRuntimeLeaseEvent(event.payload as PanelRuntimeLeaseChangedEvent);
     });
-    this.recovery.registerResubscribeHandler("mobile-panel-tree", async () => {
-      await drainWorkspaceMutationQueue(this);
-      await this.panels.refresh();
-    });
-    this.recovery.registerColdRecoverHandler("mobile-panel-tree", async () => {
-      await drainWorkspaceMutationQueue(this);
-      await this.panels.recoverSnapshot();
-    });
   }
   async init(): Promise<void> {
     this.transport.connect();
@@ -434,6 +428,7 @@ export class ShellClient {
     await this.events.subscribe("panel:runtimeLeaseChanged");
     await this.panels.syncRuntimeLeases();
     await drainWorkspaceMutationQueue(this);
+    this.registerPanelRecoveryHandlers();
   }
   startPeriodicSync(intervalMs = 30000): void {
     this.stopPeriodicSync();
@@ -459,8 +454,23 @@ export class ShellClient {
   async handlePanelBridgeCall(panelId: string, method: string, args: unknown[]): Promise<unknown> {
     return this.panels.handleBridgeCall(panelId, method, args);
   }
+  private registerPanelRecoveryHandlers(): void {
+    if (this.panelRecoveryUnsubs) return;
+    this.panelRecoveryUnsubs = [
+      this.recovery.registerResubscribeHandler("mobile-panel-tree", async () => {
+        await drainWorkspaceMutationQueue(this);
+        await this.panels.refresh();
+      }),
+      this.recovery.registerColdRecoverHandler("mobile-panel-tree", async () => {
+        await drainWorkspaceMutationQueue(this);
+        await this.panels.recoverSnapshot();
+      }),
+    ];
+  }
   dispose(): void {
     this.stopPeriodicSync();
+    for (const unsubscribe of this.panelRecoveryUnsubs ?? []) unsubscribe();
+    this.panelRecoveryUnsubs = null;
     void (async () => {
       await this.transport
         .call("main", "panelRuntime.unregisterClient", [this.credentials.deviceId])

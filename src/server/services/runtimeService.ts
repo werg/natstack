@@ -83,6 +83,10 @@ export interface RuntimeServiceDeps {
     title: string | undefined,
     options?: { explicit?: boolean }
   ) => void | Promise<void>;
+  canCreateCrossContextEntity?: (
+    caller: VerifiedCaller,
+    spec: RuntimeEntityCreateSpec
+  ) => boolean | Promise<boolean>;
 }
 
 const CreateEntitySpecSchema = z.discriminatedUnion("kind", [
@@ -140,6 +144,9 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
     }
     const callerKind = caller.runtime.kind;
     if (callerKind === "server" || callerKind === "shell") {
+      return requested;
+    }
+    if (await deps.canCreateCrossContextEntity?.(caller, spec)) {
       return requested;
     }
     // Pull caller's current contextId from the local cache; falls back to DO if absent.

@@ -79,7 +79,20 @@ describe("native-held mobile credentials", () => {
   });
 
   it("passes an explicit selected app source while pairing", async () => {
-    await completePairing("https://server.example", "pairing-code", "apps/field-mobile");
+    nativeHost.completePairing.mockResolvedValueOnce({
+      serverUrl: "https://server.example",
+      deviceId: "dev_123",
+      callerId: "app:apps/field-mobile:dev_123",
+      connectionGrant: "grant_123",
+      serverId: "srv_123",
+      workspaceId: "workspace_123",
+    });
+
+    await expect(
+      completePairing("https://server.example", "pairing-code", "apps/field-mobile")
+    ).resolves.toMatchObject({
+      callerId: "app:apps/field-mobile:dev_123",
+    });
 
     expect(nativeHost.completePairing).toHaveBeenCalledWith(
       "https://server.example",

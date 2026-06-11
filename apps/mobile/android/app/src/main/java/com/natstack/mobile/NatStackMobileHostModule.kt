@@ -1,6 +1,7 @@
 package com.natstack.mobile
 
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
@@ -316,8 +317,17 @@ class NatStackMobileHostModule(
             (app.reactHost ?: throw IllegalStateException("ReactHost is unavailable"))
                 .reload("NatStack workspace app bundle activated")
         } else {
-            app.reactNativeHost.reactInstanceManager.recreateReactContextInBackground()
+            restartApplicationProcess()
         }
+    }
+
+    private fun restartApplicationProcess() {
+        val launchIntent = reactApplicationContext.packageManager
+            .getLaunchIntentForPackage(reactApplicationContext.packageName)
+            ?: throw IllegalStateException("Could not resolve mobile launch intent")
+        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        reactApplicationContext.startActivity(launchIntent)
+        Runtime.getRuntime().exit(0)
     }
 
     private fun saveCredential(credential: Credential) {
