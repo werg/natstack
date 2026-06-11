@@ -138,6 +138,17 @@ export interface GcOptions {
 }
 
 const DEFAULT_GRACE_MS = 60 * 60 * 1000;
+const WORKSPACE_REQUIRED_TABLES = [
+  "entities",
+  "slots",
+  "slot_history",
+  "panel_search_metadata",
+  "workspace_meta",
+  "lifecycle_epochs",
+  "lifecycle_leases",
+  "lifecycle_ops",
+  "do_alarms",
+] as const;
 
 export class WorkspaceDO extends DurableObjectBase {
   static override schemaVersion = 11;
@@ -281,6 +292,10 @@ export class WorkspaceDO extends DurableObjectBase {
     this.createLifecycleTables();
   }
 
+  protected override requiredTables(): readonly string[] {
+    return WORKSPACE_REQUIRED_TABLES;
+  }
+
   protected override migrate(fromVersion: number, _toVersion: number): void {
     if (fromVersion === 0) return;
     // Pre-release. Schema changes are destructive — there is no user data to
@@ -291,9 +306,7 @@ export class WorkspaceDO extends DurableObjectBase {
     this.sql.exec(`DROP TABLE IF EXISTS panel_search_metadata`);
     this.sql.exec(`DROP TABLE IF EXISTS panel_ops`);
     this.sql.exec(`DROP TABLE IF EXISTS panels`);
-    this.sql.exec(
-      `DELETE FROM workspace_meta WHERE key IN ('revision','compactedThroughRevision')`
-    );
+    this.sql.exec(`DROP TABLE IF EXISTS workspace_meta`);
     this.sql.exec(`DROP TABLE IF EXISTS slot_history`);
     this.sql.exec(`DROP TABLE IF EXISTS slots`);
     this.sql.exec(`DROP TABLE IF EXISTS entities`);

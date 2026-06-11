@@ -51,6 +51,7 @@ class MigrationProbeDO extends DurableObjectBase {
   }
 
   protected override migrate(fromVersion: number, toVersion: number): void {
+    this.createTables();
     this.sql.exec(
       `INSERT INTO migration_log (from_version, to_version) VALUES (?, ?)`,
       fromVersion,
@@ -71,6 +72,10 @@ class DestructiveMigrationProbeDO extends DurableObjectBase {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS required_table (id TEXT PRIMARY KEY)`);
   }
 
+  protected override requiredTables(): readonly string[] {
+    return ["required_table"];
+  }
+
   protected override migrate(fromVersion: number, _toVersion: number): void {
     if (fromVersion > 0) this.sql.exec(`DROP TABLE IF EXISTS required_table`);
   }
@@ -85,11 +90,28 @@ class DestructiveMigrationProbeDO extends DurableObjectBase {
 }
 
 describe("DurableObjectBase migration hook", () => {
-  it("runs migrate before recording the target schema version and skips after readiness", async () => {
+  it("initializes a new schema without running migrations", async () => {
     const { call, sql } = await createTestDO(MigrationProbeDO);
 
+    expect(await call("countMigrations")).toBe(0);
+    expect(sql.exec(`SELECT value FROM state WHERE key = 'schema_version'`).one()).toEqual({
+      value: "2",
+    });
+  });
+
+  it("runs migrate on old schemas before recording the target schema version", async () => {
+    const SQL = await initSqlJs();
+    const db = new SQL.Database();
+    db.run(`CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    db.run(`INSERT INTO state (key, value) VALUES ('schema_version', ?)`, ["1"]);
+
+    const { call, sql } = await createTestDO(MigrationProbeDO, undefined, { db });
+
     expect(await call("countMigrations")).toBe(1);
-    expect(await call("countMigrations")).toBe(1);
+    expect(sql.exec(`SELECT * FROM migration_log`).one()).toEqual({
+      from_version: 1,
+      to_version: 2,
+    });
     expect(sql.exec(`SELECT value FROM state WHERE key = 'schema_version'`).one()).toEqual({
       value: "2",
     });
@@ -109,5 +131,30 @@ describe("DurableObjectBase migration hook", () => {
     expect(sql.exec(`SELECT value FROM state WHERE key = 'schema_version'`).one()).toEqual({
       value: "2",
     });
+  });
+
+  it("repairs a current-version schema that is missing required idempotent tables", async () => {
+    const SQL = await initSqlJs();
+    const db = new SQL.Database();
+    db.run(`CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    db.run(`INSERT INTO state (key, value) VALUES ('schema_version', ?)`, ["2"]);
+
+    const { call, sql } = await createTestDO(DestructiveMigrationProbeDO, undefined, { db });
+
+    expect(await call("hasRequiredTable")).toBe(true);
+    expect(sql.exec(`SELECT value FROM state WHERE key = 'schema_version'`).one()).toEqual({
+      value: "2",
+    });
+  });
+
+  it("rejects persisted schemas newer than the running code supports", async () => {
+    const SQL = await initSqlJs();
+    const db = new SQL.Database();
+    db.run(`CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    db.run(`INSERT INTO state (key, value) VALUES ('schema_version', ?)`, ["3"]);
+
+    const { call } = await createTestDO(DestructiveMigrationProbeDO, undefined, { db });
+
+    await expect(call("hasRequiredTable")).rejects.toThrow(/newer than supported version 2/);
   });
 });

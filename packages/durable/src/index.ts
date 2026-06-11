@@ -116,6 +116,24 @@ export abstract class DurableObjectBase {
 
   protected migrate(_fromVersion: number, _toVersion: number): void {}
 
+  protected requiredTables(): readonly string[] {
+    return [];
+  }
+
+  protected validateSchema(): void {
+    const missing = this.requiredTables().filter((table) => {
+      const rows = this.sql
+        .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table)
+        .toArray();
+      return rows.length === 0;
+    });
+    if (missing.length > 0) {
+      throw new Error(
+        `${this.constructor.name} schema validation failed: missing table(s): ${missing.join(", ")}`
+      );
+    }
+  }
+
   protected ensureReady(): void {
     if (this.schemaReady) return;
     this.sql.exec(`CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
@@ -123,15 +141,30 @@ export abstract class DurableObjectBase {
     const row = this.sql.exec(`SELECT value FROM state WHERE key = 'schema_version'`).toArray();
     if (row.length > 0) currentVersion = parseInt(String(row[0]!["value"]), 10) || 0;
     const targetVersion = (this.constructor as typeof DurableObjectBase).schemaVersion;
-    if (currentVersion < targetVersion) {
+    if (currentVersion > targetVersion) {
+      throw new Error(
+        `${this.constructor.name} schema version ${currentVersion} is newer than supported version ${targetVersion}`
+      );
+    }
+
+    if (currentVersion === 0) {
       this.createTables();
-      this.migrate(currentVersion, targetVersion);
-      // Migrations may drop legacy tables; rebuild the current schema before stamping success.
-      this.createTables();
+      this.validateSchema();
       this.sql.exec(
         `INSERT OR REPLACE INTO state (key, value) VALUES ('schema_version', ?)`,
         String(targetVersion)
       );
+    } else if (currentVersion < targetVersion) {
+      this.migrate(currentVersion, targetVersion);
+      this.createTables();
+      this.validateSchema();
+      this.sql.exec(
+        `INSERT OR REPLACE INTO state (key, value) VALUES ('schema_version', ?)`,
+        String(targetVersion)
+      );
+    } else {
+      this.createTables();
+      this.validateSchema();
     }
     this.schemaReady = true;
   }
@@ -353,7 +386,8 @@ export abstract class DurableObjectBase {
       }
 
       const fn = (this as unknown as Record<string, unknown>)[method];
-      if (typeof fn !== "function") return jsonResponse({ error: `Unknown method: ${method}` }, 404);
+      if (typeof fn !== "function")
+        return jsonResponse({ error: `Unknown method: ${method}` }, 404);
 
       return this.withRpcContext(request, verifiedCallerFromBody, async () => {
         const result = await (fn as (...a: unknown[]) => Promise<unknown>).call(this, ...args);

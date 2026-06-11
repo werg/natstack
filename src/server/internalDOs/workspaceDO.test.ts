@@ -11,7 +11,17 @@ import { WorkspaceDOTestable } from "./workspaceDO.testFixture.js";
 
 const SOURCE = "panels/example";
 const VERSION = "v1";
-const WORKSPACE_TABLES = ["entities", "slots", "slot_history", "lifecycle_ops", "do_alarms"];
+const WORKSPACE_TABLES = [
+  "entities",
+  "slots",
+  "slot_history",
+  "panel_search_metadata",
+  "workspace_meta",
+  "lifecycle_epochs",
+  "lifecycle_leases",
+  "lifecycle_ops",
+  "do_alarms",
+];
 
 async function createDbAtSchemaVersion(schemaVersion: number) {
   const SQL = await initSqlJs();
@@ -45,6 +55,20 @@ function doInput(overrides: Partial<Parameters<WorkspaceDO["entityActivate"]>[0]
 describe("WorkspaceDO schema migration", () => {
   it("recreates current tables after destructive pre-release migrations", async () => {
     const db = await createDbAtSchemaVersion(10);
+    const { sql } = await createTestDO(WorkspaceDOTestable, undefined, { db });
+
+    for (const table of WORKSPACE_TABLES) {
+      expect(
+        sql.exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).one()
+      ).toEqual({ name: table });
+    }
+    expect(sql.exec(`SELECT value FROM state WHERE key = 'schema_version'`).one()).toEqual({
+      value: "11",
+    });
+  });
+
+  it("repairs a stamped current schema that is missing required tables", async () => {
+    const db = await createDbAtSchemaVersion(11);
     const { sql } = await createTestDO(WorkspaceDOTestable, undefined, { db });
 
     for (const table of WORKSPACE_TABLES) {

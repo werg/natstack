@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import initSqlJs from "sql.js";
 import { createTestDO } from "@workspace/runtime/worker/test-utils";
 import {
   AGENTIC_EVENT_PAYLOAD_KIND,
@@ -67,6 +68,36 @@ function expectNoPrivateParticipantMetadata(value: unknown): void {
 }
 
 describe("GadWorkspaceDO trajectory persistence", () => {
+  it("can reopen a current schema without dropping or recreating destructively", async () => {
+    const first = await createTestDO(GadWorkspaceDO);
+    await first.call("ensureBlob", "blob:one", 1, "text/plain");
+
+    const second = await createTestDO(GadWorkspaceDO, undefined, { db: first.db });
+    const rows = await second.call<{ rows: Array<{ hash: string }> }>(
+      "query",
+      "SELECT hash FROM gad_blobs WHERE hash = ?",
+      ["blob:one"]
+    );
+
+    expect(rows.rows).toEqual([{ hash: "blob:one" }]);
+  });
+
+  it("repairs a stamped current schema that is missing GAD tables", async () => {
+    const SQL = await initSqlJs();
+    const db = new SQL.Database();
+    db.run(`CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    db.run(`INSERT INTO state (key, value) VALUES ('schema_version', ?)`, ["14"]);
+
+    const { call } = await createTestDO(GadWorkspaceDO, undefined, { db });
+    const tables = await call<{ rows: Array<{ name: string }> }>(
+      "query",
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'trajectory_branches'",
+      []
+    );
+
+    expect(tables.rows).toEqual([{ name: "trajectory_branches" }]);
+  });
+
   it("creates only canonical trajectory/channel tables, not Pi/session dispatch tables", async () => {
     const { call } = await createTestDO(GadWorkspaceDO);
     const tables = await call<{ rows: Array<{ name: string }> }>(
@@ -1284,9 +1315,9 @@ describe("GadWorkspaceDO trajectory persistence", () => {
     const publicChannel = await call<any[]>("listChannelEnvelopes", {
       channelId: "main-channel",
     });
-    expect(
-      publicChannel.map((envelope) => envelope.payload.payload.blocks?.[0]?.content)
-    ).toEqual(["Side task summary for the main session"]);
+    expect(publicChannel.map((envelope) => envelope.payload.payload.blocks?.[0]?.content)).toEqual([
+      "Side task summary for the main session",
+    ]);
     expect(JSON.stringify(publicChannel)).not.toContain("keep this out of PubSub");
 
     const privateLineage = await call<any>("getPrivateLineageForPublishedEnvelope", {

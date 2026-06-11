@@ -230,6 +230,25 @@ export abstract class DurableObjectBase {
   /** Subclasses may migrate persisted SQL state between schema versions. */
   protected migrate(_fromVersion: number, _toVersion: number): void {}
 
+  /** Tables that must exist before a schema version is recorded as ready. */
+  protected requiredTables(): readonly string[] {
+    return [];
+  }
+
+  protected validateSchema(): void {
+    const missing = this.requiredTables().filter((table) => {
+      const rows = this.sql
+        .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table)
+        .toArray();
+      return rows.length === 0;
+    });
+    if (missing.length > 0) {
+      throw new Error(
+        `${this.constructor.name} schema validation failed: missing table(s): ${missing.join(", ")}`
+      );
+    }
+  }
+
   /**
    * Lazily called on first fetch() or alarm(). Safe for subclasses to call
    * earlier from their constructor if they need schema before first request.
@@ -252,15 +271,30 @@ export abstract class DurableObjectBase {
     }
 
     const targetVersion = (this.constructor as typeof DurableObjectBase).schemaVersion;
-    if (currentVersion < targetVersion) {
+    if (currentVersion > targetVersion) {
+      throw new Error(
+        `${this.constructor.name} schema version ${currentVersion} is newer than supported version ${targetVersion}`
+      );
+    }
+
+    if (currentVersion === 0) {
       this.createTables();
-      this.migrate(currentVersion, targetVersion);
-      // Migrations may drop legacy tables; rebuild the current schema before stamping success.
-      this.createTables();
+      this.validateSchema();
       this.sql.exec(
         `INSERT OR REPLACE INTO state (key, value) VALUES ('schema_version', ?)`,
         String(targetVersion)
       );
+    } else if (currentVersion < targetVersion) {
+      this.migrate(currentVersion, targetVersion);
+      this.createTables();
+      this.validateSchema();
+      this.sql.exec(
+        `INSERT OR REPLACE INTO state (key, value) VALUES ('schema_version', ?)`,
+        String(targetVersion)
+      );
+    } else {
+      this.createTables();
+      this.validateSchema();
     }
   }
 

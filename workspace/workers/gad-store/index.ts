@@ -32,6 +32,40 @@ type SqlBinding = null | string | number | boolean | Uint8Array;
 const EMPTY_MANIFEST_HASH =
   "manifest:48d1be9db5b498b22aa5db6ae3fa3b7f864bba5b4edf70dfc717cab0c5bea526";
 const EMPTY_STATE_HASH = "state:ffa8c21b351f3a31755c289c37c413d37f4494057cb724cc32ad5971de89d8a7";
+const GAD_REQUIRED_TABLES = [
+  "trajectory_branches",
+  "trajectory_events",
+  "trajectory_blob_refs",
+  "trajectory_turns",
+  "trajectory_messages",
+  "trajectory_message_blocks",
+  "trajectory_invocations",
+  "trajectory_invocation_outputs",
+  "trajectory_approvals",
+  "trajectory_usage_rollups",
+  "trajectory_checkpoints",
+  "channel_envelopes",
+  "channel_blob_refs",
+  "channel_message_types",
+  "trajectory_channel_publications",
+  "channel_envelope_forks",
+  "trajectory_event_forks",
+  "channel_roster",
+  "gad_blobs",
+  "gad_worktree_states",
+  "gad_file_versions",
+  "gad_manifest_nodes",
+  "gad_manifest_entries",
+  "gad_state_transitions",
+  "gad_file_observations",
+  "gad_file_mutations",
+  "gad_file_change_hunks",
+  "gad_claims",
+  "gad_claim_edges",
+  "gad_theories",
+  "gad_theory_versions",
+  "gad_contradictions",
+] as const;
 
 export interface TrajectoryAppendItem {
   event: AgenticEvent;
@@ -594,8 +628,15 @@ export class GadWorkspaceDO extends DurableObjectBase {
   }
 
   protected createTables(): void {
-    this.dropPersistenceTables();
     this.createFreshSchema();
+  }
+
+  protected override migrate(fromVersion: number, _toVersion: number): void {
+    if (fromVersion > 0) this.dropPersistenceTables();
+  }
+
+  protected override requiredTables(): readonly string[] {
+    return GAD_REQUIRED_TABLES;
   }
 
   private dropPersistenceTables(): void {
@@ -621,7 +662,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
 
   private createFreshSchema(): void {
     this.sql.exec(`
-      CREATE TABLE trajectory_branches (
+      CREATE TABLE IF NOT EXISTS trajectory_branches (
         trajectory_id TEXT NOT NULL,
         branch_id TEXT NOT NULL,
         owner_json TEXT NOT NULL,
@@ -636,10 +677,10 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(
-      `CREATE INDEX idx_trajectory_branches_head ON trajectory_branches(head_event_hash)`
+      `CREATE INDEX IF NOT EXISTS idx_trajectory_branches_head ON trajectory_branches(head_event_hash)`
     );
     this.sql.exec(`
-      CREATE TABLE trajectory_events (
+      CREATE TABLE IF NOT EXISTS trajectory_events (
         event_id TEXT NOT NULL UNIQUE,
         branch_id TEXT NOT NULL,
         trajectory_id TEXT NOT NULL,
@@ -656,12 +697,16 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(
-      `CREATE INDEX idx_trajectory_events_kind ON trajectory_events(kind, branch_id, seq)`
+      `CREATE INDEX IF NOT EXISTS idx_trajectory_events_kind ON trajectory_events(kind, branch_id, seq)`
     );
-    this.sql.exec(`CREATE INDEX idx_trajectory_events_turn ON trajectory_events(turn_id, seq)`);
-    this.sql.exec(`CREATE INDEX idx_trajectory_events_hash ON trajectory_events(event_hash)`);
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_trajectory_events_turn ON trajectory_events(turn_id, seq)`
+    );
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_trajectory_events_hash ON trajectory_events(event_hash)`
+    );
     this.sql.exec(`
-      CREATE TABLE trajectory_blob_refs (
+      CREATE TABLE IF NOT EXISTS trajectory_blob_refs (
         event_id TEXT NOT NULL,
         field_path TEXT NOT NULL,
         digest TEXT NOT NULL,
@@ -671,9 +716,11 @@ export class GadWorkspaceDO extends DurableObjectBase {
         PRIMARY KEY (event_id, field_path)
       )
     `);
-    this.sql.exec(`CREATE INDEX idx_trajectory_blob_refs_digest ON trajectory_blob_refs(digest)`);
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_trajectory_blob_refs_digest ON trajectory_blob_refs(digest)`
+    );
     this.sql.exec(`
-      CREATE TABLE trajectory_turns (
+      CREATE TABLE IF NOT EXISTS trajectory_turns (
         turn_id TEXT NOT NULL,
         branch_id TEXT NOT NULL,
         opened_at TEXT,
@@ -683,7 +730,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`
-      CREATE TABLE trajectory_messages (
+      CREATE TABLE IF NOT EXISTS trajectory_messages (
         message_id TEXT NOT NULL,
         branch_id TEXT NOT NULL,
         turn_id TEXT,
@@ -696,7 +743,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`
-      CREATE TABLE trajectory_message_blocks (
+      CREATE TABLE IF NOT EXISTS trajectory_message_blocks (
         block_id TEXT NOT NULL,
         message_id TEXT NOT NULL,
         branch_id TEXT NOT NULL,
@@ -707,7 +754,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`
-      CREATE TABLE trajectory_invocations (
+      CREATE TABLE IF NOT EXISTS trajectory_invocations (
         invocation_id TEXT NOT NULL,
         branch_id TEXT NOT NULL,
         turn_id TEXT,
@@ -725,10 +772,10 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(
-      `CREATE INDEX idx_trajectory_invocations_transport ON trajectory_invocations(transport_call_id)`
+      `CREATE INDEX IF NOT EXISTS idx_trajectory_invocations_transport ON trajectory_invocations(transport_call_id)`
     );
     this.sql.exec(`
-      CREATE TABLE trajectory_invocation_outputs (
+      CREATE TABLE IF NOT EXISTS trajectory_invocation_outputs (
         invocation_id TEXT NOT NULL,
         branch_id TEXT NOT NULL,
         seq INTEGER NOT NULL,
@@ -738,7 +785,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`
-      CREATE TABLE trajectory_approvals (
+      CREATE TABLE IF NOT EXISTS trajectory_approvals (
         approval_id TEXT NOT NULL,
         branch_id TEXT NOT NULL,
         invocation_id TEXT,
@@ -752,7 +799,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`
-      CREATE TABLE trajectory_usage_rollups (
+      CREATE TABLE IF NOT EXISTS trajectory_usage_rollups (
         branch_id TEXT NOT NULL,
         turn_id TEXT NOT NULL,
         input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -763,7 +810,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`
-      CREATE TABLE trajectory_checkpoints (
+      CREATE TABLE IF NOT EXISTS trajectory_checkpoints (
         branch_id TEXT NOT NULL,
         anchor_event_hash TEXT NOT NULL,
         materialized_blob_json TEXT NOT NULL,
@@ -773,7 +820,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`
-      CREATE TABLE channel_envelopes (
+      CREATE TABLE IF NOT EXISTS channel_envelopes (
         envelope_id TEXT NOT NULL UNIQUE,
         channel_id TEXT NOT NULL,
         seq INTEGER NOT NULL,
@@ -788,10 +835,10 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(
-      `CREATE INDEX idx_channel_envelopes_kind ON channel_envelopes(payload_kind, channel_id, seq)`
+      `CREATE INDEX IF NOT EXISTS idx_channel_envelopes_kind ON channel_envelopes(payload_kind, channel_id, seq)`
     );
     this.sql.exec(`
-      CREATE TABLE channel_blob_refs (
+      CREATE TABLE IF NOT EXISTS channel_blob_refs (
         envelope_id TEXT NOT NULL,
         field_path TEXT NOT NULL,
         digest TEXT NOT NULL,
@@ -801,9 +848,11 @@ export class GadWorkspaceDO extends DurableObjectBase {
         PRIMARY KEY (envelope_id, field_path)
       )
     `);
-    this.sql.exec(`CREATE INDEX idx_channel_blob_refs_digest ON channel_blob_refs(digest)`);
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_channel_blob_refs_digest ON channel_blob_refs(digest)`
+    );
     this.sql.exec(`
-      CREATE TABLE channel_message_types (
+      CREATE TABLE IF NOT EXISTS channel_message_types (
         channel_id TEXT NOT NULL,
         type_id TEXT NOT NULL,
         display_mode TEXT,
@@ -817,7 +866,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`
-      CREATE TABLE trajectory_channel_publications (
+      CREATE TABLE IF NOT EXISTS trajectory_channel_publications (
         event_id TEXT NOT NULL,
         trajectory_id TEXT NOT NULL,
         branch_id TEXT NOT NULL,
@@ -829,19 +878,19 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`
-      CREATE INDEX idx_trajectory_channel_publications_envelope
+      CREATE INDEX IF NOT EXISTS idx_trajectory_channel_publications_envelope
         ON trajectory_channel_publications(envelope_id)
     `);
     this.sql.exec(`
-      CREATE INDEX idx_trajectory_channel_publications_branch
+      CREATE INDEX IF NOT EXISTS idx_trajectory_channel_publications_branch
         ON trajectory_channel_publications(branch_id, event_id)
     `);
     this.sql.exec(`
-      CREATE INDEX idx_trajectory_channel_publications_channel
+      CREATE INDEX IF NOT EXISTS idx_trajectory_channel_publications_channel
         ON trajectory_channel_publications(channel_id, channel_seq)
     `);
     this.sql.exec(`
-      CREATE TABLE channel_envelope_forks (
+      CREATE TABLE IF NOT EXISTS channel_envelope_forks (
         from_channel_id TEXT NOT NULL,
         to_channel_id TEXT NOT NULL,
         source_envelope_id TEXT NOT NULL,
@@ -853,11 +902,11 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`
-      CREATE INDEX idx_channel_envelope_forks_source
+      CREATE INDEX IF NOT EXISTS idx_channel_envelope_forks_source
         ON channel_envelope_forks(from_channel_id, source_seq)
     `);
     this.sql.exec(`
-      CREATE TABLE trajectory_event_forks (
+      CREATE TABLE IF NOT EXISTS trajectory_event_forks (
         from_trajectory_id TEXT NOT NULL,
         from_branch_id TEXT NOT NULL,
         to_trajectory_id TEXT NOT NULL,
@@ -873,11 +922,11 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`
-      CREATE INDEX idx_trajectory_event_forks_source
+      CREATE INDEX IF NOT EXISTS idx_trajectory_event_forks_source
         ON trajectory_event_forks(from_trajectory_id, from_branch_id, source_seq)
     `);
     this.sql.exec(`
-      CREATE TABLE channel_roster (
+      CREATE TABLE IF NOT EXISTS channel_roster (
         channel_id TEXT NOT NULL,
         participant_id TEXT NOT NULL,
         joined_at TEXT NOT NULL,
@@ -887,7 +936,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`
-      CREATE TABLE gad_blobs (
+      CREATE TABLE IF NOT EXISTS gad_blobs (
         hash TEXT PRIMARY KEY,
         size INTEGER NOT NULL DEFAULT 0,
         mime_type TEXT,
@@ -896,7 +945,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`
-      CREATE TABLE gad_worktree_states (
+      CREATE TABLE IF NOT EXISTS gad_worktree_states (
         state_hash TEXT PRIMARY KEY,
         manifest_root_hash TEXT NOT NULL,
         metadata_json TEXT,
@@ -904,7 +953,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`
-      CREATE TABLE gad_file_versions (
+      CREATE TABLE IF NOT EXISTS gad_file_versions (
         id INTEGER PRIMARY KEY,
         path TEXT NOT NULL,
         content_hash TEXT NOT NULL,
@@ -913,16 +962,18 @@ export class GadWorkspaceDO extends DurableObjectBase {
         UNIQUE (path, content_hash, mode)
       )
     `);
-    this.sql.exec(`CREATE INDEX idx_gad_file_versions_path ON gad_file_versions(path)`);
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_gad_file_versions_path ON gad_file_versions(path)`
+    );
     this.sql.exec(`
-      CREATE TABLE gad_manifest_nodes (
+      CREATE TABLE IF NOT EXISTS gad_manifest_nodes (
         hash TEXT PRIMARY KEY,
         kind TEXT NOT NULL,
         created_at TEXT NOT NULL
       )
     `);
     this.sql.exec(`
-      CREATE TABLE gad_manifest_entries (
+      CREATE TABLE IF NOT EXISTS gad_manifest_entries (
         parent_hash TEXT NOT NULL,
         name TEXT NOT NULL,
         entry_kind TEXT NOT NULL,
@@ -932,7 +983,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`
-      CREATE TABLE gad_state_transitions (
+      CREATE TABLE IF NOT EXISTS gad_state_transitions (
         event_id TEXT PRIMARY KEY,
         invocation_id TEXT,
         input_state_hash TEXT NOT NULL,
@@ -944,10 +995,10 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(
-      `CREATE INDEX idx_gad_state_transitions_output ON gad_state_transitions(output_state_hash)`
+      `CREATE INDEX IF NOT EXISTS idx_gad_state_transitions_output ON gad_state_transitions(output_state_hash)`
     );
     this.sql.exec(`
-      CREATE TABLE gad_file_observations (
+      CREATE TABLE IF NOT EXISTS gad_file_observations (
         observation_id TEXT PRIMARY KEY,
         event_id TEXT NOT NULL,
         invocation_id TEXT,
@@ -965,10 +1016,10 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(
-      `CREATE INDEX idx_gad_observations_path ON gad_file_observations(path, created_at)`
+      `CREATE INDEX IF NOT EXISTS idx_gad_observations_path ON gad_file_observations(path, created_at)`
     );
     this.sql.exec(`
-      CREATE TABLE gad_file_mutations (
+      CREATE TABLE IF NOT EXISTS gad_file_mutations (
         mutation_id TEXT PRIMARY KEY,
         intended_event_id TEXT,
         applied_event_id TEXT,
@@ -987,9 +1038,11 @@ export class GadWorkspaceDO extends DurableObjectBase {
         updated_at TEXT NOT NULL
       )
     `);
-    this.sql.exec(`CREATE INDEX idx_gad_mutations_invocation ON gad_file_mutations(invocation_id)`);
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_gad_mutations_invocation ON gad_file_mutations(invocation_id)`
+    );
     this.sql.exec(`
-      CREATE TABLE gad_file_change_hunks (
+      CREATE TABLE IF NOT EXISTS gad_file_change_hunks (
         id INTEGER PRIMARY KEY,
         mutation_id TEXT NOT NULL,
         path TEXT NOT NULL,
@@ -1004,7 +1057,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`
-      CREATE TABLE gad_claims (
+      CREATE TABLE IF NOT EXISTS gad_claims (
         claim_id TEXT PRIMARY KEY,
         trajectory_event_id TEXT NOT NULL,
         invocation_id TEXT,
@@ -1017,7 +1070,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`
-      CREATE TABLE gad_claim_edges (
+      CREATE TABLE IF NOT EXISTS gad_claim_edges (
         edge_id TEXT PRIMARY KEY,
         trajectory_event_id TEXT NOT NULL,
         invocation_id TEXT,
@@ -1029,7 +1082,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`
-      CREATE TABLE gad_theories (
+      CREATE TABLE IF NOT EXISTS gad_theories (
         theory_id TEXT PRIMARY KEY,
         trajectory_event_id TEXT NOT NULL,
         invocation_id TEXT,
@@ -1039,7 +1092,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`
-      CREATE TABLE gad_theory_versions (
+      CREATE TABLE IF NOT EXISTS gad_theory_versions (
         version_id TEXT PRIMARY KEY,
         theory_id TEXT NOT NULL,
         trajectory_event_id TEXT NOT NULL,
@@ -1048,7 +1101,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`
-      CREATE TABLE gad_contradictions (
+      CREATE TABLE IF NOT EXISTS gad_contradictions (
         contradiction_id TEXT PRIMARY KEY,
         trajectory_event_id TEXT NOT NULL,
         invocation_id TEXT,
@@ -3188,10 +3241,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
     );
   }
 
-  private matchesExistingTerminalInvocation(
-    existing: JsonRecord,
-    event: TrajectoryEvent
-  ): boolean {
+  private matchesExistingTerminalInvocation(existing: JsonRecord, event: TrajectoryEvent): boolean {
     const completedEventId = asString(existing["completed_event_id"]);
     if (!completedEventId) return false;
     const row = this.sql

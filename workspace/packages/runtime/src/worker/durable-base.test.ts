@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import initSqlJs from "sql.js";
 import { DurableObjectBase } from "./durable-base.js";
 import { createTestDO } from "./durable-test-utils.js";
 
@@ -26,6 +27,30 @@ class LifecycleProbeDO extends DurableObjectBase {
 
   callerKind(): string | null {
     return this.caller?.callerKind ?? null;
+  }
+}
+
+class SchemaProbeDO extends DurableObjectBase {
+  static override schemaVersion = 2;
+
+  protected createTables(): void {
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS required_table (id TEXT PRIMARY KEY)`);
+  }
+
+  protected override requiredTables(): readonly string[] {
+    return ["required_table"];
+  }
+
+  protected override migrate(fromVersion: number, _toVersion: number): void {
+    if (fromVersion > 0) this.sql.exec(`DROP TABLE IF EXISTS required_table`);
+  }
+
+  hasRequiredTable(): boolean {
+    return (
+      this.sql
+        .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'required_table'`)
+        .toArray().length === 1
+    );
   }
 }
 
@@ -114,7 +139,9 @@ describe("DurableObjectBase lifecycle routing", () => {
       new Request("http://test/test-key/__lifecycle/resume", {
         method: "POST",
         body: JSON.stringify({
-          args: [{ epoch: "e1", previousGeneration: null, currentGeneration: 1, reason: "planned" }],
+          args: [
+            { epoch: "e1", previousGeneration: null, currentGeneration: 1, reason: "planned" },
+          ],
           __instanceToken: "token",
           __instanceId: "do:internal/WorkspaceDO:test-key",
           __caller: { callerId: "main", callerKind: "server" },
@@ -126,6 +153,36 @@ describe("DurableObjectBase lifecycle routing", () => {
       new Request("http://test/test-key/callerKind", { method: "POST", body: "[]" })
     );
     await expect(response.json()).resolves.toBeNull();
+  });
+});
+
+describe("DurableObjectBase schema readiness", () => {
+  it("rebuilds idempotent tables for a current-version schema before serving calls", async () => {
+    const SQL = await initSqlJs();
+    const db = new SQL.Database();
+    db.run(`CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    db.run(`INSERT INTO state (key, value) VALUES ('schema_version', ?)`, ["2"]);
+
+    const { call } = await createTestDO(SchemaProbeDO, undefined, { db });
+
+    await expect(call("hasRequiredTable")).resolves.toBe(true);
+  });
+
+  it("runs destructive migrations before recreating and stamping the current schema", async () => {
+    const SQL = await initSqlJs();
+    const db = new SQL.Database();
+    db.run(`CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    db.run(`INSERT INTO state (key, value) VALUES ('schema_version', ?)`, ["1"]);
+    db.run(`CREATE TABLE required_table (id TEXT PRIMARY KEY)`);
+    db.run(`INSERT INTO required_table (id) VALUES ('old-row')`);
+
+    const { call, sql } = await createTestDO(SchemaProbeDO, undefined, { db });
+
+    await expect(call("hasRequiredTable")).resolves.toBe(true);
+    expect(sql.exec(`SELECT * FROM required_table`).toArray()).toEqual([]);
+    expect(sql.exec(`SELECT value FROM state WHERE key = 'schema_version'`).one()).toEqual({
+      value: "2",
+    });
   });
 });
 
