@@ -186,7 +186,7 @@ async function main() {
   }
 
   if (!options.noBuild) {
-    await run("./gradlew", ["assembleInternal"], { cwd: androidDir });
+    await run("./gradlew", ["assembleInternal", "--rerun-tasks"], { cwd: androidDir });
   }
 
   console.log(`[mobile-internal] APK: ${options.apkPath}`);
