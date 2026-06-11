@@ -252,8 +252,8 @@ export abstract class DurableObjectBase {
     }
 
     const targetVersion = (this.constructor as typeof DurableObjectBase).schemaVersion;
-    this.createTables();
     if (currentVersion < targetVersion) {
+      this.createTables();
       this.migrate(currentVersion, targetVersion);
       // Migrations may drop legacy tables; rebuild the current schema before stamping success.
       this.createTables();

@@ -56,20 +56,6 @@ describe("WorkspaceDO schema migration", () => {
       value: "11",
     });
   });
-
-  it("repairs a stamped current schema that is missing tables", async () => {
-    const db = await createDbAtSchemaVersion(11);
-    const { sql } = await createTestDO(WorkspaceDOTestable, undefined, { db });
-
-    for (const table of WORKSPACE_TABLES) {
-      expect(
-        sql.exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).one()
-      ).toEqual({ name: table });
-    }
-    expect(sql.exec(`SELECT value FROM state WHERE key = 'schema_version'`).one()).toEqual({
-      value: "11",
-    });
-  });
 });
 
 describe("WorkspaceDO.entityActivate", () => {
