@@ -35,7 +35,7 @@ function errorWithCode(message: string, code: string): Error {
 
 export function wsClientTransport(config: WsClientTransportConfig): EnvelopeRpcTransport & {
   connect(): void;
-  connectAndWait(timeoutMs?: number): Promise<void>;
+  connectAndWait(timeoutMs?: number | null): Promise<void>;
   close(): Promise<void>;
   onRecovery(kind: RecoveryKind, handler: () => void | Promise<void>): () => void;
 } {
@@ -271,7 +271,7 @@ export function wsClientTransport(config: WsClientTransportConfig): EnvelopeRpcT
       clearReconnectTimer();
       void openSocket();
     },
-    connectAndWait(timeoutMs = 10_000): Promise<void> {
+    connectAndWait(timeoutMs: number | null = 10_000): Promise<void> {
       if (socket?.readyState === OPEN && authenticated) return Promise.resolve();
       let shouldConnect = false;
       if (!firstConnectPromise) {
@@ -283,14 +283,21 @@ export function wsClientTransport(config: WsClientTransportConfig): EnvelopeRpcT
       }
       if (shouldConnect) this.connect();
       return new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error(`Server WS connection timeout (${timeoutMs}ms): ${config.getWsUrl()}`)), timeoutMs);
+        const timeout =
+          timeoutMs == null
+            ? null
+            : setTimeout(
+                () =>
+                  reject(new Error(`Server WS connection timeout (${timeoutMs}ms): ${config.getWsUrl()}`)),
+                timeoutMs
+              );
         firstConnectPromise!.then(
           () => {
-            clearTimeout(timeout);
+            if (timeout) clearTimeout(timeout);
             resolve();
           },
           (error) => {
-            clearTimeout(timeout);
+            if (timeout) clearTimeout(timeout);
             reject(error);
           },
         );

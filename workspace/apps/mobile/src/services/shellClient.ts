@@ -419,7 +419,7 @@ export class ShellClient {
     });
   }
   async init(): Promise<void> {
-    await this.transport.connectAndWait(30000);
+    await this.transport.connectAndWait(null);
     const info = await this.transport.call<{
       config: WorkspaceConfig;
     }>("main", "workspace.getInfo", []);
