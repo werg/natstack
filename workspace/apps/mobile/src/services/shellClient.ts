@@ -419,8 +419,7 @@ export class ShellClient {
     });
   }
   async init(): Promise<void> {
-    this.transport.connect();
-    await this.waitForConnection(10000);
+    await this.transport.connectAndWait(30000);
     const info = await this.transport.call<{
       config: WorkspaceConfig;
     }>("main", "workspace.getInfo", []);
@@ -479,30 +478,6 @@ export class ShellClient {
     })();
     this.statusUnsub?.();
     this.statusUnsub = null;
-  }
-  private waitForConnection(timeoutMs: number): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (this.transport.status === "connected") {
-        resolve();
-        return;
-      }
-      const timeout = setTimeout(() => {
-        unsub();
-        reject(new Error(`Connection timeout after ${timeoutMs}ms`));
-      }, timeoutMs);
-      const unsub = this.transport.onStatusChange((status) => {
-        if (status === "connected") {
-          clearTimeout(timeout);
-          unsub();
-          resolve();
-        } else if (status === "disconnected") {
-          clearTimeout(timeout);
-          unsub();
-          const detail = `could not reach ${this.serverUrl} - check LAN / firewall / server running`;
-          reject(new Error(`Connection failed: ${detail}`));
-        }
-      });
-    });
   }
 }
 export type MobilePanelsClient = InstanceType<typeof MobilePanels>;

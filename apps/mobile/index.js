@@ -88,7 +88,6 @@ async function activateApprovedWorkspaceApp(options = {}) {
     if (options.allowMissingCredentials) return false;
     throw new Error("Pair this device from the desktop app before loading the workspace app.");
   }
-  await nativeHost.issueConnectionGrant();
   smokePhase("embedded-bundle-activate-start");
   const prepared = await nativeHost.prepareAppBundle(RN_HOST_ABI, platformName(), null);
   await nativeHost.activatePreparedAppBundle(

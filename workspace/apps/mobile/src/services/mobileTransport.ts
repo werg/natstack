@@ -108,6 +108,12 @@ export class MobileRpcClient implements Pick<RpcClient, "selfId" | "call" | "emi
       });
   }
 
+  async connectAndWait(timeoutMs?: number): Promise<void> {
+    this.setStatus("connecting");
+    await this.ensureRpc();
+    await this.transport?.connectAndWait(timeoutMs);
+  }
+
   reconnect(): void {
     void this.transport?.close().finally(() => {
       this.transport = null;
