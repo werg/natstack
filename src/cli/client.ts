@@ -72,6 +72,7 @@ async function mobile(argv: string[]): Promise<number> {
   }
   if (subcommand === "pair") return runScript("mobile-pair.mjs", rest);
   if (subcommand === "dev") return runScript("mobile-dev.mjs", rest);
+  if (subcommand === "smoke") return runScript("mobile-smoke.mjs", rest);
   if (subcommand === "build" || subcommand === "apk") {
     return runScript("mobile-install.mjs", ["--build-only", ...rest]);
   }
@@ -207,6 +208,7 @@ Usage:
   natstack mobile build
   natstack mobile install [--launch]
   natstack mobile dev
+  natstack mobile smoke [--device <serial>]
 
 Credentials are stored as a 0600 JSON file at ${credentialPath()}.
 `);
@@ -239,6 +241,7 @@ function printMobileHelp(): void {
 Usage:
   natstack mobile pair [--host tailscale] [--port 3030]
   natstack mobile dev [--avd <name>] [--device <serial>]
+  natstack mobile smoke [--avd <name>] [--device <serial>]
   natstack mobile build
   natstack mobile install [--device <serial>] [--launch]
   natstack mobile logs [--device <serial>]
@@ -247,6 +250,7 @@ Usage:
 Notes:
   pair starts the QR/deep-link pairing server.
   dev starts Metro, a disposable local server, installs the debug APK, and launches it.
+  smoke verifies the installed internal APK can accept a connect link and reach the workspace app.
   build and install use the trusted internal Android variant.
 `);
 }

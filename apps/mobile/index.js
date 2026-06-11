@@ -26,6 +26,10 @@ import { name as appName } from "./app.json";
 const RN_HOST_ABI = "rn-host-1";
 const nativeHost = NativeModules.NatStackMobileHost;
 
+function smokePhase(phase) {
+  console.log(`[NatStackMobileSmoke] phase=${phase}`);
+}
+
 function platformName() {
   return Platform.OS === "ios" ? "ios" : "android";
 }
@@ -75,12 +79,14 @@ async function activateApprovedWorkspaceApp(options = {}) {
     throw new Error("Pair this device from the desktop app before loading the workspace app.");
   }
   await nativeHost.issueConnectionGrant();
+  smokePhase("embedded-bundle-activate-start");
   const prepared = await nativeHost.prepareAppBundle(RN_HOST_ABI, platformName(), null);
   await nativeHost.activatePreparedAppBundle(
     prepared.localPath,
     prepared.buildKey,
     prepared.integrity
   );
+  smokePhase("embedded-bundle-activate-complete");
   return true;
 }
 
@@ -93,7 +99,9 @@ async function pairAndActivateWorkspaceApp(rawUrl) {
 }
 
 async function pairAndActivateParsedLink(parsed) {
+  smokePhase("embedded-pairing-start");
   await nativeHost.completePairing(parsed.serverUrl, parsed.code, null);
+  smokePhase("embedded-pairing-complete");
   await activateApprovedWorkspaceApp();
 }
 
@@ -109,6 +117,7 @@ function NatStackMobileHostBootstrap() {
       const initialUrl = await Linking.getInitialURL();
       const initialConnect = initialUrl ? parseConnectDeepLink(initialUrl) : null;
       if (initialConnect) {
+        smokePhase("embedded-deep-link-received");
         setPendingConnect(initialConnect);
         setStatus(`Pair this device with ${initialConnect.serverUrl}?`);
         return;
@@ -158,6 +167,7 @@ function NatStackMobileHostBootstrap() {
           setStatus("Open a NatStack connect link to pair this device.");
           return;
         }
+        smokePhase("embedded-deep-link-received");
         setPendingConnect(parsed);
         setStatus(`Pair this device with ${parsed.serverUrl}?`);
         setBusy(false);

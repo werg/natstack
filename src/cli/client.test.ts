@@ -132,6 +132,7 @@ describe("natstack CLI", () => {
 
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining("natstack remote start"));
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining("natstack mobile install"));
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("natstack mobile smoke"));
     expect(console.log).not.toHaveBeenCalledWith(expect.stringContaining("natstack-client"));
   });
 

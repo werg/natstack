@@ -96,6 +96,13 @@ natstack mobile dev
 natstack mobile logs
 ```
 
+Run a clean installed-app pairing smoke against an emulator or attached device:
+
+```sh
+natstack mobile smoke
+natstack mobile smoke --avd Pixel_8
+```
+
 Useful flags:
 
 - `--device <adb-serial>` targets a specific Android device.

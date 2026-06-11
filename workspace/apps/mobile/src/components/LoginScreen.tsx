@@ -39,6 +39,10 @@ import { shellClientAtom, panelTreeAtom } from "../state/shellClientAtom";
 import { themeColorsAtom } from "../state/themeAtoms";
 import { parseConnectDeepLink } from "../services/deepLinkConnect";
 
+function smokePhase(phase: string): void {
+  console.log(`[NatStackMobileSmoke] phase=${phase}`);
+}
+
 function confirmConnectDeepLink(serverUrl: string): Promise<boolean> {
   // Any installed app can fire a natstack://connect intent. Always confirm
   // before replacing creds, so a malicious link can't silently hijack the
@@ -100,6 +104,7 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
       });
 
       await client.init();
+      smokePhase("workspace-connected");
       client.startPeriodicSync();
 
       setShellClient(client);
@@ -133,10 +138,12 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
     setAuthError(null);
     try {
       const credentials = await completePairing(targetUrl, code, options?.mobileAppSource ?? null);
+      smokePhase("workspace-pairing-complete");
       if (options?.connectLinkUrl) {
         await markConnectLinkConsumed(options.connectLinkUrl);
       }
       if ((await ensureNativeWorkspaceAppBundle(options?.mobileAppSource ?? null)).reloading) {
+        smokePhase("workspace-bundle-reloading");
         setAuthLoading(false);
         return true;
       }
@@ -164,6 +171,7 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
         }
         return false;
       }
+      smokePhase("workspace-deep-link-received");
       if (
         (await consumeConnectLinkReplay(rawUrl)) ||
         (await connectLinkMatchesStoredServer(result.serverUrl))

@@ -76,7 +76,9 @@ class NatStackMobileHostModule(
                         ?: throw IllegalStateException("Pairing response did not include a workspace id"),
                 )
                 saveCredential(credential)
-                promise.resolve(issueGrant(credential, source))
+                val grant = issueGrant(credential, source)
+                Log.i(TAG, "[NatStackMobileSmoke] phase=native-pairing-complete")
+                promise.resolve(grant)
             } catch (error: Exception) {
                 promise.reject("pairing_failed", error.message, error)
             }
@@ -113,6 +115,7 @@ class NatStackMobileHostModule(
                     "/_r/s/auth/mobile-app-bootstrap",
                     body
                 )
+                Log.i(TAG, "[NatStackMobileSmoke] phase=native-bundle-bootstrap-fetched")
                 val bootstrap = bootstrapResponse.getJSONObject("bootstrap")
                 val rnHostAbi = bootstrap.getString("rnHostAbi")
                 if (rnHostAbi != expectedRnHostAbi) {
@@ -130,6 +133,7 @@ class NatStackMobileHostModule(
                 } else {
                     prefs.edit().remove(ACTIVE_APP_SOURCE_KEY).apply()
                 }
+                Log.i(TAG, "[NatStackMobileSmoke] phase=native-bundle-prepared")
                 promise.resolve(Arguments.createMap().apply {
                     putString("appId", bootstrap.getString("appId"))
                     putString("buildKey", bootstrap.getString("buildKey"))
@@ -152,12 +156,14 @@ class NatStackMobileHostModule(
     fun activatePreparedAppBundle(localPath: String, buildKey: String, integrity: String, promise: Promise) {
         try {
             val changed = NatStackBundleStore.activate(reactApplicationContext, localPath, buildKey, integrity)
+            Log.i(TAG, "[NatStackMobileSmoke] phase=native-bundle-activated changed=$changed")
             promise.resolve(Arguments.createMap().apply {
                 putBoolean("activated", changed)
             })
             if (changed) {
                 Handler(Looper.getMainLooper()).post {
                     try {
+                        Log.i(TAG, "[NatStackMobileSmoke] phase=native-rn-reload-requested")
                         reloadReactNative()
                     } catch (error: Exception) {
                         Log.e(TAG, "Failed to reload React Native after bundle activation", error)
