@@ -601,7 +601,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
   private dropPersistenceTables(): void {
     const rows = this.sql
       .exec(
-        `SELECT name FROM sqlite_master
+        `SELECT type, name FROM sqlite_master
          WHERE type IN ('table', 'view')
 	           AND (
 	             name LIKE 'trajectory_%' OR name LIKE 'channel_%' OR name LIKE 'gad_%'
@@ -609,10 +609,13 @@ export class GadWorkspaceDO extends DurableObjectBase {
 	                         'file_versions', 'tracked_files', 'blobs')
 	           )`
       )
-      .toArray() as Array<{ name: string }>;
+      .toArray() as Array<{ type: string; name: string }>;
     for (const row of rows) {
-      this.sql.exec(`DROP VIEW IF EXISTS ${quoteIdentifier(row.name)}`);
-      this.sql.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(row.name)}`);
+      if (row.type === "view") {
+        this.sql.exec(`DROP VIEW IF EXISTS ${quoteIdentifier(row.name)}`);
+      } else {
+        this.sql.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(row.name)}`);
+      }
     }
   }
 

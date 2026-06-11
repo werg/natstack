@@ -50,7 +50,7 @@ function parseConnectDeepLink(rawUrl) {
   if (!serverUrl || !code) {
     throw new Error("Connect link is missing url or code");
   }
-  return { serverUrl, code };
+  return { serverUrl: normalizeServerUrl(serverUrl), code: validatePairingCode(code) };
 }
 
 function parseQuery(query) {
@@ -71,6 +71,37 @@ function decodeQueryComponent(value) {
   } catch {
     throw new Error("Connect link is invalid");
   }
+}
+
+function normalizeServerUrl(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error(`Connect link server URL is not supported: ${rawUrl}`);
+  }
+  const protocol = parsed.protocol.toLowerCase();
+  if (protocol !== "http:" && protocol !== "https:") {
+    throw new Error("Connect link server URL must use http:// or https://");
+  }
+  if (
+    !parsed.hostname ||
+    parsed.username ||
+    parsed.password ||
+    (parsed.pathname && parsed.pathname !== "/") ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new Error("Connect link server URL must be a server origin without a path");
+  }
+  return `${protocol}//${parsed.host}`;
+}
+
+function validatePairingCode(code) {
+  if (!/^[A-Za-z0-9_-]{16,512}$/.test(code)) {
+    throw new Error("Connect link pairing code has an unexpected format");
+  }
+  return code;
 }
 
 async function markConnectLinkConsumed(rawUrl) {
@@ -129,16 +160,37 @@ function NatStackMobileHostBootstrap() {
   const [busy, setBusy] = useState(true);
   const [pendingConnect, setPendingConnect] = useState(null);
 
+  const presentConnectLink = useCallback((rawUrl) => {
+    try {
+      const parsed = parseConnectDeepLink(rawUrl);
+      if (!parsed) {
+        setPendingConnect(null);
+        setStatus("Open a NatStack connect link to pair this device.");
+        setBusy(false);
+        return;
+      }
+      smokePhase("embedded-deep-link-received");
+      setPendingConnect({ ...parsed, rawUrl });
+      setStatus(`Pair this device with ${parsed.serverUrl}?`);
+      setBusy(false);
+    } catch (error) {
+      setPendingConnect(null);
+      setStatus(
+        `${
+          error instanceof Error ? error.message : String(error)
+        }\n\nScan a fresh NatStack pairing QR code to re-pair this device.`
+      );
+      setBusy(false);
+    }
+  }, []);
+
   const load = useCallback(async () => {
     setBusy(true);
     setStatus("Loading approved workspace app...");
     try {
       const initialUrl = await Linking.getInitialURL();
-      const initialConnect = initialUrl ? parseConnectDeepLink(initialUrl) : null;
-      if (initialConnect) {
-        smokePhase("embedded-deep-link-received");
-        setPendingConnect({ ...initialConnect, rawUrl: initialUrl });
-        setStatus(`Pair this device with ${initialConnect.serverUrl}?`);
+      if (initialUrl && initialUrl.startsWith("natstack://connect")) {
+        presentConnectLink(initialUrl);
         return;
       }
       const activated = await activateApprovedWorkspaceApp();
@@ -152,7 +204,7 @@ function NatStackMobileHostBootstrap() {
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [presentConnectLink]);
 
   const confirmPendingConnect = useCallback(async () => {
     if (!pendingConnect) return;
@@ -180,23 +232,10 @@ function NatStackMobileHostBootstrap() {
 
   useEffect(() => {
     const subscription = Linking.addEventListener("url", (event) => {
-      try {
-        const parsed = parseConnectDeepLink(event.url);
-        if (!parsed) {
-          setStatus("Open a NatStack connect link to pair this device.");
-          return;
-        }
-        smokePhase("embedded-deep-link-received");
-        setPendingConnect({ ...parsed, rawUrl: event.url });
-        setStatus(`Pair this device with ${parsed.serverUrl}?`);
-        setBusy(false);
-      } catch (error) {
-        setStatus(error instanceof Error ? error.message : String(error));
-        setBusy(false);
-      }
+      presentConnectLink(event.url);
     });
     return () => subscription.remove();
-  }, []);
+  }, [presentConnectLink]);
 
   return (
     <SafeAreaView style={styles.root}>

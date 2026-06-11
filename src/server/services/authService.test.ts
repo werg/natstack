@@ -439,6 +439,65 @@ describe("auth service connection grants", () => {
     });
     connectionGrants.stop();
   });
+
+  it("allows panel-hosting app callers to issue panel connection grants", async () => {
+    const entityCache = new EntityCache();
+    entityCache._onActivate(makePanelRecord("panel:mobile"));
+    const connectionGrants = new ConnectionGrantService({ entityCache });
+    const service = createAuthService({
+      tokenManager: new TokenManager(),
+      deviceAuthStore: new DeviceAuthStore(
+        path.join(fs.mkdtempSync(path.join(os.tmpdir(), "natstack-auth-grant-")), "devices.json")
+      ),
+      getServerBootId: () => "boot_test",
+      getWorkspaceId: () => "workspace_test",
+      connectionGrants,
+      hasAppCapability: (callerId, capability) =>
+        callerId === "app:apps/mobile:device-1" && capability === "panel-hosting",
+    });
+
+    expect(service.definition.methods?.["grantConnection"]?.policy).toEqual({
+      allowed: ["server", "shell", "shell-remote", "app"],
+    });
+
+    const granted = (await service.definition.handler(
+      { caller: createVerifiedCaller("app:apps/mobile:device-1", "app") },
+      "grantConnection",
+      ["panel:mobile"]
+    )) as { token: string; expiresAt: number };
+
+    expect(granted.token).toMatch(/^[0-9a-f]{64}$/);
+    expect(connectionGrants.redeem(granted.token)).toEqual({
+      principalId: "panel:mobile",
+      issuedBy: "app:apps/mobile:device-1",
+    });
+    connectionGrants.stop();
+  });
+
+  it("rejects app panel connection grants without panel-hosting capability", async () => {
+    const entityCache = new EntityCache();
+    entityCache._onActivate(makePanelRecord("panel:mobile"));
+    const connectionGrants = new ConnectionGrantService({ entityCache });
+    const service = createAuthService({
+      tokenManager: new TokenManager(),
+      deviceAuthStore: new DeviceAuthStore(
+        path.join(fs.mkdtempSync(path.join(os.tmpdir(), "natstack-auth-grant-")), "devices.json")
+      ),
+      getServerBootId: () => "boot_test",
+      getWorkspaceId: () => "workspace_test",
+      connectionGrants,
+      hasAppCapability: () => false,
+    });
+
+    await expect(
+      service.definition.handler(
+        { caller: createVerifiedCaller("app:apps/other:device-1", "app") },
+        "grantConnection",
+        ["panel:mobile"]
+      )
+    ).rejects.toThrow(/panel-hosting/);
+    connectionGrants.stop();
+  });
 });
 
 describe("auth service pairing invite flow", () => {

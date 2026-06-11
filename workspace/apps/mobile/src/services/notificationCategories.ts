@@ -6,6 +6,7 @@ import {
 } from "@natstack/shared/approvalContract";
 import { Platform } from "react-native";
 import { requireApprovedAppCapability } from "./appCapabilities";
+import { isNativeFirebaseConfigured } from "./nativeFirebase";
 
 declare const require: (moduleName: string) => unknown;
 
@@ -98,6 +99,10 @@ export function getAndroidNotificationActions(category: string | undefined): Arr
 
 export async function setupNotificationCategories(): Promise<void> {
   requireApprovedAppCapability("notifications", "notification categories");
+  if (!isNativeFirebaseConfigured()) {
+    console.info("[Notifications] Firebase is not configured. Notification categories disabled.");
+    return;
+  }
   const loaded = getNotifee();
   if (!loaded) return;
 

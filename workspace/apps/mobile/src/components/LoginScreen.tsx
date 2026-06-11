@@ -59,6 +59,20 @@ function confirmConnectDeepLink(serverUrl: string): Promise<boolean> {
   });
 }
 
+function confirmManualRepair(reason: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    Alert.alert(
+      "Can't open connect link",
+      `${reason}\n\nDo you want to clear the saved pairing and scan a fresh NatStack QR code?`,
+      [
+        { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+        { text: "Re-pair", style: "destructive", onPress: () => resolve(true) },
+      ],
+      { cancelable: true, onDismiss: () => resolve(false) }
+    );
+  });
+}
+
 type LoginScreenNavigationProp = StackNavigationProp<RootStackParamList, "Login">;
 
 interface LoginScreenProps {
@@ -170,7 +184,13 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
       const result = parseConnectDeepLink(rawUrl);
       if (result.kind === "error") {
         if (rawUrl.startsWith("natstack://connect")) {
-          Alert.alert("Can't open connect link", result.reason);
+          const repair = await confirmManualRepair(result.reason);
+          if (repair) {
+            await clearCredentials().catch(() => {});
+            setServerUrl("");
+            setPairingCode("");
+            setAuthError("Scan a fresh NatStack pairing QR code to reconnect this device.");
+          }
         }
         return false;
       }

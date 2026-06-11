@@ -106,6 +106,10 @@ const RANDOM_UUID_POLYFILL_SCRIPT = `
   })();
 `;
 
+function smokePhase(phase: string, extra?: Record<string, unknown>): void {
+  console.log(`[NatStackMobileSmoke] phase=${phase}`, extra ?? "");
+}
+
 function serializeForInjection(value: unknown): string {
   return JSON.stringify(value ?? null);
 }
@@ -531,6 +535,7 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
           progress,
           reason: maxTimedOut ? "max-load-time" : "stalled-load",
         });
+        smokePhase("workspace-panel-webview-timeout", { panelId, url: stalledUrl, progress });
         logDiagnostic("load timeout", { url: stalledUrl, elapsedMs, stalledMs, progress });
         webViewRef.current?.stopLoading();
         setIsLoading(false);
@@ -694,6 +699,11 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
       (syntheticEvent: { nativeEvent: { description?: string; code?: number } }) => {
         const { nativeEvent } = syntheticEvent;
         logDiagnostic("load error", nativeEvent);
+        smokePhase("workspace-panel-webview-error", {
+          panelId,
+          code: nativeEvent.code,
+          description: nativeEvent.description,
+        });
         setHasError(true);
         setIsLoading(false);
         setErrorMessage(
@@ -710,6 +720,11 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
         if (statusCode >= 400) {
           setHasError(true);
           setIsLoading(false);
+          smokePhase("workspace-panel-webview-http-error", {
+            panelId,
+            statusCode,
+            description,
+          });
           setErrorMessage(`HTTP ${statusCode}: ${description || "Server error"}`);
         }
       },
@@ -726,6 +741,11 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
 
     const handleLoadEnd = useCallback(() => {
       logDiagnostic("load end", { url: currentUrlRef.current });
+      smokePhase("workspace-panel-webview-loaded", {
+        panelId,
+        managed,
+        url: currentUrlRef.current,
+      });
       lastLoadProgressAtRef.current = Date.now();
       lastLoadProgressRef.current = 1;
       setIsLoading(false);
@@ -754,7 +774,7 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
           true;
         })();
       `);
-    }, [diagnosticsEnabled, logDiagnostic, managed]);
+    }, [diagnosticsEnabled, logDiagnostic, managed, panelId]);
 
     const handleLoadStart = useCallback(
       (syntheticEvent: { nativeEvent: { url?: string } }) => {

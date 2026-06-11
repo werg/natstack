@@ -74,6 +74,7 @@ jest.mock(
 
 const { NativeModules } = jest.requireActual("react-native");
 NativeModules.NatStackMobileHost = {
+  firebaseConfigured: true,
   clearCredentials: jest.fn(async () => undefined),
   completePairing: jest.fn(async () => ({
     serverUrl: "https://server.example",

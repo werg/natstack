@@ -97,7 +97,7 @@ interface CallerInfo {
   /** Caller kind, formatted for display ("Panel" / "Worker" / "Service"). */
   kindLabel: string;
   /** Caller kind as accepted by the approval payload. */
-  kind: "panel" | "app" | "worker" | "do";
+  kind: "panel" | "app" | "worker" | "do" | "system";
   /** Set when this caller refers to a panel that exists in the live tree. */
   panelId?: string;
   /** Truncated id, retained for the expandable details panel. */
@@ -142,6 +142,14 @@ function resolveCallerInfo(approval: PendingApproval): CallerInfo {
       label: serverTitle ?? fromRepo ?? prettifyId(approval.callerId),
       kindLabel: "App",
       kind: "app",
+      shortId,
+    };
+  }
+  if (approval.callerKind === "system") {
+    return {
+      label: serverTitle ?? "Workspace",
+      kindLabel: "Workspace",
+      kind: "system",
       shortId,
     };
   }

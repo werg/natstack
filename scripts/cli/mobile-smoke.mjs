@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // End-to-end Android smoke test for a fresh internal app install accepting a
-// natstack://connect QR/deep link, activating the served RN bundle, and
-// connecting the workspace app.
+// natstack://connect QR/deep link, activating the served RN bundle, connecting
+// the workspace app, and rendering a panel WebView.
 
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -9,6 +9,7 @@ import path from "node:path";
 import process from "node:process";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { inflateSync } from "node:zlib";
 import {
   createServerInvocation,
   serverEntryArg,
@@ -29,6 +30,7 @@ const defaultApkPath = path.join(
 const defaultPackage = "com.natstack.mobile.internal";
 const defaultActivity = "com.natstack.mobile.MainActivity";
 const smokePrefix = "[NatStackMobileSmoke]";
+const screenshotDir = path.join(repoRoot, "test-results", "mobile-smoke");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -122,8 +124,8 @@ Everything after '--' is forwarded to ${serverEntryDescription()}.
 
 The smoke starts a disposable local server, reverses its gateway port through
 adb, sends a natstack://connect intent to the installed internal app, confirms
-the Pair screen, then waits for native bundle activation and workspace connect
-log markers.
+the Pair screen, then waits for native bundle activation, workspace connection,
+panel materialization, and panel WebView load log markers.
 `);
 }
 
@@ -231,6 +233,33 @@ async function adb(device, ...args) {
 
 async function adbCapture(device, ...args) {
   return runCommand("adb", makeAdbArgs(device, args));
+}
+
+function runCommandBuffer(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd ?? repoRoot,
+      env: options.env ?? process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    const stdoutChunks = [];
+    let stderr = "";
+    child.stdout?.on("data", (chunk) => stdoutChunks.push(Buffer.from(chunk)));
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      const stdout = Buffer.concat(stdoutChunks);
+      if (code === 0) resolve({ stdout, stderr });
+      else reject(new Error(`${command} ${args.join(" ")} failed with code ${code}\n${stderr}`));
+    });
+  });
+}
+
+async function adbCaptureBuffer(device, ...args) {
+  return runCommandBuffer("adb", makeAdbArgs(device, args));
 }
 
 async function hasAdbDevice(device) {
@@ -355,13 +384,52 @@ async function tapButtonByText(device, text, deadlineMs) {
   throw new Error(`Timed out waiting for visible Android button "${text}"`);
 }
 
-function findNodeBounds(xml, text) {
+async function tapOptionalButtonByText(device, text, timeoutMs = 6_000) {
+  const deadlineMs = Date.now() + timeoutMs;
+  const dumpPath = "/sdcard/natstack-mobile-smoke-window.xml";
+  while (Date.now() < deadlineMs) {
+    await adbCapture(device, "shell", "uiautomator", "dump", dumpPath).catch(() => null);
+    const result = await adbCapture(device, "exec-out", "cat", dumpPath).catch(() => null);
+    const xml = result?.stdout ?? "";
+    const bounds = findNodeBounds(xml, text);
+    if (bounds) {
+      await adb(device, "shell", "input", "tap", String(bounds.x), String(bounds.y));
+      return true;
+    }
+    await sleep(500);
+  }
+  return false;
+}
+
+async function tapOptionalButtonByLabelPrefix(device, text, timeoutMs = 6_000) {
+  const deadlineMs = Date.now() + timeoutMs;
+  const dumpPath = "/sdcard/natstack-mobile-smoke-window.xml";
+  while (Date.now() < deadlineMs) {
+    await adbCapture(device, "shell", "uiautomator", "dump", dumpPath).catch(() => null);
+    const result = await adbCapture(device, "exec-out", "cat", dumpPath).catch(() => null);
+    const xml = result?.stdout ?? "";
+    const bounds = findNodeBounds(xml, text, { labelPrefix: true });
+    if (bounds) {
+      await adb(device, "shell", "input", "tap", String(bounds.x), String(bounds.y));
+      return true;
+    }
+    await sleep(500);
+  }
+  return false;
+}
+
+function findNodeBounds(xml, text, options = {}) {
   const pattern = /<node\b[^>]*>/g;
   let match;
+  const expected = text.toLowerCase();
   while ((match = pattern.exec(xml))) {
     const node = match[0];
     const label = readXmlAttribute(node, "text") || readXmlAttribute(node, "content-desc");
-    if (label.toLowerCase() !== text.toLowerCase()) continue;
+    const normalized = label.toLowerCase();
+    const matched = options.labelPrefix
+      ? normalized === expected || normalized.startsWith(`${expected}.`)
+      : normalized === expected;
+    if (!matched) continue;
     const boundsMatch = node.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);
     if (!boundsMatch) continue;
     const left = Number(boundsMatch[1]);
@@ -389,6 +457,210 @@ function unescapeXmlAttribute(value) {
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&amp;/g, "&");
+}
+
+async function captureAndAssertPanelVisible(device) {
+  await sleep(2_000);
+  if (await tapOptionalButtonByText(device, "Approve all", 2_000)) {
+    await sleep(2_000);
+  }
+  if (await tapOptionalButtonByLabelPrefix(device, "Use once", 2_000)) {
+    await sleep(3_000);
+  }
+  await assertNoBlockingPermissionDialog(device);
+  await fsp.mkdir(screenshotDir, { recursive: true });
+  const screenshotPath = path.join(screenshotDir, `panel-${new Date().toISOString().replace(/[:.]/g, "-")}.png`);
+  const { stdout } = await adbCaptureBuffer(device, "exec-out", "screencap", "-p");
+  await fsp.writeFile(screenshotPath, stdout);
+  const image = decodePng(stdout);
+  const stats = samplePanelRegion(image);
+  console.log(
+    `[mobile-smoke] Visual panel sample: ${JSON.stringify({
+      screenshot: path.relative(repoRoot, screenshotPath),
+      region: stats.region,
+      sampled: stats.sampled,
+      uniqueBuckets: stats.uniqueBuckets,
+      dominantRatio: Number(stats.dominantRatio.toFixed(3)),
+      meanLuma: Number(stats.meanLuma.toFixed(1)),
+      lumaStdDev: Number(stats.lumaStdDev.toFixed(1)),
+      edgeRatio: Number(stats.edgeRatio.toFixed(3)),
+    })}`
+  );
+  if (
+    stats.sampled < 5_000 ||
+    stats.uniqueBuckets < 12 ||
+    stats.dominantRatio > 0.995 ||
+    stats.lumaStdDev < 4 ||
+    stats.edgeRatio < 0.003
+  ) {
+    throw new Error(
+      `Panel WebView screenshot looks blank. Saved ${screenshotPath}; stats=${JSON.stringify(stats)}`
+    );
+  }
+}
+
+async function assertNoBlockingPermissionDialog(device) {
+  const dumpPath = "/sdcard/natstack-mobile-smoke-window.xml";
+  await adbCapture(device, "shell", "uiautomator", "dump", dumpPath).catch(() => null);
+  const result = await adbCapture(device, "exec-out", "cat", dumpPath).catch(() => null);
+  const xml = result?.stdout ?? "";
+  const text = unescapeXmlAttribute(xml);
+  if (/send you notifications/i.test(text) || /don.?t allow/i.test(text)) {
+    throw new Error(
+      "Android permission dialog is blocking the panel screenshot; expected the panel content to be visible"
+    );
+  }
+  if (/Approve workspace extensions/i.test(text) || /Approve all/i.test(text)) {
+    throw new Error(
+      "NatStack approval sheet is blocking the panel screenshot; expected the panel content to be visible"
+    );
+  }
+  if (/Connection error/i.test(text) || /DO RPC relay failed/i.test(text)) {
+    throw new Error(
+      "Panel rendered an error banner instead of healthy content; expected the panel content to be usable"
+    );
+  }
+}
+
+function decodePng(buffer) {
+  const signature = "89504e470d0a1a0a";
+  if (buffer.subarray(0, 8).toString("hex") !== signature) {
+    throw new Error("Android screenshot is not a PNG");
+  }
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  const idatChunks = [];
+  while (offset + 12 <= buffer.length) {
+    const length = buffer.readUInt32BE(offset);
+    const type = buffer.subarray(offset + 4, offset + 8).toString("ascii");
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + length;
+    if (dataEnd + 4 > buffer.length) throw new Error("PNG chunk exceeds screenshot length");
+    const data = buffer.subarray(dataStart, dataEnd);
+    if (type === "IHDR") {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      bitDepth = data[8];
+      colorType = data[9];
+    } else if (type === "IDAT") {
+      idatChunks.push(data);
+    } else if (type === "IEND") {
+      break;
+    }
+    offset = dataEnd + 4;
+  }
+  if (!width || !height || bitDepth !== 8 || (colorType !== 6 && colorType !== 2)) {
+    throw new Error(
+      `Unsupported screenshot PNG format: ${width}x${height} bitDepth=${bitDepth} colorType=${colorType}`
+    );
+  }
+  const bytesPerPixel = colorType === 6 ? 4 : 3;
+  const stride = width * bytesPerPixel;
+  const inflated = inflateSync(Buffer.concat(idatChunks));
+  const pixels = Buffer.alloc(width * height * 4);
+  let sourceOffset = 0;
+  let previous = Buffer.alloc(stride);
+  let current = Buffer.alloc(stride);
+  for (let y = 0; y < height; y++) {
+    const filter = inflated[sourceOffset++];
+    inflated.copy(current, 0, sourceOffset, sourceOffset + stride);
+    sourceOffset += stride;
+    unfilterScanline(current, previous, filter, bytesPerPixel);
+    for (let x = 0; x < width; x++) {
+      const src = x * bytesPerPixel;
+      const dst = (y * width + x) * 4;
+      pixels[dst] = current[src];
+      pixels[dst + 1] = current[src + 1];
+      pixels[dst + 2] = current[src + 2];
+      pixels[dst + 3] = bytesPerPixel === 4 ? current[src + 3] : 255;
+    }
+    [previous, current] = [current, previous];
+  }
+  return { width, height, pixels };
+}
+
+function unfilterScanline(line, previous, filter, bytesPerPixel) {
+  for (let i = 0; i < line.length; i++) {
+    const left = i >= bytesPerPixel ? line[i - bytesPerPixel] : 0;
+    const up = previous[i] ?? 0;
+    const upLeft = i >= bytesPerPixel ? previous[i - bytesPerPixel] ?? 0 : 0;
+    if (filter === 1) {
+      line[i] = (line[i] + left) & 0xff;
+    } else if (filter === 2) {
+      line[i] = (line[i] + up) & 0xff;
+    } else if (filter === 3) {
+      line[i] = (line[i] + Math.floor((left + up) / 2)) & 0xff;
+    } else if (filter === 4) {
+      line[i] = (line[i] + paethPredictor(left, up, upLeft)) & 0xff;
+    } else if (filter !== 0) {
+      throw new Error(`Unsupported PNG filter: ${filter}`);
+    }
+  }
+}
+
+function paethPredictor(left, up, upLeft) {
+  const p = left + up - upLeft;
+  const pa = Math.abs(p - left);
+  const pb = Math.abs(p - up);
+  const pc = Math.abs(p - upLeft);
+  if (pa <= pb && pa <= pc) return left;
+  if (pb <= pc) return up;
+  return upLeft;
+}
+
+function samplePanelRegion(image) {
+  const left = Math.floor(image.width * 0.24);
+  const right = Math.floor(image.width * 0.98);
+  const top = Math.floor(image.height * 0.14);
+  const bottom = Math.floor(image.height * 0.9);
+  const buckets = new Map();
+  let sampled = 0;
+  let sum = 0;
+  let sumSquares = 0;
+  let edgeCount = 0;
+  let comparisons = 0;
+  const step = Math.max(1, Math.floor(Math.min(image.width, image.height) / 240));
+  for (let y = top; y < bottom; y += step) {
+    for (let x = left; x < right; x += step) {
+      const { r, g, b } = readPixel(image, x, y);
+      const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      const bucket = `${r >> 4},${g >> 4},${b >> 4}`;
+      buckets.set(bucket, (buckets.get(bucket) ?? 0) + 1);
+      sampled++;
+      sum += luma;
+      sumSquares += luma * luma;
+      if (x + step < right) {
+        const next = readPixel(image, x + step, y);
+        const nextLuma = 0.2126 * next.r + 0.7152 * next.g + 0.0722 * next.b;
+        if (Math.abs(luma - nextLuma) > 18) edgeCount++;
+        comparisons++;
+      }
+    }
+  }
+  const dominant = Math.max(0, ...buckets.values());
+  const meanLuma = sum / Math.max(1, sampled);
+  const variance = sumSquares / Math.max(1, sampled) - meanLuma * meanLuma;
+  return {
+    region: { left, top, right, bottom, width: right - left, height: bottom - top, step },
+    sampled,
+    uniqueBuckets: buckets.size,
+    dominantRatio: dominant / Math.max(1, sampled),
+    meanLuma,
+    lumaStdDev: Math.sqrt(Math.max(0, variance)),
+    edgeRatio: edgeCount / Math.max(1, comparisons),
+  };
+}
+
+function readPixel(image, x, y) {
+  const offset = (y * image.width + x) * 4;
+  return {
+    r: image.pixels[offset],
+    g: image.pixels[offset + 1],
+    b: image.pixels[offset + 2],
+  };
 }
 
 function shellQuote(value) {
@@ -565,6 +837,9 @@ async function main() {
       "native-bundle-activated",
       "native-rn-reload-requested",
       "workspace-connected",
+      "workspace-panel-activate-start",
+      "workspace-panel-materialized",
+      "workspace-panel-webview-loaded",
     ];
     const logcat = startLogcat(options.device, phases, deadlineMs);
     children.push(logcat.child);
@@ -582,8 +857,11 @@ async function main() {
     for (const phase of phases.slice(1)) {
       await logcat.waitForPhase(phase);
     }
+    await captureAndAssertPanelVisible(options.device);
 
-    console.log("[mobile-smoke] PASS clean QR/deep-link pairing reached workspace connection");
+    console.log(
+      "[mobile-smoke] PASS clean QR/deep-link pairing reached workspace connection and visibly loaded a panel WebView"
+    );
     await cleanup();
   } catch (error) {
     console.error(`[mobile-smoke] ${error instanceof Error ? error.message : String(error)}`);

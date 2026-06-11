@@ -1,4 +1,4 @@
-import { AppState } from "react-native";
+import { AppState, NativeModules } from "react-native";
 import { waitFor } from "@testing-library/react-native";
 import { displayApprovalNotification, registerForPushNotifications, reconcilePushNotifications } from "./pushNotifications";
 import { handleBackgroundMessage, handleBackgroundNotifeeEvent } from "./backgroundHandlers";
@@ -114,6 +114,7 @@ function createShellClient(
 
 beforeEach(() => {
   setApprovedAppCapabilities(["notifications", "keychain"]);
+  (NativeModules.NatStackMobileHost as { firebaseConfigured?: boolean }).firebaseConfigured = true;
   jest.clearAllMocks();
   mockStorage.clear();
   mockListeners.tokenRefresh = undefined;
@@ -132,6 +133,17 @@ afterAll(() => {
 });
 
 describe("pushNotifications", () => {
+  it("skips Firebase messaging setup when the native app has no Firebase config", async () => {
+    (NativeModules.NatStackMobileHost as { firebaseConfigured?: boolean }).firebaseConfigured = false;
+    const shellClient = createShellClient();
+
+    const cleanup = await registerForPushNotifications(shellClient as never);
+
+    expect(cleanup).toEqual(expect.any(Function));
+    expect(mockMessagingFactory).not.toHaveBeenCalled();
+    expect(shellClient.transport.call).not.toHaveBeenCalledWith("main", "push.register", expect.any(Array));
+  });
+
   it("registers the initial token and refreshed tokens", async () => {
     const shellClient = createShellClient();
 

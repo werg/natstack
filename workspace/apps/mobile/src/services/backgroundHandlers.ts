@@ -14,6 +14,7 @@ import {
 } from "./backgroundActionQueue";
 import { isBackgroundDecision } from "./backgroundActionQueueCore";
 import { requireApprovedAppCapability } from "./appCapabilities";
+import { isNativeFirebaseConfigured } from "./nativeFirebase";
 
 declare const require: (moduleName: string) => unknown;
 
@@ -85,6 +86,10 @@ export function registerBackgroundHandlers(): void {
   requireApprovedAppCapability("notifications", "background notification handlers");
   if (registered) return;
   registered = true;
+  if (!isNativeFirebaseConfigured()) {
+    console.info("[PushBackground] Firebase is not configured. Background FCM handler disabled.");
+    return;
+  }
 
   const messaging = getMessaging();
   const loadedNotifee = getNotifee();

@@ -38,6 +38,10 @@ class NatStackMobileHostModule(
 
     override fun getName(): String = "NatStackMobileHost"
 
+    override fun getConstants(): MutableMap<String, Any> = hashMapOf(
+        "firebaseConfigured" to BuildConfig.NATSTACK_HAS_FIREBASE
+    )
+
     @ReactMethod
     fun getCredentials(promise: Promise) {
         try {

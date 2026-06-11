@@ -116,7 +116,10 @@ export function createAuthService(deps: {
     description: "Gateway authentication bootstrap routes",
     policy: { allowed: ["server", "shell", "shell-remote"] },
     methods: {
-      grantConnection: { args: z.tuple([z.string()]) },
+      grantConnection: {
+        args: z.tuple([z.string()]),
+        policy: { allowed: ["server", "shell", "shell-remote", "app"] },
+      },
       getConnectionInfo: { args: z.tuple([]) },
       createPairingInvite: {
         args: z.tuple([CreatePairingInviteArgsSchema.optional()]),
@@ -127,6 +130,9 @@ export function createAuthService(deps: {
     },
     handler: async (ctx, method, args) => {
       if (method === "grantConnection") {
+        capabilityAuthorizer.require(ctx.caller, "panel-hosting", {
+          hostKinds: ["server", "shell", "shell-remote"],
+        });
         if (!deps.connectionGrants) throw new Error("Connection grants are not configured");
         return deps.connectionGrants.grant(args[0] as string, ctx.caller.runtime.id);
       }

@@ -65,6 +65,7 @@ import type { HostConfig } from "../services/panelUrls";
 import type { ApprovalDecision, PendingApproval } from "@natstack/shared/approvals";
 import { RPC_METHODS } from "@natstack/shared/approvalContract";
 const MAX_WEBVIEWS = 5;
+const PANEL_MATERIALIZE_TIMEOUT_MS = 45_000;
 interface WebViewEntry {
   panelId: string;
   url: string;
@@ -82,6 +83,21 @@ function addWebViewEntry(entries: WebViewEntry[], nextEntry: WebViewEntry): WebV
   const toEvict = candidates[0];
   return toEvict ? nextEntries.filter((entry) => entry.panelId !== toEvict.panelId) : nextEntries;
 }
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeout) clearTimeout(timeout);
+  });
+}
+
+function smokePhase(phase: string, extra?: Record<string, unknown>): void {
+  console.log(`[NatStackMobileSmoke] phase=${phase}`, extra ?? "");
+}
+
 export function MainScreen() {
   const navigation = useNavigation();
   const shellClient = useAtomValue(shellClientAtom);
@@ -99,6 +115,7 @@ export function MainScreen() {
   useAppLifecycle(shellClient);
   const [webViewStack, setWebViewStack] = useState<WebViewEntry[]>([]);
   const [loadingPanelId, setLoadingPanelId] = useState<string | null>(null);
+  const [panelLoadErrors, setPanelLoadErrors] = useState<Record<string, string>>({});
   const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
   const pendingApprovalsRefreshSeq = useRef(0);
   const [addressBarVisible, setAddressBarVisible] = useState(false);
@@ -181,6 +198,7 @@ export function MainScreen() {
     if (!activePanelId || !shellClient) return null;
     return shellClient.panels.registry.getRuntimeLease(activePanelId);
   }, [activePanelId, panelTree, shellClient]);
+  const activePanelLoadError = activePanelId ? panelLoadErrors[activePanelId] : null;
   const activePanelLeasedElsewhere = Boolean(
     activeRuntimeLease && activeRuntimeLease.clientSessionId !== shellClient?.credentials.deviceId
   );
@@ -385,29 +403,45 @@ export function MainScreen() {
         return;
       }
       pendingPanelLoads.current.add(panelId);
+      smokePhase("workspace-panel-activate-start", { panelId });
       setLoadingPanelId(panelId);
+      setPanelLoadErrors((prev) => {
+        if (!prev[panelId]) return prev;
+        const { [panelId]: _removed, ...rest } = prev;
+        return rest;
+      });
       void (async () => {
         const lease = shellClient.panels.registry.getRuntimeLease(panelId);
         if (lease && lease.clientSessionId !== shellClient.credentials.deviceId) {
           setWebViewStack((prev) => prev.filter((entry) => entry.panelId !== panelId));
+          smokePhase("workspace-panel-leased-elsewhere", { panelId });
           return;
         }
-        const materialized = await materializeMobilePanel({
-          panelId,
-          panel,
-          hostConfig,
-          getPanelInit: (id) => shellClient.panels.getPanelInit(id),
-          acquireLease: (id, entityId, opts) => shellClient.panels.acquireLease(id, entityId, opts),
-          takeOverLease: (id, entityId, opts) =>
-            shellClient.panels.takeOverLease(id, entityId, opts),
-          leaseMode: "acquire",
-        });
+        const materialized = await withTimeout(
+          materializeMobilePanel({
+            panelId,
+            panel,
+            hostConfig,
+            getPanelInit: (id) => shellClient.panels.getPanelInit(id),
+            acquireLease: (id, entityId, opts) =>
+              shellClient.panels.acquireLease(id, entityId, opts),
+            takeOverLease: (id, entityId, opts) =>
+              shellClient.panels.takeOverLease(id, entityId, opts),
+            leaseMode: "acquire",
+          }),
+          PANEL_MATERIALIZE_TIMEOUT_MS,
+          `Timed out preparing panel ${panelId} for mobile.`
+        );
         if (hostConfig.protocol === "http") {
           console.log(`[MainScreen] Activating panel ${panelId}`, {
             url: materialized.url,
             managed: materialized.managed,
           });
         }
+        smokePhase("workspace-panel-materialized", {
+          panelId,
+          managed: materialized.managed,
+        });
         setWebViewStack((prev) =>
           addWebViewEntry(prev, {
             panelId,
@@ -417,16 +451,30 @@ export function MainScreen() {
             lastActive: Date.now(),
           })
         );
+        setPanelLoadErrors((prev) => {
+          if (!prev[panelId]) return prev;
+          const { [panelId]: _removed, ...rest } = prev;
+          return rest;
+        });
       })()
         .catch((err: unknown) => {
           console.error(`[MainScreen] Failed to activate panel ${panelId}:`, err);
+          const message = err instanceof Error ? err.message : "Could not load this panel.";
+          setPanelLoadErrors((prev) => ({ ...prev, [panelId]: message }));
+          pushToast({
+            title: "Panel failed to load",
+            message,
+            tone: "danger",
+            durationMs: 10000,
+          });
+          smokePhase("workspace-panel-activate-failed", { panelId, message });
         })
         .finally(() => {
           pendingPanelLoads.current.delete(panelId);
           setLoadingPanelId((current) => (current === panelId ? null : current));
         });
     },
-    [hostConfig, shellClient, setActivePanelId]
+    [hostConfig, pushToast, shellClient, setActivePanelId]
   );
   const takeOverActivePanel = useCallback(() => {
     if (!activePanelId || !activePanel || !hostConfig || !shellClient) return;
@@ -1166,12 +1214,40 @@ export function MainScreen() {
 
         {loadingPanelId &&
           loadingPanelId === activePanelId &&
+          !activePanelLoadError &&
           !webViewStack.some((entry) => entry.panelId === loadingPanelId) && (
             <View style={styles.loadingContainer}>
               <ActivityIndicator size="large" color={colors.primary} />
               <Text style={[styles.loadingText, { color: colors.textSecondary }]}>
                 Loading panel...
               </Text>
+            </View>
+          )}
+
+        {activePanelId &&
+          activePanelLoadError &&
+          !activePanelLeasedElsewhere &&
+          !webViewStack.some((entry) => entry.panelId === activePanelId) && (
+            <View style={styles.placeholderContainer}>
+              <Text style={[styles.placeholderText, { color: colors.text }]}>
+                Panel failed to load
+              </Text>
+              <Text style={[styles.placeholderSubtext, { color: colors.textSecondary }]}>
+                {activePanelLoadError}
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Retry loading panel"
+                hitSlop={8}
+                style={({ pressed }) => [
+                  styles.retryButton,
+                  { borderColor: colors.primary },
+                  pressed && { opacity: 0.6 },
+                ]}
+                onPress={() => activatePanel(activePanelId)}
+              >
+                <Text style={[styles.retryButtonText, { color: colors.primary }]}>Retry</Text>
+              </Pressable>
             </View>
           )}
 
@@ -1326,6 +1402,20 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   takeOverButtonText: {
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  retryButton: {
+    marginTop: 16,
+    minHeight: 44,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderWidth: 1,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  retryButtonText: {
     fontSize: 16,
     fontWeight: "600",
   },

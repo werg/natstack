@@ -12,6 +12,7 @@ import { requireApprovedAppCapability } from "./appCapabilities";
 import { APPROVAL_NOTIFICATION_CHANNEL_ID, getAndroidNotificationActions, } from "./notificationCategories";
 import { drainBackgroundActionQueue, enqueueDeepLink, queueBackgroundAction, takePendingDeepLink, updateActionNotification, } from "./backgroundActionQueue";
 import { isBackgroundDecision } from "./backgroundActionQueueCore";
+import { isNativeFirebaseConfigured } from "./nativeFirebase";
 declare const require: (moduleName: string) => unknown;
 const PERMISSION_DENIED_TOAST_KEY = "natstack:push:permission-denied-toast-at";
 const PERMISSION_DENIED_TOAST_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -60,9 +61,10 @@ interface NotifeeEvent {
     };
 }
 interface AsyncStorageLike {
-    getItem(key: string): Promise<string | null>;
-    setItem(key: string, value: string): Promise<void>;
+  getItem(key: string): Promise<string | null>;
+  setItem(key: string, value: string): Promise<void>;
 }
+
 /** Minimal remote message shape */
 export interface RemoteMessage {
     messageId?: string;
@@ -172,16 +174,17 @@ function getNotifee(): {
     }
 }
 function getAsyncStorage(): AsyncStorageLike | null {
-    try {
-        const mod = require("@react-native-async-storage/async-storage") as {
+  try {
+    const mod = require("@react-native-async-storage/async-storage") as {
             default?: AsyncStorageLike;
         } & AsyncStorageLike;
         return mod.default ?? mod;
     }
     catch {
-        return null;
-    }
+    return null;
+  }
 }
+
 async function registerToken(shellClient: ShellClient, token: string): Promise<void> {
     const platform = Platform.OS === "ios" ? "ios" : "android";
     const clientId = await getDeviceClientId();
@@ -313,6 +316,10 @@ export async function registerForPushNotifications(shellClient: ShellClient, cal
         ? { onApprovalDeepLink: (approvalId) => callbacksOrTap({ approvalId }) }
         : callbacksOrTap ?? {};
     cleanupPushNotificationSubscriptions();
+    if (!isNativeFirebaseConfigured()) {
+        console.info("[PushNotifications] Firebase is not configured. Push disabled.");
+        return cleanupPushNotificationSubscriptions;
+    }
     const messagingModule = getFirebaseMessaging();
     const loadedNotifee = getNotifee();
     if (!messagingModule)

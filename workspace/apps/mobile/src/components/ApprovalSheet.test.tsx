@@ -75,6 +75,55 @@ const userland: PendingApproval = {
   ],
 };
 
+const deviceCode: PendingApproval = {
+  ...base,
+  kind: "device-code",
+  credentialLabel: "GitHub",
+  userCode: "ABCD-1234",
+  verificationUri: "https://github.com/login/device",
+  verificationUriComplete: "https://github.com/login/device?user_code=ABCD-1234",
+  expiresAt: Date.now() + 600_000,
+  oauthTokenOrigin: "https://github.com/login/oauth/access_token",
+};
+
+const unitBatch: PendingApproval = {
+  ...base,
+  callerId: "system:workspace-startup",
+  callerKind: "system",
+  repoPath: "/projects/foo/meta",
+  kind: "unit-batch",
+  trigger: "startup",
+  title: "Run 2 workspace units",
+  description: "Approve workspace apps and extensions declared in config.",
+  units: [
+    {
+      unitKind: "app",
+      unitName: "mobile",
+      displayName: "Mobile",
+      version: "0.1.0",
+      target: "react-native",
+      source: { kind: "internal-git", repo: "apps/mobile", ref: "abc123" },
+      ev: "ev-mobile",
+      capabilities: ["panel-hosting"],
+    },
+    {
+      unitKind: "extension",
+      unitName: "git-tools",
+      displayName: "Git Tools",
+      target: "terminal",
+      source: { kind: "internal-git", repo: "extensions/git-tools", ref: "def456" },
+      ev: "ev-extension",
+      capabilities: ["filesystem"],
+      provider: {
+        name: "provider-a",
+        activeEv: "ev-provider",
+        activeBuildKey: "build-provider",
+        contractVersion: "1",
+      },
+    },
+  ],
+};
+
 function renderSheet(
   approval: PendingApproval | PendingApproval[],
   overrides: Partial<React.ComponentProps<typeof ApprovalSheet>> = {}
@@ -98,6 +147,8 @@ describe("ApprovalSheet", () => {
     [clientConfig, "Set up Google Calendar"],
     [credentialInput, "Add Acme API"],
     [userland, "Allow foo?"],
+    [deviceCode, "Sign in to GitHub"],
+    [unitBatch, "Run 2 workspace units"],
   ] as const)("renders %s", (approval, title) => {
     const { getByText } = renderSheet(approval);
     expect(getByText(title)).toBeTruthy();
@@ -240,6 +291,36 @@ describe("ApprovalSheet", () => {
     expect(getByTestId("approval-userland-allow").props.accessibilityLabel).toContain("Allow");
     expect(getByTestId("approval-userland-deny").props.accessibilityLabel).toContain("Deny");
     expect(getByTestId("approval-userland-later").props.accessibilityLabel).toContain("Later");
+  });
+
+  it("renders device-code approvals and lets the user cancel waiting", async () => {
+    const onResolve = jest.fn(async () => undefined);
+    const { getByText, getByTestId } = renderSheet(deviceCode, { onResolve });
+
+    expect(getByText("ABCD-1234")).toBeTruthy();
+    expect(getByText("https://github.com")).toBeTruthy();
+
+    fireEvent.press(getByTestId("approval-action-device-cancel"));
+
+    await waitFor(() => expect(onResolve).toHaveBeenCalledWith("approval-1", "dismiss"));
+  });
+
+  it("renders unit-batch approvals as workspace-owned prompts", async () => {
+    const onResolve = jest.fn(async () => undefined);
+    const { getAllByText, getByText, getByTestId } = renderSheet(unitBatch, { onResolve });
+
+    expect(getByText("Workspace")).toBeTruthy();
+    expect(getByText("workspace")).toBeTruthy();
+    expect(getByText("App")).toBeTruthy();
+    expect(getByText("mobile")).toBeTruthy();
+    expect(getByText("Extension")).toBeTruthy();
+    expect(getByText("git-tools")).toBeTruthy();
+    expect(getAllByText("Access")).toHaveLength(2);
+    expect(getByText("panel-hosting")).toBeTruthy();
+
+    fireEvent.press(getByTestId("approval-action-once"));
+
+    await waitFor(() => expect(onResolve).toHaveBeenCalledWith("approval-1", "once"));
   });
 
   it("renders severe panel capability approvals with danger-tone trust action", () => {

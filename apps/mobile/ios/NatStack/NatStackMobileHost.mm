@@ -24,6 +24,12 @@ static NSString *const NatStackWorkspaceAppCallerPrefix = @"app:apps/";
   return NO;
 }
 
+- (NSDictionary *)constantsToExport
+{
+  BOOL firebaseConfigured = [[NSBundle mainBundle] pathForResource:@"GoogleService-Info" ofType:@"plist"] != nil;
+  return @{ @"firebaseConfigured": @(firebaseConfigured) };
+}
+
 RCT_EXPORT_METHOD(getCredentials:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 {
