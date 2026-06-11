@@ -14,7 +14,7 @@ describe("connectLinkReplayGuard", () => {
     storage.removeItem.mockReset();
   });
 
-  it("suppresses a consumed connect link once", async () => {
+  it("suppresses a consumed connect link throughout its replay TTL", async () => {
     const rawUrl =
       "natstack://connect?url=https%3A%2F%2Fhost.tailnet.ts.net&code=abc123abc123abc123";
 
@@ -26,7 +26,7 @@ describe("connectLinkReplayGuard", () => {
 
     storage.getItem.mockResolvedValueOnce(JSON.stringify({ url: rawUrl, consumedAt: 1_000 }));
     await expect(consumeConnectLinkReplay(rawUrl, 2_000)).resolves.toBe(true);
-    expect(storage.removeItem).toHaveBeenCalledWith("natstack:connect:consumed-url");
+    expect(storage.removeItem).not.toHaveBeenCalled();
   });
 
   it("does not suppress a different connect link", async () => {

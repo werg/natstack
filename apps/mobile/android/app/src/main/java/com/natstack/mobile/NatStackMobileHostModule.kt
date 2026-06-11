@@ -50,7 +50,7 @@ class NatStackMobileHostModule(
 
     @ReactMethod
     fun clearCredentials(promise: Promise) {
-        prefs.edit().remove(CREDENTIAL_KEY).remove(ACTIVE_APP_SOURCE_KEY).apply()
+        clearStoredCredentials()
         promise.resolve(null)
     }
 
@@ -77,7 +77,12 @@ class NatStackMobileHostModule(
                         ?: throw IllegalStateException("Pairing response did not include a workspace id"),
                 )
                 saveCredential(credential)
-                val grant = issueGrant(credential, source)
+                val grant = try {
+                    issueGrant(credential, source)
+                } catch (error: Exception) {
+                    clearStoredCredentials()
+                    throw error
+                }
                 Log.i(TAG, "[NatStackMobileSmoke] phase=native-pairing-complete")
                 promise.resolve(grant)
             } catch (error: Exception) {
@@ -218,6 +223,10 @@ class NatStackMobileHostModule(
 
     private fun activeAppSource(): String? = prefs.getString(ACTIVE_APP_SOURCE_KEY, null)
         ?.takeIf { it.isNotBlank() }
+
+    private fun clearStoredCredentials() {
+        prefs.edit().remove(CREDENTIAL_KEY).remove(ACTIVE_APP_SOURCE_KEY).apply()
+    }
 
     private fun isWorkspaceMobileAppCaller(callerId: String, deviceId: String): Boolean =
         callerId.startsWith(WORKSPACE_APP_CALLER_PREFIX) && callerId.endsWith(":$deviceId")

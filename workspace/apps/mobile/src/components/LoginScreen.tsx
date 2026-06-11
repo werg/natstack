@@ -15,8 +15,8 @@ import type { StackNavigationProp } from "@react-navigation/stack";
 import { useSetAtom, useAtomValue } from "jotai";
 import type { RootStackParamList } from "../navigation/RootNavigator";
 import {
+  clearCredentials,
   completePairing,
-  getCredentials,
   StoredCredentialsNeedRepairError,
   type Credentials,
 } from "../services/auth";
@@ -25,7 +25,6 @@ import { getConnectionBootstrap } from "../services/connectionBootstrap";
 import { ShellClient } from "../services/shellClient";
 import {
   consumeConnectLinkReplay,
-  isConnectLinkForStoredServer,
   markConnectLinkConsumed,
 } from "../services/connectLinkReplayGuard";
 import {
@@ -135,11 +134,13 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
   ): Promise<boolean> => {
     setAuthLoading(true);
     setAuthError(null);
+    let pairingCompleted = false;
     try {
       const credentials = await completePairing(targetUrl, code);
+      pairingCompleted = true;
       smokePhase("workspace-pairing-complete");
       if (options?.connectLinkUrl) {
-        await markConnectLinkConsumed(options.connectLinkUrl);
+        await markConnectLinkConsumed(options.connectLinkUrl).catch(() => {});
       }
       if ((await ensureNativeWorkspaceAppBundle()).reloading) {
         smokePhase("workspace-bundle-reloading");
@@ -148,6 +149,9 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
       }
       return await connectRef.current(credentials, options);
     } catch (error) {
+      if (pairingCompleted) {
+        await clearCredentials().catch(() => {});
+      }
       setAuthLoading(false);
       const message = error instanceof Error ? error.message : "Pairing failed";
       setAuthError(message);
@@ -171,10 +175,7 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
         return false;
       }
       smokePhase("workspace-deep-link-received");
-      if (
-        (await consumeConnectLinkReplay(rawUrl)) ||
-        (await connectLinkMatchesStoredServer(result.serverUrl))
-      ) {
+      if (await consumeConnectLinkReplay(rawUrl)) {
         return false;
       }
       const confirmed = await confirmConnectDeepLink(result.serverUrl);
@@ -187,15 +188,6 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
       });
       consumedDeepLink = connected;
       return connected;
-    };
-
-    const connectLinkMatchesStoredServer = async (targetServerUrl: string): Promise<boolean> => {
-      try {
-        const credentials = await getCredentials();
-        return isConnectLinkForStoredServer(targetServerUrl, credentials?.serverUrl ?? null);
-      } catch {
-        return false;
-      }
     };
 
     const subscription = Linking.addEventListener("url", (event: { url: string }) => {

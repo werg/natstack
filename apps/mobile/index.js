@@ -21,9 +21,11 @@ import {
   Text,
   View,
 } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { name as appName } from "./app.json";
 
 const RN_HOST_ABI = "rn-host-1";
+const CONSUMED_CONNECT_LINK_KEY = "natstack:connect:consumed-url";
 const nativeHost = NativeModules.NatStackMobileHost;
 
 function smokePhase(phase) {
@@ -71,6 +73,14 @@ function decodeQueryComponent(value) {
   }
 }
 
+async function markConnectLinkConsumed(rawUrl) {
+  if (typeof rawUrl !== "string" || !rawUrl.startsWith("natstack://connect")) return;
+  await AsyncStorage.setItem(
+    CONSUMED_CONNECT_LINK_KEY,
+    JSON.stringify({ url: rawUrl, consumedAt: Date.now() })
+  );
+}
+
 async function activateApprovedWorkspaceApp(options = {}) {
   if (!nativeHost) throw missingNativeHostError();
   const credentials = await nativeHost.getCredentials();
@@ -99,10 +109,20 @@ async function pairAndActivateWorkspaceApp(rawUrl) {
 }
 
 async function pairAndActivateParsedLink(parsed) {
+  let pairingCompleted = false;
   smokePhase("embedded-pairing-start");
-  await nativeHost.completePairing(parsed.serverUrl, parsed.code, null);
-  smokePhase("embedded-pairing-complete");
-  await activateApprovedWorkspaceApp();
+  try {
+    await nativeHost.completePairing(parsed.serverUrl, parsed.code, null);
+    pairingCompleted = true;
+    smokePhase("embedded-pairing-complete");
+    await markConnectLinkConsumed(parsed.rawUrl).catch(() => {});
+    await activateApprovedWorkspaceApp();
+  } catch (error) {
+    if (pairingCompleted) {
+      await nativeHost.clearCredentials?.().catch(() => {});
+    }
+    throw error;
+  }
 }
 
 function NatStackMobileHostBootstrap() {
@@ -118,7 +138,7 @@ function NatStackMobileHostBootstrap() {
       const initialConnect = initialUrl ? parseConnectDeepLink(initialUrl) : null;
       if (initialConnect) {
         smokePhase("embedded-deep-link-received");
-        setPendingConnect(initialConnect);
+        setPendingConnect({ ...initialConnect, rawUrl: initialUrl });
         setStatus(`Pair this device with ${initialConnect.serverUrl}?`);
         return;
       }
@@ -168,7 +188,7 @@ function NatStackMobileHostBootstrap() {
           return;
         }
         smokePhase("embedded-deep-link-received");
-        setPendingConnect(parsed);
+        setPendingConnect({ ...parsed, rawUrl: event.url });
         setStatus(`Pair this device with ${parsed.serverUrl}?`);
         setBusy(false);
       } catch (error) {

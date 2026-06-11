@@ -48,8 +48,7 @@ RCT_EXPORT_METHOD(getCredentials:(RCTPromiseResolveBlock)resolve
 RCT_EXPORT_METHOD(clearCredentials:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 {
-  [self deleteCredential];
-  [[NSUserDefaults standardUserDefaults] removeObjectForKey:NatStackActiveBundleSource];
+  [self clearStoredCredentials];
   resolve(nil);
 }
 
@@ -75,7 +74,12 @@ RCT_EXPORT_METHOD(completePairing:(NSString *)serverUrl
         @"workspaceId": [self requiredString:response key:@"workspaceId"],
       };
       [self saveCredential:credential];
-      resolve([self issueGrantForCredential:credential source:source]);
+      @try {
+        resolve([self issueGrantForCredential:credential source:source]);
+      } @catch (NSException *exception) {
+        [self clearStoredCredentials];
+        @throw;
+      }
     } @catch (NSException *exception) {
       reject(@"pairing_failed", exception.reason, nil);
     }
@@ -234,6 +238,12 @@ RCT_EXPORT_METHOD(activatePreparedAppBundle:(NSString *)localPath
 {
   NSString *source = [[NSUserDefaults standardUserDefaults] stringForKey:NatStackActiveBundleSource];
   return source.length > 0 ? source : nil;
+}
+
+- (void)clearStoredCredentials
+{
+  [self deleteCredential];
+  [[NSUserDefaults standardUserDefaults] removeObjectForKey:NatStackActiveBundleSource];
 }
 
 - (BOOL)isWorkspaceMobileAppCaller:(NSString *)callerId deviceId:(NSString *)deviceId

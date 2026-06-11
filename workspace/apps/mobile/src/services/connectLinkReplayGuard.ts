@@ -25,7 +25,7 @@ export async function consumeConnectLinkReplay(rawUrl: string, now = Date.now())
   const age = now - stored.consumedAt;
   const sameUrl = stored.url === rawUrl;
   const stale = age < 0 || age > CONSUMED_CONNECT_LINK_TTL_MS;
-  if (sameUrl || stale) {
+  if (stale) {
     await AsyncStorage.removeItem(CONSUMED_CONNECT_LINK_KEY);
   }
   return sameUrl && !stale;
