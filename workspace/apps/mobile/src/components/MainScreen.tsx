@@ -118,6 +118,7 @@ export function MainScreen() {
   const [panelLoadErrors, setPanelLoadErrors] = useState<Record<string, string>>({});
   const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
   const pendingApprovalsRefreshSeq = useRef(0);
+  const pendingApprovalsSignatureRef = useRef("");
   const [addressBarVisible, setAddressBarVisible] = useState(false);
   const [addressQuery, setAddressQuery] = useState("");
   const [addressSuggestions, setAddressSuggestions] = useState<AddressAutocompleteItem[]>([]);
@@ -332,6 +333,16 @@ export function MainScreen() {
     );
     if (seq === pendingApprovalsRefreshSeq.current) {
       setPendingApprovals(pending);
+      const signature = pending.map((approval) => `${approval.kind}:${approval.approvalId}`).join("|");
+      if (signature !== pendingApprovalsSignatureRef.current) {
+        pendingApprovalsSignatureRef.current = signature;
+        if (pending.length > 0) {
+          smokePhase("workspace-approval-pending", {
+            count: pending.length,
+            kinds: pending.map((approval) => approval.kind),
+          });
+        }
+      }
     }
     return pending;
   }, [shellClient]);
@@ -562,15 +573,25 @@ export function MainScreen() {
       "shell-approval:pending-changed",
       "workspace:revision-bumped",
     ] as const;
-    const subscribeAll = () => {
-      for (const name of eventNames) {
-        void shellClient.events.subscribe(name).catch(() => {});
-      }
+    let disposed = false;
+    const subscribeAll = async () => {
+      await Promise.all(
+        eventNames.map((name) =>
+          shellClient.events.subscribe(name).catch(() => undefined)
+        )
+      );
     };
-    subscribeAll();
+    void subscribeAll()
+      .then(() => {
+        if (!disposed) void refreshPendingApprovals().catch(() => {});
+      })
+      .catch(() => {
+        if (!disposed) void refreshPendingApprovals().catch(() => {});
+      });
     const unsubReconnect = shellClient.transport.onReconnect(() => {
-      subscribeAll();
-      void refreshPendingApprovals().catch(() => {});
+      void subscribeAll()
+        .then(() => refreshPendingApprovals())
+        .catch(() => refreshPendingApprovals());
       void shellClient.panels
         .refresh()
         .then(() => {
@@ -591,7 +612,6 @@ export function MainScreen() {
         if (panelId) activatePanel(panelId);
       }
     );
-    void refreshPendingApprovals().catch(() => {});
     const unsubExternal = shellClient.transport.on(
       "event:external-open:open",
       (event) => {
@@ -668,9 +688,14 @@ export function MainScreen() {
           .catch(() => refreshTree());
       }
     );
-    const timer = setInterval(refreshTree, 60000);
+    const approvalTimer = setInterval(() => {
+      void refreshPendingApprovals().catch(() => {});
+    }, 2000);
+    const treeTimer = setInterval(refreshTree, 60000);
     return () => {
-      clearInterval(timer);
+      disposed = true;
+      clearInterval(approvalTimer);
+      clearInterval(treeTimer);
       unsubReconnect();
       unsubNavigate();
       unsubNav();

@@ -97,6 +97,21 @@ export function ConsentApprovalBar() {
     }
   }, []);
 
+  useShellEvent(
+    "shell-approval:pending-changed",
+    useCallback(
+      (event) => {
+        if (Array.isArray(event?.pending)) {
+          pendingAccessRefreshSeq.current++;
+          setPendingAccess(event.pending);
+          return;
+        }
+        void refreshPendingAccess();
+      },
+      [refreshPendingAccess]
+    )
+  );
+
   useEffect(() => {
     const heartbeat = () => {
       void shellPresence
@@ -110,19 +125,11 @@ export function ConsentApprovalBar() {
 
   useEffect(() => {
     void refreshPendingAccess();
-  }, [refreshPendingAccess]);
-
-  useShellEvent(
-    "shell-approval:pending-changed",
-    useCallback((event) => {
-      if (Array.isArray(event?.pending)) {
-        pendingAccessRefreshSeq.current++;
-        setPendingAccess(event.pending);
-        return;
-      }
+    const intervalId = window.setInterval(() => {
       void refreshPendingAccess();
-    }, [refreshPendingAccess])
-  );
+    }, 5_000);
+    return () => window.clearInterval(intervalId);
+  }, [refreshPendingAccess]);
 
   // Browsable index into pendingAccess. Stays put when later items resolve,
   // clamps when the visible item disappears (the most natural fallback is to

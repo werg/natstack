@@ -81,13 +81,13 @@ describe("ConsentApprovalBar shell presence", () => {
       vi.advanceTimersByTime(5_000);
     });
     expect(shellClient.heartbeat).toHaveBeenCalledTimes(2);
-    expect(shellClient.listPending).toHaveBeenCalledTimes(1);
+    expect(shellClient.listPending).toHaveBeenCalledTimes(2);
 
     await act(async () => {
       vi.advanceTimersByTime(5_000);
     });
     expect(shellClient.heartbeat).toHaveBeenCalledTimes(3);
-    expect(shellClient.listPending).toHaveBeenCalledTimes(1);
+    expect(shellClient.listPending).toHaveBeenCalledTimes(3);
 
     unmount();
 
@@ -95,7 +95,7 @@ describe("ConsentApprovalBar shell presence", () => {
       vi.advanceTimersByTime(5_000);
     });
     expect(shellClient.heartbeat).toHaveBeenCalledTimes(3);
-    expect(shellClient.listPending).toHaveBeenCalledTimes(1);
+    expect(shellClient.listPending).toHaveBeenCalledTimes(3);
   });
 });
 
