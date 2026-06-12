@@ -23,6 +23,8 @@ export interface RuntimeDiagnosticRecord {
   url?: string;
   line?: number;
   sourceId?: string;
+  /** Monotonic per-entity sequence — exact resume cursor (timestamps collide). */
+  seq?: number;
 }
 
 export interface RuntimeDiagnosticHistory {
@@ -43,6 +45,8 @@ export interface RuntimeDiagnosticOptions {
   errorLimit?: number;
   level?: RuntimeDiagnosticLevel;
   since?: number;
+  /** Return only records with seq > sinceSeq (exact resume, unlike `since`). */
+  sinceSeq?: number;
 }
 
 interface PersistedRuntimeDiagnostics {
@@ -50,6 +54,7 @@ interface PersistedRuntimeDiagnostics {
   errors: RuntimeDiagnosticRecord[];
   droppedEntries: number;
   droppedErrors: number;
+  nextSeq?: number;
 }
 
 const DEFAULT_ENTRY_CAPACITY = 1_000;
@@ -75,11 +80,14 @@ export class RuntimeDiagnosticsStore {
   }
 
   record(input: Omit<RuntimeDiagnosticRecord, "timestamp"> & { timestamp?: number }): void {
+    const history = this.historyFor(input.entityId);
+    const seq = history.nextSeq ?? 1;
+    history.nextSeq = seq + 1;
     const record: RuntimeDiagnosticRecord = {
       ...input,
       timestamp: input.timestamp ?? Date.now(),
+      seq,
     };
-    const history = this.historyFor(record.entityId);
     history.entries.push(record);
     while (history.entries.length > this.entryCapacity) {
       history.entries.shift();
@@ -98,14 +106,13 @@ export class RuntimeDiagnosticsStore {
   history(entityId: string, options: RuntimeDiagnosticOptions = {}): RuntimeDiagnosticHistory {
     const history = this.historyFor(entityId);
     const minRank = options.level ? LEVEL_RANK[options.level] : null;
+    const afterCursor = (record: RuntimeDiagnosticRecord): boolean =>
+      (options.since === undefined || record.timestamp >= options.since) &&
+      (options.sinceSeq === undefined || (record.seq ?? 0) > options.sinceSeq);
     const entries = history.entries.filter(
-      (record) =>
-        (options.since === undefined || record.timestamp >= options.since) &&
-        (minRank === null || LEVEL_RANK[record.level] >= minRank)
+      (record) => afterCursor(record) && (minRank === null || LEVEL_RANK[record.level] >= minRank)
     );
-    const errors = history.errors.filter(
-      (record) => options.since === undefined || record.timestamp >= options.since
-    );
+    const errors = history.errors.filter(afterCursor);
     const limit = normalizeLimit(options.limit, entries.length, this.entryCapacity);
     const errorLimit = normalizeLimit(options.errorLimit, errors.length, this.errorCapacity);
     return {
@@ -135,11 +142,17 @@ export class RuntimeDiagnosticsStore {
       const parsed = JSON.parse(
         fs.readFileSync(this.filePath(entityId), "utf8")
       ) as Partial<PersistedRuntimeDiagnostics>;
+      const entries = Array.isArray(parsed.entries) ? parsed.entries : [];
       return {
-        entries: Array.isArray(parsed.entries) ? parsed.entries : [],
+        entries,
         errors: Array.isArray(parsed.errors) ? parsed.errors : [],
         droppedEntries: typeof parsed.droppedEntries === "number" ? parsed.droppedEntries : 0,
         droppedErrors: typeof parsed.droppedErrors === "number" ? parsed.droppedErrors : 0,
+        nextSeq:
+          typeof parsed.nextSeq === "number"
+            ? parsed.nextSeq
+            : // Pre-seq files: resume after the highest persisted seq (all 0).
+              Math.max(0, ...entries.map((record) => record.seq ?? 0)) + 1,
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {

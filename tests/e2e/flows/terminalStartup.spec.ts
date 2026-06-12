@@ -1,3 +1,12 @@
+/**
+ * Terminal startup E2E test.
+ *
+ * The standalone "terminal boots without console errors" check is ported
+ * in-system to @workspace/testkit
+ * (workspace/packages/testkit/src/suites/terminal.ts). Here the console-error
+ * diagnostics assertion is interwoven with the pty/approval startup flow
+ * (shell-level approval prompts cannot run in-system), so this spec stays.
+ */
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";

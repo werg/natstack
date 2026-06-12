@@ -15,7 +15,25 @@ Spin up headless agentic sessions to systematically test every NatStack capabili
 | test-runner.ts                             | `TestRunner` — orchestrate test suites, collect full diagnostics   |
 | types.ts                                   | `TestCase`, `TestResult`, `TestSuiteResult`, `TestExecutionResult` |
 | tests/                                     | 94 pre-built test cases across 19 categories                       |
+| deterministic.ts                           | Bridge to `@workspace/testkit` deterministic suites (see below)    |
 | [SELF_IMPROVEMENT.md](SELF_IMPROVEMENT.md) | Workflow for analyzing failures and pushing fixes                  |
+
+## Deterministic tests (testkit)
+
+The `deterministic` stage wraps the exact-assertion suites from
+`@workspace/testkit` (see the **testkit** skill — panel lifecycle, viewport
+fits, chat transcript, spectrolite, terminal). They run via
+`deterministicTestCases()` inside the normal staged agentic workflow, or
+directly without an agent session:
+
+```
+import { runDeterministic } from "@workspace-skills/system-testing/deterministic";
+const { suiteResult } = await runDeterministic();
+```
+
+Layering: testkit = deterministic layer (exact assertions, CDP automation,
+profiling); system-testing = agentic layer (LLM-driven sessions judged by
+validators). Prefer testkit when expected behavior is exactly specifiable.
 
 ## Quick Start
 

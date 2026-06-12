@@ -123,9 +123,16 @@ describe("natstack CLI", () => {
 
     const log = vi.mocked(console.log);
     const { main } = await import("./client.js");
-    await expect(main(["remote", "discover"])).resolves.toBe(0);
+    await expect(main(["remote", "discover", "--json"])).resolves.toBe(0);
 
-    expect(log).toHaveBeenCalledWith("https://host.tailnet.ts.net");
+    const output = log.mock.calls.map((call) => String(call[0])).join("\n");
+    expect(JSON.parse(output)).toEqual([
+      {
+        url: "https://host.tailnet.ts.net",
+        hostname: "host.tailnet.ts.net",
+        discoveryVersion: 1,
+      },
+    ]);
   });
 
   it("shows the unified CLI groups in top-level help", async () => {
@@ -149,13 +156,25 @@ describe("natstack CLI", () => {
 
     const { main } = await import("./client.js");
     await expect(
-      main(["remote", "pair", "--url", "https://host.tailnet.ts.net", "--code", "A".repeat(24)])
+      main([
+        "remote",
+        "pair",
+        "--url",
+        "https://host.tailnet.ts.net",
+        "--code",
+        "A".repeat(24),
+        "--json",
+      ])
     ).resolves.toBe(0);
 
-    expect(console.log).toHaveBeenCalledWith("paired https://host.tailnet.ts.net");
+    const output = vi
+      .mocked(console.log)
+      .mock.calls.map((call) => String(call[0]))
+      .join("\n");
+    expect(JSON.parse(output)).toMatchObject({ url: "https://host.tailnet.ts.net" });
   });
 
-  it("reports a failed or expired pairing code as non-zero", async () => {
+  it("reports a failed or expired pairing code as an auth error (exit 3)", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(
@@ -166,7 +185,7 @@ describe("natstack CLI", () => {
     const { main } = await import("./client.js");
     await expect(
       main(["remote", "pair", "--url", "https://host.tailnet.ts.net", "--code", "A".repeat(24)])
-    ).resolves.toBe(1);
+    ).resolves.toBe(3);
   });
 
   it("rejects old top-level remote commands", async () => {
@@ -286,5 +305,97 @@ describe("natstack CLI", () => {
       code: "A".repeat(24),
       deepLink: createConnectDeepLink("https://host.tailnet.ts.net", "A".repeat(24)),
     });
+  });
+
+  function writeCredentials(content?: string): void {
+    const credentialDir = path.join(tmpDir, ".config", "natstack");
+    fs.mkdirSync(credentialDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(credentialDir, "cli-credentials.json"),
+      content ??
+        JSON.stringify({
+          schemaVersion: 1,
+          kind: "device",
+          url: "https://host.tailnet.ts.net",
+          deviceId: "dev_cli",
+          refreshToken: "refresh_cli",
+        })
+    );
+  }
+
+  it("prints per-command help for --help and -h (exit 0)", async () => {
+    const { main } = await import("./client.js");
+    await expect(main(["remote", "invite", "--help"])).resolves.toBe(0);
+    await expect(main(["fs", "ls", "-h"])).resolves.toBe(0);
+
+    const output = vi
+      .mocked(console.log)
+      .mock.calls.map((call) => String(call[0]))
+      .join("\n");
+    expect(output).toContain("natstack remote invite [--ttl-ms <milliseconds>]");
+    expect(output).toContain("--ttl-ms <value>");
+    expect(output).toContain("--json");
+    expect(output).toContain("Emit JSON");
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it("accepts --flag=value syntax for value flags", async () => {
+    writeCredentials();
+    const bodies: Array<{ url: string; body: unknown }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: URL, init?: RequestInit) => {
+        bodies.push({ url: String(url), body: JSON.parse(String(init?.body ?? "{}")) });
+        if (String(url).endsWith("/_r/s/auth/refresh-shell")) {
+          return new Response(JSON.stringify({ shellToken: "shell_token" }));
+        }
+        return new Response(
+          JSON.stringify({
+            result: { code: "A".repeat(24), connectUrl: "https://host.tailnet.ts.net" },
+          })
+        );
+      })
+    );
+
+    const { main } = await import("./client.js");
+    await expect(main(["remote", "invite", "--ttl-ms=60000", "--json"])).resolves.toBe(0);
+    expect(bodies[1]?.body).toEqual({
+      method: "auth.createPairingInvite",
+      args: [{ ttlMs: 60_000 }],
+    });
+  });
+
+  it("accepts --flag=true|false for boolean flags and rejects other values", async () => {
+    writeCredentials();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: URL) => {
+        if (String(url).endsWith("/_r/s/auth/refresh-shell")) {
+          return new Response(JSON.stringify({ shellToken: "shell_token", workspaceId: "ws_1" }));
+        }
+        return new Response(JSON.stringify({ ok: true }));
+      })
+    );
+
+    const { main } = await import("./client.js");
+    await expect(main(["remote", "status", "--json=true"])).resolves.toBe(0);
+    await expect(main(["remote", "status", "--json=banana"])).resolves.toBe(2);
+  });
+
+  it("rejects a non-numeric --ttl-ms as a usage error (exit 2)", async () => {
+    writeCredentials();
+    const { main } = await import("./client.js");
+    await expect(main(["remote", "invite", "--ttl-ms", "soon", "--json"])).resolves.toBe(2);
+  });
+
+  it("treats corrupted credentials as not paired (exit 3, no crash)", async () => {
+    writeCredentials("{not json");
+    const { main } = await import("./client.js");
+    await expect(main(["remote", "status", "--json"])).resolves.toBe(3);
+    const output = vi
+      .mocked(console.error)
+      .mock.calls.map((call) => String(call[0]))
+      .join("\n");
+    expect(output).toContain("not paired");
   });
 });

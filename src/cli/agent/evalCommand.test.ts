@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { clearShellTokenCache } from "../rpcClient.js";
-import { runEvalProcess } from "./evalCommand.js";
+import { resolveRunnerInvocation, runEvalProcess } from "./evalCommand.js";
 import type { EvalHandshake } from "./evalRunner.js";
 
 vi.mock("@natstack/shared/tailscaleDiscovery", () => ({
@@ -113,8 +113,30 @@ process.stdin.on("end", () => {
 /** Runner that never reads stdin and never exits (for SIGKILL/timeout). */
 const SLEEP_RUNNER = `setInterval(() => {}, 1000);`;
 
+/** Runner that logs to console + stderr, then hangs (for timeout context). */
+const LOGGING_SLEEP_RUNNER = `
+process.stdout.write(JSON.stringify({ type: "console", level: "log", text: "before hang", ts: 1 }) + "\\n");
+process.stderr.write("stuck in a loop\\n");
+setInterval(() => {}, 1000);
+`;
+
+/** Runner that fails at infrastructure level: result without a scope. */
+const INFRA_FAILING_RUNNER = `
+process.stdin.resume();
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify({
+    type: "result", success: false, error: "invalid eval handshake: boom",
+  }) + "\\n");
+});
+`;
+
 function jsonOutput(): Record<string, unknown> {
   const lines = vi.mocked(console.log).mock.calls.map((call) => String(call[0]));
+  return JSON.parse(lines[lines.length - 1]!) as Record<string, unknown>;
+}
+
+function jsonErrorOutput(): Record<string, unknown> {
+  const lines = vi.mocked(console.error).mock.calls.map((call) => String(call[0]));
   return JSON.parse(lines[lines.length - 1]!) as Record<string, unknown>;
 }
 
@@ -166,6 +188,19 @@ describe("runEvalProcess", () => {
     expect(outcome.result).toBeNull();
     expect(Date.now() - started).toBeLessThan(5_000);
   });
+
+  it("real runner omits scope from infrastructure-failure results", async () => {
+    // Invalid handshake (code is not a string) — main() must emit a result
+    // event without a scope so the parent keeps the stored one.
+    const outcome = await runEvalProcess({
+      invocation: resolveRunnerInvocation(),
+      handshake: { code: 42 } as unknown as EvalHandshake,
+      timeoutMs: 30_000,
+    });
+    expect(outcome.result?.success).toBe(false);
+    expect(outcome.result?.error).toContain("invalid eval handshake");
+    expect(outcome.result?.scope).toBeUndefined();
+  }, 30_000);
 });
 
 describe("natstack eval commands", () => {
@@ -233,9 +268,14 @@ describe("natstack eval commands", () => {
     expect(echoed.sessionId).toBe("session:default");
     expect(echoed.shellToken).toBe("tok");
     expect(echoed.code).toBe("return 1;");
+    // One shell refresh per eval: the handshake token is the client's token.
+    const refreshCalls = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.filter((call) => String(call[0]).endsWith("/_r/s/auth/refresh-shell"));
+    expect(refreshCalls).toHaveLength(1);
   });
 
-  it("eval run --fresh-scope skips the scope load", async () => {
+  it("eval run --fresh-scope skips the scope load and save", async () => {
     writeCredentials(tmpDir);
     writeSession(tmpDir);
     stubRunner(tmpDir, ECHO_RUNNER);
@@ -246,7 +286,25 @@ describe("natstack eval commands", () => {
       0
     );
 
-    expect(rpcBodies.map((b) => b.method)).toEqual(["scope.upsert"]);
+    // The throwaway scope must not clobber the stored one.
+    expect(rpcBodies.map((b) => b.method)).toEqual([]);
+    expect(jsonOutput()["scopeSaved"]).toBe(false);
+  });
+
+  it("eval run keeps the stored scope when the result carries none", async () => {
+    writeCredentials(tmpDir);
+    writeSession(tmpDir);
+    stubRunner(tmpDir, INFRA_FAILING_RUNNER);
+    const { rpcBodies } = stubServer(() => null);
+
+    const { main } = await import("../client.js");
+    await expect(main(["eval", "run", "-e", "return 1;", "--json"])).resolves.toBe(1);
+
+    // No scope.upsert: an infrastructure failure must not wipe the scope.
+    expect(rpcBodies.map((b) => b.method)).toEqual(["scope.loadCurrent"]);
+    const output = jsonOutput();
+    expect(output["success"]).toBe(false);
+    expect(output["scopeSaved"]).toBe(false);
   });
 
   it("eval run reads code from a local FILE positional", async () => {
@@ -288,6 +346,26 @@ describe("natstack eval commands", () => {
     await expect(
       main(["eval", "run", "-e", "while(true){}", "--timeout", "300", "--json"])
     ).resolves.toBe(4);
+  });
+
+  it("eval run timeout error JSON includes console events and stderr", async () => {
+    writeCredentials(tmpDir);
+    writeSession(tmpDir);
+    stubRunner(tmpDir, LOGGING_SLEEP_RUNNER);
+    stubServer(() => null);
+
+    const { main } = await import("../client.js");
+    await expect(
+      main(["eval", "run", "-e", "while(true){}", "--timeout", "300", "--json"])
+    ).resolves.toBe(4);
+
+    const output = jsonErrorOutput();
+    expect(String(output["error"])).toContain("timed out");
+    expect(output["exitCode"]).toBe(4);
+    expect(output["console"]).toEqual([
+      { type: "console", level: "log", text: "before hang", ts: 1 },
+    ]);
+    expect(output["stderr"]).toBe("stuck in a loop");
   });
 
   it("eval run usage errors exit 2", async () => {

@@ -1,0 +1,26 @@
+{
+  "name": "@workspace-panels/testbench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "title": "Testbench",
+    "entry": "index.tsx",
+    "exposeModules": [
+      "react",
+      "react/jsx-runtime",
+      "react/jsx-dev-runtime",
+      "@radix-ui/themes",
+      "@radix-ui/react-icons",
+      "@workspace/runtime",
+      "@workspace/react"
+    ]
+  },
+  "dependencies": {
+    "@workspace/runtime": "workspace:*",
+    "@workspace/react": "workspace:*",
+    "@workspace/testkit": "workspace:*",
+    "@radix-ui/themes": "^3.2.1",
+    "@radix-ui/react-icons": "^1.3.2"
+  }
+}

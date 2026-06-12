@@ -2,7 +2,11 @@
  * Mobile panel chrome smoke tests.
  *
  * These run the real Electron shell at a phone-sized native window and assert
- * that shell chrome and all shipped panels stay within the viewport.
+ * shell-chrome behavior (titlebar, address bar, panel tree, stack mode) at
+ * mobile size. The per-panel viewport-fit matrix ("panel X fits a phone-width
+ * viewport") now lives in @workspace/testkit
+ * (workspace/packages/testkit/src/suites/panelViewport.ts); only panels/chat,
+ * which that suite does not cover, keeps a matrix entry here.
  */
 
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
@@ -27,20 +31,9 @@ import {
 test.skip(!hasElectronDisplay(), ELECTRON_DISPLAY_UNAVAILABLE_MESSAGE);
 
 const MOBILE_BOUNDS = { width: 390, height: 844 };
-const SHIPPED_PANELS = [
-  "about/about",
-  "about/new",
-  "about/help",
-  "about/keyboard-shortcuts",
-  "about/adblock",
-  "panels/chat",
-  "panels/gad-browser",
-  "panels/terminal",
-] as const;
-const STATEFUL_PANELS = [
-  { source: "about/dirty-repo", stateArgs: { repoPath: "panels/chat" } },
-  { source: "about/git-init", stateArgs: { repoPath: "panels/chat" } },
-] as const;
+// The rest of the shipped-panel matrix is ported to the in-system
+// panelViewport testkit suite; panels/chat is the remaining unported entry.
+const SHIPPED_PANELS = ["panels/chat"] as const;
 
 function writeInitPanelsConfig(
   workspacePath: string,
@@ -406,19 +399,6 @@ test.describe("Mobile Panels", () => {
       await setMobileWindow(testApp.app);
       await ensureShellStackMode(testApp.window);
       const panelId = await ensurePanelSource(testApp.app, source);
-      await testApp.window.waitForTimeout(500);
-
-      await expectShellFitsMobileViewport(testApp.window);
-      await expectPanelFitsMobileViewport(testApp.app, panelId);
-    });
-  }
-
-  for (const { source, stateArgs } of STATEFUL_PANELS) {
-    test(`${source} fits a phone-width panel viewport`, async () => {
-      testApp = await launchMobileTestApp([{ source: "about/new" }]);
-      await setMobileWindow(testApp.app);
-      await ensureShellStackMode(testApp.window);
-      const panelId = await ensurePanelSource(testApp.app, source, { stateArgs });
       await testApp.window.waitForTimeout(500);
 
       await expectShellFitsMobileViewport(testApp.window);

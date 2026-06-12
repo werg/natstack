@@ -95,7 +95,7 @@ function decodeBase64(data: string): Uint8Array {
   throw new Error("No base64 decoder is available in this runtime");
 }
 
-class CdpConnection {
+export class CdpConnection {
   private nextId = 1;
   private pending = new Map<number, PendingCommand>();
   private eventListeners = new Map<string, Set<(params: unknown) => void>>();

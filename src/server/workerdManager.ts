@@ -195,7 +195,11 @@ function canonicalInstanceNameForSource(source: string): string {
 }
 
 function workerdInspectorEnabled(): boolean {
-  return process.env["NATSTACK_PROD"] !== "1" && process.env["NODE_ENV"] !== "production";
+  // Always on by default: NatStack is a continuous-development system, and
+  // userland profiling (workerdInspector service) depends on the inspector.
+  // The socket binds 127.0.0.1 and is only reachable from userland through
+  // the token-authenticated, approval-gated inspector bridge.
+  return process.env["NATSTACK_DISABLE_WORKERD_INSPECTOR"] !== "1";
 }
 
 // ---------------------------------------------------------------------------

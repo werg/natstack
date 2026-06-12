@@ -21,7 +21,6 @@ import {
   TimeoutError,
   UsageError,
 } from "../output.js";
-import { refreshShell } from "../rpcClient.js";
 import { resolveSessionScope, SESSION_FLAG } from "./sessionContext.js";
 import type { EvalHandshake, ResultEvent, RunnerEvent } from "./evalRunner.js";
 
@@ -50,25 +49,30 @@ function scopeChannelId(scopeKey: string): string {
 
 /**
  * Locate the eval-runner entry. Built CLI: dist/cli/eval-runner.mjs next to
- * client.mjs. Dev (tsx on src/): falls back to repo dist/, then to running
- * the TS source through the local tsx install. NATSTACK_EVAL_RUNNER overrides.
+ * client.mjs. Dev (tsx on src/): runs the TS source through the local tsx
+ * install so the runner always matches the CLI code being executed — a
+ * repo dist/ build may be stale. NATSTACK_EVAL_RUNNER overrides.
  */
 export function resolveRunnerInvocation(): { command: string; args: string[] } {
   const override = process.env["NATSTACK_EVAL_RUNNER"];
   if (override) return { command: process.execPath, args: [override] };
   const here = path.dirname(fileURLToPath(import.meta.url));
+  // Running from TS source (tsx dev mode): prefer the matching source runner
+  // over any previously built dist (which may be stale).
+  if (here.includes(`${path.sep}src${path.sep}`)) {
+    const repoRoot = path.resolve(here, "..", "..", "..");
+    const tsxCli = path.join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
+    const runnerSource = path.join(repoRoot, "src", "cli", "agent", "evalRunner.ts");
+    if (fs.existsSync(tsxCli) && fs.existsSync(runnerSource)) {
+      return { command: process.execPath, args: [tsxCli, runnerSource] };
+    }
+  }
   const candidates = [
     path.join(here, "eval-runner.mjs"), // bundled: dist/cli/client.mjs sibling
-    path.resolve(here, "..", "..", "..", "dist", "cli", "eval-runner.mjs"), // dev: src/cli/agent -> repo dist
+    path.resolve(here, "..", "..", "..", "dist", "cli", "eval-runner.mjs"), // dev fallback: repo dist
   ];
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) return { command: process.execPath, args: [candidate] };
-  }
-  const repoRoot = path.resolve(here, "..", "..", "..");
-  const tsxCli = path.join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
-  const runnerSource = path.join(repoRoot, "src", "cli", "agent", "evalRunner.ts");
-  if (fs.existsSync(tsxCli) && fs.existsSync(runnerSource)) {
-    return { command: process.execPath, args: [tsxCli, runnerSource] };
   }
   throw new CliError(
     "eval runner not found — run `node build.mjs` to produce dist/cli/eval-runner.mjs"
@@ -217,6 +221,26 @@ function parseSyntax(inv: ParsedInvocation): "typescript" | "jsx" | "tsx" | unde
   return raw;
 }
 
+/**
+ * Fail an eval run that produced no usable result (timeout, runner death).
+ * In JSON mode the error document carries the collected console events and
+ * trimmed runner stderr so hung evals stay debuggable; in text mode the
+ * console output already streamed live, so just throw for printError.
+ */
+function failWithRunnerContext(error: CliError, outcome: RunnerOutcome, json: boolean): number {
+  if (!json) throw error;
+  const stderr = outcome.stderr.trim();
+  console.error(
+    JSON.stringify({
+      error: error.message,
+      exitCode: error.exitCode,
+      console: outcome.consoleEvents,
+      ...(stderr ? { stderr } : {}),
+    })
+  );
+  return error.exitCode;
+}
+
 async function evalRun(inv: ParsedInvocation): Promise<number> {
   const json = jsonMode(inv.flags["json"] === true);
   try {
@@ -227,7 +251,10 @@ async function evalRun(inv: ParsedInvocation): Promise<number> {
     const { client, contextId, session } = resolveSessionScope(inv);
     const creds = loadCliCredentials();
     if (!creds) throw new CliError("not paired");
-    const refresh = await refreshShell(creds);
+    // Reuse the client's shell token (one refresh) for both the scope RPC
+    // calls below and the runner handshake.
+    const shellToken = await client.getShellToken();
+    const workspaceId = client.lastRefresh?.workspaceId;
 
     const channelId = scopeChannelId(session.scopeKey);
     const freshScope = inv.flags["fresh-scope"] === true;
@@ -240,10 +267,10 @@ async function evalRun(inv: ParsedInvocation): Promise<number> {
       syntax,
       imports,
       serverUrl: creds.url,
-      shellToken: refresh.shellToken,
+      shellToken,
       contextId,
       sessionId: session.entityId,
-      workspaceId: refresh.workspaceId,
+      workspaceId,
       scopeSnapshot: previousEntry?.data,
     };
 
@@ -260,39 +287,53 @@ async function evalRun(inv: ParsedInvocation): Promise<number> {
     });
 
     if (outcome.timedOut) {
-      throw new TimeoutError(`eval timed out after ${timeoutMs}ms (runner killed)`);
+      return failWithRunnerContext(
+        new TimeoutError(`eval timed out after ${timeoutMs}ms (runner killed)`),
+        outcome,
+        json
+      );
     }
     const result = outcome.result;
     if (!result) {
-      throw new CliError(
-        `eval runner exited (code ${outcome.exitCode}) without a result${
-          outcome.stderr ? `: ${outcome.stderr.trim()}` : ""
-        }`
+      return failWithRunnerContext(
+        new CliError(
+          `eval runner exited (code ${outcome.exitCode}) without a result${
+            outcome.stderr ? `: ${outcome.stderr.trim()}` : ""
+          }`
+        ),
+        outcome,
+        json
       );
     }
 
-    // Persist the final scope under the same scope id (or a fresh one).
+    // Persist the final scope under the same scope id. Skipped when the
+    // result carries no scope (infrastructure failure before the sandbox ran)
+    // or under --fresh-scope (a throwaway scope must not clobber the stored
+    // one).
+    const finalScope = result.scope;
     let scopeSaved = false;
     let scopeError: string | undefined;
-    try {
-      await client.call("scope.upsert", [
-        {
-          id: previousEntry?.id ?? randomUUID(),
-          channelId,
-          panelId: SCOPE_PANEL_ID,
-          data: result.scope.json,
-          serializedKeys: result.scope.serializedKeys,
-          droppedPaths: result.scope.droppedPaths,
-          partialKeys: result.scope.partialKeys,
-          createdAt: previousEntry?.createdAt ?? Date.now(),
-        } satisfies ScopeEntry,
-      ]);
-      scopeSaved = true;
-    } catch (error) {
-      scopeError = error instanceof Error ? error.message : String(error);
+    if (finalScope && !freshScope) {
+      try {
+        await client.call("scope.upsert", [
+          {
+            id: previousEntry?.id ?? randomUUID(),
+            channelId,
+            panelId: SCOPE_PANEL_ID,
+            data: finalScope.json,
+            serializedKeys: finalScope.serializedKeys,
+            droppedPaths: finalScope.droppedPaths,
+            partialKeys: finalScope.partialKeys,
+            createdAt: previousEntry?.createdAt ?? Date.now(),
+          } satisfies ScopeEntry,
+        ]);
+        scopeSaved = true;
+      } catch (error) {
+        scopeError = error instanceof Error ? error.message : String(error);
+      }
     }
     const scopeWarnings = [
-      ...result.scope.droppedPaths.map((d) => `scope: dropped ${d.path} (${d.reason})`),
+      ...(finalScope?.droppedPaths ?? []).map((d) => `scope: dropped ${d.path} (${d.reason})`),
       ...(scopeError ? [`scope: save failed: ${scopeError}`] : []),
     ];
 

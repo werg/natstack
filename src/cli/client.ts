@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { discoverNatstackServers } from "@natstack/shared/tailscaleDiscovery";
@@ -19,6 +21,7 @@ import {
   findCommand,
   groupCommands,
   parseInvocation,
+  renderCommandHelp,
   renderGroupHelp,
   JSON_FLAG,
   type CliCommand,
@@ -33,6 +36,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 // ───────────────────────────────────────────────────────────────────────────
 
 async function remotePair(inv: ParsedInvocation): Promise<number> {
+  const json = jsonMode(inv.flags["json"] === true);
   const opts: { url?: string; code?: string; link?: string; label?: string } = {};
   if (typeof inv.flags["url"] === "string") opts.url = inv.flags["url"];
   if (typeof inv.flags["code"] === "string") opts.code = inv.flags["code"];
@@ -40,17 +44,21 @@ async function remotePair(inv: ParsedInvocation): Promise<number> {
   const positional = inv.positionals[0];
   if (positional?.startsWith("natstack://")) opts.link = positional;
   else if (positional) opts.url = positional;
-  let creds;
   try {
-    creds = await completePairing(opts);
+    const creds = await completePairing(opts);
+    saveCliCredentials(creds);
+    const result = { url: creds.url, credentialPath: credentialPath() };
+    printResult(result, {
+      json,
+      human: () => {
+        console.log(`paired ${result.url}`);
+        console.log(`credentials: ${result.credentialPath}`);
+      },
+    });
+    return 0;
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    return 1;
+    return printError(error, { json });
   }
-  saveCliCredentials(creds);
-  console.log(`paired ${creds.url}`);
-  console.log(`credentials: ${credentialPath()}`);
-  return 0;
 }
 
 async function remoteStatus(inv: ParsedInvocation): Promise<number> {
@@ -93,7 +101,10 @@ async function remoteInvite(inv: ParsedInvocation): Promise<number> {
     let ttlMs: number | undefined;
     if (typeof inv.flags["ttl-ms"] === "string") {
       const value = Number(inv.flags["ttl-ms"]);
-      if (Number.isFinite(value)) ttlMs = value;
+      if (!Number.isFinite(value)) {
+        throw new UsageError(`--ttl-ms must be a number, got: ${inv.flags["ttl-ms"]}`);
+      }
+      ttlMs = value;
     }
     const invite = await createPairingInvite(creds, { ttlMs });
     printResult(invite, {
@@ -151,9 +162,10 @@ const remoteCommands: CliCommand[] = [
     summary: "Save a CLI device credential without launching Electron",
     usage: 'natstack remote pair "natstack://connect?url=...&code=..."',
     flags: [
-      { name: "url", takesValue: true },
-      { name: "code", takesValue: true },
-      { name: "label", takesValue: true },
+      { name: "url", takesValue: true, description: "Server URL (with --code)" },
+      { name: "code", takesValue: true, description: "Pairing code (with --url)" },
+      { name: "label", takesValue: true, description: "Device label shown on the server" },
+      JSON_FLAG,
     ],
     run: remotePair,
   },
@@ -178,9 +190,11 @@ const remoteCommands: CliCommand[] = [
     name: "logout",
     summary: "Remove the stored CLI device credential",
     usage: "natstack remote logout",
-    run: async () => {
+    flags: [JSON_FLAG],
+    run: async (inv) => {
+      const json = jsonMode(inv.flags["json"] === true);
       clearCliCredentials();
-      console.log("logged out");
+      printResult({ loggedOut: true }, { json, human: () => console.log("logged out") });
       return 0;
     },
   },
@@ -189,13 +203,134 @@ const remoteCommands: CliCommand[] = [
     name: "discover",
     summary: "Print NatStack servers discovered on the tailnet",
     usage: "natstack remote discover",
-    run: async () => {
+    flags: [JSON_FLAG],
+    run: async (inv) => {
+      const json = jsonMode(inv.flags["json"] === true);
       const servers = await discoverNatstackServers();
-      for (const server of servers) console.log(server.url);
+      printResult(servers, {
+        json,
+        human: () => {
+          for (const server of servers) console.log(server.url);
+        },
+      });
       return 0;
     },
   },
+  {
+    group: "remote",
+    name: "host",
+    aliases: ["headless-host"],
+    summary: "Run a headless Chromium panel host against the paired server",
+    usage:
+      "natstack remote host [--url <serverUrl> --token <shellToken>] [--label <name>] " +
+      "[--max-panels 8] [--idle-unload-min 5] [--idle-exit-min 0] [--chromium-path <bin>] [--lean-browser]",
+    flags: [
+      { name: "url", takesValue: true, description: "Server URL (defaults to the paired server)" },
+      {
+        name: "token",
+        takesValue: true,
+        description: "Shell token (defaults to device-credential refresh)",
+      },
+      { name: "label", takesValue: true, description: "Client label shown in lease holders" },
+      { name: "max-panels", takesValue: true, description: "Concurrent hosted panels (default 8)" },
+      {
+        name: "idle-unload-min",
+        takesValue: true,
+        description: "Unload panels idle this long (default 5)",
+      },
+      {
+        name: "idle-exit-min",
+        takesValue: true,
+        description: "Self-exit after holding zero leases this long (default: never)",
+      },
+      { name: "chromium-path", takesValue: true, description: "Chromium executable override" },
+      {
+        name: "lean-browser",
+        takesValue: false,
+        description: "Download chrome-headless-shell instead of full Chrome",
+      },
+    ],
+    run: remoteHost,
+  },
 ];
+
+async function remoteHost(inv: ParsedInvocation): Promise<number> {
+  const flagStr = (name: string): string | undefined =>
+    typeof inv.flags[name] === "string" ? (inv.flags[name] as string) : undefined;
+  const flagMin = (name: string): number | undefined => {
+    const raw = flagStr(name);
+    if (!raw) return undefined;
+    const minutes = Number.parseInt(raw, 10);
+    return Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : undefined;
+  };
+
+  const explicitUrl = flagStr("url");
+  const explicitToken = flagStr("token");
+  let auth:
+    | { serverUrl: string; token: string }
+    | { deviceCredential: { serverUrl: string; deviceId: string; refreshToken: string } };
+  if (explicitUrl && explicitToken) {
+    auth = { serverUrl: explicitUrl, token: explicitToken };
+  } else {
+    const creds = loadCliCredentials();
+    if (!creds) {
+      console.error("not paired — run `natstack remote pair` first or pass --url and --token");
+      return 3;
+    }
+    auth = {
+      deviceCredential: {
+        serverUrl: explicitUrl ?? creds.url,
+        deviceId: creds.deviceId,
+        refreshToken: creds.refreshToken,
+      },
+    };
+  }
+
+  // Root builds copy the headless host bundle to dist/headless-host so the
+  // installed CLI can import plain JS. In-repo dev falls back to app dist or
+  // TS source (the CLI runs under tsx in-repo).
+  const bundledEntry = path.join(repoRoot, "dist", "headless-host", "index.js");
+  const appDistEntry = path.join(repoRoot, "apps", "headless-host", "dist", "index.js");
+  const srcEntry = path.join(repoRoot, "apps", "headless-host", "src", "index.ts");
+  const entry = fs.existsSync(bundledEntry)
+    ? bundledEntry
+    : fs.existsSync(appDistEntry)
+      ? appDistEntry
+      : srcEntry;
+  const { HeadlessHost, resolveConfig } = (await import(pathToFileURL(entry).href)) as {
+    HeadlessHost: new (config: unknown) => {
+      start(): Promise<void>;
+      stop(reason: string): Promise<void>;
+      done: Promise<void>;
+    };
+    resolveConfig: (overrides: Record<string, unknown>) => unknown;
+  };
+
+  const config = resolveConfig({
+    ...auth,
+    label: flagStr("label"),
+    maxPanels: flagStr("max-panels")
+      ? Number.parseInt(flagStr("max-panels") as string, 10)
+      : undefined,
+    idleUnloadMs: flagMin("idle-unload-min"),
+    idleExitMs: flagMin("idle-exit-min"),
+    chromiumPath: flagStr("chromium-path"),
+    leanBrowser: inv.flags["lean-browser"] === true,
+  });
+  const host = new HeadlessHost(config);
+  process.on("SIGINT", () => void host.stop("SIGINT"));
+  process.on("SIGTERM", () => void host.stop("SIGTERM"));
+  try {
+    await host.start();
+  } catch (error) {
+    console.error(
+      `headless host failed to start: ${error instanceof Error ? error.message : String(error)}`
+    );
+    return 1;
+  }
+  await host.done;
+  return 0;
+}
 
 const mobileCommands: CliCommand[] = [
   scriptCommand("mobile", "pair", "mobile-pair.mjs", "Start the QR/deep-link pairing server", {
@@ -266,6 +401,10 @@ export async function main(argv: string[]): Promise<number> {
     printGroupHelp(group);
     return 2;
   }
+  if (wantsHelp(subArgs)) {
+    console.log(renderCommandHelp(command));
+    return 0;
+  }
   if (command.passthrough) {
     return await command.run({ positionals: subArgs, flags: {} }, subArgs);
   }
@@ -283,6 +422,15 @@ export async function main(argv: string[]): Promise<number> {
   return await command.run(inv, subArgs);
 }
 
+/** Whether argv requests command help (--help/-h before any `--` separator). */
+function wantsHelp(args: string[]): boolean {
+  for (const arg of args) {
+    if (arg === "--") return false;
+    if (arg === "--help" || arg === "-h") return true;
+  }
+  return false;
+}
+
 function runScript(scriptName: string, argv: string[]): Promise<number> {
   return new Promise((resolve, reject) => {
     const child = spawn(
@@ -298,6 +446,8 @@ function runScript(scriptName: string, argv: string[]): Promise<number> {
     child.on("exit", (code, signal) => {
       if (signal) {
         process.kill(process.pid, signal);
+        // If the signal is trapped or ignored, still resolve so main() exits.
+        resolve(128 + (os.constants.signals[signal] ?? 0));
         return;
       }
       resolve(code ?? 0);

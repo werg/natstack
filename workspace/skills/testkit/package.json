@@ -1,0 +1,14 @@
+{
+  "name": "@workspace-skills/testkit",
+  "version": "0.1.0",
+  "description": "Deterministic in-system E2E testing, supervision and profiling via @workspace/testkit",
+  "type": "module",
+  "exports": {
+    ".": "./examples.ts",
+    "./examples": "./examples.ts"
+  },
+  "dependencies": {
+    "@workspace/testkit": "workspace:*",
+    "@workspace/runtime": "workspace:*"
+  }
+}

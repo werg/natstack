@@ -13,7 +13,8 @@ natstack agent services | head              # what can I call?
 natstack agent skills                       # what does this workspace document?
 ```
 
-One-shot variant — attach pairs on the fly:
+One-shot variant — when no credential is stored yet, attach can pair first
+(if already paired this is a usage error; `natstack remote logout` to re-pair):
 
 ```bash
 natstack agent attach work --url https://host.ts.net --code ABC123
@@ -61,6 +62,28 @@ natstack git status --repo panels/notes | jq '.files[].path'
 natstack agent services scope --json | jq '.methods | keys'   # check the schema
 natstack agent call workspace.listSkills '[]'
 natstack agent call git.contextStatus "[\"$(natstack agent status --json | jq -r .contextId)\", \"panels/notes\"]"
+```
+
+## Create and call a worker
+
+The workerd service is not shell-callable — create workers through
+`runtime.createEntity` with `kind: "worker"` (spec:
+`{kind, source, ref?, contextId?, key?, stateArgs?, env?}`; returns
+`{id, kind, source, contextId, targetId}`):
+
+```bash
+natstack agent call runtime.createEntity '[{"kind":"worker","source":"workers/stats","key":"stats-1"}]'
+natstack agent call ping --target "worker:workers/stats:stats-1"   # relayed: plain method name
+natstack agent call runtime.retireEntity '[{"id":"worker:workers/stats:stats-1"}]'
+```
+
+The same works from eval:
+
+```bash
+natstack eval run -e '
+  const h = await services.runtime.createEntity({ kind: "worker", source: "workers/stats", key: "stats-1" });
+  return h.targetId;
+'
 ```
 
 ## Debug a misbehaving worker/unit

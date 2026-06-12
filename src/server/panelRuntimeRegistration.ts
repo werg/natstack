@@ -274,11 +274,26 @@ export async function createServerPanelTreeBridge(
     await sync();
     const runtimeEntityId = await panelManager.getCurrentEntityId(asPanelSlotId(panelId));
     const cdpBridge = deps.container.get<import("./cdpBridge.js").CdpBridge>("cdpBridge");
-    const assigned = deps.panelRuntimeCoordinator?.ensureDefaultCdpHostForSlot(
+    let assigned = deps.panelRuntimeCoordinator?.ensureDefaultCdpHostForSlot(
       panelId,
       runtimeEntityId,
       { isHostAvailable: (hostConnectionId) => cdpBridge.isProviderConnected(hostConnectionId) }
     );
+    if (
+      assigned &&
+      !assigned.assigned &&
+      assigned.reason === "no_default_cdp_host" &&
+      deps.ensureDefaultHeadlessHost
+    ) {
+      // Renderer of last resort: spawn the headless host and retry once.
+      if (await deps.ensureDefaultHeadlessHost()) {
+        assigned = deps.panelRuntimeCoordinator?.ensureDefaultCdpHostForSlot(
+          panelId,
+          runtimeEntityId,
+          { isHostAvailable: (hostConnectionId) => cdpBridge.isProviderConnected(hostConnectionId) }
+        );
+      }
+    }
     return {
       panelId,
       status:
@@ -615,6 +630,12 @@ export interface CommonDeps {
   eventService?: import("@natstack/shared/eventsService").EventService;
   grantStore?: import("./services/capabilityGrantStore.js").CapabilityGrantStore;
   panelRuntimeCoordinator?: import("./panelRuntimeCoordinator.js").PanelRuntimeCoordinator;
+  /**
+   * Renderer of last resort: spawn (or reuse) the standalone headless host
+   * and resolve true once a default CDP host is registered + bridge-connected.
+   * Callers retry default lease assignment after a true result.
+   */
+  ensureDefaultHeadlessHost?: () => Promise<boolean>;
   getGatewayPort?: () => number | null;
   requestRelaunch?: (name: string) => void;
   /** IPC proxy: fetch workspace list from Electron main when centralData is null. */
@@ -924,14 +945,21 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
               { code: "cdp_unavailable_mobile_held" }
             );
           }
-          if (!holder && deps.panelRuntimeCoordinator) {
-            const assigned = deps.panelRuntimeCoordinator.ensureDefaultCdpHostForSlot(
-              panelId,
-              runtimeEntityId,
-              {
+          const coordinator = deps.panelRuntimeCoordinator;
+          if (!holder && coordinator) {
+            const assign = () =>
+              coordinator.ensureDefaultCdpHostForSlot(panelId, runtimeEntityId, {
                 isHostAvailable: (hostConnectionId) => bridge.isProviderConnected(hostConnectionId),
-              }
-            );
+              });
+            let assigned = assign();
+            if (
+              !assigned.assigned &&
+              assigned.reason === "no_default_cdp_host" &&
+              deps.ensureDefaultHeadlessHost
+            ) {
+              // Renderer of last resort: spawn the headless host and retry once.
+              if (await deps.ensureDefaultHeadlessHost()) assigned = assign();
+            }
             if (assigned.lease) {
               holder = {
                 hostConnectionId: assigned.lease.hostConnectionId,

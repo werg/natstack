@@ -467,7 +467,9 @@ async function buildPlaywrightCore() {
 async function buildNatstackPackages() {
   console.log("Building @natstack/* infrastructure packages...");
   try {
-    execSync('pnpm --filter "@natstack/*" build', { stdio: "inherit" });
+    execSync('pnpm --filter "!@natstack/headless-host" --filter "@natstack/*" build', {
+      stdio: "inherit",
+    });
     console.log("@natstack/* packages built successfully!");
   } catch (error) {
     console.error("Failed to build @natstack/* packages:", error);
@@ -488,6 +490,19 @@ async function buildWorkspacePackages() {
     console.log("@workspace/* packages built successfully!");
   } catch (error) {
     console.error("Failed to build @workspace/* packages:", error);
+    throw error;
+  }
+}
+
+async function buildHeadlessHost() {
+  console.log("Building @natstack/headless-host...");
+  try {
+    execSync('pnpm --filter "@natstack/headless-host" build', { stdio: "inherit" });
+    fs.rmSync("dist/headless-host", { recursive: true, force: true });
+    copyDirectoryRecursive("apps/headless-host/dist", "dist/headless-host");
+    console.log("@natstack/headless-host built successfully!");
+  } catch (error) {
+    console.error("Failed to build @natstack/headless-host:", error);
     throw error;
   }
 }
@@ -593,6 +608,14 @@ async function build() {
     // These must be built as they are consumed by later steps
     // Dependencies: buildNatstackPackages, buildPlaywrightCore
     await buildWorkspacePackages();
+
+    // ========================================================================
+    // STEP 1.5: Build standalone headless panel host
+    // ========================================================================
+    // The server auto-spawns this bundle as a child process when no desktop
+    // CDP host is connected; copy it under dist/ so packaged CLIs can find it.
+    // Dependencies: buildNatstackPackages, buildWorkspacePackages
+    await buildHeadlessHost();
 
     // ========================================================================
     // STEP 2: Build main application

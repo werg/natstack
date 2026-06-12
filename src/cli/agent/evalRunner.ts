@@ -46,8 +46,12 @@ export interface ResultEvent {
   returnValue?: unknown;
   returnTruncated?: boolean;
   error?: string;
-  /** Serialized final scope, for the parent to persist. */
-  scope: SerializedScope;
+  /**
+   * Serialized final scope, for the parent to persist. Omitted on
+   * infrastructure failures (invalid handshake, runner crash) where the
+   * sandbox never produced a scope — the parent must keep the stored one.
+   */
+  scope?: SerializedScope;
 }
 
 export type RunnerEvent = ConsoleEvent | ResultEvent;
@@ -81,6 +85,11 @@ export function createRunnerRpc(serverUrl: string, shellToken: string): RunnerRp
       error?: unknown;
       errorCode?: unknown;
     };
+    if (response.status === 401) {
+      // The runner holds a single token issued at startup; a 401 mid-run
+      // means the server restarted or revoked it (tokens have no TTL).
+      throw new Error("shell token rejected (server restarted?) — rerun the eval");
+    }
     if (typeof parsed.error === "string") {
       const error = new Error(parsed.error);
       if (typeof parsed.errorCode === "string") {
@@ -284,7 +293,11 @@ export async function runEval(
     imports: handshake.imports,
     loadImport: createLoadImport(rpc),
     bindings: {
-      rpc: { call: (method: string, args: unknown[] = []) => rpc.call(method, args) },
+      rpc: {
+        call: (method: string, args: unknown[] = []) => rpc.call(method, args),
+        callTarget: (targetId: string, method: string, args: unknown[] = []) =>
+          rpc.callTarget(targetId, method, args),
+      },
       services: createServicesProxy(rpc),
       fs: createFsBinding(rpc, handshake.contextId),
       ctx,
@@ -332,11 +345,11 @@ async function main(): Promise<number> {
       throw new Error("handshake must include code and serverUrl");
     }
   } catch (error) {
+    // Infrastructure failure: omit `scope` so the parent keeps the stored one.
     emit({
       type: "result",
       success: false,
       error: `invalid eval handshake: ${error instanceof Error ? error.message : String(error)}`,
-      scope: serializeScope(new Map()),
     });
     return 1;
   }
@@ -344,11 +357,11 @@ async function main(): Promise<number> {
     await runEval(handshake, emit);
     return 0;
   } catch (error) {
+    // Infrastructure failure: omit `scope` so the parent keeps the stored one.
     emit({
       type: "result",
       success: false,
       error: error instanceof Error ? error.message : String(error),
-      scope: serializeScope(new Map()),
     });
     return 1;
   }

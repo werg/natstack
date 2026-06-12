@@ -5,6 +5,7 @@ import {
   parseConnectLink,
   parseConnectServerUrl,
 } from "@natstack/shared/connect";
+import { AuthError } from "./output.js";
 import { RpcClient, type DeviceCredential } from "./rpcClient.js";
 
 export type { DeviceCredential } from "./rpcClient.js";
@@ -27,22 +28,29 @@ export interface PairingInvite {
 
 export async function completePairing(options: PairOptions): Promise<DeviceCredential> {
   const parsed = parsePairOptions(options);
-  const response = await fetch(new URL("/_r/s/auth/complete-pairing", parsed.url), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      code: parsed.code,
-      label: options.label ?? `${os.userInfo().username}@${os.hostname()}`,
-      platform: "desktop",
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(new URL("/_r/s/auth/complete-pairing", parsed.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        code: parsed.code,
+        label: options.label ?? `${os.userInfo().username}@${os.hostname()}`,
+        platform: "desktop",
+      }),
+    });
+  } catch (error) {
+    throw new AuthError(
+      `cannot reach ${parsed.url}: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
   const body = (await response.json().catch(() => ({}))) as {
     deviceId?: unknown;
     refreshToken?: unknown;
     error?: unknown;
   };
   if (!response.ok || typeof body.deviceId !== "string" || typeof body.refreshToken !== "string") {
-    throw new Error(
+    throw new AuthError(
       remoteErrorMessage(body, `pairing failed (${response.status} ${response.statusText})`)
     );
   }

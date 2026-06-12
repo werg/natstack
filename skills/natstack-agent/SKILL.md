@@ -49,7 +49,14 @@ natstack agent detach --rm             # retire session + remove its context
 | `natstack git` | `status`, `diff`, `add`, `commit` | Git on a repo inside the context |
 | `natstack eval` | `run`, `repl-reset` | Sandboxed TS/JS against the server |
 
-Every command supports `--help` at the group level (`natstack fs --help`).
+`--help` works at the group level (`natstack fs --help`) and per command
+(`natstack fs write --help`).
+
+There is no dedicated worker command: the workerd service is not
+shell-callable, so create workers (and DOs) via RPC —
+`natstack agent call runtime.createEntity '[{"kind":"worker","source":"workers/NAME"}]'`
+— and retire them with `runtime.retireEntity`. See
+[RECIPES.md](RECIPES.md) for a full example.
 
 ## Files in this skill
 

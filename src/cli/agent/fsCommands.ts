@@ -58,8 +58,8 @@ function requirePositional(inv: ParsedInvocation, index: number, label: string):
 
 function positiveInt(value: string, flag: string): number {
   const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 0) {
-    throw new UsageError(`${flag} must be a non-negative integer`);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new UsageError(`${flag} must be a positive integer`);
   }
   return parsed;
 }
@@ -131,9 +131,21 @@ async function write(inv: ParsedInvocation): Promise<number> {
     const target = requirePositional(inv, 0, "PATH");
     const fromFile =
       typeof inv.flags["from-file"] === "string" ? inv.flags["from-file"] : undefined;
-    const content = typeof inv.flags["content"] === "string" ? inv.flags["content"] : undefined;
-    if (fromFile !== undefined && content !== undefined) {
-      throw new UsageError("--from-file and --content are mutually exclusive");
+    const contentFlag = typeof inv.flags["content"] === "string" ? inv.flags["content"] : undefined;
+    const contentPositional = inv.positionals[1];
+    const sources = [fromFile, contentFlag, contentPositional].filter(
+      (source) => source !== undefined
+    );
+    if (sources.length > 1) {
+      throw new UsageError(
+        "content was provided more than once (CONTENT positional, --content, and --from-file are mutually exclusive)"
+      );
+    }
+    const content = contentFlag ?? contentPositional;
+    if (content === undefined && fromFile === undefined && process.stdin.isTTY) {
+      throw new UsageError(
+        "no content: pass CONTENT, --content, --from-file, or pipe data on stdin"
+      );
     }
     const data =
       fromFile !== undefined
@@ -340,8 +352,9 @@ export const fsCommands: CliCommand[] = [
   {
     group: "fs",
     name: "write",
-    summary: "Write a file from --content, --from-file, or stdin",
-    usage: "natstack fs write PATH [--from-file F | --content TEXT] [--append] [--parents]",
+    summary: "Write a file from CONTENT, --content, --from-file, or stdin",
+    usage:
+      "natstack fs write PATH [CONTENT] [--content TEXT | --from-file F] [--append] [--parents]",
     flags: [
       { name: "from-file", takesValue: true, description: "Read content from a local file" },
       { name: "content", takesValue: true, description: "Literal content" },

@@ -173,6 +173,60 @@ describe("rpcClient", () => {
     ]);
   });
 
+  it("rejects a 200 /rpc response without result or error keys as malformed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: URL) => {
+        if (String(url).endsWith("/refresh-shell")) {
+          return new Response(
+            JSON.stringify({ shellToken: "tok", callerId: "c", deviceId: "dev_cli" })
+          );
+        }
+        return new Response(JSON.stringify({ ok: true }));
+      })
+    );
+    const client = new RpcClient(CREDS);
+    await expect(client.call("meta.listServices", [])).rejects.toMatchObject({
+      name: "RpcError",
+      message: "malformed rpc response (non-JSON or proxy response?)",
+    });
+  });
+
+  it("rejects a non-JSON 200 /rpc response as malformed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: URL) => {
+        if (String(url).endsWith("/refresh-shell")) {
+          return new Response(
+            JSON.stringify({ shellToken: "tok", callerId: "c", deviceId: "dev_cli" })
+          );
+        }
+        return new Response("<html>proxy says hi</html>");
+      })
+    );
+    const client = new RpcClient(CREDS);
+    await expect(client.call("meta.listServices", [])).rejects.toMatchObject({
+      name: "RpcError",
+      message: "malformed rpc response (non-JSON or proxy response?)",
+    });
+  });
+
+  it("still returns null results without treating them as malformed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: URL) => {
+        if (String(url).endsWith("/refresh-shell")) {
+          return new Response(
+            JSON.stringify({ shellToken: "tok", callerId: "c", deviceId: "dev_cli" })
+          );
+        }
+        return new Response(JSON.stringify({ result: null }));
+      })
+    );
+    const client = new RpcClient(CREDS);
+    await expect(client.call("meta.listServices", [])).resolves.toBeNull();
+  });
+
   it("maps unreachable servers to auth/connection errors", async () => {
     vi.stubGlobal(
       "fetch",

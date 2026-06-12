@@ -17,6 +17,10 @@ Generated statically from `src/server/services/`; a server build may register
 a subset depending on its configuration — `natstack agent services` shows what
 is actually live.
 
+Some internal services (e.g. workerd) are not shell-callable and do not appear
+here. Create workers and DOs via `runtime.createEntity` (`kind: "worker"` /
+`"do"`), then dispatch to them with `--target` relay calls.
+
 ## `audit`
 
 Audit log query access
@@ -75,6 +79,7 @@ Allowed callers: `panel`, `app`, `shell`, `server`, `worker`, `do`, `extension`
 | `build.getBuildMetadata` |  |
 | `build.getEffectiveVersion` |  |
 | `build.inspectBuildProvenance` | Resolve a workspace build unit and report its effective version, immutable build keys, and cached artifact metadata. |
+| `build.listRecentBuildEvents` | List recent push-triggered build lifecycle events and failures, optionally filtered by unit name or workspace-relative path. |
 | `build.doctorExtension` | Inspect an extension manifest, dependency routing, cached metadata, and smoke/build status. |
 | `build.recompute` |  |
 | `build.gc` |  |
@@ -188,16 +193,6 @@ Allowed callers: `panel`, `app`, `worker`, `do`, `extension`, `server`, `shell`
 | `meta.listServices` | List all registered RPC services and their method metadata. |
 | `meta.describeService` | Describe one registered RPC service by name. |
 | `meta.getRuntimeSurface` | Return the live eval runtime surface manifest for the requested target. |
-
-## `models`
-
-Static model catalog from the pi registry (no credentials/connection state)
-
-Allowed callers: `panel`, `shell`, `server`, `worker`, `app`, `do`, `extension`
-
-| Method | Description |
-|--------|-------------|
-| `models.listCatalog` |  |
 
 ## `notification`
 
@@ -342,6 +337,17 @@ Allowed callers: `shell`, `server`, `panel`, `app`, `worker`, `do`, `extension`
 | `webhookIngress.listSubscriptions` |  |
 | `webhookIngress.revokeSubscription` |  |
 | `webhookIngress.rotateSecret` |  |
+
+## `workerdInspector`
+
+Approval-gated workerd V8 inspector access for profiling workers and DOs
+
+Allowed callers: `shell`, `server`, `panel`, `worker`, `do`
+
+| Method | Description |
+|--------|-------------|
+| `workerdInspector.listTargets` |  |
+| `workerdInspector.getEndpoint` |  |
 
 ## `workerLog`
 

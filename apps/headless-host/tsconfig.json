@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.workspace.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "jsx": "preserve",
+    "rootDir": "./src",
+    "baseUrl": ".",
+    "paths": {},
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["src"]
+}

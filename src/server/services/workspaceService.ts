@@ -120,12 +120,18 @@ export interface WorkspaceServiceDeps {
   /** Query retained logs for a workspace unit. */
   listUnitLogs?: (
     name: string,
-    opts?: { since?: number; level?: WorkspaceUnitLogRecord["level"]; limit?: number }
+    opts?: {
+      since?: number;
+      sinceSeq?: number;
+      level?: WorkspaceUnitLogRecord["level"];
+      limit?: number;
+    }
   ) => Promise<WorkspaceUnitLogRecord[]> | WorkspaceUnitLogRecord[];
   unitDiagnostics?: (
     name: string,
     opts?: {
       since?: number;
+      sinceSeq?: number;
       level?: WorkspaceUnitLogRecord["level"];
       limit?: number;
       errorLimit?: number;
@@ -239,6 +245,8 @@ export interface WorkspaceUnitLogRecord {
   message: string;
   fields?: Record<string, unknown>;
   source?: "stdout" | "stderr" | "ctx.log" | "console" | "lifecycle" | "system";
+  /** Monotonic per-unit sequence — exact resume cursor for `sinceSeq` polling. */
+  seq?: number;
 }
 
 export interface WorkspaceUnitDiagnostics {
@@ -520,6 +528,7 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
           z
             .object({
               since: z.number().optional(),
+              sinceSeq: z.number().optional(),
               level: z.enum(["debug", "info", "warn", "error"]).optional(),
               limit: z.number().int().positive().max(1000).optional(),
             })
@@ -532,6 +541,7 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
           z
             .object({
               since: z.number().optional(),
+              sinceSeq: z.number().optional(),
               level: z.enum(["debug", "info", "warn", "error"]).optional(),
               limit: z.number().int().positive().max(1000).optional(),
               errorLimit: z.number().int().positive().max(500).optional(),
@@ -770,7 +780,15 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
           if (!deps.listUnitLogs) return [];
           const [name, opts] = args as [
             string,
-            { since?: number; level?: WorkspaceUnitLogRecord["level"]; limit?: number } | undefined,
+            (
+              | {
+                  since?: number;
+                  sinceSeq?: number;
+                  level?: WorkspaceUnitLogRecord["level"];
+                  limit?: number;
+                }
+              | undefined
+            ),
           ];
           return await deps.listUnitLogs(name, opts);
         }
@@ -780,7 +798,12 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
             const [name, opts] = args as [
               string,
               (
-                | { since?: number; level?: WorkspaceUnitLogRecord["level"]; limit?: number }
+                | {
+                    since?: number;
+                    sinceSeq?: number;
+                    level?: WorkspaceUnitLogRecord["level"];
+                    limit?: number;
+                  }
                 | undefined
               ),
             ];
@@ -798,6 +821,7 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
             (
               | {
                   since?: number;
+                  sinceSeq?: number;
                   level?: WorkspaceUnitLogRecord["level"];
                   limit?: number;
                   errorLimit?: number;

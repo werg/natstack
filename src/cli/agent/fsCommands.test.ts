@@ -269,6 +269,16 @@ describe("natstack fs commands", () => {
     expect(jsonOutput()).toEqual(result);
   });
 
+  it("grep rejects zero for --max and -C as usage errors (exit 2)", async () => {
+    writeCredentials(tmpDir);
+    writeSession(tmpDir);
+    stubServer(() => ({ matches: [], matchCount: 0, truncated: false }));
+
+    const { main } = await import("../client.js");
+    await expect(main(["fs", "grep", "x", "--max", "0", "--json"])).resolves.toBe(2);
+    await expect(main(["fs", "grep", "x", "-C", "0", "--json"])).resolves.toBe(2);
+  });
+
   it("renderGrepMatches formats matches with context and truncation", () => {
     const lines = renderGrepMatches({
       matches: [

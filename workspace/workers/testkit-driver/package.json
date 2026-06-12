@@ -1,0 +1,22 @@
+{
+  "name": "testkit-driver",
+  "version": "0.0.0",
+  "type": "module",
+  "natstack": {
+    "title": "Testkit Driver",
+    "kind": "worker",
+    "entry": "index.ts",
+    "durable": {
+      "classes": [
+        {
+          "className": "TestkitDriverDO"
+        }
+      ]
+    }
+  },
+  "dependencies": {
+    "@workspace/runtime": "workspace:*",
+    "@workspace/cdp-client": "workspace:*",
+    "@workspace/testkit": "workspace:*"
+  }
+}

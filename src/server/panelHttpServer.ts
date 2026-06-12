@@ -157,6 +157,9 @@ export class PanelHttpServer {
 
   private wss: WebSocketServer | null = null;
   private cdpBridge: CdpBridge | null = null;
+  private workerdInspectorBridge:
+    | import("./workerdInspectorBridge.js").WorkerdInspectorBridge
+    | null = null;
 
   constructor(
     host = "127.0.0.1",
@@ -210,6 +213,12 @@ export class PanelHttpServer {
 
   setCdpBridge(bridge: CdpBridge): void {
     this.cdpBridge = bridge;
+  }
+
+  setWorkerdInspectorBridge(
+    bridge: import("./workerdInspectorBridge.js").WorkerdInspectorBridge
+  ): void {
+    this.workerdInspectorBridge = bridge;
   }
 
   // =========================================================================
@@ -327,6 +336,11 @@ export class PanelHttpServer {
     socket: import("stream").Duplex,
     head: Buffer
   ): void {
+    const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+    if (this.workerdInspectorBridge?.isInspectorPath(pathname) && this.wss) {
+      this.workerdInspectorBridge.handleUpgrade(req, socket, head, this.wss);
+      return;
+    }
     if (this.cdpBridge && this.wss) {
       this.cdpBridge.handleUpgrade(req, socket, head, this.wss);
     } else {
