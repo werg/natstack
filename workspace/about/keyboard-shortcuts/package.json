@@ -4,12 +4,14 @@
   "private": true,
   "natstack": {
     "title": "Keyboard Shortcuts",
-    "description": "View and customize keyboard shortcuts",
+    "description": "View keyboard shortcuts",
     "shell": true,
     "hiddenInLauncher": false,
     "autoArchiveWhenEmpty": true
   },
   "dependencies": {
-    "@workspace/react": "*"
+    "@workspace/react": "*",
+    "@workspace/about-shared": "workspace:*",
+    "@workspace/runtime": "*"
   }
 }

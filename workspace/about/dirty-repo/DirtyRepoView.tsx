@@ -78,9 +78,6 @@ export function DirtyRepoView({ repoPath, onRetryBuild, onNotify, theme }: Dirty
     [onNotify]
   );
 
-  // AI-driven commit message generation was removed in the Phase 8 migration
-  // to the chat agent path. The chat agent now owns all AI surfaces.
-
   return (
     <Flex direction="column" style={{ height: "100%", minHeight: 0 }}>
       {/* Build-specific header with Continue button */}

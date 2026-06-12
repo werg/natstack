@@ -2,23 +2,18 @@
  * New Panel Page - Shell panel for launching panels from workspace.
  * Opens with Cmd/Ctrl+T and displays available panels with a chat prompt input.
  */
-
-import { createRoot } from "react-dom/client";
-import { useEffect, useState, useCallback } from "react";
-import "@radix-ui/themes/styles.css";
+import { useEffect, useState, useCallback, useMemo } from "react";
+import { Card, Flex, Heading, Text, Box, Button, TextField, Spinner } from "@radix-ui/themes";
 import {
-  Theme,
-  Card,
-  Flex,
-  Heading,
-  Text,
-  Box,
-  Button,
-  TextField,
-  ScrollArea,
-} from "@radix-ui/themes";
+  PlusIcon,
+  MagnifyingGlassIcon,
+  ChatBubbleIcon,
+  PaperPlaneIcon,
+  ChevronRightIcon,
+} from "@radix-ui/react-icons";
 import { getWorkspaceTree, buildPanelLink, onFocus } from "@workspace/runtime";
-import { useIsMobile, usePanelTheme } from "@workspace/react";
+import { useIsMobile } from "@workspace/react";
+import { mountAboutPanel, AboutPage, Section } from "@workspace/about-shared/ui";
 import type { WorkspaceTree, WorkspaceNode } from "@workspace/runtime";
 
 /** Flatten a workspace tree into a list of visible launchable panels. */
@@ -36,17 +31,45 @@ function collectPanels(nodes: WorkspaceNode[]): WorkspaceNode[] {
   return result;
 }
 
+function PanelCard({ node }: { node: WorkspaceNode }) {
+  const isMobile = useIsMobile();
+  return (
+    <Card asChild>
+      <a href={buildPanelLink(node.path)} style={{ textDecoration: "none", color: "inherit" }}>
+        <Flex align="center" justify="between" gap="3">
+          <Flex
+            align={isMobile ? "start" : "center"}
+            direction={isMobile ? "column" : "row"}
+            gap={isMobile ? "0" : "3"}
+            style={{ minWidth: 0 }}
+          >
+            <Text weight="medium" size="2">
+              {node.launchable?.title ?? node.name}
+            </Text>
+            <Text size="1" color="gray" style={{ wordBreak: "break-all" }}>
+              {node.path}
+            </Text>
+          </Flex>
+          <ChevronRightIcon style={{ flexShrink: 0, color: "var(--gray-8)" }} />
+        </Flex>
+      </a>
+    </Card>
+  );
+}
+
 function NewPanelPage() {
   const isMobile = useIsMobile();
   const [tree, setTree] = useState<WorkspaceTree | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [promptInput, setPromptInput] = useState("");
+  const [filter, setFilter] = useState("");
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
       setTree(await getWorkspaceTree());
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -59,10 +82,6 @@ function NewPanelPage() {
     return onFocus(() => void fetchData());
   }, [fetchData]);
 
-  const handleLaunch = useCallback((node: WorkspaceNode) => {
-    window.location.href = buildPanelLink(node.path);
-  }, []);
-
   const handleNewChat = useCallback(() => {
     const prompt = promptInput.trim();
     if (!prompt) return;
@@ -71,106 +90,91 @@ function NewPanelPage() {
     });
   }, [promptInput]);
 
-  if (loading) {
-    return (
-      <Box p={isMobile ? "3" : "4"} style={{ maxWidth: "700px", margin: "0 auto" }}>
-        <Heading size={isMobile ? "5" : "7"} mb="4">
-          New Panel
-        </Heading>
-        <Text color="gray">Loading...</Text>
-      </Box>
-    );
-  }
+  const panels = useMemo(() => (tree ? collectPanels(tree.children) : []), [tree]);
 
-  if (error) {
-    return (
-      <Box p={isMobile ? "3" : "4"} style={{ maxWidth: "700px", margin: "0 auto" }}>
-        <Heading size={isMobile ? "5" : "7"} mb="4">
-          New Panel
-        </Heading>
-        <Card>
-          <Text color="red">Error: {error}</Text>
-        </Card>
-      </Box>
+  const filteredPanels = useMemo(() => {
+    const query = filter.trim().toLowerCase();
+    if (!query) return panels;
+    return panels.filter(
+      (node) =>
+        node.path.toLowerCase().includes(query) ||
+        (node.launchable?.title ?? node.name).toLowerCase().includes(query)
     );
-  }
-
-  const panels = tree ? collectPanels(tree.children) : [];
+  }, [panels, filter]);
 
   return (
-    <Box p={isMobile ? "3" : "4"} style={{ maxWidth: "700px", margin: "0 auto" }}>
-      <Heading size={isMobile ? "5" : "7"} mb="4">
-        New Panel
-      </Heading>
+    <AboutPage icon={<PlusIcon width={20} height={20} />} title="New Panel" maxWidth={640}>
+      {/* New chat hero */}
+      <Section>
+        <Flex align="center" gap="2" mb="3">
+          <ChatBubbleIcon style={{ color: "var(--accent-9)" }} />
+          <Heading size="3">Start a chat</Heading>
+        </Flex>
+        <Flex gap="2" direction={isMobile ? "column" : "row"}>
+          <TextField.Root
+            autoFocus
+            size="3"
+            style={{ flex: 1 }}
+            placeholder="Ask anything to open a new chat..."
+            value={promptInput}
+            onChange={(e) => setPromptInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleNewChat()}
+          />
+          <Button size="3" onClick={handleNewChat} disabled={!promptInput.trim()}>
+            <PaperPlaneIcon /> Chat
+          </Button>
+        </Flex>
+      </Section>
 
-      <ScrollArea style={{ height: isMobile ? "calc(100dvh - 76px)" : "calc(100dvh - 100px)" }}>
-        <Flex direction="column" gap="4">
-          {/* Chat prompt input */}
-          <Card>
-            <Heading size="3" mb="2">
-              New Chat
-            </Heading>
-            <Flex gap="2" direction={isMobile ? "column" : "row"}>
-              <TextField.Root
-                style={{ flex: 1 }}
-                placeholder="Start a chat with a prompt..."
-                value={promptInput}
-                onChange={(e) => setPromptInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleNewChat()}
-              />
-              <Button onClick={handleNewChat} disabled={!promptInput.trim()}>
-                Chat
-              </Button>
-            </Flex>
-          </Card>
+      {/* Panel list */}
+      {loading ? (
+        <Flex align="center" justify="center" gap="2" py="6">
+          <Spinner />
+          <Text color="gray">Loading panels...</Text>
+        </Flex>
+      ) : error ? (
+        <Section>
+          <Flex direction="column" gap="3" align="start">
+            <Text color="red" size="2">
+              Failed to load workspace panels: {error}
+            </Text>
+            <Button variant="soft" onClick={() => void fetchData()}>
+              Retry
+            </Button>
+          </Flex>
+        </Section>
+      ) : (
+        <Box>
+          <Flex align="center" justify="between" gap="3" mb="3">
+            <Heading size="3">Panels</Heading>
+            <TextField.Root
+              size="2"
+              style={{ width: isMobile ? "50%" : 220 }}
+              placeholder="Filter..."
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+            >
+              <TextField.Slot>
+                <MagnifyingGlassIcon />
+              </TextField.Slot>
+            </TextField.Root>
+          </Flex>
 
-          {/* Panel list */}
-          {panels.length > 0 ? (
+          {filteredPanels.length > 0 ? (
             <Flex direction="column" gap="2">
-              {panels.map((node) => (
-                <Card
-                  key={node.path}
-                  tabIndex={0}
-                  style={{ cursor: "pointer" }}
-                  onClick={() => handleLaunch(node)}
-                  onKeyDown={(e) => e.key === "Enter" && handleLaunch(node)}
-                >
-                  <Flex
-                    align={isMobile ? "start" : "center"}
-                    justify="between"
-                    direction={isMobile ? "column" : "row"}
-                    gap="1"
-                  >
-                    <Text weight="medium" style={{ minWidth: 0 }}>
-                      {node.launchable?.title ?? node.name}
-                    </Text>
-                    <Text size="1" color="gray" style={{ wordBreak: "break-all" }}>
-                      {node.path}
-                    </Text>
-                  </Flex>
-                </Card>
+              {filteredPanels.map((node) => (
+                <PanelCard key={node.path} node={node} />
               ))}
             </Flex>
           ) : (
-            <Text color="gray">No panels found in workspace</Text>
+            <Text color="gray" size="2">
+              {panels.length === 0 ? "No panels found in workspace" : `No panels match "${filter}"`}
+            </Text>
           )}
-        </Flex>
-      </ScrollArea>
-    </Box>
+        </Box>
+      )}
+    </AboutPage>
   );
 }
 
-function ThemedApp() {
-  const theme = usePanelTheme();
-  return (
-    <Theme appearance={theme} radius="medium">
-      <NewPanelPage />
-    </Theme>
-  );
-}
-
-// Mount the app
-const root = document.getElementById("root");
-if (root) {
-  createRoot(root).render(<ThemedApp />);
-}
+mountAboutPanel(NewPanelPage);

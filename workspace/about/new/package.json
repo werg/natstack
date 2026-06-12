@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@workspace/react": "*",
-    "@workspace/runtime": "*"
+    "@workspace/runtime": "*",
+    "@workspace/about-shared": "workspace:*"
   }
 }

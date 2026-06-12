@@ -1,128 +1,144 @@
 /**
  * Keyboard Shortcuts Page - Shell panel showing available keyboard shortcuts.
+ *
+ * The shortcut list mirrors the accelerators registered in src/main/menu.ts.
+ * Keys are rendered platform-aware: symbols (⌘⇧⌥) on macOS, text elsewhere.
  */
+import { Flex, Text, Kbd, Separator } from "@radix-ui/themes";
+import { Fragment } from "react";
+import { KeyboardIcon } from "@radix-ui/react-icons";
+import { mountAboutPanel, AboutPage, Section } from "@workspace/about-shared/ui";
 
-import { createRoot } from "react-dom/client";
-import "@radix-ui/themes/styles.css";
-import { Theme, Card, Flex, Heading, Text, Box, Table, Kbd, ScrollArea } from "@radix-ui/themes";
-import { useIsMobile, usePanelTheme } from "@workspace/react";
+const IS_MAC =
+  typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform ?? "");
+
+interface Shortcut {
+  description: string;
+  /** Key tokens in macOS symbol notation, e.g. ["⌘", "⇧", "O"]. */
+  mac: string[];
+  /** Override for Windows/Linux when not a simple symbol translation. */
+  other?: string[];
+  /** Restrict the shortcut to one platform. */
+  platform?: "mac" | "other";
+}
 
 interface ShortcutGroup {
   title: string;
-  shortcuts: Array<{
-    keys: string[];
-    description: string;
-  }>;
+  shortcuts: Shortcut[];
+}
+
+const SYMBOL_TO_TEXT: Record<string, string> = { "⌘": "Ctrl", "⇧": "Shift", "⌥": "Alt", "⌃": "Ctrl" };
+
+function keysFor(shortcut: Shortcut): string[] {
+  if (IS_MAC) return shortcut.mac;
+  return shortcut.other ?? shortcut.mac.map((key) => SYMBOL_TO_TEXT[key] ?? key);
 }
 
 const shortcutGroups: ShortcutGroup[] = [
   {
     title: "General",
     shortcuts: [
-      { keys: ["Cmd/Ctrl", "T"], description: "New Panel" },
-      { keys: ["Cmd/Ctrl", "Shift", "M"], description: "Model Provider Config" },
-      { keys: ["Cmd/Ctrl", "Shift", "O"], description: "Switch Workspace" },
-      { keys: ["Cmd/Ctrl", "/"], description: "Show Keyboard Shortcuts" },
-      { keys: ["Cmd/Ctrl", "Q"], description: "Quit Application" },
+      { description: "New panel / launcher", mac: ["⌘", "T"] },
+      { description: "Switch workspace", mac: ["⌘", "⇧", "O"] },
+      { description: "Archive current panel", mac: ["⌘", "W"] },
+      { description: "Keyboard shortcuts", mac: ["⌘", "/"] },
+      { description: "Quit application", mac: ["⌘", "Q"] },
     ],
   },
   {
     title: "Navigation",
     shortcuts: [
-      { keys: ["Cmd", "["], description: "Back (macOS)" },
-      { keys: ["Cmd", "]"], description: "Forward (macOS)" },
-      { keys: ["Alt", "Left"], description: "Back (Windows/Linux)" },
-      { keys: ["Alt", "Right"], description: "Forward (Windows/Linux)" },
-      { keys: ["Cmd/Ctrl", "R"], description: "Reload Current Panel" },
-      { keys: ["Cmd/Ctrl", "Shift", "R"], description: "Force Reload" },
+      { description: "Back", mac: ["⌘", "["], other: ["Alt", "←"] },
+      { description: "Forward", mac: ["⌘", "]"], other: ["Alt", "→"] },
+      { description: "Reload panel", mac: ["⌘", "R"] },
+      { description: "Force reload view", mac: ["⌘", "⇧", "R"] },
+      { description: "Stop loading", mac: ["Esc"] },
+      { description: "Toggle address bar", mac: ["⌘", "L"] },
+    ],
+  },
+  {
+    title: "View",
+    shortcuts: [
+      { description: "Zoom in", mac: ["⌘", "+"] },
+      { description: "Zoom out", mac: ["⌘", "−"] },
+      { description: "Reset zoom", mac: ["⌘", "0"] },
+      { description: "Toggle fullscreen", mac: ["⌃", "⌘", "F"], other: ["F11"] },
+      { description: "Minimize window", mac: ["⌘", "M"], platform: "mac" },
+    ],
+  },
+  {
+    title: "Editing",
+    shortcuts: [
+      { description: "Undo", mac: ["⌘", "Z"] },
+      { description: "Redo", mac: ["⇧", "⌘", "Z"], other: ["Ctrl", "Y"] },
+      { description: "Cut", mac: ["⌘", "X"] },
+      { description: "Copy", mac: ["⌘", "C"] },
+      { description: "Paste", mac: ["⌘", "V"] },
+      { description: "Select all", mac: ["⌘", "A"] },
     ],
   },
   {
     title: "Developer",
     shortcuts: [
-      { keys: ["Cmd/Ctrl", "Shift", "I"], description: "Toggle Panel DevTools" },
-      { keys: ["Cmd/Ctrl", "Alt", "I"], description: "Toggle App DevTools" },
-    ],
-  },
-  {
-    title: "Window",
-    shortcuts: [
-      { keys: ["Cmd/Ctrl", "M"], description: "Minimize Window" },
-      { keys: ["F11"], description: "Toggle Fullscreen" },
-    ],
-  },
-  {
-    title: "Edit",
-    shortcuts: [
-      { keys: ["Cmd/Ctrl", "Z"], description: "Undo" },
-      { keys: ["Cmd/Ctrl", "Y"], description: "Redo" },
-      { keys: ["Cmd/Ctrl", "X"], description: "Cut" },
-      { keys: ["Cmd/Ctrl", "C"], description: "Copy" },
-      { keys: ["Cmd/Ctrl", "V"], description: "Paste" },
-      { keys: ["Cmd/Ctrl", "A"], description: "Select All" },
+      { description: "Toggle panel DevTools", mac: ["⌘", "⇧", "I"] },
+      { description: "Toggle app DevTools", mac: ["⌘", "⌥", "I"] },
     ],
   },
 ];
 
+function ShortcutKeys({ shortcut }: { shortcut: Shortcut }) {
+  const keys = keysFor(shortcut);
+  if (IS_MAC) {
+    // macOS convention: render the chord as one compact group, e.g. ⇧⌘O
+    return <Kbd size="3">{keys.join("")}</Kbd>;
+  }
+  return (
+    <Flex align="center" gap="1">
+      {keys.map((key, i) => (
+        <Fragment key={i}>
+          {i > 0 && (
+            <Text size="1" color="gray">
+              +
+            </Text>
+          )}
+          <Kbd size="2">{key}</Kbd>
+        </Fragment>
+      ))}
+    </Flex>
+  );
+}
+
 function KeyboardShortcutsPage() {
-  const isMobile = useIsMobile();
+  const currentPlatform = IS_MAC ? "mac" : "other";
   return (
-    <Box p={isMobile ? "3" : "4"} style={{ maxWidth: "700px", margin: "0 auto" }}>
-      <Heading size={isMobile ? "5" : "7"} mb="4">
-        Keyboard Shortcuts
-      </Heading>
-
-      <ScrollArea style={{ height: isMobile ? "calc(100dvh - 76px)" : "calc(100dvh - 100px)" }}>
-        <Flex direction="column" gap="4">
-          {shortcutGroups.map((group) => (
-            <Card key={group.title}>
-              <Heading size="4" mb="3">
-                {group.title}
-              </Heading>
-              <Table.Root style={{ width: "100%", tableLayout: isMobile ? "fixed" : undefined }}>
-                <Table.Body>
-                  {group.shortcuts.map((shortcut, index) => (
-                    <Table.Row key={index}>
-                      <Table.Cell style={{ width: isMobile ? "44%" : "200px" }}>
-                        <Flex gap="1" wrap="wrap">
-                          {shortcut.keys.map((key, keyIndex) => (
-                            <span key={keyIndex}>
-                              <Kbd>{key}</Kbd>
-                              {keyIndex < shortcut.keys.length - 1 && (
-                                <Text size="1" color="gray" mx="1">
-                                  +
-                                </Text>
-                              )}
-                            </span>
-                          ))}
-                        </Flex>
-                      </Table.Cell>
-                      <Table.Cell>
-                        <Text style={{ overflowWrap: "anywhere" }}>{shortcut.description}</Text>
-                      </Table.Cell>
-                    </Table.Row>
-                  ))}
-                </Table.Body>
-              </Table.Root>
-            </Card>
-          ))}
-        </Flex>
-      </ScrollArea>
-    </Box>
+    <AboutPage
+      icon={<KeyboardIcon width={20} height={20} />}
+      title="Keyboard Shortcuts"
+      maxWidth={640}
+    >
+      {shortcutGroups.map((group) => {
+        const visible = group.shortcuts.filter(
+          (s) => !s.platform || s.platform === currentPlatform
+        );
+        if (visible.length === 0) return null;
+        return (
+          <Section key={group.title} title={group.title}>
+            <Flex direction="column">
+              {visible.map((shortcut, index) => (
+                <Fragment key={shortcut.description}>
+                  {index > 0 && <Separator size="4" my="2" />}
+                  <Flex align="center" justify="between" gap="3">
+                    <Text size="2">{shortcut.description}</Text>
+                    <ShortcutKeys shortcut={shortcut} />
+                  </Flex>
+                </Fragment>
+              ))}
+            </Flex>
+          </Section>
+        );
+      })}
+    </AboutPage>
   );
 }
 
-function ThemedApp() {
-  const theme = usePanelTheme();
-  return (
-    <Theme appearance={theme} radius="medium">
-      <KeyboardShortcutsPage />
-    </Theme>
-  );
-}
-
-// Mount the app
-const root = document.getElementById("root");
-if (root) {
-  createRoot(root).render(<ThemedApp />);
-}
+mountAboutPanel(KeyboardShortcutsPage);

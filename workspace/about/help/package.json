@@ -10,6 +10,8 @@
     "autoArchiveWhenEmpty": true
   },
   "dependencies": {
-    "@workspace/react": "*"
+    "@workspace/react": "*",
+    "@workspace/about-shared": "workspace:*",
+    "@workspace/runtime": "*"
   }
 }

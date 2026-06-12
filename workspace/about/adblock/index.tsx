@@ -5,13 +5,8 @@
  * It provides UI for configuring ad blocking, filter lists, and whitelists.
  */
 import { useEffect, useState } from "react";
-import { createRoot } from "react-dom/client";
-import "@radix-ui/themes/styles.css";
 import {
-  Theme,
-  Card,
   Flex,
-  Heading,
   Text,
   Button,
   TextField,
@@ -20,10 +15,14 @@ import {
   Badge,
   Spinner,
   IconButton,
+  Separator,
+  Card,
 } from "@radix-ui/themes";
-import { Cross2Icon, PlusIcon } from "@radix-ui/react-icons";
+import { Cross2Icon, PlusIcon, LockClosedIcon } from "@radix-ui/react-icons";
 import { rpc } from "@workspace/runtime";
-import { useIsMobile, usePanelTheme } from "@workspace/react";
+import { useIsMobile } from "@workspace/react";
+import { mountAboutPanel, AboutPage, Section } from "@workspace/about-shared/ui";
+
 interface AdBlockListConfig {
   ads: boolean;
   privacy: boolean;
@@ -41,13 +40,8 @@ interface AdBlockStats {
   blockedRequests: number;
   blockedElements: number;
 }
-const LIST_LABELS: Record<
-  keyof AdBlockListConfig,
-  {
-    label: string;
-    description: string;
-  }
-> = {
+
+const LIST_LABELS: Record<keyof AdBlockListConfig, { label: string; description: string }> = {
   ads: {
     label: "EasyList (Ads)",
     description: "Block advertisements from common ad networks",
@@ -65,15 +59,13 @@ const LIST_LABELS: Record<
     description: "Block social media buttons and widgets",
   },
 };
-/**
- * Format a timestamp as a relative time string.
- */
+
+/** Format a timestamp as a relative time string. */
 function formatLastUpdated(timestamp: number | undefined): string {
   if (!timestamp) {
     return "Never";
   }
-  const now = Date.now();
-  const diff = now - timestamp;
+  const diff = Date.now() - timestamp;
   const minutes = Math.floor(diff / (1000 * 60));
   const hours = Math.floor(diff / (1000 * 60 * 60));
   const days = Math.floor(diff / (1000 * 60 * 60 * 24));
@@ -87,6 +79,73 @@ function formatLastUpdated(timestamp: number | undefined): string {
     return `${days} day${days === 1 ? "" : "s"} ago`;
   }
 }
+
+function StatBlock({ value, label }: { value: number; label: string }) {
+  return (
+    <Card variant="surface" style={{ flex: 1 }}>
+      <Flex direction="column" align="center" py="1">
+        <Text size="6" weight="bold">
+          {value.toLocaleString()}
+        </Text>
+        <Text size="1" color="gray">
+          {label}
+        </Text>
+      </Flex>
+    </Card>
+  );
+}
+
+/** A label/description pair with a switch on the right. */
+function ToggleRow({
+  label,
+  description,
+  checked,
+  onCheckedChange,
+  disabled,
+}: {
+  label: string;
+  description: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  disabled: boolean;
+}) {
+  return (
+    <Flex justify="between" align="center" gap="3">
+      <Flex direction="column" style={{ minWidth: 0 }}>
+        <Text size="2" weight="medium">
+          {label}
+        </Text>
+        <Text size="1" color="gray">
+          {description}
+        </Text>
+      </Flex>
+      <Switch checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} />
+    </Flex>
+  );
+}
+
+/** A removable list entry row (custom list URL or whitelisted domain). */
+function RemovableRow({
+  value,
+  onRemove,
+  disabled,
+}: {
+  value: string;
+  onRemove: () => void;
+  disabled: boolean;
+}) {
+  return (
+    <Flex justify="between" align="center" gap="2">
+      <Text size="2" style={{ wordBreak: "break-all", flex: 1 }}>
+        {value}
+      </Text>
+      <IconButton variant="ghost" color="red" size="1" onClick={onRemove} disabled={disabled}>
+        <Cross2Icon />
+      </IconButton>
+    </Flex>
+  );
+}
+
 function AdBlockSettingsPage() {
   const isMobile = useIsMobile();
   const [config, setConfig] = useState<AdBlockConfig | null>(null);
@@ -98,6 +157,7 @@ function AdBlockSettingsPage() {
   const [newDomain, setNewDomain] = useState("");
   // New custom list URL input
   const [newListUrl, setNewListUrl] = useState("");
+
   const loadData = async () => {
     try {
       setLoading(true);
@@ -114,6 +174,7 @@ function AdBlockSettingsPage() {
       setLoading(false);
     }
   };
+
   const refreshStats = async () => {
     try {
       const statsData = await rpc.call<AdBlockStats>("main", "adblock.getStats", []);
@@ -122,12 +183,14 @@ function AdBlockSettingsPage() {
       console.error("Failed to refresh stats:", err);
     }
   };
+
   useEffect(() => {
     loadData();
     // Refresh stats periodically
     const interval = setInterval(refreshStats, 5000);
     return () => clearInterval(interval);
   }, []);
+
   const handleToggleEnabled = async (enabled: boolean) => {
     if (!config) return;
     setIsSaving(true);
@@ -140,6 +203,7 @@ function AdBlockSettingsPage() {
       setIsSaving(false);
     }
   };
+
   const handleToggleList = async (list: keyof AdBlockListConfig, enabled: boolean) => {
     if (!config) return;
     setIsSaving(true);
@@ -155,6 +219,7 @@ function AdBlockSettingsPage() {
       setIsSaving(false);
     }
   };
+
   const handleAddWhitelist = async () => {
     if (!config || !newDomain.trim()) return;
     setIsSaving(true);
@@ -171,6 +236,7 @@ function AdBlockSettingsPage() {
       setIsSaving(false);
     }
   };
+
   const handleRemoveWhitelist = async (domain: string) => {
     if (!config) return;
     setIsSaving(true);
@@ -186,6 +252,7 @@ function AdBlockSettingsPage() {
       setIsSaving(false);
     }
   };
+
   const handleAddCustomList = async () => {
     if (!config || !newListUrl.trim()) return;
     setIsSaving(true);
@@ -202,6 +269,7 @@ function AdBlockSettingsPage() {
       setIsSaving(false);
     }
   };
+
   const handleRemoveCustomList = async (url: string) => {
     if (!config) return;
     setIsSaving(true);
@@ -217,6 +285,7 @@ function AdBlockSettingsPage() {
       setIsSaving(false);
     }
   };
+
   const handleRebuild = async () => {
     setIsSaving(true);
     try {
@@ -227,6 +296,7 @@ function AdBlockSettingsPage() {
       setIsSaving(false);
     }
   };
+
   if (loading) {
     return (
       <Flex align="center" justify="center" gap="2" style={{ height: "100dvh" }}>
@@ -235,6 +305,7 @@ function AdBlockSettingsPage() {
       </Flex>
     );
   }
+
   if (error) {
     return (
       <Flex align="center" justify="center" direction="column" gap="3" style={{ height: "100dvh" }}>
@@ -243,133 +314,86 @@ function AdBlockSettingsPage() {
       </Flex>
     );
   }
+
   return (
-    <Box p={isMobile ? "3" : "4"} style={{ maxWidth: "600px", margin: "0 auto" }}>
-      <Heading size={isMobile ? "5" : "7"} mb={isMobile ? "4" : "5"}>
-        Ad Blocking
-      </Heading>
-
-      {/* Master Toggle */}
-      <Card mb="4">
-        <Flex
-          justify="between"
-          align={isMobile ? "start" : "center"}
-          direction={isMobile ? "column" : "row"}
-          gap="3"
-        >
-          <Flex direction="column">
-            <Text weight="medium">Enable Ad Blocking</Text>
-            <Text size="1" color="gray">
-              Block ads, trackers, and annoyances in browser panels
-            </Text>
-          </Flex>
-          <Switch
-            checked={config?.enabled ?? false}
-            onCheckedChange={handleToggleEnabled}
-            disabled={isSaving}
-          />
+    <AboutPage
+      icon={<LockClosedIcon width={20} height={20} />}
+      title="Ad Blocking"
+      subtitle={`Filter lists updated: ${formatLastUpdated(config?.lastUpdated)}`}
+      maxWidth={640}
+      actions={
+        <Badge color={config?.enabled ? "green" : "gray"} size="2" variant="soft">
+          {config?.enabled ? "Active" : "Disabled"}
+        </Badge>
+      }
+    >
+      {/* Master toggle + session stats */}
+      <Section>
+        <ToggleRow
+          label="Enable Ad Blocking"
+          description="Block ads, trackers, and annoyances in browser panels"
+          checked={config?.enabled ?? false}
+          onCheckedChange={handleToggleEnabled}
+          disabled={isSaving}
+        />
+        <Separator size="4" my="3" />
+        <Flex gap="3" direction={isMobile ? "column" : "row"}>
+          <StatBlock value={stats?.blockedRequests ?? 0} label="Requests blocked this session" />
+          <StatBlock value={stats?.blockedElements ?? 0} label="Elements hidden this session" />
         </Flex>
-      </Card>
-
-      {/* Stats */}
-      <Card mb="4">
-        <Flex
-          justify="between"
-          align={isMobile ? "start" : "center"}
-          direction={isMobile ? "column" : "row"}
-          gap="3"
-        >
-          <Flex direction="column">
-            <Text weight="medium">Session Statistics</Text>
-            <Text size="1" color="gray">
-              {stats?.blockedRequests.toLocaleString() ?? 0} requests blocked,{" "}
-              {stats?.blockedElements.toLocaleString() ?? 0} elements hidden
-            </Text>
-            <Text size="1" color="gray">
-              Filter lists updated: {formatLastUpdated(config?.lastUpdated)}
-            </Text>
-          </Flex>
-          <Badge color={config?.enabled ? "green" : "gray"} size="2">
-            {config?.enabled ? "Active" : "Disabled"}
-          </Badge>
-        </Flex>
-      </Card>
+      </Section>
 
       {/* Filter Lists */}
-      <Card mb="4">
-        <Heading size="4" mb="3">
-          Filter Lists
-        </Heading>
-        <Text size="2" color="gray" mb="4">
-          Choose which filter lists to use. Changes require rebuilding the engine.
-        </Text>
-
+      <Section
+        title="Filter Lists"
+        description="Choose which filter lists to use. Changes require rebuilding the engine."
+      >
         <Flex direction="column" gap="3">
           {(Object.keys(LIST_LABELS) as Array<keyof AdBlockListConfig>).map((list) => (
-            <Flex
+            <ToggleRow
               key={list}
-              justify="between"
-              align={isMobile ? "start" : "center"}
-              direction={isMobile ? "column" : "row"}
-              gap="2"
-            >
-              <Flex direction="column">
-                <Text size="2" weight="medium">
-                  {LIST_LABELS[list].label}
-                </Text>
-                <Text size="1" color="gray">
-                  {LIST_LABELS[list].description}
-                </Text>
-              </Flex>
-              <Switch
-                checked={config?.lists[list] ?? false}
-                onCheckedChange={(checked) => handleToggleList(list, checked)}
-                disabled={isSaving || !config?.enabled}
-              />
-            </Flex>
+              label={LIST_LABELS[list].label}
+              description={LIST_LABELS[list].description}
+              checked={config?.lists[list] ?? false}
+              onCheckedChange={(checked) => handleToggleList(list, checked)}
+              disabled={isSaving || !config?.enabled}
+            />
           ))}
         </Flex>
-
         <Box mt="4">
           <Button variant="soft" onClick={handleRebuild} disabled={isSaving || !config?.enabled}>
             {isSaving ? <Spinner /> : "Rebuild Filter Engine"}
           </Button>
         </Box>
-      </Card>
+      </Section>
 
       {/* Custom Lists */}
-      <Card mb="4">
-        <Heading size="4" mb="3">
-          Custom Filter Lists
-        </Heading>
-        <Text size="2" color="gray" mb="4">
-          Add URLs to custom filter lists (e.g., regional ad filters).
-        </Text>
-
-        <Flex direction="column" gap="2" mb="3">
-          {config?.customLists.map((url) => (
-            <Flex key={url} justify="between" align="center" gap="2">
-              <Text size="2" style={{ wordBreak: "break-all", flex: 1 }}>
-                {url}
-              </Text>
-              <IconButton
-                variant="ghost"
-                color="red"
-                size="1"
-                onClick={() => handleRemoveCustomList(url)}
+      <Section
+        title="Custom Filter Lists"
+        description="Add URLs to custom filter lists (e.g., regional ad filters)."
+      >
+        {config && config.customLists.length > 0 && (
+          <Flex direction="column" gap="2" mb="3">
+            {config.customLists.map((url) => (
+              <RemovableRow
+                key={url}
+                value={url}
+                onRemove={() => handleRemoveCustomList(url)}
                 disabled={isSaving}
-              >
-                <Cross2Icon />
-              </IconButton>
-            </Flex>
-          ))}
-        </Flex>
-
+              />
+            ))}
+          </Flex>
+        )}
         <Flex gap="2" direction={isMobile ? "column" : "row"}>
           <TextField.Root
             placeholder="https://example.com/filters.txt"
             value={newListUrl}
             onChange={(e) => setNewListUrl(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && newListUrl.trim()) {
+                handleAddCustomList();
+              }
+            }}
             style={{ flex: 1 }}
             disabled={isSaving || !config?.enabled}
           />
@@ -380,31 +404,21 @@ function AdBlockSettingsPage() {
             <PlusIcon />
           </IconButton>
         </Flex>
-      </Card>
+      </Section>
 
       {/* Whitelist */}
-      <Card>
-        <Heading size="4" mb="3">
-          Whitelisted Domains
-        </Heading>
-        <Text size="2" color="gray" mb="4">
-          Domains where ad blocking is disabled. Supports wildcards (*.example.com).
-        </Text>
-
+      <Section
+        title="Whitelisted Domains"
+        description="Domains where ad blocking is disabled. Supports wildcards (*.example.com)."
+      >
         <Flex direction="column" gap="2" mb="3">
           {config?.whitelist.map((domain) => (
-            <Flex key={domain} justify="between" align="center" gap="2">
-              <Text size="2">{domain}</Text>
-              <IconButton
-                variant="ghost"
-                color="red"
-                size="1"
-                onClick={() => handleRemoveWhitelist(domain)}
-                disabled={isSaving}
-              >
-                <Cross2Icon />
-              </IconButton>
-            </Flex>
+            <RemovableRow
+              key={domain}
+              value={domain}
+              onRemove={() => handleRemoveWhitelist(domain)}
+              disabled={isSaving}
+            />
           ))}
           {config?.whitelist.length === 0 && (
             <Text size="2" color="gray">
@@ -412,7 +426,6 @@ function AdBlockSettingsPage() {
             </Text>
           )}
         </Flex>
-
         <Flex gap="2" direction={isMobile ? "column" : "row"}>
           <TextField.Root
             placeholder="example.com or *.example.com"
@@ -430,20 +443,9 @@ function AdBlockSettingsPage() {
             <PlusIcon />
           </IconButton>
         </Flex>
-      </Card>
-    </Box>
+      </Section>
+    </AboutPage>
   );
 }
-function ThemedApp() {
-  const theme = usePanelTheme();
-  return (
-    <Theme appearance={theme} radius="medium">
-      <AdBlockSettingsPage />
-    </Theme>
-  );
-}
-// Mount the app
-const root = document.getElementById("root");
-if (root) {
-  createRoot(root).render(<ThemedApp />);
-}
+
+mountAboutPanel(AdBlockSettingsPage);
