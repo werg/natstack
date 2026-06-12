@@ -88,6 +88,11 @@ async function add(inv: ParsedInvocation): Promise<number> {
   const json = jsonMode(inv.flags["json"] === true);
   try {
     const repo = requireRepo(inv);
+    if (inv.positionals.length > 1) {
+      throw new UsageError(
+        "git add stages ALL changes in the repo — per-file staging is not supported; drop the extra path arguments"
+      );
+    }
     const { client, contextId } = resolveSessionScope(inv);
     await client.call("git.contextAddAll", [contextId, repo]);
     printResult(

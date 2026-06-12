@@ -86,4 +86,45 @@ describe("RuntimeDiagnosticsStore", () => {
     expect(history.entries.map((entry) => entry.message)).toEqual(["warn", "error"]);
     expect(history.errors.map((entry) => entry.message)).toEqual(["error"]);
   });
+
+  it("stamps monotonic per-entity seq and resumes exactly via sinceSeq", () => {
+    const statePath = tempStatePath();
+    const store = new RuntimeDiagnosticsStore({ statePath, entryCapacity: 10, errorCapacity: 10 });
+
+    const sameTimestamp = 1_700_000_000_000;
+    for (const message of ["a", "b", "c"]) {
+      store.record({
+        entityId: "workers/demo",
+        kind: "worker",
+        level: "info",
+        message,
+        source: "console",
+        timestamp: sameTimestamp,
+      });
+    }
+
+    const all = store.history("workers/demo");
+    expect(all.entries.map((entry) => entry.seq)).toEqual([1, 2, 3]);
+
+    // Timestamp cursor cannot split colliding records; seq cursor can.
+    const afterSecond = store.history("workers/demo", { sinceSeq: 2 });
+    expect(afterSecond.entries.map((entry) => entry.message)).toEqual(["c"]);
+
+    // Seq continues across reload instead of restarting.
+    const reloaded = new RuntimeDiagnosticsStore({
+      statePath,
+      entryCapacity: 10,
+      errorCapacity: 10,
+    });
+    reloaded.record({
+      entityId: "workers/demo",
+      kind: "worker",
+      level: "info",
+      message: "d",
+      source: "console",
+    });
+    const resumed = reloaded.history("workers/demo", { sinceSeq: 3 });
+    expect(resumed.entries.map((entry) => entry.message)).toEqual(["d"]);
+    expect(resumed.entries[0]?.seq).toBe(4);
+  });
 });

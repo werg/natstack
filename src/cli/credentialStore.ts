@@ -17,7 +17,12 @@ export function credentialPath(): string {
 export function loadCliCredentials(): CliCredentials | null {
   const p = credentialPath();
   if (!fs.existsSync(p)) return null;
-  const parsed = JSON.parse(fs.readFileSync(p, "utf8")) as Partial<CliCredentials>;
+  let parsed: Partial<CliCredentials>;
+  try {
+    parsed = JSON.parse(fs.readFileSync(p, "utf8")) as Partial<CliCredentials>;
+  } catch {
+    return null;
+  }
   if (
     parsed.schemaVersion !== 1 ||
     parsed.kind !== "device" ||

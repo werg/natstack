@@ -1,98 +1,23 @@
 /**
  * Panel Lifecycle E2E Tests
  *
- * Tests panel creation, navigation, closing, and persistence.
- * These are the priority tests for the initial E2E setup.
+ * Only the persistence test remains here: it restarts the app, which cannot
+ * run in-system. The rest of the lifecycle coverage (panel creation, focus
+ * management, panel loading state) now lives in @workspace/testkit
+ * (workspace/packages/testkit/src/suites/panelLifecycle.ts).
  */
 
 import { test, expect } from "@playwright/test";
 import {
   ELECTRON_DISPLAY_UNAVAILABLE_MESSAGE,
-  getFocusedPanelId,
   getPanelTree,
   hasElectronDisplay,
   launchTestApp,
-  isPanelLoaded,
   createManagedTestWorkspace,
   removeManagedTestWorkspace,
-  type TestApp,
 } from "../../setup/electronSetup";
 
 test.skip(!hasElectronDisplay(), ELECTRON_DISPLAY_UNAVAILABLE_MESSAGE);
-
-test.describe("Panel Lifecycle", () => {
-  let testApp: TestApp;
-
-  test.afterEach(async () => {
-    if (testApp) {
-      await testApp.cleanup();
-    }
-  });
-
-  test.describe("Panel Creation", () => {
-    test("can get initial panel tree after startup", async () => {
-      testApp = await launchTestApp();
-
-      // Wait for app initialization
-      await new Promise((resolve) => setTimeout(resolve, 3000));
-
-      const panelTree = await getPanelTree(testApp.app);
-
-      // Should have at least one root panel after initialization
-      // (the launcher panel created by launchTestApp)
-      expect(panelTree.length).toBeGreaterThanOrEqual(0);
-    });
-
-    test("panel tree includes panel IDs and titles", async () => {
-      testApp = await launchTestApp();
-
-      // Wait for app initialization
-      await new Promise((resolve) => setTimeout(resolve, 3000));
-
-      const panelTree = await getPanelTree(testApp.app);
-
-      if (panelTree.length > 0) {
-        const firstPanel = panelTree[0];
-        expect(firstPanel).toHaveProperty("id");
-        expect(firstPanel).toHaveProperty("title");
-      }
-    });
-  });
-
-  test.describe("Focus Management", () => {
-    test("can query focused panel ID", async () => {
-      testApp = await launchTestApp();
-
-      // Wait for app initialization
-      await new Promise((resolve) => setTimeout(resolve, 3000));
-
-      // Should be able to get focused panel (may be null if no panels)
-      const focusedId = await getFocusedPanelId(testApp.app);
-
-      // Result should be string or null
-      expect(focusedId === null || typeof focusedId === "string").toBe(true);
-    });
-  });
-
-  test.describe("Panel Loading State", () => {
-    test("can check if panel is loaded", async () => {
-      testApp = await launchTestApp();
-
-      // Wait for app initialization
-      await new Promise((resolve) => setTimeout(resolve, 3000));
-
-      const panelTree = await getPanelTree(testApp.app);
-
-      if (panelTree.length > 0) {
-        const firstPanel = panelTree[0];
-        const loaded = await isPanelLoaded(testApp.app, firstPanel.id);
-
-        // Panel should be either loaded or not (boolean)
-        expect(typeof loaded).toBe("boolean");
-      }
-    });
-  });
-});
 
 test.describe("Panel Persistence", () => {
   // This test launches the app twice, so it needs a longer timeout

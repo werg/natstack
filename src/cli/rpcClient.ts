@@ -102,6 +102,15 @@ export class RpcClient {
   /** Result of the most recent shell refresh, if one occurred. */
   lastRefresh: RefreshShellResponse | null = null;
 
+  /**
+   * Ensure a shell token exists (cached or freshly refreshed) and return it.
+   * Lets callers that need the raw token (e.g. eval runner handshakes) share
+   * the same token subsequent `call`s will use, instead of refreshing twice.
+   */
+  async getShellToken(): Promise<string> {
+    return await this.ensureShellToken();
+  }
+
   private async ensureShellToken(): Promise<string> {
     const cached = shellTokenCache.get(cacheKey(this.creds));
     if (cached) return cached;
@@ -159,6 +168,9 @@ export class RpcClient {
         parsed.error,
         typeof parsed.errorCode === "string" ? parsed.errorCode : undefined
       );
+    }
+    if (!("result" in parsed) && !("error" in parsed)) {
+      throw new RpcError("malformed rpc response (non-JSON or proxy response?)");
     }
     return parsed.result as T;
   }

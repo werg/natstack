@@ -153,6 +153,10 @@ singletonObjects:
     className: ModelSettingsDO
     key: workspace-model-settings
 
+  - source: workers/testkit-driver
+    className: TestkitDriverDO
+    key: workspace-testkit-driver
+
 # =============================================================================
 # Userland services. Resolved by `name` or by any entry in `protocols`.
 # A `durableObject.className` entry without a matching singletonObjects row
@@ -188,6 +192,16 @@ services:
       allowed: [panel, shell, server, worker, do, extension, harness]
     durableObject:
       className: ModelSettingsDO
+
+  - source: workers/testkit-driver
+    name: testkit-driver
+    title: Testkit Driver
+    protocols:
+      - natstack.testkit-driver.v1
+    policy:
+      allowed: [panel, shell, server, worker, do, harness]
+    durableObject:
+      className: TestkitDriverDO
 
 # =============================================================================
 # HTTP routes exposed under `/_r/w/<source>/...`.

@@ -1,0 +1,35 @@
+{
+  "name": "@natstack/headless-host",
+  "version": "0.1.0",
+  "description": "Standalone headless Chromium panel host — NatStack's renderer of last resort",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "natstack-headless-host": "./dist/main.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@natstack/dev-log": "workspace:*",
+    "@natstack/rpc": "workspace:*",
+    "@natstack/shared": "workspace:*",
+    "@puppeteer/browsers": "^2.6.1",
+    "ws": "^8.18.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.4"
+  }
+}

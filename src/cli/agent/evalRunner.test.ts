@@ -17,6 +17,7 @@ let server: http.Server;
 let serverUrl = "";
 let rpcBodies: RpcRequest[] = [];
 let rpcHandler: (body: RpcRequest) => unknown = () => null;
+let rpcStatus = 200;
 
 beforeAll(async () => {
   server = http.createServer((req, res) => {
@@ -26,6 +27,7 @@ beforeAll(async () => {
       const body = JSON.parse(raw) as RpcRequest;
       rpcBodies.push(body);
       res.setHeader("Content-Type", "application/json");
+      res.statusCode = rpcStatus;
       try {
         res.end(JSON.stringify({ result: rpcHandler(body) }));
       } catch (error) {
@@ -46,6 +48,7 @@ afterAll(async () => {
 afterEach(() => {
   rpcBodies = [];
   rpcHandler = () => null;
+  rpcStatus = 200;
 });
 
 function handshake(code: string, extra: Partial<EvalHandshake> = {}): EvalHandshake {
@@ -122,6 +125,13 @@ describe("evalRunner", () => {
     expect(result.error).toContain("Path traversal detected");
   });
 
+  it("a mid-run 401 surfaces an actionable shell-token error", async () => {
+    rpcStatus = 401;
+    const { result } = await run("await services.meta.listServices();");
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("shell token rejected (server restarted?) — rerun the eval");
+  });
+
   it("restores the scope snapshot and serializes the final scope", async () => {
     const { result } = await run(
       "scope.count = (scope.count ?? 0) + 1; scope.label = `run ${scope.count}`; return scope.count;",
@@ -129,19 +139,21 @@ describe("evalRunner", () => {
     );
     expect(result.success).toBe(true);
     expect(result.returnValue).toBe(42);
-    expect(JSON.parse(result.scope.json)).toEqual({
+    // runEval always serializes a scope; only main()'s infrastructure
+    // failures omit it.
+    expect(JSON.parse(result.scope!.json)).toEqual({
       count: 42,
       label: "run 42",
       keep: { nested: true },
     });
-    expect(result.scope.serializedKeys.sort()).toEqual(["count", "keep", "label"]);
+    expect(result.scope!.serializedKeys.sort()).toEqual(["count", "keep", "label"]);
   });
 
   it("drops function-valued scope entries with a warning path", async () => {
     const { result } = await run("scope.fn = () => 1; scope.ok = 7;");
     expect(result.success).toBe(true);
-    expect(JSON.parse(result.scope.json)).toEqual({ ok: 7 });
-    expect(result.scope.droppedPaths).toEqual([{ path: "fn", reason: "function" }]);
+    expect(JSON.parse(result.scope!.json)).toEqual({ ok: 7 });
+    expect(result.scope!.droppedPaths).toEqual([{ path: "fn", reason: "function" }]);
   });
 
   it("ctx binding exposes the handshake identifiers", async () => {

@@ -9,7 +9,7 @@ the context root (`/` = context root). All commands accept `--json`.
 ## Sessions
 
 ```bash
-natstack agent attach [NAME] [--url U --code C]   # create or reuse (pairs first if --url/--code given)
+natstack agent attach [NAME] [--url U --code C]   # create or reuse; --url/--code pair first (errors if already paired)
 natstack agent status [NAME]                      # verify the entity is live (exit 5 if stale)
 natstack agent sessions                           # list local sessions, live/stale
 natstack agent detach [NAME] [--rm]               # retire entity; --rm also deletes the context folder
@@ -23,8 +23,8 @@ the device credential at `~/.config/natstack/cli-credentials.json` (both 0600).
 ```bash
 natstack fs ls [PATH] [-R]                  # list directory; dirs print with trailing "/"; -R recurses
 natstack fs read PATH [--out FILE]          # raw bytes to stdout (binary-safe), or save to a local FILE
-natstack fs write PATH [--from-file F | --content TEXT] [--append] [--parents]
-                                            # content from flag, local file, or stdin; --parents mkdirs first
+natstack fs write PATH [CONTENT] [--content TEXT | --from-file F] [--append] [--parents]
+                                            # content from positional, flag, local file, or stdin; --parents mkdirs first
 natstack fs rm PATH [-r]                    # -r for directories
 natstack fs mv SRC DEST                     # rename/move
 natstack fs cp SRC DEST                     # copy a file
@@ -38,8 +38,11 @@ Notes:
 
 - `fs read` without `--out` writes the file verbatim to stdout (even with
   `--json`), so it is safe for binary files and for piping.
-- `fs write` sources are mutually exclusive: `--content TEXT` > `--from-file F`
-  > stdin. `--append` appends instead of overwriting.
+- `fs write` content comes from exactly one of a `CONTENT` positional,
+  `--content TEXT`, or `--from-file F` (mutually exclusive; passing more than
+  one is a usage error). With none of them, stdin is read when piped; on a
+  TTY the command fails with a usage error. `--append` appends instead of
+  overwriting.
 - `fs grep` human output is classic grep style — `file:NN: match` with
   `file:NN- context` lines and a trailing `(truncated at N matches)` marker.
   `--json` returns `{matches, matchCount, truncated}` with
@@ -73,7 +76,9 @@ natstack agent call SERVICE.METHOD 'ARGS_JSON' [--target ID]
 `ARGS_JSON` is a JSON **array** of positional arguments. `fs.*` and
 `git.context*` methods take the session's contextId as their first argument
 (get it from `natstack agent status --json`). `--target ID` relays the call to
-a runtime entity (panel/worker) instead of the server. See
+a runtime entity (panel/worker/DO) instead of the server; relayed methods are
+entity-defined and may be plain names without a `SERVICE.` prefix (e.g.
+`natstack agent call ping --target worker:...`). See
 [API.md](API.md) for the service list and
 `natstack agent services NAME --json` for full schemas.
 

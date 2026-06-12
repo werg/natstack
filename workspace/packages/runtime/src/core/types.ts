@@ -111,6 +111,9 @@ export interface PanelConsoleHistoryEntry {
   line: number;
   sourceId: string;
   url: string;
+  /** "lifecycle" marks host-recorded events (crash/unresponsive/did-fail-load). */
+  source?: "console" | "lifecycle";
+  fields?: Record<string, unknown>;
 }
 
 export interface PanelConsoleHistoryOptions {

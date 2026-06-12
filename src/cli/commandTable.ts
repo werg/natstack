@@ -77,16 +77,28 @@ export function parseInvocation(command: CliCommand, argv: string[]): ParsedInvo
     const isLong = arg.startsWith("--");
     const isShort = !isLong && /^-[A-Za-z]$/.test(arg);
     if (isLong || isShort) {
+      // Long flags may carry an inline value: --flag=value.
+      const eq = isLong ? arg.indexOf("=") : -1;
+      const name = eq === -1 ? arg : arg.slice(0, eq);
+      const inlineValue = eq === -1 ? undefined : arg.slice(eq + 1);
       const spec = isLong
-        ? command.flags?.find((flag) => flag.name === arg.slice(2))
-        : command.flags?.find((flag) => flag.short === arg.slice(1));
+        ? command.flags?.find((flag) => flag.name === name.slice(2))
+        : command.flags?.find((flag) => flag.short === name.slice(1));
       if (!spec) {
-        throw new UsageError(`Unknown flag for ${command.group} ${command.name}: ${arg}`);
+        throw new UsageError(`Unknown flag for ${command.group} ${command.name}: ${name}`);
       }
       if (spec.takesValue) {
+        if (inlineValue !== undefined) {
+          flags[spec.name] = inlineValue;
+          continue;
+        }
         const value = argv[++i];
         if (value === undefined) throw new UsageError(`Flag ${arg} requires a value`);
         flags[spec.name] = value;
+      } else if (inlineValue !== undefined) {
+        if (inlineValue === "true") flags[spec.name] = true;
+        else if (inlineValue === "false") flags[spec.name] = false;
+        else throw new UsageError(`Flag ${name} is boolean; use ${name} or ${name}=true|false`);
       } else {
         flags[spec.name] = true;
       }
@@ -95,6 +107,26 @@ export function parseInvocation(command: CliCommand, argv: string[]): ParsedInvo
     }
   }
   return { positionals, flags };
+}
+
+/** Render per-command help: usage line plus declared flags. */
+export function renderCommandHelp(command: CliCommand): string {
+  const usage = command.usage ?? `natstack ${command.group} ${command.name}`;
+  const lines = [`${command.summary}`, "", `Usage: ${usage}`];
+  const flags = command.flags ?? [];
+  if (flags.length > 0) {
+    lines.push("", "Flags:");
+    for (const flag of flags) {
+      const label = flag.short ? `--${flag.name}, -${flag.short}` : `--${flag.name}`;
+      const valueHint = flag.takesValue ? " <value>" : "";
+      lines.push(`  ${(label + valueHint).padEnd(28)} ${flag.description ?? ""}`.trimEnd());
+    }
+    lines.push(
+      "",
+      "Value flags accept --flag value or --flag=value; boolean flags accept --flag or --flag=true|false."
+    );
+  }
+  return lines.join("\n");
 }
 
 /** Render usage lines for one group's commands. */

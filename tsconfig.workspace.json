@@ -280,6 +280,12 @@
       "@workspace/runtime": [
         "workspace/packages/runtime/src/panel/index.ts"
       ],
+      "@workspace/testkit/suites": [
+        "workspace/packages/testkit/src/suites/index.ts"
+      ],
+      "@workspace/testkit/profiling": [
+        "workspace/packages/testkit/src/profile-core.ts"
+      ],
       "@workspace/runtime/credentials": [
         "workspace/packages/runtime/src/shared/credentials.ts"
       ],

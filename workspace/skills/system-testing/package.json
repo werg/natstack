@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./index.ts",
+    "./deterministic": "./deterministic.ts",
     "./diagnostics": "./diagnostics.ts",
     "./panel-guards": "./panel-guards.ts",
     "./report": "./messages/report.ts",
@@ -16,6 +17,7 @@
   "dependencies": {
     "@workspace/agentic-session": "workspace:*",
     "@workspace/agentic-core": "workspace:*",
-    "@workspace/runtime": "workspace:*"
+    "@workspace/runtime": "workspace:*",
+    "@workspace/testkit": "workspace:*"
   }
 }

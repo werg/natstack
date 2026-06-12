@@ -62,6 +62,8 @@ export interface WorkspaceUnitLogRecord {
   message: string;
   fields?: Record<string, unknown>;
   source?: "stdout" | "stderr" | "ctx.log" | "console" | "lifecycle" | "system";
+  /** Monotonic per-unit sequence — exact resume cursor for `sinceSeq` polling. */
+  seq?: number;
 }
 
 export interface WorkspaceUnitDiagnostics {
@@ -85,12 +87,18 @@ export interface WorkspaceUnitsClient {
   restart(name: string): Promise<void>;
   logs(
     name: string,
-    opts?: { since?: number; level?: WorkspaceUnitLogRecord["level"]; limit?: number }
+    opts?: {
+      since?: number;
+      sinceSeq?: number;
+      level?: WorkspaceUnitLogRecord["level"];
+      limit?: number;
+    }
   ): Promise<WorkspaceUnitLogRecord[]>;
   diagnostics(
     name: string,
     opts?: {
       since?: number;
+      sinceSeq?: number;
       level?: WorkspaceUnitLogRecord["level"];
       limit?: number;
       errorLimit?: number;

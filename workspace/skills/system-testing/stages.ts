@@ -39,6 +39,7 @@ import { docsProbeTests as _docs } from "./tests/docs-probes.js";
 import { projectLifecycleTests as _projectLifecycle } from "./tests/project-lifecycle.js";
 import { cdpGadDiagnosticTests as _cdpGad } from "./tests/cdp-gad-diagnostics.js";
 import { harnessResilienceTests as _harnessResilience } from "./tests/harness-resilience.js";
+import { deterministicTestCases as _deterministic } from "./deterministic.js";
 
 export type TestStage = {
   index: number;
@@ -85,6 +86,7 @@ export function allTests(): TestCase[] {
     ..._cdpGad,
     ..._harnessResilience,
     ..._docs,
+    ..._deterministic(),
   ];
 }
 

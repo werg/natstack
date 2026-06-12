@@ -2,7 +2,7 @@ import type { RuntimeEntityHandle } from "@natstack/shared/runtime/entitySpec";
 import { JSON_FLAG, type CliCommand, type ParsedInvocation } from "../commandTable.js";
 import { loadCliCredentials, saveCliCredentials, type CliCredentials } from "../credentialStore.js";
 import { completePairing } from "../remoteClient.js";
-import { RpcClient } from "../rpcClient.js";
+import { RpcClient, RpcError } from "../rpcClient.js";
 import {
   deleteAgentSession,
   isValidSessionName,
@@ -55,6 +55,15 @@ function sessionName(inv: ParsedInvocation): string {
   return name;
 }
 
+/** Whether an RPC failure means the entity is already gone on the server. */
+function isEntityNotFoundError(error: unknown): boolean {
+  return (
+    error instanceof RpcError &&
+    (error.errorCode === "ENTITY_NOT_FOUND" ||
+      /\b(?:not found|unknown entity|no such entity|already retired)\b/i.test(error.message))
+  );
+}
+
 async function sessionEntityExists(client: RpcClient, entityId: string): Promise<boolean> {
   const entities = await client.call<EntitySummary[]>("runtime.listEntities", [
     { kind: "session" },
@@ -71,9 +80,14 @@ async function attach(inv: ParsedInvocation): Promise<number> {
       positionals: inv.positionals.filter((arg) => !arg.startsWith("natstack://")),
     });
     let creds = loadCliCredentials();
+    const url = typeof inv.flags["url"] === "string" ? inv.flags["url"] : undefined;
+    const code = typeof inv.flags["code"] === "string" ? inv.flags["code"] : undefined;
+    if (creds && (link || url || code)) {
+      throw new UsageError(
+        "already paired — run `natstack remote logout` to re-pair, or attach without --url/--code"
+      );
+    }
     if (!creds) {
-      const url = typeof inv.flags["url"] === "string" ? inv.flags["url"] : undefined;
-      const code = typeof inv.flags["code"] === "string" ? inv.flags["code"] : undefined;
       if (link || (url && code)) {
         creds = await completePairing({ link, url, code });
         saveCliCredentials(creds);
@@ -90,6 +104,11 @@ async function attach(inv: ParsedInvocation): Promise<number> {
     // Idempotent re-attach: reuse the stored session when the entity is
     // still live on the same server; recreate it when it is gone.
     const existing = loadAgentSession(name);
+    if (existing && existing.serverUrl !== creds.url) {
+      console.error(
+        `warning: session ${name} was created for ${existing.serverUrl}; recreating it on ${creds.url}`
+      );
+    }
     if (existing && existing.serverUrl === creds.url) {
       if (await sessionEntityExists(client, existing.entityId)) {
         printResult(existing, {
@@ -172,13 +191,31 @@ async function detach(inv: ParsedInvocation): Promise<number> {
     if (!session) throw new CliError(`no session named ${name}`);
     const creds = requireCredentials();
     const client = new RpcClient(creds);
-    await client.call("runtime.retireEntity", [
-      { id: session.entityId, removeContext: inv.flags["rm"] === true },
-    ]);
+    let entityMissing = false;
+    try {
+      await client.call("runtime.retireEntity", [
+        { id: session.entityId, removeContext: inv.flags["rm"] === true },
+      ]);
+    } catch (error) {
+      // The entity is already gone — still clean up the local session file.
+      if (!isEntityNotFoundError(error)) throw error;
+      entityMissing = true;
+    }
     deleteAgentSession(name);
     printResult(
-      { detached: name, entityId: session.entityId, removedContext: inv.flags["rm"] === true },
-      { json, human: () => console.log(`detached ${name}`) }
+      {
+        detached: name,
+        entityId: session.entityId,
+        removedContext: inv.flags["rm"] === true,
+        entityMissing,
+      },
+      {
+        json,
+        human: () =>
+          console.log(
+            entityMissing ? `detached ${name} (entity already gone)` : `detached ${name}`
+          ),
+      }
     );
     return 0;
   } catch (error) {
@@ -190,18 +227,23 @@ async function sessions(inv: ParsedInvocation): Promise<number> {
   const json = jsonMode(inv.flags["json"] === true);
   try {
     const local = listAgentSessions();
-    const creds = requireCredentials();
-    const client = new RpcClient(creds);
-    const entities = await client.call<EntitySummary[]>("runtime.listEntities", [
-      { kind: "session" },
-    ]);
-    const liveIds = new Set(entities.map((entity) => entity.id));
+    // Unpaired: still list local session files, with unknown liveness.
+    const creds = loadCliCredentials();
+    let liveIds: Set<string> | null = null;
+    if (creds) {
+      const client = new RpcClient(creds);
+      const entities = await client.call<EntitySummary[]>("runtime.listEntities", [
+        { kind: "session" },
+      ]);
+      liveIds = new Set(entities.map((entity) => entity.id));
+    }
     const rows = local.map((session) => ({
       name: session.name,
       entityId: session.entityId,
       contextId: session.contextId,
       serverUrl: session.serverUrl,
-      live: session.serverUrl === creds.url && liveIds.has(session.entityId),
+      live:
+        creds && liveIds ? session.serverUrl === creds.url && liveIds.has(session.entityId) : null,
     }));
     printResult(rows, {
       json,
@@ -211,7 +253,8 @@ async function sessions(inv: ParsedInvocation): Promise<number> {
           return;
         }
         for (const row of rows) {
-          console.log(`${row.name}  ${row.live ? "live" : "stale"}  ${row.entityId}`);
+          const liveness = row.live === null ? "unknown" : row.live ? "live" : "stale";
+          console.log(`${row.name}  ${liveness}  ${row.entityId}`);
         }
       },
     });
@@ -224,9 +267,14 @@ async function sessions(inv: ParsedInvocation): Promise<number> {
 async function call(inv: ParsedInvocation): Promise<number> {
   const json = jsonMode(inv.flags["json"] === true);
   try {
+    const target = typeof inv.flags["target"] === "string" ? inv.flags["target"] : undefined;
     const method = inv.positionals[0];
-    if (!method || !method.includes(".")) {
-      throw new UsageError("usage: natstack agent call SERVICE.METHOD [ARGS_JSON] [--target ID]");
+    // Relay targets (workers/DOs/panels) dispatch plain entity-defined method
+    // names; only direct server calls require the SERVICE.METHOD form.
+    if (!method || (!target && !method.includes("."))) {
+      throw new UsageError(
+        "usage: natstack agent call SERVICE.METHOD [ARGS_JSON] [--target ID] (plain METHOD with --target)"
+      );
     }
     let args: unknown[] = [];
     if (inv.positionals[1] !== undefined) {
@@ -240,7 +288,6 @@ async function call(inv: ParsedInvocation): Promise<number> {
       args = parsed;
     }
     const client = new RpcClient(requireCredentials());
-    const target = typeof inv.flags["target"] === "string" ? inv.flags["target"] : undefined;
     const result = target
       ? await client.callTarget(target, method, args)
       : await client.call(method, args);
@@ -381,7 +428,8 @@ export const agentCommands: CliCommand[] = [
     group: "agent",
     name: "call",
     summary: "Invoke an RPC method (optionally relayed to a runtime target)",
-    usage: "natstack agent call SERVICE.METHOD [ARGS_JSON] [--target ID]",
+    usage:
+      "natstack agent call SERVICE.METHOD [ARGS_JSON] [--target ID] (plain METHOD with --target)",
     flags: [{ name: "target", takesValue: true, description: "Relay target id" }, JSON_FLAG],
     run: call,
   },

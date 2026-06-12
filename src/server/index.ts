@@ -196,6 +196,7 @@ interface CliArgs {
   requireElectronReady?: boolean;
   interactiveStartupApproval?: boolean;
   noVpnDetect?: boolean;
+  headlessHostAutospawn?: boolean;
   help?: boolean;
 }
 
@@ -338,6 +339,7 @@ function parseArgs(argv: string[]): CliArgs {
     "require-electron-ready",
     "interactive-startup-approval",
     "no-vpn-detect",
+    "headless-host-autospawn",
     "help",
   ]);
   /** Flags that don't take a value */
@@ -351,6 +353,7 @@ function parseArgs(argv: string[]): CliArgs {
     "require-electron-ready",
     "interactive-startup-approval",
     "no-vpn-detect",
+    "headless-host-autospawn",
     "help",
   ]);
 
@@ -450,6 +453,9 @@ function parseArgs(argv: string[]): CliArgs {
         break;
       case "require-mobile-ready":
         args.requireMobileReady = true;
+        break;
+      case "headless-host-autospawn":
+        args.headlessHostAutospawn = value !== "off" && value !== "0" && value !== "false";
         break;
       case "require-electron-ready":
         args.requireElectronReady = true;
@@ -2050,6 +2056,10 @@ async function main() {
         return resp?.workspaces ?? [];
       }
     : undefined;
+  // Set once the container constructs the manager (registered before
+  // startAll below); the commonDeps closure resolves it lazily.
+  let headlessHostManager: import("./headlessHostManager.js").HeadlessHostManager | null = null;
+  const getHeadlessHostManager = () => headlessHostManager;
   const commonDeps = {
     container,
     dispatcher,
@@ -2067,6 +2077,11 @@ async function main() {
     tokenManager,
     grantStore: capabilityGrantStore,
     panelRuntimeCoordinator,
+    ensureDefaultHeadlessHost: async () => {
+      const manager = getHeadlessHostManager();
+      if (!manager) return false;
+      return Boolean(await manager.ensureDefaultHost());
+    },
     getGatewayPort: () => gatewayPortResolved,
     eventService,
     requestRelaunch,
@@ -2233,6 +2248,7 @@ async function main() {
       name: string,
       opts?: {
         since?: number;
+        sinceSeq?: number;
         level?: import("./services/workspaceService.js").WorkspaceUnitLogRecord["level"];
         limit?: number;
         errorLimit?: number;
@@ -2243,6 +2259,7 @@ async function main() {
       const entityId = unit?.kind === "worker" ? unit.source : (unit?.name ?? name);
       const history = runtimeDiagnostics.history(entityId, {
         since: opts?.since,
+        sinceSeq: opts?.sinceSeq,
         level: opts?.level,
         limit: opts?.limit,
         errorLimit: opts?.errorLimit,
@@ -2259,6 +2276,7 @@ async function main() {
         message: entry.message,
         fields: entry.fields,
         source: entry.source,
+        seq: entry.seq,
       });
       const fallbackLogs = commonDeps.listWorkspaceUnitLogs(name, opts);
       const logs = history.entries.length > 0 ? history.entries.map(toLog) : fallbackLogs;
@@ -2581,6 +2599,83 @@ async function main() {
           publicUrlReachabilityReason: reachability.ok ? undefined : reachability.reason,
         };
       })();
+
+  // ── Workerd inspector bridge + service (userland profiling of workers/DOs) ──
+  {
+    let workerdInspectorDefinition:
+      | import("@natstack/shared/serviceDefinition").ServiceDefinition
+      | null = null;
+    container.registerManaged({
+      name: "workerdInspector",
+      dependencies: ["workerdManager", "panelHttpServer"],
+      async start(resolve) {
+        const workerdManager = assertPresent(
+          resolve<import("./workerdManager.js").WorkerdManager>("workerdManager")
+        );
+        const { server } = assertPresent(
+          resolve<{ server: import("./panelHttpServer.js").PanelHttpServer }>("panelHttpServer")
+        );
+        const { WorkerdInspectorBridge } = await import("./workerdInspectorBridge.js");
+        const bridge = new WorkerdInspectorBridge({
+          getInspectorUrl: () => workerdManager.getInspectorUrl(),
+          protocol: hostConfig.protocol,
+          externalHost: hostConfig.externalHost,
+          port: gatewayPort,
+        });
+        server.setWorkerdInspectorBridge(bridge);
+        // Inspector sessions cannot survive a workerd restart — close them
+        // eagerly so clients fail fast instead of hanging on a dead socket.
+        workerdManager.onRestartBegin(() => bridge.closeAll());
+        const { createWorkerdInspectorService } =
+          await import("./services/workerdInspectorService.js");
+        workerdInspectorDefinition = createWorkerdInspectorService({
+          approvalQueue,
+          grantStore: capabilityGrantStore,
+          listTargets: () => bridge.listTargets(),
+          getEndpoint: (targetPath, principalId) => bridge.getEndpoint(targetPath, principalId),
+        });
+        return bridge;
+      },
+      async stop(instance: import("./workerdInspectorBridge.js").WorkerdInspectorBridge) {
+        instance?.stop();
+      },
+      getServiceDefinition() {
+        if (!workerdInspectorDefinition) throw new Error("workerdInspector not initialized");
+        return workerdInspectorDefinition;
+      },
+    });
+  }
+
+  // ── Headless host auto-spawn (renderer of last resort) ──
+  {
+    // Default ON for standalone servers (remote serve / direct node) where no
+    // desktop client may ever connect; OFF under the Electron desktop's child
+    // server, which ships its own clients. Env/flag override both ways.
+    const envAutospawn = process.env["NATSTACK_HEADLESS_HOST_AUTOSPAWN"];
+    const autospawnEnabled =
+      args.headlessHostAutospawn ??
+      (envAutospawn !== undefined ? envAutospawn === "1" || envAutospawn === "true" : !ipcChannel);
+    container.registerManaged({
+      name: "headlessHostManager",
+      dependencies: ["cdpBridge"],
+      async start(resolve) {
+        const cdpBridge = assertPresent(resolve<import("./cdpBridge.js").CdpBridge>("cdpBridge"));
+        const { HeadlessHostManager } = await import("./headlessHostManager.js");
+        const manager = new HeadlessHostManager({
+          tokenManager,
+          coordinator: panelRuntimeCoordinator,
+          isHostAvailable: (hostConnectionId) => cdpBridge.isProviderConnected(hostConnectionId),
+          getServerUrl: () => `http://127.0.0.1:${gatewayPort}`,
+          config: { enabled: autospawnEnabled },
+        });
+        headlessHostManager = manager;
+        return manager;
+      },
+      async stop(instance: import("./headlessHostManager.js").HeadlessHostManager) {
+        await instance?.stop();
+      },
+    });
+  }
 
   // ── Start all services in dependency order ──
   await container.startAll();

@@ -164,6 +164,47 @@ describe("natstack agent commands", () => {
     expect(jsonOutput()).toMatchObject({ entityId: "session:work2", contextId: "ctx_2" });
   });
 
+  it("attach rejects pairing options when already paired (exit 2)", async () => {
+    writeCredentials(tmpDir);
+    const { main } = await import("../client.js");
+    await expect(
+      main(["agent", "attach", "work", "--url", "https://other.ts.net", "--code", "ABC", "--json"])
+    ).resolves.toBe(2);
+    await expect(main(["agent", "attach", "work", "--code", "ABC", "--json"])).resolves.toBe(2);
+  });
+
+  it("attach warns on stderr before overwriting a session from another server", async () => {
+    writeCredentials(tmpDir);
+    const dir = path.join(tmpDir, ".config", "natstack", "agent-sessions");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      sessionFile(tmpDir, "work"),
+      JSON.stringify({
+        schemaVersion: 1,
+        name: "work",
+        serverUrl: "https://old.ts.net",
+        entityId: "session:old",
+        contextId: "ctx_old",
+        scopeKey: "work",
+        createdAt: 1,
+      })
+    );
+    stubServer((body) => (body.method === "runtime.createEntity" ? SESSION_HANDLE : []));
+
+    const { main } = await import("../client.js");
+    await expect(main(["agent", "attach", "work", "--json"])).resolves.toBe(0);
+    const warnings = vi.mocked(console.error).mock.calls.map((call) => String(call[0]));
+    expect(warnings.some((line) => line.includes("https://old.ts.net"))).toBe(true);
+    const stored = JSON.parse(fs.readFileSync(sessionFile(tmpDir, "work"), "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(stored).toMatchObject({
+      entityId: "session:work",
+      serverUrl: "https://host.tailnet.ts.net",
+    });
+  });
+
   it("attach without credentials or pairing options is an auth error (exit 3)", async () => {
     const { main } = await import("../client.js");
     await expect(main(["agent", "attach", "work", "--json"])).resolves.toBe(3);
@@ -205,6 +246,33 @@ describe("natstack agent commands", () => {
     expect(fs.existsSync(sessionFile(tmpDir, "work"))).toBe(false);
   });
 
+  it("detach deletes the session file when the entity is already gone", async () => {
+    writeCredentials(tmpDir);
+    const { main } = await import("../client.js");
+    stubServer((body) => (body.method === "runtime.createEntity" ? SESSION_HANDLE : []));
+    await expect(main(["agent", "attach", "work", "--json"])).resolves.toBe(0);
+
+    stubServer(() => {
+      throw new Error("entity session:work not found");
+    });
+    await expect(main(["agent", "detach", "work", "--json"])).resolves.toBe(0);
+    expect(fs.existsSync(sessionFile(tmpDir, "work"))).toBe(false);
+    expect(jsonOutput()).toMatchObject({ detached: "work", entityMissing: true });
+  });
+
+  it("detach keeps the session file when retire fails for other reasons", async () => {
+    writeCredentials(tmpDir);
+    const { main } = await import("../client.js");
+    stubServer((body) => (body.method === "runtime.createEntity" ? SESSION_HANDLE : []));
+    await expect(main(["agent", "attach", "work", "--json"])).resolves.toBe(0);
+
+    stubServer(() => {
+      throw new Error("durable object dispatch failed");
+    });
+    await expect(main(["agent", "detach", "work", "--json"])).resolves.toBe(1);
+    expect(fs.existsSync(sessionFile(tmpDir, "work"))).toBe(true);
+  });
+
   it("sessions reconciles local files against live entities", async () => {
     writeCredentials(tmpDir);
     const { main } = await import("../client.js");
@@ -229,6 +297,27 @@ describe("natstack agent commands", () => {
     ]);
   });
 
+  it("sessions lists local files with unknown liveness when not paired", async () => {
+    const dir = path.join(tmpDir, ".config", "natstack", "agent-sessions");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      sessionFile(tmpDir, "work"),
+      JSON.stringify({
+        schemaVersion: 1,
+        name: "work",
+        serverUrl: "https://host.tailnet.ts.net",
+        entityId: "session:work",
+        contextId: "ctx_1",
+        scopeKey: "work",
+        createdAt: 1,
+      })
+    );
+
+    const { main } = await import("../client.js");
+    await expect(main(["agent", "sessions", "--json"])).resolves.toBe(0);
+    expect(jsonOutput()).toEqual([expect.objectContaining({ name: "work", live: null })]);
+  });
+
   it("call dispatches direct and relayed RPC and prints the result", async () => {
     writeCredentials(tmpDir);
     const { main } = await import("../client.js");
@@ -249,6 +338,21 @@ describe("natstack agent commands", () => {
       targetId: "worker:r:k",
       method: "stats.get",
       args: [{ a: 1 }],
+    });
+  });
+
+  it("call allows plain method names when relaying with --target", async () => {
+    writeCredentials(tmpDir);
+    const { main } = await import("../client.js");
+    const { rpcBodies } = stubServer(() => "pong");
+    await expect(main(["agent", "call", "ping", "--target", "worker:r:k", "--json"])).resolves.toBe(
+      0
+    );
+    expect(rpcBodies[0]).toEqual({
+      type: "call",
+      targetId: "worker:r:k",
+      method: "ping",
+      args: [],
     });
   });
 

@@ -123,6 +123,10 @@ Generated statically from \`src/server/services/\`; a server build may register
 a subset depending on its configuration — \`natstack agent services\` shows what
 is actually live.
 
+Some internal services (e.g. workerd) are not shell-callable and do not appear
+here. Create workers and DOs via \`runtime.createEntity\` (\`kind: "worker"\` /
+\`"do"\`), then dispatch to them with \`--target\` relay calls.
+
 ${defs.map(renderService).join("\n\n")}
 `;
 }

@@ -1,0 +1,15 @@
+{
+  "name": "@workspace/testkit",
+  "version": "0.1.0",
+  "description": "In-system E2E testing, orchestration, supervision and profiling SDK for userland code",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./suites": "./src/suites/index.ts",
+    "./profiling": "./src/profile-core.ts"
+  },
+  "dependencies": {
+    "@workspace/runtime": "workspace:*",
+    "@workspace/cdp-client": "workspace:*"
+  }
+}
