@@ -1,4 +1,7 @@
 import type { RuntimeEntityHandle } from "@natstack/shared/runtime/entitySpec";
+import { metaMethods } from "@natstack/shared/serviceSchemas/meta";
+import { runtimeMethods } from "@natstack/shared/serviceSchemas/runtime";
+import { workspaceMethods } from "@natstack/shared/serviceSchemas/workspace";
 import { JSON_FLAG, type CliCommand, type ParsedInvocation } from "../commandTable.js";
 import { loadCliCredentials, saveCliCredentials, type CliCredentials } from "../credentialStore.js";
 import { completePairing } from "../remoteClient.js";
@@ -20,6 +23,7 @@ import {
   printError,
   printResult,
 } from "../output.js";
+import { typedClient } from "../typedClients.js";
 import { skillCommand } from "./skillCommand.js";
 
 /**
@@ -29,15 +33,6 @@ import { skillCommand } from "./skillCommand.js";
  */
 
 const DEFAULT_SESSION = "default";
-
-interface EntitySummary {
-  id: string;
-  kind: string;
-  source: string;
-  contextId: string;
-  title?: string;
-  createdAt: number;
-}
 
 function requireCredentials(): CliCredentials {
   const creds = loadCliCredentials();
@@ -65,9 +60,8 @@ function isEntityNotFoundError(error: unknown): boolean {
 }
 
 async function sessionEntityExists(client: RpcClient, entityId: string): Promise<boolean> {
-  const entities = await client.call<EntitySummary[]>("runtime.listEntities", [
-    { kind: "session" },
-  ]);
+  const runtime = typedClient("runtime", runtimeMethods, client);
+  const entities = await runtime.listEntities({ kind: "session" });
   return entities.some((entity) => entity.id === entityId);
 }
 
@@ -123,9 +117,15 @@ async function attach(inv: ParsedInvocation): Promise<number> {
       }
     }
 
-    const handle = await client.call<RuntimeEntityHandle>("runtime.createEntity", [
-      { kind: "session", source: "agent-cli", key: name, title: name },
-    ]);
+    const runtime = typedClient("runtime", runtimeMethods, client);
+    // createEntity has no `returns` schema yet, so the typed client yields
+    // `unknown`; the handle shape comes from the shared entity-spec types.
+    const handle = (await runtime.createEntity({
+      kind: "session",
+      source: "agent-cli",
+      key: name,
+      title: name,
+    })) as RuntimeEntityHandle;
     const session: AgentSession = {
       schemaVersion: 1,
       name,
@@ -191,11 +191,10 @@ async function detach(inv: ParsedInvocation): Promise<number> {
     if (!session) throw new CliError(`no session named ${name}`);
     const creds = requireCredentials();
     const client = new RpcClient(creds);
+    const runtime = typedClient("runtime", runtimeMethods, client);
     let entityMissing = false;
     try {
-      await client.call("runtime.retireEntity", [
-        { id: session.entityId, removeContext: inv.flags["rm"] === true },
-      ]);
+      await runtime.retireEntity({ id: session.entityId, removeContext: inv.flags["rm"] === true });
     } catch (error) {
       // The entity is already gone — still clean up the local session file.
       if (!isEntityNotFoundError(error)) throw error;
@@ -232,9 +231,8 @@ async function sessions(inv: ParsedInvocation): Promise<number> {
     let liveIds: Set<string> | null = null;
     if (creds) {
       const client = new RpcClient(creds);
-      const entities = await client.call<EntitySummary[]>("runtime.listEntities", [
-        { kind: "session" },
-      ]);
+      const runtime = typedClient("runtime", runtimeMethods, client);
+      const entities = await runtime.listEntities({ kind: "session" });
       liveIds = new Set(entities.map((entity) => entity.id));
     }
     const rows = local.map((session) => ({
@@ -301,17 +299,14 @@ async function call(inv: ParsedInvocation): Promise<number> {
 async function services(inv: ParsedInvocation): Promise<number> {
   const json = jsonMode(inv.flags["json"] === true);
   try {
-    const client = new RpcClient(requireCredentials());
+    const meta = typedClient("meta", metaMethods, new RpcClient(requireCredentials()));
     const name = inv.positionals[0];
     if (name) {
-      const def = await client.call("meta.describeService", [name]);
+      const def = await meta.describeService(name);
       printResult(def, { json });
       return 0;
     }
-    const defs = await client.call<Array<{ name: string; description?: string }>>(
-      "meta.listServices",
-      []
-    );
+    const defs = await meta.listServices();
     printResult(defs, {
       json,
       human: () => {
@@ -329,17 +324,18 @@ async function services(inv: ParsedInvocation): Promise<number> {
 async function skills(inv: ParsedInvocation): Promise<number> {
   const json = jsonMode(inv.flags["json"] === true);
   try {
-    const client = new RpcClient(requireCredentials());
+    const workspace = typedClient(
+      "workspace",
+      workspaceMethods,
+      new RpcClient(requireCredentials())
+    );
     const name = inv.positionals[0];
     if (name) {
-      const content = await client.call<string>("workspace.readSkill", [name]);
+      const content = await workspace.readSkill(name);
       printResult(content, { json });
       return 0;
     }
-    const entries = await client.call<Array<{ name: string; description: string }>>(
-      "workspace.listSkills",
-      []
-    );
+    const entries = await workspace.listSkills();
     printResult(entries, {
       json,
       human: () => {
@@ -361,13 +357,23 @@ async function logs(inv: ParsedInvocation): Promise<number> {
     if (!unit) {
       throw new UsageError("usage: natstack agent logs UNIT [--since MS] [--level L] [--limit N]");
     }
-    const options: { since?: number; level?: string; limit?: number } = {};
+    const options: {
+      since?: number;
+      level?: "debug" | "info" | "warn" | "error";
+      limit?: number;
+    } = {};
     if (typeof inv.flags["since"] === "string") {
       const since = Number(inv.flags["since"]);
       if (!Number.isFinite(since)) throw new UsageError("--since must be a number (epoch ms)");
       options.since = since;
     }
-    if (typeof inv.flags["level"] === "string") options.level = inv.flags["level"];
+    if (typeof inv.flags["level"] === "string") {
+      const level = inv.flags["level"];
+      if (level !== "debug" && level !== "info" && level !== "warn" && level !== "error") {
+        throw new UsageError("--level must be one of: debug, info, warn, error");
+      }
+      options.level = level;
+    }
     if (typeof inv.flags["limit"] === "string") {
       const limit = Number(inv.flags["limit"]);
       if (!Number.isInteger(limit) || limit <= 0) {
@@ -375,9 +381,79 @@ async function logs(inv: ParsedInvocation): Promise<number> {
       }
       options.limit = limit;
     }
-    const client = new RpcClient(requireCredentials());
-    const records = await client.call("workspace.units.logs", [unit, options]);
+    const workspace = typedClient(
+      "workspace",
+      workspaceMethods,
+      new RpcClient(requireCredentials())
+    );
+    const records = await workspace.units.logs(unit, options);
     printResult(records, { json });
+    return 0;
+  } catch (error) {
+    return printError(error, { json });
+  }
+}
+
+async function diag(inv: ParsedInvocation): Promise<number> {
+  const json = jsonMode(inv.flags["json"] === true);
+  try {
+    const unit = inv.positionals[0];
+    if (!unit) {
+      throw new UsageError("usage: natstack agent diag UNIT [--since MS] [--limit N]");
+    }
+    const options: { since?: number; limit?: number } = {};
+    if (typeof inv.flags["since"] === "string") {
+      const since = Number(inv.flags["since"]);
+      if (!Number.isFinite(since)) throw new UsageError("--since must be a number (epoch ms)");
+      options.since = since;
+    }
+    if (typeof inv.flags["limit"] === "string") {
+      const limit = Number(inv.flags["limit"]);
+      if (!Number.isInteger(limit) || limit <= 0) {
+        throw new UsageError("--limit must be a positive integer");
+      }
+      options.limit = limit;
+    }
+    const workspace = typedClient(
+      "workspace",
+      workspaceMethods,
+      new RpcClient(requireCredentials())
+    );
+    const result = await workspace.units.diagnostics(unit, options);
+    if (json) {
+      printResult(result, { json });
+      return 0;
+    }
+    const ts = (ms: number) => new Date(ms).toISOString();
+    if (result.unit) {
+      console.log(`${result.unit.name} (${result.unit.kind}) — status: ${result.unit.status}`);
+      if (result.unit.lastError) console.log(`last error: ${result.unit.lastError}`);
+    } else {
+      console.log(`${unit} — unit not found in workspace (showing raw diagnostics)`);
+    }
+    const builds = result.builds;
+    if (builds.length > 0) {
+      console.log("\nrecent builds:");
+      for (const event of builds.slice(-10)) {
+        const suffix = event.type === "build-error" ? ` — ${event.error}` : "";
+        console.log(`  ${event.timestamp}  ${event.type}${suffix}`);
+      }
+    }
+    if (result.errors.length > 0) {
+      console.log("\nrecent errors:");
+      for (const entry of result.errors.slice(-20)) {
+        console.log(`  ${ts(entry.timestamp)}  ${entry.message}`);
+      }
+    }
+    if (result.logs.length > 0) {
+      console.log("\nrecent logs:");
+      for (const entry of result.logs.slice(-20)) {
+        console.log(`  ${ts(entry.timestamp)}  [${entry.level}] ${entry.message}`);
+      }
+    }
+    if (builds.length === 0 && result.errors.length === 0 && result.logs.length === 0) {
+      console.log("no diagnostics recorded for this unit");
+    }
     return 0;
   } catch (error) {
     return printError(error, { json });
@@ -461,6 +537,18 @@ export const agentCommands: CliCommand[] = [
       JSON_FLAG,
     ],
     run: logs,
+  },
+  {
+    group: "agent",
+    name: "diag",
+    summary: "Unit health: status, last error, recent build events, error/log tail",
+    usage: "natstack agent diag UNIT [--since MS] [--limit N]",
+    flags: [
+      { name: "since", takesValue: true, description: "Epoch ms lower bound" },
+      { name: "limit", takesValue: true, description: "Max log records (<=1000)" },
+      JSON_FLAG,
+    ],
+    run: diag,
   },
   skillCommand,
 ];

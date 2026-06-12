@@ -19,6 +19,9 @@ import {
   deserializeScope,
   type SerializedScope,
 } from "@workspace/eval";
+import { buildMethods } from "@natstack/shared/serviceSchemas/build";
+import { metaMethods } from "@natstack/shared/serviceSchemas/meta";
+import { typedClient } from "../typedClients.js";
 
 export interface EvalHandshake {
   code: string;
@@ -170,6 +173,7 @@ function createScopeProxy(backing: Map<string, unknown>): Record<string, unknown
 
 /** Same import loader as the in-app sandbox: server-side build over RPC. */
 function createLoadImport(rpc: RunnerRpc) {
+  const build = typedClient("build", buildMethods, rpc);
   return async (
     specifier: string,
     ref: string | undefined,
@@ -177,18 +181,13 @@ function createLoadImport(rpc: RunnerRpc) {
   ): Promise<string> => {
     if (ref?.startsWith("npm:")) {
       const version = ref.slice(4) || "latest";
-      const result = (await rpc.call("build.getBuildNpm", [specifier, version, externals])) as {
-        bundle: string;
-      };
+      const result = await build.getBuildNpm(specifier, version, externals);
       return result.bundle;
     }
-    const result = (await rpc.call("build.getBuild", [
-      specifier,
-      ref,
-      { library: true, externals },
-    ])) as {
-      bundle: string;
-    };
+    const result = await build.getBuild(specifier, ref, { library: true, externals });
+    if (!("bundle" in result)) {
+      throw new Error(`Build service returned a full build for library import: ${specifier}`);
+    }
     return result.bundle;
   };
 }
@@ -268,11 +267,13 @@ export async function runEval(
     serverUrl: handshake.serverUrl,
   };
 
+  const meta = typedClient("meta", metaMethods, rpc);
+  const build = typedClient("build", buildMethods, rpc);
   const help = async (serviceName?: string): Promise<unknown> => {
-    if (serviceName) return await rpc.call("meta.describeService", [serviceName]);
+    if (serviceName) return await meta.describeService(serviceName);
     const [services, skillPackages] = await Promise.all([
-      rpc.call("meta.listServices", []),
-      rpc.call("build.listSkills", []).catch((err: unknown) => ({
+      meta.listServices(),
+      build.listSkills().catch((err: unknown) => ({
         error: err instanceof Error ? err.message : String(err),
       })),
     ]);

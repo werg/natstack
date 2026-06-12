@@ -11,6 +11,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
+import type { z } from "zod";
+import { scopeEntrySchema, scopeMethods } from "@natstack/shared/serviceSchemas/scope";
 import { JSON_FLAG, type CliCommand, type ParsedInvocation } from "../commandTable.js";
 import { loadCliCredentials } from "../credentialStore.js";
 import {
@@ -21,22 +23,15 @@ import {
   TimeoutError,
   UsageError,
 } from "../output.js";
+import { typedClient } from "../typedClients.js";
 import { resolveSessionScope, SESSION_FLAG } from "./sessionContext.js";
 import type { EvalHandshake, ResultEvent, RunnerEvent } from "./evalRunner.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const SCOPE_PANEL_ID = "repl";
 
-interface ScopeEntry {
-  id: string;
-  channelId: string;
-  panelId: string;
-  data: string;
-  serializedKeys: string[];
-  droppedPaths: Array<{ path: string; reason: string }>;
-  partialKeys: string[];
-  createdAt: number;
-}
+/** Wire shape of a scope entry — derived from the shared scope service schema. */
+type ScopeEntry = z.infer<typeof scopeEntrySchema>;
 
 /** Scope channel for a session: one REPL scope per attached agent session. */
 function scopeChannelId(scopeKey: string): string {
@@ -256,11 +251,13 @@ async function evalRun(inv: ParsedInvocation): Promise<number> {
     const shellToken = await client.getShellToken();
     const workspaceId = client.lastRefresh?.workspaceId;
 
+    const scope = typedClient("scope", scopeMethods, client);
     const channelId = scopeChannelId(session.scopeKey);
     const freshScope = inv.flags["fresh-scope"] === true;
+    // loadCurrent has no `returns` schema yet, so the typed client yields `unknown`.
     const previousEntry = freshScope
       ? null
-      : await client.call<ScopeEntry | null>("scope.loadCurrent", [channelId, SCOPE_PANEL_ID]);
+      : ((await scope.loadCurrent(channelId, SCOPE_PANEL_ID)) as ScopeEntry | null);
 
     const handshake: EvalHandshake = {
       code,
@@ -315,18 +312,16 @@ async function evalRun(inv: ParsedInvocation): Promise<number> {
     let scopeError: string | undefined;
     if (finalScope && !freshScope) {
       try {
-        await client.call("scope.upsert", [
-          {
-            id: previousEntry?.id ?? randomUUID(),
-            channelId,
-            panelId: SCOPE_PANEL_ID,
-            data: finalScope.json,
-            serializedKeys: finalScope.serializedKeys,
-            droppedPaths: finalScope.droppedPaths,
-            partialKeys: finalScope.partialKeys,
-            createdAt: previousEntry?.createdAt ?? Date.now(),
-          } satisfies ScopeEntry,
-        ]);
+        await scope.upsert({
+          id: previousEntry?.id ?? randomUUID(),
+          channelId,
+          panelId: SCOPE_PANEL_ID,
+          data: finalScope.json,
+          serializedKeys: finalScope.serializedKeys,
+          droppedPaths: finalScope.droppedPaths,
+          partialKeys: finalScope.partialKeys,
+          createdAt: previousEntry?.createdAt ?? Date.now(),
+        } satisfies ScopeEntry);
         scopeSaved = true;
       } catch (error) {
         scopeError = error instanceof Error ? error.message : String(error);
@@ -377,20 +372,19 @@ async function evalReplReset(inv: ParsedInvocation): Promise<number> {
   const json = jsonMode(inv.flags["json"] === true);
   try {
     const { client, session } = resolveSessionScope(inv);
+    const scope = typedClient("scope", scopeMethods, client);
     const channelId = scopeChannelId(session.scopeKey);
     const scopeId = randomUUID();
-    await client.call("scope.upsert", [
-      {
-        id: scopeId,
-        channelId,
-        panelId: SCOPE_PANEL_ID,
-        data: "{}",
-        serializedKeys: [],
-        droppedPaths: [],
-        partialKeys: [],
-        createdAt: Date.now(),
-      } satisfies ScopeEntry,
-    ]);
+    await scope.upsert({
+      id: scopeId,
+      channelId,
+      panelId: SCOPE_PANEL_ID,
+      data: "{}",
+      serializedKeys: [],
+      droppedPaths: [],
+      partialKeys: [],
+      createdAt: Date.now(),
+    } satisfies ScopeEntry);
     printResult(
       { reset: true, scopeId },
       { json, human: () => console.log(`scope reset for session ${session.name}`) }

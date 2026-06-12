@@ -222,6 +222,16 @@ Allowed callers: `shell`, `server`, `panel`, `worker`, `do`
 | `panelCdp.stop` |  |
 | `panelCdp.consoleHistory` |  |
 
+## `panelLog`
+
+Forward panel console errors and lifecycle events into unit diagnostics
+
+Allowed callers: `shell`, `server`
+
+| Method | Description |
+|--------|-------------|
+| `panelLog.append` |  |
+
 ## `panelRuntime`
 
 Panel runtime lease coordination

@@ -401,6 +401,9 @@ export async function main(argv: string[]): Promise<number> {
     printGroupHelp(group);
     return 2;
   }
+  if (command.passthrough && wantsScriptHelp(subArgs)) {
+    return await command.run({ positionals: subArgs, flags: {} }, subArgs);
+  }
   if (wantsHelp(subArgs)) {
     console.log(renderCommandHelp(command));
     return 0;
@@ -427,6 +430,15 @@ function wantsHelp(args: string[]): boolean {
   for (const arg of args) {
     if (arg === "--") return false;
     if (arg === "--help" || arg === "-h") return true;
+  }
+  return false;
+}
+
+/** Whether argv asks a passthrough script for its own richer help. */
+function wantsScriptHelp(args: string[]): boolean {
+  for (const arg of args) {
+    if (arg === "--") return false;
+    if (arg === "--help") return true;
   }
   return false;
 }

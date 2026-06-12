@@ -6,7 +6,9 @@ import {
   parseConnectServerUrl,
 } from "@natstack/shared/connect";
 import { AuthError } from "./output.js";
+import { authMethods } from "@natstack/shared/serviceSchemas/auth";
 import { RpcClient, type DeviceCredential } from "./rpcClient.js";
+import { typedClient } from "./typedClients.js";
 
 export type { DeviceCredential } from "./rpcClient.js";
 export { refreshShell, type RefreshShellResponse } from "./rpcClient.js";
@@ -67,10 +69,11 @@ export async function createPairingInvite(
   creds: Pick<DeviceCredential, "url" | "deviceId" | "refreshToken">,
   options: { ttlMs?: number } = {}
 ): Promise<PairingInvite> {
-  const client = new RpcClient(creds);
-  const result = (await client.call("auth.createPairingInvite", [
-    options.ttlMs ? { ttlMs: options.ttlMs } : {},
-  ])) as Record<string, unknown> | undefined;
+  const auth = typedClient("auth", authMethods, new RpcClient(creds));
+  // createPairingInvite has no `returns` schema yet — validate the shape here.
+  const result = (await auth.createPairingInvite(options.ttlMs ? { ttlMs: options.ttlMs } : {})) as
+    | Record<string, unknown>
+    | undefined;
   if (!result || typeof result["code"] !== "string" || typeof result["connectUrl"] !== "string") {
     throw new Error("invite failed: server returned an unexpected response");
   }

@@ -1,3 +1,4 @@
+import { gitMethods } from "@natstack/shared/serviceSchemas/git";
 import {
   JSON_FLAG,
   type CliCommand,
@@ -5,6 +6,7 @@ import {
   type ParsedInvocation,
 } from "../commandTable.js";
 import { jsonMode, printError, printResult, UsageError } from "../output.js";
+import { typedClient } from "../typedClients.js";
 import { resolveSessionScope, SESSION_FLAG } from "./sessionContext.js";
 
 /**
@@ -19,18 +21,6 @@ const REPO_FLAG: FlagSpec = {
   description: "Workspace repo path inside the context (e.g. panels/notes)",
 };
 
-interface ContextRepoStatus {
-  branch: string | null;
-  commit: string | null;
-  dirty: boolean;
-  files: Array<{
-    path: string;
-    status: string;
-    staged: boolean;
-    unstaged: boolean;
-  }>;
-}
-
 function requireRepo(inv: ParsedInvocation): string {
   const repo = typeof inv.flags["repo"] === "string" ? inv.flags["repo"] : inv.positionals[0];
   if (!repo) {
@@ -44,7 +34,8 @@ async function status(inv: ParsedInvocation): Promise<number> {
   try {
     const repo = requireRepo(inv);
     const { client, contextId } = resolveSessionScope(inv);
-    const result = await client.call<ContextRepoStatus>("git.contextStatus", [contextId, repo]);
+    const git = typedClient("git", gitMethods, client);
+    const result = await git.contextStatus(contextId, repo);
     printResult(result, {
       json,
       human: () => {
@@ -71,11 +62,10 @@ async function diff(inv: ParsedInvocation): Promise<number> {
   try {
     const repo = requireRepo(inv);
     const { client, contextId } = resolveSessionScope(inv);
-    const result = await client.call<string>("git.contextDiff", [
-      contextId,
-      repo,
-      { staged: inv.flags["staged"] === true },
-    ]);
+    const git = typedClient("git", gitMethods, client);
+    const result = await git.contextDiff(contextId, repo, {
+      staged: inv.flags["staged"] === true,
+    });
     if (json) printResult(result, { json });
     else process.stdout.write(result);
     return 0;
@@ -94,7 +84,7 @@ async function add(inv: ParsedInvocation): Promise<number> {
       );
     }
     const { client, contextId } = resolveSessionScope(inv);
-    await client.call("git.contextAddAll", [contextId, repo]);
+    await typedClient("git", gitMethods, client).contextAddAll(contextId, repo);
     printResult(
       { staged: repo },
       { json, human: () => console.log(`staged all changes in ${repo}`) }
@@ -114,11 +104,8 @@ async function commit(inv: ParsedInvocation): Promise<number> {
     }
     const repo = requireRepo(inv);
     const { client, contextId } = resolveSessionScope(inv);
-    const result = await client.call<{ commitId: string; summary: string }>("git.contextCommit", [
-      contextId,
-      repo,
-      message,
-    ]);
+    const git = typedClient("git", gitMethods, client);
+    const result = await git.contextCommit(contextId, repo, message);
     printResult(result, {
       json,
       human: () => console.log(`${result.commitId.slice(0, 12)} ${result.summary}`),

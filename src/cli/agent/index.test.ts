@@ -393,6 +393,30 @@ describe("natstack agent commands", () => {
     expect(rpcBodies[1]).toEqual({ method: "meta.describeService", args: ["runtime"] });
   });
 
+  it("diag hits workspace.units.diagnostics and prints JSON", async () => {
+    writeCredentials(tmpDir);
+    const { main } = await import("../client.js");
+    const diagnostics = {
+      unit: { name: "foo", kind: "worker", status: "error", lastError: "boom" },
+      logs: [],
+      errors: [],
+      builds: [],
+    };
+    const { rpcBodies } = stubServer((body) => {
+      if (body.method === "workspace.units.diagnostics") return diagnostics;
+      throw new Error(`unexpected method ${body.method}`);
+    });
+
+    await expect(main(["agent", "diag", "workers/foo", "--limit", "10", "--json"])).resolves.toBe(
+      0
+    );
+
+    expect(rpcBodies).toEqual([
+      { method: "workspace.units.diagnostics", args: ["workers/foo", { limit: 10 }] },
+    ]);
+    expect(jsonOutput()).toEqual(diagnostics);
+  });
+
   it("skills and logs hit the workspace service with the right shapes", async () => {
     writeCredentials(tmpDir);
     const { main } = await import("../client.js");

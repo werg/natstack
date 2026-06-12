@@ -1,20 +1,18 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import {
+  fsMethods,
+  type FsBinaryEnvelope,
+  type FsDirentWire,
+  type FsGrepResult,
+} from "@natstack/shared/serviceSchemas/fs";
 import { JSON_FLAG, type CliCommand, type ParsedInvocation } from "../commandTable.js";
 import { jsonMode, printError, printResult, UsageError } from "../output.js";
 import { resolveSessionScope, SESSION_FLAG } from "./sessionContext.js";
-
-/**
- * `natstack fs ...` — filesystem operations inside an agent session's context
- * folder, via the server `fs` service. Shell callers pass the contextId as
- * the explicit first argument of every fs.* call (fsService convention).
- */
+import { typedClient } from "../typedClients.js";
 
 /** JSON-RPC binary envelope used by fs.readFile/writeFile (see fsService.ts). */
-interface BinaryEnvelope {
-  __bin: true;
-  data: string; // base64
-}
+type BinaryEnvelope = FsBinaryEnvelope;
 
 function isBinaryEnvelope(value: unknown): value is BinaryEnvelope {
   return (
@@ -29,26 +27,8 @@ function encodeBinary(buf: Buffer): BinaryEnvelope {
   return { __bin: true, data: buf.toString("base64") };
 }
 
-interface DirentEntry {
-  name: string;
-  _isFile: boolean;
-  _isDirectory: boolean;
-  _isSymbolicLink: boolean;
-}
-
-interface GrepMatch {
-  file: string;
-  lineNumber: number;
-  line: string;
-  before: string[];
-  after: string[];
-}
-
-interface GrepResult {
-  matches: GrepMatch[];
-  matchCount: number;
-  truncated: boolean;
-}
+type DirentEntry = FsDirentWire;
+type GrepResult = FsGrepResult;
 
 function requirePositional(inv: ParsedInvocation, index: number, label: string): string {
   const value = inv.positionals[index];
@@ -77,11 +57,11 @@ async function ls(inv: ParsedInvocation): Promise<number> {
   try {
     const target = inv.positionals[0] ?? "/";
     const { client, contextId } = resolveSessionScope(inv);
-    const entries = await client.call<DirentEntry[]>("fs.readdir", [
-      contextId,
-      target,
-      { withFileTypes: true, recursive: inv.flags["recursive"] === true },
-    ]);
+    const fsClient = typedClient("fs", fsMethods, client);
+    const entries = (await fsClient.readdir(contextId, target, {
+      withFileTypes: true,
+      recursive: inv.flags["recursive"] === true,
+    })) as DirentEntry[];
     const rows = entries.map((entry) => ({
       name: entry.name,
       type: entry._isDirectory ? "dir" : entry._isSymbolicLink ? "symlink" : "file",
@@ -103,7 +83,8 @@ async function read(inv: ParsedInvocation): Promise<number> {
   try {
     const target = requirePositional(inv, 0, "PATH");
     const { client, contextId } = resolveSessionScope(inv);
-    const result = await client.call<unknown>("fs.readFile", [contextId, target]);
+    const fsClient = typedClient("fs", fsMethods, client);
+    const result = await fsClient.readFile(contextId, target);
     if (!isBinaryEnvelope(result)) {
       throw new Error("unexpected fs.readFile response (missing binary envelope)");
     }
@@ -154,18 +135,19 @@ async function write(inv: ParsedInvocation): Promise<number> {
           ? Buffer.from(content, "utf8")
           : await readStdin();
     const { client, contextId } = resolveSessionScope(inv);
+    const fsClient = typedClient("fs", fsMethods, client);
     if (inv.flags["parents"] === true) {
       const dir = path.posix.dirname(target);
       if (dir && dir !== "/" && dir !== ".") {
-        await client.call("fs.mkdir", [contextId, dir, { recursive: true }]);
+        await fsClient.mkdir(contextId, dir, { recursive: true });
       }
     }
     const append = inv.flags["append"] === true;
-    await client.call(append ? "fs.appendFile" : "fs.writeFile", [
-      contextId,
-      target,
-      encodeBinary(data),
-    ]);
+    if (append) {
+      await fsClient.appendFile(contextId, target, encodeBinary(data));
+    } else {
+      await fsClient.writeFile(contextId, target, encodeBinary(data));
+    }
     printResult(
       { path: target, bytes: data.length, appended: append },
       {
@@ -185,7 +167,8 @@ async function rm(inv: ParsedInvocation): Promise<number> {
   try {
     const target = requirePositional(inv, 0, "PATH");
     const { client, contextId } = resolveSessionScope(inv);
-    await client.call("fs.rm", [contextId, target, { recursive: inv.flags["recursive"] === true }]);
+    const fsClient = typedClient("fs", fsMethods, client);
+    await fsClient.rm(contextId, target, { recursive: inv.flags["recursive"] === true });
     printResult({ removed: target }, { json, human: () => console.log(`removed ${target}`) });
     return 0;
   } catch (error) {
@@ -199,7 +182,8 @@ async function mv(inv: ParsedInvocation): Promise<number> {
     const src = requirePositional(inv, 0, "SRC");
     const dest = requirePositional(inv, 1, "DEST");
     const { client, contextId } = resolveSessionScope(inv);
-    await client.call("fs.rename", [contextId, src, dest]);
+    const fsClient = typedClient("fs", fsMethods, client);
+    await fsClient.rename(contextId, src, dest);
     printResult({ from: src, to: dest }, { json, human: () => console.log(`${src} -> ${dest}`) });
     return 0;
   } catch (error) {
@@ -213,7 +197,8 @@ async function cp(inv: ParsedInvocation): Promise<number> {
     const src = requirePositional(inv, 0, "SRC");
     const dest = requirePositional(inv, 1, "DEST");
     const { client, contextId } = resolveSessionScope(inv);
-    await client.call("fs.copyFile", [contextId, src, dest]);
+    const fsClient = typedClient("fs", fsMethods, client);
+    await fsClient.copyFile(contextId, src, dest);
     printResult({ from: src, to: dest }, { json, human: () => console.log(`${src} -> ${dest}`) });
     return 0;
   } catch (error) {
@@ -226,11 +211,8 @@ async function mkdir(inv: ParsedInvocation): Promise<number> {
   try {
     const target = requirePositional(inv, 0, "PATH");
     const { client, contextId } = resolveSessionScope(inv);
-    await client.call("fs.mkdir", [
-      contextId,
-      target,
-      { recursive: inv.flags["parents"] === true },
-    ]);
+    const fsClient = typedClient("fs", fsMethods, client);
+    await fsClient.mkdir(contextId, target, { recursive: inv.flags["parents"] === true });
     printResult({ created: target }, { json, human: () => console.log(`created ${target}`) });
     return 0;
   } catch (error) {
@@ -243,7 +225,8 @@ async function stat(inv: ParsedInvocation): Promise<number> {
   try {
     const target = requirePositional(inv, 0, "PATH");
     const { client, contextId } = resolveSessionScope(inv);
-    const result = await client.call("fs.stat", [contextId, target]);
+    const fsClient = typedClient("fs", fsMethods, client);
+    const result = await fsClient.stat(contextId, target);
     printResult(result, { json });
     return 0;
   } catch (error) {
@@ -286,7 +269,8 @@ async function grep(inv: ParsedInvocation): Promise<number> {
       options.maxMatches = positiveInt(inv.flags["max"], "--max");
     }
     const { client, contextId } = resolveSessionScope(inv);
-    const result = await client.call<GrepResult>("fs.grep", [contextId, pattern, options]);
+    const fsClient = typedClient("fs", fsMethods, client);
+    const result = await fsClient.grep(contextId, pattern, options);
     printResult(result, {
       json,
       human: () => {
@@ -306,7 +290,8 @@ async function glob(inv: ParsedInvocation): Promise<number> {
     const options: { path?: string } = {};
     if (inv.positionals[1]) options.path = inv.positionals[1];
     const { client, contextId } = resolveSessionScope(inv);
-    const files = await client.call<string[]>("fs.glob", [contextId, pattern, options]);
+    const fsClient = typedClient("fs", fsMethods, client);
+    const files = await fsClient.glob(contextId, pattern, options);
     printResult(files, {
       json,
       human: () => {
