@@ -53,26 +53,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
 }
 
-const UNIT_LOG_LEVEL_RANK = { debug: 10, info: 20, warn: 30, error: 40 } as const;
-
-function filterUnitLogs(
-  records: import("./services/workspaceService.js").WorkspaceUnitLogRecord[],
-  opts?: {
-    since?: number;
-    level?: import("./services/workspaceService.js").WorkspaceUnitLogRecord["level"];
-    limit?: number;
-  }
-): import("./services/workspaceService.js").WorkspaceUnitLogRecord[] {
-  const minLevel = opts?.level ? UNIT_LOG_LEVEL_RANK[opts.level] : null;
-  const filtered = records.filter(
-    (record) =>
-      (opts?.since === undefined || record.timestamp >= opts.since) &&
-      (minLevel === null || UNIT_LOG_LEVEL_RANK[record.level] >= minLevel)
-  );
-  const limit = opts?.limit && opts.limit > 0 ? Math.min(Math.floor(opts.limit), 1000) : 200;
-  return filtered.slice(-limit);
-}
-
 function detectServerIpcChannel(): IpcChannel | null {
   // Electron utilityProcess: process.parentPort exists
   const parentPort = (process as NodeJS.Process & { parentPort?: ElectronParentPort }).parentPort;
@@ -1102,36 +1082,57 @@ async function main() {
     ["gitServer"]
   );
   const runtimeDiagnostics = new RuntimeDiagnosticsStore({ statePath });
-  // Per-worker-source ring buffer feeding `workspace.units.logs`. Same shape
-  // as the extension log store: capped at 1000 records per source, FIFO drop.
-  const workerUnitLogs = new Map<
-    string,
-    import("./services/workspaceService.js").WorkspaceUnitLogRecord[]
-  >();
-  const workerUnitLogsAppend = (
-    source: string,
-    record: import("./services/workspaceService.js").WorkspaceUnitLogRecord
-  ): void => {
-    const existing = workerUnitLogs.get(source) ?? [];
-    existing.push(record);
-    if (existing.length > 1000) existing.splice(0, existing.length - 1000);
-    workerUnitLogs.set(source, existing);
-  };
+  // Bridge push-triggered build failures (and completions) into the per-unit
+  // diagnostics store so `workspace.units.diagnostics` surfaces build errors
+  // alongside runtime logs. Keyed the same way unitDiagnostics resolves
+  // entities: workers by source path, everything else by package name.
+  container.registerManaged({
+    name: "buildDiagnosticsBridge",
+    dependencies: ["buildSystem"],
+    start: async (resolve) => {
+      const buildSystem = assertPresent(
+        resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")
+      );
+      const kindMap: Record<string, import("./runtimeDiagnosticsStore.js").RuntimeDiagnosticKind> =
+        {
+          panel: "panel",
+          worker: "worker",
+          extension: "extension",
+          app: "app",
+        };
+      return buildSystem.onBuildEvent((event) => {
+        if (event.type === "build-started") return;
+        const node = buildSystem.getGraph().tryGet(event.name);
+        const kind = kindMap[node?.kind ?? ""] ?? "worker";
+        const entityId = node?.kind === "worker" ? (node.relativePath ?? event.name) : event.name;
+        runtimeDiagnostics.record({
+          workspaceId: workspace.config.id,
+          entityId,
+          kind,
+          level: event.type === "build-error" ? "error" : "info",
+          message:
+            event.type === "build-error"
+              ? `Build failed: ${event.error ?? "unknown error"}`
+              : `Build complete (${event.buildKey ?? "no key"})`,
+          source: "lifecycle",
+          fields: {
+            buildEvent: event.type,
+            ...(event.buildKey ? { buildKey: event.buildKey } : {}),
+            ...(event.trigger?.repo ? { repo: event.trigger.repo } : {}),
+          },
+        });
+      });
+    },
+    stop: async (unsubscribe: () => void) => {
+      unsubscribe?.();
+    },
+  });
   {
     const { createWorkerLogService } = await import("./services/workerLogService.js");
     container.registerRpc(
       createWorkerLogService({
         onLog: (entry) => {
           if (!entry.source) return;
-          const record: import("./services/workspaceService.js").WorkspaceUnitLogRecord = {
-            workspaceId: workspace.config.id,
-            unitName: entry.source,
-            kind: "worker",
-            timestamp: entry.timestamp,
-            level: entry.level,
-            message: entry.message,
-            source: "console",
-          };
           runtimeDiagnostics.record({
             workspaceId: workspace.config.id,
             entityId: entry.callerId,
@@ -1152,8 +1153,58 @@ async function main() {
             source: "console",
             fields: { callerId: entry.callerId },
           });
-          workerUnitLogsAppend(entry.source, record);
-          eventService.emit("workspace:unit-log", record);
+          eventService.emit("workspace:unit-log", {
+            workspaceId: workspace.config.id,
+            unitName: entry.source,
+            kind: "worker",
+            timestamp: entry.timestamp,
+            level: entry.level,
+            message: entry.message,
+            source: "console",
+          } satisfies import("./services/workspaceService.js").WorkspaceUnitLogRecord);
+        },
+      })
+    );
+  }
+  {
+    const { createPanelLogService } = await import("./services/panelLogService.js");
+    container.registerRpc(
+      createPanelLogService({
+        onRecords: (records) => {
+          const buildSystem = container.has("buildSystem")
+            ? container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem")
+            : null;
+          for (const entry of records) {
+            // Diagnostics for panels are keyed by package name (matching
+            // unitDiagnostics' entity resolution); fall back to the source
+            // path when the unit isn't in the graph.
+            const node = buildSystem
+              ?.getGraph()
+              .allNodes()
+              .find((candidate) => candidate.relativePath === entry.unitSource);
+            const entityId = node?.name ?? entry.unitSource;
+            runtimeDiagnostics.record({
+              workspaceId: workspace.config.id,
+              entityId,
+              kind: "panel",
+              timestamp: entry.timestamp,
+              level: entry.level,
+              message: entry.message,
+              source: entry.source,
+              fields: { panelId: entry.panelId, ...entry.fields },
+              url: entry.url,
+              line: entry.line,
+            });
+            eventService.emit("workspace:unit-log", {
+              workspaceId: workspace.config.id,
+              unitName: entityId,
+              kind: "panel",
+              timestamp: entry.timestamp,
+              level: entry.level,
+              message: entry.message,
+              source: entry.source === "lifecycle" ? "console" : entry.source,
+            });
+          }
         },
       })
     );
@@ -1884,6 +1935,26 @@ async function main() {
           registerEgressCaller: (callerId, caller) => egressCallers.set(callerId, caller),
           unregisterEgressCaller: (callerId) => egressCallers.delete(callerId),
           getWorkerdGatewayToken: () => workerdGatewayToken,
+          recordLifecycleEvent: (event) => {
+            runtimeDiagnostics.record({
+              workspaceId: workspace.config.id,
+              entityId: event.source,
+              kind: "worker",
+              level: event.level,
+              message: event.message,
+              source: "lifecycle",
+              fields: { callerId: event.callerId, ...event.fields },
+            });
+            eventService.emit("workspace:unit-log", {
+              workspaceId: workspace.config.id,
+              unitName: event.source,
+              kind: "worker",
+              timestamp: Date.now(),
+              level: event.level,
+              message: event.message,
+              source: "console",
+            } satisfies import("./services/workspaceService.js").WorkspaceUnitLogRecord);
+          },
         });
         workerdManagerForGateway = workerdManagerInstance;
         // Resolve attributed egress (shared listener) → live worker VerifiedCaller.
@@ -2125,6 +2196,10 @@ async function main() {
         }
         const workerInstance =
           node.kind === "worker" ? workerInstances.get(node.relativePath) : null;
+        const workerLastError =
+          node.kind === "worker"
+            ? (workerdManagerForGateway?.getLastWorkerError(node.relativePath) ?? null)
+            : null;
         rows.push({
           name: node.name,
           kind: node.kind,
@@ -2134,7 +2209,10 @@ async function main() {
             ? workerInstance.status === "starting"
               ? "building"
               : workerInstance.status
-            : "available",
+            : workerLastError
+              ? "error"
+              : "available",
+          lastError: workerLastError?.message ?? null,
           ev: workerInstance?.buildKey ?? buildSystem?.getEffectiveVersion(node.name) ?? null,
           inspectorUrl: workerInstance
             ? (workerdManagerForGateway?.getWorkerInspectorUrl(workerInstance.source) ?? null)
@@ -2225,20 +2303,36 @@ async function main() {
           level: opts?.level,
           limit: opts?.limit,
         });
-        if (persisted.entries.length > 0) {
-          return persisted.entries.map((entry) => ({
-            workspaceId: entry.workspaceId ?? workspace.config.id,
-            unitName: source,
-            kind: "worker" as const,
-            timestamp: entry.timestamp,
-            level: entry.level,
-            message: entry.message,
-            fields: entry.fields,
-            source: entry.source === "system" ? "console" : entry.source,
-          }));
-        }
-        const buffer = workerUnitLogs.get(source) ?? [];
-        return filterUnitLogs(buffer, opts);
+        return persisted.entries.map((entry) => ({
+          workspaceId: entry.workspaceId ?? workspace.config.id,
+          unitName: source,
+          kind: "worker" as const,
+          timestamp: entry.timestamp,
+          level: entry.level,
+          message: entry.message,
+          fields: entry.fields,
+          source: entry.source === "system" ? "console" : entry.source,
+        }));
+      }
+      if (kind === "panel") {
+        // Panel console errors and lifecycle events are forwarded from the
+        // shell via panelLog.append and keyed by package name.
+        const persisted = runtimeDiagnostics.history(node?.name ?? name, {
+          since: opts?.since,
+          level: opts?.level,
+          limit: opts?.limit,
+        });
+        return persisted.entries.map((entry) => ({
+          workspaceId: entry.workspaceId ?? workspace.config.id,
+          unitName: node?.name ?? name,
+          kind: "panel" as const,
+          timestamp: entry.timestamp,
+          level: entry.level,
+          message: entry.message,
+          fields: entry.fields,
+          source:
+            entry.source === "system" || entry.source === "lifecycle" ? "console" : entry.source,
+        }));
       }
       // Default and extension: the extension host has its own buffer and
       // also returns [] if the name is unknown.
@@ -2280,10 +2374,12 @@ async function main() {
       });
       const fallbackLogs = commonDeps.listWorkspaceUnitLogs(name, opts);
       const logs = history.entries.length > 0 ? history.entries.map(toLog) : fallbackLogs;
+      const buildSystem = container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");
       return {
         unit,
         logs,
         errors: history.errors.map(toLog),
+        builds: buildSystem?.listRecentBuildEvents(unit?.name ?? name) ?? [],
         dropped: history.dropped,
         capacity: history.capacity,
       };

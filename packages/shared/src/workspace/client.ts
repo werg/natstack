@@ -1,152 +1,58 @@
+/**
+ * Typed workspace client — derives its RPC call surface from the shared
+ * `workspaceMethods` schema table (`../serviceSchemas/workspace.ts`), the
+ * single source of truth for the workspace service's wire contract. Only the
+ * non-RPC conveniences (`switchTo` alias, `units.watch()` event subscription)
+ * are hand-written here.
+ */
+
 import type { RpcCaller } from "@natstack/rpc";
-import type {
-  InitPanelEntry,
-  WorkspaceConfig,
+import { createTypedServiceClient, type TypedServiceClient } from "../typedServiceClient.js";
+import { workspaceMethods, type WorkspaceUnitStatus } from "../serviceSchemas/workspace.js";
+
+export type { InitPanelEntry, WorkspaceConfig } from "./types.js";
+export type {
   WorkspaceEntry,
-} from "./types.js";
+  WorkspaceAppVersionRecord,
+  WorkspaceAppVersions,
+  WorkspaceUnitStatus,
+  WorkspaceUnitLogRecord,
+  WorkspaceUnitBuildEvent,
+  WorkspaceUnitDiagnostics,
+} from "../serviceSchemas/workspace.js";
 
-export type { InitPanelEntry, WorkspaceConfig, WorkspaceEntry } from "./types.js";
+type WorkspaceTypedClient = TypedServiceClient<typeof workspaceMethods>;
 
-export interface WorkspaceUnitStatus {
-  name: string;
-  kind: "panel" | "worker" | "extension" | "app";
-  source: string;
-  displayName?: string;
-  status: "running" | "stopped" | "error" | "pending-approval" | "building" | "available";
-  version?: string;
-  ev?: string | null;
-  activeEv?: string | null;
-  activeBundleKey?: string | null;
-  activeRuntimeDepsKey?: string | null;
-  lastError?: string | null;
-  lastErrorDetails?: unknown;
-  target?: string;
-  canRollback?: boolean;
-  rollbackRetentionLimit?: number;
-  previousVersions?: WorkspaceAppVersionRecord[];
-  health?: unknown;
-  methods?: string[];
-  hasFetch?: boolean;
-  respawn?: {
-    attempts: number;
-    nextAttemptAt: number | null;
-  } | null;
-  inspectorUrl?: string | null;
-}
-
-export interface WorkspaceAppVersionRecord {
-  version: string;
-  target: string;
-  capabilities: string[];
-  activeEv: string | null;
-  activeSha: string | null;
-  activeBundleKey: string;
-  activeDependencyEvs: Record<string, string>;
-  activeExternalDeps: Record<string, string>;
-  activeRuntimeDepsKey: string | null;
-  activatedAt: number;
-}
-
-export interface WorkspaceAppVersions {
-  current: WorkspaceAppVersionRecord | null;
-  previous: WorkspaceAppVersionRecord[];
-  retentionLimit: number;
-}
-
-export interface WorkspaceUnitLogRecord {
-  workspaceId: string;
-  unitName: string;
-  kind: "extension" | "worker" | "panel" | "app";
-  timestamp: number;
-  level: "debug" | "info" | "warn" | "error";
-  message: string;
-  fields?: Record<string, unknown>;
-  source?: "stdout" | "stderr" | "ctx.log" | "console" | "lifecycle" | "system";
-  /** Monotonic per-unit sequence — exact resume cursor for `sinceSeq` polling. */
-  seq?: number;
-}
-
-export interface WorkspaceUnitDiagnostics {
-  unit: WorkspaceUnitStatus | null;
-  logs: WorkspaceUnitLogRecord[];
-  errors: WorkspaceUnitLogRecord[];
-  dropped: {
-    entries: number;
-    errors: number;
-  };
-  capacity: {
-    entries: number;
-    errors: number;
-  };
-}
-
-export interface WorkspaceUnitsClient {
-  list(): Promise<WorkspaceUnitStatus[]>;
+export type WorkspaceUnitsClient = WorkspaceTypedClient["units"] & {
+  /**
+   * Live unit-status snapshots: emits a fresh `units.list()` result on every
+   * unit-related event (status, health, lifecycle, logs). Best-effort — fetch
+   * errors are swallowed; call `list()` directly to observe them.
+   */
   watch(): AsyncIterable<WorkspaceUnitStatus[]>;
-  inspector(name: string): Promise<{ url: string } | null>;
-  restart(name: string): Promise<void>;
-  logs(
-    name: string,
-    opts?: {
-      since?: number;
-      sinceSeq?: number;
-      level?: WorkspaceUnitLogRecord["level"];
-      limit?: number;
-    }
-  ): Promise<WorkspaceUnitLogRecord[]>;
-  diagnostics(
-    name: string,
-    opts?: {
-      since?: number;
-      sinceSeq?: number;
-      level?: WorkspaceUnitLogRecord["level"];
-      limit?: number;
-      errorLimit?: number;
-    }
-  ): Promise<WorkspaceUnitDiagnostics>;
-  versions(name: string): Promise<WorkspaceAppVersions>;
-  rollback(name: string, opts?: { buildKey?: string }): Promise<unknown>;
-}
+};
+
+export type WorkspaceClient = Omit<WorkspaceTypedClient, "units"> & {
+  /** Alias for the wire method `workspace.select` (switch + relaunch). */
+  switchTo(name: string): Promise<void>;
+  units: WorkspaceUnitsClient;
+};
 
 type WorkspaceRpc = RpcCaller & {
   on?: (event: string, listener: (event: { payload: unknown }) => void) => () => void;
 };
 
-export interface WorkspaceClient {
-  list(): Promise<WorkspaceEntry[]>;
-  getActive(): Promise<string>;
-  getActiveEntry(): Promise<WorkspaceEntry>;
-  getConfig(): Promise<WorkspaceConfig>;
-  create(name: string, opts?: { forkFrom?: string }): Promise<WorkspaceEntry>;
-  delete(name: string): Promise<void>;
-  setInitPanels(entries: InitPanelEntry[]): Promise<void>;
-  setConfigField(key: string, value: unknown): Promise<void>;
-  switchTo(name: string): Promise<void>;
-  units: WorkspaceUnitsClient;
-}
-
 export function createWorkspaceClient(rpc: WorkspaceRpc): WorkspaceClient {
-  const listUnits = () => rpc.call<WorkspaceUnitStatus[]>("main", "workspace.units.list", []);
+  const typed = createTypedServiceClient("workspace", workspaceMethods, (svc, method, args) =>
+    rpc.call("main", `${svc}.${method}`, args)
+  );
+  const listUnits = () => typed.units.list();
   return {
-    list: () => rpc.call("main", "workspace.list", []),
-    getActive: () => rpc.call("main", "workspace.getActive", []),
-    getActiveEntry: () => rpc.call("main", "workspace.getActiveEntry", []),
-    getConfig: () => rpc.call("main", "workspace.getConfig", []),
-    create: (name, opts) => rpc.call("main", "workspace.create", [name, opts]),
-    delete: (name) => rpc.call("main", "workspace.delete", [name]),
-    setInitPanels: (entries) => rpc.call("main", "workspace.setInitPanels", [entries]),
-    setConfigField: (key, value) => rpc.call("main", "workspace.setConfigField", [key, value]),
-    switchTo: (name) => rpc.call("main", "workspace.select", [name]),
+    ...typed,
+    switchTo: (name) => typed.select(name),
     units: {
-      list: listUnits,
+      ...typed.units,
       watch: () => createUnitsWatch(rpc, listUnits),
-      inspector: (name) => rpc.call("main", "workspace.units.inspector", [name]),
-      restart: (name) => rpc.call("main", "workspace.units.restart", [name]),
-      logs: (name, opts) => rpc.call("main", "workspace.units.logs", [name, opts]),
-      diagnostics: (name, opts) =>
-        rpc.call("main", "workspace.units.diagnostics", [name, opts]),
-      versions: (name) => rpc.call("main", "workspace.units.versions", [name]),
-      rollback: (name, opts) => rpc.call("main", "workspace.units.rollback", [name, opts]),
     },
   };
 }

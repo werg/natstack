@@ -55,6 +55,12 @@ app.setName(APP_NAME);
 
 import { PanelRegistry } from "@natstack/shared/panelRegistry";
 import { asPanelSlotId } from "@natstack/shared/panel/ids";
+import { getPanelSource } from "@natstack/shared/panel/accessors";
+import { createTypedServiceClient } from "@natstack/shared/typedServiceClient";
+import { panelLogMethods } from "@natstack/shared/serviceSchemas/panelLog";
+import { corsApprovalMethods } from "@natstack/shared/serviceSchemas/corsApproval";
+import { externalOpenMethods } from "@natstack/shared/serviceSchemas/externalOpen";
+import { workspaceMethods } from "@natstack/shared/serviceSchemas/workspace";
 import { PanelOrchestrator } from "./panelOrchestrator.js";
 import { PanelView } from "./panelView.js";
 import { AppOrchestrator } from "./appOrchestrator.js";
@@ -98,10 +104,7 @@ import {
   parseServiceMethod,
   type ServiceContext,
 } from "@natstack/shared/serviceDispatcher";
-// RpcServer type: inline import("...") used intentionally — main/ constructs
-// server objects via dynamic import at runtime; inline types are acceptable
-// in entry points per the boundary rule (no static module-level imports).
-import { z } from "zod";
+import { autofillMethods } from "@natstack/shared/serviceSchemas/autofill";
 import { ServiceContainer } from "@natstack/shared/serviceContainer";
 import { createEventsServiceDefinition } from "@natstack/shared/eventsService";
 import { setupTestApi } from "./testApi.js";
@@ -575,15 +578,12 @@ async function authorizeCorsResponseAccess(
 
   let pending = pendingCorsApprovals.get(cacheKey);
   if (!pending) {
-    pending = serverSession.serverClient
-      .call("corsApproval", "authorize", [
-        {
-          targetUrl: details.url,
-          requestOrigin,
-        },
-      ])
-      .then((result: unknown) => {
-        const response = result as { allowed?: unknown; decision?: unknown };
+    const client = serverSession.serverClient;
+    pending = createTypedServiceClient("corsApproval", corsApprovalMethods, (svc, m, a) =>
+      client.call(svc, m, a)
+    )
+      .authorize({ targetUrl: details.url, requestOrigin })
+      .then((response) => {
         const allowed = response.allowed === true;
         const cacheable = allowed && response.decision !== "once";
         if (cacheable) corsApprovalCache.add(cacheKey);
@@ -850,12 +850,11 @@ function installRemoteTlsPinning(mode: StartupMode): void {
 
 async function syncElectronHostTarget(serverClient: Pick<ServerClient, "call">): Promise<void> {
   try {
-    const result = await serverClient.call("workspace", "hostTargets.launch", ["electron"]);
-    const launched =
-      typeof result === "object" &&
-      result !== null &&
-      (result as { launched?: unknown }).launched === true;
-    if (!launched) {
+    const workspaceClient = createTypedServiceClient("workspace", workspaceMethods, (svc, m, a) =>
+      serverClient.call(svc, m, a)
+    );
+    const result = await workspaceClient.hostTargets.launch("electron");
+    if (!result.launched) {
       log.warn("[apps] No launchable Electron host target is selected");
     }
   } catch (error) {
@@ -1406,6 +1405,51 @@ app.on("ready", async () => {
 
     await panelOrchestrator.registerRuntimeClient();
 
+    // Batch panel warn/error + lifecycle diagnostics into `panelLog.append`
+    // so panel failures land in the server's per-unit diagnostics store
+    // (queryable by workspace agents). Best-effort: drops on send failure.
+    const panelLogClient = createTypedServiceClient("panelLog", panelLogMethods, (svc, m, a) =>
+      conn.serverClient.call(svc, m, a)
+    );
+    const panelLogQueue: import("@natstack/shared/serviceSchemas/panelLog").PanelLogRecord[] = [];
+    let panelLogFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    const flushPanelLog = () => {
+      panelLogFlushTimer = null;
+      const batch = panelLogQueue.splice(0, panelLogQueue.length);
+      if (batch.length === 0) return;
+      void panelLogClient.append(batch).catch(() => {});
+    };
+    const forwardPanelDiagnostic = (
+      panelId: string,
+      entry: import("./cdpHostProvider.js").PanelConsoleHistoryEntry
+    ) => {
+      const panel = panelRegistry?.getPanel(panelId);
+      if (!panel) return;
+      const rawSource = getPanelSource(panel);
+      // Browser panels aren't workspace units; their console isn't unit health.
+      if (rawSource.startsWith("browser:")) return;
+      const unitSource = rawSource.split(/[?#]/)[0];
+      if (!unitSource) return;
+      panelLogQueue.push({
+        unitSource,
+        panelId,
+        timestamp: entry.timestamp,
+        level:
+          entry.level === "warning" ? "warn" : entry.level === "unknown" ? "info" : entry.level,
+        message: entry.message,
+        source: entry.source === "lifecycle" ? "lifecycle" : "console",
+        fields: entry.fields,
+        url: entry.url || undefined,
+        line: entry.line || undefined,
+      });
+      if (panelLogQueue.length >= 50) {
+        if (panelLogFlushTimer) clearTimeout(panelLogFlushTimer);
+        flushPanelLog();
+      } else if (!panelLogFlushTimer) {
+        panelLogFlushTimer = setTimeout(flushPanelLog, 500);
+      }
+    };
+
     cdpHostProvider = new CdpHostProvider({
       serverUrl: conn.gatewayConfig.serverUrl,
       authToken: () => conn.shellToken || conn.adminToken,
@@ -1414,6 +1458,7 @@ app.on("ready", async () => {
       diagnosticsStore: new RuntimeDiagnosticsStore({
         statePath: startupMode.kind === "remote" ? getRemoteUserDataDir() : serverSession.statePath,
       }),
+      forwardDiagnostic: forwardPanelDiagnostic,
       onHostCommand: async (panelId, action, args) => {
         if (action === "openDevTools") {
           if (!viewManager) throw new Error("ViewManager not initialized");
@@ -1560,11 +1605,7 @@ app.on("ready", async () => {
       name: "autofill",
       description: "Password autofill management",
       policy: { allowed: ["shell"] },
-      methods: {
-        confirmSave: {
-          args: z.tuple([z.string(), z.enum(["save", "never", "dismiss"])]),
-        },
-      },
+      methods: autofillMethods,
       handler: async (_ctx, method, args) => {
         if (!autofillManager) throw new Error("Autofill not initialized");
         const def = autofillManager.getServiceDefinition();
@@ -1821,7 +1862,15 @@ app.on("ready", async () => {
     ipcMain.handle("natstack:openExternal", async (event, url: string, options?: unknown) => {
       const caller = resolveCaller(event);
       if (caller.callerKind === "shell") {
-        await sc.call("externalOpen", "openExternal", [url, options]);
+        const externalOpen = createTypedServiceClient(
+          "externalOpen",
+          externalOpenMethods,
+          (svc, m, a) => sc.call(svc, m, a)
+        );
+        await externalOpen.openExternal(
+          url,
+          options as import("@natstack/shared/externalOpen").OpenExternalOptions | undefined
+        );
       } else {
         throw new Error("Panel openExternal must use its authenticated RPC transport");
       }

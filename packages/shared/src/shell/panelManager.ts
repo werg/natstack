@@ -860,19 +860,25 @@ export class PanelManager {
   private async fetchPanelTree(): Promise<Panel[]> {
     const slots = await this.workspaceState.listSlots();
     const openSlots = slots.filter((s) => s.closed_at == null);
+    // Per-slot lookups are independent server round trips — issue them in
+    // parallel; awaiting each one serially made startup latency O(slots).
     const histories = new Map<PanelSlotId, SlotHistoryRow[]>();
-    for (const slot of openSlots) {
-      const rows = await this.workspaceState.getSlotHistory(slot.slot_id);
-      histories.set(slot.slot_id, rows);
-    }
+    await Promise.all(
+      openSlots.map(async (slot) => {
+        const rows = await this.workspaceState.getSlotHistory(slot.slot_id);
+        histories.set(slot.slot_id, rows);
+      })
+    );
     const metadataBySource = await this.fetchPanelMetadataForHistories(histories);
 
     const entitySourceById = new Map<string, { repoPath: string; effectiveVersion: string }>();
-    for (const slot of openSlots) {
-      if (!slot.current_entity_id) continue;
-      const record = await this.workspaceState.resolveActiveEntity(slot.current_entity_id);
-      if (record?.source) entitySourceById.set(slot.current_entity_id, record.source);
-    }
+    await Promise.all(
+      openSlots.map(async (slot) => {
+        if (!slot.current_entity_id) return;
+        const record = await this.workspaceState.resolveActiveEntity(slot.current_entity_id);
+        if (record?.source) entitySourceById.set(slot.current_entity_id, record.source);
+      })
+    );
 
     const slotById = new Map(openSlots.map((slot) => [slot.slot_id, slot]));
 

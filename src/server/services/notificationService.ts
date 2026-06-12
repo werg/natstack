@@ -6,11 +6,11 @@
  * for blocking consent flows.
  */
 
-import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { EventService } from "@natstack/shared/eventsService";
 import type { NotificationPayload } from "@natstack/shared/events";
+import { notificationMethods } from "@natstack/shared/serviceSchemas/notification";
 
 /**
  * Internal interface for server-side code to push notifications
@@ -73,58 +73,7 @@ export function createNotificationService(deps: { eventService: EventService }):
     name: "notification",
     description: "Push notifications to the shell chrome area",
     policy: { allowed: ["shell", "app", "panel", "worker", "do", "extension", "server"] },
-    methods: {
-      show: {
-        args: z.tuple([
-          z.object({
-            id: z.string().optional(),
-            type: z.enum(["info", "success", "warning", "error", "consent"]),
-            title: z.string(),
-            message: z.string().optional(),
-            consent: z
-              .object({
-                provider: z.string(),
-                scopes: z.array(z.string()),
-                callerId: z.string(),
-                callerTitle: z.string(),
-                callerKind: z.enum(["panel", "app", "worker", "do"]),
-              })
-              .optional(),
-            ttl: z.number().optional(),
-            actions: z
-              .array(
-                z.object({
-                  id: z.string(),
-                  label: z.string(),
-                  variant: z.enum(["solid", "soft", "ghost"]).optional(),
-                  command: z
-                    .union([
-                      z.object({ type: z.literal("app.applyUpdate"), appId: z.string() }),
-                      z.object({
-                        type: z.literal("app.rollback"),
-                        appId: z.string(),
-                        buildKey: z.string().optional(),
-                      }),
-                      z.object({
-                        type: z.literal("workspace.restartUnit"),
-                        name: z.string(),
-                      }),
-                    ])
-                    .optional(),
-                })
-              )
-              .optional(),
-            sourcePanelId: z.string().optional(),
-          }),
-        ]),
-      },
-      dismiss: {
-        args: z.tuple([z.string()]),
-      },
-      reportAction: {
-        args: z.tuple([z.string(), z.string()]),
-      },
-    },
+    methods: notificationMethods,
     handler: async (_ctx, method, args) => {
       switch (method) {
         case "show": {

@@ -183,6 +183,19 @@ export interface WorkerdManagerDeps {
   /** Override for tests; production uses the default router readiness window. */
   workerdStartupReadyTimeoutMs?: number;
   cleanupWebhookSubscriptions?: (callerId: string) => Promise<void>;
+  /**
+   * Structured lifecycle sink (start/stop/update/failure per worker). The
+   * server feeds this into the runtime-diagnostics store so worker startup
+   * failures are queryable via `workspace.units.diagnostics` instead of
+   * living only in the server console.
+   */
+  recordLifecycleEvent?: (event: {
+    source: string;
+    callerId: string;
+    level: "info" | "error";
+    message: string;
+    fields?: Record<string, unknown>;
+  }) => void;
 }
 
 type ResolvedWorkerdManagerDeps = WorkerdManagerDeps;
@@ -208,6 +221,10 @@ function workerdInspectorEnabled(): boolean {
 
 export class WorkerdManager {
   private instances = new Map<string, WorkerInstance>();
+  // Most recent startup/update failure per worker source. Survives the
+  // instance row (which is deleted on failed start) so `units.list` can
+  // report lastError for workers that never came up.
+  private lastWorkerErrors = new Map<string, { message: string; timestamp: number }>();
   private process: ChildProcess | null = null;
   // Restart coalescing: callers mutate doServices/instances then call
   // restartWorkerd(). `requestedEpoch` increments per call; `appliedEpoch` is the
@@ -507,14 +524,24 @@ export class WorkerdManager {
     this.instances.set(name, instance);
 
     try {
-      const buildResult = await this.deps.getBuild(args.source, args.ref);
-      instance.buildKey = buildResult.metadata.ev;
-      instance.status = "starting";
-
+      // Build and workerd startup are independent (the dynamic host loads
+      // code on demand) — run them in parallel to cut cold-start latency.
       this.registerEgressCaller(instance);
-      await this.ensureWorkerdRunning();
+      const [buildResult] = await Promise.all([
+        this.deps.getBuild(args.source, args.ref),
+        this.ensureWorkerdRunning(),
+      ]);
+      instance.buildKey = buildResult.metadata.ev;
 
       instance.status = "running";
+      this.lastWorkerErrors.delete(args.source);
+      this.deps.recordLifecycleEvent?.({
+        source: args.source,
+        callerId,
+        level: "info",
+        message: `Worker started (build ${buildResult.metadata.ev})`,
+        fields: { event: "worker-started", buildKey: buildResult.metadata.ev },
+      });
       log.info(`Worker entity "${targetId}" started (source: ${args.source})`);
 
       if (this.deps.routeRegistry && this.deps.getManifestRoutes) {
@@ -533,6 +560,15 @@ export class WorkerdManager {
       this.instances.delete(name);
       this.deps.unregisterEgressCaller(callerId);
       this.revokeWorkerBearer(callerId);
+      const message = error instanceof Error ? error.message : String(error);
+      this.lastWorkerErrors.set(args.source, { message, timestamp: Date.now() });
+      this.deps.recordLifecycleEvent?.({
+        source: args.source,
+        callerId,
+        level: "error",
+        message: `Worker failed to start: ${message}`,
+        fields: { event: "worker-start-failed" },
+      });
       log.error(`Failed to start worker entity "${targetId}":`, error);
       throw error;
     }
@@ -630,17 +666,26 @@ export class WorkerdManager {
 
     // Trigger build
     try {
-      const buildResult = await this.deps.getBuild(options.source, options.ref);
-      instance.buildKey = buildResult.metadata.ev;
-      instance.status = "starting";
-
-      // Register the worker for attributed egress, then ensure the dynamic
-      // worker host is up. The host loads this instance's code on demand via
-      // `/_workercode` — no per-worker config, no restart.
+      // The build and the workerd process are independent — the dynamic host
+      // loads this instance's code on demand via `/_workercode` (no per-worker
+      // config, no restart) — so run the build and the host startup in
+      // parallel instead of paying their latencies back to back.
       this.registerEgressCaller(instance);
-      await this.ensureWorkerdRunning();
+      const [buildResult] = await Promise.all([
+        this.deps.getBuild(options.source, options.ref),
+        this.ensureWorkerdRunning(),
+      ]);
+      instance.buildKey = buildResult.metadata.ev;
 
       instance.status = "running";
+      this.lastWorkerErrors.delete(options.source);
+      this.deps.recordLifecycleEvent?.({
+        source: options.source,
+        callerId,
+        level: "info",
+        message: `Worker started (build ${buildResult.metadata.ev})`,
+        fields: { event: "worker-started", buildKey: buildResult.metadata.ev },
+      });
       log.info(`Worker instance "${name}" started (source: ${options.source})`);
 
       // Register regular-worker routes only for the canonical-named instance.
@@ -660,6 +705,15 @@ export class WorkerdManager {
       this.instances.delete(name);
       this.deps.unregisterEgressCaller(callerId);
       this.revokeWorkerBearer(callerId);
+      const message = error instanceof Error ? error.message : String(error);
+      this.lastWorkerErrors.set(options.source, { message, timestamp: Date.now() });
+      this.deps.recordLifecycleEvent?.({
+        source: options.source,
+        callerId,
+        level: "error",
+        message: `Worker failed to start: ${message}`,
+        fields: { event: "worker-start-failed" },
+      });
       log.error(`Failed to start worker "${name}":`, error);
       throw error;
     }
@@ -746,8 +800,20 @@ export class WorkerdManager {
     // next request. No workerd restart — the host is static.
     instance.codeVersion += 1;
 
+    this.deps.recordLifecycleEvent?.({
+      source: instance.source,
+      callerId: instance.callerId,
+      level: "info",
+      message: `Worker updated (codeVersion ${instance.codeVersion})`,
+      fields: { event: "worker-updated", codeVersion: instance.codeVersion },
+    });
     log.info(`Worker instance "${name}" updated (codeVersion ${instance.codeVersion})`);
     return instance;
+  }
+
+  /** Most recent startup/update failure for a worker source, if any. */
+  getLastWorkerError(source: string): { message: string; timestamp: number } | null {
+    return this.lastWorkerErrors.get(source) ?? null;
   }
 
   listInstances(): Omit<WorkerInstance, "token">[] {

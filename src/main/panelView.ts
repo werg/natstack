@@ -290,6 +290,9 @@ export class PanelView implements PanelViewLike {
   openDevTools(panelId: string): void {
     this.viewManager.openDevTools(panelId);
   }
+  getViewPartition(panelId: string): string | undefined | null {
+    return this.viewManager.getViewPartition(panelId);
+  }
   getViewManager(): ViewManager {
     return this.viewManager;
   }
@@ -304,6 +307,12 @@ export class PanelView implements PanelViewLike {
 
     if (!this.shouldAttemptReload(viewId)) {
       console.error(`[PanelView] Giving up on ${viewId} after repeated crashes`);
+      this.showPanelErrorPage(
+        viewId,
+        "Panel crashed repeatedly",
+        `The panel's renderer crashed ${this.MAX_CRASHES} times in a row (last reason: ${reason}). ` +
+          "Automatic recovery was stopped to avoid a crash loop."
+      );
       return;
     }
     log.verbose(` Attempting reload of ${viewId}`);
@@ -363,8 +372,23 @@ export class PanelView implements PanelViewLike {
       didNavigateInPage: (_event: Electron.Event, url: string) => {
         queueStateUpdate({ url });
       },
-      didFailLoad: (_e: Electron.Event, code: number, desc: string, url: string) => {
+      didFailLoad: (
+        _e: Electron.Event,
+        code: number,
+        desc: string,
+        url: string,
+        isMainFrame?: boolean
+      ) => {
         console.warn(`[PanelView] Panel ${panelId} failed to load: ${desc} (${code}) - ${url}`);
+        // -3 is ERR_ABORTED (navigation superseded) — routine, not a failure.
+        if (isMainFrame && code !== -3) {
+          this.showPanelErrorPage(
+            panelId,
+            "Panel failed to load",
+            `${desc} (${code}) while loading ${url}`,
+            url
+          );
+        }
       },
       renderProcessGone: (_e: Electron.Event, details: Electron.RenderProcessGoneDetails) => {
         console.warn(`[PanelView] Panel ${panelId} render process gone: ${details.reason}`);
@@ -562,6 +586,46 @@ export class PanelView implements PanelViewLike {
   }
 
   // ==== Crash recovery ======================================================
+
+  /**
+   * Replace a dead/blank panel with a visible error page instead of leaving
+   * it empty. Loading a data: URL spawns a fresh renderer, so this works even
+   * after the previous renderer process is gone. The retry link re-navigates
+   * to the panel's real URL.
+   */
+  private showPanelErrorPage(
+    panelId: string,
+    title: string,
+    detail: string,
+    retryUrl?: string
+  ): void {
+    const contents = this.viewManager.getWebContents(panelId);
+    if (!contents || contents.isDestroyed()) return;
+    const panel = this.panelRegistry.getPanel(panelId);
+    const targetUrl = retryUrl ?? (panel ? getCurrentSnapshot(panel).resolvedUrl : null);
+    const escapeHtml = (text: string) =>
+      text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
+  body { font-family: system-ui, sans-serif; background: #1e1e1e; color: #ddd;
+         display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+  .box { max-width: 560px; padding: 2rem; }
+  h1 { font-size: 1.1rem; color: #f48771; }
+  p { font-size: 0.9rem; line-height: 1.5; color: #aaa; word-break: break-word; }
+  a { color: #4fc1ff; }
+</style></head><body><div class="box">
+  <h1>${escapeHtml(title)}</h1>
+  <p>${escapeHtml(detail)}</p>
+  ${targetUrl ? `<p><a href="${escapeHtml(targetUrl)}">Reload panel</a></p>` : ""}
+</div></body></html>`;
+    void contents
+      .loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+      .catch(() => {});
+  }
 
   private shouldAttemptReload(viewId: string): boolean {
     const now = Date.now();

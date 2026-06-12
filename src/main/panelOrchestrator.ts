@@ -24,7 +24,6 @@ import type { PanelManager } from "@natstack/shared/shell/panelManager";
 import type {
   PanelRuntimeLease,
   PanelRuntimeLeaseChangedEvent,
-  RuntimeLeaseSnapshot,
 } from "@natstack/shared/panel/panelLease";
 import type {
   BridgePanelLifecycle,
@@ -32,6 +31,10 @@ import type {
   PanelHttpServerLike,
   PanelCreateOptions,
 } from "@natstack/shared/panelInterfaces";
+import { BROWSER_SESSION_PARTITION } from "@natstack/shared/panelInterfaces";
+import { contextIdToPartition } from "@natstack/shared/contextIdToPartition.js";
+import { createTypedServiceClient } from "@natstack/shared/typedServiceClient";
+import { panelRuntimeMethods } from "@natstack/shared/serviceSchemas/panelRuntime";
 import type { WorkspaceConfig } from "@natstack/shared/workspace/types";
 import type { PanelRestorePolicy } from "@natstack/shared/workspace/types";
 import { buildPanelUrl } from "@natstack/shared/panelFactory";
@@ -122,6 +125,12 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
   private viewRevision = 0;
   private lastAppliedServerPanelTreeRevision = 0;
   private readonly explicitTitlePanelIds = new Set<string>();
+  /** Typed client for the server's panel-runtime lease coordinator. */
+  private readonly panelRuntime = createTypedServiceClient(
+    "panelRuntime",
+    panelRuntimeMethods,
+    (svc, method, args) => this.serverClient.call(svc, method, args)
+  );
   private readonly restorePolicy: PanelRestorePolicy;
 
   constructor(deps: PanelOrchestratorDeps) {
@@ -379,6 +388,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
       this.rejectAgentCallsForPanel(id, new Error("panel-closed"));
       this.stateArgsPushUnsubs.get(id)?.();
       this.stateArgsPushUnsubs.delete(id);
+      this.explicitTitlePanelIds.delete(id);
       this.releaseLocalPanelRuntime(id, "close");
       this.registry.removePanel(id);
     }
@@ -719,8 +729,9 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     this.registry.updateSelectedPath(targetPanelId);
     this.registry.notifyPanelTreeUpdate();
 
-    // Persist to server
-    await this.shellCore.notifyFocused(asPanelSlotId(targetPanelId)).catch(() => {});
+    // Persist focus to the server fire-and-forget: it's pure bookkeeping and
+    // must not add an RPC round trip before an already-loaded view is shown.
+    void this.shellCore.notifyFocused(asPanelSlotId(targetPanelId)).catch(() => {});
 
     const view = this.getPanelView();
     if (view?.hasView(targetPanelId)) {
@@ -987,7 +998,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
   async unregisterRuntimeClient(): Promise<void> {
     if (!this.runtimeClientRegistered) return;
     this.runtimeClientRegistered = false;
-    await this.serverClient.call("panelRuntime", "unregisterClient", [this.runtimeClientSessionId]);
+    await this.panelRuntime.unregisterClient(this.runtimeClientSessionId);
   }
 
   getFocusedPanelId(): string | null {
@@ -1004,11 +1015,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
   }
 
   async syncRuntimeLeaseSnapshot(): Promise<void> {
-    const snapshot = (await this.serverClient.call(
-      "panelRuntime",
-      "getSnapshot",
-      []
-    )) as RuntimeLeaseSnapshot;
+    const snapshot = await this.panelRuntime.getSnapshot();
     this.registry.applyRuntimeLeaseSnapshot(snapshot);
   }
 
@@ -1399,10 +1406,11 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     const view = this.getPanelView();
     if (!view) return;
 
-    if (view.hasView(panelId)) {
-      view.destroyView(panelId);
-      this.bumpViewRevision();
-    }
+    // Only tear the view down when its session partition must change
+    // (workspace panel ↔ browser panel, or a different contextId). For a
+    // plain URL change, createViewForPanel/Browser navigate the existing
+    // renderer in place — destroy/recreate costs a full renderer restart.
+    this.destroyViewIfPartitionChanged(view, panelId, snapshot);
 
     if (snapshot.source.startsWith("browser:")) {
       const url = snapshot.source.slice("browser:".length);
@@ -1448,10 +1456,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     const view = this.getPanelView();
     if (!view) return;
 
-    if (view.hasView(panelId)) {
-      view.destroyView(panelId);
-      this.bumpViewRevision();
-    }
+    this.destroyViewIfPartitionChanged(view, panelId, snapshot);
 
     this.runtimeConnectionBySlot.set(panelId, {
       runtimeEntityId: lease.runtimeEntityId,
@@ -1496,18 +1501,39 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
   // Private helpers
   // =========================================================================
 
+  /**
+   * Destroy an existing view only when the snapshot needs a different session
+   * partition (workspace ↔ browser panel, or a contextId change). Same
+   * partition means createViewForPanel/Browser can navigate the existing
+   * renderer in place, avoiding a full renderer-process restart on every
+   * managed navigation.
+   */
+  private destroyViewIfPartitionChanged(
+    view: PanelViewLike,
+    panelId: string,
+    snapshot: PanelSnapshot
+  ): void {
+    if (!view.hasView(panelId)) return;
+    const target = snapshot.source.startsWith("browser:")
+      ? BROWSER_SESSION_PARTITION
+      : snapshot.contextId
+        ? contextIdToPartition(snapshot.contextId)
+        : undefined;
+    if (view.getViewPartition(panelId) === target) return;
+    view.destroyView(panelId);
+    this.bumpViewRevision();
+  }
+
   private async ensureRuntimeClientRegistered(): Promise<void> {
     if (this.runtimeClientRegistered) return;
-    await this.serverClient.call("panelRuntime", "registerClient", [
-      {
-        clientSessionId: this.runtimeClientSessionId,
-        hostConnectionId: this.runtimeClientSessionId,
-        label: this.runtimeClientLabel,
-        platform: this.runtimeClientPlatform,
-        supportsCdp: this.runtimeClientSupportsCdp,
-        loadOnLeaseAssignment: this.loadOnLeaseAssignment,
-      },
-    ]);
+    await this.panelRuntime.registerClient({
+      clientSessionId: this.runtimeClientSessionId,
+      hostConnectionId: this.runtimeClientSessionId,
+      label: this.runtimeClientLabel,
+      platform: this.runtimeClientPlatform,
+      supportsCdp: this.runtimeClientSupportsCdp,
+      loadOnLeaseAssignment: this.loadOnLeaseAssignment,
+    });
     this.runtimeClientRegistered = true;
   }
 
@@ -1518,14 +1544,14 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     await this.ensureRuntimeClientRegistered();
     const runtimeEntityId = await this.shellCore.getCurrentEntityId(asPanelSlotId(panelId));
     const connectionId = `${this.runtimeClientPlatform}-${panelId}-${randomUUID()}`;
-    const result = (await this.serverClient.call("panelRuntime", leaseMode, [
-      runtimeEntityId,
-      {
-        slotId: panelId,
-        clientSessionId: this.runtimeClientSessionId,
-        connectionId,
-      },
-    ])) as { acquired: boolean; lease?: { holderLabel?: string } };
+    const lease = {
+      slotId: panelId,
+      clientSessionId: this.runtimeClientSessionId,
+      connectionId,
+    };
+    const result = await (leaseMode === "acquire"
+      ? this.panelRuntime.acquire(runtimeEntityId, lease)
+      : this.panelRuntime.takeOver(runtimeEntityId, lease));
     if (!result.acquired) {
       throw new Error(
         `Panel ${panelId} is running on ${result.lease?.holderLabel ?? "another client"}`
@@ -1568,9 +1594,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     const lease = this.runtimeConnectionBySlot.get(panelId);
     this.runtimeConnectionBySlot.delete(panelId);
     if (lease) {
-      void this.serverClient
-        .call("panelRuntime", "release", [lease.runtimeEntityId, lease.connectionId])
-        .catch(() => {});
+      void this.panelRuntime.release(lease.runtimeEntityId, lease.connectionId).catch(() => {});
     }
     // Close open file handles (skip for browser panels)
     // Note: FS handles are managed server-side, but local cleanup still needed

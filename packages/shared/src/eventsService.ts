@@ -7,16 +7,16 @@
  * - Automatic cleanup when subscriber disconnects
  *
  * Usage:
- *   // Subscribe (from shell/panel/worker)
- *   rpc.call("main", "events.subscribe", ["panel-tree-updated"]);
+ *   // Subscribe through a typed events client, then listen on the transport.
+ *   await events.subscribe("panel-tree-updated");
  *
  *   // Listen for events
  *   rpc.on("event:panel-tree-updated", (data) => { ... });
  */
 
-import { z } from "zod";
 import type { WebSocket } from "ws";
 import type { ServiceDefinition } from "./serviceDefinition.js";
+import { eventsMethods } from "./serviceSchemas/events.js";
 import type { ServiceContext, CallerKind } from "./serviceDispatcher.js";
 import { isValidEventName, type EventName, type EventPayloads } from "./events.js";
 
@@ -377,11 +377,7 @@ export function createEventsServiceDefinition(
     name: "events",
     description: "Event subscriptions",
     policy: { allowed: ["shell", "app", "panel", "server", "worker", "do", "extension"] },
-    methods: {
-      subscribe: { args: z.tuple([z.string()]) },
-      unsubscribe: { args: z.tuple([z.string()]) },
-      unsubscribeAll: { args: z.tuple([]) },
-    },
+    methods: eventsMethods,
     handler: async (ctx, method, args) => {
       switch (method) {
         case "subscribe": {

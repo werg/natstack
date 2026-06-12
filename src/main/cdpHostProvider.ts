@@ -70,6 +70,13 @@ export interface CdpHostProviderOptions {
   reconnectDelayMs?: number;
   diagnosticsStore?: RuntimeDiagnosticsStore;
   onHostCommand?: (targetId: string, action: string, args: unknown[]) => unknown | Promise<unknown>;
+  /**
+   * Forward a panel diagnostic to the server so it lands in the per-unit
+   * diagnostics store (queryable via `workspace.units.diagnostics`). Invoked
+   * for warn/error console output and all lifecycle events; full console
+   * history stays local to the shell, served via the CDP host.
+   */
+  forwardDiagnostic?: (targetId: string, entry: PanelConsoleHistoryEntry) => void;
 }
 
 interface ProviderMessage {
@@ -492,6 +499,16 @@ export class CdpHostProvider {
   }
 
   private persistPanelDiagnostic(targetId: string, entry: PanelConsoleHistoryEntry): void {
+    if (
+      this.options.forwardDiagnostic &&
+      (entry.source === "lifecycle" || entry.level === "warning" || entry.level === "error")
+    ) {
+      try {
+        this.options.forwardDiagnostic(targetId, entry);
+      } catch {
+        // Best-effort: forwarding must never break local capture.
+      }
+    }
     this.options.diagnosticsStore?.record({
       entityId: targetId,
       kind: "panel",

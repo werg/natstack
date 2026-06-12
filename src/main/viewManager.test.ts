@@ -72,6 +72,7 @@ vi.mock("electron", () => {
     getContentSize: vi.fn().mockReturnValue([1200, 800]),
     isDestroyed: vi.fn().mockReturnValue(false),
     isVisible: vi.fn().mockReturnValue(true),
+    isFocused: vi.fn().mockReturnValue(true),
     on: vi.fn(),
   };
 

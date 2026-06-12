@@ -5,45 +5,18 @@ import * as path from "path";
 import { Transform } from "stream";
 import { pipeline } from "stream/promises";
 import type { IncomingMessage, ServerResponse } from "http";
-import { z } from "zod";
 import { createDevLogger } from "@natstack/dev-log";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
-import type { ServicePolicy } from "@natstack/shared/servicePolicy";
+import {
+  BLOBSTORE_READ_POLICY as READ_POLICY,
+  DIGEST_RE,
+  blobstoreMethods,
+} from "@natstack/shared/serviceSchemas/blobstore";
 import type { ServiceRouteDecl } from "../routeRegistry.js";
 import type { ServiceWithRoutes } from "../serviceWithHttpRoutes.js";
 import { assertPresent } from "../../lintHelpers";
 
 const log = createDevLogger("BlobstoreService");
-
-const DIGEST_RE = /^[0-9a-f]{64}$/;
-const PREFIX_RE = /^[0-9a-f]{0,64}$/;
-const READ_POLICY: ServicePolicy = { allowed: ["panel", "app", "worker", "do", "shell", "server"] };
-const ADMIN_POLICY: ServicePolicy = { allowed: ["shell", "server"] };
-
-const DigestSchema = z.string().regex(DIGEST_RE);
-const Base64Schema = z.string().refine((value) => {
-  try {
-    return (
-      Buffer.from(value, "base64").toString("base64").replace(/=+$/u, "") ===
-      value.replace(/=+$/u, "")
-    );
-  } catch {
-    return false;
-  }
-}, "Invalid base64 payload");
-const ListOptsSchema = z
-  .object({
-    prefix: z.string().regex(PREFIX_RE).optional(),
-    limit: z.number().int().positive().max(100_000).optional(),
-  })
-  .optional();
-const PruneOptsSchema = z.object({
-  referenced: z.array(DigestSchema),
-  dryRun: z.boolean().optional(),
-  olderThanMs: z.number().int().nonnegative().optional(),
-  limit: z.number().int().positive().max(100_000).optional(),
-});
-const ListArgsSchema = z.union([z.tuple([]), z.tuple([ListOptsSchema])]);
 
 export interface BlobstoreServiceDeps {
   blobsDir: string;
@@ -387,87 +360,7 @@ export function createBlobstoreService(deps: BlobstoreServiceDeps): ServiceWithR
     name: "blobstore",
     description: "Per-workspace content-addressable blob storage",
     policy: READ_POLICY,
-    methods: {
-      has: { args: z.tuple([DigestSchema]), returns: z.boolean(), policy: READ_POLICY },
-      stat: {
-        args: z.tuple([DigestSchema]),
-        returns: z.object({ size: z.number(), mtime: z.number() }).nullable(),
-        policy: READ_POLICY,
-      },
-      putText: {
-        args: z.tuple([z.string()]),
-        returns: z.object({ digest: z.string(), size: z.number() }),
-        policy: READ_POLICY,
-      },
-      getText: {
-        args: z.tuple([DigestSchema]),
-        returns: z.string().nullable(),
-        policy: READ_POLICY,
-      },
-      /**
-       * UTF-8 text slice. The offset/length are bytes (so they
-       * compose with `stat.size`) but the returned string is decoded
-       * as UTF-8 — partial codepoints at slice boundaries become
-       * U+FFFD replacement chars rather than corrupted bytes. Use
-       * `getRangeBytes` if you need a raw binary slice.
-       */
-      getRange: {
-        args: z.tuple([DigestSchema, z.number().int().nonnegative(), z.number().int().positive()]),
-        returns: z.string().nullable(),
-        policy: READ_POLICY,
-      },
-      /**
-       * Raw byte slice — base64-encoded on the wire so binary blobs
-       * (PDFs, images) round-trip intact. Caller decodes with
-       * `Buffer.from(result.bytesBase64, "base64")` (or equivalent).
-       */
-      getRangeBytes: {
-        args: z.tuple([DigestSchema, z.number().int().nonnegative(), z.number().int().positive()]),
-        returns: z.object({ bytesBase64: z.string() }).nullable(),
-        policy: READ_POLICY,
-      },
-      grep: {
-        args: z.tuple([
-          DigestSchema,
-          z.string(),
-          z
-            .object({
-              caseInsensitive: z.boolean().optional(),
-              contextLines: z.number().int().nonnegative().max(10).optional(),
-              maxMatches: z.number().int().positive().max(500).optional(),
-            })
-            .optional(),
-        ]),
-        returns: z
-          .array(
-            z.object({
-              lineNumber: z.number(),
-              line: z.string(),
-              before: z.array(z.string()),
-              after: z.array(z.string()),
-            })
-          )
-          .nullable(),
-        policy: READ_POLICY,
-      },
-      putBase64: {
-        args: z.tuple([Base64Schema]),
-        returns: z.object({ digest: z.string(), size: z.number() }),
-        policy: READ_POLICY,
-      },
-      getBase64: {
-        args: z.tuple([DigestSchema]),
-        returns: z.string().nullable(),
-        policy: READ_POLICY,
-      },
-      delete: { args: z.tuple([DigestSchema]), returns: z.boolean(), policy: ADMIN_POLICY },
-      list: { args: ListArgsSchema, returns: z.array(z.string()), policy: ADMIN_POLICY },
-      pruneUnreferenced: {
-        args: z.tuple([PruneOptsSchema]),
-        returns: z.object({ deleted: z.array(z.string()), kept: z.number(), dryRun: z.boolean() }),
-        policy: ADMIN_POLICY,
-      },
-    },
+    methods: blobstoreMethods,
     handler: async (_ctx, method, args) => {
       switch (method) {
         case "has":

@@ -1,18 +1,17 @@
-import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { PanelOrchestrator } from "../panelOrchestrator.js";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import type { PanelView } from "../panelView.js";
 import type { ViewManager } from "../viewManager.js";
 import type {
-  BranchInfo,
-  CommitInfo,
   PanelFocusResult,
   PanelNavigationState,
   ThemeAppearance,
-  WorkspaceNode,
 } from "@natstack/shared/types";
 import type { ServerClient } from "../serverClient.js";
+import { createTypedServiceClient } from "@natstack/shared/typedServiceClient";
+import { gitMethods } from "@natstack/shared/serviceSchemas/git";
+import { panelMethods } from "@natstack/shared/serviceSchemas/panel";
 import {
   buildPanelChromeState,
   isBrowserPanelSource,
@@ -26,10 +25,7 @@ import {
 } from "@natstack/shared/panelChrome";
 import { createBrowserDataRpcClient } from "@natstack/browser-data";
 import { getPanelSource } from "@natstack/shared/panel/accessors";
-import {
-  BROWSER_NAVIGATION_TRANSITIONS,
-  type BrowserNavigationIntent,
-} from "@natstack/shared/panelCommands";
+import type { BrowserNavigationIntent } from "@natstack/shared/panelCommands";
 import { createDevLogger } from "@natstack/dev-log";
 import { requireAppCapability } from "./appCapabilities.js";
 
@@ -60,23 +56,10 @@ async function getBrowserAddressOptions(
 }
 
 function createGitAdapter(serverClient: ServerClient) {
-  return {
-    getWorkspaceTree: () =>
-      serverClient.call("git", "getWorkspaceTree", []) as Promise<{ children: WorkspaceNode[] }>,
-    findRepoForPath: (source: string) =>
-      serverClient.call("git", "findRepoForPath", [source]) as Promise<{
-        repoPath: string;
-        relativePath: string;
-      } | null>,
-    status: (repoPath: string) =>
-      serverClient.call("git", "status", [repoPath]) as Promise<
-        PanelRepoState & { repoPath: string }
-      >,
-    listBranches: (repoPath: string) =>
-      serverClient.call("git", "listBranches", [repoPath]) as Promise<BranchInfo[]>,
-    listCommits: (repoPath: string, ref: string, limit: number) =>
-      serverClient.call("git", "listCommits", [repoPath, ref, limit]) as Promise<CommitInfo[]>,
-  };
+  // Typed client derived from the git service's schema table — no casts.
+  return createTypedServiceClient("git", gitMethods, (svc, method, args) =>
+    serverClient.call(svc, method, args)
+  );
 }
 
 function createBrowserDataAdapter(serverClient: ServerClient): AddressProviderBrowserDataAdapter {
@@ -99,17 +82,10 @@ async function getRepoState(
   }
 
   try {
-    const repo = (await serverClient.call("git", "findRepoForPath", [source])) as {
-      repoPath: string;
-      relativePath: string;
-    } | null;
+    const git = createGitAdapter(serverClient);
+    const repo = await git.findRepoForPath(source);
     const repoPath = repo?.repoPath ?? source;
-    const status = (await serverClient.call("git", "status", [repoPath])) as {
-      repoPath: string;
-      branch: string | null;
-      commit: string | null;
-      dirty: boolean;
-    };
+    const status = await git.status(repoPath);
     return {
       repoPath: status.repoPath,
       branch: status.branch,
@@ -134,112 +110,7 @@ export function createPanelShellService(deps: {
     name: "panel",
     description: "Panel tree management, reload, close",
     policy: { allowed: ["shell", "app"] },
-    methods: {
-      loadTree: { args: z.tuple([]) },
-      getTree: { args: z.tuple([]) },
-      getTreeSnapshot: { args: z.tuple([]) },
-      getFocusedPanelId: { args: z.tuple([]) },
-      notifyFocused: { args: z.tuple([z.string()]) },
-      updateTheme: { args: z.tuple([z.unknown()]) },
-      openDevTools: { args: z.tuple([z.string()]) },
-      getChromeState: { args: z.tuple([z.string()]) },
-      getRuntimeLease: { args: z.tuple([z.string()]) },
-      takeOver: { args: z.tuple([z.string()]) },
-      getAddressOptions: {
-        args: z.union([z.tuple([z.string()]), z.tuple([z.string(), z.string().optional()])]),
-      },
-      getBrowserAddressOptions: { args: z.tuple([z.string()]) },
-      markBrowserNavigationIntent: {
-        args: z.tuple([
-          z.string(),
-          z.object({
-            transition: z.enum(BROWSER_NAVIGATION_TRANSITIONS).optional(),
-            typed: z.boolean().optional(),
-          }),
-        ]),
-      },
-      reload: { args: z.tuple([z.string()]) },
-      reloadView: { args: z.tuple([z.string()]) },
-      forceReloadView: { args: z.tuple([z.string()]) },
-      rebuildPanel: { args: z.tuple([z.string()]) },
-      rebuildAndReload: { args: z.tuple([z.string()]) },
-      goBack: { args: z.tuple([z.string()]) },
-      goForward: { args: z.tuple([z.string()]) },
-      unload: { args: z.tuple([z.string()]) },
-      archive: { args: z.tuple([z.string()]) },
-      initGitRepo: { args: z.tuple([z.string()]) },
-      updatePanelState: { args: z.tuple([z.string(), z.record(z.unknown())]) },
-      createAboutPanel: { args: z.tuple([z.unknown()]) },
-      navigate: {
-        args: z.tuple([
-          z.string(),
-          z.string(),
-          z
-            .object({
-              ref: z.string().optional(),
-              contextId: z.string().optional(),
-              stateArgs: z.record(z.unknown()).optional(),
-            })
-            .optional(),
-        ]),
-      },
-      create: {
-        args: z.tuple([
-          z.string(),
-          z
-            .object({
-              name: z.string().optional(),
-              isRoot: z.boolean().optional(),
-              ref: z.string().optional(),
-            })
-            .optional(),
-        ]),
-      },
-      createChild: {
-        args: z.tuple([
-          z.string(),
-          z.string(),
-          z
-            .object({
-              name: z.string().optional(),
-              focus: z.boolean().optional(),
-              ref: z.string().optional(),
-            })
-            .optional(),
-        ]),
-      },
-      createBrowser: {
-        args: z.tuple([
-          z.string(),
-          z.object({ name: z.string().optional(), focus: z.boolean().optional() }).optional(),
-        ]),
-      },
-      createBrowserChild: {
-        args: z.tuple([
-          z.string(),
-          z.string(),
-          z.object({ name: z.string().optional(), focus: z.boolean().optional() }).optional(),
-        ]),
-      },
-      movePanel: {
-        args: z.tuple([
-          z.object({
-            panelId: z.string(),
-            newParentId: z.string().nullable(),
-            targetPosition: z.number(),
-          }),
-        ]),
-      },
-      getChildrenPaginated: {
-        args: z.tuple([z.object({ parentId: z.string(), offset: z.number(), limit: z.number() })]),
-      },
-      getRootPanelsPaginated: {
-        args: z.tuple([z.object({ offset: z.number(), limit: z.number() })]),
-      },
-      getCollapsedIds: { args: z.tuple([]) },
-      setCollapsed: { args: z.tuple([z.string(), z.boolean()]) },
-      expandIds: { args: z.tuple([z.array(z.string())]) },
-    },
+    methods: panelMethods,
     handler: async (ctx, method, args) => {
       const lifecycle = deps.panelOrchestrator;
       const registry = deps.panelRegistry;

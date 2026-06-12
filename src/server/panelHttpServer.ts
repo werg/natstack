@@ -495,11 +495,15 @@ export class PanelHttpServer {
       return;
     }
 
-    // Wait briefly — if build is already cached in buildStore, getBuild returns fast
-    const FAST_RESOLVE_MS = 500;
+    // Hold the HTML request open while the build runs (up to a budget) rather
+    // than racing a short timer: the building placeholder costs a 2s
+    // meta-refresh poll cycle, so serving it for a build that finishes at
+    // 501ms used to add ~2.5s to the edit-reload loop. Cached builds resolve
+    // in milliseconds either way.
+    const BUILD_WAIT_BUDGET_MS = 3_000;
     const resolved = await Promise.race([
       assertPresent(this.buildInFlight.get(flightKey)).then(() => true),
-      new Promise<false>((r) => setTimeout(() => r(false), FAST_RESOLVE_MS)),
+      new Promise<false>((r) => setTimeout(() => r(false), BUILD_WAIT_BUDGET_MS)),
     ]);
 
     if (resolved) {

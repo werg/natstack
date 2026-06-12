@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import { authMethods, CreatePairingInviteArgsSchema } from "@natstack/shared/serviceSchemas/auth";
 import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { ServiceRouteDecl } from "../routeRegistry.js";
 import type { ServiceWithRoutes } from "../serviceWithHttpRoutes.js";
@@ -26,15 +27,6 @@ const IssueDeviceBodySchema = z.object({
 });
 
 const CreatePairingCodeBodySchema = z.object({
-  ttlMs: z
-    .number()
-    .int()
-    .min(30_000)
-    .max(60 * 60 * 1000)
-    .optional(),
-});
-
-const CreatePairingInviteArgsSchema = z.object({
   ttlMs: z
     .number()
     .int()
@@ -115,19 +107,7 @@ export function createAuthService(deps: {
     name: "auth",
     description: "Gateway authentication bootstrap routes",
     policy: { allowed: ["server", "shell", "shell-remote"] },
-    methods: {
-      grantConnection: {
-        args: z.tuple([z.string()]),
-        policy: { allowed: ["server", "shell", "shell-remote", "app"] },
-      },
-      getConnectionInfo: { args: z.tuple([]) },
-      createPairingInvite: {
-        args: z.tuple([CreatePairingInviteArgsSchema.optional()]),
-        policy: { allowed: ["server", "shell", "shell-remote", "app"] },
-      },
-      listDevices: { args: z.tuple([]) },
-      revokeDevice: { args: z.tuple([z.string()]) },
-    },
+    methods: authMethods,
     handler: async (ctx, method, args) => {
       if (method === "grantConnection") {
         capabilityAuthorizer.require(ctx.caller, "panel-hosting", {

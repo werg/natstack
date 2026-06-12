@@ -23,7 +23,6 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import { ServiceError, type ServiceContext } from "@natstack/shared/serviceDispatcher";
 import type { Workspace, WorkspaceConfig } from "@natstack/shared/workspace/types";
@@ -34,7 +33,25 @@ import type {
   HostTargetSelection,
   HostTargetSelectionInput,
 } from "@natstack/shared/hostTargets";
+import { workspaceMethods } from "@natstack/shared/serviceSchemas/workspace";
+import type {
+  WorkspaceAppVersions,
+  WorkspaceUnitDiagnostics,
+  WorkspaceUnitLogRecord,
+  WorkspaceUnitStatus,
+} from "@natstack/shared/serviceSchemas/workspace";
 import type { ApprovalQueue } from "./approvalQueue.js";
+
+// Wire data types live in the shared schema module (single source of truth
+// for server registration and typed clients). Re-exported here because many
+// server-side modules import them from this file.
+export type {
+  WorkspaceAppVersionRecord,
+  WorkspaceAppVersions,
+  WorkspaceUnitDiagnostics,
+  WorkspaceUnitLogRecord,
+  WorkspaceUnitStatus,
+} from "@natstack/shared/serviceSchemas/workspace";
 
 /**
  * Minimal metadata for a skill directory under `<workspace>/skills/<name>/`.
@@ -177,108 +194,12 @@ export interface WorkspaceServiceDeps {
   approvalQueue?: Pick<ApprovalQueue, "requestUserland">;
 }
 
-export interface WorkspaceAppVersionRecord {
-  version: string;
-  target: string;
-  capabilities: string[];
-  activeEv: string | null;
-  activeSha: string | null;
-  activeBundleKey: string;
-  activeDependencyEvs: Record<string, string>;
-  activeExternalDeps: Record<string, string>;
-  activeRuntimeDepsKey: string | null;
-  activatedAt: number;
-}
-
-export interface WorkspaceAppVersions {
-  current: WorkspaceAppVersionRecord | null;
-  previous: WorkspaceAppVersionRecord[];
-  retentionLimit: number;
-}
-
-export interface WorkspaceUnitStatus {
-  name: string;
-  kind: "panel" | "worker" | "extension" | "app";
-  source: string;
-  displayName?: string;
-  status: "running" | "stopped" | "error" | "pending-approval" | "building" | "available";
-  version?: string;
-  ev?: string | null;
-  activeEv?: string | null;
-  activeBundleKey?: string | null;
-  activeRuntimeDepsKey?: string | null;
-  /** Epoch ms when the currently active build was produced (best-effort; null if unknown). */
-  lastBuiltAt?: number | null;
-  /** Worker bindings (DOs, env). Only populated for kind === "worker". */
-  bindings?: Record<string, unknown> | null;
-  /**
-   * Set when an extension install/update approval is currently in flight,
-   * so a "running units" panel can surface a "pending approval" affordance
-   * without polling the approval queue separately.
-   */
-  pendingApproval?: { kind: string; submittedAt: number } | null;
-  /**
-   * Set when current workspace state would change the unit's runtime inputs
-   * (a dependency push, an external-dep bump). Driven by needsBuildRefresh
-   * for extensions; absent for workers/panels in v1.
-   */
-  availableUpdate?: { reason: "dependency"; checkedAt: number } | null;
-  lastError?: string | null;
-  lastErrorDetails?: unknown;
-  target?: string;
-  canRollback?: boolean;
-  rollbackRetentionLimit?: number;
-  previousVersions?: WorkspaceAppVersionRecord[];
-  health?: unknown;
-  methods?: string[];
-  hasFetch?: boolean;
-  respawn?: { attempts: number; nextAttemptAt: number | null } | null;
-  inspectorUrl?: string | null;
-}
-
-export interface WorkspaceUnitLogRecord {
-  workspaceId: string;
-  unitName: string;
-  kind: "extension" | "worker" | "panel" | "app";
-  timestamp: number;
-  level: "debug" | "info" | "warn" | "error";
-  message: string;
-  fields?: Record<string, unknown>;
-  source?: "stdout" | "stderr" | "ctx.log" | "console" | "lifecycle" | "system";
-  /** Monotonic per-unit sequence — exact resume cursor for `sinceSeq` polling. */
-  seq?: number;
-}
-
-export interface WorkspaceUnitDiagnostics {
-  unit: WorkspaceUnitStatus | null;
-  logs: WorkspaceUnitLogRecord[];
-  errors: WorkspaceUnitLogRecord[];
-  dropped: {
-    entries: number;
-    errors: number;
-  };
-  capacity: {
-    entries: number;
-    errors: number;
-  };
-}
-
 type WorkspaceApprovalOperation =
   | "create"
   | "delete"
   | "select"
   | "setInitPanels"
   | "setConfigField";
-
-const HostTargetSchema = z.enum(["electron", "react-native", "terminal"]);
-const HostTargetSelectionInputSchema = z.object({
-  source: z.string().min(1),
-  mode: z.enum(["follow-ref", "pinned-build", "pinned-commit"]).optional(),
-  ref: z.string().min(1).optional(),
-  buildKey: z.string().min(1).optional(),
-  commit: z.string().min(1).optional(),
-  autoSelected: z.boolean().optional(),
-});
 
 function isTrustedWorkspaceCaller(ctx: ServiceContext): boolean {
   return ctx.caller.runtime.kind === "shell" || ctx.caller.runtime.kind === "server";
@@ -453,8 +374,10 @@ async function requireWorkspaceApproval(
 export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefinition {
   const { workspace } = deps;
 
-  // Catalog-dependent methods are conditionally registered based on whether
-  // we have a workspace catalog (`centralData`) at all. In remote-server /
+  // The method table lives in the shared schema module (the single source of
+  // truth typed clients derive from). Catalog-dependent methods (`create` /
+  // `delete`) are conditionally registered based on whether we have a
+  // workspace catalog (`centralData`) at all. In remote-server /
   // mobile-client mode there's no catalog here, so creation/deletion can't
   // be fulfilled — and advertising them only to fail with "Workspace creation
   // not available" AFTER schema validation is confusing for callers (they
@@ -462,18 +385,11 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
   // happen to be schema-valid). Omit the methods entirely instead: callers
   // get a single, consistent "Unknown workspace method: create" that makes
   // it obvious the API isn't available in this mode.
-  const catalogMethods: ServiceDefinition["methods"] = deps.centralData
-    ? {
-        create: {
-          args: z.tuple([z.string(), z.object({ forkFrom: z.string().optional() }).optional()]),
-          policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
-        },
-        delete: {
-          args: z.tuple([z.string()]),
-          policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
-        },
-      }
-    : {};
+  let methods: ServiceDefinition["methods"] = workspaceMethods;
+  if (!deps.centralData) {
+    const { create: _create, delete: _delete, ...catalogFreeMethods } = workspaceMethods;
+    methods = catalogFreeMethods;
+  }
 
   return {
     name: "workspace",
@@ -481,113 +397,7 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
     policy: {
       allowed: ["shell", "shell-remote", "app", "panel", "worker", "do", "extension", "server"],
     },
-    methods: {
-      // Read methods
-      getInfo: { args: z.tuple([]) },
-      list: { args: z.tuple([]) },
-      getActive: { args: z.tuple([]) },
-      getActiveEntry: { args: z.tuple([]) },
-      getConfig: { args: z.tuple([]) },
-      // Catalog-dependent write methods (conditionally registered above).
-      ...catalogMethods,
-      // SECURITY (#33, T2 in audit summary): `select` triggers an
-      // app.relaunch() — disruptive and reachable only via shell UI.
-      select: {
-        args: z.tuple([z.string()]),
-        policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
-      },
-      setInitPanels: {
-        args: z.tuple([
-          z.array(
-            z.object({
-              source: z.string(),
-              stateArgs: z.record(z.unknown()).optional(),
-            })
-          ),
-        ]),
-        policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
-      },
-      // SECURITY: arbitrary config-field writes — server-internal use
-      // by default, but userland can request a one-shot approval.
-      setConfigField: {
-        args: z.tuple([z.string(), z.unknown()]),
-        policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
-      },
-      // Agent resource loading — read AGENTS.md and skill definitions directly
-      // from the workspace source tree. Kept server-side because they touch
-      // the filesystem; panels/workers call these over the RPC transport.
-      getAgentsMd: { args: z.tuple([]) },
-      listSkills: { args: z.tuple([]) },
-      readSkill: { args: z.tuple([z.string()]) },
-      "units.list": { args: z.tuple([]) },
-      "units.inspector": { args: z.tuple([z.string()]) },
-      "units.restart": { args: z.tuple([z.string()]) },
-      "units.logs": {
-        args: z.tuple([
-          z.string(),
-          z
-            .object({
-              since: z.number().optional(),
-              sinceSeq: z.number().optional(),
-              level: z.enum(["debug", "info", "warn", "error"]).optional(),
-              limit: z.number().int().positive().max(1000).optional(),
-            })
-            .optional(),
-        ]),
-      },
-      "units.diagnostics": {
-        args: z.tuple([
-          z.string(),
-          z
-            .object({
-              since: z.number().optional(),
-              sinceSeq: z.number().optional(),
-              level: z.enum(["debug", "info", "warn", "error"]).optional(),
-              limit: z.number().int().positive().max(1000).optional(),
-              errorLimit: z.number().int().positive().max(500).optional(),
-            })
-            .optional(),
-        ]),
-      },
-      "units.versions": {
-        args: z.tuple([z.string()]),
-      },
-      "units.rollback": {
-        args: z.tuple([z.string(), z.object({ buildKey: z.string().optional() }).optional()]),
-      },
-      "units.bakeAppDist": {
-        args: z.tuple([z.string(), z.object({ outDir: z.string().optional() }).optional()]),
-        policy: { allowed: ["shell", "server"] },
-      },
-      "hostTargets.list": {
-        args: z.tuple([HostTargetSchema]),
-        policy: { allowed: ["shell", "shell-remote", "server"] },
-      },
-      "hostTargets.getSelection": {
-        args: z.tuple([HostTargetSchema]),
-        policy: { allowed: ["shell", "shell-remote", "server"] },
-      },
-      "hostTargets.setSelection": {
-        args: z.tuple([HostTargetSchema, HostTargetSelectionInputSchema]),
-        policy: { allowed: ["shell", "shell-remote", "server"] },
-      },
-      "hostTargets.clearSelection": {
-        args: z.tuple([HostTargetSchema]),
-        policy: { allowed: ["shell", "shell-remote", "server"] },
-      },
-      "hostTargets.versions": {
-        args: z.tuple([HostTargetSchema, z.string()]),
-        policy: { allowed: ["shell", "shell-remote", "server"] },
-      },
-      "hostTargets.preparePinnedCommit": {
-        args: z.tuple([HostTargetSchema, z.string(), z.string()]),
-        policy: { allowed: ["shell", "shell-remote", "server"] },
-      },
-      "hostTargets.launch": {
-        args: z.tuple([HostTargetSchema]),
-        policy: { allowed: ["shell", "shell-remote", "server"] },
-      },
-    },
+    methods,
     handler: async (ctx, method, args) => {
       switch (method) {
         // -----------------------------------------------------------------
@@ -812,6 +622,7 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
               unit: null,
               logs,
               errors: logs.filter((entry) => entry.level === "error"),
+              builds: [],
               dropped: { entries: 0, errors: 0 },
               capacity: { entries: 0, errors: 0 },
             };
@@ -833,7 +644,7 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
         }
 
         case "units.versions": {
-          if (!deps.listAppVersions) return { current: null, previous: [] };
+          if (!deps.listAppVersions) return { current: null, previous: [], retentionLimit: 0 };
           const [name] = args as [string];
           await requireAppUnitManagementAccess(deps, ctx, method, name);
           return await deps.listAppVersions(name);
@@ -909,7 +720,7 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
         }
 
         case "hostTargets.launch": {
-          if (!deps.launchHostTarget) return false;
+          if (!deps.launchHostTarget) return { launched: false };
           const [target] = args as [HostTarget];
           return { launched: await deps.launchHostTarget(target) };
         }

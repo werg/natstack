@@ -1,4 +1,6 @@
 import type { UnitRegistryEntryBase } from "@natstack/unit-host";
+import { extensionsMethods } from "@natstack/shared/serviceSchemas/extensions";
+import { createTypedServiceClient } from "@natstack/shared/typedServiceClient";
 
 export interface Disposable {
   dispose(): void;
@@ -121,6 +123,13 @@ const IGNORED_PROXY_PROPS = new Set<PropertyKey>([
 
 const PROMISE_MISUSE_PROPS = new Set<PropertyKey>(["catch", "finally"]);
 
+/** Typed `extensions.*` client over a `call(target, method, args)` transport. */
+function createExtensionsServiceClient(rpc: Pick<ExtensionsClientRpc, "call">) {
+  return createTypedServiceClient("extensions", extensionsMethods, (service, method, args) =>
+    rpc.call("main", `${service}.${method}`, args),
+  );
+}
+
 /**
  * Build the invocation proxy for a single extension. Method access becomes a
  * unary `extensions.invoke` call, or `extensions.invokeStream` when the method
@@ -132,6 +141,7 @@ export function createExtensionProxy<T extends object>(
   name: string,
   resolveStreaming: (method: string) => boolean | Promise<boolean>,
 ): T {
+  const extensionsService = createExtensionsServiceClient(rpc);
   return new Proxy(Object.create(null), {
     get(_target, prop) {
       if (IGNORED_PROXY_PROPS.has(prop) || typeof prop !== "string") return undefined;
@@ -149,8 +159,10 @@ export function createExtensionProxy<T extends object>(
       return async (...args: unknown[]) => {
         const streaming = await resolveStreaming(prop);
         return streaming
-          ? rpc.stream("main", "extensions.invokeStream", [name, prop, args])
-          : rpc.call("main", "extensions.invoke", [name, prop, args]);
+          ? // invokeStream stays on the raw streaming transport: the typed
+            // client only models promise-returning calls, not Response streams.
+            rpc.stream("main", "extensions.invokeStream", [name, prop, args])
+          : extensionsService.invoke(name, prop, args);
       };
     },
   }) as T;
@@ -163,13 +175,14 @@ export function createExtensionProxy<T extends object>(
  * overridable through `use(name, { streamingMethods })`.
  */
 export function createExtensionsClient(rpc: ExtensionsClientRpc): ExtensionsClient {
+  const extensionsService = createExtensionsServiceClient(rpc);
   const streamingCache = new Map<string, Promise<Set<string>>>();
   const declaredStreaming = (name: string): Promise<Set<string>> => {
     let cached = streamingCache.get(name);
     if (!cached) {
-      cached = rpc
-        .call("main", "extensions.streamingMethods", [name])
-        .then((methods) => new Set((methods as string[] | null) ?? []))
+      cached = extensionsService
+        .streamingMethods(name)
+        .then((methods) => new Set(methods ?? []))
         .catch(() => {
           // Don't pin a transient failure as "no streaming methods" for the
           // client's lifetime — drop the entry so the next call re-fetches.
@@ -194,11 +207,11 @@ export function createExtensionsClient(rpc: ExtensionsClientRpc): ExtensionsClie
       const unsubscribe = rpc.on
         ? rpc.on(`event:${eventName}`, (event) => cb(event.payload))
         : () => {};
-      void rpc.call("main", "extensions.on", [name, event]);
+      void extensionsService.on(name, event);
       return { dispose: unsubscribe };
     },
-    list: () => rpc.call("main", "extensions.list", []) as Promise<RegistryEntry[]>,
-    reload: (name) => rpc.call("main", "extensions.reload", [name]) as Promise<void>,
+    list: () => extensionsService.list(),
+    reload: (name) => extensionsService.reload(name),
   };
   return client;
 }

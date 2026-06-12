@@ -6,8 +6,11 @@ import {
   type RpcEnvelope,
 } from "@natstack/rpc";
 import type { ApprovalDecision, PendingApproval } from "@natstack/shared/approvals";
-import { RPC_METHODS } from "@natstack/shared/approvalContract";
 import { getApprovalCategoryLabel, getApprovalCopy } from "@natstack/shared/approvalCopy";
+import { createTypedServiceClient } from "@natstack/shared/typedServiceClient";
+import { appMethods } from "@natstack/shared/serviceSchemas/app";
+import { workspaceMethods } from "@natstack/shared/serviceSchemas/workspace";
+import { shellApprovalMethods } from "@natstack/shared/serviceSchemas/shellApproval";
 
 type ShellTransportBridge = {
   send: (targetId: string, message: unknown) => Promise<void>;
@@ -44,16 +47,21 @@ const transport: EnvelopeRpcTransport = {
 };
 
 const rpc: RpcClient = createRpcClient({ selfId: "bootstrap", callerKind: "app", transport });
+const workspaceService = createTypedServiceClient(
+  "workspace",
+  workspaceMethods,
+  (service, method, args) => rpc.call("main", `${service}.${method}`, args)
+);
+const appService = createTypedServiceClient("app", appMethods, (service, method, args) =>
+  rpc.call("main", `${service}.${method}`, args)
+);
+const shellApprovalService = createTypedServiceClient(
+  "shellApproval",
+  shellApprovalMethods,
+  (service, method, args) => rpc.call("main", `${service}.${method}`, args)
+);
 let pending: PendingApproval[] = [];
 let rendering = false;
-
-type WorkspaceEntry = { name: string; lastOpened?: number };
-type WorkspaceUnitLogRecord = {
-  timestamp: number;
-  level: string;
-  unitName: string;
-  message: string;
-};
 
 function setOutput(message: string): void {
   if (!output) return;
@@ -70,7 +78,7 @@ function callerLabel(approval: PendingApproval): string {
 }
 
 async function decide(approval: PendingApproval, decision: ApprovalDecision): Promise<void> {
-  await rpc.call("main", RPC_METHODS.shellApproval.resolve, [approval.approvalId, decision]);
+  await shellApprovalService.resolve(approval.approvalId, decision);
   pending = pending.filter((item) => item.approvalId !== approval.approvalId);
   render();
 }
@@ -128,7 +136,7 @@ function render(): void {
 
 async function refresh(): Promise<void> {
   try {
-    pending = await rpc.call<PendingApproval[]>("main", RPC_METHODS.shellApproval.listPending, []);
+    pending = await shellApprovalService.listPending();
     render();
   } catch (err) {
     approvalsContainer.className = "empty";
@@ -144,8 +152,8 @@ function workspaceEntryName(entry: unknown): string | null {
 async function refreshWorkspaces(): Promise<void> {
   if (!workspaceSelect) return;
   try {
-    const entries = await rpc.call<WorkspaceEntry[]>("main", "workspace.list", []);
-    const active = await rpc.call<string>("main", "workspace.getActive", []);
+    const entries = await workspaceService.list();
+    const active = await workspaceService.getActive();
     workspaceSelect.replaceChildren();
     for (const entry of entries) {
       const name = workspaceEntryName(entry);
@@ -163,7 +171,7 @@ async function refreshWorkspaces(): Promise<void> {
 
 async function rollbackShell(): Promise<void> {
   try {
-    const result = await rpc.call("main", "workspace.units.rollback", ["@workspace-apps/shell"]);
+    const result = await workspaceService.units.rollback("@workspace-apps/shell");
     setOutput(`Shell app rolled back.\n${JSON.stringify(result, null, 2)}`);
   } catch (err) {
     setOutput(`Shell rollback failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -172,10 +180,7 @@ async function rollbackShell(): Promise<void> {
 
 async function showLogs(): Promise<void> {
   try {
-    const rows = await rpc.call<WorkspaceUnitLogRecord[]>("main", "workspace.units.logs", [
-      "@workspace-apps/shell",
-      { limit: 100 },
-    ]);
+    const rows = await workspaceService.units.logs("@workspace-apps/shell", { limit: 100 });
     if (rows.length === 0) {
       setOutput("No shell app logs are available.");
       return;
@@ -195,7 +200,7 @@ async function showLogs(): Promise<void> {
 
 async function openWorkspacePath(): Promise<void> {
   try {
-    await rpc.call("main", "app.openWorkspacePath", []);
+    await appService.openWorkspacePath();
     setOutput("Workspace path opened.");
   } catch (err) {
     setOutput(`Open workspace failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -206,7 +211,7 @@ async function switchWorkspace(): Promise<void> {
   const name = workspaceSelect?.value;
   if (!name) return;
   try {
-    await rpc.call("main", "workspace.select", [name]);
+    await workspaceService.select(name);
     setOutput(`Switching to workspace ${name}...`);
   } catch (err) {
     setOutput(`Workspace switch failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -217,7 +222,7 @@ async function createWorkspace(): Promise<void> {
   const name = workspaceName?.value.trim();
   if (!name) return;
   try {
-    await rpc.call("main", "workspace.create", [name]);
+    await workspaceService.create(name);
     setOutput(`Workspace ${name} created.`);
     if (workspaceName) workspaceName.value = "";
     await refreshWorkspaces();

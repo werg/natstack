@@ -1,5 +1,5 @@
-import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import { buildMethods } from "@natstack/shared/serviceSchemas/build";
 import type { BuildSystemV2, BuildUnitOptions } from "../buildV2/index.js";
 import { computeBuildKey } from "../buildV2/effectiveVersion.js";
 
@@ -8,50 +8,7 @@ export function createBuildService(deps: { buildSystem: BuildSystemV2 }): Servic
     name: "build",
     description: "Build system (getBuild, getBuildNpm, recompute, gc, getAboutPages)",
     policy: { allowed: ["panel", "app", "shell", "server", "worker", "do", "extension"] },
-    methods: {
-      getBuild: {
-        args: z.tuple([
-          z.string(),
-          z.string().optional(),
-          z
-            .object({
-              library: z.boolean().optional(),
-              externals: z.array(z.string()).optional(),
-            })
-            .optional(),
-        ]),
-      },
-      getBuildNpm: {
-        args: z.tuple([z.string(), z.string(), z.array(z.string()).optional()]),
-      },
-      getBuildMetadata: { args: z.tuple([z.string()]) },
-      getEffectiveVersion: { args: z.tuple([z.string()]) },
-      inspectBuildProvenance: {
-        description:
-          "Resolve a workspace build unit and report its effective version, immutable build keys, and cached artifact metadata.",
-        args: z.tuple([z.string()]),
-      },
-      listRecentBuildEvents: {
-        description:
-          "List recent push-triggered build lifecycle events and failures, optionally filtered by unit name or workspace-relative path.",
-        args: z.tuple([z.string().optional()]),
-      },
-      doctorExtension: {
-        description:
-          "Inspect an extension manifest, dependency routing, cached metadata, and smoke/build status.",
-        args: z.tuple([z.string()]),
-      },
-      recompute: { args: z.tuple([]) },
-      gc: { args: z.tuple([z.array(z.string())]) },
-      getAboutPages: { args: z.tuple([]) },
-      hasUnit: { args: z.tuple([z.string()]) },
-      getPanelMetadata: { args: z.tuple([z.string()]) },
-      listSkills: {
-        description:
-          "List available workspace skill packages that can be loaded via the eval imports parameter.",
-        args: z.tuple([]),
-      },
-    },
+    methods: buildMethods,
     handler: async (_ctx, method, args) => {
       const bs = deps.buildSystem;
       switch (method) {

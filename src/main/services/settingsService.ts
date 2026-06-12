@@ -1,5 +1,5 @@
-import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import { settingsMethods } from "@natstack/shared/serviceSchemas/settings";
 import type { SettingsData, ModelRoleConfig } from "@natstack/shared/types";
 import type { ServerClient } from "../serverClient.js";
 import { loadCentralConfig } from "@natstack/shared/workspace/loader";
@@ -14,9 +14,7 @@ export function createSettingsService(_deps: {
     name: "settings",
     description: "Settings, model roles",
     policy: { allowed: ["shell", "app"] },
-    methods: {
-      getData: { args: z.tuple([]) },
-    },
+    methods: settingsMethods,
     handler: async (ctx, method, _args) => {
       switch (method) {
         case "getData": {

@@ -1,3 +1,5 @@
+import { extensionsMethods } from "@natstack/shared/serviceSchemas/extensions";
+import { createTypedServiceClient } from "@natstack/shared/typedServiceClient";
 import type { ImportedPassword } from "../types.js";
 import type { RecordHistoryVisitRequest, UpdateHistoryTitleRequest } from "../types.js";
 import type { StoredBookmark, StoredCookie, StoredHistory, StoredPassword, StoredSearchEngine } from "../storage/types.js";
@@ -47,12 +49,12 @@ export function createBrowserDataRpcClient(rpc: RpcLike): BrowserDataClient {
     // Browser data lives in the @workspace-extensions/browser-data extension —
     // calls go through the dispatcher's `extensions.invoke` relay rather than a
     // dedicated host service.
+    const extensions = createTypedServiceClient("extensions", extensionsMethods, (service, method, args) => rpc.call(service, method, args));
     const call = <T>(method: string, ...args: unknown[]) => {
-        return rpc.call("extensions", "invoke", [
-                BROWSER_DATA_EXTENSION,
-                method,
-                args,
-            ]) as Promise<T>;
+        // Only the outer extensions.invoke call is typed — the inner method
+        // names are dynamic extension methods outside the wire schema, so each
+        // wrapper keeps its local result cast.
+        return extensions.invoke(BROWSER_DATA_EXTENSION, method, args) as Promise<T>;
     };
     return {
         cookies: {

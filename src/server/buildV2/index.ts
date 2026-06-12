@@ -171,6 +171,13 @@ export interface BuildSystemV2 {
   listRecentBuildEvents(unitName?: string): BuildSystemBuildEvent[];
 
   /**
+   * Subscribe to push-triggered build lifecycle events (started/complete/error).
+   * Returns an unsubscribe function. Used to feed unit diagnostics so build
+   * failures are queryable alongside runtime logs.
+   */
+  onBuildEvent(callback: (event: BuildSystemBuildEvent) => void): () => void;
+
+  /**
    * Register a callback for when a push-triggered build completes.
    * The callback receives the source path (e.g. "panels/chat") so the
    * HTTP server can invalidate its serving cache.
@@ -285,15 +292,24 @@ export async function initBuildSystemV2(
   let currentContentHashes: ContentHashMap = initResult.contentHashes;
   let currentGraph = graph;
   const recentBuildEvents: BuildSystemBuildEvent[] = [];
+  const buildEventListeners = new Set<(event: BuildSystemBuildEvent) => void>();
   const recordBuildEvent = (event: Omit<BuildSystemBuildEvent, "relativePath" | "timestamp">) => {
     const node = currentGraph.tryGet(event.name);
-    recentBuildEvents.push({
+    const full: BuildSystemBuildEvent = {
       ...event,
       relativePath: node?.relativePath,
       timestamp: new Date().toISOString(),
-    });
+    };
+    recentBuildEvents.push(full);
     if (recentBuildEvents.length > 200) {
       recentBuildEvents.splice(0, recentBuildEvents.length - 200);
+    }
+    for (const listener of buildEventListeners) {
+      try {
+        listener(full);
+      } catch (err) {
+        console.error("[BuildV2] build-event listener failed:", err);
+      }
     }
   };
 
@@ -706,6 +722,11 @@ export async function initBuildSystemV2(
           )
         : recentBuildEvents;
       return [...events];
+    },
+
+    onBuildEvent(callback: (event: BuildSystemBuildEvent) => void): () => void {
+      buildEventListeners.add(callback);
+      return () => buildEventListeners.delete(callback);
     },
 
     onPushBuild(callback: (source: string) => void): void {

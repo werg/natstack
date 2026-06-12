@@ -3,7 +3,6 @@ import { lstatSync } from "fs";
 import * as fsPromises from "fs/promises";
 import { readFile, mkdir, writeFile } from "fs/promises";
 import { resolve, join, dirname, relative, isAbsolute } from "path";
-import { z } from "zod";
 import YAML from "yaml";
 import { GitClient } from "@natstack/git";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
@@ -25,6 +24,7 @@ import {
 } from "@natstack/shared/workspace/remotes";
 import { WORKSPACE_IMPORT_PARENT_DIRS } from "@natstack/shared/workspace/sourceDirs";
 import { execGitFileAsync } from "@natstack/shared/gitRuntime";
+import { gitMethods } from "@natstack/shared/serviceSchemas/git";
 import type { ApprovalQueue } from "./approvalQueue.js";
 import type { CapabilityGrantStore } from "./capabilityGrantStore.js";
 import type { EgressProxy } from "./egressProxy.js";
@@ -95,64 +95,11 @@ function assertSafeRef(ref: string, label = "ref"): string {
 }
 
 export function createGitService(deps: GitServiceDeps): ServiceDefinition {
-  const remoteSchema = z.object({
-    name: z.string(),
-    url: z.string(),
-  });
-  const importProjectSchema = z.object({
-    path: z.string(),
-    remote: remoteSchema,
-    credentialId: z.string().optional(),
-  });
-  const completeWorkspaceDependenciesSchema = z.object({
-    credentialId: z.string().optional(),
-  });
-  const contextDiffOptionsSchema = z.object({
-    staged: z.boolean().optional(),
-  });
   return {
     name: "git",
     description: "Git operations and scoped filesystem access for panels",
     policy: { allowed: ["shell", "panel", "app", "server", "worker", "do", "extension"] },
-    methods: {
-      getWorkspaceTree: { args: z.tuple([]) },
-      findRepoForPath: { args: z.tuple([z.string()]) },
-      status: { args: z.tuple([z.string()]) },
-      // context* methods: entity callers (panel/app/worker/do/extension) pass
-      // [repoPath, ...]; explicit-context callers (server/shell/harness) prepend
-      // their contextId: [contextId, repoPath, ...] — same convention as fs.*.
-      contextStatus: {
-        args: z.union([z.tuple([z.string()]), z.tuple([z.string(), z.string()])]),
-      },
-      contextAddAll: {
-        args: z.union([z.tuple([z.string()]), z.tuple([z.string(), z.string()])]),
-      },
-      contextDiff: {
-        args: z.union([
-          z.tuple([z.string()]),
-          z.tuple([z.string(), contextDiffOptionsSchema.optional()]),
-          z.tuple([z.string(), z.string()]),
-          z.tuple([z.string(), z.string(), contextDiffOptionsSchema.optional()]),
-        ]),
-      },
-      contextCommit: {
-        args: z.union([
-          z.tuple([z.string(), z.string()]),
-          z.tuple([z.string(), z.string(), z.string()]),
-        ]),
-      },
-      listBranches: { args: z.tuple([z.string()]) },
-      listCommits: { args: z.tuple([z.string(), z.string(), z.number()]) },
-      resolveRef: { args: z.tuple([z.string(), z.string()]) },
-      createRepo: { args: z.tuple([z.string()]) },
-      setSharedRemote: { args: z.tuple([z.string(), remoteSchema]) },
-      removeSharedRemote: { args: z.tuple([z.string(), z.string()]) },
-      importProject: { args: z.tuple([importProjectSchema]) },
-      completeWorkspaceDependencies: {
-        args: z.union([z.tuple([]), z.tuple([completeWorkspaceDependenciesSchema.optional()])]),
-      },
-      ensureRepoPresentInContexts: { args: z.tuple([z.string()]) },
-    },
+    methods: gitMethods,
     handler: async (ctx, method, args) => {
       const g = deps.gitServer;
 

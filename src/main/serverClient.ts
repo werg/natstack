@@ -12,7 +12,9 @@ import {
 } from "@natstack/rpc";
 import { wsClientTransport } from "@natstack/rpc/transports/wsClient";
 import type { WsLike } from "@natstack/rpc/protocol/wsAdapter";
+import { authMethods } from "@natstack/shared/serviceSchemas/auth";
 import type { CallerKind } from "@natstack/shared/serviceDispatcher";
+import { createTypedServiceClient } from "@natstack/shared/typedServiceClient";
 import { createPinnedTlsSocket } from "./tlsPinning.js";
 
 export type ConnectionStatus = RpcConnectionStatus;
@@ -167,6 +169,9 @@ export async function createServerClient(
     callerKind: "server",
     transport,
   });
+  const authClient = createTypedServiceClient("auth", authMethods, (service, method, args) =>
+    rpc.call("main", `${service}.${method}`, args)
+  );
 
   type ScopedClient = {
     transport: ReturnType<typeof wsClientTransport>;
@@ -182,9 +187,7 @@ export async function createServerClient(
     if (caller.callerKind !== "app") {
       throw new Error(`Scoped server RPC is not available for ${caller.callerKind} callers`);
     }
-    const grant = await rpc.call<{ token: string }>("main", "auth.grantConnection", [
-      caller.callerId,
-    ]);
+    const grant = await authClient.grantConnection(caller.callerId);
     const scopedTransport = wsClientTransport({
       selfId: caller.callerId,
       getWsUrl,

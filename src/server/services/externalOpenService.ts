@@ -1,7 +1,7 @@
-import { z } from "zod";
 import type { EventService } from "@natstack/shared/eventsService";
 import { assertAllowedOAuthExternalUrl } from "@natstack/shared/externalOpen";
 import type { OpenExternalOptions, OpenExternalResult } from "@natstack/shared/externalOpen";
+import { externalOpenMethods } from "@natstack/shared/serviceSchemas/externalOpen";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
 import type { ApprovalQueue } from "./approvalQueue.js";
@@ -11,11 +11,6 @@ import type { DeferredResult } from "@natstack/shared/serviceDispatcher";
 
 const CAPABILITY = "external-browser-open";
 const OPEN_EXTERNAL_ALLOWED_SCHEMES = new Set(["http:", "https:", "mailto:"]);
-const OPEN_EXTERNAL_OPTIONS_SCHEMA = z
-  .object({
-    expectedRedirectUri: z.string().optional(),
-  })
-  .strict();
 
 export interface ExternalOpenServiceDeps {
   eventService: EventService;
@@ -82,9 +77,7 @@ export function createExternalOpenService(deps: ExternalOpenServiceDeps): Servic
     name: "externalOpen",
     description: "Approval-gated system browser opens",
     policy: { allowed: ["shell", "server", "panel", "app", "worker", "do", "extension"] },
-    methods: {
-      openExternal: { args: z.tuple([z.string(), OPEN_EXTERNAL_OPTIONS_SCHEMA.optional()]) },
-    },
+    methods: externalOpenMethods,
     handler: async (ctx, method, args) => {
       switch (method) {
         case "openExternal":

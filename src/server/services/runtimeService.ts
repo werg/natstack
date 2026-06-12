@@ -11,8 +11,8 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import { runtimeMethods } from "@natstack/shared/serviceSchemas/runtime";
 import type { VerifiedCaller } from "@natstack/shared/serviceDispatcher";
 import {
   canonicalEntityId,
@@ -95,49 +95,6 @@ export interface RuntimeServiceDeps {
     spec: RuntimeEntityCreateSpec
   ) => boolean | Promise<boolean>;
 }
-
-const CreateEntitySpecSchema = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("panel"),
-    source: z.string(),
-    ref: z.string().optional(),
-    contextId: z.string().nullable().optional(),
-    key: z.string().optional(),
-    stateArgs: z.unknown().optional(),
-  }),
-  z.object({
-    kind: z.literal("app"),
-    source: z.string(),
-    ref: z.string().optional(),
-    contextId: z.string().nullable().optional(),
-    key: z.string().optional(),
-    stateArgs: z.unknown().optional(),
-  }),
-  z.object({
-    kind: z.literal("worker"),
-    source: z.string(),
-    ref: z.string().optional(),
-    contextId: z.string().nullable().optional(),
-    key: z.string().optional(),
-    stateArgs: z.unknown().optional(),
-    env: z.record(z.string()).optional(),
-  }),
-  z.object({
-    kind: z.literal("do"),
-    source: z.string(),
-    ref: z.string().optional(),
-    className: z.string(),
-    key: z.string().optional(),
-    contextId: z.string().nullable().optional(),
-  }),
-  z.object({
-    kind: z.literal("session"),
-    source: z.string(),
-    contextId: z.string().nullable().optional(),
-    key: z.string().optional(),
-    title: z.string().optional(),
-  }),
-]);
 
 export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinition {
   const workspaceDORef = {
@@ -393,36 +350,7 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
     name: "runtime",
     description: "Runtime entity creation and retirement",
     policy: { allowed: ["panel", "app", "shell", "server", "worker", "do", "harness"] },
-    methods: {
-      createEntity: {
-        args: z.tuple([CreateEntitySpecSchema]),
-        description: "Create a runtime entity (panel, worker, or DO).",
-      },
-      retireEntity: {
-        args: z.tuple([z.object({ id: z.string(), removeContext: z.boolean().optional() })]),
-        description:
-          "Retire a single entity, firing cleanup hooks. With removeContext, also delete the context folder when no other live entity shares the context.",
-      },
-      listEntities: {
-        args: z.tuple([
-          z.object({ kind: z.enum(["panel", "app", "worker", "do", "session"]).optional() }),
-        ]),
-        description: "List live entities (id, kind, source, contextId, title, createdAt).",
-      },
-      resolveContext: {
-        args: z.tuple([z.string()]),
-        description:
-          "Return the contextId for an entity (or null if unknown). Cached read; falls back to DO.",
-      },
-      setTitle: {
-        args: z.tuple([
-          z.string().nullable(),
-          z.object({ explicit: z.boolean().optional() }).optional(),
-        ]),
-        description:
-          "Set a server-controlled display title for the calling entity. Surfaced by approval UIs in place of the opaque id. Pass null/empty to clear.",
-      },
-    },
+    methods: runtimeMethods,
     handler: async (ctx, method, args) => {
       switch (method) {
         case "createEntity": {

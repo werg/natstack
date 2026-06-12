@@ -5,8 +5,8 @@
  * Mirror of the Electron settingsService (src/main/services/settingsService.ts).
  */
 
-import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import { settingsMethods } from "@natstack/shared/serviceSchemas/settings";
 import type { SettingsData, ModelRoleConfig } from "@natstack/shared/types";
 import type { ServiceDispatcher } from "@natstack/shared/serviceDispatcher";
 import { loadCentralConfig } from "@natstack/shared/workspace/loader";
@@ -18,9 +18,7 @@ export function createSettingsServiceStandalone(_deps: {
     name: "settings",
     description: "Settings, model roles (standalone mode)",
     policy: { allowed: ["shell", "app"] },
-    methods: {
-      getData: { args: z.tuple([]) },
-    },
+    methods: settingsMethods,
     handler: async (_ctx, method, _args) => {
       switch (method) {
         case "getData": {

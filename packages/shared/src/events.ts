@@ -57,6 +57,19 @@ export interface NotificationAction {
     | { type: "workspace.restartUnit"; name: string };
 }
 
+export interface NotificationDetail {
+  label: string;
+  value: string;
+  mono?: boolean;
+}
+
+export interface NotificationHistoryItem {
+  title?: string;
+  message: string;
+  timestamp?: number;
+  details?: NotificationDetail[];
+}
+
 /**
  * OAuth consent metadata for consent-type notifications.
  */
@@ -85,6 +98,10 @@ export interface NotificationPayload {
   ttl?: number;
   /** Action buttons */
   actions?: NotificationAction[];
+  /** Expandable diagnostic facts for long-running or failure notifications. */
+  details?: NotificationDetail[];
+  /** Expandable chronological records, e.g. several restart failures. */
+  history?: NotificationHistoryItem[];
   /** Panel that triggered this notification */
   sourcePanelId?: string;
 }

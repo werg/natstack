@@ -9,7 +9,7 @@
  */
 
 import { ipcMain } from "electron";
-import { z } from "zod";
+import { autofillMethods } from "@natstack/shared/serviceSchemas/autofill";
 import type { WebContents } from "electron";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { EventService } from "@natstack/shared/eventsService";
@@ -347,11 +347,7 @@ export class AutofillManager {
       name: "autofill",
       description: "Password autofill management",
       policy: { allowed: ["shell"] },
-      methods: {
-        confirmSave: {
-          args: z.tuple([z.string(), z.enum(["save", "never", "dismiss"])]),
-        },
-      },
+      methods: autofillMethods,
       handler: async (_ctx, method, args) => {
         switch (method) {
           case "confirmSave": {

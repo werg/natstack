@@ -9,17 +9,12 @@
  * transport caller kind as the source label.
  */
 
-import { z } from "zod";
-import { APPROVAL_DECISIONS } from "@natstack/shared/approvalContract";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { ApprovalDecision } from "@natstack/shared/approvals";
+import { shellApprovalMethods } from "@natstack/shared/serviceSchemas/shellApproval";
 import { ServiceError } from "@natstack/shared/serviceDispatcher";
 import type { ApprovalQueue } from "./approvalQueue.js";
 import { pushMetrics, type PushMetrics } from "./pushMetrics.js";
-
-const USERLAND_RESOLVE_VALUES = ["dismiss"] as const;
-const clientConfigValuesSchema = z.record(z.string().min(1).max(128), z.string().max(4096));
-const credentialInputValuesSchema = clientConfigValuesSchema;
 
 export function createShellApprovalService(deps: {
   approvalQueue: ApprovalQueue;
@@ -33,18 +28,7 @@ export function createShellApprovalService(deps: {
     name: "shellApproval",
     description: "Shell-owned consent approval queue",
     policy: { allowed: ["shell", "app", "server"] },
-    methods: {
-      resolve: { args: z.tuple([z.string(), z.enum(APPROVAL_DECISIONS)]) },
-      resolveUserland: {
-        args: z.tuple([
-          z.string(),
-          z.union([z.string().min(1).max(40), z.enum(USERLAND_RESOLVE_VALUES)]),
-        ]),
-      },
-      submitClientConfig: { args: z.tuple([z.string(), clientConfigValuesSchema]) },
-      submitCredentialInput: { args: z.tuple([z.string(), credentialInputValuesSchema]) },
-      listPending: { args: z.tuple([]) },
-    },
+    methods: shellApprovalMethods,
     handler: async (ctx, method, args) => {
       switch (method) {
         case "resolve": {

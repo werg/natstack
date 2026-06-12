@@ -454,6 +454,7 @@ export interface WorkspaceNode {
    * report the real error than to silently hide repos with incomplete configs.
    */
   launchable?: {
+    type: "app";
     title: string;
     hidden?: boolean;
   };

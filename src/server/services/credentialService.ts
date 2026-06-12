@@ -8,7 +8,6 @@ import {
   randomUUID,
 } from "node:crypto";
 import * as http from "node:http";
-import { z } from "zod";
 import { createDevLogger } from "@natstack/dev-log";
 import type { EventName, EventPayloads, EventService } from "@natstack/shared/eventsService";
 import type { ServiceRouteDecl } from "../routeRegistry.js";
@@ -59,6 +58,24 @@ import type {
 } from "../../../packages/shared/src/serviceDispatcher.js";
 import { deferIfNeeded } from "../../../packages/shared/src/serviceDispatcher.js";
 import type { ServiceDefinition } from "../../../packages/shared/src/serviceDefinition.js";
+import {
+  ConnectCredentialParamsSchema,
+  credentialsMethods,
+  type AuditParams,
+  type ConfigureClientParams,
+  type ConnectCredentialParams,
+  type CredentialIdParams,
+  type DeleteClientConfigParams,
+  type ForwardOAuthCallbackParams,
+  type GetClientConfigStatusParams,
+  type GrantCredentialParams,
+  type ProxyFetchParams,
+  type ProxyGitHttpParams,
+  type RequestClientConfigParams,
+  type RequestCredentialInputParams,
+  type ResolveCredentialParams,
+  type StoreUrlBoundCredentialParams,
+} from "../../../packages/shared/src/serviceSchemas/credentials.js";
 import type { EgressProxy } from "./egressProxy.js";
 import type { ApprovalQueue, GrantedDecision } from "./approvalQueue.js";
 import { CredentialLifecycle, CredentialLifecycleError } from "./credentialLifecycle.js";
@@ -73,13 +90,6 @@ const log = createDevLogger("CredentialService");
 type BrowserHandoffCallerKind = "app" | "panel" | "shell";
 type BrowserDeliveryCallerKind = "app" | "shell";
 
-const IDENTIFIER_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9._@+=:-]{0,127}$/;
-const identifierSchema = z
-  .string()
-  .regex(
-    IDENTIFIER_REGEX,
-    "Invalid identifier (must be a safe path component matching /^[a-zA-Z0-9][a-zA-Z0-9._@+=:-]{0,127}$/)"
-  );
 /** Connect flows that block on a human (browser auth / device code) — eligible
  * for out-of-band deferral. Machine flows (client-credentials, jwt-bearer,
  * api-key, etc.) complete inline. */
@@ -108,528 +118,6 @@ const RESERVED_OAUTH_AUTHORIZE_PARAMS = new Set([
   "state",
 ]);
 
-const urlAudienceSchema = z
-  .object({
-    url: z.string().url(),
-    match: z.enum(["origin", "path-prefix", "exact"]).optional(),
-  })
-  .strict();
-
-const credentialInjectionSchema = z.discriminatedUnion("type", [
-  z
-    .object({
-      type: z.literal("header"),
-      name: z.string().min(1).max(128),
-      valueTemplate: z.string().min(1).max(256),
-      stripIncoming: z.array(z.string().min(1).max(128)).optional(),
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal("query-param"),
-      name: z.string().min(1).max(128),
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal("basic-auth"),
-      usernameTemplate: z.string().min(1).max(256),
-      passwordTemplate: z.string().min(1).max(256),
-      stripIncoming: z.array(z.string().min(1).max(128)).optional(),
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal("oauth1-signature"),
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal("cookie"),
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal("aws-sigv4"),
-      service: identifierSchema,
-      region: identifierSchema,
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal("ssh-key"),
-    })
-    .strict(),
-]);
-
-const credentialBindingSchema = z
-  .object({
-    id: identifierSchema,
-    use: z.enum(["fetch", "git-http", "git-ssh"]),
-    audience: z.array(urlAudienceSchema).min(1).max(16),
-    injection: credentialInjectionSchema,
-  })
-  .strict();
-
-const accountIdentitySchema = z
-  .object({
-    email: z.string().max(320).optional(),
-    username: z.string().max(256).optional(),
-    workspaceName: z.string().max(256).optional(),
-    providerUserId: z.string().max(256).optional(),
-  })
-  .strict();
-
-const oauthAccountValidationSchema = z
-  .object({
-    userinfo: z
-      .object({
-        url: z.string().url(),
-        idField: z.string().min(1).max(128).optional(),
-        emailField: z.string().min(1).max(128).optional(),
-        usernameField: z.string().min(1).max(128).optional(),
-        workspaceField: z.string().min(1).max(128).optional(),
-      })
-      .strict()
-      .optional(),
-  })
-  .strict();
-
-const storeUrlBoundCredentialParamsSchema = z
-  .object({
-    label: z.string().min(1).max(256),
-    audience: z.array(urlAudienceSchema).min(1).max(16),
-    injection: credentialInjectionSchema,
-    bindings: z.array(credentialBindingSchema).min(1).max(8).optional(),
-    material: z
-      .object({
-        type: z.enum([
-          "bearer-token",
-          "api-key",
-          "oauth1-token",
-          "cookie-session",
-          "saml-session",
-          "aws-sigv4",
-          "ssh-key",
-        ]),
-        token: z.string().min(1).max(65536),
-      })
-      .strict(),
-    accountIdentity: accountIdentitySchema.optional(),
-    scopes: z.array(z.string().max(256)).optional(),
-    expiresAt: z.number().positive().optional(),
-    metadata: z.record(z.string(), z.string()).optional(),
-  })
-  .strict();
-
-const connectCredentialDetailsSchema = z
-  .object({
-    label: z.string().min(1).max(256),
-    audience: z.array(urlAudienceSchema).min(1).max(16),
-    injection: credentialInjectionSchema,
-    bindings: z.array(credentialBindingSchema).min(1).max(8).optional(),
-    accountIdentity: accountIdentitySchema.optional(),
-    scopes: z.array(z.string().max(256)).optional(),
-    metadata: z.record(z.string(), z.string()).optional(),
-  })
-  .strict();
-
-const clientConfigFieldSchema = z
-  .object({
-    name: identifierSchema,
-    label: z.string().min(1).max(128),
-    type: z.enum(["text", "secret"]),
-    required: z.boolean().optional(),
-    description: z.string().max(512).optional(),
-  })
-  .strict();
-
-const requestClientConfigParamsSchema = z
-  .object({
-    configId: identifierSchema,
-    title: z.string().min(1).max(256),
-    description: z.string().max(1024).optional(),
-    authorizeUrl: z.string().url(),
-    tokenUrl: z.string().url(),
-    fields: z.array(clientConfigFieldSchema).min(1).max(16),
-  })
-  .strict();
-
-const credentialFlowTypeSchema = z.enum([
-  "oauth2-auth-code-pkce",
-  "oauth2-auth-code",
-  "oauth2-device-code",
-  "oauth2-client-credentials",
-  "oauth1a",
-  "api-key",
-  "aws-sigv4",
-  "ssh-key",
-  "oauth2-jwt-bearer",
-  "oauth2-token-exchange",
-  "browser-cookie-session",
-  "saml-browser-session",
-]);
-
-const configureClientParamsSchema = requestClientConfigParamsSchema
-  .extend({
-    flowTypes: z.array(credentialFlowTypeSchema).min(1).max(8).optional(),
-    status: z.enum(["active", "disabled"]).optional(),
-    allowRefreshWhenDisabled: z.boolean().optional(),
-  })
-  .strict();
-
-const requestCredentialInputParamsSchema = z
-  .object({
-    title: z.string().min(1).max(256),
-    description: z.string().max(1024).optional(),
-    credential: z
-      .object({
-        label: z.string().min(1).max(256),
-        audience: z.array(urlAudienceSchema).min(1).max(16),
-        injection: credentialInjectionSchema,
-        bindings: z.array(credentialBindingSchema).min(1).max(8).optional(),
-        accountIdentity: accountIdentitySchema.optional(),
-        scopes: z.array(z.string().max(256)).optional(),
-        metadata: z.record(z.string(), z.string()).optional(),
-      })
-      .strict(),
-    fields: z.array(clientConfigFieldSchema).length(1),
-    material: z
-      .object({
-        type: z.enum(["bearer-token", "api-key"]),
-        tokenField: identifierSchema,
-      })
-      .strict(),
-  })
-  .strict();
-
-const getClientConfigStatusParamsSchema = z
-  .object({
-    configId: identifierSchema,
-    fields: z.array(clientConfigFieldSchema).max(16).optional(),
-  })
-  .strict();
-
-const oauthRedirectStrategySchema = z
-  .object({
-    type: z.enum(["loopback", "public", "client-forwarded", "client-loopback"]).optional(),
-    host: z.string().optional(),
-    port: z.number().int().min(0).max(65535).optional(),
-    callbackPath: z.string().optional(),
-    callbackUri: z.string().url().optional(),
-    fallback: z.literal("dynamic-port").optional(),
-  })
-  .strict();
-
-const tokenAuthSchema = z.enum([
-  "none",
-  "client_secret_post",
-  "client_secret_basic",
-  "private_key_jwt",
-]);
-
-const browserHandoffTargetSchema = z
-  .object({
-    callerId: z.string().min(1).max(512),
-    callerKind: z.enum(["app", "panel", "shell"]),
-  })
-  .strict();
-
-const connectCredentialSpecSchema = z
-  .object({
-    flow: z.discriminatedUnion("type", [
-      z
-        .object({
-          type: z.literal("oauth2-auth-code-pkce"),
-          authorizeUrl: z.string().url().optional(),
-          tokenUrl: z.string().url().optional(),
-          clientId: z.string().min(1).max(512).optional(),
-          clientConfigId: identifierSchema.optional(),
-          scopes: z.array(z.string().max(256)).optional(),
-          extraAuthorizeParams: z.record(z.string(), z.string()).optional(),
-          tokenAuth: tokenAuthSchema.optional(),
-          persistRefreshToken: z.boolean().optional(),
-          allowMissingExpiry: z.boolean().optional(),
-          accountValidation: oauthAccountValidationSchema.optional(),
-          revocationUrl: z.string().url().optional(),
-        })
-        .strict(),
-      z
-        .object({
-          type: z.literal("oauth2-auth-code"),
-          authorizeUrl: z.string().url().optional(),
-          tokenUrl: z.string().url().optional(),
-          clientId: z.string().min(1).max(512).optional(),
-          clientConfigId: identifierSchema.optional(),
-          scopes: z.array(z.string().max(256)).optional(),
-          extraAuthorizeParams: z.record(z.string(), z.string()).optional(),
-          tokenAuth: tokenAuthSchema.optional(),
-          persistRefreshToken: z.boolean().optional(),
-          accountValidation: oauthAccountValidationSchema.optional(),
-          revocationUrl: z.string().url().optional(),
-          pkce: z.literal(false),
-          compatibilityReason: z.string().min(1).max(1024),
-          requiresConfidentialClient: z.boolean().optional(),
-        })
-        .strict(),
-      z
-        .object({
-          type: z.literal("oauth2-device-code"),
-          deviceAuthorizationUrl: z.string().url(),
-          tokenUrl: z.string().url(),
-          clientId: z.string().min(1).max(512).optional(),
-          clientConfigId: identifierSchema.optional(),
-          scopes: z.array(z.string().max(256)).optional(),
-          tokenAuth: tokenAuthSchema.optional(),
-          pollIntervalSeconds: z.number().int().positive().optional(),
-          expiresInSeconds: z.number().int().positive().optional(),
-          accountValidation: oauthAccountValidationSchema.optional(),
-          persistRefreshToken: z.boolean().optional(),
-          revocationUrl: z.string().url().optional(),
-        })
-        .strict(),
-      z
-        .object({
-          type: z.literal("oauth2-client-credentials"),
-          tokenUrl: z.string().url(),
-          clientConfigId: identifierSchema,
-          tokenAuth: z.enum(["client_secret_post", "client_secret_basic", "private_key_jwt"]),
-          scopes: z.array(z.string().max(256)).optional(),
-          audienceParam: z.string().max(512).optional(),
-          resourceParam: z.string().max(512).optional(),
-          accountValidation: oauthAccountValidationSchema.optional(),
-          revocationUrl: z.string().url().optional(),
-        })
-        .strict(),
-      z
-        .object({
-          type: z.literal("oauth2-jwt-bearer"),
-          tokenUrl: z.string().url(),
-          clientConfigId: identifierSchema,
-          issuer: z.string().min(1).max(512).optional(),
-          subject: z.string().min(1).max(512).optional(),
-          audience: z.string().min(1).max(2048).optional(),
-          scopes: z.array(z.string().max(256)).optional(),
-          accountValidation: oauthAccountValidationSchema.optional(),
-          persistRefreshToken: z.boolean().optional(),
-          revocationUrl: z.string().url().optional(),
-        })
-        .strict(),
-      z
-        .object({
-          type: z.literal("oauth2-token-exchange"),
-          tokenUrl: z.string().url(),
-          clientConfigId: identifierSchema,
-          subjectCredentialId: identifierSchema,
-          subjectTokenType: z.enum(["access_token", "jwt"]).optional(),
-          requestedTokenType: z.string().min(1).max(512).optional(),
-          scopes: z.array(z.string().max(256)).optional(),
-          audience: z.string().min(1).max(2048).optional(),
-          resource: z.string().min(1).max(2048).optional(),
-          tokenAuth: z
-            .enum(["client_secret_post", "client_secret_basic", "private_key_jwt"])
-            .optional(),
-          accountValidation: oauthAccountValidationSchema.optional(),
-          persistRefreshToken: z.boolean().optional(),
-          revocationUrl: z.string().url().optional(),
-        })
-        .strict(),
-      z
-        .object({
-          type: z.literal("oauth1a"),
-          requestTokenUrl: z.string().url(),
-          authorizeUrl: z.string().url(),
-          accessTokenUrl: z.string().url(),
-          clientConfigId: identifierSchema,
-          callbackConfirmedParam: z.string().max(128).optional(),
-          signatureMethod: z.literal("HMAC-SHA1").optional(),
-          accountValidation: z.enum(["none", "http-probe"]).optional(),
-        })
-        .strict(),
-      z
-        .object({
-          type: z.literal("api-key"),
-          title: z.string().min(1).max(256).optional(),
-          description: z.string().max(1024).optional(),
-          fields: z.array(clientConfigFieldSchema).min(1).max(16),
-          materialTemplate: z
-            .object({
-              type: z.enum(["bearer-token", "api-key"]),
-              valueTemplate: z.string().min(1).max(4096),
-            })
-            .strict(),
-          accountValidation: z.enum(["http-probe", "none"]).optional(),
-        })
-        .strict(),
-      z
-        .object({
-          type: z.literal("aws-sigv4"),
-          title: z.string().min(1).max(256).optional(),
-          description: z.string().max(1024).optional(),
-          accountValidation: z.enum(["http-probe", "none"]).optional(),
-        })
-        .strict(),
-      z
-        .object({
-          type: z.literal("ssh-key"),
-          mode: z.enum(["generate", "import"]).optional(),
-          algorithm: z.literal("ed25519").optional(),
-          title: z.string().min(1).max(256).optional(),
-          description: z.string().max(1024).optional(),
-          accountValidation: z.literal("none").optional(),
-        })
-        .strict(),
-      z
-        .object({
-          type: z.literal("browser-cookie-session"),
-          signInUrl: z.string().url(),
-          capture: z
-            .object({
-              cookies: z.array(z.string().min(1).max(256)).min(1).max(64),
-              origins: z.array(z.string().url()).min(1).max(16),
-            })
-            .strict(),
-          completionUrlPattern: z.string().max(1024).optional(),
-          accountValidation: z.enum(["http-probe", "none"]).optional(),
-          maxTtlSeconds: z.number().int().positive().optional(),
-        })
-        .strict(),
-      z
-        .object({
-          type: z.literal("saml-browser-session"),
-          signInUrl: z.string().url(),
-          spAudience: z.string().min(1).max(2048),
-          capture: z
-            .object({
-              cookies: z.array(z.string().min(1).max(256)).min(1).max(64).optional(),
-              assertion: z
-                .object({
-                  issuer: z.string().min(1).max(2048),
-                  audience: z.string().min(1).max(2048),
-                  recipient: z.string().min(1).max(2048),
-                  persistAssertion: z.boolean().optional(),
-                })
-                .strict()
-                .optional(),
-            })
-            .strict(),
-          completionUrlPattern: z.string().max(1024).optional(),
-          maxTtlSeconds: z.number().int().positive().optional(),
-          accountValidation: z.enum(["saml-assertion-claims", "http-probe", "none"]).optional(),
-        })
-        .strict(),
-    ]),
-    credential: connectCredentialDetailsSchema,
-    redirect: oauthRedirectStrategySchema.optional(),
-    browser: z.enum(["external", "internal"]).optional(),
-  })
-  .strict();
-
-const connectCredentialParamsSchema = z.union([
-  connectCredentialSpecSchema,
-  z
-    .object({
-      spec: connectCredentialSpecSchema,
-      handoffTarget: browserHandoffTargetSchema,
-    })
-    .strict(),
-]);
-
-const deleteClientConfigParamsSchema = z
-  .object({
-    configId: identifierSchema,
-  })
-  .strict();
-
-const forwardOAuthCallbackParamsSchema = z
-  .object({
-    transactionId: identifierSchema.optional(),
-    url: z.string().url().optional(),
-    code: z.string().min(1).max(4096).optional(),
-    state: z.string().min(1).max(4096).optional(),
-  })
-  .strict();
-
-const credentialIdParamsSchema = z
-  .object({
-    credentialId: identifierSchema,
-  })
-  .strict();
-
-const grantCredentialParamsSchema = z
-  .object({
-    credentialId: identifierSchema,
-    callerId: identifierSchema,
-    grantedBy: z.string().min(1).max(128).optional(),
-  })
-  .strict();
-
-const resolveCredentialParamsSchema = z
-  .object({
-    url: z.string().url(),
-    credentialId: identifierSchema.optional(),
-    use: z.enum(["fetch", "git-http", "git-ssh"]).optional(),
-  })
-  .strict();
-
-const proxyFetchParamsSchema = z
-  .object({
-    url: z.string().url(),
-    method: z.string().min(1).max(16),
-    headers: z.record(z.string()).optional(),
-    /** UTF-8 text request body. Mutually exclusive with `bodyBase64`. */
-    body: z.string().optional(),
-    /**
-     * Binary request body, base64-encoded. Used when the caller has a
-     * Uint8Array / ArrayBuffer / Blob. Mutually exclusive with `body`.
-     */
-    bodyBase64: z.string().optional(),
-    credentialId: identifierSchema.optional(),
-  })
-  .strict()
-  .refine((p) => !(p.body !== undefined && p.bodyBase64 !== undefined), {
-    message: "credentials.proxyFetch: provide either `body` or `bodyBase64`, not both",
-  });
-
-const proxyGitHttpParamsSchema = z
-  .object({
-    url: z.string().url(),
-    method: z.string().min(1).max(16).optional(),
-    headers: z.record(z.string()).optional(),
-    bodyBase64: z.string().optional(),
-    credentialId: identifierSchema.optional(),
-  })
-  .strict();
-
-const auditParamsSchema = z
-  .object({
-    filter: z
-      .object({
-        providerId: z.string().optional(),
-        connectionId: z.string().optional(),
-        callerId: z.string().optional(),
-        since: z.number().optional(),
-      })
-      .optional(),
-    limit: z.number().int().positive().max(1000).optional(),
-    after: z.number().optional(),
-  })
-  .strict();
-
-type StoreUrlBoundCredentialParams = z.infer<typeof storeUrlBoundCredentialParamsSchema>;
-type RequestClientConfigParams = z.infer<typeof requestClientConfigParamsSchema>;
-type ConfigureClientParams = z.infer<typeof configureClientParamsSchema>;
-type RequestCredentialInputParams = z.infer<typeof requestCredentialInputParamsSchema>;
-type GetClientConfigStatusParams = z.infer<typeof getClientConfigStatusParamsSchema>;
-type ConnectCredentialParams = z.infer<typeof connectCredentialParamsSchema>;
-type DeleteClientConfigParams = z.infer<typeof deleteClientConfigParamsSchema>;
-type ForwardOAuthCallbackParams = z.infer<typeof forwardOAuthCallbackParamsSchema>;
-type CredentialIdParams = z.infer<typeof credentialIdParamsSchema>;
-type GrantCredentialParams = z.infer<typeof grantCredentialParamsSchema>;
-type ResolveCredentialParams = z.infer<typeof resolveCredentialParamsSchema>;
-type ProxyFetchParams = z.infer<typeof proxyFetchParamsSchema>;
-type ProxyGitHttpParams = z.infer<typeof proxyGitHttpParamsSchema>;
-type AuditParams = z.infer<typeof auditParamsSchema>;
 type AuthCodeConnectRequest = {
   flow: {
     authorizeUrl?: string;
@@ -1442,7 +930,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     ctx: ServiceContext,
     params: ConnectCredentialParams
   ): Promise<StoredCredentialSummary | DeferredResult> {
-    const parsedParams = connectCredentialParamsSchema.parse(params);
+    const parsedParams = ConnectCredentialParamsSchema.parse(params);
     const { request, handoffTarget } = normalizeConnectInvocation(ctx, parsedParams);
     const dispatch = (signal?: AbortSignal): Promise<StoredCredentialSummary> => {
       switch (request.flow.type) {
@@ -4137,22 +3625,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     name: "credentials",
     description: "URL-bound userland credential storage and egress",
     policy: { allowed: ["shell", "app", "panel", "server", "worker", "do", "extension"] },
-    methods: {
-      storeCredential: { args: z.tuple([storeUrlBoundCredentialParamsSchema]) },
-      connect: { args: z.tuple([connectCredentialParamsSchema]) },
-      configureClient: { args: z.tuple([configureClientParamsSchema]) },
-      requestCredentialInput: { args: z.tuple([requestCredentialInputParamsSchema]) },
-      getClientConfigStatus: { args: z.tuple([getClientConfigStatusParamsSchema]) },
-      deleteClientConfig: { args: z.tuple([deleteClientConfigParamsSchema]) },
-      forwardOAuthCallback: { args: z.tuple([forwardOAuthCallbackParamsSchema]) },
-      listStoredCredentials: { args: z.tuple([]) },
-      revokeCredential: { args: z.tuple([credentialIdParamsSchema]) },
-      grantCredential: { args: z.tuple([grantCredentialParamsSchema]) },
-      resolveCredential: { args: z.tuple([resolveCredentialParamsSchema]) },
-      proxyFetch: { args: z.tuple([proxyFetchParamsSchema]) },
-      proxyGitHttp: { args: z.tuple([proxyGitHttpParamsSchema]) },
-      audit: { args: z.tuple([auditParamsSchema]) },
-    },
+    methods: credentialsMethods,
     handler: async (ctx, method, args) => {
       switch (method) {
         case "storeCredential":

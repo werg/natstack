@@ -91,6 +91,10 @@ export interface PanelViewLike {
   ): Promise<void>;
   createViewForBrowser?(panelId: string, url: string, contextId: string): Promise<void>;
   hasView(panelId: string): boolean;
+  /** Session partition of an existing view (null = no view; undefined =
+   *  default session). Lets the orchestrator navigate in place when the
+   *  partition is unchanged instead of destroying the renderer. */
+  getViewPartition(panelId: string): string | undefined | null;
   setViewVisible?(panelId: string, visible: boolean): void;
   destroyView(panelId: string): void;
   reloadView(panelId: string): boolean;

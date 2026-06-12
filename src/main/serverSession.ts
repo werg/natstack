@@ -27,6 +27,8 @@ import type { WorkspaceConfig } from "@natstack/shared/workspace/types";
 import type { CentralDataManager } from "@natstack/shared/centralData";
 import type { StartupMode } from "./startupMode.js";
 import { saveRemoteCredentials } from "./remoteCredentialStore.js";
+import { createTypedServiceClient } from "@natstack/shared/typedServiceClient";
+import { workspaceMethods } from "@natstack/shared/serviceSchemas/workspace";
 
 const log = createDevLogger("ServerSession");
 
@@ -68,12 +70,6 @@ function buildServerInfo(
     externalHost,
     gatewayPort: ports.gatewayPort,
     protocol,
-    getWorkspaceTree: () => getClient().call("git", "getWorkspaceTree", []),
-    listBranches: (repoPath) => getClient().call("git", "listBranches", [repoPath]),
-    listCommits: (repoPath, ref, limit) =>
-      getClient().call("git", "listCommits", [repoPath, ref, limit]),
-    resolveRef: (repoPath, ref) =>
-      getClient().call("git", "resolveRef", [repoPath, ref]) as Promise<string>,
     call: (service, method, args) => getClient().call(service, method, args),
   };
 }
@@ -425,12 +421,10 @@ export async function establishServerSession(args: {
   const serverInfo = buildServerInfo(ports, externalHost, protocol, gatewayConfig, getClient);
 
   // Get workspace metadata from server
-  const wsInfo = (await serverClient.call("workspace", "getInfo", [])) as {
-    path: string;
-    statePath: string;
-    contextsPath: string;
-    config: WorkspaceConfig;
-  };
+  const workspaceClient = createTypedServiceClient("workspace", workspaceMethods, (svc, m, a) =>
+    serverClient.call(svc, m, a)
+  );
+  const wsInfo = await workspaceClient.getInfo();
   log.info(`[Workspace] Server workspace: ${wsInfo.config.id}`);
 
   const gatewayPort = ports.gatewayPort;

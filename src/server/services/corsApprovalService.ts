@@ -1,30 +1,23 @@
-import { z } from "zod";
-
+import type { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import {
   ServiceError,
   type ServiceContext,
   type DeferredResult,
 } from "@natstack/shared/serviceDispatcher";
-import type { ApprovalQueue, GrantedDecision } from "./approvalQueue.js";
+import type { ApprovalQueue } from "./approvalQueue.js";
 import type { CapabilityGrantStore } from "./capabilityGrantStore.js";
 import { withCapability } from "./capabilityPermission.js";
+import {
+  authorizeCorsSchema,
+  corsApprovalMethods,
+  type CorsApprovalResult,
+} from "@natstack/shared/serviceSchemas/corsApproval";
+
+export type { CorsApprovalResult } from "@natstack/shared/serviceSchemas/corsApproval";
 
 const SERVICE_NAME = "corsApproval";
 const CAPABILITY = "cors-response-read";
-
-const authorizeCorsSchema = z
-  .object({
-    targetUrl: z.string().min(1),
-    requestOrigin: z.string().min(1).optional(),
-  })
-  .strict();
-
-export interface CorsApprovalResult {
-  allowed: boolean;
-  decision?: Exclude<GrantedDecision, "deny">;
-  reason?: string;
-}
 
 export function createCorsApprovalService(deps: {
   approvalQueue: ApprovalQueue;
@@ -88,9 +81,7 @@ export function createCorsApprovalService(deps: {
     name: SERVICE_NAME,
     description: "Approval-gated CORS response header relaxation",
     policy: { allowed: ["panel", "app", "worker", "do"] },
-    methods: {
-      authorize: { args: z.tuple([authorizeCorsSchema]) },
-    },
+    methods: corsApprovalMethods,
     handler: async (ctx, method, args) => {
       switch (method) {
         case "authorize":

@@ -1,5 +1,5 @@
-import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import { viewMethods } from "@natstack/shared/serviceSchemas/view";
 import type { ViewManager } from "../viewManager.js";
 import { assertHttpUrl } from "../utils.js";
 
@@ -53,13 +53,6 @@ export function createViewService(deps: { getViewManager: () => ViewManager }): 
     throw new Error(`view.${method}: hosted apps must place panels with native panel slots`);
   };
 
-  const boundsSchema = z.object({
-    x: z.number(),
-    y: z.number(),
-    width: z.number(),
-    height: z.number(),
-  });
-
   const assertOwnsOrViewHost = (
     vm: ViewManager,
     callerId: string,
@@ -76,94 +69,7 @@ export function createViewService(deps: { getViewManager: () => ViewManager }): 
     name: "view",
     description: "View bounds, visibility, theme CSS",
     policy: { allowed: ["shell", "app"] },
-    methods: {
-      setBounds: {
-        args: z.tuple([
-          z.string(),
-          z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }),
-        ]),
-      },
-      setVisible: { args: z.tuple([z.string(), z.boolean()]) },
-      forwardMouseClick: {
-        args: z.tuple([z.string(), z.object({ x: z.number(), y: z.number() })]),
-      },
-      setThemeCss: { args: z.tuple([z.string()]) },
-      updateLayout: {
-        args: z.tuple([
-          z.object({
-            titleBarHeight: z.number().optional(),
-            sidebarVisible: z.boolean().optional(),
-            sidebarWidth: z.number().optional(),
-            saveBarHeight: z.number().optional(),
-            notificationBarHeight: z.number().optional(),
-            consentBarHeight: z.number().optional(),
-          }),
-        ]),
-      },
-      updatePanelViewportBounds: {
-        args: z.tuple([z.union([z.null(), boundsSchema])]),
-      },
-      bindNativePanelSlot: {
-        args: z.tuple([
-          z.object({
-            nativeSlotId: z.string(),
-            panelId: z.string(),
-            bounds: boundsSchema,
-            focused: z.boolean().optional(),
-          }),
-        ]),
-      },
-      updateNativePanelSlot: {
-        args: z.tuple([
-          z.object({
-            nativeSlotId: z.string(),
-            bounds: boundsSchema.optional(),
-            focused: z.boolean().optional(),
-          }),
-        ]),
-      },
-      clearNativePanelSlot: {
-        args: z.tuple([z.object({ nativeSlotId: z.string() })]),
-      },
-      setHostedShellReady: {
-        args: z.tuple([z.object({ ready: z.boolean() })]),
-      },
-      setShellOverlay: { args: z.tuple([z.boolean()]) },
-      showNativeShellOverlay: {
-        args: z.tuple([
-          z.object({
-            id: z.string(),
-            html: z.string(),
-            bounds: z.object({
-              x: z.number(),
-              y: z.number(),
-              width: z.number(),
-              height: z.number(),
-            }),
-            focus: z.boolean().optional(),
-          }),
-        ]),
-      },
-      updateNativeShellOverlay: {
-        args: z.tuple([
-          z.object({
-            id: z.string().optional(),
-            html: z.string().optional(),
-            bounds: z
-              .object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() })
-              .optional(),
-            focus: z.boolean().optional(),
-          }),
-        ]),
-      },
-      hideNativeShellOverlay: { args: z.union([z.tuple([]), z.tuple([z.string().optional()])]) },
-      browserNavigate: { args: z.tuple([z.string(), z.string()]) },
-      browserGoBack: { args: z.tuple([z.string()]) },
-      browserGoForward: { args: z.tuple([z.string()]) },
-      browserReload: { args: z.tuple([z.string()]) },
-      browserForceReload: { args: z.tuple([z.string()]) },
-      browserStop: { args: z.tuple([z.string()]) },
-    },
+    methods: viewMethods,
     handler: async (ctx, method, args) => {
       const vm = deps.getViewManager();
 

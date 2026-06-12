@@ -129,6 +129,8 @@ interface ManagedView {
   parentId?: string;
   visible: boolean;
   bounds: ViewBounds;
+  /** Session partition the view was created with (undefined = default session). */
+  partition?: string;
   injectHostThemeVariables: boolean;
   appCapabilities: readonly AppCapability[];
   hostChrome: boolean;
@@ -235,7 +237,12 @@ export class ViewManager {
   /** Timer for periodic gentle compositor keepalive */
   private compositorKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
   /** Timer for periodic compositor stall detection via capturePage */
-  private compositorStallDetectorTimer: ReturnType<typeof setInterval> | null = null;
+  private compositorStallDetectorTimer: ReturnType<typeof setTimeout> | null = null;
+  // capturePage is a real GPU readback; back off while probes keep coming
+  // back healthy, reset on focus/stall so recovery stays prompt.
+  private readonly STALL_PROBE_MIN_INTERVAL_MS = 10000;
+  private readonly STALL_PROBE_MAX_INTERVAL_MS = 60000;
+  private stallProbeIntervalMs = 10000;
   /** Timestamp of last visibility cycle per view, for cooldown to prevent feedback loops */
   private lastVisibilityCycleTimeByView = new Map<string, number>();
 
@@ -342,6 +349,15 @@ export class ViewManager {
     this.window.on("minimize", () => this.handleWindowVisibility(false));
     this.window.on("restore", () => this.handleWindowVisibility(true));
 
+    // Compositor probes are focus-gated (no GPU readbacks while the user is
+    // elsewhere); on refocus, reset the probe backoff and check immediately
+    // so a stall that happened in the background recovers right away.
+    this.window.on("focus", () => {
+      this.stallProbeIntervalMs = this.STALL_PROBE_MIN_INTERVAL_MS;
+      this.keepCompositorAlive();
+      void this.detectAndRecoverStall();
+    });
+
     // Start compositor keepalive to prevent layer painting stalls
     this.startCompositorKeepalive();
     // Start stall detector — capturePage probe for aggressive recovery
@@ -440,6 +456,7 @@ export class ViewManager {
       parentId: config.parentId,
       visible: false,
       bounds: { x: 0, y: 0, width: 0, height: 0 },
+      partition: config.partition,
       injectHostThemeVariables: config.injectHostThemeVariables ?? true,
       appCapabilities: config.type === "app" ? [...(config.appCapabilities ?? [])] : [],
       hostChrome: config.type === "app" ? (config.hostChrome ?? false) : false,
@@ -1251,39 +1268,82 @@ export class ViewManager {
   private reconcileNativeLayerOrder(): void {
     if (this.window.isDestroyed()) return;
 
-    const raised = new Set<string>();
-    const raise = (id: string | null | undefined) => {
-      if (!id || raised.has(id)) return;
+    // Compute the desired top-of-stack ordering first (pure), so we can skip
+    // the remove/add churn entirely when the layer tree is already correct.
+    // Re-stacking is expensive native work and steals focus from input
+    // elements, and this runs on every focus/visibility/overlay change.
+    const raisedIds = new Set<string>();
+    const desired: Electron.View[] = [];
+    const plan = (id: string | null | undefined) => {
+      if (!id || raisedIds.has(id)) return;
       const managed = this.views.get(id);
       if (!managed) return;
-      raised.add(id);
-      this.window.contentView.removeChildView(managed.view);
-      this.window.contentView.addChildView(managed.view);
+      raisedIds.add(id);
+      desired.push(managed.view);
     };
 
     if (!this.nativePanelSlots.hostedShellReady) {
-      raise("shell");
+      plan("shell");
     }
 
     for (const managed of this.views.values()) {
-      if (managed.hostChrome && managed.visible) raise(managed.id);
+      if (managed.hostChrome && managed.visible) plan(managed.id);
     }
     if (this.nativePanelSlots.hostedShellReady) {
-      raise(this.nativePanelSlots.activeHostedShellViewId);
+      plan(this.nativePanelSlots.activeHostedShellViewId);
     }
 
     if (this.visiblePanelId && !this.nativePanelSlots.panelToSlot.has(this.visiblePanelId)) {
       const managed = this.views.get(this.visiblePanelId);
-      if (managed?.visible) raise(this.visiblePanelId);
+      if (managed?.visible) plan(this.visiblePanelId);
     }
 
     for (const slot of this.nativePanelSlots.activeSlots.values()) {
       if (slot.nativeSlotId === this.nativePanelSlots.focusedNativeSlotId) continue;
-      raise(slot.panelId);
+      plan(slot.panelId);
     }
     const focusedSlotId = this.nativePanelSlots.focusedNativeSlotId;
     if (focusedSlotId) {
-      raise(this.nativePanelSlots.activeSlots.get(focusedSlotId)?.panelId);
+      plan(this.nativePanelSlots.activeSlots.get(focusedSlotId)?.panelId);
+    }
+
+    // No-op check: the layer tree is already correct when (a) the desired
+    // views appear in the child list in the desired relative order, and
+    // (b) no other *visible managed* view sits above them. Overlay views
+    // (shell overlay, autofill dropdown) are unmanaged and always belong on
+    // top, so they're ignored here.
+    const children = this.window.contentView.children as Electron.View[] | undefined;
+    if (children && desired.length > 0) {
+      const childIndex = new Map<Electron.View, number>();
+      children.forEach((view, i) => childIndex.set(view, i));
+      let alreadyOrdered = true;
+      let prevIndex = -1;
+      for (const view of desired) {
+        const idx = childIndex.get(view);
+        if (idx === undefined || idx < prevIndex) {
+          alreadyOrdered = false;
+          break;
+        }
+        prevIndex = idx;
+      }
+      if (alreadyOrdered) {
+        const firstDesired = desired[0];
+        const firstDesiredIndex = firstDesired ? (childIndex.get(firstDesired) ?? 0) : 0;
+        for (const managed of this.views.values()) {
+          if (raisedIds.has(managed.id) || !managed.visible) continue;
+          const idx = childIndex.get(managed.view);
+          if (idx !== undefined && idx > firstDesiredIndex) {
+            alreadyOrdered = false;
+            break;
+          }
+        }
+      }
+      if (alreadyOrdered) return;
+    }
+
+    for (const view of desired) {
+      this.window.contentView.removeChildView(view);
+      this.window.contentView.addChildView(view);
     }
 
     for (const cb of this.viewOrderChangedCallbacks) {
@@ -1296,16 +1356,24 @@ export class ViewManager {
    * Register a callback invoked after every native layer-order change.
    * Used by AutofillManager to re-add the dropdown overlay on top.
    */
-  onViewOrderChanged(callback: () => void): void {
+  onViewOrderChanged(callback: () => void): () => void {
     this.viewOrderChangedCallbacks.push(callback);
+    return () => {
+      const idx = this.viewOrderChangedCallbacks.indexOf(callback);
+      if (idx !== -1) this.viewOrderChangedCallbacks.splice(idx, 1);
+    };
   }
 
   /**
    * Register a callback invoked when a panel view is hidden.
    * Used by AutofillManager to dismiss overlays on panel switch.
    */
-  onViewHidden(callback: (viewId: string) => void): void {
+  onViewHidden(callback: (viewId: string) => void): () => void {
     this.viewHiddenCallbacks.push(callback);
+    return () => {
+      const idx = this.viewHiddenCallbacks.indexOf(callback);
+      if (idx !== -1) this.viewHiddenCallbacks.splice(idx, 1);
+    };
   }
 
   /**
@@ -1723,6 +1791,15 @@ export class ViewManager {
   /**
    * Get view info for debugging.
    */
+  /** Session partition a view was created with (null when the view doesn't
+   *  exist; undefined = default session). Used to decide whether an existing
+   *  view can be navigated in place instead of destroy/recreate. */
+  getViewPartition(id: string): string | undefined | null {
+    const managed = this.views.get(id);
+    if (!managed) return null;
+    return managed.partition;
+  }
+
   getViewInfo(id: string): {
     type: string;
     visible: boolean;
@@ -1981,6 +2058,10 @@ export class ViewManager {
   private keepCompositorAlive(): void {
     if (this.window.isDestroyed()) return;
     if (!this.windowVisible) return;
+    // Skip the periodic invalidate while the window is unfocused: forcing
+    // repaints fights OS-level occlusion throttling and burns GPU/battery in
+    // the background. A focus listener nudges the compositor on return.
+    if (!this.window.isFocused()) return;
 
     const slots = Array.from(this.nativePanelSlots.activeSlots.values());
     if (slots.length > 0) {
@@ -2057,14 +2138,20 @@ export class ViewManager {
    */
   private startCompositorStallDetector(intervalMs = 10000): void {
     this.stopCompositorStallDetector();
-    this.compositorStallDetectorTimer = setInterval(() => {
-      void this.detectAndRecoverStall();
-    }, intervalMs);
+    this.stallProbeIntervalMs = Math.max(intervalMs, this.STALL_PROBE_MIN_INTERVAL_MS);
+    const schedule = () => {
+      this.compositorStallDetectorTimer = setTimeout(async () => {
+        await this.detectAndRecoverStall();
+        if (this.compositorStallDetectorTimer === null) return; // stopped mid-probe
+        schedule();
+      }, this.stallProbeIntervalMs);
+    };
+    schedule();
   }
 
   private stopCompositorStallDetector(): void {
     if (this.compositorStallDetectorTimer) {
-      clearInterval(this.compositorStallDetectorTimer);
+      clearTimeout(this.compositorStallDetectorTimer);
       this.compositorStallDetectorTimer = null;
     }
   }
@@ -2077,12 +2164,15 @@ export class ViewManager {
   private async detectAndRecoverStall(): Promise<void> {
     if (this.window.isDestroyed()) return;
     if (!this.windowVisible) return;
+    if (!this.window.isFocused()) return;
 
     const slots = Array.from(this.nativePanelSlots.activeSlots.values());
     if (slots.length > 0) {
+      let anyStalled = false;
       for (const slot of slots) {
-        await this.detectAndRecoverPanelSlotStall(slot);
+        if (await this.detectAndRecoverPanelSlotStall(slot)) anyStalled = true;
       }
+      this.adjustStallProbeBackoff(anyStalled);
       return;
     }
 
@@ -2105,20 +2195,30 @@ export class ViewManager {
         managed.view.setBounds(bounds);
         managed.view.webContents.invalidate();
         this.cycleCompositorVisibility(managed);
+        this.adjustStallProbeBackoff(true);
+      } else {
+        this.adjustStallProbeBackoff(false);
       }
     } catch {
       // capturePage failed (webContents navigating, destroyed, etc.) — skip
     }
   }
 
-  private async detectAndRecoverPanelSlotStall(slot: NativePanelSlotState): Promise<void> {
+  /** Healthy probes back off toward the max interval; stalls reset to min. */
+  private adjustStallProbeBackoff(stalled: boolean): void {
+    this.stallProbeIntervalMs = stalled
+      ? this.STALL_PROBE_MIN_INTERVAL_MS
+      : Math.min(this.stallProbeIntervalMs * 2, this.STALL_PROBE_MAX_INTERVAL_MS);
+  }
+
+  private async detectAndRecoverPanelSlotStall(slot: NativePanelSlotState): Promise<boolean> {
     const managed = this.views.get(slot.panelId);
-    if (!managed || !managed.visible || managed.view.webContents.isDestroyed()) return;
+    if (!managed || !managed.visible || managed.view.webContents.isDestroyed()) return false;
 
     try {
       const image = await managed.view.webContents.capturePage();
       if (this.nativePanelSlots.activeSlots.get(slot.nativeSlotId)?.panelId !== slot.panelId) {
-        return;
+        return false;
       }
       if (image.isEmpty()) {
         log.verbose(` Compositor stall detected on ${slot.panelId} (empty capture) — recovering`);
@@ -2127,10 +2227,12 @@ export class ViewManager {
         managed.view.setBounds(slot.bounds);
         managed.view.webContents.invalidate();
         this.cycleCompositorVisibility(managed);
+        return true;
       }
     } catch {
       // capturePage failed (webContents navigating, destroyed, etc.) — skip
     }
+    return false;
   }
 
   // =========================================================================

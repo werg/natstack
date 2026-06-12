@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import { extensionsMethods } from "@natstack/shared/serviceSchemas/extensions";
 import {
   ServiceError,
   type ServiceContext,
@@ -216,6 +216,7 @@ export class ExtensionHost {
   private health = new Map<string, unknown>();
   private inspectorUrls = new Map<string, string | null>();
   private unitLogs = new Map<string, UnitLogRecord[]>();
+  private extensionErrorHistory = new Map<string, ExtensionErrorHistoryItem[]>();
   private fetchRequestBodies = new Map<string, FetchRequestBodyStream>();
   private activeInvocations = new Map<string, ExtensionInvocation>();
   private registeredBuildProviderTargets = new Map<string, Set<BuildProviderTarget>>();
@@ -237,12 +238,16 @@ export class ExtensionHost {
     this.sourcePushGrants = new UnitSourcePushGrantStore({ statePath: deps.statePath });
     this.processes = new ExtensionProcessManager({
       onStatus: (name, status, error) => {
+        if (status === "running") {
+          this.extensionErrorHistory.delete(name);
+        }
         if (this.registry.has(name)) {
           this.registry.patch(name, { status, lastError: error ?? null });
         }
         this.deps.eventService.emit("extensions:status", { name, status, error: error ?? null });
       },
       onError: (name, error, attempts) => {
+        this.rememberExtensionError(name, error, attempts);
         this.deps.eventService.emit("extensions:error", { name, error, attempts });
       },
       onHealth: (name, health) => {
@@ -252,11 +257,32 @@ export class ExtensionHost {
         this.recordExtensionLog(name, level, message, fields, source);
       },
       onCrashLimit: (name, error, attempts) => {
+        const history = this.extensionErrorHistory.get(name) ?? [
+          { attempts, error, timestamp: Date.now() },
+        ];
         this.deps.notificationService?.show({
           id: `extension-crash-${encodeURIComponent(name)}`,
           type: "error",
           title: "Extension stopped",
-          message: `${name} failed ${attempts} times and will not restart until reloaded. ${error}`,
+          message: `${name} failed ${attempts} times and will not restart until reloaded.`,
+          details: [
+            { label: "Extension", value: name, mono: true },
+            { label: "Attempts", value: String(attempts) },
+            { label: "Latest error", value: error, mono: true },
+          ],
+          history: history.map((item) => ({
+            title: `Attempt ${item.attempts}`,
+            message: item.error,
+            timestamp: item.timestamp,
+          })),
+          actions: [
+            {
+              id: "reload",
+              label: "Reload",
+              variant: "solid",
+              command: { type: "workspace.restartUnit", name },
+            },
+          ],
         });
       },
       onInspectorUrl: (name, inspectorUrl) => {
@@ -433,30 +459,7 @@ export class ExtensionHost {
       name: "extensions",
       description: "Installed extension management and invocation",
       policy: { allowed: ["panel", "app", "worker", "do", "shell", "server", "extension"] },
-      methods: {
-        invoke: { args: z.tuple([z.string(), z.string(), z.array(z.unknown())]) },
-        invokeStream: { args: z.tuple([z.string(), z.string(), z.array(z.unknown())]) },
-        streamingMethods: { args: z.tuple([z.string()]) },
-        list: { args: z.tuple([]) },
-        on: { args: z.tuple([z.string(), z.string()]) },
-        ready: {
-          args: z.tuple([z.object({ methods: z.array(z.string()), hasFetch: z.boolean() })]),
-        },
-        emit: { args: z.tuple([z.string(), z.unknown()]) },
-        fetchRequestBodyChunk: { args: z.tuple([z.string()]) },
-        fetchRequestBodyClose: { args: z.tuple([z.string()]) },
-        health: {
-          args: z.tuple([z.enum(["healthy", "degraded", "unhealthy"]), z.unknown().optional()]),
-        },
-        log: {
-          args: z.tuple([
-            z.enum(["debug", "info", "warn", "error"]),
-            z.string(),
-            z.record(z.unknown()).optional(),
-          ]),
-        },
-        reload: { args: z.tuple([z.string()]) },
-      },
+      methods: extensionsMethods,
       handler: (ctx, method, args) => this.handle(ctx, method, args),
     };
   }
@@ -1579,6 +1582,21 @@ export class ExtensionHost {
     this.deps.recordUnitLog?.(record);
     this.deps.eventService.emit("workspace:unit-log", record);
   }
+
+  private rememberExtensionError(name: string, error: string, attempts: number): void {
+    const items = this.extensionErrorHistory.get(name) ?? [];
+    items.push({ attempts, error, timestamp: Date.now() });
+    if (items.length > 20) {
+      items.splice(0, items.length - 20);
+    }
+    this.extensionErrorHistory.set(name, items);
+  }
+}
+
+interface ExtensionErrorHistoryItem {
+  attempts: number;
+  error: string;
+  timestamp: number;
 }
 
 interface UnitLogRecord {

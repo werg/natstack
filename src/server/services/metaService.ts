@@ -1,10 +1,11 @@
-import { z } from "zod";
 import { zodToJsonSchema as convertZodToJsonSchema } from "zod-to-json-schema";
-import type { ServiceDefinition, MethodDef } from "@natstack/shared/serviceDefinition";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import { metaMethods } from "@natstack/shared/serviceSchemas/meta";
+import type { MethodSchema } from "@natstack/shared/typedServiceClient";
 import type { ServiceDispatcher } from "@natstack/shared/serviceDispatcher";
 import type { RuntimeSurface } from "@natstack/shared/runtimeSurface";
 
-function serializeMethod(method: MethodDef) {
+function serializeMethod(method: MethodSchema) {
   return {
     ...(method.description ? { description: method.description } : {}),
     ...(method.policy ? { policy: method.policy } : {}),
@@ -44,20 +45,7 @@ export function createMetaService(deps: {
     name: "meta",
     description: "Runtime introspection for services and eval runtime surfaces.",
     policy: { allowed: ["panel", "app", "worker", "do", "extension", "server", "shell"] },
-    methods: {
-      listServices: {
-        description: "List all registered RPC services and their method metadata.",
-        args: z.tuple([]),
-      },
-      describeService: {
-        description: "Describe one registered RPC service by name.",
-        args: z.tuple([z.string()]),
-      },
-      getRuntimeSurface: {
-        description: "Return the live eval runtime surface manifest for the requested target.",
-        args: z.tuple([z.enum(["panel", "workerRuntime"])]),
-      },
-    },
+    methods: metaMethods,
     handler: async (_ctx, method, args) => {
       switch (method) {
         case "listServices":

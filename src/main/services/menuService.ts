@@ -1,6 +1,8 @@
 import { Menu, type MenuItemConstructorOptions } from "electron";
-import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import { createTypedServiceClient } from "@natstack/shared/typedServiceClient";
+import { buildMethods } from "@natstack/shared/serviceSchemas/build";
+import { menuMethods } from "@natstack/shared/serviceSchemas/menu";
 import type { PanelOrchestrator } from "../panelOrchestrator.js";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import type { ViewManager } from "../viewManager.js";
@@ -18,20 +20,15 @@ export function createMenuService(deps: {
   getViewManager: () => ViewManager;
   serverClient: ServerClient | null;
 }): ServiceDefinition {
+  const serverClient = deps.serverClient;
+  const buildClient = serverClient
+    ? createTypedServiceClient("build", buildMethods, (svc, m, a) => serverClient.call(svc, m, a))
+    : null;
   return {
     name: "menu",
     description: "Native menus",
     policy: { allowed: ["shell", "app"] },
-    methods: {
-      showHamburger: { args: z.tuple([z.object({ x: z.number(), y: z.number() })]) },
-      showContext: {
-        args: z.tuple([
-          z.array(z.object({ id: z.string(), label: z.string() })),
-          z.object({ x: z.number(), y: z.number() }),
-        ]),
-      },
-      showPanelContext: { args: z.tuple([z.string(), z.object({ x: z.number(), y: z.number() })]) },
-    },
+    methods: menuMethods,
     handler: async (ctx, method, args) => {
       const vm = deps.getViewManager();
       requireAppCapability(ctx, vm, "native-menus", `menu.${method}`);
@@ -44,9 +41,9 @@ export function createMenuService(deps: {
           const shellContents = vm.getShellWebContents();
 
           const clearBuildCache = async () => {
-            if (deps.serverClient) {
+            if (buildClient) {
               try {
-                await deps.serverClient.call("build", "recompute", []);
+                await buildClient.recompute();
               } catch (e) {
                 console.warn("[App] Build recompute failed:", e);
               }

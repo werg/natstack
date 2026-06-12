@@ -1,15 +1,12 @@
 /**
- * ServerInfo — extends ServerInfoLike with git operations.
+ * ServerInfo — Electron-main's view of the server connection.
  *
- * Used only in Electron main process where server access is via RPC.
+ * Formerly carried hand-typed git RPC wrappers (getWorkspaceTree,
+ * listBranches, listCommits, resolveRef); those had no consumers — callers
+ * use typed service clients (`createTypedServiceClient` + the git schema
+ * table) directly instead.
  */
 
 import type { ServerInfoLike } from "@natstack/shared/panelInterfaces";
 
-export interface ServerInfo extends ServerInfoLike {
-  getWorkspaceTree(): Promise<unknown>;
-  listBranches(repoPath: string): Promise<unknown>;
-  listCommits(repoPath: string, ref?: string, limit?: number): Promise<unknown>;
-  /** Resolve a git ref to a commit SHA (used for GitHub paths) */
-  resolveRef(repoPath: string, ref: string): Promise<string>;
-}
+export type ServerInfo = ServerInfoLike;

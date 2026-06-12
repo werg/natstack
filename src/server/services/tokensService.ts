@@ -1,6 +1,6 @@
-import { z } from "zod";
 import { randomBytes } from "node:crypto";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import { tokensMethods } from "@natstack/shared/serviceSchemas/tokens";
 import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { CallerKind } from "@natstack/shared/serviceDispatcher";
 
@@ -20,25 +20,7 @@ export function createTokensService(deps: {
     name: "tokens",
     description: "Token management for non-panel bearers and admin token rotation",
     policy: { allowed: ["server", "shell"] },
-    methods: {
-      create: { args: z.tuple([z.string(), z.string()]) },
-      ensure: { args: z.tuple([z.string(), z.string()]) },
-      revoke: { args: z.tuple([z.string()]) },
-      get: { args: z.tuple([z.string()]) },
-      /**
-       * Rotate the admin token. Generates a fresh 32-byte hex token, persists
-       * it to the central config dir (if enabled), swaps it into the token
-       * manager, and returns the new token. Existing WS connections that
-       * already authenticated with the old token keep their live session —
-       * only new connects and reconnects need the new token. The client
-       * receives the new token once; callers should immediately write it
-       * into their credential store and plan a relaunch.
-       *
-       * Policy: server + shell only. Never callable from panel or worker —
-       * those are semantically untrusted.
-       */
-      rotateAdmin: { args: z.tuple([]) },
-    },
+    methods: tokensMethods,
     handler: async (ctx, method, args) => {
       const tm = deps.tokenManager;
       switch (method) {

@@ -95,11 +95,11 @@ function updateDoc(relativePath, replacements, checkOnly) {
 }
 
 const panelSurface = loadRuntimeSurface(
-  "workspace/packages/runtime/src/shared/runtimeSurface.panel.ts",
+  "packages/shared/src/runtimeSurface.panel.ts",
   "panelRuntimeSurface"
 );
 const workerSurface = loadRuntimeSurface(
-  "workspace/packages/runtime/src/shared/runtimeSurface.worker.ts",
+  "packages/shared/src/runtimeSurface.worker.ts",
   "workerRuntimeSurface"
 );
 

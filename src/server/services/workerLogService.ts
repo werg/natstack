@@ -15,8 +15,8 @@
  *   [server] [workerLog] [do:workers/example-store:ExampleStoreDO:ctx-...] warn: <message>
  */
 
-import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import { workerLogMethods } from "@natstack/shared/serviceSchemas/workerLog";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("workerLog");
@@ -72,15 +72,7 @@ export function createWorkerLogService(deps: WorkerLogServiceDeps = {}): Service
     description:
       "Forward DO console output to the server terminal and the workspace-unit log stream",
     policy: { allowed: ["shell", "panel", "app", "server", "worker", "do", "extension"] },
-    methods: {
-      write: {
-        args: z.tuple([
-          z.enum(["log", "info", "warn", "error"]),
-          z.string(),
-          z.object({ source: z.string().optional() }).optional(),
-        ]),
-      },
-    },
+    methods: workerLogMethods,
     handler: async (ctx, method, args) => {
       if (method !== "write") throw new Error(`Unknown method: ${method}`);
       const [level, message, fields] = args as [Level, string, WorkerLogFields | undefined];

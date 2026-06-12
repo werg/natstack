@@ -1,6 +1,9 @@
 import { app, nativeTheme, shell } from "electron";
-import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import { appMethods } from "@natstack/shared/serviceSchemas/app";
+import { buildMethods } from "@natstack/shared/serviceSchemas/build";
+import { workspaceMethods } from "@natstack/shared/serviceSchemas/workspace";
+import { createTypedServiceClient } from "@natstack/shared/typedServiceClient";
 import type { ThemeMode } from "@natstack/shared/types";
 import type { PanelOrchestrator } from "../panelOrchestrator.js";
 import type { ServerClient } from "../serverClient.js";
@@ -16,22 +19,21 @@ export function createAppService(deps: {
   connectionMode: "local" | "remote";
   remoteHost?: string;
 }): ServiceDefinition {
+  const serverClient = deps.serverClient;
+  const callServer = serverClient
+    ? (svc: string, m: string, a: unknown[]) => serverClient.call(svc, m, a)
+    : null;
+  const buildClient = callServer
+    ? createTypedServiceClient("build", buildMethods, callServer)
+    : null;
+  const workspaceClient = callServer
+    ? createTypedServiceClient("workspace", workspaceMethods, callServer)
+    : null;
   return {
     name: "app",
     description: "App lifecycle, theme, devtools",
     policy: { allowed: ["shell", "app"] },
-    methods: {
-      getInfo: { args: z.tuple([]) },
-      getSystemTheme: { args: z.tuple([]) },
-      setThemeMode: { args: z.tuple([z.string()]) },
-      openDevTools: { args: z.tuple([]) },
-      openExternal: { args: z.tuple([z.string()]) },
-      openWorkspacePath: { args: z.tuple([]) },
-      clearBuildCache: { args: z.tuple([]) },
-      getShellPages: { args: z.tuple([]) },
-      applyUpdate: { args: z.tuple([z.string()]) },
-      listPendingUpdates: { args: z.tuple([]) },
-    },
+    methods: appMethods,
     handler: async (ctx, method, args) => {
       switch (method) {
         case "getInfo":
@@ -72,8 +74,8 @@ export function createAppService(deps: {
           if (ctx.caller.runtime.kind !== "shell") {
             throw new Error("app.openWorkspacePath is shell-only");
           }
-          const info = await deps.serverClient?.call("workspace", "getInfo", []);
-          const workspacePath = (info as { path?: unknown } | undefined)?.path;
+          const info = await workspaceClient?.getInfo();
+          const workspacePath = info?.path;
           if (typeof workspacePath !== "string" || workspacePath.length === 0) {
             throw new Error("Workspace path unavailable");
           }
@@ -84,9 +86,9 @@ export function createAppService(deps: {
 
         case "clearBuildCache": {
           requireAppCapability(ctx, deps.getViewManager(), "panel-hosting", "app.clearBuildCache");
-          if (deps.serverClient) {
+          if (buildClient) {
             try {
-              await deps.serverClient.call("build", "recompute", []);
+              await buildClient.recompute();
             } catch (e) {
               console.warn("[App] Build recompute failed:", e);
             }
@@ -101,9 +103,9 @@ export function createAppService(deps: {
 
         case "getShellPages":
           requireAppCapability(ctx, deps.getViewManager(), "panel-hosting", "app.getShellPages");
-          if (deps.serverClient) {
+          if (buildClient) {
             try {
-              return await deps.serverClient.call("build", "getAboutPages", []);
+              return await buildClient.getAboutPages();
             } catch (e) {
               console.warn("[App] Failed to fetch shell pages:", e);
             }

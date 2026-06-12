@@ -1,5 +1,4 @@
 import { app, dialog } from "electron";
-import { z } from "zod";
 import * as fs from "fs";
 import * as os from "os";
 import * as tls from "tls";
@@ -7,6 +6,9 @@ import { request as httpsRequest, Agent as HttpsAgent, type RequestOptions } fro
 import { request as httpRequest } from "http";
 import { createHash } from "crypto";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import { createTypedServiceClient } from "@natstack/shared/typedServiceClient";
+import { authMethods } from "@natstack/shared/serviceSchemas/auth";
+import { remoteCredMethods } from "@natstack/shared/serviceSchemas/remoteCred";
 import type { StartupMode } from "../startupMode.js";
 import {
   loadRemoteCredentials,
@@ -296,6 +298,10 @@ async function postAuthJson(
   });
 }
 
+function authClientFor(client: ServerClient) {
+  return createTypedServiceClient("auth", authMethods, (svc, m, a) => client.call(svc, m, a));
+}
+
 export function createRemoteCredService(deps: {
   startupMode: StartupMode;
   getServerClient?: () => ServerClient | null;
@@ -304,61 +310,7 @@ export function createRemoteCredService(deps: {
     name: "remoteCred",
     description: "Manage the Electron-side remote-server credential store",
     policy: { allowed: ["shell"] },
-    methods: {
-      getCurrent: { args: z.tuple([]) },
-      save: {
-        args: z.tuple([
-          z.object({
-            url: z.string(),
-            token: z.string(),
-            caPath: z.string().optional(),
-            fingerprint: z.string().optional(),
-          }),
-        ]),
-      },
-      testConnection: {
-        args: z.tuple([
-          z.object({
-            url: z.string(),
-            token: z.string(),
-            caPath: z.string().optional(),
-            fingerprint: z.string().optional(),
-          }),
-        ]),
-      },
-      exchangePairingCode: {
-        args: z.tuple([
-          z.object({
-            url: z.string(),
-            code: z.string(),
-            caPath: z.string().optional(),
-            fingerprint: z.string().optional(),
-            label: z.string().optional(),
-          }),
-        ]),
-      },
-      discoverServers: { args: z.tuple([]) },
-      createPairingInvite: {
-        args: z.tuple([
-          z
-            .object({
-              ttlMs: z
-                .number()
-                .int()
-                .min(30_000)
-                .max(60 * 60 * 1000)
-                .optional(),
-            })
-            .optional(),
-        ]),
-      },
-      listDevices: { args: z.tuple([]) },
-      revokeDevice: { args: z.tuple([z.string()]) },
-      fetchPeerFingerprint: { args: z.tuple([z.string()]) },
-      pickCaFile: { args: z.tuple([]) },
-      clear: { args: z.tuple([]) },
-      relaunch: { args: z.tuple([]) },
-    },
+    methods: remoteCredMethods,
     handler: async (_ctx, method, args) => {
       switch (method) {
         case "getCurrent": {
@@ -511,18 +463,16 @@ export function createRemoteCredService(deps: {
             );
           const client = deps.getServerClient?.();
           if (!client) throw new Error("Not connected to a server");
-          return (await client.call("auth", "createPairingInvite", [
-            args[0] ?? {},
-          ])) as PairingInvite;
+          return await authClientFor(client).createPairingInvite(
+            (args[0] ?? {}) as { ttlMs?: number }
+          );
         }
         case "listDevices": {
           if (deps.startupMode.kind !== "remote") return [];
           const client = deps.getServerClient?.();
           if (!client) return [];
-          const response = (await client.call("auth", "listDevices", [])) as {
-            devices?: DeviceRecord[];
-          };
-          return response.devices ?? [];
+          const response = await authClientFor(client).listDevices();
+          return response.devices;
         }
         case "revokeDevice": {
           const deviceId = args[0] as string;
@@ -530,9 +480,7 @@ export function createRemoteCredService(deps: {
             throw new Error("Not connected to a remote server");
           const client = deps.getServerClient?.();
           if (!client) throw new Error("Not connected to a server");
-          const response = (await client.call("auth", "revokeDevice", [deviceId])) as {
-            revoked: boolean;
-          };
+          const response = await authClientFor(client).revokeDevice(deviceId);
           const current = loadRemoteCredentials();
           if (
             response.revoked &&

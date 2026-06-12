@@ -199,6 +199,41 @@ describe("WorkerdManager", () => {
       expect(instance.callerId).toBe("worker:my-worker");
     });
 
+    it("records a lifecycle event and lastError on failed start, cleared by a later success", async () => {
+      const recordLifecycleEvent = vi.fn();
+      const getBuild = vi.fn().mockRejectedValueOnce(new Error("boom"));
+      const deps = createMockDeps({ getBuild, recordLifecycleEvent });
+      const mgr = new WorkerdManager(deps);
+
+      await expect(mgr.createInstance(defaultCreateOptions())).rejects.toThrow("boom");
+
+      expect(recordLifecycleEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: "workers/hello",
+          callerId: "worker:hello",
+          level: "error",
+          message: "Worker failed to start: boom",
+          fields: expect.objectContaining({ event: "worker-start-failed" }),
+        })
+      );
+      expect(mgr.getLastWorkerError("workers/hello")).toEqual(
+        expect.objectContaining({ message: "boom", timestamp: expect.any(Number) })
+      );
+
+      // Subsequent successful start clears the recorded failure.
+      getBuild.mockResolvedValue(mockWorkerBuild());
+      await mgr.createInstance(defaultCreateOptions());
+
+      expect(mgr.getLastWorkerError("workers/hello")).toBeNull();
+      expect(recordLifecycleEvent).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          source: "workers/hello",
+          level: "info",
+          fields: expect.objectContaining({ event: "worker-started" }),
+        })
+      );
+    });
+
     it("rolls back on build failure", async () => {
       const deps = createMockDeps({
         getBuild: vi.fn().mockRejectedValue(new Error("build failed")),

@@ -263,6 +263,18 @@ class ConnectionRegistry {
   }
 }
 
+const DEFAULT_RPC_MAX_BODY_BYTES = 256 * 1024 * 1024;
+
+/** Max HTTP RPC body size; NATSTACK_RPC_MAX_BODY_BYTES overrides (0 = uncapped). */
+function resolveRpcMaxBodyBytes(): number {
+  const raw = process.env["NATSTACK_RPC_MAX_BODY_BYTES"];
+  if (raw !== undefined) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= 0) return Math.floor(parsed);
+  }
+  return DEFAULT_RPC_MAX_BODY_BYTES;
+}
+
 function getErrorCode(error: unknown): string | undefined {
   return error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
 }
@@ -1411,10 +1423,25 @@ export class RpcServer {
       return;
     }
 
-    // Read body. Intentionally uncapped here so RPC remains compatible with
-    // existing large-payload developer workflows.
+    // Read body, bounded. The cap is deliberately generous (large file writes
+    // ride this path) but finite, so a runaway or malicious client can't
+    // buffer unbounded memory server-side. Override via
+    // NATSTACK_RPC_MAX_BODY_BYTES (0 disables the cap).
+    const maxBodyBytes = resolveRpcMaxBodyBytes();
     const chunks: Buffer[] = [];
+    let bodyBytes = 0;
     for await (const chunk of req) {
+      bodyBytes += (chunk as Buffer).length;
+      if (maxBodyBytes > 0 && bodyBytes > maxBodyBytes) {
+        res.writeHead(413, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: `RPC body exceeds ${maxBodyBytes} bytes (set NATSTACK_RPC_MAX_BODY_BYTES to raise)`,
+          })
+        );
+        req.destroy();
+        return;
+      }
       chunks.push(chunk as Buffer);
     }
 
@@ -1963,9 +1990,10 @@ export class RpcServer {
           })
         );
       } else if (frame.kind === "chunk") {
-        let binary = "";
-        for (const byte of frame.bytes) binary += String.fromCharCode(byte);
-        sendFrame(0x02, btoa(binary));
+        // Buffer's native base64 encoder — the previous byte-by-byte
+        // String.fromCharCode + btoa version built an O(n) intermediate
+        // string one character at a time, dominating CPU on large bodies.
+        sendFrame(0x02, Buffer.from(frame.bytes).toString("base64"));
       } else if (frame.kind === "end") {
         sendFrame(0x03, JSON.stringify({ bytesIn: frame.bytesIn }));
       } else if (frame.kind === "error") {
@@ -2498,10 +2526,28 @@ export class RpcServer {
   // Internal helpers
   // ===========================================================================
 
+  // Backpressure limits for slow WebSocket consumers. Below the soft limit
+  // everything is sent; between soft and hard, broadcast events are dropped
+  // (they're best-effort — clients resync via snapshots) while responses and
+  // stream frames still go through; past the hard limit the socket is
+  // terminated so an unread buffer can't grow without bound.
+  private static readonly WS_BACKPRESSURE_SOFT_LIMIT = 16 * 1024 * 1024;
+  private static readonly WS_BACKPRESSURE_HARD_LIMIT = 128 * 1024 * 1024;
+
   private sendToWs(ws: WebSocket, msg: WsServerMessage): void {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(msg));
+    if (ws.readyState !== WebSocket.OPEN) return;
+    const buffered = ws.bufferedAmount;
+    if (buffered > RpcServer.WS_BACKPRESSURE_HARD_LIMIT) {
+      log.warn(
+        `WebSocket client buffer exceeded hard limit (${buffered} bytes buffered) — terminating slow consumer`
+      );
+      ws.terminate();
+      return;
     }
+    if (buffered > RpcServer.WS_BACKPRESSURE_SOFT_LIMIT && msg.type === "ws:event") {
+      return;
+    }
+    ws.send(JSON.stringify(msg));
   }
 
   // ===========================================================================

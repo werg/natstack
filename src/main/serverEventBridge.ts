@@ -3,6 +3,8 @@ import { isValidEventName, type EventName } from "@natstack/shared/events";
 import type { PanelTreeSnapshot } from "@natstack/shared/types";
 import type { PanelRuntimeLeaseChangedEvent } from "@natstack/shared/panel/panelLease";
 import type { PendingApproval } from "@natstack/shared/approvals";
+import { credentialsMethods } from "@natstack/shared/serviceSchemas/credentials";
+import { createTypedServiceClient } from "@natstack/shared/typedServiceClient";
 import type { ServerClient } from "./serverClient.js";
 import type { PanelOrchestrator } from "./panelOrchestrator.js";
 import type { AppOrchestrator, AppAvailableEvent } from "./appOrchestrator.js";
@@ -31,6 +33,10 @@ export function createServerEventBridge(deps: ServerEventBridgeDeps) {
   const emitNormalized = (event: EventName, payload: unknown): void => {
     (deps.eventService.emit as (e: EventName, d: unknown) => void)(event, payload);
   };
+  const credentialsClientFor = (client: ServerClient) =>
+    createTypedServiceClient("credentials", credentialsMethods, (service, method, args) =>
+      client.call(service, method, args)
+    );
 
   return function handleServerEvent(event: string, payload: unknown): void {
     const panelOrchestrator = deps.getPanelOrchestrator();
@@ -53,9 +59,12 @@ export function createServerEventBridge(deps: ServerEventBridgeDeps) {
     if (bareEvent === "external-open:open") {
       void handleExternalOpenPayload(payload as ExternalOpenPayload, {
         openExternal: deps.openExternal,
-        forwardOAuthCallback: (request) =>
-          deps.getServerClient()?.call("credentials", "forwardOAuthCallback", [request]) ??
-          Promise.resolve(),
+        forwardOAuthCallback: (request) => {
+          const client = deps.getServerClient();
+          return client
+            ? credentialsClientFor(client).forwardOAuthCallback(request)
+            : Promise.resolve();
+        },
       }).catch((err: unknown) => {
         deps.warn(
           `[externalOpen] OAuth browser handoff failed: ${

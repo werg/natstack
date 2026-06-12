@@ -8,54 +8,17 @@
  * manipulate slots via runtime.*, not directly here.
  */
 
-import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
-import type { ServicePolicy } from "@natstack/shared/servicePolicy";
 import type { EntityRecord } from "@natstack/shared/runtime/entitySpec";
 import type { IndexablePanel, PanelSearchResult } from "@natstack/shared/panelSearchTypes";
+import {
+  WORKSPACE_STATE_READ_POLICY as READ_POLICY,
+  workspaceStateMethods,
+} from "@natstack/shared/serviceSchemas/workspaceState";
 import type { DODispatch } from "../doDispatch.js";
 import { INTERNAL_DO_SOURCE } from "../internalDOs/internalDoLoader.js";
 
 export const WORKSPACE_DO_CLASS = "WorkspaceDO";
-
-const SlotHistoryEntryInputSchema = z.object({
-  entryKey: z.string(),
-  entityId: z.string(),
-  source: z.string(),
-  contextId: z.string(),
-  stateArgs: z.unknown().optional(),
-});
-
-const SlotCreateInputSchema = z.object({
-  slotId: z.string(),
-  parentSlotId: z.string().nullable(),
-  positionId: z.string(),
-  initialEntry: SlotHistoryEntryInputSchema.optional(),
-});
-
-const READ_POLICY: ServicePolicy = {
-  allowed: ["shell", "app", "server", "panel", "worker", "do"],
-};
-const WRITE_POLICY: ServicePolicy = {
-  allowed: ["shell", "app", "server"],
-};
-const LIFECYCLE_POLICY: ServicePolicy = {
-  allowed: ["server", "do"],
-};
-
-const LifecycleKeySchema = z.object({
-  source: z.string().min(1),
-  className: z.string().min(1),
-  objectKey: z.string().min(1),
-});
-
-const LifecycleLeaseSchema = LifecycleKeySchema.extend({
-  detail: z.unknown().optional(),
-});
-
-const AlarmSetSchema = LifecycleKeySchema.extend({
-  wakeAt: z.number(),
-});
 
 export interface WorkspaceStateServiceDeps {
   doDispatch: DODispatch;
@@ -86,128 +49,7 @@ export function createWorkspaceStateService(deps: WorkspaceStateServiceDeps): Se
     name: "workspace-state",
     description: "Workspace slot/entity state (WorkspaceDO).",
     policy: READ_POLICY,
-    methods: {
-      "slot.list": {
-        args: z.tuple([]),
-        description: "List open slots.",
-        policy: READ_POLICY,
-      },
-      "slot.get": {
-        args: z.tuple([z.string()]),
-        description: "Get a single slot row by id.",
-        policy: READ_POLICY,
-      },
-      "slot.history": {
-        args: z.tuple([z.string()]),
-        description: "Get the history for a slot.",
-        policy: READ_POLICY,
-      },
-      "entity.resolveActive": {
-        args: z.tuple([z.string()]),
-        description: "Resolve a single active entity record by id.",
-        policy: READ_POLICY,
-      },
-      "slot.create": {
-        args: z.tuple([SlotCreateInputSchema]),
-        description: "Create a new slot row.",
-        policy: WRITE_POLICY,
-      },
-      "slot.appendHistory": {
-        args: z.tuple([z.string(), SlotHistoryEntryInputSchema]),
-        description: "Append a history entry to a slot.",
-        policy: WRITE_POLICY,
-      },
-      "slot.setCurrent": {
-        args: z.tuple([z.string(), z.string()]),
-        description: "Move a slot's current pointer to an existing history entry.",
-        policy: WRITE_POLICY,
-      },
-      "slot.updateCurrentStateArgs": {
-        args: z.tuple([z.string(), z.unknown()]),
-        description: "Mutate the stateArgs for a slot's current history entry.",
-        policy: WRITE_POLICY,
-      },
-      "slot.replaceHistory": {
-        args: z.tuple([z.string(), z.array(SlotHistoryEntryInputSchema), z.number()]),
-        description: "Replace a slot's history with the given entries and cursor.",
-        policy: WRITE_POLICY,
-      },
-      "slot.setParent": {
-        args: z.tuple([z.string(), z.string().nullable()]),
-        description: "Reparent a slot.",
-        policy: WRITE_POLICY,
-      },
-      "slot.setPosition": {
-        args: z.tuple([z.string(), z.string()]),
-        description: "Update a slot's position rank.",
-        policy: WRITE_POLICY,
-      },
-      "slot.move": {
-        args: z.tuple([z.string(), z.string().nullable(), z.string()]),
-        description: "Atomically update a slot's parent and position.",
-        policy: WRITE_POLICY,
-      },
-      "slot.close": {
-        args: z.tuple([z.string()]),
-        description: "Mark a slot closed.",
-        policy: WRITE_POLICY,
-      },
-      "panel.search": {
-        args: z.tuple([z.string(), z.number().optional()]),
-        description: "FTS5 search over panel entities.",
-        policy: READ_POLICY,
-      },
-      "panel.index": {
-        args: z.tuple([
-          z.object({
-            id: z.string(),
-            title: z.string(),
-            path: z.string().optional(),
-            manifestDescription: z.string().optional(),
-            manifestDependencies: z.array(z.string()).optional(),
-            tags: z.array(z.string()).optional(),
-            keywords: z.array(z.string()).optional(),
-          }),
-        ]),
-        description: "Upsert a panel's search-metadata row.",
-        policy: WRITE_POLICY,
-      },
-      "panel.updateTitle": {
-        args: z.tuple([z.string(), z.string()]),
-        description: "Update the searchable title for a panel entity.",
-        policy: WRITE_POLICY,
-      },
-      "panel.incrementAccess": {
-        args: z.tuple([z.string()]),
-        description: "Bump the access counter for a panel entity.",
-        policy: WRITE_POLICY,
-      },
-      "panel.rebuildIndex": {
-        args: z.tuple([]),
-        description: "Rebuild the panel-search index from active panel entities.",
-        policy: WRITE_POLICY,
-      },
-      lifecycleLeaseUpsert: {
-        args: z.tuple([LifecycleLeaseSchema]),
-        description: "Mark a Durable Object as having active checkpointable work.",
-        policy: LIFECYCLE_POLICY,
-      },
-      lifecycleLeaseClear: {
-        args: z.tuple([LifecycleKeySchema]),
-        description: "Clear a Durable Object active-work lease.",
-        policy: LIFECYCLE_POLICY,
-      },
-      alarmSet: {
-        args: z.tuple([AlarmSetSchema]),
-        description: "Register/replace a Durable Object's server-driven wake time.",
-        policy: LIFECYCLE_POLICY,
-      },
-      alarmClear: {
-        args: z.tuple([LifecycleKeySchema]),
-        description: "Clear a Durable Object's pending server-driven alarm.",
-        policy: LIFECYCLE_POLICY,
-      },
-    },
+    methods: workspaceStateMethods,
     handler: async (_ctx, method, args) => {
       switch (method) {
         case "slot.list":

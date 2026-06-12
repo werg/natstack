@@ -9,9 +9,9 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { z } from "zod";
 import { getCentralDataPath } from "@natstack/env-paths";
 import type { PushApprovalDataPayload } from "@natstack/shared/approvalContract";
+import { pushMethods } from "@natstack/shared/serviceSchemas/push";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import { pushMetrics, type PushMetrics } from "./pushMetrics.js";
 
@@ -390,36 +390,7 @@ export function createPushService(deps: PushServiceDeps = {}): PushServiceResult
     name: "push",
     description: "Push notification device registration and delivery",
     policy: { allowed: ["shell", "app", "server"] },
-    methods: {
-      register: {
-        args: z.tuple([
-          z.object({
-            token: z.string(),
-            platform: z.enum(["ios", "android", "web"]),
-            clientId: z.string(),
-          }),
-        ]),
-      },
-      unregister: {
-        args: z.tuple([z.string()]),
-      },
-      send: {
-        args: z.tuple([
-          z.object({
-            clientId: z.string(),
-            title: z.string(),
-            body: z.string().optional(),
-            category: z.string().optional(),
-            data: z.record(z.unknown()).optional(),
-          }),
-        ]),
-        policy: { allowed: ["server"] },
-      },
-      listRegistrations: {
-        args: z.tuple([]),
-        policy: { allowed: ["server"] },
-      },
-    },
+    methods: pushMethods,
     handler: async (_ctx, method, args) => {
       switch (method) {
         case "register": {
