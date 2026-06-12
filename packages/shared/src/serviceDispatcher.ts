@@ -7,7 +7,8 @@
  */
 
 import { z } from "zod";
-import type { ServiceDefinition, MethodDef } from "./serviceDefinition.js";
+import type { ServiceDefinition } from "./serviceDefinition.js";
+import type { MethodSchema } from "./typedServiceClient.js";
 import type { ServicePolicy } from "./servicePolicy.js";
 import { checkServiceAccess } from "./servicePolicy.js";
 import type { CallerKind, CodeIdentityCallerKind } from "./principalKinds.js";
@@ -25,31 +26,85 @@ export type { CallerKind } from "./principalKinds.js";
  * trailing `null` with `undefined` so Zod's `.optional()` accepts them.
  */
 function normalizeArgs(args: unknown[], schema: z.ZodType): unknown[] {
+  if (schema instanceof z.ZodUnion) {
+    // Many service methods model overloads as unions of tuples, e.g.
+    // context-bound `fs.readFile(path, encoding?)` vs explicit-context
+    // `fs.readFile(contextId, path, encoding?)`.
+    if (schema.safeParse(args).success) return args;
+
+    const options = schema._def.options as z.ZodType[];
+    for (const option of options) {
+      const normalized = normalizeArgs(args, option);
+      if (option.safeParse(normalized).success) return normalized;
+    }
+    return args;
+  }
+
   if (!(schema instanceof z.ZodTuple)) return args;
 
   const items = (schema as z.ZodTuple)._def.items as z.ZodType[];
-  if (args.length >= items.length) {
-    // Full-length array — just fix null→undefined for optional positions
-    return args.map((arg, i) => {
-      if (arg === null && i < items.length && items[i]!.isOptional()) {
-        return undefined;
-      }
-      return arg;
-    });
+  // Single pass: pad short arrays to the tuple length (missing trailing args
+  // become undefined) and replace null with undefined at optional positions.
+  // Extra args beyond the tuple length are preserved as-is.
+  const length = Math.max(args.length, items.length);
+  const normalized = new Array<unknown>(length);
+  for (let i = 0; i < length; i++) {
+    const arg = i < args.length ? args[i] : undefined;
+    normalized[i] =
+      arg === null && i < items.length && items[i]!.isOptional() ? undefined : arg;
   }
+  return normalized;
+}
 
-  // Short array — pad with undefined for missing optional trailing args
-  const padded = [...args];
-  for (let i = args.length; i < items.length; i++) {
-    padded.push(undefined);
-  }
-  // Also fix null→undefined in the provided args
-  return padded.map((arg, i) => {
-    if (arg === null && i < items.length && items[i]!.isOptional()) {
-      return undefined;
-    }
-    return arg;
+/**
+ * Render a ZodError from method-args tuple validation as a concise,
+ * human-readable summary, e.g. `invalid argument [1].limit — expected number,
+ * received string`. The leading tuple index is shown as `[n]`; deeper path
+ * segments are dot-joined.
+ */
+function formatArgsValidationError(error: z.ZodError): string {
+  const summaries = error.issues.map((issue) => {
+    const [head, ...rest] = issue.path;
+    const where =
+      typeof head === "number"
+        ? `[${head}]${rest.length > 0 ? `.${rest.join(".")}` : ""}`
+        : issue.path.length > 0
+          ? issue.path.join(".")
+          : "(args)";
+    const detail =
+      issue.code === "invalid_type"
+        ? `expected ${issue.expected}, received ${issue.received}`
+        : issue.message;
+    return `invalid argument ${where} — ${detail}`;
   });
+  return summaries.join("; ");
+}
+
+function formatReturnValidationError(error: z.ZodError): string {
+  const summaries = error.issues.map((issue) => {
+    const where = issue.path.length > 0 ? issue.path.join(".") : "(return)";
+    const detail =
+      issue.code === "invalid_type"
+        ? `expected ${issue.expected}, received ${issue.received}`
+        : issue.message;
+    return `invalid return ${where} — ${detail}`;
+  });
+  return summaries.join("; ");
+}
+
+function shouldValidateServiceReturns(): boolean {
+  const override = process.env["NATSTACK_VALIDATE_SERVICE_RETURNS"];
+  if (override === "0" || override === "false") return false;
+  if (override === "1" || override === "true") return true;
+  return process.env["NODE_ENV"] !== "production";
+}
+
+function normalizeReturnForSchema(result: unknown, schema: z.ZodType): unknown {
+  // JSON and DO HTTP boundaries cannot carry `undefined`; void method returns
+  // commonly round-trip as `null`. Treat that as the wire representation of
+  // logical void while still validating every non-void return strictly.
+  if (result === null && schema instanceof z.ZodVoid) return undefined;
+  return result;
 }
 
 export interface VerifiedCodeIdentity {
@@ -313,8 +368,9 @@ export class ServiceDispatcher {
 
     // Validate args against schema if method has a definition
     const def = this.definitions.get(service);
+    let methodDef: MethodSchema | undefined;
     if (def) {
-      const methodDef = def.methods[method];
+      methodDef = def.methods[method];
       if (methodDef) {
         // Normalize args for wire compatibility: RPC args arrive as JSON arrays
         // where trailing optional args may be omitted (shorter array) or null
@@ -324,10 +380,13 @@ export class ServiceDispatcher {
         const normalized = normalizeArgs(args, methodDef.args);
         const parsed = methodDef.args.safeParse(normalized);
         if (!parsed.success) {
+          // ServiceError prefixes the message with `[service.method]`, so the
+          // full error reads e.g.:
+          //   [workspace.logs] Invalid args: invalid argument [1].limit — expected number, received string
           throw new ServiceError(
             service,
             method,
-            `Invalid args: ${parsed.error.message}`
+            `Invalid args: ${formatArgsValidationError(parsed.error)}`
           );
         }
         // Use normalized args so handlers see undefined (not null) for optional params
@@ -336,7 +395,22 @@ export class ServiceDispatcher {
     }
 
     try {
-      return await handler(ctx, method, args);
+      const result = await handler(ctx, method, args);
+      let normalizedResult = result;
+      if (methodDef?.returns) {
+        normalizedResult = normalizeReturnForSchema(result, methodDef.returns);
+        if (shouldValidateServiceReturns()) {
+          const parsed = methodDef.returns.safeParse(normalizedResult);
+          if (!parsed.success) {
+            throw new ServiceError(
+              service,
+              method,
+              `Invalid return: ${formatReturnValidationError(parsed.error)}`
+            );
+          }
+        }
+      }
+      return normalizedResult;
     } catch (error) {
       if (error instanceof ServiceError) {
         throw error;
@@ -375,7 +449,7 @@ export class ServiceDispatcher {
   /**
    * Get the Zod schema for a specific method.
    */
-  getMethodSchema(service: string, method: string): MethodDef | undefined {
+  getMethodSchema(service: string, method: string): MethodSchema | undefined {
     return this.definitions.get(service)?.methods[method];
   }
 
