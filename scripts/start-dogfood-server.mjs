@@ -208,47 +208,6 @@ function printDirtyWarning() {
   printDogfoodBlock("HOST DIRTY - dogfood propagation will be refused", dirty.split("\n"));
 }
 
-export function shouldRestart(changedPaths) {
-  if (!Array.isArray(changedPaths) || changedPaths.length === 0) return true;
-  return changedPaths.some((changedPath) => classifySelfUpdatePath(changedPath).requiresRestart);
-}
-
-export function classifySelfUpdatePath(changedPath) {
-  if (typeof changedPath !== "string") {
-    return {
-      kind: "unknown",
-      requiresRestart: true,
-    };
-  }
-  if (/^README/.test(changedPath) || changedPath.endsWith(".md") || changedPath.startsWith("docs/")) {
-    return {
-      kind: "docs",
-      requiresRestart: false,
-    };
-  }
-  if (
-    changedPath.startsWith("apps/mobile/") ||
-    changedPath.startsWith("src/main/") ||
-    changedPath.startsWith("src/preload/") ||
-    changedPath.startsWith("src/renderer/")
-  ) {
-    return {
-      kind: "client",
-      requiresRestart: false,
-    };
-  }
-  if (changedPath.startsWith("workspace/")) {
-    return {
-      kind: "workspace-runtime",
-      requiresRestart: false,
-    };
-  }
-  return {
-    kind: "server-runtime",
-    requiresRestart: true,
-  };
-}
-
 function printDogfoodBlock(title, lines) {
   const divider = "=".repeat(72);
   console.warn(`\n${divider}`);
@@ -262,11 +221,8 @@ function recoveryLines(exitLabel = null) {
   return [
     ...(exitLabel ? [`Exit: ${exitLabel}`] : []),
     `Recovery: cd ${repoRoot}`,
-    "Inspect the last mirrored commit, then revert or fix it before restarting:",
-    "  git log --oneline -5",
-    "  git revert HEAD",
+    "Fix the rebuild/startup error, then restart:",
     "  pnpm dev:self:server",
-    "If the checkout is intentionally disposable, a hard reset is still possible, but review the branch first.",
   ];
 }
 
@@ -293,27 +249,8 @@ async function buildServerAsync() {
   });
 }
 
-function dogfoodGitUrl(options, selectedHost) {
-  return `${options.protocol}://${selectedHost.address}:${options.port}/_git/${projectPath}`;
-}
-
 export function createDogfoodPairHooks({ workspaceName }) {
-  let lastMirrorAt = 0;
   const restartTimes = [];
-  const mirrorRestartTimes = [];
-
-  const recordMirrorRestart = () => {
-    mirrorRestartTimes.push(Date.now());
-    while (mirrorRestartTimes[0] && Date.now() - mirrorRestartTimes[0] > 60_000) {
-      mirrorRestartTimes.shift();
-    }
-    if (mirrorRestartTimes.length >= 5) {
-      console.error("[dogfood] Self-update restart storm detected; stopping supervisor.");
-      process.exit(1);
-      return false;
-    }
-    return true;
-  };
 
   return {
     beforeStart({ options, selectedHost }) {
@@ -328,7 +265,7 @@ export function createDogfoodPairHooks({ workspaceName }) {
         );
       }
       bootstrapWorkspace(workspaceName, {
-        gitRemoteUrl: dogfoodGitUrl(options, selectedHost),
+        gitRemoteUrl: repoRoot,
       });
       printDirtyWarning();
       buildServer();
@@ -375,36 +312,13 @@ export function createDogfoodPairHooks({ workspaceName }) {
       });
     },
     onServerLine(line, control) {
-      const mirrorMatch = line.match(/^\[mirror\] (.*)$/);
-      if (!mirrorMatch) return false;
-      let payload;
-      try {
-        payload = JSON.parse(mirrorMatch[1]);
-      } catch (error) {
-        console.error(
-          `[dogfood] Invalid mirror event: ${error instanceof Error ? error.message : String(error)}`
-        );
-        return true;
-      }
-      if (payload.event === "applied") {
-        if (shouldRestart(payload.changedPaths)) {
-          if (!recordMirrorRestart()) return true;
-          lastMirrorAt = Date.now();
-          void control.restart(buildServerAsync);
-        }
-      } else if (payload.event === "skipped-dirty") {
-        printDogfoodBlock("HOST DIRTY - propagation refused", payload.dirtyPaths ?? []);
-      } else if (payload.event === "branch-created") {
-        console.warn(
-          `[dogfood] Non-fast-forward mirror; created ${payload.branch}. Host HEAD unchanged.`
-        );
-      } else if (payload.event === "error") {
-        console.error(`[dogfood] Mirror error: ${payload.message}`);
-      }
+      void control;
+      if (!line.startsWith("[mirror] ")) return false;
+      console.warn("[dogfood] Self-update mirroring is unsupported under GAD VCS; event ignored.");
       return true;
     },
     onRestartError(error) {
-      printDogfoodBlock("DOGFOOD REBUILD FAILED AFTER SELF-UPDATE", [
+      printDogfoodBlock("DOGFOOD REBUILD FAILED", [
         error instanceof Error ? error.message : String(error),
         ...recoveryLines(),
       ]);
@@ -419,15 +333,6 @@ export function createDogfoodPairHooks({ workspaceName }) {
         process.exit(code ?? 1);
         return true;
       }
-      const recentMirrorExit = lastMirrorAt > 0 && Date.now() - lastMirrorAt < 30_000;
-      if (recentMirrorExit && code !== 0) {
-        printDogfoodBlock("DOGFOOD SERVER FAILED AFTER SELF-UPDATE", [
-          ...recoveryLines(String(signal ?? code)),
-        ]);
-        process.exit(code ?? 1);
-        return true;
-      }
-
       restartTimes.push(Date.now());
       while (restartTimes[0] && Date.now() - restartTimes[0] > 60_000) restartTimes.shift();
       if (restartTimes.length >= 5) {
@@ -454,7 +359,7 @@ export function runDogfoodServer(argv = process.argv.slice(2)) {
       "pnpm dev:self:server --workspace dogfood",
     ],
     startupHint:
-      "[dogfood] Edits in workspace/source/projects/natstack mirror back to this checkout.",
+      "[dogfood] Self-update mirroring is unsupported under GAD VCS; workspace edits stay in the managed workspace.",
     additionalHelp:
       "Dogfood mode always uses a persistent managed workspace. Use --workspace <name>; --workspace-dir, --dev, and --no-init are not supported.",
     bannerTitle: "NatStack dogfood server",

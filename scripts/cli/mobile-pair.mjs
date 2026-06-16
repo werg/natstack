@@ -18,7 +18,6 @@ try {
     ],
     startupHint:
       "[mobile-pair] Install the internal APK with: natstack mobile install --launch",
-    requireMobileReady: true,
     bannerTitle: "NatStack Android pairing",
     instructions:
       "Open the QR code with the Android camera. NatStack will confirm and save the connection.",

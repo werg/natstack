@@ -10,9 +10,6 @@ overrides:
   protobufjs: ^7.5.5
 
 patchedDependencies:
-  '@earendil-works/pi-agent-core@0.78.0':
-    hash: bc0be24fd55ea1946ed7b83e4bd45059163068d06da67fadd75804657c83b768
-    path: workspace/packages/harness/patches/@earendil-works__pi-agent-core@0.78.0.patch
   '@earendil-works/pi-ai@0.78.0':
     hash: 367203b290408f63f8cbe00450609aeb78788095d27d45d7f626c1f5b6be53eb
     path: workspace/packages/harness/patches/@earendil-works__pi-ai@0.78.0.patch
@@ -33,9 +30,6 @@ importers:
       '@dnd-kit/utilities':
         specifier: ^3.2.2
         version: 3.2.2(react@19.0.0)
-      '@earendil-works/pi-agent-core':
-        specifier: ^0.78.0
-        version: 0.78.0(patch_hash=bc0be24fd55ea1946ed7b83e4bd45059163068d06da67fadd75804657c83b768)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
       '@earendil-works/pi-ai':
         specifier: ^0.78.0
         version: 0.78.0(patch_hash=367203b290408f63f8cbe00450609aeb78788095d27d45d7f626c1f5b6be53eb)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
@@ -66,9 +60,6 @@ importers:
       '@natstack/git':
         specifier: workspace:*
         version: link:packages/git
-      '@natstack/git-server':
-        specifier: workspace:*
-        version: link:packages/git-server
       '@natstack/port-utils':
         specifier: workspace:*
         version: link:packages/port-utils
@@ -165,9 +156,6 @@ importers:
       jotai:
         specifier: ^2.15.1
         version: 2.17.0(@babel/core@7.29.0)(@babel/template@7.28.6)(@types/react@19.2.10)(react@19.0.0)
-      node-git-server:
-        specifier: ^1.0.0
-        version: 1.0.0
       node-pty:
         specifier: ^1.0.0
         version: 1.1.0
@@ -262,12 +250,6 @@ importers:
       '@workspace/eval':
         specifier: workspace:*
         version: link:workspace/packages/eval
-      '@workspace/git-ui':
-        specifier: workspace:*
-        version: link:workspace/packages/git-ui
-      '@workspace/pi-adapter':
-        specifier: workspace:*
-        version: link:workspace/packages/pi-adapter
       '@workspace/react':
         specifier: workspace:*
         version: link:workspace/packages/react
@@ -606,31 +588,6 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
-  packages/git-server:
-    dependencies:
-      '@natstack/dev-log':
-        specifier: workspace:*
-        version: link:../dev-log
-      '@natstack/env-paths':
-        specifier: workspace:*
-        version: link:../env-paths
-      '@natstack/port-utils':
-        specifier: workspace:*
-        version: link:../port-utils
-      '@natstack/shared':
-        specifier: workspace:*
-        version: link:../shared
-      node-git-server:
-        specifier: ^1.0.0
-        version: 1.0.0
-    devDependencies:
-      '@types/node':
-        specifier: ^24.10.1
-        version: 24.10.9
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
-
   packages/port-utils:
     devDependencies:
       '@types/node':
@@ -917,27 +874,27 @@ importers:
 
   workspace/packages/about-shared:
     dependencies:
-      '@natstack/git':
-        specifier: workspace:*
-        version: link:../../../packages/git
-      '@natstack/shared':
-        specifier: workspace:*
-        version: link:../../../packages/shared
       '@radix-ui/themes':
         specifier: ^3.2.1
         version: 3.3.0(@types/react-dom@19.2.3(@types/react@19.2.10))(@types/react@19.2.10)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
       '@workspace/react':
         specifier: workspace:*
         version: link:../react
-      '@workspace/runtime':
-        specifier: workspace:*
-        version: link:../runtime
       react:
         specifier: 19.0.0
         version: 19.0.0
       react-dom:
         specifier: 19.0.0
         version: 19.0.0(react@19.0.0)
+
+  workspace/packages/agent-loop:
+    dependencies:
+      '@workspace/agentic-protocol':
+        specifier: workspace:*
+        version: link:../agentic-protocol
+      '@workspace/pi-core':
+        specifier: workspace:*
+        version: link:../pi-core
 
   workspace/packages/agentic-chat:
     dependencies:
@@ -1022,6 +979,9 @@ importers:
       '@natstack/shared':
         specifier: workspace:*
         version: link:../../../packages/shared
+      '@workspace/agent-loop':
+        specifier: workspace:*
+        version: link:../agent-loop
       '@workspace/agentic-core':
         specifier: workspace:*
         version: link:../agentic-core
@@ -1096,6 +1056,12 @@ importers:
 
   workspace/packages/cdp-client: {}
 
+  workspace/packages/channel-policies:
+    dependencies:
+      '@workspace/agentic-protocol':
+        specifier: workspace:*
+        version: link:../agentic-protocol
+
   workspace/packages/core:
     dependencies:
       '@natstack/types':
@@ -1122,70 +1088,6 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.12)(@types/node@24.10.9)(jsdom@29.0.1)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.0)
 
-  workspace/packages/git-ui:
-    dependencies:
-      '@natstack/git':
-        specifier: workspace:*
-        version: link:../../../packages/git
-      '@natstack/typecheck':
-        specifier: workspace:*
-        version: link:../../../packages/typecheck
-      '@radix-ui/react-accordion':
-        specifier: ^1.2.0
-        version: 1.2.12(@types/react-dom@19.2.3(@types/react@19.2.10))(@types/react@19.2.10)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
-      '@radix-ui/react-alert-dialog':
-        specifier: ^1.1.0
-        version: 1.1.15(@types/react-dom@19.2.3(@types/react@19.2.10))(@types/react@19.2.10)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
-      '@radix-ui/react-collapsible':
-        specifier: ^1.1.0
-        version: 1.1.12(@types/react-dom@19.2.3(@types/react@19.2.10))(@types/react@19.2.10)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
-      '@radix-ui/react-context-menu':
-        specifier: ^2.2.0
-        version: 2.2.16(@types/react-dom@19.2.3(@types/react@19.2.10))(@types/react@19.2.10)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
-      '@radix-ui/react-icons':
-        specifier: ^1.3.2
-        version: 1.3.2(react@19.0.0)
-      '@radix-ui/react-popover':
-        specifier: ^1.1.6
-        version: 1.1.15(@types/react-dom@19.2.3(@types/react@19.2.10))(@types/react@19.2.10)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
-      '@radix-ui/react-scroll-area':
-        specifier: ^1.2.0
-        version: 1.2.10(@types/react-dom@19.2.3(@types/react@19.2.10))(@types/react@19.2.10)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
-      '@radix-ui/react-tooltip':
-        specifier: ^1.1.0
-        version: 1.2.8(@types/react-dom@19.2.3(@types/react@19.2.10))(@types/react@19.2.10)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
-      '@radix-ui/themes':
-        specifier: ^3.2.1
-        version: 3.3.0(@types/react-dom@19.2.3(@types/react@19.2.10))(@types/react@19.2.10)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
-      '@workspace/runtime':
-        specifier: workspace:*
-        version: link:../runtime
-      jotai:
-        specifier: ^2.12.3
-        version: 2.17.0(@babel/core@7.29.0)(@babel/template@7.28.6)(@types/react@19.2.10)(react@19.0.0)
-      modern-monaco:
-        specifier: ^0.3.7
-        version: 0.3.7(typescript@5.9.3)
-    devDependencies:
-      '@types/react':
-        specifier: ^19.2.4
-        version: 19.2.10
-      '@types/react-dom':
-        specifier: ^19.2.3
-        version: 19.2.3(@types/react@19.2.10)
-      esbuild:
-        specifier: ^0.27.0
-        version: 0.27.2
-      react:
-        specifier: 19.0.0
-        version: 19.0.0
-      react-dom:
-        specifier: 19.0.0
-        version: 19.0.0(react@19.0.0)
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
-
   workspace/packages/gmail:
     dependencies:
       '@workspace/runtime':
@@ -1210,31 +1112,25 @@ importers:
       '@natstack/rpc':
         specifier: workspace:*
         version: link:../../../packages/rpc
-      '@natstack/shared':
+      '@sinclair/typebox':
+        specifier: ^0.27.8
+        version: 0.27.10
+      '@workspace/pi-core':
         specifier: workspace:*
-        version: link:../../../packages/shared
-      '@workspace/agentic-protocol':
-        specifier: workspace:*
-        version: link:../agentic-protocol
-      '@workspace/pi-adapter':
-        specifier: workspace:*
-        version: link:../pi-adapter
+        version: link:../pi-core
+      diff:
+        specifier: ^7.0.0
+        version: 7.0.0
       linkedom:
         specifier: ^0.18.5
         version: 0.18.12
       unpdf:
         specifier: ^1.6.2
         version: 1.6.2
-      ws:
-        specifier: ^8.18.0
-        version: 8.19.0
-      zod:
-        specifier: ^3.24.4
-        version: 3.25.76
     devDependencies:
-      '@types/ws':
-        specifier: ^8.5.14
-        version: 8.18.1
+      '@types/diff':
+        specifier: ^7.0.0
+        version: 7.0.2
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -1248,6 +1144,103 @@ importers:
       '@workspace/runtime':
         specifier: workspace:*
         version: link:../runtime
+
+  workspace/packages/mdx-editor-core:
+    dependencies:
+      '@lexical/link':
+        specifier: 0.35.0
+        version: 0.35.0
+      '@lexical/list':
+        specifier: 0.35.0
+        version: 0.35.0
+      '@lexical/react':
+        specifier: 0.35.0
+        version: 0.35.0(react-dom@19.2.4(react@19.0.0))(react@19.0.0)(yjs@13.6.30)
+      '@lexical/rich-text':
+        specifier: 0.35.0
+        version: 0.35.0
+      lexical:
+        specifier: 0.35.0
+        version: 0.35.0
+      mdast-util-directive:
+        specifier: 3.1.0
+        version: 3.1.0
+      mdast-util-from-markdown:
+        specifier: 2.0.2
+        version: 2.0.2
+      mdast-util-frontmatter:
+        specifier: 2.0.1
+        version: 2.0.1
+      mdast-util-gfm-strikethrough:
+        specifier: 2.0.0
+        version: 2.0.0
+      mdast-util-gfm-table:
+        specifier: 2.0.0
+        version: 2.0.0
+      mdast-util-gfm-task-list-item:
+        specifier: 2.0.0
+        version: 2.0.0
+      mdast-util-highlight-mark:
+        specifier: 1.2.2
+        version: 1.2.2
+      mdast-util-mdx:
+        specifier: 3.0.0
+        version: 3.0.0
+      mdast-util-mdx-jsx:
+        specifier: 3.2.0
+        version: 3.2.0
+      mdast-util-to-markdown:
+        specifier: 2.1.2
+        version: 2.1.2
+      micromark-extension-frontmatter:
+        specifier: 2.0.0
+        version: 2.0.0
+      micromark-extension-gfm-strikethrough:
+        specifier: 2.1.0
+        version: 2.1.0
+      micromark-extension-gfm-table:
+        specifier: 2.1.1
+        version: 2.1.1
+      micromark-extension-gfm-task-list-item:
+        specifier: 2.1.0
+        version: 2.1.0
+      micromark-extension-highlight-mark:
+        specifier: 1.2.0
+        version: 1.2.0
+      micromark-extension-mdx-jsx:
+        specifier: 3.0.2
+        version: 3.0.2
+      micromark-extension-mdx-md:
+        specifier: 2.0.0
+        version: 2.0.0
+      micromark-extension-mdxjs:
+        specifier: 3.0.0
+        version: 3.0.0
+      micromark-factory-space:
+        specifier: 2.0.1
+        version: 2.0.1
+      micromark-util-character:
+        specifier: 2.1.1
+        version: 2.1.1
+      micromark-util-symbol:
+        specifier: 2.0.1
+        version: 2.0.1
+      react:
+        specifier: 19.0.0
+        version: 19.0.0
+      unist-util-visit:
+        specifier: 5.1.0
+        version: 5.1.0
+    devDependencies:
+      '@types/mdast':
+        specifier: 4.0.4
+        version: 4.0.4
+      '@types/react':
+        specifier: ^19.2.4
+        version: 19.2.10
+      '@types/unist':
+        specifier: 3.0.3
+        version: 3.0.3
 
   workspace/packages/model-catalog:
     dependencies:
@@ -1272,21 +1265,24 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
-  workspace/packages/pi-adapter:
+  workspace/packages/pi-core:
     dependencies:
-      '@earendil-works/pi-agent-core':
+      '@earendil-works/pi-ai':
         specifier: ^0.78.0
-        version: 0.78.0(patch_hash=bc0be24fd55ea1946ed7b83e4bd45059163068d06da67fadd75804657c83b768)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
-      '@workspace/agentic-protocol':
-        specifier: workspace:*
-        version: link:../agentic-protocol
+        version: 0.78.0(patch_hash=367203b290408f63f8cbe00450609aeb78788095d27d45d7f626c1f5b6be53eb)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
+      ignore:
+        specifier: 7.0.5
+        version: 7.0.5
+      typebox:
+        specifier: 1.1.38
+        version: 1.1.38
+      yaml:
+        specifier: 2.9.0
+        version: 2.9.0
     devDependencies:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
-      vitest:
-        specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.12)(@types/node@24.10.9)(jsdom@29.0.1)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.0)
 
   workspace/packages/playwright-automation:
     dependencies:
@@ -1490,9 +1486,6 @@ importers:
       '@radix-ui/themes':
         specifier: ^3.2.1
         version: 3.3.0(@types/react-dom@19.2.3(@types/react@19.2.10))(@types/react@19.2.10)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
-      '@workspace/git-ui':
-        specifier: workspace:*
-        version: link:../git-ui
       '@workspace/pubsub':
         specifier: workspace:*
         version: link:../pubsub
@@ -1580,10 +1573,7 @@ importers:
         version: 3.1.1
       '@mdxeditor/editor':
         specifier: ^3.20.0
-        version: 3.55.0(@codemirror/language@6.12.3)(@lezer/highlight@1.2.3)(@types/react-dom@19.2.3(@types/react@19.2.10))(@types/react@19.2.10)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(yjs@13.6.30)
-      '@natstack/git':
-        specifier: workspace:*
-        version: link:../../../packages/git
+        version: 3.55.0(@codemirror/language@6.12.3)(@lezer/highlight@1.2.3)(@types/react-dom@19.2.3(@types/react@19.2.10))(@types/react@19.2.10)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@radix-ui/react-icons':
         specifier: ^1.3.2
         version: 1.3.2(react@19.2.4)
@@ -1779,6 +1769,9 @@ importers:
       '@workspace/agentic-protocol':
         specifier: workspace:*
         version: link:../../packages/agentic-protocol
+      '@workspace/channel-policies':
+        specifier: workspace:*
+        version: link:../../packages/channel-policies
       '@workspace/harness':
         specifier: workspace:*
         version: link:../../packages/harness
@@ -1788,6 +1781,9 @@ importers:
       '@workspace/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
 
   workspace/workers/sample-do: {}
 
@@ -2723,10 +2719,6 @@ packages:
     peerDependencies:
       react: 19.0.0
 
-  '@earendil-works/pi-agent-core@0.78.0':
-    resolution: {integrity: sha512-xhWd59Qzd8yO88gYQw2S4dEQstJJEiUtxRP01//YzVJ61jCtUASMfcyAmYhgGYR4Onp7GmwEAbBBGOiV6Iwk9g==}
-    engines: {node: '>=22.19.0'}
-
   '@earendil-works/pi-ai@0.78.0':
     resolution: {integrity: sha512-q0hUrvT6ngT6cgBX0oIbzfQfmzztgdkZobP8OTL+sCOOBlnG6+1YRt8g7zO9CC/4NdeYEqa7uGqWdQhH0fjCLA==}
     engines: {node: '>=22.19.0'}
@@ -3394,9 +3386,6 @@ packages:
     peerDependencies:
       react: 19.0.0
       react-dom: 19.0.0
-
-  '@floating-ui/utils@0.2.10':
-    resolution: {integrity: sha512-aGTxbpbg8/b5JfU1HXSrbH3wXZuLPJcNEcZQFMxLs3oSzgtVu6nFPkbbGGUvBcUjKV2YyB9Wxxabo+HEH9tcRQ==}
 
   '@floating-ui/utils@0.2.11':
     resolution: {integrity: sha512-RiB/yIh78pcIxl6lLMG0CgBXAZ2Y0eVHqMPYugu+9U0AeT6YBeiJpf7lbdJNIugFP5SIjwNRgo4DhR1Qxi26Gg==}
@@ -8903,11 +8892,6 @@ packages:
     engines: {node: '>=10'}
     hasBin: true
 
-  modern-monaco@0.3.7:
-    resolution: {integrity: sha512-YPpKf7wr7mXpcD3GqWGxGKJ9LllCJ7luQF07tTJ7TMLPBNyWDt1CqjUa2soY/Q1KgEJBG6Cu0RtoYDbFw/fVNg==}
-    peerDependencies:
-      typescript: '>= 5.0.0'
-
   mri@1.2.0:
     resolution: {integrity: sha512-tzzskb3bG8LvYGFF/mDTpq3jpI6Q9wc3LEmBaghu+DdCssd1FakN7Bc0hVNmEyGq1bq3RgfkCb3cmQLpNPOroA==}
     engines: {node: '>=4'}
@@ -8989,9 +8973,6 @@ packages:
   node-forge@1.4.0:
     resolution: {integrity: sha512-LarFH0+6VfriEhqMMcLX2F7SwSXeWwnEAJEsYm5QKWchiVYVvJyV9v7UDvUv+w5HO23ZpQTXDv/GxdDdMyOuoQ==}
     engines: {node: '>= 6.13.0'}
-
-  node-git-server@1.0.0:
-    resolution: {integrity: sha512-LdAEExF4N6/RIuAdJe16l1U5OZrw5M1U7B4C4O2PiRVImyaPNTFeTHlj46vGgpjthvrK7z43JKcIPc4r6+j0fA==}
 
   node-gyp@10.3.1:
     resolution: {integrity: sha512-Pp3nFHBThHzVtNY7U6JfPjvT/DTE8+o/4xKsLQtBoU+j2HLsGlhcfzflAoUreaJbNmYnX+LlLi0qjV8kpyO6xQ==}
@@ -10483,9 +10464,6 @@ packages:
 
   throat@5.0.0:
     resolution: {integrity: sha512-fcwX4mndzpLQKBS1DVYhGAcYaYt7vsHNIvQV+WXMvnow5cgjPphq5CaayLaGsjRdSCKZFNGt7/GYAuXaNOiYCA==}
-
-  through@2.3.8:
-    resolution: {integrity: sha512-w89qg7PI8wAdvX60bMDP+bFoD5Dvhm9oLheFp5O4a2QF0cSBGsBX4qZmadPMvVqlLJBBci+WqGGOAPvcDeNSVg==}
 
   tiny-inflate@1.0.3:
     resolution: {integrity: sha512-pkY1fj1cKHb2seWDy0B16HeWyczlJA9/WW3u3c4z/NiWDsO3DOU5D7nhTLE9CF0yXv/QZFY7sEJmj24dK+Rrqw==}
@@ -12459,20 +12437,6 @@ snapshots:
       react: 19.0.0
       tslib: 2.8.1
 
-  '@earendil-works/pi-agent-core@0.78.0(patch_hash=bc0be24fd55ea1946ed7b83e4bd45059163068d06da67fadd75804657c83b768)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)':
-    dependencies:
-      '@earendil-works/pi-ai': 0.78.0(patch_hash=367203b290408f63f8cbe00450609aeb78788095d27d45d7f626c1f5b6be53eb)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)
-      ignore: 7.0.5
-      typebox: 1.1.38
-      yaml: 2.9.0
-    transitivePeerDependencies:
-      - '@modelcontextprotocol/sdk'
-      - bufferutil
-      - supports-color
-      - utf-8-validate
-      - ws
-      - zod
-
   '@earendil-works/pi-ai@0.78.0(patch_hash=367203b290408f63f8cbe00450609aeb78788095d27d45d7f626c1f5b6be53eb)(@modelcontextprotocol/sdk@1.25.3(hono@4.11.7)(zod@3.25.76))(ws@8.19.0)(zod@3.25.76)':
     dependencies:
       '@anthropic-ai/sdk': 0.91.1(zod@3.25.76)
@@ -13144,7 +13108,7 @@ snapshots:
 
   '@floating-ui/core@1.7.4':
     dependencies:
-      '@floating-ui/utils': 0.2.10
+      '@floating-ui/utils': 0.2.11
 
   '@floating-ui/core@1.7.5':
     dependencies:
@@ -13153,7 +13117,7 @@ snapshots:
   '@floating-ui/dom@1.7.5':
     dependencies:
       '@floating-ui/core': 1.7.4
-      '@floating-ui/utils': 0.2.10
+      '@floating-ui/utils': 0.2.11
 
   '@floating-ui/dom@1.7.6':
     dependencies:
@@ -13178,11 +13142,25 @@ snapshots:
       react: 19.2.4
       react-dom: 19.2.4(react@19.2.4)
 
+  '@floating-ui/react-dom@2.1.8(react-dom@19.2.4(react@19.0.0))(react@19.0.0)':
+    dependencies:
+      '@floating-ui/dom': 1.7.6
+      react: 19.0.0
+      react-dom: 19.2.4(react@19.0.0)
+
   '@floating-ui/react-dom@2.1.8(react-dom@19.2.4(react@19.2.4))(react@19.2.4)':
     dependencies:
       '@floating-ui/dom': 1.7.6
       react: 19.2.4
       react-dom: 19.2.4(react@19.2.4)
+
+  '@floating-ui/react@0.27.19(react-dom@19.2.4(react@19.0.0))(react@19.0.0)':
+    dependencies:
+      '@floating-ui/react-dom': 2.1.8(react-dom@19.2.4(react@19.0.0))(react@19.0.0)
+      '@floating-ui/utils': 0.2.11
+      react: 19.0.0
+      react-dom: 19.2.4(react@19.0.0)
+      tabbable: 6.4.0
 
   '@floating-ui/react@0.27.19(react-dom@19.2.4(react@19.2.4))(react@19.2.4)':
     dependencies:
@@ -13191,8 +13169,6 @@ snapshots:
       react: 19.2.4
       react-dom: 19.2.4(react@19.2.4)
       tabbable: 6.4.0
-
-  '@floating-ui/utils@0.2.10': {}
 
   '@floating-ui/utils@0.2.11': {}
 
@@ -13681,6 +13657,17 @@ snapshots:
       lexical: 0.35.0
       prismjs: 1.30.0
 
+  '@lexical/devtools-core@0.35.0(react-dom@19.2.4(react@19.0.0))(react@19.0.0)':
+    dependencies:
+      '@lexical/html': 0.35.0
+      '@lexical/link': 0.35.0
+      '@lexical/mark': 0.35.0
+      '@lexical/table': 0.35.0
+      '@lexical/utils': 0.35.0
+      lexical: 0.35.0
+      react: 19.0.0
+      react-dom: 19.2.4(react@19.0.0)
+
   '@lexical/devtools-core@0.35.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4)':
     dependencies:
       '@lexical/html': 0.35.0
@@ -13753,7 +13740,32 @@ snapshots:
       '@lexical/utils': 0.35.0
       lexical: 0.35.0
 
-  '@lexical/react@0.35.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(yjs@13.6.30)':
+  '@lexical/react@0.35.0(react-dom@19.2.4(react@19.0.0))(react@19.0.0)(yjs@13.6.30)':
+    dependencies:
+      '@floating-ui/react': 0.27.19(react-dom@19.2.4(react@19.0.0))(react@19.0.0)
+      '@lexical/devtools-core': 0.35.0(react-dom@19.2.4(react@19.0.0))(react@19.0.0)
+      '@lexical/dragon': 0.35.0
+      '@lexical/hashtag': 0.35.0
+      '@lexical/history': 0.35.0
+      '@lexical/link': 0.35.0
+      '@lexical/list': 0.35.0
+      '@lexical/mark': 0.35.0
+      '@lexical/markdown': 0.35.0
+      '@lexical/overflow': 0.35.0
+      '@lexical/plain-text': 0.35.0
+      '@lexical/rich-text': 0.35.0
+      '@lexical/table': 0.35.0
+      '@lexical/text': 0.35.0
+      '@lexical/utils': 0.35.0
+      '@lexical/yjs': 0.35.0(yjs@13.6.30)
+      lexical: 0.35.0
+      react: 19.0.0
+      react-dom: 19.2.4(react@19.0.0)
+      react-error-boundary: 3.1.4(react@19.0.0)
+    transitivePeerDependencies:
+      - yjs
+
+  '@lexical/react@0.35.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4)':
     dependencies:
       '@floating-ui/react': 0.27.19(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@lexical/devtools-core': 0.35.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -13951,7 +13963,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@mdxeditor/editor@3.55.0(@codemirror/language@6.12.3)(@lezer/highlight@1.2.3)(@types/react-dom@19.2.3(@types/react@19.2.10))(@types/react@19.2.10)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(yjs@13.6.30)':
+  '@mdxeditor/editor@3.55.0(@codemirror/language@6.12.3)(@lezer/highlight@1.2.3)(@types/react-dom@19.2.3(@types/react@19.2.10))(@types/react@19.2.10)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)':
     dependencies:
       '@codemirror/commands': 6.10.3
       '@codemirror/lang-markdown': 6.5.0
@@ -13965,7 +13977,7 @@ snapshots:
       '@lexical/list': 0.35.0
       '@lexical/markdown': 0.35.0
       '@lexical/plain-text': 0.35.0
-      '@lexical/react': 0.35.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(yjs@13.6.30)
+      '@lexical/react': 0.35.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@lexical/rich-text': 0.35.0
       '@lexical/selection': 0.35.0
       '@lexical/utils': 0.35.0
@@ -16582,7 +16594,7 @@ snapshots:
       ora: 5.4.1
       semver: 7.7.3
       wcwidth: 1.0.1
-      yaml: 2.8.2
+      yaml: 2.9.0
     transitivePeerDependencies:
       - typescript
 
@@ -16808,7 +16820,9 @@ snapshots:
       metro-runtime: 0.82.5
     transitivePeerDependencies:
       - '@babel/core'
+      - bufferutil
       - supports-color
+      - utf-8-validate
 
   '@react-native/normalize-colors@0.79.7': {}
 
@@ -21867,10 +21881,6 @@ snapshots:
 
   mkdirp@1.0.4: {}
 
-  modern-monaco@0.3.7(typescript@5.9.3):
-    dependencies:
-      typescript: 5.9.3
-
   mri@1.2.0: {}
 
   ms@2.0.0: {}
@@ -21930,10 +21940,6 @@ snapshots:
       formdata-polyfill: 4.0.10
 
   node-forge@1.4.0: {}
-
-  node-git-server@1.0.0:
-    dependencies:
-      through: 2.3.8
 
   node-gyp@10.3.1:
     dependencies:
@@ -22803,6 +22809,11 @@ snapshots:
     dependencies:
       react: 19.2.4
       scheduler: 0.27.0
+
+  react-error-boundary@3.1.4(react@19.0.0):
+    dependencies:
+      '@babel/runtime': 7.29.2
+      react: 19.0.0
 
   react-error-boundary@3.1.4(react@19.2.4):
     dependencies:
@@ -23966,8 +23977,6 @@ snapshots:
       any-promise: 1.3.0
 
   throat@5.0.0: {}
-
-  through@2.3.8: {}
 
   tiny-inflate@1.0.3: {}
 

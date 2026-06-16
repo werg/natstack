@@ -104,6 +104,44 @@ async function getPanelSurfaceLayout(testApp: TestApp): Promise<{
   });
 }
 
+async function approveStartupUnitsIfNeeded(testApp: TestApp): Promise<void> {
+  await expect
+    .poll(
+      async () =>
+        testApp.app.evaluate(async ({ webContents }) => {
+          for (const contents of webContents.getAllWebContents()) {
+            if (contents.isDestroyed()) continue;
+            try {
+              const result = await contents.executeJavaScript(
+                `(() => {
+                  const hasHostedShellChrome = Boolean(document.querySelector(".titlebar-breadcrumb-scroll")
+                    || document.querySelector('[aria-label="Menu"]'));
+                  if (hasHostedShellChrome) return "ready";
+
+                  if (!document.querySelector('[data-bootstrap-launch-gate="true"]')) {
+                    return "missing";
+                  }
+
+                  const approveAll = Array.from(document.querySelectorAll("button"))
+                    .find((button) => (button.textContent ?? "").trim() === "Approve and start");
+                  if (!approveAll) return "waiting";
+                  approveAll.click();
+                  return "approved";
+                })()`,
+                true
+              );
+              if (result === "ready" || result === "approved") return true;
+            } catch {
+              // Ignore non-DOM webContents.
+            }
+          }
+          return false;
+        }),
+      { timeout: 120_000, intervals: [500, 1000, 2000] }
+    )
+    .toBe(true);
+}
+
 test.describe("Desktop Shell Chrome", () => {
   test.setTimeout(240_000);
 
@@ -116,6 +154,7 @@ test.describe("Desktop Shell Chrome", () => {
 
   test("mounts the dynamic shell app with custom titlebar chrome", async () => {
     testApp = await launchTestApp({ launchTimeout: 240_000 });
+    await approveStartupUnitsIfNeeded(testApp);
 
     await expect
       .poll(
@@ -135,6 +174,7 @@ test.describe("Desktop Shell Chrome", () => {
 
   test("places the native panel exactly in the measured shell panel surface", async () => {
     testApp = await launchTestApp({ launchTimeout: 240_000 });
+    await approveStartupUnitsIfNeeded(testApp);
 
     await expect
       .poll(

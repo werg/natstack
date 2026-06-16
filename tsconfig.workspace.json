@@ -3,7 +3,7 @@
     "target": "ES2020",
     "module": "ESNext",
     "lib": [
-      "ES2020",
+      "ES2022",
       "DOM",
       "DOM.Iterable"
     ],
@@ -58,9 +58,6 @@
       "@natstack/git": [
         "packages/git/src/index.ts"
       ],
-      "@natstack/git-server": [
-        "packages/git-server/src/index.ts"
-      ],
       "@workspace/*": [
         "workspace/packages/*/src/index.ts"
       ],
@@ -99,12 +96,6 @@
       ],
       "@workspace-about/adblock": [
         "workspace/about/adblock/index.tsx"
-      ],
-      "@workspace-about/dirty-repo": [
-        "workspace/about/dirty-repo/index.tsx"
-      ],
-      "@workspace-about/git-init": [
-        "workspace/about/git-init/index.tsx"
       ],
       "@workspace-about/help": [
         "workspace/about/help/index.tsx"
@@ -181,9 +172,6 @@
       "@workspace-workers/test-agent": [
         "workspace/workers/test-agent/index.ts"
       ],
-      "@workspace/about-shared/serviceAdapters": [
-        "workspace/packages/about-shared/serviceAdapters.ts"
-      ],
       "@workspace/about-shared/types": [
         "workspace/packages/about-shared/types.ts"
       ],
@@ -226,15 +214,6 @@
       "@workspace/eval": [
         "workspace/packages/eval/src/index.ts"
       ],
-      "@workspace/git-ui": [
-        "workspace/packages/git-ui/src/index.ts"
-      ],
-      "@workspace/git-ui/constants": [
-        "workspace/packages/git-ui/src/constants.ts"
-      ],
-      "@workspace/git-ui/monaco": [
-        "workspace/packages/git-ui/src/monaco.ts"
-      ],
       "@workspace/integrations": [
         "workspace/packages/integrations/src/index.ts"
       ],
@@ -261,9 +240,6 @@
       ],
       "@workspace/playwright-client": [
         "workspace/packages/playwright-client/index.d.ts"
-      ],
-      "@workspace/pi-adapter": [
-        "workspace/packages/pi-adapter/src/index.ts"
       ],
       "@workspace/pubsub": [
         "workspace/packages/pubsub/src/index.ts"

@@ -1,9 +1,7 @@
 // @ts-expect-error Script modules are plain .mjs and intentionally untyped.
 import {
   bootstrapWorkspace,
-  classifySelfUpdatePath,
   createDogfoodPairHooks,
-  shouldRestart,
   workspaceDir,
 } from "../scripts/start-dogfood-server.mjs";
 import fs from "node:fs";
@@ -40,38 +38,10 @@ function gitConfig(cwd: string, key: string): string {
 }
 
 describe("dogfood server supervisor", () => {
-  it("classifies server-runtime changes as restart-worthy", () => {
-    expect(shouldRestart(["src/server/index.ts"])).toBe(true);
-    expect(shouldRestart(["packages/git-server/src/server.ts"])).toBe(true);
-    expect(shouldRestart(["docs/remote-server.md", "README.md"])).toBe(false);
-    expect(
-      shouldRestart([
-        "src/main/index.ts",
-        "src/renderer/index.tsx",
-        "apps/mobile/App.tsx",
-        "workspace/apps/shell/index.ts",
-      ])
-    ).toBe(false);
-  });
-
-  it("explains self-update path classes", () => {
-    expect(classifySelfUpdatePath("docs/remote-server.md")).toEqual({
-      kind: "docs",
-      requiresRestart: false,
-    });
-    expect(classifySelfUpdatePath("workspace/extensions/shell/index.ts")).toEqual({
-      kind: "workspace-runtime",
-      requiresRestart: false,
-    });
-    expect(classifySelfUpdatePath("src/server/index.ts")).toEqual({
-      kind: "server-runtime",
-      requiresRestart: true,
-    });
-  });
-
-  it("restarts after an applied self-update mirror event", () => {
+  it("ignores mirror events under GAD VCS", () => {
     const hooks = createDogfoodPairHooks({ workspaceName: "dogfood-test" });
     const restart = vi.fn().mockResolvedValue(true);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     const handled = hooks.onServerLine(
       `[mirror] ${JSON.stringify({
@@ -82,43 +52,29 @@ describe("dogfood server supervisor", () => {
     );
 
     expect(handled).toBe(true);
-    expect(restart).toHaveBeenCalledTimes(1);
-    expect(restart.mock.calls[0][0]).toEqual(expect.any(Function));
-  });
-
-  it("does not restart for doc-only mirror events", () => {
-    const hooks = createDogfoodPairHooks({ workspaceName: "dogfood-test" });
-    const restart = vi.fn().mockResolvedValue(true);
-
-    const handled = hooks.onServerLine(
-      `[mirror] ${JSON.stringify({
-        event: "applied",
-        changedPaths: ["docs/remote-server.md"],
-      })}`,
-      { restart }
-    );
-
-    expect(handled).toBe(true);
     expect(restart).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("unsupported under GAD VCS")
+    );
+    warnSpy.mockRestore();
   });
 
-  it("prints recovery guidance when rebuild after self-update fails", () => {
+  it("prints recovery guidance when rebuild fails", () => {
     const hooks = createDogfoodPairHooks({ workspaceName: "dogfood-test" });
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     hooks.onRestartError(new Error("build failed"));
 
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("DOGFOOD REBUILD FAILED"));
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("git revert HEAD"));
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("pnpm dev:self:server"));
     warnSpy.mockRestore();
   });
 
-  it("bootstraps a dogfood project with the advertised gateway remote", () => {
+  it("bootstraps a dogfood project with the host checkout remote", () => {
     const configRoot = tmpRoot();
     vi.stubEnv("XDG_CONFIG_HOME", configRoot);
     vi.spyOn(console, "log").mockImplementation(() => undefined);
-    const remoteUrl = "http://100.90.80.70:3030/_git/projects/natstack";
+    const remoteUrl = tmpRoot();
 
     const wsDir = bootstrapWorkspace("dogfood-test", { gitRemoteUrl: remoteUrl });
     const projectDir = path.join(wsDir, "source", "projects", "natstack");

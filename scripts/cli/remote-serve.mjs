@@ -18,9 +18,6 @@ try {
     ],
     startupHint:
       "[pair] Scan with the NatStack mobile app, click the Pair URL on a laptop, or paste the pairing code.",
-    interactiveStartupApproval: true,
-    requireMobileReady: true,
-    requireElectronReady: true,
     bannerTitle: "Pair a NatStack device",
     deepLinkLabel: "Pair URL",
     clientCommandLabel: "Desktop command",

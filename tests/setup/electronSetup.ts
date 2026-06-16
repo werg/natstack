@@ -255,7 +255,6 @@ export async function launchTestApp(options: LaunchOptions = {}): Promise<TestAp
       // Disable GPU acceleration for CI environments
       ELECTRON_DISABLE_GPU: "1",
       ELECTRON_DISABLE_SANDBOX: "1",
-      ...(ownsWorkspace ? { NATSTACK_WORKSPACE_CREATED_FROM_TEMPLATE: "1" } : {}),
       ...workspaceInfo.env,
       ...env,
     },

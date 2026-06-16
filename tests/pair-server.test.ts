@@ -169,14 +169,12 @@ describe("pair-server runner", () => {
         commandName: "natstack remote serve",
         requireMobileReady: true,
         requireElectronReady: true,
-        interactiveStartupApproval: true,
       },
       ["--host", "127.0.0.1", "--port", "3456", "--", "--no-vpn-detect"],
       {
         spawnServer({ serverArgs }: { serverArgs: string[] }) {
           expect(serverArgs).toContain("--require-mobile-ready");
           expect(serverArgs).toContain("--require-electron-ready");
-          expect(serverArgs).toContain("--interactive-startup-approval");
           expect(serverArgs).toContain("--no-vpn-detect");
           const readyIndex = serverArgs.indexOf("--ready-file");
           readyFile = serverArgs[readyIndex + 1] ?? "";

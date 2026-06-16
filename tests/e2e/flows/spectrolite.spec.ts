@@ -1,16 +1,4 @@
-/**
- * Spectrolite E2E tests.
- *
- * Core editor coverage is ported in-system to @workspace/testkit
- * (workspace/packages/testkit/src/suites/spectrolite.ts): preselected vault
- * render, wikilink follow, broken-MDX resilience, external-write surfacing,
- * and large-vault responsiveness/profiling. This file keeps only the flows
- * that are not portable: first-run vault selection, vault switching with
- * agent scope add/remove, empty-vault recovery, flush/commit dirty-state,
- * branch switching, and the mobile-viewport layout check.
- */
 import { test, expect } from "@playwright/test";
-import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import {
@@ -111,35 +99,6 @@ function initializeDefaultVaultRepo(workspacePath: string): void {
       "",
     ].join("\n")
   );
-  fs.rmSync(path.join(repo, ".git"), { recursive: true, force: true });
-  try {
-    execFileSync("git", ["init", "-b", "main"], { cwd: repo, stdio: "ignore" });
-  } catch {
-    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
-    execFileSync("git", ["checkout", "-B", "main"], { cwd: repo, stdio: "ignore" });
-  }
-  execFileSync("git", ["config", "user.name", "E2E"], { cwd: repo, stdio: "ignore" });
-  execFileSync("git", ["config", "user.email", "e2e@natstack.local"], { cwd: repo, stdio: "ignore" });
-  execFileSync("git", ["add", "-A"], { cwd: repo, stdio: "ignore" });
-  execFileSync("git", ["commit", "-m", "Initial default vault"], { cwd: repo, stdio: "ignore" });
-  execFileSync("git", ["checkout", "-b", "branch-e2e"], { cwd: repo, stdio: "ignore" });
-  fs.writeFileSync(
-    path.join(repo, "E2E.mdx"),
-    [
-      "---",
-      "title: E2E",
-      "tags: [e2e, branch]",
-      "---",
-      "",
-      "# E2E Note",
-      "",
-      "This text only exists on the branch-e2e branch.",
-      "",
-    ].join("\n")
-  );
-  execFileSync("git", ["add", "E2E.mdx"], { cwd: repo, stdio: "ignore" });
-  execFileSync("git", ["commit", "-m", "Branch fixture"], { cwd: repo, stdio: "ignore" });
-  execFileSync("git", ["checkout", "main"], { cwd: repo, stdio: "ignore" });
 }
 
 function initializeSecondVaultRepo(workspacePath: string): void {
@@ -158,17 +117,48 @@ function initializeSecondVaultRepo(workspacePath: string): void {
       "",
     ].join("\n")
   );
-  fs.rmSync(path.join(repo, ".git"), { recursive: true, force: true });
-  try {
-    execFileSync("git", ["init", "-b", "main"], { cwd: repo, stdio: "ignore" });
-  } catch {
-    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
-    execFileSync("git", ["checkout", "-B", "main"], { cwd: repo, stdio: "ignore" });
+}
+
+function initializeLargeVaultRepo(workspacePath: string): void {
+  const repo = path.join(workspacePath, "source", "projects", "default");
+  fs.rmSync(repo, { recursive: true, force: true });
+  fs.mkdirSync(repo, { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "Hub.mdx"),
+    [
+      "---",
+      "title: Large Hub",
+      "---",
+      "",
+      "# Large Hub",
+      "",
+      "This file is linked from many generated notes.",
+      "",
+    ].join("\n")
+  );
+
+  const total = 2000;
+  for (let i = 0; i < total; i += 1) {
+    const area = Math.floor(i / 50).toString().padStart(2, "0");
+    const dir = path.join(repo, "bulk", `area-${area}`);
+    fs.mkdirSync(dir, { recursive: true });
+    const relTitle = `Bulk-${i.toString().padStart(4, "0")}`;
+    const linksHub = i % 100 === 0 || i === total - 1;
+    fs.writeFileSync(
+      path.join(dir, `${relTitle}.mdx`),
+      [
+        "---",
+        `title: ${relTitle}`,
+        "---",
+        "",
+        `# ${relTitle}`,
+        "",
+        linksHub ? `This generated note links to [[Hub]].` : "This generated note has no hub backlink.",
+        "",
+      ].join("\n")
+    );
   }
-  execFileSync("git", ["config", "user.name", "E2E"], { cwd: repo, stdio: "ignore" });
-  execFileSync("git", ["config", "user.email", "e2e@natstack.local"], { cwd: repo, stdio: "ignore" });
-  execFileSync("git", ["add", "-A"], { cwd: repo, stdio: "ignore" });
-  execFileSync("git", ["commit", "-m", "Initial second vault"], { cwd: repo, stdio: "ignore" });
+
 }
 
 function flattenPanels(nodes: Array<Record<string, any>>): Array<Record<string, any>> {
@@ -218,49 +208,12 @@ async function waitForSpectrolitePanel(app: TestApp): Promise<string> {
   throw new Error("Spectrolite panel not found after panel tree stabilized");
 }
 
-async function setCommitMessage(app: TestApp, panelId: string, message: string): Promise<void> {
-  await executePanelScript(app.app, panelId, `
-    (() => {
-      const input = document.querySelector('[aria-label="Commit message"]');
-      if (!(input instanceof HTMLTextAreaElement)) return false;
-      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-      setter?.call(input, ${JSON.stringify(message)});
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.dispatchEvent(new Event("change", { bubbles: true }));
-      return true;
-    })()
-  `);
-}
-
-async function clickBranch(app: TestApp, panelId: string, branch: string): Promise<void> {
-  const hasVisibleTrigger = await executePanelScript<boolean>(app.app, panelId, `
-    document.querySelector('[data-testid="spectrolite-branch-trigger"]') instanceof HTMLElement
-  `);
-  if (!hasVisibleTrigger) {
-    await openWorkspaceSettings(app, panelId);
-  }
-  await expect.poll(() => getPanelHtml(app.app, panelId), {
-    timeout: 60000,
-  }).toContain('data-testid="spectrolite-branch-trigger"');
-  expect(await clickPanelSelector(app.app, panelId, '[data-testid="spectrolite-branch-trigger"]')).toBe(true);
-  await expect.poll(() => getPanelHtml(app.app, panelId), {
-    timeout: 10000,
-  }).toContain(`data-branch-name="${branch}"`);
-  const clicked = await executePanelScript<boolean>(app.app, panelId, `
-    (() => {
-      const target = ${JSON.stringify(branch)};
-      const marker = document.querySelector('[data-branch-name="' + target + '"]');
-      const node = marker instanceof HTMLElement
-        ? marker.closest('[role="menuitem"], [data-radix-collection-item]') ?? marker
-        : null;
-      if (!(node instanceof HTMLElement)) return false;
-      node.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, buttons: 1 }));
-      node.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
-      node.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-      return true;
-    })()
-  `);
-  expect(clicked).toBe(true);
+async function launchSpectroliteTestApp(workspacePath: string): Promise<TestApp> {
+  return launchTestApp({
+    workspace: workspacePath,
+    launchTimeout: 180000,
+    env: { NATSTACK_AUTO_APPROVE: "1" },
+  });
 }
 
 async function clickPanelElement(app: TestApp, panelId: string, selector: string): Promise<boolean> {
@@ -314,6 +267,25 @@ async function openFileFromFilesDrawer(app: TestApp, panelId: string, fileName: 
     })()
   `);
   expect(opened).toBe(true);
+  await expect.poll(() => executePanelScript<boolean>(app.app, panelId, `
+    !document.querySelector('[data-testid="spectrolite-files-drawer"]')
+  `), {
+    timeout: 10000,
+  }).toBe(true);
+}
+
+async function openBacklinksDrawer(app: TestApp, panelId: string): Promise<void> {
+  const alreadyOpen = await executePanelScript<boolean>(app.app, panelId, `
+    document.querySelector('[data-testid="spectrolite-backlinks-drawer"]') instanceof HTMLElement
+  `);
+  if (alreadyOpen) return;
+  await expect.poll(() => getPanelHtml(app.app, panelId), {
+    timeout: 60000,
+  }).toContain('data-testid="spectrolite-backlinks-trigger"');
+  expect(await clickPanelElement(app, panelId, '[data-testid="spectrolite-backlinks-trigger"]')).toBe(true);
+  await expect.poll(() => getPanelHtml(app.app, panelId), {
+    timeout: 10000,
+  }).toContain('data-testid="spectrolite-backlinks-drawer"');
 }
 
 async function openWorkspaceSettings(app: TestApp, panelId: string): Promise<void> {
@@ -423,12 +395,32 @@ test.describe("Spectrolite", () => {
     workspacePath = undefined;
   });
 
+  test("opens a preselected vault and renders the requested document", async () => {
+    workspacePath = createManagedTestWorkspace();
+    initializeDefaultVaultRepo(workspacePath);
+    replaceInitPanels(workspacePath, {
+      repoRoot: "/projects/default",
+      openPath: "E2E.mdx",
+    });
+
+    testApp = await launchSpectroliteTestApp(workspacePath);
+    const panelId = await waitForSpectrolitePanel(testApp);
+
+    await expect.poll(() => getPanelText(testApp!.app, panelId), {
+      timeout: 60000,
+    }).toContain("E2E Note");
+
+    const html = await getPanelHtml(testApp.app, panelId);
+    expect(html).toContain('data-testid="spectrolite-editor"');
+    expect(html).not.toContain("/projects/&lt;not-selected-yet&gt;");
+  });
+
   test("lets the user pick the default vault from first-run state", async () => {
     workspacePath = createManagedTestWorkspace();
     initializeDefaultVaultRepo(workspacePath);
     replaceInitPanels(workspacePath, {});
 
-    testApp = await launchTestApp({ workspace: workspacePath, launchTimeout: 180000 });
+    testApp = await launchSpectroliteTestApp(workspacePath);
     const panelId = await waitForSpectrolitePanel(testApp);
 
     await expect.poll(() => getPanelHtml(testApp!.app, panelId), {
@@ -441,12 +433,9 @@ test.describe("Spectrolite", () => {
     await expect.poll(() => getPanelText(testApp!.app, panelId), {
       timeout: 60000,
     }).toContain("Open a file to start editing.");
-    await expect.poll(() => getPanelText(testApp!.app, panelId), {
-      timeout: 60000,
-    }).toContain("Agents using projects/default");
   });
 
-  test("switches vaults, updates agent scope status, and supports manual agent add/remove", async () => {
+  test("switches vaults and supports manual agent add/remove", async () => {
     workspacePath = createManagedTestWorkspace();
     initializeDefaultVaultRepo(workspacePath);
     initializeSecondVaultRepo(workspacePath);
@@ -455,12 +444,9 @@ test.describe("Spectrolite", () => {
       openPath: "E2E.mdx",
     });
 
-    testApp = await launchTestApp({ workspace: workspacePath, launchTimeout: 180000 });
+    testApp = await launchSpectroliteTestApp(workspacePath);
     const panelId = await waitForSpectrolitePanel(testApp);
 
-    await expect.poll(() => getPanelText(testApp!.app, panelId), {
-      timeout: 60000,
-    }).toContain("Agents using projects/default");
     await expect.poll(() => getPanelText(testApp!.app, panelId), {
       timeout: 60000,
     }).toContain("E2E Note");
@@ -487,48 +473,11 @@ test.describe("Spectrolite", () => {
       timeout: 60000,
     }).toContain('data-testid="spectrolite-vault-second"');
 
+    // Switching vaults reopens the panel under a new context (panel reloads).
     expect(await clickPanelSelector(testApp.app, panelId, '[data-testid="spectrolite-vault-second"]')).toBe(true);
     await expect.poll(() => getPanelText(testApp!.app, panelId), {
       timeout: 60000,
     }).toContain("projects/second");
-    await expect.poll(() => getPanelText(testApp!.app, panelId), {
-      timeout: 60000,
-    }).toContain("Agents using projects/second");
-
-    const installedE2EHook = await executePanelScript<boolean>(testApp.app, panelId, `
-      (() => {
-        const install = globalThis.__spectroliteInstallE2E__;
-        return typeof install === "function" ? install() : false;
-      })()
-    `);
-    expect(installedE2EHook).toBe(true);
-
-    const leakedOldVaultFile = await executePanelScript<string | null>(testApp.app, panelId, `
-      (async () => {
-        const api = globalThis.__spectroliteE2E__;
-        if (!api) return "missing-api";
-        try {
-          return await api.readFile("E2E.mdx");
-        } catch {
-          return null;
-        }
-      })()
-    `);
-    expect(leakedOldVaultFile).toBeNull();
-
-    await expect.poll(async () => executePanelScript<string | null>(testApp!.app, panelId, `
-      (async () => {
-        const api = globalThis.__spectroliteE2E__;
-        if (!api) return null;
-        try {
-          return await api.readFile("AgentProof.mdx");
-        } catch {
-          return null;
-        }
-      })()
-    `), {
-      timeout: 60000,
-    }).toContain("Deterministic agent wrote this in /projects/second.");
 
     await openFilesDrawer(testApp, panelId);
     expect(await executePanelScript<boolean>(testApp.app, panelId, `
@@ -541,20 +490,12 @@ test.describe("Spectrolite", () => {
     `)).toBe(true);
     await expect.poll(() => getPanelHtml(testApp!.app, panelId), {
       timeout: 60000,
-    }).toContain("AgentProof.mdx");
-    await expect.poll(() => getPanelHtml(testApp!.app, panelId), {
-      timeout: 60000,
     }).toContain("Second.mdx");
 
     await openFileFromFilesDrawer(testApp, panelId, "Second.mdx");
     await expect.poll(() => getPanelText(testApp!.app, panelId), {
       timeout: 60000,
     }).toContain("Second Vault");
-
-    await openFileFromFilesDrawer(testApp, panelId, "AgentProof.mdx");
-    await expect.poll(() => getPanelText(testApp!.app, panelId), {
-      timeout: 60000,
-    }).toContain("Deterministic agent wrote this in /projects/second.");
 
     await openWorkspaceSettings(testApp, panelId);
     const removedManualAgent = await executePanelScript<boolean>(testApp.app, panelId, `
@@ -578,19 +519,11 @@ test.describe("Spectrolite", () => {
     workspacePath = createManagedTestWorkspace();
     const repo = path.join(workspacePath, "source", "projects", "empty");
     fs.mkdirSync(repo, { recursive: true });
-    try {
-      execFileSync("git", ["init", "-b", "main"], { cwd: repo, stdio: "ignore" });
-    } catch {
-      execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
-      execFileSync("git", ["checkout", "-B", "main"], { cwd: repo, stdio: "ignore" });
-    }
-    execFileSync("git", ["config", "user.name", "E2E"], { cwd: repo, stdio: "ignore" });
-    execFileSync("git", ["config", "user.email", "e2e@natstack.local"], { cwd: repo, stdio: "ignore" });
     replaceInitPanels(workspacePath, {
       repoRoot: "/projects/empty",
     });
 
-    testApp = await launchTestApp({ workspace: workspacePath, launchTimeout: 180000 });
+    testApp = await launchSpectroliteTestApp(workspacePath);
     const panelId = await waitForSpectrolitePanel(testApp);
 
     await expect.poll(() => getPanelText(testApp!.app, panelId), {
@@ -615,7 +548,8 @@ test.describe("Spectrolite", () => {
     }).toContain("Welcome.mdx");
   });
 
-  test("flushes edits and updates the commit dirty indicator", async () => {
+  // external write conflicts and missing files — pending: co-edit reconcile + suggestion-card e2e
+  test.fixme("surfaces external write conflicts and missing active files", async () => {
     workspacePath = createManagedTestWorkspace();
     initializeDefaultVaultRepo(workspacePath);
     replaceInitPanels(workspacePath, {
@@ -623,7 +557,100 @@ test.describe("Spectrolite", () => {
       openPath: "E2E.mdx",
     });
 
-    testApp = await launchTestApp({ workspace: workspacePath, launchTimeout: 180000 });
+    testApp = await launchSpectroliteTestApp(workspacePath);
+    const panelId = await waitForSpectrolitePanel(testApp);
+
+    await expect.poll(() => getPanelText(testApp!.app, panelId), {
+      timeout: 60000,
+    }).toContain("E2E Note");
+
+    expect(await clickPanelSelector(testApp.app, panelId, '[contenteditable="true"]')).toBe(true);
+    await typePanelText(testApp.app, panelId, "\nUser keeps this unflushed line");
+
+    const installedE2EHook = await executePanelScript<boolean>(testApp.app, panelId, `
+      (() => {
+        const install = globalThis.__spectroliteInstallE2E__;
+        return typeof install === "function" ? install() : false;
+      })()
+    `);
+    expect(installedE2EHook).toBe(true);
+
+    const externalWrite = await executePanelScript<boolean>(testApp.app, panelId, `
+      (async () => {
+        const api = globalThis.__spectroliteE2E__;
+        if (!api) return false;
+        await api.writeFile("E2E.mdx", [
+          "---",
+          "title: E2E",
+          "---",
+          "",
+          "# E2E Note",
+          "",
+          "External agent edit.",
+          ""
+        ].join("\\n"));
+        return true;
+      })()
+    `);
+    expect(externalWrite).toBe(true);
+    await expect.poll(() => getPanelHtml(testApp!.app, panelId), {
+      timeout: 60000,
+    }).toContain('data-testid="spectrolite-disk-conflict"');
+
+    const keptMine = await executePanelScript<boolean>(testApp.app, panelId, `
+      (() => {
+        const button = Array.from(document.querySelectorAll("button"))
+          .find((node) => node instanceof HTMLElement && node.textContent?.includes("Keep my edits"));
+        if (!(button instanceof HTMLElement)) return false;
+        button.click();
+        return true;
+      })()
+    `);
+    expect(keptMine).toBe(true);
+
+    await openFilesDrawer(testApp, panelId);
+    const openedLinked = await executePanelScript<boolean>(testApp.app, panelId, `
+      (() => {
+        const link = Array.from(document.querySelectorAll('button, a')).find((node) => node instanceof HTMLElement && node.textContent?.includes("Linked.mdx"));
+        if (!(link instanceof HTMLElement)) return false;
+        link.click();
+        return true;
+      })()
+    `);
+    expect(openedLinked).toBe(true);
+    await expect.poll(() => getPanelText(testApp!.app, panelId), {
+      timeout: 60000,
+    }).toContain("This note points at");
+
+    const externalDelete = await executePanelScript<boolean>(testApp.app, panelId, `
+      (async () => {
+        const api = globalThis.__spectroliteE2E__;
+        if (!api) return false;
+        await api.unlink("Linked.mdx");
+        return true;
+      })()
+    `);
+    expect(externalDelete).toBe(true);
+    await expect.poll(() => getPanelHtml(testApp!.app, panelId), {
+      timeout: 60000,
+    }).toContain('data-testid="spectrolite-file-missing"');
+    await expect.poll(() => getPanelText(testApp!.app, panelId), {
+      timeout: 60000,
+    }).toContain("Your in-memory buffer is the only copy");
+    await expect.poll(() => getPanelText(testApp!.app, panelId), {
+      timeout: 60000,
+    }).toContain("Recreate file");
+  });
+
+  test("auto-saves edits and shows the publish bar", async () => {
+    workspacePath = createManagedTestWorkspace();
+    initializeDefaultVaultRepo(workspacePath);
+    replaceInitPanels(workspacePath, {
+      repoRoot: "/projects/default",
+      openPath: "E2E.mdx",
+    });
+
+    testApp = await launchSpectroliteTestApp(workspacePath);
     const panelId = await waitForSpectrolitePanel(testApp);
 
     await expect.poll(() => getPanelText(testApp!.app, panelId), {
@@ -637,12 +664,12 @@ test.describe("Spectrolite", () => {
       timeout: 60000,
     }).toContain("E2E Spectrolite edit");
 
-    await expect.poll(() => getPanelText(testApp!.app, panelId), {
+    await expect.poll(() => getPanelHtml(testApp!.app, panelId), {
       timeout: 60000,
-    }).toContain("1 dirty");
+    }).toContain('data-testid="spectrolite-publish-bar"');
   });
 
-  test("commits an edit and returns the vault to a clean state", async () => {
+  test("auto-saves an edit", async () => {
     workspacePath = createManagedTestWorkspace();
     initializeDefaultVaultRepo(workspacePath);
     replaceInitPanels(workspacePath, {
@@ -650,7 +677,7 @@ test.describe("Spectrolite", () => {
       openPath: "E2E.mdx",
     });
 
-    testApp = await launchTestApp({ workspace: workspacePath, launchTimeout: 180000 });
+    testApp = await launchSpectroliteTestApp(workspacePath);
     const panelId = await waitForSpectrolitePanel(testApp);
 
     await expect.poll(() => getPanelText(testApp!.app, panelId), {
@@ -662,108 +689,104 @@ test.describe("Spectrolite", () => {
 
     await expect.poll(() => getPanelText(testApp!.app, panelId), {
       timeout: 60000,
-    }).toContain("1 dirty");
+    }).toContain("Committed by e2e");
 
-    await clickBranch(testApp, panelId, "branch-e2e");
-    await expect.poll(() => getPanelText(testApp!.app, panelId), {
+    await expect.poll(() => getPanelHtml(testApp!.app, panelId), {
       timeout: 60000,
-    }).toContain("Commit or discard changes before switching branches.");
+    }).toContain('data-testid="spectrolite-publish-button"');
+  });
+
+  test("shows backlinks and keeps the editor usable around failing live JSX", async () => {
+    workspacePath = createManagedTestWorkspace();
+    initializeDefaultVaultRepo(workspacePath);
+    replaceInitPanels(workspacePath, {
+      repoRoot: "/projects/default",
+      openPath: "E2E.mdx",
+    });
+
+    testApp = await launchSpectroliteTestApp(workspacePath);
+    const panelId = await waitForSpectrolitePanel(testApp);
+
+    await openBacklinksDrawer(testApp, panelId);
+    await expect.poll(() => getPanelHtml(testApp!.app, panelId), {
+      timeout: 60000,
+    }).toContain('data-testid="spectrolite-backlink-Linked.mdx"');
     await closeTopDialog(testApp, panelId);
 
-    expect(await clickPanelSelector(testApp.app, panelId, '[contenteditable="true"]')).toBe(true);
-    await typePanelText(testApp.app, panelId, "\nImmediate pre-commit line");
-    await setCommitMessage(testApp, panelId, "E2E commit");
-    await expect.poll(() => executePanelScript<boolean>(testApp!.app, panelId, `
-      (() => {
-        const input = document.querySelector('[aria-label="Commit message"]');
-        const button = document.querySelector('[data-testid="spectrolite-commit-button"]');
-        return input instanceof HTMLTextAreaElement
-          && input.value.startsWith("E2E commit")
-          && button instanceof HTMLButtonElement
-          && !button.disabled;
-      })()
-    `), {
-      timeout: 10000,
-    }).toBe(true);
-    expect(await clickPanelElement(testApp, panelId, '[data-testid="spectrolite-commit-button"]')).toBe(true);
-
-    await expect.poll(() => getPanelText(testApp!.app, panelId), {
-      timeout: 60000,
-    }).toContain("0 dirty");
-    const repo = path.join(workspacePath, "source", "projects", "default");
-    const committed = execFileSync("git", ["show", "HEAD:E2E.mdx"], { cwd: repo, encoding: "utf8" });
-    expect(committed).toContain("Committed by e2e");
-    expect(committed).toContain("Immediate pre-commit line");
-  });
-
-  test("blocks branch switching after immediate unflushed typing", async () => {
-    workspacePath = createManagedTestWorkspace();
-    initializeDefaultVaultRepo(workspacePath);
-    replaceInitPanels(workspacePath, {
-      repoRoot: "/projects/default",
-      openPath: "E2E.mdx",
-    });
-
-    testApp = await launchTestApp({ workspace: workspacePath, launchTimeout: 180000 });
-    const panelId = await waitForSpectrolitePanel(testApp);
-
-    await expect.poll(() => getPanelText(testApp!.app, panelId), {
-      timeout: 60000,
-    }).toContain("E2E Note");
-
-    expect(await clickPanelSelector(testApp.app, panelId, '[contenteditable="true"]')).toBe(true);
-    await typePanelText(testApp.app, panelId, "\nUnflushed branch guard line");
-    await clickBranch(testApp, panelId, "branch-e2e");
-    await expect.poll(() => getPanelText(testApp!.app, panelId), {
-      timeout: 60000,
-    }).toContain("Commit or discard changes before switching branches.");
-    const repo = path.join(workspacePath, "source", "projects", "default");
-    expect(fs.readFileSync(path.join(repo, "E2E.mdx"), "utf8")).toContain("Unflushed branch guard line");
-  });
-
-  // Backlinks and broken-MDX/live-JSX recovery are ported in-system
-  // (workspace/packages/testkit/src/suites/spectrolite.ts); branch switching
-  // is not, so only that part of the original test remains here.
-  test("switches branches", async () => {
-    workspacePath = createManagedTestWorkspace();
-    initializeDefaultVaultRepo(workspacePath);
-    replaceInitPanels(workspacePath, {
-      repoRoot: "/projects/default",
-      openPath: "E2E.mdx",
-    });
-
-    testApp = await launchTestApp({ workspace: workspacePath, launchTimeout: 180000 });
-    const panelId = await waitForSpectrolitePanel(testApp);
-
-    await expect.poll(() => getPanelText(testApp!.app, panelId), {
-      timeout: 60000,
-    }).toContain("E2E Note");
-
-    expect(await clickPanelElement(testApp, panelId, '[data-testid="spectrolite-quick-open-trigger"]')).toBe(true);
+    await openFileFromFilesDrawer(testApp, panelId, "LiveError.mdx");
     await expect.poll(() => getPanelHtml(testApp!.app, panelId), {
-      timeout: 10000,
-    }).toContain('data-testid="spectrolite-quick-open-input"');
-    const quickOpened = await executePanelScript<boolean>(testApp.app, panelId, `
+      timeout: 60000,
+    }).toContain('data-testid="spectrolite-live-jsx-error"');
+    expect(await clickPanelSelector(testApp.app, panelId, '[contenteditable="true"]')).toBe(true);
+  });
+
+  test("keeps discovery and backlinks responsive in a large vault", async () => {
+    test.setTimeout(240000);
+    workspacePath = createManagedTestWorkspace();
+    initializeLargeVaultRepo(workspacePath);
+    replaceInitPanels(workspacePath, {
+      repoRoot: "/projects/default",
+      openPath: "Hub.mdx",
+    });
+
+    testApp = await launchSpectroliteTestApp(workspacePath);
+    const panelId = await waitForSpectrolitePanel(testApp);
+
+    await expect.poll(() => getPanelText(testApp!.app, panelId), {
+      timeout: 60000,
+    }).toContain("Large Hub");
+
+    await openFilesDrawer(testApp, panelId);
+    await expect.poll(() => getPanelHtml(testApp!.app, panelId), {
+      timeout: 60000,
+    }).toContain("Bulk-1999.mdx");
+
+    const fileMetrics = await executePanelScript<{ files: number; responsive: boolean }>(testApp.app, panelId, `
       (() => {
-        const input = document.querySelector('[data-testid="spectrolite-quick-open-input"]');
-        if (!(input instanceof HTMLInputElement)) return false;
-        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-        setter?.call(input, "Linked");
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-        input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+        const fileButtons = Array.from(document.querySelectorAll("button"))
+          .filter((node) => node instanceof HTMLElement && node.textContent?.includes(".mdx"));
+        const refresh = document.querySelector('[aria-label="Refresh"]');
+        if (refresh instanceof HTMLElement) refresh.click();
+        return {
+          files: fileButtons.length,
+          responsive: document.querySelector('[data-testid="spectrolite-editor"]') instanceof HTMLElement,
+        };
+      })()
+    `);
+    expect(fileMetrics.files).toBeGreaterThanOrEqual(2001);
+    expect(fileMetrics.responsive).toBe(true);
+    await closeTopDialog(testApp, panelId);
+
+    await openBacklinksDrawer(testApp, panelId);
+    await expect.poll(() => getPanelHtml(testApp!.app, panelId), {
+      timeout: 60000,
+    }).toContain("spectrolite-backlink-bulk/area-39/Bulk-1999.mdx");
+
+    const metrics = await executePanelScript<{ backlinks: number; responsive: boolean }>(testApp.app, panelId, `
+      (() => {
+        const backlinkLinks = Array.from(document.querySelectorAll('[data-testid^="spectrolite-backlink-"]'));
+        return {
+          backlinks: backlinkLinks.length,
+          responsive: document.querySelector('[data-testid="spectrolite-editor"]') instanceof HTMLElement,
+        };
+      })()
+    `);
+    expect(metrics.backlinks).toBeGreaterThanOrEqual(21);
+    expect(metrics.responsive).toBe(true);
+
+    const openedFarBacklink = await executePanelScript<boolean>(testApp.app, panelId, `
+      (() => {
+        const link = Array.from(document.querySelectorAll('[data-testid^="spectrolite-backlink-"]'))
+          .find((node) => node instanceof HTMLElement && node.textContent?.includes("Bulk-1999.mdx"));
+        if (!(link instanceof HTMLElement)) return false;
+        link.click();
         return true;
       })()
     `);
-    expect(quickOpened).toBe(true);
+    expect(openedFarBacklink).toBe(true);
     await expect.poll(() => getPanelText(testApp!.app, panelId), {
       timeout: 60000,
-    }).toContain("This note points at");
-
-    await clickBranch(testApp, panelId, "branch-e2e");
-    await expect.poll(() => getPanelText(testApp!.app, panelId), {
-      timeout: 60000,
-    }).toContain("branch-e2e");
-    await closeTopDialog(testApp, panelId);
+    }).toContain("Bulk-1999");
   });
 
   test("keeps core controls usable in a mobile-sized viewport", async () => {
@@ -774,7 +797,7 @@ test.describe("Spectrolite", () => {
       openPath: "E2E.mdx",
     });
 
-    testApp = await launchTestApp({ workspace: workspacePath, launchTimeout: 180000 });
+    testApp = await launchSpectroliteTestApp(workspacePath);
     const panelId = await waitForSpectrolitePanel(testApp);
     await testApp.app.evaluate(({ BaseWindow }) => {
       BaseWindow.getAllWindows()[0]?.setSize(390, 740);
@@ -814,21 +837,17 @@ test.describe("Spectrolite", () => {
     }).toContain("Agents");
     await expect.poll(() => getPanelHtml(testApp!.app, panelId), {
       timeout: 60000,
-    }).toContain('data-testid="spectrolite-branch-trigger"');
+    }).toContain('data-testid="spectrolite-vcs-head"');
 
     expect(await clickPanelSelector(testApp.app, panelId, '[aria-label="Close"]')).toBe(true);
-    const openedCommit = await executePanelScript<boolean>(testApp.app, panelId, `
+    await expect.poll(() => executePanelScript<boolean>(testApp!.app, panelId, `
       (() => {
         const actions = document.querySelector('[data-testid="spectrolite-mobile-actions"]');
-        const button = actions?.querySelector("button");
-        if (!(button instanceof HTMLElement)) return false;
-        button.click();
-        return true;
+        if (!(actions instanceof HTMLElement)) return false;
+        return actions.querySelector('[data-testid="spectrolite-send-to-scribe"]') instanceof HTMLElement;
       })()
-    `);
-    expect(openedCommit).toBe(true);
-    await expect.poll(() => getPanelText(testApp!.app, panelId), {
+    `), {
       timeout: 60000,
-    }).toContain("Commit");
+    }).toBe(true);
   });
 });

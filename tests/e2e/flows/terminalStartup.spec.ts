@@ -12,6 +12,7 @@ import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { promisify } from "node:util";
+import YAML from "yaml";
 import {
   callTerminalPanel,
   clickPanelSelector,
@@ -40,6 +41,11 @@ type PendingApproval = {
   approvalId: string;
   kind: string;
   title?: string;
+  options?: Array<{
+    value: string;
+    tone?: string;
+    label?: string;
+  }>;
 };
 
 async function getTerminalPanelId(app: ElectronApplication): Promise<string> {
@@ -90,7 +96,28 @@ async function listPendingApprovals(app: ElectronApplication): Promise<PendingAp
       }
     ).__testApi;
     if (!testApi) throw new Error("Test API not available");
-    return testApi.rpcCall("shellApproval", "listPending", []) as Promise<PendingApproval[]>;
+    const pending = await testApi.rpcCall("shellApproval", "listPending", []) as Array<{
+      approvalId: string;
+      kind: string;
+      title?: string;
+      options?: Array<{
+        value: unknown;
+        tone?: unknown;
+        label?: unknown;
+      }>;
+    }>;
+    return pending.map((approval) => ({
+      approvalId: approval.approvalId,
+      kind: approval.kind,
+      title: approval.title,
+      options: Array.isArray(approval.options)
+        ? approval.options.map((option) => ({
+            value: String(option.value),
+            tone: typeof option.tone === "string" ? option.tone : undefined,
+            label: typeof option.label === "string" ? option.label : undefined,
+          }))
+        : undefined,
+    }));
   });
 }
 
@@ -105,7 +132,14 @@ async function resolveApproval(app: ElectronApplication, approval: PendingApprov
     ).__testApi;
     if (!testApi) throw new Error("Test API not available");
     if (pending.kind === "userland") {
-      await testApi.rpcCall("shellApproval", "resolveUserland", [pending.approvalId, "allow"]);
+      const choice =
+        pending.options?.find((option) => option.tone === "primary")?.value ??
+        pending.options?.find((option) => option.tone !== "danger")?.value ??
+        pending.options?.[0]?.value;
+      if (!choice) {
+        throw new Error(`Userland approval ${pending.approvalId} did not include any options`);
+      }
+      await testApi.rpcCall("shellApproval", "resolveUserland", [pending.approvalId, choice]);
       return;
     }
     await testApi.rpcCall("shellApproval", "resolve", [pending.approvalId, "session"]);
@@ -119,7 +153,9 @@ async function approvePendingTerminalWork(app: ElectronApplication, window?: Pag
   }
   if (window) {
     await window
-      .getByRole("button", { name: /Install and run|Allow|Run once|Allow for session/i })
+      .getByRole("button", {
+        name: /Approve and start|Approve all|Approve push|Approve|Dev session|Install and run|Allow|Run once|Allow for session|Use this session/i,
+      })
       .click({ timeout: 250 })
       .catch(() => {});
   }
@@ -127,10 +163,13 @@ async function approvePendingTerminalWork(app: ElectronApplication, window?: Pag
 
 function createTerminalOnlyWorkspace(): string {
   const workspace = createManagedTestWorkspace();
-  fs.writeFileSync(
-    path.join(workspace, "source", "meta", "natstack.yml"),
-    ["initPanels:", "  - source: panels/terminal", ""].join("\n")
-  );
+  const configPath = path.join(workspace, "source", "meta", "natstack.yml");
+  const config = (YAML.parse(fs.readFileSync(configPath, "utf8")) ?? {}) as Record<
+    string,
+    unknown
+  >;
+  config.initPanels = [{ source: "panels/terminal" }];
+  fs.writeFileSync(configPath, YAML.stringify(config), "utf8");
   return workspace;
 }
 
@@ -151,19 +190,40 @@ async function listTerminalSessions(
   return callTerminalPanel<TerminalSession[]>(app, panelId, "listSessions");
 }
 
+async function requestTerminalSession(
+  app: ElectronApplication,
+  panelId: string
+): Promise<string | undefined> {
+  const result = await callTerminalPanel<{ sessionId?: string }>(app, panelId, "openSession");
+  return result.sessionId;
+}
+
 async function waitForUsableTerminalSession(
   app: ElectronApplication,
   panelId: string,
   window?: Page
 ): Promise<TerminalSession> {
+  const startedAt = Date.now();
+  let lastOpenRequestAt = 0;
   await expect
     .poll(
       async () => {
         await approvePendingTerminalWork(app, window);
-        const sessions = await listTerminalSessions(app, panelId).catch(() => []);
+        let sessions = await listTerminalSessions(app, panelId).catch(() => []);
+        const alive = sessions.find((session) => session.alive !== false)?.sessionId;
+        if (alive) return alive;
+
+        const now = Date.now();
+        if (now - startedAt > 5_000 && now - lastOpenRequestAt > 5_000) {
+          lastOpenRequestAt = now;
+          const opened = await requestTerminalSession(app, panelId).catch(() => undefined);
+          await approvePendingTerminalWork(app, window);
+          if (opened) return opened;
+          sessions = await listTerminalSessions(app, panelId).catch(() => []);
+        }
         return sessions.find((session) => session.alive !== false)?.sessionId ?? "";
       },
-      { timeout: 70_000, intervals: [500, 1000, 2000] }
+      { timeout: 120_000, intervals: [500, 1000, 2000] }
     )
     .not.toBe("");
 
@@ -373,7 +433,7 @@ test.describe("Terminal Startup", () => {
         timeout: 10_000,
         intervals: [250, 500, 1000],
       })
-      .toMatch(/aria-label="New terminal"(?![^>]*disabled)/);
+      .toMatch(/aria-label="Terminal input"/);
 
     await callTerminalPanel(app, terminalPanelId, "sendText", {
       sessionId: session.sessionId,
