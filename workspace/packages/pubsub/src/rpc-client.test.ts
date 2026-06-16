@@ -672,7 +672,9 @@ describe("connectViaRpc", () => {
       await emitReplayAndReady(emit, []);
       await client.ready();
       mockRpc.call.mockClear();
-      mockRpc.call.mockResolvedValue(undefined);
+      mockRpc.call.mockImplementation(async (_target: string, method: string) =>
+        method === "submitMethodResult" ? { id: 301 } : undefined
+      );
 
       // Simulate an invocation start arriving from another participant.
       emit({
@@ -730,6 +732,88 @@ describe("connectViaRpc", () => {
       client.close();
     });
 
+    it("waits for fire-and-forget method progress before publishing the terminal result", async () => {
+      const executeFn = vi.fn(async (_args, ctx) => {
+        void ctx.stream("console line");
+        return { done: true };
+      });
+      let releaseProgress!: () => void;
+      const progressSubmitted = new Promise<void>((resolve) => {
+        releaseProgress = resolve;
+      });
+
+      const client = connectViaRpc({
+        rpc: mockRpc as any,
+        channel: CHANNEL,
+        methods: {
+          compute: {
+            description: "compute something",
+            parameters: z.object({}),
+            execute: executeFn,
+          },
+        },
+      });
+
+      await emitReplayAndReady(emit, []);
+      await client.ready();
+      mockRpc.call.mockClear();
+      mockRpc.call.mockImplementation(async (_target: string, method: string) => {
+        if (method === "submitMethodProgress") {
+          await progressSubmitted;
+        }
+        return undefined;
+      });
+
+      emit({
+        stream: "log",
+        phase: "live",
+        id: 201,
+        type: AGENTIC_EVENT_PAYLOAD_KIND,
+        payload: invocation(
+          "invocation.started",
+          CALL_ID_1,
+          {
+            name: "compute",
+            request: {},
+            transport: {
+              kind: "channel",
+              channelId: CHANNEL,
+              target: { kind: "panel", id: SELF_ID, participantId: SELF_ID },
+              transportCallId: TRANSPORT_ID_1,
+            },
+          },
+          { transportCallId: TRANSPORT_ID_1, turnId: "turn-1" }
+        ),
+        senderId: "caller-1",
+        ts: Date.now(),
+      });
+
+      await vi.waitFor(() => {
+        expect(mockRpc.call.mock.calls.some((call) => call[1] === "submitMethodProgress")).toBe(
+          true
+        );
+      });
+      expect(mockRpc.call.mock.calls.some((call) => call[1] === "submitMethodResult")).toBe(false);
+
+      releaseProgress();
+      await vi.waitFor(() => {
+        expect(mockRpc.call.mock.calls.some((call) => call[1] === "submitMethodResult")).toBe(
+          true
+        );
+      });
+
+      const progressIndex = mockRpc.call.mock.calls.findIndex(
+        (call) => call[1] === "submitMethodProgress"
+      );
+      const resultIndex = mockRpc.call.mock.calls.findIndex(
+        (call) => call[1] === "submitMethodResult"
+      );
+      expect(progressIndex).toBeGreaterThanOrEqual(0);
+      expect(resultIndex).toBeGreaterThan(progressIndex);
+
+      client.close();
+    });
+
     it("dedupes redelivered invocation starts for the same transport call", async () => {
       let resolveWork!: (value: { answer: number }) => void;
       const executeFn = vi.fn(
@@ -754,7 +838,9 @@ describe("connectViaRpc", () => {
       await emitReplayAndReady(emit, []);
       await client.ready();
       mockRpc.call.mockClear();
-      mockRpc.call.mockResolvedValue(undefined);
+      mockRpc.call.mockImplementation(async (_target: string, method: string) =>
+        method === "submitMethodResult" ? { id: 302 } : undefined
+      );
 
       const emitInvocationStarted = (id: number) => {
         emit({
@@ -807,6 +893,70 @@ describe("connectViaRpc", () => {
       expect(
         mockRpc.call.mock.calls.filter((c: unknown[]) => c[1] === "submitMethodResult")
       ).toHaveLength(1);
+
+      client.close();
+    });
+
+    it("retries a redelivered method call when the terminal submit was not accepted", async () => {
+      const executeFn = vi.fn(async () => ({ answer: 42 }));
+
+      const client = connectViaRpc({
+        rpc: mockRpc as any,
+        channel: CHANNEL,
+        methods: {
+          compute: {
+            description: "compute something",
+            parameters: z.object({}),
+            execute: executeFn,
+          },
+        },
+      });
+
+      await emitReplayAndReady(emit, []);
+      await client.ready();
+      mockRpc.call.mockClear();
+      mockRpc.call.mockResolvedValue(undefined);
+
+      const emitInvocationStarted = (id: number) => {
+        emit({
+          stream: "log",
+          phase: "live",
+          id,
+          type: AGENTIC_EVENT_PAYLOAD_KIND,
+          payload: invocation(
+            "invocation.started",
+            CALL_ID_1,
+            {
+              name: "compute",
+              request: {},
+              transport: {
+                kind: "channel",
+                channelId: CHANNEL,
+                target: { kind: "panel", id: SELF_ID, participantId: SELF_ID },
+                transportCallId: TRANSPORT_ID_1,
+              },
+            },
+            { transportCallId: TRANSPORT_ID_1, turnId: "turn-1" }
+          ),
+          senderId: "caller-1",
+          ts: Date.now(),
+        });
+      };
+
+      emitInvocationStarted(211);
+      await vi.waitFor(() => {
+        expect(
+          mockRpc.call.mock.calls.filter((c: unknown[]) => c[1] === "submitMethodResult")
+        ).toHaveLength(1);
+      });
+
+      emitInvocationStarted(212);
+      await vi.waitFor(() => {
+        expect(executeFn).toHaveBeenCalledTimes(2);
+        expect(
+          mockRpc.call.mock.calls.filter((c: unknown[]) => c[1] === "submitMethodResult")
+        ).toHaveLength(2);
+      });
 
       client.close();
     });
@@ -874,6 +1024,140 @@ describe("connectViaRpc", () => {
       });
 
       client.close();
+    });
+
+    it("does not time out method execution without a journaled deadline", async () => {
+      vi.useFakeTimers();
+      const executeFn = vi.fn(() => new Promise(() => undefined));
+      const client = connectViaRpc({
+        rpc: mockRpc as any,
+        channel: CHANNEL,
+        methods: {
+          feedback_form: {
+            description: "waits for user input",
+            parameters: z.any(),
+            execute: executeFn,
+          },
+        },
+      });
+
+      try {
+        await emitReplayAndReady(emit, []);
+        await client.ready();
+        mockRpc.call.mockClear();
+
+        emit({
+          stream: "log",
+          phase: "live",
+          id: 202,
+          type: AGENTIC_EVENT_PAYLOAD_KIND,
+          payload: invocation(
+            "invocation.started",
+            CALL_ID_1,
+            {
+              name: "feedback_form",
+              request: { prompt: "Continue?" },
+              transport: {
+                kind: "channel",
+                channelId: CHANNEL,
+                target: { kind: "panel", id: SELF_ID, participantId: SELF_ID },
+                transportCallId: TRANSPORT_ID_1,
+              },
+            },
+            { transportCallId: TRANSPORT_ID_1 }
+          ),
+          senderId: "caller-1",
+          ts: Date.now(),
+        });
+
+        await vi.waitFor(() => {
+          expect(executeFn).toHaveBeenCalledTimes(1);
+        });
+
+        await vi.advanceTimersByTimeAsync(130_000);
+        await Promise.resolve();
+
+        expect(
+          mockRpc.call.mock.calls.filter((c: unknown[]) => c[1] === "submitMethodResult")
+        ).toHaveLength(0);
+      } finally {
+        client.close();
+        vi.useRealTimers();
+      }
+    });
+
+    it("honors an explicit journaled method deadline", async () => {
+      vi.useFakeTimers();
+      const executeFn = vi.fn(() => new Promise(() => undefined));
+      const client = connectViaRpc({
+        rpc: mockRpc as any,
+        channel: CHANNEL,
+        methods: {
+          slowWork: {
+            description: "waits",
+            parameters: z.object({}).strict(),
+            execute: executeFn,
+          },
+        },
+      });
+
+      try {
+        await emitReplayAndReady(emit, []);
+        await client.ready();
+        mockRpc.call.mockClear();
+        const deadlineAt = Date.now() + 5_000;
+
+        emit({
+          stream: "log",
+          phase: "live",
+          id: 203,
+          type: AGENTIC_EVENT_PAYLOAD_KIND,
+          payload: invocation(
+            "invocation.started",
+            CALL_ID_SLOW,
+            {
+              name: "slowWork",
+              request: {},
+              transport: {
+                kind: "channel",
+                channelId: CHANNEL,
+                target: { kind: "panel", id: SELF_ID, participantId: SELF_ID },
+                transportCallId: TRANSPORT_ID_1,
+                deadlineAt,
+              },
+            },
+            { transportCallId: TRANSPORT_ID_1 }
+          ),
+          senderId: "caller-1",
+          ts: Date.now(),
+        });
+
+        await vi.waitFor(() => {
+          expect(executeFn).toHaveBeenCalledTimes(1);
+        });
+
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        await vi.waitFor(() => {
+          expect(
+            mockRpc.call.mock.calls.filter((c: unknown[]) => c[1] === "submitMethodResult")
+          ).toHaveLength(1);
+        });
+        expect(mockRpc.call).toHaveBeenCalledWith(
+          DO_TARGET,
+          "submitMethodResult",
+          [
+            SELF_ID,
+            TRANSPORT_ID_1,
+            `Method "slowWork" reached its journaled deadline`,
+            true,
+            expect.objectContaining({ terminalReasonCode: "method_execution_timeout" }),
+          ]
+        );
+      } finally {
+        client.close();
+        vi.useRealTimers();
+      }
     });
 
     it("hydrates stored-value method results before resolving callers", async () => {

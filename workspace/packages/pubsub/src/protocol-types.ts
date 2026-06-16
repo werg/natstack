@@ -16,7 +16,8 @@ import type {
   ChannelConfig,
   ChannelReplayEnvelope,
 } from "./types.js";
-import { AGENTIC_EVENT_PAYLOAD_KIND, type AgenticEvent } from "@workspace/agentic-protocol";
+import { AGENTIC_EVENT_PAYLOAD_KIND,
+  CREDENTIAL_CONNECT_PAYLOAD_KIND, type AgenticEvent } from "@workspace/agentic-protocol";
 import type { z } from "zod";
 
 export interface AgentBuildError {
@@ -146,11 +147,19 @@ export type IncomingEvent =
   | IncomingInvocationCallEvent
   | IncomingPresenceEventWithType
   | IncomingAgenticEvent
+  | IncomingCredentialConnectEvent
   | IncomingAgentDebugEvent;
 
 export interface IncomingAgenticEvent extends IncomingBase {
   type: typeof AGENTIC_EVENT_PAYLOAD_KIND;
   payload: AgenticEvent;
+}
+
+/** Model credential connect card published by an agent (opaque payload —
+ *  the chat UI reduces it into its credential-request view). */
+export interface IncomingCredentialConnectEvent extends IncomingBase {
+  type: typeof CREDENTIAL_CONNECT_PAYLOAD_KIND;
+  payload: unknown;
 }
 
 /**
@@ -347,6 +356,11 @@ export interface IncomingInvocationCall {
   providerId: string;
   /** Method arguments */
   args: unknown;
+  /** Journaled call deadline (epoch ms) — THE clock for this call's
+   *  lifetime. The executing client derives its abort budget from it; the
+   *  channel expires and redelivers from the same value. Absent when the
+   *  caller passed no timeout. */
+  deadlineAt?: number;
 }
 
 /**

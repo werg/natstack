@@ -145,17 +145,16 @@ export const RunTestsArgsSchema = z.object({
 export type RunTestsArgs = z.infer<typeof RunTestsArgsSchema>;
 
 /**
- * git - Git operations on the workspace context folder
+ * vcs - Workspace VCS operations on the current context state.
  */
-export const GitArgsSchema = z.object({
-  operation: z.enum(["status", "diff", "commit", "log", "push", "commit_and_push"]).describe(
-    "Git operation to perform. Use commit_and_push to commit and push in one step (triggers auto-build)."
+export const VcsArgsSchema = z.object({
+  operation: z.enum(["status", "diff", "commit", "log"]).describe(
+    "Workspace VCS operation to perform. Commit snapshots the context state and triggers auto-build."
   ),
   path: z.string().optional().describe("Relative path within workspace (default: repository root)"),
-  message: z.string().optional().describe('Commit message (required for "commit" and "commit_and_push")'),
-  files: z.array(z.string()).optional().describe("Files to stage (default: all changed files)"),
+  message: z.string().optional().describe('Commit message (required for "commit")'),
 });
-export type GitArgs = z.infer<typeof GitArgsSchema>;
+export type VcsArgs = z.infer<typeof VcsArgsSchema>;
 
 // ============================================================================
 // Rich Preview Support

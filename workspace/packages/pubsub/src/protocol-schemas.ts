@@ -114,6 +114,7 @@ export const FieldDefinitionSchema = z.object({
   options: z
     .array(z.object({ value: z.string(), label: z.string(), description: z.string().optional() }))
     .optional(),
+  variant: z.enum(["buttons", "cards", "list"]).optional(),
   placeholder: z.string().optional(),
   allowFreeText: z.boolean().optional(),
   freeTextLabel: z.string().optional(),

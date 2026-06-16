@@ -45,6 +45,8 @@ describe("FeedbackFormArgsSchema", () => {
     });
 
     expect(parsed.success).toBe(true);
+    if (!parsed.success) throw new Error("Expected feedback schema to parse");
+    expect(parsed.data.fields[0]?.variant).toBe("cards");
   });
 
   it("rejects timeout arguments", () => {

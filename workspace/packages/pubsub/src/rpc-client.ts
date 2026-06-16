@@ -45,6 +45,7 @@ import type {
 import {
   AGENTIC_EVENT_PAYLOAD_KIND,
   AGENTIC_PROTOCOL_VERSION,
+  CREDENTIAL_CONNECT_PAYLOAD_KIND,
   hydrateStoredValueRefs,
   type AgenticEvent,
   type MessageId,
@@ -157,6 +158,7 @@ export interface RpcConnectOptions<T extends ParticipantMetadata = ParticipantMe
   reconnect?: boolean;
   metadata?: T;
   protocol?: string;
+  /** Stable participant id. Panel callers should pass runtime `slotId`, not `rpc.selfId`. */
   clientId?: string;
   name?: string;
   type?: string;
@@ -410,6 +412,21 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       } as IncomingAgenticEvent;
     }
 
+    if (msgType === CREDENTIAL_CONNECT_PAYLOAD_KIND) {
+      if (!payload || typeof payload !== "object") return null;
+      return {
+        type: CREDENTIAL_CONNECT_PAYLOAD_KIND,
+        delivery,
+        phase,
+        senderId,
+        ts,
+        attachments: msgAttachments,
+        pubsubId,
+        senderMetadata: normalizedSender,
+        payload,
+      } as IncomingEvent;
+    }
+
     if (msgType === "presence") {
       const presencePayload = payload as {
         action?: string;
@@ -476,6 +493,9 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       methodName: invocationPayload.name,
       providerId,
       args: invocationPayload.request,
+      ...(typeof (transport as { deadlineAt?: unknown }).deadlineAt === "number"
+        ? { deadlineAt: (transport as { deadlineAt: number }).deadlineAt }
+        : {}),
     } as IncomingInvocationCallEvent;
   }
 
@@ -888,19 +908,27 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       terminalReasonCode?: string;
       attachments?: AttachmentInput[];
     }
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (!pid) {
       throw new Error(
         `Cannot submit result for invocation ${invocationId}: pubsub client is disconnected`
       );
     }
-    await callChannel("submitMethodResult", pid, transportCallId, content, isError, {
-      invocationId,
-      ...(opts?.turnId ? { turnId: opts.turnId } : {}),
-      ...(opts?.terminalOutcome ? { terminalOutcome: opts.terminalOutcome } : {}),
-      ...(opts?.terminalReasonCode ? { terminalReasonCode: opts.terminalReasonCode } : {}),
-      ...(opts?.attachments ? { attachments: toStoredAttachments(opts.attachments) } : {}),
-    });
+    const response = await callChannel<{ id?: number } | undefined>(
+      "submitMethodResult",
+      pid,
+      transportCallId,
+      content,
+      isError,
+      {
+        invocationId,
+        ...(opts?.turnId ? { turnId: opts.turnId } : {}),
+        ...(opts?.terminalOutcome ? { terminalOutcome: opts.terminalOutcome } : {}),
+        ...(opts?.terminalReasonCode ? { terminalReasonCode: opts.terminalReasonCode } : {}),
+        ...(opts?.attachments ? { attachments: toStoredAttachments(opts.attachments) } : {}),
+      }
+    );
+    return typeof response?.id === "number";
   }
 
   async function submitMethodProgress(
@@ -930,13 +958,23 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       executingMethods.has(event.transportCallId) ||
       submittedMethodTransportCallIds.has(event.transportCallId)
     ) {
+      // Redelivery while a previous execution is still running (or already
+      // terminally submitted). Silent skips here have hidden real wedges —
+      // log so a hung handler is visible in the panel console.
+      console.warn(
+        `[PubSub] Skipping redelivered method call ${event.methodName} ` +
+          `(${event.transportCallId}): ` +
+          (executingMethods.has(event.transportCallId)
+            ? "still executing from a previous delivery"
+            : "terminal already submitted")
+      );
       return;
     }
 
     const methodDef = registeredMethods[event.methodName];
     if (!methodDef) {
       try {
-        await submitMethodResult(
+        const accepted = await submitMethodResult(
           event.invocationId,
           event.transportCallId,
           `Method "${event.methodName}" not registered on this client`,
@@ -947,15 +985,90 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
             terminalReasonCode: "method_not_registered",
           }
         );
+        if (accepted) rememberSubmittedMethodTransportCall(event.transportCallId);
       } catch {
         /* best effort */
       }
       return;
     }
 
+    // Single-clock discipline (CH-3): only a journaled deadlineAt can impose
+    // a call lifetime. Calls without a deadline can legitimately wait on a
+    // human or a long-running agentic continuation.
+    const remainingMs =
+      typeof event.deadlineAt === "number" ? event.deadlineAt - Date.now() : null;
+    if (remainingMs !== null && remainingMs <= 1_000) {
+      // Redelivered at/after its deadline: executing now can't beat the
+      // channel's own expiry; let the channel settle it.
+      console.warn(
+        `[PubSub] Skipping method call ${event.methodName} (${event.transportCallId}): ` +
+          `journaled deadline already ${remainingMs <= 0 ? "passed" : "imminent"}`
+      );
+      return;
+    }
+
     const abortController = new AbortController();
     executingMethods.set(event.transportCallId, abortController);
     let terminalSubmitted = false;
+    const pendingStreamSubmissions = new Set<Promise<void>>();
+    const trackStreamSubmission = (promise: Promise<void>): Promise<void> => {
+      pendingStreamSubmissions.add(promise);
+      void promise
+        .catch(() => undefined)
+        .finally(() => pendingStreamSubmissions.delete(promise));
+      return promise;
+    };
+    const drainStreamSubmissions = async (): Promise<void> => {
+      while (pendingStreamSubmissions.size > 0) {
+        const batch = [...pendingStreamSubmissions];
+        const results = await Promise.allSettled(batch);
+        for (const result of results) {
+          if (result.status === "rejected") {
+            console.warn(
+              `[PubSub] Failed to submit method progress for ${event.methodName} ` +
+                `(${event.transportCallId}):`,
+              result.reason
+            );
+          }
+        }
+      }
+    };
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    if (remainingMs !== null) {
+      watchdog = setTimeout(() => {
+        if (terminalSubmitted) return;
+        console.warn(
+          `[PubSub] Method ${event.methodName} (${event.transportCallId}) did not settle ` +
+            `before its journaled deadline — aborting and reporting timeout to the channel`
+        );
+        abortController.abort();
+        void submitMethodResult(
+          event.invocationId,
+          event.transportCallId,
+          `Method "${event.methodName}" reached its journaled deadline`,
+          true,
+          {
+            turnId: event.turnId,
+            terminalOutcome: "tool_error",
+            terminalReasonCode: "method_execution_timeout",
+          }
+        )
+          .then((accepted) => {
+            terminalSubmitted = accepted;
+            if (accepted) rememberSubmittedMethodTransportCall(event.transportCallId);
+          })
+          .catch((e) =>
+            console.error(
+              `[PubSub] Failed to submit watchdog timeout for ${event.methodName} ` +
+                `(${event.transportCallId}) — a later redelivery may retry it:`,
+              e
+            )
+          )
+          .finally(() => {
+            executingMethods.delete(event.transportCallId);
+          });
+      }, remainingMs);
+    }
     const ctx: MethodExecutionContext = {
       callId: event.callId,
       invocationId: event.invocationId,
@@ -963,25 +1076,21 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       callerId: event.senderId,
       signal: abortController.signal,
       stream: async (content: unknown) => {
-        await submitMethodProgress(
-          event.invocationId,
-          event.transportCallId,
-          content,
-          { turnId: event.turnId }
+        await trackStreamSubmission(
+          submitMethodProgress(event.invocationId, event.transportCallId, content, {
+            turnId: event.turnId,
+          })
         );
       },
       streamWithAttachments: async (
         content: unknown,
         attachments: AttachmentInput[]
       ) => {
-        await submitMethodProgress(
-          event.invocationId,
-          event.transportCallId,
-          content,
-          {
+        await trackStreamSubmission(
+          submitMethodProgress(event.invocationId, event.transportCallId, content, {
             turnId: event.turnId,
             attachments,
-          }
+          })
         );
       },
       resultWithAttachments: <R>(
@@ -1000,8 +1109,9 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       }
 
       const result = await methodDef.execute(args, ctx);
+      await drainStreamSubmissions();
       if (abortController.signal.aborted) {
-        await submitMethodResult(
+        terminalSubmitted = await submitMethodResult(
           event.invocationId,
           event.transportCallId,
           "cancelled",
@@ -1012,7 +1122,6 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
             terminalReasonCode: "cancelled",
           }
         );
-        terminalSubmitted = true;
         return;
       }
 
@@ -1026,7 +1135,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
           content: unknown;
           attachments: AttachmentInput[];
         };
-        await submitMethodResult(
+        terminalSubmitted = await submitMethodResult(
           event.invocationId,
           event.transportCallId,
           withAttachments.content,
@@ -1036,18 +1145,17 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
             attachments: withAttachments.attachments,
           }
         );
-        terminalSubmitted = true;
       } else {
-        await submitMethodResult(
+        terminalSubmitted = await submitMethodResult(
           event.invocationId,
           event.transportCallId,
           result,
           false,
           { turnId: event.turnId }
         );
-        terminalSubmitted = true;
       }
     } catch (err) {
+      await drainStreamSubmissions();
       const errorMsg = err instanceof Error ? err.message : String(err);
       const aborted = abortController.signal.aborted;
       await submitMethodResult(
@@ -1061,8 +1169,8 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
           terminalReasonCode: aborted ? "cancelled" : "eval_exception",
         }
       )
-        .then(() => {
-          terminalSubmitted = true;
+        .then((accepted) => {
+          terminalSubmitted = accepted;
         })
         .catch((e) =>
           // If even this fallback terminal cannot be submitted, the caller's
@@ -1076,6 +1184,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
           )
         );
     } finally {
+      if (watchdog) clearTimeout(watchdog);
       executingMethods.delete(event.transportCallId);
       if (terminalSubmitted) rememberSubmittedMethodTransportCall(event.transportCallId);
     }

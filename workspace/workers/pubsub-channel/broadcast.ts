@@ -12,6 +12,7 @@ import type { RpcClient } from "@natstack/rpc";
 import type { ChannelEvent } from "@workspace/harness";
 import type { BroadcastEnvelope } from "./types.js";
 import type { RpcChannelMessage } from "@workspace/pubsub";
+import { serializeByKey } from "@natstack/shared/keyedSerializer";
 
 export interface BroadcastDeps {
   sql: SqlStorage;
@@ -29,6 +30,10 @@ const deliveryChains = new Map<string, Promise<void>>();
  *  is typically parked on an outstanding RPC call when replay runs). */
 const emitChains = new Map<string, Promise<void>>();
 
+function deliveryKey(channelId: string, participantId: string): string {
+  return `${channelId}\u0000${participantId}`;
+}
+
 /**
  * Queue an `rpc.emit` to `subscriberId` behind any previously queued emits to
  * the same subscriber. Returns the tail of the chain for callers that want to
@@ -41,20 +46,19 @@ export function queueEmit(
   payload: unknown,
   onFatalDelivery?: (err: { code?: string }) => boolean | void,
 ): Promise<void> {
-  const prev = emitChains.get(subscriberId) ?? Promise.resolve();
-  const next = prev.then(() =>
+  const key = deliveryKey(deps.objectKey, subscriberId);
+  return serializeByKey(emitChains, key, () =>
     deps.rpc.emit(subscriberId, "channel:message", payload).catch((err) => {
       onFatalDelivery?.(err as { code?: string });
-    }),
+    })
   );
-  emitChains.set(subscriberId, next);
-  return next;
 }
 
 /** Clean up delivery chain for a participant that unsubscribed. */
-export function cleanupDeliveryChain(participantId: string): void {
-  deliveryChains.delete(participantId);
-  emitChains.delete(participantId);
+export function cleanupDeliveryChain(channelId: string, participantId: string): void {
+  const key = deliveryKey(channelId, participantId);
+  deliveryChains.delete(key);
+  emitChains.delete(key);
 }
 
 /** Queue an ordered structured envelope delivery to a DO participant. */
@@ -64,17 +68,16 @@ export function queueDoEnvelope(
   envelope: RpcChannelMessage,
   onFatalDelivery?: (err: { code?: string }) => boolean | void,
 ): Promise<void> {
-  const prev = deliveryChains.get(participantId) ?? Promise.resolve();
-  const next: Promise<void> = prev.then(() =>
-    deps.rpc.call(participantId, "onChannelEnvelope", [deps.objectKey, envelope])
+  const key = deliveryKey(deps.objectKey, participantId);
+  return serializeByKey(deliveryChains, key, () =>
+    deps.rpc
+      .call(participantId, "onChannelEnvelope", [deps.objectKey, envelope])
       .then(() => {})
       .catch((err) => {
         const handled = onFatalDelivery?.(err as { code?: string });
         if (!handled) console.error(`[Channel] delivery failed for ${participantId}:`, err);
-      }),
+      })
   );
-  deliveryChains.set(participantId, next);
-  return next;
 }
 
 // ── Broadcast ────────────────────────────────────────────────────────────────
@@ -107,7 +110,7 @@ export function broadcast(
         code === "DO_NOT_CREATED"
       ) {
         deps.sql.exec(`DELETE FROM participants WHERE id = ?`, pid);
-        cleanupDeliveryChain(pid);
+        cleanupDeliveryChain(deps.objectKey, pid);
         return true;
       }
       return false;
@@ -149,6 +152,7 @@ export function buildChannelEvent(
   senderMetadata: Record<string, unknown> | undefined,
   ts: number,
   attachments?: Array<{ id: string; data: string; mimeType: string; name?: string; size: number }>,
+  annotations?: Record<string, unknown>,
 ): ChannelEvent {
   let parsedPayload: unknown;
   try { parsedPayload = JSON.parse(payloadJson); } catch { parsedPayload = payloadJson; }
@@ -177,6 +181,7 @@ export function buildChannelEvent(
     ...(contentType ? { contentType } : {}),
     ts,
     ...(mappedAttachments && mappedAttachments.length > 0 ? { attachments: mappedAttachments } : {}),
+    ...(annotations && Object.keys(annotations).length > 0 ? { annotations } : {}),
   };
 }
 

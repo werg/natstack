@@ -6,13 +6,19 @@
   "natstack": {
     "entry": "index.ts",
     "durable": {
-      "classes": [{ "className": "PubSubChannel" }]
+      "classes": [
+        {
+          "className": "PubSubChannel"
+        }
+      ]
     }
   },
   "dependencies": {
     "@workspace/agentic-protocol": "workspace:*",
     "@workspace/runtime": "workspace:*",
     "@workspace/pubsub": "workspace:*",
-    "@workspace/harness": "workspace:*"
+    "@workspace/harness": "workspace:*",
+    "@workspace/channel-policies": "workspace:*",
+    "zod": "^3.24.1"
   }
 }

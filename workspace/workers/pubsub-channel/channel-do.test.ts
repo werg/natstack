@@ -28,11 +28,14 @@ function deferred<T = void>(): {
 function setRpcCaller(
   instance: PubSubChannel,
   callerId: string | null,
-  callerKind: string | null
+  callerKind: string | null,
+  callerPanelId?: string | null
 ): void {
   (instance as unknown as { _currentRpcCallerId: string | null })._currentRpcCallerId = callerId;
   (instance as unknown as { _currentRpcCallerKind: string | null })._currentRpcCallerKind =
     callerKind;
+  (instance as unknown as { _currentRpcCallerPanelId: string | null })._currentRpcCallerPanelId =
+    callerPanelId ?? null;
 }
 
 function agenticEvent(kind = "message.completed") {
@@ -54,6 +57,9 @@ function messageTypeRegisteredEvent(
   typeId: string,
   code = "export default function App() { return null; }"
 ) {
+  // Direct-to-GAD seeds must arrive storage-encoded (the channel DO's encode
+  // path spills payload.source before appending; GAD validates at append).
+  const encoded = JSON.stringify({ type: "code", code });
   return {
     kind: "messageType.registered",
     actor: { kind: "panel", id: "panel:user" },
@@ -61,7 +67,13 @@ function messageTypeRegisteredEvent(
       protocol: AGENTIC_PROTOCOL_VERSION,
       typeId,
       displayMode: "row",
-      source: { type: "code", code },
+      source: {
+        protocol: "natstack.blob-ref.v1",
+        digest: `source-${typeId}`,
+        size: encoded.length,
+        encoding: "json",
+        originalBytes: encoded.length,
+      },
     },
     createdAt: new Date().toISOString(),
   };
@@ -151,8 +163,8 @@ describe("PubSubChannel", () => {
     expect(result.id).toBe(2);
     const rows = gad.sql
       .exec(
-        `SELECT seq, envelope_id, payload_kind, payload_ref_json, metadata_json
-       FROM channel_envelopes ORDER BY seq ASC`
+        `SELECT seq, envelope_id, payload_kind, payload_ref_json, annotations_json
+       FROM log_events ORDER BY seq ASC`
       )
       .toArray();
     expect(rows).toHaveLength(2);
@@ -163,7 +175,26 @@ describe("PubSubChannel", () => {
     expect(JSON.parse(rows[1]!["payload_ref_json"] as string)).toMatchObject({
       kind: "message.completed",
     });
-    expect(JSON.parse(rows[1]!["metadata_json"] as string)).toMatchObject({ name: "User" });
+    expect(JSON.parse(rows[1]!["annotations_json"] as string)).toMatchObject({
+      metadata: { name: "User" },
+    });
+  });
+
+  it("allows a panel caller to use its stable slot participant id", async () => {
+    const { instance } = await createGadBackedChannel();
+    setRpcCaller(instance, "panel:nav-current", "panel", "panel:slot-stable");
+
+    await expect(
+      instance.subscribe("panel:slot-stable", { contextId: "ctx-1", name: "User", type: "panel" })
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      instance.publish("panel:slot-stable", AGENTIC_EVENT_PAYLOAD_KIND, agenticEvent())
+    ).resolves.toMatchObject({ id: expect.any(Number) });
+    await expect(
+      instance.publish("panel:other", AGENTIC_EVENT_PAYLOAD_KIND, agenticEvent())
+    ).rejects.toThrow(
+      "publish: participant panel:other cannot be used by caller panel:nav-current"
+    );
   });
 
   it("dedupes concurrent publishes with the same idempotency key before append settles", async () => {
@@ -177,7 +208,7 @@ describe("PubSubChannel", () => {
       rpcCall: async (target, method, args) => {
         if (
           target === "do:workers/gad-store:GadWorkspaceDO:workspace-gad" &&
-          method === "appendChannelEnvelope" &&
+          method === "appendLogEvent" &&
           blockAppend
         ) {
           appendCalls += 1;
@@ -209,7 +240,7 @@ describe("PubSubChannel", () => {
     releaseAppend.resolve();
     await expect(Promise.all([first, second])).resolves.toEqual([{ id: 2 }, { id: 2 }]);
 
-    const rows = gad.sql.exec(`SELECT seq FROM channel_envelopes ORDER BY seq ASC`).toArray();
+    const rows = gad.sql.exec(`SELECT seq FROM log_events ORDER BY seq ASC`).toArray();
     expect(rows).toHaveLength(2);
   });
 
@@ -242,8 +273,8 @@ describe("PubSubChannel", () => {
 
     const rows = gad.sql
       .exec(
-        `SELECT from_json, payload_ref_json, metadata_json
-         FROM channel_envelopes ORDER BY seq ASC`
+        `SELECT actor_json, payload_ref_json, annotations_json
+         FROM log_events ORDER BY seq ASC`
       )
       .toArray();
     const durableJson = JSON.stringify(rows);
@@ -255,8 +286,8 @@ describe("PubSubChannel", () => {
     expect(JSON.parse(rows[0]!["payload_ref_json"] as string)).toMatchObject({
       metadata: { methods: [{ name: "eval" }] },
     });
-    expect(JSON.parse(rows[1]!["metadata_json"] as string)).toMatchObject({
-      methods: [{ name: "eval" }],
+    expect(JSON.parse(rows[1]!["annotations_json"] as string)).toMatchObject({
+      metadata: { methods: [{ name: "eval" }] },
     });
   });
 
@@ -476,7 +507,7 @@ describe("PubSubChannel", () => {
 
     const events = gad.sql
       .exec(
-        `SELECT payload_ref_json FROM channel_envelopes WHERE payload_kind = ? ORDER BY seq ASC`,
+        `SELECT payload_ref_json FROM log_events WHERE payload_kind = ? ORDER BY seq ASC`,
         AGENTIC_EVENT_PAYLOAD_KIND
       )
       .toArray()
@@ -556,7 +587,9 @@ describe("PubSubChannel", () => {
     await fork.instance.postClone("channel-parent", 3);
 
     const replay = await fork.instance.getReplayAfter(0);
-    expect(replay.logEvents.map((event) => event.id)).toEqual([2, 3]);
+    // No-copy fork: the child sees the parent prefix verbatim, including the
+    // presence envelope, with the original sequence numbers.
+    expect(replay.logEvents.map((event) => event.id)).toEqual([1, 2, 3]);
     const messages = replay.logEvents.filter((event) => event.type === AGENTIC_EVENT_PAYLOAD_KIND);
     expect(
       messages.map(
@@ -564,9 +597,9 @@ describe("PubSubChannel", () => {
       )
     ).toEqual(["msg-1", "msg-2"]);
     expect(replay.ready).toMatchObject({
-      totalCount: 2,
-      envelopeCount: 2,
-      firstEnvelopeSeq: 2,
+      totalCount: 3,
+      envelopeCount: 3,
+      firstEnvelopeSeq: 1,
     });
 
     setRpcCaller(fork.instance, "panel:user", "panel");
@@ -604,7 +637,7 @@ describe("PubSubChannel", () => {
 
     const rows = gad.sql
       .exec(
-        `SELECT payload_ref_json FROM channel_envelopes WHERE payload_kind = ? ORDER BY seq ASC`,
+        `SELECT payload_ref_json FROM log_events WHERE payload_kind = ? ORDER BY seq ASC`,
         AGENTIC_EVENT_PAYLOAD_KIND
       )
       .toArray();
@@ -726,6 +759,65 @@ describe("PubSubChannel", () => {
     expect(pending).toHaveLength(0);
   });
 
+  it("reconstructs pending_calls during submitMethodResult before dropping a result", async () => {
+    const { instance, sql, gad } = await createGadBackedChannel();
+
+    setRpcCaller(instance, "panel:caller", "panel");
+    await instance.subscribe("panel:caller", { contextId: "ctx-1", name: "Caller", type: "panel" });
+    setRpcCaller(instance, "panel:provider", "panel");
+    await instance.subscribe("panel:provider", {
+      contextId: "ctx-1",
+      name: "Provider",
+      type: "panel",
+    });
+
+    setRpcCaller(instance, "panel:caller", "panel");
+    await instance.callMethod(
+      "panel:caller",
+      "panel:provider",
+      "transport-cache-race",
+      "eval",
+      { code: "1 + 1" },
+      {
+        invocationId: "invocation-cache-race",
+        transportCallId: "transport-cache-race",
+        turnId: "turn-cache-race",
+      }
+    );
+
+    sql.exec(`DELETE FROM pending_calls WHERE transport_call_id = ?`, "transport-cache-race");
+
+    setRpcCaller(instance, "panel:provider", "panel");
+    const result = await instance.submitMethodResult(
+      "panel:provider",
+      "transport-cache-race",
+      2,
+      false,
+      {
+        invocationId: "invocation-cache-race",
+        turnId: "turn-cache-race",
+        terminalOutcome: "success",
+      }
+    );
+
+    expect(result.id).toEqual(expect.any(Number));
+    expect(
+      sql
+        .exec(
+          `SELECT transport_call_id FROM pending_calls WHERE transport_call_id = ?`,
+          "transport-cache-race"
+        )
+        .toArray()
+    ).toHaveLength(0);
+    const terminals = gad.sql
+      .exec(
+        `SELECT envelope_id FROM log_events WHERE envelope_id = ?`,
+        "terminal:transport-cache-race"
+      )
+      .toArray();
+    expect(terminals).toHaveLength(1);
+  });
+
   it("appends a durable invocation.completed terminal (no method-result envelope)", async () => {
     const emitted: unknown[] = [];
     const { instance, gad } = await createGadBackedChannel({ emitted });
@@ -771,7 +863,7 @@ describe("PubSubChannel", () => {
     // The canonical terminal is a durable invocation.completed log event,
     // carrying the result and the attachment on the envelope.
     const envelopes = gad.sql
-      .exec(`SELECT payload_ref_json, attachments_json FROM channel_envelopes ORDER BY seq ASC`)
+      .exec(`SELECT payload_ref_json, annotations_json FROM log_events ORDER BY seq ASC`)
       .toArray();
     const completed = envelopes.find(
       (row) =>
@@ -784,9 +876,9 @@ describe("PubSubChannel", () => {
       causality: { transportCallId: "transport-envelope" },
       payload: { result: 2, terminalOutcome: "success" },
     });
-    expect(JSON.parse(completed!["attachments_json"] as string)).toMatchObject([
-      { id: "att-1", mimeType: "text/plain" },
-    ]);
+    expect(JSON.parse(completed!["annotations_json"] as string)).toMatchObject({
+      attachments: [{ id: "att-1", mimeType: "text/plain" }],
+    });
   });
 
   it("appends a durable invocation.cancelled on cancel and drops late submits", async () => {
@@ -827,7 +919,7 @@ describe("PubSubChannel", () => {
 
     // Durable invocation.cancelled terminal.
     const cancelled = gad.sql
-      .exec(`SELECT payload_ref_json FROM channel_envelopes ORDER BY seq ASC`)
+      .exec(`SELECT payload_ref_json FROM log_events ORDER BY seq ASC`)
       .toArray()
       .map(
         (row) =>
@@ -843,11 +935,20 @@ describe("PubSubChannel", () => {
       payload: expect.objectContaining({ terminalOutcome: "cancelled" }),
     });
 
-    // The call is consumed: a late terminal is dropped and late progress is a no-op.
+    // The call is consumed: a late terminal is idempotently acknowledged with
+    // the existing terminal id, and late progress is a no-op.
     setRpcCaller(instance, "panel:provider", "panel");
+    const terminalCountBefore = gad.sql
+      .exec(`SELECT COUNT(*) AS cnt FROM log_events WHERE envelope_id LIKE 'terminal:%'`)
+      .toArray()[0]?.["cnt"];
     await expect(
       instance.submitMethodResult("panel:provider", "transport-cancel-envelope", "late", false)
-    ).resolves.toEqual({ id: undefined });
+    ).resolves.toEqual({ id: expect.any(Number) });
+    expect(
+      gad.sql
+        .exec(`SELECT COUNT(*) AS cnt FROM log_events WHERE envelope_id LIKE 'terminal:%'`)
+        .toArray()[0]?.["cnt"]
+    ).toBe(terminalCountBefore);
     await expect(
       instance.submitMethodProgress("panel:provider", "transport-cancel-envelope", "late progress")
     ).resolves.toBeUndefined();
@@ -883,7 +984,7 @@ describe("PubSubChannel", () => {
     await instance.submitMethodProgress("panel:provider", "transport-output", "chunk-1");
 
     const output = gad.sql
-      .exec(`SELECT payload_ref_json FROM channel_envelopes ORDER BY seq ASC`)
+      .exec(`SELECT payload_ref_json FROM log_events ORDER BY seq ASC`)
       .toArray()
       .map(
         (row) =>
@@ -894,11 +995,12 @@ describe("PubSubChannel", () => {
           }
       )
       .find((ev) => ev.kind === "invocation.output");
-    // A small progress chunk stays inline on the durable event (no blob write).
+    // Progress chunks are class-REFERENCE (storage classes: fold-opaque
+    // streaming bulk is ALWAYS a ref, even when tiny — one code path).
     expect(output).toMatchObject({
       kind: "invocation.output",
       causality: { transportCallId: "transport-output" },
-      payload: { output: "chunk-1" },
+      payload: { output: { protocol: "natstack.blob-ref.v1", encoding: "text" } },
     });
 
     // Consume the call, then a late progress chunk is a quiet no-op (not appended).
@@ -907,7 +1009,7 @@ describe("PubSubChannel", () => {
       instance.submitMethodProgress("panel:provider", "transport-output", "chunk-2")
     ).resolves.toBeUndefined();
     const outputs = gad.sql
-      .exec(`SELECT payload_ref_json FROM channel_envelopes ORDER BY seq ASC`)
+      .exec(`SELECT payload_ref_json FROM log_events ORDER BY seq ASC`)
       .toArray()
       .map((row) => JSON.parse(row["payload_ref_json"] as string) as { kind?: string })
       .filter((ev) => ev.kind === "invocation.output");
@@ -982,7 +1084,7 @@ describe("PubSubChannel", () => {
 
     // No invocation.* terminal is appended for an unknown call.
     const orphan = gad.sql
-      .exec(`SELECT payload_ref_json FROM channel_envelopes ORDER BY seq ASC`)
+      .exec(`SELECT payload_ref_json FROM log_events ORDER BY seq ASC`)
       .toArray()
       .map(
         (row) =>
@@ -1026,7 +1128,7 @@ describe("PubSubChannel", () => {
     await worker.failPendingCallsTargeting("panel:provider", "disconnect");
 
     const abandoned = gad.sql
-      .exec(`SELECT payload_ref_json FROM channel_envelopes ORDER BY seq ASC`)
+      .exec(`SELECT payload_ref_json FROM log_events ORDER BY seq ASC`)
       .toArray()
       .map(
         (row) =>
@@ -1232,7 +1334,7 @@ describe("PubSubChannel", () => {
 
     const events = gad.sql
       .exec(
-        `SELECT payload_ref_json FROM channel_envelopes WHERE payload_kind = ? ORDER BY seq ASC`,
+        `SELECT payload_ref_json FROM log_events WHERE payload_kind = ? ORDER BY seq ASC`,
         AGENTIC_EVENT_PAYLOAD_KIND
       )
       .toArray()
@@ -1286,7 +1388,7 @@ describe("PubSubChannel", () => {
     expect(resultId).toBeTypeOf("number");
     const rows = gad.sql
       .exec(
-        `SELECT payload_ref_json FROM channel_envelopes WHERE payload_kind = ? ORDER BY seq ASC`,
+        `SELECT payload_ref_json FROM log_events WHERE payload_kind = ? ORDER BY seq ASC`,
         AGENTIC_EVENT_PAYLOAD_KIND
       )
       .toArray();
@@ -1339,7 +1441,7 @@ describe("PubSubChannel", () => {
 
     const rows = gad.sql
       .exec(
-        `SELECT payload_ref_json FROM channel_envelopes WHERE payload_kind = ? ORDER BY seq ASC`,
+        `SELECT payload_ref_json FROM log_events WHERE payload_kind = ? ORDER BY seq ASC`,
         AGENTIC_EVENT_PAYLOAD_KIND
       )
       .toArray();
@@ -1365,30 +1467,11 @@ describe("PubSubChannel", () => {
     expect(JSON.stringify(completed).length).toBeLessThan(1_000);
   });
 
-  it("hydrates the message type registry from GAD instead of trusting a partial local cache", async () => {
+  it("reads message types directly from GAD", async () => {
     const { instance, gad } = await createGadBackedChannel();
     setRpcCaller(instance, "panel:user", "panel");
     await instance.subscribe("panel:user", { contextId: "ctx-1", name: "User", type: "panel" });
 
-    (
-      instance as unknown as {
-        cacheMessageTypeMutation: (
-          seq: number,
-          mutation: {
-            kind: "upsertMessageType";
-            typeId: string;
-            row: { displayMode: "row"; source: { type: "code"; code: string } };
-          }
-        ) => void;
-      }
-    ).cacheMessageTypeMutation(1, {
-      kind: "upsertMessageType",
-      typeId: "weather",
-      row: {
-        displayMode: "row",
-        source: { type: "code", code: "export default function Weather() { return null; }" },
-      },
-    });
     await gad.instance.appendChannelEnvelopeWithRegistryMutation({
       channelId: "channel-1" as never,
       from: { kind: "panel", id: "panel:user", participantId: "panel:user" },
@@ -1441,16 +1524,296 @@ describe("PubSubChannel", () => {
         },
         createdAt: new Date().toISOString(),
       })
-    ).rejects.toThrow(/Invalid registry payload/);
+    ).rejects.toThrow(/payload invalid/u);
 
     const rows = gad.sql
       .exec(
-        `SELECT payload_ref_json FROM channel_envelopes WHERE payload_kind = ? ORDER BY seq ASC`,
+        `SELECT payload_ref_json FROM log_events WHERE payload_kind = ? ORDER BY seq ASC`,
         AGENTIC_EVENT_PAYLOAD_KIND
       )
       .toArray();
     expect(rows.map((row) => JSON.parse(row["payload_ref_json"] as string).kind)).not.toContain(
       "messageType.registered"
     );
+  });
+});
+
+describe("PubSubChannel policy folds and cache amnesia (WS2)", () => {
+  function agentCompleted(messageId: string, extraCausality: Record<string, unknown> = {}) {
+    return {
+      kind: "message.completed",
+      actor: { kind: "agent", id: "agent:one" },
+      causality: { messageId, ...extraCausality },
+      payload: {
+        protocol: "agentic.trajectory.v1",
+        role: "assistant",
+        blocks: [{ blockId: `${messageId}:block:0`, type: "text", content: "reply" }],
+        outcome: "completed",
+      },
+      createdAt: "2026-05-20T12:00:00.000Z",
+    };
+  }
+
+  it("stamps agentHops into annotations without mutating the payload", async () => {
+    const { instance, gad } = await createGadBackedChannel();
+    setRpcCaller(instance, "agent:one", "harness");
+    await instance.subscribe("agent:one", { contextId: "ctx-1", name: "Agent", type: "agent" });
+
+    await instance.publish("agent:one", AGENTIC_EVENT_PAYLOAD_KIND, agentCompleted("msg-a1"));
+    await instance.publish("agent:one", AGENTIC_EVENT_PAYLOAD_KIND, agentCompleted("msg-a2"));
+
+    const rows = gad.sql
+      .exec(
+        `SELECT payload_ref_json, annotations_json FROM log_events
+         WHERE payload_kind = ? ORDER BY seq ASC`,
+        AGENTIC_EVENT_PAYLOAD_KIND
+      )
+      .toArray();
+    expect(rows).toHaveLength(2);
+    expect(JSON.parse(rows[0]!["annotations_json"] as string)).toMatchObject({ agentHops: 1 });
+    expect(JSON.parse(rows[1]!["annotations_json"] as string)).toMatchObject({ agentHops: 2 });
+    // the payload itself is never mutated by the transport
+    for (const row of rows) {
+      const payload = JSON.parse(row["payload_ref_json"] as string) as {
+        causality?: { agentHops?: number };
+      };
+      expect(payload.causality?.agentHops).toBeUndefined();
+    }
+
+    // explicit caller-computed hops win
+    await instance.publish(
+      "agent:one",
+      AGENTIC_EVENT_PAYLOAD_KIND,
+      agentCompleted("msg-a3", { agentHops: 9 })
+    );
+    const explicit = gad.sql
+      .exec(
+        `SELECT annotations_json FROM log_events WHERE payload_kind = ? ORDER BY seq DESC LIMIT 1`,
+        AGENTIC_EVENT_PAYLOAD_KIND
+      )
+      .toArray();
+    expect(JSON.parse(explicit[0]!["annotations_json"] as string)).toMatchObject({ agentHops: 9 });
+  });
+
+  it("rebuilds conversation policy state across a fork (the fork-wipe bug fix)", async () => {
+    const parent = await createGadBackedChannel({ channelKey: "channel-policy-parent" });
+    setRpcCaller(parent.instance, "agent:one", "harness");
+    await parent.instance.subscribe("agent:one", {
+      contextId: "ctx-1",
+      name: "Agent",
+      type: "agent",
+    });
+    await parent.instance.publish(
+      "agent:one",
+      AGENTIC_EVENT_PAYLOAD_KIND,
+      agentCompleted("msg-p1")
+    );
+    await parent.instance.publish(
+      "agent:one",
+      AGENTIC_EVENT_PAYLOAD_KIND,
+      agentCompleted("msg-p2")
+    );
+    const parentState = await parent.instance.getPolicyState();
+    expect(parentState.state).toMatchObject({ agentStreak: 2, lastCompletedSender: "agent:one" });
+
+    const fork = await createGadBackedChannel({
+      channelKey: "channel-policy-fork",
+      gad: parent.gad,
+    });
+    await fork.instance.postClone("channel-policy-parent", 3);
+
+    // conversation state SURVIVES the fork — rebuilt by replaying the lineage
+    const forkState = await fork.instance.getPolicyState();
+    expect(forkState.state).toMatchObject({ agentStreak: 2, lastCompletedSender: "agent:one" });
+
+    setRpcCaller(fork.instance, "agent:one", "harness");
+    await fork.instance.subscribe("agent:one", {
+      contextId: "ctx-1",
+      name: "Agent",
+      type: "agent",
+    });
+    await fork.instance.publish(
+      "agent:one",
+      AGENTIC_EVENT_PAYLOAD_KIND,
+      agentCompleted("msg-f1")
+    );
+    const stamped = parent.gad.sql
+      .exec(
+        `SELECT annotations_json FROM log_events
+         WHERE log_id = 'channel-policy-fork' AND payload_kind = ? ORDER BY seq DESC LIMIT 1`,
+        AGENTIC_EVENT_PAYLOAD_KIND
+      )
+      .toArray();
+    expect(JSON.parse(stamped[0]!["annotations_json"] as string)).toMatchObject({ agentHops: 3 });
+  });
+
+  it("dedupes idempotent publishes durably across a dedup_keys wipe", async () => {
+    const { instance, gad, sql } = await createGadBackedChannel();
+    setRpcCaller(instance, "panel:user", "panel");
+    await instance.subscribe("panel:user", { contextId: "ctx-1", name: "User", type: "panel" });
+
+    const payload = agenticEvent();
+    const first = await instance.publish("panel:user", AGENTIC_EVENT_PAYLOAD_KIND, payload, {
+      idempotencyKey: "durable-key-1",
+    });
+
+    // wipe the latency cache — the durable dedupe is the ik:{key} envelope id
+    sql.exec(`DELETE FROM dedup_keys`);
+
+    const second = await instance.publish("panel:user", AGENTIC_EVENT_PAYLOAD_KIND, payload, {
+      idempotencyKey: "durable-key-1",
+    });
+    expect(second.id).toBe(first.id);
+    const rows = gad.sql
+      .exec(`SELECT envelope_id FROM log_events WHERE envelope_id = ?`, "ik:durable-key-1")
+      .toArray();
+    expect(rows).toHaveLength(1);
+  });
+
+  it("treats duplicate pending callMethod as a durable redrive", async () => {
+    const { instance, gad, sql } = await createGadBackedChannel();
+    setRpcCaller(instance, "panel:caller", "panel");
+    await instance.subscribe("panel:caller", { contextId: "ctx-1", name: "Caller", type: "panel" });
+    setRpcCaller(instance, "panel:provider", "panel");
+    await instance.subscribe("panel:provider", {
+      contextId: "ctx-1",
+      name: "Provider",
+      type: "panel",
+    });
+
+    setRpcCaller(instance, "panel:caller", "panel");
+    await instance.callMethod(
+      "panel:caller",
+      "panel:provider",
+      "call-redrive",
+      "eval",
+      { code: "first" },
+      { invocationId: "inv-redrive", transportCallId: "call-redrive", turnId: "turn-redrive" }
+    );
+    await instance.callMethod(
+      "panel:caller",
+      "panel:provider",
+      "call-redrive",
+      "mutated_eval",
+      { code: "second" },
+      { invocationId: "inv-redrive", transportCallId: "call-redrive", turnId: "turn-redrive" }
+    );
+
+    const starts = gad.sql
+      .exec(`SELECT envelope_id FROM log_events WHERE envelope_id = ?`, "inv-redrive")
+      .toArray();
+    expect(starts).toHaveLength(1);
+
+    const pending = sql
+      .exec(`SELECT method FROM pending_calls WHERE transport_call_id = ?`, "call-redrive")
+      .toArray();
+    expect(pending).toEqual([expect.objectContaining({ method: "eval" })]);
+  });
+
+  it("reconstructs pending_calls from the log after cache amnesia", async () => {
+    const { instance, sql, gad } = await createGadBackedChannel();
+    setRpcCaller(instance, "panel:caller", "panel");
+    await instance.subscribe("panel:caller", { contextId: "ctx-1", name: "Caller", type: "panel" });
+    setRpcCaller(instance, "panel:provider", "panel");
+    await instance.subscribe("panel:provider", {
+      contextId: "ctx-1",
+      name: "Provider",
+      type: "panel",
+    });
+
+    setRpcCaller(instance, "panel:caller", "panel");
+    await instance.callMethod(
+      "panel:caller",
+      "panel:provider",
+      "call-keep",
+      "slow_method",
+      { input: 1 },
+      { invocationId: "inv-keep", transportCallId: "call-keep", turnId: "turn-1", timeoutMs: 60000 }
+    );
+    await instance.callMethod(
+      "panel:caller",
+      "panel:provider",
+      "call-settle",
+      "fast_method",
+      { input: 2 },
+      { invocationId: "inv-settle", transportCallId: "call-settle" }
+    );
+
+    setRpcCaller(instance, "panel:provider", "panel");
+    await instance.submitMethodResult("panel:provider", "call-settle", { ok: true }, false);
+
+    // P3: derived state is deletable at any time
+    sql.exec(`DELETE FROM pending_calls`);
+    const { inserted } = await instance.reconcilePendingCalls(true);
+    expect(inserted).toBe(1);
+
+    const rows = sql.exec(`SELECT * FROM pending_calls`).toArray();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      transport_call_id: "call-keep",
+      invocation_id: "inv-keep",
+      caller_id: "panel:caller",
+      target_id: "panel:provider",
+      method: "slow_method",
+      turn_id: "turn-1",
+    });
+    // args come back in journal form — $.payload.request is blob-spilled by
+    // the storage boundary, so the rebuilt row carries the blob ref
+    expect(JSON.parse(rows[0]!["args"] as string)).toMatchObject({
+      protocol: "natstack.blob-ref.v1",
+    });
+    expect(Number(rows[0]!["deadline_at"])).toBeGreaterThan(0);
+
+    // the rebuilt row settles normally, with the deterministic terminal id
+    await instance.submitMethodResult("panel:provider", "call-keep", { ok: 1 }, false);
+    const terminals = gad.sql
+      .exec(`SELECT envelope_id FROM log_events WHERE envelope_id LIKE 'terminal:%'`)
+      .toArray();
+    expect(terminals.map((row) => row["envelope_id"])).toEqual(
+      expect.arrayContaining(["terminal:call-settle", "terminal:call-keep"])
+    );
+    expect(sql.exec(`SELECT COUNT(*) AS cnt FROM pending_calls`).toArray()[0]?.["cnt"]).toBe(0);
+  });
+
+  it("does not busy-loop the alarm on a long-running pending call (CH-4)", async () => {
+    const { instance, sql } = await createGadBackedChannel();
+    const internal = instance as unknown as {
+      nextPendingRedeliveryAt(now: number): number | null;
+      getStateValue(key: string): string | null;
+      setStateValue(key: string, value: string): void;
+    };
+
+    const now = Date.now();
+    // A pending call created 60s ago (handler is genuinely slow, deadline 5min).
+    const createdAt = now - 60_000;
+    sql.exec(
+      `INSERT INTO pending_calls (transport_call_id, invocation_id, turn_id, caller_id,
+        target_id, method, args, created_at, deadline_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      "tc-slow",
+      "inv-slow",
+      null,
+      "agent:self",
+      "panel:user",
+      "longMethod",
+      null,
+      createdAt,
+      now + 5 * 60_000
+    );
+
+    // First redelivery is anchored to creation (it may be in the past — that's
+    // fine, it fires once); critically it is NOT pinned to created_at+10s
+    // forever.
+    const first = internal.nextPendingRedeliveryAt(now);
+    expect(first).toBe(createdAt + 10_000);
+
+    // Simulate a sweep advancing the marker (what alarm() does).
+    internal.setStateValue("pendingRedeliverySweptAt", String(now));
+
+    // The next deadline is now anchored to the LAST sweep + interval — a real
+    // future time, so scheduleNextAlarm cannot clamp to now+100ms repeatedly.
+    const second = internal.nextPendingRedeliveryAt(now);
+    expect(second).toBe(now + 15_000);
+    expect(second!).toBeGreaterThan(now);
   });
 });
