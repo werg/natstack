@@ -1,0 +1,125 @@
+/**
+ * Deterministic id scheme (WS1 §1.5). Every envelopeId and effectId is a pure
+ * function of stable coordinates — `crypto.randomUUID()` is banned in this
+ * package. Ids are scoped to log lineage (Stage-0 fork-aware idempotency
+ * makes post-fork divergence on the same id legal).
+ */
+
+export const ids = {
+  logIdForChannel(channelId: string): string {
+    return `branch:channel:${channelId}`;
+  },
+
+  turnId(channelId: string, triggerEnvelopeId: string): string {
+    return `t:${channelId}:${triggerEnvelopeId}`;
+  },
+
+  messageId(turnId: string, modelCallCount: number): string {
+    return `m:${turnId}:${modelCallCount}`;
+  },
+
+  attemptId(messageId: string): string {
+    return `att:${messageId}`;
+  },
+
+  transportCallId(invocationId: string): string {
+    return `tc:${invocationId}`;
+  },
+
+  approvalId(invocationId: string): string {
+    return `approval:${invocationId}`;
+  },
+
+  credKey(channelId: string, providerId: string): string {
+    return `cred:${channelId}:${providerId}`;
+  },
+
+  // envelope ids -------------------------------------------------------------
+
+  recvUserMessage(channelId: string, channelEnvelopeId: string): string {
+    return `recv:${channelId}:${channelEnvelopeId}`;
+  },
+
+  turnOpened(turnId: string): string {
+    return `turn:${turnId}:opened`;
+  },
+
+  turnClosed(turnId: string): string {
+    return `turn:${turnId}:closed`;
+  },
+
+  turnWaiting(turnId: string, n: number): string {
+    return `turn:${turnId}:waiting:${n}`;
+  },
+
+  messageStarted(messageId: string): string {
+    return `msg:${messageId}:started`;
+  },
+
+  /** completed OR failed — exactly one wins per lineage. */
+  messageTerminal(messageId: string): string {
+    return `msg:${messageId}:terminal`;
+  },
+
+  invocationStart(invocationId: string): string {
+    return `inv:${invocationId}:start`;
+  },
+
+  /** completed|failed|cancelled|abandoned — one wins per lineage. */
+  invocationTerminal(invocationId: string): string {
+    return `inv:${invocationId}:terminal`;
+  },
+
+  invocationOutput(invocationId: string, n: number): string {
+    return `inv:${invocationId}:output:${n}`;
+  },
+
+  approvalRequested(approvalId: string): string {
+    return `appr:${approvalId}:requested`;
+  },
+
+  approvalResolved(approvalId: string): string {
+    return `appr:${approvalId}:resolved`;
+  },
+
+  systemEvent(scope: string, detailKind: string, n?: number): string {
+    return n === undefined ? `sys:${scope}:${detailKind}` : `sys:${scope}:${detailKind}:${n}`;
+  },
+
+  compaction(turnId: string, n: number): string {
+    return `sys:compaction:${turnId}:${n}`;
+  },
+
+  configChange(patchHash: string, n: number): string {
+    return `sys:config:${patchHash}:${n}`;
+  },
+
+  // effect ids ----------------------------------------------------------------
+
+  modelEffect(messageId: string): string {
+    return `model:${messageId}`;
+  },
+
+  invocationEffect(invocationId: string): string {
+    return `inv:${invocationId}`;
+  },
+
+  approvalFormEffect(approvalId: string): string {
+    return `form:${approvalId}`;
+  },
+
+  credentialWaitEffect(credKey: string): string {
+    return `credwait:${credKey}`;
+  },
+};
+
+/** Tiny deterministic hash for config-patch ids (FNV-1a over JSON). */
+export function patchHash(value: unknown): string {
+  const text = JSON.stringify(value) ?? "null";
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}

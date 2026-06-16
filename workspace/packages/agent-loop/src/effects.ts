@@ -1,0 +1,419 @@
+/**
+ * Effect taxonomy (WS1 §1.4) + derivePendingEffects + outcomeEvents.
+ *
+ * Reconstructibility invariant (P1/P2, normative): every descriptor is a pure
+ * function of the logged intention event. The outbox's descriptor_json is a
+ * denormalized copy only; `derivePendingEffects(fold(log))` is the authority.
+ */
+
+import {
+  AGENTIC_PROTOCOL_VERSION,
+  invocationCompletedPayload,
+  invocationFailedPayload,
+  type EventKind,
+  type LogEventCausality,
+  type ParticipantRef,
+} from "@workspace/agentic-protocol";
+import { ids } from "./ids.js";
+import { classifyModelFailure, type ModelFailureInfo } from "./model-errors.js";
+import type {
+  AgentState,
+  InFlightModelCall,
+  ModelRequestDescriptor,
+  PendingApproval,
+  PendingCredentialWait,
+  PendingInvocation,
+} from "./state.js";
+
+export type EffectKind =
+  | "model_call"
+  | "local_tool"
+  | "channel_call"
+  | "http_call"
+  | "credential_wait"
+  | "publish_envelope";
+
+export interface EffectDescriptorBase {
+  /** deterministic (§1.5); == outbox PK. */
+  effectId: string;
+  kind: EffectKind;
+  channelId: string;
+  /** invocationId for invocation effects; attemptId for model calls. */
+  idempotencyKey: string;
+}
+
+export interface ModelCallEffect extends EffectDescriptorBase {
+  kind: "model_call";
+  messageId: string;
+  turnId: string;
+  request: ModelRequestDescriptor;
+}
+
+export interface LocalToolEffect extends EffectDescriptorBase {
+  kind: "local_tool";
+  invocationId: string;
+  turnId: string;
+  tool: string;
+  args: unknown;
+}
+
+export interface ChannelCallEffect extends EffectDescriptorBase {
+  kind: "channel_call";
+  invocationId: string;
+  turnId: string;
+  transportCallId: string;
+  target: ParticipantRef;
+  method: string;
+  args: unknown;
+  timeoutMs?: number;
+  /** approval-form / ask-user calls map their outcome to approval.resolved. */
+  purpose?: "tool" | "approval-form" | "ask-user";
+  approvalId?: string;
+}
+
+export interface HttpCallEffect extends EffectDescriptorBase {
+  kind: "http_call";
+  invocationId: string;
+  turnId: string;
+  targetUrl?: string;
+  target?: { service: string; method: string };
+  request: unknown;
+}
+
+export interface CredentialWaitEffect extends EffectDescriptorBase {
+  kind: "credential_wait";
+  credKey: string;
+  /** Seq of the wait_started envelope — the occurrence discriminator for
+   *  resolution/expiry envelope ids (a later wait for the same credKey must
+   *  not collide with an earlier occurrence). */
+  startedAtSeq: number;
+  providerId: string;
+  turnId: string;
+  connectSpec: Record<string, unknown>;
+  modelBaseUrl?: string;
+  expiresAt: string;
+}
+
+export interface PublishEnvelopeEffect extends EffectDescriptorBase {
+  kind: "publish_envelope";
+  payloadKind: string;
+  payload: unknown;
+}
+
+export type EffectDescriptor =
+  | ModelCallEffect
+  | LocalToolEffect
+  | ChannelCallEffect
+  | HttpCallEffect
+  | CredentialWaitEffect
+  | PublishEnvelopeEffect;
+
+// ---------------------------------------------------------------------------
+// derivePendingEffects (§1.7) — the dispatch-cache derivation
+// ---------------------------------------------------------------------------
+
+export function modelCallEffect(state: AgentState, call: InFlightModelCall): ModelCallEffect {
+  return {
+    effectId: ids.modelEffect(call.messageId),
+    kind: "model_call",
+    channelId: state.channelId,
+    idempotencyKey: call.attemptId,
+    messageId: call.messageId,
+    turnId: state.openTurn?.turnId ?? "",
+    request: call.request,
+  };
+}
+
+export function invocationEffect(
+  state: AgentState,
+  invocation: PendingInvocation
+): LocalToolEffect | ChannelCallEffect | HttpCallEffect {
+  const base = {
+    effectId: ids.invocationEffect(invocation.invocationId),
+    channelId: state.channelId,
+    idempotencyKey: invocation.invocationId,
+    invocationId: invocation.invocationId,
+    turnId: invocation.turnId,
+  };
+  const transport = invocation.transport;
+  if (transport.kind === "local") {
+    return { ...base, kind: "local_tool", tool: invocation.name, args: invocation.request };
+  }
+  if (transport.kind === "channel") {
+    return {
+      ...base,
+      kind: "channel_call",
+      idempotencyKey: transport.transportCallId ?? ids.transportCallId(invocation.invocationId),
+      transportCallId:
+        transport.transportCallId ?? ids.transportCallId(invocation.invocationId),
+      target: transport.target,
+      method: invocation.name,
+      args: invocation.request,
+      ...(invocation.approvalId
+        ? { purpose: "tool" as const, approvalId: invocation.approvalId }
+        : {}),
+    };
+  }
+  return {
+    ...base,
+    kind: "http_call",
+    targetUrl: transport.targetUrl,
+    idempotencyKey: transport.idempotencyKey,
+    request: invocation.request,
+  };
+}
+
+export function approvalFormEffect(
+  state: AgentState,
+  approval: PendingApproval
+): ChannelCallEffect {
+  const target =
+    state.config.roster?.participants?.find(
+      (participant) => participant.type === "panel" || participant.ref.kind === "user"
+    )?.ref ?? ({ kind: "user", id: "user" } as ParticipantRef);
+  return {
+    effectId: ids.approvalFormEffect(approval.approvalId),
+    kind: "channel_call",
+    channelId: state.channelId,
+    idempotencyKey: approval.approvalId,
+    invocationId: approval.invocationId,
+    turnId: approval.turnId,
+    transportCallId: ids.transportCallId(approval.approvalId),
+    target,
+    method: "confirm",
+    args: { question: approval.question, details: approval.details },
+    purpose: "approval-form",
+    approvalId: approval.approvalId,
+  };
+}
+
+export function credentialWaitEffect(
+  state: AgentState,
+  wait: PendingCredentialWait
+): CredentialWaitEffect {
+  return {
+    effectId: ids.credentialWaitEffect(wait.credKey),
+    kind: "credential_wait",
+    channelId: state.channelId,
+    idempotencyKey: wait.credKey,
+    credKey: wait.credKey,
+    startedAtSeq: wait.startedAtSeq,
+    providerId: wait.providerId,
+    turnId: wait.turnId,
+    connectSpec: wait.connectSpec,
+    ...(wait.modelBaseUrl ? { modelBaseUrl: wait.modelBaseUrl } : {}),
+    expiresAt: wait.expiresAt,
+  };
+}
+
+/** Pending effect ⟺ logged intention without logged outcome (P2). */
+export function derivePendingEffects(state: AgentState): EffectDescriptor[] {
+  const out: EffectDescriptor[] = [];
+  if (state.inFlightModelCall) out.push(modelCallEffect(state, state.inFlightModelCall));
+  for (const invocation of Object.values(state.pendingInvocations)) {
+    if (invocation.requiresApproval && invocation.approvalState !== "granted") continue; // gated
+    out.push(invocationEffect(state, invocation));
+  }
+  for (const approval of Object.values(state.pendingApprovals)) {
+    out.push(approvalFormEffect(state, approval));
+  }
+  for (const wait of Object.values(state.pendingCredentialWaits)) {
+    out.push(credentialWaitEffect(state, wait));
+  }
+  return out; // publish_envelope is best-effort and exempt (§1.4.6)
+}
+
+// ---------------------------------------------------------------------------
+// outcomeEvents (§1.8) — pure mapping executor outcome → terminal AppendItems
+// ---------------------------------------------------------------------------
+
+export interface AppendItem {
+  envelopeId: string;
+  payloadKind: EventKind;
+  payload: unknown;
+  causality?: LogEventCausality;
+  /** publish to the loop's channel on append. */
+  publish?: boolean;
+}
+
+export type EffectOutcome =
+  | {
+      kind: "model";
+      blocks: unknown[];
+      stopReason: "completed" | "aborted" | "error";
+      outcome?: "completed" | "interrupted" | "empty" | "tool_calls_only";
+      usage?: Record<string, unknown>;
+      errorReason?: string;
+      recoverable?: boolean;
+      failure?: ModelFailureInfo;
+    }
+  | {
+      kind: "retry";
+      reason: string;
+      retryAfterMs?: number;
+      code?: string;
+    }
+  | { kind: "model-suspended"; reason: "credential"; providerId: string; modelBaseUrl?: string }
+  | { kind: "tool"; result: unknown; summary?: string; isError: boolean; reason?: string }
+  | { kind: "approval"; granted: boolean; resolvedBy: ParticipantRef; reason?: string }
+  | { kind: "credential"; resolved: boolean; reason?: string };
+
+function modelFailurePayload(
+  failure: ModelFailureInfo,
+  recoverableOverride: boolean | undefined
+): Record<string, unknown> {
+  const recoverable = failure.recoverable && (recoverableOverride ?? true);
+  return {
+    protocol: AGENTIC_PROTOCOL_VERSION,
+    reason: failure.reason,
+    recoverable,
+    code: failure.code,
+    ...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}),
+    ...(failure.resetAt ? { resetAt: failure.resetAt } : {}),
+  };
+}
+
+function classifyModelOutcome(
+  outcome: Extract<EffectOutcome, { kind: "model" }>
+): "completed" | "interrupted" | "empty" | "tool_calls_only" {
+  if (outcome.outcome) return outcome.outcome;
+  if (outcome.stopReason === "aborted") return "interrupted";
+  const blocks = outcome.blocks ?? [];
+  if (blocks.length === 0) return "empty";
+  const hasContent = blocks.some(
+    (block) =>
+      !!block &&
+      typeof block === "object" &&
+      ((block as { type?: string }).type === "text" ||
+        (block as { type?: string }).type === "thinking")
+  );
+  if (!hasContent) return "tool_calls_only";
+  return "completed";
+}
+
+/** Map an executor outcome to its terminal append items. Pure. */
+export function outcomeEvents(
+  descriptor: EffectDescriptor,
+  outcome: EffectOutcome,
+  ctx: { now: string }
+): AppendItem[] {
+  if (descriptor.kind === "model_call") {
+    if (outcome.kind === "model-suspended") return []; // §1.4.5 events come from step
+    if (outcome.kind === "retry") return []; // driver reschedules the same effect row
+    if (outcome.kind !== "model") throw new Error("model_call expects a model outcome");
+    if (outcome.stopReason === "error") {
+      const failure =
+        outcome.failure ??
+        classifyModelFailure({
+          provider: descriptor.request.provider,
+          model: descriptor.request.model,
+          rawReason: outcome.errorReason,
+          message: outcome.errorReason,
+          now: ctx.now,
+        });
+      return [
+        {
+          envelopeId: ids.messageTerminal(descriptor.messageId),
+          payloadKind: "message.failed",
+          payload: modelFailurePayload(failure, outcome.recoverable),
+          causality: { messageId: descriptor.messageId as never },
+          publish: true,
+        },
+      ];
+    }
+    return [
+      {
+        envelopeId: ids.messageTerminal(descriptor.messageId),
+        payloadKind: "message.completed",
+        payload: {
+          protocol: AGENTIC_PROTOCOL_VERSION,
+          role: "assistant",
+          blocks: outcome.blocks,
+          outcome: classifyModelOutcome(outcome),
+          ...(outcome.usage ? { usage: outcome.usage } : {}),
+        },
+        causality: { messageId: descriptor.messageId as never },
+        publish: true,
+      },
+    ];
+  }
+
+  if (
+    descriptor.kind === "local_tool" ||
+    descriptor.kind === "http_call" ||
+    (descriptor.kind === "channel_call" && descriptor.purpose !== "approval-form")
+  ) {
+    if (outcome.kind !== "tool") throw new Error(`${descriptor.kind} expects a tool outcome`);
+    const causality: LogEventCausality = {
+      invocationId: descriptor.invocationId as never,
+      ...(descriptor.kind === "channel_call"
+        ? { transportCallId: descriptor.transportCallId }
+        : {}),
+      turnId: descriptor.turnId,
+    };
+    return [
+      {
+        envelopeId: ids.invocationTerminal(descriptor.invocationId),
+        payloadKind: outcome.isError ? "invocation.failed" : "invocation.completed",
+        payload: outcome.isError
+          ? invocationFailedPayload("tool_error", outcome.reason ?? "tool failed", {
+              error: outcome.result,
+            })
+          : invocationCompletedPayload({
+              result: outcome.result,
+              ...(outcome.summary ? { summary: outcome.summary } : {}),
+            }),
+        causality,
+        publish: true,
+      },
+    ];
+  }
+
+  if (descriptor.kind === "channel_call" && descriptor.purpose === "approval-form") {
+    if (outcome.kind !== "approval") throw new Error("approval form expects an approval outcome");
+    return [
+      {
+        envelopeId: ids.approvalResolved(descriptor.approvalId!),
+        payloadKind: "approval.resolved",
+        payload: {
+          protocol: AGENTIC_PROTOCOL_VERSION,
+          granted: outcome.granted,
+          resolvedBy: outcome.resolvedBy,
+          ...(outcome.reason ? { reason: outcome.reason } : {}),
+        },
+        causality: {
+          approvalId: descriptor.approvalId as never,
+          invocationId: descriptor.invocationId as never,
+          turnId: descriptor.turnId,
+        },
+        publish: true,
+      },
+    ];
+  }
+
+  if (descriptor.kind === "credential_wait") {
+    if (outcome.kind !== "credential") throw new Error("credential_wait expects credential");
+    return [
+      {
+        envelopeId: ids.systemEvent(descriptor.credKey, "resolved", descriptor.startedAtSeq),
+        payloadKind: "system.event",
+        payload: {
+          protocol: AGENTIC_PROTOCOL_VERSION,
+          kind: "credential.wait_resolved",
+          credKey: descriptor.credKey,
+          details: {
+            kind: "credential.wait_resolved",
+            credKey: descriptor.credKey,
+            providerId: descriptor.providerId,
+            resolved: outcome.resolved,
+            ...(outcome.reason ? { reason: outcome.reason } : {}),
+          },
+        },
+        causality: { turnId: descriptor.turnId },
+        publish: true,
+      },
+    ];
+  }
+
+  return []; // publish_envelope: fire-and-forget, no outcome events
+}
