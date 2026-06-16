@@ -22,8 +22,6 @@ const SHIPPED_PANELS: Array<{ source: string; stateArgs?: Record<string, unknown
   { source: "about/keyboard-shortcuts" },
   { source: "about/adblock" },
   { source: "panels/gad-browser" },
-  { source: "about/dirty-repo", stateArgs: { repoPath: "panels/chat" } },
-  { source: "about/git-init", stateArgs: { repoPath: "panels/chat" } },
 ];
 
 export const panelViewport = suite("panel-viewport", { timeoutMs: 90_000 });

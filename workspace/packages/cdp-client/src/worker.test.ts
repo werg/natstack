@@ -166,6 +166,9 @@ describe("worker Playwright compatibility client", () => {
     page.clearConsoleEvents();
     expect(page.consoleEvents()).toEqual([]);
     await expect(page.waitForLoadState("domcontentloaded")).resolves.toBeUndefined();
+    await expect(page.waitForFunction(() => document.readyState === "complete")).resolves.toBe(
+      true
+    );
     await page.fill("input", "abc");
     await page.type("input", "123");
     await expect(page.locator("input").isVisible()).resolves.toBe(true);

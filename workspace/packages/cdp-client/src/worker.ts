@@ -104,6 +104,11 @@ export class CdpConnection {
     ws.addEventListener("message", (event) => {
       void this.handleMessage(event.data);
     });
+    ws.addEventListener("error", () => {
+      const error = new Error("CDP WebSocket error");
+      for (const pending of this.pending.values()) pending.reject(error);
+      this.pending.clear();
+    });
     ws.addEventListener("close", () => {
       const error = new Error("CDP WebSocket closed");
       for (const pending of this.pending.values()) pending.reject(error);
@@ -242,6 +247,52 @@ class WorkerCdpPage {
 
   async waitForTimeout(timeout: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, timeout));
+  }
+
+  async waitForFunction(
+    pageFunction: string | ((arg?: unknown) => unknown),
+    arg?: unknown,
+    options?: { timeout?: number; polling?: number | "raf" }
+  ): Promise<unknown> {
+    let actualArg = arg;
+    let actualOptions = options ?? {};
+    if (
+      options === undefined &&
+      arg &&
+      typeof arg === "object" &&
+      ("timeout" in arg || "polling" in arg)
+    ) {
+      actualArg = undefined;
+      actualOptions = arg as { timeout?: number; polling?: number | "raf" };
+    }
+    const timeout = actualOptions.timeout ?? 30_000;
+    const polling =
+      typeof actualOptions.polling === "number" && actualOptions.polling > 0
+        ? actualOptions.polling
+        : 50;
+    const source =
+      typeof pageFunction === "function" ? `(${pageFunction.toString()})` : pageFunction;
+    const isFunction = typeof pageFunction === "function";
+
+    return this.evaluate(
+      `(async function(source, isFunction, arg, timeout, polling) {
+        const deadline = Date.now() + timeout;
+        const predicateOrValue = isFunction
+          ? (0, eval)(source)
+          : new Function("arg", "return (" + source + ")");
+        while (Date.now() <= deadline) {
+          let value = await (
+            typeof predicateOrValue === "function" ? predicateOrValue(arg) : predicateOrValue
+          );
+          if (typeof value === "function") value = await value(arg);
+          if (value) return value === true ? true : value;
+          await new Promise(resolve => setTimeout(resolve, polling));
+        }
+        throw new Error("Timeout " + timeout + "ms exceeded waiting for function");
+      })(${JSON.stringify(source)}, ${JSON.stringify(isFunction)}, ${JSON.stringify(
+        actualArg
+      )}, ${JSON.stringify(timeout)}, ${JSON.stringify(polling)})`
+    );
   }
 
   async fill(selector: string, value: string): Promise<void> {

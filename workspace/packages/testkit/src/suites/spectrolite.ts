@@ -4,7 +4,7 @@
  *
  * The outside spec builds vault fixtures on the host filesystem before
  * launching Electron; here the fixture vault is created in context fs via the
- * runtime git client, and the panel is opened with the same stateArgs
+ * runtime fs and workspace VCS client, and the panel is opened with the same stateArgs
  * ({ repoRoot, openPath }). DOM interaction goes through CDP (driver DO
  * route for workspace panels).
  *
@@ -13,7 +13,7 @@
  * keyboard editing flows (Electron input events), mobile-viewport variant
  * (covered generically by the panel-viewport suite).
  */
-import { fs, git } from "@workspace/runtime";
+import { fs, vcs } from "@workspace/runtime";
 import { suite } from "../run.js";
 import { expect } from "../expect.js";
 import { evalInPanel, panelText, waitFor, waitForText, withPanel } from "../panels.js";
@@ -21,6 +21,23 @@ import { profilePanel } from "../profile.js";
 
 const VAULT = "/projects/testkit-vault";
 const LARGE_VAULT = "/projects/testkit-vault-large";
+
+/** The vault's durable ctx head — mirrors `spectrolite/app/vaultContext.ts`
+ *  (`vault-<fnv1a36>` of the workspace-relative vault root). Kept in sync by
+ *  the unit test in that package; replicated here to address the panel's head
+ *  from the privileged testkit caller. */
+function vaultCtxHead(vaultPath: string): string {
+  const input = vaultPath.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+  let h1 = 0x811c9dc5 >>> 0;
+  let h2 = 0x01000193 >>> 0;
+  for (let i = 0; i < input.length; i += 1) {
+    const c = input.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ c, 0x85ebca77) >>> 0;
+    h2 = (h2 + i + 1) >>> 0;
+  }
+  return `ctx:vault-${h1.toString(36)}${h2.toString(36)}`;
+}
 
 const FIXTURES: Record<string, string> = {
   "E2E.mdx": [
@@ -52,25 +69,11 @@ const FIXTURES: Record<string, string> = {
 };
 
 async function ensureVault(dir: string, files: Record<string, string>): Promise<void> {
-  const marker = `${dir}/.git`;
-  const exists = await fs
-    .stat(marker)
-    .then(() => true)
-    .catch(() => false);
   await fs.mkdir(dir, { recursive: true });
   for (const [name, content] of Object.entries(files)) {
     await fs.writeFile(`${dir}/${name}`, content);
   }
-  const client = git.client();
-  if (!exists) await client.init(dir, "main");
-  await client.addAll(dir);
-  const status = await client.status(dir);
-  if (status.files.some((file) => file.status !== "unmodified" && file.status !== "ignored")) {
-    await client.commit(dir, "testkit vault fixture", {
-      name: "testkit",
-      email: "testkit@natstack.local",
-    });
-  }
+  await vcs.commit(dir.replace(/^\/+/, ""), "testkit vault fixture");
 }
 
 function largeVaultFiles(): Record<string, string> {
@@ -158,20 +161,39 @@ export const spectrolite = suite("spectrolite", { timeoutMs: 120_000 })
       { stateArgs: { repoRoot: VAULT, openPath: "Broken.mdx" } }
     );
   })
-  .test("surfaces external writes to the open document", async () => {
+  .test("reconciles a co-editor's edit into the open document (no banner)", async () => {
+    // GAD-native: disk is a projection of the vault head. A co-editor (the
+    // scribe) advancing the head must reconcile NARROWLY into the live editor —
+    // no "changed on disk" banner, no reload prompt (both removed). We simulate
+    // the co-editor with a privileged `vcs.applyEdits` against the vault's
+    // durable ctx head.
     await ensureVault(VAULT, FIXTURES);
     await withPanel(
       "panels/spectrolite",
       async (handle) => {
         await waitForText(handle, "E2E Note", { timeoutMs: 60_000 });
-        const stamp = `external-edit-${Date.now()}`;
-        await fs.writeFile(
-          `${VAULT}/E2E.mdx`,
-          `${FIXTURES["E2E.mdx"]}\nExternal change marker: ${stamp}\n`
-        );
-        await waitForText(handle, new RegExp(`${stamp}|changed on disk|Reload`), {
-          timeoutMs: 60_000,
+        const stamp = `co-editor-${Date.now()}`;
+        const head = vaultCtxHead(VAULT);
+        const docPath = `${VAULT.replace(/^\/+/, "")}/E2E.mdx`;
+        const current = await vcs.readFile(head, docPath);
+        await vcs.applyEdits({
+          head,
+          baseStateHash: current?.stateHash,
+          edits: [
+            {
+              kind: "write",
+              path: docPath,
+              content: {
+                kind: "text",
+                text: `${FIXTURES["E2E.mdx"]}\nCo-editor marker: ${stamp}\n`,
+              },
+            },
+          ],
         });
+        await waitForText(handle, stamp, { timeoutMs: 60_000 });
+        // The disk-conflict UX is gone entirely.
+        const text = await panelText(handle);
+        expect(text, "no disk-conflict banner").not.toContain("changed on disk");
       },
       { stateArgs: { repoRoot: VAULT, openPath: "E2E.mdx" } }
     );

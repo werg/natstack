@@ -60,7 +60,7 @@ export interface ValidateRequiresResult {
 
 export function unavailableModuleMessage(spec: string): string {
   if (spec.startsWith("node:")) {
-    return `Node built-in module "${spec}" is not available in sandbox eval. Do not add it to imports. Use @workspace/runtime APIs such as fs and git.client(), or put privileged Node work behind a workspace extension/worker service.`;
+    return `Node built-in module "${spec}" is not available in sandbox eval. Do not add it to imports. Use @workspace/runtime APIs such as fs and vcs, or put privileged Node work behind a workspace extension/worker service.`;
   }
   return `Module "${spec}" not available. For npm packages, use the imports parameter: imports: { "${spec}": "npm:latest" }`;
 }

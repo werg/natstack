@@ -127,6 +127,12 @@ function isFreeTextSelected(field: FieldDefinition, value: FieldValue | undefine
   return value === FREE_TEXT_CHOICE_VALUE;
 }
 
+function getMultiSelectBulkValues(field: FieldDefinition): string[] {
+  return getOptionsWithFreeText(field)
+    .map((option) => option.value)
+    .filter((value) => value !== FREE_TEXT_CHOICE_VALUE);
+}
+
 /**
  * Props for custom field renderer components.
  * Used with customFieldRenderers to handle custom field types like toolPreview.
@@ -245,6 +251,45 @@ export function FormRenderer({
         {...clickProps}
       />
     ) : null;
+    const queueSubmitOnSelect = (value: string) => {
+      if (field.submitOnSelect && onSubmit && value !== FREE_TEXT_CHOICE_VALUE) {
+        setTimeout(onSubmit, 0);
+      }
+    };
+    const renderMultiSelectBulkActions = (selected: string[]) => {
+      const bulkValues = getMultiSelectBulkValues(field);
+      if (bulkValues.length < 2) return null;
+
+      const bulkValueSet = new Set(bulkValues);
+      const allSelected = bulkValues.every((value) => selected.includes(value));
+      const hasSelection = selected.length > 0;
+
+      return (
+        <Flex gap="2" wrap="wrap">
+          <Button
+            size="1"
+            variant="soft"
+            color="gray"
+            disabled={!isEnabled || allSelected}
+            onClick={() => {
+              const preserved = selected.filter((value) => !bulkValueSet.has(value));
+              onChange(field.key, [...preserved, ...bulkValues]);
+            }}
+          >
+            Select all
+          </Button>
+          <Button
+            size="1"
+            variant="soft"
+            color="gray"
+            disabled={!isEnabled || !hasSelection}
+            onClick={() => onChange(field.key, [])}
+          >
+            Deselect all
+          </Button>
+        </Flex>
+      );
+    };
 
     // Build placeholder text with default value info
     const placeholderText = field.placeholder
@@ -332,7 +377,10 @@ export function FormRenderer({
               size={size}
               value={String(currentValue ?? "")}
               disabled={!isEnabled}
-              onValueChange={(value) => onChange(field.key, value)}
+              onValueChange={(value) => {
+                onChange(field.key, value);
+                queueSubmitOnSelect(value);
+              }}
             >
               <Select.Trigger placeholder="Select..." />
               <Select.Content>
@@ -400,7 +448,14 @@ export function FormRenderer({
             <SegmentedControl.Root
               size={size}
               value={String(currentValue ?? "")}
-              onValueChange={isEnabled ? (value) => onChange(field.key, value) : undefined}
+              onValueChange={
+                isEnabled
+                  ? (value) => {
+                      onChange(field.key, value);
+                      queueSubmitOnSelect(value);
+                    }
+                  : undefined
+              }
             >
               {getOptionsWithFreeText(field).map((option) => (
                 <SegmentedControl.Item
@@ -430,7 +485,14 @@ export function FormRenderer({
             <RadioGroup.Root
               size={size}
               value={String(currentValue ?? "")}
-              onValueChange={isEnabled ? (value) => onChange(field.key, value) : undefined}
+              onValueChange={
+                isEnabled
+                  ? (value) => {
+                      onChange(field.key, value);
+                      queueSubmitOnSelect(value);
+                    }
+                  : undefined
+              }
             >
               <Flex direction="column" gap="2">
                 {getOptionsWithFreeText(field).map((option) => {
@@ -480,7 +542,14 @@ export function FormRenderer({
             <SegmentedControl.Root
               size={size}
               value={String(currentValue ?? field.options[0]!.value)}
-              onValueChange={isEnabled ? (value) => onChange(field.key, value) : undefined}
+              onValueChange={
+                isEnabled
+                  ? (value) => {
+                      onChange(field.key, value);
+                      queueSubmitOnSelect(value);
+                    }
+                  : undefined
+              }
             >
               {field.options.slice(0, 2).map((option) => (
                 <SegmentedControl.Item
@@ -532,7 +601,7 @@ export function FormRenderer({
                     label: field.freeTextLabel ?? "Other",
                     color: "gray" as const,
                   }]
-                  : []),
+                      : []),
               ].map((btn) => (
                 <Button
                   key={btn.value}
@@ -558,6 +627,10 @@ export function FormRenderer({
         {/* MultiSelect field - list variant (default) */}
         {field.type === "multiSelect" && field.options && field.variant !== "cards" && (
           <Flex direction="column" gap="1" {...clickProps}>
+            {(() => {
+              const selected = Array.isArray(currentValue) ? currentValue : [];
+              return renderMultiSelectBulkActions(selected);
+            })()}
             {getOptionsWithFreeText(field).map((opt) => {
               const selected = Array.isArray(currentValue) ? currentValue : [];
               const isChecked = selected.includes(opt.value);
@@ -588,30 +661,36 @@ export function FormRenderer({
 
         {/* MultiSelect field - cards variant (CheckboxGroup with visible checkboxes) */}
         {field.type === "multiSelect" && field.options && field.variant === "cards" && (
-          <CheckboxGroup.Root
-            size={size}
-            value={Array.isArray(currentValue) ? currentValue : []}
-            onValueChange={isEnabled ? (value) => onChange(field.key, value) : undefined}
-            {...clickProps}
-          >
-            <Flex direction="column" gap="2">
-              {getOptionsWithFreeText(field).map((opt) => (
-                <Text as="label" size={size} key={opt.value}>
-                  <Flex gap="2" align={opt.description ? "start" : "center"}>
-                    <CheckboxGroup.Item value={opt.value} disabled={!isEnabled} style={{ marginTop: opt.description ? 2 : 0 }} />
-                    <Flex direction="column" gap="1">
-                      <Text weight="medium">{opt.label}</Text>
-                      {opt.description && (
-                        <Text size="1" color="gray">{opt.description}</Text>
-                      )}
+          <Flex direction="column" gap="2" {...clickProps}>
+            {renderMultiSelectBulkActions(Array.isArray(currentValue) ? currentValue : [])}
+            <CheckboxGroup.Root
+              size={size}
+              value={Array.isArray(currentValue) ? currentValue : []}
+              onValueChange={isEnabled ? (value) => onChange(field.key, value) : undefined}
+            >
+              <Flex direction="column" gap="2">
+                {getOptionsWithFreeText(field).map((opt) => (
+                  <Text as="label" size={size} key={opt.value}>
+                    <Flex gap="2" align={opt.description ? "start" : "center"}>
+                      <CheckboxGroup.Item
+                        value={opt.value}
+                        disabled={!isEnabled}
+                        style={{ marginTop: opt.description ? 2 : 0 }}
+                      />
+                      <Flex direction="column" gap="1">
+                        <Text weight="medium">{opt.label}</Text>
+                        {opt.description && (
+                          <Text size="1" color="gray">{opt.description}</Text>
+                        )}
+                      </Flex>
                     </Flex>
-                  </Flex>
-                </Text>
-              ))}
-            </Flex>
-          </CheckboxGroup.Root>
+                  </Text>
+                ))}
+              </Flex>
+            </CheckboxGroup.Root>
+            {freeTextInput}
+          </Flex>
         )}
-        {field.type === "multiSelect" && field.options && field.variant === "cards" && freeTextInput}
 
         {/* Diff field - pre-formatted diff display */}
         {field.type === "diff" && (
