@@ -58,6 +58,10 @@ export type EventKind =
   | "state.file_mutation_intended"
   | "state.file_mutation_applied"
   | "state.transition_recorded"
+  | "state.snapshot_ingested"
+  | "state.merge_applied"
+  | "memory.recalled"
+  | "build.completed"
   | "external.envelope_published"
   | "external.envelope_observed"
   | "external.participant_observed"
@@ -94,6 +98,9 @@ export interface EventCausality {
    * respond past the channel's hop cap so agents cannot loop forever.
    */
   agentHops?: number;
+  /** Originating model attempt (WS1) — invocations record which attempt
+   *  produced them so crash recovery never duplicates tool dispatch. */
+  attemptId?: string;
 }
 
 export type MessageRole = "user" | "assistant" | "system" | "tool" | "panel";
@@ -133,7 +140,14 @@ export type MessagePayload =
       replyTo?: MessageId;
       to?: ParticipantSelector[];
     }
-  | { protocol: "agentic.trajectory.v1"; reason: string; recoverable?: boolean };
+  | {
+      protocol: "agentic.trajectory.v1";
+      reason: string;
+      recoverable?: boolean;
+      code?: string;
+      resetAt?: string;
+      retryAfterMs?: number;
+    };
 
 export type MessageBlockType =
   | "text"
@@ -174,6 +188,9 @@ export interface DiagnosticBlockMetadata {
   severity: DiagnosticSeverity;
   reason?: string;
   recoverable?: boolean;
+  failureCode?: string;
+  resetAt?: string;
+  retryAfterMs?: number;
 }
 
 export function readDiagnosticMetadata(
@@ -183,6 +200,9 @@ export function readDiagnosticMetadata(
   const severity = record["severity"];
   const reason = record["reason"];
   const code = record["code"];
+  const failureCode = record["failureCode"];
+  const resetAt = record["resetAt"];
+  const retryAfterMs = record["retryAfterMs"];
   return {
     code: typeof code === "string" ? code : "diagnostic",
     severity:
@@ -191,6 +211,13 @@ export function readDiagnosticMetadata(
         : "warning",
     reason: typeof reason === "string" && reason.trim() ? reason : undefined,
     recoverable: typeof record["recoverable"] === "boolean" ? record["recoverable"] : undefined,
+    failureCode:
+      typeof failureCode === "string" && failureCode.trim() ? failureCode : undefined,
+    resetAt: typeof resetAt === "string" && resetAt.trim() ? resetAt : undefined,
+    retryAfterMs:
+      typeof retryAfterMs === "number" && Number.isFinite(retryAfterMs)
+        ? retryAfterMs
+        : undefined,
   };
 }
 
@@ -204,7 +231,14 @@ export interface UsagePayload {
 
 export type InvocationTransport =
   | { kind: "local"; awaiterId: string }
-  | { kind: "channel"; channelId: ChannelId; target: ParticipantRef; transportCallId?: string }
+  | {
+      kind: "channel";
+      channelId: ChannelId;
+      target: ParticipantRef;
+      transportCallId?: string;
+      /** Epoch ms deadline journaled with the call so it survives cache amnesia. */
+      deadlineAt?: number;
+    }
   | { kind: "http"; targetUrl: string; idempotencyKey: string };
 
 export type InvocationCompletedPayload = {
@@ -479,6 +513,11 @@ export interface StatePayload {
   diff?: string;
   inputStateHash?: StateHash;
   outputStateHash?: StateHash;
+  /** Merge parents beyond `inputStateHash` (which stays parent 0). */
+  parentStateHashes?: StateHash[];
+  /** Optional explicit file list for snapshot events; large lists must be
+   *  blob-spilled by callers. */
+  files?: Array<{ path: string; contentHash: string; size?: number; mode?: number }>;
   stateHash?: StateHash;
   invocationId?: InvocationId;
   contentHash?: string;
@@ -506,6 +545,24 @@ export interface CompactionPayload {
   rangeStart: EventId;
   rangeEnd: EventId;
   replacement?: unknown;
+}
+
+export interface MemoryRecalledPayload {
+  protocol: "agentic.trajectory.v1";
+  query: string;
+  results?: unknown; // recall results (blob-spilled when large)
+  anchors?: unknown[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface BuildCompletedPayload {
+  protocol: "agentic.trajectory.v1";
+  inputStateHash: string;
+  subtree?: string;
+  evHash?: string;
+  artifactRefs?: unknown;
+  diagnostics?: unknown;
+  metadata?: Record<string, unknown>;
 }
 
 export interface KnowledgePayload {
@@ -566,9 +623,13 @@ export type PayloadFor<K extends EventKind> = K extends `message.${string}`
                               ? CompactionPayload
                               : K extends "system.event"
                                 ? SystemPayload
-                                : K extends `knowledge.${string}`
-                                  ? KnowledgePayload
-                                  : never;
+                                : K extends "memory.recalled"
+                                  ? MemoryRecalledPayload
+                                  : K extends "build.completed"
+                                    ? BuildCompletedPayload
+                                    : K extends `knowledge.${string}`
+                                      ? KnowledgePayload
+                                      : never;
 
 export interface AgenticEvent<K extends EventKind = EventKind> {
   kind: K;

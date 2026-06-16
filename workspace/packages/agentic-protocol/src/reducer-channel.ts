@@ -1,4 +1,4 @@
-import { AGENTIC_EVENT_PAYLOAD_KIND } from "./constants.js";
+import { AGENTIC_EVENT_PAYLOAD_KIND, CREDENTIAL_CONNECT_PAYLOAD_KIND } from "./constants.js";
 import type {
   ActorRef,
   AgenticEvent,
@@ -69,9 +69,25 @@ export interface ProjectedCustomMessage {
   error?: { message: string; details?: unknown };
 }
 
+/** An unresolved model-credential connect request (one per credKey). */
+export interface ProjectedCredentialRequest {
+  credKey: string;
+  providerId: string;
+  /** Connect-preset props for the credential card (ModelCredentialSetupProps). */
+  connectSpec: Record<string, unknown>;
+  modelBaseUrl?: string;
+  expiresAt?: string;
+  envelopeId: string;
+  seq: number;
+  /** The requesting agent's participant id (card method-call target). */
+  participantId: string;
+  publishedAt?: string;
+}
+
 export interface ChannelViewState {
   channelId?: string;
   cursor?: number;
+  credentialRequests: Record<string, ProjectedCredentialRequest>;
   messages: MessageMap;
   invocations: InvocationMap;
   approvals: ApprovalMap;
@@ -89,6 +105,7 @@ export interface ChannelViewState {
 
 export function createInitialChannelViewState(): ChannelViewState {
   return {
+    credentialRequests: {},
     messages: {},
     invocations: {},
     approvals: {},
@@ -111,6 +128,36 @@ export function reduceChannelView(
 ): ChannelViewState {
   if (state.seenEnvelopeIds[envelope.envelopeId]) {
     return state;
+  }
+
+  if (envelope.payloadKind === CREDENTIAL_CONNECT_PAYLOAD_KIND) {
+    const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+    const credKey = typeof payload["credKey"] === "string" ? payload["credKey"] : "";
+    const base = {
+      ...state,
+      channelId: envelope.channelId,
+      cursor: envelope.seq,
+      seenEnvelopeIds: { ...state.seenEnvelopeIds, [envelope.envelopeId]: true as const },
+    };
+    if (!credKey) return base;
+    return {
+      ...base,
+      credentialRequests: {
+        ...state.credentialRequests,
+        [credKey]: {
+          credKey,
+          providerId: String(payload["providerId"] ?? ""),
+          connectSpec: (payload["connectSpec"] ?? {}) as Record<string, unknown>,
+          modelBaseUrl:
+            typeof payload["modelBaseUrl"] === "string" ? payload["modelBaseUrl"] : undefined,
+          expiresAt: typeof payload["expiresAt"] === "string" ? payload["expiresAt"] : undefined,
+          envelopeId: String(envelope.envelopeId),
+          seq: envelope.seq,
+          participantId: participantKey(envelope.from),
+          publishedAt: envelope.publishedAt,
+        },
+      },
+    };
   }
 
   if (envelope.payloadKind !== AGENTIC_EVENT_PAYLOAD_KIND) {
@@ -347,6 +394,17 @@ export function reduceChannelView(
         },
       };
     }
+  } else if (event.kind === "system.event") {
+    const payload = event.payload as Record<string, unknown>;
+    const details = (payload["details"] ?? {}) as Record<string, unknown>;
+    const sysKind = String(payload["kind"] ?? details["kind"] ?? "");
+    if (sysKind === "credential.wait_resolved" || sysKind === "credential.wait_expired") {
+      const credKey = String(payload["credKey"] ?? details["credKey"] ?? "");
+      if (credKey && credKey in next.credentialRequests) {
+        const { [credKey]: _resolved, ...rest } = next.credentialRequests;
+        next = { ...next, credentialRequests: rest };
+      }
+    }
   } else if (event.kind === "external.participant_observed") {
     const payload = event.payload;
     if ("participant" in payload) {
@@ -370,7 +428,7 @@ export function reduceChannelView(
     }
   }
 
-  if (event.turnId && event.kind !== "turn.closed") {
+  if (event.turnId && event.kind !== "turn.closed" && event.kind !== "turn.waiting") {
     const existing = next.turns[event.turnId];
     if (existing?.status === "open" && existing.updatedAt !== event.createdAt) {
       next = {

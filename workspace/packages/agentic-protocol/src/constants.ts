@@ -2,6 +2,11 @@ export const AGENTIC_PROTOCOL_VERSION = "agentic.trajectory.v1" as const;
 
 export const AGENTIC_EVENT_PAYLOAD_KIND = "agentic.trajectory.v1/event" as const;
 
+/** Channel envelope kind for the model credential connect card. Published by
+ *  the agent's credential_wait executor; reduced into
+ *  `ChannelViewState.credentialRequests` and rendered by the chat UI. */
+export const CREDENTIAL_CONNECT_PAYLOAD_KIND = "agentic.credential-connect.v1" as const;
+
 export const GENESIS_EVENT_HASH = "0".repeat(64);
 
 export const TERMINAL_MESSAGE_KINDS = ["message.completed", "message.failed"] as const;
@@ -43,6 +48,9 @@ export const TURN_REASON_CODES = [
   "work_failed",
   "model_credential_required",
   "model_credential_reconnect_required",
+  "model_usage_limit_reset",
+  "max_model_calls_per_turn",
+  "forked",
 ] as const;
 
 export type TurnReasonCode = (typeof TURN_REASON_CODES)[number];

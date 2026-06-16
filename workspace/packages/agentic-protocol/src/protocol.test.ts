@@ -177,6 +177,28 @@ describe("@workspace/agentic-protocol schemas", () => {
     ).toBe("message.failed");
   });
 
+  it("accepts reset metadata on message.failed", () => {
+    expect(
+      agenticEventSchema.parse({
+        kind: "message.failed",
+        actor: agent,
+        causality: { messageId: brandId<MessageId>("msg-reset") },
+        payload: {
+          protocol: AGENTIC_PROTOCOL_VERSION,
+          reason: "The usage limit has been reached.",
+          recoverable: false,
+          code: "usage_limit_terminal",
+          resetAt: "2026-06-15T18:35:01.000Z",
+          retryAfterMs: 12000,
+        },
+        createdAt: "2026-05-20T12:00:00.000Z",
+      }).payload
+    ).toMatchObject({
+      code: "usage_limit_terminal",
+      resetAt: "2026-06-15T18:35:01.000Z",
+    });
+  });
+
   it("enforces per-type message block invariants via the discriminated union", () => {
     const completed = (block: unknown) => ({
       kind: "message.completed" as const,
@@ -340,25 +362,23 @@ describe("@workspace/agentic-protocol schemas", () => {
     expect(result.success ? "" : result.error.issues[0]?.message).toContain("payload.name");
   });
 
-  it("spills oversized message blocks and metadata while preserving compact inline summaries", async () => {
+  it("keeps bounded block content inline (storage classes — no threshold spill)", async () => {
     const blobs = new Map<string, string>();
-    const large = "x".repeat(80 * 1024);
+    const bounded = "x".repeat(80 * 1024); // under MAX_INLINE_TRAJECTORY_TEXT_BYTES
     const event = messageEvent({
       actor: agent,
       turnId: brandId<TurnId>("turn-1"),
       payload: {
         protocol: AGENTIC_PROTOCOL_VERSION,
         role: "assistant",
-        blocks: Array.from({ length: 8 }, (_, index) => ({
-          blockId: brandId<BlockId>(`msg-1:block:${index}`),
-          type: "text",
-          content: large,
-          metadata: {
-            index,
-            raw: large,
-            nested: { value: large },
+        blocks: [
+          {
+            blockId: brandId<BlockId>(`msg-1:block:0`),
+            type: "text",
+            content: bounded,
+            metadata: { index: 0 },
           },
-        })),
+        ],
         outcome: "completed",
       },
     });
@@ -371,12 +391,48 @@ describe("@workspace/agentic-protocol schemas", () => {
       },
     });
 
+    // Block content is class-INLINE: bounded content stays verbatim in the
+    // envelope (the fold/step read block structure), and NOTHING spills by
+    // size — fold-readability is a static property of the path.
     expect(encoded.eventBytes).toBeLessThan(MAX_INLINE_TRAJECTORY_EVENT_BYTES);
-    expect(storedAgenticEventSchema.parse(encoded.event).payload).toMatchObject({
-      blocks: { protocol: "natstack.blob-ref.v1", encoding: "json" },
+    const blocks = storedAgenticEventSchema.parse(encoded.event).payload as Record<string, unknown>;
+    expect(JSON.stringify(blocks)).toContain(bounded);
+    expect(blobs.size).toBe(0);
+  });
+
+  it("always stores toolCall block arguments as refs (class REFERENCE inside blocks)", async () => {
+    const blobs = new Map<string, string>();
+    const event = messageEvent({
+      actor: agent,
+      turnId: brandId<TurnId>("turn-1"),
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        role: "assistant",
+        blocks: [
+          {
+            type: "toolCall",
+            id: "call-1",
+            name: "write",
+            arguments: { path: "a.txt", content: "tiny" },
+          },
+        ],
+        outcome: "completed",
+      } as never,
     });
-    expect(JSON.stringify(encoded.event.payload)).not.toContain(large);
-    expect(blobs.size).toBeGreaterThan(1);
+
+    const encoded = await encodeAgenticEventStoredValues(event, {
+      putText: async (value) => {
+        const digest = `digest-${blobs.size + 1}`;
+        blobs.set(digest, value);
+        return { digest, size: value.length };
+      },
+    });
+
+    const payload = encoded.event.payload as Record<string, unknown>;
+    const block = (payload["blocks"] as Array<Record<string, unknown>>)[0]!;
+    // One code path: arguments are refs even when tiny (`[*]` reference path).
+    expect(isStoredValueRef(block["arguments"])).toBe(true);
+    expect(block["name"]).toBe("write"); // structure stays inline for the step
   });
 
   it("hydrates refs nested inside hydrated json blobs", async () => {
@@ -528,16 +584,19 @@ describe("@workspace/agentic-protocol stored values", () => {
     );
   });
 
-  it("encodes every unbounded agentic payload field as a stored ref", async () => {
-    // NOTE: `output` is intentionally NOT force-spilled — it streams many small
-    // method-progress chunks, so it is size-thresholded instead (asserted below).
+  it("encodes every class-REFERENCE agentic payload field as a stored ref", async () => {
+    // NOTE: `details` is class-INLINE — the agent-loop fold reads
+    // fold-critical fields from system.event details and never hydrates;
+    // emitters must keep details bounded (oversize is a hard error).
+    // NOTE: `replacement` (compaction) is class-INLINE — the fold replaces
+    // its entries from it; bulky members inside those entries are already
+    // refs from their original events.
     const unboundedFields = [
       "request",
       "result",
-      "details",
       "data",
+      "output",
       "error",
-      "replacement",
       "body",
       "update",
       "initialState",
@@ -573,7 +632,7 @@ describe("@workspace/agentic-protocol stored values", () => {
     expect(writes).toHaveLength(unboundedFields.length);
   });
 
-  it("keeps small invocation.output inline but spills large output by size", async () => {
+  it("stores invocation.output as a ref regardless of size (one code path)", async () => {
     const writes: string[] = [];
     const writer = {
       putText: async (value: string) => {
@@ -589,56 +648,40 @@ describe("@workspace/agentic-protocol stored values", () => {
       createdAt: "2026-05-20T12:00:00.000Z",
     });
 
+    // Progress chunks are fold-opaque, arbitrary client data — class
+    // REFERENCE, so they can never trigger an inline-bound error remotely.
     const small = await encodeAgenticEventStoredValues(make("streamed line"), writer);
-    expect((small.event.payload as Record<string, unknown>)["output"]).toBe("streamed line");
+    expect(isStoredValueRef((small.event.payload as Record<string, unknown>)["output"])).toBe(true);
 
     const large = await encodeAgenticEventStoredValues(make("x".repeat(140 * 1024)), writer);
     expect(isStoredValueRef((large.event.payload as Record<string, unknown>)["output"])).toBe(true);
+    expect(writes).toHaveLength(2);
   });
 
-  it("encodes large message content, deltas, and block content as stored refs", async () => {
+  it("rejects oversized inline content at encode time (no implicit spill)", async () => {
     const largeText = "x".repeat(140 * 1024);
-    const writes: string[] = [];
     const writer = {
-      putText: async (value: string) => {
-        writes.push(value);
-        return { digest: `digest-${writes.length}`, size: value.length };
-      },
+      putText: async (value: string) => ({ digest: "unused", size: value.length }),
     };
 
-    const completed = await encodeAgenticEventStoredValues(
-      messageEvent({
-        payload: {
-          protocol: AGENTIC_PROTOCOL_VERSION,
-          role: "assistant",
-          blocks: [{ blockId: brandId<BlockId>("msg-1:block:0"), type: "text", content: largeText }],
-          outcome: "completed",
-        },
-      }),
-      writer
-    );
-    const completedPayload = completed.event.payload as Record<string, unknown>;
-    const block = (completedPayload["blocks"] as Array<Record<string, unknown>>)[0]!;
-    expect(isStoredValueRef(block["content"])).toBe(true);
-
-    const delta = await encodeAgenticEventStoredValues(
-      {
-        kind: "message.delta",
-        actor: agent,
-        causality: { messageId: brandId<MessageId>("msg-large-delta") },
-        payload: {
-          protocol: AGENTIC_PROTOCOL_VERSION,
-          blockId: brandId<BlockId>("msg-large-delta:block:0"),
-          type: "text",
-          text: largeText,
-        },
-        createdAt: "2026-05-20T12:00:00.000Z",
-      },
-      writer
-    );
-    const deltaPayload = delta.event.payload as Record<string, unknown>;
-    expect(isStoredValueRef(deltaPayload["text"])).toBe(true);
-    expect(writes).toHaveLength(2);
+    // Block content over the inline bound is the EMITTER's bug (the
+    // model-call executor splits long text into multiple blocks); the
+    // storage layer surfaces it loudly instead of silently blinding the fold.
+    await expect(
+      encodeAgenticEventStoredValues(
+        messageEvent({
+          payload: {
+            protocol: AGENTIC_PROTOCOL_VERSION,
+            role: "assistant",
+            blocks: [
+              { blockId: brandId<BlockId>("msg-1:block:0"), type: "text", content: largeText },
+            ],
+            outcome: "completed",
+          },
+        }),
+        writer
+      )
+    ).rejects.toThrow(/inline value at \$\.payload\.blocks\[0\]\.content .* no implicit spill/u);
   });
 });
 

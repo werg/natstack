@@ -1,22 +1,7 @@
 import { agenticSlice, type AgenticEvent, type TrajectoryEvent } from "./events.js";
 
-export function canonicalJson(value: unknown): string {
-  return JSON.stringify(sortForCanonicalJson(value));
-}
-
-function sortForCanonicalJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortForCanonicalJson);
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    const sorted: Record<string, unknown> = {};
-    for (const key of Object.keys(record).sort()) {
-      const child = record[key];
-      if (child !== undefined) sorted[key] = sortForCanonicalJson(child);
-    }
-    return sorted;
-  }
-  return value;
-}
+export { canonicalJson, sortForCanonicalJson } from "./canonical-json.js";
+import { canonicalJson } from "./canonical-json.js";
 
 export async function sha256Hex(input: string): Promise<string> {
   const bytes = new TextEncoder().encode(input);

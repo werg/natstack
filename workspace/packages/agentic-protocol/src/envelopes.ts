@@ -11,6 +11,8 @@ export interface ChannelEnvelope<Payload = unknown> {
   payloadKind?: string;
   metadata?: Record<string, unknown>;
   attachments?: unknown[];
+  /** Durable envelope annotations (policy folds — e.g. agentHops). */
+  annotations?: Record<string, unknown>;
   publishedAt: string;
 }
 

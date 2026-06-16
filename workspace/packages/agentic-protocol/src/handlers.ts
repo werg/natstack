@@ -35,6 +35,10 @@ export interface ProjectedMessage {
   completedAt?: string;
   failedAt?: string;
   failureReason?: string;
+  failureCode?: string;
+  failureResetAt?: string;
+  failureRetryAfterMs?: number;
+  failureRecoverable?: boolean;
   updatedAt?: string;
   usage?: UsagePayload;
 }
@@ -219,6 +223,13 @@ export function applyMessageEvent(
   }
 
   if (event.kind === "message.delta") {
+    // Terminal guard: ephemeral deltas travel an unordered path (signals) and
+    // can race in AFTER the durable terminal. Applying one would append
+    // duplicate text and flip the message back to "streaming" permanently
+    // (which is what the typing indicator ultimately derives from).
+    if (existing.status === "completed" || existing.status === "failed") {
+      return messages;
+    }
     const payload = event.payload;
     const blockId = "blockId" in payload ? String(payload.blockId) : "";
     const type = "type" in payload ? payload.type : "text";
@@ -290,11 +301,24 @@ export function applyMessageEvent(
             severity: "error",
             reason: "reason" in event.payload ? event.payload.reason : undefined,
             recoverable: "recoverable" in event.payload ? event.payload.recoverable : undefined,
+            failureCode: "code" in event.payload ? event.payload.code : undefined,
+            resetAt: "resetAt" in event.payload ? event.payload.resetAt : undefined,
+            retryAfterMs:
+              "retryAfterMs" in event.payload ? event.payload.retryAfterMs : undefined,
           }
         )
       ),
       failedAt: event.createdAt,
       failureReason: "reason" in event.payload ? event.payload.reason : existing.failureReason,
+      failureCode: "code" in event.payload ? event.payload.code : existing.failureCode,
+      failureResetAt:
+        "resetAt" in event.payload ? event.payload.resetAt : existing.failureResetAt,
+      failureRetryAfterMs:
+        "retryAfterMs" in event.payload
+          ? event.payload.retryAfterMs
+          : existing.failureRetryAfterMs,
+      failureRecoverable:
+        "recoverable" in event.payload ? event.payload.recoverable : existing.failureRecoverable,
       updatedAt: event.createdAt,
     },
   };

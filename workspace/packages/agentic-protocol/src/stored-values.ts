@@ -31,31 +31,93 @@ export interface EncodedAgenticEvent {
   eventBytes: number;
 }
 
-export interface BoundedJsonOptions {
+export interface StorageClassOptions {
+  /** Hard bound for class-INLINE string leaves. */
   maxInlineTextBytes?: number;
-  maxInlineJsonBytes?: number;
-  forceJsonRefPaths?: ReadonlySet<string>;
+  /** Exact paths that are class REFERENCE: always stored by ref. Array
+   *  indices in these paths are written `[*]`. */
+  referencePaths?: ReadonlySet<string>;
+  /** What happens when an INLINE leaf exceeds the bound:
+   *  - "error" (default — trajectory events): InlineValueTooLargeError at
+   *    the emitter. Trajectory folds read inline fields; a silent spill
+   *    blinds them, so oversize is the emitter's bug and must surface there.
+   *  - "spill" (channel payloads ONLY): store by ref. Channel payload bodies
+   *    are a bulk transport for presentation/custom data, hydrated on read;
+   *    arbitrary client publishes must not be able to trigger server-side
+   *    encode errors. Channel policy folds must not read unbounded payload
+   *    fields (they may see refs).
+   */
+  oversizeInline?: "error" | "spill";
 }
 
-const DEFAULT_FORCE_JSON_REF_PATHS = new Set([
+/**
+ * Storage classes — every payload field is exactly one of:
+ *
+ * - REFERENCE (listed below): ALWAYS stored as a StoredValueRef, even when
+ *   tiny — one code path, no "maybe spilled" states. Folds treat these as
+ *   opaque carriers and never read inside them; executors/UI hydrate.
+ * - INLINE (everything else): always present verbatim in the envelope — the
+ *   ONLY class folds may read. Oversized inline values are a hard
+ *   encode-time error at the emitter (InlineValueTooLargeError), never a
+ *   silent spill: emitters of fold-read data must bound it by construction
+ *   (split long model text blocks, clamp roster descriptions, keep
+ *   connectSpec small).
+ *
+ * History: the previous model (force-spill paths + a 128KB size-threshold
+ * spill on everything else) blinded the fold four separate times
+ * (modelRequest, system.event details, compaction replacement, and a latent
+ * roster spill). Fold-readability is now a static property of the path.
+ */
+export const REFERENCE_PAYLOAD_PATHS: ReadonlySet<string> = new Set([
   "$.payload.request",
   "$.payload.result",
-  "$.payload.details",
+  // NOTE: $.payload.details is INLINE — the fold reads fold-critical fields
+  // from system.event details (credKey, expiresAt, roster, config patch).
+  // Emitters must keep details bounded; oversize is an error, not a spill.
   "$.payload.data",
-  // NOTE: $.payload.output is intentionally size-thresholded, not force-spilled —
-  // method progress (invocation.output) streams many small chunks, and a blob
-  // write per chunk would be wasteful. Small outputs stay inline; large outputs
-  // (> maxInlineTextBytes) still spill by size.
+  // Method progress chunks are fold-opaque streaming bulk: always by ref
+  // (one code path; chunks are arbitrary client data and must never be able
+  // to trigger an inline-bound error remotely).
+  "$.payload.output",
   "$.payload.error",
-  "$.payload.replacement",
+  // NOTE: $.payload.replacement (compaction) is INLINE — the fold replaces
+  // its entries from it. The entries it carries are copies of fold entries,
+  // whose bulky members (request/result/output) are already refs.
   "$.payload.body",
   "$.payload.update",
   "$.payload.initialState",
   "$.payload.props",
   "$.payload.imports",
   "$.payload.source",
+  // Tool-call arguments inside assistant blocks are unbounded model output
+  // (file writes!) and fold-opaque: the step reads the block's `name` and
+  // copies `arguments` verbatim into invocation.started's `request` (itself
+  // a reference path); executors hydrate before running the tool. `[*]`
+  // matches any array index. Block `content` (text/thinking) stays INLINE —
+  // the model-call executor splits oversized text into multiple blocks.
+  "$.payload.blocks[*].arguments",
 ]);
-const REQUIRED_STORED_PAYLOAD_PATHS = DEFAULT_FORCE_JSON_REF_PATHS;
+
+/** @deprecated old name for REFERENCE_PAYLOAD_PATHS (pre-storage-classes). */
+export const DEFAULT_FORCE_JSON_REF_PATHS = REFERENCE_PAYLOAD_PATHS;
+
+const REQUIRED_STORED_PAYLOAD_PATHS = REFERENCE_PAYLOAD_PATHS;
+
+export class InlineValueTooLargeError extends Error {
+  constructor(
+    readonly path: string,
+    readonly bytes: number,
+    readonly maxBytes: number
+  ) {
+    super(
+      `inline value at ${path} is ${bytes} bytes (max ${maxBytes}). There is no ` +
+        `implicit spill: bound this value at the emitter (split/clamp it) or ` +
+        `classify the path as REFERENCE in REFERENCE_PAYLOAD_PATHS (fold-opaque, ` +
+        `always stored by ref).`
+    );
+    this.name = "InlineValueTooLargeError";
+  }
+}
 
 export async function encodeAgenticEventStoredValues(
   event: AgenticEvent,
@@ -63,8 +125,8 @@ export async function encodeAgenticEventStoredValues(
 ): Promise<EncodedAgenticEvent> {
   const eventWithStoredPayload = {
     ...event,
-    payload: await encodeBoundedJsonForStorage(event.payload, writer, {
-      forceJsonRefPaths: DEFAULT_FORCE_JSON_REF_PATHS,
+    payload: await encodeStorageClasses(event.payload, writer, {
+      referencePaths: REFERENCE_PAYLOAD_PATHS,
     }, "$.payload"),
   } as AgenticEvent;
   const eventBytes = byteLength(JSON.stringify(eventWithStoredPayload));
@@ -75,54 +137,91 @@ export async function encodeChannelPayloadStoredValues(
   payload: unknown,
   writer: BlobWriter
 ): Promise<unknown> {
-  return encodeBoundedJsonForStorage(payload, writer, {
-    forceJsonRefPaths: DEFAULT_FORCE_JSON_REF_PATHS,
+  return encodeStorageClasses(payload, writer, {
+    referencePaths: REFERENCE_PAYLOAD_PATHS,
+    oversizeInline: "spill",
   });
 }
 
-export async function encodeBoundedJsonForStorage(
+export async function encodeStorageClasses(
   value: unknown,
   writer: BlobWriter,
-  options: BoundedJsonOptions = {},
+  options: StorageClassOptions = {},
   path = "$"
+): Promise<unknown> {
+  // matchPath generalizes array indices to `[*]` so reference paths can
+  // classify array elements; `path` keeps real indices for diagnostics.
+  return encodeStorageClassesInner(value, writer, options, path, path);
+}
+
+async function encodeStorageClassesInner(
+  value: unknown,
+  writer: BlobWriter,
+  options: StorageClassOptions,
+  path: string,
+  matchPath: string
 ): Promise<unknown> {
   if (isStoredValueRef(value)) return value;
 
   const maxText = options.maxInlineTextBytes ?? MAX_INLINE_TRAJECTORY_TEXT_BYTES;
-  const maxJson = options.maxInlineJsonBytes ?? MAX_INLINE_TRAJECTORY_TEXT_BYTES;
-  const forceJson = options.forceJsonRefPaths?.has(path) === true;
+  const reference = options.referencePaths?.has(matchPath) === true;
+
+  if (reference) {
+    if (typeof value === "string") return storeText(value, writer);
+    if (value === null || value === undefined || typeof value === "number" || typeof value === "boolean") {
+      return value;
+    }
+    return storeJson(value, writer);
+  }
 
   if (typeof value === "string") {
-    return forceJson || byteLength(value) > maxText
-      ? storeText(value, writer)
-      : value;
+    const bytes = byteLength(value);
+    if (bytes > maxText) {
+      if (options.oversizeInline === "spill") return storeText(value, writer);
+      throw new InlineValueTooLargeError(path, bytes, maxText);
+    }
+    return value;
   }
   if (value === null || value === undefined || typeof value === "number" || typeof value === "boolean") {
     return value;
   }
-  if (typeof value !== "object") {
-    return forceJson ? storeJson(String(value), writer) : String(value);
-  }
-
-  if (forceJson) return storeJson(value, writer);
+  if (typeof value !== "object") return String(value);
 
   if (Array.isArray(value)) {
-    const encoded = await Promise.all(
-      value.map((item, index) => encodeBoundedJsonForStorage(item, writer, options, `${path}[${index}]`))
+    return Promise.all(
+      value.map((item, index) =>
+        encodeStorageClassesInner(item, writer, options, `${path}[${index}]`, `${matchPath}[*]`)
+      )
     );
-    const json = JSON.stringify(encoded);
-    return byteLength(json) > maxJson ? storeJson(encoded, writer) : encoded;
   }
-
   const entries = await Promise.all(
     Object.entries(value as Record<string, unknown>).map(async ([key, item]) => [
       key,
-      await encodeBoundedJsonForStorage(item, writer, options, `${path}.${key}`),
+      await encodeStorageClassesInner(item, writer, options, `${path}.${key}`, `${matchPath}.${key}`),
     ] as const)
   );
-  const encoded = Object.fromEntries(entries);
-  const json = JSON.stringify(encoded);
-  return byteLength(json) > maxJson ? storeJson(encoded, writer) : encoded;
+  return Object.fromEntries(entries);
+}
+
+/** @deprecated old threshold-spill entry point — now delegates to
+ *  encodeStorageClasses (no size-threshold spilling; inline overflow errors). */
+export async function encodeBoundedJsonForStorage(
+  value: unknown,
+  writer: BlobWriter,
+  options: { maxInlineTextBytes?: number; maxInlineJsonBytes?: number; forceJsonRefPaths?: ReadonlySet<string> } = {},
+  path = "$"
+): Promise<unknown> {
+  return encodeStorageClasses(
+    value,
+    writer,
+    {
+      ...(options.maxInlineTextBytes !== undefined
+        ? { maxInlineTextBytes: options.maxInlineTextBytes }
+        : {}),
+      ...(options.forceJsonRefPaths ? { referencePaths: options.forceJsonRefPaths } : {}),
+    },
+    path
+  );
 }
 
 export function isStoredValueRef(value: unknown): value is StoredValueRef {
@@ -164,12 +263,21 @@ export function findUnencodedAgenticEventStoredValues(event: AgenticEvent): Arra
     violations.push({ path, reason: `stored ref is only allowed inside payload storage (${ref.digest})` });
   }
   for (const path of REQUIRED_STORED_PAYLOAD_PATHS) {
-    const value = getPath(event, path);
-    if (value === undefined || value === null || typeof value === "number" || typeof value === "boolean") {
-      continue;
+    // getPathAll expands `[*]` wildcards over arrays, so e.g.
+    // $.payload.blocks[*].arguments validates EVERY block's arguments — a
+    // literal lookup matched nothing and let unencoded args through.
+    for (const value of getPathAll(event, path)) {
+      if (
+        value === undefined ||
+        value === null ||
+        typeof value === "number" ||
+        typeof value === "boolean"
+      ) {
+        continue;
+      }
+      if (isStoredValueRef(value)) continue;
+      violations.push({ path, reason: "storage-boundary payload field must be a StoredValueRef" });
     }
-    if (isStoredValueRef(value)) continue;
-    violations.push({ path, reason: "storage-boundary payload field must be a StoredValueRef" });
   }
   const eventBytes = byteLength(JSON.stringify(event));
   if (eventBytes > MAX_INLINE_TRAJECTORY_EVENT_BYTES) {
@@ -178,12 +286,25 @@ export function findUnencodedAgenticEventStoredValues(event: AgenticEvent): Arra
   return violations;
 }
 
-function getPath(value: unknown, path: string): unknown {
-  if (path === "$") return value;
-  let current = value;
+/** Resolve a JSONPath-ish path to all matching values, expanding a trailing
+ *  `[*]` on a segment over array elements (e.g. `blocks[*].arguments`). */
+function getPathAll(value: unknown, path: string): unknown[] {
+  if (path === "$") return [value];
+  let current: unknown[] = [value];
   for (const segment of path.slice(2).split(".")) {
-    if (!current || typeof current !== "object" || Array.isArray(current)) return undefined;
-    current = (current as Record<string, unknown>)[segment];
+    const wildcard = segment.endsWith("[*]");
+    const key = wildcard ? segment.slice(0, -3) : segment;
+    const next: unknown[] = [];
+    for (const node of current) {
+      if (!node || typeof node !== "object" || Array.isArray(node)) continue;
+      const child = (node as Record<string, unknown>)[key];
+      if (wildcard) {
+        if (Array.isArray(child)) next.push(...child);
+      } else {
+        next.push(child);
+      }
+    }
+    current = next;
   }
   return current;
 }

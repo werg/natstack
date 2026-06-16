@@ -2,6 +2,7 @@ export {
   AGENT_INTERRUPTED_BEFORE_TOOL_DISPATCH,
   AGENTIC_EVENT_PAYLOAD_KIND,
   AGENTIC_PROTOCOL_VERSION,
+  CREDENTIAL_CONNECT_PAYLOAD_KIND,
   GENESIS_EVENT_HASH,
   INVOCATION_OUTCOMES,
   LIFECYCLE_MESSAGE_REASON_CODES,
@@ -58,6 +59,8 @@ export type {
   AgenticEvent,
   ApprovalPayload,
   BranchPayload,
+  BuildCompletedPayload,
+  MemoryRecalledPayload,
   CompactionPayload,
   CustomMessageDisplayMode,
   CustomStartedPayload,
@@ -196,6 +199,7 @@ export {
 export type {
   ChannelTimelineEntry,
   ChannelViewState,
+  ProjectedCredentialRequest,
   ProjectedCustomMessage,
   ProjectedCustomMessageUpdate,
   ProjectedMessageTypeDefinition,
@@ -227,3 +231,7 @@ export {
   sha256Hex,
   verifyEventHash,
 } from "./hash.js";
+
+export * from "./log-envelope.js";
+export * from "./worktree-hash.js";
+export * from "./append-errors.js";

@@ -45,6 +45,8 @@ export const causalitySchema = z
     approvalId: idSchema.optional(),
     modelToolCallId: z.string().optional(),
     agentHops: z.number().int().nonnegative().optional(),
+    /** Originating model attempt (WS1 §1.9) — the duplicate-dispatch guard. */
+    attemptId: z.string().optional(),
   })
   .strict();
 
@@ -123,6 +125,9 @@ const failurePayloadSchema = z
     reason: z.string().min(1),
     error: z.unknown().optional(),
     recoverable: z.boolean().optional(),
+    code: z.string().min(1).optional(),
+    resetAt: isoDateSchema.optional(),
+    retryAfterMs: z.number().nonnegative().optional(),
   })
   .strict();
 
@@ -143,6 +148,7 @@ const invocationTransportSchema = z.discriminatedUnion("kind", [
       channelId: idSchema,
       target: participantRefSchema,
       transportCallId: z.string().optional(),
+      deadlineAt: z.number().int().positive().optional(),
     })
     .strict(),
   z
@@ -384,6 +390,19 @@ const statePayloadSchema = z
     diff: z.string().optional(),
     inputStateHash: idSchema.optional(),
     outputStateHash: idSchema.optional(),
+    parentStateHashes: z.array(z.string()).optional(),
+    files: z
+      .array(
+        z
+          .object({
+            path: z.string(),
+            contentHash: z.string(),
+            size: z.number().optional(),
+            mode: z.number().optional(),
+          })
+          .strict()
+      )
+      .optional(),
     stateHash: idSchema.optional(),
     invocationId: idSchema.optional(),
     contentHash: z.string().optional(),
@@ -435,6 +454,28 @@ const compactionPayloadSchema = z
     rangeStart: idSchema,
     rangeEnd: idSchema,
     replacement: z.unknown().optional(),
+  })
+  .strict();
+
+const memoryRecalledPayloadSchema = z
+  .object({
+    protocol: protocolSchema,
+    query: z.string(),
+    results: z.unknown().optional(),
+    anchors: z.array(z.unknown()).optional(),
+    metadata: z.record(z.unknown()).optional(),
+  })
+  .strict();
+
+const buildCompletedPayloadSchema = z
+  .object({
+    protocol: protocolSchema,
+    inputStateHash: z.string(),
+    subtree: z.string().optional(),
+    evHash: z.string().optional(),
+    artifactRefs: z.unknown().optional(),
+    diagnostics: z.unknown().optional(),
+    metadata: z.record(z.unknown()).optional(),
   })
   .strict();
 
@@ -495,6 +536,10 @@ export const eventKindSchemas = {
   "state.file_mutation_intended": eventSchema("state.file_mutation_intended", statePayloadSchema),
   "state.file_mutation_applied": eventSchema("state.file_mutation_applied", statePayloadSchema),
   "state.transition_recorded": eventSchema("state.transition_recorded", statePayloadSchema),
+  "state.snapshot_ingested": eventSchema("state.snapshot_ingested", statePayloadSchema),
+  "state.merge_applied": eventSchema("state.merge_applied", statePayloadSchema),
+  "memory.recalled": eventSchema("memory.recalled", memoryRecalledPayloadSchema),
+  "build.completed": eventSchema("build.completed", buildCompletedPayloadSchema),
   "external.envelope_published": eventSchema(
     "external.envelope_published",
     externalEnvelopePublishedPayloadSchema
@@ -894,6 +939,7 @@ export const channelEnvelopeSchema = z
     payloadKind: z.string().optional(),
     metadata: z.record(z.unknown()).optional(),
     attachments: z.array(z.unknown()).optional(),
+    annotations: z.record(z.unknown()).optional(),
     publishedAt: isoDateSchema,
   })
   .strict();
