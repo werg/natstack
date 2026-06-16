@@ -1,6 +1,26 @@
 import { buildWsUrl, MobileRpcClient, type MobileConnectionGrant } from "./mobileTransport";
 
 describe("MobileRpcClient", () => {
+  it("accepts paired mobile shell principals from native grants", async () => {
+    const transport = new MobileRpcClient({
+      serverUrl: "https://server.example",
+      issueConnectionGrant: async () => ({
+        callerId: "shell:dev_123",
+        connectionGrant: "grant_123",
+      }),
+    });
+
+    await expect(
+      (
+        transport as unknown as {
+          issueNativeGrant(): Promise<MobileConnectionGrant>;
+        }
+      ).issueNativeGrant()
+    ).resolves.toMatchObject({
+      callerId: "shell:dev_123",
+    });
+  });
+
   it("accepts workspace mobile app principals from native grants", async () => {
     const transport = new MobileRpcClient({
       serverUrl: "https://server.example",
@@ -31,7 +51,7 @@ describe("MobileRpcClient", () => {
     });
 
     await expect(transport.call("main", "noop", [])).rejects.toThrow(
-      /invalid app connection grant/
+      /invalid mobile host connection grant/
     );
   });
 

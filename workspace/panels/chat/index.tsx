@@ -6,10 +6,10 @@
  * directly — no cross-context navigation needed.
  */
 
-import { contextId, rpc, recoveryCoordinator, focusPanel, useStateArgs, getStateArgs, setStateArgs, buildPanelLink, createDurableObjectServiceClient } from "@workspace/runtime";
+import { contextId, rpc, recoveryCoordinator, focusPanel, useStateArgs, getStateArgs, setStateArgs, buildPanelLink, createDurableObjectServiceClient, slotId } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Flex, Spinner, Text, Theme } from "@radix-ui/themes";
+import { Flex, Text, Theme } from "@radix-ui/themes";
 import { AgenticChat, ErrorBoundary } from "@workspace/agentic-chat";
 import type { ConnectionConfig, AgenticChatActions, ToolProvider, ToolProviderDeps } from "@workspace/agentic-chat";
 import { createPanelSandboxConfig, buildEvalTool } from "@workspace/agentic-core";
@@ -393,7 +393,7 @@ export default function ChatPanel() {
 
   // Build ConnectionConfig from runtime
   const config: ConnectionConfig = {
-    clientId: rpc.selfId,
+    clientId: slotId,
     rpc,
     recoveryCoordinator,
   };
@@ -729,10 +729,20 @@ export default function ChatPanel() {
   // Still bootstrapping — show a brief loading indicator
   if (!channelName) {
     return (
-      <ErrorBoundary>
+      <ErrorBoundary surfaceName="chat panel">
         <Theme appearance={theme}>
-          <Flex align="center" justify="center" gap="2" style={{ height: "100dvh" }}>
-            <Spinner />
+          <Flex
+            align="center"
+            justify="center"
+            style={{
+              minHeight: "100dvh",
+              width: "100vw",
+              maxWidth: "100%",
+              boxSizing: "border-box",
+              padding: 16,
+              overflow: "hidden",
+            }}
+          >
             <Text size="2" color="gray">Starting chat...</Text>
           </Flex>
         </Theme>

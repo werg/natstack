@@ -31,6 +31,7 @@ import {
 } from "./vscodeShellIntegrationMeta.js";
 import type { VscodeShellIntegrationEvent } from "./vscodeShellIntegration.js";
 import "@xterm/xterm/css/xterm.css";
+import "./terminal.css";
 
 const IMAGE_PASTE_HINT_KEY = "terminal.imagePasteScratchHintShown";
 
@@ -278,7 +279,10 @@ export function PaneView(props: {
     shellIntegrationMetaRef.current = next;
     void sessionShellRef.current
       .setMeta?.(sessionId, VSCODE_SHELL_INTEGRATION_META_KEY, next)
-      .catch((err) => console.warn("Failed to update terminal shell integration metadata", err));
+      .catch((err) => {
+        if (isUnknownSessionError(err)) return;
+        console.warn("Failed to update terminal shell integration metadata", err);
+      });
   }
 
   function handleTitleChange(title: string, sessionId: string): void {
@@ -522,7 +526,17 @@ export function PaneView(props: {
       />
       <div
         ref={hostRef}
-        style={{ flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden", background: "var(--gray-1)", position: "relative" }}
+        className="natstack-terminal-host"
+        style={{
+          flex: 1,
+          width: "100%",
+          maxWidth: "100%",
+          minHeight: 0,
+          minWidth: 0,
+          overflow: "hidden",
+          background: "var(--gray-1)",
+          position: "relative",
+        }}
       >
         <DropOverlay visible={dragDepth > 0} target=".snug/scratch/..." />
         {showJumpToBottom ? (
@@ -744,4 +758,12 @@ function shellIntegrationMetaEqual(
     && JSON.stringify(a?.shellEnv) === JSON.stringify(b?.shellEnv)
     && a?.shellEnvUpdatedAt === b?.shellEnvUpdatedAt
     && a?.updatedAt === b?.updatedAt;
+}
+
+function isUnknownSessionError(err: unknown): boolean {
+  if (typeof err === "object" && err && "code" in err && err.code === "ENOENT") {
+    return true;
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return message.includes("Unknown session");
 }

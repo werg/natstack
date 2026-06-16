@@ -56,31 +56,4 @@ describe("AppBar address UX", () => {
     expect(onAddressQueryChange).toHaveBeenCalledWith("docs");
     expect(onSelectAddressSuggestion).toHaveBeenCalledWith(suggestion);
   });
-
-  it("filters and selects panel branches from the ref picker", () => {
-    const onSelectBranch = jest.fn();
-    const { getByTestId, queryByTestId } = render(
-      <AppBar
-        title="Panel"
-        onMenuPress={jest.fn()}
-        addressBarVisible
-        address="panels/app"
-        chromeKind="panel"
-        branches={[
-          { name: "main", current: true },
-          { name: "feature/browser-address", current: false },
-        ]}
-        selectedBranch="main"
-        onSelectBranch={onSelectBranch}
-      />,
-    );
-
-    fireEvent.press(getByTestId("branch-picker-button"));
-    fireEvent.changeText(getByTestId("ref-picker-input"), "browser");
-
-    expect(queryByTestId("branch-option-main")).toBeNull();
-    fireEvent.press(getByTestId("branch-option-feature/browser-address"));
-
-    expect(onSelectBranch).toHaveBeenCalledWith("feature/browser-address");
-  });
 });

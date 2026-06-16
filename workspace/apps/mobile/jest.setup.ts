@@ -79,14 +79,18 @@ NativeModules.NatStackMobileHost = {
   completePairing: jest.fn(async () => ({
     serverUrl: "https://server.example",
     deviceId: "dev_123",
-    callerId: "app:apps/mobile:dev_123",
+    callerId: "shell:dev_123",
     connectionGrant: "grant_123",
+    serverId: "srv_123",
+    workspaceId: "workspace_123",
   })),
   getCredentials: jest.fn(async () => null),
   issueConnectionGrant: jest.fn(async () => ({
     deviceId: "dev_123",
-    callerId: "app:apps/mobile:dev_123",
+    callerId: "shell:dev_123",
     connectionGrant: "grant_123",
+    serverId: "srv_123",
+    workspaceId: "workspace_123",
   })),
   prepareAppBundle: jest.fn(async () => ({
     appId: "@workspace-apps/mobile",

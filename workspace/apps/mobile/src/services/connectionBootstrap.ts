@@ -1,5 +1,4 @@
 import { completePairing, getCredentials, type Credentials } from "./auth";
-import { ensureNativeWorkspaceAppBundle } from "./appBootstrap";
 import { devBootstrapConfig } from "../generated/devBootstrap";
 
 export interface ConnectionBootstrap extends Credentials {
@@ -10,7 +9,6 @@ export interface ConnectionBootstrap extends Credentials {
 export async function getConnectionBootstrap(): Promise<ConnectionBootstrap | null> {
   const stored = await getCredentials();
   if (stored?.serverUrl && stored.deviceId) {
-    if ((await ensureNativeWorkspaceAppBundle()).reloading) return null;
     return {
       ...stored,
       autoConnect: true,
@@ -23,7 +21,6 @@ export async function getConnectionBootstrap(): Promise<ConnectionBootstrap | nu
       devBootstrapConfig.serverUrl,
       devBootstrapConfig.pairingCode,
     );
-    if ((await ensureNativeWorkspaceAppBundle()).reloading) return null;
     return {
       serverUrl: paired.serverUrl,
       deviceId: paired.deviceId,

@@ -1,5 +1,6 @@
 import React from "react";
 import {
+  View,
   Text,
   StyleSheet,
   TextInput,
@@ -20,9 +21,8 @@ import {
   StoredCredentialsNeedRepairError,
   type Credentials,
 } from "../services/auth";
-import { ensureNativeWorkspaceAppBundle } from "../services/appBootstrap";
 import { getConnectionBootstrap } from "../services/connectionBootstrap";
-import { ShellClient } from "../services/shellClient";
+import { MobileHostTargetApprovalRequiredError, ShellClient } from "../services/shellClient";
 import {
   consumeConnectLinkReplay,
   markConnectLinkConsumed,
@@ -37,6 +37,8 @@ import { connectionStatusAtom } from "../state/connectionAtoms";
 import { shellClientAtom, panelTreeAtom } from "../state/shellClientAtom";
 import { themeColorsAtom } from "../state/themeAtoms";
 import { parseConnectDeepLink } from "../services/deepLinkConnect";
+import type { PendingUnitBatchApproval } from "@natstack/shared/approvals";
+import type { UnitBatchEntry } from "@natstack/shared/approvals";
 
 function smokePhase(phase: string): void {
   console.log(`[NatStackMobileSmoke] phase=${phase}`);
@@ -73,10 +75,47 @@ function confirmManualRepair(reason: string): Promise<boolean> {
   });
 }
 
+function formatStartupApproval(approval: PendingUnitBatchApproval): string {
+  const unit = approval.units[0];
+  return (
+    unit?.displayName ||
+    unit?.unitName ||
+    approval.title ||
+    approval.description ||
+    approval.approvalId
+  );
+}
+
+function unitTargetLabel(unit: UnitBatchEntry): string {
+  if (unit.target === "react-native") return "Mobile app";
+  if (unit.target === "electron") return "Desktop app";
+  if (unit.target === "terminal") return "Terminal app";
+  return unit.unitKind === "extension" ? "Extension" : "App";
+}
+
+function unitSourceLabel(unit: UnitBatchEntry): string {
+  const ev = unit.ev ? ` (${unit.ev.slice(0, 12)})` : "";
+  return `${unit.source.repo}@${unit.source.ref}${ev}`;
+}
+
+function unitCapabilitiesLabel(unit: UnitBatchEntry): string {
+  return unit.capabilities.length > 0
+    ? unit.capabilities.join(", ")
+    : "No declared capabilities";
+}
+
 type LoginScreenNavigationProp = StackNavigationProp<RootStackParamList, "Login">;
 
 interface LoginScreenProps {
   navigation: LoginScreenNavigationProp;
+}
+
+interface HostApprovalState {
+  client: ShellClient;
+  credentials: Credentials;
+  approvals: PendingUnitBatchApproval[];
+  busy: boolean;
+  error: string | null;
 }
 
 export function LoginScreen({ navigation }: LoginScreenProps) {
@@ -84,6 +123,8 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
   const [pairingCode, setPairingCode] = React.useState("");
   const [bootstrapPending, setBootstrapPending] = React.useState(true);
   const [autoConnecting, setAutoConnecting] = React.useState(false);
+  const [hostApproval, setHostApproval] = React.useState<HostApprovalState | null>(null);
+  const hostApprovalRef = React.useRef<HostApprovalState | null>(null);
   const colors = useAtomValue(themeColorsAtom);
 
   const setServerUrlAtom = useSetAtom(serverUrlAtom);
@@ -96,6 +137,23 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
   const authLoading = useAtomValue(authLoadingAtom);
   const authError = useAtomValue(authErrorAtom);
 
+  React.useEffect(() => {
+    hostApprovalRef.current = hostApproval;
+  }, [hostApproval]);
+
+  const finishConnectedClient = (client: ShellClient, credentials: Credentials) => {
+    smokePhase("workspace-connected");
+    client.startPeriodicSync();
+
+    setShellClient(client);
+    setServerUrlAtom(credentials.serverUrl);
+    setAuthenticated(true);
+    setAuthLoading(false);
+    setHostApproval(null);
+
+    navigation.replace("Main");
+  };
+
   // Reusable connect logic shared by auto-connect and manual button
   const connectWithCredentials = async (
     credentials: Credentials,
@@ -103,30 +161,35 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
   ): Promise<boolean> => {
     setAuthLoading(true);
     setAuthError(null);
+    hostApprovalRef.current?.client.dispose();
+    setHostApproval(null);
+    const client = new ShellClient({
+      credentials,
+      onStatusChange: (status) => {
+        setConnectionStatus(status);
+      },
+      onTreeUpdated: (tree) => {
+        setPanelTree(tree);
+      },
+    });
 
     try {
-      const client = new ShellClient({
-        credentials,
-        onStatusChange: (status) => {
-          setConnectionStatus(status);
-        },
-        onTreeUpdated: (tree) => {
-          setPanelTree(tree);
-        },
-      });
-
       await client.init();
-      smokePhase("workspace-connected");
-      client.startPeriodicSync();
-
-      setShellClient(client);
-      setServerUrlAtom(credentials.serverUrl);
-      setAuthenticated(true);
-      setAuthLoading(false);
-
-      navigation.replace("Main");
+      finishConnectedClient(client, credentials);
       return true;
     } catch (error) {
+      if (error instanceof MobileHostTargetApprovalRequiredError) {
+        setHostApproval({
+          client,
+          credentials,
+          approvals: error.approvals,
+          busy: false,
+          error: null,
+        });
+        setAuthLoading(false);
+        return false;
+      }
+      client.dispose();
       setAuthLoading(false);
       const message = error instanceof Error ? error.message : "Connection failed";
       setAuthError(message);
@@ -140,6 +203,46 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
   // Keep a ref so the mount effect always calls the latest version
   const connectRef = React.useRef(connectWithCredentials);
   connectRef.current = connectWithCredentials;
+
+  const resolveHostApproval = async (decision: "once" | "deny") => {
+    if (!hostApproval) return;
+    const { client, credentials, approvals } = hostApproval;
+    setHostApproval({ ...hostApproval, busy: true, error: null });
+    setAuthLoading(true);
+    try {
+      for (const approval of approvals) {
+        await client.shellApproval.resolveBootstrap(approval.approvalId, decision);
+      }
+      if (decision === "deny") {
+        client.dispose();
+        setHostApproval(null);
+        setAuthError("Workspace app approval denied.");
+        return;
+      }
+      await client.init();
+      finishConnectedClient(client, credentials);
+    } catch (error) {
+      if (error instanceof MobileHostTargetApprovalRequiredError) {
+        setHostApproval((current) =>
+          current?.client === client
+            ? {
+                ...current,
+                approvals: error.approvals,
+                busy: false,
+                error: null,
+              }
+            : current
+        );
+        return;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      setHostApproval((current) =>
+        current?.client === client ? { ...current, busy: false, error: message } : current
+      );
+    } finally {
+      setAuthLoading(false);
+    }
+  };
 
   const pairAndConnect = async (
     targetUrl: string,
@@ -155,11 +258,6 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
       smokePhase("workspace-pairing-complete");
       if (options?.connectLinkUrl) {
         await markConnectLinkConsumed(options.connectLinkUrl).catch(() => {});
-      }
-      if ((await ensureNativeWorkspaceAppBundle()).reloading) {
-        smokePhase("workspace-bundle-reloading");
-        setAuthLoading(false);
-        return true;
       }
       return await connectRef.current(credentials, options);
     } catch (error) {
@@ -292,6 +390,99 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
     );
   }
 
+  if (hostApproval) {
+    const busy = hostApproval.busy || authLoading;
+    return (
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        style={{ flex: 1, backgroundColor: colors.background }}
+      >
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+        >
+          <Text style={[styles.title, { color: colors.text }]}>
+            Do you trust the code in this workspace?
+          </Text>
+          <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+            Review the workspace code that wants to run on this device.
+          </Text>
+          <View
+            style={[
+              styles.approvalBox,
+              { borderColor: colors.border, backgroundColor: colors.surface },
+            ]}
+          >
+            {hostApproval.approvals.map((approval) => (
+              <View key={approval.approvalId} style={styles.approvalGroup}>
+                <Text style={[styles.approvalGroupTitle, { color: colors.text }]}>
+                  {formatStartupApproval(approval)}
+                </Text>
+                {approval.units.map((unit) => (
+                  <View
+                    key={`${approval.approvalId}:${unit.unitName}`}
+                    style={[styles.unitCard, { borderColor: colors.border }]}
+                  >
+                    <View style={styles.unitHeader}>
+                      <Text style={[styles.approvalItem, { color: colors.text }]}>
+                        {unit.displayName || unit.unitName}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.unitBadge,
+                          { color: colors.text, borderColor: colors.border },
+                        ]}
+                      >
+                        {unitTargetLabel(unit)}
+                      </Text>
+                    </View>
+                    <Text style={[styles.unitMeta, { color: colors.textSecondary }]}>
+                      {unitSourceLabel(unit)}
+                    </Text>
+                    <Text style={[styles.unitMeta, { color: colors.textSecondary }]}>
+                      {unitCapabilitiesLabel(unit)}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            ))}
+          </View>
+          <Pressable
+            style={[
+              styles.button,
+              { backgroundColor: colors.primary },
+              busy && styles.buttonDisabled,
+            ]}
+            onPress={() => resolveHostApproval("once")}
+            disabled={busy}
+          >
+            {busy ? (
+              <ActivityIndicator color="#e0e0e0" />
+            ) : (
+              <Text style={styles.buttonText}>Trust and start</Text>
+            )}
+          </Pressable>
+          <Pressable
+            style={[
+              styles.secondaryButton,
+              { borderColor: colors.border },
+              busy && styles.buttonDisabled,
+            ]}
+            onPress={() => resolveHostApproval("deny")}
+            disabled={busy}
+          >
+            <Text style={[styles.secondaryButtonText, { color: colors.text }]}>Deny</Text>
+          </Pressable>
+          {hostApproval.error ? (
+            <Text style={[styles.errorText, { color: colors.danger }]} accessibilityRole="alert">
+              {hostApproval.error}
+            </Text>
+          ) : null}
+        </ScrollView>
+      </KeyboardAvoidingView>
+    );
+  }
+
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -399,6 +590,67 @@ const styles = StyleSheet.create({
     color: "#e0e0e0",
     fontSize: 16,
     fontWeight: "600",
+  },
+  secondaryButton: {
+    width: "100%",
+    height: 48,
+    borderRadius: 8,
+    borderWidth: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    marginTop: 8,
+  },
+  secondaryButtonText: {
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  approvalBox: {
+    width: "100%",
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 16,
+    marginBottom: 16,
+    gap: 8,
+  },
+  approvalGroup: {
+    width: "100%",
+    gap: 8,
+  },
+  approvalGroupTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  unitCard: {
+    width: "100%",
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+    gap: 6,
+  },
+  unitHeader: {
+    width: "100%",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 8,
+  },
+  approvalItem: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  unitBadge: {
+    flexShrink: 0,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  unitMeta: {
+    fontSize: 13,
+    lineHeight: 18,
   },
   errorText: {
     width: "100%",

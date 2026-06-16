@@ -1,6 +1,7 @@
 import type { RpcClient } from "@natstack/rpc";
 import type { ApprovalDecisionId } from "@natstack/shared/approvalContract";
 import type { PendingApproval } from "@natstack/shared/approvals";
+import { filterRuntimeApprovals } from "@natstack/shared/bootstrapApprovals";
 import { shellApprovalMethods } from "@natstack/shared/serviceSchemas/shellApproval";
 import { createTypedServiceClient } from "@natstack/shared/typedServiceClient";
 
@@ -26,7 +27,7 @@ export function createApprovalsClient(rpc: RpcClient): ApprovalsClient {
   return {
     async list() {
       const pending = await shellApproval.listPending();
-      return Array.isArray(pending) ? pending : [];
+      return Array.isArray(pending) ? filterRuntimeApprovals(pending) : [];
     },
     async resolve(approvalId, decision) {
       await shellApproval.resolve(approvalId, decision);

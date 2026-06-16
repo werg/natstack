@@ -6,6 +6,7 @@
  */
 import { AppState, Platform, type AppStateStatus } from "react-native";
 import { APPROVAL_CATEGORY_DECIDE, type PushApprovalDataPayload, } from "@natstack/shared/approvalContract";
+import { filterRuntimeApprovals } from "@natstack/shared/bootstrapApprovals";
 import type { ShellClient } from "./shellClient";
 import { requireApprovedAppCapability } from "./appCapabilities";
 import { APPROVAL_NOTIFICATION_CHANNEL_ID, getAndroidNotificationActions, } from "./notificationCategories";
@@ -245,7 +246,7 @@ export async function reconcilePushNotifications(shellClient: ShellClient, notif
     if (!notifee)
         return;
     try {
-        const pending = await shellClient.shellApproval.listPending();
+        const pending = filterRuntimeApprovals(await shellClient.shellApproval.listPending());
         const pendingIds = new Set(pending.map((approval) => approval.approvalId));
         const displayed = await notifee.getDisplayedNotifications?.() ?? [];
         for (const entry of displayed) {

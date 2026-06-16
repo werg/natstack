@@ -24,7 +24,7 @@ describe("native-held mobile credentials", () => {
     nativeHost.completePairing.mockReset().mockResolvedValue({
       serverUrl: "https://server.example",
       deviceId: "dev_123",
-      callerId: "app:apps/mobile:dev_123",
+      callerId: "shell:dev_123",
       connectionGrant: "grant_123",
       serverId: "srv_123",
       workspaceId: "workspace_123",
@@ -37,7 +37,7 @@ describe("native-held mobile credentials", () => {
     });
     nativeHost.issueConnectionGrant.mockReset().mockResolvedValue({
       deviceId: "dev_123",
-      callerId: "app:apps/mobile:dev_123",
+      callerId: "shell:dev_123",
       connectionGrant: "grant_123",
       serverId: "srv_123",
       workspaceId: "workspace_123",
@@ -82,7 +82,7 @@ describe("native-held mobile credentials", () => {
     nativeHost.completePairing.mockResolvedValueOnce({
       serverUrl: "https://server.example",
       deviceId: "dev_123",
-      callerId: "app:apps/field-mobile:dev_123",
+      callerId: "shell:dev_123",
       connectionGrant: "grant_123",
       serverId: "srv_123",
       workspaceId: "workspace_123",
@@ -91,7 +91,7 @@ describe("native-held mobile credentials", () => {
     await expect(
       completePairing("https://server.example", "pairing-code", "apps/field-mobile")
     ).resolves.toMatchObject({
-      callerId: "app:apps/field-mobile:dev_123",
+      callerId: "shell:dev_123",
     });
 
     expect(nativeHost.completePairing).toHaveBeenCalledWith(
@@ -101,9 +101,9 @@ describe("native-held mobile credentials", () => {
     );
   });
 
-  it("issues one-time app connection grants without exposing the refresh token", async () => {
+  it("issues one-time mobile host connection grants without exposing the refresh token", async () => {
     await expect(issueConnectionGrant()).resolves.toMatchObject({
-      callerId: "app:apps/mobile:dev_123",
+      callerId: "shell:dev_123",
       connectionGrant: "grant_123",
     });
   });
@@ -122,7 +122,7 @@ describe("native-held mobile credentials", () => {
     });
   });
 
-  it("rejects native grants that are not workspace mobile app principals", async () => {
+  it("rejects native grants that are not mobile host principals", async () => {
     nativeHost.issueConnectionGrant.mockResolvedValueOnce({
       deviceId: "dev_123",
       callerId: "app:other-app:dev_123",
@@ -131,10 +131,10 @@ describe("native-held mobile credentials", () => {
       workspaceId: "workspace_123",
     });
 
-    await expect(issueConnectionGrant()).rejects.toThrow(/valid native app connection grant/);
+    await expect(issueConnectionGrant()).rejects.toThrow(/valid mobile host connection grant/);
   });
 
-  it("rejects native pairing responses without a workspace mobile app principal grant", async () => {
+  it("rejects native pairing responses without a mobile host principal grant", async () => {
     nativeHost.completePairing.mockResolvedValueOnce({
       serverUrl: "https://server.example",
       deviceId: "dev_123",
@@ -145,18 +145,18 @@ describe("native-held mobile credentials", () => {
     });
 
     await expect(completePairing("https://server.example", "pairing-code")).rejects.toThrow(
-      /valid native app connection grant/
+      /valid mobile host connection grant/
     );
   });
 
   it("rejects native grants without server and workspace identity", async () => {
     nativeHost.issueConnectionGrant.mockResolvedValueOnce({
       deviceId: "dev_123",
-      callerId: "app:apps/mobile:dev_123",
+      callerId: "shell:dev_123",
       connectionGrant: "grant_123",
     });
 
-    await expect(issueConnectionGrant()).rejects.toThrow(/valid native app connection grant/);
+    await expect(issueConnectionGrant()).rejects.toThrow(/valid mobile host connection grant/);
   });
 
   it("prepares approved app bundles through native ABI and integrity checks", async () => {

@@ -12,7 +12,7 @@ import {
 import { wsClientTransport } from "@natstack/rpc/transports/wsClient";
 import type { WsLike } from "@natstack/rpc/protocol/wsAdapter";
 import type { RecoveryKind } from "@natstack/rpc/protocol/recoveryCoordinator";
-import { isWorkspaceMobileAppCallerId } from "./auth";
+import { isWorkspaceMobileAppCallerId, isWorkspaceMobileHostCallerId } from "./auth";
 
 function smokePhase(phase: string, details?: Record<string, unknown>): void {
   const suffix = details ? ` ${JSON.stringify(details)}` : "";
@@ -149,7 +149,7 @@ export class MobileRpcClient implements Pick<RpcClient, "selfId" | "call" | "emi
     void this.ensureRpc()
       .then(() => this.transport?.connect())
       .catch((error) => {
-        console.warn("[MobileRpcClient] Failed to initialize native app principal:", error);
+        console.warn("[MobileRpcClient] Failed to initialize mobile host principal:", error);
         this.setStatus("disconnected");
       });
   }
@@ -159,7 +159,7 @@ export class MobileRpcClient implements Pick<RpcClient, "selfId" | "call" | "emi
     try {
       await this.ensureRpc();
     } catch (error) {
-      console.warn("[MobileRpcClient] Failed to initialize native app principal:", error);
+      console.warn("[MobileRpcClient] Failed to initialize mobile host principal:", error);
       this.setStatus("disconnected");
       throw error;
     }
@@ -264,7 +264,7 @@ export class MobileRpcClient implements Pick<RpcClient, "selfId" | "call" | "emi
     this.transport = this.createTransport(grant.callerId);
     this.rpc = createRpcClient({
       selfId: grant.callerId,
-      callerKind: "app",
+      callerKind: isWorkspaceMobileAppCallerId(grant.callerId) ? "app" : "shell-remote",
       transport: this.transport,
     });
     for (const event of this.eventSubscriptions.keys()) this.attachEventSubscription(event);
@@ -277,12 +277,12 @@ export class MobileRpcClient implements Pick<RpcClient, "selfId" | "call" | "emi
       typeof grant.connectionGrant !== "string" ||
       !grant.connectionGrant ||
       typeof grant.callerId !== "string" ||
-      !isWorkspaceMobileAppCallerId(grant.callerId)
+      !isWorkspaceMobileHostCallerId(grant.callerId)
     ) {
-      throw new Error("Native host returned an invalid app connection grant");
+      throw new Error("Native host returned an invalid mobile host connection grant");
     }
     if (this.currentCallerId && grant.callerId !== this.currentCallerId) {
-      throw new Error("Native host returned a different app principal for this connection");
+      throw new Error("Native host returned a different mobile host principal for this connection");
     }
     smokePhase("workspace-grant-issued", { callerId: grant.callerId });
     return grant;

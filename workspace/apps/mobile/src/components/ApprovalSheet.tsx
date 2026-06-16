@@ -1217,16 +1217,16 @@ function UnitBatchActions({
   const count = approval.units.length;
   const hasExtensions = approval.units.some((unit) => unit.unitKind === "extension");
   const unitLabel = unitBatchNoun(approval);
-  const isSourcePush = approval.trigger === "source-push";
+  const isSourceChange = approval.trigger === "source-change";
   const isManagement = approval.trigger === "management";
   return (
     <View style={styles.actionGroups}>
       <View style={styles.actionRow}>
         <DecisionButton
-          label={isSourcePush ? "Approve push" : isManagement ? "Approve" : count > 0 ? "Approve all" : "Allow"}
+          label={isSourceChange ? "Approve change" : isManagement ? "Approve" : count > 0 ? "Approve all" : "Allow"}
           description={
-            isSourcePush
-              ? `Allow this ${unitLabel} source push.`
+            isSourceChange
+              ? `Allow this ${unitLabel} source change.`
               : isManagement
               ? `Allow this ${unitLabel} management request.`
               : count > 0
@@ -1239,12 +1239,12 @@ function UnitBatchActions({
           onPress={() => onChoose("once")}
           testID="approval-action-once"
         />
-        {approval.trigger === "meta-push" || isSourcePush ? (
+        {approval.trigger === "meta-change" || isSourceChange ? (
           <DecisionButton
             label="Dev session"
-            description={isSourcePush
-              ? `Allow ${unitLabel} source pushes without asking again for the next 4 hours.`
-              : "Allow workspace-config pushes without asking again for the next 4 hours."}
+            description={isSourceChange
+              ? `Allow ${unitLabel} source changes without asking again for the next 4 hours.`
+              : "Allow workspace-config changes without asking again for the next 4 hours."}
             variant="surface"
             disabled={busy}
             loading={pendingAction === "session"}
@@ -1253,10 +1253,10 @@ function UnitBatchActions({
           />
         ) : null}
         <DecisionButton
-          label={isSourcePush || isManagement ? "Deny" : count > 0 ? "Deny all" : "Deny"}
+          label={isSourceChange || isManagement ? "Deny" : count > 0 ? "Deny all" : "Deny"}
           description={
-            isSourcePush
-              ? "Reject this source push."
+            isSourceChange
+              ? "Reject this source change."
               : isManagement
               ? "Reject this management request."
               : count > 0 ? `Do not install these ${unitLabel}${count === 1 ? "" : "s"}.` : "Reject this workspace config change."

@@ -11,7 +11,7 @@ import {
   PaperPlaneIcon,
   ChevronRightIcon,
 } from "@radix-ui/react-icons";
-import { getWorkspaceTree, buildPanelLink, onFocus } from "@workspace/runtime";
+import { buildPanelLink, onFocus, workspace } from "@workspace/runtime";
 import { useIsMobile } from "@workspace/react";
 import { mountAboutPanel, AboutPage, Section } from "@workspace/about-shared/ui";
 import type { WorkspaceTree, WorkspaceNode } from "@workspace/runtime";
@@ -68,7 +68,7 @@ function NewPanelPage() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      setTree(await getWorkspaceTree());
+      setTree(await workspace.sourceTree());
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

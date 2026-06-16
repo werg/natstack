@@ -1,0 +1,30 @@
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+.natstack-terminal-host {
+  contain: layout paint;
+}
+
+.natstack-terminal-host .xterm {
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+}
+
+.natstack-terminal-host .xterm-screen,
+.natstack-terminal-host .xterm-rows,
+.natstack-terminal-host .xterm-rows > div {
+  max-width: 100% !important;
+}

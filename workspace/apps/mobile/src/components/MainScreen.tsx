@@ -61,6 +61,7 @@ import {
   type PanelCommandId,
 } from "@natstack/shared/panelCommands";
 import { getCurrentSnapshot } from "@natstack/shared/panel/accessors";
+import { filterRuntimeApprovals } from "@natstack/shared/bootstrapApprovals";
 import type { HostConfig } from "../services/panelUrls";
 import type { ApprovalDecision, PendingApproval } from "@natstack/shared/approvals";
 const MAX_WEBVIEWS = 5;
@@ -122,8 +123,6 @@ export function MainScreen() {
   const [addressQuery, setAddressQuery] = useState("");
   const [addressSuggestions, setAddressSuggestions] = useState<AddressAutocompleteItem[]>([]);
   const [panelAddressOptions, setPanelAddressOptions] = useState<PanelAddressOptions | null>(null);
-  const [selectedBranch, setSelectedBranch] = useState<string | null>(null);
-  const [selectedCommit, setSelectedCommit] = useState<string | null>(null);
   const [selectedMobileApp, setSelectedMobileApp] = useState<{
     source: string | null;
     appId: string | null;
@@ -244,7 +243,7 @@ export function MainScreen() {
               })
             )
           : shellClient.panels
-              .getAddressOptions(query, selectedBranch ?? activeChromeState.ref)
+              .getAddressOptions(query, activeChromeState.ref)
               .then((options) => {
                 setPanelAddressOptions(options);
                 return buildAddressAutocompleteItems({
@@ -266,11 +265,7 @@ export function MainScreen() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [activeChromeState, addressBarVisible, addressQuery, selectedBranch, shellClient]);
-  useEffect(() => {
-    setSelectedBranch(activeChromeState?.ref ?? activeChromeState?.repo?.branch ?? null);
-    setSelectedCommit(null);
-  }, [activeChromeState?.panelId, activeChromeState?.ref, activeChromeState?.repo?.branch]);
+  }, [activeChromeState, addressBarVisible, addressQuery, shellClient]);
   useEffect(() => {
     if (
       !activePanel ||
@@ -286,19 +281,19 @@ export function MainScreen() {
     let cancelled = false;
     const source = activePanelSnapshot.source;
     void shellClient.panels
-      .getAddressOptions(source, selectedBranch ?? activeChromeState?.ref)
+      .getAddressOptions(source, activeChromeState?.ref)
       .then((options) => {
         if (cancelled) return;
         setPanelAddressOptions(options);
         setActiveRepoState(options.repo);
       })
       .catch(() => {
-        if (!cancelled) setActiveRepoState({ repoPath: source });
+        if (!cancelled) setActiveRepoState({ unitPath: source });
       });
     return () => {
       cancelled = true;
     };
-  }, [activeChromeState?.ref, activePanel, activePanelSnapshot, selectedBranch, shellClient]);
+  }, [activeChromeState?.ref, activePanel, activePanelSnapshot, shellClient]);
   useEffect(() => {
     if (!approvalDeepLinkId) return;
     if (pendingApprovals.some((approval) => approval.approvalId === approvalDeepLinkId)) {
@@ -325,7 +320,7 @@ export function MainScreen() {
       return [];
     }
     const seq = ++pendingApprovalsRefreshSeq.current;
-    const pending = await shellClient.shellApproval.listPending();
+    const pending = filterRuntimeApprovals(await shellClient.shellApproval.listPending());
     if (seq === pendingApprovalsRefreshSeq.current) {
       setPendingApprovals(pending);
       const signature = pending.map((approval) => `${approval.kind}:${approval.approvalId}`).join("|");
@@ -1015,7 +1010,7 @@ export function MainScreen() {
         return;
       }
       if (action.type === "panel-source") {
-        const ref = action.ref ?? selectedCommit ?? selectedBranch ?? undefined;
+        const ref = action.ref ?? undefined;
         const created =
           mode === "current"
             ? shellClient.panels.navigatePanel(activePanelId, action.source, { ref })
@@ -1040,8 +1035,6 @@ export function MainScreen() {
       activatePanel,
       activePanelId,
       pushToast,
-      selectedBranch,
-      selectedCommit,
       shellClient,
       webViewNavigation,
     ]
@@ -1195,16 +1188,7 @@ export function MainScreen() {
         onAddressQueryChange={setAddressQuery}
         onSelectAddressSuggestion={(item) => executeAddressAction(item.action)}
         chromeKind={activeChromeState?.kind}
-        branches={panelAddressOptions?.branches ?? []}
-        commits={panelAddressOptions?.commits ?? []}
-        selectedBranch={selectedBranch ?? panelAddressOptions?.repo?.branch ?? null}
-        selectedCommit={selectedCommit ?? panelAddressOptions?.repo?.commit ?? null}
         dirty={Boolean(panelAddressOptions?.repo?.dirty ?? activeChromeState?.repo?.dirty)}
-        onSelectBranch={(branch) => {
-          setSelectedBranch(branch);
-          setSelectedCommit(null);
-        }}
-        onSelectCommit={setSelectedCommit}
         onShowActions={() => showPanelActions()}
       />
 

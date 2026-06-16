@@ -1,6 +1,5 @@
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import type { Panel, ThemeAppearance } from "@natstack/shared/types";
-import type { BranchInfo, CommitInfo, WorkspaceNode } from "@natstack/shared/types";
 import type { WorkspaceConfig } from "@natstack/shared/workspace/types";
 import { Appearance } from "react-native";
 import { WorkspaceClient } from "@natstack/shared/shell/workspaceClient";
@@ -36,9 +35,12 @@ import { drainWorkspaceMutationQueue } from "./backgroundActionQueue";
 import { createTypedServiceClient } from "@natstack/shared/typedServiceClient";
 import { shellApprovalMethods } from "@natstack/shared/serviceSchemas/shellApproval";
 import { panelRuntimeMethods } from "@natstack/shared/serviceSchemas/panelRuntime";
-import { gitMethods } from "@natstack/shared/serviceSchemas/git";
 import { credentialsMethods } from "@natstack/shared/serviceSchemas/credentials";
 import { pushMethods } from "@natstack/shared/serviceSchemas/push";
+import { workspaceMethods } from "@natstack/shared/serviceSchemas/workspace";
+import { vcsMethods } from "@natstack/shared/serviceSchemas/vcs";
+import type { HostTargetLaunchResult } from "@natstack/shared/hostTargets";
+import type { PendingUnitBatchApproval } from "@natstack/shared/approvals";
 
 function smokePhase(phase: string, details?: Record<string, unknown>): void {
   const suffix = details ? ` ${JSON.stringify(details)}` : "";
@@ -62,12 +64,6 @@ function createPanelRuntimeClient(transport: MobileRpcClient) {
   );
 }
 
-function createGitClient(transport: MobileRpcClient) {
-  return createTypedServiceClient("git", gitMethods, (service, method, args) =>
-    transport.call("main", `${service}.${method}`, args)
-  );
-}
-
 function createCredentialsClient(transport: MobileRpcClient) {
   return createTypedServiceClient("credentials", credentialsMethods, (service, method, args) =>
     transport.call("main", `${service}.${method}`, args)
@@ -80,19 +76,51 @@ function createPushClient(transport: MobileRpcClient) {
   );
 }
 
+function createWorkspaceRpcClient(transport: MobileRpcClient) {
+  return createTypedServiceClient("workspace", workspaceMethods, (service, method, args) =>
+    transport.call("main", `${service}.${method}`, args)
+  );
+}
+
+function createVcsClient(transport: MobileRpcClient) {
+  return createTypedServiceClient("vcs", vcsMethods, (service, method, args) =>
+    transport.call("main", `${service}.${method}`, args)
+  );
+}
+
 type ShellApprovalClient = ReturnType<typeof createShellApprovalClient>;
 type PanelRuntimeClient = ReturnType<typeof createPanelRuntimeClient>;
-type GitClient = ReturnType<typeof createGitClient>;
 type CredentialsClient = ReturnType<typeof createCredentialsClient>;
 type PushClient = ReturnType<typeof createPushClient>;
+type WorkspaceRpcClient = ReturnType<typeof createWorkspaceRpcClient>;
+type VcsClient = ReturnType<typeof createVcsClient>;
+type WorkspaceInfo = Awaited<ReturnType<WorkspaceClient["getInfo"]>>;
+
+export class MobileHostTargetApprovalRequiredError extends Error {
+  readonly approvals: PendingUnitBatchApproval[];
+
+  constructor(approvals: PendingUnitBatchApproval[]) {
+    super("Approve the workspace mobile app before opening panels.");
+    this.name = "MobileHostTargetApprovalRequiredError";
+    this.approvals = approvals;
+  }
+}
+
+function formatHostTargetLaunchUnavailable(
+  launch: Extract<HostTargetLaunchResult, { status: "unavailable" }>
+): string {
+  const details = launch.details.length ? `: ${launch.details.join("; ")}` : "";
+  return `${launch.reason || "No launchable mobile workspace app is available"}${details}`;
+}
 
 class MobilePanels {
   private panelManager: PanelManager | null = null;
   private registryInstance: PanelRegistry | null = null;
   private bridgeAdapterInstance: ReturnType<typeof createBridgeAdapter> | null = null;
   private readonly panelRuntime: PanelRuntimeClient;
-  private readonly git: GitClient;
   private readonly browserData: BrowserDataClient;
+  private readonly workspaceRpc: WorkspaceRpcClient;
+  private readonly vcs: VcsClient;
   constructor(
     private readonly deps: {
       serverUrl: string;
@@ -103,7 +131,8 @@ class MobilePanels {
     }
   ) {
     this.panelRuntime = createPanelRuntimeClient(this.deps.transport);
-    this.git = createGitClient(this.deps.transport);
+    this.workspaceRpc = createWorkspaceRpcClient(this.deps.transport);
+    this.vcs = createVcsClient(this.deps.transport);
     this.browserData = createBrowserDataRpcClient({
       call: (service: string, method: string, args: unknown[]) =>
         this.deps.transport.call("main", `${service}.${method}`, args),
@@ -325,15 +354,18 @@ class MobilePanels {
     return getSharedPanelAddressOptions({
       source,
       ref,
-      git: {
-        getWorkspaceTree: () =>
-          this.git.getWorkspaceTree() as Promise<{ children: WorkspaceNode[] }>,
-        findRepoForPath: (path) => this.git.findRepoForPath(path),
-        status: (repoPath) =>
-          this.git.status(repoPath) as Promise<PanelRepoState & { repoPath: string }>,
-        listBranches: (repoPath) => this.git.listBranches(repoPath) as Promise<BranchInfo[]>,
-        listCommits: (repoPath, commitRef, limit) =>
-          this.git.listCommits(repoPath, commitRef, limit) as Promise<CommitInfo[]>,
+      repoProvider: {
+        sourceTree: () => this.workspaceRpc.sourceTree(),
+        findUnitForPath: (path) => this.workspaceRpc.findUnitForPath(path),
+        unitStatus: async (unitPath) => {
+          const status = await this.vcs.unitStatus(unitPath);
+          return {
+            unitPath: status.unitPath,
+            head: status.head,
+            stateHash: status.stateHash,
+            dirty: status.dirty,
+          } satisfies PanelRepoState & { unitPath: string };
+        },
       },
     });
   }
@@ -423,6 +455,8 @@ export class ShellClient {
   private navigationListeners = new Set<(panelId: string) => void>();
   private periodicSyncTimer: ReturnType<typeof setInterval> | null = null;
   private panelRecoveryUnsubs: Array<() => void> | null = null;
+  private workspaceInfo: WorkspaceInfo | null = null;
+  private panelsInitialized = false;
   constructor(config: ShellClientConfig) {
     this.credentials = config.credentials;
     this.serverUrl = config.credentials.serverUrl;
@@ -457,17 +491,51 @@ export class ShellClient {
     });
   }
   async init(): Promise<void> {
+    const info = await this.connectWorkspace();
+    await this.ensureReactNativeHostTargetReady();
+    await this.initPanels(info);
+  }
+
+  private async connectWorkspace(): Promise<WorkspaceInfo> {
+    if (this.workspaceInfo) return this.workspaceInfo;
     smokePhase("workspace-shell-init-start", { serverUrl: this.serverUrl });
     await this.transport.connectAndWait(null);
     smokePhase("workspace-ws-authenticated");
     const info = await this.workspaces.getInfo();
     smokePhase("workspace-info-loaded", { workspaceId: info.config.id });
+    this.workspaceInfo = info;
+    return info;
+  }
+
+  private async ensureReactNativeHostTargetReady(): Promise<void> {
+    const launch = await this.workspaces.launchHostTarget("react-native");
+    if (launch.status === "ready") {
+      smokePhase("workspace-host-target-ready", {
+        target: launch.target,
+        appId: launch.appId,
+        source: launch.source,
+      });
+      return;
+    }
+    if (launch.status === "approval-required") {
+      smokePhase("workspace-host-target-approval-required", {
+        target: launch.target,
+        count: launch.approvals.length,
+      });
+      throw new MobileHostTargetApprovalRequiredError(launch.approvals);
+    }
+    throw new Error(formatHostTargetLaunchUnavailable(launch));
+  }
+
+  private async initPanels(info: WorkspaceInfo): Promise<void> {
+    if (this.panelsInitialized) return;
     await this.panels.init(info.config.id, info.config);
     smokePhase("workspace-panels-initialized");
     await this.events.subscribe("panel:runtimeLeaseChanged");
     await this.panels.syncRuntimeLeases();
     await drainWorkspaceMutationQueue(this);
     this.registerPanelRecoveryHandlers();
+    this.panelsInitialized = true;
   }
   startPeriodicSync(intervalMs = 30000): void {
     this.stopPeriodicSync();

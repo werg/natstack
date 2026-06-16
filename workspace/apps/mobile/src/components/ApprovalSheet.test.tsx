@@ -102,7 +102,7 @@ const unitBatch: PendingApproval = {
       displayName: "Mobile",
       version: "0.1.0",
       target: "react-native",
-      source: { kind: "internal-git", repo: "apps/mobile", ref: "abc123" },
+      source: { kind: "workspace-repo", repo: "apps/mobile", ref: "abc123" },
       ev: "ev-mobile",
       capabilities: ["panel-hosting"],
     },
@@ -111,7 +111,7 @@ const unitBatch: PendingApproval = {
       unitName: "git-tools",
       displayName: "Git Tools",
       target: "terminal",
-      source: { kind: "internal-git", repo: "extensions/git-tools", ref: "def456" },
+      source: { kind: "workspace-repo", repo: "extensions/git-tools", ref: "def456" },
       ev: "ev-extension",
       capabilities: ["filesystem"],
       provider: {

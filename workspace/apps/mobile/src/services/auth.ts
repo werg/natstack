@@ -59,6 +59,19 @@ export function isWorkspaceMobileAppCallerId(callerId: string, deviceId?: string
   return callerId.split(":").length >= 3;
 }
 
+export function isMobileShellCallerId(callerId: string, deviceId?: string): boolean {
+  if (!callerId.startsWith("shell:")) return false;
+  if (deviceId && callerId !== `shell:${deviceId}`) return false;
+  return callerId.length > "shell:".length;
+}
+
+export function isWorkspaceMobileHostCallerId(callerId: string, deviceId?: string): boolean {
+  return (
+    isMobileShellCallerId(callerId, deviceId) ||
+    isWorkspaceMobileAppCallerId(callerId, deviceId)
+  );
+}
+
 interface NatStackMobileHostNative {
   getCredentials(): Promise<Credentials | null>;
   clearCredentials(): Promise<void>;
@@ -123,13 +136,13 @@ export async function completePairing(
   source?: string | null
 ): Promise<PairingResponse> {
   const response = await nativeHost().completePairing(serverUrl, code, source ?? null);
-  validateNativeAppGrant(response, "Pairing response");
+  validateNativeHostGrant(response, "Pairing response");
   return response;
 }
 
 export async function issueConnectionGrant(): Promise<ConnectionGrantResponse> {
   const response = await nativeHost().issueConnectionGrant();
-  validateNativeAppGrant(response, "Native host response");
+  validateNativeHostGrant(response, "Native host response");
   return response;
 }
 
@@ -178,7 +191,7 @@ function isNativeRepairError(error: unknown): boolean {
   );
 }
 
-function validateNativeAppGrant(
+function validateNativeHostGrant(
   response: Partial<ConnectionGrantResponse>,
   source: string
 ): asserts response is ConnectionGrantResponse {
@@ -188,12 +201,12 @@ function validateNativeAppGrant(
     typeof response.callerId !== "string" ||
     typeof response.deviceId !== "string" ||
     response.deviceId.length === 0 ||
-    !isWorkspaceMobileAppCallerId(response.callerId, response.deviceId) ||
+    !isWorkspaceMobileHostCallerId(response.callerId, response.deviceId) ||
     typeof response.serverId !== "string" ||
     response.serverId.length === 0 ||
     typeof response.workspaceId !== "string" ||
     response.workspaceId.length === 0
   ) {
-    throw new Error(`${source} did not include a valid native app connection grant`);
+    throw new Error(`${source} did not include a valid mobile host connection grant`);
   }
 }

@@ -46,7 +46,8 @@ export class VscodeTerminalInstance {
   private resizeDebouncer: VscodeTerminalResizeDebouncer | null = null;
   private writeScheduler: VscodeTerminalWriteScheduler | null = null;
   private disposables: Disposable[] = [];
-  private resizeTimer: ReturnType<typeof setTimeout> | null = null;
+  private resizeFrame: number | null = null;
+  private resizeTimers: Array<ReturnType<typeof setTimeout>> = [];
   private disposed = false;
   private readonly notificationParser = new NotificationStreamParser();
   private autoScroll = true;
@@ -97,8 +98,7 @@ export class VscodeTerminalInstance {
       this.updateScrollState();
 
       this.resizeObserver = new ResizeObserver(() => {
-        if (this.resizeTimer) clearTimeout(this.resizeTimer);
-        this.resizeTimer = setTimeout(() => this.frontend?.fit(), 50);
+        this.scheduleFitBurst();
       });
       this.resizeObserver.observe(host);
 
@@ -215,7 +215,7 @@ export class VscodeTerminalInstance {
 
   dispose(): void {
     this.disposed = true;
-    if (this.resizeTimer) clearTimeout(this.resizeTimer);
+    this.clearScheduledFits();
     this.resizeObserver?.disconnect();
     this.resizeDebouncer?.flush();
     this.resizeDebouncer?.dispose();
@@ -237,6 +237,38 @@ export class VscodeTerminalInstance {
     const scrolledUp = this.frontend?.isScrolledUp() ?? false;
     this.autoScroll = !scrolledUp;
     if (!this.disposed) this.options.onScrollStateChange?.(scrolledUp);
+  }
+
+  private scheduleFitBurst(): void {
+    this.clearScheduledFits();
+    const run = () => {
+      if (this.disposed) return;
+      try {
+        this.frontend?.fit();
+      } catch {
+        // The frontend may still be loading xterm addons during the first resize.
+      }
+    };
+    this.resizeFrame = requestAnimationFrame(() => {
+      this.resizeFrame = null;
+      run();
+    });
+    for (const delayMs of [50, 150, 300]) {
+      const timeout = setTimeout(() => {
+        this.resizeTimers = this.resizeTimers.filter((timer) => timer !== timeout);
+        run();
+      }, delayMs);
+      this.resizeTimers.push(timeout);
+    }
+  }
+
+  private clearScheduledFits(): void {
+    if (this.resizeFrame !== null) {
+      cancelAnimationFrame(this.resizeFrame);
+      this.resizeFrame = null;
+    }
+    for (const timer of this.resizeTimers) clearTimeout(timer);
+    this.resizeTimers = [];
   }
 
 }
