@@ -26,10 +26,12 @@ import path from "node:path";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import { ServiceError, type ServiceContext } from "@natstack/shared/serviceDispatcher";
 import type { Workspace, WorkspaceConfig } from "@natstack/shared/workspace/types";
+import { normalizeWorkspaceRepoPath } from "@natstack/shared/workspace/remotes";
 import type { ApprovalPrincipal } from "@natstack/shared/approvals";
 import type {
   HostTarget,
   HostTargetCandidate,
+  HostTargetLaunchResult,
   HostTargetSelection,
   HostTargetSelectionInput,
 } from "@natstack/shared/hostTargets";
@@ -41,6 +43,7 @@ import type {
   WorkspaceUnitStatus,
 } from "@natstack/shared/serviceSchemas/workspace";
 import type { ApprovalQueue } from "./approvalQueue.js";
+import type { WorkspaceTreeScanner } from "../gadVcs/workspaceTree.js";
 
 // Wire data types live in the shared schema module (single source of truth
 // for server registration and typed clients). Re-exported here because many
@@ -110,6 +113,7 @@ export interface CentralDataLike {
 
 export interface WorkspaceServiceDeps {
   workspace: Workspace;
+  treeScanner?: WorkspaceTreeScanner;
   getConfig: () => WorkspaceConfig;
   setConfigField: (key: string, value: unknown) => void;
   /** Central workspace catalog. null only in remote-server mode. */
@@ -182,14 +186,16 @@ export interface WorkspaceServiceDeps {
     target: HostTarget,
     sourceOrName: string
   ) => Promise<WorkspaceAppVersions> | WorkspaceAppVersions;
-  /** Materialize a retained build for a specific commit through the build system. */
-  prepareHostTargetPinnedCommit?: (
+  /** Materialize a retained build for a specific ref through the build system. */
+  prepareHostTargetPinnedRef?: (
     target: HostTarget,
     sourceOrName: string,
-    commit: string
+    ref: string
   ) => Promise<unknown> | unknown;
   /** Launch/reload the selected target app in this host. */
-  launchHostTarget?: (target: HostTarget) => Promise<boolean> | boolean;
+  launchHostTarget?: (
+    target: HostTarget
+  ) => Promise<HostTargetLaunchResult> | HostTargetLaunchResult;
   /** Queue used to gate userland workspace mutations. */
   approvalQueue?: Pick<ApprovalQueue, "requestUserland">;
 }
@@ -200,6 +206,23 @@ type WorkspaceApprovalOperation =
   | "select"
   | "setInitPanels"
   | "setConfigField";
+
+type WorkspaceTreeNode = {
+  path: string;
+  isUnit: boolean;
+  children: WorkspaceTreeNode[];
+};
+
+function collectWorkspaceUnitPaths(nodes: WorkspaceTreeNode[]): Set<string> {
+  const units = new Set<string>();
+  for (const node of nodes) {
+    if (node.isUnit) units.add(node.path);
+    for (const childPath of collectWorkspaceUnitPaths(node.children)) {
+      units.add(childPath);
+    }
+  }
+  return units;
+}
 
 function isTrustedWorkspaceCaller(ctx: ServiceContext): boolean {
   return ctx.caller.runtime.kind === "shell" || ctx.caller.runtime.kind === "server";
@@ -568,6 +591,28 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
           return await fs.readFile(skillMdPath, "utf-8");
         }
 
+        case "sourceTree": {
+          if (!deps.treeScanner) throw new Error("Workspace source tree is unavailable");
+          return deps.treeScanner.getSourceTree();
+        }
+
+        case "findUnitForPath": {
+          if (!deps.treeScanner) throw new Error("Workspace source tree is unavailable");
+          const inputPath = normalizeWorkspaceRepoPath(args[0] as string);
+          const tree = await deps.treeScanner.getSourceTree();
+          const units = [...collectWorkspaceUnitPaths(tree.children as WorkspaceTreeNode[])].sort(
+            (a, b) => b.length - a.length
+          );
+          const unitPath = units.find(
+            (unit) => inputPath === unit || inputPath.startsWith(`${unit}/`)
+          );
+          if (!unitPath) return null;
+          return {
+            unitPath,
+            relativePath: inputPath === unitPath ? "" : inputPath.slice(unitPath.length + 1),
+          };
+        }
+
         case "units.list":
           return deps.listUnits ? await deps.listUnits() : [];
 
@@ -711,18 +756,27 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
           return await deps.listHostTargetVersions(target, sourceOrName);
         }
 
-        case "hostTargets.preparePinnedCommit": {
-          if (!deps.prepareHostTargetPinnedCommit) {
-            throw new Error("Pinned commit preparation is unavailable");
+        case "hostTargets.preparePinnedRef": {
+          if (!deps.prepareHostTargetPinnedRef) {
+            throw new Error("Pinned ref preparation is unavailable");
           }
-          const [target, sourceOrName, commit] = args as [HostTarget, string, string];
-          return await deps.prepareHostTargetPinnedCommit(target, sourceOrName, commit);
+          const [target, sourceOrName, ref] = args as [HostTarget, string, string];
+          return await deps.prepareHostTargetPinnedRef(target, sourceOrName, ref);
         }
 
         case "hostTargets.launch": {
-          if (!deps.launchHostTarget) return { launched: false };
+          if (!deps.launchHostTarget) {
+            const [target] = args as [HostTarget];
+            return {
+              status: "unavailable",
+              launched: false,
+              target,
+              reason: "Host target launch is unavailable",
+              details: [],
+            } satisfies HostTargetLaunchResult;
+          }
           const [target] = args as [HostTarget];
-          return { launched: await deps.launchHostTarget(target) };
+          return await deps.launchHostTarget(target);
         }
 
         default:

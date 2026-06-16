@@ -8,6 +8,7 @@ import type { ServiceWithRoutes } from "../serviceWithHttpRoutes.js";
 import type { DeviceAuthStore } from "./deviceAuthStore.js";
 import type { ConnectionGrantService } from "@natstack/shared/connectionGrants";
 import type { AuditLog } from "@natstack/shared/credentials/audit";
+import type { PendingUnitBatchApproval } from "@natstack/shared/approvals";
 import type { AppCapability } from "@natstack/shared/unitManifest";
 import {
   connectionInfoResponse,
@@ -50,7 +51,6 @@ const RefreshPrincipalGrantBodySchema = RefreshShellBodySchema.extend({
   principal: z.string().min(1).max(128).optional(),
   source: z.string().min(1).max(256).optional(),
 });
-const RefreshAppGrantBodySchema = RefreshPrincipalGrantBodySchema;
 const MobileAppBootstrapBodySchema = RefreshShellBodySchema.extend({
   source: z.string().min(1).max(256).optional(),
 });
@@ -92,6 +92,8 @@ export function createAuthService(deps: {
     ready: boolean;
     reason?: string;
     details?: string[];
+    approvalRequired?: boolean;
+    approvals?: PendingUnitBatchApproval[];
   }>;
   getMobileAppBootstrap?: (source?: string | null) => unknown | null | Promise<unknown | null>;
   registerMobileAppPrincipal?: (
@@ -222,7 +224,7 @@ export function createAuthService(deps: {
             platform: credential.platform,
             method: "http-public",
           });
-          sendJson(res, 200, responseForCredential(deps, credential, { includeShellToken: false }));
+          sendJson(res, 200, responseForCredential(deps, credential, { includeShellToken: true }));
         } catch (error) {
           sendAuthError(res, error, 401);
         }
@@ -249,24 +251,6 @@ export function createAuthService(deps: {
             serverId: deps.deviceAuthStore.getServerId(),
             serverBootId: deps.getServerBootId(),
             workspaceId: deps.getWorkspaceId(),
-          });
-        } catch (error) {
-          sendAuthError(res, error, 401);
-        }
-      },
-    },
-    {
-      serviceName: "auth",
-      path: "/refresh-app-grant",
-      methods: ["POST"],
-      auth: "public",
-      handler: async (req, res) => {
-        try {
-          const body = RefreshAppGrantBodySchema.parse(await readJson(req));
-          sendJson(res, 200, await refreshPrincipalGrantResponse(deps, body), {
-            Deprecation: "true",
-            "X-NatStack-Deprecated-Route": "/_r/s/auth/refresh-principal-grant",
-            Warning: '299 - "refresh-app-grant is deprecated; use refresh-principal-grant"',
           });
         } catch (error) {
           sendAuthError(res, error, 401);
@@ -305,12 +289,14 @@ export function createAuthService(deps: {
           deps.deviceAuthStore.validateRefresh(body.deviceId, body.refreshToken);
           const readiness = await deps.ensureMobileAppReady?.(body.source ?? null);
           if (readiness && !readiness.ready) {
-            sendJson(res, 503, {
+            const approvalRequired = readiness.approvalRequired === true;
+            sendJson(res, approvalRequired ? 409 : 503, {
               error: [
                 readiness.reason ?? "No approved React Native workspace app is available",
                 ...(readiness.details?.length ? readiness.details : []),
               ].join(": "),
-              code: "MOBILE_APP_UNAVAILABLE",
+              code: approvalRequired ? "MOBILE_APP_APPROVAL_REQUIRED" : "MOBILE_APP_UNAVAILABLE",
+              ...(approvalRequired ? { approvals: readiness.approvals ?? [] } : {}),
             });
             return;
           }

@@ -63,10 +63,12 @@ function mockWorkerBuild(
 ): BuildResult {
   return {
     dir: "/tmp/test-build",
+    sourceStateHash: "state:test",
     metadata: {
       kind: "worker",
       name: "workers/hello",
       ev: "abc123",
+      sourceStateHash: "state:test",
       sourcemap: false,
       details: { kind: "generic" },
       builtAt: "2026-01-01T00:00:00.000Z",
@@ -84,6 +86,7 @@ function mockWorkerBuild(
 }
 
 function createMockDeps(overrides: Partial<WorkerdManagerDeps> = {}): WorkerdManagerDeps {
+  const build = mockWorkerBuild();
   return {
     tokenManager: {
       ensureToken: vi.fn().mockReturnValue("mock-token-123"),
@@ -93,7 +96,14 @@ function createMockDeps(overrides: Partial<WorkerdManagerDeps> = {}): WorkerdMan
       closeHandlesForCaller: vi.fn(),
     } as unknown as WorkerdManagerDeps["fsService"],
     getServerUrl: () => "http://127.0.0.1:9999",
-    getBuild: vi.fn().mockResolvedValue(mockWorkerBuild()),
+    bindRuntimeImage: vi.fn(async (unitPath: string, ref?: string) => ({
+      source: unitPath,
+      unitName: unitPath,
+      stateHash: ref?.startsWith("state:") ? ref : "state:test",
+      effectiveVersion: build.metadata.ev,
+      buildKey: `build:${unitPath}:${ref ?? "main"}`,
+    })),
+    getBuildByKey: vi.fn(() => build),
     workspacePath: "/tmp/test-workspace",
     statePath: "/tmp/test-workspace-state",
     getProxyPort: () => 49444,
@@ -201,8 +211,8 @@ describe("WorkerdManager", () => {
 
     it("records a lifecycle event and lastError on failed start, cleared by a later success", async () => {
       const recordLifecycleEvent = vi.fn();
-      const getBuild = vi.fn().mockRejectedValueOnce(new Error("boom"));
-      const deps = createMockDeps({ getBuild, recordLifecycleEvent });
+      const bindRuntimeImage = vi.fn().mockRejectedValueOnce(new Error("boom"));
+      const deps = createMockDeps({ bindRuntimeImage, recordLifecycleEvent });
       const mgr = new WorkerdManager(deps);
 
       await expect(mgr.createInstance(defaultCreateOptions())).rejects.toThrow("boom");
@@ -221,7 +231,13 @@ describe("WorkerdManager", () => {
       );
 
       // Subsequent successful start clears the recorded failure.
-      getBuild.mockResolvedValue(mockWorkerBuild());
+      bindRuntimeImage.mockResolvedValue({
+        source: "workers/hello",
+        unitName: "workers/hello",
+        stateHash: "main",
+        effectiveVersion: "workers/hello@main",
+        buildKey: "build:workers/hello:main",
+      });
       await mgr.createInstance(defaultCreateOptions());
 
       expect(mgr.getLastWorkerError("workers/hello")).toBeNull();
@@ -236,7 +252,7 @@ describe("WorkerdManager", () => {
 
     it("rolls back on build failure", async () => {
       const deps = createMockDeps({
-        getBuild: vi.fn().mockRejectedValue(new Error("build failed")),
+        bindRuntimeImage: vi.fn().mockRejectedValue(new Error("build failed")),
       });
       const mgr = new WorkerdManager(deps);
 
@@ -279,24 +295,43 @@ describe("WorkerdManager", () => {
   // Ref-specific builds
   // -------------------------------------------------------------------------
   describe("ref builds", () => {
-    it("stores ref when provided", async () => {
+    it("stores explicit state ref when provided", async () => {
       const deps = createMockDeps();
       const mgr = new WorkerdManager(deps);
 
-      const instance = await mgr.createInstance(defaultCreateOptions({ ref: "abc123" }));
+      const instance = await mgr.createInstance(defaultCreateOptions({ ref: "state:abc123" }));
 
-      expect(instance.ref).toBe("abc123");
-      expect(deps.getBuild).toHaveBeenCalledWith("workers/hello", "abc123");
+      expect(instance.scopeRef).toBe("state:abc123");
+      expect(deps.bindRuntimeImage).toHaveBeenCalledWith("workers/hello", "state:abc123");
     });
 
-    it("passes undefined ref when not provided", async () => {
+    it("binds main when no ref is provided", async () => {
       const deps = createMockDeps();
       const mgr = new WorkerdManager(deps);
 
       const instance = await mgr.createInstance(defaultCreateOptions());
 
-      expect(instance.ref).toBeUndefined();
-      expect(deps.getBuild).toHaveBeenCalledWith("workers/hello", undefined);
+      expect(instance.scopeRef).toBeUndefined();
+      expect(deps.bindRuntimeImage).toHaveBeenCalledWith("workers/hello", undefined);
+    });
+
+    it("binds bootstrap-style singleton DOs to explicit main instead of synthetic ctx heads", async () => {
+      const deps = createMockDeps();
+      const mgr = new WorkerdManager(deps);
+      const syntheticContextId = "5b0784b0a6d5b81c3ba856394cb1eb6e456e4716ab43030e62d2e8de77a6d2de";
+
+      const prepared = await mgr.ensureDurableObjectEntity({
+        source: "workers/model-settings",
+        className: "ModelSettingsDO",
+        key: "workspace-model-settings",
+        contextId: syntheticContextId,
+        ref: "main",
+      });
+
+      expect(prepared.targetId).toBe(
+        "do:workers/model-settings:ModelSettingsDO:workspace-model-settings"
+      );
+      expect(deps.bindRuntimeImage).toHaveBeenCalledWith("workers/model-settings", "main");
     });
   });
 
@@ -343,19 +378,19 @@ describe("WorkerdManager", () => {
       const mgr = new WorkerdManager(deps);
 
       await mgr.createInstance(defaultCreateOptions());
-      const updated = await mgr.updateInstance("hello", { ref: "feature/x" });
+      const updated = await mgr.updateInstance("hello", { ref: "state:feature-x" });
 
-      expect(updated.ref).toBe("feature/x");
+      expect(updated.scopeRef).toBe("state:feature-x");
     });
 
-    it("clears ref on update with empty string", async () => {
+    it("restores main tracking on update with empty string", async () => {
       const deps = createMockDeps();
       const mgr = new WorkerdManager(deps);
 
-      await mgr.createInstance(defaultCreateOptions({ ref: "abc123" }));
+      await mgr.createInstance(defaultCreateOptions({ ref: "state:abc123" }));
       const updated = await mgr.updateInstance("hello", { ref: "" });
 
-      expect(updated.ref).toBeUndefined();
+      expect(updated.scopeRef).toBeUndefined();
     });
   });
 
@@ -435,13 +470,29 @@ describe("WorkerdManager", () => {
   // onSourceRebuilt
   // -------------------------------------------------------------------------
   describe("onSourceRebuilt", () => {
-    it("reloads HEAD-tracking instances via a codeVersion bump (no restart)", async () => {
+    it("reloads main-tracking instances via a codeVersion bump (no restart)", async () => {
       const deps = createMockDeps();
       const mgr = new WorkerdManager(deps);
 
       await mgr.createInstance(defaultCreateOptions());
       const before = mgr.getWorkerVersion("hello");
-      await mgr.onSourceRebuilt("workers/hello");
+      await mgr.onSourceRebuilt(
+        "workers/hello",
+        undefined,
+        {
+          head: "main",
+          stateHash: "state:next",
+          sinceStateHash: "state:prev",
+          eventId: "event:next",
+          headHash: "head:next",
+          actor: { id: "user", kind: "user" },
+          transitionKind: "snapshot",
+          changedPaths: ["workers/hello/index.ts"],
+          fileChanges: [],
+          editOps: [],
+        },
+        "build:workers/hello:main"
+      );
 
       // No restart — the worker host reloads on its next request because the
       // loader-cache version bumped. The instance stays "running" throughout.
@@ -449,20 +500,96 @@ describe("WorkerdManager", () => {
       expect(mgr.getWorkerVersion("hello")).toBe((before ?? 0) + 1);
     });
 
+    it("keeps rebuild codeVersion strictly above prior env-only updates", async () => {
+      const deps = createMockDeps();
+      const mgr = new WorkerdManager(deps);
+
+      await mgr.createInstance(defaultCreateOptions());
+      await mgr.updateInstance("hello", { env: { FEATURE: "enabled" } });
+      const beforeRebuild = mgr.getWorkerVersion("hello");
+
+      await mgr.onSourceRebuilt(
+        "workers/hello",
+        undefined,
+        {
+          head: "main",
+          stateHash: "state:next",
+          sinceStateHash: "state:prev",
+          eventId: "event:next",
+          headHash: "head:next",
+          actor: { id: "user", kind: "user" },
+          transitionKind: "snapshot",
+          changedPaths: ["workers/hello/index.ts"],
+          fileChanges: [],
+          editOps: [],
+        },
+        "build:workers/hello:main"
+      );
+
+      expect(mgr.getWorkerVersion("hello")).toBe((beforeRebuild ?? 0) + 1);
+    });
+
+    it("marks failed runtime image rebinds terminal after the warm attempt fails", async () => {
+      const buildKey = "build:workers/hello:main";
+      const bindRuntimeImage = vi
+        .fn()
+        .mockResolvedValueOnce({
+          source: "workers/hello",
+          unitName: "workers/hello",
+          stateHash: "state:test",
+          effectiveVersion: "workers/hello@main",
+          buildKey,
+        })
+        .mockRejectedValueOnce(new Error("Unknown vcs ref: ctx:deleted"));
+      const deps = createMockDeps({
+        bindRuntimeImage,
+        getBuildByKey: vi.fn(() => null),
+        statePath: fs.mkdtempSync(path.join(os.tmpdir(), "natstack-runtime-image-error-")),
+      });
+      const mgr = new WorkerdManager(deps);
+
+      await mgr.createInstance(defaultCreateOptions());
+
+      await expect(mgr.getWorkerCode("hello")).rejects.toMatchObject({
+        code: "RUNTIME_IMAGE_WARMING",
+      });
+      await vi.waitFor(() => expect(bindRuntimeImage).toHaveBeenCalledTimes(2));
+      await expect(mgr.getWorkerCode("hello")).rejects.toMatchObject({
+        code: "RUNTIME_IMAGE_UNAVAILABLE",
+        message: expect.stringContaining("Unknown vcs ref: ctx:deleted"),
+      });
+    });
+
     it("skips ref-targeted instances", async () => {
       const deps = createMockDeps();
       const mgr = new WorkerdManager(deps);
 
-      await mgr.createInstance(defaultCreateOptions({ ref: "abc123" }));
-      const callsBefore = vi.mocked(deps.getBuild).mock.calls.length;
+      await mgr.createInstance(defaultCreateOptions({ ref: "state:abc123" }));
+      const callsBefore = vi.mocked(deps.bindRuntimeImage).mock.calls.length;
 
       // Ref-targeted instance should not restart on HEAD push
-      await mgr.onSourceRebuilt("workers/hello");
+      await mgr.onSourceRebuilt(
+        "workers/hello",
+        undefined,
+        {
+          head: "main",
+          stateHash: "state:next",
+          sinceStateHash: "state:prev",
+          eventId: "event:next",
+          headHash: "head:next",
+          actor: { id: "user", kind: "user" },
+          transitionKind: "snapshot",
+          changedPaths: ["workers/hello/index.ts"],
+          fileChanges: [],
+          editOps: [],
+        },
+        "build:workers/hello:main"
+      );
 
       const status = mgr.getInstanceStatus("hello");
       expect(status?.status).toBe("running");
-      // No additional getBuild calls — rebuild was skipped
-      expect(deps.getBuild).toHaveBeenCalledTimes(callsBefore);
+      // No additional bind calls — rebuild was skipped
+      expect(deps.bindRuntimeImage).toHaveBeenCalledTimes(callsBefore);
     });
 
     it("does not restart workerd on a source rebuild", async () => {
@@ -484,12 +611,12 @@ describe("WorkerdManager", () => {
       const mgr = new WorkerdManager(deps);
 
       await mgr.createInstance(defaultCreateOptions());
-      const callsBefore = vi.mocked(deps.getBuild).mock.calls.length;
+      const callsBefore = vi.mocked(deps.bindRuntimeImage).mock.calls.length;
 
       await mgr.onSourceRebuilt("workers/other");
 
-      // No additional getBuild calls (no restart triggered)
-      expect(vi.mocked(deps.getBuild).mock.calls.length).toBe(callsBefore);
+      // No additional bind calls (no restart triggered)
+      expect(vi.mocked(deps.bindRuntimeImage).mock.calls.length).toBe(callsBefore);
     });
 
     it("tears down stale DO services when a class is removed from the manifest", async () => {
@@ -572,6 +699,20 @@ describe("WorkerdManager", () => {
 
       expect(fetchMock).not.toHaveBeenCalled();
       expect(restartBegin).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("universal DO host", () => {
+    it("shares dynamically loaded DO module graphs across object keys for the same version", () => {
+      const mgr = new WorkerdManager(createMockDeps());
+      const code = (
+        mgr as unknown as {
+          generateUniversalDOCode(): string;
+        }
+      ).generateUniversalDOCode();
+
+      expect(code).toContain('env.LOADER.get(identity + "@" + version');
+      expect(code).not.toContain("loaderIdentity");
     });
   });
 

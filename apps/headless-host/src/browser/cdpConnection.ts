@@ -31,6 +31,10 @@ export class CdpConnection {
 
   private constructor(private readonly ws: WebSocket) {
     ws.on("message", (data) => this.handleMessage(String(data)));
+    ws.on("error", (error) => {
+      for (const pending of this.pending.values()) pending.reject(error);
+      this.pending.clear();
+    });
     ws.on("close", () => {
       const error = new Error("CDP connection closed");
       for (const pending of this.pending.values()) pending.reject(error);

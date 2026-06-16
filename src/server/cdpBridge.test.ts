@@ -240,6 +240,49 @@ describe("CdpBridge authentication", () => {
     });
   });
 
+  it("routes browser Page.navigate as a stable in-target CDP command", async () => {
+    const harness = await createHarness();
+    const provider = await connectHostProvider(harness, "desktop-host");
+
+    const endpoint = await waitForEndpoint(harness);
+    const client = new WebSocket(endpoint.wsEndpoint);
+    harness.sockets.push(client);
+    await waitForOpen(client);
+    client.send(JSON.stringify({ type: "natstack:cdp-auth", token: endpoint.token }));
+    await expect(waitForJson(client)).resolves.toMatchObject({ type: "natstack:cdp-auth-ok" });
+
+    client.send(
+      JSON.stringify({
+        id: 9,
+        method: "Page.navigate",
+        params: { url: "https://example.org/" },
+      })
+    );
+
+    const command = await waitForJson(provider);
+    expect(command).toMatchObject({
+      type: "cdp:command",
+      targetId: "browser-1",
+      method: "Page.navigate",
+      params: { url: "https://example.org/" },
+      requestId: expect.any(String),
+    });
+
+    provider.send(
+      JSON.stringify({
+        type: "cdp:result",
+        targetId: "browser-1",
+        requestId: command["requestId"],
+        result: { frameId: "frame-1" },
+      })
+    );
+
+    await expect(waitForJson(client)).resolves.toMatchObject({
+      id: 9,
+      result: { frameId: "frame-1" },
+    });
+  });
+
   it("routes host control commands to the provider that registered the target", async () => {
     const harness = await createHarness();
     const provider = await connectHostProvider(harness, "desktop-host");
@@ -265,6 +308,103 @@ describe("CdpBridge authentication", () => {
     );
 
     await expect(commandPromise).resolves.toBeNull();
+  });
+
+  it("lets model-aware navigation resolve after the old target unregisters", async () => {
+    const harness = await createHarness();
+    const provider = await connectHostProvider(harness, "desktop-host");
+
+    const commandPromise = harness.bridge.sendHostCommand("browser-1", "navigatePanel", [
+      "https://example.org",
+      {},
+    ]);
+    const command = await waitForJson(provider);
+
+    expect(command).toMatchObject({
+      type: "host:command",
+      targetId: "browser-1",
+      action: "navigatePanel",
+      requestId: expect.any(String),
+    });
+
+    provider.send(
+      JSON.stringify({
+        type: "cdp:unregister",
+        targetId: "browser-1",
+      })
+    );
+    provider.send(
+      JSON.stringify({
+        type: "host:result",
+        targetId: "browser-1",
+        requestId: command["requestId"],
+        result: { id: "browser-1", title: "example.org" },
+      })
+    );
+
+    await expect(commandPromise).resolves.toEqual({ id: "browser-1", title: "example.org" });
+  });
+
+  it("rejects model-aware host commands if the provider disconnects after target unregister", async () => {
+    const harness = await createHarness();
+    const provider = await connectHostProvider(harness, "desktop-host");
+
+    const commandPromise = harness.bridge.sendHostCommand("browser-1", "navigatePanel", [
+      "https://example.org",
+      {},
+    ]);
+    await expect(waitForJson(provider)).resolves.toMatchObject({
+      type: "host:command",
+      targetId: "browser-1",
+      action: "navigatePanel",
+    });
+
+    provider.send(
+      JSON.stringify({
+        type: "cdp:unregister",
+        targetId: "browser-1",
+      })
+    );
+    provider.close();
+
+    await expect(commandPromise).rejects.toThrow("CDP host provider disconnected");
+  });
+
+  it("lets model-aware history traversal resolve after the old target unregisters", async () => {
+    const harness = await createHarness();
+    const provider = await connectHostProvider(harness, "desktop-host");
+
+    const commandPromise = harness.bridge.sendHostCommand(
+      "browser-1",
+      "navigatePanelHistory",
+      [-1]
+    );
+    const command = await waitForJson(provider);
+
+    expect(command).toMatchObject({
+      type: "host:command",
+      targetId: "browser-1",
+      action: "navigatePanelHistory",
+      args: [-1],
+      requestId: expect.any(String),
+    });
+
+    provider.send(
+      JSON.stringify({
+        type: "cdp:unregister",
+        targetId: "browser-1",
+      })
+    );
+    provider.send(
+      JSON.stringify({
+        type: "host:result",
+        targetId: "browser-1",
+        requestId: command["requestId"],
+        result: { id: "browser-1", title: "Previous" },
+      })
+    );
+
+    await expect(commandPromise).resolves.toEqual({ id: "browser-1", title: "Previous" });
   });
 
   it("rejects pending host control commands when the provider disconnects", async () => {

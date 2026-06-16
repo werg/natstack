@@ -44,10 +44,12 @@ const WORKER_BUNDLE = `export default {
 function workerBuild(bundle = WORKER_BUNDLE, ev = "ev-1"): BuildResult {
   return {
     dir: "/tmp/test-build",
+    sourceStateHash: "state:test",
     metadata: {
       kind: "worker",
       name: "workers/echo",
       ev,
+      sourceStateHash: "state:test",
       sourcemap: false,
       details: { kind: "generic" },
       builtAt: "2026-01-01T00:00:00.000Z",
@@ -105,7 +107,14 @@ async function createHarness(buildRef?: { value: BuildResult }): Promise<Harness
     tokenManager,
     fsService: { closeHandlesForCaller: () => {} } as unknown as WorkerdManagerDeps["fsService"],
     getServerUrl: () => `http://127.0.0.1:${portHolder.value}`,
-    getBuild: async () => currentBuild.value,
+    bindRuntimeImage: async (unitPath: string, ref?: string) => ({
+      source: unitPath,
+      unitName: unitPath,
+      stateHash: ref?.startsWith("state:") ? ref : "state:test",
+      effectiveVersion: currentBuild.value.metadata.ev,
+      buildKey: `build:${unitPath}:${currentBuild.value.metadata.ev}`,
+    }),
+    getBuildByKey: () => currentBuild.value,
     workspacePath: mkdtempSync(join(tmpdir(), "natstack-dwh-ws-")),
     statePath: mkdtempSync(join(tmpdir(), "natstack-dwh-state-")),
     getProxyPort: () => 1,

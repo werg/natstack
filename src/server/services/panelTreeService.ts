@@ -25,6 +25,7 @@ const METHOD_ACCESS: Partial<Record<string, PanelAccessOperation>> = {
   archive: "archive",
   unload: "unload",
   movePanel: "movePanel",
+  navigate: "replacePanel",
   takeOver: "takeOver",
   openDevTools: "openDevTools",
   rebuildPanel: "rebuildPanel",
@@ -72,6 +73,20 @@ const methodSchemas = {
         newParentId: z.string().nullable(),
         targetPosition: z.number().int(),
       }),
+    ]),
+  },
+  navigate: {
+    args: z.tuple([
+      z.string(),
+      z.string(),
+      z
+        .object({
+          ref: z.string().optional(),
+          contextId: z.string().optional(),
+          env: z.record(z.string()).optional(),
+          stateArgs: z.record(z.unknown()).optional(),
+        })
+        .optional(),
     ]),
   },
   takeOver: { args: z.tuple([z.string()]) },
@@ -152,6 +167,7 @@ export function createPanelTreeService(deps: PanelTreeServiceDeps): ServiceDefin
         case "archive":
         case "unload":
         case "movePanel":
+        case "navigate":
         case "takeOver":
         case "openDevTools":
         case "rebuildPanel":

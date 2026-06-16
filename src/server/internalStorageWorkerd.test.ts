@@ -43,8 +43,14 @@ beforeAll(async () => {
 // `getServerUrl`, so the harness must serve those loader endpoints.
 const activeLoaderServers: Server[] = [];
 
-async function createWorkerdHarness(overrides: Partial<WorkerdManagerDeps> = {}) {
+async function createWorkerdHarness(
+  overrides: Partial<WorkerdManagerDeps> & {
+    getBuild?: (source: string, ref?: string) => Promise<BuildResult>;
+  } = {}
+) {
   const tokenManager = new TokenManager();
+  const { getBuild, ...managerOverrides } = overrides;
+  const builds = new Map<string, BuildResult>();
   // Construct the manager first (getServerUrl reads the port lazily via the
   // holder) so the loader-server closure can reference a `const` manager.
   const portHolder = { value: 0 };
@@ -54,9 +60,20 @@ async function createWorkerdHarness(overrides: Partial<WorkerdManagerDeps> = {})
       closeHandlesForCaller: () => {},
     } as unknown as WorkerdManagerDeps["fsService"],
     getServerUrl: () => `http://127.0.0.1:${portHolder.value}`,
-    getBuild: async () => {
-      throw new Error("workspace builds are not used by internal DO tests");
+    bindRuntimeImage: async (source: string, ref?: string) => {
+      if (!getBuild) throw new Error("workspace builds are not used by internal DO tests");
+      const build = await getBuild(source, ref);
+      const buildKey = `build:${source}:${build.metadata.ev}`;
+      builds.set(buildKey, build);
+      return {
+        source,
+        unitName: source,
+        stateHash: ref?.startsWith("state:") ? ref : "state:test",
+        effectiveVersion: build.metadata.ev,
+        buildKey,
+      };
     },
+    getBuildByKey: (key: string) => builds.get(key) ?? null,
     workspacePath: mkdtempSync(join(tmpdir(), "natstack-workerd-workspace-")),
     statePath: mkdtempSync(join(tmpdir(), "natstack-workerd-state-")),
     getProxyPort: () => 9,
@@ -64,7 +81,7 @@ async function createWorkerdHarness(overrides: Partial<WorkerdManagerDeps> = {})
     registerEgressCaller: () => {},
     unregisterEgressCaller: () => {},
     getWorkerdGatewayToken: () => "internal-test-workerd-gateway-token",
-    ...overrides,
+    ...managerOverrides,
   } satisfies WorkerdManagerDeps);
 
   const loaderServer = createServer((req, res) => {
@@ -166,10 +183,12 @@ async function bundleWorker(source: string, entryPoint: string, ev: string): Pro
 function buildResult(source: string, ev: string, bundle: string): BuildResult {
   return {
     dir: `/tmp/natstack-${ev}-build`,
+    sourceStateHash: "state:test",
     metadata: {
       kind: "worker",
       name: source,
       ev,
+      sourceStateHash: "state:test",
       sourcemap: false,
       details: { kind: "generic" },
       builtAt: "2026-01-01T00:00:00.000Z",
@@ -517,10 +536,12 @@ describe("internal storage DOs under workerd", () => {
         const bundle = result.outputFiles[0]!.text;
         return {
           dir: "/tmp/natstack-gad-store-test-build",
+          sourceStateHash: "state:test",
           metadata: {
             kind: "worker",
             name: "workers/gad-store",
             ev: "gad-store-test",
+            sourceStateHash: "state:test",
             sourcemap: false,
             details: { kind: "generic" },
             builtAt: "2026-01-01T00:00:00.000Z",
@@ -609,8 +630,8 @@ describe("internal storage DOs under workerd", () => {
       metric: string;
       value: number;
     }>;
-    expect(status.find((row) => row.metric === "Trajectory branches")?.value).toBe(1);
-    expect(status.find((row) => row.metric === "Trajectory events")?.value).toBe(3);
+    expect(status.find((row) => row.metric === "Log heads")?.value).toBe(1);
+    expect(status.find((row) => row.metric === "Log events")?.value).toBe(3);
     expect(status.find((row) => row.metric === "File mutations")?.value).toBe(1);
   }, 30_000);
 

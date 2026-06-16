@@ -17,19 +17,16 @@
 
 import * as path from "path";
 import * as fs from "fs";
+import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "crypto";
 import { canonicalEntityId, type EntityRecord } from "@natstack/shared/runtime/entitySpec";
-import { normalizeUnitRepoPath, UnitSourcePushGrantStore } from "@natstack/unit-host";
+import { normalizeUnitRepoPath } from "@natstack/unit-host";
 import { formatPairUrlLine } from "./pairingBanner.js";
 import { getPublicUrl, isPublicUrlVerified } from "./publicUrl.js";
 import { registerBuildProvider, unregisterBuildProvider } from "./buildV2/buildProviderRegistry.js";
 import { RuntimeDiagnosticsStore } from "./runtimeDiagnosticsStore.js";
-import {
-  createWorkspaceRepoPushAuthorizer,
-  createWorkspaceMetaPushAuthorizer,
-  createWorkspacePushAuthorizer,
-} from "./workspacePushAuthorizer.js";
 import { assertPresent, deleteDynamicProperty } from "../lintHelpers";
+import { resolveHeadlessHostAutospawn } from "./headlessHostAutospawn.js";
 
 // __filename is available natively in CJS and via the esbuild banner shim in ESM.
 declare const __filename: string;
@@ -174,7 +171,6 @@ interface CliArgs {
   requirePublicUrl?: boolean;
   requireMobileReady?: boolean;
   requireElectronReady?: boolean;
-  interactiveStartupApproval?: boolean;
   noVpnDetect?: boolean;
   headlessHostAutospawn?: boolean;
   help?: boolean;
@@ -218,9 +214,6 @@ Options:
                            built and served to native mobile clients.
   --require-electron-ready Fail startup unless the workspace Electron shell app can be
                            built and served to desktop clients.
-  --interactive-startup-approval
-                           Prompt in the server terminal for unapproved startup
-                           workspace apps/extensions before reporting ready.
   --no-vpn-detect          Skip auto-detection and auto-configuration of the VPN-based
                            public URL (Tailscale today). Useful if you manage
                            tailscale serve yourself or use --public-url.
@@ -317,7 +310,6 @@ function parseArgs(argv: string[]): CliArgs {
     "require-public-url",
     "require-mobile-ready",
     "require-electron-ready",
-    "interactive-startup-approval",
     "no-vpn-detect",
     "headless-host-autospawn",
     "help",
@@ -331,7 +323,6 @@ function parseArgs(argv: string[]): CliArgs {
     "require-public-url",
     "require-mobile-ready",
     "require-electron-ready",
-    "interactive-startup-approval",
     "no-vpn-detect",
     "headless-host-autospawn",
     "help",
@@ -440,9 +431,6 @@ function parseArgs(argv: string[]): CliArgs {
       case "require-electron-ready":
         args.requireElectronReady = true;
         break;
-      case "interactive-startup-approval":
-        args.interactiveStartupApproval = true;
-        break;
       case "no-vpn-detect":
         args.noVpnDetect = true;
         break;
@@ -491,13 +479,11 @@ async function main() {
     await import("@natstack/shared/centralAuth");
   const { resolveLocalWorkspaceStartup } = await import("@natstack/shared/workspace/startup");
   const { CentralDataManager } = await import("@natstack/shared/centralData");
-  const { GitServer } = await import("@natstack/git-server");
   const { TokenManager } = await import("@natstack/shared/tokenManager");
   const { ServiceDispatcher } = await import("@natstack/shared/serviceDispatcher");
   const { EventService, createEventsServiceDefinition } =
     await import("@natstack/shared/eventsService");
   const { getExistingAppNodeModulesRoots } = await import("@natstack/shared/runtimePaths");
-  const { assertGitAvailable } = await import("@natstack/shared/gitRuntime");
   const eventService = new EventService();
   const { RpcServer } = await import("./rpcServer.js");
   const { ServiceContainer } = await import("@natstack/shared/serviceContainer");
@@ -517,7 +503,6 @@ async function main() {
   // With --init: auto-create from template if workspace doesn't exist.
 
   const appRoot = process.env["NATSTACK_APP_ROOT"] ?? process.cwd();
-  assertGitAvailable();
   const centralData = !ipcChannel ? new CentralDataManager() : null;
 
   const wsDir = args.workspaceDir ?? process.env["NATSTACK_WORKSPACE_DIR"];
@@ -526,7 +511,6 @@ async function main() {
   let workspace: import("@natstack/shared/workspace/types").Workspace;
   let workspaceName: string;
   let workspaceIsEphemeral = false;
-  let workspaceCreatedFromTemplate = false;
   try {
     const startup = resolveLocalWorkspaceStartup({
       appRoot,
@@ -539,8 +523,6 @@ async function main() {
     });
     workspace = startup.resolved.workspace;
     workspaceName = startup.resolved.name;
-    workspaceCreatedFromTemplate =
-      startup.resolved.created || process.env["NATSTACK_WORKSPACE_CREATED_FROM_TEMPLATE"] === "1";
     workspaceIsEphemeral =
       startup.isEphemeral || process.env["NATSTACK_WORKSPACE_EPHEMERAL"] === "1";
   } catch (error) {
@@ -584,7 +566,6 @@ async function main() {
   const tokenManager = new TokenManager();
   const { EntityCache } = await import("@natstack/shared/runtime/entityCache");
   const { ConnectionGrantService } = await import("@natstack/shared/connectionGrants");
-  const { resolveCodeIdentity } = await import("./services/principalIdentity.js");
   const entityCache = new EntityCache();
   entityCache.registerBootstrap({ id: "server", kind: "server" });
   entityCache.registerBootstrap({ id: "electron-main", kind: "shell" });
@@ -645,20 +626,11 @@ async function main() {
       process.env["NODE_ENV"] === "development" && process.env["NATSTACK_AUTO_APPROVE"] === "1",
   });
   const { ServerUnitApprovalCoordinator } = await import("./unitApprovalCoordinator.js");
+  const unitApprovalCoordinator = new ServerUnitApprovalCoordinator({ approvalQueue });
   const requireMobileReady =
     args.requireMobileReady || process.env["NATSTACK_REQUIRE_MOBILE_READY"] === "1";
   const requireElectronReady =
     args.requireElectronReady || process.env["NATSTACK_REQUIRE_ELECTRON_READY"] === "1";
-  const interactiveStartupApproval =
-    args.interactiveStartupApproval || process.env["NATSTACK_INTERACTIVE_STARTUP_APPROVAL"] === "1";
-  const startupPrompt = interactiveStartupApproval
-    ? (await import("./startupApprovalPrompt.js")).createTerminalStartupApprovalPrompt()
-    : undefined;
-  const unitApprovalCoordinator = new ServerUnitApprovalCoordinator({
-    approvalQueue,
-    autoApproveStartup: workspaceCreatedFromTemplate,
-    startupPrompt,
-  });
   const credentialLifecycle = new CredentialLifecycle({
     credentialStore,
     clientConfigStore,
@@ -715,42 +687,30 @@ async function main() {
     });
   };
   // In pnpm dev mode, the app runs from a throwaway workspace copied from
-  // `<appRoot>/workspace`. Mirror accepted pushes back to that template so
-  // edits made in the generated workspace persist into the source checkout.
+  // `<appRoot>/workspace`. Mirror committed workspace changes back to that
+  // template so edits made in the generated workspace persist into the source
+  // checkout.
   const templateDir = path.join(appRoot, "workspace");
   const isPnpmDevMode = process.env["NODE_ENV"] === "development";
   const hasDevTemplate = fs.existsSync(path.join(templateDir, "meta", "natstack.yml"));
   const templateDiffersFromActive =
     templateDir !== workspacePath && !workspacePath.startsWith(templateDir + path.sep);
-  const devMirrors: import("@natstack/git-server").GitServerConfig["devMirrors"] = {};
-  let defaultDevMirror: import("@natstack/git-server").GitServerConfig["defaultDevMirror"];
-  const buildV2IgnoredRepos = new Set<string>();
-  if (isPnpmDevMode && workspaceIsEphemeral && hasDevTemplate && templateDiffersFromActive) {
-    defaultDevMirror = {
-      targetDir: templateDir,
-      mode: "rsync-delete",
-    };
-  }
+  // pnpm dev mode: mirror committed workspace changes back to the template
+  // checkout so edits persist. Hooked onto vcs state advances (see below).
+  const devTemplateMirrorDir =
+    isPnpmDevMode && workspaceIsEphemeral && hasDevTemplate && templateDiffersFromActive
+      ? templateDir
+      : null;
   if (process.env["NATSTACK_DOGFOOD"] === "1") {
-    const project = process.env["NATSTACK_DOGFOOD_PROJECT"];
-    const sourceRoot = process.env["NATSTACK_DOGFOOD_SOURCE_ROOT"];
-    if (project && sourceRoot) {
-      devMirrors[project] = {
-        targetDir: sourceRoot,
-        mode: "git-fast-forward",
-      };
-      buildV2IgnoredRepos.add(project);
-    } else {
-      console.warn(
-        "[Dogfood] NATSTACK_DOGFOOD requires NATSTACK_DOGFOOD_PROJECT and NATSTACK_DOGFOOD_SOURCE_ROOT"
-      );
-    }
+    console.warn(
+      "[Dogfood] NATSTACK_DOGFOOD git-fast-forward mirroring is unavailable under the GAD vcs; " +
+        "use the git bridge (vcs export) once available."
+    );
   }
   const requestedGatewayPort = args.gatewayPort ?? parseEnvPort("NATSTACK_GATEWAY_PORT");
   const configuredProtocol = (process.env["NATSTACK_PROTOCOL"] ?? args.protocol ?? "http") as
     | "http"
     | "https";
-  const configuredExternalHost = process.env["NATSTACK_HOST"] ?? args.host ?? "localhost";
   let extensionHostForGateway: import("@natstack/extension-host").ExtensionHost | null = null;
   let appHostForGateway: import("./appHost.js").AppHost | null = null;
   type TrustedUnitHostInstance =
@@ -760,61 +720,34 @@ async function main() {
     [extensionHostForGateway, appHostForGateway].filter(
       (host): host is TrustedUnitHostInstance => host !== null
     );
-  const workspaceMetaPushAuthorizer = createWorkspaceMetaPushAuthorizer({
-    workspacePath,
-    approvalQueue,
-    grantStore: new UnitSourcePushGrantStore({ statePath }),
-    grantTtlMs: 4 * 60 * 60 * 1000,
-    getProviders: trustedUnitHosts,
+  // Workspace VCS (GAD-native): starts local-first (no DO needed), attaches
+  // to the gad-store DO once workerd is up (see "vcsAttach" below).
+  const { WorkspaceVcs } = await import("./gadVcs/workspaceVcs.js");
+  const workspaceVcs = new WorkspaceVcs({
+    blobsDir: path.join(getUserDataPath(), "blobs"),
+    workspaceRoot: workspacePath,
+    contextsRoot: path.join(statePath, ".contexts"),
+    buildSourcesRoot: path.join(getUserDataPath(), "build-sources"),
   });
-
-  const { WORKSPACE_GIT_INIT_PATTERNS } = await import("@natstack/shared/workspace/sourceDirs");
-  const workspaceRepoPushAuthorizer = createWorkspaceRepoPushAuthorizer({
-    approvalQueue,
-    grantStore: capabilityGrantStore,
-  });
-  const gitServer = new GitServer({
-    reposPath: workspacePath,
-    initPatterns: [...WORKSPACE_GIT_INIT_PATTERNS],
-    devMirrors,
-    defaultDevMirror,
-    getSourceForCaller: (callerId) => resolveCodeIdentity(entityCache, callerId)?.repoPath ?? null,
-    getAllowedOrigins: () => {
-      const port = gatewayPortResolved ?? requestedGatewayPort ?? 0;
-      const origins = new Set<string>();
-      if (port) {
-        origins.add(`http://127.0.0.1:${port}`);
-        origins.add(`http://localhost:${port}`);
-        origins.add(`https://127.0.0.1:${port}`);
-        origins.add(`https://localhost:${port}`);
-        origins.add(`${configuredProtocol}://${configuredExternalHost}:${port}`);
-      }
-      // Picks up both explicit --public-url and the auto-detected VPN URL,
-      // since both flow into configurePublicUrl().
-      try {
-        origins.add(new URL(getPublicUrl()).origin);
-      } catch {
-        // configurePublicUrl not yet called or value invalid — ignore.
-      }
-      return Array.from(origins);
-    },
-    pushAuthorizer: createWorkspacePushAuthorizer({
-      targets: [
-        { sourceRoot: "apps", getHandler: () => appHostForGateway },
-        { sourceRoot: "extensions", getHandler: () => extensionHostForGateway },
-      ],
-      getMetaHandler: () => workspaceMetaPushAuthorizer,
-      getFallbackHandler: () => workspaceRepoPushAuthorizer,
-    }),
-  });
-
-  // Create ContextFolderManager before core services
+  const readWorkspaceFileAtCommit = async (
+    commit: string,
+    filePath: string
+  ): Promise<string | null> => {
+    const ref = commit.startsWith("state:")
+      ? commit
+      : /^[0-9a-f]{64}$/i.test(commit)
+        ? `state:${commit}`
+        : commit;
+    const file = await workspaceVcs.readFile(ref, filePath);
+    if (!file || file.content.kind !== "text") return null;
+    return file.content.text;
+  };
+  // Create ContextFolderManager before core services. Context folders are
+  // GAD branch forks of the workspace main head, materialized from the CAS.
   const { ContextFolderManager } = await import("@natstack/shared/contextFolderManager");
   const contextFolderManager = new ContextFolderManager({
-    sourcePath: workspacePath,
     contextsRoot: path.join(statePath, ".contexts"),
-    getWorkspaceTree: () => gitServer.getWorkspaceTree(),
-    getWorkspaceConfig: () => workspaceConfig,
+    materialize: (contextId) => workspaceVcs.ensureContextFolder(contextId),
   });
 
   const { isDeclaredRemoteRepoPath, syncDeclaredRemoteForRepo } =
@@ -823,77 +756,143 @@ async function main() {
     await import("@natstack/shared/workspace/loader");
   const reconcileDeclaredWorkspaceUnits = async (
     nextConfig: ReturnType<typeof loadWorkspaceConfig>,
-    trigger: "startup" | "meta-push"
+    trigger: "startup" | "meta-change"
   ): Promise<void> => {
-    if (trigger === "startup" && requireMobileReady) {
-      const reactNativeDeclarations = resolveDeclaredExtensions(nextConfig).filter(
+    const reconcile = async (): Promise<void> => {
+      const tasks: Array<Promise<void>> = [];
+      if (extensionHostForGateway) {
+        tasks.push(
+          extensionHostForGateway
+            .reconcileDeclared(resolveDeclaredExtensions(nextConfig), { trigger })
+            .then(() => extensionHostForGateway?.whenReconciled())
+            .then(() => import("@natstack/shared/workspace/extensionRegistry"))
+            .then(({ writeExtensionRegistry }) => {
+              writeExtensionRegistry(workspacePath);
+            })
+            .catch((err: unknown) =>
+              console.warn("[Extensions] Failed to reconcile declared workspace units:", err)
+            )
+        );
+      }
+      if (appHostForGateway) {
+        if (trigger === "startup") {
+          tasks.push(
+            appHostForGateway
+              .reconcileDeclared(resolveDeclaredApps(nextConfig), { trigger })
+              .then(() => appHostForGateway?.whenReconciled())
+              .catch((err: unknown) =>
+                console.warn("[Apps] Failed to reconcile declared workspace app units:", err)
+              )
+          );
+        } else {
+          try {
+            appHostForGateway.setDeclared(resolveDeclaredApps(nextConfig), { trigger });
+          } catch (err) {
+            console.warn("[Apps] Failed to update declared workspace app units:", err);
+          }
+        }
+      }
+      await Promise.all(tasks);
+    };
+    await reconcile();
+  };
+
+  type MobileHostReadinessForPairing = {
+    ready: boolean;
+    reason?: string;
+    details?: string[];
+    source?: string | null;
+    appId?: string | null;
+    buildKey?: string;
+    approvalRequired?: boolean;
+    approvals?: import("@natstack/shared/approvals").PendingUnitBatchApproval[];
+  };
+
+  const ensureReactNativeProviderReadyForPairing =
+    async (): Promise<MobileHostReadinessForPairing> => {
+      const extensionHost = extensionHostForGateway;
+      if (!extensionHost) {
+        return { ready: false, reason: "Extension host is not available", details: [] };
+      }
+      const buildSystemInst =
+        container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");
+      if (buildSystemInst.getBuildProviderDetails?.("react-native")) {
+        return { ready: true };
+      }
+
+      const currentConfig = loadWorkspaceConfig(workspacePath);
+      const declaredExtensions = resolveDeclaredExtensions(currentConfig);
+      const hasReactNativeProvider = declaredExtensions.some(
         (decl) => normalizeUnitRepoPath(decl.source) === "extensions/react-native"
       );
-      const extensionApproval =
-        extensionHostForGateway?.preapproveDeclarations(reactNativeDeclarations);
-      const approvedCount = extensionApproval?.identityKeys.length ?? 0;
-      if (approvedCount > 0) {
-        console.log(
-          `[Mobile] Preapproved ${approvedCount} React Native provider startup unit${approvedCount === 1 ? "" : "s"} for pairing`
-        );
+      if (!hasReactNativeProvider) {
+        return {
+          ready: false,
+          reason: "React Native build provider extension is not declared",
+          details: ["Declare extensions/react-native before pairing a React Native host."],
+        };
       }
-    }
-    if (extensionHostForGateway) {
-      await extensionHostForGateway
-        .reconcileDeclared(resolveDeclaredExtensions(nextConfig), { trigger })
-        .then(() =>
-          interactiveStartupApproval
-            ? extensionHostForGateway?.whenSettled()
-            : extensionHostForGateway?.whenReconciled()
-        )
-        .then(() => import("@natstack/shared/workspace/extensionRegistry"))
-        .then(({ writeExtensionRegistry }) => writeExtensionRegistry(workspacePath))
-        .catch((err: unknown) =>
-          console.warn("[Extensions] Failed to reconcile declared workspace units:", err)
-        );
-    }
-    if (trigger === "startup" && requireMobileReady) {
-      const appApproval = appHostForGateway?.preapproveHostTargetDeclarations(
-        "react-native",
-        resolveDeclaredApps(nextConfig)
-      );
-      const approvedCount = appApproval?.identityKeys.length ?? 0;
-      if (approvedCount > 0) {
-        console.log(
-          `[Mobile] Preapproved ${approvedCount} React Native app startup unit${approvedCount === 1 ? "" : "s"} for pairing`
-        );
+
+      await extensionHost.reconcileDeclared(declaredExtensions, { trigger: "startup" });
+      await extensionHost.whenSettled();
+
+      if (buildSystemInst.getBuildProviderDetails?.("react-native")) {
+        return { ready: true };
       }
+
+      const providerUnit = extensionHost
+        .listWorkspaceUnits()
+        .find((unit) => normalizeUnitRepoPath(unit.source) === "extensions/react-native");
+      return {
+        ready: false,
+        reason: "React Native build provider extension is not ready",
+        details: [
+          providerUnit
+            ? `${providerUnit.displayName || providerUnit.name}: ${providerUnit.status}${
+                providerUnit.lastError ? ` (${providerUnit.lastError})` : ""
+              }`
+            : "extensions/react-native is declared but no workspace unit status is available.",
+        ],
+      };
+    };
+
+  const ensureMobileHostReadyForPairing = async (
+    source?: string | null
+  ): Promise<MobileHostReadinessForPairing> => {
+    const provider = await ensureReactNativeProviderReadyForPairing();
+    if (!provider.ready) return provider;
+    const appHost = appHostForGateway;
+    if (!appHost) {
+      return {
+        ready: false,
+        reason: "App host is not available",
+        details: [],
+      };
     }
-    if (trigger === "startup" && requireElectronReady) {
-      const appApproval = appHostForGateway?.preapproveHostTargetDeclarations(
-        "electron",
-        resolveDeclaredApps(nextConfig)
-      );
-      const approvedCount = appApproval?.identityKeys.length ?? 0;
-      if (approvedCount > 0) {
-        console.log(
-          `[Desktop] Preapproved ${approvedCount} Electron app startup unit${approvedCount === 1 ? "" : "s"} for pairing`
-        );
-      }
+    const readiness = await appHost.ensureReactNativeReady(source, { waitForApproval: false });
+    if (readiness.ready) return readiness;
+    const approvals = appHost.listPendingHostTargetApprovals("react-native");
+    if (approvals.length > 0) {
+      return {
+        ready: false,
+        approvalRequired: true,
+        approvals,
+        reason: "React Native workspace app requires approval",
+        details: readiness.details,
+        source: readiness.source,
+        appId: readiness.appId,
+      };
     }
-    if (appHostForGateway) {
-      await appHostForGateway
-        .reconcileDeclared(resolveDeclaredApps(nextConfig), { trigger })
-        .then(() =>
-          interactiveStartupApproval || requireElectronReady
-            ? appHostForGateway?.whenSettled()
-            : appHostForGateway?.whenReconciled()
-        )
-        .catch((err: unknown) =>
-          console.warn("[Apps] Failed to reconcile declared workspace units:", err)
-        );
-    }
+    return readiness;
   };
+
+  const { WorkspaceTreeScanner } = await import("./gadVcs/workspaceTree.js");
+  const treeScanner = new WorkspaceTreeScanner(workspacePath);
   const skippedDeclaredRemoteRepoWarnings = new Set<string>();
   const syncDeclaredRemotesForSource = async (repoPath?: string): Promise<void> => {
     const repos = repoPath
       ? [repoPath]
-      : collectWorkspaceRepoPaths((await gitServer.getWorkspaceTree()).children);
+      : collectWorkspaceUnitPaths((await treeScanner.getSourceTree()).children);
     await Promise.all(
       repos.map((repo) => {
         if (!isDeclaredRemoteRepoPath(repo)) {
@@ -915,42 +914,70 @@ async function main() {
       })
     );
   };
-  gitServer.onPush((event) => {
-    if (event.repo !== "meta") {
-      queueMicrotask(() => {
-        gitServer.invalidateTreeCache();
-        contextFolderManager
-          .ensureRepoPresentInContexts(event.repo)
-          .then(() => syncDeclaredRemotesForSource(event.repo))
-          .then(() => contextFolderManager.syncDeclaredRemotes(event.repo))
-          .catch((err: unknown) =>
-            console.warn(
-              `[GitRemotes] Failed to sync declared remote after push to ${event.repo}:`,
-              err
-            )
-          );
-      });
-      return;
-    }
-    queueMicrotask(() => {
-      try {
-        const nextConfig = loadWorkspaceConfig(workspacePath);
-        replaceWorkspaceConfig(workspaceConfig, nextConfig);
-        // Reconcile declared workspace units after the combined meta-push gate.
-        // Any newly trusted app/extension identities were preapproved by the
-        // workspace push authorizer, so these reconciles activate without a second
-        // prompt.
-        void reconcileDeclaredWorkspaceUnits(nextConfig, "meta-push");
-        syncDeclaredRemotesForSource()
-          .then(() => contextFolderManager.syncDeclaredRemotes())
-          .catch((err: unknown) =>
-            console.warn("[GitRemotes] Failed to sync declared remotes after meta push:", err)
-          );
-      } catch (err) {
-        console.warn("[GitRemotes] Failed to reload workspace config after meta push:", err);
-      }
-    });
+  // Workspace state advances drive source-side reactions:
+  //  - meta/ changes reload the workspace config and reconcile declared units
+  //  - any change invalidates the tree scanner cache
+  //  - pnpm dev mode mirrors the committed tree back to the template checkout
+  let devMirrorTimer: NodeJS.Timeout | null = null;
+  let initialWorkspaceUnitReconcileComplete = false;
+  let pendingStartupMetaConfigReload = false;
+  // Bridge every head advance to the client event bus so subscribers (panels)
+  // can react incrementally: `vcs.subscribeHead(head)` listens on this topic.
+  workspaceVcs.onStateAdvanced((event) => {
+    eventService.emit(`vcs:head:${event.head}`, event);
   });
+  workspaceVcs.onStateAdvanced((event) => {
+    if (event.head !== "main") return;
+    treeScanner.invalidate();
+    if (event.changedPaths.some((changed) => changed.startsWith("meta/"))) {
+      queueMicrotask(() => {
+        try {
+          const nextConfig = loadWorkspaceConfig(workspacePath);
+          replaceWorkspaceConfig(workspaceConfig, nextConfig);
+          if (!initialWorkspaceUnitReconcileComplete) {
+            pendingStartupMetaConfigReload = true;
+            return;
+          }
+          void reconcileDeclaredWorkspaceUnits(nextConfig, "meta-change");
+          syncDeclaredRemotesForSource().catch((err: unknown) =>
+            console.warn("[GitRemotes] Failed to sync declared remotes after meta change:", err)
+          );
+        } catch (err) {
+          console.warn("[GitRemotes] Failed to reload workspace config after meta change:", err);
+        }
+      });
+    }
+    if (devTemplateMirrorDir) {
+      // Debounced non-destructive rsync — state advances can arrive in bursts
+      // during agent commit loops; mirror once things settle.
+      if (devMirrorTimer) clearTimeout(devMirrorTimer);
+      devMirrorTimer = setTimeout(() => {
+        devMirrorTimer = null;
+        execFile(
+          "rsync",
+          [
+            "-a",
+            "--exclude=.git",
+            "--exclude=node_modules",
+            "--exclude=.contexts",
+            "--exclude=.gad",
+            "--exclude=.cache",
+            "--exclude=.databases",
+            `${workspacePath}/`,
+            `${devTemplateMirrorDir}/`,
+          ],
+          (err) => {
+            if (err) console.warn("[DevMirror] rsync to template failed:", err.message);
+          }
+        );
+      }, 500);
+    }
+  });
+  // Configure declared remotes for repos already present at startup — without
+  // this, remotes are only synced when a later state advance touches meta/.
+  syncDeclaredRemotesForSource().catch((err: unknown) =>
+    console.warn("[GitRemotes] Failed to sync declared remotes at startup:", err)
+  );
 
   // ===========================================================================
   // Unified ServiceContainer — lifecycle + RPC services in one container
@@ -975,42 +1002,25 @@ async function main() {
     },
   });
   container.registerManaged({
-    name: "gitServer",
+    name: "workspaceVcs",
     async start() {
-      await gitServer.init();
-      await syncDeclaredRemotesForSource();
-      return gitServer;
+      return workspaceVcs;
     },
   });
 
   // Build system
   container.registerManaged({
     name: "buildSystem",
+    dependencies: ["workspaceVcs"],
     async start() {
       return await initBuildSystemV2(
         workspacePath,
-        gitServer,
-        appNodeModules.length > 0 ? appNodeModules : [path.join(appRoot, "node_modules")],
-        buildV2IgnoredRepos
+        workspaceVcs,
+        appNodeModules.length > 0 ? appNodeModules : [path.join(appRoot, "node_modules")]
       );
     },
     async stop(instance: import("./buildV2/index.js").BuildSystemV2) {
       await instance?.shutdown();
-    },
-  });
-
-  // Git watcher
-  container.registerManaged({
-    name: "gitWatcher",
-    dependencies: ["gitServer"],
-    async start() {
-      const { createGitWatcher } = await import("@natstack/shared/workspace/gitWatcher");
-      const watcher = createGitWatcher(workspace);
-      gitServer.subscribeToGitWatcher(watcher);
-      return watcher;
-    },
-    async stop(instance: import("@natstack/shared/workspace/gitWatcher").GitWatcher) {
-      await instance?.close();
     },
   });
 
@@ -1021,7 +1031,7 @@ async function main() {
   const { createTokensService } = await import("./services/tokensService.js");
   const { createPresenceService, createPresenceTracker } =
     await import("./services/presenceService.js");
-  const { createGitService } = await import("./services/gitService.js");
+  const { createGitInteropService } = await import("./services/gitInteropService.js");
   const { createWorkerService } = await import("./services/workerService.js");
 
   {
@@ -1068,21 +1078,47 @@ async function main() {
     });
   }
   container.registerRpc(
-    createGitService({
-      gitServer,
-      tokenManager,
+    createGitInteropService({
+      treeScanner,
       workspacePath,
       workspaceConfig,
-      contextFolderManager,
-      entityCache,
       egressProxy,
       approvalQueue,
       grantStore: capabilityGrantStore,
-    }),
-    ["gitServer"]
+    })
   );
+  {
+    const { createVcsService } = await import("./services/vcsService.js");
+    const { createMainAdvanceApprovalGate, FileMetaApprovalGrantStore } =
+      await import("./services/mainAdvanceApproval.js");
+    const mainAdvanceGate = createMainAdvanceApprovalGate({
+      approvalQueue,
+      grantStore: new FileMetaApprovalGrantStore({ statePath }),
+      grantTtlMs: 4 * 60 * 60 * 1000,
+      capabilityGrantStore,
+      getProviders: () => trustedUnitHosts(),
+    });
+    let buildSystemForVcs: import("./buildV2/index.js").BuildSystemV2 | null = null;
+    container.registerManaged({
+      name: "vcsService",
+      dependencies: ["buildSystem"],
+      async start(resolve) {
+        buildSystemForVcs = assertPresent(
+          resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")
+        );
+      },
+      getServiceDefinition() {
+        return createVcsService({
+          workspaceVcs,
+          entityCache,
+          getBuildSystem: () => buildSystemForVcs,
+          mainAdvanceGate,
+        });
+      },
+    });
+  }
   const runtimeDiagnostics = new RuntimeDiagnosticsStore({ statePath });
-  // Bridge push-triggered build failures (and completions) into the per-unit
+  // Bridge state-triggered build failures (and completions) into the per-unit
   // diagnostics store so `workspace.units.diagnostics` surfaces build errors
   // alongside runtime logs. Keyed the same way unitDiagnostics resolves
   // entities: workers by source path, everything else by package name.
@@ -1118,7 +1154,9 @@ async function main() {
           fields: {
             buildEvent: event.type,
             ...(event.buildKey ? { buildKey: event.buildKey } : {}),
-            ...(event.trigger?.repo ? { repo: event.trigger.repo } : {}),
+            ...(event.trigger
+              ? { head: event.trigger.head, stateHash: event.trigger.stateHash }
+              : {}),
           },
         });
       });
@@ -1713,6 +1751,7 @@ async function main() {
         tokenManager: tokenManagerInst,
         eventService,
         approvalQueue,
+        approvalCoordinator: unitApprovalCoordinator,
         notificationService: notificationResult.internal,
         recordUnitLog: (record) => {
           runtimeDiagnostics.record({
@@ -1726,7 +1765,7 @@ async function main() {
             fields: record.fields,
           });
         },
-        approvalCoordinator: unitApprovalCoordinator,
+        readWorkspaceFileAtCommit,
         getContextIdForCaller: (callerId) => entityCache.resolveContext(callerId),
         getGatewayUrl: () => getLocalGatewayUrl("extension startup"),
         extensionTransport: {
@@ -1776,10 +1815,11 @@ async function main() {
         buildSystem: buildSystemInst,
         eventService,
         approvalQueue,
-        notificationService: notificationResult.internal,
         approvalCoordinator: unitApprovalCoordinator,
+        notificationService: notificationResult.internal,
         entityCache,
         connectionGrants,
+        readWorkspaceFileAtCommit,
         getGatewayUrl: () => getLocalGatewayUrl("app startup"),
         getReactNativeBootstrapUrl: () => getConnectUrl("React Native bootstrap"),
       });
@@ -1790,6 +1830,59 @@ async function main() {
       await instance?.shutdown();
     },
   });
+
+  // Activate a Durable Object's entity record (idempotent). A DO that calls
+  // back into the server (runtime.*, console bridge) is attributed through the
+  // entity cache — without a record its principal kind is unknown and every
+  // call 403s. Service resolution activates on demand (workersRpc below);
+  // server-dispatched singletons (vcsAttach → gad-store) activate explicitly.
+  const activateDurableObjectEntity = async (
+    doDispatch: import("./doDispatch.js").DODispatch,
+    workerdManagerInst: import("./workerdManager.js").WorkerdManager,
+    ref: { source: string; className: string; objectKey: string; buildRef?: string }
+  ): Promise<void> => {
+    const { source, className, objectKey, buildRef } = ref;
+    const targetId = canonicalEntityId({ kind: "do", source, className, key: objectKey });
+    if (entityCache.resolveActive(targetId)) return;
+    const { INTERNAL_DO_SOURCE } = await import("./internalDOs/internalDoLoader.js");
+    const workspaceDORef: import("./doDispatch.js").DORef = {
+      source: INTERNAL_DO_SOURCE,
+      className: "WorkspaceDO",
+      objectKey: workspace.config.id,
+    };
+    const existing = (await doDispatch.dispatch(
+      workspaceDORef,
+      "entityResolve",
+      targetId
+    )) as EntityRecord | null;
+    if (existing?.status === "active") {
+      entityCache._onActivate(existing);
+      return;
+    }
+    const contextId =
+      existing?.contextId ??
+      createHash("sha256")
+        .update(`${workspace.config.id}\x00${source}\x00${className}\x00${objectKey}`)
+        .digest("hex");
+    const prepared = await workerdManagerInst.ensureDurableObjectEntity({
+      source,
+      className,
+      key: objectKey,
+      contextId,
+      ref: buildRef,
+    });
+    const record = (await doDispatch.dispatch(workspaceDORef, "entityActivate", {
+      kind: "do",
+      source: {
+        repoPath: source,
+        effectiveVersion: existing?.source.effectiveVersion ?? prepared.effectiveVersion,
+      },
+      contextId,
+      className,
+      key: objectKey,
+    })) as EntityRecord;
+    entityCache._onActivate(record);
+  };
 
   {
     let workerServiceDef: import("@natstack/shared/serviceDefinition").ServiceDefinition;
@@ -1806,49 +1899,17 @@ async function main() {
         const doDispatch = assertPresent(
           resolve<import("./doDispatch.js").DODispatch>("doDispatch")
         );
-        const { INTERNAL_DO_SOURCE } = await import("./internalDOs/internalDoLoader.js");
-        const workspaceDORef: import("./doDispatch.js").DORef = {
-          source: INTERNAL_DO_SOURCE,
-          className: "WorkspaceDO",
-          objectKey: workspace.config.id,
-        };
         workerServiceDef = createWorkerService({
           buildSystem: buildSystemInst,
           workspaceDecls,
-          activateDurableObject: async ({ source, className, objectKey }) => {
-            const targetId = canonicalEntityId({
-              kind: "do",
+          activateDurableObject: ({ source, className, objectKey }) => {
+            const singleton = workspaceDecls.singletons.find(source, className);
+            return activateDurableObjectEntity(doDispatch, workerdManagerInst, {
               source,
               className,
-              key: objectKey,
+              objectKey,
+              buildRef: singleton?.contextId ? undefined : "main",
             });
-            if (entityCache.resolveActive(targetId)) return;
-            const existing = (await doDispatch.dispatch(
-              workspaceDORef,
-              "entityResolveActive",
-              targetId
-            )) as EntityRecord | null;
-            if (existing) {
-              entityCache._onActivate(existing);
-              return;
-            }
-            const contextId = createHash("sha256")
-              .update(`${workspace.config.id}\x00${source}\x00${className}\x00${objectKey}`)
-              .digest("hex");
-            const prepared = await workerdManagerInst.ensureDurableObjectEntity({
-              source,
-              className,
-              key: objectKey,
-              contextId,
-            });
-            const record = (await doDispatch.dispatch(workspaceDORef, "entityActivate", {
-              kind: "do",
-              source: { repoPath: source, effectiveVersion: prepared.effectiveVersion },
-              contextId,
-              className,
-              key: objectKey,
-            })) as import("@natstack/shared/runtime/entitySpec").EntityRecord;
-            entityCache._onActivate(record);
           },
         });
       },
@@ -1923,7 +1984,9 @@ async function main() {
             );
             return [...aliases];
           },
-          getBuild: (unitPath, ref) => assertPresent(buildSystemForWorkerd).getBuild(unitPath, ref),
+          bindRuntimeImage: (unitPath, ref) =>
+            assertPresent(buildSystemForWorkerd).bindRuntimeImage(unitPath, ref),
+          getBuildByKey: (key) => assertPresent(buildSystemForWorkerd).getBuildByKey(key),
           workspacePath,
           statePath,
           routeRegistry,
@@ -1960,13 +2023,26 @@ async function main() {
         // Resolve attributed egress (shared listener) → live worker VerifiedCaller.
         egressProxy.setCallerResolver((callerId) => egressCallers.get(callerId) ?? null);
 
-        // Wire push trigger to restart workers on source rebuild.
+        // Wire source rebuilds to restart workers.
         //
         // Always pass an explicit array (possibly empty) so onSourceRebuilt
         // can reconcile removals: if a manifest edit DROPS a DO class, the
         // array reflects that absence and the stale DO service gets torn
         // down. Passing `undefined` would leave stale services bound forever.
-        buildSystemForWorkerd.onPushBuild((source) => {
+        buildSystemForWorkerd.onPushBuild((source, trigger, buildKey) => {
+          const head = trigger?.head ?? "main";
+          if (head !== "main") {
+            workerdManagerInstance
+              ?.onSourceRebuilt(source, undefined, trigger, buildKey)
+              .catch((err) => {
+                console.error(
+                  `[WorkerdManager] Failed to handle rebuilt source ${source}@${head}:`,
+                  err
+                );
+              });
+            return;
+          }
+
           const node = buildSystemForWorkerd
             ?.getGraph()
             .allNodes()
@@ -1977,9 +2053,11 @@ async function main() {
             | undefined;
           const doClasses = durable?.classes ?? [];
 
-          workerdManagerInstance?.onSourceRebuilt(source, doClasses).catch((err) => {
-            console.error(`[WorkerdManager] Failed to handle rebuilt source ${source}:`, err);
-          });
+          workerdManagerInstance
+            ?.onSourceRebuilt(source, doClasses, trigger, buildKey)
+            .catch((err) => {
+              console.error(`[WorkerdManager] Failed to handle rebuilt source ${source}:`, err);
+            });
         });
 
         // Pre-register all DO classes from the build graph so they're available
@@ -2043,10 +2121,50 @@ async function main() {
           return `http://127.0.0.1:${port}`;
         });
         doDispatch.setGetDispatchSecret(() => workerdManager.getDispatchSecret());
-        doDispatch.setEnsureDO((source, className, objectKey) =>
-          workerdManager.ensureDO(source, className, objectKey)
-        );
+        doDispatch.setEnsureDO((source, className, objectKey) => {
+          const targetId = canonicalEntityId({ kind: "do", source, className, key: objectKey });
+          const record = entityCache.resolveActive(targetId);
+          return workerdManager.ensureDO(source, className, objectKey, {
+            contextId: record?.contextId,
+          });
+        });
         return doDispatch;
+      },
+    });
+  }
+
+  {
+    // Attach the workspace vcs to the gad-store DO: ingest the bootstrap
+    // local state (same state hash — no EV churn) and enable durable
+    // commits, context forks, and the builds provenance log.
+    container.registerManaged({
+      name: "vcsAttach",
+      dependencies: ["doDispatch", "workerdManager"],
+      async start(resolve) {
+        const doDispatch = assertPresent(
+          resolve<import("./doDispatch.js").DODispatch>("doDispatch")
+        );
+        const workerdManagerInst = assertPresent(
+          resolve<import("./workerdManager.js").WorkerdManager>("workerdManager")
+        );
+        const gadRef = {
+          source: "workers/gad-store",
+          className: "GadWorkspaceDO",
+          objectKey:
+            workspaceDecls.singletons.find("workers/gad-store", "GadWorkspaceDO")?.key ??
+            "workspace-gad",
+          buildRef: "main",
+        };
+        // Entity record first: the DO's callbacks into the server (setTitle,
+        // console bridge) resolve their principal through the entity cache.
+        await activateDurableObjectEntity(doDispatch, workerdManagerInst, gadRef);
+        await workspaceVcs.attachGad({
+          call: <T>(method: string, input: unknown): Promise<T> =>
+            doDispatch.dispatch(gadRef, method, input) as Promise<T>,
+        });
+        workspaceVcs.enableMemoryIndexing();
+        console.log("[Vcs] Attached to gad-store DO");
+        return workspaceVcs;
       },
     });
   }
@@ -2139,7 +2257,7 @@ async function main() {
     workspace,
     workspacePath,
     workspaceConfig,
-    gitServer,
+    treeScanner,
     adminToken,
     centralData: centralData ?? null,
     args,
@@ -2435,18 +2553,27 @@ async function main() {
       if (!appHost) return { current: null, previous: [], retentionLimit: 0 };
       return appHost.listHostTargetVersions(target, sourceOrName);
     },
-    prepareHostTargetPinnedCommit: (
+    prepareHostTargetPinnedRef: (
       target: import("@natstack/shared/hostTargets").HostTarget,
       sourceOrName: string,
-      commit: string
+      ref: string
     ) => {
       const appHost = appHostForGateway;
       if (!appHost) throw new Error("App host is not available");
-      return appHost.prepareHostTargetPinnedCommit(target, sourceOrName, commit);
+      return appHost.prepareHostTargetPinnedRef(target, sourceOrName, ref);
     },
     launchHostTarget: (target: import("@natstack/shared/hostTargets").HostTarget) => {
       const appHost = appHostForGateway;
-      return appHost?.launchHostTarget(target) ?? false;
+      return (
+        appHost?.launchHostTarget(target) ??
+        ({
+          status: "unavailable",
+          launched: false,
+          target,
+          reason: "App host is not available",
+          details: [],
+        } satisfies import("@natstack/shared/hostTargets").HostTargetLaunchResult)
+      );
     },
     approvalQueue,
     registerEntityTitleListener: (
@@ -2521,17 +2648,9 @@ async function main() {
           auditLog,
           hasAppCapability: (callerId, capability) =>
             appHostForGateway?.hasAppCapability(callerId, capability) ?? false,
-          ensureMobileAppReady: async (source) =>
-            appHostForGateway?.ensureReactNativeReady(source) ?? {
-              ready: false,
-              reason: "App host is not available",
-              details: [],
-            },
-          getMobileAppBootstrap: async (source) => {
-            const readiness = await appHostForGateway?.ensureReactNativeReady(source);
-            if (readiness?.ready) return readiness.bootstrap;
-            return appHostForGateway?.getReactNativeBootstrap(source) ?? null;
-          },
+          ensureMobileAppReady: ensureMobileHostReadyForPairing,
+          getMobileAppBootstrap: async (source) =>
+            appHostForGateway?.getReactNativeBootstrap(source) ?? null,
           registerMobileAppPrincipal: (deviceId, source) =>
             appHostForGateway?.registerReactNativeAppPrincipal(deviceId, source) ?? null,
           retireMobileAppPrincipal: (deviceId) => {
@@ -2563,7 +2682,6 @@ async function main() {
         "panelHttpServer"
       ).server;
     },
-    getGitHandler: () => gitServer,
     getExtensionHttpHandler: () => extensionHostForGateway,
     getAppArtifactHandler: () => appHostForGateway,
     getWorkerdPort: () => workerdManagerForGateway?.getPort() ?? null,
@@ -2744,13 +2862,14 @@ async function main() {
 
   // ── Headless host auto-spawn (renderer of last resort) ──
   {
-    // Default ON for standalone servers (remote serve / direct node) where no
-    // desktop client may ever connect; OFF under the Electron desktop's child
-    // server, which ships its own clients. Env/flag override both ways.
+    // Default ON but lazy: server-created browser panels may need a CDP host
+    // even when the Electron desktop is connected, because desktop clients are
+    // not lease-assignment defaults. Env/flag override both ways.
     const envAutospawn = process.env["NATSTACK_HEADLESS_HOST_AUTOSPAWN"];
-    const autospawnEnabled =
-      args.headlessHostAutospawn ??
-      (envAutospawn !== undefined ? envAutospawn === "1" || envAutospawn === "true" : !ipcChannel);
+    const autospawnEnabled = resolveHeadlessHostAutospawn({
+      cliValue: args.headlessHostAutospawn,
+      envValue: envAutospawn,
+    });
     container.registerManaged({
       name: "headlessHostManager",
       dependencies: ["cdpBridge"],
@@ -2850,9 +2969,13 @@ async function main() {
   }
   rpcServerInstance.setWorkerdGatewayToken(workerdGatewayToken);
   rpcServerInstance.setWorkerdDispatchSecret(workerdManager.getDispatchSecret());
-  rpcServerInstance.setEnsureDO((source, className, objectKey) =>
-    workerdManager.ensureDO(source, className, objectKey)
-  );
+  rpcServerInstance.setEnsureDO((source, className, objectKey) => {
+    const targetId = canonicalEntityId({ kind: "do", source, className, key: objectKey });
+    const record = entityCache.resolveActive(targetId);
+    return workerdManager.ensureDO(source, className, objectKey, {
+      contextId: record?.contextId,
+    });
+  });
 
   dispatcher.markInitialized();
 
@@ -2925,6 +3048,7 @@ async function main() {
           className: decl.className,
           key: decl.key,
           contextId,
+          ref: decl.contextId ? undefined : "main",
         });
         const record = await dispatchWorkspaceDO<EntityRecord>("entityActivate", {
           kind: "do",
@@ -2958,11 +3082,31 @@ async function main() {
   });
   cleanupReaper.start();
 
-  await reconcileDeclaredWorkspaceUnits(workspaceConfig, "startup");
+  let syncDeclaredRemotesAfterStartupReload = false;
+  do {
+    if (pendingStartupMetaConfigReload) {
+      try {
+        replaceWorkspaceConfig(workspaceConfig, loadWorkspaceConfig(workspacePath));
+        syncDeclaredRemotesAfterStartupReload = true;
+      } catch (err) {
+        console.warn(
+          "[GitRemotes] Failed to reload workspace config before startup reconcile:",
+          err
+        );
+      }
+      pendingStartupMetaConfigReload = false;
+    }
+    await reconcileDeclaredWorkspaceUnits(workspaceConfig, "startup");
+  } while (pendingStartupMetaConfigReload);
+  initialWorkspaceUnitReconcileComplete = true;
+  if (syncDeclaredRemotesAfterStartupReload) {
+    syncDeclaredRemotesForSource().catch((err: unknown) =>
+      console.warn("[GitRemotes] Failed to sync declared remotes after startup config reload:", err)
+    );
+  }
 
   if (requireMobileReady) {
-    const appHost = container.get<import("./appHost.js").AppHost>("appHost");
-    const readiness = await appHost.ensureReactNativeReady();
+    const readiness = await ensureMobileHostReadyForPairing();
     if (!readiness?.ready) {
       printReadinessActionBlock("React Native mobile app is not ready", [
         "This server was started with mobile pairing enabled, but the",
@@ -2978,7 +3122,7 @@ async function main() {
       process.exit(1);
     }
     console.log(
-      `[Mobile] React Native app ready: ${readiness.appId} (${readiness.source}) build ${readiness.buildKey}`
+      `[Mobile] React Native app ready${readiness.appId ? `: ${readiness.appId} (${readiness.source ?? "unknown"}) build ${readiness.buildKey ?? "unknown"}` : ""}`
     );
   }
   if (requireElectronReady) {
@@ -3039,7 +3183,6 @@ async function main() {
     console.log("natstack-server ready:");
     console.log(`  Workspace:   ${workspaceName}${workspaceIsEphemeral ? " (ephemeral dev)" : ""}`);
     console.log(`  Gateway:     ${proto}://${hostConfig.externalHost}:${gatewayPort}`);
-    console.log(`  Git:         (via gateway /_git/)`);
     console.log(`  Workerd:     (via gateway /_w/)`);
     console.log(`  RPC:         ${wsProto}://${hostConfig.externalHost}:${gatewayPort}/rpc`);
     const sourceLabel =
@@ -3210,7 +3353,6 @@ async function main() {
         isEphemeral: workspaceIsEphemeral,
         gatewayUrl: `${proto}://${hostConfig.externalHost}:${gatewayPort}`,
         rpcUrl: `${wsProto}://${hostConfig.externalHost}:${gatewayPort}/rpc`,
-        gitUrl: `${proto}://${hostConfig.externalHost}:${gatewayPort}/_git/`,
         workerdUrl: `${proto}://${hostConfig.externalHost}:${gatewayPort}/_w/`,
         publicUrl: explicitPublicUrl ?? detectedVpn?.url ?? null,
         connectUrl: pairingTargetUrl,
@@ -3325,19 +3467,19 @@ async function main() {
   }
 }
 
-function collectWorkspaceRepoPaths(
-  nodes: Array<{ path: string; isGitRepo: boolean; children: unknown[] }>
+function collectWorkspaceUnitPaths(
+  nodes: Array<{ path: string; isUnit: boolean; children: unknown[] }>
 ): string[] {
-  const repos: string[] = [];
+  const units: string[] = [];
   for (const node of nodes) {
-    if (node.isGitRepo) repos.push(node.path);
-    repos.push(
-      ...collectWorkspaceRepoPaths(
-        node.children as Array<{ path: string; isGitRepo: boolean; children: unknown[] }>
+    if (node.isUnit) units.push(node.path);
+    units.push(
+      ...collectWorkspaceUnitPaths(
+        node.children as Array<{ path: string; isUnit: boolean; children: unknown[] }>
       )
     );
   }
-  return repos;
+  return units;
 }
 
 function replaceWorkspaceConfig<T extends object>(target: T, next: T): void {

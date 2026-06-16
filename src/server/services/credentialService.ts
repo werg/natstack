@@ -3022,16 +3022,31 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     let usage: CredentialUseContext;
     if (request.credentialId) {
       credential = await loadActiveCredential(request.credentialId);
-      const matched = credentialUseContext(credential, new URL(request.url), use);
-      if (!matched) {
-        throw new Error("Credential audience does not match requested URL");
+      if (!request.url) {
+        const matched = providerCredentialUseContext(credential, request.providerId, use);
+        if (!matched) {
+          throw new Error("Credential does not match requested provider");
+        }
+        usage = matched;
+      } else {
+        const matched = credentialUseContext(credential, new URL(request.url), use);
+        if (!matched) {
+          throw new Error("Credential audience does not match requested URL");
+        }
+        usage = matched;
       }
-      usage = matched;
-    } else {
+    } else if (request.url) {
       const found = await findUrlBoundCredentialForUrl(new URL(request.url), use);
       if (!found) return null;
       credential = found.credential;
       usage = found.usage;
+    } else if (request.providerId) {
+      const found = await findUrlBoundCredentialForProvider(request.providerId, use);
+      if (!found) return null;
+      credential = found.credential;
+      usage = found.usage;
+    } else {
+      return null;
     }
 
     // Already permitted — summarize inline (fast path, unchanged).
@@ -3359,6 +3374,66 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       throw new Error("Credential audience does not match requested URL");
     }
     return { credential: active, usage };
+  }
+
+  async function findUrlBoundCredentialForProvider(
+    providerId: string,
+    use: CredentialBindingUse = "fetch"
+  ): Promise<{ credential: Credential; usage: CredentialUseContext } | null> {
+    const credentials = (await credentialStore.listUrlBound()).filter((credential) => {
+      if (credential.revokedAt) return false;
+      if (
+        credential.metadata?.["providerId"] !== providerId &&
+        credential.metadata?.["modelProviderId"] !== providerId &&
+        credential.providerId !== providerId
+      ) {
+        return false;
+      }
+      return credential.bindings?.some((binding) => binding.use === use) ?? false;
+    });
+    if (credentials.length > 1) {
+      throw new Error(
+        "Multiple credentials match requested provider; choose an explicit credential"
+      );
+    }
+    const credential = credentials[0] ?? null;
+    if (!credential) return null;
+    const active = credential.id ? await loadActiveCredential(credential.id) : credential;
+    const usage = providerCredentialUseContext(active, providerId, use);
+    if (!usage) {
+      throw new Error("Credential provider does not match requested provider");
+    }
+    return { credential: active, usage };
+  }
+
+  function providerCredentialUseContext(
+    credential: Credential,
+    providerId: string | undefined,
+    use: CredentialBindingUse
+  ): CredentialUseContext | null {
+    if (
+      providerId &&
+      credential.metadata?.["providerId"] !== providerId &&
+      credential.metadata?.["modelProviderId"] !== providerId &&
+      credential.providerId !== providerId
+    ) {
+      return null;
+    }
+    const binding = credential.bindings?.find((candidate) => candidate.use === use);
+    const audience = binding?.audience[0];
+    if (!binding || !audience) return null;
+    const action: CredentialGrantAction = use === "git-http" || use === "git-ssh" ? "read" : "use";
+    return {
+      binding,
+      resource: audience.url,
+      action,
+      sessionResource: {
+        bindingId: binding.id,
+        resource: audience.url,
+        action,
+      },
+      gitOperation: undefined,
+    };
   }
 
   async function findReplacementCandidate(
@@ -4244,7 +4319,8 @@ function describeGitHttpOperation(
   targetUrl: URL,
   method: string
 ): CredentialUseContext["gitOperation"] {
-  const service = targetUrl.searchParams.get("service") ?? gitServiceFromPath(targetUrl.pathname);
+  const service =
+    targetUrl.searchParams.get("service") ?? gitHostServiceFromPath(targetUrl.pathname);
   const action = service === "git-receive-pack" ? "write" : "read";
   return {
     action,
@@ -4254,7 +4330,7 @@ function describeGitHttpOperation(
   };
 }
 
-function gitServiceFromPath(pathname: string): string | null {
+function gitHostServiceFromPath(pathname: string): string | null {
   if (pathname.endsWith("/git-receive-pack")) return "git-receive-pack";
   if (pathname.endsWith("/git-upload-pack")) return "git-upload-pack";
   return null;

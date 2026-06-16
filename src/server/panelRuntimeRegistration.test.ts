@@ -174,7 +174,14 @@ describe("createServerPanelTreeBridge reload", () => {
     const cdpBridge = {
       isProviderConnected: vi.fn(() => true),
       isTargetRegisteredForHost: vi.fn(() => true),
-      sendTargetCommand: vi.fn(async () => null),
+      sendHostCommand: vi.fn(async () => ({
+        panelId: "slot-a",
+        operation: "reload",
+        status: "reloaded",
+        loaded: true,
+        rebuilt: false,
+        reloaded: true,
+      })),
     };
     const unloadSlot = vi.fn();
     const bridge = await createServerPanelTreeBridge({
@@ -211,12 +218,7 @@ describe("createServerPanelTreeBridge reload", () => {
     });
 
     expect(unloadSlot).not.toHaveBeenCalled();
-    expect(cdpBridge.sendTargetCommand).toHaveBeenCalledWith(
-      "slot-a",
-      "panel:requester",
-      "reload",
-      []
-    );
+    expect(cdpBridge.sendHostCommand).toHaveBeenCalledWith("slot-a", "reloadPanel", []);
   });
 
   it("delegates rebuild-and-reload to the active host without unloading leases", async () => {
@@ -304,5 +306,168 @@ describe("createServerPanelTreeBridge reload", () => {
 
     expect(unloadSlot).not.toHaveBeenCalled();
     expect(cdpBridge.sendHostCommand).toHaveBeenCalledWith("slot-a", "rebuildAndReload", []);
+  });
+
+  it("delegates hosted panel navigation to the active CDP host", async () => {
+    const now = Date.now();
+    const slot = {
+      slot_id: "slot-a",
+      parent_slot_id: null,
+      current_entity_id: "panel:entry-a",
+      current_entity_title: "Target",
+      current_entry_key: "entry-a",
+      position_id: "root",
+      created_at: now,
+      closed_at: null,
+    };
+    const history = {
+      slot_id: "slot-a",
+      cursor: 0,
+      entry_key: "entry-a",
+      entity_id: "panel:entry-a",
+      source: "panels/target",
+      context_id: "ctx-target",
+      state_args: null,
+      recorded_at: now,
+    };
+    const entity = {
+      id: "panel:entry-a",
+      kind: "panel",
+      source: { repoPath: "panels/target", effectiveVersion: "ev-target" },
+      contextId: "ctx-target",
+      key: "entry-a",
+      createdAt: now,
+      status: "active",
+      cleanupComplete: false,
+    };
+    const dispatch = vi.fn(async (_ctx, service: string, method: string, args: unknown[]) => {
+      if (service === "workspace-state" && method === "slot.list") return [slot];
+      if (service === "workspace-state" && method === "slot.get")
+        return args[0] === "slot-a" ? slot : null;
+      if (service === "workspace-state" && method === "slot.history") return [history];
+      if (service === "workspace-state" && method === "entity.resolveActive") return entity;
+      if (service === "workspace-state" && method === "panel.search") return [];
+      if (service === "build" && method === "getPanelMetadata") return { title: "Target" };
+      if (service === "presence" && method === "markPanelActive") return undefined;
+      throw new Error(`Unexpected dispatch: ${service}.${method}`);
+    });
+    const hostResult = { id: "slot-a", title: "Next" };
+    const cdpBridge = {
+      isProviderConnected: vi.fn(() => true),
+      isTargetRegisteredForHost: vi.fn(() => true),
+      sendHostCommand: vi.fn(async () => hostResult),
+    };
+    const eventService = { emit: vi.fn() };
+    const bridge = await createServerPanelTreeBridge({
+      container: { get: vi.fn(() => cdpBridge) },
+      dispatcher: { dispatch },
+      workspace: {},
+      workspacePath: "/tmp/workspace",
+      workspaceConfig: {},
+      adminToken: "admin-token",
+      centralData: null,
+      hostConfig: { gatewayPort: 0, externalHost: "localhost", protocol: "http" },
+      isIpcMode: false,
+      panelRuntimeCoordinator: {
+        resolveHostForSlot: vi.fn(() => ({ hostConnectionId: "desktop-host", supportsCdp: true })),
+      },
+      eventService,
+    } as never);
+
+    await expect(
+      bridge({
+        callerId: "panel:requester",
+        callerKind: "panel",
+        method: "navigate",
+        args: ["slot-a", "panels/next", { contextId: "ctx-next" }],
+      })
+    ).resolves.toEqual(hostResult);
+
+    expect(cdpBridge.sendHostCommand).toHaveBeenCalledWith("slot-a", "navigatePanel", [
+      "panels/next",
+      { contextId: "ctx-next" },
+    ]);
+    expect(eventService.emit).toHaveBeenCalledWith("panel-tree-updated", expect.any(Object));
+  });
+
+  it("treats a null hosted navigation result as handled", async () => {
+    const now = Date.now();
+    const slot = {
+      slot_id: "slot-a",
+      parent_slot_id: null,
+      current_entity_id: "panel:entry-a",
+      current_entity_title: "Target",
+      current_entry_key: "entry-a",
+      position_id: "root",
+      created_at: now,
+      closed_at: null,
+    };
+    const history = {
+      slot_id: "slot-a",
+      cursor: 0,
+      entry_key: "entry-a",
+      entity_id: "panel:entry-a",
+      source: "panels/target",
+      context_id: "ctx-target",
+      state_args: null,
+      recorded_at: now,
+    };
+    const entity = {
+      id: "panel:entry-a",
+      kind: "panel",
+      source: { repoPath: "panels/target", effectiveVersion: "ev-target" },
+      contextId: "ctx-target",
+      key: "entry-a",
+      createdAt: now,
+      status: "active",
+      cleanupComplete: false,
+    };
+    const dispatch = vi.fn(async (_ctx, service: string, method: string, args: unknown[]) => {
+      if (service === "workspace-state" && method === "slot.list") return [slot];
+      if (service === "workspace-state" && method === "slot.get")
+        return args[0] === "slot-a" ? slot : null;
+      if (service === "workspace-state" && method === "slot.history") return [history];
+      if (service === "workspace-state" && method === "entity.resolveActive") return entity;
+      if (service === "workspace-state" && method === "panel.search") return [];
+      if (service === "build" && method === "getPanelMetadata") return { title: "Target" };
+      if (service === "presence" && method === "markPanelActive") return undefined;
+      throw new Error(`Unexpected dispatch: ${service}.${method}`);
+    });
+    const cdpBridge = {
+      isProviderConnected: vi.fn(() => true),
+      isTargetRegisteredForHost: vi.fn(() => true),
+      sendHostCommand: vi.fn(async () => null),
+    };
+    const eventService = { emit: vi.fn() };
+    const bridge = await createServerPanelTreeBridge({
+      container: { get: vi.fn(() => cdpBridge) },
+      dispatcher: { dispatch },
+      workspace: {},
+      workspacePath: "/tmp/workspace",
+      workspaceConfig: {},
+      adminToken: "admin-token",
+      centralData: null,
+      hostConfig: { gatewayPort: 0, externalHost: "localhost", protocol: "http" },
+      isIpcMode: false,
+      panelRuntimeCoordinator: {
+        resolveHostForSlot: vi.fn(() => ({ hostConnectionId: "desktop-host", supportsCdp: true })),
+      },
+      eventService,
+    } as never);
+
+    await expect(
+      bridge({
+        callerId: "panel:requester",
+        callerKind: "panel",
+        method: "navigate",
+        args: ["slot-a", "panels/next", { contextId: "ctx-next" }],
+      })
+    ).resolves.toBeNull();
+
+    expect(cdpBridge.sendHostCommand).toHaveBeenCalledWith("slot-a", "navigatePanel", [
+      "panels/next",
+      { contextId: "ctx-next" },
+    ]);
+    expect(eventService.emit).toHaveBeenCalledWith("panel-tree-updated", expect.any(Object));
   });
 });

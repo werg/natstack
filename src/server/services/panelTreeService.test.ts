@@ -282,6 +282,81 @@ describe("panelTreeService", () => {
     });
   });
 
+  it("lets a panel navigate itself without approval", async () => {
+    const approvalQueue = approvalQueueMock("deny");
+    const bridge = vi.fn(async (request: { method: string }) =>
+      request.method === "metadata"
+        ? {
+            id: "requester-slot",
+            title: "Requester",
+            source: "panels/requester",
+            runtimeEntityId: "panel:requester",
+          }
+        : { id: "requester-slot", title: "Vault" }
+    );
+    const service = createPanelTreeService({
+      approvalQueue,
+      grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
+      resolveRequesterPanel: vi.fn(async () => ({
+        id: "requester-slot",
+        runtimeEntityId: "panel:requester",
+      })),
+      bridge,
+    });
+
+    await expect(
+      service.handler(ctx(), "navigate", [
+        "requester-slot",
+        "panels/spectrolite",
+        { contextId: "ctx-vault", stateArgs: { repoRoot: "/repo" } },
+      ])
+    ).resolves.toEqual({ id: "requester-slot", title: "Vault" });
+
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+    expect(bridge).toHaveBeenLastCalledWith({
+      callerId: "panel:requester",
+      callerKind: "panel",
+      method: "navigate",
+      args: [
+        "requester-slot",
+        "panels/spectrolite",
+        { contextId: "ctx-vault", stateArgs: { repoRoot: "/repo" } },
+      ],
+    });
+  });
+
+  it("approval-gates navigating another panel as structural replacement", async () => {
+    const approvalQueue = approvalQueueMock("once");
+    const bridge = vi.fn(async (request: { method: string }) =>
+      request.method === "metadata"
+        ? { id: "target", title: "Target", source: "panels/target" }
+        : { id: "target", title: "Next" }
+    );
+    const service = createPanelTreeService({
+      approvalQueue,
+      grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
+      bridge,
+    });
+
+    await expect(
+      service.handler(ctx(), "navigate", ["target", "panels/next", { contextId: "ctx-next" }])
+    ).resolves.toEqual({ id: "target", title: "Next" });
+
+    expect(approvalQueue.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capability: PANEL_STRUCTURAL_CAPABILITY,
+        title: "Navigate panel",
+        description: "Allow this requester to navigate Target to another panel source or context.",
+      })
+    );
+    expect(bridge).toHaveBeenLastCalledWith({
+      callerId: "panel:requester",
+      callerKind: "panel",
+      method: "navigate",
+      args: ["target", "panels/next", { contextId: "ctx-next" }],
+    });
+  });
+
   it("approval-gates object-shaped structural operations by target panel id", async () => {
     const approvalQueue = approvalQueueMock("session");
     const bridge = vi.fn(async (request: { method: string }) =>

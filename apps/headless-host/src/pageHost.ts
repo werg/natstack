@@ -127,15 +127,16 @@ export class PageHost {
     log.info(`loaded panel ${input.slotId} (${input.panelUrl})`);
   }
 
-  async reloadPanel(slotId: string, panelInit: unknown): Promise<void> {
+  async reloadPanel(slotId: string, panelUrl: string, panelInit: unknown): Promise<void> {
     const page = this.requirePage(slotId);
+    page.panelUrl = panelUrl;
     const initScript = `globalThis.__natstackPanelInit = ${JSON.stringify(panelInit)}; globalThis.__natstackHostPlatform = "headless";`;
     await this.cdp.send(
       "Page.addScriptToEvaluateOnNewDocument",
       { source: initScript },
       page.mgmtSessionId
     );
-    const nav = (await this.cdp.send("Page.navigate", { url: page.panelUrl }, page.mgmtSessionId)) as {
+    const nav = (await this.cdp.send("Page.navigate", { url: panelUrl }, page.mgmtSessionId)) as {
       errorText?: string;
     };
     if (nav.errorText && nav.errorText !== "net::ERR_ABORTED") {

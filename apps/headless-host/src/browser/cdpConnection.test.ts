@@ -113,6 +113,15 @@ describe("CdpConnection", () => {
     await expect(pending).rejects.toThrow(/closed/);
   });
 
+  it("rejects pending commands when the WebSocket errors after connect", async () => {
+    server.socket?.removeAllListeners("message");
+    const pending = connection.send("Runtime.evaluate", { expression: "1" });
+    (
+      connection as unknown as { ws: { emit(event: "error", error: Error): void } }
+    ).ws.emit("error", new Error("socket failure"));
+    await expect(pending).rejects.toThrow(/socket failure/);
+  });
+
   it("surfaces CDP protocol errors as rejections", async () => {
     server.socket?.removeAllListeners("message");
     server.socket?.on("message", (data) => {

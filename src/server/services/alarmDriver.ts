@@ -112,12 +112,25 @@ export class AlarmDriver {
           objectKey: target.objectKey,
         });
       } catch (err) {
-        // The DO may have been destroyed, or load/dispatch failed. The alarm was
-        // already removed; a recurring DO simply won't re-arm. Best-effort.
+        // Alarms are at-least-once: `alarmTakeDue` already removed the row, so
+        // a failed dispatch MUST re-arm or the wake is lost forever (stuck
+        // effect-outbox nudges, dead lease recovery — "typing forever").
+        // Re-arm with a short backoff; a destroyed DO keeps failing and keeps
+        // its (cheap) retry row until it is cleaned up with the entity.
         log.warn(
-          `alarm dispatch failed for ${target.source}:${target.className}/${target.objectKey}:`,
+          `alarm dispatch failed for ${target.source}:${target.className}/${target.objectKey}; re-arming:`,
           err
         );
+        try {
+          await this.dispatchWorkspace("alarmSet", {
+            source: target.source,
+            className: target.className,
+            objectKey: target.objectKey,
+            wakeAt: Date.now() + 5_000,
+          });
+        } catch (rearmErr) {
+          log.warn("alarm re-arm failed (will rely on next notifyChanged):", rearmErr);
+        }
       }
     });
     void this.reschedule();

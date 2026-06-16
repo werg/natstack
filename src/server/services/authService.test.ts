@@ -13,6 +13,7 @@ import { EntityCache } from "@natstack/shared/runtime/entityCache";
 import type { EntityRecord } from "@natstack/shared/runtime/entitySpec";
 import { ConnectionGrantService } from "@natstack/shared/connectionGrants";
 import type { CredentialAuditEvent } from "@natstack/shared/credentials/types";
+import type { PendingUnitBatchApproval } from "@natstack/shared/approvals";
 
 function makePanelRecord(id: string): EntityRecord {
   return {
@@ -51,6 +52,8 @@ type IssueDeviceResponse = {
 type PairingCompleteResponse = {
   deviceId: string;
   refreshToken: string;
+  shellToken: string;
+  callerId: string;
 };
 type RefreshAppGrantResponse = { callerId: string; connectionGrant: string };
 type MobileAppBootstrapResponse = {
@@ -188,8 +191,8 @@ describe("auth service device credentials", () => {
     expect(completed.status).toBe(200);
     expect(completed.body.deviceId).toMatch(/^dev_/);
     expect(completed.body.refreshToken).toBeTruthy();
-    expect(completed.body).not.toHaveProperty("shellToken");
-    expect(completed.body).not.toHaveProperty("callerId");
+    expect(completed.body.callerId).toBe(`shell:${completed.body.deviceId}`);
+    expect(tokenManager.validateToken(completed.body.shellToken)?.callerKind).toBe("shell-remote");
 
     const refreshed = await postJson<RefreshAppGrantResponse>(
       "/_r/s/auth/refresh-principal-grant",
@@ -202,21 +205,6 @@ describe("auth service device credentials", () => {
     expect(refreshed.status).toBe(200);
     expect(refreshed.body.callerId).toBe(`app:apps/mobile:${completed.body.deviceId}`);
     expect(refreshed.body.connectionGrant).toMatch(/^[0-9a-f]{64}$/);
-
-    const legacyGrant = await fetch(`${gatewayUrl}/_r/s/auth/refresh-app-grant`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        deviceId: completed.body.deviceId,
-        refreshToken: completed.body.refreshToken,
-        principal: "react-native-app",
-      }),
-    });
-    expect(legacyGrant.status).toBe(200);
-    expect(legacyGrant.headers.get("deprecation")).toBe("true");
-    expect(legacyGrant.headers.get("x-natstack-deprecated-route")).toBe(
-      "/_r/s/auth/refresh-principal-grant"
-    );
 
     const unsupportedPrincipal = await postJson<{ error: string; code: string }>(
       "/_r/s/auth/refresh-principal-grant",
@@ -497,6 +485,94 @@ describe("auth service connection grants", () => {
       )
     ).rejects.toThrow(/panel-hosting/);
     connectionGrants.stop();
+  });
+
+  it("returns mobile app approval requirements without blocking bootstrap", async () => {
+    const tokenManager = new TokenManager();
+    const routeRegistry = new RouteRegistry();
+    const authStore = new DeviceAuthStore(
+      path.join(
+        fs.mkdtempSync(path.join(os.tmpdir(), "natstack-auth-mobile-approval-")),
+        "devices.json"
+      )
+    );
+    const approvals = [
+      {
+        approvalId: "approval-mobile",
+        kind: "unit-batch",
+        callerId: "system:apps",
+        callerKind: "system",
+        repoPath: "apps/mobile",
+        effectiveVersion: "ev-mobile",
+        trigger: "startup",
+        title: "Approve workspace apps",
+        description: "Approve the mobile app",
+        units: [
+          {
+            unitKind: "app",
+            unitName: "@workspace-apps/mobile",
+            displayName: "Mobile",
+            target: "react-native",
+            source: { kind: "workspace-repo", repo: "apps/mobile", ref: "main" },
+            ev: "ev-mobile",
+            capabilities: ["notifications"],
+            dependencyEvs: {},
+            externalDeps: {},
+          },
+        ],
+        configWrite: null,
+        requestedAt: 1,
+      },
+    ] satisfies PendingUnitBatchApproval[];
+    const authService = createAuthService({
+      tokenManager,
+      deviceAuthStore: authStore,
+      getServerBootId: () => "boot_mobile_approval",
+      getWorkspaceId: () => "workspace_mobile_approval",
+      ensureMobileAppReady: async () => ({
+        ready: false,
+        approvalRequired: true,
+        approvals,
+        reason: "React Native workspace app requires approval",
+      }),
+      getMobileAppBootstrap: () => null,
+    });
+    routeRegistry.registerHttpServiceRoutes(authService.routes ?? []);
+    const gateway = new Gateway({
+      externalHost: "127.0.0.1",
+      bindHost: "127.0.0.1",
+      workerdPort: 9,
+      routeRegistry,
+      adminToken: "admin-secret",
+      tokenManager,
+    });
+    try {
+      const port = await gateway.start(0);
+      const issued = await postLocal<IssueDeviceResponse>(
+        port,
+        "/_r/s/auth/issue-device",
+        { label: "Phone", platform: "mobile" },
+        "admin-secret"
+      );
+      const response = await postLocal<{
+        code: string;
+        approvals: PendingUnitBatchApproval[];
+      }>(port, "/_r/s/auth/mobile-app-bootstrap", {
+        deviceId: issued.body.deviceId,
+        refreshToken: issued.body.refreshToken,
+      });
+
+      expect(response.status).toBe(409);
+      expect(response.body.code).toBe("MOBILE_APP_APPROVAL_REQUIRED");
+      expect(response.body.approvals).toEqual([
+        expect.objectContaining({
+          approvalId: "approval-mobile",
+          units: [expect.objectContaining({ target: "react-native" })],
+        }),
+      ]);
+    } finally {
+      await gateway.stop();
+    }
   });
 });
 

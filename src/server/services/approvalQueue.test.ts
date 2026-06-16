@@ -16,7 +16,7 @@ function unitBatchRequest(
     callerKind: "panel" as const,
     repoPath: "panels/example",
     effectiveVersion: "hash-1",
-    trigger: "source-push" as const,
+    trigger: "source-change" as const,
     title: "Update trusted unit source",
     description: "Accepting this push updates trusted native extension code.",
     units: [
@@ -27,7 +27,7 @@ function unitBatchRequest(
         version: "1.0.0",
         target: null,
         source: {
-          kind: "internal-git" as const,
+          kind: "workspace-repo" as const,
           repo: "extensions/typecheck-service",
           ref: "main",
         },
@@ -227,7 +227,7 @@ describe("approvalQueue", () => {
       callerKind: "panel",
       repoPath: "panels/example",
       effectiveVersion: "hash-1",
-      capability: "internal-git-write",
+      capability: "workspace-repo-write",
       title: "Write project files",
       resource: {
         type: "git-repo",
@@ -242,7 +242,7 @@ describe("approvalQueue", () => {
       callerKind: "panel",
       repoPath: "panels/example",
       effectiveVersion: "hash-1",
-      capability: "internal-git-write",
+      capability: "workspace-repo-write",
       title: "Write project files",
       resource: {
         type: "git-repo",
@@ -297,11 +297,11 @@ describe("approvalQueue", () => {
   it("honors custom unit-batch approval dedup keys", async () => {
     const { queue } = createQueue();
     const first = queue.request(
-      unitBatchRequest({ dedupKey: "unit-source-push:extension:typecheck:main" })
+      unitBatchRequest({ dedupKey: "unit-source-change:extension:typecheck:main" })
     );
     const second = queue.request(
       unitBatchRequest({
-        dedupKey: "unit-source-push:extension:typecheck:main",
+        dedupKey: "unit-source-change:extension:typecheck:main",
         effectiveVersion: "newer-commit",
       })
     );
@@ -319,13 +319,13 @@ describe("approvalQueue", () => {
     const first = queue.request(
       unitBatchRequest({
         callerId: "panel-1",
-        dedupKey: "unit-source-push:extension:typecheck:main",
+        dedupKey: "unit-source-change:extension:typecheck:main",
       })
     );
     const second = queue.request(
       unitBatchRequest({
         callerId: "panel-2",
-        dedupKey: "unit-source-push:extension:typecheck:main",
+        dedupKey: "unit-source-change:extension:typecheck:main",
       })
     );
 
@@ -554,7 +554,7 @@ describe("approvalQueue", () => {
           unitName: "@workspace-extensions/image-service",
           displayName: "Image Service",
           source: {
-            kind: "internal-git" as const,
+            kind: "workspace-repo" as const,
             repo: "extensions/image-service",
             ref: "main",
           },
@@ -565,7 +565,7 @@ describe("approvalQueue", () => {
           unitName: "@workspace-extensions/file-tools",
           displayName: "File Tools",
           source: {
-            kind: "internal-git" as const,
+            kind: "workspace-repo" as const,
             repo: "extensions/file-tools",
             ref: "main",
           },

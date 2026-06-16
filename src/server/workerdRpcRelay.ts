@@ -36,28 +36,64 @@ export interface DurableObjectRelayDeps {
   idempotencyKey?: string;
 }
 
+function describeFetchCause(cause: unknown): string {
+  if (!(cause instanceof Error)) return String(cause);
+  const fields = cause as Error & {
+    code?: unknown;
+    errno?: unknown;
+    syscall?: unknown;
+    address?: unknown;
+    port?: unknown;
+  };
+  const parts = [`${cause.name}: ${cause.message}`];
+  for (const key of ["code", "errno", "syscall", "address", "port"] as const) {
+    const value = fields[key];
+    if (typeof value === "string" || typeof value === "number") {
+      parts.push(`${key}=${value}`);
+    }
+  }
+  return parts.join(" ");
+}
+
+function describeFetchFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const cause = error instanceof Error ? (error as Error & { cause?: unknown }).cause : undefined;
+  if (!cause) return message;
+  return `${message} (cause: ${describeFetchCause(cause)})`;
+}
+
 export async function postToDurableObject(
   ref: DORef,
   method: string,
   args: unknown[],
   deps: DurableObjectRelayDeps
 ): Promise<unknown> {
-  const res = await fetch(`${deps.workerdUrl}${doRefUrl(ref, method)}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${deps.workerdGatewayToken}`,
-      ...(deps.workerdDispatchSecret
-        ? { "X-NatStack-Dispatch-Secret": deps.workerdDispatchSecret }
-        : {}),
-      ...(deps.callerId ? { "X-Natstack-Rpc-Caller-Id": deps.callerId } : {}),
-      ...(deps.callerKind ? { "X-Natstack-Rpc-Caller-Kind": deps.callerKind } : {}),
-      ...(deps.callerPanelId ? { "X-Natstack-Rpc-Caller-Panel-Id": deps.callerPanelId } : {}),
-      ...(deps.requestId ? { "X-Natstack-Rpc-Request-Id": deps.requestId } : {}),
-      ...(deps.idempotencyKey ? { "X-Natstack-Rpc-Idempotency-Key": deps.idempotencyKey } : {}),
-    },
-    body: JSON.stringify(args),
-  });
+  const url = `${deps.workerdUrl}${doRefUrl(ref, method)}`;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${deps.workerdGatewayToken}`,
+        ...(deps.workerdDispatchSecret
+          ? { "X-NatStack-Dispatch-Secret": deps.workerdDispatchSecret }
+          : {}),
+        ...(deps.callerId ? { "X-Natstack-Rpc-Caller-Id": deps.callerId } : {}),
+        ...(deps.callerKind ? { "X-Natstack-Rpc-Caller-Kind": deps.callerKind } : {}),
+        ...(deps.callerPanelId ? { "X-Natstack-Rpc-Caller-Panel-Id": deps.callerPanelId } : {}),
+        ...(deps.requestId ? { "X-Natstack-Rpc-Request-Id": deps.requestId } : {}),
+        ...(deps.idempotencyKey ? { "X-Natstack-Rpc-Idempotency-Key": deps.idempotencyKey } : {}),
+      },
+      body: JSON.stringify(args),
+    });
+  } catch (error) {
+    const wrapped = new Error(
+      `DO RPC fetch to ${url} failed: ${describeFetchFailure(error)}`
+    ) as Error & { cause?: unknown };
+    wrapped.cause = error;
+    throw wrapped;
+  }
 
   if (!res.ok) {
     const text = await res.text();

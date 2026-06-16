@@ -19,6 +19,7 @@ import type { HostConfig } from "@natstack/shared/hostConfig";
 import type {
   HostTarget,
   HostTargetCandidate,
+  HostTargetLaunchResult,
   HostTargetSelection,
   HostTargetSelectionInput,
 } from "@natstack/shared/hostTargets";
@@ -84,6 +85,36 @@ function normalizePanelNavigationState(input: Record<string, unknown>): PanelNav
     ...(typeof input["isLoading"] === "boolean" ? { isLoading: input["isLoading"] } : {}),
     ...(typeof input["canGoBack"] === "boolean" ? { canGoBack: input["canGoBack"] } : {}),
     ...(typeof input["canGoForward"] === "boolean" ? { canGoForward: input["canGoForward"] } : {}),
+  };
+}
+
+function normalizePanelTreeNavigateOptions(input: unknown):
+  | {
+      ref?: string;
+      contextId?: string;
+      env?: Record<string, string>;
+      stateArgs?: Record<string, unknown>;
+    }
+  | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const record = input as Record<string, unknown>;
+  const env =
+    record["env"] && typeof record["env"] === "object"
+      ? Object.fromEntries(
+          Object.entries(record["env"] as Record<string, unknown>).filter(
+            (entry): entry is [string, string] => typeof entry[1] === "string"
+          )
+        )
+      : undefined;
+  const stateArgs =
+    record["stateArgs"] && typeof record["stateArgs"] === "object"
+      ? (record["stateArgs"] as Record<string, unknown>)
+      : undefined;
+  return {
+    ...(typeof record["ref"] === "string" ? { ref: record["ref"] } : {}),
+    ...(typeof record["contextId"] === "string" ? { contextId: record["contextId"] } : {}),
+    ...(env ? { env } : {}),
+    ...(stateArgs ? { stateArgs } : {}),
   };
 }
 
@@ -337,6 +368,30 @@ export async function createServerPanelTreeBridge(
     }
     return cdpBridge;
   };
+  const navigateViaActiveHost = async (
+    panelId: string,
+    source: string,
+    options:
+      | {
+          ref?: string;
+          contextId?: string;
+          env?: Record<string, string>;
+          stateArgs?: Record<string, unknown>;
+        }
+      | undefined
+  ): Promise<{ handled: true; result: unknown } | { handled: false }> => {
+    const holder = deps.panelRuntimeCoordinator?.resolveHostForSlot(panelId) ?? null;
+    if (!holder?.supportsCdp) return { handled: false };
+    const cdpBridge = deps.container.get<import("./cdpBridge.js").CdpBridge>("cdpBridge");
+    if (!cdpBridge.isProviderConnected(holder.hostConnectionId)) return { handled: false };
+    if (!cdpBridge.isTargetRegisteredForHost(panelId, holder.hostConnectionId)) {
+      return { handled: false };
+    }
+    return {
+      handled: true,
+      result: await cdpBridge.sendHostCommand(panelId, "navigatePanel", [source, options ?? {}]),
+    };
+  };
 
   return async (request) => {
     const method = request.method;
@@ -485,6 +540,24 @@ export async function createServerPanelTreeBridge(
         emitTreeSnapshot();
         return result;
       }
+      case "navigate": {
+        const panelId = String(args[0]);
+        const source = String(args[1]);
+        const options = normalizePanelTreeNavigateOptions(args[2]);
+        const hosted = await navigateViaActiveHost(panelId, source, options);
+        if (hosted.handled) {
+          await sync({ force: true });
+          emitTreeSnapshot();
+          return hosted.result;
+        }
+        const result = await panelManager.navigate(asPanelSlotId(panelId), source, options);
+        emitTreeSnapshot();
+        return {
+          id: result.panelId,
+          title: result.title,
+          kind: result.source.startsWith("browser:") ? "browser" : "workspace",
+        };
+      }
       case "updatePanelState":
         await panelManager.updatePanelState(
           asPanelSlotId(String(args[0])),
@@ -495,15 +568,7 @@ export async function createServerPanelTreeBridge(
       case "reload": {
         const panelId = String(args[0]);
         const cdpBridge = await ensureHostCommandTargetReady(panelId);
-        await cdpBridge.sendTargetCommand(panelId, request.callerId, "reload", []);
-        const result = {
-          panelId,
-          operation: "reload",
-          status: "reloaded",
-          loaded: true,
-          rebuilt: false,
-          reloaded: true,
-        };
+        const result = await cdpBridge.sendHostCommand(panelId, "reloadPanel", []);
         emitTreeSnapshot();
         return result;
       }
@@ -622,6 +687,7 @@ export interface CommonDeps {
   workspace: Workspace;
   workspacePath: string;
   workspaceConfig: WorkspaceConfig;
+  treeScanner?: import("./gadVcs/workspaceTree.js").WorkspaceTreeScanner;
   adminToken: string;
   centralData: CentralDataManager | null;
   hostConfig: HostConfig;
@@ -694,12 +760,14 @@ export interface CommonDeps {
   ) =>
     | Promise<import("./services/workspaceService.js").WorkspaceAppVersions>
     | import("./services/workspaceService.js").WorkspaceAppVersions;
-  prepareHostTargetPinnedCommit?: (
+  prepareHostTargetPinnedRef?: (
     target: HostTarget,
     sourceOrName: string,
-    commit: string
+    ref: string
   ) => Promise<unknown> | unknown;
-  launchHostTarget?: (target: HostTarget) => Promise<boolean> | boolean;
+  launchHostTarget?: (
+    target: HostTarget
+  ) => Promise<HostTargetLaunchResult> | HostTargetLaunchResult;
   approvalQueue?: ApprovalQueue;
   getEffectiveVersion?: (source: string) => Promise<string | undefined>;
   registerEntityTitleListener?: (
@@ -776,6 +844,7 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
     container.registerRpc(
       createWorkspaceService({
         workspace,
+        treeScanner: deps.treeScanner,
         getConfig: wsConfigManager.get,
         setConfigField: wsConfigManager.set as (key: string, value: unknown) => void,
         centralData: centralData ?? null,
@@ -798,7 +867,7 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
         setHostTargetSelection: deps.setHostTargetSelection,
         clearHostTargetSelection: deps.clearHostTargetSelection,
         listHostTargetVersions: deps.listHostTargetVersions,
-        prepareHostTargetPinnedCommit: deps.prepareHostTargetPinnedCommit,
+        prepareHostTargetPinnedRef: deps.prepareHostTargetPinnedRef,
         launchHostTarget: deps.launchHostTarget,
         approvalQueue: deps.approvalQueue,
       })
@@ -860,6 +929,11 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
             if (!resolved) return null;
             return resolved.supportsCdp ? resolved.hostConnectionId : null;
           },
+          getTargetInfo: async (targetId) => {
+            const target = await requestPanelMetadataForServices(targetId);
+            if (!target) return null;
+            return { kind: target.kind, source: target.source };
+          },
           isPanelKnown: isKnownPanelSlot,
         });
         deps.panelRuntimeCoordinator?.onLeaseChanged((event) => {
@@ -901,6 +975,11 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
           },
           drive: async (panelId, requesterEntityId, command, args) => {
             await ensureCdpTargetReady(panelId);
+            if (command === "navigate") {
+              const url = typeof args[0] === "string" ? args[0] : "";
+              if (!url) throw new Error("Panel navigation URL is required");
+              return bridge.sendTargetCommand(panelId, requesterEntityId, command, args);
+            }
             return bridge.sendTargetCommand(panelId, requesterEntityId, command, args);
           },
           consoleHistory: async (panelId, _requesterEntityId, options) => {

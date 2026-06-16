@@ -7,8 +7,13 @@
  */
 import { PanelRegistry } from "@natstack/shared/panelRegistry";
 import { PanelManager } from "@natstack/shared/shell/panelManager";
-import { asPanelSlotId } from "@natstack/shared/panel/ids";
+import type {
+  CreatePanelResult,
+  NavigatePanelOptions,
+} from "@natstack/shared/shell/panelManager";
+import { asPanelSlotId, type PanelSlotId } from "@natstack/shared/panel/ids";
 import { buildPanelUrl } from "@natstack/shared/panelFactory";
+import type { PanelRuntimeAcquireResult } from "@natstack/shared/panel/panelLease";
 import type {
   RuntimeClient,
   SlotCreateInput,
@@ -38,7 +43,8 @@ export class PanelInitClient {
   constructor(
     private readonly rpc: Pick<RpcClient, "call">,
     private readonly serverUrl: string,
-    private readonly clientLabel: string
+    private readonly clientLabel: string,
+    private readonly clientSessionId: string
   ) {
     const call = <T>(method: string, args: unknown[]) =>
       rpc.call<T>("main", method, args) as Promise<T>;
@@ -136,5 +142,55 @@ export class PanelInitClient {
         clientLabel: this.clientLabel,
       },
     };
+  }
+
+  async navigatePanel(
+    slotId: string,
+    source: string,
+    options: NavigatePanelOptions | undefined,
+    leaseConnectionId: string
+  ): Promise<CreatePanelResult> {
+    const normalizedSlotId = asPanelSlotId(slotId);
+    const result = await this.panelManager.navigate(normalizedSlotId, source, options);
+    await this.acquireCurrentPanelLease(normalizedSlotId, slotId, leaseConnectionId);
+    return result;
+  }
+
+  async navigatePanelHistory(
+    slotId: string,
+    delta: -1 | 1,
+    leaseConnectionId: string
+  ): Promise<{ id: string; title: string } | null> {
+    const normalizedSlotId = asPanelSlotId(slotId);
+    const panel = await this.panelManager.navigateHistory(normalizedSlotId, delta);
+    if (!panel) return null;
+    await this.acquireCurrentPanelLease(normalizedSlotId, slotId, leaseConnectionId);
+    return { id: panel.id, title: panel.title };
+  }
+
+  private async acquireCurrentPanelLease(
+    normalizedSlotId: PanelSlotId,
+    slotId: string,
+    leaseConnectionId: string
+  ): Promise<void> {
+    const runtimeEntityId = await this.panelManager.getCurrentEntityId(normalizedSlotId);
+    const acquired = await this.rpc.call<PanelRuntimeAcquireResult>(
+      "main",
+      "panelRuntime.acquire",
+      [
+        runtimeEntityId,
+        {
+          slotId,
+          clientSessionId: this.clientSessionId,
+          hostConnectionId: this.clientSessionId,
+          connectionId: leaseConnectionId,
+        },
+      ]
+    );
+    if (!acquired.acquired) {
+      throw new Error(
+        `Panel ${slotId} is running on ${acquired.lease?.holderLabel ?? "another client"}`
+      );
+    }
   }
 }

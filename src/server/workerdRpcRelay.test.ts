@@ -1,6 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { doRefUrl, encodeUniversalKey, postToDurableObject } from "./workerdRpcRelay.js";
 import { INTERNAL_DO_SOURCE } from "./internalDOs/internalDoLoader.js";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("workerdRpcRelay", () => {
   it("routes userland DOs through the UniversalDO facet host (/_u/)", () => {
@@ -55,6 +59,29 @@ describe("workerdRpcRelay", () => {
           "X-NatStack-Dispatch-Secret": "dispatch-secret",
         }),
       })
+    );
+  });
+
+  it("annotates fetch failures with the DO relay URL and low-level cause", async () => {
+    const cause = Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" });
+    const fetchError = Object.assign(new TypeError("fetch failed"), { cause });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw fetchError;
+      })
+    );
+
+    const ref = { source: "workers/agent", className: "AgentDO", objectKey: "channel-1" };
+    const url = `http://127.0.0.1:8787/_u/${encodeURIComponent(encodeUniversalKey(ref))}/ping`;
+
+    await expect(
+      postToDurableObject(ref, "ping", [], {
+        workerdUrl: "http://127.0.0.1:8787",
+        workerdGatewayToken: "gateway-token",
+      })
+    ).rejects.toThrow(
+      `DO RPC fetch to ${url} failed: fetch failed (cause: Error: other side closed code=UND_ERR_SOCKET)`
     );
   });
 

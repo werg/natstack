@@ -1971,7 +1971,8 @@ function describeGitHttpOperation(
   remote: string;
   service?: string;
 } {
-  const service = targetUrl.searchParams.get("service") ?? gitServiceFromPath(targetUrl.pathname);
+  const service =
+    targetUrl.searchParams.get("service") ?? gitHostServiceFromPath(targetUrl.pathname);
   const action = service === "git-receive-pack" ? "write" : "read";
   return {
     action,
@@ -1981,7 +1982,7 @@ function describeGitHttpOperation(
   };
 }
 
-function gitServiceFromPath(pathname: string): string | null {
+function gitHostServiceFromPath(pathname: string): string | null {
   if (pathname.endsWith("/git-receive-pack")) return "git-receive-pack";
   if (pathname.endsWith("/git-upload-pack")) return "git-upload-pack";
   return null;

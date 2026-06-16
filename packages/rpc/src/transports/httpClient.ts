@@ -11,6 +11,41 @@ export interface HttpClientTransportConfig {
   runtimeIdHeader?: string;
 }
 
+function describeFetchFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const cause = error instanceof Error ? (error as Error & { cause?: unknown }).cause : undefined;
+  if (!cause) return message;
+  return `${message} (cause: ${describeFetchCause(cause)})`;
+}
+
+function describeFetchCause(cause: unknown): string {
+  if (!(cause instanceof Error)) return String(cause);
+  const fields = cause as Error & {
+    code?: unknown;
+    errno?: unknown;
+    syscall?: unknown;
+    address?: unknown;
+    port?: unknown;
+  };
+  const parts = [`${cause.name}: ${cause.message}`];
+  for (const key of ["code", "errno", "syscall", "address", "port"] as const) {
+    const value = fields[key];
+    if (typeof value === "string" || typeof value === "number") {
+      parts.push(`${key}=${value}`);
+    }
+  }
+  return parts.join(" ");
+}
+
+function rpcFetchError(url: string, error: unknown, attempts?: number): Error {
+  const retryText = attempts && attempts > 1 ? ` after ${attempts} attempts` : "";
+  const wrapped = new Error(
+    `RPC fetch to ${url} failed${retryText}: ${describeFetchFailure(error)}`
+  ) as Error & { cause?: unknown };
+  wrapped.cause = error;
+  return wrapped;
+}
+
 export function httpClientTransport(config: HttpClientTransportConfig): EnvelopeRpcTransport & {
   deliver(envelope: RpcEnvelope): void;
   stream(envelope: RpcEnvelope, signal?: AbortSignal | null): Promise<Response>;
@@ -18,13 +53,15 @@ export function httpClientTransport(config: HttpClientTransportConfig): Envelope
   const listeners = new Set<(envelope: RpcEnvelope) => void>();
   const fetchImpl = config.fetch ?? rpcFetch;
   const runtimeIdHeader = config.runtimeIdHeader ?? "X-Natstack-Runtime-Id";
+  const rpcUrl = `${config.serverUrl}/rpc`;
+  const streamUrl = `${config.serverUrl}/__rpc/stream`;
 
   async function postEnvelope(envelope: RpcEnvelope): Promise<unknown> {
     const maxRetries = 3;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       let response: Response;
       try {
-        response = await fetchImpl(`${config.serverUrl}/rpc`, {
+        response = await fetchImpl(rpcUrl, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -38,7 +75,7 @@ export function httpClientTransport(config: HttpClientTransportConfig): Envelope
           await new Promise((resolve) => setTimeout(resolve, 100 * Math.pow(2, attempt)));
           continue;
         }
-        throw error;
+        throw rpcFetchError(rpcUrl, error, maxRetries);
       }
       if (response.status >= 500 && attempt < maxRetries - 1) {
         await new Promise((resolve) => setTimeout(resolve, 100 * Math.pow(2, attempt)));
@@ -73,16 +110,21 @@ export function httpClientTransport(config: HttpClientTransportConfig): Envelope
       for (const listener of listeners) listener(envelope);
     },
     async stream(envelope, signal): Promise<Response> {
-      const response = await fetchImpl(`${config.serverUrl}/__rpc/stream`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${config.authToken}`,
-          [runtimeIdHeader]: config.selfId,
-        },
-        body: JSON.stringify(envelope),
-        signal: signal ?? undefined,
-      });
+      let response: Response;
+      try {
+        response = await fetchImpl(streamUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${config.authToken}`,
+            [runtimeIdHeader]: config.selfId,
+          },
+          body: JSON.stringify(envelope),
+          signal: signal ?? undefined,
+        });
+      } catch (error) {
+        throw rpcFetchError(streamUrl, error);
+      }
       if (response.status === 401) throw new Error("RPC streaming authentication failed");
       if (!response.ok) {
         const detail = await response.text().catch(() => "");

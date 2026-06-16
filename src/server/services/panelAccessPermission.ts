@@ -40,7 +40,10 @@ export async function requirePanelAccessPermission(
     ctx.caller.runtime.kind === "panel" && deps.resolveRequesterPanel
       ? await deps.resolveRequesterPanel(ctx.caller)
       : null;
-  if (op === "stateArgs.set" && isSelfPanelTarget(ctx.caller, target, requesterPanel)) {
+  if (
+    (op === "stateArgs.set" || op === "replacePanel") &&
+    isSelfPanelTarget(ctx.caller, target, requesterPanel)
+  ) {
     return { allowed: true };
   }
   const decision = accessDecision(
@@ -134,6 +137,7 @@ function titleFor(
   if (op === "close" || op === "archive") return "Close panel";
   if (op === "unload") return "Unload panel";
   if (op === "movePanel") return "Move panel";
+  if (op === "replacePanel") return "Navigate panel";
   if (op === "takeOver") return "Take over panel";
   if (op === "openDevTools") return "Open panel DevTools";
   if (op === "rebuildPanel") return "Rebuild panel";
@@ -166,6 +170,9 @@ function descriptionFor(op: PanelAccessOperation, targetLabel: string): string {
   }
   if (op === "movePanel") {
     return `Allow this requester to move ${targetLabel} in the panel tree.`;
+  }
+  if (op === "replacePanel") {
+    return `Allow this requester to navigate ${targetLabel} to another panel source or context.`;
   }
   if (op === "takeOver") {
     return `Allow this requester to take over hosting for ${targetLabel}.`;

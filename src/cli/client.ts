@@ -15,7 +15,7 @@ import { completePairing, createPairingInvite } from "./remoteClient.js";
 import { refreshShell } from "./rpcClient.js";
 import { agentCommands } from "./agent/index.js";
 import { fsCommands } from "./agent/fsCommands.js";
-import { gitCommands } from "./agent/gitCommands.js";
+import { vcsCommands } from "./agent/vcsCommands.js";
 import { evalCommands } from "./agent/evalCommand.js";
 import {
   findCommand,
@@ -366,18 +366,18 @@ const mobileCommands: CliCommand[] = [
 
 /**
  * The full command registry. Extension point: later command groups
- * (fs, git, eval, ...) append their `CliCommand[]` here.
+ * (fs, vcs, eval, ...) append their `CliCommand[]` here.
  */
 const commandRegistry: CliCommand[] = [
   ...remoteCommands,
   ...mobileCommands,
   ...agentCommands,
   ...fsCommands,
-  ...gitCommands,
+  ...vcsCommands,
   ...evalCommands,
 ];
 
-const GROUP_ORDER = ["remote", "mobile", "agent", "fs", "git", "eval"];
+const GROUP_ORDER = ["remote", "mobile", "agent", "fs", "vcs", "eval"];
 
 export async function main(argv: string[]): Promise<number> {
   const [group, ...rest] = argv;

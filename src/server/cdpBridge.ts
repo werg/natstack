@@ -28,6 +28,7 @@ import { assertPresent } from "../lintHelpers";
 const log = createDevLogger("CdpBridge");
 
 const NAV_COMMAND_TIMEOUT_MS = 30_000;
+const MODEL_AWARE_HOST_COMMANDS = new Set(["navigatePanel", "navigatePanelHistory", "reloadPanel"]);
 
 interface CdpBridgeOptions {
   adminToken: string;
@@ -35,6 +36,7 @@ interface CdpBridgeOptions {
   authenticateHostProvider?: (token: string, hostConnectionId: string) => boolean;
   canRegisterHostProvider?: (hostConnectionId: string) => boolean;
   resolveHostForTarget?: (targetId: string) => string | null;
+  getTargetInfo?: (targetId: string) => CdpTargetInfo | null | Promise<CdpTargetInfo | null>;
   /** Check if a targetId corresponds to a known panel in the registry. */
   isPanelKnown?: (targetId: string) => boolean | Promise<boolean>;
   protocol?: "http" | "https";
@@ -59,6 +61,8 @@ interface PendingNavCommand {
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
   targetId: string;
+  providerHostConnectionId?: string;
+  resilientToTargetClose?: boolean;
 }
 
 interface ProviderBridgeMessage {
@@ -79,6 +83,17 @@ interface ProviderBridgeMessage {
 interface RegisteredTarget {
   tabId: number;
   hostConnectionId?: string;
+  kind?: string;
+  source?: string;
+}
+
+interface CdpTargetInfo {
+  kind?: string;
+  source?: string;
+}
+
+function isModelAwareHostCommand(action: string): boolean {
+  return MODEL_AWARE_HOST_COMMANDS.has(action);
 }
 
 export class CdpBridge {
@@ -87,6 +102,9 @@ export class CdpBridge {
   private authenticateHostProvider: (token: string, hostConnectionId: string) => boolean;
   private canRegisterHostProvider: (hostConnectionId: string) => boolean;
   private resolveHostForTarget?: (targetId: string) => string | null;
+  private getTargetInfo?: (
+    targetId: string
+  ) => CdpTargetInfo | null | Promise<CdpTargetInfo | null>;
   private isPanelKnown: (targetId: string) => boolean | Promise<boolean>;
   private protocol: "http" | "https";
   private externalHost: string;
@@ -118,6 +136,7 @@ export class CdpBridge {
       ((token) => constantTimeStringEqual(token, this.adminToken));
     this.canRegisterHostProvider = options.canRegisterHostProvider ?? (() => true);
     this.resolveHostForTarget = options.resolveHostForTarget;
+    this.getTargetInfo = options.getTargetInfo;
     this.isPanelKnown = options.isPanelKnown ?? (() => true);
     this.protocol = options.protocol ?? "http";
     this.externalHost = options.externalHost ?? "127.0.0.1";
@@ -275,7 +294,13 @@ export class CdpBridge {
         reject(new Error(`Navigation command timed out: ${command}`));
       }, NAV_COMMAND_TIMEOUT_MS);
 
-      this.pendingNavCommands.set(requestId, { resolve, reject, timer, targetId });
+      this.pendingNavCommands.set(requestId, {
+        resolve,
+        reject,
+        timer,
+        targetId,
+        providerHostConnectionId: this.targetRegistry.get(targetId)?.hostConnectionId,
+      });
 
       const msg: Record<string, unknown> = {
         type: "nav:command",
@@ -322,7 +347,14 @@ export class CdpBridge {
         reject(new Error(`Host command timed out: ${action}`));
       }, NAV_COMMAND_TIMEOUT_MS);
 
-      this.pendingNavCommands.set(requestId, { resolve, reject, timer, targetId });
+      this.pendingNavCommands.set(requestId, {
+        resolve,
+        reject,
+        timer,
+        targetId,
+        providerHostConnectionId: this.targetRegistry.get(targetId)?.hostConnectionId,
+        resilientToTargetClose: isModelAwareHostCommand(action),
+      });
 
       try {
         provider.send(
@@ -516,7 +548,13 @@ export class CdpBridge {
           }
           break;
         }
-        this.targetRegistry.set(msg.targetId, { tabId: msg.tabId, hostConnectionId });
+        const targetInfo = (await this.getTargetInfo?.(msg.targetId)) ?? {};
+        this.targetRegistry.set(msg.targetId, {
+          tabId: msg.tabId,
+          hostConnectionId,
+          kind: targetInfo.kind,
+          source: targetInfo.source,
+        });
         log.info(
           `Target registered: ${msg.targetId} (tab ${msg.tabId}${
             hostConnectionId ? `, host ${hostConnectionId}` : ""
@@ -634,7 +672,7 @@ export class CdpBridge {
         if (typeof msg.requestId !== "string") break;
         const pending = this.pendingNavCommands.get(msg.requestId);
         if (pending) {
-          if (!this.isMessageFromTargetProvider(pending.targetId, hostConnectionId)) break;
+          if (!this.isPendingCommandProvider(pending, hostConnectionId)) break;
           clearTimeout(pending.timer);
           pending.resolve(msg.result);
           this.pendingNavCommands.delete(msg.requestId);
@@ -646,7 +684,7 @@ export class CdpBridge {
         if (typeof msg.requestId !== "string") break;
         const pending = this.pendingNavCommands.get(msg.requestId);
         if (pending) {
-          if (!this.isMessageFromTargetProvider(pending.targetId, hostConnectionId)) break;
+          if (!this.isPendingCommandProvider(pending, hostConnectionId)) break;
           clearTimeout(pending.timer);
           pending.reject(new Error(msg.error ?? "Host command failed"));
           this.pendingNavCommands.delete(msg.requestId);
@@ -681,6 +719,10 @@ export class CdpBridge {
         const provider = this.providerForTarget(targetId);
         if (!provider) {
           this.sendErrorToClient(ws, msg.id, "CDP provider not connected", msg.sessionId);
+          return;
+        }
+
+        if (this.rejectWorkspacePanelNavigationCdp(ws, targetId, msg)) {
           return;
         }
 
@@ -789,7 +831,62 @@ export class CdpBridge {
     );
   }
 
+  private rejectWorkspacePanelNavigationCdp(
+    ws: WebSocket,
+    targetId: string,
+    msg: {
+      id: number;
+      method: string;
+      params?: Record<string, unknown>;
+      sessionId?: string;
+    }
+  ): boolean {
+    if (!this.isWorkspaceTarget(targetId)) return false;
+    // NOTE: no frameId carve-out. CDP honors Page.navigate with a frameId for
+    // the MAIN frame too, so exempting frameId requests let a panel/agent yank
+    // its own top frame to an arbitrary URL (the no-state-yank rule). Workspace
+    // panels navigate only via panelTree.navigate; reject all raw CDP navigation.
+    const navigationMethods = new Set([
+      "Page.navigate",
+      "Page.reload",
+      "Page.stopLoading",
+      "Page.navigateToHistoryEntry",
+      "Page.resetNavigationHistory",
+    ]);
+    if (!navigationMethods.has(msg.method)) return false;
+    this.sendErrorToClient(
+      ws,
+      msg.id,
+      "CDP navigation is only available for browser panel targets. Use panelTree.navigate only when intentionally replacing a workspace panel.",
+      msg.sessionId
+    );
+    return true;
+  }
+
+  private isWorkspaceTarget(targetId: string): boolean {
+    const target = this.targetRegistry.get(targetId);
+    if (!target) return false;
+    if (target.kind === "workspace") return true;
+    if (target.source && !target.source.startsWith("browser:")) return true;
+    return false;
+  }
+
+  private isPendingCommandProvider(
+    pending: PendingNavCommand,
+    hostConnectionId: string | undefined
+  ): boolean {
+    if (this.isMessageFromTargetProvider(pending.targetId, hostConnectionId)) return true;
+    return pending.providerHostConnectionId === hostConnectionId;
+  }
+
   private flushProvider(hostConnectionId: string, reason: string): void {
+    for (const [requestId, pending] of this.pendingNavCommands) {
+      if (pending.providerHostConnectionId !== hostConnectionId) continue;
+      clearTimeout(pending.timer);
+      pending.reject(new Error(reason));
+      this.pendingNavCommands.delete(requestId);
+    }
+
     for (const [requestId, pending] of this.pendingCommands) {
       const registration = this.targetRegistry.get(pending.targetId);
       if (registration?.hostConnectionId !== hostConnectionId) continue;
@@ -841,6 +938,7 @@ export class CdpBridge {
   private rejectPendingTargetCommands(targetId: string, reason: string): void {
     for (const [requestId, pending] of this.pendingNavCommands) {
       if (pending.targetId !== targetId) continue;
+      if (pending.resilientToTargetClose && reason === "CDP target closed") continue;
       clearTimeout(pending.timer);
       pending.reject(new Error(reason));
       this.pendingNavCommands.delete(requestId);

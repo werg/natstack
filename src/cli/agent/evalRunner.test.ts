@@ -110,10 +110,10 @@ describe("evalRunner", () => {
   });
 
   it("services proxy dispatches service.method calls", async () => {
-    rpcHandler = (body) => (body.method === "git.contextStatus" ? { clean: true } : null);
-    const { result } = await run('return await services.git.contextStatus("ctx_1", "/repo");');
+    rpcHandler = (body) => (body.method === "vcs.status" ? { clean: true } : null);
+    const { result } = await run('return await services.vcs.status("ctx:ctx_1");');
     expect(result.returnValue).toEqual({ clean: true });
-    expect(rpcBodies).toEqual([{ method: "git.contextStatus", args: ["ctx_1", "/repo"] }]);
+    expect(rpcBodies).toEqual([{ method: "vcs.status", args: ["ctx:ctx_1"] }]);
   });
 
   it("rpc errors from the stub server propagate as eval failures", async () => {

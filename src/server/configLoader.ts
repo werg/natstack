@@ -8,6 +8,14 @@
  */
 
 export const CONFIG_LOADER_JS = `(async () => {
+  // Capture the loader <script> element synchronously: document.currentScript
+  // is null after the first await below, so read its data-bundle-src (the
+  // content-hashed entry bundle name) up front.
+  const loaderScript = document.currentScript;
+  const configuredBundleSrc =
+    loaderScript && loaderScript instanceof HTMLScriptElement
+      ? loaderScript.dataset.bundleSrc
+      : null;
   const installRandomUuidPolyfill = () => {
     const cryptoObj = globalThis.crypto;
     if (!cryptoObj || typeof cryptoObj.randomUUID === "function") return;
@@ -133,6 +141,6 @@ export const CONFIG_LOADER_JS = `(async () => {
   globalThis.__natstackContextReady = true;
   const bundle = document.createElement("script");
   bundle.type = "module";
-  bundle.src = "./bundle.js";
+  bundle.src = configuredBundleSrc || "./bundle.js";
   document.body.appendChild(bundle);
 })();`;

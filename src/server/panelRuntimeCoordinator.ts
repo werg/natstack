@@ -318,8 +318,22 @@ export class PanelRuntimeCoordinator {
     );
   }
 
-  resolveRouteConnection(runtimeEntityId: string): string | null {
-    return this.leases.get(asPanelEntityId(runtimeEntityId))?.connectionId ?? null;
+  resolveRouteLease(targetId: string): PanelRuntimeLease | null {
+    const entityLease = this.leases.get(asPanelEntityId(targetId));
+    if (entityLease) return entityLease;
+    const slotId = asPanelSlotId(targetId);
+    for (const lease of this.leases.values()) {
+      if (lease.slotId === slotId) return lease;
+    }
+    return null;
+  }
+
+  resolveRouteConnection(targetId: string): string | null {
+    return this.resolveRouteLease(targetId)?.connectionId ?? null;
+  }
+
+  resolveRouteRuntimeEntityId(targetId: string): string | null {
+    return this.resolveRouteLease(targetId)?.runtimeEntityId ?? null;
   }
 
   private writeLease(

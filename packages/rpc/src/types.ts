@@ -176,6 +176,11 @@ export interface RpcTransport {
 export interface AuthenticatedCaller {
   callerId: string;
   callerKind: CallerKind | "unknown";
+  /**
+   * Stable visible panel slot for panel callers whose runtime `callerId` is a
+   * per-navigation entity. Only the trusted server/bridge stamps this field.
+   */
+  callerPanelId?: string;
 }
 
 export type CallerKind =

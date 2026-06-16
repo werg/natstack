@@ -4,6 +4,7 @@
  *   browser launch → cdp-host bridge connect → snapshot reconcile.
  * (The bridge upgrade is rejected until registerClient exists server-side.)
  */
+import { randomUUID } from "crypto";
 import { createDevLogger } from "@natstack/dev-log";
 import type {
   PanelRuntimeLeaseChangedEvent,
@@ -40,6 +41,8 @@ export class HeadlessHost {
   private idleExitSince: number | null = null;
   private stopped = false;
   private browserRelaunches = 0;
+  private browserGeneration = 0;
+  private browserRecovery: Promise<void> | null = null;
   /** Resolves when stop() completes; main.ts awaits this. */
   readonly done: Promise<void>;
   private resolveDone!: () => void;
@@ -54,7 +57,12 @@ export class HeadlessHost {
   async start(): Promise<void> {
     const connection = await connectToServer(this.config);
     this.connection = connection;
-    this.panelInit = new PanelInitClient(connection.rpc, this.config.serverUrl, this.config.label);
+    this.panelInit = new PanelInitClient(
+      connection.rpc,
+      this.config.serverUrl,
+      this.config.label,
+      this.config.clientSessionId
+    );
 
     await this.registerClient();
     connection.onServerEvent((event, payload) => {
@@ -126,6 +134,7 @@ export class HeadlessHost {
   }
 
   private async startBrowser(): Promise<void> {
+    const generation = ++this.browserGeneration;
     const resolved = await resolveChromium({
       chromiumPath: this.config.chromiumPath,
       cacheDir: this.config.cacheDir,
@@ -141,12 +150,22 @@ export class HeadlessHost {
     this.pages.onRelayEvent((slotId, method, params, sessionId) => {
       this.bridge?.sendEvent(slotId, method, params, sessionId);
     });
-    this.cdp.onClose(() => void this.handleBrowserGone());
-    this.browser.process.once("exit", () => void this.handleBrowserGone());
+    this.cdp.onClose(() => void this.handleBrowserGone(generation));
+    this.browser.process.once("exit", () => void this.handleBrowserGone(generation));
   }
 
-  private async handleBrowserGone(): Promise<void> {
+  private async handleBrowserGone(generation: number): Promise<void> {
     if (this.stopped) return;
+    if (generation !== this.browserGeneration) return;
+    if (this.browserRecovery) return this.browserRecovery;
+    this.browserRecovery = this.recoverBrowser(generation).finally(() => {
+      if (this.browserGeneration === generation) this.browserRecovery = null;
+    });
+    return this.browserRecovery;
+  }
+
+  private async recoverBrowser(generation: number): Promise<void> {
+    if (this.stopped || generation !== this.browserGeneration) return;
     this.browserRelaunches += 1;
     if (this.browserRelaunches > 1) {
       log.warn("chromium died twice — giving up");
@@ -188,9 +207,7 @@ export class HeadlessHost {
         hostCommand: (targetId, action, args) => this.handleHostCommand(targetId, action, args),
         detach: (targetId) => this.pages!.detachRelay(targetId),
         registerRejected: (targetId, reason) => {
-          this.tracker.drop(targetId);
-          this.tabIds.delete(targetId);
-          void this.pages?.unloadPanel(targetId);
+          void this.releaseAndUnload(targetId, `register rejected: ${reason}`);
           log.warn(`dropped panel ${targetId} after register rejection (${reason})`);
         },
       },
@@ -216,8 +233,54 @@ export class HeadlessHost {
         const lease = this.tracker.heldLease(slotId);
         if (!lease) throw new Error(`no lease held for panel ${slotId}`);
         const info = await this.panelInit!.getPanelLoadInfo(slotId, lease.connectionId);
-        await this.pages!.reloadPanel(slotId, info.panelInit);
+        await this.pages!.reloadPanel(slotId, info.panelUrl, info.panelInit);
         return { action, status: "reloaded" };
+      }
+      case "reloadPanel": {
+        const lease = this.tracker.heldLease(slotId);
+        if (!lease) throw new Error(`no lease held for panel ${slotId}`);
+        const info = await this.panelInit!.getPanelLoadInfo(slotId, lease.connectionId);
+        await this.pages!.reloadPanel(slotId, info.panelUrl, info.panelInit);
+        return {
+          panelId: slotId,
+          operation: "reload",
+          status: "reloaded",
+          loaded: true,
+          rebuilt: false,
+          reloaded: true,
+        };
+      }
+      case "navigatePanel": {
+        if (!this.tracker.heldLease(slotId)) throw new Error(`no lease held for panel ${slotId}`);
+        const source = typeof args[0] === "string" ? args[0] : "";
+        if (!source) throw new Error("navigatePanel requires a source");
+        const options =
+          args[1] && typeof args[1] === "object"
+            ? (args[1] as {
+                ref?: string;
+                contextId?: string;
+                env?: Record<string, string>;
+                stateArgs?: Record<string, unknown>;
+              })
+            : undefined;
+        const connectionId = `navigate-${slotId}-${randomUUID()}`;
+        const result = await this.panelInit!.navigatePanel(
+          slotId,
+          source,
+          options,
+          connectionId
+        );
+        await this.reconcile();
+        return { id: result.panelId, title: result.title };
+      }
+      case "navigatePanelHistory": {
+        if (!this.tracker.heldLease(slotId)) throw new Error(`no lease held for panel ${slotId}`);
+        const delta = args[0] === -1 || args[0] === 1 ? args[0] : 0;
+        if (!delta) throw new Error("navigatePanelHistory requires delta -1 or 1");
+        const connectionId = `history-${slotId}-${randomUUID()}`;
+        const result = await this.panelInit!.navigatePanelHistory(slotId, delta, connectionId);
+        await this.reconcile();
+        return result;
       }
       case "openDevTools":
         throw new Error("openDevTools is not supported on a headless host");
@@ -262,6 +325,9 @@ export class HeadlessHost {
           await this.processIntent(intent);
         } catch (error) {
           log.warn(`intent ${intent.kind} for ${intent.slotId} failed: ${String(error)}`);
+          if (intent.kind === "load") {
+            await this.releaseAndUnload(intent.slotId, "load failed");
+          }
         }
       }
     });

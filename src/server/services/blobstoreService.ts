@@ -27,7 +27,7 @@ export interface BlobStat {
   mtime: number;
 }
 
-function ensureLayout(blobsDir: string): void {
+export function ensureLayout(blobsDir: string): void {
   fs.mkdirSync(path.join(blobsDir, "tmp"), { recursive: true });
   fs.mkdirSync(path.join(blobsDir, "sha256"), { recursive: true });
 }
@@ -45,7 +45,7 @@ function validateDigest(digest: string): void {
   }
 }
 
-function blobPath(blobsDir: string, digest: string): string {
+export function blobPath(blobsDir: string, digest: string): string {
   validateDigest(digest);
   return path.join(blobsDir, "sha256", digest.slice(0, 2), digest.slice(2, 4), digest.slice(4));
 }
@@ -70,7 +70,7 @@ async function pathExists(filePath: string): Promise<boolean> {
   }
 }
 
-async function statBlob(blobsDir: string, digest: string): Promise<BlobStat | null> {
+export async function statBlob(blobsDir: string, digest: string): Promise<BlobStat | null> {
   const filePath = blobPath(blobsDir, digest);
   try {
     const stat = await fsp.stat(filePath);
@@ -117,7 +117,7 @@ async function putBlob(
   }
 }
 
-async function putBytes(
+export async function putBytes(
   blobsDir: string,
   bytes: Buffer
 ): Promise<{ digest: string; size: number }> {
@@ -146,12 +146,55 @@ async function putBytes(
   }
 }
 
-async function getBytes(blobsDir: string, digest: string): Promise<Buffer | null> {
+export async function getBytes(blobsDir: string, digest: string): Promise<Buffer | null> {
   const filePath = blobPath(blobsDir, digest);
   try {
     return await fsp.readFile(filePath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+/**
+ * Stream a file from disk into the CAS (hash while copying — never loads the
+ * file into memory). Hardlinks tmp → final like the other writers, so on the
+ * same filesystem the eventual `materializeState` hardlink shares the inode.
+ */
+export async function putFile(
+  blobsDir: string,
+  filePath: string
+): Promise<{ digest: string; size: number }> {
+  const tmpPath = path.join(blobsDir, "tmp", `${process.pid}-${randomUUID()}.tmp`);
+  const hash = createHash("sha256");
+  let size = 0;
+  const tee = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      hash.update(chunk);
+      size += chunk.length;
+      callback(null, chunk);
+    },
+  });
+  try {
+    await pipeline(
+      fs.createReadStream(filePath),
+      tee,
+      fs.createWriteStream(tmpPath, { flags: "wx" })
+    );
+    const digest = hash.digest("hex");
+    const finalPath = blobPath(blobsDir, digest);
+    await fsp.mkdir(path.dirname(finalPath), { recursive: true });
+    try {
+      await fsp.link(tmpPath, finalPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    await fsp.unlink(tmpPath).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    });
+    return { digest, size };
+  } catch (error) {
+    await fsp.unlink(tmpPath).catch(() => {});
     throw error;
   }
 }

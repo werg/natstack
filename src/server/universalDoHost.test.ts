@@ -55,10 +55,12 @@ export default { fetch() { return new Response("counter host"); } };`;
 function doBuild(source: string, ev: string, bundle = COUNTER_DO): BuildResult {
   return {
     dir: "/tmp/test-build",
+    sourceStateHash: "state:test",
     metadata: {
       kind: "worker",
       name: source,
       ev,
+      sourceStateHash: "state:test",
       sourcemap: false,
       details: { kind: "generic" },
       builtAt: "2026-01-01T00:00:00.000Z",
@@ -103,10 +105,22 @@ async function createHarness(builds: Record<string, BuildResult>): Promise<Harne
     tokenManager,
     fsService: { closeHandlesForCaller: () => {} } as unknown as WorkerdManagerDeps["fsService"],
     getServerUrl: () => `http://127.0.0.1:${portHolder.value}`,
-    getBuild: async (source: string) => {
+    bindRuntimeImage: async (source: string, ref?: string) => {
       const b = builds[source];
       if (!b) throw new Error(`no build for ${source}`);
-      return b;
+      return {
+        source,
+        unitName: source,
+        stateHash: ref?.startsWith("state:") ? ref : "state:test",
+        effectiveVersion: b.metadata.ev,
+        buildKey: `build:${source}:${b.metadata.ev}`,
+      };
+    },
+    getBuildByKey: (key: string) => {
+      const entry = Object.entries(builds).find(
+        ([source, build]) => key === `build:${source}:${build.metadata.ev}`
+      );
+      return entry?.[1] ?? null;
     },
     workspacePath: mkdtempSync(join(tmpdir(), "natstack-udo-ws-")),
     statePath: mkdtempSync(join(tmpdir(), "natstack-udo-state-")),

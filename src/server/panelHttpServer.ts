@@ -125,6 +125,19 @@ function shouldLogPanelResourceRequests(): boolean {
   );
 }
 
+function isPanelAssetRequest(resource: string): boolean {
+  const normalized = resource.replace(/^\/+/, "");
+  return (
+    normalized === "bundle.js" ||
+    normalized === "bundle.css" ||
+    normalized.startsWith("assets/") ||
+    normalized.startsWith("chunk-") ||
+    /\.[cm]?js(?:\.map)?$/iu.test(normalized) ||
+    /\.css(?:\.map)?$/iu.test(normalized) ||
+    /\.(?:png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|otf|wasm)$/iu.test(normalized)
+  );
+}
+
 // ---------------------------------------------------------------------------
 // PanelHttpServer
 // ---------------------------------------------------------------------------
@@ -391,7 +404,11 @@ export class PanelHttpServer {
 
     const parsed = extractSourcePath(pathname);
     if (parsed) {
-      const routeLabel = url.searchParams.get("contextId") || parsed.source;
+      const contextId =
+        url.searchParams.get("contextId") || this.contextIdFromReferer(req) || undefined;
+      const routeLabel = contextId || parsed.source;
+      // `contextId` is panel/runtime identity, not necessarily a VCS head.
+      // Only an explicit ref selects a non-main build.
       const ref = url.searchParams.get("ref") || this.refFromReferer(req) || undefined;
       this.logPanelResourceRequest(req, res, parsed.source, parsed.resource, routeLabel);
       const isHtmlRequest = parsed.resource === "/" || parsed.resource === "/index.html";
@@ -533,6 +550,17 @@ export class PanelHttpServer {
     try {
       const parsed = new URL(referer);
       return parsed.searchParams.get("ref");
+    } catch {
+      return null;
+    }
+  }
+
+  private contextIdFromReferer(req: import("http").IncomingMessage): string | null {
+    const referer = req.headers.referer;
+    if (typeof referer !== "string") return null;
+    try {
+      const parsed = new URL(referer);
+      return parsed.searchParams.get("contextId");
     } catch {
       return null;
     }
@@ -710,6 +738,12 @@ export class PanelHttpServer {
     const artifact = this.resolvePanelArtifact(build, resource);
     if (artifact) {
       this.writeArtifact(res, build.revision, artifact);
+      return;
+    }
+
+    if (isPanelAssetRequest(resource)) {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Not found");
       return;
     }
 

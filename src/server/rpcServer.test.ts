@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { WebSocket } from "ws";
 import { TokenManager } from "../../packages/shared/src/tokenManager.js";
 import { RpcServer } from "./rpcServer.js";
@@ -133,6 +133,10 @@ function createClient(callerId = "panel-a"): WsClientState {
   };
 }
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 function createClientWithConnection(callerId: string, connectionId: string): WsClientState {
   const client = createClient(callerId);
   client.connectionId = connectionId;
@@ -208,6 +212,41 @@ describe("RpcServer relay behavior", () => {
     await expect(
       testServer(server).relayToDO("panel-a", "panel", "do:workers/example:Store:key", "ping", [])
     ).rejects.toMatchObject({ code: "DO_NOT_CREATED" });
+  });
+
+  it("refreshes workerd connection details after ensureDO before retrying DO relay", async () => {
+    const { server, entityCache } = createServer();
+    const targetId = "do:workers/example:Store:key";
+    entityCache._onActivate(makeRecord(targetId, "do"));
+    server.setWorkerdUrl("http://127.0.0.1:1111");
+    server.setWorkerdGatewayToken("gateway-token");
+
+    const fetchError = Object.assign(new TypeError("fetch failed"), {
+      cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }),
+    });
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(fetchError)
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    server.setEnsureDO(
+      vi.fn(async () => {
+        server.setWorkerdUrl("http://127.0.0.1:2222");
+      })
+    );
+
+    await expect(
+      testServer(server).relayToDO("panel-a", "panel", targetId, "ping", [])
+    ).resolves.toEqual({ ok: true });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0]?.[0]).toMatch(/^http:\/\/127\.0\.0\.1:1111\//);
+    expect(fetchMock.mock.calls[1]?.[0]).toMatch(/^http:\/\/127\.0\.0\.1:2222\//);
   });
 
   it("rejects distinct live panel runtime connections for the same caller", () => {
@@ -490,6 +529,74 @@ describe("RpcServer relay behavior", () => {
       fromId: "panel-a",
       message: { type: "event", event: "test:event", payload: { ok: true } },
     });
+  });
+
+  it("routes stable panel slot events to the current runtime entity connection", () => {
+    const { server, runtimeCoordinator } = createServer();
+    runtimeCoordinator.acquire("panel-b", {
+      slotId: "slot-b",
+      clientSessionId: "test-desktop",
+      connectionId: "target-conn",
+    });
+    const client = createClient();
+    const target = createClientWithConnection("panel-b", "target-conn");
+    registerClient(server, target);
+
+    testServer(server).handleRoute(client, "slot-b", {
+      type: "event",
+      fromId: "panel-a",
+      event: "test:event",
+      payload: { ok: true },
+    });
+
+    expect(target.ws.send).toHaveBeenCalledTimes(1);
+    expect(
+      JSON.parse((target.ws.send as ReturnType<typeof vi.fn>).mock.calls[0]![0])
+    ).toMatchObject({
+      type: "ws:routed",
+      fromId: "panel-a",
+      message: { type: "event", event: "test:event", payload: { ok: true } },
+    });
+  });
+
+  it("routes stable panel slot RPC calls to the current runtime entity bridge", async () => {
+    const { server, grantPanel, runtimeCoordinator } = createServer();
+    runtimeCoordinator.acquire("panel-b", {
+      slotId: "slot-b",
+      clientSessionId: "test-desktop",
+      connectionId: "target-conn",
+    });
+    const targetWs = createTestWs();
+    testServer(server).handleAuth(targetWs, grantPanel("panel-b"), "target-conn");
+
+    const relay = testServer(server).relayCall("do:channel", "do", "slot-b", "onMethodCall", [
+      "channel-1",
+      "call-1",
+      "eval",
+      { code: "1 + 1" },
+    ]);
+
+    const sent = targetWs.send.mock.calls
+      .map(([raw]) => JSON.parse(raw as string))
+      .find((message) => message.type === "ws:rpc" && message.message?.type === "request") as
+      | { message: { requestId: string } }
+      | undefined;
+    expect(sent).toMatchObject({
+      type: "ws:rpc",
+      message: { method: "onMethodCall" },
+    });
+    expect(sent).toBeTruthy();
+
+    targetWs.emitMessage({
+      type: "ws:rpc",
+      message: {
+        type: "response",
+        requestId: sent!.message.requestId,
+        result: { ok: true },
+      },
+    });
+
+    await expect(relay).resolves.toEqual({ ok: true });
   });
 
   it("throws TARGET_NOT_REACHABLE when a panel target is disconnected", async () => {

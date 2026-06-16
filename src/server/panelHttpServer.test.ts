@@ -8,6 +8,7 @@
  */
 
 import { describe, it, expect } from "vitest";
+import type { IncomingMessage, ServerResponse } from "http";
 
 // ---------------------------------------------------------------------------
 // extractSourcePath is module-private, so we test the regex logic directly.
@@ -92,6 +93,49 @@ vi.mock("ws", () => ({
 
 // Must import after mocks
 const { PanelHttpServer } = await import("./panelHttpServer.js");
+
+function createMockResponse(): ServerResponse & {
+  body?: unknown;
+  statusCodeWritten?: number;
+} {
+  const res = {
+    headersSent: false,
+  } as unknown as ServerResponse & {
+    body?: unknown;
+    statusCodeWritten?: number;
+    headersSent: boolean;
+  };
+  res.setHeader = vi.fn() as unknown as ServerResponse["setHeader"];
+  res.writeHead = vi.fn((statusCode: number) => {
+    res.headersSent = true;
+    res.statusCodeWritten = statusCode;
+    return res;
+  }) as unknown as ServerResponse["writeHead"];
+  res.end = vi.fn((body?: unknown) => {
+    res.body = body;
+    return res;
+  }) as unknown as ServerResponse["end"];
+  return res;
+}
+
+async function handlePanelRequest(
+  server: InstanceType<typeof PanelHttpServer>,
+  url: string,
+  headers: Record<string, string> = {}
+): Promise<ReturnType<typeof createMockResponse>> {
+  const req = {
+    method: "GET",
+    url,
+    headers,
+  } as unknown as IncomingMessage;
+  const res = createMockResponse();
+  await (
+    server as unknown as {
+      handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void>;
+    }
+  ).handleRequest(req, res);
+  return res;
+}
 
 describe("PanelHttpServer build cache", () => {
   const buildResult = {
@@ -189,5 +233,71 @@ describe("PanelHttpServer build cache", () => {
 
     server.storeBuild("panels/my-app", buildResult);
     expect(onBuildComplete).toHaveBeenCalledWith("panels/my-app");
+  });
+
+  it("does not synthesize build refs from panel context ids", async () => {
+    const server = new PanelHttpServer();
+    server.setPort(1234);
+    const getBuild = vi.fn(async () => buildResult);
+    server.setCallbacks({
+      listPanels: vi.fn().mockReturnValue([]),
+      onBuildComplete: vi.fn(),
+      getBuild,
+    });
+
+    await handlePanelRequest(
+      server,
+      "/panels/my-app/?contextId=ctx-panel-tree-panels-chat-mqcv4k57-8e395774"
+    );
+
+    expect(getBuild).toHaveBeenCalledWith("panels/my-app", undefined);
+  });
+
+  it("uses explicit panel build refs when present", async () => {
+    const server = new PanelHttpServer();
+    server.setPort(1234);
+    const getBuild = vi.fn(async () => buildResult);
+    server.setCallbacks({
+      listPanels: vi.fn().mockReturnValue([]),
+      onBuildComplete: vi.fn(),
+      getBuild,
+    });
+
+    await handlePanelRequest(server, "/panels/my-app/?contextId=ctx-panel&ref=state:abc123");
+
+    expect(getBuild).toHaveBeenCalledWith("panels/my-app", "state:abc123");
+  });
+
+  it("does not serve a main entry artifact for a referer-less ref-pinned asset path", async () => {
+    const server = new PanelHttpServer();
+    const mainBuild = {
+      ...buildResult,
+      artifacts: buildResult.artifacts.map((artifact) =>
+        artifact.role === "primary"
+          ? { ...artifact, path: "bundle-main.js", content: "console.log('main')" }
+          : artifact
+      ),
+    } as typeof buildResult;
+    const refBuild = {
+      ...buildResult,
+      artifacts: buildResult.artifacts.map((artifact) =>
+        artifact.role === "primary"
+          ? { ...artifact, path: "bundle-ref.js", content: "console.log('ref')" }
+          : artifact
+      ),
+    } as typeof buildResult;
+
+    server.storeBuild("panels/my-app", mainBuild);
+    server.storeBuild("panels/my-app", refBuild, "state:abc123");
+
+    const refererless = await handlePanelRequest(server, "/panels/my-app/bundle-ref.js");
+    expect(refererless.statusCodeWritten).toBe(404);
+    expect(refererless.body).toBe("Not found");
+
+    const pinned = await handlePanelRequest(server, "/panels/my-app/bundle-ref.js", {
+      referer: "http://localhost:1234/panels/my-app/?ref=state:abc123",
+    });
+    expect(pinned.statusCodeWritten).toBe(200);
+    expect(pinned.body).toBe("console.log('ref')");
   });
 });

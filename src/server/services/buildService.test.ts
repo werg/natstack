@@ -4,6 +4,21 @@ import { describe, expect, it, vi } from "vitest";
 import { createBuildService } from "./buildService.js";
 import type { BuildSystemV2 } from "../buildV2/index.js";
 
+function buildTrigger(path: string) {
+  return {
+    head: "main",
+    stateHash: "state:abcdef123",
+    sinceStateHash: "state:previous",
+    eventId: "event:abcdef123",
+    headHash: "head:abcdef123",
+    actor: { id: "user", kind: "user" },
+    transitionKind: "snapshot" as const,
+    changedPaths: [path],
+    fileChanges: [],
+    editOps: [],
+  };
+}
+
 function makeBuildSystem(): BuildSystemV2 {
   return {
     getBuild: vi.fn(),
@@ -67,7 +82,6 @@ function makeBuildSystem(): BuildSystemV2 {
           dependencies: {},
           dependencyOverrides: {},
           internalDeps: [],
-          internalDepRefs: {},
           manifest: {},
         },
       ],
@@ -81,7 +95,6 @@ function makeBuildSystem(): BuildSystemV2 {
               dependencies: {},
               dependencyOverrides: {},
               internalDeps: [],
-              internalDepRefs: {},
               manifest: {},
             }
           : undefined,
@@ -148,15 +161,7 @@ describe("build service extension diagnostics", () => {
         name: "@workspace-extensions/example",
         relativePath: "extensions/example",
         error: "Build failed with 1 error: missing module",
-        trigger: {
-          repo: "extensions/example",
-          branch: "main",
-          commit: "abcdef123",
-          origin: {
-            callerId: "panel:test",
-            callerKind: "panel",
-          },
-        },
+        trigger: buildTrigger("extensions/example/index.ts"),
         timestamp: "2026-01-01T00:00:01.000Z",
       },
     ]);
@@ -193,14 +198,14 @@ describe("build service extension diagnostics", () => {
           type: "build-error",
           error: "Build failed with 1 error: missing module",
           trigger: expect.objectContaining({
-            origin: expect.objectContaining({ callerId: "panel:test" }),
+            head: "main",
           }),
         }),
       ],
     });
   });
 
-  it("lists recent push-triggered build events", async () => {
+  it("lists recent state-triggered build events", async () => {
     const buildSystem = makeBuildSystem();
     vi.mocked(buildSystem.listRecentBuildEvents).mockReturnValue([
       {
@@ -208,15 +213,7 @@ describe("build service extension diagnostics", () => {
         name: "@workspace-panels/example",
         relativePath: "panels/example",
         error: "Could not resolve node:buffer",
-        trigger: {
-          repo: "panels/example",
-          branch: "main",
-          commit: "abcdef123",
-          origin: {
-            callerId: "panel:test",
-            callerKind: "panel",
-          },
-        },
+        trigger: buildTrigger("panels/example/index.tsx"),
         timestamp: "2026-01-01T00:00:01.000Z",
       },
     ]);
@@ -231,7 +228,7 @@ describe("build service extension diagnostics", () => {
         name: "@workspace-panels/example",
         error: "Could not resolve node:buffer",
         trigger: expect.objectContaining({
-          origin: expect.objectContaining({ callerId: "panel:test" }),
+          head: "main",
         }),
       }),
     ]);
@@ -250,7 +247,6 @@ describe("build service extension diagnostics", () => {
           dependencies: {},
           dependencyOverrides: {},
           internalDeps: [],
-          internalDepRefs: {},
           manifest: {},
         },
         {
@@ -261,7 +257,6 @@ describe("build service extension diagnostics", () => {
           dependencies: {},
           dependencyOverrides: {},
           internalDeps: [],
-          internalDepRefs: {},
           manifest: {},
         },
       ],

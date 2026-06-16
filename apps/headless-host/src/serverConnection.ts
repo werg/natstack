@@ -69,6 +69,10 @@ export interface ServerConnection {
   close(): Promise<void>;
 }
 
+export function normalizeServerEventName(event: string): string {
+  return event.startsWith("event:") ? event.slice("event:".length) : event;
+}
+
 export async function connectToServer(config: HeadlessHostConfig): Promise<ServerConnection> {
   let currentToken =
     config.auth.kind === "token" ? config.auth.token : await refreshShellToken(config.auth);
@@ -81,7 +85,8 @@ export async function connectToServer(config: HeadlessHostConfig): Promise<Serve
     reconnect: true,
     logPrefix: "HeadlessHost",
     onServerEvent: (event, payload) => {
-      for (const listener of eventListeners) listener(event, payload);
+      const normalizedEvent = normalizeServerEventName(event);
+      for (const listener of eventListeners) listener(normalizedEvent, payload);
     },
     getAuthMessageFields: () => ({
       clientLabel: config.label,

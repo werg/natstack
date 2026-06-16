@@ -137,6 +137,7 @@ describe("panelAccessPermission", () => {
     await requirePanelAccessPermission(deps, ctx, "archive", target);
     await requirePanelAccessPermission(deps, ctx, "unload", target);
     await requirePanelAccessPermission(deps, ctx, "movePanel", target);
+    await requirePanelAccessPermission(deps, ctx, "replacePanel", target);
     await requirePanelAccessPermission(deps, ctx, "takeOver", target);
     await requirePanelAccessPermission(deps, ctx, "openDevTools", target);
     await requirePanelAccessPermission(deps, ctx, "rebuildPanel", target);
@@ -203,6 +204,27 @@ describe("panelAccessPermission", () => {
       },
       panelCtx("panel:entity-a"),
       "stateArgs.set",
+      { id: "slot-a", runtimeEntityId: "panel:entity-a" }
+    );
+
+    expect(result).toEqual({ allowed: true });
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+  });
+
+  it("allows a panel to replace itself without prompting", async () => {
+    const approvalQueue = approvalQueueMock("deny");
+
+    const result = await requirePanelAccessPermission(
+      {
+        approvalQueue,
+        grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
+        resolveRequesterPanel: vi.fn(async () => ({
+          id: "slot-a",
+          runtimeEntityId: "panel:entity-a",
+        })),
+      },
+      panelCtx("panel:entity-a"),
+      "replacePanel",
       { id: "slot-a", runtimeEntityId: "panel:entity-a" }
     );
 

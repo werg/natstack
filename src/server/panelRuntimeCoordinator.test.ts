@@ -144,6 +144,25 @@ describe("PanelRuntimeCoordinator", () => {
     expect(coordinator.resolveHostForSlot("slot-missing")).toBeNull();
   });
 
+  it("resolves route targets from either runtime entity id or stable panel slot", () => {
+    const { coordinator } = createCoordinator();
+
+    coordinator.acquire("panel:nav-entity-a", {
+      slotId: "slot-a",
+      clientSessionId: "desktop-a",
+      connectionId: "runtime-conn",
+    });
+
+    expect(coordinator.resolveRouteConnection("panel:nav-entity-a")).toBe("runtime-conn");
+    expect(coordinator.resolveRouteRuntimeEntityId("panel:nav-entity-a")).toBe(
+      "panel:nav-entity-a"
+    );
+    expect(coordinator.resolveRouteConnection("slot-a")).toBe("runtime-conn");
+    expect(coordinator.resolveRouteRuntimeEntityId("slot-a")).toBe("panel:nav-entity-a");
+    expect(coordinator.resolveRouteConnection("slot-missing")).toBeNull();
+    expect(coordinator.resolveRouteRuntimeEntityId("slot-missing")).toBeNull();
+  });
+
   it("assigns unheld panels to a registered headless CDP host", () => {
     const eventService = { emit: vi.fn() };
     const coordinator = new PanelRuntimeCoordinator({

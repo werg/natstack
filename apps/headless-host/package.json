@@ -17,7 +17,7 @@
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "cd ../.. && vitest run apps/headless-host/src/*.test.ts apps/headless-host/src/*/*.test.ts"
   },
   "dependencies": {
     "@natstack/dev-log": "workspace:*",

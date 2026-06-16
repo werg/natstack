@@ -48,8 +48,9 @@ const log = createDevLogger("Gateway");
  * Headers that must NEVER be forwarded from inbound gateway requests to
  * upstream workerd / git proxies (audit finding #32). These carry
  * gateway-level authority that the upstream must not see; the upstream
- * gets its own narrow credential injected (or, for git, no credential at
- * all — git auth is handled by the git server's own bearer scheme).
+ * gets its own narrow credential injected. External Git interop is handled by
+ * server services after gateway caller validation, not by forwarding bearer
+ * credentials upstream.
  *
  * `x-natstack-*` covers `x-natstack-token` (admin) and any future
  * NatStack-internal admin-bearing headers.
@@ -82,14 +83,6 @@ export interface RpcHandler {
   handleGatewayWsConnection(ws: WebSocket): void;
   /** Handle an HTTP POST /rpc request */
   handleGatewayHttpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> | void;
-}
-
-export interface GitHttpHandler {
-  handleHttpRequest(
-    req: IncomingMessage,
-    res: ServerResponse,
-    caller: VerifiedCaller | null
-  ): Promise<void> | void;
 }
 
 export interface ExtensionHttpHandler {
@@ -126,11 +119,12 @@ export interface WorkerHostCodeProvider {
     callerId: string;
   } | null>;
   /** Userland DO class version (build ev) for the UniversalDO facet host. */
-  getDoVersion(source: string, className: string): string | null;
+  getDoVersion(source: string, className: string, objectKey?: string): string | null;
   /** Userland DO class code+env for the UniversalDO facet host. */
   getDoCode(
     source: string,
-    className: string
+    className: string,
+    objectKey?: string
   ): Promise<{
     compatibilityDate: string;
     compatibilityFlags: string[];
@@ -150,8 +144,6 @@ export interface GatewayDeps {
   panelHttpHandler?: PanelHttpHandler;
   /** Dynamic in-process panel HTTP handler getter. */
   getPanelHttpHandler?: () => PanelHttpHandler | null | undefined;
-  /** Dynamic in-process git handler getter. */
-  getGitHandler?: () => GitHttpHandler | null | undefined;
   /** Dynamic in-process extension fetch handler getter. */
   getExtensionHttpHandler?: () => ExtensionHttpHandler | null | undefined;
   /** Dynamic in-process workspace-app artifact handler getter. */
@@ -223,7 +215,6 @@ export class Gateway {
       const url = req.url ?? "/";
       const rpcHandler = this.deps.getRpcHandler?.() ?? this.deps.rpcHandler;
       const panelHttpHandler = this.deps.getPanelHttpHandler?.() ?? this.deps.panelHttpHandler;
-      const gitHandler = this.deps.getGitHandler?.();
       const extensionHttpHandler = this.deps.getExtensionHttpHandler?.();
       const appArtifactHandler = this.deps.getAppArtifactHandler?.();
       const workerdPort = this.deps.getWorkerdPort?.() ?? this.deps.workerdPort;
@@ -296,6 +287,22 @@ export class Gateway {
             res.end(JSON.stringify(code));
           })
           .catch((err: unknown) => {
+            const code = (err as { code?: unknown })?.code;
+            if (code === "RUNTIME_IMAGE_WARMING") {
+              res.writeHead(503, {
+                "Content-Type": "text/plain",
+                "Retry-After": "1",
+              });
+              res.end("Worker code warming");
+              return;
+            }
+            if (code === "RUNTIME_IMAGE_UNAVAILABLE") {
+              res.writeHead(410, { "Content-Type": "text/plain" });
+              res.end(
+                `Worker code unavailable: ${err instanceof Error ? err.message : String(err)}`
+              );
+              return;
+            }
             res.writeHead(500, { "Content-Type": "text/plain" });
             res.end(`Worker code error: ${err instanceof Error ? err.message : String(err)}`);
           });
@@ -321,17 +328,19 @@ export class Gateway {
           return;
         }
         const isVersion = url.startsWith("/_doversion/");
+        const requestUrl = new URL(url, "http://localhost");
         const prefix = isVersion ? "/_doversion/" : "/_docode/";
         const segs = (url.slice(prefix.length).split("?")[0] ?? "").split("/");
         const source = decodeURIComponent(segs[0] ?? "");
         const className = decodeURIComponent(segs[1] ?? "");
+        const objectKey = requestUrl.searchParams.get("objectKey") ?? undefined;
         if (!source || !className) {
           res.writeHead(400, { "Content-Type": "text/plain" });
           res.end("Missing DO source/class");
           return;
         }
         if (isVersion) {
-          const version = host.getDoVersion(source, className);
+          const version = host.getDoVersion(source, className, objectKey);
           if (version === null) {
             res.writeHead(404, { "Content-Type": "text/plain" });
             res.end("DO class not found");
@@ -342,7 +351,7 @@ export class Gateway {
           return;
         }
         void host
-          .getDoCode(source, className)
+          .getDoCode(source, className, objectKey)
           .then((code) => {
             if (!code) {
               res.writeHead(404, { "Content-Type": "text/plain" });
@@ -353,6 +362,20 @@ export class Gateway {
             res.end(JSON.stringify(code));
           })
           .catch((err: unknown) => {
+            const code = (err as { code?: unknown })?.code;
+            if (code === "RUNTIME_IMAGE_WARMING") {
+              res.writeHead(503, {
+                "Content-Type": "text/plain",
+                "Retry-After": "1",
+              });
+              res.end("DO code warming");
+              return;
+            }
+            if (code === "RUNTIME_IMAGE_UNAVAILABLE") {
+              res.writeHead(410, { "Content-Type": "text/plain" });
+              res.end(`DO code unavailable: ${err instanceof Error ? err.message : String(err)}`);
+              return;
+            }
             res.writeHead(500, { "Content-Type": "text/plain" });
             res.end(`DO code error: ${err instanceof Error ? err.message : String(err)}`);
           });
@@ -457,25 +480,6 @@ export class Gateway {
           parsed.buildKey,
           parsed.remainderPath
         );
-      }
-
-      // /_git/ → git server reverse proxy
-      if (url.startsWith("/_git/") && gitHandler) {
-        if (req.method === "OPTIONS") {
-          return gitHandler.handleHttpRequest(req, res, null);
-        }
-        const entry = validateCallerBearer(
-          req,
-          tokenManager,
-          this.deps.connectionGrants,
-          this.deps.entityCache
-        );
-        if (!entry) {
-          res.writeHead(401, { "Content-Type": "text/plain" });
-          res.end("Unauthorized");
-          return;
-        }
-        return gitHandler.handleHttpRequest(req, res, entry);
       }
 
       // POST /rpc → RPC handler (in-process). `/rpc/stream` is the

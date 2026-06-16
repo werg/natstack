@@ -5,9 +5,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   UnitHost,
   UnitRegistry,
-  UnitSourcePushGrantStore,
+  UnitSourceChangeGrantStore,
   UnitTrustResolver,
-  authorizeUnitSourcePush,
+  authorizeUnitSourceChange,
   collectTransitiveUnitDependencyEvs,
   createPendingUnitRegistryEntry,
   createUnitBuildIdentity,
@@ -20,15 +20,20 @@ import {
   type UnitBuildIdentity,
   type UnitDescriptor,
   type UnitApprovalCoordinator,
+  type UnitMetaChangeApprovalProvider,
+  type UnitReconcileOptions,
   type UnitReconcileTrigger,
   type UnitRegistryEntryBase,
 } from "@natstack/unit-host";
-import { execGitFileSync } from "@natstack/shared/gitRuntime";
 import type { EventService } from "@natstack/shared/eventsService";
 import type { EventName } from "@natstack/shared/events";
-import type { PendingUnitBatchApproval, UnitBatchEntry } from "@natstack/shared/approvals";
+import type {
+  PendingApproval,
+  PendingUnitBatchApproval,
+  UnitBatchEntry,
+} from "@natstack/shared/approvals";
 import type { VerifiedCaller } from "@natstack/shared/serviceDispatcher";
-import { verifyProductSeedSource } from "@natstack/shared/productSeedTrust";
+import { filterBootstrapApprovalsForTarget } from "@natstack/shared/bootstrapApprovals";
 import {
   parseWorkspaceConfigContentWithId,
   resolveDeclaredApps,
@@ -43,6 +48,7 @@ import {
 import type {
   HostTarget,
   HostTargetCandidate,
+  HostTargetLaunchResult,
   HostTargetSelection,
   HostTargetSelectionInput,
 } from "@natstack/shared/hostTargets";
@@ -99,7 +105,7 @@ export interface AppVersionRecord {
   target: WorkspaceAppTarget;
   capabilities: AppCapability[];
   activeEv: string | null;
-  activeSha: string | null;
+  activeSourceHash: string | null;
   activeBundleKey: string;
   activeDependencyEvs: Record<string, string>;
   activeExternalDeps: Record<string, string>;
@@ -108,11 +114,39 @@ export interface AppVersionRecord {
 }
 
 export interface AppActivationTrustRecord {
-  decision: "host-target-pinned-commit";
+  decision: "host-target-pinned-ref";
   identityKey: string;
   actor: "shell-host";
   reason: string;
   acceptedAt: number;
+}
+
+interface AppAvailablePayload {
+  appId: string;
+  source: string;
+  target: WorkspaceAppTarget;
+  launchMode: "hosted-view" | "native-bootstrap" | "terminal-process";
+  url: string;
+  artifacts: Array<{
+    path: string;
+    role: string;
+    contentType: string;
+    encoding: string;
+    platform?: string;
+    integrity?: string;
+    url: string;
+  }>;
+  capabilities: AppCapability[];
+  buildKey: string | null;
+  effectiveVersion: string | null;
+  previousBuildKey: string | null;
+  previousEffectiveVersion: string | null;
+  canRollback: boolean;
+  adoptionPolicy: "immediate" | "prompt" | "artifact-only";
+  selectedForHost?: boolean;
+  integrity?: string | null;
+  rnHostAbi?: string | null;
+  provider?: AppBuildProviderDetails | null;
 }
 
 export interface ReactNativeAppBootstrap {
@@ -168,13 +202,8 @@ export type ElectronHostReadiness =
     };
 
 interface BuildSystemLike {
-  getBuild(
-    unitPath: string,
-    ref?: string
-  ): Promise<{ dir: string; metadata: AppBuildMetadataLike; artifacts?: AppBuildArtifactLike[] }>;
-  getBuildByKey?(
-    key: string
-  ): { dir: string; metadata: AppBuildMetadataLike; artifacts?: AppBuildArtifactLike[] } | null;
+  getBuild(unitPath: string, ref?: string): Promise<AppBuildResultLike>;
+  getBuildByKey?(key: string): AppBuildResultLike | null;
   getEffectiveVersion(unitName: string): string | null;
   getExternalDeps(unitName: string): Record<string, string>;
   getBuildProviderDetails?(target: "react-native"): AppBuildProviderDetails | null;
@@ -205,6 +234,13 @@ interface AppBuildArtifactLike {
   content: string;
 }
 
+interface AppBuildResultLike {
+  dir: string;
+  sourceStateHash?: string | null;
+  metadata: AppBuildMetadataLike;
+  artifacts?: AppBuildArtifactLike[];
+}
+
 interface AppBuildProviderDetails {
   name: string;
   activeEv: string | null;
@@ -226,6 +262,7 @@ interface AppGraphNode {
 
 interface AppBuildMetadataLike {
   ev: string;
+  sourceStateHash?: string | null;
   details?:
     | {
         kind: "app";
@@ -256,6 +293,7 @@ interface ApprovalQueueLike {
     units: PendingUnitBatchApproval["units"];
     configWrite?: PendingUnitBatchApproval["configWrite"];
   }): Promise<"once" | "session" | "version" | "repo" | "deny">;
+  listPending(): PendingApproval[];
 }
 
 interface NotificationServiceLike {
@@ -281,6 +319,7 @@ export interface AppHostDeps {
   statePath: string;
   workspacePath: string;
   workspaceId: string;
+  readWorkspaceFileAtCommit(commit: string, filePath: string): Promise<string | null>;
   buildSystem: BuildSystemLike;
   eventService: EventService;
   approvalQueue: ApprovalQueueLike;
@@ -292,7 +331,7 @@ export interface AppHostDeps {
   getReactNativeBootstrapUrl(): string;
 }
 
-export class AppHost {
+export class AppHost implements UnitMetaChangeApprovalProvider<UnitBatchEntry> {
   readonly registry: UnitRegistry<AppRegistryEntry>;
   private readonly trustResolver: UnitTrustResolver<AppRegistryEntry>;
   private readonly unitHost: UnitHost<
@@ -301,7 +340,7 @@ export class AppHost {
     AppGraphNode,
     UnitBatchEntry
   >;
-  private readonly sourcePushGrants: UnitSourcePushGrantStore;
+  private readonly sourceChangeGrants: UnitSourceChangeGrantStore;
   private readonly terminalRunner: TerminalAppRunner | null;
   private readonly appLogs = new Map<
     string,
@@ -316,7 +355,7 @@ export class AppHost {
     }>
   >();
   private lastDeclared: WorkspaceAppDeclaration[] = [];
-  private lastDirtyDevDiagnosticKey: string | null = null;
+  private lastDevStatusDiagnosticKey: string | null = null;
 
   constructor(private readonly deps: AppHostDeps) {
     this.registry = new UnitRegistry<AppRegistryEntry>({
@@ -332,7 +371,7 @@ export class AppHost {
         activationTrust: entry.activationTrust ?? null,
       }),
     });
-    this.sourcePushGrants = new UnitSourcePushGrantStore({ statePath: deps.statePath });
+    this.sourceChangeGrants = new UnitSourceChangeGrantStore({ statePath: deps.statePath });
     this.terminalRunner =
       deps.connectionGrants && deps.entityCache
         ? new TerminalAppRunner({
@@ -345,17 +384,10 @@ export class AppHost {
         : null;
     this.trustResolver = new UnitTrustResolver<AppRegistryEntry>({
       entryIdentity: (entry) => this.registryEntryIdentity(entry),
-      productSeedTrust: (identity) =>
-        verifyProductSeedSource({
-          unitDir: path.join(this.deps.workspacePath, identity.source.repo),
-          identity,
-        }) !== null,
     });
     this.unitHost = new UnitHost({
       descriptor: APP_UNIT_DESCRIPTOR,
       registry: this.registry,
-      currentDeclarationVersion: () =>
-        resolveGitCommit(path.join(this.deps.workspacePath, "meta"), "HEAD"),
       resolveNode: (source) => this.findAppNode(source),
       candidateIdentity: (node, decl) => this.declarationIdentity(node, decl),
       trustResolver: this.trustResolver,
@@ -382,6 +414,9 @@ export class AppHost {
           message: `meta/natstack.yml declares apps that don't exist: ${sources.join(", ")}.`,
         });
       },
+      validateBeforeApproval: (node) => this.validateAppManifestAtPath(node.path, node.name),
+      onApprovalCandidateError: (node, _decl, message) =>
+        this.emitStatus(node.name, "error", message),
       approvalEntry: (node, decl) => this.buildBatchEntry(node, decl),
       requestApproval: (entries, trigger) =>
         requestUnitBatchApproval({
@@ -422,10 +457,18 @@ export class AppHost {
 
   async reconcileDeclared(
     declared: WorkspaceAppDeclaration[],
-    opts: { trigger?: UnitReconcileTrigger } = {}
+    opts: UnitReconcileOptions = {}
   ): Promise<void> {
     this.lastDeclared = declared.map((decl) => ({ ...decl }));
     await this.unitHost.reconcileDeclared(declared, opts);
+    this.emitDevStatusDiagnostic(opts.trigger ?? "startup");
+  }
+
+  setDeclared(
+    declared: WorkspaceAppDeclaration[],
+    opts: { trigger?: UnitReconcileTrigger } = {}
+  ): void {
+    this.lastDeclared = declared.map((decl) => ({ ...decl }));
     this.emitDevStatusDiagnostic(opts.trigger ?? "startup");
   }
 
@@ -441,20 +484,17 @@ export class AppHost {
     await this.terminalRunner?.stopAll();
   }
 
-  acceptPreapprovedTrust(version: string, keys: Iterable<string>): void {
-    this.unitHost.acceptPreapprovedTrust(version, keys);
+  async metaChangeApprovalForCommit(
+    commit: string
+  ): Promise<{ units: UnitBatchEntry[]; identityKeys: string[] }> {
+    const approval = this.unitHost.approvalForDeclarations(
+      await this.readDeclaredAppsFromCommit(commit)
+    );
+    return { units: approval.entries, identityKeys: approval.identityKeys };
   }
 
-  preapproveHostTargetDeclarations(
-    target: HostTarget,
-    declared: WorkspaceAppDeclaration[]
-  ): { units: UnitBatchEntry[]; identityKeys: string[] } {
-    const targetDeclarations = declared.filter((decl) => {
-      const node = this.tryFindAppNode(decl.source);
-      return node ? this.appTarget(node, decl) === target : false;
-    });
-    const approval = this.unitHost.preapproveDeclarations(targetDeclarations);
-    return { units: approval.entries, identityKeys: approval.identityKeys };
+  acceptPreapprovedTrust(keys: Iterable<string>): void {
+    this.unitHost.acceptPreapprovedTrust(keys);
   }
 
   listWorkspaceUnits(): Array<{
@@ -541,7 +581,7 @@ export class AppHost {
         reason: candidate.compatibility.reasons.join("; ") || "Selected app is not compatible",
       };
     }
-    if (selection.mode === "pinned-build" || selection.mode === "pinned-commit") {
+    if (selection.mode === "pinned-build" || selection.mode === "pinned-ref") {
       const versions = this.listAppVersions(selection.appId);
       const known = [versions.current, ...versions.previous].some(
         (version) => version?.activeBundleKey === selection.buildKey
@@ -596,7 +636,7 @@ export class AppHost {
       );
     }
     const mode = input.mode ?? "follow-ref";
-    if (mode === "pinned-build" || mode === "pinned-commit") {
+    if (mode === "pinned-build" || mode === "pinned-ref") {
       if (!input.buildKey) throw new Error(`${mode} selections require buildKey`);
       const versions = this.listAppVersions(candidate.name);
       const known = [versions.current, ...versions.previous].some(
@@ -604,8 +644,8 @@ export class AppHost {
       );
       if (!known) throw new Error(`Build ${input.buildKey} is not retained for ${candidate.name}`);
     }
-    if (mode === "pinned-commit" && !input.commit) {
-      throw new Error("pinned-commit selections require commit");
+    if (mode === "pinned-ref" && !input.ref) {
+      throw new Error("pinned-ref selections require ref");
     }
     const selection: HostTargetSelection = {
       workspaceId: this.deps.workspaceId,
@@ -615,7 +655,6 @@ export class AppHost {
       mode,
       ref: input.ref,
       buildKey: input.buildKey,
-      commit: input.commit,
       updatedAt: Date.now(),
       autoSelected: input.autoSelected,
     };
@@ -655,10 +694,10 @@ export class AppHost {
     return this.listAppVersions(candidate.name);
   }
 
-  async prepareHostTargetPinnedCommit(
+  async prepareHostTargetPinnedRef(
     target: HostTarget,
     sourceOrName: string,
-    commit: string
+    ref: string
   ): Promise<{ buildKey: string; effectiveVersion: string; appId: string; source: string }> {
     const candidate = this.listHostTargetCandidates(target).find(
       (item) => item.name === sourceOrName || item.source === normalizeRepoPath(sourceOrName)
@@ -668,19 +707,20 @@ export class AppHost {
     const previous = this.registry.get(candidate.name) ?? null;
     const decl: WorkspaceAppDeclaration = {
       source: candidate.source,
-      ref: commit,
+      ref,
     };
     this.assertHostTargetMatchesManifest(node, target);
-    const build = await this.deps.buildSystem.getBuild(candidate.name, commit);
+    const build = await this.deps.buildSystem.getBuild(candidate.name, ref);
     this.validateBuildForTarget(candidate.name, target, build);
+    const activeSourceHash = requireBuildSourceStateHash(node.name, build);
     const externalDeps = this.externalDepsForBuild(node, build.metadata, decl);
     const dependencyEvs = this.currentDependencyEvs(node);
-    const trust = this.hostPinnedCommitTrustRecord(
+    const trust = this.hostPinnedRefTrustRecord(
       createUnitBuildIdentity({
         unitKind: "app",
         name: node.name,
         sourceRepo: node.relativePath,
-        ref: commit,
+        ref,
         effectiveVersion: build.metadata.ev,
         dependencyEvs,
         externalDeps,
@@ -692,10 +732,10 @@ export class AppHost {
       name: node.name,
       version: readPackageVersion(node.path),
       sourceRepo: node.relativePath,
-      ref: commit,
+      ref,
       buildDir: build.dir,
       effectiveVersion: build.metadata.ev,
-      activeSha: commit,
+      activeSourceHash,
       dependencyEvs,
       externalDeps,
       runtimeDepsKey: null,
@@ -733,11 +773,39 @@ export class AppHost {
     };
   }
 
-  async launchHostTarget(target: HostTarget): Promise<boolean> {
+  async launchHostTarget(target: HostTarget): Promise<HostTargetLaunchResult> {
+    const readiness = await this.prepareHostTargetForLaunch(target);
+    if (!readiness.ready) {
+      const approvals = this.pendingLaunchApprovals(target);
+      if (approvals.length > 0) {
+        return {
+          status: "approval-required",
+          launched: false,
+          target,
+          approvals,
+        };
+      }
+      return {
+        status: "unavailable",
+        launched: false,
+        target,
+        reason: readiness.reason,
+        details: readiness.details,
+      };
+    }
+
     const { selection, valid } = this.getHostTargetSelection(target);
-    if (!selection || !valid) return false;
+    if (!selection || !valid) {
+      return {
+        status: "unavailable",
+        launched: false,
+        target,
+        reason: "No host target is selected",
+        details: [],
+      };
+    }
     if (
-      (selection.mode === "pinned-build" || selection.mode === "pinned-commit") &&
+      (selection.mode === "pinned-build" || selection.mode === "pinned-ref") &&
       selection.buildKey
     ) {
       const current = this.findRegistryEntry(selection.appId);
@@ -746,10 +814,18 @@ export class AppHost {
       }
     }
     const entry = this.findRegistryEntry(selection.appId);
-    if (!entry || entry.target !== target || !entry.activeBundleKey) return false;
+    if (!entry || entry.target !== target || !entry.activeBundleKey) {
+      return {
+        status: "unavailable",
+        launched: false,
+        target,
+        reason: "Selected host target is not active",
+        details: [],
+      };
+    }
     if (target === "electron") {
-      this.emitAvailable(entry);
-      return true;
+      const available = this.emitAvailable(entry);
+      return launchReadyResult(target, entry, available);
     }
     if (target === "terminal") {
       for (const other of this.registry.list()) {
@@ -758,9 +834,98 @@ export class AppHost {
         }
       }
       await this.startTerminalApp(entry);
-      return true;
+      return launchReadyResult(target, entry);
     }
-    return true;
+    return launchReadyResult(target, entry);
+  }
+
+  listPendingHostTargetApprovals(target: HostTarget): PendingUnitBatchApproval[] {
+    return this.pendingLaunchApprovals(target);
+  }
+
+  private async prepareHostTargetForLaunch(target: HostTarget): Promise<{
+    ready: boolean;
+    reason: string;
+    details: string[];
+  }> {
+    if (target === "electron") {
+      const readiness = await this.ensureElectronReady(null, { waitForApproval: false });
+      return readiness.ready
+        ? { ready: true, reason: "", details: [] }
+        : { ready: false, reason: readiness.reason, details: readiness.details };
+    }
+    if (target === "react-native") {
+      const readiness = await this.ensureReactNativeReady(null, { waitForApproval: false });
+      return readiness.ready
+        ? { ready: true, reason: "", details: [] }
+        : { ready: false, reason: readiness.reason, details: readiness.details };
+    }
+    if (target === "terminal") {
+      return this.ensureTerminalReady({ waitForApproval: false });
+    }
+    return { ready: false, reason: `Unknown host target: ${target}`, details: [] };
+  }
+
+  private async ensureTerminalReady(
+    opts: { waitForApproval?: boolean } = {}
+  ): Promise<{ ready: boolean; reason: string; details: string[] }> {
+    await this.whenReconciled();
+    const resolvedSource = this.getSelectedTerminalSource();
+    if (!resolvedSource) {
+      return { ready: false, reason: "No Terminal workspace app is selected", details: [] };
+    }
+    const normalizedSource = normalizeRepoPath(resolvedSource);
+    const candidate = this.listHostTargetCandidates("terminal").find(
+      (item) => item.source === normalizedSource || item.name === resolvedSource
+    );
+    if (!candidate?.compatibility.selectable) {
+      return {
+        ready: false,
+        reason: "Selected Terminal app is not compatible",
+        details: candidate?.compatibility.reasons ?? [],
+      };
+    }
+
+    const declared = this.declaredForCandidate(candidate);
+    if (!declared) {
+      return {
+        ready: false,
+        reason: "Terminal app is not declared in meta/natstack.yml",
+        details: [`Declare ${candidate.source} under apps: before terminal clients can launch.`],
+      };
+    }
+
+    await this.reconcileHostTargetDeclaration("terminal", declared, opts);
+
+    const entry = this.registry
+      .list()
+      .find(
+        (item) =>
+          item.target === "terminal" &&
+          !!item.activeBundleKey &&
+          normalizeRepoPath(item.source.repo) === normalizeRepoPath(candidate.source)
+      );
+    if (!entry?.activeBundleKey) {
+      return {
+        ready: false,
+        reason: "Selected Terminal app does not have an active build",
+        details: [`${candidate.source}: ${candidate.status}`],
+      };
+    }
+    const build = this.deps.buildSystem.getBuildByKey?.(entry.activeBundleKey);
+    if (!build) {
+      return {
+        ready: false,
+        reason: "Selected Terminal app build is missing",
+        details: [entry.activeBundleKey],
+      };
+    }
+    this.validateBuildForTarget(entry.name, "terminal", build);
+    return { ready: true, reason: "", details: [] };
+  }
+
+  private pendingLaunchApprovals(target: HostTarget): PendingUnitBatchApproval[] {
+    return filterBootstrapApprovalsForTarget(this.deps.approvalQueue.listPending(), target);
   }
 
   async rollbackAppVersion(sourceOrName: string, buildKey?: string): Promise<AppRegistryEntry> {
@@ -792,7 +957,7 @@ export class AppHost {
       target: selected.target,
       capabilities: selected.capabilities,
       activeEv: selected.activeEv,
-      activeSha: selected.activeSha,
+      activeSourceHash: selected.activeSourceHash,
       activeBundleKey: selected.activeBundleKey,
       activeDependencyEvs: selected.activeDependencyEvs,
       activeExternalDeps: selected.activeExternalDeps,
@@ -875,33 +1040,28 @@ export class AppHost {
     });
   }
 
-  metaPushApprovalForCommit(commit: string): { units: UnitBatchEntry[]; identityKeys: string[] } {
-    const approval = this.unitHost.approvalForDeclarations(this.readDeclaredAppsFromCommit(commit));
-    return { units: approval.entries, identityKeys: approval.identityKeys };
-  }
-
-  async authorizeSourcePush(request: {
+  async authorizeSourceChange(request: {
     caller: VerifiedCaller;
     repoPath: string;
     branch: string;
     commit: string;
   }): Promise<{ allowed: boolean; reason?: string }> {
-    return authorizeUnitSourcePush(
+    return authorizeUnitSourceChange(
       {
         descriptor: APP_UNIT_DESCRIPTOR,
-        grantStore: this.sourcePushGrants,
+        grantStore: this.sourceChangeGrants,
         grantTtlMs: UNIT_DEV_SESSION_TTL_MS,
         findInstalledByRepo: (repoPath) => this.unitHost.findInstalledByRepo(repoPath),
-        requestApproval: async ({ request: sourcePush, installed, identity, callerKind }) =>
+        requestApproval: async ({ request: sourceChange, installed, identity, callerKind }) =>
           this.deps.approvalQueue.request({
             kind: "unit-batch",
-            callerId: sourcePush.caller.runtime.id,
+            callerId: sourceChange.caller.runtime.id,
             callerKind,
             repoPath: identity.repoPath,
             effectiveVersion: identity.effectiveVersion,
-            dedupKey: `app-source-push:${installed.entry.name}:${sourcePush.branch}`,
-            trigger: "source-push",
-            title: `${installed.entry.name} app source push`,
+            dedupKey: `app-source-change:${installed.entry.name}:${sourceChange.branch}`,
+            trigger: "source-change",
+            title: `${installed.entry.name} app source change`,
             description: "Accepting this push updates trusted workspace app code.",
             units: [
               {
@@ -1038,7 +1198,10 @@ export class AppHost {
     };
   }
 
-  async ensureReactNativeReady(source?: string | null): Promise<ReactNativeHostReadiness> {
+  async ensureReactNativeReady(
+    source?: string | null,
+    opts: { waitForApproval?: boolean } = {}
+  ): Promise<ReactNativeHostReadiness> {
     await this.whenReconciled();
 
     const first = this.reactNativeReadinessSnapshot(source);
@@ -1065,13 +1228,7 @@ export class AppHost {
         item.name === first.appId
     );
     if (!candidate) return first;
-    const declared = this.lastDeclared.find((decl) => {
-      const node = this.tryFindAppNode(decl.source);
-      return (
-        normalizeRepoPath(decl.source) === normalizeRepoPath(candidate.source) ||
-        node?.name === candidate.name
-      );
-    });
+    const declared = this.declaredForCandidate(candidate);
     if (!declared) {
       return {
         ready: false,
@@ -1082,12 +1239,14 @@ export class AppHost {
       };
     }
 
-    await this.reconcileDeclared(this.lastDeclared, { trigger: "startup" });
-    await this.whenSettled();
+    await this.reconcileHostTargetDeclaration("react-native", declared, opts);
     return this.reactNativeReadinessSnapshot(candidate.source);
   }
 
-  async ensureElectronReady(source?: string | null): Promise<ElectronHostReadiness> {
+  async ensureElectronReady(
+    source?: string | null,
+    opts: { waitForApproval?: boolean } = {}
+  ): Promise<ElectronHostReadiness> {
     await this.whenReconciled();
 
     const first = this.electronReadinessSnapshot(source);
@@ -1102,13 +1261,7 @@ export class AppHost {
         item.name === first.appId
     );
     if (!candidate) return first;
-    const declared = this.lastDeclared.find((decl) => {
-      const node = this.tryFindAppNode(decl.source);
-      return (
-        normalizeRepoPath(decl.source) === normalizeRepoPath(candidate.source) ||
-        node?.name === candidate.name
-      );
-    });
+    const declared = this.declaredForCandidate(candidate);
     if (!declared) {
       return {
         ready: false,
@@ -1119,8 +1272,7 @@ export class AppHost {
       };
     }
 
-    await this.reconcileDeclared(this.lastDeclared, { trigger: "startup" });
-    await this.whenSettled();
+    await this.reconcileHostTargetDeclaration("electron", declared, opts);
     return this.electronReadinessSnapshot(candidate.source);
   }
 
@@ -1332,6 +1484,7 @@ export class AppHost {
       const target = this.appTarget(node, decl);
       diagnostic.target = target;
       this.validateBuildForTarget(node.name, target, build);
+      const activeSourceHash = requireBuildSourceStateHash(node.name, build);
       diagnostic.phase = "activation";
       const capabilities = this.appCapabilities(node);
       let entry = this.unitHost.activateBuild({
@@ -1341,7 +1494,7 @@ export class AppHost {
         ref: decl.ref,
         buildDir: build.dir,
         effectiveVersion: build.metadata.ev,
-        activeSha: resolveGitCommit(node.path, decl.ref),
+        activeSourceHash,
         dependencyEvs: this.currentDependencyEvs(node),
         externalDeps: this.externalDepsForBuild(node, build.metadata, decl),
         runtimeDepsKey: null,
@@ -1412,7 +1565,7 @@ export class AppHost {
       previousEffectiveVersion?: string | null;
       notify?: boolean;
     } = {}
-  ): void {
+  ): AppAvailablePayload {
     const buildKey = entry.activeBundleKey ?? "";
     const baseUrl = `${this.deps.getGatewayUrl()}/_a/${encodeURIComponent(buildKey)}`;
     const build = buildKey ? this.deps.buildSystem.getBuildByKey?.(buildKey) : null;
@@ -1437,7 +1590,7 @@ export class AppHost {
         ? build.metadata.details
         : null;
     const url = primaryArtifact?.url ?? `${baseUrl}/index.html`;
-    this.deps.eventService.emit("apps:available" as EventName, {
+    const payload: AppAvailablePayload = {
       appId: entry.name,
       source: normalizeRepoPath(entry.source.repo),
       target: entry.target,
@@ -1455,7 +1608,8 @@ export class AppHost {
       integrity: details?.integrity ?? null,
       rnHostAbi: details?.rnHostAbi ?? null,
       provider: details?.provider ?? null,
-    });
+    };
+    this.deps.eventService.emit("apps:available" as EventName, payload);
     this.emitAppLifecycle({
       type: opts.lifecycleType ?? "available",
       appId: entry.name,
@@ -1472,6 +1626,7 @@ export class AppHost {
     });
     if (opts.notify) this.notifyAppUpdateAvailable(entry);
     this.emitStatus(entry.name, entry.status, entry.lastError ?? null);
+    return payload;
   }
 
   private validateActiveBuild(entry: AppRegistryEntry): void {
@@ -1675,7 +1830,7 @@ export class AppHost {
     }
     this.registry.patch(name, {
       activeEv: previous.activeEv,
-      activeSha: previous.activeSha,
+      activeSourceHash: previous.activeSourceHash,
       activeBundleKey: previous.activeBundleKey,
       activeDependencyEvs: previous.activeDependencyEvs ?? {},
       activeExternalDeps: previous.activeExternalDeps ?? {},
@@ -1824,6 +1979,37 @@ export class AppHost {
     return null;
   }
 
+  private getSelectedTerminalSource(): string | null {
+    const current = this.getHostTargetSelection("terminal");
+    if (current.valid && current.selection) return current.selection.source;
+    const activeEntries = this.registry
+      .list()
+      .filter(
+        (entry) =>
+          entry.target === "terminal" &&
+          (entry.status === "available" || entry.status === "running") &&
+          !!entry.activeBundleKey
+      );
+    const canonicalRemoteCli = activeEntries.find(
+      (entry) => normalizeRepoPath(entry.source.repo) === "apps/remote-cli"
+    );
+    if (canonicalRemoteCli) return normalizeRepoPath(canonicalRemoteCli.source.repo);
+    const onlyActiveEntry = activeEntries[0];
+    if (activeEntries.length === 1 && onlyActiveEntry) {
+      return normalizeRepoPath(onlyActiveEntry.source.repo);
+    }
+    const candidates = this.listHostTargetCandidates("terminal").filter(
+      (candidate) => candidate.compatibility.selectable
+    );
+    const canonicalCandidate = candidates.find(
+      (candidate) => normalizeRepoPath(candidate.source) === "apps/remote-cli"
+    );
+    if (canonicalCandidate) return canonicalCandidate.source;
+    const onlyCandidate = candidates[0];
+    if (candidates.length === 1 && onlyCandidate) return onlyCandidate.source;
+    return null;
+  }
+
   private getSelectedElectronSource(): string | null {
     const current = this.getHostTargetSelection("electron");
     if (current.valid && current.selection) return current.selection.source;
@@ -1866,7 +2052,7 @@ export class AppHost {
     const current = this.getHostTargetSelection(entry.target);
     const selection = current.valid ? current.selection : null;
     if (!selection) return null;
-    if (selection.mode !== "pinned-build" && selection.mode !== "pinned-commit") return null;
+    if (selection.mode !== "pinned-build" && selection.mode !== "pinned-ref") return null;
     if (
       selection.appId !== entry.name &&
       normalizeRepoPath(selection.source) !== normalizeRepoPath(entry.source.repo)
@@ -2031,21 +2217,38 @@ export class AppHost {
   }
 
   private async reconcileAfterProviderChange(_providerName: string): Promise<void> {
-    if (this.lastDeclared.length === 0) return;
-    let hasReactNativeApp = false;
-    for (const decl of this.lastDeclared) {
-      try {
-        if (this.appTarget(this.findAppNode(decl.source), decl) === "react-native") {
-          hasReactNativeApp = true;
-          break;
-        }
-      } catch {
-        // The normal declared-unit reconciliation path will surface unresolved apps.
-      }
-    }
-    if (!hasReactNativeApp) return;
-    await this.unitHost.reconcileDeclared(this.lastDeclared.map((decl) => ({ ...decl })));
     this.emitDevStatusDiagnostic("provider-change");
+  }
+
+  private declaredForCandidate(
+    candidate: Pick<HostTargetCandidate, "source" | "name">
+  ): WorkspaceAppDeclaration | null {
+    return (
+      this.lastDeclared.find((decl) => {
+        const node = this.tryFindAppNode(decl.source);
+        return (
+          normalizeRepoPath(decl.source) === normalizeRepoPath(candidate.source) ||
+          node?.name === candidate.name
+        );
+      }) ?? null
+    );
+  }
+
+  private async reconcileHostTargetDeclaration(
+    target: HostTarget,
+    declared: WorkspaceAppDeclaration,
+    opts: { waitForApproval?: boolean } = {}
+  ): Promise<void> {
+    await this.unitHost.reconcileDeclared([{ ...declared }], {
+      trigger: "startup",
+      removeUndeclared: false,
+    });
+    if (opts.waitForApproval !== false) {
+      await this.whenSettled();
+    } else {
+      await this.whenReconciled();
+    }
+    this.emitDevStatusDiagnostic(`launch:${target}`);
   }
 
   private async handleSourceRebuilt(source: string): Promise<void> {
@@ -2090,30 +2293,18 @@ export class AppHost {
     if (!appDevDiagnosticsEnabled() || this.lastDeclared.length === 0) return;
 
     const rows: string[] = [];
-    const dirtyRows: Array<{ name: string; source: string; files: string[] }> = [];
 
     for (const decl of this.lastDeclared) {
       try {
         const node = this.findAppNode(decl.source);
         const entry = this.registry.get(node.name);
         const target = this.appTarget(node, decl);
-        const dirtyFiles = readGitDirtyFiles(node.path);
         const activeEv = entry?.activeEv ? shortId(entry.activeEv) : "none";
         const activeBuild = entry?.activeBundleKey ? shortId(entry.activeBundleKey) : "none";
-        const head = shortId(resolveGitCommit(node.path, decl.ref)) ?? "unknown";
-        const dirtyLabel = dirtyFiles
-          ? dirtyFiles.length > 0
-            ? `dirty=${dirtyFiles.length}`
-            : "clean"
-          : "git=unavailable";
 
         rows.push(
-          `${node.name} target=${target} source=${node.relativePath} status=${entry?.status ?? "uninstalled"} ev=${activeEv} build=${activeBuild} head=${head} ${dirtyLabel}`
+          `${node.name} target=${target} source=${node.relativePath} ref=${decl.ref} status=${entry?.status ?? "uninstalled"} ev=${activeEv} build=${activeBuild}`
         );
-
-        if (dirtyFiles && dirtyFiles.length > 0) {
-          dirtyRows.push({ name: node.name, source: node.relativePath, files: dirtyFiles });
-        }
       } catch (error) {
         rows.push(
           `${decl.source} status=unresolved error=${error instanceof Error ? error.message : String(error)}`
@@ -2121,43 +2312,10 @@ export class AppHost {
       }
     }
 
-    console.info(`[Apps] Dev status (${trigger}):\n  ${rows.join("\n  ")}`);
-
-    const dirtyKey = dirtyRows
-      .map((row) => `${row.name}:${row.files.join(",")}`)
-      .sort()
-      .join("|");
-    if (!dirtyKey) {
-      this.lastDirtyDevDiagnosticKey = null;
-      return;
-    }
-    if (dirtyKey === this.lastDirtyDevDiagnosticKey) return;
-    this.lastDirtyDevDiagnosticKey = dirtyKey;
-
-    const details = dirtyRows
-      .map((row) => `${row.name} (${row.source}): ${summarizeFiles(row.files)}`)
-      .join("; ");
-    this.deps.notificationService?.show({
-      id: "apps-dev-dirty",
-      type: "warning",
-      title: "Workspace app source has uncommitted changes",
-      message: `Trusted app builds use committed source. Commit/push or approve the app update before expecting these changes to load. ${details}`,
-    });
-  }
-
-  private readDeclaredAppsFromCommit(commit: string): WorkspaceAppDeclaration[] {
-    const metaRepoDir = path.join(this.deps.workspacePath, "meta");
-    try {
-      const out = String(
-        execGitFileSync(["show", "--end-of-options", `${commit}:natstack.yml`], {
-          cwd: metaRepoDir,
-          encoding: "utf-8",
-          stdio: ["ignore", "pipe", "ignore"],
-        })
-      );
-      return resolveDeclaredApps(parseWorkspaceConfigContentWithId(out, this.deps.workspaceId));
-    } catch {
-      return [];
+    const statusKey = `${trigger}\n${rows.join("\n")}`;
+    if (statusKey !== this.lastDevStatusDiagnosticKey) {
+      this.lastDevStatusDiagnosticKey = statusKey;
+      console.info(`[Apps] Dev status (${trigger}):\n  ${rows.join("\n  ")}`);
     }
   }
 
@@ -2174,6 +2332,16 @@ export class AppHost {
       return this.findAppNode(nameOrRepo);
     } catch {
       return null;
+    }
+  }
+
+  private async readDeclaredAppsFromCommit(commit: string): Promise<WorkspaceAppDeclaration[]> {
+    try {
+      const content = await this.deps.readWorkspaceFileAtCommit(commit, "meta/natstack.yml");
+      if (!content) return [];
+      return resolveDeclaredApps(parseWorkspaceConfigContentWithId(content, this.deps.workspaceId));
+    } catch {
+      return [];
     }
   }
 
@@ -2215,14 +2383,12 @@ export class AppHost {
     }
   }
 
-  private hostPinnedCommitTrustRecord(
-    identity: UnitBuildIdentity<"app">
-  ): AppActivationTrustRecord {
+  private hostPinnedRefTrustRecord(identity: UnitBuildIdentity<"app">): AppActivationTrustRecord {
     return {
-      decision: "host-target-pinned-commit",
+      decision: "host-target-pinned-ref",
       identityKey: canonicalUnitBuildIdentity(identity),
       actor: "shell-host",
-      reason: "Host target pinned to an explicit commit selected by a trusted shell/server caller",
+      reason: "Host target pinned to an explicit ref selected by a trusted shell/server caller",
       acceptedAt: Date.now(),
     };
   }
@@ -2381,6 +2547,32 @@ function buildProviderIdentityValue(provider: AppBuildProviderDetails): string {
   );
 }
 
+function launchReadyResult(
+  target: HostTarget,
+  entry: AppRegistryEntry,
+  available?: Pick<
+    AppAvailablePayload,
+    "url" | "capabilities" | "effectiveVersion" | "adoptionPolicy"
+  >
+): HostTargetLaunchResult {
+  return {
+    status: "ready",
+    launched: true,
+    target,
+    source: entry.source.repo,
+    appId: entry.name,
+    buildKey: entry.activeBundleKey ?? "",
+    ...(available
+      ? {
+          url: available.url,
+          capabilities: available.capabilities,
+          effectiveVersion: available.effectiveVersion,
+          adoptionPolicy: available.adoptionPolicy,
+        }
+      : {}),
+  };
+}
+
 function appLaunchMode(
   target: WorkspaceAppTarget
 ): "hosted-view" | "native-bootstrap" | "terminal-process" {
@@ -2391,6 +2583,12 @@ function appLaunchMode(
 
 function appRegistryStatusForTarget(target: WorkspaceAppTarget): AppRegistryEntry["status"] {
   return target === "terminal" ? "available" : "running";
+}
+
+function requireBuildSourceStateHash(unitName: string, build: AppBuildResultLike): string {
+  if (build.sourceStateHash) return build.sourceStateHash;
+  if (build.metadata.sourceStateHash) return build.metadata.sourceStateHash;
+  throw new Error(`Build for ${unitName} is missing workspace source state provenance`);
 }
 
 function isCapabilityActiveStatus(status: AppRegistryEntry["status"]): boolean {
@@ -2422,6 +2620,7 @@ function appBuildMetadataForDist(
     kind: "app",
     name: entry.name,
     ev: metadata.ev,
+    sourceStateHash: entry.activeSourceHash,
     sourcemap: true,
     details: {
       kind: "app",
@@ -2524,7 +2723,7 @@ function isHostTargetSelection(value: unknown): value is HostTargetSelection {
     typeof candidate.appId === "string" &&
     (candidate.mode === "follow-ref" ||
       candidate.mode === "pinned-build" ||
-      candidate.mode === "pinned-commit") &&
+      candidate.mode === "pinned-ref") &&
     typeof candidate.updatedAt === "number"
   );
 }
@@ -2536,7 +2735,7 @@ function appVersionRecordFromEntry(entry: AppRegistryEntry): AppVersionRecord | 
     target: entry.target,
     capabilities: [...entry.capabilities],
     activeEv: entry.activeEv,
-    activeSha: entry.activeSha,
+    activeSourceHash: entry.activeSourceHash,
     activeBundleKey: entry.activeBundleKey,
     activeDependencyEvs: { ...(entry.activeDependencyEvs ?? {}) },
     activeExternalDeps: { ...(entry.activeExternalDeps ?? {}) },
@@ -2595,48 +2794,6 @@ function readPackageVersion(nodePath: string): string {
   return pkg.version ?? "0.0.0";
 }
 
-function resolveGitCommit(repoPath: string, ref = "HEAD"): string | null {
-  try {
-    return (
-      String(
-        execGitFileSync(["rev-parse", "--verify", "--end-of-options", ref], {
-          cwd: repoPath,
-          encoding: "utf-8",
-          stdio: ["ignore", "pipe", "ignore"],
-        })
-      ).trim() || null
-    );
-  } catch {
-    return null;
-  }
-}
-
-function readGitDirtyFiles(repoPath: string): string[] | null {
-  try {
-    const output = String(
-      execGitFileSync(["status", "--porcelain=v1", "--untracked-files=normal"], {
-        cwd: repoPath,
-        encoding: "utf-8",
-        stdio: ["ignore", "pipe", "ignore"],
-      })
-    ).trimEnd();
-    if (!output) return [];
-    return output
-      .split("\n")
-      .map((line) => {
-        const rawPath = line.length > 3 ? line.slice(3).trim() : line.trim();
-        const renameParts = rawPath.split(" -> ");
-        const renameTarget = rawPath.includes(" -> ")
-          ? renameParts[renameParts.length - 1]
-          : rawPath;
-        return renameTarget?.replace(/^"|"$/g, "") ?? rawPath;
-      })
-      .filter((file) => file.length > 0);
-  } catch {
-    return null;
-  }
-}
-
 function appDevDiagnosticsEnabled(): boolean {
   const override = process.env["NATSTACK_APP_DEV_STATUS"];
   if (override === "0" || override === "false") return false;
@@ -2647,12 +2804,6 @@ function appDevDiagnosticsEnabled(): boolean {
 function shortId(value: string | null | undefined): string | null {
   if (!value) return null;
   return value.length > 12 ? value.slice(0, 12) : value;
-}
-
-function summarizeFiles(files: readonly string[]): string {
-  const shown = files.slice(0, 5);
-  const suffix = files.length > shown.length ? `, +${files.length - shown.length} more` : "";
-  return `${shown.join(", ")}${suffix}`;
 }
 
 const UNIT_DEV_SESSION_TTL_MS = 4 * 60 * 60 * 1000;

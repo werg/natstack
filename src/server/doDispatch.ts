@@ -307,6 +307,32 @@ export class DODispatch {
    * raw dispatcher function.
    */
   async dispatch(ref: DORef, method: string, ...args: unknown[]): Promise<unknown> {
+    return this.withSlowWarning(`${doRefKey(ref)}.${method}`, () =>
+      this.dispatchImpl(ref, method, args)
+    );
+  }
+
+  /**
+   * Slow-call watchdog: a DO call that never returns (loader stall, deadlock,
+   * dead workerd socket) otherwise hangs its caller with zero output. Warns
+   * every 10s while the call is pending so the offender is named in the log.
+   */
+  private async withSlowWarning<T>(label: string, fn: () => Promise<T>): Promise<T> {
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      console.warn(
+        `[DODispatch] ${label} still pending after ${Math.round((Date.now() - startedAt) / 1000)}s`
+      );
+    }, 10_000);
+    timer.unref?.();
+    try {
+      return await fn();
+    } finally {
+      clearInterval(timer);
+    }
+  }
+
+  private async dispatchImpl(ref: DORef, method: string, args: unknown[]): Promise<unknown> {
     await Promise.resolve(this.beforeDispatchFn?.(ref));
 
     // Token-based path: use postToDOWithToken when tokenManager + getWorkerdUrl are set
@@ -353,6 +379,16 @@ export class DODispatch {
   }
 
   async dispatchLifecycle(
+    ref: DORef,
+    method: "prepare" | "resume",
+    arg: unknown
+  ): Promise<unknown> {
+    return this.withSlowWarning(`${doRefKey(ref)}.__lifecycle/${method}`, () =>
+      this.dispatchLifecycleImpl(ref, method, arg)
+    );
+  }
+
+  private async dispatchLifecycleImpl(
     ref: DORef,
     method: "prepare" | "resume",
     arg: unknown
@@ -409,6 +445,10 @@ export class DODispatch {
    * ensureDO-on-missing retry (a hibernated/cold DO is woken to handle it).
    */
   async dispatchAlarm(ref: DORef): Promise<unknown> {
+    return this.withSlowWarning(`${doRefKey(ref)}.__alarm`, () => this.dispatchAlarmImpl(ref));
+  }
+
+  private async dispatchAlarmImpl(ref: DORef): Promise<unknown> {
     await Promise.resolve(this.beforeDispatchFn?.(ref));
 
     if (this.tokenManager && this.getWorkerdUrl && this.getWorkerdGatewayToken) {

@@ -523,10 +523,20 @@ export class RpcServer {
     return this.connections.getConnection(callerId, connectionId);
   }
 
+  private resolveRoutableTargetId(targetId: string): string {
+    return this.deps.runtimeCoordinator?.resolveRouteRuntimeEntityId(targetId) ?? targetId;
+  }
+
   private pickRoutableTarget(targetId: string, connectionId?: string): WsClientState | undefined {
-    if (connectionId) return this.getConnection(targetId, connectionId);
+    const routedTargetId = this.resolveRoutableTargetId(targetId);
+    if (connectionId) {
+      return (
+        this.getConnection(routedTargetId, connectionId) ??
+        this.getConnection(targetId, connectionId)
+      );
+    }
     const leaseConnectionId = this.deps.runtimeCoordinator?.resolveRouteConnection(targetId);
-    if (leaseConnectionId) return this.getConnection(targetId, leaseConnectionId);
+    if (leaseConnectionId) return this.getConnection(routedTargetId, leaseConnectionId);
     return this.pickPrimary(targetId);
   }
 
@@ -1097,11 +1107,12 @@ export class RpcServer {
 
     if (outboundMessage.type === "event" && !targetConnectionId) {
       const leaseConnectionId = this.deps.runtimeCoordinator?.resolveRouteConnection(targetId);
+      const routedTargetId = this.resolveRoutableTargetId(targetId);
       const connections = leaseConnectionId
-        ? [this.getConnection(targetId, leaseConnectionId)].filter(
+        ? [this.getConnection(routedTargetId, leaseConnectionId)].filter(
             (connection): connection is WsClientState => Boolean(connection)
           )
-        : this.getCallerConnections(targetId);
+        : this.getCallerConnections(routedTargetId);
       for (const connection of connections) {
         this.sendToWs(connection.ws, {
           type: "ws:routed",
@@ -2167,11 +2178,12 @@ export class RpcServer {
     if (wsClient?.ws.readyState !== WebSocket.OPEN) {
       throw createRelayError(`Target not reachable: ${targetId}`, "TARGET_NOT_REACHABLE");
     }
-    const bridge = this.connections.getBridge(targetId, wsClient.connectionId);
+    const routedTargetId = this.resolveRoutableTargetId(targetId);
+    const bridge = this.connections.getBridge(routedTargetId, wsClient.connectionId);
     if (!bridge) {
       throw createRelayError(`Target bridge not reachable: ${targetId}`, "TARGET_NOT_REACHABLE");
     }
-    return bridge.stream(targetId, method, args);
+    return bridge.stream(routedTargetId, method, args);
   }
 
   private async relayCall(
@@ -2185,33 +2197,37 @@ export class RpcServer {
   ): Promise<unknown> {
     const isPanelOrShellTarget = !targetId.startsWith("do:") && !targetId.startsWith("worker:");
     if (isPanelOrShellTarget) {
+      const routedTargetId = this.resolveRoutableTargetId(targetId);
       const wsClient = this.pickRoutableTarget(targetId, targetConnectionId);
       if (wsClient?.ws.readyState === WebSocket.OPEN) {
-        const bridge = this.connections.getBridge(targetId, wsClient.connectionId);
+        const bridge = this.connections.getBridge(routedTargetId, wsClient.connectionId);
         if (bridge) {
-          return await bridge.call(targetId, method, args);
+          return await bridge.call(routedTargetId, method, args);
         }
       }
 
       if (targetConnectionId) {
-        const reconnectedClient = await this.resolveWsRelayTarget(targetId, targetConnectionId);
-        const bridge = this.connections.getBridge(targetId, reconnectedClient.connectionId);
+        const reconnectedClient = await this.resolveWsRelayTarget(
+          routedTargetId,
+          targetConnectionId
+        );
+        const bridge = this.connections.getBridge(routedTargetId, reconnectedClient.connectionId);
         if (!bridge) {
           throw new Error(
             `Target ${targetId}:${targetConnectionId} reconnected but bridge missing`
           );
         }
-        return await bridge.call(targetId, method, args);
+        return await bridge.call(routedTargetId, method, args);
       }
 
-      const outcome = await this.awaitReconnectIfPending(targetId);
+      const outcome = await this.awaitReconnectIfPending(routedTargetId);
       switch (outcome.kind) {
         case "reconnected": {
-          const bridge = this.connections.getBridge(targetId, outcome.client.connectionId);
+          const bridge = this.connections.getBridge(routedTargetId, outcome.client.connectionId);
           if (!bridge) {
             throw new Error(`Target ${targetId} reconnected but bridge missing`);
           }
-          return await bridge.call(targetId, method, args);
+          return await bridge.call(routedTargetId, method, args);
         }
         case "server-shutdown":
           throw createRelayError("Server shutting down", "SERVER_SHUTTING_DOWN");
@@ -2277,16 +2293,15 @@ export class RpcServer {
 
     const { postToDurableObject } = await import("./workerdRpcRelay.js");
 
-    if (!this.deps.tokenManager || !this.workerdUrl || !this.workerdGatewayToken) {
-      throw new Error(
-        "Cannot relay to DO: tokenManager, workerdUrl, or workerdGatewayToken not configured"
-      );
-    }
-    const workerdUrl = this.workerdUrl;
-    const workerdGatewayToken = this.workerdGatewayToken;
-    const workerdDispatchSecret = this.workerdDispatchSecret;
-
     const dispatch = async () => {
+      if (!this.deps.tokenManager || !this.workerdUrl || !this.workerdGatewayToken) {
+        throw new Error(
+          "Cannot relay to DO: tokenManager, workerdUrl, or workerdGatewayToken not configured"
+        );
+      }
+      const workerdUrl = this.workerdUrl;
+      const workerdGatewayToken = this.workerdGatewayToken;
+      const workerdDispatchSecret = this.workerdDispatchSecret;
       const callerPanelId =
         callerKind === "panel"
           ? (this.deps.runtimeCoordinator?.getLease(callerId)?.slotId ?? undefined)
@@ -2368,11 +2383,12 @@ export class RpcServer {
     const isPanelOrShellTarget = !targetId.startsWith("do:") && !targetId.startsWith("worker:");
     if (isPanelOrShellTarget) {
       const leaseConnectionId = this.deps.runtimeCoordinator?.resolveRouteConnection(targetId);
+      const routedTargetId = this.resolveRoutableTargetId(targetId);
       const wsClients = leaseConnectionId
-        ? [this.getConnection(targetId, leaseConnectionId)].filter(
+        ? [this.getConnection(routedTargetId, leaseConnectionId)].filter(
             (connection): connection is WsClientState => Boolean(connection)
           )
-        : this.getCallerConnections(targetId);
+        : this.getCallerConnections(routedTargetId);
       if (wsClients.length > 0) {
         for (const wsClient of wsClients) {
           this.sendToWs(wsClient.ws, {
@@ -2384,10 +2400,10 @@ export class RpcServer {
         return;
       }
 
-      const outcome = await this.awaitReconnectIfPending(targetId);
+      const outcome = await this.awaitReconnectIfPending(routedTargetId);
       switch (outcome.kind) {
         case "reconnected":
-          for (const wsClient of this.getCallerConnections(targetId)) {
+          for (const wsClient of this.getCallerConnections(routedTargetId)) {
             this.sendToWs(wsClient.ws, {
               type: "ws:routed",
               fromId,
