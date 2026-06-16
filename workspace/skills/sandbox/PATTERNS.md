@@ -7,7 +7,7 @@ Recipes for common tasks using the sandbox.
 ```
 eval({ code: `
   import { fs } from "@workspace/runtime";
-  const content = await fs.readFile("/src/index.ts", "utf-8");
+  const content = await fs.readFile("src/index.ts", "utf-8");
   console.log(content);
   return content;
 ` })
@@ -18,7 +18,7 @@ eval({ code: `
 ```
 eval({ code: `
   import { fs } from "@workspace/runtime";
-  const entries = await fs.readdir("/src", { withFileTypes: true });
+  const entries = await fs.readdir("src", { withFileTypes: true });
   for (const e of entries) {
     console.log(e.isDirectory() ? "dir:  " + e.name : "file: " + e.name);
   }
@@ -50,7 +50,7 @@ eval({ code: `
     return results;
   }
 
-  const matches = await grep("/src", "TODO");
+  const matches = await grep("src", "TODO");
   console.log(matches);
   return matches;
 `

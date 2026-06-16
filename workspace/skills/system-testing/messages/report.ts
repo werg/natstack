@@ -154,6 +154,8 @@ export async function reportStage(
     passed: entry.result.passed,
     durationMs: entry.execution.duration ?? 0,
     reason: reasonFor(entry),
+    toolFailures: entry.execution.toolFailures,
+    toolFailureCount: entry.execution.toolFailures?.length ?? 0,
     detail: summarizeEntry(entry, PER_TEST_LIMITS),
   }));
 
@@ -162,6 +164,8 @@ export async function reportStage(
     passed: tests.filter((t) => t.status === "passed").length,
     failed: tests.filter((t) => t.status === "failed").length,
     errored: tests.filter((t) => t.status === "errored").length,
+    toolFailureCount: tests.reduce((sum, test) => sum + (test.toolFailureCount ?? 0), 0),
+    testsWithToolFailures: tests.filter((test) => (test.toolFailureCount ?? 0) > 0).length,
     skipped: 0,
     durationMs: entries.reduce((sum, entry) => sum + (entry.execution.duration ?? 0), 0),
   };
@@ -182,16 +186,6 @@ export async function reportStage(
     displayMode: "row",
     initialState: state,
   });
-
-  // Memory hygiene: the card now holds a bounded diagnostic for every test in
-  // this stage, so the heavy raw transcript/snapshot for *passing* tests can be
-  // shed from the in-memory run. Failing/errored tests keep full raw forensics.
-  for (const entry of entries) {
-    if (entry.result.passed && !entry.execution.error) {
-      entry.execution.messages = [];
-      entry.execution.snapshot = undefined;
-    }
-  }
 
   return { messageId };
 }

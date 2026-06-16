@@ -2,7 +2,13 @@ export { HeadlessRunner } from "./runner.js";
 export { TestRunner } from "./test-runner.js";
 export { summarizeFailures, summarizeEntry } from "./diagnostics.js";
 export type { FailureDiagnostic, FailureReport, DiagnosticLimits } from "./diagnostics.js";
-export type { TestCase, TestResult, TestSuiteResult, TestExecutionResult } from "./types.js";
+export type {
+  TestCase,
+  TestResult,
+  TestSuiteResult,
+  TestExecutionResult,
+  ToolFailureSummary,
+} from "./types.js";
 export type { SessionSnapshot } from "@workspace/agentic-session";
 
 // Stage report cards (runtime-safe: no value import of the .tsx renderer).
@@ -18,7 +24,6 @@ export {
   docsProbeTests,
   edgeCaseTests,
   filesystemTests,
-  gitTests,
   harnessResilienceTests,
   interactionSurfaceTests,
   nextSelectedStage,
@@ -33,6 +38,7 @@ export {
   testCategories,
   testStageChoices,
   testStages,
+  vcsTests,
   workerTests,
   workspaceTests,
 } from "./stages.js";

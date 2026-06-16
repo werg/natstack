@@ -165,7 +165,7 @@ Full RPC bridge to all server and main-process services. Same as `rpc` from `@wo
 
 ```typescript
 // Filesystem
-const content = await chat.rpc.call("main", "fs.readFile", ["/src/index.ts", "utf-8"]);
+const content = await chat.rpc.call("main", "fs.readFile", ["src/index.ts", "utf-8"]);
 
 // Database
 Call a Durable Object method that stores data with `this.sql`.

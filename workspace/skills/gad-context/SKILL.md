@@ -96,7 +96,8 @@ them from `eval`; use `inspect*` APIs first, then fetch one digest or envelope
 only when the exact artifact is needed. `payload_ref_json` is the durable column
 name even when the value is inline JSON; there is no `payload_json` column.
 
-Contexts behave like isolated workspace checkouts. A source edit affects the
-running app only after the relevant context commits/pushes and the runtime build
-reloads that artifact. When a fix appears ignored, inspect git status/remotes and
-runtime build provenance before assuming the code path is still broken.
+Contexts behave like isolated workspace state views. A source edit affects the
+running app only after the relevant context commits and the runtime build
+reloads that artifact. When a fix appears ignored, inspect VCS status, build
+events, and runtime build provenance before assuming the code path is still
+broken.

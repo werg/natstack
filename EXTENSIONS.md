@@ -51,11 +51,11 @@ The registry is a small JSON in workspace state. It holds **operational state on
 interface RegistryEntry {
   name: string;                  // "@workspace-extensions/git-tools"
   version: string;
-  source: ExtensionSource;       // workspace-internal git repo + ref
+  source: ExtensionSource;       // workspace repo + ref
   installedAt: number;
 
   activeEv: string | null;       // workspace-source EV of the approved/running build
-  activeSha: string | null;
+  activeSourceHash: string | null;
   activeBundleKey: string | null;
   activeDependencyEvs: Record<string, string>; // workspace deps pinned into active bundle
   activeExternalDeps: Record<string, string>;  // npm deps + versions captured at approval time
@@ -500,7 +500,7 @@ await approvals.request({
   detail: {
     name: "@workspace-extensions/git-tools",
     version: "1.2.0",
-    source: { kind: "internal-git", repo: "extensions/git-tools", ref: "v1.2.0" },
+    source: { kind: "workspace-repo", repo: "extensions/git-tools", ref: "v1.2.0" },
 
     // Build context, shown for diagnostics only. Not an approval key.
     ev: "ev_2a9f...",                // workspace-source EV, shown for diff/debug context
@@ -817,7 +817,7 @@ These are migrations where the current in-host service is exposed on `ctx.*` to 
 
 6. **AI runtime client** — removed from the runtime surface instead of migrated. The chat agent path already owns current model execution, and there were no active runtime callers left for the old package/client.
 
-7. **`gitService`'s user-facing methods** (`blame`, `log`, `branches`, etc.) — has a complication: the in-host git service has *two* caller populations. Build-internal callers (the build pipeline depends on git tree hashing, source extraction, push events) must stay in-host. User-facing callers (panels viewing repo state, extensions inspecting commit history) should migrate. Requires teasing apart the in-host caller graph before migration is mechanical.
+7. **Legacy workspace Git service** — removed. Workspace repo state uses the GAD-native `vcs` surface, while explicit external Git import/export lives behind `gitInterop`.
 
 8. **`webhooks` consumer surface** — once `webhookIngressService` eventually lands as an extension, the corresponding `ctx.webhooks` subscription client also goes away in favor of `extensions.use<WebhookApi>("@workspace-extensions/webhook-ingress")`.
 

@@ -79,7 +79,7 @@ services.push({
 
 - `fetch("http://169.254.169.254/latest/meta-data/iam/security-credentials/…")` — AWS IMDSv1, no token. The proxy's per-provider manifest machinery was the only thing that would have blocked this.
 - `fetch("http://127.0.0.1:${rpcPort}/rpc", { headers: { authorization: "Bearer "+RPC_AUTH_TOKEN }, body: JSON.stringify({ service:"workerd", method:"createInstance", args:[{ source:"workers/attacker", contextId:"ctx", name:"x", …}]})})` — privilege-escalate by RPC'ing `workerd.createInstance` with arbitrary `source` / `stateArgs`. (`workerdService.policy.allowed` includes `"worker"`, so callerKind=worker is acceptable.)
-- `fetch(GATEWAY_URL + "/_git/…", { headers: { authorization: "Bearer "+RPC_AUTH_TOKEN } })` — workers no longer receive a separate git bearer, but they do receive a real caller token plus gateway URL. If git policy over-allows that caller, a compromised worker can still exercise git through the authenticated gateway path.
+- `fetch(GATEWAY_URL + "/rpc", { headers: { authorization: "Bearer "+RPC_AUTH_TOKEN }, body: JSON.stringify({method:"vcs.status", args:["main"]}) })` — workers receive a real caller token plus gateway URL. If RPC policy over-allows that caller, a compromised worker can still exercise workspace services through the authenticated gateway path.
 - Any on-host service: Redis at 6379, Postgres at 5432, Elasticsearch at 9200, the developer's ssh-agent UNIX socket forwarded over TCP, etc.
 - Data exfiltration to any attacker-controlled host with no audit trail.
 
@@ -296,7 +296,7 @@ Severity: **High** — exposed to worker code today.
 **Attack paths**:
 
 1. Any local process that obtains a panel token can connect to Electron CDP; any remote client with a valid token and browser access can connect through the remote CDP bridge.
-2. Any panel/worker can proxy through `/rpc` to acquire its own browser's CDP endpoint (`panel.createBrowser`), which returns `getCdpEndpoint` — there's no separation between "panel may open browser" and "panel may pilot browser".
+2. Any panel/worker can proxy through `/rpc` to open or locate a browser panel (`openPanel` / `panelTree`) and then request that panel's CDP endpoint — there's no separation between "panel may open browser" and "panel may pilot browser".
 3. `contents.debugger.sendCommand("Runtime.evaluate", { expression: "<attacker-JS>" })` = full main-world execution inside the browser's webContents, which in Electron has access to `window` of arbitrary origins if the browser has navigated there — sufficient to exfiltrate cookies, session storage, etc.
 4. `Page.navigate` → `file:///…` can in some Electron configurations read local files into the target page.
 

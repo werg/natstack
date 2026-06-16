@@ -1,4 +1,5 @@
 import { contextId as runtimeContextId, getStateArgs, rpc, setStateArgs } from "@workspace/runtime";
+import { getGoogleOnboardingStatus } from "@workspace-skills/google-workspace";
 
 const GMAIL_AGENT_SOURCE = "workers/gmail-agent";
 const GMAIL_AGENT_CLASS = "GmailAgentWorker";
@@ -31,8 +32,7 @@ function record(value: unknown): Record<string, unknown> {
 
 export async function getGmailAgentSetupStatus(): Promise<GmailAgentSetupStatus> {
   try {
-    const google = await import("@workspace-skills/google-workspace");
-    const status = await google.getGoogleOnboardingStatus({ verify: true });
+    const status = await getGoogleOnboardingStatus({ verify: true });
     if (status.stage === "needs-setup") {
       return {
         stage: "needs-google-workspace",
@@ -128,8 +128,7 @@ export async function setupGmailAgent(args: GmailAgentSetupArgs = {}): Promise<{
   if (!contextId) {
     throw new Error("setupGmailAgent requires a runtime contextId");
   }
-  const google = await import("@workspace-skills/google-workspace");
-  const googleStatus = await google.getGoogleOnboardingStatus({ verify: true });
+  const googleStatus = await getGoogleOnboardingStatus({ verify: true });
   const googleCredentialId = googleStatus.credentialId;
   if (googleStatus.stage !== "verified" || !googleCredentialId) {
     throw new Error("setupGmailAgent requires a verified Google Workspace credential");

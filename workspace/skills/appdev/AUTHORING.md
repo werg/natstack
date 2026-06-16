@@ -79,7 +79,7 @@ identity includes:
 - target/provider metadata where applicable
 
 This means adding a capability, changing a dependency, changing the React Native
-provider, or pushing app source can require a new approval before the app is
+provider, or committing app source can require a new approval before the app is
 active.
 
 ## Runtime Update Protocol
@@ -91,7 +91,7 @@ their own UI. Relevant event types are:
   loaded by clients. Payload includes app id, source, target, build key,
   effective version, previous build metadata, `canRollback`, and an
   `adoptionPolicy`.
-- `update-error`: a pushed build failed to build or validate. The previous
+- `update-error`: a committed build failed to build or validate. The previous
   active build remains selected. Payload includes the error and rollback
   availability.
 - `rolled-back`: the server switched the app back to a previous trusted build.
@@ -137,7 +137,7 @@ Guidelines:
 - Keep native host code outside `workspace/apps/mobile`; the workspace mobile
   app should consume native host APIs through its service wrappers.
 - Do not import server/main internals from workspace app code.
-- Do not assume app source edits are live. Commit and push the app repo to
+- Do not assume app source edits are live. Commit the workspace app unit to
   update the active build.
 
 ## Choosing Apps vs Panels vs Extensions

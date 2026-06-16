@@ -287,6 +287,7 @@ panelTree.list(): Promise<PanelHandle[]>
 panelTree.roots(): Promise<PanelHandle[]>
 panelTree.children(id): Promise<PanelHandle[]>
 panelTree.parent(id): PanelHandle | null
+panelTree.navigate(id, source, opts): Promise<{ id: string; title: string }>
 panelTree.open(source, opts): Promise<PanelHandle>
 ```
 

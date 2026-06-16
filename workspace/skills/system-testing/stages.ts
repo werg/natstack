@@ -2,7 +2,7 @@ import type { TestCase } from "./types.js";
 
 export { smokeTests } from "./tests/smoke.js";
 export { filesystemTests } from "./tests/filesystem.js";
-export { gitTests } from "./tests/git.js";
+export { vcsTests } from "./tests/vcs.js";
 export { panelTests } from "./tests/panels.js";
 export { workerTests } from "./tests/workers.js";
 export { buildTests } from "./tests/build.js";
@@ -22,7 +22,7 @@ export { harnessResilienceTests } from "./tests/harness-resilience.js";
 
 import { smokeTests as _smoke } from "./tests/smoke.js";
 import { filesystemTests as _fs } from "./tests/filesystem.js";
-import { gitTests as _git } from "./tests/git.js";
+import { vcsTests as _vcs } from "./tests/vcs.js";
 import { panelTests as _panels } from "./tests/panels.js";
 import { workerTests as _workers } from "./tests/workers.js";
 import { buildTests as _build } from "./tests/build.js";
@@ -69,7 +69,7 @@ export function allTests(): TestCase[] {
   return [
     ..._smoke,
     ..._fs,
-    ..._git,
+    ..._vcs,
     ..._panels,
     ..._workers,
     ..._build,

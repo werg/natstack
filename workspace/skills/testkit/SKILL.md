@@ -10,6 +10,8 @@ test runner that works inside eval and panels, panel automation over
 `panelTree`/CDP, worker/DO orchestration and inspection, supervision
 (console/crash/health watching), and profiling for both panels (Chromium CDP)
 and workerd isolates (V8 inspector).
+`panelTree` is the top-level runtime panel-tree API; do not use
+`workspace.panelTree`.
 
 **Layering:** testkit = deterministic layer (this skill). system-testing =
 agentic layer (spawns headless agent sessions) — it can run testkit suites via
@@ -80,14 +82,15 @@ Key facts:
 ## Panel automation
 
 - `openPanel(source, { stateArgs?, waitLoaded? })` / `withPanel(source, fn)` (auto-close)
+- Existing panels: pass a `panelTree.list/roots/children/get` handle; do not
+  call `handle.close`, `handle.navigate`, or `handle.reload` unless that is the
+  test.
 - `panelText(h)` / `waitForText(h, text)` — approval-free agentApi snapshot path
 - `evalInPanel(h, expression)` — Runtime.evaluate by value (CDP)
 - `setViewport(h, { width, height, mobile })` / `audit(h)` — overflow + console health
 - `rawCdpSession(h)` — any CDP method
-- **Workspace panels** are automated via the `testkit-driver` DO
-  (workers/testkit-driver, service `natstack.testkit-driver.v1`) because panel
-  callers may only CDP-drive *browser* panels. This is transparent — the first
-  use may raise a panel-access approval prompt. Browser panels connect direct.
+- Workspace and browser panels are both CDP-accessible through `PanelHandle`;
+  `testkit-driver` remains useful for orchestration/isolation.
 - Never automate the panel your eval runs in (testkit guards against this).
 
 ## Workers and DOs

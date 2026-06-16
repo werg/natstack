@@ -133,7 +133,7 @@ Today's surface (mirrors what panels and workers see; will narrow as capabilitie
 | `ctx.name`, `ctx.version` | Extension identity |
 | `ctx.storage` | Per-extension scratch directory (path-scoped to the storage root) |
 | `ctx.fs` | **Unrestricted** filesystem RPC — for auditable writes |
-| `ctx.git` | Git operations through the host's git server |
+| `ctx.git` | External Git interop helpers |
 | `ctx.workspace` | Workspace info (`getInfo`, etc.) |
 | `ctx.rpc` | `call(targetId, method, ...args)` for unified RPC targets |
 | `ctx.workers` | Userland service/DO discovery (`listServices`, `resolveService`, `resolveDurableObject`) |

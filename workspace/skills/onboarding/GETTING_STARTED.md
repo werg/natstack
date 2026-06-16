@@ -5,38 +5,24 @@ A step-by-step guide for onboarding. The agent should first detect the user's ex
 ## Step 0: Detect Experience Level And Setup State
 
 Before anything else, check how many workspaces exist and what is already set
-up. Keep this lightweight and tolerate failures because some APIs are
-panel-only or depend on optional skills.
+up. Keep this lightweight and tolerate helper-call failures because some APIs
+are panel-only or depend on optional services/runtime state.
 
 ```
 eval({ code: `
   import { credentials, fs, workspace } from "@workspace/runtime";
+  import { browserData } from "@workspace/panel-browser";
+  import { getGoogleOnboardingStatus } from "@workspace-skills/google-workspace";
+  import { getActiveSearchProvider } from "@workspace-skills/web-research";
 
   const workspaces = await workspace.list();
   const active = await workspace.getActive();
   const storedCredentials = await credentials.listStoredCredentials().catch(() => []);
-  let google = null;
-  try {
-    const googleSkill = await import("@workspace-skills/google-workspace");
-    google = await googleSkill.getGoogleOnboardingStatus();
-  } catch (error) {
-    google = { error: error instanceof Error ? error.message : String(error) };
-  }
-  let importHistory = [];
-  try {
-    const { browserData } = await import("@workspace/panel-browser");
-    importHistory = await browserData.getImportHistory();
-  } catch {
-    importHistory = [];
-  }
-  let searchProvider = "duckduckgo";
-  try {
-    const webResearch = await import("@workspace-skills/web-research");
-    searchProvider = await webResearch.getActiveSearchProvider();
-  } catch {
-    // skill optional — fall back to the zero-config DDG default
-  }
-  const panels = await fs.readdir("/panels").catch(() => []);
+  const google = await getGoogleOnboardingStatus()
+    .catch(error => ({ error: error instanceof Error ? error.message : String(error) }));
+  const importHistory = await browserData.getImportHistory().catch(() => []);
+  const searchProvider = await getActiveSearchProvider().catch(() => "duckduckgo");
+  const panels = await fs.readdir("panels").catch(() => []);
   const providerIds = [...new Set(storedCredentials.map(c =>
     String(c.metadata?.providerId ?? c.providerId ?? "unknown")
   ))];
@@ -56,6 +42,14 @@ eval({ code: `
 })
 ```
 
+- Use static imports for runtime APIs, workspace packages, and workspace skills.
+  `await import(...)` bypasses the eval loader's static dependency planning and
+  is not the supported way to load `@workspace/*`, `@workspace-skills/*`, or
+  `@natstack/*` modules.
+- `fs` paths are rooted at the current context folder. `panels` and `/panels`
+  resolve to the same workspace source directory; prefer `panels` in docs and
+  examples so agents do not mistake it for a host absolute path.
+
 - **`workspaceCount <= 1`** → new user. Start from Step 1, explain concepts thoroughly. Note: in IPC/remote mode `workspace.list()` may return `[]` even when an active workspace exists — treat `workspaceCount === 0` with a valid `active` as a new user too.
 - **`workspaceCount > 1`** → returning user. Greet them briefly, mention their active workspace, and ask what they need. Skip to whichever step is relevant, or point them to the right skill directly.
 - Use `providerIds`, Google status, `searchProvider`, `browserImportCount`, and `panelCount` to make the first recommendations specific. A `searchProvider === "duckduckgo"` value is fine for most users; only suggest upgrading if they bring up research, hit rate limits, or ask about search quality.
@@ -71,7 +65,7 @@ eval({ code: `
   console.log("Workspace:", config.id);
   console.log("Init panels:", config.initPanels);
 
-  const entries = await fs.readdir("/", { withFileTypes: true });
+  const entries = await fs.readdir(".", { withFileTypes: true });
   const dirs = entries.filter(e => e.isDirectory()).map(e => e.name);
   console.log("Top-level directories:", dirs.join(", "));
   return { config, dirs };
@@ -309,9 +303,9 @@ Then edit the generated files with Read/Edit/Write tools and launch:
 
 ```
 eval({ code: `
-  import { commitAndPush } from "@workspace-skills/workspace-dev";
+  import { commitWorkspace } from "@workspace-skills/workspace-dev";
   import { openPanel } from "@workspace/runtime";
-  await commitAndPush("panels/hello", "Initial launch");
+  await commitWorkspace("panels/hello", "Initial launch");
   await openPanel("panels/hello");
 `
 })

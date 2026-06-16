@@ -28,10 +28,9 @@ natstack fs grep "registerPanel" panels/notes -C 2
 natstack fs read panels/notes/src/index.tsx > /tmp/index.tsx
 # ...edit locally...
 natstack fs write panels/notes/src/index.tsx --from-file /tmp/index.tsx
-natstack git status --repo panels/notes
-natstack git diff   --repo panels/notes
-natstack git add    --repo panels/notes
-natstack git commit --repo panels/notes -m "Fix panel registration"
+natstack vcs status --repo panels/notes
+natstack vcs diff   --repo panels/notes
+natstack vcs commit --repo panels/notes -m "Fix panel registration"
 ```
 
 ## Analyze live data with a persistent REPL
@@ -53,7 +52,7 @@ Output is already JSON when piped:
 ```bash
 natstack agent sessions | jq -r '.[].name'
 natstack fs grep "TODO" --max 50 | jq '.matchCount'
-natstack git status --repo panels/notes | jq '.files[].path'
+natstack vcs status --repo panels/notes | jq '.files[].path'
 ```
 
 ## Call a service the CLI has no command for
@@ -61,7 +60,7 @@ natstack git status --repo panels/notes | jq '.files[].path'
 ```bash
 natstack agent services scope --json | jq '.methods | keys'   # check the schema
 natstack agent call workspace.listSkills '[]'
-natstack agent call git.contextStatus "[\"$(natstack agent status --json | jq -r .contextId)\", \"panels/notes\"]"
+natstack agent call vcs.status "[\"ctx:$(natstack agent status --json | jq -r .contextId)\"]"
 ```
 
 ## Create and call a worker

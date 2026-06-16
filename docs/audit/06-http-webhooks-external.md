@@ -10,7 +10,7 @@
 
 ## Executive Summary
 
-NatStack's external HTTP surface is **intentionally small** — a single-port TLS gateway multiplexes four namespaces (`/healthz`, `/rpc`, `/_w/`, `/_r/`, `/_git/`) plus panel HTML. Authentication is centered on a shared bearer admin token plus per-caller tokens managed by `TokenManager`. For WebSocket attachment NatStack has **solid** TLS-fingerprint pinning with a credible proof (bytes-on-wire test) that the app-layer token cannot leak to a mismatched peer.
+NatStack's external HTTP surface is **intentionally small** — a single-port TLS gateway multiplexes four namespaces (`/healthz`, `/rpc`, `/_w/`, `/_r/`) plus panel HTML. Authentication is centered on a shared bearer admin token plus per-caller tokens managed by `TokenManager`. For WebSocket attachment NatStack has **solid** TLS-fingerprint pinning with a credible proof (bytes-on-wire test) that the app-layer token cannot leak to a mismatched peer.
 
 That said, the audit found **several exploitable or latent weaknesses** that warrant remediation before a public-server deployment:
 
@@ -21,12 +21,10 @@ That said, the audit found **several exploitable or latent weaknesses** that war
 5. **Very permissive CSP on panels** (`script-src 'self' 'unsafe-inline' 'unsafe-eval'`, `connect-src … ws: wss: https:`) makes any XSS in a panel trivially escalate. **Severity: Medium** (accepted by design for panel runtime — should be documented).
 6. **Host-header-derived `URL` construction** in `panelHttpServer.handleRequest` allows Host-header injection for logging/`req.url` side-effects — no direct exploit found, but documented below.
 7. **Management API on panel HTTP server does not require auth when `managementToken` is null** (validateManagementAuth returns true). Any caller can enumerate running panels / context IDs. **Severity: Medium** in any non-Electron deployment.
-8. **Historical gateway auth gap for workerd/git has been remediated.** `/_w/*`
+8. **Historical gateway auth gap for workerd has been remediated.** `/_w/*`
    now requires a caller bearer at the gateway and receives only a gateway-scoped
-   upstream bearer; `/_git/*` requires a caller bearer at the gateway (except
-   CORS `OPTIONS`) and dispatches in-process with caller identity. Inbound
-   `Authorization`, cookies, and `x-natstack-*` headers are stripped before any
-   workerd proxying.
+   upstream bearer. Inbound `Authorization`, cookies, and `x-natstack-*`
+   headers are stripped before any workerd proxying.
 9. **Egress proxy CONNECT tunnel (`EgressProxy.handleConnect`) has no provider-matching / consent check** — only requires the two attribution headers to be present. Any worker that can set those headers (which every worker can, via the proxy-auth wiring) tunnels arbitrary TLS traffic without consent enforcement, bypassing the capability/rate-limit/audit path that HTTP requests take. **Severity: High** if workers are untrusted.
 10. **Audit log entries include full request URL** (including query strings, which for many providers carry access tokens). Log records are JSONL files; log injection is blocked by `JSON.stringify`, but secrets landing in logs is the real concern. **Severity: Medium.**
 11. **Default `apple-app-site-association` path pattern `/oauth/callback/*`** and Android assetlinks don't yet have real fingerprints in `config.json` (TODO placeholders). A released build with placeholder values would bind universal links to no apps / wrong apps. **Severity: Build-time — blocker if shipped.**
@@ -48,7 +46,6 @@ No findings affect the core TLS-pinning implementation (`src/main/tlsPinning.ts`
 | ANY    | `/_w/*`               | reverse proxy → workerd                                            | caller bearer at gateway; gateway-scoped bearer to workerd                          |
 | ANY    | `/_r/w/<source>/...`  | route lookup → workerd rewrite                                     | route `auth` attr (public / admin-token)                                            |
 | ANY    | `/_r/s/<service>/...` | in-proc service handler                                            | route `auth` attr                                                                   |
-| ANY    | `/_git/*`             | in-process git handler                                             | caller bearer at gateway, except CORS `OPTIONS`                                     |
 | other  | `*`                   | `PanelHttpServer.handleGatewayRequest`                             | varies (see below)                                                                  |
 
 Upgrade path mirrors HTTP: `/rpc`, `/_w/`, `/_r/` with WS-enabled routes, and anything else goes to the panel HTTP upgrade handler (CDP bridge).
@@ -231,12 +228,6 @@ The constructor signature is `managementToken?: string`, and nothing in the stan
 if (url.startsWith("/_w/")) {
   if (!validateCallerBearer(req, tokenManager)) return 401;
   return proxyRequest(req, res, workerdPort, url, workerdToken);
-}
-...
-// /_git/ → in-process git handler
-if (url.startsWith("/_git/") && gitHandler) {
-  const entry = validateCallerBearer(req, tokenManager);
-  return gitHandler.handleHttpRequest(req, res, entry.callerId, entry.callerKind);
 }
 ```
 

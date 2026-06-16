@@ -7,6 +7,7 @@
  */
 
 import type { FailureDiagnostic } from "../diagnostics.js";
+import type { ToolFailureSummary } from "../types.js";
 
 export type StageTestStatus = "passed" | "failed" | "errored";
 
@@ -18,6 +19,9 @@ export interface StageTestRow {
   durationMs: number;
   /** Validation reason (failures) or session error summary, when present. */
   reason?: string;
+  /** Non-fatal failed tool calls observed while running this test. */
+  toolFailures?: ToolFailureSummary[];
+  toolFailureCount?: number;
   /** Bounded per-test diagnostic (transcript, tool calls, etc.) for drill-down. */
   detail: FailureDiagnostic;
 }
@@ -27,6 +31,8 @@ export interface StageReportCounts {
   passed: number;
   failed: number;
   errored: number;
+  toolFailureCount?: number;
+  testsWithToolFailures?: number;
   skipped: number;
   durationMs: number;
 }

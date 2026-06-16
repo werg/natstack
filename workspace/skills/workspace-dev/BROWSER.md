@@ -1,9 +1,11 @@
 # CDP Panel Automation
 
-URL panels are opened with the same API as workspace panels. CDP automation is
-available on any panel-tree target through the unified `PanelHandle`. In
-userland, opening a panel is a structural tree mutation and prompts on first use
-per requester entity and parent/root target:
+CDP automation is available on any panel-tree target through `PanelHandle`.
+Use top-level `panelTree` for existing panels; `workspace.panelTree` is not part
+of the runtime surface. For web browsing or website automation, open or reuse a
+dedicated browser panel. Existing workspace panels, especially chat panels, are
+application surfaces: inspect them when that app is the target, but do not use
+them as disposable web pages.
 
 ```ts
 import { openPanel, openExternal } from "@workspace/runtime";
@@ -19,29 +21,26 @@ await handle.click(".search-button"); // same target, convenience wrapper
 await handle.cdp.navigate("https://other.com");
 await handle.cdp.goBack();
 await handle.cdp.reload();
-await handle.close();
 
 await openExternal("https://docs.example.com");
 ```
 
-Agents own browser panels they open. If the panel is temporary, close it in
-`finally` with `await handle.close()`. Reuse one handle and one CDP page object
-for a workflow; repeated `openPanel()` calls create duplicate panels, and
-repeated `handle.cdp.*Page()` calls can create duplicate CDP connections. Leave
-a browser panel open only when the user explicitly asked to inspect or continue
-using it, or the workflow explicitly needs it to remain open.
+Use `panelTree.list/roots/children/get` for existing panels. Existing handles
+are non-owned: do not call `handle.navigate`, `handle.reload`, or
+`handle.close` on them unless requested. Do not call `handle.cdp.navigate(url)`
+or `page.goto(url)` on the current chat panel, a parent chat panel, or another
+workspace panel unless the requested task is to replace that exact panel. Open a
+browser panel for arbitrary URLs, login flows, scraping, and browser navigation.
 
 ```ts
-let handle;
-try {
-  handle = await openPanel("https://example.com", { focus: true });
-  const page = await handle.cdp.lightweightPage();
-  await page.waitForSelector("body");
-  console.log(await page.title());
-} finally {
-  await handle?.close().catch((err) => console.warn("panel cleanup failed", err));
-}
+// Later, when an owned temporary panel is no longer needed:
+await scope.browser?.close();
+delete scope.browser;
+delete scope.page;
 ```
+
+Reuse one handle and one CDP page object per workflow; repeated `openPanel()`
+calls create duplicate panels.
 
 Choose one CDP client explicitly. This keeps ordinary panel startup fast while
 making the automation surface unambiguous:

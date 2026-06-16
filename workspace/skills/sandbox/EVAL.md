@@ -63,8 +63,14 @@ artifact you need.
 
 Use static `import` syntax for `@workspace/runtime`, workspace skills, and
 workspace packages. Dynamic `await import(...)` may work for ordinary browser
-ESM, but it is not the supported path for workspace package loading because the
-eval loader plans those dependencies statically.
+ESM, but it is not the supported path for runtime or workspace package loading
+because the eval loader plans those dependencies statically.
+
+Do not use dynamic `await import(...)` to probe optional
+`@workspace/*`, `@workspace-skills/*`, or `@natstack/*` packages. Import the
+helper statically and catch the helper call, or run truly optional probes as
+separate small eval calls so one missing package does not break the main
+snapshot.
 
 ### Workspace packages — auto-resolved
 
@@ -78,17 +84,17 @@ eval({ code: `
 })
 ```
 
-The first import triggers an on-demand build from git (a few seconds). Subsequent imports use the cached build.
+The first import triggers an on-demand build from the committed workspace state (a few seconds). Subsequent imports use the cached build.
 
-To pin a specific git ref (branch, tag, or commit SHA), use the `imports` parameter explicitly:
+To pin a specific VCS ref or state hash, use the `imports` parameter explicitly:
 
 ```
 eval({ code: `...`, imports: { "@workspace-skills/workspace-dev": "my-branch" } })
 ```
 
-**Important:** Workspace runtime units are built from git refs, not from the working tree. If you edit source files under `apps/`, `extensions/`, `packages/`, `panels/`, `workers/`, or `skills/`, you must **publish the workspace repo** before changes take effect. Use `git.publishWorkspaceRepo(repoPath, message)` or the `commitAndPush` wrapper from the workspace-dev skill. A plain `git.client().commit()` only creates a local/context commit; it does not update the workspace source ref, trigger rebuilds, or mirror dev-mode changes back to the template.
+**Important:** Workspace runtime units are built from committed VCS states, not from the working tree. If you edit source files under `apps/`, `extensions/`, `packages/`, `panels/`, `workers/`, or `skills/`, you must **commit the workspace unit** before changes take effect. Use `vcs.commit(repoPath, message)` or the `commitWorkspace` wrapper from the workspace-dev skill.
 
-Context folders are isolated working trees with context-local refs, index, HEAD, config, and hooks. Only `.git/objects` is shared, through a validated symlink to the canonical source repo object store. Local commits can add immutable loose objects before push; approval gates canonical ref movement and source working tree updates. Do not manually edit `.git/objects`, and do not assume another context's push resets your current context. A dirty count shown by a running panel is the dirty state of that panel's own context, not a global workspace dirty state.
+Context folders are isolated working trees backed by context-local VCS heads. Do not assume another context's commit resets your current context. A dirty count shown by a running panel is the dirty state of that panel's own context, not a global workspace dirty state.
 
 ### npm packages
 
@@ -160,11 +166,23 @@ eval({
 - Only packages with standard npm names are accepted (e.g. `lodash`, `@scope/pkg`). URLs, file paths, and git specifiers are rejected.
 - Packages requiring native addons (`.node` binaries) won't work — esbuild cannot bundle them.
 
+## Path Conventions
+
+The `path` parameter for file-loaded eval is always context-relative, for
+example `.natstack/eval/check-project.ts`.
+
+Runtime `fs.*` calls are also scoped to the current context folder. In `fs`
+calls, both `src/index.ts` and `/src/index.ts` refer to files under the context
+root; the leading slash means context-root absolute, not a host filesystem path.
+Prefer paths without a leading slash in examples that touch workspace source,
+and never pass host absolute paths such as `/home/user/.../workspace/...`.
+
 ## Pre-injected Variables
 
-Only `chat`, `scope`, `scopes` are pre-injected. Everything else
-(`db`, `fs`, `rpc`, `ai`, `workers`, `workspace`, `contextId`) must be
-imported from `@workspace/runtime` — bare references throw `ReferenceError`.
+Only `chat`, `scope`, `scopes`, and `help` are pre-injected. Use them directly;
+do not import them from `@workspace/runtime`. Everything else (`db`, `fs`, `rpc`,
+`ai`, `workers`, `workspace`, `contextId`) must be imported from
+`@workspace/runtime` — bare references throw `ReferenceError`.
 
 ## REPL Scope
 
@@ -245,7 +263,7 @@ eval({ code: `
 ```
 eval({ code: `
   import { fs } from "@workspace/runtime";
-  const content = await fs.readFile("/src/index.ts", "utf-8");
+  const content = await fs.readFile("src/index.ts", "utf-8");
   console.log(content);
 ` })
 ```
@@ -272,33 +290,36 @@ eval({ code: `
 ` })
 ```
 
-## Git Operations
+## Workspace VCS
 
-Use the routed `git.client()` helper from `@workspace/runtime` — do NOT use `node:child_process`, shell commands, or manually construct `new GitClient(fs, { serverUrl: gitConfig.serverUrl, token })`.
-Sandbox eval does not provide Node built-ins such as `node:child_process`; if an operation seems to need a process, first look for a runtime API (`fs`, `git`, `workspace`, `workers`, `extensions`) or move privileged host work into an extension/worker service.
+Use the `vcs` helper from `@workspace/runtime` for workspace source changes.
+Sandbox eval does not provide Node built-ins such as `node:child_process`; if an operation seems to need a process, first look for a runtime API (`fs`, `vcs`, `git`, `workspace`, `workers`, `extensions`) or move privileged host work into an extension/worker service.
 
 ```
 eval({ code: `
-  import { fs, git } from "@workspace/runtime";
+  import { fs, vcs } from "@workspace/runtime";
 
   await fs.writeFile("panels/my-panel/index.tsx", "...");
-  const published = await git.publishWorkspaceRepo("panels/my-panel", "Update panel");
-  console.log(published.message);
-  const status = await git.client().status("panels/my-panel");
-  console.log("Changed files:", status.files);
+  const committed = await vcs.commit("panels/my-panel", "Update panel");
+  console.log(committed.message);
+  const status = await vcs.status();
+  console.log("Changed files:", [...status.added, ...status.changed, ...status.removed]);
 ` })
 ```
 
-Use `client.status(dir)` for normal structured status. If you specifically need
-isomorphic-git's raw `[filepath, HEAD, WORKDIR, STAGE]` tuples, use
-`client.statusMatrix(dir)`.
+`vcs.status()` takes no workspace-root or repo-path argument. Its optional
+argument is a materialized VCS head such as `"main"` or `"ctx:..."`. To compare
+two committed states, use state hashes returned by commits or `resolveHead`:
 
-Common signatures: `client.status(dir: string)`,
-`client.fetch({ dir, remote?, ref? })`, and
-`client.push({ dir, remote?, ref?, force? })`. `client.methods` lists the
-discoverable client methods when `Object.keys(client)` is too sparse.
-For normal workspace source edits, prefer `git.publishWorkspaceRepo()` over
-calling `client.commit()` and `client.push()` separately.
+```
+eval({ code: `
+  import { vcs } from "@workspace/runtime";
+  const before = (await vcs.resolveHead("main")).stateHash;
+  const after = (await vcs.commit("panels/my-panel", "Update panel")).stateHash;
+  const diff = before ? await vcs.diff(before, after) : null;
+  console.log({ before, after, diff });
+` })
+```
 
 ## Large Results And Diagnostics
 
@@ -382,7 +403,7 @@ For read-only queries, RPC shortcuts work too:
 ```
 eval({ code: `
   import { rpc } from "@workspace/runtime";
-  const tree = await rpc.call("main", "git.getWorkspaceTree", []);
+  const tree = await rpc.call("main", "workspace.sourceTree", []);
   console.log("Workspace tree:", tree);
 ` })
 ```
@@ -484,7 +505,7 @@ The last expression or `return` value is serialized and sent back to the agent:
 ```
 eval({ code: `
   import { fs } from "@workspace/runtime";
-  const files = await fs.readdir("/src");
+  const files = await fs.readdir("src");
   return files;
 ` })
 // Agent receives: { consoleOutput: "", returnValue: ["index.ts", "utils.ts", ...] }

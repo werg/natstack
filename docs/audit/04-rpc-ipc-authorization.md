@@ -105,7 +105,6 @@ Single-port front door:
 - `GET /healthz` — public liveness; `Authorization: Bearer <admin>` unlocks detailed body.
 - `/_w/*` — reverse-proxy to workerd (HTTP and Upgrade).
 - `/_r/*` — route registry dispatch (`RouteRegistry.lookup`). Auth is `public`, `admin-token`, or `caller-token`; protected routes use `Authorization: Bearer <token>`.
-- `/_git/*` — reverse-proxy to git server with path stripped.
 - `POST /rpc` — forwarded to `RpcServer.handleGatewayHttpRequest`.
 - WebSocket upgrades on `/rpc` are forwarded to the RPC server; upgrades on `/_w/*` or `/_r/*` go through proxy or route dispatch.
 - Fall-through goes to the `PanelHttpServer`.

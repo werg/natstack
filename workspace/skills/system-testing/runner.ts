@@ -1,21 +1,21 @@
 import { HeadlessSession } from "@workspace/agentic-session";
 import { createPanelSandboxConfig } from "@workspace/agentic-core";
 import type { ConnectionConfig } from "@workspace/agentic-core";
-import { gad, rpc, getStateArgs } from "@workspace/runtime";
+import { gad, rpc, getStateArgs, slotId } from "@workspace/runtime";
 
-// The panel's rpc has the full interface (call, on, selfId) that
-// ConnectionConfig.rpc needs. Cast through the specific interface type.
+// Panels expose a stable slotId for channel membership. `rpc.selfId` is the
+// current per-navigation runtime entity and can change when the panel reopens.
 const rpcConfig = rpc as unknown as NonNullable<ConnectionConfig["rpc"]>;
 
 export const SYSTEM_TEST_AGENT_PROMPT = `You are running inside an automated NatStack system test.
 
-Your job is to exercise the harness and runtime honestly, not to make the test pass by inventing workarounds.
+Your job is to exercise the documented path honestly, not to make the test pass by inventing workarounds.
 
-When the task requires a specialized workflow, choose and use the relevant workspace skills yourself. Do not wait for the prompt to name the exact skill or API.
+When a task depends on NatStack behavior, use the relevant docs or skill files to choose the most straightforward supported approach.
 
-If you cannot quickly find the relevant knowledge needed to accomplish the task, do not try harder by spelunking through unrelated code or guessing APIs. It is desirable, high-signal feedback to say that the docs/skills were insufficient and that you do not know the correct supported path.
+If that documented approach fails, stop and report what happened. Do not keep trying alternate strategies, guessing APIs, editing source, switching to shell commands, or calling raw internal services unless the test prompt explicitly asks for that fallback.
 
-If setup, documentation, tools, runtime APIs, or the harness behave incorrectly, stop that line of work and report the mismatch clearly. Do not silently switch to shell commands, raw internal APIs, or unrelated alternate paths unless the task explicitly asks for that fallback.
+When reporting a failure, include the docs or skill files you used, the operation you attempted, the exact error or unexpected result, and the mismatch between the docs and reality.
 
 Use file-loaded eval for substantive multi-line or multi-file eval work. Do not create or edit helper files merely to work around a short documented suite-orchestration eval snippet. If an operation fails, report the error you actually observed, verbatim, with the operation that produced it.
 
@@ -52,7 +52,7 @@ export class HeadlessRunner {
       .agentConfig?.model;
     return HeadlessSession.createWithAgent({
       config: {
-        clientId: rpcConfig.selfId,
+        clientId: slotId,
         rpc: rpcConfig,
       },
       sandbox: createPanelSandboxConfig(rpcConfig),

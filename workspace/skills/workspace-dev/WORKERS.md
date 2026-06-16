@@ -15,9 +15,10 @@ Generated from `runtimeSurface.worker.ts`. Use `await help()` at runtime for the
 | `doTargetId` | value |  | Build a unified RPC target ID for a Durable Object reference. |
 | `createDurableObjectServiceClient` | value |  | Resolve a Durable Object-backed service and call it through unified RPC. |
 | `workers` | namespace | `create`, `destroy`, `update`, `list`, `status`, `listInstanceSources`, `listServices`, `resolveService`, `resolveDurableObject`, `durableObjectService`, `getPort`, `restartAll`, `cloneDO`, `destroyDO` |  |
-| `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `delete`, `setInitPanels`, `setConfigField`, `switchTo`, `units` |  |
+| `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `delete`, `setInitPanels`, `setConfigField`, `switchTo`, `sourceTree`, `findUnitForPath`, `units` | Workspace catalog, source tree, and unit helpers. Does not include panelTree; use runtime.panelTree for panel-tree handles. |
 | `credentials` | namespace | `store`, `connect`, `configureClient`, `requestCredentialInput`, `getClientConfigStatus`, `deleteClientConfig`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl`, `gitHttp` |  |
-| `git` | namespace | `http`, `importProject`, `completeWorkspaceDependencies`, `setSharedRemote`, `removeSharedRemote`, `ensureRepoPresentInContexts`, `publishWorkspaceRepo`, `client` |  |
+| `git` | namespace | `http`, `importProject`, `completeWorkspaceDependencies`, `setSharedRemote`, `removeSharedRemote` |  |
+| `vcs` | namespace | `commit`, `applyEdits`, `readFile`, `listFiles`, `revert`, `status`, `unitStatus`, `log`, `diff`, `resolveHead`, `merge`, `abortMerge`, `pendingMerge`, `publishStatus`, `publish`, `recall` | Workspace GAD VCS. Paths are workspace-relative; status scans materialized heads, log can read refs, and diff compares state hashes. |
 | `gad` | namespace | `rawSql`, `query`, `status`, `ensureBlob`, `getTrajectoryBranchHead`, `appendTrajectoryBatch`, `listTrajectoryEvents`, `appendChannelEnvelope`, `getChannelEnvelope`, `getTrajectoryForEnvelope`, `listPublishedEnvelopesForTrajectory`, `getEnvelopesForTrajectory`, `getPublishedArtifactsForTurn`, `getPrivateLineageForPublishedEnvelope`, `getDownstreamConsumers`, `getChannelReplayWindow`, `listChannelEnvelopesAfter`, `listChannelEnvelopesBefore`, `getInitialChannelWindow`, `listChannelEnvelopes`, `inspectChannelEnvelopes`, `listStoredValueRefs`, `inspectStorageDiagnostics`, `listGadBranchFiles`, `diffGadStates`, `readGadFileAtState`, `getGadStateProducer`, `blameGadFileSnippet`, `validateGadHashes`, `clearDirtyAfterValidation`, `checkGadIntegrity`, `rebuildTrajectoryProjections` |  |
 | `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
 | `extensions` | namespace | `use`, `on`, `list`, `reload` |  |
@@ -26,21 +27,23 @@ Generated from `runtimeSurface.worker.ts`. Use `await help()` at runtime for the
 | `contextId` | value |  |  |
 | `gatewayConfig` | value |  | Gateway base URL and bearer token for NatStack service routes. |
 | `gatewayFetch` | value |  | Fetch helper that prefixes gateway-relative paths and adds Authorization: Bearer. |
-| `gitConfig` | value |  | Git HTTP endpoint and token derived from the gateway config. |
 | `callMain` | value |  |  |
 | `openExternal` | value |  |  |
-| `getWorkspaceTree` | value |  |  |
-| `listBranches` | value |  |  |
-| `listCommits` | value |  |  |
 | `requestApproval` | value |  |  |
 | `revokeApproval` | value |  |  |
 | `listApprovals` | value |  |  |
 | `expose` | value |  |  |
 | `getParent` | value |  |  |
-| `panelTree` | namespace | `self`, `get`, `list`, `roots`, `children`, `parent`, `open` | Return signatures: self(): PanelHandle; get(id): PanelHandle; list(): Promise<PanelHandle[]>; roots(): Promise<PanelHandle[]>; children(id): Promise<PanelHandle[]>; parent(id): PanelHandle \| null; open(source, opts?): Promise<PanelHandle>. `self()` and `get()` are synchronous handle factories; catch errors on async handle methods like `refresh()` or `getInfo()`. |
+| `panelTree` | namespace | `self`, `get`, `list`, `roots`, `children`, `parent`, `navigate`, `open` | Runtime property, not workspace.panelTree. Signatures: self(): PanelHandle; get(id): PanelHandle; list(): Promise<PanelHandle[]>; roots(): Promise<PanelHandle[]>; children(id): Promise<PanelHandle[]>; parent(id): PanelHandle \| null; navigate(id, source, opts?): Promise<{ id, title }>; open(source, opts?): Promise<PanelHandle>. Use list/roots/children/get for existing panels; navigate replaces an existing panel slot; open creates a new panel. self/get are sync; async methods refresh metadata as needed. |
 | `handleRpcPost` | value |  |  |
 | `destroy` | value |  |  |
 <!-- END GENERATED: worker-runtime-surface -->
+
+Existing panel handles are non-owned; do not call `handle.navigate`,
+`handle.reload`, or `handle.close` unless requested. Use
+`handle.navigate(source, opts)` or `panelTree.navigate(id, source, opts)` only
+when replacing that specific slot is the requested behavior. Clean up temporary
+panels opened by the worker.
 
 ## Userland Services
 

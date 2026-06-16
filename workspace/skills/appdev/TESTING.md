@@ -111,7 +111,7 @@ When capabilities or dependency identity change, test:
 - new declaration requires approval
 - denied approval leaves app inactive or at previous active build
 - approved update becomes active
-- source push approval works for app repos
+- source change approval works for app repos
 - capability denial surfaces clearly
 - newly created template workspaces activate their initial trusted app and
   extension set without a headless approval dead end

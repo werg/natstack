@@ -35,7 +35,7 @@ Recommended flow:
 
 1. Run `getGmailAgentSetupStatus()`.
 2. If Google Workspace is not verified, follow
-   `workspace/skills/google-workspace/ONBOARDING.md`.
+   `skills/google-workspace/ONBOARDING.md`.
 3. Once Google Workspace is verified, run
    `setupGmailAgent({ channelId: chat.channelId })` from the target chat
    context. Do not start another OAuth flow after verification.

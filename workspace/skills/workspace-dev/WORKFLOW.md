@@ -22,10 +22,10 @@ await createProject({ projectType: "panel", name: "my-app", title: "My App" });
 3. Publish and open once:
 
 ```ts
-import { commitAndPush } from "@workspace-skills/workspace-dev";
+import { commitWorkspace } from "@workspace-skills/workspace-dev";
 import { openPanel } from "@workspace/runtime";
 
-await commitAndPush("panels/my-app", "Initial launch");
+await commitWorkspace("panels/my-app", "Initial launch");
 scope.myApp = await openPanel("panels/my-app", { focus: true });
 await scope.myApp.snapshot();
 ```
@@ -33,18 +33,18 @@ await scope.myApp.snapshot();
 4. Iterate by rebuilding and reloading the same handle:
 
 ```ts
-import { commitAndPush } from "@workspace-skills/workspace-dev";
+import { commitWorkspace } from "@workspace-skills/workspace-dev";
 
-await commitAndPush("panels/my-app", "Fix layout");
+await commitWorkspace("panels/my-app", "Fix layout");
 const lifecycle = await scope.myApp.rebuildAndReload();
 console.log(lifecycle);
 await scope.myApp.snapshot();
 ```
 
-`commitAndPush()` publishes through `git.publishWorkspaceRepo`; a bare
-`git.client().commit()` is not enough because it does not update the workspace
-source ref. `rebuildAndReload()` is the canonical operation after
-`commitAndPush()` when the
+`commitWorkspace()` snapshots your context working tree as a workspace
+transition and waits for the triggered rebuilds; there is no separate
+push step. `rebuildAndReload()` is the canonical operation after
+`commitWorkspace()` when the
 panel is already open. It targets exactly the panel named by the handle's `id`.
 It does not unload the target's runtime lease and does not rebuild or reload
 child panels. If the eval is running inside the target being reloaded, the eval
@@ -160,4 +160,4 @@ const plan = await forkProject({
 console.log(plan);
 ```
 
-If the worker has multiple Durable Object classes, apply with an explicit `classMap`. After the fork, typecheck, launch the panel or worker, then use `commitAndPush` for follow-up edits.
+If the worker has multiple Durable Object classes, apply with an explicit `classMap`. After the fork, typecheck, launch the panel or worker, then use `commitWorkspace` for follow-up edits.

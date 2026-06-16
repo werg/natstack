@@ -1,6 +1,17 @@
 import type { ChatMessage } from "@workspace/agentic-core";
 import type { SessionSnapshot } from "@workspace/agentic-session";
 
+export interface ToolFailureSummary {
+  id?: string;
+  name: string;
+  status?: string;
+  terminalOutcome?: string;
+  terminalReasonCode?: string;
+  error?: string;
+  resultSummary?: string;
+  source: "message" | "snapshot";
+}
+
 export interface TestCase {
   name: string;
   description: string;
@@ -24,6 +35,8 @@ export interface TestExecutionResult {
   snapshot?: SessionSnapshot;
   /** Runtime/GAD diagnostics collected automatically when a test errors. */
   diagnostics?: Record<string, unknown>;
+  /** Non-fatal tool-call failures observed during the turn. */
+  toolFailures?: ToolFailureSummary[];
 }
 
 export interface TestResult {
@@ -43,6 +56,10 @@ export interface TestSuiteResult {
   passed: number;
   failed: number;
   errored: number;
+  /** Total failed tool calls observed, independent from pass/fail status. */
+  toolFailureCount?: number;
+  /** Number of tests that observed at least one failed tool call. */
+  testsWithToolFailures?: number;
   skipped: number;
   duration: number;
   results: TestSuiteResultEntry[];

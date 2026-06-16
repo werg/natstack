@@ -5,7 +5,7 @@ description: Automated system testing via headless agentic sessions. Spawns test
 
 # System Testing Skill
 
-Spin up headless agentic sessions to systematically test every NatStack capability — filesystem, database, git, workers, panels, browser panels, build system, OAuth, skills, and more. Collect structured pass/fail results with full diagnostic data for every turn.
+Spin up headless agentic sessions to systematically test every NatStack capability — filesystem, database, GAD workspace VCS, external Git interop, workers, panels, browser panels, build system, OAuth, skills, and more. Collect structured pass/fail results with full diagnostic data for every turn.
 
 ## Files
 
@@ -16,7 +16,7 @@ Spin up headless agentic sessions to systematically test every NatStack capabili
 | types.ts                                   | `TestCase`, `TestResult`, `TestSuiteResult`, `TestExecutionResult` |
 | tests/                                     | 94 pre-built test cases across 19 categories                       |
 | deterministic.ts                           | Bridge to `@workspace/testkit` deterministic suites (see below)    |
-| [SELF_IMPROVEMENT.md](SELF_IMPROVEMENT.md) | Workflow for analyzing failures and pushing fixes                  |
+| [SELF_IMPROVEMENT.md](SELF_IMPROVEMENT.md) | Workflow for analyzing failures and committing fixes               |
 
 ## Deterministic tests (testkit)
 
@@ -83,9 +83,10 @@ return only the compact control data needed to render the feedback form. Do not
 return `scope.systemTestingRun`, the full stage list, or test result arrays from
 eval calls.
 
-> `scope`, `scopes`, and `chat` are **pre-injected ambient globals** in eval —
-> use them directly. Do **not** `import` them (only `contextId`, `rpc`, `gad`,
-> `fs`, etc. come from `@workspace/runtime`). Run the block below as written.
+> `scope`, `scopes`, `chat`, and `help` are **pre-injected ambient globals** in
+> eval — use them directly. Do **not** `import` them (only `contextId`, `rpc`,
+> `gad`, `fs`, etc. come from `@workspace/runtime`). Run the block below as
+> written.
 
 ```
 eval({
@@ -219,6 +220,8 @@ eval({
         passed: aggregate?.passed ?? 0,
         failed: aggregate?.failed ?? 0,
         errored: aggregate?.errored ?? 0,
+        toolFailureCount: aggregate?.toolFailureCount ?? 0,
+        testsWithToolFailures: aggregate?.testsWithToolFailures ?? 0,
         skipped: aggregate?.skipped ?? 0,
       };
     }
@@ -235,17 +238,19 @@ eval({
       testTimeoutMs: 20 * 60 * 1000,
     });
 
-    // Cap concurrency: each test is a full headless agent + channel, so running
-    // a whole stage at once floods the DO relay and spikes server memory.
-    // (Worker create/destroy no longer restarts workerd — the dynamic worker
-    // host loads code in-place — so worker-lifecycle stages run concurrently.)
-    const concurrency = Math.min(4, Math.max(1, stage.tests.length));
+    // Cap concurrency: each test is a full headless agent + channel, and the
+    // workers stage adds workerd/DO lifecycle pressure inside each test.
+    const concurrency = stage.category === "workers"
+      ? 1
+      : Math.min(2, Math.max(1, stage.tests.length));
     const partial = await tester.runSuite(stage.tests, { concurrency });
     const aggregate = run.results ?? scope.results ?? {
       total: 0,
       passed: 0,
       failed: 0,
       errored: 0,
+      toolFailureCount: 0,
+      testsWithToolFailures: 0,
       skipped: tests.length,
       duration: 0,
       results: [],
@@ -254,6 +259,8 @@ eval({
     aggregate.passed += partial.passed;
     aggregate.failed += partial.failed;
     aggregate.errored += partial.errored;
+    aggregate.toolFailureCount = (aggregate.toolFailureCount ?? 0) + (partial.toolFailureCount ?? 0);
+    aggregate.testsWithToolFailures = (aggregate.testsWithToolFailures ?? 0) + (partial.testsWithToolFailures ?? 0);
     aggregate.duration += partial.duration;
     aggregate.results.push(...partial.results);
     aggregate.skipped = tests.length - aggregate.total;
@@ -270,6 +277,12 @@ eval({
         const reason = entry.execution.error || entry.result.reason || "No reason captured";
         return entry.test.name + ": " + reason.slice(0, 240);
       });
+    const toolFailureNames = partial.results
+      .filter((entry) => (entry.execution.toolFailures?.length ?? 0) > 0)
+      .map((entry) => {
+        const tools = entry.execution.toolFailures.map((failure) => failure.name).join(", ");
+        return entry.test.name + ": " + entry.execution.toolFailures.length + " tool failure(s): " + tools;
+      });
     const remainingStages = selectedStages.filter((item) => !completed.has(item.index)).length;
     const stageSummary = {
       index: stage.index,
@@ -281,9 +294,12 @@ eval({
       passed: partial.passed,
       failed: partial.failed,
       errored: partial.errored,
+      toolFailureCount: partial.toolFailureCount ?? 0,
+      testsWithToolFailures: partial.testsWithToolFailures ?? 0,
       durationMs: partial.duration,
       concurrency,
       failedTests: failedNames,
+      toolFailures: toolFailureNames,
     };
     run.stageSummaries.push(stageSummary);
     run.lastStageSummary = stageSummary;
@@ -298,8 +314,11 @@ eval({
       passed: aggregate.passed,
       failed: aggregate.failed,
       errored: aggregate.errored,
+      toolFailureCount: aggregate.toolFailureCount ?? 0,
+      testsWithToolFailures: aggregate.testsWithToolFailures ?? 0,
       skipped: aggregate.skipped,
       failedTestCount: failedNames.length,
+      toolFailureTestCount: toolFailureNames.length,
     };
   `,
 })
@@ -318,7 +337,7 @@ eval({
   code: `
     import { reportStage } from "@workspace-skills/system-testing/report";
     await reportStage(chat, scope, {
-      prose: "<2-4 sentences: what passed, what failed, and the most likely cause>",
+      prose: "<2-4 sentences: what passed, what failed, any non-fatal tool failures observed, and the most likely cause or investigation needed>",
     });
     return { reported: scope.systemTestingRun.lastStageSummary.name };
   `,
@@ -332,6 +351,13 @@ Pass `{ stageIndex }` to report a specific earlier stage. The card embeds bounde
 diagnostics from `summarizeFailures`, so it persists across reload/replay without
 depending on live `scope`. Do not skip a stage's card; the cards are the primary
 per-stage deliverable.
+
+Tool failures are not the same as task failures. A test can pass after a
+subagent hits a tool error and recovers, but the stage report must still mention
+the affected test and tool so the top-level agent can investigate and surface
+the issue. Full raw messages and snapshots remain in `scope.results.results`;
+the report card is only a bounded presentation layer and is not the complete
+diagnostic record.
 
 ## Inspecting Results
 
@@ -358,11 +384,13 @@ return summarizeFailures(scope.results, {
 });
 ```
 
-Each failure summary includes the prompt, validation reason, session error,
-final agent message, bounded conversation transcript, invocation statuses and
-errors, debug events, cleanup errors, participant state, and a coarse likely
-issue. Use that packet to explain the mismatch. If the packet is insufficient,
-query the specific failed session further; do not substitute a list of files.
+Each summary includes the prompt, validation reason, session error, final agent
+message, bounded conversation transcript, invocation statuses and errors, debug
+events, cleanup errors, participant state, non-fatal tool failures, and a coarse
+likely issue. `summarizeFailures()` includes failed tests and passed tests with
+tool failures. Use that packet to explain the mismatch or recovered tool error.
+If the packet is insufficient, query the specific session further; do not
+substitute a list of files.
 
 ### Summary
 
@@ -466,27 +494,31 @@ return {
 You can also call `await runner.collectDiagnostics({ channelId, error })` to
 produce the same bounded packet explicitly.
 
+System-testing runs from a panel and uses that panel's stable `slotId` as its
+channel/client identity. Do not key orchestrator channel state on `rpc.selfId`;
+that is the current runtime entity and may change when the panel is recreated.
+
 ### Background build failures
 
-Some build failures happen after a successful git push, on the server's
-push-triggered background build path. Those failures are not returned by the
-git push call itself. Query the build service before retrying or guessing:
+Some build failures happen after a successful VCS commit, on the server's
+state-triggered background build path. Those failures are not returned by the
+commit call itself. Query the build service before retrying or guessing:
 
 ```typescript
-import { git, rpc } from "@workspace/runtime";
+import { rpc } from "@workspace/runtime";
 
 return {
-  recent: await git.listRecentBuildEvents(),
-  forRepo: await git.listRecentBuildEvents("panels/example"),
+  recent: await rpc.call("main", "build.listRecentBuildEvents", []),
+  forUnit: await rpc.call("main", "build.listRecentBuildEvents", ["panels/example"]),
   panel: await rpc.call("main", "build.inspectBuildProvenance", ["panels/example"]),
 };
 ```
 
 `build.listRecentBuildEvents` accepts an optional unit name or workspace path,
 for example `["panels/example"]`. Events include `build-error` messages and, for
-push-triggered builds, a `trigger` with repo, branch, commit, and the verified
-caller that caused the push when the server can attribute it. Results from
-`git.publishWorkspaceRepo(...)` also include `buildEventsQuery`, a machine-readable
+state-triggered builds, a `trigger` with head, state hash, changed paths, and the
+verified caller that caused the commit when the server can attribute it. Results
+from `vcs.commit(...)` also include `buildEventsQuery`, a machine-readable
 reminder for the same follow-up lookup.
 
 ### Agent debug port
@@ -531,10 +563,10 @@ if (fail.execution.snapshot) {
 | ------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `smokeTests`              | 4     | Basic sanity: eval, fs, package import, file tools                                                                                     |
 | `filesystemTests`         | 9     | All fs operations: read/write, dirs, stats, symlinks, handles                                                                          |
-| `gitTests`                | 6     | init, branch, diff, log, stash, push                                                                                                   |
-| `panelTests`              | 6     | Open, browser panels, navigate, screenshot, evaluate, list sources                                                                     |
+| `vcsTests`                | 6     | GAD workspace status, commit, log, state diff, exact apply-edits, publish status                                                       |
+| `panelTests`              | 5     | Open, browser panel create+navigate, screenshot, evaluate, list sources                                                                |
 | `workerTests`             | 6     | Create, list, unified RPC DO calls, destroy, env bindings, list sources                                                                |
-| `buildTests`              | 4     | Workspace + npm builds, build at ref, eval imports                                                                                     |
+| `buildTests`              | 4     | Workspace + npm builds, build at GAD state ref, eval imports                                                                           |
 | `oauthTests`              | 3     | List providers/connections, error on missing connection                                                                                |
 | `workspaceTests`          | 3     | List, active, config                                                                                                                   |
 | `notificationTests`       | 2     | Show + dismiss                                                                                                                         |
@@ -542,9 +574,9 @@ if (fail.execution.snapshot) {
 | `agentCapabilityTests`    | 6     | Multi-turn, error recovery, large output, dynamic import                                                                               |
 | `rpcTests`                | 2     | Cross-service calls                                                                                                                    |
 | `edgeCaseTests`           | 3     | Invalid eval args, invalid imports, missing files                                                                                      |
-| `agenticRuntimeTests`     | 8     | State args, routed git client, GAD conventions, bounded inspection, test-runner extension, no-stall tool turns                         |
+| `agenticRuntimeTests`     | 8     | State args, runtime VCS client, GAD conventions, bounded inspection, test-runner extension, no-stall tool turns                        |
 | `interactionSurfaceTests` | 4     | MDX ActionButton, inline UI, action bar, custom messages                                                                               |
-| `projectLifecycleTests`   | 4     | Create, fork, commit, push, open, and inspect real workspace units                                                                     |
+| `projectLifecycleTests`   | 4     | Create, fork, commit, open, and inspect real workspace units                                                                           |
 | `cdpGadDiagnosticTests`   | 5     | CDP UI mutation, lightweight console/DOM inspection, historical console diagnostics, panel state args, GAD integrity/state diagnostics |
 | `harnessResilienceTests`  | 5     | Eval errors, huge returns, visible timeouts, invalid args, post-tool follow-ups                                                        |
 | `docsProbeTests`          | 10    | Scenario probes that require agents to apply relevant skills, not summarize docs                                                       |
@@ -552,7 +584,7 @@ if (fail.execution.snapshot) {
 Use `allTests()` to get all 94 tests combined. For full-suite execution, prefer
 the staged-progress pattern above: initialize `testStages(allTests())`, build
 feedback choices with `testStageChoices(stages)`, run one selected stage per
-eval with `tester.runSuite(stage.tests, { concurrency: stage.tests.length })`,
+eval with a bounded concurrency cap (`1` for `workers`, at most `2` elsewhere),
 publish the stage report, then continue until `remainingStages` is `0`. Because
 the choices come from `allTests()` and `testStages()`, the feedback form follows
 the current test skill exports automatically.
@@ -564,8 +596,8 @@ with ordinary smoke testing:
 
 - state args must update the caller panel immediately from the returned host
   snapshot, while host-published events still update non-callers
-- browser-panel git operations must use `git.client()` instead of raw
-  `new GitClient(fs, { serverUrl: gitConfig.serverUrl, token })`
+- browser-panel workspace commits must use `vcs.commit()`; external Git remotes
+  use `@natstack/git` with `credentials.gitHttp()`
 - GAD raw SQL uses positional `(sql, bindings)` calls
 - channel/history inspection must stay bounded enough for agent context
 - large eval/tool results must complete visibly without pending invocation
@@ -573,7 +605,7 @@ with ordinary smoke testing:
 - the standard agent participant debug method should be discoverable
 - rich interaction surfaces must exercise MDX, `inline_ui`,
   `load_action_bar`, and custom messages without hand-writing raw channel rows
-- project lifecycle flows must create real projects, commit/push them, fork
+- project lifecycle flows must create real projects, commit them, fork
   panel and worker sources, open the result, and inspect snapshots/state
 - CDP/Playwright automation must be able to mutate browser UI, type/click,
   evaluate DOM state, and take screenshots through runtime panel handles
@@ -594,7 +626,7 @@ the relevant skills themselves. These tests avoid doc recitation and instead
 check concrete decisions, bounded evidence, and clear reports when documented
 paths do not work.
 
-For SQLite-backed userland storage, the canonical pattern is `this.sql` inside a Durable Object. See `workspace/workers/sample-do/index.ts` for the minimal example and `workspace/workers/sample-do/sampleDo.test.ts` for an end-to-end round-trip exercised via `createTestDO`.
+For SQLite-backed userland storage, the canonical pattern is `this.sql` inside a Durable Object. See `workers/sample-do/index.ts` for the minimal example and `workers/sample-do/sampleDo.test.ts` for an end-to-end round-trip exercised via `createTestDO`.
 
 ## Filtering
 
@@ -627,7 +659,25 @@ See `meta/natstack.yml` for the current testing agent configuration.
 
 ## Build Model
 
-**Workspace runtime units are built from git refs, not from the working tree.** When fixing bugs in workspace source files (`apps/`, `extensions/`, `packages/`, `panels/`, `workers/`, `skills/`), you must publish the workspace repo before changes take effect. Use `git.publishWorkspaceRepo(repoPath, message)` or the workspace-dev `commitAndPush` wrapper. Editing a file or making a local/context commit alone does nothing — the build system extracts source from published workspace refs.
+**Workspace runtime units are built from immutable VCS states, not from the working tree.** When fixing bugs in workspace source files (`apps/`, `extensions/`, `packages/`, `panels/`, `workers/`, `skills/`), commit the unit before changes take effect. Use `vcs.commit(repoPath, message)` or the workspace-dev `commitWorkspace` wrapper. Editing a file alone does nothing — the build system extracts source from committed workspace states.
+
+When a loose system test asks for VCS status, logs, or diffs, use the documented
+runtime API shape rather than guessing from filesystem terms:
+
+- `vcs.status()` checks the current context head; its optional argument is a materialized VCS head such as `main` or `ctx:...`.
+- `vcs.commit("panels/example", "message")` snapshots the context state and returns `stateHash`.
+- `vcs.diff(leftStateHash, rightStateHash)` compares committed state hashes.
+- `vcs.readFile("", "path")` reads from the current context/head.
+- `vcs.publishStatus()` reports unpublished context changes without moving `main`.
+
+Do not pass workspace roots, cwd values, or unit paths to `vcs.status` or
+`vcs.diff`; those methods are not filesystem-root based.
+
+GAD VCS implementation files live under `src/server/services/vcsService.ts`,
+`src/server/gadVcs/`, and the runtime client
+`workspace/packages/runtime/src/shared/vcsClient.ts`. Do not look for
+`packages/runtime/src/server/vcs/vcs.ts`; that path is not part of this
+workspace layout.
 
 For trusted app failures under `apps/`, read `skills/appdev/SKILL.md` before
 changing shell, mobile, or terminal app source. App bugs often involve approval
@@ -637,11 +687,11 @@ For NatStack application source (`src/server/`, `src/main/`, root
 `packages/*`), use a plain checkout under `projects/natstack`. In normal mode
 that prepares a branch/patch but does not hot-patch the running server. In
 dogfood server mode (`pnpm dev:self:server`), the workspace contains
-`meta/dogfood.json`; pushes from `projects/natstack` mirror back to the
-launching checkout. Server-runtime changes rebuild/restart the standalone
-server; docs, desktop shell, mobile app, and workspace runtime-unit changes may
-mirror without a server restart. See [SELF_IMPROVEMENT.md](SELF_IMPROVEMENT.md)
-for the full workflow and the userland detection snippet.
+`meta/dogfood.json`, but host-checkout mirroring is unavailable under GAD VCS.
+Treat `projects/natstack` as an external Git project used to
+prepare a branch or patch; it does not hot-patch the running server. See
+[SELF_IMPROVEMENT.md](SELF_IMPROVEMENT.md) for the full workflow and the
+userland detection snippet.
 
 ## Environment Compatibility
 

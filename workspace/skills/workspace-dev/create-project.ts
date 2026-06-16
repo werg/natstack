@@ -1,32 +1,34 @@
-import { fs, git } from "@workspace/runtime";
-import { initAndPush, type GitClient } from "@natstack/git";
+import { fs, vcs } from "@workspace/runtime";
 
 // ---------------------------------------------------------------------------
-// Shared git client helper
-// ---------------------------------------------------------------------------
-
-export interface CommitAndPushOptions {
-  force?: boolean;
-}
-
-function createGit(): GitClient {
-  return git.client();
-}
-
-// ---------------------------------------------------------------------------
-// commitAndPush — workspace-dev convenience wrapper around the runtime publish API
+// commitWorkspace — workspace-dev convenience wrapper around the vcs commit API
 // ---------------------------------------------------------------------------
 
 /**
- * Stage all changes in a repo directory, commit, and push to the git server.
+ * Commit the working tree as a workspace transition (GAD-native vcs).
+ * The `dir` argument scopes the build-events pointer (e.g. "panels/my-app").
  */
-export async function commitAndPush(
+export async function commitWorkspace(
   dir: string,
-  message: string,
-  options: CommitAndPushOptions = {}
+  message: string
 ): Promise<string> {
-  const result = await git.publishWorkspaceRepo(dir, message, options);
+  const result = await vcs.commit(dir, message);
   return result.message;
+}
+
+/** Write a set of project files (creating parent directories). */
+async function writeProjectFiles(
+  dir: string,
+  files: Record<string, string | Uint8Array>
+): Promise<void> {
+  for (const [filePath, content] of Object.entries(files)) {
+    const fullPath = `${dir}/${filePath}`;
+    const parentDir = fullPath.split("/").slice(0, -1).join("/");
+    if (parentDir && parentDir !== dir) {
+      await fs.mkdir(parentDir, { recursive: true });
+    }
+    await fs.writeFile(fullPath, content);
+  }
 }
 
 const TYPE_DIRS: Record<string, string> = {
@@ -417,17 +419,9 @@ export default {
       break;
   }
 
-  // Use isomorphic-git to init repo, write files, commit, and push
-  // This goes directly to the git server over HTTP — no server-side RPC needed
-  const git = createGit();
-
-  await initAndPush(git, fs, {
-    dir: projectPath,
-    remote: projectPath,
-    initialFiles: files,
-    message: `Create ${projectType}: ${title}`,
-  });
-  await ensureRepoPresentInContextsBestEffort(projectPath);
+  // Write the scaffold and commit it as a workspace transition.
+  await writeProjectFiles(projectPath, files);
+  await vcs.commit(projectPath, `Create ${projectType}: ${title}`);
 
   return { created: projectPath, files: Object.keys(files) };
 }
@@ -459,7 +453,7 @@ export interface ForkProjectResult {
   files: string[];
   rewrites: Array<{ file: string; description: string }>;
   warnings: string[];
-  pushed: boolean;
+  committed: boolean;
   dryRun: boolean;
 }
 
@@ -525,8 +519,6 @@ export async function forkProject(options: ForkProjectOptions): Promise<ForkProj
   const to = options.to.replace(/^\/+|\/+$/g, "");
   if (!from || !to) throw new Error("forkProject requires from and to paths");
   if (!(await fs.exists(from))) throw new Error(`Source project does not exist: ${from}`);
-  if (!(await fs.exists(`${from}/.git`)))
-    throw new Error(`Source project is not a workspace git repo: ${from}`);
   if (await fs.exists(to)) throw new Error(`Destination already exists: ${to}`);
 
   const fromType = projectTypeFromPath(from);
@@ -690,28 +682,22 @@ export async function forkProject(options: ForkProjectOptions): Promise<ForkProj
       files: createdFiles,
       rewrites,
       warnings,
-      pushed: false,
+      committed: false,
       dryRun: true,
     };
   }
 
   const initialFiles: Record<string, string | Uint8Array> = {};
   for (const [rel, content] of Object.entries(planned)) initialFiles[rel] = content;
-  const gitClient = createGit();
-  await initAndPush(gitClient, fs, {
-    dir: to,
-    remote: to,
-    initialFiles,
-    message: options.commitMessage ?? `Fork ${from} to ${to}`,
-  });
-  await ensureRepoPresentInContextsBestEffort(to);
+  await writeProjectFiles(to, initialFiles);
+  await vcs.commit(to, options.commitMessage ?? `Fork ${from} to ${to}`);
   return {
     source: from,
     created: to,
     files: createdFiles,
     rewrites,
     warnings,
-    pushed: true,
+    committed: true,
     dryRun: false,
   };
 }
@@ -744,13 +730,4 @@ export async function forkWorker(params: {
     classMap: params.classMap,
     dryRun: params.dryRun,
   });
-}
-
-async function ensureRepoPresentInContextsBestEffort(repoPath: string): Promise<void> {
-  try {
-    await git.ensureRepoPresentInContexts(repoPath);
-  } catch {
-    // Older runtimes may not expose this helper; post-push server hooks still
-    // sync new repos in supported hosts.
-  }
 }

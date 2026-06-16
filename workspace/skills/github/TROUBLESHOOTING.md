@@ -16,7 +16,5 @@ Create the PAT with a friendly access level such as
 `mode: "api-and-git"` are still available for lower-level agent flows. Verify a
 specific remote with `verifyGitHubGitRemoteAccess(remoteUrl, credentialId)`.
 
-The internal git server does not consume GitHub credentials or transparently
-proxy GitHub repositories. Direct clone, pull, push, or fork workflows should
-use `git.client()` from `@workspace/runtime`, or `credentials.gitHttp()` with
-raw isomorphic-git, so the PAT is not exposed to panels or workers.
+Direct clone, pull, push, or fork workflows should use `@natstack/git` with
+`credentials.gitHttp()` so the PAT is not exposed to panels or workers.

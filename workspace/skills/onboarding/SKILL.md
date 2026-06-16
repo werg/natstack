@@ -37,25 +37,18 @@ collect a lightweight setup snapshot:
 ```
 eval({ code: `
   import { credentials, fs, workspace } from "@workspace/runtime";
+  import { browserData } from "@workspace/panel-browser";
+  import { getGoogleOnboardingStatus } from "@workspace-skills/google-workspace";
+  import { getActiveSearchProvider } from "@workspace-skills/web-research";
 
   const workspaces = await workspace.list();
   const active = await workspace.getActive();
   const storedCredentials = await credentials.listStoredCredentials().catch(() => []);
-  let google = null;
-  try {
-    const googleSkill = await import("@workspace-skills/google-workspace");
-    google = await googleSkill.getGoogleOnboardingStatus();
-  } catch (error) {
-    google = { error: error instanceof Error ? error.message : String(error) };
-  }
-  let importHistory = [];
-  try {
-    const { browserData } = await import("@workspace/panel-browser");
-    importHistory = await browserData.getImportHistory();
-  } catch {
-    importHistory = [];
-  }
-  const panels = await fs.readdir("/panels").catch(() => []);
+  const google = await getGoogleOnboardingStatus()
+    .catch(error => ({ error: error instanceof Error ? error.message : String(error) }));
+  const importHistory = await browserData.getImportHistory().catch(() => []);
+  const searchProvider = await getActiveSearchProvider().catch(() => "duckduckgo");
+  const panels = await fs.readdir("panels").catch(() => []);
   const providerIds = [...new Set(storedCredentials.map(c =>
     String(c.metadata?.providerId ?? c.providerId ?? "unknown")
   ))];
@@ -67,12 +60,22 @@ eval({ code: `
     providerIds,
     storedCredentialCount: storedCredentials.length,
     google,
+    searchProvider,
     browserImportCount: importHistory.length,
     panelCount: panels.length,
   };
 `
 })
 ```
+
+Use static imports for runtime, workspace packages, and workspace skills in
+eval snippets. If a probe is truly optional and its static import may not exist
+in the current workspace, run it as a separate small eval and tolerate that eval
+failing; do not use `await import(...)` to probe `@workspace/*`,
+`@workspace-skills/*`, or `@natstack/*` packages. `fs` paths are rooted at the
+current context folder; `panels` and `/panels` refer to the same context-root
+directory, but onboarding examples prefer `panels` to avoid confusing this with
+a host absolute path.
 
 - **New user** (`workspaceCount <= 1`, or `workspaceCount === 0` with an active workspace) — give the full walkthrough with explanations of key concepts. These users need context on what NatStack is and what it can do. Note: in some runtime modes `workspace.list()` may return an empty array even when an active workspace exists — treat this as a new user.
 - **Returning user** (`workspaceCount > 1`) — skip the overview, be succinct, and ask what they need help with. They already know the basics.

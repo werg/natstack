@@ -1,25 +1,25 @@
 # Workspace Directory Structure
 
-A NatStack workspace is organized into source directories, each of which becomes an independent git repository. This structure enables isolated context folders where agents can safely read and write files.
+A NatStack workspace is organized into source directories backed by a shared GAD VCS state graph. This structure enables isolated context folders where agents can safely read and write files.
 
 ## Layout
 
 ```
 source/
-  meta/                 ← Workspace metadata (git repo)
-    natstack.yml        ← Workspace config: init panels, shared git remotes
+  meta/                 ← Workspace metadata
+    natstack.yml        ← Workspace config: init panels, external git remotes
     AGENTS.md           ← Agent system prompt
   panels/               ← Panel source code
-    chat/               ← (git repo) Default chat panel
-    my-panel/           ← (git repo) User-created panel
+    chat/               ← Default chat panel
+    my-panel/           ← User-created panel
   packages/             ← Shared libraries
-    runtime/            ← (git repo) @workspace/runtime
+    runtime/            ← @workspace/runtime
   skills/               ← Agent skill definitions
-    sandbox/            ← (git repo) Sandbox execution skill
-    workspace-dev/           ← (git repo) Workspace development skill
+    sandbox/            ← Sandbox execution skill
+    workspace-dev/           ← Workspace development skill
   agents/               ← Agent configurations
   workers/              ← Workerd Durable Object source
-    agent-worker/       ← (git repo) Default AI chat worker
+    agent-worker/       ← Default AI chat worker
   apps/                 ← Trusted workspace apps
     shell/              ← @workspace-apps/shell (Electron shell target)
     mobile/             ← @workspace-apps/mobile (React Native target)
@@ -39,32 +39,30 @@ state/
 
 `meta/` contains workspace-level configuration that agents need access to:
 
-- **natstack.yml** — Workspace configuration (initial panels and shared git remotes). Read by the server at startup; agents can read it via `workspace.getConfig()`.
+- **natstack.yml** — Workspace configuration (initial panels and external git remotes). Read by the server at startup; agents can read it via `workspace.getConfig()`.
 - **AGENTS.md** — The system prompt injected into every agent session. Loaded by the resource loader at agent startup. Agents can also read it directly from `meta/AGENTS.md` in their context folder.
 
-Like every other source directory, `meta/` is a git repo. This means:
+Like every other source directory, `meta/` is tracked by workspace VCS. This means:
 
-- It gets copied into each context folder by the context folder manager
-- Agents can publish changes back to the workspace source via the internal git server
-- Changes pushed to meta/ can trigger rebuilds and config reloads
-- Shared git remotes declared under `git.remotes` are materialized into repo
-  `.git/config` for source repos and context folders. Prefer
+- It is materialized into each context folder
+- Agents can commit changes back to their context VCS head
+- Changes committed under meta/ can trigger rebuilds and config reloads
+- External git remotes declared under `git.remotes` are materialized into
+  `.git/config` for interop checkouts. Prefer
   `git.setSharedRemote(path, { name, url })` for targeted approval and
   propagation instead of editing a context-local remote by hand.
 
 ## Context Folders
 
-When a panel or agent session starts, it gets a **context folder** — an isolated copy of the workspace's git repos. Each context folder:
+When a panel or agent session starts, it gets a **context folder** — an isolated
+working tree backed by a context VCS head (`ctx:<contextId>`). Each context can
+read and write files without affecting workspace source or other contexts.
 
-1. Copies the working tree from every git repo in the workspace (panels, packages, skills, meta, etc.)
-2. Gets its own mutable git state (`.git/HEAD`, `.git/index`, `.git/refs`, `.git/config`, hooks)
-3. Shares only the immutable git object store via a validated `.git/objects` symlink to the canonical source repo
-
-Context commits may add immutable loose objects to the shared object pool before a push. Push approval gates the canonical repository refs and source working tree update, not raw object admission. Object writes are no-overwrite and limited to loose object paths; packfile mutation through the context symlink is intentionally blocked.
-
-This means agents can freely read and write files in their context without affecting the workspace source or other contexts. To propagate changes back, agents publish the repo through the internal git server, normally with `git.publishWorkspaceRepo(repoPath, message)` or the workspace-dev `commitAndPush` wrapper. A plain local `git.client().commit()` can create commit objects in the shared object store, but it does not move the workspace source ref, recompute effective versions, trigger rebuilds, or mirror changes back to the dev template. Existing contexts do not auto-reset when another context pushes; shared objects become visible immediately, but each context keeps its own refs and working tree until it explicitly fetches, pulls, rebases, or resets.
-
-Do not run destructive pruning on canonical source object stores unless the GC is context-aware. Context-only commits can be reachable from context refs even before their refs are pushed.
+To make workspace source changes visible to builds, commit the affected unit
+with `vcs.commit(repoPath, message)` or the workspace-dev `commitWorkspace`
+wrapper. Editing files alone does not move the context head, recompute
+effective versions, trigger rebuilds, or mirror changes back to the dev
+template. Existing contexts do not auto-reset when another context commits.
 
 ## Trusted Apps And Extensions
 
@@ -97,16 +95,16 @@ are not themselves panels, workers, skills, templates, or packages consumed by
 the workspace build system. Examples include upstream application checkouts,
 third-party libraries, or larger patch branches an agent is preparing.
 
-Plain projects are still normal workspace git repos:
+Plain projects are still external Git-backed projects when imported that way:
 
 - They appear in the workspace tree once initialized or cloned.
-- They are copied into context folders like other repos.
+- They are materialized into context folders like other source trees.
 - Shared remotes declared under `git.remotes.projects.<repo>.<remoteName>` are
   materialized into their `.git/config`.
 - `git.importProject({ path: "projects/name", remote })` creates a canonical
-  workspace repo from a remote and records the shared remote in `meta/natstack.yml`.
+  workspace project from a remote and records the shared remote in `meta/natstack.yml`.
 - `git.completeWorkspaceDependencies()` imports configured shared remotes whose
-  workspace repos are currently missing.
+  workspace projects are currently missing.
 - They are not launchable runtime units and are not auto-imported as
   `@workspace/*` packages.
 
@@ -115,12 +113,10 @@ Plain projects are still normal workspace git repos:
 The `workspace/` directory in the NatStack source repo is a **template**, never used directly as a live workspace. When a workspace is created:
 
 1. Source directories are copied from the template into `~/.config/natstack/workspaces/{name}/source/`
-2. Each subdirectory within the source dirs is initialized as a git repo (`git init` + initial commit)
+2. Source directories are ingested into the workspace GAD VCS state graph
 3. State directories are scaffolded fresh
 
 In dev mode (`pnpm dev`), an ephemeral workspace is created from the template
-each run. Accepted pushes from that generated workspace are mirrored back into
-the checked-in `workspace/` template, so published workspace-unit edits made
-during a dev session persist into the source checkout. `git.ensureRepoPresentInContexts`
-is not this publish path; it only ensures newly-created repos are present in
-existing contexts.
+each run. Committed workspace-unit edits from that generated workspace are
+mirrored back into the checked-in `workspace/` template, so accepted source
+changes made during a dev session persist into the source checkout.

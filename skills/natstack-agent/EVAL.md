@@ -20,13 +20,13 @@ top-level `await` and `return` are allowed.
 
 | Binding | What it is |
 |---------|------------|
-| `rpc.call(method, args)` | Raw RPC: `await rpc.call("git.contextStatus", [ctx.contextId, "panels/notes"])` |
+| `rpc.call(method, args)` | Raw RPC: `await rpc.call("vcs.status", ["ctx:" + ctx.contextId])` |
 | `rpc.callTarget(targetId, method, args)` | Call a runtime entity (DO/worker) by target id, e.g. after `workers.resolveService`: `const svc = await rpc.call("workers.resolveService", ["natstack.testkit-driver.v1", null]); await rpc.callTarget(svc.targetId, "ping", [])` |
 | `services` | Proxy over rpc: `await services.meta.listServices()` ≡ `rpc.call("meta.listServices", [])` |
 | `fs` | Context-bound fs service — the session contextId is injected as the first arg: `await fs.readdir("/")`, `await fs.grep("TODO", {})` |
 | `ctx` | `{contextId, sessionId, workspaceId, serverUrl}` |
 | `scope` | Persistent REPL scope (see below): `scope.results = data` survives across runs |
-| `help()` | `await help()` lists services + import guidance; `await help("git")` describes one service |
+| `help()` | `await help()` lists services + import guidance; `await help("vcs")` describes one service |
 
 ```bash
 natstack eval run -e '

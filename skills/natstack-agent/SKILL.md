@@ -1,6 +1,6 @@
 ---
 name: natstack-agent
-description: Operate a NatStack workspace server from the command line with the natstack CLI — durable agent sessions, remote file/git access, arbitrary RPC calls, and sandboxed TypeScript eval with a persistent REPL scope. Use when working against a NatStack server from a terminal or script — reading/editing workspace context files, committing changes, calling workspace services, or running code on live data.
+description: Operate a NatStack workspace server from the command line with the natstack CLI — durable agent sessions, remote file/VCS access, arbitrary RPC calls, and sandboxed TypeScript eval with a persistent REPL scope. Use when working against a NatStack server from a terminal or script — reading/editing workspace context files, committing changes, calling workspace services, or running code on live data.
 ---
 
 # NatStack Agent CLI
@@ -15,7 +15,7 @@ the repo: `pnpm cli ...`).
   (`natstack remote pair`) and most need an attached agent session
   (`natstack agent attach`). Sessions are durable server entities; a session
   named `default` is used when `--session NAME` is omitted.
-- **Paths are remote.** `fs`/`git`/`eval` operate inside the session's
+- **Paths are remote.** `fs`/`vcs`/`eval` operate inside the session's
   *context folder on the server*, not the local filesystem. The context is a
   copy-on-write checkout of the workspace tree (e.g. `panels/notes/...`).
 - **JSON is automatic when piped.** Results are human text on a TTY and a
@@ -46,7 +46,7 @@ natstack agent detach --rm             # retire session + remove its context
 | `natstack remote` | `pair`, `status`, `invite`, `logout`, `discover`, `start`, `serve` | Device pairing and credentials |
 | `natstack agent` | `attach`, `status`, `detach`, `sessions`, `call`, `services`, `skills`, `logs`, `skill` | Sessions, raw RPC, introspection |
 | `natstack fs` | `ls`, `read`, `write`, `rm`, `mv`, `cp`, `mkdir`, `stat`, `grep`, `glob` | Files in the session context |
-| `natstack git` | `status`, `diff`, `add`, `commit` | Git on a repo inside the context |
+| `natstack vcs` | `status`, `diff`, `commit` | VCS on a workspace unit inside the context |
 | `natstack eval` | `run`, `repl-reset` | Sandboxed TS/JS against the server |
 
 `--help` works at the group level (`natstack fs --help`) and per command
@@ -62,7 +62,7 @@ shell-callable, so create workers (and DOs) via RPC —
 
 | File | Read when |
 |------|-----------|
-| [FILES.md](FILES.md) | Doing file or git operations (`fs`/`git` flags, binary handling, repo paths) |
+| [FILES.md](FILES.md) | Doing file or VCS operations (`fs`/`vcs` flags, binary handling, repo paths) |
 | [EVAL.md](EVAL.md) | Running code with `natstack eval` (bindings, imports, persistent scope) |
 | [API.md](API.md) | Looking up which RPC services/methods exist (generated reference) |
 | [RECIPES.md](RECIPES.md) | End-to-end workflows (edit+commit, data analysis, debugging units) |

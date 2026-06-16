@@ -27,6 +27,15 @@ That's it. NatStack auto-mounts your default export.
 
 ---
 
+## Panel Identity
+
+Panels have two IDs. `slotId` is the stable visible panel slot and is the right
+identity for panel-tree operations and PubSub/channel clients. `rpc.selfId`
+matches the current runtime entity for direct RPC delivery and can change when
+the panel navigates or reopens in place.
+
+---
+
 ## React Hooks
 
 Import from `@workspace/react`:
@@ -260,20 +269,13 @@ async function example() {
 }
 ```
 
-### Git Operations
+### Workspace VCS
 
 ```typescript
-import { promises as fs } from "fs";
-import { GitClient } from "@workspace/git";
-import { gitConfig } from "@workspace/runtime";
+import { vcs } from "@workspace/runtime";
 
-const git = new GitClient(fs, {
-  serverUrl: gitConfig.serverUrl,
-  token: gitConfig.token,
-});
-
-await git.clone({ url: `${gitConfig.serverUrl}/my-repo`, dir: "/repo" });
-await git.pull({ dir: "/repo" });
+const status = await vcs.status();
+await vcs.commit("panels/my-panel", "Update panel");
 ```
 
 ---
@@ -292,42 +294,45 @@ const workspace = env["NATSTACK_WORKSPACE"] || "/workspace";
 
 ## CDP Panel Automation
 
-Open URL panels and control any panel through the unified `PanelHandle`. Opening panels,
-CDP automation, and structural operations are approval-gated on first use per requester
-panel/worker/DO and target pair. Approvals are remembered for that requester entity;
-privileged shell/about panels use a danger-tone approval.
+Use `PanelHandle` for new or existing panels. Opening panels, CDP, and
+structural operations are approval-gated per requester/target.
 
 #### Typed API
 
 ```typescript
 import { openPanel, openExternal, panelTree } from "@workspace/runtime";
 
-// 1. Open a URL panel, which returns a PanelHandle.
+// panelTree is a top-level export, not workspace.panelTree.
 const handle = await openPanel("https://example.com", { focus: true });
+const page = await handle.cdp.lightweightPage();
 
-// 2. CDP access prompts on first use and transparently loads unloaded targets.
-const page = await handle.cdp.page();
-
-// 3. Interact with the page
 await page.fill("input[name=query]", "NatStack");
 await page.click(".search-button");
 const text = await page.textContent(".results .first");
 
-// 4. Navigate via CDP controls
 await handle.cdp.navigate("https://other.com");
 await handle.cdp.goBack();
 await handle.cdp.reload();
 
-// 5. Close when done
-await handle.close();
-
-// Drive a parent or sibling the same way. Tree relationships do not bypass approval.
+// Existing panels: discover or get by slot id.
 const parent = panelTree.self().parent();
-await parent?.cdp.page();
+await parent?.cdp.lightweightPage();
+
+const allPanels = await panelTree.list();
+const existing = allPanels.find((panel) => panel.source === "panels/spectrolite");
+const existingPage = await existing?.cdp.lightweightPage();
+
+const known = panelTree.get("panel-slot-id");
+await known.refresh(); // hydrate metadata when you start from a known slot id
+await known.cdp.lightweightPage();
 
 // Or open in system browser (no CDP access)
 await openExternal("https://docs.example.com");
 ```
+
+Panels created by the workflow are owned by it; close temporary owned panels
+when the workflow is done. Existing handles from `panelTree.*` are non-owned:
+do not navigate, reload, or close them unless requested.
 
 #### Fire-and-forget (window.open)
 
@@ -347,7 +352,7 @@ window.open("https://example.com");
 
 | Method | Description |
 |--------|-------------|
-| `cdp.page()` | Connect Playwright and return the active page |
+| `cdp.lightweightPage()` | Connect the lightweight CDP client and return the active page |
 | `cdp.getCdpEndpoint()` | Get CDP WebSocket URL and token for Playwright |
 | `cdp.navigate(url)` | Load a URL |
 | `cdp.goBack()` | Navigate back |
@@ -356,7 +361,8 @@ window.open("https://example.com");
 | `cdp.stop()` | Stop loading |
 | `close()` | Close browser panel |
 
-Use `handle.ensureLoaded()` before RPC calls to an unloaded panel. CDP access performs that load automatically after approval.
+Use `handle.ensureLoaded()` before RPC calls to an unloaded panel. CDP access
+loads targets automatically after approval.
 
 ---
 

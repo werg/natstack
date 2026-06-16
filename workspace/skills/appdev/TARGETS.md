@@ -158,10 +158,10 @@ Selection modes:
 - `follow-ref`: the host follows the app's current approved build.
 - `pinned-build`: the host stays on a retained build key until the user selects
   `Follow latest` or picks another build.
-- `pinned-commit`: the host asks the git-backed build system to materialize a
-  specific commit/ref, then pins the resulting build key.
+- `pinned-ref`: the host asks the GAD-backed build system to materialize a
+  specific ref, then pins the resulting build key.
 
-Pinned selections are recovery tools as well as dev tools. If a newer push is
+Pinned selections are recovery tools as well as dev tools. If a newer state update is
 approved while a target is pinned, the server records the newer build in
 rollback history and restores the pinned build as the active host target. The
 user can return to normal update adoption by switching that target back to

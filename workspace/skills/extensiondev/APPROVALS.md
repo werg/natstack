@@ -2,7 +2,7 @@
 
 Extensions have two distinct trust boundaries:
 
-1. **Install / update / source-push** — the *elevated* approval. Granted once by the user at install time (and again on dependency updates or accepted source pushes). After install, the extension has full Node access. The host does not gate individual `ctx.fs` or `node:fs` calls — that would be theatre.
+1. **Install / update / source change** — the *elevated* approval. Granted once by the user at install time (and again on dependency updates or accepted source changes). After install, the extension has full Node access. The host does not gate individual `ctx.fs` or `node:fs` calls — that would be theatre.
 
 2. **Shared-resource approvals** — the *userland* approval, raised by the extension via `ctx.approvals.request(...)` against the original panel/worker that triggered the call. This is for custom resources owned by the extension that are made available to other userland code. It is not a general confirmation mechanism for actions the caller or extension can already take, and it is not a security boundary against the already-installed extension.
 

@@ -157,30 +157,38 @@ Allowed callers: `panel`, `app`, `server`, `worker`, `do`, `extension`, `shell`,
 | `fs.handleStat` |  |
 | `fs.mktemp` |  |
 
-## `git`
+## `gitInterop`
 
-Git operations and scoped filesystem access for panels
+External Git project import and remote metadata only
 
 Allowed callers: `shell`, `panel`, `app`, `server`, `worker`, `do`, `extension`
 
 | Method | Description |
 |--------|-------------|
-| `git.getWorkspaceTree` |  |
-| `git.findRepoForPath` |  |
-| `git.status` |  |
-| `git.contextStatus` |  |
-| `git.contextAddAll` |  |
-| `git.contextDiff` |  |
-| `git.contextCommit` |  |
-| `git.listBranches` |  |
-| `git.listCommits` |  |
-| `git.resolveRef` |  |
-| `git.createRepo` |  |
-| `git.setSharedRemote` |  |
-| `git.removeSharedRemote` |  |
+| `gitInterop.setSharedRemote` |  |
+| `gitInterop.removeSharedRemote` |  |
+| `gitInterop.importProject` |  |
+| `gitInterop.completeWorkspaceDependencies` |  |
 | `git.importProject` |  |
 | `git.completeWorkspaceDependencies` |  |
-| `git.ensureRepoPresentInContexts` |  |
+
+## `vcs`
+
+Workspace version control (GAD-native): commit, status, log, diff
+
+Allowed callers: `shell`, `panel`, `app`, `server`, `worker`, `do`, `extension`, `harness`
+
+| Method | Description |
+|--------|-------------|
+| `vcs.commit` |  |
+| `vcs.status` |  |
+| `vcs.log` |  |
+| `vcs.diff` |  |
+| `vcs.resolveHead` |  |
+| `vcs.merge` |  |
+| `vcs.abortMerge` |  |
+| `vcs.pendingMerge` |  |
+| `vcs.recall` |  |
 
 ## `meta`
 
@@ -416,7 +424,7 @@ Allowed callers: `shell`, `shell-remote`, `app`, `panel`, `worker`, `do`, `exten
 | `workspace.hostTargets.setSelection` |  |
 | `workspace.hostTargets.clearSelection` |  |
 | `workspace.hostTargets.versions` |  |
-| `workspace.hostTargets.preparePinnedCommit` |  |
+| `workspace.hostTargets.preparePinnedRef` |  |
 | `workspace.hostTargets.launch` |  |
 
 ## `workspace-state`

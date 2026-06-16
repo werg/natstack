@@ -59,7 +59,9 @@ Alternative templates (e.g., Svelte) can be used by setting the `template` field
 ```typescript
 import {
   // Identity
-  id,                    // This panel's ID
+  id,                    // Current panel runtime entity ID
+  entityId,              // Same current runtime entity ID
+  slotId,                // Stable visible panel slot ID
   parentId,              // Parent's ID or null
   contextId,             // Storage context ID
 
@@ -83,7 +85,6 @@ import {
   ai,                    // AI client (streaming text generation with tools)
 
   // Configuration
-  gitConfig,             // Git server config
   env,                   // Environment variables (Record<string, string>)
 
   // Lifecycle
@@ -95,10 +96,9 @@ import {
   expose,                // Expose RPC methods
   onConnectionError,     // Subscribe to RPC connection errors
 
-  // Git utilities
-  getWorkspaceTree,      // Get workspace directory tree with metadata
-  listBranches,          // List branches for a repo (repoPath) → BranchInfo[]
-  listCommits,           // List commits for a repo (repoPath, ref?, limit?) → CommitInfo[]
+  // Workspace/VCS utilities
+  workspace,             // Workspace catalog, source tree, and unit helpers
+  vcs,                   // GAD-native repo status/log/diff/commit operations
 
   // Utilities
   parseContextId,        // Parse context ID components
@@ -125,6 +125,15 @@ import {
 } from "@workspace/runtime";
 export type { PanelHandle } from "@workspace/runtime";
 ```
+
+Use `slotId` for panel-tree operations and PubSub/channel client identity. Use
+`id`/`entityId`/`rpc.selfId` only when you need the current live runtime entity;
+that entity can change when a panel navigates or reopens in place.
+
+`panelTree` is a top-level runtime export. Do not call
+`workspace.panelTree`; the `workspace` namespace is for workspace catalog,
+source-tree, and unit helpers, with only `workspace.openPanel` as a panel-opening
+convenience.
 
 ## Navigation
 
@@ -158,14 +167,20 @@ window.location.href = buildPanelLink("panels/chat", { contextId: "abc-123" });
 ```typescript
 const handle = panelTree.get("panel-id");
 
-handle.id                         // Panel ID
+handle.id                         // Stable panel slot ID
+await handle.refresh()            // Hydrate metadata for an existing slot
 handle.call.method(args)          // Call exposed RPC method
 handle.emit("event", payload)     // Emit event to the panel
 handle.on("event", handler)       // Listen for events from the panel
-handle.cdp.page()                 // Approval-gated CDP page access
+handle.cdp.lightweightPage()      // Approval-gated CDP page access
 handle.ensureLoaded()             // Explicit load for RPC/introspection
 handle.close()                    // Approval-gated structural operation
 ```
+
+Use `panelTree.get/list/roots/children` for existing panels;
+`openPanel()`/`panelTree.open()` creates a new panel. Existing handles are
+non-owned: do not navigate, reload, or close them unless requested; clean up
+temporary panels opened by the workflow when it is done.
 
 ## Typed RPC Contracts
 
@@ -207,28 +222,24 @@ rpc.expose({
 await parent?.emit("saved", { path: "/file.txt" }); // Typed when a parent is present.
 ```
 
-## Git Utilities
+## Repo Utilities
 
-Query workspace repository metadata:
+Query workspace repo metadata through the workspace and VCS namespaces:
 
 ```typescript
-import { getWorkspaceTree, listBranches, listCommits } from "@workspace/runtime";
+import { workspace, vcs } from "@workspace/runtime";
 
-// Get the full workspace directory tree
-const tree = await getWorkspaceTree();
-// tree.children: WorkspaceNode[] — each node has name, path, isGitRepo,
+// Get the full workspace source tree
+const tree = await workspace.sourceTree();
+// tree.children: WorkspaceNode[] — each node has name, path, isUnit,
 //   launchable?: { title }, packageInfo?: { name, version }, children
 
-// List branches for a repo
-const branches = await listBranches("panels/editor");
-// [{ name: "main", current: true }, { name: "feature-x", current: false }]
+// Resolve a source path to its owning repo
+const owner = await workspace.findUnitForPath("panels/editor/src/index.tsx");
+// { unitPath: "panels/editor", relativePath: "src/index.tsx" }
 
-// List recent commits (default: HEAD, limit 50)
-const commits = await listCommits("panels/editor");
-// [{ oid: "abc123...", message: "Fix bug", author: { name: "...", timestamp: 1709900000 } }]
-
-// List commits on a specific branch with custom limit
-const history = await listCommits("panels/editor", "feature-x", 10);
+// Read recent GAD-native repo history
+const history = await vcs.log("panels/editor", { limit: 50 });
 ```
 
 ## Connection Error Handling

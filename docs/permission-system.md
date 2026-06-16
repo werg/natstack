@@ -29,7 +29,7 @@ credentials. It handles:
 Each permission has:
 
 - `capability`: stable permission type, such as `external-browser-open` or
-  `internal-git-write`
+  `workspace-repo-write`
 - `resource.key`: stable grant key
 - `resource.value`: human-readable UI value
 
@@ -68,23 +68,21 @@ the same issuer with the same `subject.id` returns the stored choice without a
 new prompt. `revokeApproval(subjectId)` removes that stored decision.
 
 Do not use userland approvals as a substitute for host capabilities. If the
-action opens an external browser, stores or uses credentials, writes git state,
+action opens an external browser, stores or uses credentials, writes workspace repo state,
 imports a project, or otherwise touches host-managed resources, call the
 corresponding runtime API and let the built-in permission flow choose the right
 scope and audit model.
 
-## Git Writes
+## Workspace Repo Writes
 
-Internal git pushes use branch-aware push authorizers. The git HTTP token only
-identifies the caller; it does not authorize writes by itself. The workspace
-server intentionally does not install the coarse pre-receive git write gate for
-pushes, because that gate cannot see the concrete pushed ref and commit.
+Workspace repo writes use ref-aware authorizers. The caller identity only
+identifies the requester; it does not authorize writes by itself.
 
-The same `internal-git-write` capability is also used for RPC-created
-repositories, keyed to the target repo path.
+The same `workspace-repo-write` capability is used for host-mediated repo
+writes, keyed to the target repo path.
 
 This lets NatStack show approvals that are specific to the destination repo,
-branch, and commit. Generic workspace source repos such as `panels/*`,
+ref, and change. Generic workspace source repos such as `panels/*`,
 `workers/*`, `skills/*`, and `packages/*` use a push-specific
-`internal-git-write` resource key. Unit repos (`apps/*`, `extensions/*`) and
+`workspace-repo-write` resource key. Unit repos (`apps/*`, `extensions/*`) and
 `meta` keep their richer unit/config approval flows.

@@ -152,16 +152,16 @@ packfiles through `credentials.fetch()`, and do not expose PATs to userland
 `onAuth` callbacks:
 
 ```ts
-import { git } from "@workspace/runtime";
+import { credentials, fs } from "@workspace/runtime";
+import { GitClient } from "@natstack/git";
 
-const client = git.client();
+const client = new GitClient(fs, { http: credentials.gitHttp() });
 await client.clone({ url: "https://github.com/owner/repo.git", dir: "/repo" });
 const status = await client.status("/repo");
 ```
 
-When the caller just needs a Git client, prefer `git.client()` from the runtime.
-It routes relative NatStack repositories to the internal git server and absolute
-external remotes through credential-gated host git HTTP.
+When the caller needs external Git transport, use `@natstack/git` with
+`credentials.gitHttp()` so credentials stay host-mediated.
 Use `client.status(dir)` for structured status and `client.statusMatrix(dir)`
 only when raw isomorphic-git HEAD/WORKDIR/STAGE tuples are required.
 

@@ -9,14 +9,14 @@ function checked(result: Parameters<typeof finalMessageHasAll>[0], markers: stri
 
 export const projectLifecycleTests: TestCase[] = [
   {
-    name: "panel-create-commit-push-open",
+    name: "panel-create-commit-open",
     description: "Create and open a new panel project",
     category: "project-lifecycle",
     prompt: "Create and open a brand-new isolated panel project. Finish with PROJECT_PANEL_OK.",
     validate: (result) => checked(result, ["PROJECT_PANEL_OK"]),
   },
   {
-    name: "panel-fork-dry-run-and-push",
+    name: "panel-fork-dry-run-and-commit",
     description: "Fork and open a panel project",
     category: "project-lifecycle",
     prompt: "Fork an existing panel into a new isolated panel and open the result. Finish with PROJECT_FORK_OK.",
@@ -30,10 +30,10 @@ export const projectLifecycleTests: TestCase[] = [
     validate: (result) => checked(result, ["WORKER_FORK_OK"]),
   },
   {
-    name: "commit-and-push-existing-project",
+    name: "commit-existing-project",
     description: "Change and publish a package project",
     category: "project-lifecycle",
-    prompt: "Create an isolated package project, change it once, and publish the change. Finish with COMMIT_AND_PUSH_OK.",
-    validate: (result) => checked(result, ["COMMIT_AND_PUSH_OK"]),
+    prompt: "Create an isolated package project, change it once, and commit the change through workspace VCS. Finish with COMMIT_PROJECT_OK.",
+    validate: (result) => checked(result, ["COMMIT_PROJECT_OK"]),
   },
 ];

@@ -1,41 +1,45 @@
 # Dev loop
 
-Extension source authoring happens **in the workspace git repo for the extension**, like any other workspace unit. Saving files locally doesn't restart anything — the **push** is the dev signal.
+Extension source authoring happens in the shared workspace VCS state, like any
+other workspace unit. Saving files locally doesn't restart anything — a
+committed workspace state advance is the dev signal.
 
 ## The flow
 
 1. Edit files under `workspace/extensions/<name>/`.
-2. Commit and push to the extension repo's `main` (or `master`).
-3. The git server sees an extension push and triggers the extension-specific approval prompt.
+2. Commit the workspace state with `vcs.commit` or the workspace-dev helpers.
+3. The state advance triggers the extension-specific approval prompt.
 4. On approve, the manager rebuilds the bundle, replaces the running process, and runs `activate(ctx)` again.
-5. On deny, the push fails — the branch ref doesn't move and the old extension keeps running.
+5. On deny, the main-head advance is rejected and the old extension keeps running.
 
-There is no "save file → hot reload" path. Pushes to **other** branches don't affect the running extension.
+There is no "save file → hot reload" path. Context-head work does not affect
+the running extension until it is published into `main`.
 
 ## Dev-session approval
 
-The push approval offers three choices:
+The source approval offers three choices:
 
-- **Allow push** — accept this push.
-- **Reject push** — fail the push, keep old extension running.
-- **Allow extension pushes to `<name>` without asking, for the next 4 hours** — the dev-session grant. Stored against `(extension, repo, branch)` and consulted before re-prompting.
+- **Allow update** — accept this source update.
+- **Reject update** — reject the main-head advance and keep the old extension running.
+- **Allow extension updates to `<name>` without asking, for the next 4 hours** — the dev-session grant. Stored against the extension identity and consulted before re-prompting.
 
-Pick dev-session while actively iterating. It expires automatically; the next push outside the 4h window prompts again.
+Pick dev-session while actively iterating. It expires automatically; the next source update outside the 4h window prompts again.
 
-This is the one place the extension trust model loosens for ergonomics. Source pushes to extension branches are a privileged operation, not a normal git write — review what you're pushing before granting a session.
+This is the one place the extension trust model loosens for ergonomics. Source
+updates for extensions are privileged — review what you're publishing before
+granting a session.
 
-## Pushing from a panel or worker
+## Committing from a panel or worker
 
 ```ts
-import { commitAndPush } from "@workspace-skills/workspace-dev";
+import { commitWorkspace } from "@workspace-skills/workspace-dev";
 
-await commitAndPush("extensions/hello", "Add greet method");
+await commitWorkspace("extensions/hello", "Add greet method");
 ```
 
-`commitAndPush` from the `workspace-dev` skill delegates to
-`git.publishWorkspaceRepo` and works on extension repos the same way it works on
-panel/worker repos. The first push will prompt; subsequent pushes in a dev
-session auto-accept.
+`commitWorkspace` from the `workspace-dev` skill delegates to `vcs.commit` and
+works on extension units the same way it works on panel/worker units. The first
+commit can prompt; subsequent commits in a dev session auto-accept.
 
 ## Inspector (dev mode only)
 
@@ -58,7 +62,7 @@ The unified status surface (`workspace.units.list()`) is the right tool for "is 
 - `health` — self-reported operational state (see `ctx.health` in [AUTHORING.md](AUTHORING.md))
 - `respawn` — when the manager is mid-backoff after a crash, this shows `{ attempts, nextAttemptAt }`
 - `pendingApproval` — set when a declaration/update approval is in flight
-- `availableUpdate` — set when current workspace state would change the extension's runtime inputs (a dep push, an external-dep bump)
+- `availableUpdate` — set when current workspace state would change the extension's runtime inputs (a dependency source update, an external-dep bump)
 - `lastBuiltAt` — best-effort epoch ms of the active bundle
 - `lastError` — populated on `error` status
 - `inspectorUrl` — dev-only
@@ -75,7 +79,7 @@ await extensions.reload("@workspace-extensions/hello");
 
 Approval-gated. Restarts the _currently active approved build_ — does not pull dependency changes. Use this after editing in-process state (env vars, on-disk config) that the extension reads at `activate()` time.
 
-To adopt dependency changes (a `@workspace/runtime` push, an `npm` version bump), the extension must rebuild — and rebuilds happen only on reconcile, at workspace startup or when `meta/natstack.yml` is pushed. `extensions.reload(name)` restarts the _active approved build_ and does **not** rebuild, so it won't pick up dependency changes on its own, and dependency pushes don't auto-reload a running extension either.
+To adopt dependency changes (a `@workspace/runtime` commit, an `npm` version bump), the extension must rebuild — and rebuilds happen only on reconcile, at workspace startup or when `meta/natstack.yml` is committed. `extensions.reload(name)` restarts the _active approved build_ and does **not** rebuild, so it won't pick up dependency changes on its own, and dependency commits don't auto-reload a running extension either.
 
 ## Common failure shapes
 
@@ -83,7 +87,7 @@ To adopt dependency changes (a `@workspace/runtime` push, an `npm` version bump)
 | ----------------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | `MANIFEST_KIND`                     | `package.json` is missing `natstack.extension` (or has two kind blocks) | Add exactly one `natstack.extension` block                                    |
 | `MANIFEST_ACTIVATION`               | `activationEvents` is not `["*"]`                                       | Lazy activation is future work — must be `["*"]` in v1                        |
-| Stays in `error` after push         | `activate()` threw                                                      | Check `lastError` on `workspace.units.list()`; look at the inspector log      |
+| Stays in `error` after update       | `activate()` threw                                                      | Check `lastError` on `workspace.units.list()`; look at the inspector log      |
 | `Cannot find module ...` at runtime | Dep was externalized but missing from runtime install                   | Set `dependencyMode: "external"` and confirm the package is in `dependencies` |
 | `Named export ... not found`        | ESM imported a named export from a CJS package                          | Use `import pkg from "x"; const { fn } = pkg;`                                |
 | `require is not defined`            | Code crossed an ESM/CJS boundary in a bundled dep                       | Switch the dep to `dependencyMode: "external"`                                |
@@ -92,4 +96,4 @@ To adopt dependency changes (a `@workspace/runtime` push, an `npm` version bump)
 
 ## Remove a Declaration
 
-Remove the extension's entry from the `extensions:` list in `meta/natstack.yml` and push. The next reconcile stops the process and deletes its registry entry; the per-extension storage scratch is retained. The workspace source tree stays — you'd `git rm` that separately. Userland approval grants the extension received persist (they're keyed by `(principal, extension-name)`); re-declaring under the same name reuses them. The declared set is authoritative.
+Remove the extension's entry from the `extensions:` list in `meta/natstack.yml` and commit the workspace state. The next reconcile stops the process and deletes its registry entry; the per-extension storage scratch is retained. The workspace source tree stays until you remove those files separately. Userland approval grants the extension received persist (they're keyed by `(principal, extension-name)`); re-declaring under the same name reuses them. The declared set is authoritative.

@@ -30,7 +30,7 @@ status or verification reports `credential-expired`, replace the old credential
 with `connectGoogle({ force: true })`.
 
 When the user is setting up Gmail specifically, continue with
-`workspace/skills/gmail/ONBOARDING.md` after Google Workspace reaches
+`skills/gmail/ONBOARDING.md` after Google Workspace reaches
 `verified`.
 
 Never skip the Production publishing step. Testing-mode refresh tokens for

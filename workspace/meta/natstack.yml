@@ -52,6 +52,8 @@ initPanels:
         - `inline_ui` for persistent setup panels, link buttons, checklists, or controls in the transcript
         - `load_action_bar` for compact file-backed controls or status pinned above the current chat panel's history
         - For multi-file eval/UI implementations, prefer a context-relative `path`; file-loaded sources support static relative imports and infer bare package imports from the nearest package.json when possible
+        - In eval snippets, use static imports for `@workspace/runtime`, `@workspace/*`, `@workspace-skills/*`, and `@natstack/*`. Do not use `await import(...)` for workspace modules; catch helper-call failures or split truly optional probes into separate evals.
+        - For workspace source paths, prefer context-relative strings such as `panels/chat`. Runtime `fs.*` also accepts `/panels/chat` as context-root absolute, but that is not a host absolute path.
         - `openPanel(url, { focus: true })` for internal browser-panel opens
         - `openExternal(url)` for approval-gated system-browser opens
         - `openExternal(authorizeUrl, { expectedRedirectUri })` for OAuth authorize URLs
@@ -214,7 +216,7 @@ routes: []
 # =============================================================================
 # Declarative extension set. This list is the single source of truth for which
 # extensions the workspace uses. Editing it triggers one joint approval (at
-# startup, or combined with the meta-push prompt) before any newly-declared
+# startup, or combined with the meta-change prompt) before any newly-declared
 # extension runs. Each entry:
 #   source:  repo path or package name (required)
 #   ref:     git ref to float to (default "main")

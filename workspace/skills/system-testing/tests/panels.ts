@@ -40,47 +40,25 @@ export const panelTests: TestCase[] = [
     name: "create-panel",
     description: "Open a new panel",
     category: "panels",
-    prompt: "Exercise opening a workspace panel. Finish with PANEL_OPEN_OK and handle=<panel-id>.",
+    prompt:
+      "Exercise opening a spectrolite panel as a child panel using the documented @workspace/runtime panel APIs only. Do not inspect guessed internal source paths. Get a screenshot, retrieve host-captured console logs from the running panel, and run JavaScript in the child panel through handle.cdp.lightweightPage(). Finish with PANEL_OPEN_OK and handle=<panel-id>.",
     validate: (result) => checkedWithField(result, ["PANEL_OPEN_OK"], "handle"),
   },
   {
     name: "browser-panel",
-    description: "Create a browser panel pointing to a URL",
+    description: "Create and navigate a browser panel",
     category: "panels",
     prompt:
-      "Exercise opening a browser panel for https://example.com/ with the documented panelTree/openPanel API. Use the returned PanelHandle directly; do not invent panel IDs or titles, and do not call adblock APIs. Verify CDP availability with handle.cdp.getCdpEndpoint(). Finish with PANEL_BROWSER_OK and url=<current-url>.",
-    validate: (result) => checkedWithField(result, ["PANEL_BROWSER_OK"], "url"),
-  },
-  {
-    name: "browser-navigate",
-    description: "Navigate a browser panel to a new URL",
-    category: "panels",
-    prompt:
-      "Exercise browser panel navigation using a browser PanelHandle returned by panelTree/openPanel. Open https://example.com/ first, then navigate the same handle to https://example.org/ using its CDP/lightweight page APIs. Do not use data: URLs, about:blank, guessed panel names, read unrelated docs, or call adblock APIs. Finish with PANEL_NAVIGATE_OK and final-marker.",
-    validate: (result) => checked(result, ["PANEL_NAVIGATE_OK", "final-marker"]),
-  },
-  {
-    name: "browser-screenshot",
-    description: "Take a screenshot of a browser panel",
-    category: "panels",
-    prompt:
-      "Exercise browser panel screenshot capture using a browser PanelHandle returned by panelTree/openPanel for https://example.com/. Initialize the page in the same eval scope before using it; do not refer to a page variable unless it was assigned by await handle.cdp.lightweightPage(). Do not use data: URLs or about:blank. Only report success after a same-run screenshot call returns bytes. Finish with PANEL_SCREENSHOT_OK and bytes=<byte-count>.",
-    validate: (result) => checkedWithNumericField(result, ["PANEL_SCREENSHOT_OK"], "bytes"),
-  },
-  {
-    name: "browser-evaluate",
-    description: "Evaluate JavaScript in a browser panel",
-    category: "panels",
-    prompt:
-      "Exercise evaluating JavaScript in a browser panel using a browser PanelHandle returned by panelTree/openPanel for https://example.com/. Initialize const page = await handle.cdp.lightweightPage() in the same eval before calling page.evaluate(...); inject or compute marker-match with page.evaluate instead of opening data: URLs or about:blank, and do not use guessed panel IDs or titles. Finish with PANEL_EVALUATE_OK and marker-match.",
-    validate: (result) => checked(result, ["PANEL_EVALUATE_OK", "marker-match"]),
+      "Exercise opening a browser panel for https://example.com/ using openPanel(), then navigate that same browser panel to https://example.org/ with the documented CDP automation API. Reuse the same handle and page; do not open replacement panels or inspect guessed internal source paths. Take a screenshot and run JavaScript in the browser panel. Finish with PANEL_BROWSER_OK, PANEL_NAVIGATE_OK, PANEL_SCREENSHOT_OK, PANEL_EVAL_OK, url=<current-url>, and final-marker.",
+    validate: (result) =>
+      checkedWithField(result, ["PANEL_BROWSER_OK", "PANEL_NAVIGATE_OK", "PANEL_SCREENSHOT_OK", "PANEL_EVAL_OK", "final-marker"], "url"),
   },
   {
     name: "panel-list-sources",
     description: "List visible panel handles through the runtime panel API",
     category: "panels",
     prompt:
-      "Exercise listing currently available panels via the runtime panel API. Use @workspace/runtime panelTree/listPanels APIs; do not inspect guessed filesystem roots. Finish with PANEL_SOURCES_OK and count=<number>.",
+      "Exercise listing currently available panels via the documented runtime panel APIs. Finish with PANEL_SOURCES_OK and count=<number>.",
     validate: (result) => checkedWithNumericField(result, ["PANEL_SOURCES_OK"], "count"),
   },
 ];

@@ -111,6 +111,8 @@ eval({
         passed: aggregate?.passed ?? 0,
         failed: aggregate?.failed ?? 0,
         errored: aggregate?.errored ?? 0,
+        toolFailureCount: aggregate?.toolFailureCount ?? 0,
+        testsWithToolFailures: aggregate?.testsWithToolFailures ?? 0,
         skipped: aggregate?.skipped ?? 0,
       };
     }
@@ -127,13 +129,17 @@ eval({
       testTimeoutMs: 20 * 60 * 1000,
     });
 
-    const concurrency = Math.max(1, stage.tests.length);
+    const concurrency = stage.category === "workers"
+      ? 1
+      : Math.min(2, Math.max(1, stage.tests.length));
     const partial = await tester.runSuite(stage.tests, { concurrency });
     const aggregate = run.results ?? scope.results ?? {
       total: 0,
       passed: 0,
       failed: 0,
       errored: 0,
+      toolFailureCount: 0,
+      testsWithToolFailures: 0,
       skipped: tests.length,
       duration: 0,
       results: [],
@@ -142,6 +148,8 @@ eval({
     aggregate.passed += partial.passed;
     aggregate.failed += partial.failed;
     aggregate.errored += partial.errored;
+    aggregate.toolFailureCount = (aggregate.toolFailureCount ?? 0) + (partial.toolFailureCount ?? 0);
+    aggregate.testsWithToolFailures = (aggregate.testsWithToolFailures ?? 0) + (partial.testsWithToolFailures ?? 0);
     aggregate.duration += partial.duration;
     aggregate.results.push(...partial.results);
     aggregate.skipped = tests.length - aggregate.total;
@@ -158,6 +166,12 @@ eval({
         const reason = entry.execution.error || entry.result.reason || "No reason captured";
         return entry.test.name + ": " + reason.slice(0, 240);
       });
+    const toolFailureNames = partial.results
+      .filter((entry) => (entry.execution.toolFailures?.length ?? 0) > 0)
+      .map((entry) => {
+        const tools = entry.execution.toolFailures.map((failure) => failure.name).join(", ");
+        return entry.test.name + ": " + entry.execution.toolFailures.length + " tool failure(s): " + tools;
+      });
     const remainingStages = selectedStages.filter((item) => !completed.has(item.index)).length;
     const stageSummary = {
       index: stage.index,
@@ -168,9 +182,12 @@ eval({
       passed: partial.passed,
       failed: partial.failed,
       errored: partial.errored,
+      toolFailureCount: partial.toolFailureCount ?? 0,
+      testsWithToolFailures: partial.testsWithToolFailures ?? 0,
       durationMs: partial.duration,
       concurrency,
       failedTests: failedNames,
+      toolFailures: toolFailureNames,
     };
     run.stageSummaries.push(stageSummary);
     run.lastStageSummary = stageSummary;
@@ -193,8 +210,11 @@ eval({
       passed: aggregate.passed,
       failed: aggregate.failed,
       errored: aggregate.errored,
+      toolFailureCount: aggregate.toolFailureCount ?? 0,
+      testsWithToolFailures: aggregate.testsWithToolFailures ?? 0,
       skipped: aggregate.skipped,
       failedTestCount: failedNames.length,
+      toolFailureTestCount: toolFailureNames.length,
     };
   `,
 })
@@ -205,6 +225,15 @@ eval({
 Full test state lives in `scope.results.results`, with compact per-stage
 summaries in `scope.systemTestingRun.stageSummaries`. Eval return values are
 only progress/control packets; do not use them as the diagnostic record.
+
+Tool failures are not automatically task failures. If a subagent hits a tool
+error and then recovers enough to satisfy validation, keep the test as passed
+but report the tool failure as an investigation item. Do not trim messages or
+snapshots from passing results; the top-level agent needs the full raw evidence
+to determine whether the issue is runtime, docs, harness, or expected recovery.
+`summarizeFailures(scope.results)` includes both failed tests and passed tests
+with tool failures, so use it as the bounded investigation packet before
+drilling into the full raw session state.
 
 For each failed test, inspect **everything** — the conversation, every tool call and its result, harness lifecycle, and participant state. Never hand off only filenames or artifact paths. A useful report must say what the test agent did, where it diverged from the expected marker/behavior, what tool calls completed or errored, and whether the failure looks like runtime, docs, harness, or test validation.
 
@@ -279,16 +308,16 @@ captures dispatcher state, runner phase, persisted pending work, checkpoints,
 and recent lifecycle/debug events. See `docs/agent-debug-port.md` for the full
 field guide.
 
-If a build or import failure follows a successful git push, inspect the server's
-push-triggered build event buffer before retrying. The push call can return
+If a build failure follows a successful VCS commit, inspect the server's
+state-triggered build event buffer before retrying. The commit call can return
 before the background build finishes:
 
 ```typescript
-import { git, rpc } from "@workspace/runtime";
+import { rpc } from "@workspace/runtime";
 
 return {
-  recent: await git.listRecentBuildEvents(),
-  forRepo: await git.listRecentBuildEvents("panels/example"),
+  recent: await rpc.call("main", "build.listRecentBuildEvents", []),
+  forUnit: await rpc.call("main", "build.listRecentBuildEvents", ["panels/example"]),
   unit: await rpc.call("main", "build.inspectBuildProvenance", [
     "panels/example",
   ]),
@@ -296,9 +325,8 @@ return {
 ```
 
 `build.listRecentBuildEvents` can be filtered with a unit name or
-workspace-relative path. Push-triggered events include `trigger.repo`,
-`trigger.branch`, `trigger.commit`, and `trigger.origin` when the git server can
-attribute the push to a runtime caller. Results from `git.publishWorkspaceRepo(...)`
+workspace-relative path. State-triggered events include `trigger.head`,
+`trigger.stateHash`, and `trigger.changedPaths`. Results from `vcs.commit(...)`
 also include `buildEventsQuery`, a machine-readable reminder for the same
 follow-up lookup.
 
@@ -335,7 +363,8 @@ For each failure, determine the root cause category and act accordingly:
 | --------------------------- | -------------------------------------------------------------------------------------------------- |
 | fs operation failed         | `src/server/services/fsService.ts`, `workspace/packages/runtime/src/panel/fs.ts`                   |
 | DO storage operation failed | `src/server/internalDOs/*`, `workspace/packages/runtime/src/worker/durable-base.ts`                |
-| git operation failed        | `packages/git/src/client.ts`, `src/server/services/gitService.ts`                                  |
+| GAD VCS operation failed    | `src/server/services/vcsService.ts`, `src/server/gadVcs/`, `workspace/packages/runtime/src/shared/vcsClient.ts` |
+| external Git operation failed | `packages/git/src/client.ts`, `src/server/services/gitInteropService.ts`                         |
 | Build failed                | `src/server/buildV2/`, `build.mjs`                                                                 |
 | Worker/DO issue             | `src/server/services/workerService.ts`, `workspace/packages/runtime/src/worker/`                   |
 | Panel lifecycle             | `src/main/panelOrchestrator.ts`, `src/server/services/bridgeService.ts`                            |
@@ -351,23 +380,22 @@ For each failure, determine the root cause category and act accordingly:
 
 Pick the checkout type based on what failed.
 
-### Workspace Runtime Repos
+### Workspace Runtime Source
 
-If the bug is in workspace-owned runtime source such as `workspace/apps/`,
-`workspace/extensions/`, `workspace/packages/`, `workspace/panels/`,
-`workspace/workers/`, or `workspace/skills/`, edit the existing workspace repo
-directly in your context and commit/push to the internal git server. These repos
-are live build inputs.
+If the bug is in workspace-owned runtime source — from your file root that is
+`apps/`, `extensions/`, `packages/`, `panels/`, `workers/`, or `skills/` —
+edit the files directly in your context and commit with `vcs.commit` (or the
+workspace-dev `commitWorkspace` wrapper). These trees are live build inputs.
 
-For `workspace/apps/` bugs, read `workspace/skills/appdev/SKILL.md` before
+For `apps/` bugs, read `skills/appdev/SKILL.md` before
 editing. App fixes can require target-specific validation: Electron host chrome,
 mobile native bootstrap and principal grants, or terminal process supervision.
 
 ### NatStack Application Source
 
 If the bug is in the NatStack application itself, such as `src/server/`,
-`src/main/`, `packages/git/`, or `packages/git-server/`, use a plain project
-checkout under `projects/natstack`.
+`src/main/`, or root `packages/*`, use a plain project checkout under
+`projects/natstack`.
 
 #### Dogfood Server Mode
 
@@ -378,28 +406,17 @@ pnpm dev:self:server
 ```
 
 the active workspace is a managed dogfood workspace. The launcher creates or
-reuses `~/.config/natstack/workspaces/dogfood/source/projects/natstack`, writes
-`meta/dogfood.json`, and configures the running server to mirror pushes from
-`projects/natstack` back to the launching checkout with a git fast-forward.
+reuses `~/.config/natstack/workspaces/dogfood/source/projects/natstack` and
+writes `meta/dogfood.json`.
 
 In this mode, `projects/natstack` is still a plain project, not a Build V2
 runtime unit, but it is a **self-edit target**:
 
-- Commit and push from `projects/natstack` to the internal git server.
-- If the host checkout is clean and fast-forwardable, the server mirrors the
-  commit back to the launching checkout.
-- Server-runtime changes rebuild `dist/server.mjs` and restart the standalone
-  dogfood server on the same gateway port.
-- Docs, desktop shell, mobile app, and `workspace/` runtime-unit changes may
-  mirror without restarting the server.
-- If the host checkout is dirty, propagation is refused. Do not try to work
-  around that from userland; ask the operator to clean or commit the host
-  checkout.
-- If the host checkout is dirty at startup, the launcher warns, but startup
-  continues. The later mirror apply is what refuses dirty targets.
-- If the dogfood project clone is dirty or diverged at startup, the launcher
-  warns and does not force it. Resolve that git state before expecting
-  fast-forward propagation.
+- Host-checkout mirroring is unavailable under GAD VCS.
+- Changes in `projects/natstack` prepare an external Git branch or patch; they
+  do not hot-patch the running NatStack server.
+- Verification requires restarting NatStack from that checkout, applying the
+  patch in the host checkout, or handing the branch to a developer.
 
 Userland code can detect this mode by reading `meta/dogfood.json`:
 
@@ -443,7 +460,6 @@ eval({
   code: `
     import { fs, git } from "@workspace/runtime";
 
-    const client = git.client();
     const dir = "projects/natstack";
     try {
       await fs.stat(dir);
@@ -458,7 +474,7 @@ eval({
       });
     }
 
-    scope.git = client;
+    return dir;
     scope.checkoutDir = dir;
   `,
 })
@@ -468,8 +484,11 @@ eval({
 
 ```typescript
 const branchName = `fix/system-test-${failedTestName}`;
-await scope.git.createBranch(scope.checkoutDir, branchName); // positional: (dir, name)
-await scope.git.checkout(scope.checkoutDir, branchName);
+import { GitClient } from "@natstack/git";
+import { credentials, fs } from "@workspace/runtime";
+const externalGit = new GitClient(fs, { http: credentials.gitHttp() });
+await externalGit.createBranch(scope.checkoutDir, branchName);
+await externalGit.checkout(scope.checkoutDir, branchName);
 ```
 
 ## Phase 6: Edit and Fix
@@ -492,30 +511,30 @@ await fs.writeFile("projects/natstack/src/server/services/fsService.ts", fixedCo
 
 ## Phase 7: Publish, then Verify
 
-**Critical:** The build system builds from workspace git refs, not from the working tree. Runtime-unit edits have no effect until you publish the workspace repo. A plain local commit is not enough.
+**Critical:** The build system builds from committed workspace VCS states, not from the working tree. Runtime-unit edits have no effect until you commit the workspace unit.
 
 ```typescript
-// For workspace runtime repos, publish through the runtime API:
-await git.publishWorkspaceRepo(scope.checkoutDir, `fix: describe the change`);
+// For workspace runtime units, commit through the runtime API:
+if (!scope.checkoutDir.startsWith("projects/")) {
+  await vcs.commit(scope.checkoutDir, `fix: describe the change`);
+}
 
-// For plain external project repos, use the normal GitClient flow:
-// await scope.git.addAll(scope.checkoutDir);
-// await scope.git.commit(scope.checkoutDir, `fix: describe the change`);
-// await scope.git.push(scope.checkoutDir, { remote: "origin", ref: branchName });
+// For plain external project repos, use @natstack/git with credentials.gitHttp():
+// const externalGit = new GitClient(fs, { http: credentials.gitHttp() });
+// await externalGit.addAll(scope.checkoutDir);
+// await externalGit.commit(scope.checkoutDir, `fix: describe the change`);
+// await externalGit.push(scope.checkoutDir, { remote: "origin", ref: branchName });
 
-// Then rebuild if the fix touched workspace runtime repos. Plain projects
+// Then rebuild if the fix touched workspace runtime units. Plain projects
 // such as projects/natstack are not Build V2 live inputs.
 if (!scope.checkoutDir.startsWith("projects/")) {
   const buildResult = await chat.rpc.call("main", "build.recompute", []);
   console.log("Build recomputed:", buildResult);
 }
 
-// If this is dogfood mode and checkoutDir is projects/natstack, the push
-// mirrors to the host checkout. Watch the operator logs for [mirror] events:
-//   applied       -> host fast-forwarded; server may rebuild/restart
-//   skipped-dirty -> host checkout is dirty; propagation refused
-//   branch-created -> non-fast-forward; host HEAD unchanged
-// Reconnect/retry the test after the dogfood server restarts.
+// If checkoutDir is projects/natstack, this is an external project edit. It
+// does not hot-patch the running server under GAD VCS; restart from that
+// checkout or hand off the branch/patch before re-testing server changes.
 
 // For panel fixes, check types in the current context before re-testing.
 if (scope.checkoutDir.startsWith("panels/")) {
@@ -537,12 +556,12 @@ console.log(`Re-test: ${retest.result.passed ? "PASS" : "FAIL"}`);
 Before assuming a fix failed, verify provenance:
 
 - the checkout containing the edit is the context the test is using
-- the workspace repo was published with `git.publishWorkspaceRepo` or `commitAndPush`
-- the build/reload consumed the published commit
-- dogfood mirror logs did not report `skipped-dirty`
+- the workspace unit was committed with `vcs.commit` or `commitWorkspace`
+- the build/reload consumed the committed state
+- external project edits under `projects/` were applied to the server under test
 
 Planned hardening: expose a runtime build-provenance API with context id,
-source path, git SHA, dirty flag, build timestamp, and artifact id, then include
+source path, state hash, dirty flag, build timestamp, and artifact id, then include
 it automatically in system-test failure reports.
 
 ## Phase 8: Iterate or Finalize

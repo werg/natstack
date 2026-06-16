@@ -24,10 +24,10 @@ function appliedDocsProbe(
 
 export const docsProbeTests: TestCase[] = [
   appliedDocsProbe(
-    "docs-sandbox-git-decision",
-    "Choose and verify the safe git path from a browser/eval context",
-    "A user asks you to push changes from inside a browser panel. Determine what you would do.",
-    ["DOC_GIT_DECISION_OK", "decision"]
+    "docs-sandbox-vcs-decision",
+    "Choose and verify the safe workspace VCS path from a browser/eval context",
+    "A user asks you to commit workspace source changes from inside a browser panel. Determine what you would do.",
+    ["DOC_VCS_DECISION_OK", "decision"]
   ),
   appliedDocsProbe(
     "docs-interaction-surface-choice",

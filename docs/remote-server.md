@@ -82,7 +82,6 @@ The server prints its gateway URL, admin token file, and startup pairing code:
 ```
 natstack-server ready:
   Gateway:     https://my-server.example.com:38291
-  Git:         (via gateway /_git/)
   Workerd:     (via gateway /_w/)
   RPC:         wss://my-server.example.com:38291/rpc
   Token file:  /path/to/workspace/state/admin-token
@@ -414,7 +413,7 @@ A paired device credential also powers the headless agent CLI (`pnpm cli`, or
 natstack remote pair "natstack://connect?url=...&code=..."   # store the device credential
 natstack agent attach            # create a durable session entity + context folder
 natstack fs ls /                 # files inside the session context
-natstack git status --repo panels/notes
+natstack vcs status --repo panels/notes
 natstack eval run -e 'return await services.meta.listServices()'
 natstack agent call SERVICE.METHOD 'ARGS_JSON'               # any shell-callable RPC
 ```
@@ -434,7 +433,6 @@ The standalone server runs a single-port gateway that multiplexes all traffic:
 | ---------------------- | --------- | ---------------------------------------------- |
 | `/rpc`                 | WebSocket | RPC server (admin client, harness connections) |
 | `/rpc`                 | HTTP POST | RPC server (HTTP fallback)                     |
-| `/_git/*`              | HTTP      | Reverse proxy to git server                    |
 | `/_w/*`                | HTTP/WS   | Reverse proxy to workerd                       |
 | `/*` (everything else) | HTTP/WS   | Panel HTTP server                              |
 

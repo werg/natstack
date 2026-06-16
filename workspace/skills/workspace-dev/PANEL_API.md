@@ -5,6 +5,9 @@ Import panel APIs from `@workspace/runtime`.
 Panel handles are server-mediated APIs. Panels, workers, and Durable Objects can
 list, inspect, open, and mutate UI panels through `panelTree`; CDP is served by
 the Electron host that currently holds the target panel's runtime lease.
+In panel code, import `panelTree` as a top-level runtime export. Do not use
+`workspace.panelTree`; `workspace` is the workspace catalog/source/unit
+namespace and only carries `workspace.openPanel` as a panel-opening convenience.
 
 `panelTree` return signatures:
 
@@ -15,6 +18,7 @@ panelTree.list(): Promise<PanelHandle[]>
 panelTree.roots(): Promise<PanelHandle[]>
 panelTree.children(id): Promise<PanelHandle[]>
 panelTree.parent(id): PanelHandle | null
+panelTree.navigate(id, source, opts?): Promise<{ id: string; title: string }>
 panelTree.open(source, opts?): Promise<PanelHandle>
 ```
 
@@ -35,6 +39,11 @@ const snapshot = await handle.snapshot();
 await handle.close(); // close temporary panels opened for diagnostics/tests
 ```
 
+Inside the current panel, use `reopen({ source?, contextId?, stateArgs? })` for
+self-replacement. Use `handle.navigate(source, opts)` or
+`panelTree.navigate(id, source, opts)` when intentionally replacing a known
+panel slot from another runtime.
+
 `PanelHandle` fields:
 
 | Member                                          | Description                                                                                                         |
@@ -44,6 +53,7 @@ await handle.close(); // close temporary panels opened for diagnostics/tests
 | `source`                                        | Workspace source or URL                                                                                             |
 | `kind`                                          | `"workspace"` or `"browser"`                                                                                        |
 | `children()`                                    | Fresh direct child handles                                                                                          |
+| `navigate(source, opts?)`                       | Replace this panel slot with another source/context/stateArgs                                                       |
 | `rebuildPanel()`                                | Invalidate/rebuild this workspace panel's bundle; target-only and not recursive                                     |
 | `reload()`                                      | Browser-style reload of this panel's current renderer; does not rebuild code                                        |
 | `rebuildAndReload()`                            | Rebuild this panel's bundle and reload this panel's renderer; target-only and not recursive                         |

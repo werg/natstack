@@ -1,4 +1,11 @@
-import type { TestCase, TestSuiteResult, TestExecutionResult, TestResult, TestSuiteResultEntry } from "./types.js";
+import type {
+  TestCase,
+  TestSuiteResult,
+  TestExecutionResult,
+  TestResult,
+  TestSuiteResultEntry,
+  ToolFailureSummary,
+} from "./types.js";
 import type { HeadlessRunner } from "./runner.js";
 import type { ChatMessage } from "@workspace/agentic-core";
 import type { SessionSnapshot } from "@workspace/agentic-session";
@@ -83,16 +90,22 @@ export class TestRunner {
   ): TestSuiteResult {
     const results = entries.filter((entry): entry is TestSuiteResultEntry => Boolean(entry));
     let passed = 0, failed = 0, errored = 0;
+    let toolFailureCount = 0, testsWithToolFailures = 0;
     for (const entry of results) {
       if (entry.execution.error) errored++;
       else if (entry.result.passed) passed++;
       else failed++;
+      const entryToolFailures = entry.execution.toolFailures?.length ?? 0;
+      toolFailureCount += entryToolFailures;
+      if (entryToolFailures > 0) testsWithToolFailures++;
     }
     return {
       total: results.length,
       passed,
       failed,
       errored,
+      toolFailureCount,
+      testsWithToolFailures,
       skipped: sourceTotal - filteredTotal,
       duration: Date.now() - startTime,
       results,
@@ -122,6 +135,7 @@ export class TestRunner {
       const snapshot = session.snapshot();
       const duration = Date.now() - startTime;
       const execution: TestExecutionResult = { messages, duration, snapshot };
+      execution.toolFailures = collectToolFailures(execution);
       const result = test.validate(execution);
       outcome = { result, execution };
     } catch (err) {
@@ -140,10 +154,19 @@ export class TestRunner {
         error: errorMessage,
         snapshot,
       };
-      execution.diagnostics = await this.runner.collectDiagnostics({
-        channelId: session?.channelId,
-        error: new Error(errorMessage),
-      });
+      execution.toolFailures = collectToolFailures(execution);
+      try {
+        execution.diagnostics = await this.runner.collectDiagnostics({
+          channelId: session?.channelId,
+          error: new Error(errorMessage),
+        });
+      } catch (diagnosticErr) {
+        execution.diagnostics = {
+          generatedAt: new Date().toISOString(),
+          diagnosticCollectionError:
+            diagnosticErr instanceof Error ? diagnosticErr.message : String(diagnosticErr),
+        };
+      }
       outcome = {
         result: { passed: false, reason: `Error: ${execution.error}` },
         execution,
@@ -256,4 +279,131 @@ function timeoutDiagnosticDetails(
 
 function isSettledInvocationStatus(status: string): boolean {
   return ["complete", "completed", "error", "failed", "cancelled", "abandoned"].includes(status);
+}
+
+interface InvocationLike {
+  id?: unknown;
+  name?: unknown;
+  method?: unknown;
+  status?: unknown;
+  terminalOutcome?: unknown;
+  terminalReasonCode?: unknown;
+  error?: unknown;
+  result?: unknown;
+  execution?: {
+    status?: unknown;
+    terminalOutcome?: unknown;
+    terminalReasonCode?: unknown;
+    description?: unknown;
+    error?: unknown;
+    result?: unknown;
+    isError?: unknown;
+  };
+}
+
+function collectToolFailures(execution: TestExecutionResult): ToolFailureSummary[] {
+  const failures: ToolFailureSummary[] = [];
+  const seen = new Set<string>();
+
+  const add = (summary: ToolFailureSummary) => {
+    const key = summary.id
+      ? `id:${summary.id}`
+      : [summary.name, summary.status, summary.error, summary.resultSummary, summary.source].join("\0");
+    if (seen.has(key)) return;
+    seen.add(key);
+    failures.push(summary);
+  };
+
+  for (const message of execution.messages) {
+    if (message.contentType !== "invocation") continue;
+    const payload = ((message as { invocation?: unknown }).invocation ?? parseJson(message.content)) as
+      | InvocationLike
+      | undefined;
+    const summary = summarizeToolFailure(payload, "message", (message as { error?: unknown }).error);
+    if (summary) add(summary);
+  }
+
+  for (const invocation of execution.snapshot?.invocations ?? []) {
+    const summary = summarizeToolFailure(invocation as InvocationLike, "snapshot");
+    if (summary) add(summary);
+  }
+
+  return failures;
+}
+
+function summarizeToolFailure(
+  invocation: InvocationLike | undefined,
+  source: ToolFailureSummary["source"],
+  messageError?: unknown
+): ToolFailureSummary | null {
+  if (!invocation || typeof invocation !== "object") return null;
+  const exec = isRecord(invocation.execution) ? invocation.execution : {};
+  const status = asString(exec.status) ?? asString(invocation.status);
+  const terminalOutcome = asString(exec.terminalOutcome) ?? asString(invocation.terminalOutcome);
+  const terminalReasonCode =
+    asString(exec.terminalReasonCode) ?? asString(invocation.terminalReasonCode);
+  const isError = exec.isError === true;
+  const hasFailureStatus = status === "error" || status === "failed";
+  const hasFailureOutcome = /error|fail/i.test(terminalOutcome ?? "");
+  const rawError =
+    invocation.error ??
+    exec.error ??
+    messageError ??
+    (isError ? exec.result ?? exec.description : undefined);
+
+  if (!isError && !hasFailureStatus && !hasFailureOutcome && rawError === undefined) return null;
+
+  const rawResult = invocation.result ?? exec.result;
+  const name = asString(invocation.name) ?? asString(invocation.method) ?? "(unknown)";
+  return {
+    id: asString(invocation.id),
+    name,
+    status,
+    terminalOutcome,
+    terminalReasonCode,
+    error: summarizeError(rawError),
+    resultSummary: rawResult === undefined ? undefined : summarizeValue(rawResult, 240),
+    source,
+  };
+}
+
+function summarizeError(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (isRecord(value) && typeof value["error"] === "string") return clip(value["error"], 240);
+  if (value instanceof Error) return clip(value.message, 240);
+  return summarizeValue(value, 240);
+}
+
+function summarizeValue(value: unknown, limit: number): string {
+  const text = typeof value === "string" ? value : safeJson(value);
+  return clip(text, limit);
+}
+
+function clip(value: string, limit: number): string {
+  return value.length <= limit ? value : `${value.slice(0, limit)}...`;
+}
+
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function parseJson(value: string | undefined): unknown {
+  if (!value) return undefined;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

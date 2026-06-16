@@ -1,6 +1,9 @@
 # CDP Panel Automation
 
-Automate panels with Playwright-style CDP page control. Open a URL or target an existing panel, get a page handle, and interact — click, fill forms, evaluate JS, take screenshots.
+Automate panels with Playwright-style CDP page control. For web browsing or
+website automation, open or reuse a dedicated browser panel. Existing workspace
+panels, including chat panels, are application surfaces: inspect them when
+debugging that app, but do not use them as disposable web pages.
 
 ## REPL Scope: Open Once, Reuse Across Calls
 
@@ -46,29 +49,48 @@ Do not call `openPanel()` or `handle.cdp.lightweightPage()` repeatedly for the
 same target. Repeated opens create duplicate panels; repeated CDP client calls
 create duplicate CDP connections.
 
-## Cleanup Ownership
+## Existing Panels
 
-Agents own the panels they open. For temporary browser panels used for
-diagnostics, scraping, setup, or tests, close the panel when finished:
+Use `panelTree` for already-open panels; do not reopen duplicates. Only drive
+an existing workspace panel when the task is to inspect or test that panel's
+own UI. For arbitrary URLs, login flows, scraping, or browser navigation, use
+`openPanel(url)` and keep that browser handle in `scope`.
 
 ```ts
-import { openPanel } from "@workspace/runtime";
+import { panelTree } from "@workspace/runtime";
 
-let browser;
-try {
-  browser = await openPanel("https://example.com", { focus: true });
-  const page = await browser.cdp.lightweightPage();
-  await page.waitForSelector("body");
-  scope.result = await page.title();
-} finally {
-  await browser?.close().catch((err) => console.warn("panel cleanup failed", err));
-}
+// panelTree is top-level; workspace.panelTree is not available.
+const panels = await panelTree.list();
+const target = panels.find((handle) => handle.source === "panels/spectrolite");
+if (!target) throw new Error("target panel not found");
+
+scope.targetPanel = target;
+scope.page = await target.cdp.lightweightPage();
+console.log(await scope.page.title());
 ```
 
-Keep a panel open only when the user explicitly asked to inspect it or continue
-using it, or the workflow explicitly needs it across follow-up calls. If a
-workflow spans multiple eval calls, store one handle in `scope` and close it in
-a final cleanup call when the workflow is done:
+With a known slot id:
+
+```ts
+import { panelTree } from "@workspace/runtime";
+
+const handle = panelTree.get("panel-slot-id");
+await handle.refresh(); // hydrates title/source/parent/runtime entity metadata
+scope.page = await handle.cdp.lightweightPage();
+```
+
+For RPC or `_agent` calls on unloaded panels, call `await handle.ensureLoaded()`
+first. Existing-panel handles are non-owned: do not call `handle.navigate`,
+`handle.reload`, or `handle.close` on them unless requested. Do not call
+`handle.cdp.navigate(url)` or `page.goto(url)` on the current chat panel, a
+parent chat panel, or any workspace panel discovered from `panelTree` unless
+the requested task is to replace that exact panel. Open a browser panel for web
+navigation instead.
+
+## Panel Ownership
+
+Panels opened by the workflow are owned by it. Keep handles in `scope` across
+evals; close temporary owned panels when the workflow is done:
 
 ```ts
 await scope.browser?.close();
@@ -76,10 +98,7 @@ delete scope.browser;
 delete scope.page;
 ```
 
-When a page or browser object exposes its own `close()` method, call it before
-closing the panel. The reliable cleanup primitive is still `handle.close()`,
-because it tears down the panel and its associated CDP target. Do not leave
-throwaway `about:blank`, URL, or diagnostic panels behind.
+Do not close panels discovered with `panelTree.*` unless requested.
 
 ## Reconnection After Panel Reload
 
@@ -126,7 +145,7 @@ API scope:
 
 | Client          | Entry point                                                      | Scope                                                                                                                                                                                              | Use when                                                                               |
 | --------------- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Lightweight CDP | `handle.cdp.lightweightPage()`                                   | Small CDP wrapper for basic `goto`, `click`, `fill`, `evaluate`, `waitForSelector`, `screenshot`, console event capture, DOM `inspect(selector)`, and simple locator helpers                       | Default eval diagnostics and intentionally constrained contexts                        |
+| Lightweight CDP | `handle.cdp.lightweightPage()`                                   | Small CDP wrapper for basic `goto`, `click`, `fill`, `evaluate`, `waitForSelector`, `waitForFunction`, `screenshot`, console event capture, DOM `inspect(selector)`, and simple locator helpers      | Default eval diagnostics and intentionally constrained contexts                        |
 | Full Playwright | `playwrightPage(handle)` from `@workspace/playwright-automation` | Fuller Playwright-style page/locator surface: `url`, `title`, `goto`, `locator`, locator `click/fill/innerText/textContent/count`, `waitForSelector`, `waitForLoadState`, `evaluate`, `screenshot` | UI tests, browser workflows, login flows, anything where robust selectors/waits matter |
 
 Historical console diagnostics are not a CDP page feature. CDP console events
@@ -194,6 +213,7 @@ await scope.page.type('input[name="search"]', "query"); // types character by ch
 
 ```typescript
 await scope.page.waitForSelector(".loaded"); // wait for element to appear
+await scope.page.waitForFunction(() => document.readyState === "complete");
 await scope.page.waitForSelector(".modal");
 await scope.page.querySelector(".result"); // check if element exists
 await scope.page.locator(".result").count(); // count matches

@@ -93,7 +93,7 @@ server pairing/debugging, but it stays dormant until the shell UI or
 `workspace.units.restart("@workspace-apps/remote-cli")` starts it.
 
 Fresh workspaces created from the product template trust their initial declared
-app/extension set during startup. Later meta pushes, capability changes, source
+app/extension set during startup. Later meta-state updates, capability changes, source
 changes, dependency changes, and target changes still go through the normal unit
 approval path.
 

@@ -22,7 +22,7 @@ from panels, workers, and extensions:
 | [AUTHORING.md](AUTHORING.md)           | Package layout, manifest shape, source paths, dependencies, and declaration rules |
 | [TARGETS.md](TARGETS.md)               | Electron, React Native, and terminal target contracts                             |
 | [CAPABILITIES.md](CAPABILITIES.md)     | Capability declarations and what each app capability unlocks                      |
-| [DEV_LOOP.md](DEV_LOOP.md)             | Edit, commit, push, approval, rebuild, reload, and debugging workflow             |
+| [DEV_LOOP.md](DEV_LOOP.md)             | Edit, commit, approve, rebuild, reload, and debugging workflow                   |
 | [MOBILE.md](MOBILE.md)                 | Native mobile host bootstrap, pairing, principal grants, and RN build artifacts   |
 | [REMOTE_CLIENTS.md](REMOTE_CLIENTS.md) | Server pairing, remote shells, terminal-client direction, and credential model    |
 | [TESTING.md](TESTING.md)               | Focused checks and smoke scenarios for app changes                                |
@@ -34,9 +34,9 @@ from panels, workers, and extensions:
    identity, not from a special filesystem path.
 3. App code is trusted client code. Add capabilities deliberately and keep the
    capability list no broader than the target needs.
-4. Workspace app builds come from published git refs. Editing a file or making
-   a local/context commit has no runtime effect until the app repo is published
-   with `git.publishWorkspaceRepo` or the workspace-dev `commitAndPush` wrapper.
+4. Workspace app builds come from committed VCS states. Editing a file has no
+   runtime effect until the app unit is committed with `vcs.commit` or the
+   workspace-dev `commitWorkspace` wrapper.
 5. Electron shell apps that manage panel layout must declare `panel-hosting`.
 6. React Native workspace apps are loaded by the shipped native host bootstrap;
    clean-install pairing must work before the workspace app bundle is available.

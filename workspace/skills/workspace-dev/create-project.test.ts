@@ -3,19 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => {
   const files = new Map<string, string | Uint8Array>();
   const dirs = new Set<string>();
-  const initAndPush = vi.fn();
-  const gitClient = {
-    listRemotes: vi.fn(),
-    addRemote: vi.fn(),
-    addAll: vi.fn(),
-    status: vi.fn(),
-    getCurrentBranch: vi.fn(),
-    getCurrentCommit: vi.fn(),
-    commit: vi.fn(),
-    push: vi.fn(),
-  };
-  const publishWorkspaceRepo = vi.fn();
-  return { files, dirs, initAndPush, gitClient, publishWorkspaceRepo };
+  const vcsCommit = vi.fn();
+  return { files, dirs, vcsCommit };
 });
 
 function normalize(p: string): string {
@@ -37,11 +26,8 @@ function addFile(p: string, content: string | Uint8Array): void {
 }
 
 vi.mock("@workspace/runtime", () => ({
-  gitConfig: { serverUrl: "http://git.local", token: "token" },
-  git: {
-    client: vi.fn(() => mocks.gitClient),
-    publishWorkspaceRepo: mocks.publishWorkspaceRepo,
-    ensureRepoPresentInContexts: vi.fn(),
+  vcs: {
+    commit: mocks.vcsCommit,
   },
   fs: {
     async exists(p: string): Promise<boolean> {
@@ -87,58 +73,43 @@ vi.mock("@workspace/runtime", () => ({
   },
 }));
 
-vi.mock("@natstack/git", () => ({
-  GitClient: class GitClient {},
-  initAndPush: mocks.initAndPush,
-}));
-
 describe("forkProject", () => {
   beforeEach(() => {
     mocks.files.clear();
     mocks.dirs.clear();
-    mocks.initAndPush.mockReset();
-    mocks.publishWorkspaceRepo.mockReset();
-    for (const fn of Object.values(mocks.gitClient)) fn.mockReset();
+    mocks.vcsCommit.mockReset();
   });
 
-  it("commitAndPush supports force push", async () => {
-    mocks.publishWorkspaceRepo.mockResolvedValue({
-      message: "Committed 1234567 and pushed to __natstack/main",
+  it("commitWorkspace commits through vcs", async () => {
+    mocks.vcsCommit.mockResolvedValue({
+      message: "Committed state:1234567… on main (3 paths)",
     });
 
-    const { commitAndPush } = await import("./create-project.js");
-    const result = await commitAndPush("panels/my-app", "Update", { force: true });
+    const { commitWorkspace } = await import("./create-project.js");
+    const result = await commitWorkspace("panels/my-app", "Update");
 
-    expect(mocks.publishWorkspaceRepo).toHaveBeenCalledWith("panels/my-app", "Update", {
-      force: true,
-    });
-    expect(result).toBe("Committed 1234567 and pushed to __natstack/main");
+    expect(mocks.vcsCommit).toHaveBeenCalledWith("panels/my-app", "Update");
+    expect(result).toBe("Committed state:1234567… on main (3 paths)");
   });
 
-  it("commitAndPush pushes an existing clean commit on retry", async () => {
-    mocks.publishWorkspaceRepo.mockResolvedValue({
-      message: "No working-tree changes; pushed current HEAD to __natstack/main",
+  it("commitWorkspace reports an unchanged tree", async () => {
+    mocks.vcsCommit.mockResolvedValue({
+      message: "No changes; workspace state unchanged at state:1234567…",
     });
 
-    const { commitAndPush } = await import("./create-project.js");
-    const result = await commitAndPush("panels/my-app", "Update");
+    const { commitWorkspace } = await import("./create-project.js");
+    const result = await commitWorkspace("panels/my-app", "Update");
 
-    expect(mocks.publishWorkspaceRepo).toHaveBeenCalledWith("panels/my-app", "Update", {});
-    expect(result).toBe("No working-tree changes; pushed current HEAD to __natstack/main");
+    expect(mocks.vcsCommit).toHaveBeenCalledWith("panels/my-app", "Update");
+    expect(result).toBe("No changes; workspace state unchanged at state:1234567…");
   });
 
-  it("commitAndPush reports the local commit when push fails", async () => {
-    mocks.publishWorkspaceRepo.mockRejectedValue(
-      new Error(
-        "Workspace publish failed for panels/my-app on main. Local commit 1234567890abcdef exists. Underlying error: Authentication failed: Forbidden"
-      )
-    );
+  it("commitWorkspace propagates commit failures", async () => {
+    mocks.vcsCommit.mockRejectedValue(new Error("ref CAS conflict: worktree:vcs:workspace:main"));
 
-    const { commitAndPush } = await import("./create-project.js");
+    const { commitWorkspace } = await import("./create-project.js");
 
-    await expect(commitAndPush("panels/my-app", "Update")).rejects.toThrow(
-      /Local commit 1234567890abcdef exists\.[\s\S]*Underlying error: Authentication failed: Forbidden/
-    );
+    await expect(commitWorkspace("panels/my-app", "Update")).rejects.toThrow(/ref CAS conflict/);
   });
 
   it("rewrites a single-class worker fork and preserves binary files", async () => {
@@ -159,6 +130,7 @@ describe("forkProject", () => {
       'export class SourceWorker { readonly source = "workers/source"; }\n'
     );
     addFile("workers/source/icon.png", new Uint8Array([1, 2, 3]));
+    mocks.vcsCommit.mockResolvedValue({ message: "Committed" });
 
     const { forkProject } = await import("./create-project.js");
     const result = await forkProject({
@@ -167,11 +139,14 @@ describe("forkProject", () => {
       title: "New Worker",
     });
 
-    expect(result.pushed).toBe(true);
+    expect(result.committed).toBe(true);
     expect(result.files).toContain("new-worker.ts");
-    const options = mocks.initAndPush.mock.calls[0]![2];
-    const initialFiles = options.initialFiles as Record<string, string | Uint8Array>;
-    expect(JSON.parse(initialFiles["package.json"] as string)).toMatchObject({
+    expect(mocks.vcsCommit).toHaveBeenCalledWith(
+      "workers/new",
+      expect.stringContaining("Fork workers/source to workers/new")
+    );
+    // The fork wrote its files through fs before committing.
+    expect(JSON.parse(mocks.files.get("workers/new/package.json") as string)).toMatchObject({
       name: "@workspace-workers/new",
       natstack: {
         title: "New Worker",
@@ -179,8 +154,8 @@ describe("forkProject", () => {
         durable: { classes: [{ className: "NewWorker" }] },
       },
     });
-    expect(initialFiles["new-worker.ts"]).toContain("class NewWorker");
-    expect(initialFiles["new-worker.ts"]).toContain("workers/new");
-    expect(initialFiles["icon.png"]).toBeInstanceOf(Uint8Array);
+    expect(mocks.files.get("workers/new/new-worker.ts")).toContain("class NewWorker");
+    expect(mocks.files.get("workers/new/new-worker.ts")).toContain("workers/new");
+    expect(mocks.files.get("workers/new/icon.png")).toBeInstanceOf(Uint8Array);
   });
 });

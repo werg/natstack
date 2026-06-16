@@ -14,7 +14,9 @@ ev(leaf)    = hash(treeHash(leaf))
 ev(package) = hash(treeHash(package), ev(dep_1), ev(dep_2), ...)
 ```
 
-Content is hashed via `git rev-parse <ref>^{tree}` — the git tree hash at the main branch. Each workspace unit is its own git repo, so the tree hash captures all tracked content in one command.
+Content is hashed from the GAD workspace state. Each unit contributes the
+content-addressed subtree hash for its workspace-relative path at the selected
+source state.
 
 Computed bottom-up via topological sort. If `ev(X)` hasn't changed, X's build is still valid.
 
@@ -31,9 +33,8 @@ build_key = hash(BUILD_CACHE_VERSION, unitName, ev, sourcemap)
 ### Runtime Provenance
 
 Running panels, workers, skills, packages, extensions, and apps should report
-the exact build identity they are using. For git-backed workspace units, the
-runtime-facing provenance is the unit's effective version plus the artifact
-build key/revision when available.
+the exact build identity they are using. Runtime-facing provenance is the
+unit's effective version plus the artifact build key/revision when available.
 
 For panels, `PanelHandle.getInfo()` includes `effectiveVersion` and build
 metadata, and lifecycle calls such as `rebuildPanel()`, `reload()`, and
@@ -68,12 +69,13 @@ No LRU, no TTL. GC prunes entries not referenced by any active unit. Race-safe w
 ```
 src/server/buildV2/
 ├── packageGraph.ts       ← DAG discovery from workspace package.json files
-├── effectiveVersion.ts   ← Git tree hashing, EV computation, ref-state persistence
+├── effectiveVersion.ts   ← State subtree hashing and EV computation
+├── buildSource.ts        ← GAD-state materialization for reproducible builds
+├── refs.ts               ← Source-ref helpers for pinned workspace inputs
+├── stateTrigger.ts       ← VCS state advance → EV recompute → rebuild
 ├── buildStore.ts         ← Content-addressed artifact storage
 ├── externalDeps.ts       ← Transitive external dep collection + cached npm install
-├── sourceExtractor.ts    ← Git archive extraction for reproducible builds
 ├── builder.ts            ← esbuild orchestration (panels + workers + extensions)
-├── pushTrigger.ts        ← Git push event → EV recompute → rebuild
 └── index.ts              ← Public API + RPC service handler
 ```
 
@@ -105,31 +107,26 @@ The graph supports **dependency ref specs** — internal deps can pin to specifi
 }
 ```
 
-Ref specs affect EV computation: the dep's tree hash is resolved at the specified ref, not necessarily the main branch.
+Ref specs affect EV computation: the dependency source state is resolved at the specified ref, not necessarily the main branch.
 
 ### Effective Version Computation (`effectiveVersion.ts`)
 
-**Full computation** (`computeEffectiveVersions`): Walks nodes in topological order. For each node, computes `git rev-parse <main>^{tree}` for the content hash, then combines with dependency edge signatures (dep name + ref spec + commit + dep EV).
+**Full computation** (`computeEffectiveVersions`): Walks nodes in topological order. For each node, reads the unit subtree hash from the workspace state, then combines it with dependency edge signatures (dep name + ref spec + dep EV).
 
-**Incremental recomputation** (`recomputeFromNode`): When a single node changes (push event), only recomputes EVs for that node and its reverse dependencies. Accepts an optional `commitSha` to pin the changed node at the exact push commit.
+**Incremental recomputation** (`recomputeFromNodes`): When a state advance changes one or more units, only recomputes EVs for those units and their reverse dependencies.
 
-**Cold-start optimization** (`computeEffectiveVersionsWithCache`): Compares current ref state (main-branch commit SHA per repo) against persisted ref state. If a unit's commit hasn't changed and no dependency was recomputed, the previous EV is reused. Makes cold start O(changed repos) not O(all repos).
+**Cold-start optimization** (`computeEffectiveVersionsWithCache`): Compares current source-state hashes against persisted ref state. If a unit's content state hasn't changed and no dependency was recomputed, the previous EV is reused. Makes cold start O(changed units) not O(all units).
 
 **Persisted state** (in `{userData}/`):
 
 - `ev-map.json` — derived state, safe to delete (triggers full recompute)
-- `ref-state.json` — per-unit commit SHAs for cold-start diff
+- `ref-state.json` — per-unit source-state hashes for cold-start diff
 
-### Source Extraction (`sourceExtractor.ts`)
+### Build Source Materialization (`buildSource.ts`)
 
-Before building, source is extracted from git at the correct commit into a temp directory. This ensures builds match the EV regardless of working tree state.
+Before building, source is materialized from the immutable GAD state into a temp directory. This ensures builds match the EV regardless of later working tree edits.
 
-**Two-phase extraction:**
-
-1. **Resolve commits** — For each node in the transitive dependency closure, resolve the commit SHA. Prefers pre-captured commits from `commitMap` (built by push trigger from persisted ref state), falls back to resolving from git (cold-start/on-demand paths). All SHAs captured atomically before any extraction.
-2. **Extract** — `git archive --format=tar <sha>` piped to `tar -x -C <dir>` for each node. Preserves workspace-relative paths.
-
-The extracted tree is cleaned up after the build completes.
+The materialized tree is cleaned up after the build completes.
 
 ### External Dependencies (`externalDeps.ts`)
 
@@ -183,26 +180,26 @@ Two build strategies, selected by unit kind:
 
 **Concurrency:** Semaphore with `MAX_CONCURRENT_BUILDS = 8` by default (override via `NATSTACK_MAX_CONCURRENT_BUILDS`). Build coalescing deduplicates concurrent builds of the same key.
 
-**Workspace resolve plugin:** Resolves `@workspace/*` imports from the git-extracted source tree. Reads `package.json` exports fields with condition-based resolution (panel: `natstack-panel`, `import`, `default`; extension: `import`, `default`). Since extracted source lacks `dist/` (gitignored), the plugin maps `dist/` paths to their TypeScript source equivalents.
+**Workspace resolve plugin:** Resolves `@workspace/*` imports from the materialized source tree. Reads `package.json` exports fields with condition-based resolution (panel: `natstack-panel`, `import`, `default`; extension: `import`, `default`). Since build sources do not include generated `dist/` output, the plugin maps `dist/` paths to their TypeScript source equivalents.
 
-### Push Trigger (`pushTrigger.ts`)
+### State Trigger (`stateTrigger.ts`)
 
-Subscribes to git push events from the git server. Only processes pushes to `main`/`master` branches, plus non-main pushes that match a branch/ref-pinned dependency edge.
+Subscribes to GAD VCS state-advance events. Only the advanced head's changed paths and dependency graph decide what needs recomputation.
 
-**On main-branch push:**
+**On main-head advance:**
 
 1. Check if `package.json` deps or natstack manifest changed (sorted JSON comparison to avoid key-order false positives). If changed → full rediscovery.
-2. Otherwise: incremental path. Build a `commitMap` (pushed node at push commit, all other nodes at their persisted ref state commits). Recompute EVs from the pushed node upward. Build changed units using the `commitMap`.
+2. Otherwise: incremental path. Recompute EVs from changed units upward. Build changed units from the immutable state that triggered the advance.
 
-**Full rediscovery** (triggered by dep/manifest changes or non-main ref pushes):
+**Full rediscovery** (triggered by dep/manifest changes or pinned source-ref advances):
 
 1. Re-scan workspace (`discoverPackageGraph`)
-2. Snapshot all commit SHAs, pre-set content hashes
+2. Snapshot the relevant source-state hashes
 3. Compute EVs using pre-set hashes
 4. Persist state, emit `"graph-updated"` event
-5. Build changed units using the snapshot `commitMap`
+5. Build changed units from the triggering state snapshot
 
-Concurrent pushes are serialized via a promise queue.
+Concurrent state advances are serialized via a promise queue.
 
 ### RPC Service (`index.ts`)
 
@@ -224,7 +221,8 @@ The build system is registered as the `"build"` RPC service:
 
 ## Workspace Layout
 
-Each workspace unit is its own git repo. The build system requires this — source extraction uses `git archive` from each unit's directory.
+Workspace units are directories in the shared GAD-backed source tree. Builds use
+state materialization rather than per-unit repositories.
 
 ```
 workspace/
@@ -241,7 +239,6 @@ workspace/
 │   └── ...
 ├── about/                 ← shell panels (browser target, shell service access)
 │   ├── about/
-│   ├── dirty-repo/
 │   ├── model-provider-config/
 │   └── ...
 └── extensions/            ← trusted Node extensions
@@ -285,11 +282,11 @@ Unit metadata lives in `package.json` under the `natstack` key:
 
 ## Build Triggers
 
-**Git push (proactive):** Push to a unit's main branch → push trigger recomputes EVs → builds changed units. This is the primary trigger.
+**VCS state advance (proactive):** A committed workspace state advance recomputes EVs and builds changed units. This is the primary trigger.
 
-**On demand (fallback):** `getBuild(unitPath)` checks the store. If missing, builds on the spot. The push trigger should have already built it, but this covers cold-start and first-launch scenarios.
+**On demand (fallback):** `getBuild(unitPath)` checks the store. If missing, builds on the spot. The state trigger should have already built it, but this covers cold-start and first-launch scenarios.
 
-**Cold start:** At server startup, compares persisted ref state against current refs. Recomputes EVs for changed units. Builds anything missing from the store.
+**Cold start:** At server startup, compares persisted source state against current state. Recomputes EVs for changed units. Builds anything missing from the store.
 
 **Force recompute:** `recompute()` re-discovers the full graph and recomputes all EVs from scratch.
 
@@ -297,12 +294,12 @@ Unit metadata lives in `package.json` under the `natstack` key:
 
 ## Initialization Flow
 
-`initBuildSystemV2(workspaceRoot, gitServer)`:
+`initBuildSystemV2(workspaceRoot, workspaceVcs)`:
 
 1. Discover package graph from workspace
-2. Snapshot current ref state (main-branch commit per repo)
+2. Snapshot current source state
 3. Compute EVs with cold-start optimization (diff against persisted refs)
 4. Persist ref state + EV map
 5. Build any missing buildable units (panels, about pages, workers, extensions — not packages)
-6. Start push trigger (subscribes to git server push events)
+6. Start state trigger (subscribes to VCS state advances)
 7. Return public API handle

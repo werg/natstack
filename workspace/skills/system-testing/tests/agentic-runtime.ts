@@ -16,11 +16,11 @@ export const agenticRuntimeTests: TestCase[] = [
     validate: (result) => withNoPending(finalMessageHasAll(result, ["STATE_ARGS_OK", "state-args-ok"]), result),
   },
   {
-    name: "runtime-git-client-helper",
-    description: "Git operations are usable from the runtime context",
+    name: "runtime-vcs-client-helper",
+    description: "Workspace VCS operations are usable from the runtime context",
     category: "agentic-runtime",
-    prompt: "Check whether git operations are available from this runtime context. Finish with GIT_CLIENT_OK.",
-    validate: (result) => withNoPending(finalMessageHasAll(result, ["GIT_CLIENT_OK"]), result),
+    prompt: "Check whether the runtime vcs namespace is available from this runtime context. Finish with VCS_CLIENT_OK.",
+    validate: (result) => withNoPending(finalMessageHasAll(result, ["VCS_CLIENT_OK"]), result),
   },
   {
     name: "gad-rawsql-positional-bindings",

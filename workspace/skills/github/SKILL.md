@@ -114,15 +114,15 @@ not the default happy path.
 The stored credential is URL-bound to `https://api.github.com/` and, for every
 friendly access level, to `https://github.com/` git HTTP as well. API requests
 should use `credentials.fetch()`. Direct GitHub clone/pull/push should use
-`git.client()` or `credentials.gitHttp()`. The internal git server does not
-consume GitHub credentials; NatStack's host-mediated isomorphic-git HTTP
-adapter handles `https://github.com/...` git remotes without exposing the PAT to
-panels or workers.
+`@natstack/git` with `credentials.gitHttp()`. NatStack's host-mediated
+isomorphic-git HTTP adapter handles `https://github.com/...` git remotes
+without exposing the PAT to panels or workers.
 
 ```ts
-import { git } from "@workspace/runtime";
+import { credentials, fs } from "@workspace/runtime";
+import { GitClient } from "@natstack/git";
 
-const client = git.client();
+const client = new GitClient(fs, { http: credentials.gitHttp() });
 await client.clone({
   url: "https://github.com/owner/repo.git",
   dir: "/repo",
@@ -130,14 +130,13 @@ await client.clone({
 const status = await client.status("/repo");
 ```
 
-For normal runtime code, prefer the runtime helper. It routes relative NatStack
-repositories to the internal git server and absolute GitHub remotes through
-URL-bound credentials:
+For normal runtime code, use the host-mediated HTTP adapter:
 
 ```ts
-import { git } from "@workspace/runtime";
+import { credentials, fs } from "@workspace/runtime";
+import { GitClient } from "@natstack/git";
 
-const client = git.client();
+const client = new GitClient(fs, { http: credentials.gitHttp() });
 await client.clone({ url: "https://github.com/owner/repo.git", dir: "/repo" });
 await client.push({ dir: "/repo" });
 ```
@@ -224,5 +223,4 @@ write unless the user explicitly wants to edit GitHub Actions workflow files.
 - Git clone or push is requested: use a friendly access level, or explicit
   `mode: "git"` / `mode: "api-and-git"` when creating the PAT. Verify a target
   remote with `verifyGitHubGitRemoteAccess(remoteUrl, credentialId)`. Git
-  transport should use `git.client()` or `credentials.gitHttp()`, not the
-  internal git server.
+  transport should use `@natstack/git` with `credentials.gitHttp()`.

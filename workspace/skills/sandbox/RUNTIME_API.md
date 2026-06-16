@@ -4,6 +4,11 @@ Credentials are URL-bound and may only be used through host-mediated egress.
 
 ## Panel Runtime Surface
 
+Panel identity has two layers: `slotId` is the stable visible panel slot and is
+the correct identity for panel-tree operations and PubSub/channel clients;
+`id`/`entityId`/`rpc.selfId` identify the current live runtime entity and can
+change when the panel navigates or reopens.
+
 <!-- BEGIN GENERATED: panel-runtime-surface -->
 Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the live surface.
 
@@ -18,7 +23,7 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `getInstanceId` | value |  |  |
 | `id` | value |  |  |
 | `entityId` | value |  | Panel entity id (panel:<historyEntryKey>) - same as `id`. |
-| `slotId` | value |  | Stable panel slot id for panel tree operations. |
+| `slotId` | value |  | Stable panel slot id for panel tree operations and panel channel/client identity. |
 | `rpc` | value |  |  |
 | `parent` | value |  |  |
 | `getParent` | value |  |  |
@@ -26,9 +31,6 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `onConnectionError` | value |  |  |
 | `getInfo` | value |  |  |
 | `focusPanel` | value |  |  |
-| `getWorkspaceTree` | value |  |  |
-| `listBranches` | value |  |  |
-| `listCommits` | value |  |  |
 | `getTheme` | value |  |  |
 | `onThemeChange` | value |  |  |
 | `onFocus` | value |  |  |
@@ -40,7 +42,6 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `createGatewayFetch` | value |  | Create a gateway-authenticated fetch helper from an explicit config. |
 | `gatewayConfig` | value |  | Gateway base URL and bearer token for NatStack service routes. |
 | `gatewayFetch` | value |  | Fetch helper that prefixes gateway-relative paths and adds Authorization: Bearer. |
-| `gitConfig` | value |  | Git HTTP endpoint and token derived from the gateway config. |
 | `env` | value |  |  |
 | `doTargetId` | value |  | Build a unified RPC target ID for a Durable Object reference. |
 | `createDurableObjectServiceClient` | value |  | Resolve a Durable Object-backed service and call it through unified RPC. |
@@ -52,20 +53,25 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `useStateArgs` | value |  |  |
 | `setStateArgs` | value |  |  |
 | `setStateArgsForPanel` | value |  |  |
+| `reopen` | value |  | Replace the current panel slot with a source/context/stateArgs using panelTree.navigate. |
 | `openExternal` | value |  |  |
 | `onChildCreated` | value |  |  |
 | `openPanel` | value |  |  |
 | `listPanels` | value |  |  |
 | `getPanelHandle` | value |  |  |
-| `panelTree` | namespace | `self`, `get`, `list`, `roots`, `children`, `parent`, `open` | Return signatures: self(): PanelHandle; get(id): PanelHandle; list(): Promise<PanelHandle[]>; roots(): Promise<PanelHandle[]>; children(id): Promise<PanelHandle[]>; parent(id): PanelHandle \| null; open(source, opts?): Promise<PanelHandle>. `self()` and `get()` are synchronous handle factories; catch errors on async handle methods like `refresh()` or `getInfo()`. |
+| `panelTree` | namespace | `self`, `get`, `list`, `roots`, `children`, `parent`, `navigate`, `open` | Top-level export, not workspace.panelTree. Signatures: self(): PanelHandle; get(id): PanelHandle; list(): Promise<PanelHandle[]>; roots(): Promise<PanelHandle[]>; children(id): Promise<PanelHandle[]>; parent(id): PanelHandle \| null; navigate(id, source, opts?): Promise<{ id, title }>; open(source, opts?): Promise<PanelHandle>. Use list/roots/children/get for existing panels; navigate replaces an existing panel slot; open creates a new panel. self/get are sync; async methods refresh metadata as needed. |
+| `buildPanelRenderErrorPrompt` | value |  |  |
+| `installPanelErrorDiagnosticLauncher` | value |  |  |
+| `openPanelErrorDiagnosticChat` | value |  |  |
 | `agentApi` | value |  |  |
 | `Journal` | value |  |  |
 | `withJournal` | value |  |  |
 | `currentJournal` | value |  |  |
 | `adblock` | namespace | `getStats`, `isActive`, `getStatsForPanel`, `isEnabledForPanel`, `setEnabledForPanel`, `resetStatsForPanel`, `getPanelUrl`, `addToWhitelist`, `removeFromWhitelist` |  |
-| `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `delete`, `setInitPanels`, `setConfigField`, `switchTo`, `openPanel`, `units` |  |
+| `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `delete`, `setInitPanels`, `setConfigField`, `switchTo`, `sourceTree`, `findUnitForPath`, `openPanel`, `units` | Workspace catalog, source tree, and unit helpers. Does not include panelTree; import top-level panelTree for panel-tree handles. |
 | `credentials` | namespace | `store`, `connect`, `configureClient`, `requestCredentialInput`, `getClientConfigStatus`, `deleteClientConfig`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl`, `gitHttp` |  |
-| `git` | namespace | `http`, `importProject`, `completeWorkspaceDependencies`, `setSharedRemote`, `removeSharedRemote`, `ensureRepoPresentInContexts`, `publishWorkspaceRepo`, `client` |  |
+| `git` | namespace | `http`, `importProject`, `completeWorkspaceDependencies`, `setSharedRemote`, `removeSharedRemote` |  |
+| `vcs` | namespace | `commit`, `applyEdits`, `readFile`, `listFiles`, `revert`, `status`, `unitStatus`, `log`, `diff`, `resolveHead`, `merge`, `abortMerge`, `pendingMerge`, `publishStatus`, `publish`, `recall` | Workspace GAD VCS. Paths are workspace-relative; status scans materialized heads, log can read refs, and diff compares state hashes. |
 | `gad` | namespace | `rawSql`, `query`, `status`, `ensureBlob`, `getTrajectoryBranchHead`, `appendTrajectoryBatch`, `listTrajectoryEvents`, `appendChannelEnvelope`, `getChannelEnvelope`, `getTrajectoryForEnvelope`, `listPublishedEnvelopesForTrajectory`, `getEnvelopesForTrajectory`, `getPublishedArtifactsForTurn`, `getPrivateLineageForPublishedEnvelope`, `getDownstreamConsumers`, `getChannelReplayWindow`, `listChannelEnvelopesAfter`, `listChannelEnvelopesBefore`, `getInitialChannelWindow`, `listChannelEnvelopes`, `inspectChannelEnvelopes`, `listStoredValueRefs`, `inspectStorageDiagnostics`, `listGadBranchFiles`, `diffGadStates`, `readGadFileAtState`, `getGadStateProducer`, `blameGadFileSnippet`, `validateGadHashes`, `clearDirtyAfterValidation`, `checkGadIntegrity`, `rebuildTrajectoryProjections` |  |
 | `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
 | `extensions` | namespace | `use`, `on`, `list`, `reload` |  |
@@ -76,11 +82,32 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `notifications` | namespace | `show`, `dismiss` |  |
 <!-- END GENERATED: panel-runtime-surface -->
 
-Prefer the `git` namespace for git operations. Use `git.client()` for structured
-repository operations and `git.publishWorkspaceRepo(repoPath, message)` for
-workspace source edits that must affect rebuilt panels, workers, packages, or
-skills. `gitConfig` is a low-level transport detail for runtime internals; do
-not construct `GitClient` instances manually in agent eval code.
+Use `vcs.commit(repoPath, message)` for workspace source edits that must affect
+rebuilt panels, workers, packages, or skills. Use `git` only for external
+project import, shared remotes, and build-event lookup. For external Git smart
+HTTP, construct `GitClient` from `@natstack/git` with `credentials.gitHttp()`.
+
+### Workspace VCS Call Shape
+
+The `vcs` API is state-based, not cwd-based. Do not pass the workspace root,
+`process.cwd()`, or a repo path to methods that ask for a head/ref or state hash.
+
+| Task | Call shape |
+| --- | --- |
+| Current context status | `await vcs.status()` |
+| Status for a materialized head | `await vcs.status("main")`, `await vcs.status("ctx:...")` |
+| Commit current context/source state | `await vcs.commit("panels/my-app", "message")` |
+| Log current context/head | `await vcs.log()` or `await vcs.log(20)` |
+| Resolve a head to a state hash | `(await vcs.resolveHead("main")).stateHash` |
+| Diff two states | `await vcs.diff(leftStateHash, rightStateHash)` |
+| Read from current context/head | `await vcs.readFile("", "path/to/file.txt")` |
+| Apply edit-first changes | `await vcs.applyEdits({ baseStateHash, edits: [...] })` |
+| Check unpublished context changes | `await vcs.publishStatus()` |
+
+`vcs.status` scans a materialized working tree (`main` or `ctx:...`), not
+arbitrary refs. `vcs.diff` accepts state hashes, not file paths and not head
+names. If you have heads, resolve them first with `vcs.resolveHead`; if you just
+committed, use the `stateHash` returned by `vcs.commit` or `vcs.applyEdits`.
 
 ## Store
 
@@ -137,8 +164,9 @@ await credentials.fetch("https://api.example.com/v1/items", undefined, {
 
 ## Unified Panel Handles
 
-Use `panelTree` and `PanelHandle` for panel-tree work from panels, workers, and
-Durable Objects:
+Use `panelTree` and `PanelHandle` from panels, workers, and DOs. In panel
+code, `panelTree` is imported directly from `@workspace/runtime`; it is not
+`workspace.panelTree`:
 
 ```ts
 import { panelTree, openPanel } from "@workspace/runtime";
@@ -148,7 +176,26 @@ const same = panelTree.get(created.id);
 const parent = panelTree.self().parent();
 const parentInfo = parent ? await parent.getInfo() : null;
 const roots = await panelTree.roots();
+
+const all = await panelTree.list();
+const existing = all.find((handle) => handle.source === "panels/spectrolite");
+const byKnownSlot = panelTree.get("panel-slot-id");
+await byKnownSlot.refresh(); // hydrate title/source/parent/runtime entity metadata
+await byKnownSlot.navigate("panels/spectrolite", { contextId: "ctx-vault" }); // replace slot
 ```
+
+`openPanel()`/`panelTree.open()` creates a panel owned by the workflow. Handles
+from `list`/`roots`/`children`/`get` are existing panels; do not call
+`handle.navigate`, `handle.reload`, or `handle.close` unless requested. Inside
+the current panel, prefer `reopen({ contextId, stateArgs })` for
+self-replacement.
+
+For web automation, use an owned browser panel from `openPanel("https://...")`.
+Do not use the current chat panel, a parent chat panel, or another workspace
+panel as a disposable browser target. `handle.cdp.navigate(url)` and
+`page.goto(url)` replace/navigate the panel they target; use them only on the
+browser panel you intentionally opened or on a panel the user explicitly asked
+you to replace.
 
 `PanelHandle` combines metadata, RPC, lifecycle, state, tree, and CDP:
 
@@ -176,9 +223,9 @@ runtime-owned full Playwright method.
 CDP and structural operations are approval-gated on first use per requester
 runtime entity and target panel. Privileged shell/about targets use a severe
 danger-tone approval. CDP transparently loads unloaded targets after approval;
-RPC and `_agent` introspection do not auto-load, so call `handle.ensureLoaded()`
-first when you need those against an unloaded target. A target held by a
-mobile/non-CDP host rejects CDP access rather than being taken over silently.
+RPC and `_agent` introspection do not auto-load; call `handle.ensureLoaded()`
+first. It refreshes metadata for `handle.call.*` / `emit(...)`. A target held by
+a mobile/non-CDP host rejects CDP access.
 
 ## Userland Approval Prompts
 
@@ -257,18 +304,12 @@ letters/numbers/`_-`; `dismiss` is reserved.
 Do not use `requestApproval()` as a general confirmation dialog or a defensive
 wrapper around actions the agent/runtime can already take. For host capabilities
 that already have a NatStack permission flow, use `openExternal()`,
-`credentials.*`, `git.*`, or the relevant runtime API so the host can apply the
+`credentials.*`, `git.*`, `vcs.*`, or the relevant runtime API so the host can apply the
 right trust scope and audit model.
 
-## Workspace Git Publish
+## Workspace VCS Commit
 
-Workspace runtime source is activated from git refs. After editing a workspace
-repo, call `git.publishWorkspaceRepo(repoPath, message, { force?: true })`.
-This stages all context changes, commits when needed, and pushes through the
-internal Git server so the canonical source ref, effective versions, rebuilds,
-and dev-mode template mirror all see the change.
-
-`git.client().commit()` by itself is only a local/context commit. It can create
-objects without moving the workspace source ref. Use
-`git.ensureRepoPresentInContexts()` only when the intent is to seed a
-newly-created repo into existing context folders.
+Workspace runtime source is activated from committed GAD states. After editing
+a workspace unit, call `await vcs.commit(repoPath, message)`. This records the
+caller head, advances effective versions, triggers rebuilds, and makes the
+change visible to workspace runtime units.

@@ -7,6 +7,7 @@ import {
   finalMessageHasMarkerCount,
   finalMessageHasNumericField,
   incompleteToolCalls,
+  noFailedInvocations,
 } from "./_helpers.js";
 
 function executionWithInvocation(status: string, terminalOutcome?: string): TestExecutionResult {
@@ -156,5 +157,16 @@ describe("system-testing validation helpers", () => {
         executionWithInvocationResult("error", { error: "No CDP-capable host is available" }, true)
       ).map((call) => call.name)
     ).toEqual(["eval"]);
+  });
+
+  it("does not make settled tool failures fatal to validation", () => {
+    expect(
+      noFailedInvocations(
+        executionWithInvocationResult("error", { error: "No CDP-capable host is available" }, true)
+      )
+    ).toEqual({
+      passed: true,
+      reason: "Observed failed tool calls: eval:No CDP-capable host is available",
+    });
   });
 });

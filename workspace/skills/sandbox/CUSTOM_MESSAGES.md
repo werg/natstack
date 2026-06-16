@@ -234,9 +234,9 @@ Rules:
 - The component must be pure with respect to `state` — updates re-render via
   the reducer fold. Don't keep authoritative state in component-local refs;
   publish a `custom.updated` event instead.
-- Treat `chat`, `scope`, and `scopes` like any other sandbox handle — call
-  `chat.publish` / `chat.callMethod` from event handlers when you need to send
-  events back to the channel.
+- Treat pre-injected handles (`chat`, `scope`, `scopes`, and `help`) like any
+  other sandbox handle — call `chat.publish` / `chat.callMethod` from event
+  handlers when you need to send events back to the channel.
 - The module is recompiled when `updatedAtSeq` advances (re-registration).
   Keep the module pure so identical re-registrations produce stable output.
 
@@ -266,9 +266,9 @@ rules follow:
 
 ## Caveats
 
-- Workspace source is built from published git refs, not the working tree. If
-  the module lives in a workspace repo, call `git.publishWorkspaceRepo` or the
-  workspace-dev `commitAndPush` wrapper before the channel can load it. (Same
+- Workspace source is built from committed VCS states, not the working tree. If
+  the module lives in a workspace unit, call `vcs.commit` or the workspace-dev
+  `commitWorkspace` wrapper before the channel can load it. (Same
   constraint as eval imports — see SKILL.md.)
 - Custom messages are panel-rendered. Headless sessions receive the events
   but won't materialize React output.

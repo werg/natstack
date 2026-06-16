@@ -1,6 +1,6 @@
-# Files & Git in a Session Context
+# Files & VCS in a Session Context
 
-All `natstack fs` and `natstack git` commands operate inside the **context
+All `natstack fs` and `natstack vcs` commands operate inside the **context
 folder** of an attached agent session on the server. Pick the session with
 `--session NAME` (default `default`); attach it first with
 `natstack agent attach [NAME]`. Remote paths are POSIX-style and relative to
@@ -50,20 +50,19 @@ Notes:
   lines, `--glob` filters candidate files, `--max` stops after N matches,
   `-i` is case-insensitive. PATTERN is a regular expression.
 
-## git commands
+## vcs commands
 
-Git operates on a **repo inside the context** — pass its workspace path with
-`--repo` (e.g. `--repo panels/notes`). There is no default repo.
+VCS operates on a **workspace unit inside the context** — pass its workspace
+path with `--repo` (e.g. `--repo panels/notes`). There is no staging area.
 
 ```bash
-natstack git status --repo panels/notes               # branch, commit, changed files
-natstack git diff   --repo panels/notes [--staged]    # raw patch to stdout (string in --json mode)
-natstack git add    --repo panels/notes               # stage everything (git add -A)
-natstack git commit --repo panels/notes -m "message"  # commit staged changes -> {commitId, summary}
+natstack vcs status --repo panels/notes               # head, state hash, changed files
+natstack vcs diff   --repo panels/notes               # name-status diff
+natstack vcs commit --repo panels/notes -m "message"  # commit pending changes on ctx:<id>
 ```
 
-`git status --json` returns
-`{branch, commit, dirty, files: [{path, status, staged, unstaged}]}`.
+`vcs status --json` returns
+`{head, stateHash, dirty, files: [{path, status}]}`.
 
 ## Escape hatch: raw RPC
 
@@ -74,9 +73,10 @@ natstack agent call SERVICE.METHOD 'ARGS_JSON' [--target ID]
 ```
 
 `ARGS_JSON` is a JSON **array** of positional arguments. `fs.*` and
-`git.context*` methods take the session's contextId as their first argument
-(get it from `natstack agent status --json`). `--target ID` relays the call to
-a runtime entity (panel/worker/DO) instead of the server; relayed methods are
+the session's contextId as their first argument (get it from
+`natstack agent status --json`). For VCS, use heads such as `ctx:<contextId>`
+with `vcs.status` or `vcs.commit`. `--target ID` relays the call to a runtime
+entity (panel/worker/DO) instead of the server; relayed methods are
 entity-defined and may be plain names without a `SERVICE.` prefix (e.g.
 `natstack agent call ping --target worker:...`). See
 [API.md](API.md) for the service list and

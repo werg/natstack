@@ -5,7 +5,7 @@ Your working directory is the **context folder** — an isolated copy of the wor
 **CRITICAL RULES:**
 
 - All file paths are **relative to your working directory** (e.g., `panels/my-app/index.tsx`)
-- **NEVER** use absolute paths (e.g., `/home/.../workspace/panels/...`)
+- **NEVER** use host absolute paths (e.g., `/home/.../workspace/panels/...`). Runtime `fs.*` accepts context-root absolute paths like `/panels/my-app/index.tsx`, but prefer `panels/my-app/index.tsx` in examples and source edits.
 - **NEVER** use `Bash` for git operations, file listing, or file creation — use the structured tools
 - In eval, use **static imports** (`import { rpc } from "@workspace/runtime"`). Dynamic `await import(...)` may work in some builds, but it bypasses the loader's static dependency planning and is not the supported pattern.
 
@@ -200,33 +200,44 @@ eval({ code: `
 
 Methods: `create(options)`, `destroy(name)`, `update(name, updates)`, `list()`, `status(name)`, `listInstanceSources()`, `getPort()`, `restartAll()`. See [WORKERS.md](WORKERS.md) for full API.
 
-#### Git (via `@workspace-skills/workspace-dev`)
+#### Version control (via `@workspace-skills/workspace-dev`)
 
-Git operations use the runtime workspace publish path. For normal source edits,
-prefer `git.publishWorkspaceRepo(repoPath, message)` or this skill's
-`commitAndPush` wrapper. A plain `git.client().commit()` only creates a
-context/local commit; it does not publish the workspace source ref, trigger
-rebuilds, or mirror dev-mode changes back to the checked-in template.
+Workspace version control is GAD-native: a commit snapshots your working tree
+as an immutable workspace state and triggers rebuilds of every changed unit.
+There is no staging, no push, and no separate publish step — `commitWorkspace`
+does the whole thing atomically and returns once builds have settled.
 
 ```
-// Commit and push
+// Commit (snapshots the tree, rebuilds changed units)
 eval({ code: `
-  import { commitAndPush } from "@workspace-skills/workspace-dev";
-  const result = await commitAndPush("panels/my-app", "Update");
+  import { commitWorkspace } from "@workspace-skills/workspace-dev";
+  const result = await commitWorkspace("panels/my-app", "Update");
   console.log(result);
 `
 })
 ```
 
-**`commitAndPush(dir, message, options?)`** — workspace-dev wrapper around
-`git.publishWorkspaceRepo`. It stages all changes, commits when needed, and
-pushes through NatStack's internal Git server using a reserved internal remote.
-`options.force` passes through for deliberate non-fast-forward recovery. If a
-previous call already created the local commit but push failed, retrying
-`commitAndPush` on the clean repo pushes the current `HEAD` instead of returning
-"Nothing to commit".
+**`commitWorkspace(dir, message)`** — wrapper around `vcs.commit`.
+The `dir` argument (e.g. "panels/my-app") scopes the build-events pointer in
+the result; the snapshot always covers your whole working tree. Out-of-band
+edits are first-class: anything on disk at commit time is captured. Retrying
+after a failure is always safe — an unchanged tree is a no-op.
 
-**`forkProject(options)`** — copies an existing workspace repo into a new repo, rewrites safe metadata, initializes git, and pushes it to the internal server.
+Raw `vcs` calls use VCS heads and state hashes, not filesystem cwd values:
+
+| Need | Runtime call |
+| --- | --- |
+| Check current context status | `await vcs.status()` |
+| Check a materialized head | `await vcs.status("main")` |
+| Resolve a head to a state hash | `(await vcs.resolveHead("main")).stateHash` |
+| Compare committed states | `await vcs.diff(leftStateHash, rightStateHash)` |
+| Read a file from the current head | `await vcs.readFile("", "panels/my-app/index.tsx")` |
+| Inspect unpublished context changes | `await vcs.publishStatus()` |
+
+Do not pass `process.cwd()`, `/workspace`, or a repo path to `vcs.status` or
+`vcs.diff`. `vcs.diff` compares two state hashes.
+
+**`forkProject(options)`** — copies an existing workspace unit into a new one, rewrites safe metadata, and commits it.
 
 ```ts
 import { forkProject } from "@workspace-skills/workspace-dev";
@@ -246,13 +257,13 @@ const workerPlan = await forkProject({
 console.log(workerPlan.warnings);
 ```
 
-Dry runs return the planned file list, metadata rewrites, and warnings without writing files or pushing. Worker forks rewrite package metadata, obvious worker file names, source strings, and Durable Object class names; pass `classMap` when a worker has more than one class.
+Dry runs return the planned file list, metadata rewrites, and warnings without writing or committing anything. Worker forks rewrite package metadata, obvious worker file names, source strings, and Durable Object class names; pass `classMap` when a worker has more than one class.
 
-Dirty state is context-local. A running panel, a chat agent, and another panel may each have different isolated working trees even when they refer to the same repo path. Committing and pushing from one context updates the canonical git ref, but it does not reset another already-running context's worktree or editor buffers. If a panel still shows dirty after an agent push, check that panel's `contextId` and either commit/discard/pull in that context or reopen the panel in the context you just changed.
-
-New repos are synced into existing contexts after push. Existing context working trees are not reset after unrelated pushes; pull, fetch, rebase, or reset explicitly when you want a context to move.
-
-Git object storage is shared across contexts through a validated `.git/objects` symlink. Contexts may add immutable loose objects before push; approval gates canonical ref updates and source working tree changes.
+Each context is its own VCS head (`ctx:{contextId}`), forked from the workspace
+main head when the context was created. Your commits land on YOUR context head;
+panels launched in your context build and serve from that head automatically.
+The user's main workspace tree is never touched by agent commits — merging
+context work back to main is an explicit operation.
 
 #### @workspace-extensions/typecheck-service.checkPanel (recommended)
 
@@ -412,9 +423,9 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { commitAndPush } from "@workspace-skills/workspace-dev";
+  import { commitWorkspace } from "@workspace-skills/workspace-dev";
   import { openPanel } from "@workspace/runtime";
-  await commitAndPush("panels/my-app", "Initial");
+  await commitWorkspace("panels/my-app", "Initial");
   await openPanel("panels/my-app");
 `
 })
@@ -424,9 +435,9 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { commitAndPush } from "@workspace-skills/workspace-dev";
+  import { commitWorkspace } from "@workspace-skills/workspace-dev";
   import { openPanel } from "@workspace/runtime";
-  await commitAndPush("panels/my-app", "Update");
+  await commitWorkspace("panels/my-app", "Update");
   const handle = await openPanel("panels/my-app");
   const lifecycle = await handle.rebuildAndReload();
   console.log(lifecycle.status, lifecycle.effectiveVersion);

@@ -29,6 +29,7 @@ For standard forms with typed fields. No code needed.
 | `select` | `options: { value, label }[]` | Dropdown |
 | `slider` | `min`, `max` | Range slider |
 | `segmented` | `options: { value, label }[]` | Segmented control |
+| `multiSelect` | `options: { value, label }[]` | Multiple checkboxes with Select all / Deselect all controls |
 
 Choice fields (`select`, `segmented`, and `multiSelect`) show an automatic
 free-text "Other" choice in feedback forms unless `allowFreeText: false` is set

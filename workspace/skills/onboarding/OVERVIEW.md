@@ -31,13 +31,13 @@ A workspace is a named collection of panels, packages, workers, and configuratio
 - Switch between workspaces (triggers app relaunch)
 - Configure which panels open on first launch (`initPanels`)
 
-Workspace config lives in `meta/natstack.yml`. Each workspace gets its own git repository.
+Workspace config lives in `meta/natstack.yml`. Each workspace gets its own GAD VCS state graph.
 
 ### Contexts
 
 A context is an isolated execution environment for a panel. Each context gets:
 
-- Its own **context folder** — a checkout of the workspace's git repo
+- Its own **context folder** — a materialized view of the workspace state
 - A unique **context ID** used in URLs and storage
 
 Panels in the same context share a filesystem. The chat panel's agent and its child panels typically share a context so they can see each other's files.
@@ -79,7 +79,7 @@ Additional packages: `@workspace/panel-browser` (browser data import/export), `@
 
 ### Build System
 
-Panels and workers are built **on demand** — when you navigate to a panel URL or create a worker instance, the build system compiles the source with esbuild. Pushing to the internal git server triggers rebuilds of affected units.
+Panels and workers are built **on demand** — when you navigate to a panel URL or create a worker instance, the build system compiles the source with esbuild. Committing a workspace VCS state triggers rebuilds of affected units.
 
 ## Architecture at a Glance
 
@@ -92,7 +92,7 @@ Panels and workers are built **on demand** — when you navigate to a panel URL 
 │  └────┬─────┘ └────┬─────┘ └────┬─────┘        │
 │       │ WebSocket   │            │              │
 │  ┌────┴─────────────┴────────────┴──────┐       │
-│  │  Server (RPC, build, git, services)  │       │
+│  │  Server (RPC, build, VCS, services)  │       │
 │  └────┬─────────────────────────────────┘       │
 │       │                                         │
 │  ┌────┴──────────────────┐                      │
@@ -100,12 +100,12 @@ Panels and workers are built **on demand** — when you navigate to a panel URL 
 │  └───────────────────────┘                      │
 │       │                                         │
 │  ┌────┴──────────────────┐                      │
-│  │  Git Server (repos)   │                      │
+│  │  GAD VCS (source)     │                      │
 │  └───────────────────────┘                      │
 └─────────────────────────────────────────────────┘
 ```
 
 - **Panels** connect to the server over WebSocket for RPC
-- The **server** handles builds, file access, git, database, AI proxy, and service routing
+- The **server** handles builds, file access, VCS, external Git interop, database, AI proxy, and service routing
 - **Workerd** runs workers and Durable Objects in V8 isolates
-- The **git server** stores workspace source code; pushes trigger rebuilds
+- **GAD VCS** stores workspace source state; committed state advances trigger rebuilds

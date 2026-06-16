@@ -1,21 +1,31 @@
 import { describe, expect, it, vi } from "vitest";
 import { reportStage } from "./report.js";
 import type { StageReportState } from "./report-types.js";
+import type { ChatMessage } from "@workspace/agentic-core";
 import type { TestSuiteResultEntry } from "../types.js";
 
 function entry(
   name: string,
   category: string,
   passed: boolean,
-  opts: { reason?: string; error?: string; duration?: number } = {},
+  opts: {
+    reason?: string;
+    error?: string;
+    duration?: number;
+    messages?: ChatMessage[];
+    snapshot?: TestSuiteResultEntry["execution"]["snapshot"];
+    toolFailures?: TestSuiteResultEntry["execution"]["toolFailures"];
+  } = {},
 ): TestSuiteResultEntry {
   return {
     test: { name, category, description: `desc ${name}`, prompt: `do ${name}` },
     result: { passed, reason: opts.reason },
     execution: {
-      messages: [],
+      messages: opts.messages ?? [],
       duration: opts.duration ?? 100,
       error: opts.error,
+      snapshot: opts.snapshot,
+      toolFailures: opts.toolFailures,
     },
   };
 }
@@ -26,6 +36,8 @@ function makeScope(entries: TestSuiteResultEntry[], stage: { index: number; name
     passed: entries.filter((e) => e.result.passed).length,
     failed: entries.filter((e) => !e.result.passed && !e.execution.error).length,
     errored: entries.filter((e) => Boolean(e.execution.error)).length,
+    toolFailureCount: entries.reduce((count, e) => count + (e.execution.toolFailures?.length ?? 0), 0),
+    testsWithToolFailures: entries.filter((e) => (e.execution.toolFailures?.length ?? 0) > 0).length,
     skipped: 0,
     duration: entries.reduce((s, e) => s + (e.execution.duration ?? 0), 0),
     results: entries,
@@ -86,6 +98,76 @@ describe("reportStage", () => {
     const symlink = state.tests.find((t) => t.name === "fs-symlink")!;
     expect(symlink.detail.passed).toBe(false);
     expect(symlink.detail.validationReason).toBe("symlink target missing");
+  });
+
+  it("reports tool failures separately from task failures", async () => {
+    const entries = [
+      entry("recovered-tool-error", "smoke", true, {
+        toolFailures: [
+          {
+            id: "call-1",
+            name: "eval",
+            status: "error",
+            terminalOutcome: "tool_error",
+            error: "ReferenceError: missingVar is not defined",
+            source: "message",
+          },
+        ],
+      }),
+    ];
+    const scope = makeScope(entries, { index: 0, name: "smoke", category: "smoke" });
+    const { chat, published } = makeChat();
+
+    await reportStage(chat, scope, { prose: "one task passed with one tool failure" });
+
+    const state = published[0]!.initialState;
+    expect(state.counts).toMatchObject({
+      passed: 1,
+      failed: 0,
+      errored: 0,
+      toolFailureCount: 1,
+      testsWithToolFailures: 1,
+    });
+    expect(state.tests[0]).toMatchObject({
+      status: "passed",
+      toolFailureCount: 1,
+      toolFailures: [expect.objectContaining({ name: "eval" })],
+    });
+  });
+
+  it("does not trim raw execution evidence after publishing a report", async () => {
+    const messages = [
+      {
+        id: "prompt-1",
+        senderId: "headless",
+        kind: "message",
+        complete: true,
+        content: "prompt",
+      },
+    ] satisfies ChatMessage[];
+    const snapshot = {
+      messages,
+      invocations: [{ id: "call-1", name: "read", status: "complete" }],
+      debugEvents: [],
+      cleanupErrors: [],
+      participants: {},
+      localMethodNames: [],
+      connected: true,
+      duration: 10,
+    };
+    const entries = [
+      entry("passing-with-evidence", "smoke", true, {
+        messages,
+        snapshot,
+      }),
+    ];
+    const scope = makeScope(entries, { index: 0, name: "smoke", category: "smoke" });
+    const { chat } = makeChat();
+
+    await reportStage(chat, scope, { prose: "passed" });
+
+    expect(entries[0]!.execution.messages).toBe(messages);
+    expect(entries[0]!.execution.snapshot).toBe(snapshot);
   });
 
   it("registers the renderer only once per run", async () => {

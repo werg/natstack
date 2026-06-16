@@ -73,4 +73,140 @@ describe("TestRunner", () => {
       error: expect.objectContaining({ message: execution.error }),
     });
   });
+
+  it("keeps the original test failure when diagnostics collection fails", async () => {
+    const session = {
+      channelId: "chat-fetch-failed",
+      messages: [],
+      sendAndWait: vi.fn(async () => {
+        throw new Error("fetch failed");
+      }),
+      snapshot: vi.fn(() => ({
+        messages: [],
+        invocations: [],
+        debugEvents: [],
+        cleanupErrors: [],
+        participants: {},
+        connected: true,
+        duration: 10,
+      })),
+      close: vi.fn(async () => undefined),
+    };
+    const runner = {
+      spawn: vi.fn(async () => session),
+      collectDiagnostics: vi.fn(async () => {
+        throw new Error("diagnostics fetch failed");
+      }),
+    } as unknown as HeadlessRunner;
+    const tester = new TestRunner(runner, { testTimeoutMs: 5 });
+
+    const { result, execution } = await tester.runOne({
+      name: "fetch-failed-test",
+      category: "test",
+      description: "fetch failed",
+      prompt: "trigger fetch",
+      validate: () => ({ passed: true }),
+    });
+
+    expect(result.passed).toBe(false);
+    expect(execution.error).toBe("fetch failed");
+    expect(execution.diagnostics).toMatchObject({
+      diagnosticCollectionError: "diagnostics fetch failed",
+    });
+  });
+
+  it("reports failed tool calls without converting a passing task into a failed test", async () => {
+    const messages = [
+      {
+        id: "prompt-1",
+        senderId: "headless",
+        kind: "message",
+        complete: true,
+        content: "prompt",
+      },
+      {
+        id: "invocation:call-1",
+        senderId: "agent",
+        kind: "message",
+        contentType: "invocation",
+        complete: true,
+        content: JSON.stringify({
+          id: "call-1",
+          name: "eval",
+          execution: {
+            status: "error",
+            terminalOutcome: "tool_error",
+            result: { error: "ReferenceError: missingVar is not defined" },
+            isError: true,
+          },
+        }),
+      },
+      {
+        id: "answer-1",
+        senderId: "agent",
+        kind: "message",
+        complete: true,
+        content: "Recovered and finished with TOOL_RECOVERY_OK.",
+      },
+    ] satisfies ChatMessage[];
+    const session = {
+      channelId: "chat-tool-error",
+      messages,
+      sendAndWait: vi.fn(async () => undefined),
+      snapshot: vi.fn(() => ({
+        messages,
+        invocations: [
+          {
+            id: "call-1",
+            name: "eval",
+            status: "error",
+            execution: {
+              status: "error",
+              terminalOutcome: "tool_error",
+              result: { error: "ReferenceError: missingVar is not defined" },
+              isError: true,
+            },
+          },
+        ],
+        debugEvents: [],
+        cleanupErrors: [],
+        participants: {},
+        connected: true,
+        duration: 10,
+      })),
+      close: vi.fn(async () => undefined),
+    };
+    const runner = {
+      spawn: vi.fn(async () => session),
+      collectDiagnostics: vi.fn(async () => ({})),
+    } as unknown as HeadlessRunner;
+    const tester = new TestRunner(runner, { testTimeoutMs: 5 });
+
+    const suite = await tester.runSuite([
+      {
+        name: "tool-error-recovery",
+        category: "test",
+        description: "tool error recovery",
+        prompt: "trigger recovery",
+        validate: () => ({ passed: true }),
+      },
+    ]);
+
+    expect(suite).toMatchObject({
+      passed: 1,
+      failed: 0,
+      errored: 0,
+      toolFailureCount: 1,
+      testsWithToolFailures: 1,
+    });
+    expect(suite.results[0]!.execution.error).toBeUndefined();
+    expect(suite.results[0]!.execution.toolFailures).toEqual([
+      expect.objectContaining({
+        name: "eval",
+        status: "error",
+        terminalOutcome: "tool_error",
+        error: "ReferenceError: missingVar is not defined",
+      }),
+    ]);
+  });
 });

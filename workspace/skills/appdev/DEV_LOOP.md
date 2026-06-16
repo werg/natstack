@@ -1,22 +1,22 @@
 # App Development Loop
 
-Workspace app source is built from git commits. Editing files locally is not
-enough.
+Workspace app source is built from committed VCS state. Editing files locally is
+not enough.
 
 ## Standard Loop
 
 1. Edit files under `apps/<name>`.
 2. Run focused type/tests where available.
-3. Commit the app repo.
-4. Push through the workspace git server.
-5. Approve the app install/update/source-push prompt if the trusted identity
+3. Commit the workspace state with `vcs.commit` or the workspace-dev helpers.
+4. Publish the context when you are working outside `main`.
+5. Approve the app install/update/source-change prompt if the trusted identity
    changed.
 6. Wait for rebuild/reconcile.
 7. Use the target-specific update prompt to adopt the new build, or keep the
    currently loaded build until you are ready.
 
-For context agents, this usually means using workspace git/runtime APIs rather
-than direct shell git commands. See `workspace-dev/TOOLS.md` for common git helper
+For context agents, this usually means using workspace VCS/runtime APIs rather
+than direct shell file writes. See `workspace-dev/TOOLS.md` for common helper
 patterns.
 
 In development, app reconciliation prints an app status diagnostic with source,
@@ -45,7 +45,7 @@ to be used until the update is approved, depending on the reconcile path.
 
 ## Update Errors And Rollback
 
-Push-triggered rebuilds keep the previous active app build until the new build
+State-triggered rebuilds keep the previous active app build until the new build
 validates. If the build or target validation fails, the app status becomes
 `error`, `apps:status` includes the active build key and effective version that
 remain in use, and `apps:lifecycle` emits `type: "update-error"` with the
@@ -72,7 +72,7 @@ to the most recent previous version.
 The workspace target picker also supports pinning a host target to a retained
 build or to a specific commit/ref. Use this when the latest desktop, mobile, or
 terminal app is broken and the host needs to recover on a known-good version.
-Pinned targets do not follow newer pushes automatically: approved newer builds
+Pinned targets do not follow newer committed states automatically: approved newer builds
 are retained in history, then the host target is restored to the pinned build.
 Choose `Follow latest` in the picker to resume normal update adoption.
 
@@ -93,7 +93,7 @@ Common failure modes:
 - missing `panel-hosting` blocks view service methods
 - missing app event subscriber breaks shell event subscriptions
 - unsupported capability rejects app loading
-- app source edited but not committed/pushed, so build did not change
+- app source edited but not committed, so build did not change
 
 ## React Native App Loop
 
@@ -129,7 +129,7 @@ For terminal apps:
 - Expect `available` when the build is trusted but no process is running, and
   `running` when the runner has spawned the process.
 - Inspect stdout/stderr with `workspace.units.logs(appName)`.
-- Test push updates and rollback while the terminal app is running; the runner
+- Test committed updates and rollback while the terminal app is running; the runner
   should replace the process with the selected trusted build.
 
 Terminal app source should be written as a clean Node ESM entry that reads the
