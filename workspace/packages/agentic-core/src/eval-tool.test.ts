@@ -22,6 +22,7 @@ function createEvalTool(overrides: Partial<Parameters<typeof buildEvalTool>[0]> 
       publishCustomMessage: async () => ({ messageId: "custom-1", pubsubId: 1 }),
       updateCustomMessage: async () => 2,
       registerMessageType: async () => 1,
+      focusMessage: async () => false,
       clearMessageType: async () => 1,
       getMessageType: async () => null,
       getMessageTypes: async () => [],

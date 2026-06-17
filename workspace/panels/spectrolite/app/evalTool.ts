@@ -76,6 +76,8 @@ export function createEvalRuntime(opts: EvalRuntimeOptions): EvalRuntime {
   };
 
   const chatSandboxValue: ChatSandboxValue = {
+    // Spectrolite's eval has no chat transcript DOM to scroll.
+    focusMessage: async () => false,
     publish: async (eventType, payload, options) => {
       const client = opts.getClient();
       return client ? client.publish(eventType, payload, options) : undefined;

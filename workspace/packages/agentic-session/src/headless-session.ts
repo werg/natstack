@@ -368,6 +368,8 @@ export class HeadlessSession {
 
   private buildChatSandboxValue() {
     return {
+      // Headless sessions have no rendered transcript to scroll.
+      focusMessage: async (_messageId: string) => false,
       send: async (content: string, options?: { idempotencyKey?: string }) => {
         if (!this._client) throw new Error("Not connected");
         const result = await this._client.send(content, options);

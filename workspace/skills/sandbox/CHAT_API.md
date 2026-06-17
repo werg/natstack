@@ -18,6 +18,14 @@ interface ChatSandboxValue {
   /** Send a visible user-authored message to the channel */
   send(content: string, options?: { idempotencyKey?: string }): Promise<unknown>;
 
+  /**
+   * Scroll the chat to a message and briefly highlight it. Resolves false
+   * when the message is not in the rendered transcript (paged-out history,
+   * headless sessions). Use after creating a card so the user lands on it -
+   * e.g. a digest row's "Reply" focusing the compose card it produced.
+   */
+  focusMessage(messageId: string): Promise<boolean>;
+
   /** Publish a custom-message instance for a registered message type */
   publishCustomMessage(
     input: { typeId: string; initialState?: unknown; displayMode?: "inline" | "row" },

@@ -418,6 +418,27 @@ export function useAgenticChat({
           options
         );
       },
+      focusMessage: async (messageId: string): Promise<boolean> => {
+        // Message cards render with id={`message-${msg.id}`} in the same DOM
+        // as sandboxed renderers — no RPC needed. Retry briefly: the card the
+        // caller just created may still be folding into the transcript.
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          const element = document.getElementById(`message-${messageId}`);
+          if (element) {
+            element.scrollIntoView({ behavior: "smooth", block: "center" });
+            element.animate(
+              [
+                { boxShadow: "0 0 0 3px var(--accent-a7)", borderRadius: "8px" },
+                { boxShadow: "0 0 0 3px transparent", borderRadius: "8px" },
+              ],
+              { duration: 1600, easing: "ease-out" }
+            );
+            return true;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+        return false;
+      },
       contextId: contextId ?? "",
       channelId: channelName,
       rpc: sandbox.rpc,

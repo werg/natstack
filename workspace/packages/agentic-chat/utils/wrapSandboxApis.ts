@@ -38,6 +38,8 @@ export function wrapChatForErrorReporting(
       trackPromise(chat.callMethodByHandle(...args), onError),
     callMethodResultByHandle: (...args: Parameters<ChatSandboxValue["callMethodResultByHandle"]>) =>
       trackPromise(chat.callMethodResultByHandle(...args), onError),
+    focusMessage: (...args: Parameters<ChatSandboxValue["focusMessage"]>) =>
+      trackPromise(chat.focusMessage(...args), onError),
     rpc: {
       call: (...args: Parameters<ChatSandboxValue["rpc"]["call"]>) =>
         trackPromise(chat.rpc.call(...args), onError),

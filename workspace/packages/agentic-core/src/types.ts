@@ -168,6 +168,13 @@ export interface ChatSandboxValue {
     args: unknown,
     options?: { timeoutMs?: number; signal?: AbortSignal }
   ) => Promise<ChatMethodResult>;
+  /**
+   * Scroll the chat to a message and briefly highlight it. Resolves false
+   * when the message is not currently in the rendered transcript (e.g. paged
+   * out of history). Lets cards hand the user to something they created —
+   * "Reply" on a digest row focuses the compose card it produced.
+   */
+  focusMessage: (messageId: string) => Promise<boolean>;
   contextId: string;
   channelId: string | null;
   rpc: { call: (target: string, method: string, args: unknown[]) => Promise<unknown> };
