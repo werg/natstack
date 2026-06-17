@@ -1,0 +1,38 @@
+{
+  "name": "@workspace-workers/news-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "entry": "index.ts",
+    "durable": {
+      "classes": [{ "className": "NewsAgentWorker" }]
+    },
+    "agent": {
+      "displayName": "News Agent",
+      "description": "Aggregates feeds and followed topics into briefings",
+      "icon": "📰",
+      "defaultConfig": {
+        "handle": "news",
+        "respondPolicy": "mentioned-or-followup"
+      }
+    },
+    "exposeModules": [
+      "@workspace/runtime",
+      "@workspace/pubsub",
+      "@workspace/feeds"
+    ]
+  },
+  "dependencies": {
+    "@workspace/runtime": "workspace:*",
+    "@workspace/agentic-do": "workspace:*",
+    "@workspace/agentic-protocol": "workspace:*",
+    "@workspace/feeds": "workspace:*",
+    "@workspace/pubsub": "workspace:*",
+    "@workspace/harness": "workspace:*",
+    "@workspace/pi-core": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.2"
+  }
+}

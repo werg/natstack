@@ -1,0 +1,94 @@
+import type { SqlStorage } from "@workspace/runtime/worker";
+
+/**
+ * News tables are versioned by drop-and-recreate (see NewsAgentWorker
+ * schemaVersion): dev-mode data is disposable and articles re-ingest from
+ * feeds on the next poll.
+ */
+export function createNewsTables(sql: SqlStorage): void {
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS news_channel_state (
+      channel_id TEXT PRIMARY KEY,
+      poll_interval_ms INTEGER NOT NULL,
+      briefing_interval_ms INTEGER NOT NULL,
+      briefing_at_minutes INTEGER,
+      top_k INTEGER NOT NULL DEFAULT 12,
+      setup_status TEXT NOT NULL DEFAULT 'needs-user-preferences',
+      setup_prompted_at INTEGER,
+      preferences_text TEXT,
+      last_briefing_id TEXT,
+      last_run_at INTEGER,
+      last_error TEXT,
+      last_setup_json TEXT
+    )
+  `);
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS news_feeds (
+      channel_id TEXT NOT NULL,
+      feed_id TEXT NOT NULL,
+      url TEXT NOT NULL,
+      title TEXT,
+      weight REAL NOT NULL DEFAULT 1.0,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      etag TEXT,
+      last_modified TEXT,
+      last_fetch_at INTEGER,
+      last_status TEXT,
+      fail_count INTEGER NOT NULL DEFAULT 0,
+      backoff_until INTEGER,
+      PRIMARY KEY (channel_id, feed_id)
+    )
+  `);
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS news_topics (
+      channel_id TEXT NOT NULL,
+      topic TEXT NOT NULL,
+      weight REAL NOT NULL DEFAULT 1.0,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (channel_id, topic)
+    )
+  `);
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS news_articles (
+      channel_id TEXT NOT NULL,
+      article_id TEXT NOT NULL,
+      feed_id TEXT,
+      origin TEXT NOT NULL DEFAULT 'feed',
+      canonical_url TEXT NOT NULL,
+      title TEXT NOT NULL,
+      title_sim_key TEXT,
+      summary TEXT,
+      author TEXT,
+      published_at INTEGER,
+      fetched_at INTEGER NOT NULL,
+      read INTEGER NOT NULL DEFAULT 0,
+      briefed_in TEXT,
+      blurb TEXT,
+      PRIMARY KEY (channel_id, article_id)
+    )
+  `);
+  sql.exec(
+    `CREATE INDEX IF NOT EXISTS idx_news_articles_unbriefed
+     ON news_articles(channel_id, briefed_in, fetched_at)`
+  );
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS news_briefings (
+      channel_id TEXT NOT NULL,
+      briefing_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      tldr TEXT,
+      story_ids_json TEXT NOT NULL DEFAULT '[]',
+      card_message_id TEXT,
+      PRIMARY KEY (channel_id, briefing_id)
+    )
+  `);
+}
+
+export function dropNewsTables(sql: SqlStorage): void {
+  sql.exec(`DROP TABLE IF EXISTS news_channel_state`);
+  sql.exec(`DROP TABLE IF EXISTS news_feeds`);
+  sql.exec(`DROP TABLE IF EXISTS news_topics`);
+  sql.exec(`DROP TABLE IF EXISTS news_articles`);
+  sql.exec(`DROP TABLE IF EXISTS news_briefings`);
+}
