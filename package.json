@@ -46,6 +46,7 @@
     "test:mobile": "pnpm --dir apps/mobile test --runInBand",
     "test:extension-smoke": "NODE_ENV=development node build.mjs && NATSTACK_RUN_SERVER_INTEGRATION=1 vitest run tests/extension-image-service.integration.test.ts",
     "test:headless-panel-integration": "NODE_ENV=development node build.mjs && NATSTACK_RUN_HEADLESS_PANEL_INTEGRATION=1 vitest run tests/headless-panel.integration.test.ts",
+    "test:desktop-pairing-smoke": "NODE_ENV=development node build.mjs && node scripts/desktop-pairing-smoke.mjs --network tailscale",
     "test:terminal-app-smoke": "NODE_ENV=development node build.mjs && node scripts/terminal-app-smoke.mjs",
     "test:watch": "vitest",
     "test:e2e": "playwright test -c tests/config/playwright.config.ts",

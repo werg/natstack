@@ -1773,6 +1773,7 @@ async function main() {
         connectionGrants,
         readWorkspaceFileAtCommit,
         getGatewayUrl: () => getLocalGatewayUrl("app startup"),
+        getAppArtifactBaseUrl: () => getConnectUrl("app artifact"),
         getReactNativeBootstrapUrl: () => getConnectUrl("React Native bootstrap"),
         onHostTargetChanged: (target, reason) =>
           hostTargetLaunchCoordinator.notifyTargetChanged(target, reason),
