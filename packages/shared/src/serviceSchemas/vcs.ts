@@ -17,24 +17,6 @@ export const VcsUnitStatusSchema = z.object({
 });
 export type VcsUnitStatus = z.infer<typeof VcsUnitStatusSchema>;
 
-export const vcsCommitOptionsSchema = z.object({ head: z.string().optional() });
-export type VcsCommitOptions = z.infer<typeof vcsCommitOptionsSchema>;
-
-export const vcsCommitResultSchema = z.object({
-  head: z.string(),
-  stateHash: z.string(),
-  changed: z.boolean(),
-  fileCount: z.number().int().nonnegative(),
-  changedPaths: z.array(z.string()),
-  message: z.string(),
-  buildEventsQuery: z.object({
-    service: z.literal("build.listRecentBuildEvents"),
-    args: z.tuple([z.string()]),
-    description: z.string(),
-  }),
-});
-export type VcsCommitResult = z.infer<typeof vcsCommitResultSchema>;
-
 export const vcsFileWriteContentSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("text"), text: z.string() }),
   z.object({ kind: z.literal("bytes"), base64: z.string() }),
@@ -101,6 +83,14 @@ export const vcsApplyEditsResultSchema = z.object({
 });
 export type VcsApplyEditsResult = z.infer<typeof vcsApplyEditsResultSchema>;
 
+/**
+ * Status is a pure GAD state-diff of a head against its publish baseline
+ * (`main`): the unpublished changes that live on this head. It is NOT a
+ * filesystem scan — the on-disk worktree is a disposable projection of the
+ * head, so edits (which commit through `applyEdits`) never appear as "dirty".
+ * `stateHash` is the head's current state; `dirty` is true iff the head is
+ * ahead of `main`. Status on `main` is always clean (it is the baseline).
+ */
 export const vcsStatusResultSchema = z.object({
   stateHash: nullableString,
   dirty: z.boolean(),
@@ -239,10 +229,6 @@ export const vcsRecallResultSchema = z.object({
 export type VcsRecallResult = z.infer<typeof vcsRecallResultSchema>;
 
 export const vcsMethods = defineServiceMethods({
-  commit: {
-    args: z.tuple([z.string(), z.string(), vcsCommitOptionsSchema.optional()]),
-    returns: vcsCommitResultSchema,
-  },
   applyEdits: {
     args: z.tuple([vcsApplyEditsInputSchema]),
     returns: vcsApplyEditsResultSchema,

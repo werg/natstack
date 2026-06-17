@@ -58,11 +58,13 @@ When a panel or agent session starts, it gets a **context folder** — an isolat
 working tree backed by a context VCS head (`ctx:<contextId>`). Each context can
 read and write files without affecting workspace source or other contexts.
 
-To make workspace source changes visible to builds, commit the affected unit
-with `vcs.commit(repoPath, message)` or the workspace-dev `commitWorkspace`
-wrapper. Editing files alone does not move the context head, recompute
-effective versions, trigger rebuilds, or mirror changes back to the dev
-template. Existing contexts do not auto-reset when another context commits.
+Workspace source changes are edit-first: the `edit`/`write` tools (and
+`vcs.applyEdits` directly) apply each change as one atomic GAD transition on
+your context head and project it to disk, which moves the head, recomputes
+effective versions, and triggers rebuilds — so the change is visible to builds
+immediately, with no separate commit step. Do not edit via `fs.writeFile` and
+expect it to build; a stray write never lands on the head. Existing contexts do
+not auto-reset when another context publishes.
 
 ## Trusted Apps And Extensions
 

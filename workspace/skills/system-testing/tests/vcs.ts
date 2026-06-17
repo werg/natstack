@@ -21,7 +21,7 @@ export const vcsTests: TestCase[] = [
     description: "Create a GAD workspace commit and report its state hash",
     category: "vcs",
     prompt:
-      "Create a small temporary project file, commit it with vcs.commit, and report the resulting state hash. Finish with VCS_COMMIT_OK and state:.",
+      "Create a small temporary project file with vcs.applyEdits (edit-first: the write commits to your context head) and report the resulting state hash. Finish with VCS_COMMIT_OK and state:.",
     validate: (result) => checked(result, ["VCS_COMMIT_OK", "state:"]),
   },
   {
@@ -29,7 +29,7 @@ export const vcsTests: TestCase[] = [
     description: "Create multiple GAD commits and inspect the VCS log",
     category: "vcs",
     prompt:
-      "Create two small temporary commits with vcs.commit, inspect vcs.log, and report the observed entries. Finish with VCS_LOG_OK and commits:2.",
+      "Create two small temporary commits with vcs.applyEdits (each write commits to your context head), inspect vcs.log, and report the observed entries. Finish with VCS_LOG_OK and commits:2.",
     validate: (result) => checked(result, ["VCS_LOG_OK", "commits:2"]),
   },
   {
@@ -37,7 +37,7 @@ export const vcsTests: TestCase[] = [
     description: "Diff two committed GAD states",
     category: "vcs",
     prompt:
-      "Create two committed VCS states that differ by one temporary file edit, then compare them with vcs.diff. Finish with VCS_DIFF_OK and changed-path.",
+      "Create two committed VCS states with vcs.applyEdits that differ by one temporary file edit, then compare them with vcs.diff. Finish with VCS_DIFF_OK and changed-path.",
     validate: (result) => checked(result, ["VCS_DIFF_OK", "changed-path"]),
   },
   {

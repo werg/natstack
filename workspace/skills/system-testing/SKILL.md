@@ -517,9 +517,9 @@ return {
 `build.listRecentBuildEvents` accepts an optional unit name or workspace path,
 for example `["panels/example"]`. Events include `build-error` messages and, for
 state-triggered builds, a `trigger` with head, state hash, changed paths, and the
-verified caller that caused the commit when the server can attribute it. Results
-from `vcs.commit(...)` also include `buildEventsQuery`, a machine-readable
-reminder for the same follow-up lookup.
+verified caller that caused the edit when the server can attribute it. An edit
+applied via `vcs.applyEdits(...)` returns the resulting `stateHash` and
+`changedPaths`; pass the unit path here for the matching build-event lookup.
 
 ### Agent debug port
 
@@ -596,8 +596,9 @@ with ordinary smoke testing:
 
 - state args must update the caller panel immediately from the returned host
   snapshot, while host-published events still update non-callers
-- browser-panel workspace commits must use `vcs.commit()`; external Git remotes
-  use `@natstack/git` with `credentials.gitHttp()`
+- browser-panel workspace edits must go through `edit`/`write`/`vcs.applyEdits`
+  (edit-first — they commit + project atomically, no separate commit step);
+  external Git remotes use `@natstack/git` with `credentials.gitHttp()`
 - GAD raw SQL uses positional `(sql, bindings)` calls
 - channel/history inspection must stay bounded enough for agent context
 - large eval/tool results must complete visibly without pending invocation
@@ -605,7 +606,8 @@ with ordinary smoke testing:
 - the standard agent participant debug method should be discoverable
 - rich interaction surfaces must exercise MDX, `inline_ui`,
   `load_action_bar`, and custom messages without hand-writing raw channel rows
-- project lifecycle flows must create real projects, commit them, fork
+- project lifecycle flows must create real projects (scaffolding applies files
+  as one `vcs.applyEdits` transition — no separate commit step), fork
   panel and worker sources, open the result, and inspect snapshots/state
 - CDP/Playwright automation must be able to mutate browser UI, type/click,
   evaluate DOM state, and take screenshots through runtime panel handles
@@ -659,13 +661,13 @@ See `meta/natstack.yml` for the current testing agent configuration.
 
 ## Build Model
 
-**Workspace runtime units are built from immutable VCS states, not from the working tree.** When fixing bugs in workspace source files (`apps/`, `extensions/`, `packages/`, `panels/`, `workers/`, `skills/`), commit the unit before changes take effect. Use `vcs.commit(repoPath, message)` or the workspace-dev `commitWorkspace` wrapper. Editing a file alone does nothing — the build system extracts source from committed workspace states.
+**Workspace runtime units are built from the committed context head, in lockstep with your edits.** When fixing bugs in workspace source files (`apps/`, `extensions/`, `packages/`, `panels/`, `workers/`, `skills/`), edit with the `edit`/`write` tools or `vcs.applyEdits` — each edit commits to your context head and projects to disk atomically, so it takes effect for builds immediately with no separate commit step. Do not edit via `fs.writeFile` and expect it to build: the worktree is a disposable projection and the build system reads committed GAD state, so the edit must land on the head.
 
 When a loose system test asks for VCS status, logs, or diffs, use the documented
 runtime API shape rather than guessing from filesystem terms:
 
-- `vcs.status()` checks the current context head; its optional argument is a materialized VCS head such as `main` or `ctx:...`.
-- `vcs.commit("panels/example", "message")` snapshots the context state and returns `stateHash`.
+- `vcs.status()` reports the current context head's unpublished changes vs `main` (a GAD state-diff, not filesystem dirtiness); its optional argument is a materialized VCS head such as `main` or `ctx:...`.
+- `vcs.applyEdits({ baseStateHash, edits })` applies an edit to the context head (commits + projects atomically) and returns `stateHash` and `changedPaths`.
 - `vcs.diff(leftStateHash, rightStateHash)` compares committed state hashes.
 - `vcs.readFile("", "path")` reads from the current context/head.
 - `vcs.publishStatus()` reports unpublished context changes without moving `main`.

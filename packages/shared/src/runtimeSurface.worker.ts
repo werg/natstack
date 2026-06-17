@@ -68,7 +68,6 @@ export const workerRuntimeSurface: RuntimeSurface = {
       "removeSharedRemote",
     ]),
     vcs: namespaceEntry([
-      "commit",
       "applyEdits",
       "readFile",
       "listFiles",

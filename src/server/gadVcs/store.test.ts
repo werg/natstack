@@ -177,22 +177,6 @@ describe("GadVcs snapshot/materialize", () => {
     expect(paths).not.toContain("MERGE_CONFLICTS.md");
   });
 
-  it("reports status against the durable ref", async () => {
-    await writeTree(workDir, { "a.txt": "one", "b.txt": "two" });
-    await vcs.snapshotDir(workDir);
-
-    const cleanStatus = await vcs.status(workDir);
-    expect(cleanStatus.dirty).toBe(false);
-
-    await writeTree(workDir, { "a.txt": "edited", "c.txt": "new" });
-    await fsp.rm(path.join(workDir, "b.txt"));
-    const dirtyStatus = await vcs.status(workDir);
-    expect(dirtyStatus.dirty).toBe(true);
-    expect(dirtyStatus.changed).toEqual(["a.txt"]);
-    expect(dirtyStatus.added).toEqual(["c.txt"]);
-    expect(dirtyStatus.removed).toEqual(["b.txt"]);
-  });
-
   it("forks a context head sharing the main lineage", async () => {
     await writeTree(workDir, { "a.txt": "one" });
     const snap = await vcs.snapshotDir(workDir);

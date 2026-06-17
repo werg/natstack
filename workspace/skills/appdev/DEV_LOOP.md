@@ -1,28 +1,31 @@
 # App Development Loop
 
-Workspace app source is built from committed VCS state. Editing files locally is
-not enough.
+Workspace app source is built from the committed context head, which stays in
+lockstep with your edits. Editing files via the `edit`/`write` tools (or
+`vcs.applyEdits`) commits + projects atomically — there is no separate commit
+step — but a stray `fs.writeFile` that never lands on the head is not enough.
 
 ## Standard Loop
 
-1. Edit files under `apps/<name>`.
+1. Edit files under `apps/<name>` with the `edit`/`write` tools — each edit
+   commits to your context head and projects to disk atomically.
 2. Run focused type/tests where available.
-3. Commit the workspace state with `vcs.commit` or the workspace-dev helpers.
-4. Publish the context when you are working outside `main`.
-5. Approve the app install/update/source-change prompt if the trusted identity
+3. Publish the context when you are working outside `main`.
+4. Approve the app install/update/source-change prompt if the trusted identity
    changed.
-6. Wait for rebuild/reconcile.
-7. Use the target-specific update prompt to adopt the new build, or keep the
+5. Wait for rebuild/reconcile.
+6. Use the target-specific update prompt to adopt the new build, or keep the
    currently loaded build until you are ready.
 
-For context agents, this usually means using workspace VCS/runtime APIs rather
-than direct shell file writes. See `workspace-dev/TOOLS.md` for common helper
-patterns.
+For context agents, this means making edits through the workspace `edit`/`write`
+tools (which apply through `vcs.applyEdits`) rather than direct shell file
+writes. See `workspace-dev/TOOLS.md` for common helper patterns.
 
 In development, app reconciliation prints an app status diagnostic with source,
-target, active EV, build key, source HEAD, and clean/dirty state. Dirty app
-source means the running trusted app build does not include those uncommitted
-changes yet. Set `NATSTACK_APP_DEV_STATUS=0` to silence the diagnostic, or
+target, active EV, build key, source HEAD, and clean/dirty state. Here
+"dirty" means the context head has unpublished changes ahead of `main` that the
+running trusted app build does not yet include — not filesystem dirtiness. Set
+`NATSTACK_APP_DEV_STATUS=0` to silence the diagnostic, or
 `NATSTACK_APP_DEV_STATUS=1` to force it outside `NODE_ENV=development`.
 
 ## Approval Behavior
@@ -93,7 +96,7 @@ Common failure modes:
 - missing `panel-hosting` blocks view service methods
 - missing app event subscriber breaks shell event subscriptions
 - unsupported capability rejects app loading
-- app source edited but not committed, so build did not change
+- app source edited via a stray `fs.writeFile` that never landed on the head (use `edit`/`write`), so build did not change
 
 ## React Native App Loop
 

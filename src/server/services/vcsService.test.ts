@@ -33,81 +33,21 @@ function entityCacheWithContext(
 }
 
 describe("vcsService", () => {
-  describe("commit / status", () => {
-    it("commits the caller's context head by default", async () => {
-      const commitHead = vi.fn(async () => ({
-        head: "ctx:ctx-1",
-        stateHash: "state:abc",
-        eventId: "e1",
-        headHash: "h1",
-        fileCount: 2,
-        unchanged: false,
-        changedPaths: ["panels/spectrolite/index.ts"],
-      }));
-      const service = createVcsService({
-        workspaceVcs: { commitHead } as never,
-        entityCache: entityCacheWithContext("panel-source", "ctx-1"),
-      });
-
-      const result = (await service.handler({ caller: panelCaller() }, "commit", [
-        "panels/spectrolite",
-        "My real message",
-        undefined,
-      ])) as { changed: boolean };
-
-      // Exactly one commit, carrying the user's message — add-all must not
-      // have pre-committed the changes under a placeholder summary.
-      expect(commitHead).toHaveBeenCalledTimes(1);
-      expect(commitHead).toHaveBeenCalledWith(
-        "ctx:ctx-1",
-        expect.objectContaining({ summary: "My real message" })
-      );
-      expect(result.changed).toBe(true);
-    });
-
-    it("allows shell callers to commit an explicit context head", async () => {
-      const commitHead = vi.fn(async () => ({
-        head: "ctx:ctx-1",
-        stateHash: "state:abc",
-        eventId: "e1",
-        headHash: "h1",
-        fileCount: 1,
-        unchanged: false,
-        changedPaths: ["panels/spectrolite/index.ts"],
-      }));
-      const service = createVcsService({
-        workspaceVcs: { commitHead } as never,
-      });
-      const shell = createVerifiedCaller("shell:dev_cli", "shell");
-
-      const result = (await service.handler({ caller: shell }, "commit", [
-        "panels/spectrolite",
-        "Shell message",
-        { head: "ctx:ctx-1" },
-      ])) as { head: string; stateHash: string };
-
-      expect(commitHead).toHaveBeenCalledWith(
-        "ctx:ctx-1",
-        expect.objectContaining({ summary: "Shell message" })
-      );
-      expect(result).toMatchObject({ head: "ctx:ctx-1", stateHash: "state:abc" });
-    });
-
+  describe("status / write authorization", () => {
     it("rejects explicit foreign heads for context-bound callers", async () => {
-      const commitHead = vi.fn();
+      // The head-write gate is shared by every write method; exercise it
+      // through `merge` (whose target is a head write) now that the FS-snapshot
+      // `commit` RPC is gone.
+      const mergeHeads = vi.fn();
       const service = createVcsService({
-        workspaceVcs: { commitHead } as never,
+        workspaceVcs: { mergeHeads } as never,
         entityCache: entityCacheWithContext("panel-source", "ctx-1"),
       });
 
       await expect(
-        service.handler({ caller: panelCaller() }, "commit", [
-          "panels/spectrolite",
-          "Bad target",
-          { head: "ctx:ctx-2" },
-        ])
+        service.handler({ caller: panelCaller() }, "merge", ["ctx:ctx-1", "ctx:ctx-2"])
       ).rejects.toThrow("Callers may only write their own context head (ctx:ctx-1)");
-      expect(commitHead).not.toHaveBeenCalled();
+      expect(mergeHeads).not.toHaveBeenCalled();
     });
 
     it("allows shell callers to read explicit head status", async () => {

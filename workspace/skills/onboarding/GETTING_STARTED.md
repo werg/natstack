@@ -299,13 +299,13 @@ eval({ code: `
 })
 ```
 
-Then edit the generated files with Read/Edit/Write tools and launch:
+Then edit the generated files with Read/Edit/Write tools — each edit commits to
+your context head and projects to disk atomically (edit-first), so it is
+build-ready immediately — and launch:
 
 ```
 eval({ code: `
-  import { commitWorkspace } from "@workspace-skills/workspace-dev";
   import { openPanel } from "@workspace/runtime";
-  await commitWorkspace("panels/hello", "Initial launch");
   await openPanel("panels/hello");
 `
 })

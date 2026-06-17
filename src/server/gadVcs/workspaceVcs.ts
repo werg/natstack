@@ -558,7 +558,18 @@ export class WorkspaceVcs implements WorkspaceStateSource, BuildSourceProvider {
     return pending;
   }
 
-  /** Commit the main workspace tree (vcs.commit / launch_panel pipeline). */
+  // -------------------------------------------------------------------------
+  // Worktree ingest (FS → GAD)
+  //
+  // The internal worktree-snapshot primitive: scan a head's working tree and
+  // ingest any out-of-band changes onto the head. This is the FS→GAD boundary
+  // — needed because `main` IS the real workspace (direct edits, `git push`),
+  // and used by bootstrap, merge resolution, and tests. It is NOT exposed over
+  // RPC: sandboxed callers commit through `applyEdits` (edit-first), never by
+  // snapshotting their context worktree behind GAD's back.
+  // -------------------------------------------------------------------------
+
+  /** Snapshot the main workspace worktree onto `main`. */
   commit(
     opts: {
       summary?: string;
@@ -569,7 +580,7 @@ export class WorkspaceVcs implements WorkspaceStateSource, BuildSourceProvider {
     return this.commitHead(VCS_MAIN_HEAD, opts);
   }
 
-  /** Commit a context folder onto its `ctx:{id}` head. */
+  /** Snapshot a context folder worktree onto its `ctx:{id}` head. */
   commitContext(
     contextId: string,
     opts: {
@@ -1776,11 +1787,51 @@ export class WorkspaceVcs implements WorkspaceStateSource, BuildSourceProvider {
   }
 
   /**
+   * GAD state-diff of `head` against its publish baseline (`main`): the
+   * unpublished changes on this head. Pure CAS computation — there is NO
+   * worktree scan, because the on-disk tree is a disposable projection of the
+   * head (edits commit through `applyEdits`, which keeps disk and head in
+   * lockstep). `head` equal to the baseline — or `main` against itself — yields
+   * no changes. This is the single diff both {@link statusHead} and
+   * {@link publishStatus} are built on. `added`/`removed` are oriented from the
+   * baseline's perspective: a file present on `head` but not on `main` is
+   * "added", the change a publish would apply.
+   */
+  private async unpublishedDelta(
+    head: string,
+    mainHead: string = VCS_MAIN_HEAD
+  ): Promise<{
+    headStateHash: string | null;
+    baseStateHash: string | null;
+    added: string[];
+    removed: string[];
+    changed: string[];
+  }> {
+    const headStateHash = await this.resolveHead(head);
+    const baseStateHash = await this.resolveHead(mainHead);
+    if (!headStateHash || !baseStateHash || headStateHash === baseStateHash) {
+      return { headStateHash, baseStateHash, added: [], removed: [], changed: [] };
+    }
+    const diff = await this.gad().call<{
+      added: Array<{ path: string }>;
+      removed: Array<{ path: string }>;
+      changed: Array<{ path: string }>;
+    }>("diffGadStates", { leftStateHash: baseStateHash, rightStateHash: headStateHash });
+    return {
+      headStateHash,
+      baseStateHash,
+      added: diff.added.map((file) => file.path),
+      removed: diff.removed.map((file) => file.path),
+      changed: diff.changed.map((file) => file.path),
+    };
+  }
+
+  /**
    * Publish status for a context head: how far it is **ahead of `main`**
-   * (the unpublished changes). Distinct from {@link statusHead}, which reports
-   * working-tree dirtiness against the head's own ref — this diffs the durable
-   * ctx head against `main`, the signal the editor's "● N unpublished changes"
-   * indicator and Publish action are built on.
+   * (the unpublished changes). The signal the editor's "● N unpublished
+   * changes" indicator and Publish action are built on. Same underlying diff
+   * as {@link statusHead}, shaped for the publish UI (ahead count + both
+   * state hashes).
    */
   async publishStatus(
     head: string,
@@ -1792,22 +1843,19 @@ export class WorkspaceVcs implements WorkspaceStateSource, BuildSourceProvider {
     ahead: number;
     files: Array<{ path: string; kind: "added" | "removed" | "changed" }>;
   }> {
-    const ctxStateHash = await this.resolveHead(head);
-    const mainStateHash = await this.resolveHead(mainHead);
-    if (!ctxStateHash || !mainStateHash || ctxStateHash === mainStateHash) {
-      return { head, ctxStateHash, mainStateHash, ahead: 0, files: [] };
-    }
-    const diff = await this.gad().call<{
-      added: Array<{ path: string }>;
-      removed: Array<{ path: string }>;
-      changed: Array<{ path: string }>;
-    }>("diffGadStates", { leftStateHash: mainStateHash, rightStateHash: ctxStateHash });
+    const delta = await this.unpublishedDelta(head, mainHead);
     const files = [
-      ...diff.added.map((file) => ({ path: file.path, kind: "added" as const })),
-      ...diff.removed.map((file) => ({ path: file.path, kind: "removed" as const })),
-      ...diff.changed.map((file) => ({ path: file.path, kind: "changed" as const })),
+      ...delta.added.map((path) => ({ path, kind: "added" as const })),
+      ...delta.removed.map((path) => ({ path, kind: "removed" as const })),
+      ...delta.changed.map((path) => ({ path, kind: "changed" as const })),
     ];
-    return { head, ctxStateHash, mainStateHash, ahead: files.length, files };
+    return {
+      head,
+      ctxStateHash: delta.headStateHash,
+      mainStateHash: delta.baseStateHash,
+      ahead: files.length,
+      files,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -1962,6 +2010,11 @@ export class WorkspaceVcs implements WorkspaceStateSource, BuildSourceProvider {
   }
 
   /** Working-tree status of a head against its durable ref. */
+  /**
+   * Status of a head: its unpublished changes against `main` (a pure GAD
+   * state-diff, never a worktree scan). `dirty` is true iff the head is ahead
+   * of `main`; `main` is always clean (it is the baseline).
+   */
   async statusHead(head: string): Promise<{
     stateHash: string | null;
     dirty: boolean;
@@ -1969,7 +2022,14 @@ export class WorkspaceVcs implements WorkspaceStateSource, BuildSourceProvider {
     removed: string[];
     changed: string[];
   }> {
-    return await this.vcs.status(this.dirForHead(head), head);
+    const delta = await this.unpublishedDelta(head);
+    return {
+      stateHash: delta.headStateHash,
+      dirty: delta.added.length > 0 || delta.removed.length > 0 || delta.changed.length > 0,
+      added: delta.added,
+      removed: delta.removed,
+      changed: delta.changed,
+    };
   }
 }
 

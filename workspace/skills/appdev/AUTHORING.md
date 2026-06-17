@@ -137,8 +137,10 @@ Guidelines:
 - Keep native host code outside `workspace/apps/mobile`; the workspace mobile
   app should consume native host APIs through its service wrappers.
 - Do not import server/main internals from workspace app code.
-- Do not assume app source edits are live. Commit the workspace app unit to
-  update the active build.
+- Edit app source via the `edit`/`write` tools (or `vcs.applyEdits`): each edit
+  commits to your context head and projects to disk atomically, so it is
+  build-ready immediately (edit-first — no separate commit step). Do not edit
+  via `fs.writeFile` and expect it to update the active build.
 
 ## Choosing Apps vs Panels vs Extensions
 

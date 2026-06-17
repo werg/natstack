@@ -1,34 +1,41 @@
 import { fs, vcs } from "@workspace/runtime";
 
 // ---------------------------------------------------------------------------
-// commitWorkspace — workspace-dev convenience wrapper around the vcs commit API
+// writeProjectFiles — GAD-native scaffold write. Edit-first: the write IS the
+// commit (one atomic transition on the caller's context head); disk is a
+// projection of the head, never written behind GAD's back. There is no
+// separate commit step.
 // ---------------------------------------------------------------------------
 
-/**
- * Commit the working tree as a workspace transition (GAD-native vcs).
- * The `dir` argument scopes the build-events pointer (e.g. "panels/my-app").
- */
-export async function commitWorkspace(
-  dir: string,
-  message: string
-): Promise<string> {
-  const result = await vcs.commit(dir, message);
-  return result.message;
+/** Encode bytes as base64 for GAD binary file content. */
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
 }
 
-/** Write a set of project files (creating parent directories). */
+/**
+ * Create a set of new project files as one atomic GAD transition, rooted at
+ * `dir`. GAD addresses files by full path — no parent directories to create —
+ * and `applyEdits` both commits to the head and projects the files to disk.
+ */
 async function writeProjectFiles(
   dir: string,
   files: Record<string, string | Uint8Array>
 ): Promise<void> {
-  for (const [filePath, content] of Object.entries(files)) {
-    const fullPath = `${dir}/${filePath}`;
-    const parentDir = fullPath.split("/").slice(0, -1).join("/");
-    if (parentDir && parentDir !== dir) {
-      await fs.mkdir(parentDir, { recursive: true });
-    }
-    await fs.writeFile(fullPath, content);
-  }
+  const root = dir.replace(/^\/+/, "").replace(/\/+$/, "");
+  const edits = Object.entries(files).map(([filePath, content]) => ({
+    kind: "create" as const,
+    path: `${root}/${filePath.replace(/^\/+/, "")}`,
+    content:
+      typeof content === "string"
+        ? { kind: "text" as const, text: content }
+        : { kind: "bytes" as const, base64: bytesToBase64(content) },
+  }));
+  await vcs.applyEdits({ edits });
 }
 
 const TYPE_DIRS: Record<string, string> = {
@@ -419,9 +426,9 @@ export default {
       break;
   }
 
-  // Write the scaffold and commit it as a workspace transition.
+  // Write the scaffold as one atomic GAD transition (edit-first: the write is
+  // the commit; no separate commit step).
   await writeProjectFiles(projectPath, files);
-  await vcs.commit(projectPath, `Create ${projectType}: ${title}`);
 
   return { created: projectPath, files: Object.keys(files) };
 }
@@ -444,7 +451,6 @@ export interface ForkProjectOptions {
         tests?: boolean;
       };
   classMap?: Record<string, string>;
-  commitMessage?: string;
 }
 
 export interface ForkProjectResult {
@@ -690,7 +696,6 @@ export async function forkProject(options: ForkProjectOptions): Promise<ForkProj
   const initialFiles: Record<string, string | Uint8Array> = {};
   for (const [rel, content] of Object.entries(planned)) initialFiles[rel] = content;
   await writeProjectFiles(to, initialFiles);
-  await vcs.commit(to, options.commitMessage ?? `Fork ${from} to ${to}`);
   return {
     source: from,
     created: to,

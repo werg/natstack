@@ -1942,10 +1942,35 @@ async function main() {
   // the main process has its OWN FsService for panel-facing FS RPC)
   {
     const { FsService } = await import("@natstack/shared/fsService");
+    const { isWritableVcsPath, vcsContextHead } = await import("./gadVcs/store.js");
+    // Reroute: sandboxed context mutations to GAD-tracked paths commit through
+    // GAD (edit-first) instead of writing the worktree projection directly.
+    const vcsBridge: import("@natstack/shared/fsService").FsVcsBridge = {
+      isTracked: (relPath) => isWritableVcsPath(relPath),
+      applyEdits: async (contextId, edits, actor) => {
+        const head = vcsContextHead(contextId);
+        const baseStateHash = await workspaceVcs.resolveHead(head);
+        if (!baseStateHash) {
+          throw new Error(`fs reroute: context head ${head} has no base state to edit`);
+        }
+        const result = await workspaceVcs.applyEdits({ head, baseStateHash, edits, actor });
+        if (result.status === "conflicted") {
+          throw new Error(
+            `fs write to ${head} conflicted with a concurrent change to the same region; retry the operation`
+          );
+        }
+      },
+      readFile: async (contextId, relPath) => {
+        const file = await workspaceVcs.readFile(vcsContextHead(contextId), relPath);
+        return file ? file.content : null;
+      },
+      listFiles: async (contextId) =>
+        (await workspaceVcs.listFiles(vcsContextHead(contextId))).map((f) => f.path),
+    };
     container.registerManaged({
       name: "fsService",
       async start() {
-        return new FsService(contextFolderManager, entityCache);
+        return new FsService(contextFolderManager, entityCache, { vcsBridge });
       },
     });
   }

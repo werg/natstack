@@ -26,7 +26,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { FsService, _setRipgrepPathForTests, type GrepResult } from "./fsService.js";
+import {
+  FsService,
+  _setRipgrepPathForTests,
+  type GrepResult,
+  type FsVcsBridge,
+  type FsVcsContent,
+  type FsVcsEditOp,
+} from "./fsService.js";
 import { EntityCache } from "./runtime/entityCache.js";
 import type { EntityKind, EntityRecord } from "./runtime/entitySpec.js";
 import type { ContextFolderManager } from "./contextFolderManager.js";
@@ -605,4 +612,112 @@ describe("FsService", () => {
     };
     entityCache._onActivate(record);
   }
+
+  // ─── GAD reroute (tracked context mutations commit through GAD) ────────────
+  describe("GAD reroute", () => {
+    function makeMockBridge() {
+      const files = new Map<string, FsVcsContent>(); // `${contextId}/${rel}` → content
+      const applyCalls: Array<{ contextId: string; edits: FsVcsEditOp[] }> = [];
+      const isScratch = (rel: string) =>
+        rel === ".tmp" ||
+        rel.startsWith(".tmp/") ||
+        rel === ".testkit" ||
+        rel.startsWith(".testkit/");
+      const bridge: FsVcsBridge = {
+        isTracked: async (rel) => rel.length > 0 && !isScratch(rel),
+        applyEdits: async (contextId, edits) => {
+          applyCalls.push({ contextId, edits });
+          for (const e of edits) {
+            const key = `${contextId}/${e.path}`;
+            if (e.kind === "write") files.set(key, e.content);
+            else if (e.kind === "delete") files.delete(key);
+          }
+        },
+        readFile: async (contextId, rel) => files.get(`${contextId}/${rel}`) ?? null,
+        listFiles: async (contextId) =>
+          [...files.keys()]
+            .filter((k) => k.startsWith(`${contextId}/`))
+            .map((k) => k.slice(contextId.length + 1)),
+      };
+      return { bridge, applyCalls, files };
+    }
+
+    it("routes a tracked-path writeFile through GAD, not raw disk", async () => {
+      const { bridge, applyCalls, files } = makeMockBridge();
+      const svc = new FsService(makeStubFolderManager(tmpRoot), entityCache, { vcsBridge: bridge });
+      const ctx = makeWorkerCtx("do:src:class:key");
+      registerContext(ctx.caller.runtime.id, "do", "ctx-gad");
+
+      await svc.handleCall(ctx, "writeFile", ["/panels/app/index.ts", "export const x = 1;\n"]);
+
+      expect(applyCalls).toHaveLength(1);
+      expect(applyCalls[0]!.edits).toEqual([
+        {
+          kind: "write",
+          path: "panels/app/index.ts",
+          content: { kind: "text", text: "export const x = 1;\n" },
+        },
+      ]);
+      expect(files.get("ctx-gad/panels/app/index.ts")).toEqual({
+        kind: "text",
+        text: "export const x = 1;\n",
+      });
+      // The worktree projection was NOT written directly.
+      expect(existsSync(path.join(tmpRoot, "ctx-gad", "panels", "app", "index.ts"))).toBe(false);
+    });
+
+    it("leaves scratch-path writes (.tmp) on direct disk, never through GAD", async () => {
+      const { bridge, applyCalls } = makeMockBridge();
+      const svc = new FsService(makeStubFolderManager(tmpRoot), entityCache, { vcsBridge: bridge });
+      const ctx = makeWorkerCtx("do:src:class:key");
+      registerContext(ctx.caller.runtime.id, "do", "ctx-scratch");
+
+      const tmp = (await svc.handleCall(ctx, "mktemp", ["edit"])) as string;
+      await svc.handleCall(ctx, "writeFile", [tmp, "scratch"]);
+
+      expect(applyCalls).toHaveLength(0);
+      expect(existsSync(path.join(tmpRoot, "ctx-scratch", tmp.replace(/^\//, "")))).toBe(true);
+    });
+
+    it("routes a tracked-path delete through GAD", async () => {
+      const { bridge, applyCalls, files } = makeMockBridge();
+      const svc = new FsService(makeStubFolderManager(tmpRoot), entityCache, { vcsBridge: bridge });
+      const ctx = makeWorkerCtx("do:src:class:key");
+      registerContext(ctx.caller.runtime.id, "do", "ctx-del");
+
+      await svc.handleCall(ctx, "writeFile", ["/packages/lib/a.ts", "a"]);
+      await svc.handleCall(ctx, "unlink", ["/packages/lib/a.ts"]);
+
+      expect(files.has("ctx-del/packages/lib/a.ts")).toBe(false);
+      expect(applyCalls.at(-1)!.edits).toEqual([{ kind: "delete", path: "packages/lib/a.ts" }]);
+    });
+
+    it("commits an atomic-write rename (.tmp → tracked) through GAD and drops the temp", async () => {
+      const { bridge, files } = makeMockBridge();
+      const svc = new FsService(makeStubFolderManager(tmpRoot), entityCache, { vcsBridge: bridge });
+      const ctx = makeWorkerCtx("do:src:class:key");
+      registerContext(ctx.caller.runtime.id, "do", "ctx-atomic");
+
+      const tmp = (await svc.handleCall(ctx, "mktemp", ["w"])) as string;
+      await svc.handleCall(ctx, "writeFile", [tmp, "final\n"]);
+      await svc.handleCall(ctx, "rename", [tmp, "/skills/x/SKILL.md"]);
+
+      expect(files.get("ctx-atomic/skills/x/SKILL.md")).toEqual({
+        kind: "bytes",
+        base64: Buffer.from("final\n").toString("base64"),
+      });
+      expect(existsSync(path.join(tmpRoot, "ctx-atomic", tmp.replace(/^\//, "")))).toBe(false);
+    });
+
+    it("rejects opening a tracked path for writing (must go through GAD)", async () => {
+      const { bridge } = makeMockBridge();
+      const svc = new FsService(makeStubFolderManager(tmpRoot), entityCache, { vcsBridge: bridge });
+      const ctx = makeWorkerCtx("do:src:class:key");
+      registerContext(ctx.caller.runtime.id, "do", "ctx-open");
+
+      await expect(svc.handleCall(ctx, "open", ["/panels/app/index.ts", "w"])).rejects.toThrow(
+        /must commit through GAD/
+      );
+    });
+  });
 });

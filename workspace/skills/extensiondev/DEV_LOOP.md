@@ -1,14 +1,17 @@
 # Dev loop
 
 Extension source authoring happens in the shared workspace VCS state, like any
-other workspace unit. Saving files locally doesn't restart anything — a
-committed workspace state advance is the dev signal.
+other workspace unit. Edits are edit-first — the `edit`/`write` tools commit
+each change to your context head and project it to disk atomically — but
+context-head work doesn't restart anything. Publishing that head into `main`
+(a `main`-head advance) is the dev signal.
 
 ## The flow
 
-1. Edit files under `workspace/extensions/<name>/`.
-2. Commit the workspace state with `vcs.commit` or the workspace-dev helpers.
-3. The state advance triggers the extension-specific approval prompt.
+1. Edit files under `workspace/extensions/<name>/` with the `edit`/`write`
+   tools — each edit commits to your context head and projects to disk.
+2. Publish your context head into `main` (`vcs.publish`).
+3. The `main`-head advance triggers the extension-specific approval prompt.
 4. On approve, the manager rebuilds the bundle, replaces the running process, and runs `activate(ctx)` again.
 5. On deny, the main-head advance is rejected and the old extension keeps running.
 
@@ -29,17 +32,21 @@ This is the one place the extension trust model loosens for ergonomics. Source
 updates for extensions are privileged — review what you're publishing before
 granting a session.
 
-## Committing from a panel or worker
+## Publishing from a panel or worker
+
+Edits to extension source are already committed to your context head (edit-first
+— the `edit`/`write` tools apply through `vcs.applyEdits`). To make them affect
+the running extension, publish your context head into `main`:
 
 ```ts
-import { commitWorkspace } from "@workspace-skills/workspace-dev";
+import { vcs } from "@workspace/runtime";
 
-await commitWorkspace("extensions/hello", "Add greet method");
+await vcs.publish();
 ```
 
-`commitWorkspace` from the `workspace-dev` skill delegates to `vcs.commit` and
-works on extension units the same way it works on panel/worker units. The first
-commit can prompt; subsequent commits in a dev session auto-accept.
+`vcs.publish` works on extension units the same way it works on panel/worker
+units; the `main`-head advance is what triggers the rebuild. The first publish
+can prompt; subsequent publishes in a dev session auto-accept.
 
 ## Inspector (dev mode only)
 
@@ -96,4 +103,4 @@ To adopt dependency changes (a `@workspace/runtime` commit, an `npm` version bum
 
 ## Remove a Declaration
 
-Remove the extension's entry from the `extensions:` list in `meta/natstack.yml` and commit the workspace state. The next reconcile stops the process and deletes its registry entry; the per-extension storage scratch is retained. The workspace source tree stays until you remove those files separately. Userland approval grants the extension received persist (they're keyed by `(principal, extension-name)`); re-declaring under the same name reuses them. The declared set is authoritative.
+Remove the extension's entry from the `extensions:` list in `meta/natstack.yml` (the edit commits to your context head) and publish into `main`. The next reconcile stops the process and deletes its registry entry; the per-extension storage scratch is retained. The workspace source tree stays until you remove those files separately. Userland approval grants the extension received persist (they're keyed by `(principal, extension-name)`); re-declaring under the same name reuses them. The declared set is authoritative.

@@ -326,9 +326,9 @@ return {
 
 `build.listRecentBuildEvents` can be filtered with a unit name or
 workspace-relative path. State-triggered events include `trigger.head`,
-`trigger.stateHash`, and `trigger.changedPaths`. Results from `vcs.commit(...)`
-also include `buildEventsQuery`, a machine-readable reminder for the same
-follow-up lookup.
+`trigger.stateHash`, and `trigger.changedPaths`. An edit applied via
+`vcs.applyEdits(...)` returns the resulting `stateHash` and `changedPaths`;
+pass the unit path here for the matching build-event lookup.
 
 ## Phase 3: Classify the Root Cause
 
@@ -384,8 +384,10 @@ Pick the checkout type based on what failed.
 
 If the bug is in workspace-owned runtime source — from your file root that is
 `apps/`, `extensions/`, `packages/`, `panels/`, `workers/`, or `skills/` —
-edit the files directly in your context and commit with `vcs.commit` (or the
-workspace-dev `commitWorkspace` wrapper). These trees are live build inputs.
+edit the files directly in your context with the `edit`/`write` tools (which
+apply through `vcs.applyEdits`). Each edit commits to your context head and
+projects to disk atomically — there is no separate commit step. These trees are
+live build inputs.
 
 For `apps/` bugs, read `skills/appdev/SKILL.md` before
 editing. App fixes can require target-specific validation: Electron host chrome,
@@ -511,13 +513,11 @@ await fs.writeFile("projects/natstack/src/server/services/fsService.ts", fixedCo
 
 ## Phase 7: Publish, then Verify
 
-**Critical:** The build system builds from committed workspace VCS states, not from the working tree. Runtime-unit edits have no effect until you commit the workspace unit.
+**Critical:** The build system builds from the committed context head, which is in lockstep with your edits. Edits made via the `edit`/`write` tools (or `vcs.applyEdits`) commit to your context head and project to disk atomically — there is no separate commit step. A stray `fs.writeFile` that never lands on the head has no effect on the build.
 
 ```typescript
-// For workspace runtime units, commit through the runtime API:
-if (!scope.checkoutDir.startsWith("projects/")) {
-  await vcs.commit(scope.checkoutDir, `fix: describe the change`);
-}
+// For workspace runtime units, editing via edit/write/vcs.applyEdits already
+// committed the change to your context head — no separate commit call needed.
 
 // For plain external project repos, use @natstack/git with credentials.gitHttp():
 // const externalGit = new GitClient(fs, { http: credentials.gitHttp() });
@@ -556,7 +556,7 @@ console.log(`Re-test: ${retest.result.passed ? "PASS" : "FAIL"}`);
 Before assuming a fix failed, verify provenance:
 
 - the checkout containing the edit is the context the test is using
-- the workspace unit was committed with `vcs.commit` or `commitWorkspace`
+- the edit landed on the head via `edit`/`write`/`vcs.applyEdits` (not a stray `fs.writeFile`)
 - the build/reload consumed the committed state
 - external project edits under `projects/` were applied to the server under test
 

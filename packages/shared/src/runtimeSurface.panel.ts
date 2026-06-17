@@ -136,7 +136,6 @@ export const panelRuntimeSurface: RuntimeSurface = {
       "removeSharedRemote",
     ]),
     vcs: namespaceEntry([
-      "commit",
       "applyEdits",
       "readFile",
       "listFiles",

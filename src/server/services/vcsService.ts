@@ -14,8 +14,6 @@ import type { EntityCache } from "@natstack/shared/runtime/entityCache";
 import {
   vcsMethods,
   type VcsApplyEditsInput,
-  type VcsCommitOptions,
-  type VcsCommitResult,
   type VcsRecallInput,
 } from "@natstack/shared/serviceSchemas/vcs";
 import { normalizeWorkspaceRepoPath } from "@natstack/shared/workspace/remotes";
@@ -159,7 +157,7 @@ function assertStateHashArg(method: string, value: string, position: "left" | "r
   if (!value.startsWith("state:")) {
     throw new Error(
       `vcs.${method} expects ${position} to be a GAD state hash such as "state:...", not ${JSON.stringify(value)}. ` +
-        `Use vcs.resolveHead(head).stateHash or the stateHash returned by vcs.commit/applyEdits before diffing.`
+        `Use vcs.resolveHead(head).stateHash or the stateHash returned by vcs.applyEdits before diffing.`
     );
   }
 }
@@ -175,47 +173,6 @@ export function createVcsService(deps: VcsServiceDeps): ServiceDefinition {
     handler: async (ctx, method, args) => {
       const vcs = deps.workspaceVcs;
       switch (method) {
-        case "commit": {
-          // The repoPath arg (e.g. "panels/my-app") is advisory under the
-          // single-workspace-tree model: the whole tree is snapshotted in
-          // one transition; the path scopes the build-events pointer.
-          const [repoPath, message, options] = args as [
-            string,
-            string,
-            VcsCommitOptions | undefined,
-          ];
-          const head = resolveWriteHead(ctx, deps, options?.head);
-          const result = await vcs.commitHead(head, {
-            summary: message,
-            actor: { id: ctx.caller.runtime.id, kind: ctx.caller.runtime.kind },
-            ...(head === VCS_MAIN_HEAD
-              ? mainAdvanceOptions(ctx, deps, { operation: "commit" })
-              : {}),
-          });
-          // launch-and-build UX: a commit returns once the build trigger has
-          // settled, so an immediate getBuild sees the new state.
-          await deps.getBuildSystem?.()?.whenSettled();
-          const normalizedRepoPath = repoPath
-            .replace(/\\/g, "/")
-            .replace(/^\.\/+/, "")
-            .replace(/\/+$/, "");
-          return {
-            head,
-            stateHash: result.stateHash,
-            changed: !result.unchanged,
-            fileCount: result.fileCount,
-            changedPaths: result.changedPaths,
-            message: result.unchanged
-              ? `No changes; workspace state unchanged at ${result.stateHash.slice(0, 18)}…`
-              : `Committed ${result.stateHash.slice(0, 18)}… on ${head} (${result.changedPaths.length} paths)`,
-            buildEventsQuery: {
-              service: "build.listRecentBuildEvents",
-              args: [normalizedRepoPath],
-              description:
-                "State-triggered builds run asynchronously; query this for recent build failures.",
-            },
-          } satisfies VcsCommitResult;
-        }
         case "applyEdits": {
           // Edit-first write — same head-write gate as commit; actor is derived
           // from the verified caller (never client-supplied).

@@ -71,7 +71,7 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `delete`, `setInitPanels`, `setConfigField`, `switchTo`, `sourceTree`, `findUnitForPath`, `openPanel`, `units` | Workspace catalog, source tree, and unit helpers. Does not include panelTree; import top-level panelTree for panel-tree handles. |
 | `credentials` | namespace | `store`, `connect`, `configureClient`, `requestCredentialInput`, `getClientConfigStatus`, `deleteClientConfig`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl`, `gitHttp` |  |
 | `git` | namespace | `http`, `importProject`, `completeWorkspaceDependencies`, `setSharedRemote`, `removeSharedRemote` |  |
-| `vcs` | namespace | `commit`, `applyEdits`, `readFile`, `listFiles`, `revert`, `status`, `unitStatus`, `log`, `diff`, `resolveHead`, `merge`, `abortMerge`, `pendingMerge`, `publishStatus`, `publish`, `recall` |  |
+| `vcs` | namespace | `applyEdits`, `readFile`, `listFiles`, `revert`, `status`, `unitStatus`, `log`, `diff`, `resolveHead`, `merge`, `abortMerge`, `pendingMerge`, `publishStatus`, `publish`, `recall` | Workspace GAD VCS. Paths are workspace-relative; `applyEdits` commits and projects edits atomically, status reports a head's unpublished changes vs main, log can read refs, and diff compares state hashes. |
 | `gad` | namespace | `rawSql`, `query`, `status`, `ensureBlob`, `getTrajectoryBranchHead`, `appendTrajectoryBatch`, `listTrajectoryEvents`, `appendChannelEnvelope`, `getChannelEnvelope`, `getTrajectoryForEnvelope`, `listPublishedEnvelopesForTrajectory`, `getEnvelopesForTrajectory`, `getPublishedArtifactsForTurn`, `getPrivateLineageForPublishedEnvelope`, `getDownstreamConsumers`, `getChannelReplayWindow`, `listChannelEnvelopesAfter`, `listChannelEnvelopesBefore`, `getInitialChannelWindow`, `listChannelEnvelopes`, `inspectChannelEnvelopes`, `listStoredValueRefs`, `inspectStorageDiagnostics`, `listGadBranchFiles`, `diffGadStates`, `readGadFileAtState`, `getGadStateProducer`, `blameGadFileSnippet`, `validateGadHashes`, `clearDirtyAfterValidation`, `checkGadIntegrity`, `rebuildTrajectoryProjections` |  |
 | `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
 | `extensions` | namespace | `use`, `on`, `list`, `reload` |  |
@@ -82,8 +82,10 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `notifications` | namespace | `show`, `dismiss` |  |
 <!-- END GENERATED: panel-runtime-surface -->
 
-Use `vcs.commit(repoPath, message)` for workspace source edits that must affect
-rebuilt panels, workers, packages, or skills. Use `git` only for external
+Workspace source edits commit immediately: the `edit`/`write` tools — and
+`vcs.applyEdits` directly — apply each change as one atomic GAD transition on
+your context head and project it to disk, so rebuilt panels, workers, packages,
+or skills pick it up with no separate commit step. Use `git` only for external
 project import, shared remotes, and build-event lookup. For external Git smart
 HTTP, construct `GitClient` from `@natstack/git` with `credentials.gitHttp()`.
 
@@ -96,18 +98,20 @@ The `vcs` API is state-based, not cwd-based. Do not pass the workspace root,
 | --- | --- |
 | Current context status | `await vcs.status()` |
 | Status for a materialized head | `await vcs.status("main")`, `await vcs.status("ctx:...")` |
-| Commit current context/source state | `await vcs.commit("panels/my-app", "message")` |
 | Log current context/head | `await vcs.log()` or `await vcs.log(20)` |
 | Resolve a head to a state hash | `(await vcs.resolveHead("main")).stateHash` |
 | Diff two states | `await vcs.diff(leftStateHash, rightStateHash)` |
 | Read from current context/head | `await vcs.readFile("", "path/to/file.txt")` |
-| Apply edit-first changes | `await vcs.applyEdits({ baseStateHash, edits: [...] })` |
+| Apply an edit (commits + projects atomically) | `await vcs.applyEdits({ baseStateHash, edits: [...] })` |
 | Check unpublished context changes | `await vcs.publishStatus()` |
 
-`vcs.status` scans a materialized working tree (`main` or `ctx:...`), not
-arbitrary refs. `vcs.diff` accepts state hashes, not file paths and not head
-names. If you have heads, resolve them first with `vcs.resolveHead`; if you just
-committed, use the `stateHash` returned by `vcs.commit` or `vcs.applyEdits`.
+`vcs.status` reports a head's unpublished changes vs `main` — a GAD state-diff,
+not filesystem dirtiness. Editing a file does not make `vcs.status` report
+"dirty"; the edit is already committed to your context head. `dirty` means the
+head is ahead of `main` (has unpublished changes); `main` is always clean. To
+diff or pin states, use state hashes: `vcs.diff` accepts state hashes, not file
+paths and not head names. If you have heads, resolve them first with
+`vcs.resolveHead`; otherwise use the `stateHash` returned by `vcs.applyEdits`.
 
 ## Store
 
@@ -307,9 +311,15 @@ that already have a NatStack permission flow, use `openExternal()`,
 `credentials.*`, `git.*`, `vcs.*`, or the relevant runtime API so the host can apply the
 right trust scope and audit model.
 
-## Workspace VCS Commit
+## Workspace VCS Edits
 
-Workspace runtime source is activated from committed GAD states. After editing
-a workspace unit, call `await vcs.commit(repoPath, message)`. This records the
-caller head, advances effective versions, triggers rebuilds, and makes the
-change visible to workspace runtime units.
+Workspace runtime source is activated from committed GAD states, and edits are
+edit-first: the `edit`/`write` tools and `vcs.applyEdits` apply each change as
+one atomic GAD transition on your context head and project it to disk. The edit
+*is* the commit — there is no separate commit step. Each applied change advances
+effective versions, triggers rebuilds, and is immediately visible to workspace
+runtime units. Do not edit source through `fs.writeFile` and expect it to build:
+the worktree is a disposable projection, and builds read GAD state, so source
+edits must go through `edit`/`write`/`vcs.applyEdits` to land on the head. Use
+the `stateHash` returned by `vcs.applyEdits` (or `vcs.resolveHead(head).stateHash`)
+when you need a state hash for diffing or pinning.

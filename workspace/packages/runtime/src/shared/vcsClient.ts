@@ -13,8 +13,6 @@ import {
 export type {
   VcsApplyEditsInput,
   VcsApplyEditsResult,
-  VcsCommitOptions,
-  VcsCommitResult,
   VcsDiffResult,
   VcsEditOp,
   VcsFileContent,

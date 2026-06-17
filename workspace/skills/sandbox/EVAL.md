@@ -92,9 +92,9 @@ To pin a specific VCS ref or state hash, use the `imports` parameter explicitly:
 eval({ code: `...`, imports: { "@workspace-skills/workspace-dev": "my-branch" } })
 ```
 
-**Important:** Workspace runtime units are built from committed VCS states, not from the working tree. If you edit source files under `apps/`, `extensions/`, `packages/`, `panels/`, `workers/`, or `skills/`, you must **commit the workspace unit** before changes take effect. Use `vcs.commit(repoPath, message)` or the `commitWorkspace` wrapper from the workspace-dev skill.
+**Important:** Workspace runtime units are built from the committed context head, which is always in lockstep with your edits. Edits are edit-first: the `edit`/`write` tools and `vcs.applyEdits` apply each change to source under `apps/`, `extensions/`, `packages/`, `panels/`, `workers/`, or `skills/` as one atomic GAD transition on your context head and project it to disk, so the change takes effect for builds immediately — there is no separate commit step. Do not edit source via `fs.writeFile` and expect it to build: the worktree is a projection, builds read GAD state, and there is no commit step to ingest stray `fs` writes.
 
-Context folders are isolated working trees backed by context-local VCS heads. Do not assume another context's commit resets your current context. A dirty count shown by a running panel is the dirty state of that panel's own context, not a global workspace dirty state.
+Context folders are isolated working trees backed by context-local VCS heads. Do not assume another context's edits reset your current context. An "unpublished changes" count shown by a running panel is the unpublished state of that panel's own context head (changes ahead of `main`), not a global workspace state.
 
 ### npm packages
 
@@ -295,27 +295,38 @@ eval({ code: `
 Use the `vcs` helper from `@workspace/runtime` for workspace source changes.
 Sandbox eval does not provide Node built-ins such as `node:child_process`; if an operation seems to need a process, first look for a runtime API (`fs`, `vcs`, `git`, `workspace`, `workers`, `extensions`) or move privileged host work into an extension/worker service.
 
+Edits are edit-first: applying an edit commits it to your context head and
+projects it to disk atomically. The `edit`/`write` tools do this for you;
+`vcs.applyEdits` does the same directly and returns the new `stateHash`.
+
 ```
 eval({ code: `
-  import { fs, vcs } from "@workspace/runtime";
+  import { vcs } from "@workspace/runtime";
 
-  await fs.writeFile("panels/my-panel/index.tsx", "...");
-  const committed = await vcs.commit("panels/my-panel", "Update panel");
-  console.log(committed.message);
+  const before = (await vcs.resolveHead()).stateHash;
+  const result = await vcs.applyEdits({
+    baseStateHash: before,
+    edits: [
+      { kind: "write", path: "panels/my-panel/index.tsx", content: { kind: "text", text: "..." } },
+    ],
+  });
+  console.log("New state:", result.stateHash);
   const status = await vcs.status();
   console.log("Changed files:", [...status.added, ...status.changed, ...status.removed]);
 ` })
 ```
 
 `vcs.status()` takes no workspace-root or repo-path argument. Its optional
-argument is a materialized VCS head such as `"main"` or `"ctx:..."`. To compare
-two committed states, use state hashes returned by commits or `resolveHead`:
+argument is a materialized VCS head such as `"main"` or `"ctx:..."`. It reports
+that head's unpublished changes vs `main`, not filesystem dirtiness. To compare
+two committed states, use state hashes returned by `vcs.applyEdits` or
+`resolveHead`:
 
 ```
 eval({ code: `
   import { vcs } from "@workspace/runtime";
   const before = (await vcs.resolveHead("main")).stateHash;
-  const after = (await vcs.commit("panels/my-panel", "Update panel")).stateHash;
+  const after = (await vcs.resolveHead()).stateHash;
   const diff = before ? await vcs.diff(before, after) : null;
   console.log({ before, after, diff });
 ` })

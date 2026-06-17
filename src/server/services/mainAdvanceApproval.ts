@@ -16,7 +16,7 @@ const WORKSPACE_REPO_WRITE_CAPABILITY = "workspace-repo-write";
 export interface MainAdvanceApprovalCandidate {
   event: StateAdvancedEvent;
   caller: VerifiedCaller;
-  operation: "commit" | "apply-edits" | "revert" | "merge" | "abort-merge" | "publish";
+  operation: "apply-edits" | "revert" | "merge" | "abort-merge" | "publish";
   sourceHead?: string;
 }
 
@@ -314,8 +314,6 @@ function operationLabel(operation: MainAdvanceApprovalCandidate["operation"]): s
       return "vcs apply edits";
     case "abort-merge":
       return "vcs abort merge";
-    case "commit":
-      return "vcs commit";
     case "merge":
       return "vcs merge";
     case "publish":

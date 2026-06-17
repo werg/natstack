@@ -17,34 +17,32 @@ import { createProject } from "@workspace-skills/workspace-dev";
 await createProject({ projectType: "panel", name: "my-app", title: "My App" });
 ```
 
-2. Edit files with filesystem tools, not eval.
+2. Edit files with the `edit`/`write` filesystem tools, not eval. Each edit
+   commits to your context head and projects to disk atomically (edit-first) —
+   there is no separate commit step.
 
-3. Publish and open once:
+3. Open once:
 
 ```ts
-import { commitWorkspace } from "@workspace-skills/workspace-dev";
 import { openPanel } from "@workspace/runtime";
 
-await commitWorkspace("panels/my-app", "Initial launch");
 scope.myApp = await openPanel("panels/my-app", { focus: true });
 await scope.myApp.snapshot();
 ```
 
-4. Iterate by rebuilding and reloading the same handle:
+4. Iterate by editing, then rebuilding and reloading the same handle:
 
 ```ts
-import { commitWorkspace } from "@workspace-skills/workspace-dev";
-
-await commitWorkspace("panels/my-app", "Fix layout");
+// Edits made via the edit/write tools are already committed to your head.
 const lifecycle = await scope.myApp.rebuildAndReload();
 console.log(lifecycle);
 await scope.myApp.snapshot();
 ```
 
-`commitWorkspace()` snapshots your context working tree as a workspace
-transition and waits for the triggered rebuilds; there is no separate
-push step. `rebuildAndReload()` is the canonical operation after
-`commitWorkspace()` when the
+Edits are edit-first: applying an edit commits it to your context head and
+projects it to disk atomically, triggering rebuilds; there is no separate
+commit or push step. `rebuildAndReload()` is the canonical operation after
+edits when the
 panel is already open. It targets exactly the panel named by the handle's `id`.
 It does not unload the target's runtime lease and does not rebuild or reload
 child panels. If the eval is running inside the target being reloaded, the eval
@@ -160,4 +158,4 @@ const plan = await forkProject({
 console.log(plan);
 ```
 
-If the worker has multiple Durable Object classes, apply with an explicit `classMap`. After the fork, typecheck, launch the panel or worker, then use `commitWorkspace` for follow-up edits.
+If the worker has multiple Durable Object classes, apply with an explicit `classMap`. After the fork, typecheck, launch the panel or worker; follow-up edits via the `edit`/`write` tools commit to your context head automatically (edit-first).

@@ -34,9 +34,11 @@ from panels, workers, and extensions:
    identity, not from a special filesystem path.
 3. App code is trusted client code. Add capabilities deliberately and keep the
    capability list no broader than the target needs.
-4. Workspace app builds come from committed VCS states. Editing a file has no
-   runtime effect until the app unit is committed with `vcs.commit` or the
-   workspace-dev `commitWorkspace` wrapper.
+4. Workspace app builds come from the committed context head, which stays in
+   lockstep with your edits. Edits are edit-first: the `edit`/`write` tools and
+   `vcs.applyEdits` apply each change to the app unit atomically on your head and
+   project it to disk, so it is build-ready immediately — there is no separate
+   commit step. Do not edit app source via `fs.writeFile` and expect it to build.
 5. Electron shell apps that manage panel layout must declare `panel-hosting`.
 6. React Native workspace apps are loaded by the shipped native host bootstrap;
    clean-install pairing must work before the workspace app bundle is available.

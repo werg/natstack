@@ -18,8 +18,8 @@ describe("formatVcsError", () => {
     expect(formatVcsError("head", new Error("unexpected"))).toBe(
       "The VCS head is unavailable right now. Refresh the workspace or reopen this vault."
     );
-    expect(formatVcsError("commit", "unexpected")).toBe(
-      "Commit failed. Check that the vault has changes, then try again."
+    expect(formatVcsError("status", "unexpected")).toBe(
+      "Workspace VCS status is unavailable right now. Refresh the workspace or reopen this vault."
     );
   });
 });

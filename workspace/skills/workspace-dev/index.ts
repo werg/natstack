@@ -1,6 +1,5 @@
 export {
   createProject,
-  commitWorkspace,
   forkProject,
   forkPanel,
   forkWorker,

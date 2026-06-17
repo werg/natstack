@@ -292,7 +292,7 @@ export const vcs = helpfulNamespace(
     rpc
   )
 );
-export type { VcsClient, VcsCommitResult, VcsStatusResult } from "../shared/vcsClient.js";
+export type { VcsClient, VcsStatusResult } from "../shared/vcsClient.js";
 // Generic public webhook ingress.
 import { createWebhookIngressClient } from "../shared/webhooks.js";
 export type {

@@ -15,13 +15,13 @@ mobile React Native, or terminal targets), use the `appdev` skill instead.
 
 | Document                               | Content                                                                                                                                 |
 | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| [WORKFLOW.md](WORKFLOW.md)             | Canonical agent workflow: scaffold, open, inspect, edit, commit, rebuild/reload, close                                                    |
+| [WORKFLOW.md](WORKFLOW.md)             | Canonical agent workflow: scaffold, open, inspect, edit, rebuild/reload, close                                                    |
 | [PANEL_API.md](PANEL_API.md)           | Runtime panel API reference                                                                                                             |
 | [WORKERS.md](WORKERS.md)               | Workers & Durable Objects: AgentWorkerBase (@workspace/agentic-do), DurableObjectBase, PiRunner, custom shared-resource approval grants |
 | [RPC.md](RPC.md)                       | Typed parent-child contracts                                                                                                            |
 | [BROWSER.md](BROWSER.md)               | Browser automation (Playwright/CDP)                                                                                                     |
 | [TOOLS.md](TOOLS.md)                   | Agent tools reference                                                                                                                   |
-| [create-project.ts](create-project.ts) | Project scaffolding and vcs helpers (importable via eval `imports` parameter)                                                           |
+| [create-project.ts](create-project.ts) | Project scaffolding helpers (importable via eval `imports` parameter)                                                           |
 
 ## Interaction Patterns
 
@@ -32,7 +32,7 @@ See the sandbox skill's [INTERACTION_PATTERNS.md](../sandbox/INTERACTION_PATTERN
 1. **Relative workspace paths only** — use `panels/my-app/index.tsx`, NEVER host absolute paths such as `/home/.../workspace/...`. In runtime `fs.*` calls, `/panels/...` is context-root absolute and accepted, but docs and source-edit examples prefer `panels/...` to avoid ambiguity.
 2. **NEVER use Bash** for vcs, file listing, or file creation — use the structured tools
 3. **Use filesystem tools for file edits** — Read, Edit, Write (not eval)
-4. **Use eval only for runtime operations** — project creation, vcs commits, typecheck, tests, launching panels
+4. **Use eval only for runtime operations** — project creation, typecheck, tests, launching panels
 5. **Static imports in eval** — `import { rpc, openPanel } from "@workspace/runtime"`; dynamic `await import(...)` may work in some builds, but it is not the supported path for runtime or skill packages.
 6. **Close panels you open for temporary work** — keep the one development panel the user is reviewing, but close duplicate, browser, child, and diagnostic panels with `await handle.close()` when done. Use `listPanels()` to reuse existing panels instead of opening another copy.
 
@@ -48,13 +48,13 @@ eval({ code: `
 })
 ```
 
-Edit the generated files, then commit and launch:
+Edit the generated files with the `edit`/`write` tools — each edit commits to
+your context head and projects to disk atomically, so it is build-ready
+immediately — then launch:
 
 ```
 eval({ code: `
-  import { commitWorkspace } from "@workspace-skills/workspace-dev";
   import { openPanel } from "@workspace/runtime";
-  await commitWorkspace("panels/my-app", "Initial launch");
   scope.myApp = await openPanel("panels/my-app");
 `
 })
@@ -67,16 +67,17 @@ eval({ code: `
 | Create project  | `eval` — `import { createProject } from "@workspace-skills/workspace-dev"` then `createProject({ projectType, name, title })`                             |
 | Fork panel      | `eval` — `import { forkProject } from "@workspace-skills/workspace-dev"` then `forkProject({ from: "panels/chat", to: "panels/chat-experiment", title })` |
 | Fork worker     | `eval` — run `forkProject({ from, to, title, dryRun: true })` first; pass `classMap` for multi-class workers                                              |
-| Commit changes | `eval` — `import { commitWorkspace } from "@workspace-skills/workspace-dev"` then `commitWorkspace("panels/my-app", "message")`             |
-| Launch panel    | `eval` — `commitWorkspace(...)` + `scope.handle = await openPanel(source)`                                                                                  |
+| Launch panel    | `eval` — `scope.handle = await openPanel(source)` (edits are already committed to your head)                                                                |
 | Launch worker   | `eval` — `workers.create({ source: "workers/my-worker", contextId })`                                                                                     |
 | Read a file     | `Read({ file_path: "panels/my-app/index.tsx" })`                                                                                                          |
 | Edit a file     | `Edit({ file_path: "panels/my-app/index.tsx", old_string: "...", new_string: "..." })`                                                                    |
 | Check types     | `eval` — `extensions.use("@workspace-extensions/typecheck-service").checkPanel("panels/my-app")`                                                          |
 | Run tests       | `eval` — `extensions.use("@workspace-extensions/test-runner").run("packages/my-lib")`                                                                     |
 
-`commitWorkspace` snapshots your working tree as a workspace transition (GAD
-vcs) and waits for triggered rebuilds. There is no staging or push step.
+Edits are edit-first: the `edit`/`write` tools (and `vcs.applyEdits` directly)
+apply each change as one atomic GAD transition on your context head and project
+it to disk, triggering rebuilds. The edit *is* the commit — there is no separate
+commit, staging, or push step.
 | Vcs status | `eval` — `import { vcs } from "@workspace/runtime"; await vcs.status()` (see TOOLS.md) |
 | List workspaces | `eval` — `workspace.list()` |
 | Get workspace config | `eval` — `workspace.getConfig()` |
@@ -87,29 +88,33 @@ vcs) and waits for triggered rebuilds. There is no staging or push step.
 ## Environment Compatibility
 
 - Panel lifecycle operations (`openPanel`, `listPanels`, `focusPanel`, handle `rebuildAndReload`/reload/close) require **panel context**.
-- Project scaffolding (`createProject`), vcs commits (`commitWorkspace`), typecheck, and test runs work in **headless** sessions via eval + RPC.
+- Project scaffolding (`createProject`), vcs operations (`vcs.applyEdits`, `vcs.status`, `vcs.publish`), typecheck, and test runs work in **headless** sessions via eval + RPC.
 - Unit tests run through `@workspace-extensions/test-runner`, not shell commands.
 
 ## Provenance And Reloads
 
-Workspace runtime units are built from committed workspace states (GAD vcs).
-If an agent edits a panel, worker, package, or skill and then observes
-unchanged runtime behavior, check provenance before changing the fix:
+Workspace runtime units are built from the committed context head, which stays
+in lockstep with your edits (each edit commits + projects atomically). If an
+agent edits a panel, worker, package, or skill and then observes unchanged
+runtime behavior, check provenance before changing the fix:
 
-- Was the edit made in the same context/worktree the runtime imports from?
-- Was the tree committed with `commitWorkspace` (or `vcs.commit`)?
+- Was the edit made in the same context the runtime builds from?
+- Was the edit applied through `edit`/`write`/`vcs.applyEdits` (not a stray `fs.writeFile` that never landed on the head)?
 - Did the build system rebuild that source?
-- Did the already-open panel run `handle.rebuildAndReload()` after the commit?
+- Did the already-open panel run `handle.rebuildAndReload()` after the edit?
 - In dogfood mode, did the mirror apply or skip because the host checkout was dirty?
 
-For raw runtime `vcs` calls, status scans materialized heads and diff operates
-on state hashes. `vcs.status()` is the current context status; do not pass the
-workspace root or unit path to it. Use `vcs.resolveHead(head)` or commit results
-when you need hashes for `vcs.diff(leftStateHash, rightStateHash)`.
+For raw runtime `vcs` calls, `vcs.status()` reports a head's unpublished changes
+vs `main` (a GAD state-diff, not filesystem dirtiness); do not pass the
+workspace root or unit path to it. Use `vcs.resolveHead(head).stateHash` or the
+`stateHash` returned by `vcs.applyEdits` when you need hashes for
+`vcs.diff(leftStateHash, rightStateHash)`.
 
-Dirty state is context-local. A running panel can remain dirty in its own
-isolated context even after an agent committed the same source path
-from another context. Check `contextId` when validating editor or git status
+Unpublished state is context-local. A running panel's context head can stay
+ahead of `main` ("unpublished changes") even after another context published the
+same source path. `vcs.status` will not report "dirty" merely because you edited
+a file — the edit is already committed to your context head; `dirty` means the
+head is ahead of `main`. Check `contextId` when validating editor or vcs status
 symptoms.
 
 Planned hardening: expose a runtime build-provenance API that reports source,

@@ -10,7 +10,6 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { promises as fs } from "fs";
 import { Box, Button, Callout, Card, Code, Flex, Heading, IconButton, Spinner, Text, TextField } from "@radix-ui/themes";
 import { ArchiveIcon, ExclamationTriangleIcon, FilePlusIcon, ReloadIcon } from "@radix-ui/react-icons";
 import { vcs } from "@workspace/runtime";
@@ -76,9 +75,17 @@ export function VaultPicker({ agentHandle, onSelect }: VaultPickerProps) {
     setCreating(true);
     try {
       const dir = vaultContextPath(trimmed);
-      await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(`${dir}/Welcome.mdx`, WELCOME_BODY);
-      await vcs.commit(`projects/${trimmed}`, "Initial vault");
+      // Edit-first: the create commits to the context head and projects the
+      // file to disk in one atomic GAD transition (no fs write, no commit).
+      await vcs.applyEdits({
+        edits: [
+          {
+            kind: "create",
+            path: `projects/${trimmed}/Welcome.mdx`,
+            content: { kind: "text", text: WELCOME_BODY },
+          },
+        ],
+      });
       onSelect(dir);
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : String(err));

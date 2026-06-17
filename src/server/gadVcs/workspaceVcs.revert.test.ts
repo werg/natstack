@@ -230,4 +230,42 @@ describe("WorkspaceVcs.listFiles / revert / publishStatus", () => {
     expect(merged.status).toBe("merged");
     expect((await vcs.publishStatus(head)).ahead).toBe(0);
   });
+
+  it("statusHead reports a context head's unpublished changes vs main (pure GAD diff)", async () => {
+    await write(workspaceRoot, "notes.mdx", "hello\n");
+    await vcs.commit({ summary: "seed main" });
+
+    const contextId = "status-test";
+    const { head } = await vcs.ensureContextFolder(contextId);
+
+    // A fresh fork matches main — status is clean even though the worktree is
+    // fully materialized on disk (status is a head-vs-main diff, not a scan).
+    const clean = await vcs.statusHead(head);
+    expect(clean.dirty).toBe(false);
+    expect(clean.added).toEqual([]);
+    expect(clean.changed).toEqual([]);
+    expect(clean.removed).toEqual([]);
+
+    // Edits commit to the context head immediately (edit-first) — and that is
+    // exactly what status surfaces as unpublished, with no separate commit.
+    const ctxState = (await vcs.resolveHead(head))!;
+    await vcs.applyEdits({
+      head,
+      baseStateHash: ctxState,
+      actor: USER,
+      edits: [
+        { kind: "write", path: "notes.mdx", content: text("hello world\n") },
+        { kind: "create", path: "fresh.mdx", content: text("new\n") },
+      ],
+    });
+
+    const dirty = await vcs.statusHead(head);
+    expect(dirty.dirty).toBe(true);
+    expect(dirty.changed).toEqual(["notes.mdx"]);
+    expect(dirty.added).toEqual(["fresh.mdx"]);
+    expect(dirty.stateHash).toBe(await vcs.resolveHead(head));
+
+    // main is the publish baseline — always clean.
+    expect((await vcs.statusHead(VCS_MAIN_HEAD)).dirty).toBe(false);
+  });
 });

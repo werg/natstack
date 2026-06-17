@@ -1,4 +1,4 @@
-export type VcsOperation = "commit" | "head" | "status";
+export type VcsOperation = "head" | "status";
 
 export function formatVcsError(operation: VcsOperation, error: unknown): string {
   const detail = error instanceof Error ? error.message : String(error);
@@ -19,8 +19,6 @@ export function formatVcsError(operation: VcsOperation, error: unknown): string 
   switch (operation) {
     case "head":
       return "The VCS head is unavailable right now. Refresh the workspace or reopen this vault.";
-    case "commit":
-      return "Commit failed. Check that the vault has changes, then try again.";
     case "status":
       return "Workspace VCS status is unavailable right now. Refresh the workspace or reopen this vault.";
   }

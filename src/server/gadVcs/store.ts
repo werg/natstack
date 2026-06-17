@@ -50,6 +50,8 @@ const ALWAYS_IGNORED_DIRS = new Set([
   ".natstack",
   ".turbo",
   ".vite",
+  ".tmp",
+  ".testkit",
   "node_modules",
   "dist",
   "out",
@@ -115,6 +117,23 @@ export async function assertWritableVcsPath(p: string): Promise<void> {
   }
   if (platformIgnoreMatcher.ignores(p)) {
     throw new Error(`vcs path is platform-ignored: ${JSON.stringify(p)}`);
+  }
+}
+
+/**
+ * Whether `p` is a GAD-trackable path — i.e. exactly the set `applyEdits`
+ * accepts (safe + not platform-ignored). The fs-service reroute uses this to
+ * decide whether a context mutation must go through GAD (`applyEdits`) or is a
+ * scratch/ignored path (`.tmp`, `.testkit`, `node_modules`, `*.log`, …) that
+ * stays a direct disk write.
+ */
+export async function isWritableVcsPath(p: string): Promise<boolean> {
+  try {
+    assertSafeVcsPath(p);
+    await assertWritableVcsPath(p);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -790,44 +809,4 @@ export class GadVcs {
    * — the sidecar is only a hashing fast path; status must be true against
    * the durable ref even after cache amnesia).
    */
-  async status(
-    dir: string,
-    head: string = VCS_MAIN_HEAD
-  ): Promise<{
-    stateHash: string | null;
-    dirty: boolean;
-    added: string[];
-    removed: string[];
-    changed: string[];
-  }> {
-    const refStateHash = await this.resolveWorktreeRef(head);
-    const sidecar = await this.readSidecar(dir);
-    const scanned = await this.scanDir(dir);
-    const { files } = await this.hashFiles(scanned, sidecar);
-    const refFiles = refStateHash
-      ? await this.deps.gad.call<Array<{ path: string; content_hash: string; mode: number }>>(
-          "listStateFiles",
-          { stateHash: refStateHash }
-        )
-      : [];
-    const refByPath = new Map(refFiles.map((file) => [file.path, file]));
-    const added: string[] = [];
-    const changed: string[] = [];
-    for (const file of files) {
-      const ref = refByPath.get(file.path);
-      if (!ref) added.push(file.path);
-      else if (ref.content_hash !== file.contentHash || ref.mode !== file.mode) {
-        changed.push(file.path);
-      }
-    }
-    const scannedPaths = new Set(files.map((file) => file.path));
-    const removed = refFiles.map((file) => file.path).filter((p) => !scannedPaths.has(p));
-    return {
-      stateHash: refStateHash,
-      dirty: added.length > 0 || removed.length > 0 || changed.length > 0,
-      added,
-      removed,
-      changed,
-    };
-  }
 }

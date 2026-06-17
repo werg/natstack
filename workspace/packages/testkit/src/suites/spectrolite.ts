@@ -13,7 +13,7 @@
  * keyboard editing flows (Electron input events), mobile-viewport variant
  * (covered generically by the panel-viewport suite).
  */
-import { fs, vcs } from "@workspace/runtime";
+import { vcs } from "@workspace/runtime";
 import { suite } from "../run.js";
 import { expect } from "../expect.js";
 import { evalInPanel, panelText, waitFor, waitForText, withPanel } from "../panels.js";
@@ -69,11 +69,16 @@ const FIXTURES: Record<string, string> = {
 };
 
 async function ensureVault(dir: string, files: Record<string, string>): Promise<void> {
-  await fs.mkdir(dir, { recursive: true });
-  for (const [name, content] of Object.entries(files)) {
-    await fs.writeFile(`${dir}/${name}`, content);
-  }
-  await vcs.commit(dir.replace(/^\/+/, ""), "testkit vault fixture");
+  const root = dir.replace(/^\/+/, "").replace(/\/+$/, "");
+  // Edit-first GAD write: each `write` creates-or-overwrites and commits to the
+  // context head in one atomic transition (disk is projected from the head).
+  await vcs.applyEdits({
+    edits: Object.entries(files).map(([name, content]) => ({
+      kind: "write" as const,
+      path: `${root}/${name}`,
+      content: { kind: "text" as const, text: content },
+    })),
+  });
 }
 
 function largeVaultFiles(): Record<string, string> {

@@ -111,9 +111,9 @@ eval({ code: `
 ` })
 ```
 
-`vcs.status()` takes no filesystem path; its optional argument is a materialized VCS head such as `main` or `ctx:...`.
-For diffs, pass state hashes from `vcs.commit`, `vcs.applyEdits`, or
-`vcs.resolveHead`, not workspace paths.
+`vcs.status()` takes no filesystem path; its optional argument is a materialized VCS head such as `main` or `ctx:...`. It reports that head's unpublished changes vs `main`, not filesystem dirtiness.
+For diffs, pass state hashes from `vcs.applyEdits` or `vcs.resolveHead`, not
+workspace paths.
 
 See [EVAL.md](EVAL.md) for details. On-demand imports are not available in inline_ui/load_action_bar/feedback_custom components (use eval to preload first).
 
@@ -136,11 +136,11 @@ or `feedback_custom` rather than hand-written raw channel records.
 ## Critical Rules
 
 1. **Static imports only** — `import { rpc } from "@workspace/runtime"` (NOT `await import(...)`). File-loaded relative imports must also be static/literal.
-2. **Workspace packages are auto-resolved** — `import { vcs } from "@workspace/runtime"` just works for workspace commits; npm packages require `imports: { "lodash": "npm:4" }`
+2. **Workspace packages are auto-resolved** — `import { vcs } from "@workspace/runtime"` just works for workspace vcs operations; npm packages require `imports: { "lodash": "npm:4" }`
 3. **Components must `export default`** — named exports alone won't work for inline_ui/load_action_bar/feedback_custom components
 4. **Inline UI components receive `{ props, chat, scope, scopes }`** — always default `props` (`{ props = {}, chat }`) and guard property access (`props?.items ?? []`). For maximum portability, prefer embedding small constant data in the component source.
 5. **Feedback components receive `{ onSubmit, onCancel, onError, chat }`**
-6. **Workspace code is built from committed VCS states, not from the working tree** — source under `packages/`, `panels/`, `workers/`, `skills/`, `apps/`, and `extensions/` is extracted from committed workspace states for builds. Editing files has NO effect until you call `vcs.commit(repoPath, message)` or the workspace-dev `commitWorkspace` wrapper.
+6. **Workspace code is built from the committed context head, in lockstep with your edits** — source under `packages/`, `panels/`, `workers/`, `skills/`, `apps/`, and `extensions/` is built from committed GAD states. Edits are edit-first: the `edit`/`write` tools and `vcs.applyEdits` apply each change atomically to your context head and project it to disk, so it takes effect for builds immediately — there is no separate commit step. Do NOT edit source via `fs.writeFile` and expect it to build; the worktree is a projection and builds read GAD state, so edits must go through `edit`/`write`/`vcs.applyEdits`.
 7. **Close temporary panels you open** — when eval opens a browser/workspace panel for diagnostics, scraping, setup, or testing, keep its handle and call `await handle.close()` in `finally` when done. Reuse an existing handle instead of opening duplicates. Leave a panel open only when the user explicitly asked to inspect or continue using it, or the workflow explicitly needs it to remain open.
 
 For optional workspace probes, prefer one of these patterns:

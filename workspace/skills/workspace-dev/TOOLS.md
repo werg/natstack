@@ -200,44 +200,54 @@ eval({ code: `
 
 Methods: `create(options)`, `destroy(name)`, `update(name, updates)`, `list()`, `status(name)`, `listInstanceSources()`, `getPort()`, `restartAll()`. See [WORKERS.md](WORKERS.md) for full API.
 
-#### Version control (via `@workspace-skills/workspace-dev`)
+#### Version control (GAD-native, edit-first)
 
-Workspace version control is GAD-native: a commit snapshots your working tree
-as an immutable workspace state and triggers rebuilds of every changed unit.
-There is no staging, no push, and no separate publish step — `commitWorkspace`
-does the whole thing atomically and returns once builds have settled.
+Workspace version control is GAD-native and edit-first: the `edit`/`write` tools
+— and `vcs.applyEdits` directly — apply each change as one atomic GAD transition
+on your context head and project it to disk, then trigger rebuilds of every
+changed unit. The edit *is* the commit. There is no staging, no push, no
+separate commit or publish step — applying the edit does the whole thing
+atomically. (`vcs.publish` is a distinct, explicit operation that publishes your
+context head into `main`.)
 
 ```
-// Commit (snapshots the tree, rebuilds changed units)
+// Apply an edit directly (commits + projects atomically, rebuilds changed units)
 eval({ code: `
-  import { commitWorkspace } from "@workspace-skills/workspace-dev";
-  const result = await commitWorkspace("panels/my-app", "Update");
-  console.log(result);
+  import { vcs } from "@workspace/runtime";
+  const base = (await vcs.resolveHead()).stateHash;
+  const result = await vcs.applyEdits({
+    baseStateHash: base,
+    edits: [
+      { kind: "write", path: "panels/my-app/index.tsx", content: { kind: "text", text: "..." } },
+    ],
+  });
+  console.log(result.stateHash, result.changedPaths);
 `
 })
 ```
 
-**`commitWorkspace(dir, message)`** — wrapper around `vcs.commit`.
-The `dir` argument (e.g. "panels/my-app") scopes the build-events pointer in
-the result; the snapshot always covers your whole working tree. Out-of-band
-edits are first-class: anything on disk at commit time is captured. Retrying
-after a failure is always safe — an unchanged tree is a no-op.
+In normal flows just use the `edit`/`write` tools; they apply through
+`vcs.applyEdits` for you. Source edits must land on the head this way — do not
+edit via `fs.writeFile` and expect it to build, since the worktree is a
+projection and builds read GAD state.
 
 Raw `vcs` calls use VCS heads and state hashes, not filesystem cwd values:
 
 | Need | Runtime call |
 | --- | --- |
-| Check current context status | `await vcs.status()` |
+| Check current context status (unpublished changes vs main) | `await vcs.status()` |
 | Check a materialized head | `await vcs.status("main")` |
 | Resolve a head to a state hash | `(await vcs.resolveHead("main")).stateHash` |
 | Compare committed states | `await vcs.diff(leftStateHash, rightStateHash)` |
 | Read a file from the current head | `await vcs.readFile("", "panels/my-app/index.tsx")` |
 | Inspect unpublished context changes | `await vcs.publishStatus()` |
+| Publish your context head into main | `await vcs.publish()` |
 
 Do not pass `process.cwd()`, `/workspace`, or a repo path to `vcs.status` or
-`vcs.diff`. `vcs.diff` compares two state hashes.
+`vcs.diff`. `vcs.status` reports unpublished changes vs `main`, not filesystem
+dirtiness. `vcs.diff` compares two state hashes.
 
-**`forkProject(options)`** — copies an existing workspace unit into a new one, rewrites safe metadata, and commits it.
+**`forkProject(options)`** — copies an existing workspace unit into a new one, rewrites safe metadata, and applies all files as one `vcs.applyEdits` transition on your context head (commits + projects atomically — no separate commit step).
 
 ```ts
 import { forkProject } from "@workspace-skills/workspace-dev";
@@ -257,13 +267,13 @@ const workerPlan = await forkProject({
 console.log(workerPlan.warnings);
 ```
 
-Dry runs return the planned file list, metadata rewrites, and warnings without writing or committing anything. Worker forks rewrite package metadata, obvious worker file names, source strings, and Durable Object class names; pass `classMap` when a worker has more than one class.
+Dry runs return the planned file list, metadata rewrites, and warnings without writing anything to the head. Worker forks rewrite package metadata, obvious worker file names, source strings, and Durable Object class names; pass `classMap` when a worker has more than one class.
 
 Each context is its own VCS head (`ctx:{contextId}`), forked from the workspace
-main head when the context was created. Your commits land on YOUR context head;
+main head when the context was created. Your edits land on YOUR context head;
 panels launched in your context build and serve from that head automatically.
-The user's main workspace tree is never touched by agent commits — merging
-context work back to main is an explicit operation.
+The user's `main` head is never touched by agent edits — publishing your
+context head into `main` (`vcs.publish`) is an explicit operation.
 
 #### @workspace-extensions/typecheck-service.checkPanel (recommended)
 
@@ -423,9 +433,8 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { commitWorkspace } from "@workspace-skills/workspace-dev";
   import { openPanel } from "@workspace/runtime";
-  await commitWorkspace("panels/my-app", "Initial");
+  // Edits made via the edit/write tools are already committed to your head.
   await openPanel("panels/my-app");
 `
 })
@@ -435,9 +444,8 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { commitWorkspace } from "@workspace-skills/workspace-dev";
   import { openPanel } from "@workspace/runtime";
-  await commitWorkspace("panels/my-app", "Update");
+  // Your edits are already committed (edit-first); just reload the open panel.
   const handle = await openPanel("panels/my-app");
   const lifecycle = await handle.rebuildAndReload();
   console.log(lifecycle.status, lifecycle.effectiveVersion);

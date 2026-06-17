@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => {
   const files = new Map<string, string | Uint8Array>();
   const dirs = new Set<string>();
-  const vcsCommit = vi.fn();
-  return { files, dirs, vcsCommit };
+  const applyEdits = vi.fn();
+  return { files, dirs, applyEdits };
 });
 
 function normalize(p: string): string {
@@ -27,7 +27,7 @@ function addFile(p: string, content: string | Uint8Array): void {
 
 vi.mock("@workspace/runtime", () => ({
   vcs: {
-    commit: mocks.vcsCommit,
+    applyEdits: mocks.applyEdits,
   },
   fs: {
     async exists(p: string): Promise<boolean> {
@@ -77,39 +77,37 @@ describe("forkProject", () => {
   beforeEach(() => {
     mocks.files.clear();
     mocks.dirs.clear();
-    mocks.vcsCommit.mockReset();
-  });
-
-  it("commitWorkspace commits through vcs", async () => {
-    mocks.vcsCommit.mockResolvedValue({
-      message: "Committed state:1234567… on main (3 paths)",
-    });
-
-    const { commitWorkspace } = await import("./create-project.js");
-    const result = await commitWorkspace("panels/my-app", "Update");
-
-    expect(mocks.vcsCommit).toHaveBeenCalledWith("panels/my-app", "Update");
-    expect(result).toBe("Committed state:1234567… on main (3 paths)");
-  });
-
-  it("commitWorkspace reports an unchanged tree", async () => {
-    mocks.vcsCommit.mockResolvedValue({
-      message: "No changes; workspace state unchanged at state:1234567…",
-    });
-
-    const { commitWorkspace } = await import("./create-project.js");
-    const result = await commitWorkspace("panels/my-app", "Update");
-
-    expect(mocks.vcsCommit).toHaveBeenCalledWith("panels/my-app", "Update");
-    expect(result).toBe("No changes; workspace state unchanged at state:1234567…");
-  });
-
-  it("commitWorkspace propagates commit failures", async () => {
-    mocks.vcsCommit.mockRejectedValue(new Error("ref CAS conflict: worktree:vcs:workspace:main"));
-
-    const { commitWorkspace } = await import("./create-project.js");
-
-    await expect(commitWorkspace("panels/my-app", "Update")).rejects.toThrow(/ref CAS conflict/);
+    mocks.applyEdits.mockReset();
+    // Edit-first scaffold: `writeProjectFiles` applies one GAD transition of
+    // create ops. The mock records each created file so fork assertions can
+    // inspect the projected content.
+    mocks.applyEdits.mockImplementation(
+      async (input: {
+        edits: Array<{
+          kind: string;
+          path: string;
+          content?: { kind: "text"; text: string } | { kind: "bytes"; base64: string };
+        }>;
+      }) => {
+        for (const edit of input.edits) {
+          if ((edit.kind === "create" || edit.kind === "write") && edit.content) {
+            const value =
+              edit.content.kind === "text"
+                ? edit.content.text
+                : Uint8Array.from(atob(edit.content.base64), (c) => c.charCodeAt(0));
+            addFile(edit.path, value);
+          }
+        }
+        return {
+          status: "clean" as const,
+          stateHash: "state:test",
+          eventId: "e",
+          headHash: "h",
+          conflicts: [],
+          changedPaths: input.edits.map((edit) => edit.path),
+        };
+      }
+    );
   });
 
   it("rewrites a single-class worker fork and preserves binary files", async () => {
@@ -130,7 +128,6 @@ describe("forkProject", () => {
       'export class SourceWorker { readonly source = "workers/source"; }\n'
     );
     addFile("workers/source/icon.png", new Uint8Array([1, 2, 3]));
-    mocks.vcsCommit.mockResolvedValue({ message: "Committed" });
 
     const { forkProject } = await import("./create-project.js");
     const result = await forkProject({
@@ -141,11 +138,9 @@ describe("forkProject", () => {
 
     expect(result.committed).toBe(true);
     expect(result.files).toContain("new-worker.ts");
-    expect(mocks.vcsCommit).toHaveBeenCalledWith(
-      "workers/new",
-      expect.stringContaining("Fork workers/source to workers/new")
-    );
-    // The fork wrote its files through fs before committing.
+    // The fork wrote all files through a single GAD applyEdits transition.
+    expect(mocks.applyEdits).toHaveBeenCalledTimes(1);
+    // The fork wrote its files through one edit-first GAD transition.
     expect(JSON.parse(mocks.files.get("workers/new/package.json") as string)).toMatchObject({
       name: "@workspace-workers/new",
       natstack: {

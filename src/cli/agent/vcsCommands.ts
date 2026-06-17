@@ -15,18 +15,8 @@ import { resolveSessionScope, SESSION_FLAG } from "./sessionContext.js";
 const REPO_FLAG: FlagSpec = {
   name: "repo",
   takesValue: true,
-  description:
-    "Workspace unit path for status/build-event context; commit snapshots the whole context",
+  description: "Workspace unit path to scope status/diff to (e.g. panels/notes)",
 };
-
-interface VcsCommitResult {
-  head: string;
-  stateHash: string;
-  changed: boolean;
-  fileCount: number;
-  changedPaths?: string[];
-  message: string;
-}
 
 interface RepoStatus {
   head: string;
@@ -59,30 +49,6 @@ function formatNameStatus(files: RepoStatus["files"]): string {
       return `${code}\t${file.path}`;
     })
     .join("\n");
-}
-
-function isWithinRepo(filePath: string, repo: string): boolean {
-  return filePath === repo || filePath.startsWith(`${repo}/`);
-}
-
-function printCommitSummary(result: VcsCommitResult, repo: string): void {
-  console.log(`${result.stateHash.slice(0, 12)} ${result.message}`);
-  console.log(`scope: whole context head ${result.head}; --repo ${repo} is not a commit filter`);
-  const changedPaths = result.changedPaths ?? [];
-  if (changedPaths.length === 0) return;
-
-  const outsideRepo = changedPaths.filter((filePath) => !isWithinRepo(filePath, repo));
-  if (outsideRepo.length > 0) {
-    console.log(`note: ${outsideRepo.length} committed path(s) are outside ${repo}`);
-  }
-  console.log("changed paths:");
-  const maxShown = 50;
-  for (const filePath of changedPaths.slice(0, maxShown)) {
-    console.log(`  ${filePath}`);
-  }
-  if (changedPaths.length > maxShown) {
-    console.log(`  ... ${changedPaths.length - maxShown} more`);
-  }
 }
 
 async function status(inv: ParsedInvocation): Promise<number> {
@@ -128,32 +94,11 @@ async function diff(inv: ParsedInvocation): Promise<number> {
   }
 }
 
-async function commit(inv: ParsedInvocation): Promise<number> {
-  const json = jsonMode(inv.flags["json"] === true);
-  try {
-    const message = typeof inv.flags["message"] === "string" ? inv.flags["message"] : undefined;
-    if (!message || !message.trim()) {
-      throw new UsageError("missing commit message — pass -m MSG");
-    }
-    const repo = requireRepo(inv);
-    const { client, contextId } = resolveSessionScope(inv);
-    const head = headForContext(contextId);
-    const result = await client.call<VcsCommitResult>("vcs.commit", [repo, message, { head }]);
-    printResult(result, {
-      json,
-      human: () => printCommitSummary(result, repo),
-    });
-    return 0;
-  } catch (error) {
-    return printError(error, { json });
-  }
-}
-
 export const vcsCommands: CliCommand[] = [
   {
     group: "vcs",
     name: "status",
-    summary: "Show working-tree status for a context unit",
+    summary: "Show a context unit's unpublished changes (vs main)",
     usage: "natstack vcs status --repo REPOPATH",
     flags: [REPO_FLAG, SESSION_FLAG, JSON_FLAG],
     run: status,
@@ -161,22 +106,9 @@ export const vcsCommands: CliCommand[] = [
   {
     group: "vcs",
     name: "diff",
-    summary: "Show a name-status diff for a context unit",
+    summary: "Show a name-status diff of a context unit's unpublished changes",
     usage: "natstack vcs diff --repo REPOPATH",
     flags: [REPO_FLAG, SESSION_FLAG, JSON_FLAG],
     run: diff,
-  },
-  {
-    group: "vcs",
-    name: "commit",
-    summary: "Commit all pending changes in the current context",
-    usage: "natstack vcs commit -m MSG --repo REPOPATH",
-    flags: [
-      { name: "message", short: "m", takesValue: true, description: "Commit message" },
-      REPO_FLAG,
-      SESSION_FLAG,
-      JSON_FLAG,
-    ],
-    run: commit,
   },
 ];

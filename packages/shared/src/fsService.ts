@@ -126,6 +126,71 @@ function decodeBinary(envelope: BinaryEnvelope): Buffer {
 }
 
 // ---------------------------------------------------------------------------
+// GAD reroute — context source mutations commit through GAD, not raw disk
+// ---------------------------------------------------------------------------
+
+/** Write content for a GAD edit op (text, or base64 bytes). */
+export type FsVcsContent = { kind: "text"; text: string } | { kind: "bytes"; base64: string };
+
+/** The edit ops the fs reroute emits (a subset of the vcs edit-op union). */
+export type FsVcsEditOp =
+  | { kind: "write"; path: string; content: FsVcsContent; mode?: number }
+  | { kind: "delete"; path: string }
+  | { kind: "chmod"; path: string; mode: number };
+
+/**
+ * Bridge from the fs service to the workspace GAD VCS. When a sandboxed context
+ * caller mutates a GAD-tracked path, the mutation commits through GAD
+ * (`applyEdits`) — which advances the context head AND projects to disk —
+ * rather than writing the worktree projection directly behind GAD's back.
+ * Scratch/ignored paths (`.tmp`, `.testkit`, `node_modules`, `*.log`, …) are
+ * not tracked and stay direct disk writes.
+ */
+export interface FsVcsBridge {
+  /** True iff `relPath` is a GAD-trackable workspace path (what applyEdits accepts). */
+  isTracked(relPath: string): Promise<boolean>;
+  /** Commit edit ops to a context head (edit-first: also projects to disk). */
+  applyEdits(
+    contextId: string,
+    edits: FsVcsEditOp[],
+    actor: { id: string; kind: string }
+  ): Promise<void>;
+  /** Read a file's content at a context head; null if it does not exist there. */
+  readFile(contextId: string, relPath: string): Promise<FsVcsContent | null>;
+  /** List every tracked file path at a context head. */
+  listFiles(contextId: string): Promise<string[]>;
+}
+
+function contentToBuffer(c: FsVcsContent): Buffer {
+  return c.kind === "text" ? Buffer.from(c.text, "utf8") : Buffer.from(c.base64, "base64");
+}
+
+function dataToVcsContent(data: unknown): FsVcsContent {
+  if (isBinaryEnvelope(data)) return { kind: "bytes", base64: data.data };
+  return { kind: "text", text: data as string };
+}
+
+function appendVcsContent(existing: FsVcsContent | null, data: unknown): FsVcsContent {
+  const add = dataToVcsContent(data);
+  if (!existing) return add;
+  if (existing.kind === "text" && add.kind === "text") {
+    return { kind: "text", text: existing.text + add.text };
+  }
+  return {
+    kind: "bytes",
+    base64: Buffer.concat([contentToBuffer(existing), contentToBuffer(add)]).toString("base64"),
+  };
+}
+
+function truncateVcsContent(existing: FsVcsContent | null, len: number): FsVcsContent {
+  if (!existing) return { kind: "text", text: "" };
+  const sliced = contentToBuffer(existing).subarray(0, Math.max(0, len));
+  return existing.kind === "text"
+    ? { kind: "text", text: sliced.toString("utf8") }
+    : { kind: "bytes", base64: sliced.toString("base64") };
+}
+
+// ---------------------------------------------------------------------------
 // Stat serialisation
 // ---------------------------------------------------------------------------
 
@@ -475,6 +540,8 @@ export class FsService {
   private readonly entityCache: EntityCache;
   /** Extensions granted explicit unrestricted host-fs access (Phase 3 capability). */
   private readonly hostFsCapableExtensions?: ReadonlySet<string>;
+  /** Routes GAD-tracked context mutations through GAD instead of raw disk. */
+  private readonly vcsBridge?: FsVcsBridge;
 
   /** handleId → TrackedHandle */
   private readonly openHandles = new Map<number, TrackedHandle>();
@@ -483,13 +550,14 @@ export class FsService {
   constructor(
     contextFolderManager: ContextFolderManager,
     entityCache: EntityCache = new EntityCache(),
-    opts?: { hostFsCapableExtensions?: Iterable<string> }
+    opts?: { hostFsCapableExtensions?: Iterable<string>; vcsBridge?: FsVcsBridge }
   ) {
     this.contextFolderManager = contextFolderManager;
     this.entityCache = entityCache;
     this.hostFsCapableExtensions = opts?.hostFsCapableExtensions
       ? new Set(opts.hostFsCapableExtensions)
       : undefined;
+    this.vcsBridge = opts?.vcsBridge;
   }
 
   // =========================================================================
@@ -658,6 +726,177 @@ export class FsService {
   }
 
   // =========================================================================
+  // GAD reroute
+  // =========================================================================
+
+  /**
+   * Intercept mutating fs calls from a sandboxed context caller whose target is
+   * a GAD-tracked path, and commit them through GAD instead of writing the
+   * worktree projection directly. Returns `{ handled: false }` for reads,
+   * scratch/ignored paths, host-fs/unrestricted callers, or when no vcs bridge
+   * is wired — those fall through to the direct-disk implementation.
+   */
+  private async maybeRouteToGad(
+    scope: FsCallScope,
+    ctx: ServiceContext,
+    method: string,
+    args: unknown[]
+  ): Promise<{ handled: boolean; result?: unknown }> {
+    const bridge = this.vcsBridge;
+    if (!bridge || scope.unrestricted || !scope.contextId) return { handled: false };
+    const contextId = scope.contextId;
+    const actor = { id: ctx.caller.runtime.id, kind: ctx.caller.runtime.kind };
+    const relOf = async (userPath: string): Promise<string> => {
+      const abs = await resolveFsPath(scope, userPath);
+      return path.relative(scope.root, abs).split(path.sep).join("/");
+    };
+    const tracked = (rel: string) => bridge.isTracked(rel);
+    const commit = (edits: FsVcsEditOp[]) =>
+      edits.length > 0 ? bridge.applyEdits(contextId, edits, actor) : Promise.resolve();
+
+    switch (method) {
+      case "writeFile": {
+        const rel = await relOf(args[0] as string);
+        if (!(await tracked(rel))) return { handled: false };
+        await commit([{ kind: "write", path: rel, content: dataToVcsContent(args[1]) }]);
+        return { handled: true };
+      }
+      case "appendFile": {
+        const rel = await relOf(args[0] as string);
+        if (!(await tracked(rel))) return { handled: false };
+        const content = appendVcsContent(await bridge.readFile(contextId, rel), args[1]);
+        await commit([{ kind: "write", path: rel, content }]);
+        return { handled: true };
+      }
+      case "truncate": {
+        const rel = await relOf(args[0] as string);
+        if (!(await tracked(rel))) return { handled: false };
+        const content = truncateVcsContent(
+          await bridge.readFile(contextId, rel),
+          (args[1] as number | undefined) ?? 0
+        );
+        await commit([{ kind: "write", path: rel, content }]);
+        return { handled: true };
+      }
+      case "chmod": {
+        const rel = await relOf(args[0] as string);
+        if (!(await tracked(rel))) return { handled: false };
+        await commit([{ kind: "chmod", path: rel, mode: args[1] as number }]);
+        return { handled: true };
+      }
+      case "unlink": {
+        const rel = await relOf(args[0] as string);
+        if (!(await tracked(rel))) return { handled: false };
+        await commit([{ kind: "delete", path: rel }]);
+        return { handled: true };
+      }
+      case "rmdir": {
+        const rel = await relOf(args[0] as string);
+        if (!(await tracked(rel))) return { handled: false };
+        await commit(await this.subtreeDeleteEdits(bridge, contextId, rel));
+        return { handled: true };
+      }
+      case "rm": {
+        const rel = await relOf(args[0] as string);
+        if (!(await tracked(rel))) return { handled: false };
+        const recursive = !!(args[1] as { recursive?: boolean } | undefined)?.recursive;
+        await commit(
+          recursive
+            ? await this.subtreeDeleteEdits(bridge, contextId, rel)
+            : [{ kind: "delete", path: rel }]
+        );
+        return { handled: true };
+      }
+      case "copyFile": {
+        const dstRel = await relOf(args[1] as string);
+        if (!(await tracked(dstRel))) return { handled: false };
+        const srcRel = await relOf(args[0] as string);
+        const content = (await tracked(srcRel))
+          ? await bridge.readFile(contextId, srcRel)
+          : dataToVcsContent(encodeBinary(await fs.readFile(await resolveFsPath(scope, args[0] as string))));
+        if (!content) throw codedError("ENOENT", `copyFile: source not found: ${String(args[0])}`);
+        await commit([{ kind: "write", path: dstRel, content }]);
+        return { handled: true };
+      }
+      case "rename": {
+        const srcRel = await relOf(args[0] as string);
+        const dstRel = await relOf(args[1] as string);
+        const srcTracked = await tracked(srcRel);
+        const dstTracked = await tracked(dstRel);
+        if (!srcTracked && !dstTracked) return { handled: false };
+        if (srcTracked && dstTracked) {
+          await commit(await this.renameEdits(bridge, contextId, srcRel, dstRel));
+          return { handled: true };
+        }
+        if (!srcTracked && dstTracked) {
+          // Atomic-write pattern: a scratch temp file renamed into a tracked
+          // path. Commit its bytes through GAD, then drop the temp file.
+          const srcAbs = await resolveFsPath(scope, args[0] as string);
+          const buf = await fs.readFile(srcAbs);
+          await commit([
+            { kind: "write", path: dstRel, content: dataToVcsContent(encodeBinary(buf)) },
+          ]);
+          await fs.rm(srcAbs, { force: true });
+          return { handled: true };
+        }
+        // tracked → scratch: moving source out of the GAD tree.
+        throw new Error(
+          `fs.rename of the GAD-tracked path ${JSON.stringify(args[0])} to a scratch path is not ` +
+            `supported. Source mutations must go through GAD (vcs.applyEdits / the write tool).`
+        );
+      }
+      case "open": {
+        const flags = (args[1] as string | undefined) ?? "r";
+        if (!/[wax+]/.test(flags)) return { handled: false };
+        const rel = await relOf(args[0] as string);
+        if (!(await tracked(rel))) return { handled: false };
+        throw new Error(
+          `fs.open with write flags is not supported on the GAD-tracked path ${JSON.stringify(args[0])}. ` +
+            `Source edits must commit through GAD — use the write/edit tool or vcs.applyEdits.`
+        );
+      }
+      default:
+        // reads, mkdir, utimes, mktemp, handle* → direct disk
+        return { handled: false };
+    }
+  }
+
+  /** Delete ops for a path and (if it is a directory) its whole tracked subtree. */
+  private async subtreeDeleteEdits(
+    bridge: FsVcsBridge,
+    contextId: string,
+    rel: string
+  ): Promise<FsVcsEditOp[]> {
+    const prefix = `${rel}/`;
+    const files = await bridge.listFiles(contextId);
+    return files
+      .filter((p) => p === rel || p.startsWith(prefix))
+      .map((p) => ({ kind: "delete" as const, path: p }));
+  }
+
+  /** Move a tracked file (or directory subtree) from `srcRel` to `dstRel`. */
+  private async renameEdits(
+    bridge: FsVcsBridge,
+    contextId: string,
+    srcRel: string,
+    dstRel: string
+  ): Promise<FsVcsEditOp[]> {
+    const prefix = `${srcRel}/`;
+    const files = (await bridge.listFiles(contextId)).filter(
+      (p) => p === srcRel || p.startsWith(prefix)
+    );
+    const edits: FsVcsEditOp[] = [];
+    for (const oldPath of files) {
+      const content = await bridge.readFile(contextId, oldPath);
+      if (!content) continue;
+      const newPath = oldPath === srcRel ? dstRel : `${dstRel}/${oldPath.slice(prefix.length)}`;
+      edits.push({ kind: "write", path: newPath, content });
+      edits.push({ kind: "delete", path: oldPath });
+    }
+    return edits;
+  }
+
+  // =========================================================================
   // Main dispatch handler
   // =========================================================================
 
@@ -666,6 +905,11 @@ export class FsService {
     const args = [...rawArgs];
     const scope = await this.resolveContextRoot(ctx, args);
     const { panelId } = scope;
+
+    // Sandboxed context mutations to GAD-tracked paths commit through GAD
+    // (edit-first) rather than writing the worktree projection directly.
+    const routed = await this.maybeRouteToGad(scope, ctx, method, args);
+    if (routed.handled) return routed.result;
 
     switch (method) {
       // ----- File content -----
