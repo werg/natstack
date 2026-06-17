@@ -69,13 +69,14 @@ eval({ code: `
 ```
 
 Use static imports for runtime, workspace packages, and workspace skills in
-eval snippets. If a probe is truly optional and its static import may not exist
-in the current workspace, run it as a separate small eval and tolerate that eval
-failing; do not use `await import(...)` to probe `@workspace/*`,
-`@workspace-skills/*`, or `@natstack/*` packages. `fs` paths are rooted at the
-current context folder; `panels` and `/panels` refer to the same context-root
-directory, but onboarding examples prefer `panels` to avoid confusing this with
-a host absolute path.
+eval snippets. For standard onboarding probes, import the documented workspace
+packages directly. Only split a probe into a separate small eval if you are
+checking an optional or custom package that may not be installed in a particular
+workspace; tolerate that eval failing. Do not use `await import(...)` to probe
+`@workspace/*`, `@workspace-skills/*`, or `@natstack/*` packages. `fs` paths are
+rooted at the current context folder; `panels` and `/panels` refer to the same
+context-root directory, but onboarding examples prefer `panels` to avoid
+confusing this with a host absolute path.
 
 - **New user** (`workspaceCount <= 1`, or `workspaceCount === 0` with an active workspace) — give the full walkthrough with explanations of key concepts. These users need context on what NatStack is and what it can do. Note: in some runtime modes `workspace.list()` may return an empty array even when an active workspace exists — treat this as a new user.
 - **Returning user** (`workspaceCount > 1`) — skip the overview, be succinct, and ask what they need help with. They already know the basics.
