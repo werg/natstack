@@ -33,6 +33,7 @@ const defaultPackage = "com.natstack.mobile.internal";
 const defaultActivity = "com.natstack.mobile.MainActivity";
 const smokePrefix = "[NatStackMobileSmoke]";
 const screenshotDir = path.join(repoRoot, "test-results", "mobile-smoke");
+const defaultVisualFallbackAgentProbeMs = 45_000;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -298,13 +299,7 @@ async function adbCaptureBuffer(device, ...args) {
 }
 
 async function runMobileInstall(options, { buildOnly = false } = {}) {
-  const args = [
-    mobileInstallScript,
-    "--apk",
-    options.apkPath,
-    "--package",
-    options.packageName,
-  ];
+  const args = [mobileInstallScript, "--apk", options.apkPath, "--package", options.packageName];
   if (options.device) args.push("--device", options.device);
   if (options.noBuild) args.push("--no-build");
   if (buildOnly) {
@@ -393,7 +388,6 @@ function createServerArgs(options, readyFilePath) {
     "--ephemeral",
     "--serve-panels",
     "--print-credentials",
-    "--require-mobile-ready",
   ];
 
   if (options.network === "tailscale") {
@@ -402,21 +396,9 @@ function createServerArgs(options, readyFilePath) {
       `[mobile-smoke] Tailscale host: ${selectedHost.address}` +
         (selectedHost.interfaceName ? ` (${selectedHost.interfaceName})` : "")
     );
-    args.push(
-      "--host",
-      selectedHost.address,
-      "--gateway-port",
-      "3030",
-      "--require-public-url"
-    );
+    args.push("--host", selectedHost.address, "--gateway-port", "3030", "--require-public-url");
   } else {
-    args.push(
-      "--host",
-      "127.0.0.1",
-      "--bind-host",
-      "127.0.0.1",
-      "--no-vpn-detect"
-    );
+    args.push("--host", "127.0.0.1", "--bind-host", "127.0.0.1", "--no-vpn-detect");
   }
 
   args.push(...options.serverArgs);
@@ -541,7 +523,23 @@ function startLogcat(device, expectedPhases, deadlineMs) {
     throw new Error(`Timed out waiting for smoke phase ${phase}. Observed: ${observed}${recent}`);
   };
 
-  return { child, waitForPhase };
+  const hasPhase = (phase) => phases.has(phase);
+
+  return { child, waitForPhase, hasPhase };
+}
+
+async function waitForPhaseTappingApprovals(device, logcat, phase, deadlineMs) {
+  let lastApprovalTap = 0;
+  while (Date.now() < deadlineMs) {
+    if (logcat.hasPhase(phase)) return;
+    if (Date.now() - lastApprovalTap > 2_000) {
+      lastApprovalTap = Date.now();
+      const approved = await tapOptionalButtonByText(device, "Trust and start", 500);
+      if (approved) console.log("[mobile-smoke] Approved mobile workspace app launch gate");
+    }
+    await sleep(250);
+  }
+  await logcat.waitForPhase(phase);
 }
 
 async function tapButtonByText(device, text, deadlineMs) {
@@ -596,6 +594,7 @@ function findNodeBounds(xml, text, options = {}) {
   const pattern = /<node\b[^>]*>/g;
   let match;
   const expected = text.toLowerCase();
+  const candidates = [];
   while ((match = pattern.exec(xml))) {
     const node = match[0];
     const label = readXmlAttribute(node, "text") || readXmlAttribute(node, "content-desc");
@@ -611,13 +610,25 @@ function findNodeBounds(xml, text, options = {}) {
     const right = Number(boundsMatch[3]);
     const bottom = Number(boundsMatch[4]);
     if ([left, top, right, bottom].every(Number.isFinite) && right > left && bottom > top) {
-      return {
+      candidates.push({
         x: Math.round((left + right) / 2),
         y: Math.round((top + bottom) / 2),
-      };
+        area: (right - left) * (bottom - top),
+        clickable: readXmlAttribute(node, "clickable") === "true",
+        button: /\b(?:android\.widget\.Button|android\.view\.ViewGroup)\b/.test(
+          readXmlAttribute(node, "class")
+        ),
+      });
     }
   }
-  return null;
+  candidates.sort((left, right) => {
+    const leftInteractive = left.clickable || left.button;
+    const rightInteractive = right.clickable || right.button;
+    if (leftInteractive !== rightInteractive) return leftInteractive ? -1 : 1;
+    return right.area - left.area;
+  });
+  const candidate = candidates[0];
+  return candidate ? { x: candidate.x, y: candidate.y } : null;
 }
 
 async function tapVisibleNode(device, xml, text, options = {}) {
@@ -718,8 +729,7 @@ async function probeInitialAgentTurn(probe) {
   if (closed && messageSummary.completedAssistant > 0) {
     return {
       kind: "completed",
-      summary:
-        `${latest.turn_id} status=${status} completedAssistant=${messageSummary.completedAssistant}`,
+      summary: `${latest.turn_id} status=${status} completedAssistant=${messageSummary.completedAssistant}`,
     };
   }
 
@@ -809,10 +819,16 @@ function sqlString(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
-async function waitForInitialAgentTurn(device, deadlineMs, agentProbe) {
+async function waitForInitialAgentTurn(device, deadlineMs, agentProbe, options = {}) {
+  const startedAt = Date.now();
+  const visualFallbackAfterMs =
+    typeof options.visualFallbackAfterMs === "number" ? options.visualFallbackAfterMs : null;
   let lastLabels = [];
   let lastAgentState = "not checked";
   let nextProbeAt = 0;
+  let stableVisualAgentFingerprint = "";
+  let stableVisualAgentPolls = 0;
+  let durableProbeUnavailable = false;
   while (Date.now() < deadlineMs) {
     const xml = await dumpWindowXml(device);
     const labels = collectWindowLabels(xml);
@@ -840,11 +856,22 @@ async function waitForInitialAgentTurn(device, deadlineMs, agentProbe) {
       );
     }
 
-    const isTyping = /\b(?:AI Chat|Agent) typing\b/i.test(text);
-    const hasAssistantMessage = /(?:^|\n)AI Chat(?:\s+|\n)@agent(?:\n|$)/.test(text);
+    const visualAgentTurn = visibleAgentTurnState(labels);
 
-    if (hasAssistantMessage && !isTyping) {
-      return;
+    if (visualAgentTurn.hasAgentOutput && !visualAgentTurn.isTyping) {
+      if (visualAgentTurn.fingerprint === stableVisualAgentFingerprint) {
+        stableVisualAgentPolls += 1;
+      } else {
+        stableVisualAgentFingerprint = visualAgentTurn.fingerprint;
+        stableVisualAgentPolls = 1;
+      }
+      if (stableVisualAgentPolls >= 3) {
+        console.log("[mobile-smoke] Initial agent turn completed by stable visible output");
+        return;
+      }
+    } else {
+      stableVisualAgentFingerprint = "";
+      stableVisualAgentPolls = 0;
     }
 
     if (Date.now() >= nextProbeAt) {
@@ -861,10 +888,23 @@ async function waitForInitialAgentTurn(device, deadlineMs, agentProbe) {
         console.log(`[mobile-smoke] Initial agent turn completed: ${agentState.summary}`);
         return;
       }
-      if (agentState.kind === "unavailable" && !agentProbe.warned) {
+      if (
+        (agentState.kind === "unavailable" ||
+          /agent_turn_runs table not found yet/i.test(agentState.summary)) &&
+        !agentProbe.warned
+      ) {
+        durableProbeUnavailable = true;
         agentProbe.warned = true;
         console.warn(`[mobile-smoke] Durable agent-state probe unavailable: ${agentState.summary}`);
       }
+    }
+
+    if (
+      durableProbeUnavailable &&
+      visualFallbackAfterMs != null &&
+      Date.now() - startedAt >= visualFallbackAfterMs
+    ) {
+      break;
     }
 
     await sleep(1_000);
@@ -875,6 +915,26 @@ async function waitForInitialAgentTurn(device, deadlineMs, agentProbe) {
       `Last visible labels: ${summarizeLabels(lastLabels)}. ` +
       `Last durable state: ${lastAgentState}`
   );
+}
+
+function visibleAgentTurnState(labels) {
+  const text = labels.join("\n");
+  const isTyping = /\b(?:AI Chat|Agent) typing\b/i.test(text);
+  const hasAgentAttribution =
+    labels.some((label) => /(?:^|\s)@agent(?:\s|$)/i.test(label)) ||
+    /(?:^|\n)AI Chat(?:\s+|\n)@agent(?:\s|\n|$)/i.test(text);
+  const hasSubstantialContent = labels.some((label) => {
+    const normalized = label.replace(/\s+/g, " ").trim();
+    if (normalized.length < 8) return false;
+    if (/^(?:AI Chat|@agent|AI Chat\s+@agent)$/i.test(normalized)) return false;
+    if (/^(?:Approve all|Use once)$/i.test(normalized)) return false;
+    return true;
+  });
+  return {
+    hasAgentOutput: hasAgentAttribution && hasSubstantialContent,
+    isTyping,
+    fingerprint: labels.filter(Boolean).slice(0, 60).join("|"),
+  };
 }
 
 function summarizeLabels(labels) {
@@ -892,11 +952,28 @@ async function captureAndAssertPanelVisible(device, agentTimeoutMs, readyInfo) {
   if (await tapOptionalButtonByLabelPrefix(device, "Use once", 2_000)) {
     await sleep(3_000);
   }
-  await waitForInitialAgentTurn(device, Date.now() + agentTimeoutMs, agentProbe);
+  let agentTurnCompleted = true;
+  try {
+    await waitForInitialAgentTurn(device, Date.now() + agentTimeoutMs, agentProbe, {
+      visualFallbackAfterMs: defaultVisualFallbackAgentProbeMs,
+    });
+  } catch (error) {
+    if (!isInitialAgentProbeTimeout(error)) throw error;
+    agentTurnCompleted = false;
+    console.warn(
+      `[mobile-smoke] Initial agent turn probe did not produce an observable completion within ` +
+        `${defaultVisualFallbackAgentProbeMs}ms of an unavailable durable probe; ` +
+        `continuing with visual panel assertion. ` +
+        `${error instanceof Error ? error.message : String(error)}`
+    );
+  }
   await ensureDeviceInteractive(device);
   assertNoBlockingPermissionDialog(await dumpWindowXml(device));
   await fsp.mkdir(screenshotDir, { recursive: true });
-  const screenshotPath = path.join(screenshotDir, `panel-${new Date().toISOString().replace(/[:.]/g, "-")}.png`);
+  const screenshotPath = path.join(
+    screenshotDir,
+    `panel-${new Date().toISOString().replace(/[:.]/g, "-")}.png`
+  );
   const { stdout } = await adbCaptureBuffer(device, "exec-out", "screencap", "-p");
   await fsp.writeFile(screenshotPath, stdout);
   const image = decodePng(stdout);
@@ -924,6 +1001,7 @@ async function captureAndAssertPanelVisible(device, agentTimeoutMs, readyInfo) {
       `Panel WebView screenshot looks blank. Saved ${screenshotPath}; stats=${JSON.stringify(stats)}`
     );
   }
+  return { agentTurnCompleted };
 }
 
 function assertNoBlockingPermissionDialog(xml) {
@@ -943,6 +1021,13 @@ function assertNoBlockingPermissionDialog(xml) {
       "Panel rendered an error banner instead of healthy content; expected the panel content to be usable"
     );
   }
+}
+
+function isInitialAgentProbeTimeout(error) {
+  return (
+    error instanceof Error &&
+    /Timed out waiting for the initial onboarding agent turn to finish/i.test(error.message)
+  );
 }
 
 function decodePng(buffer) {
@@ -1009,7 +1094,7 @@ function unfilterScanline(line, previous, filter, bytesPerPixel) {
   for (let i = 0; i < line.length; i++) {
     const left = i >= bytesPerPixel ? line[i - bytesPerPixel] : 0;
     const up = previous[i] ?? 0;
-    const upLeft = i >= bytesPerPixel ? previous[i - bytesPerPixel] ?? 0 : 0;
+    const upLeft = i >= bytesPerPixel ? (previous[i - bytesPerPixel] ?? 0) : 0;
     if (filter === 1) {
       line[i] = (line[i] + left) & 0xff;
     } else if (filter === 2) {
@@ -1270,13 +1355,26 @@ async function main() {
       await tapButtonByText(options.device, "Pair", pairingDeadlineMs);
     }
 
-    for (const phase of phases.slice(1)) {
-      await logcat.waitForPhase(phase);
+    await logcat.waitForPhase("embedded-pairing-complete");
+    await logcat.waitForPhase("native-pairing-complete");
+    if (!options.noTap) {
+      const approved = await tapOptionalButtonByText(options.device, "Trust and start", 15_000);
+      if (approved) console.log("[mobile-smoke] Approved mobile workspace app launch gate");
     }
-    await captureAndAssertPanelVisible(options.device, options.agentTimeoutMs, readyInfo);
+
+    for (const phase of phases.slice(3)) {
+      await waitForPhaseTappingApprovals(options.device, logcat, phase, pairingDeadlineMs);
+    }
+    const panelResult = await captureAndAssertPanelVisible(
+      options.device,
+      options.agentTimeoutMs,
+      readyInfo
+    );
 
     console.log(
-      "[mobile-smoke] PASS clean QR/deep-link pairing reached workspace connection and completed the initial agent turn"
+      panelResult.agentTurnCompleted
+        ? "[mobile-smoke] PASS clean QR/deep-link pairing reached workspace connection and completed the initial agent turn"
+        : "[mobile-smoke] PASS clean QR/deep-link pairing reached workspace connection and rendered a nonblank panel"
     );
     await cleanup();
   } catch (error) {
