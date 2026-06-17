@@ -158,6 +158,7 @@ export interface PendingCredentialApproval extends PendingApprovalBase {
   accountIdentity: AccountIdentity;
   scopes: string[];
   credentialUse?: CredentialBindingUse;
+  bindingLabel?: string;
   gitOperation?: {
     action: "read" | "write";
     label: string;

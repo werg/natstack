@@ -1,14 +1,15 @@
 ---
 name: google-workspace
-description: Set up Google Workspace (Gmail, Calendar, Drive) OAuth credentials for this NatStack instance
+description: Set up broad Google Workspace OAuth credentials with staged local bindings for Gmail, Calendar, Drive, Docs, Sheets, Slides, People, and identity.
 ---
 
 # Google Workspace Skill
 
 Use this skill to configure and verify Google Workspace OAuth for Gmail,
-Calendar, and Drive. The goal is not just "make OAuth work"; guide the user
-toward a durable setup with a Desktop app OAuth client, Production publishing,
-offline refresh tokens, and a verified live API call.
+Calendar, Drive, Docs, Sheets, Slides, People, and identity. The goal is not
+just "make OAuth work"; guide the user toward a durable setup with a Desktop
+app OAuth client, Production publishing, offline refresh tokens, a broad
+upstream Workspace grant, staged local bindings, and a verified live API call.
 
 ## Onboarding Policy
 
@@ -29,6 +30,13 @@ Google offline access and opts into NatStack refresh-token persistence. If
 status or verification reports `credential-expired`, replace the old credential
 with `connectGoogle({ force: true })`.
 
+NatStack intentionally asks Google for a broad Workspace bundle once, then
+stores separate local bindings: `google-gmail`, `google-calendar`,
+`google-drive`, `google-docs`, `google-sheets`, `google-slides`,
+`google-people`, and `google-identity`. Agents should use the service-specific
+client/helper instead of asking the user to reconnect when moving from Gmail to
+Calendar or Docs.
+
 When the user is setting up Gmail specifically, continue with
 `skills/gmail/ONBOARDING.md` after Google Workspace reaches
 `verified`.
@@ -39,7 +47,7 @@ Gmail, Calendar, and Drive expire after 7 days.
 ## What The User Must Do
 
 1. Create or choose a Google Cloud project.
-2. Enable the Gmail, Calendar, and Drive APIs.
+2. Enable the Gmail, Calendar, Drive, Docs, Sheets, Slides, and People APIs.
 3. Configure the OAuth consent screen with the required scopes.
 4. Publish the app to Production, even while unverified.
 5. Create OAuth credentials with application type **Desktop app**.

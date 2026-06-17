@@ -384,6 +384,10 @@ export function ConsentApprovalBar() {
               ) : null}
             </Flex>
 
+            {current.kind === "credential" && current.grantResource ? (
+              <ApprovalGrantSummary approval={current} />
+            ) : null}
+
             {copy.warning ? (
               <Flex align="center" gap="1" style={{ color: "var(--red-11)" }}>
                 <ExclamationTriangleIcon width={13} height={13} />
@@ -448,6 +452,28 @@ export function ConsentApprovalBar() {
         </Flex>
       </Flex>
     </Box>
+  );
+}
+
+function ApprovalGrantSummary({ approval }: { approval: PendingCredentialApproval }) {
+  if (!approval.grantResource) return null;
+  return (
+    <Flex align="center" gap="2" wrap="wrap" style={{ minWidth: 0 }}>
+      <Badge color="sky" variant="soft">
+        {approval.bindingLabel ?? approval.grantResource.bindingId}
+      </Badge>
+      <Text size="1" color="gray" style={{ flexShrink: 0 }}>
+        {approval.grantResource.action}
+      </Text>
+      <Code
+        size="1"
+        variant="soft"
+        color="gray"
+        style={{ maxWidth: "100%", overflowWrap: "anywhere" }}
+      >
+        {approval.grantResource.resource}
+      </Code>
+    </Flex>
   );
 }
 
@@ -569,6 +595,12 @@ function StandardApprovalActions({
         description={copy.session.description}
         variant="surface"
         onClick={() => decide("session")}
+      />
+      <DecisionButton
+        label={copy.repo.label}
+        description={copy.repo.description}
+        variant="surface"
+        onClick={() => decide("repo")}
       />
       <DecisionButton
         label={copy.version.label}
@@ -1153,6 +1185,25 @@ function CredentialDetails({ approval }: { approval: PendingCredentialApproval }
         label="Injects as"
         value={<InlineCode>{formatInjection(approval)}</InlineCode>}
       />
+      {approval.bindingLabel ? (
+        <Detail
+          icon={<LockClosedIcon />}
+          label="Binding"
+          value={<InlineCode>{approval.bindingLabel}</InlineCode>}
+        />
+      ) : null}
+      {approval.grantResource ? (
+        <Detail
+          icon={<GlobeIcon />}
+          label="Grant"
+          value={
+            <InlineCode>
+              {approval.grantResource.bindingId} {approval.grantResource.action}{" "}
+              {approval.grantResource.resource}
+            </InlineCode>
+          }
+        />
+      ) : null}
       {approval.gitOperation ? (
         <>
           <Detail

@@ -96,18 +96,42 @@ export const CredentialInjectionSchema = z.discriminatedUnion("type", [
 export const CredentialBindingSchema = z
   .object({
     id: IdentifierSchema,
+    label: z.string().min(1).max(128).optional(),
     use: z.enum(["fetch", "git-http", "git-ssh"]),
     audience: z.array(UrlAudienceSchema).min(1).max(16),
     injection: CredentialInjectionSchema,
+    grantResource: z
+      .discriminatedUnion("type", [
+        z.object({ type: z.literal("audience") }).strict(),
+        z
+          .object({
+            type: z.literal("url-path-prefix"),
+            segmentCount: z.number().int().min(1).max(8),
+          })
+          .strict(),
+      ])
+      .optional(),
   })
   .strict();
 
 const CredentialBindingOutputSchema = z
   .object({
     id: IdentifierSchema,
+    label: z.string().min(1).max(128).optional(),
     use: z.enum(["fetch", "git-http", "git-ssh"]),
     audience: z.array(UrlAudienceOutputSchema).min(1).max(16),
     injection: CredentialInjectionSchema,
+    grantResource: z
+      .discriminatedUnion("type", [
+        z.object({ type: z.literal("audience") }).strict(),
+        z
+          .object({
+            type: z.literal("url-path-prefix"),
+            segmentCount: z.number().int().min(1).max(8),
+          })
+          .strict(),
+      ])
+      .optional(),
   })
   .strict() satisfies z.ZodType<CredentialBinding>;
 

@@ -1144,6 +1144,7 @@ export class EgressProxy {
       accountIdentity: credential.accountIdentity,
       scopes: credential.scopes,
       credentialUse: binding.use,
+      bindingLabel: binding.label,
       grantResource: usage.sessionResource,
       gitOperation:
         binding.use === "git-http" || binding.use === "git-ssh"
@@ -2015,7 +2016,7 @@ function credentialUseResource(
   const resource =
     binding.use === "git-http" || binding.use === "git-ssh"
       ? gitRemoteFromUrl(targetUrl)
-      : (findMatchingUrlAudience(targetUrl, binding.audience)?.url ?? targetUrl.origin);
+      : credentialBindingResource(binding, targetUrl);
   const action: CredentialGrantAction =
     binding.use === "git-http" || binding.use === "git-ssh"
       ? describeGitHttpOperation(targetUrl, method).action
@@ -2029,6 +2030,20 @@ function credentialUseResource(
       action,
     },
   };
+}
+
+function credentialBindingResource(binding: CredentialBinding, targetUrl: URL): string {
+  if (binding.grantResource?.type === "url-path-prefix") {
+    return urlPathPrefixResource(targetUrl, binding.grantResource.segmentCount);
+  }
+  return findMatchingUrlAudience(targetUrl, binding.audience)?.url ?? targetUrl.origin;
+}
+
+function urlPathPrefixResource(targetUrl: URL, segmentCount: number): string {
+  const resource = new URL(targetUrl.origin);
+  const segments = targetUrl.pathname.split("/").filter(Boolean).slice(0, segmentCount);
+  resource.pathname = segments.length ? `/${segments.join("/")}/` : "/";
+  return resource.toString();
 }
 
 function hasOAuthAudienceDomainMismatch(

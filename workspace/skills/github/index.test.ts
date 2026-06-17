@@ -81,11 +81,17 @@ describe("github skill facade", () => {
           label: "GitHub",
           metadata: expect.objectContaining({ providerId: "github", credentialMode: "api" }),
           audience: expect.arrayContaining([
-            { url: "https://api.github.com/", match: "origin" },
+            { url: "https://api.github.com/user", match: "path-prefix" },
           ]),
-          bindings: [
-            expect.objectContaining({ use: "fetch" }),
-          ],
+          bindings: expect.arrayContaining([
+            expect.objectContaining({ id: "github-user", use: "fetch" }),
+            expect.objectContaining({
+              id: "github-repos",
+              use: "fetch",
+              grantResource: { type: "url-path-prefix", segmentCount: 3 },
+            }),
+            expect.objectContaining({ id: "github-uploads", use: "fetch" }),
+          ]),
           scopes: expect.arrayContaining(["contents:read", "contents:write"]),
         }),
         fields: [expect.objectContaining({ name: "token", type: "secret", required: true })],
@@ -107,15 +113,15 @@ describe("github skill facade", () => {
             gitRemoteOrigin: "https://github.com/",
           }),
           bindings: expect.arrayContaining([
-            expect.objectContaining({ use: "fetch" }),
             expect.objectContaining({
-              id: "github-git",
+              id: "github-git-http",
               use: "git-http",
               audience: [{ url: "https://github.com/", match: "origin" }],
               injection: {
                 type: "basic-auth",
                 usernameTemplate: "x-access-token",
                 passwordTemplate: "{token}",
+                stripIncoming: ["authorization"],
               },
             }),
           ]),
@@ -130,15 +136,26 @@ describe("github skill facade", () => {
     expect(runtimeMock.credentials.requestCredentialInput).toHaveBeenCalledWith(
       expect.objectContaining({
         credential: expect.objectContaining({
-          scopes: expect.arrayContaining(["metadata:read", "contents:read", "issues:read", "pull_requests:read", "actions:read"]),
+          scopes: expect.arrayContaining([
+            "metadata:read",
+            "contents:read",
+            "issues:read",
+            "pull_requests:read",
+            "actions:read",
+            "statuses:read",
+            "deployments:read",
+            "discussions:read",
+          ]),
           metadata: expect.objectContaining({
             accessLevel: "read-only",
             credentialMode: "api-and-git",
             gitRemoteOrigin: "https://github.com/",
+            localBindingCatalog: "github:v1",
           }),
           bindings: expect.arrayContaining([
-            expect.objectContaining({ use: "fetch" }),
-            expect.objectContaining({ id: "github-git", use: "git-http" }),
+            expect.objectContaining({ id: "github-user", use: "fetch" }),
+            expect.objectContaining({ id: "github-repos", use: "fetch" }),
+            expect.objectContaining({ id: "github-git-http", use: "git-http" }),
           ]),
         }),
       })
@@ -172,6 +189,9 @@ describe("github skill facade", () => {
     expect(url.searchParams.get("contents")).toBe("write");
     expect(url.searchParams.get("pull_requests")).toBe("write");
     expect(url.searchParams.get("workflows")).toBe("write");
+    expect(url.searchParams.get("statuses")).toBe("write");
+    expect(url.searchParams.get("deployments")).toBe("write");
+    expect(url.searchParams.get("discussions")).toBe("write");
   });
 
   it("reports verified after a live user check succeeds", async () => {

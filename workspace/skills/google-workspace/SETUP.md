@@ -5,9 +5,12 @@ The user needs a checklist with direct Google Console links and a choice to
 open each link inside NatStack or in the system browser.
 
 This setup is modeled on gogcli's Google quick start: create/select one Google
-Cloud project, enable only the APIs needed, configure OAuth consent/branding,
-add test users if the app is still in Testing, create a **Desktop app** OAuth
-client, save its client ID and client secret, then connect the account.
+Cloud project, enable the Workspace bundle NatStack requests up front, configure
+OAuth consent/branding, add test users if the app is still in Testing, create a
+**Desktop app** OAuth client, save its client ID and client secret, then connect
+the account. NatStack asks Google for broad durable Workspace access once, then
+uses local credential bindings to stage Gmail, Calendar, Drive, Docs, Sheets,
+Slides, People, and identity separately inside the app.
 
 ## Required Console Links
 
@@ -18,6 +21,10 @@ client, save its client ID and client secret, then connect the account.
 | Enable Gmail API               | `https://console.cloud.google.com/apis/api/gmail.googleapis.com`         |
 | Enable Google Calendar API     | `https://console.cloud.google.com/apis/api/calendar-json.googleapis.com` |
 | Enable Google Drive API        | `https://console.cloud.google.com/apis/api/drive.googleapis.com`         |
+| Enable Google Docs API         | `https://console.cloud.google.com/apis/api/docs.googleapis.com`          |
+| Enable Google Sheets API       | `https://console.cloud.google.com/apis/api/sheets.googleapis.com`        |
+| Enable Google Slides API       | `https://console.cloud.google.com/apis/api/slides.googleapis.com`        |
+| Enable People API              | `https://console.cloud.google.com/apis/api/people.googleapis.com`        |
 | OAuth branding                 | `https://console.cloud.google.com/auth/branding`                         |
 | OAuth audience / publish state | `https://console.cloud.google.com/auth/audience`                         |
 | OAuth clients                  | `https://console.cloud.google.com/auth/clients`                          |
@@ -30,12 +37,8 @@ Optional APIs when the user's task needs them:
 | Apps Script             | `https://console.cloud.google.com/apis/api/script.googleapis.com`        |
 | Cloud Identity / Groups | `https://console.cloud.google.com/apis/api/cloudidentity.googleapis.com` |
 | Google Chat             | `https://console.cloud.google.com/apis/api/chat.googleapis.com`          |
-| Google Docs             | `https://console.cloud.google.com/apis/api/docs.googleapis.com`          |
-| Google Sheets           | `https://console.cloud.google.com/apis/api/sheets.googleapis.com`        |
-| Google Slides           | `https://console.cloud.google.com/apis/api/slides.googleapis.com`        |
 | Google Forms            | `https://console.cloud.google.com/apis/api/forms.googleapis.com`         |
 | Google Tasks            | `https://console.cloud.google.com/apis/api/tasks.googleapis.com`         |
-| People API              | `https://console.cloud.google.com/apis/api/people.googleapis.com`        |
 
 ## Agent Flow
 
@@ -108,6 +111,30 @@ const requiredSteps = [
     note: "Required for Drive files and Docs/Sheets/Slides export flows.",
   },
   {
+    id: "docs",
+    title: "Enable Google Docs API",
+    href: "https://console.cloud.google.com/apis/api/docs.googleapis.com",
+    note: "Included in the broad Workspace grant so future Docs workflows do not require reconnecting Google.",
+  },
+  {
+    id: "sheets",
+    title: "Enable Google Sheets API",
+    href: "https://console.cloud.google.com/apis/api/sheets.googleapis.com",
+    note: "Included in the broad Workspace grant for spreadsheet workflows.",
+  },
+  {
+    id: "slides",
+    title: "Enable Google Slides API",
+    href: "https://console.cloud.google.com/apis/api/slides.googleapis.com",
+    note: "Included in the broad Workspace grant for presentation workflows.",
+  },
+  {
+    id: "people",
+    title: "Enable People API",
+    href: "https://console.cloud.google.com/apis/api/people.googleapis.com",
+    note: "Required for contact lookup and account identity checks.",
+  },
+  {
     id: "branding",
     title: "Configure OAuth branding",
     href: "https://console.cloud.google.com/auth/branding",
@@ -136,12 +163,8 @@ const optionalApis = [
     "https://console.cloud.google.com/apis/api/cloudidentity.googleapis.com",
   ],
   ["Google Chat", "https://console.cloud.google.com/apis/api/chat.googleapis.com"],
-  ["Google Docs", "https://console.cloud.google.com/apis/api/docs.googleapis.com"],
-  ["Google Sheets", "https://console.cloud.google.com/apis/api/sheets.googleapis.com"],
-  ["Google Slides", "https://console.cloud.google.com/apis/api/slides.googleapis.com"],
   ["Google Forms", "https://console.cloud.google.com/apis/api/forms.googleapis.com"],
   ["Google Tasks", "https://console.cloud.google.com/apis/api/tasks.googleapis.com"],
-  ["People API", "https://console.cloud.google.com/apis/api/people.googleapis.com"],
 ];
 
 export default function GoogleWorkspaceSetup({ onSubmit, onCancel }) {

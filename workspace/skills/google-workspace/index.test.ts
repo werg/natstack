@@ -192,9 +192,17 @@ describe("google-workspace skill facade", () => {
           scopes: expect.arrayContaining([
             "https://www.googleapis.com/auth/gmail.modify",
             "https://www.googleapis.com/auth/calendar",
-            "https://www.googleapis.com/auth/drive.file",
-            "https://www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/drive",
+            "https://www.googleapis.com/auth/documents",
+            "https://www.googleapis.com/auth/spreadsheets",
           ]),
+          accountValidation: {
+            userinfo: expect.objectContaining({
+              url: "https://www.googleapis.com/oauth2/v1/userinfo?alt=json",
+              idField: "id",
+              emailField: "email",
+            }),
+          },
           extraAuthorizeParams: {
             access_type: "offline",
             prompt: "consent",
@@ -202,10 +210,21 @@ describe("google-workspace skill facade", () => {
           persistRefreshToken: true,
         }),
         credential: expect.objectContaining({
-          metadata: { providerId: "google-workspace" },
+          metadata: expect.objectContaining({
+            providerId: "google-workspace",
+            upstreamAccessMode: "google-workspace-broad",
+            localBindingCatalog: "google-workspace:v1",
+          }),
           audience: expect.arrayContaining([
-            { url: "https://gmail.googleapis.com/", match: "origin" },
-            { url: "https://www.googleapis.com/", match: "origin" },
+            { url: "https://gmail.googleapis.com/gmail/v1/users/me/", match: "path-prefix" },
+            { url: "https://www.googleapis.com/calendar/v3/", match: "path-prefix" },
+            { url: "https://docs.googleapis.com/v1/", match: "path-prefix" },
+          ]),
+          bindings: expect.arrayContaining([
+            expect.objectContaining({ id: "google-gmail", label: "Google Gmail" }),
+            expect.objectContaining({ id: "google-calendar", label: "Google Calendar" }),
+            expect.objectContaining({ id: "google-drive", label: "Google Drive" }),
+            expect.objectContaining({ id: "google-people", label: "Google People" }),
           ]),
         }),
       })

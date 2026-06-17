@@ -1,5 +1,6 @@
 import { failureResult, handleGmailError } from "../errors.js";
 import type { GmailChannelState } from "../types.js";
+import { missingScopeActionForOperation } from "./operations.js";
 
 export interface GmailErrorPolicyDeps {
   getChannelState: (channelId: string) => GmailChannelState;
@@ -32,6 +33,12 @@ export async function failGmailOperation(
   }
   if (failure.kind === "rate-limited") {
     return failureResult(failure);
+  }
+  if (failure.code === "forbidden") {
+    const action = missingScopeActionForOperation(operation);
+    if (action) {
+      return failureResult({ ...failure, action });
+    }
   }
   throw err;
 }

@@ -2,24 +2,20 @@ import { credentials } from "@workspace/runtime";
 import type {
   StoredCredentialSummary,
 } from "@workspace/runtime";
+import {
+  bearerTokenInjection,
+  GOOGLE_WORKSPACE_BROAD_SCOPES,
+  googleWorkspaceCredential,
+} from "@workspace/integrations/providers";
 
 const GOOGLE_PROVIDER_ID = "google-workspace";
 const GOOGLE_OAUTH_CLIENT_CONFIG_ID = "google-workspace";
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
-const GOOGLE_SCOPES = [
-  "https://www.googleapis.com/auth/gmail.modify",
-  "https://www.googleapis.com/auth/calendar",
-  "https://www.googleapis.com/auth/drive.file",
-  "https://www.googleapis.com/auth/userinfo.email",
-  "https://www.googleapis.com/auth/contacts.readonly",
-  "https://www.googleapis.com/auth/contacts.other.readonly",
-] as const;
-const GOOGLE_AUDIENCE_ORIGINS = new Set([
-  "https://gmail.googleapis.com",
-  "https://www.googleapis.com",
-  "https://people.googleapis.com",
-]);
+const GOOGLE_SCOPES = [...GOOGLE_WORKSPACE_BROAD_SCOPES] as const;
+const GOOGLE_AUDIENCE_ORIGINS = new Set(
+  googleWorkspaceCredential.audiences.map((audience) => new URL(audience.url).origin)
+);
 
 type RuntimeCredentials = typeof credentials;
 
@@ -427,6 +423,14 @@ export async function connectGoogle(
           clientConfigId: GOOGLE_OAUTH_CLIENT_CONFIG_ID,
           scopes,
           persistRefreshToken: true,
+          accountValidation: {
+            userinfo: {
+              url: "https://www.googleapis.com/oauth2/v1/userinfo?alt=json",
+              idField: "id",
+              emailField: "email",
+              usernameField: "email",
+            },
+          },
           extraAuthorizeParams: {
             access_type: "offline",
             prompt: "consent",
@@ -434,19 +438,14 @@ export async function connectGoogle(
         },
         credential: {
           label: "Google Workspace",
-          audience: [
-            { url: "https://gmail.googleapis.com/", match: "origin" },
-            { url: "https://www.googleapis.com/", match: "origin" },
-            { url: "https://people.googleapis.com/", match: "origin" },
-          ],
-          injection: {
-            type: "header",
-            name: "authorization",
-            valueTemplate: "Bearer {token}",
-          },
+          audience: googleWorkspaceCredential.audiences,
+          injection: bearerTokenInjection,
+          bindings: googleWorkspaceCredential.bindings,
           scopes,
           metadata: {
             providerId: GOOGLE_PROVIDER_ID,
+            upstreamAccessMode: "google-workspace-broad",
+            localBindingCatalog: "google-workspace:v1",
           },
         },
       })

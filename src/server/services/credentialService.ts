@@ -3525,6 +3525,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       accountIdentity: credential.accountIdentity,
       scopes: credential.scopes,
       credentialUse: usage.binding.use,
+      bindingLabel: usage.binding.label,
       gitOperation: usage.gitOperation,
       grantResource: usage.sessionResource,
       oauthAuthorizeOrigin: credential.metadata?.["oauthAuthorizeOrigin"],
@@ -4241,10 +4242,31 @@ function normalizeCredentialBindings(
       ];
   return rawBindings.map((binding) => ({
     id: binding.id,
+    ...(binding.label ? { label: binding.label } : {}),
     use: binding.use,
     audience: normalizeUrlAudiences(binding.audience),
     injection: normalizeCredentialInjection(binding.injection),
+    ...(binding.grantResource
+      ? { grantResource: normalizeCredentialGrantResourceHint(binding.grantResource) }
+      : {}),
   }));
+}
+
+function normalizeCredentialGrantResourceHint(
+  hint: NonNullable<CredentialBinding["grantResource"]>
+): NonNullable<CredentialBinding["grantResource"]> {
+  if (hint.type === "audience") {
+    return { type: "audience" };
+  }
+  if (
+    hint.type === "url-path-prefix" &&
+    Number.isInteger(hint.segmentCount) &&
+    hint.segmentCount >= 1 &&
+    hint.segmentCount <= 8
+  ) {
+    return { type: "url-path-prefix", segmentCount: hint.segmentCount };
+  }
+  throw new Error("Credential binding grantResource is invalid");
 }
 
 function credentialBindings(credential: Credential): CredentialBinding[] {
@@ -4278,7 +4300,7 @@ function credentialUseContext(
   const resource =
     binding.use === "git-http" || binding.use === "git-ssh"
       ? gitRemoteFromUrl(targetUrl)
-      : (findMatchingUrlAudience(targetUrl, binding.audience)?.url ?? targetUrl.origin);
+      : credentialBindingResource(binding, targetUrl);
   const gitOperation =
     binding.use === "git-http" || binding.use === "git-ssh"
       ? describeGitHttpOperation(targetUrl, "GET")
@@ -4295,6 +4317,20 @@ function credentialUseContext(
     },
     gitOperation,
   };
+}
+
+function credentialBindingResource(binding: CredentialBinding, targetUrl: URL): string {
+  if (binding.grantResource?.type === "url-path-prefix") {
+    return urlPathPrefixResource(targetUrl, binding.grantResource.segmentCount);
+  }
+  return findMatchingUrlAudience(targetUrl, binding.audience)?.url ?? targetUrl.origin;
+}
+
+function urlPathPrefixResource(targetUrl: URL, segmentCount: number): string {
+  const resource = new URL(targetUrl.origin);
+  const segments = targetUrl.pathname.split("/").filter(Boolean).slice(0, segmentCount);
+  resource.pathname = segments.length ? `/${segments.join("/")}/` : "/";
+  return resource.toString();
 }
 
 function preapprovedUseContextsForBinding(binding: CredentialBinding): CredentialUseContext[] {

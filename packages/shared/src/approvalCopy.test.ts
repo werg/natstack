@@ -96,6 +96,29 @@ describe("approvalCopy", () => {
       summaryIncludes: "github.com/acme/project",
     },
     {
+      name: "credential repo binding",
+      approval: {
+        ...base,
+        kind: "credential",
+        credentialId: "cred-github",
+        credentialLabel: "GitHub",
+        audience: [{ match: "path-prefix", url: "https://api.github.com/repos/" }],
+        injection: { type: "header", name: "authorization", valueTemplate: "Bearer {token}" },
+        accountIdentity: { username: "octo", providerUserId: "octo" },
+        scopes: ["repo"],
+        credentialUse: "fetch",
+        bindingLabel: "GitHub repositories",
+        grantResource: {
+          bindingId: "github-repos",
+          resource: "https://api.github.com/repos/acme/project/",
+          action: "use",
+        },
+      },
+      category: "Access request",
+      title: "Use GitHub repositories",
+      summaryIncludes: "GitHub repositories at github.com/acme/project",
+    },
+    {
       name: "workspace source change",
       approval: {
         ...base,
@@ -322,6 +345,10 @@ describe("approvalCopy", () => {
       relation: "as",
       target: "me@example.com",
     });
+    expect(getApprovalAttribution(byName("credential repo binding"))).toEqual({
+      relation: "with",
+      target: "GitHub repositories at github.com/acme/project",
+    });
     // Capability/unit-batch requests have no secondary chip.
     expect(getApprovalAttribution(byName("capability"))).toEqual({});
 
@@ -362,6 +389,11 @@ describe("approvalCopy", () => {
     expect(
       getStandardActionCopy(gitWrite as Extract<PendingApproval, { kind: "credential" }>).once.label
     ).toBe("Push once");
+    const repoBinding = fixtures.find((fixture) => fixture.name === "credential repo binding")!
+      .approval as Extract<PendingApproval, { kind: "credential" }>;
+    expect(getStandardActionCopy(repoBinding).repo.description).toContain(
+      "GitHub repositories at github.com/acme/project"
+    );
     expect(
       getStandardActionCopy(capability as Extract<PendingApproval, { kind: "capability" }>).once
         .label

@@ -2,6 +2,10 @@ import type {
   CredentialClient,
   UrlCredentialHandle,
 } from "@workspace/runtime/credentials";
+import {
+  bindingAudience,
+  googleWorkspaceCredential,
+} from "@workspace/integrations/providers";
 
 import {
   BatchHttpError,
@@ -111,16 +115,6 @@ function httpFailureToError(
     }
   );
 }
-
-const googleWorkspaceCredential = {
-  id: "google-workspace",
-  displayName: "Google Workspace",
-  audiences: [
-    { url: "https://gmail.googleapis.com/", match: "origin" as const },
-    { url: "https://www.googleapis.com/", match: "origin" as const },
-    { url: "https://people.googleapis.com/", match: "origin" as const },
-  ],
-};
 
 export interface GmailHeader {
   name: string;
@@ -574,8 +568,7 @@ export function createGmailClient(
   const handle = (): Promise<UrlCredentialHandle> => {
     if (!handlePromise) {
       const p = credentials.forAudience({
-        ...googleWorkspaceCredential,
-        label: googleWorkspaceCredential.displayName,
+        ...bindingAudience(googleWorkspaceCredential, "google-gmail", opts),
         ...(opts.credentialId ? { credentialId: opts.credentialId } : {}),
       });
       p.catch(() => {

@@ -57,6 +57,101 @@ device-code, client-credentials, JWT bearer, and token exchange. Stored client
 configs support `client_secret_post`, `client_secret_basic`, and
 `private_key_jwt`; private keys and client secrets stay in the host config.
 
+## Broad Upstream, Staged Local Bindings
+
+For workspace providers, prefer requesting a durable broad upstream grant once,
+then expose narrow local bindings inside NatStack. This avoids reconnecting the
+user when an agent moves from Gmail to Calendar or from GitHub issues to Git
+transport, while still keeping runtime approval grants scoped to the service or
+resource being used.
+
+Use `credential.bindings` for the local stages. Each binding has its own
+audience, injection shape, label, and use mode:
+
+```ts
+await credentials.connect({
+  flow: {
+    type: "oauth2-auth-code-pkce",
+    clientConfigId: "google-workspace",
+    scopes: [
+      "https://www.googleapis.com/auth/gmail.modify",
+      "https://www.googleapis.com/auth/calendar",
+      "https://www.googleapis.com/auth/drive",
+      "https://www.googleapis.com/auth/documents",
+      "https://www.googleapis.com/auth/spreadsheets",
+    ],
+    persistRefreshToken: true,
+  },
+  credential: {
+    label: "Google Workspace",
+    audience: [
+      { url: "https://gmail.googleapis.com/gmail/v1/users/me/", match: "path-prefix" },
+      { url: "https://www.googleapis.com/calendar/v3/", match: "path-prefix" },
+    ],
+    injection: {
+      type: "header",
+      name: "authorization",
+      valueTemplate: "Bearer {token}",
+      stripIncoming: ["authorization"],
+    },
+    bindings: [
+      {
+        id: "google-gmail",
+        label: "Google Gmail",
+        use: "fetch",
+        audience: [{ url: "https://gmail.googleapis.com/gmail/v1/users/me/", match: "path-prefix" }],
+        injection: {
+          type: "header",
+          name: "authorization",
+          valueTemplate: "Bearer {token}",
+          stripIncoming: ["authorization"],
+        },
+      },
+      {
+        id: "google-calendar",
+        label: "Google Calendar",
+        use: "fetch",
+        audience: [{ url: "https://www.googleapis.com/calendar/v3/", match: "path-prefix" }],
+        injection: {
+          type: "header",
+          name: "authorization",
+          valueTemplate: "Bearer {token}",
+          stripIncoming: ["authorization"],
+        },
+      },
+    ],
+  },
+});
+```
+
+For dynamic provider resources, add `grantResource` so approvals stage the
+right reusable unit instead of the whole audience. GitHub API calls use this to
+allow `/repos/{owner}/{repo}/...` per repository while the upstream PAT can be
+valid for all repositories:
+
+```ts
+{
+  id: "github-repos",
+  label: "GitHub repositories",
+  use: "fetch",
+  audience: [{ url: "https://api.github.com/repos/", match: "path-prefix" }],
+  injection: {
+    type: "header",
+    name: "authorization",
+    valueTemplate: "Bearer {token}",
+    stripIncoming: ["authorization"],
+  },
+  grantResource: { type: "url-path-prefix", segmentCount: 3 },
+}
+```
+
+Provider packages should export descriptor objects with their binding catalog
+and scope list. Runtime clients should call `credentials.forAudience()` with
+the binding audience they need first, then use the returned `credentialId` for
+subsequent host-mediated fetches. The host still selects the matching binding
+for each request URL, so a Gmail client can use the same stored credential for
+People API lookups without sharing raw tokens with userland.
+
 ### Device-code flow (RFC 8628)
 
 `type: "oauth2-device-code"` is the right choice when a redirect-based flow
@@ -116,15 +211,16 @@ const stored = await credentials.connect({
   flow: {
     type: "oauth2-auth-code-pkce",
     clientConfigId: "google-workspace",
-    scopes: ["https://www.googleapis.com/auth/userinfo.email"],
+    scopes: ["openid", "profile", "email"],
   },
   credential: {
     label: "Google Workspace",
-    audience: [{ url: "https://www.googleapis.com/", match: "origin" }],
+    audience: [{ url: "https://www.googleapis.com/oauth2/v1/userinfo", match: "path-prefix" }],
     injection: {
       type: "header",
       name: "authorization",
       valueTemplate: "Bearer {token}",
+      stripIncoming: ["authorization"],
     },
   },
 });

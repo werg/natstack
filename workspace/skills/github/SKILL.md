@@ -1,6 +1,6 @@
 ---
 name: github
-description: Set up GitHub access for NatStack with fine-grained personal access tokens, URL-bound credentials, deep links, and verification helpers.
+description: Set up broad GitHub access for NatStack with fine-grained or classic personal access tokens, staged local bindings, deep links, and verification helpers.
 ---
 
 # GitHub Skill
@@ -13,13 +13,17 @@ to create the PAT needed for direct GitHub clone/pull/push support.
 
 Use a GitHub fine-grained personal access token. This is the simplest approach
 that requires no centralized NatStack server, no app registration controlled by
-NatStack, and no OAuth callback infrastructure.
+NatStack, and no OAuth callback infrastructure. The default helper path is
+broad upstream access with local staging: a fine-grained PAT can be valid for
+All repositories, while NatStack stores separate bindings for user API,
+repository API, release uploads, and git HTTPS. Repository API approvals stage
+to `/repos/{owner}/{repo}/`.
 
 If the user wants blanket or higher-trust access instead of least-privilege
 setup, say so plainly and offer the broad route:
 
-- Fine-grained PAT: choose **All repositories**, then grant the repository
-  permissions needed for the requested work.
+- Fine-grained PAT: choose **All repositories**, then grant the prefilled broad
+  repository permissions needed for durable workspace use.
 - Classic PAT: use broader scopes such as `repo` when the user explicitly wants
   broad access and accepts the larger blast radius.
 
@@ -31,13 +35,15 @@ GitHub Apps are more granular for multi-user products, but they require app
 registration and installation flows. OAuth apps can work, but for this personal
 sandbox they add more moving pieces than a user-owned fine-grained PAT and still
 do not avoid broad user authorization concerns.
+GitHub App support is the right follow-up for API surfaces that fine-grained
+PATs do not cover, such as Checks API writes.
 
 ## Workflow
 
 1. Run `getGitHubOnboardingStatus()` from `@workspace-skills/github`.
 2. If the stage is `needs-token`, ask the user to choose token style:
-   - **Fine-grained PAT (recommended)**: narrower, can still choose All
-     repositories, but GitHub requires selecting permission categories.
+   - **Fine-grained PAT (recommended)**: broad-but-staged, can choose All
+     repositories, and GitHub requires selecting permission categories.
    - **Classic PAT (broad)**: faster blanket access with broad scopes such as
      `repo`; use only when the user explicitly accepts the larger blast radius.
 3. Ask for a broad-strokes access level instead of exposing every GitHub
@@ -86,7 +92,7 @@ import {
 const status = await getGitHubOnboardingStatus();
 if (status.stage === "needs-token") {
   const tokenKind = "fine-grained"; // or "classic" if the user chose broad access
-  const accessLevel = "collaborate";
+  const accessLevel = "broad";
   await openGitHubTokenSettings({ tokenKind, accessLevel, browser: "internal" });
   const stored = await requestGitHubTokenCredential({
     tokenKind,
@@ -111,12 +117,12 @@ use External when their normal browser already has GitHub auth, passkeys, or
 password-manager state. The full workflow UI in `SETUP.md` is optional guidance,
 not the default happy path.
 
-The stored credential is URL-bound to `https://api.github.com/` and, for every
-friendly access level, to `https://github.com/` git HTTP as well. API requests
-should use `credentials.fetch()`. Direct GitHub clone/pull/push should use
-`@natstack/git` with `credentials.gitHttp()`. NatStack's host-mediated
-isomorphic-git HTTP adapter handles `https://github.com/...` git remotes
-without exposing the PAT to panels or workers.
+The stored credential is URL-bound through staged bindings:
+`github-user`, `github-repos`, `github-uploads`, and `github-git-http`.
+API requests should use `credentials.fetch()`. Direct GitHub clone/pull/push
+should use `@natstack/git` with `credentials.gitHttp()`. NatStack's
+host-mediated isomorphic-git HTTP adapter handles `https://github.com/...` git
+remotes without exposing the PAT to panels or workers.
 
 ```ts
 import { credentials, fs } from "@workspace/runtime";
@@ -211,9 +217,14 @@ console.log(result.imported, result.skipped, result.failed);
 - Pull requests: Metadata read, Pull requests read/write.
 - Actions read: Metadata read, Actions read.
 - Workflows: Metadata read, Contents write, Workflows write.
+- Statuses: Metadata read, Statuses read/write.
+- Deployments: Metadata read, Deployments read/write.
+- Discussions: Metadata read, Discussions read/write.
 
-Use the narrowest set that supports the requested workflow. Avoid workflow
-write unless the user explicitly wants to edit GitHub Actions workflow files.
+Use Broad when the user wants seamless future repository access. Use the
+narrower presets only when the user explicitly wants upstream narrowing. Avoid
+workflow write unless the user explicitly wants to edit GitHub Actions workflow
+files.
 
 ## Troubleshooting
 

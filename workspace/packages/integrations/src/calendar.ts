@@ -166,7 +166,7 @@ export interface CalendarClient {
  * The credential handle is resolved on first use and memoized.
  */
 export function createCalendarClient(credentials: CredentialClient): CalendarClient {
-  const handle = createGoogleWorkspaceCredentialHandle(credentials);
+  const handle = createGoogleWorkspaceCredentialHandle(credentials, { bindingId: "google-calendar" });
   const sharedApiFetch = createGoogleApiFetcher({
     baseUrl: GOOGLE_CALENDAR_BASE_URL,
     serviceName: "Google Calendar",

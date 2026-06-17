@@ -2,7 +2,10 @@ import type {
   CredentialClient,
   UrlCredentialHandle,
 } from "@workspace/runtime/credentials";
-import { googleWorkspaceCredential } from "./providers.js";
+import {
+  bindingAudience,
+  googleWorkspaceCredential,
+} from "./providers.js";
 
 export class GoogleApiError extends Error {
   status: number;
@@ -22,13 +25,20 @@ export class GoogleApiError extends Error {
 
 export function createGoogleWorkspaceCredentialHandle(
   credentials: CredentialClient,
+  opts: { bindingId?: string; credentialId?: string } = {},
 ): () => Promise<UrlCredentialHandle> {
   let handlePromise: Promise<UrlCredentialHandle> | null = null;
   return () => {
     if (!handlePromise) {
+      const descriptor = opts.bindingId
+        ? bindingAudience(googleWorkspaceCredential, opts.bindingId, opts)
+        : {
+            ...googleWorkspaceCredential,
+            label: googleWorkspaceCredential.displayName,
+            ...(opts.credentialId ? { credentialId: opts.credentialId } : {}),
+          };
       const p = credentials.forAudience({
-        ...googleWorkspaceCredential,
-        label: googleWorkspaceCredential.displayName,
+        ...descriptor,
       });
       p.catch(() => {
         if (handlePromise === p) handlePromise = null;

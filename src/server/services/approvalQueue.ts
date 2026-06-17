@@ -51,6 +51,7 @@ export interface CredentialApprovalQueueRequest extends ApprovalQueueRequestBase
   accountIdentity: AccountIdentity;
   scopes: string[];
   credentialUse?: PendingCredentialApproval["credentialUse"];
+  bindingLabel?: PendingCredentialApproval["bindingLabel"];
   gitOperation?: PendingCredentialApproval["gitOperation"];
   grantResource?: PendingCredentialApproval["grantResource"];
   oauthAuthorizeOrigin?: string;
@@ -456,6 +457,7 @@ export function createApprovalQueue(deps: {
       accountIdentity: req.accountIdentity,
       scopes: req.scopes,
       credentialUse: req.credentialUse,
+      bindingLabel: req.bindingLabel,
       gitOperation: req.gitOperation,
       grantResource: req.grantResource,
       oauthAuthorizeOrigin: req.oauthAuthorizeOrigin,

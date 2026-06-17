@@ -1,9 +1,12 @@
 # GitHub Setup Workflow
 
 Use this when the user wants guided help choosing repository access and
-permissions. For routine GitHub access, the simpler default is: open the
-token page the user chose, generate a token, save it with
-`requestGitHubTokenCredential()`, and verify it.
+permissions. The default NatStack-friendly path is broad upstream access:
+open a fine-grained PAT page prefilled for Broad, choose All repositories when
+the user wants seamless future repository access, save the token with
+`requestGitHubTokenCredential()`, and verify it. NatStack then stages access
+internally with separate user API, repository API, release upload, and git
+HTTPS bindings.
 
 If rendering this as an interactive checklist, provide both internal and
 external open buttons for GitHub settings links. Collect the final token only
@@ -21,8 +24,9 @@ input prompt.
 
 Always let the user choose the token style before opening GitHub:
 
-- **Fine-grained PAT (recommended)**: use for least-privilege access. Select
-  repositories or All repositories, then grant specific permission categories.
+- **Fine-grained PAT (recommended)**: use for broad-but-staged access. Select
+  All repositories when the user wants future repository access without
+  reconnecting, then grant the prefilled permission categories.
 - **Classic PAT (broad)**: use when the user explicitly wants blanket/higher
   permissions. Select broad scopes such as `repo`.
 
@@ -31,8 +35,9 @@ Always let the user choose the token style before opening GitHub:
 1. Open the chosen GitHub token page.
 2. Set a token name such as `NatStack`.
 3. Choose an expiration that matches the user's tolerance for rotation.
-4. Select repository access. Prefer selected repositories unless the user wants
-   broad personal sandbox access.
+4. Select repository access. Prefer All repositories for the seamless broad
+   workspace model; choose selected repositories only when the user explicitly
+   wants upstream narrowing.
 5. Add permissions for the requested workflow:
    - API-only default: Metadata read, Contents read, Issues read/write, Pull
      requests read/write.
@@ -42,6 +47,9 @@ Always let the user choose the token style before opening GitHub:
    - Push: Metadata read, Contents write.
    - Actions reads: Metadata read, Actions read.
    - Workflow editing: Metadata read, Contents write, Workflows write.
+   - Broad default: Contents, Issues, Pull requests, Actions, Workflows,
+     Statuses, Deployments, and Discussions where GitHub's fine-grained PAT UI
+     supports those categories.
 6. Generate the token.
 7. Run `requestGitHubTokenCredential()` and let the user enter the token in the
    host approval UI.
@@ -56,9 +64,14 @@ least-privilege checklist.
 
 - Fine-grained broad token: choose **All repositories**, then grant the
   repository permissions needed for the work, such as Contents read/write,
-  Issues read/write, Pull requests read/write, Actions read, or Workflows write.
+  Issues read/write, Pull requests read/write, Actions write, Workflows write,
+  Statuses write, Deployments write, and Discussions write.
 - Classic broad token: create a classic PAT and choose broad scopes such as
   `repo` when the user explicitly accepts broad private-repository access.
+
+GitHub fine-grained PATs still do not cover every GitHub API surface. In
+particular, Checks API write access is a GitHub App use case. Do not invent a
+Checks PAT permission; use a GitHub App path if the user needs Checks.
 
 When saving a classic PAT, call:
 
@@ -167,7 +180,7 @@ const accessLevels = [
 
 export default function GitHubSetup({ onSubmit, onCancel }) {
   const [tokenKind, setTokenKind] = useState("fine-grained");
-  const [accessLevel, setAccessLevel] = useState("collaborate");
+  const [accessLevel, setAccessLevel] = useState("broad");
   const [saving, setSaving] = useState(false);
   const tokenUrl = buildGitHubTokenSettingsUrl({ tokenKind, accessLevel });
 

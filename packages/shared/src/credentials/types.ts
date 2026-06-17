@@ -48,11 +48,17 @@ export interface CookieSessionMaterial {
 
 export type CredentialBindingUse = "fetch" | "git-http" | "git-ssh";
 
+export type CredentialGrantResourceHint =
+  | { type: "audience" }
+  | { type: "url-path-prefix"; segmentCount: number };
+
 export interface CredentialBinding {
   id: string;
+  label?: string;
   use: CredentialBindingUse;
   audience: UrlAudience[];
   injection: CredentialInjection;
+  grantResource?: CredentialGrantResourceHint;
 }
 
 export interface CredentialOwner {

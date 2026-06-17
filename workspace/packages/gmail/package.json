@@ -11,6 +11,7 @@
     "./renderers/gmail-thread.reducer": "./src/renderers/gmail-thread.reducer.ts"
   },
   "dependencies": {
+    "@workspace/integrations": "workspace:*",
     "@workspace/runtime": "workspace:*"
   },
   "devDependencies": {

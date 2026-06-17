@@ -85,11 +85,13 @@ describe("approvalQueue", () => {
       },
       accountIdentity: { providerUserId: "user-1" },
       scopes: ["repo"],
+      bindingLabel: "GitHub repositories",
     });
 
     expect(queue.listPending()[0]).toMatchObject({
       kind: "credential",
       credentialLabel: "GitHub",
+      bindingLabel: "GitHub repositories",
       audience: [{ url: "https://api.github.com/", match: "origin" }],
     });
     queue.resolve(queue.listPending()[0]!.approvalId, "deny");

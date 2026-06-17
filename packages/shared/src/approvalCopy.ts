@@ -143,16 +143,22 @@ export function getStandardActionCopy(
       };
     }
     return {
-      once: { label: "Use once", description: "Use this service for this request only." },
+      once: {
+        label: "Use once",
+        description: `Use ${formatCredentialUseTarget(approval)} for this request only.`,
+      },
       session: {
         label: "Use this session",
-        description: "Reuse this service until NatStack restarts.",
+        description: `Reuse ${formatCredentialUseTarget(approval)} until NatStack restarts.`,
       },
       version: {
         label: "Trust version",
-        description: "Reuse this service for this exact code version.",
+        description: `Allow this exact code version to use ${formatCredentialUseTarget(approval)}.`,
       },
-      repo: { label: "Trust repo", description: "Reuse this service for this workspace." },
+      repo: {
+        label: "Trust repo",
+        description: `Allow this workspace project to use ${formatCredentialUseTarget(approval)}.`,
+      },
       denyDescription: "Do not use this service.",
     };
   }
@@ -407,7 +413,7 @@ export function getApprovalAttribution(approval: PendingApproval): ApprovalAttri
         ? { relation: "as", target: account }
         : {};
     }
-    return { relation: "with", target: formatAudienceSummary(approval) };
+    return { relation: "with", target: formatCredentialUseTarget(approval) };
   }
   return {};
 }
@@ -591,8 +597,8 @@ export function getApprovalCopy(approval: PendingApproval): {
     };
   }
   return {
-    title: `Use ${approval.credentialLabel}`,
-    summary: `Uses ${approval.credentialLabel} with ${audience}.`,
+    title: `Use ${approval.bindingLabel ?? approval.credentialLabel}`,
+    summary: `Uses ${approval.credentialLabel} with ${formatCredentialUseTarget(approval)}.`,
     warning: approval.oauthAudienceDomainMismatch
       ? "The sign-in domain differs from the service domain."
       : undefined,
@@ -720,6 +726,35 @@ export function formatAudienceSummary(approval: PendingCredentialApproval): stri
   const audience = formatUrlForSummary(first.url, first.match === "origin" ? "origin" : "path");
   const extraCount = approval.audience.length - 1;
   return extraCount > 0 ? `${audience} and ${extraCount} more` : audience;
+}
+
+export function formatCredentialUseTarget(approval: PendingCredentialApproval): string {
+  if (approval.grantResource?.resource) {
+    const resource = formatCredentialGrantResourceSummary(approval.grantResource.resource);
+    return approval.bindingLabel ? `${approval.bindingLabel} at ${resource}` : resource;
+  }
+  if (approval.bindingLabel) {
+    return approval.bindingLabel;
+  }
+  return formatAudienceSummary(approval);
+}
+
+function formatCredentialGrantResourceSummary(raw: string): string {
+  try {
+    const url = new URL(raw);
+    const segments = url.pathname.split("/").filter(Boolean);
+    if (
+      (url.hostname === "api.github.com" || url.hostname === "uploads.github.com") &&
+      segments[0] === "repos" &&
+      segments[1] &&
+      segments[2]
+    ) {
+      return `github.com/${segments[1]}/${segments[2]}`;
+    }
+  } catch {
+    // fall through to generic formatting
+  }
+  return formatUrlForSummary(raw, "path");
 }
 
 export function formatGitRemoteSummary(raw: string): string {
