@@ -75,7 +75,7 @@ natstack agent call SERVICE.METHOD 'ARGS_JSON' [--target ID]
 `ARGS_JSON` is a JSON **array** of positional arguments. `fs.*` and
 the session's contextId as their first argument (get it from
 `natstack agent status --json`). For VCS, use heads such as `ctx:<contextId>`
-with `vcs.status` or `vcs.commit`. `--target ID` relays the call to a runtime
+with `vcs.status` or `vcs.applyEdits`. `--target ID` relays the call to a runtime
 entity (panel/worker/DO) instead of the server; relayed methods are
 entity-defined and may be plain names without a `SERVICE.` prefix (e.g.
 `natstack agent call ping --target worker:...`). See

@@ -271,11 +271,16 @@ async function example() {
 
 ### Workspace VCS
 
+Edits are edit-first: the `edit`/`write` tools (and `vcs.applyEdits`) commit to
+your context head and project to disk atomically — there is no separate commit
+step. `vcs.status()` reports your head's unpublished changes vs `main`; publish
+with `vcs.publish()`.
+
 ```typescript
 import { vcs } from "@workspace/runtime";
 
-const status = await vcs.status();
-await vcs.commit("panels/my-panel", "Update panel");
+const status = await vcs.status(); // unpublished changes on your context head
+await vcs.publish(); // publish your context head into main
 ```
 
 ---

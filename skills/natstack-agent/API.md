@@ -332,7 +332,6 @@ Allowed callers: `shell`, `panel`, `app`, `server`, `worker`, `do`, `extension`,
 
 | Method | Description |
 |--------|-------------|
-| `vcs.commit` |  |
 | `vcs.applyEdits` |  |
 | `vcs.readFile` |  |
 | `vcs.listFiles` |  |

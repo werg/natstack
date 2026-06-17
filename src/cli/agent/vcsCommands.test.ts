@@ -137,68 +137,6 @@ describe("natstack vcs commands", () => {
     );
   });
 
-  it("commit -m sends the message and explicit context head", async () => {
-    writeCredentials(tmpDir);
-    writeSession(tmpDir);
-    const commitResult = {
-      head: "ctx:ctx_1",
-      stateHash: "state:deadbeefcafe0000",
-      changed: true,
-      fileCount: 2,
-      changedPaths: ["panels/notes/index.ts", "workers/helper/index.ts"],
-      message: "Committed state:deadbeefcafe0000 on ctx:ctx_1 (2 paths)",
-    };
-    const { rpcBodies } = stubServer(() => commitResult);
-
-    const { main } = await import("../client.js");
-    await expect(
-      main(["vcs", "commit", "-m", "Fix it", "--repo", "panels/notes", "--json"])
-    ).resolves.toBe(0);
-
-    expect(rpcBodies).toEqual([
-      {
-        method: "vcs.commit",
-        args: ["panels/notes", "Fix it", { head: "ctx:ctx_1" }],
-      },
-    ]);
-    expect(jsonOutput()).toEqual(commitResult);
-  });
-
-  it("commit human output makes whole-context scope explicit", async () => {
-    writeCredentials(tmpDir);
-    writeSession(tmpDir);
-    const originalIsTty = process.stdout.isTTY;
-    Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
-    stubServer(() => ({
-      head: "ctx:ctx_1",
-      stateHash: "state:deadbeefcafe0000",
-      changed: true,
-      fileCount: 2,
-      changedPaths: ["panels/notes/index.ts", "workers/helper/index.ts"],
-      message: "Committed state:deadbeefcafe0000 on ctx:ctx_1 (2 paths)",
-    }));
-
-    try {
-      const { main } = await import("../client.js");
-      await expect(main(["vcs", "commit", "-m", "Fix it", "--repo", "panels/notes"])).resolves.toBe(
-        0
-      );
-    } finally {
-      Object.defineProperty(process.stdout, "isTTY", {
-        value: originalIsTty,
-        configurable: true,
-      });
-    }
-
-    const lines = vi.mocked(console.log).mock.calls.map((call) => String(call[0]));
-    expect(lines).toContain(
-      "scope: whole context head ctx:ctx_1; --repo panels/notes is not a commit filter"
-    );
-    expect(lines).toContain("note: 1 committed path(s) are outside panels/notes");
-    expect(lines).toContain("  panels/notes/index.ts");
-    expect(lines).toContain("  workers/helper/index.ts");
-  });
-
   it("honors --session for non-default sessions", async () => {
     writeCredentials(tmpDir);
     writeSession(tmpDir, "work");
@@ -223,14 +161,11 @@ describe("natstack vcs commands", () => {
     const { main } = await import("../client.js");
 
     await expect(main(["vcs", "status", "--json"])).resolves.toBe(2);
-    await expect(main(["vcs", "commit", "--repo", "panels/notes", "--json"])).resolves.toBe(2);
     await expect(main(["git", "status", "--repo", "panels/notes", "--json"])).resolves.toBe(2);
 
     stubServer(() => {
-      throw new Error("Nothing to commit: working tree is clean");
+      throw new Error("workspace VCS unavailable");
     });
-    await expect(
-      main(["vcs", "commit", "-m", "msg", "--repo", "panels/notes", "--json"])
-    ).resolves.toBe(1);
+    await expect(main(["vcs", "status", "--repo", "panels/notes", "--json"])).resolves.toBe(1);
   });
 });
