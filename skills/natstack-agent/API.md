@@ -79,7 +79,7 @@ Allowed callers: `panel`, `app`, `shell`, `server`, `worker`, `do`, `extension`
 | `build.getBuildMetadata` |  |
 | `build.getEffectiveVersion` |  |
 | `build.inspectBuildProvenance` | Resolve a workspace build unit and report its effective version, immutable build keys, and cached artifact metadata. |
-| `build.listRecentBuildEvents` | List recent push-triggered build lifecycle events and failures, optionally filtered by unit name or workspace-relative path. |
+| `build.listRecentBuildEvents` | List recent state-triggered build lifecycle events and failures, optionally filtered by unit name or workspace-relative path. |
 | `build.doctorExtension` | Inspect an extension manifest, dependency routing, cached metadata, and smoke/build status. |
 | `build.recompute` |  |
 | `build.gc` |  |
@@ -159,7 +159,7 @@ Allowed callers: `panel`, `app`, `server`, `worker`, `do`, `extension`, `shell`,
 
 ## `gitInterop`
 
-External Git project import and remote metadata only
+External Git interop: declared remotes and remote project imports
 
 Allowed callers: `shell`, `panel`, `app`, `server`, `worker`, `do`, `extension`
 
@@ -169,26 +169,6 @@ Allowed callers: `shell`, `panel`, `app`, `server`, `worker`, `do`, `extension`
 | `gitInterop.removeSharedRemote` |  |
 | `gitInterop.importProject` |  |
 | `gitInterop.completeWorkspaceDependencies` |  |
-| `git.importProject` |  |
-| `git.completeWorkspaceDependencies` |  |
-
-## `vcs`
-
-Workspace version control (GAD-native): commit, status, log, diff
-
-Allowed callers: `shell`, `panel`, `app`, `server`, `worker`, `do`, `extension`, `harness`
-
-| Method | Description |
-|--------|-------------|
-| `vcs.commit` |  |
-| `vcs.status` |  |
-| `vcs.log` |  |
-| `vcs.diff` |  |
-| `vcs.resolveHead` |  |
-| `vcs.merge` |  |
-| `vcs.abortMerge` |  |
-| `vcs.pendingMerge` |  |
-| `vcs.recall` |  |
 
 ## `meta`
 
@@ -314,6 +294,7 @@ Allowed callers: `shell`, `app`, `server`
 | Method | Description |
 |--------|-------------|
 | `shellApproval.resolve` |  |
+| `shellApproval.resolveBootstrap` |  |
 | `shellApproval.resolveUserland` |  |
 | `shellApproval.submitClientConfig` |  |
 | `shellApproval.submitCredentialInput` |  |
@@ -342,6 +323,31 @@ Allowed callers: `server`, `shell`
 | `tokens.revoke` |  |
 | `tokens.get` |  |
 | `tokens.rotateAdmin` |  |
+
+## `vcs`
+
+Workspace version control (GAD-native): commit, status, log, diff
+
+Allowed callers: `shell`, `panel`, `app`, `server`, `worker`, `do`, `extension`, `harness`
+
+| Method | Description |
+|--------|-------------|
+| `vcs.commit` |  |
+| `vcs.applyEdits` |  |
+| `vcs.readFile` |  |
+| `vcs.listFiles` |  |
+| `vcs.revert` |  |
+| `vcs.status` |  |
+| `vcs.unitStatus` |  |
+| `vcs.log` |  |
+| `vcs.diff` |  |
+| `vcs.resolveHead` |  |
+| `vcs.merge` |  |
+| `vcs.abortMerge` |  |
+| `vcs.pendingMerge` |  |
+| `vcs.publishStatus` |  |
+| `vcs.publish` |  |
+| `vcs.recall` |  |
 
 ## `webhookIngress`
 
@@ -411,6 +417,8 @@ Allowed callers: `shell`, `shell-remote`, `app`, `panel`, `worker`, `do`, `exten
 | `workspace.getAgentsMd` |  |
 | `workspace.listSkills` |  |
 | `workspace.readSkill` |  |
+| `workspace.sourceTree` |  |
+| `workspace.findUnitForPath` |  |
 | `workspace.units.list` |  |
 | `workspace.units.inspector` |  |
 | `workspace.units.restart` |  |
@@ -419,6 +427,7 @@ Allowed callers: `shell`, `shell-remote`, `app`, `panel`, `worker`, `do`, `exten
 | `workspace.units.versions` |  |
 | `workspace.units.rollback` |  |
 | `workspace.units.bakeAppDist` |  |
+| `workspace.recurring.list` |  |
 | `workspace.hostTargets.list` |  |
 | `workspace.hostTargets.getSelection` |  |
 | `workspace.hostTargets.setSelection` |  |

@@ -94,6 +94,8 @@ function updateDoc(relativePath, replacements, checkOnly) {
   }
 }
 
+// The authoritative surfaces live in @natstack/shared; the workspace runtime
+// files are re-export shims this loader cannot evaluate.
 const panelSurface = loadRuntimeSurface(
   "packages/shared/src/runtimeSurface.panel.ts",
   "panelRuntimeSurface"

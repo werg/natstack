@@ -226,11 +226,23 @@
       "@workspace/model-catalog/*": [
         "workspace/packages/model-catalog/src/*.ts"
       ],
+      "@workspace/channel-fork": [
+        "workspace/packages/channel-fork/src/index.ts"
+      ],
+      "@workspace/feeds": [
+        "workspace/packages/feeds/src/index.ts"
+      ],
+      "@workspace/feeds/card-types": [
+        "workspace/packages/feeds/src/card-types.ts"
+      ],
       "@workspace/gmail": [
         "workspace/packages/gmail/src/index.ts"
       ],
       "@workspace/gmail/gmail-client": [
         "workspace/packages/gmail/src/gmail-client.ts"
+      ],
+      "@workspace/gmail/test-utils": [
+        "workspace/packages/gmail/src/test-utils.ts"
       ],
       "@workspace/gmail/renderers/gmail-thread.reducer": [
         "workspace/packages/gmail/src/renderers/gmail-thread.reducer.ts"
