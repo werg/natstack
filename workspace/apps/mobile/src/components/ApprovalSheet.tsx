@@ -45,6 +45,7 @@ import {
   getApprovalAttribution,
   getApprovalCopy,
   getStandardActionCopy,
+  getUnitBatchActionCopy,
   originForUrl,
   shouldOpenApprovalDetails,
 } from "@natstack/shared/approvalCopy";
@@ -532,7 +533,10 @@ function ApprovalHeader({
   const CategoryIcon = getCategoryIcon(approval);
   return (
     <View style={styles.headerRow}>
-      <View style={[styles.categoryIcon, { backgroundColor: accentColor }]} testID="approval-category-icon">
+      <View
+        style={[styles.categoryIcon, { backgroundColor: accentColor }]}
+        testID="approval-category-icon"
+      >
         <CategoryIcon size={17} color="#ffffff" />
       </View>
       {queueLength > 1 ? (
@@ -991,17 +995,28 @@ function UnitBatchDetails({ approval }: { approval: PendingUnitBatchApproval }) 
       ) : null}
       {approval.units.map((entry) => (
         <React.Fragment key={`${entry.unitKind}:${entry.unitName}`}>
-          <DetailRow icon={Lock} label={entry.unitKind === "app" ? "App" : "Extension"} value={entry.unitName} code />
+          <DetailRow
+            icon={Lock}
+            label={entry.unitKind === "app" ? "App" : "Extension"}
+            value={entry.unitName}
+            code
+          />
           <DetailRow
             icon={Globe}
             label="Source"
             value={`${entry.source.repo}@${entry.source.ref}`}
             code
           />
-          {entry.target ? <DetailRow icon={Settings2} label="Target" value={entry.target} code /> : null}
-          {entry.version ? <DetailRow icon={Lock} label="Version" value={entry.version} code /> : null}
+          {entry.target ? (
+            <DetailRow icon={Settings2} label="Target" value={entry.target} code />
+          ) : null}
+          {entry.version ? (
+            <DetailRow icon={Lock} label="Version" value={entry.version} code />
+          ) : null}
           {entry.ev ? <DetailRow icon={Lock} label="EV" value={entry.ev} code /> : null}
-          {entry.integrity ? <DetailRow icon={Lock} label="Integrity" value={entry.integrity} code /> : null}
+          {entry.integrity ? (
+            <DetailRow icon={Lock} label="Integrity" value={entry.integrity} code />
+          ) : null}
           {entry.provider ? (
             <DetailRow
               icon={Settings2}
@@ -1195,14 +1210,6 @@ function StandardActions({
   );
 }
 
-function unitBatchNoun(approval: PendingUnitBatchApproval): string {
-  const hasApps = approval.units.some((unit) => unit.unitKind === "app");
-  const hasExtensions = approval.units.some((unit) => unit.unitKind === "extension");
-  if (hasApps && !hasExtensions) return "app";
-  if (hasExtensions && !hasApps) return "extension";
-  return "unit";
-}
-
 function UnitBatchActions({
   approval,
   busy,
@@ -1214,37 +1221,23 @@ function UnitBatchActions({
   pendingAction: PendingAction | null;
   onChoose: (decision: ApprovalDecision) => void;
 }) {
-  const count = approval.units.length;
-  const hasExtensions = approval.units.some((unit) => unit.unitKind === "extension");
-  const unitLabel = unitBatchNoun(approval);
-  const isSourceChange = approval.trigger === "source-change";
-  const isManagement = approval.trigger === "management";
+  const copy = getUnitBatchActionCopy(approval);
   return (
     <View style={styles.actionGroups}>
       <View style={styles.actionRow}>
         <DecisionButton
-          label={isSourceChange ? "Approve change" : isManagement ? "Approve" : count > 0 ? "Approve all" : "Allow"}
-          description={
-            isSourceChange
-              ? `Allow this ${unitLabel} source change.`
-              : isManagement
-              ? `Allow this ${unitLabel} management request.`
-              : count > 0
-              ? `Install and run ${count} ${unitLabel}${count === 1 ? "" : "s"}${hasExtensions ? " as native code" : ""}.`
-              : "Apply this workspace config change."
-          }
+          label={copy.once.label}
+          description={copy.once.description}
           variant="primary"
           disabled={busy}
           loading={pendingAction === "once"}
           onPress={() => onChoose("once")}
           testID="approval-action-once"
         />
-        {approval.trigger === "meta-change" || isSourceChange ? (
+        {copy.session ? (
           <DecisionButton
-            label="Dev session"
-            description={isSourceChange
-              ? `Allow ${unitLabel} source changes without asking again for the next 4 hours.`
-              : "Allow workspace-config changes without asking again for the next 4 hours."}
+            label={copy.session.label}
+            description={copy.session.description}
             variant="surface"
             disabled={busy}
             loading={pendingAction === "session"}
@@ -1253,14 +1246,8 @@ function UnitBatchActions({
           />
         ) : null}
         <DecisionButton
-          label={isSourceChange || isManagement ? "Deny" : count > 0 ? "Deny all" : "Deny"}
-          description={
-            isSourceChange
-              ? "Reject this source change."
-              : isManagement
-              ? "Reject this management request."
-              : count > 0 ? `Do not install these ${unitLabel}${count === 1 ? "" : "s"}.` : "Reject this workspace config change."
-          }
+          label={copy.deny.label}
+          description={copy.deny.description}
           variant="danger"
           disabled={busy}
           loading={pendingAction === "deny"}

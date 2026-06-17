@@ -8,6 +8,7 @@ import {
   getApprovalCategoryLabel,
   getApprovalCopy,
   getStandardActionCopy,
+  getUnitBatchActionCopy,
   originForUrl,
   shouldOpenApprovalDetails,
 } from "./approvalCopy.js";
@@ -175,16 +176,18 @@ describe("approvalCopy", () => {
         trigger: "source-change",
         title: "Shell app source change",
         description: "Accepting this push updates trusted workspace app code.",
-        units: [{
-          unitKind: "app",
-          unitName: "@workspace-apps/shell",
-          displayName: "Shell",
-          version: "1.0.0",
-          target: "electron",
-          source: { kind: "workspace-repo", repo: "apps/shell", ref: "main" },
-          ev: "ev-shell",
-          capabilities: ["notifications"],
-        }],
+        units: [
+          {
+            unitKind: "app",
+            unitName: "@workspace-apps/shell",
+            displayName: "Shell",
+            version: "1.0.0",
+            target: "electron",
+            source: { kind: "workspace-repo", repo: "apps/shell", ref: "main" },
+            ev: "ev-shell",
+            capabilities: ["notifications"],
+          },
+        ],
         configWrite: null,
       },
       category: "App source",
@@ -201,23 +204,24 @@ describe("approvalCopy", () => {
         trigger: "management",
         title: "Reload extension",
         description: "Allow panel panel-1 to reload @workspace-extensions/acme.",
-        units: [{
-          unitKind: "extension",
-          unitName: "@workspace-extensions/acme",
-          displayName: "Acme",
-          version: "1.2.3",
-          target: null,
-          source: { kind: "workspace-repo", repo: "extensions/acme", ref: "main" },
-          ev: "ev-acme",
-          capabilities: ["node:fs", "node:child_process"],
-        }],
+        units: [
+          {
+            unitKind: "extension",
+            unitName: "@workspace-extensions/acme",
+            displayName: "Acme",
+            version: "1.2.3",
+            target: null,
+            source: { kind: "workspace-repo", repo: "extensions/acme", ref: "main" },
+            ev: "ev-acme",
+            capabilities: ["node:fs", "node:child_process"],
+          },
+        ],
         configWrite: null,
       },
       category: "Extension management",
       title: "Reload extension",
       summaryIncludes: "reload @workspace-extensions/acme",
-      warning:
-        "Approving runs native code with filesystem, network, and process access.",
+      warning: "Approving runs native code with filesystem, network, and process access.",
       detailsOpen: true,
     },
     {
@@ -341,11 +345,14 @@ describe("approvalCopy", () => {
     const [capability, oauth, gitWrite] = fixtures.map((fixture) => fixture.approval);
     const severePanelAutomation = fixtures.find((fixture) => fixture.name === "panel automate")!
       .approval as Extract<PendingApproval, { kind: "capability" }>;
-    const workspaceSourceChange = fixtures.find((fixture) => fixture.name === "workspace source change")!
-      .approval as Extract<PendingApproval, { kind: "capability" }>;
+    const workspaceSourceChange = fixtures.find(
+      (fixture) => fixture.name === "workspace source change"
+    )!.approval as Extract<PendingApproval, { kind: "capability" }>;
     const severePanelStructural = {
-      ...(fixtures.find((fixture) => fixture.name === "panel structural")!
-        .approval as Extract<PendingApproval, { kind: "capability" }>),
+      ...(fixtures.find((fixture) => fixture.name === "panel structural")!.approval as Extract<
+        PendingApproval,
+        { kind: "capability" }
+      >),
       severity: "severe" as const,
     };
 
@@ -367,6 +374,47 @@ describe("approvalCopy", () => {
     expect(getStandardActionCopy(severePanelAutomation).version.label).toBe("Trust and drive");
     expect(getStandardActionCopy(severePanelStructural).once.label).toBe("Change once");
     expect(getStandardActionCopy(severePanelStructural).version.label).toBe("Trust and change");
+  });
+
+  it("formats unit-batch action labels for mixed scheduled jobs and apps", () => {
+    const approval: Extract<PendingApproval, { kind: "unit-batch" }> = {
+      ...base,
+      kind: "unit-batch",
+      trigger: "meta-change",
+      title: "Workspace units changed",
+      description: "Adds scheduled jobs and apps.",
+      units: [
+        {
+          unitKind: "scheduled-job",
+          unitName: "news-briefing",
+          displayName: "news-briefing (every 1d at 08:00)",
+          source: { kind: "workspace-repo", repo: "meta", ref: "state:next" },
+          capabilities: ["invokes workers/news-agent:NewsAgentWorker/news.runScheduledJob"],
+        },
+        {
+          unitKind: "app",
+          unitName: "@workspace-apps/news",
+          displayName: "News",
+          source: { kind: "workspace-repo", repo: "apps/news", ref: "main" },
+          capabilities: ["panel-hosting"],
+        },
+      ],
+    };
+
+    expect(getUnitBatchActionCopy(approval)).toMatchObject({
+      once: {
+        label: "Approve all",
+        description: "Approve 2 workspace units (workspace apps, scheduled jobs).",
+      },
+      session: {
+        label: "Dev session",
+        description: "Allow workspace-config changes without asking again for the next 4 hours.",
+      },
+      deny: {
+        label: "Deny all",
+        description: "Do not approve these workspace units.",
+      },
+    });
   });
 
   it("formats low-level detail helpers", () => {

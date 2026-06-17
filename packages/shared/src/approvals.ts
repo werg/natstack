@@ -200,7 +200,19 @@ export interface UnitApprovalDiffStat {
   deletions: number;
 }
 
-export type UnitBatchEntryKind = "extension" | "app";
+export interface UnitApprovalGitIdentity {
+  name: string;
+  email: string;
+}
+
+export interface UnitApprovalCommit {
+  author: UnitApprovalGitIdentity;
+  committer: UnitApprovalGitIdentity;
+  message: string;
+  timestamp: number;
+}
+
+export type UnitBatchEntryKind = "extension" | "app" | "scheduled-job";
 
 /**
  * One workspace-owned unit in a joint `unit-batch` approval. Carries the
@@ -225,6 +237,7 @@ export interface UnitBatchEntry {
     activeBuildKey: string | null;
     contractVersion: string;
   } | null;
+  commit?: UnitApprovalCommit | null;
 }
 
 /**

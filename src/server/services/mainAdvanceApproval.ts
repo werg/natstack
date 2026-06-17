@@ -133,6 +133,7 @@ export function createMainAdvanceApprovalGate(deps: {
         }))
       );
       const units = approvals.flatMap(({ approval }) => approval.units);
+      const identityKeys = approvals.flatMap(({ approval }) => approval.identityKeys);
 
       const grantKey = unitChangeSessionGrantKey(
         candidate.caller.runtime.id,
@@ -142,6 +143,18 @@ export function createMainAdvanceApprovalGate(deps: {
       );
       const onlyMetaChanged = candidate.event.changedPaths.every(isMetaPath);
       if (deps.grantStore.hasActive(grantKey) && units.length === 0 && onlyMetaChanged) return;
+
+      if (
+        onlyMetaChanged &&
+        units.length > 0 &&
+        identityKeys.length > 0 &&
+        identityKeys.every((key) => deps.grantStore.hasActive(metaIdentityGrantKey(key)))
+      ) {
+        for (const { provider, approval } of approvals) {
+          provider.acceptPreapprovedTrust(approval.identityKeys);
+        }
+        return;
+      }
 
       const decision = await deps.approvalQueue.request({
         kind: "unit-batch",
@@ -164,6 +177,9 @@ export function createMainAdvanceApprovalGate(deps: {
       }
       for (const { provider, approval } of approvals) {
         provider.acceptPreapprovedTrust(approval.identityKeys);
+      }
+      for (const key of identityKeys) {
+        deps.grantStore.grant(metaIdentityGrantKey(key), deps.grantTtlMs);
       }
       if (decision === "session") {
         deps.grantStore.grant(grantKey, deps.grantTtlMs);
@@ -209,6 +225,10 @@ function isMetaPath(filePath: string): boolean {
   return filePath === "meta" || filePath.startsWith("meta/");
 }
 
+function metaIdentityGrantKey(identityKey: string): string {
+  return `unit-meta-identity\x00${identityKey}`;
+}
+
 function userlandCallerKind(kind: string): "panel" | "app" | "worker" | "do" | null {
   if (kind === "panel" || kind === "app" || kind === "worker" || kind === "do") return kind;
   return null;
@@ -231,15 +251,20 @@ function metaChangeSummary(candidate: MainAdvanceApprovalCandidate): string {
 function metaChangeTitle(units: UnitBatchEntry[]): string {
   const hasApps = units.some((unit) => unit.unitKind === "app");
   const hasExtensions = units.some((unit) => unit.unitKind === "extension");
-  if (hasApps && hasExtensions) return "Workspace units changed";
+  const hasScheduledJobs = units.some((unit) => unit.unitKind === "scheduled-job");
+  if ([hasApps, hasExtensions, hasScheduledJobs].filter(Boolean).length > 1) {
+    return "Workspace units changed";
+  }
   if (hasApps) return "Workspace apps changed";
   if (hasExtensions) return "Workspace extensions changed";
+  if (hasScheduledJobs) return "Workspace scheduled jobs changed";
   return "Edit workspace config";
 }
 
 function metaChangeDescription(units: UnitBatchEntry[]): string {
   const appCount = units.filter((unit) => unit.unitKind === "app").length;
   const extensionCount = units.filter((unit) => unit.unitKind === "extension").length;
+  const jobCount = units.filter((unit) => unit.unitKind === "scheduled-job").length;
   const parts: string[] = [];
   if (extensionCount > 0) {
     parts.push(
@@ -250,6 +275,9 @@ function metaChangeDescription(units: UnitBatchEntry[]): string {
     parts.push(
       `${appCount} privileged app${appCount === 1 ? "" : "s"} that will run in the app host`
     );
+  }
+  if (jobCount > 0) {
+    parts.push(`${jobCount} scheduled job${jobCount === 1 ? "" : "s"} that will run automatically`);
   }
   return parts.length > 0
     ? `This publish edits workspace config and adds ${parts.join(" and ")}.`

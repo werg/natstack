@@ -138,6 +138,33 @@ describe("createMainAdvanceApprovalGate", () => {
     expect(provider.acceptPreapprovedTrust).toHaveBeenCalledWith(["identity:unit"]);
   });
 
+  it("does not re-prompt for the same preapproved meta identity on retry", async () => {
+    const deps = gateDeps({ decision: "once" });
+    const provider: UnitMetaChangeApprovalProvider<UnitBatchEntry> = {
+      metaChangeApprovalForCommit: vi.fn(async () => ({
+        units: [unit],
+        identityKeys: ["identity:unit"],
+      })),
+      acceptPreapprovedTrust: vi.fn(),
+    };
+    const gate = createMainAdvanceApprovalGate({
+      ...deps,
+      getProviders: () => [provider],
+    });
+    const candidate = {
+      event: stateAdvance(),
+      caller: panelCaller(),
+      operation: "publish" as const,
+      sourceHead: "ctx:ctx-1",
+    };
+
+    await gate.approve(candidate);
+    await gate.approve(candidate);
+
+    expect(deps.approvalQueue.request).toHaveBeenCalledTimes(1);
+    expect(provider.acceptPreapprovedTrust).toHaveBeenCalledTimes(2);
+  });
+
   it("approves non-meta main advances with the workspace repo write capability prompt", async () => {
     const deps = gateDeps({ decision: "repo" });
     const provider: UnitMetaChangeApprovalProvider<UnitBatchEntry> = {

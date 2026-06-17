@@ -43,6 +43,7 @@ import {
   getApprovalAttribution,
   getApprovalCopy,
   getStandardActionCopy,
+  getUnitBatchActionCopy,
   originForUrl,
   shouldOpenApprovalDetails,
 } from "@natstack/shared/approvalCopy";
@@ -165,9 +166,7 @@ export function ConsentApprovalBar() {
 
   useEffect(() => {
     setSecretConfigValues({});
-    setDecisionError((error) =>
-      error && error.approvalId !== current?.approvalId ? null : error
-    );
+    setDecisionError((error) => (error && error.approvalId !== current?.approvalId ? null : error));
   }, [current?.approvalId]);
 
   const resolveCallerInfo = useCallback((approval: PendingApproval): CallerInfo => {
@@ -595,14 +594,6 @@ function StandardApprovalActions({
   );
 }
 
-function unitBatchNoun(approval: PendingUnitBatchApproval): string {
-  const hasApps = approval.units.some((unit) => unit.unitKind === "app");
-  const hasExtensions = approval.units.some((unit) => unit.unitKind === "extension");
-  if (hasApps && !hasExtensions) return "app";
-  if (hasExtensions && !hasApps) return "extension";
-  return "unit";
-}
-
 function UnitBatchActions({
   approval,
   decide,
@@ -610,59 +601,27 @@ function UnitBatchActions({
   approval: PendingUnitBatchApproval;
   decide: (decision: ApprovalDecision) => void;
 }) {
-  const count = approval.units.length;
-  const hasExtensions = approval.units.some((unit) => unit.unitKind === "extension");
-  const unitLabel = unitBatchNoun(approval);
-  const isSourceChange = approval.trigger === "source-change";
-  const isManagement = approval.trigger === "management";
+  const copy = getUnitBatchActionCopy(approval);
   return (
     <Flex align="center" className="approval-actions" gap="2" wrap="wrap">
       <DecisionButton
-        label={
-          isSourceChange
-            ? "Approve change"
-            : isManagement
-              ? "Approve"
-              : count > 0
-                ? "Approve all"
-                : "Allow"
-        }
-        description={
-          isSourceChange
-            ? `Allow this ${unitLabel} source change.`
-            : isManagement
-              ? `Allow this ${unitLabel} management request.`
-              : count > 0
-                ? `Install and run ${count} ${unitLabel}${count === 1 ? "" : "s"}${hasExtensions ? " as native code" : ""}.`
-                : "Apply this workspace config change."
-        }
+        label={copy.once.label}
+        description={copy.once.description}
         color="amber"
         variant="solid"
         onClick={() => decide("once")}
       />
-      {approval.trigger === "meta-change" || isSourceChange ? (
+      {copy.session ? (
         <DecisionButton
-          label="Dev session"
-          description={
-            isSourceChange
-              ? `Allow ${unitLabel} source changes without asking for the next 4 hours.`
-              : "Allow workspace-config changes without asking for the next 4 hours."
-          }
+          label={copy.session.label}
+          description={copy.session.description}
           variant="surface"
           onClick={() => decide("session")}
         />
       ) : null}
       <DecisionButton
-        label={isSourceChange || isManagement ? "Deny" : count > 0 ? "Deny all" : "Deny"}
-        description={
-          isSourceChange
-            ? "Reject this source change."
-            : isManagement
-              ? "Reject this management request."
-              : count > 0
-                ? `Do not install these ${unitLabel}${count === 1 ? "" : "s"}.`
-                : "Reject this workspace config change."
-        }
+        label={copy.deny.label}
+        description={copy.deny.description}
         color="red"
         icon={<CrossCircledIcon />}
         style={{ marginLeft: 6 }}

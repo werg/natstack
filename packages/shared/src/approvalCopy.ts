@@ -45,7 +45,8 @@ export function getApprovalCategoryLabel(approval: PendingApproval): string {
   if (approval.kind === "unit-batch") {
     if (approval.trigger === "management") {
       if (approval.units.every((unit) => unit.unitKind === "app")) return "App management";
-      if (approval.units.every((unit) => unit.unitKind === "extension")) return "Extension management";
+      if (approval.units.every((unit) => unit.unitKind === "extension"))
+        return "Extension management";
       return "Unit management";
     }
     if (approval.trigger === "source-change") {
@@ -58,7 +59,9 @@ export function getApprovalCategoryLabel(approval: PendingApproval): string {
     return "Workspace setup";
   }
   if (approval.capability === "workspace-repo-write") {
-    const isWorkspaceSourceChange = approval.grantResourceKey?.startsWith("workspace-source-change:");
+    const isWorkspaceSourceChange = approval.grantResourceKey?.startsWith(
+      "workspace-source-change:"
+    );
     if (isWorkspaceSourceChange) {
       return "Workspace source";
     }
@@ -169,7 +172,9 @@ export function getStandardActionCopy(
     };
   }
   if (approval.capability === "workspace-repo-write") {
-    const isWorkspaceSourceChange = approval.grantResourceKey?.startsWith("workspace-source-change:");
+    const isWorkspaceSourceChange = approval.grantResourceKey?.startsWith(
+      "workspace-source-change:"
+    );
     if (isWorkspaceSourceChange) {
       const destination = approval.resource?.value ?? "this workspace source tree";
       return {
@@ -316,6 +321,60 @@ export function getStandardActionCopy(
   };
 }
 
+export interface UnitBatchActionCopy {
+  once: { label: string; description: string };
+  session?: { label: string; description: string };
+  deny: { label: string; description: string };
+}
+
+export function getUnitBatchActionCopy(approval: PendingUnitBatchApproval): UnitBatchActionCopy {
+  const count = approval.units.length;
+  const unitLabel = unitBatchLabel(approval).singular;
+  const isSourceChange = approval.trigger === "source-change";
+  const isManagement = approval.trigger === "management";
+
+  return {
+    once: {
+      label: isSourceChange
+        ? "Approve change"
+        : isManagement
+          ? "Approve"
+          : count > 0
+            ? "Approve all"
+            : "Allow",
+      description: isSourceChange
+        ? `Allow this ${unitLabel} source change.`
+        : isManagement
+          ? `Allow this ${unitLabel} management request.`
+          : count > 0
+            ? unitBatchApproveDescription(approval, unitLabel)
+            : "Apply this workspace config change.",
+    },
+    ...(approval.trigger === "meta-change" || isSourceChange
+      ? {
+          session: {
+            label: "Dev session",
+            description: isSourceChange
+              ? `Allow ${unitLabel} source changes without asking again for the next 4 hours.`
+              : "Allow workspace-config changes without asking again for the next 4 hours.",
+          },
+        }
+      : {}),
+    deny: {
+      label: isSourceChange || isManagement ? "Deny" : count > 0 ? "Deny all" : "Deny",
+      description: isSourceChange
+        ? "Reject this source change."
+        : isManagement
+          ? "Reject this management request."
+          : count > 0
+            ? unitLabel === "unit"
+              ? "Do not approve these workspace units."
+              : `Do not install these ${unitLabel}${count === 1 ? "" : "s"}.`
+            : "Reject this workspace config change.",
+    },
+  };
+}
+
 /**
  * The secondary attribution chip: who/what the request runs on behalf of, or
  * the identity it uses. The primary requester (panel/worker/app) is resolved
@@ -344,7 +403,9 @@ export function getApprovalAttribution(approval: PendingApproval): ApprovalAttri
     }
     if (isOAuthCredentialConnectionApproval(approval)) {
       const account = formatAccount(approval);
-      return account && account !== approval.credentialId ? { relation: "as", target: account } : {};
+      return account && account !== approval.credentialId
+        ? { relation: "as", target: account }
+        : {};
     }
     return { relation: "with", target: formatAudienceSummary(approval) };
   }
@@ -363,9 +424,11 @@ export function getApprovalAttribution(approval: PendingApproval): ApprovalAttri
  * can't render chrome (push notifications, the bootstrap fallback). The shell
  * approval cards no longer render it inline; everything else lives in details.
  */
-export function getApprovalCopy(
-  approval: PendingApproval
-): { title: string; summary: string; warning?: string } {
+export function getApprovalCopy(approval: PendingApproval): {
+  title: string;
+  summary: string;
+  warning?: string;
+} {
   if (approval.kind === "unit-batch") {
     const count = approval.units.length;
     const unitLabel = unitBatchLabel(approval);
@@ -373,32 +436,26 @@ export function getApprovalCopy(
       approval.trigger === "management"
         ? `Manage ${count} workspace ${count === 1 ? unitLabel.singular : unitLabel.plural}`
         : approval.trigger === "source-change"
-        ? `Update ${unitLabel.singular} source`
-        : approval.trigger === "meta-change"
-        ? "Apply workspace config change"
-        : count > 0
-        ? `Run ${count} workspace ${count === 1 ? unitLabel.singular : unitLabel.plural}`
-        : "Apply workspace config change";
-    const fallbackSummary = count > 0
-      ? approval.trigger === "management"
-        ? `Manages ${count} workspace ${unitLabel.singular}${count === 1 ? "" : "s"}.`
-        : approval.trigger === "source-change"
-        ? unitLabel.nativeCode
-          ? `Updates trusted native extension source code.`
-          : `Updates trusted workspace app source code.`
-        : `Declares ${count} ${unitLabel.singular}${count === 1 ? "" : "s"} that need approval before they run.`
-      : "Changes workspace configuration.";
+          ? `Update ${unitLabel.singular} source`
+          : approval.trigger === "meta-change"
+            ? "Apply workspace config change"
+            : count > 0
+              ? `Run ${count} workspace ${count === 1 ? unitLabel.singular : unitLabel.plural}`
+              : "Apply workspace config change";
+    const fallbackSummary =
+      count > 0
+        ? approval.trigger === "management"
+          ? `Manages ${count} workspace ${unitLabel.singular}${count === 1 ? "" : "s"}.`
+          : approval.trigger === "source-change"
+            ? unitLabel.nativeCode
+              ? `Updates trusted native extension source code.`
+              : `Updates trusted workspace app source code.`
+            : `Declares ${count} ${unitLabel.singular}${count === 1 ? "" : "s"} that need approval before they run.`
+        : "Changes workspace configuration.";
     return {
       title: approval.title || fallbackTitle,
       summary: approval.description || fallbackSummary,
-      ...(count > 0
-        ? {
-            warning:
-              unitLabel.nativeCode
-                ? "Approving runs native code with filesystem, network, and process access."
-                : "Approving allows these workspace apps to run in the app host.",
-          }
-        : {}),
+      ...(count > 0 ? { warning: unitBatchWarning(approval) } : {}),
     };
   }
   if (approval.kind === "capability") {
@@ -507,8 +564,8 @@ export function getApprovalCopy(
     return {
       title: `Sign in to ${approval.credentialLabel}`,
       summary:
-        `Enter code ${approval.userCode} at ${originForUrl(approval.verificationUri)} `
-        + `to finish connecting ${approval.credentialLabel}.`,
+        `Enter code ${approval.userCode} at ${originForUrl(approval.verificationUri)} ` +
+        `to finish connecting ${approval.credentialLabel}.`,
     };
   }
 
@@ -573,12 +630,79 @@ function unitBatchLabel(approval: PendingUnitBatchApproval): {
   singular: string;
   plural: string;
   nativeCode: boolean;
+  scheduledJob: boolean;
 } {
   const hasExtensions = approval.units.some((unit) => unit.unitKind === "extension");
   const hasApps = approval.units.some((unit) => unit.unitKind === "app");
-  if (hasExtensions && !hasApps) return { singular: "extension", plural: "extensions", nativeCode: true };
-  if (hasApps && !hasExtensions) return { singular: "app", plural: "apps", nativeCode: false };
-  return { singular: "unit", plural: "units", nativeCode: hasExtensions };
+  const hasScheduledJobs = approval.units.some((unit) => unit.unitKind === "scheduled-job");
+  if (hasExtensions && !hasApps && !hasScheduledJobs) {
+    return { singular: "extension", plural: "extensions", nativeCode: true, scheduledJob: false };
+  }
+  if (hasApps && !hasExtensions && !hasScheduledJobs) {
+    return { singular: "app", plural: "apps", nativeCode: false, scheduledJob: false };
+  }
+  if (hasScheduledJobs && !hasApps && !hasExtensions) {
+    return {
+      singular: "scheduled job",
+      plural: "scheduled jobs",
+      nativeCode: false,
+      scheduledJob: true,
+    };
+  }
+  return {
+    singular: "unit",
+    plural: "units",
+    nativeCode: hasExtensions,
+    scheduledJob: hasScheduledJobs,
+  };
+}
+
+function unitBatchWarning(approval: PendingUnitBatchApproval): string {
+  const hasExtensions = approval.units.some((unit) => unit.unitKind === "extension");
+  const hasApps = approval.units.some((unit) => unit.unitKind === "app");
+  const hasScheduledJobs = approval.units.some((unit) => unit.unitKind === "scheduled-job");
+  const warnings: string[] = [];
+  if (hasExtensions) {
+    warnings.push("runs native code with filesystem, network, and process access");
+  }
+  if (hasApps) {
+    warnings.push("allows these workspace apps to run in the app host");
+  }
+  if (hasScheduledJobs) {
+    warnings.push("allows these scheduled jobs to run automatically");
+  }
+  if (warnings.length === 1) return `Approving ${warnings[0]}.`;
+  return `Approving ${warnings.slice(0, -1).join("; ")}; and ${warnings[warnings.length - 1]}.`;
+}
+
+function unitBatchUnitKinds(approval: PendingUnitBatchApproval): string[] {
+  const kinds: string[] = [];
+  if (approval.units.some((unit) => unit.unitKind === "extension")) {
+    kinds.push("native extensions");
+  }
+  if (approval.units.some((unit) => unit.unitKind === "app")) {
+    kinds.push("workspace apps");
+  }
+  if (approval.units.some((unit) => unit.unitKind === "scheduled-job")) {
+    kinds.push("scheduled jobs");
+  }
+  return kinds;
+}
+
+function unitBatchApproveDescription(
+  approval: PendingUnitBatchApproval,
+  unitLabel: string
+): string {
+  const count = approval.units.length;
+  if (unitLabel === "scheduled job") {
+    return `Approve ${count} scheduled job${count === 1 ? "" : "s"} to run automatically.`;
+  }
+  if (unitLabel === "unit") {
+    const kinds = unitBatchUnitKinds(approval);
+    return `Approve ${count} workspace units${kinds.length > 0 ? ` (${kinds.join(", ")})` : ""}.`;
+  }
+  const hasExtensions = approval.units.some((unit) => unit.unitKind === "extension");
+  return `Install and run ${count} ${unitLabel}${count === 1 ? "" : "s"}${hasExtensions ? " as native code" : ""}.`;
 }
 
 export function originForUrl(raw: string): string {
