@@ -90,11 +90,15 @@ const remoteCredClient = createTypedServiceClient(
   remoteCredMethods,
   (service, method, args) => rpc.call("main", `${service}.${method}`, args)
 );
-const autofillClient = createTypedServiceClient("autofill", autofillMethods, (service, method, args) =>
-  rpc.call("main", `${service}.${method}`, args)
+const autofillClient = createTypedServiceClient(
+  "autofill",
+  autofillMethods,
+  (service, method, args) => rpc.call("main", `${service}.${method}`, args)
 );
-const settingsClient = createTypedServiceClient("settings", settingsMethods, (service, method, args) =>
-  rpc.call("main", `${service}.${method}`, args)
+const settingsClient = createTypedServiceClient(
+  "settings",
+  settingsMethods,
+  (service, method, args) => rpc.call("main", `${service}.${method}`, args)
 );
 const tokensClient = createTypedServiceClient("tokens", tokensMethods, (service, method, args) =>
   rpc.call("main", `${service}.${method}`, args)
@@ -102,8 +106,10 @@ const tokensClient = createTypedServiceClient("tokens", tokensMethods, (service,
 const viewClient = createTypedServiceClient("view", viewMethods, (service, method, args) =>
   rpc.call("main", `${service}.${method}`, args)
 );
-const workspaceClient = createTypedServiceClient("workspace", workspaceMethods, (service, method, args) =>
-  rpc.call("main", `${service}.${method}`, args)
+const workspaceClient = createTypedServiceClient(
+  "workspace",
+  workspaceMethods,
+  (service, method, args) => rpc.call("main", `${service}.${method}`, args)
 );
 import type {
   AppInfo,
@@ -162,10 +168,8 @@ export const panel = {
   takeOver: (panelId: string) => panelClient.takeOver(panelId),
   getAddressOptions: (source: string, ref?: string) => panelClient.getAddressOptions(source, ref),
   getBrowserAddressOptions: (query: string) => panelClient.getBrowserAddressOptions(query),
-  markBrowserNavigationIntent: (
-    panelId: string,
-    intent: BrowserNavigationIntent
-  ) => panelClient.markBrowserNavigationIntent(panelId, intent),
+  markBrowserNavigationIntent: (panelId: string, intent: BrowserNavigationIntent) =>
+    panelClient.markBrowserNavigationIntent(panelId, intent),
   reload: (panelId: string) => panelClient.reload(panelId),
   reloadView: (panelId: string) => panelClient.reloadView(panelId),
   forceReloadView: (panelId: string) => panelClient.forceReloadView(panelId),
@@ -185,8 +189,7 @@ export const panel = {
       canGoForward?: boolean;
     }
   ) => panelClient.updatePanelState(panelId, state),
-  createAboutPanel: (page: string) =>
-    panelClient.createAboutPanel(page),
+  createAboutPanel: (page: string) => panelClient.createAboutPanel(page),
   /** Create a panel from any source path (not prefixed with "about/"). */
   navigate: (
     panelId: string,
@@ -235,7 +238,8 @@ export const panel = {
   getRootPanelsPaginated: (offset: number, limit: number) =>
     panelClient.getRootPanelsPaginated({ offset, limit }),
   getCollapsedIds: () => panelClient.getCollapsedIds(),
-  setCollapsed: (panelId: string, collapsed: boolean) => panelClient.setCollapsed(panelId, collapsed),
+  setCollapsed: (panelId: string, collapsed: boolean) =>
+    panelClient.setCollapsed(panelId, collapsed),
   expandIds: (panelIds: string[]) => panelClient.expandIds(panelIds),
 };
 // =============================================================================
@@ -285,7 +289,8 @@ export const view = {
     bounds?: NativePanelSlotBounds;
     focused?: boolean;
   }) => viewClient.updateNativePanelSlot(request),
-  clearNativePanelSlot: (request: { nativeSlotId: string }) => viewClient.clearNativePanelSlot(request),
+  clearNativePanelSlot: (request: { nativeSlotId: string }) =>
+    viewClient.clearNativePanelSlot(request),
   setHostedShellReady: (request: { ready: boolean }) => viewClient.setHostedShellReady(request),
   setShellOverlay: (active: boolean) => viewClient.setShellOverlay(active),
   showNativeShellOverlay: (options: NativeShellOverlayOptions) =>
@@ -358,6 +363,13 @@ export const workspace = {
     preparePinnedRef: (target: HostTarget, sourceOrName: string, ref: string) =>
       workspaceClient.hostTargets.preparePinnedRef(target, sourceOrName, ref),
     launch: (target: HostTarget) => workspaceClient.hostTargets.launch(target),
+    beginLaunch: (target: HostTarget) => workspaceClient.hostTargets.beginLaunch(target),
+    getLaunchSession: (sessionId: string) =>
+      workspaceClient.hostTargets.getLaunchSession(sessionId),
+    resolveLaunchSessionApproval: (sessionId: string, decision: "once" | "deny") =>
+      workspaceClient.hostTargets.resolveLaunchSessionApproval(sessionId, decision),
+    cancelLaunchSession: (sessionId: string) =>
+      workspaceClient.hostTargets.cancelLaunchSession(sessionId),
   },
 };
 // =============================================================================
@@ -484,7 +496,8 @@ export const notification = {
 export const workspaceUnits = {
   list: () => workspaceClient.units.list(),
   versions: (name: string) => workspaceClient.units.versions(name),
-  rollback: (name: string, opts?: { buildKey?: string }) => workspaceClient.units.rollback(name, opts),
+  rollback: (name: string, opts?: { buildKey?: string }) =>
+    workspaceClient.units.rollback(name, opts),
   restart: (name: string) => workspaceClient.units.restart(name),
   logs: (
     name: string,

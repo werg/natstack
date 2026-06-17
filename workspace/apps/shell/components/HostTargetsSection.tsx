@@ -4,10 +4,22 @@ import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
 import type {
   HostTarget,
   HostTargetCandidate,
+  HostTargetLaunchSessionSnapshot,
   HostTargetSelection,
 } from "@natstack/shared/hostTargets";
-import type { PendingUnitBatchApproval, UnitBatchEntry } from "@natstack/shared/approvals";
-import { shellApproval, workspace } from "../shell/client";
+import type { PendingUnitBatchApproval } from "@natstack/shared/approvals";
+import {
+  formatCapabilities,
+  launchCopy,
+  plural,
+  shortVersion,
+  targetLabel,
+  unitKindLabel,
+  unitReviewRows,
+  unitSourceLabel,
+  unitSummaryChips,
+} from "@natstack/shared/bootstrapLaunchGate";
+import { workspace } from "../shell/client";
 
 const HOST_TARGETS: HostTarget[] = ["electron", "react-native", "terminal"];
 
@@ -15,6 +27,10 @@ type SelectionState = Record<
   HostTarget,
   { selection: HostTargetSelection | null; valid: boolean; reason?: string }
 >;
+
+function launchSessionMessage(session: HostTargetLaunchSessionSnapshot): string {
+  return [session.message, session.detail].filter(Boolean).join(" ");
+}
 
 export function HostTargetsSection() {
   const [candidates, setCandidates] = useState<Record<HostTarget, HostTargetCandidate[]>>({
@@ -30,6 +46,7 @@ export function HostTargetsSection() {
   const [pinnedRefs, setPinnedRefs] = useState<Record<string, string>>({});
   const [pendingApproval, setPendingApproval] = useState<{
     target: HostTarget;
+    session: HostTargetLaunchSessionSnapshot;
     approvals: PendingUnitBatchApproval[];
   } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -130,20 +147,18 @@ export function HostTargetsSection() {
     try {
       setError(null);
       setPendingApproval(null);
-      const result = await workspace.hostTargets.launch(target);
-      if (result.status === "approval-required") {
-        setPendingApproval({ target, approvals: result.approvals });
+      const session = await workspace.hostTargets.beginLaunch(target);
+      if (session.status === "approval-required") {
+        setPendingApproval({ target, session, approvals: session.approvals });
         setError(
           `Review and approve the pending ${targetLabel(
             target
           ).toLowerCase()} app request to continue.`
         );
-      } else if (result.status === "unavailable") {
-        setError(
-          result.details.length > 0
-            ? `${result.reason}: ${result.details.join("; ")}`
-            : result.reason
-        );
+      } else if (session.status === "unavailable" || session.status === "preparing") {
+        setError(launchSessionMessage(session));
+      } else if (session.status === "denied") {
+        setError(`${targetLabel(target)} app startup was denied.`);
       }
       await load();
     } catch (err) {
@@ -159,29 +174,23 @@ export function HostTargetsSection() {
     setBusy(`${target}:approval:${decision}`);
     try {
       setError(null);
-      for (const approval of pendingApproval.approvals) {
-        await shellApproval.resolveBootstrap(approval.approvalId, decision);
-      }
+      const session = await workspace.hostTargets.resolveLaunchSessionApproval(
+        pendingApproval.session.sessionId,
+        decision
+      );
       if (decision === "deny") {
         setPendingApproval(null);
         setError(`${targetLabel(target)} app startup was denied.`);
         await load();
         return;
       }
-      const result = await workspace.hostTargets.launch(target);
-      if (result.status === "approval-required") {
-        setPendingApproval({ target, approvals: result.approvals });
-        setError(
-          `Another ${targetLabel(target).toLowerCase()} startup approval is pending.`
-        );
+      if (session.status === "approval-required") {
+        setPendingApproval({ target, session, approvals: session.approvals });
+        setError(`Another ${targetLabel(target).toLowerCase()} startup approval is pending.`);
       } else {
         setPendingApproval(null);
-        if (result.status === "unavailable") {
-          setError(
-            result.details.length > 0
-              ? `${result.reason}: ${result.details.join("; ")}`
-              : result.reason
-          );
+        if (session.status === "unavailable" || session.status === "preparing") {
+          setError(launchSessionMessage(session));
         }
       }
       await load();
@@ -223,21 +232,59 @@ export function HostTargetsSection() {
                 {targetLabel(pendingApproval.target)} startup needs approval
               </Text>
               {pendingApproval.approvals.map((approval) => (
-                <Flex key={approval.approvalId} direction="column" gap="1">
-                  {approval.units.map((unit) => (
-                    <Flex key={`${approval.approvalId}:${unit.unitName}`} gap="2" wrap="wrap">
+                <Flex key={approval.approvalId} direction="column" gap="2">
+                  <Flex direction="column" gap="1">
+                    <Text size="2" weight="medium">
+                      {launchCopy(approval).title}
+                    </Text>
+                    <Text size="1" color="gray">
+                      {launchCopy(approval).summary}
+                    </Text>
+                  </Flex>
+                  <Flex gap="2" wrap="wrap" align="center">
+                    <Badge size="1" color="amber">
+                      {plural(approval.units.length, "privileged unit")}
+                    </Badge>
+                    {unitSummaryChips(approval).map((chip) => (
+                      <Badge key={chip} size="1" variant="soft">
+                        {chip}
+                      </Badge>
+                    ))}
+                  </Flex>
+                  <details>
+                    <summary>
                       <Text size="1" weight="medium">
-                        {unit.displayName || unit.unitName}
+                        Review details
                       </Text>
-                      <Code size="1">{unitSourceLabel(unit)}</Code>
-                      <Badge size="1">{unitTargetLabel(unit)}</Badge>
-                      {unit.capabilities.length > 0 ? (
-                        <Text size="1" color="gray">
-                          {unit.capabilities.join(", ")}
-                        </Text>
-                      ) : null}
+                      <Text size="1" color="gray">
+                        {" "}
+                        sources, versions, capabilities
+                      </Text>
+                    </summary>
+                    <Flex direction="column" gap="1" mt="1">
+                      {approval.units.map((unit, index) => {
+                        const row = unitReviewRows(approval)[index]!;
+                        return (
+                          <Flex
+                            key={`${approval.approvalId}:${unit.unitName}`}
+                            direction="column"
+                            gap="1"
+                          >
+                            <Flex gap="2" wrap="wrap" align="center">
+                              <Text size="1" weight="medium">
+                                {row.name}
+                              </Text>
+                              <Badge size="1">{unitKindLabel(unit)}</Badge>
+                            </Flex>
+                            <Code size="1">{unitSourceLabel(unit)}</Code>
+                            <Text size="1" color="gray">
+                              {formatCapabilities(unit)}
+                            </Text>
+                          </Flex>
+                        );
+                      })}
                     </Flex>
-                  ))}
+                  </details>
                 </Flex>
               ))}
               <Flex gap="2">
@@ -339,7 +386,7 @@ export function HostTargetsSection() {
                       </Table.Cell>
                       <Table.Cell>
                         <Flex direction="column" gap="1">
-                          <Code size="1">{shortBuild(candidate.activeBundleKey)}</Code>
+                          <Code size="1">{shortVersion(candidate.activeBundleKey)}</Code>
                           {candidate.activeBundleKey ? (
                             <Button
                               size="1"
@@ -423,29 +470,6 @@ export function HostTargetsSection() {
       )}
     </Flex>
   );
-}
-
-function targetLabel(target: HostTarget): string {
-  if (target === "react-native") return "Mobile";
-  if (target === "terminal") return "Terminal";
-  return "Desktop";
-}
-
-function unitTargetLabel(unit: UnitBatchEntry): string {
-  if (unit.target === "react-native") return "mobile";
-  if (unit.target === "terminal") return "terminal";
-  if (unit.target === "electron") return "desktop";
-  return unit.unitKind;
-}
-
-function unitSourceLabel(unit: UnitBatchEntry): string {
-  const ev = unit.ev ? ` ${shortBuild(unit.ev)}` : "";
-  return `${unit.source.repo}@${unit.source.ref}${ev}`;
-}
-
-function shortBuild(value?: string | null): string {
-  if (!value) return "none";
-  return value.length <= 12 ? value : value.slice(0, 12);
 }
 
 function statusColor(status: string): "gray" | "blue" | "green" | "amber" | "red" {

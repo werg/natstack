@@ -242,17 +242,15 @@ export function MainScreen() {
                 limit: 8,
               })
             )
-          : shellClient.panels
-              .getAddressOptions(query, activeChromeState.ref)
-              .then((options) => {
-                setPanelAddressOptions(options);
-                return buildAddressAutocompleteItems({
-                  kind: "panel",
-                  input: query,
-                  panelSuggestions: options.suggestions,
-                  limit: 8,
-                });
+          : shellClient.panels.getAddressOptions(query, activeChromeState.ref).then((options) => {
+              setPanelAddressOptions(options);
+              return buildAddressAutocompleteItems({
+                kind: "panel",
+                input: query,
+                panelSuggestions: options.suggestions,
+                limit: 8,
               });
+            });
       void request
         .then((items) => {
           if (!cancelled) setAddressSuggestions(items);
@@ -323,7 +321,9 @@ export function MainScreen() {
     const pending = filterRuntimeApprovals(await shellClient.shellApproval.listPending());
     if (seq === pendingApprovalsRefreshSeq.current) {
       setPendingApprovals(pending);
-      const signature = pending.map((approval) => `${approval.kind}:${approval.approvalId}`).join("|");
+      const signature = pending
+        .map((approval) => `${approval.kind}:${approval.approvalId}`)
+        .join("|");
       if (signature !== pendingApprovalsSignatureRef.current) {
         pendingApprovalsSignatureRef.current = signature;
         if (pending.length > 0) {
@@ -554,9 +554,7 @@ export function MainScreen() {
     let disposed = false;
     const subscribeAll = async () => {
       await Promise.all(
-        eventNames.map((name) =>
-          shellClient.events.subscribe(name).catch(() => undefined)
-        )
+        eventNames.map((name) => shellClient.events.subscribe(name).catch(() => undefined))
       );
     };
     void subscribeAll()
@@ -581,82 +579,67 @@ export function MainScreen() {
       refreshTree();
       activatePanel(panelId);
     });
-    const unsubNav = shellClient.transport.on(
-      "event:navigate-to-panel",
-      (event) => {
-        const { panelId } = event.payload as {
-          panelId: string;
-        };
-        if (panelId) activatePanel(panelId);
-      }
-    );
-    const unsubExternal = shellClient.transport.on(
-      "event:external-open:open",
-      (event) => {
-        void handleExternalOpen(shellClient, event.payload as ExternalOpenPayload).catch(
-          (error: unknown) => {
-            const message = error instanceof Error ? error.message : String(error);
-            console.warn("[MainScreen] Failed to open external URL:", error);
-            pushToast({
-              title: "Could not open OAuth flow",
-              message,
-              tone: "danger",
-              durationMs: 10000,
-            });
-          }
-        );
-      }
-    );
-    const unsubNotification = shellClient.transport.on(
-      "event:notification:show",
-      (event) => {
-        const notif = event.payload as {
-          id?: string;
-          title?: string;
-          message?: string;
-          type?: string;
-          consent?: {
-            provider?: string;
-            scopes?: string[];
-            callerTitle?: string;
-          };
-        };
-        if (notif.type === "consent" && notif.id) {
-          const provider = notif.consent?.provider ?? "service";
-          const scopes = notif.consent?.scopes?.join(", ") ?? "access";
-          const callerTitle = notif.consent?.callerTitle ?? "A panel";
+    const unsubNav = shellClient.transport.on("event:navigate-to-panel", (event) => {
+      const { panelId } = event.payload as {
+        panelId: string;
+      };
+      if (panelId) activatePanel(panelId);
+    });
+    const unsubExternal = shellClient.transport.on("event:external-open:open", (event) => {
+      void handleExternalOpen(shellClient, event.payload as ExternalOpenPayload).catch(
+        (error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn("[MainScreen] Failed to open external URL:", error);
           pushToast({
-            title: notif.title ?? "OAuth access requested",
-            message: `${callerTitle} wants to connect to ${provider} (${scopes}).`,
-            tone: "info",
-          });
-        } else {
-          pushToast({
-            title: notif.title ?? "NatStack",
-            message: notif.message ?? "",
-            tone: "info",
+            title: "Could not open OAuth flow",
+            message,
+            tone: "danger",
+            durationMs: 10000,
           });
         }
-      }
-    );
-    const unsubAppLifecycle = shellClient.transport.on(
-      "event:apps:lifecycle",
-      (event) => {
-        handleMobileAppLifecycleEvent(event.payload as AppLifecyclePayload, {
-          shellClient,
-          pushToast,
-          prompted: promptedAppUpdatesRef.current,
-          selectedSource: selectedMobileApp.source,
-          selectedAppId: selectedMobileApp.appId,
+      );
+    });
+    const unsubNotification = shellClient.transport.on("event:notification:show", (event) => {
+      const notif = event.payload as {
+        id?: string;
+        title?: string;
+        message?: string;
+        type?: string;
+        consent?: {
+          provider?: string;
+          scopes?: string[];
+          callerTitle?: string;
+        };
+      };
+      if (notif.type === "consent" && notif.id) {
+        const provider = notif.consent?.provider ?? "service";
+        const scopes = notif.consent?.scopes?.join(", ") ?? "access";
+        const callerTitle = notif.consent?.callerTitle ?? "A panel";
+        pushToast({
+          title: notif.title ?? "OAuth access requested",
+          message: `${callerTitle} wants to connect to ${provider} (${scopes}).`,
+          tone: "info",
+        });
+      } else {
+        pushToast({
+          title: notif.title ?? "NatStack",
+          message: notif.message ?? "",
+          tone: "info",
         });
       }
-    );
-    const unsubApproval = shellClient.transport.on(
-      "event:shell-approval:pending-changed",
-      () => {
-        void refreshPendingApprovals().catch(() => {});
-      }
-    );
+    });
+    const unsubAppLifecycle = shellClient.transport.on("event:apps:lifecycle", (event) => {
+      handleMobileAppLifecycleEvent(event.payload as AppLifecyclePayload, {
+        shellClient,
+        pushToast,
+        prompted: promptedAppUpdatesRef.current,
+        selectedSource: selectedMobileApp.source,
+        selectedAppId: selectedMobileApp.appId,
+      });
+    });
+    const unsubApproval = shellClient.transport.on("event:shell-approval:pending-changed", () => {
+      void refreshPendingApprovals().catch(() => {});
+    });
     const unsubWorkspaceRevision = shellClient.transport.on(
       "event:workspace:revision-bumped",
       () => {
@@ -666,13 +649,9 @@ export function MainScreen() {
           .catch(() => refreshTree());
       }
     );
-    const approvalTimer = setInterval(() => {
-      void refreshPendingApprovals().catch(() => {});
-    }, 2000);
     const treeTimer = setInterval(refreshTree, 60000);
     return () => {
       disposed = true;
-      clearInterval(approvalTimer);
       clearInterval(treeTimer);
       unsubReconnect();
       unsubNavigate();
@@ -1031,13 +1010,7 @@ export function MainScreen() {
           );
       }
     },
-    [
-      activatePanel,
-      activePanelId,
-      pushToast,
-      shellClient,
-      webViewNavigation,
-    ]
+    [activatePanel, activePanelId, pushToast, shellClient, webViewNavigation]
   );
   const handleNavigateAddress = useCallback(
     (value: string, mode: AddressNavigationMode = "current") => {

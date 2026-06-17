@@ -39,7 +39,11 @@ import { credentialsMethods } from "@natstack/shared/serviceSchemas/credentials"
 import { pushMethods } from "@natstack/shared/serviceSchemas/push";
 import { workspaceMethods } from "@natstack/shared/serviceSchemas/workspace";
 import { vcsMethods } from "@natstack/shared/serviceSchemas/vcs";
-import type { HostTargetLaunchResult } from "@natstack/shared/hostTargets";
+import {
+  HOST_TARGET_LAUNCH_SESSION_CHANGED_EVENT,
+  isLaunchSessionEventFor,
+} from "@natstack/shared/hostTargetLaunchGate";
+import type { HostTargetLaunchSessionSnapshot } from "@natstack/shared/hostTargets";
 import type { PendingUnitBatchApproval } from "@natstack/shared/approvals";
 
 function smokePhase(phase: string, details?: Record<string, unknown>): void {
@@ -98,19 +102,18 @@ type WorkspaceInfo = Awaited<ReturnType<WorkspaceClient["getInfo"]>>;
 
 export class MobileHostTargetApprovalRequiredError extends Error {
   readonly approvals: PendingUnitBatchApproval[];
+  readonly launchSession: HostTargetLaunchSessionSnapshot;
 
-  constructor(approvals: PendingUnitBatchApproval[]) {
-    super("Approve the workspace mobile app before opening panels.");
+  constructor(launchSession: HostTargetLaunchSessionSnapshot) {
+    super(launchSession.message || "Approve the workspace mobile app before opening panels.");
     this.name = "MobileHostTargetApprovalRequiredError";
-    this.approvals = approvals;
+    this.approvals = launchSession.approvals;
+    this.launchSession = launchSession;
   }
 }
 
-function formatHostTargetLaunchUnavailable(
-  launch: Extract<HostTargetLaunchResult, { status: "unavailable" }>
-): string {
-  const details = launch.details.length ? `: ${launch.details.join("; ")}` : "";
-  return `${launch.reason || "No launchable mobile workspace app is available"}${details}`;
+function formatHostTargetLaunchSession(session: HostTargetLaunchSessionSnapshot): string {
+  return [session.message, session.detail].filter(Boolean).join(" ");
 }
 
 class MobilePanels {
@@ -457,6 +460,7 @@ export class ShellClient {
   private panelRecoveryUnsubs: Array<() => void> | null = null;
   private workspaceInfo: WorkspaceInfo | null = null;
   private panelsInitialized = false;
+  private hostTargetReadinessEventsSubscribed = false;
   constructor(config: ShellClientConfig) {
     this.credentials = config.credentials;
     this.serverUrl = config.credentials.serverUrl;
@@ -508,23 +512,77 @@ export class ShellClient {
   }
 
   private async ensureReactNativeHostTargetReady(): Promise<void> {
-    const launch = await this.workspaces.launchHostTarget("react-native");
-    if (launch.status === "ready") {
-      smokePhase("workspace-host-target-ready", {
-        target: launch.target,
-        appId: launch.appId,
-        source: launch.source,
-      });
-      return;
+    const deadline = Date.now() + 120_000;
+    let session = await this.workspaces.beginHostTargetLaunch("react-native");
+    for (;;) {
+      if (session.status === "ready") {
+        smokePhase("workspace-host-target-ready", {
+          target: session.target,
+          appId: session.launch?.status === "ready" ? session.launch.appId : undefined,
+          source: session.launch?.status === "ready" ? session.launch.source : undefined,
+        });
+        return;
+      }
+      if (session.status === "approval-required") {
+        smokePhase("workspace-host-target-approval-required", {
+          target: session.target,
+          count: session.approvals.length,
+        });
+        throw new MobileHostTargetApprovalRequiredError(session);
+      }
+      if (session.status === "preparing" || session.status === "starting") {
+        smokePhase("workspace-host-target-preparing", {
+          target: session.target,
+          status: session.status,
+        });
+        const observed = await this.waitForHostTargetLaunchSession(
+          session.sessionId,
+          Math.max(1, deadline - Date.now())
+        );
+        if (observed) {
+          session = observed;
+          continue;
+        }
+        const refreshed = await this.workspaces.getHostTargetLaunchSession(session.sessionId);
+        if (refreshed) {
+          session = refreshed;
+          continue;
+        }
+        throw new Error(formatHostTargetLaunchSession(session));
+      }
+      throw new Error(formatHostTargetLaunchSession(session));
     }
-    if (launch.status === "approval-required") {
-      smokePhase("workspace-host-target-approval-required", {
-        target: launch.target,
-        count: launch.approvals.length,
-      });
-      throw new MobileHostTargetApprovalRequiredError(launch.approvals);
+  }
+
+  private async waitForHostTargetLaunchSession(
+    sessionId: string,
+    timeoutMs: number
+  ): Promise<HostTargetLaunchSessionSnapshot | null> {
+    const eventNames = [HOST_TARGET_LAUNCH_SESSION_CHANGED_EVENT] as const;
+    const needsSubscribe = !this.hostTargetReadinessEventsSubscribed;
+    if (needsSubscribe) this.hostTargetReadinessEventsSubscribed = true;
+    const pending = new Promise<HostTargetLaunchSessionSnapshot | null>((resolve) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      let unsubs: Array<() => void> = [];
+      const finish = (value: HostTargetLaunchSessionSnapshot | null) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        for (const unsub of unsubs) unsub();
+        resolve(value);
+      };
+      timer = setTimeout(() => finish(null), timeoutMs);
+      unsubs = eventNames.map((name) =>
+        this.transport.on(`event:${name}`, (event) => {
+          if (isLaunchSessionEventFor(sessionId, name, event.payload)) finish(event.payload);
+        })
+      );
+    });
+    if (needsSubscribe) {
+      await Promise.all(eventNames.map((name) => this.events.subscribe(name).catch(() => {})));
     }
-    throw new Error(formatHostTargetLaunchUnavailable(launch));
+    return await pending;
   }
 
   private async initPanels(info: WorkspaceInfo): Promise<void> {

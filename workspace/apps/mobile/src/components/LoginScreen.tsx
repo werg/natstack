@@ -38,7 +38,16 @@ import { shellClientAtom, panelTreeAtom } from "../state/shellClientAtom";
 import { themeColorsAtom } from "../state/themeAtoms";
 import { parseConnectDeepLink } from "../services/deepLinkConnect";
 import type { PendingUnitBatchApproval } from "@natstack/shared/approvals";
-import type { UnitBatchEntry } from "@natstack/shared/approvals";
+import type { HostTargetLaunchSessionSnapshot } from "@natstack/shared/hostTargets";
+import {
+  formatCapabilities,
+  launchCopy,
+  plural,
+  unitKindLabel,
+  unitReviewRows,
+  unitSourceLabel,
+  unitSummaryChips,
+} from "@natstack/shared/bootstrapLaunchGate";
 
 function smokePhase(phase: string): void {
   console.log(`[NatStackMobileSmoke] phase=${phase}`);
@@ -75,35 +84,6 @@ function confirmManualRepair(reason: string): Promise<boolean> {
   });
 }
 
-function formatStartupApproval(approval: PendingUnitBatchApproval): string {
-  const unit = approval.units[0];
-  return (
-    unit?.displayName ||
-    unit?.unitName ||
-    approval.title ||
-    approval.description ||
-    approval.approvalId
-  );
-}
-
-function unitTargetLabel(unit: UnitBatchEntry): string {
-  if (unit.target === "react-native") return "Mobile app";
-  if (unit.target === "electron") return "Desktop app";
-  if (unit.target === "terminal") return "Terminal app";
-  return unit.unitKind === "extension" ? "Extension" : "App";
-}
-
-function unitSourceLabel(unit: UnitBatchEntry): string {
-  const ev = unit.ev ? ` (${unit.ev.slice(0, 12)})` : "";
-  return `${unit.source.repo}@${unit.source.ref}${ev}`;
-}
-
-function unitCapabilitiesLabel(unit: UnitBatchEntry): string {
-  return unit.capabilities.length > 0
-    ? unit.capabilities.join(", ")
-    : "No declared capabilities";
-}
-
 type LoginScreenNavigationProp = StackNavigationProp<RootStackParamList, "Login">;
 
 interface LoginScreenProps {
@@ -113,6 +93,7 @@ interface LoginScreenProps {
 interface HostApprovalState {
   client: ShellClient;
   credentials: Credentials;
+  launchSession: HostTargetLaunchSessionSnapshot;
   approvals: PendingUnitBatchApproval[];
   busy: boolean;
   error: string | null;
@@ -124,6 +105,7 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
   const [bootstrapPending, setBootstrapPending] = React.useState(true);
   const [autoConnecting, setAutoConnecting] = React.useState(false);
   const [hostApproval, setHostApproval] = React.useState<HostApprovalState | null>(null);
+  const [openApprovalIds, setOpenApprovalIds] = React.useState<Set<string>>(() => new Set());
   const hostApprovalRef = React.useRef<HostApprovalState | null>(null);
   const colors = useAtomValue(themeColorsAtom);
 
@@ -150,6 +132,7 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
     setAuthenticated(true);
     setAuthLoading(false);
     setHostApproval(null);
+    setOpenApprovalIds(new Set());
 
     navigation.replace("Main");
   };
@@ -182,10 +165,12 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
         setHostApproval({
           client,
           credentials,
+          launchSession: error.launchSession,
           approvals: error.approvals,
           busy: false,
           error: null,
         });
+        setOpenApprovalIds(new Set());
         setAuthLoading(false);
         return false;
       }
@@ -206,13 +191,14 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
 
   const resolveHostApproval = async (decision: "once" | "deny") => {
     if (!hostApproval) return;
-    const { client, credentials, approvals } = hostApproval;
+    const { client, credentials, launchSession } = hostApproval;
     setHostApproval({ ...hostApproval, busy: true, error: null });
     setAuthLoading(true);
     try {
-      for (const approval of approvals) {
-        await client.shellApproval.resolveBootstrap(approval.approvalId, decision);
-      }
+      await client.workspaces.resolveHostTargetLaunchSessionApproval(
+        launchSession.sessionId,
+        decision
+      );
       if (decision === "deny") {
         client.dispose();
         setHostApproval(null);
@@ -223,10 +209,12 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
       finishConnectedClient(client, credentials);
     } catch (error) {
       if (error instanceof MobileHostTargetApprovalRequiredError) {
+        setOpenApprovalIds(new Set());
         setHostApproval((current) =>
           current?.client === client
             ? {
                 ...current,
+                launchSession: error.launchSession,
                 approvals: error.approvals,
                 busy: false,
                 error: null,
@@ -243,6 +231,15 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
       setAuthLoading(false);
     }
   };
+
+  const toggleApprovalDetails = React.useCallback((approvalId: string) => {
+    setOpenApprovalIds((current) => {
+      const next = new Set(current);
+      if (next.has(approvalId)) next.delete(approvalId);
+      else next.add(approvalId);
+      return next;
+    });
+  }, []);
 
   const pairAndConnect = async (
     targetUrl: string,
@@ -413,39 +410,83 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
               { borderColor: colors.border, backgroundColor: colors.surface },
             ]}
           >
-            {hostApproval.approvals.map((approval) => (
-              <View key={approval.approvalId} style={styles.approvalGroup}>
-                <Text style={[styles.approvalGroupTitle, { color: colors.text }]}>
-                  {formatStartupApproval(approval)}
-                </Text>
-                {approval.units.map((unit) => (
-                  <View
-                    key={`${approval.approvalId}:${unit.unitName}`}
-                    style={[styles.unitCard, { borderColor: colors.border }]}
-                  >
-                    <View style={styles.unitHeader}>
-                      <Text style={[styles.approvalItem, { color: colors.text }]}>
-                        {unit.displayName || unit.unitName}
-                      </Text>
+            {hostApproval.approvals.map((approval) => {
+              const copy = launchCopy(approval);
+              const detailsOpen = openApprovalIds.has(approval.approvalId);
+              return (
+                <View key={approval.approvalId} style={styles.approvalGroup}>
+                  <Text style={[styles.approvalGroupTitle, { color: colors.text }]}>
+                    {copy.title}
+                  </Text>
+                  <Text style={[styles.unitMeta, { color: colors.textSecondary }]}>
+                    {copy.summary}
+                  </Text>
+                  <View style={styles.unitSummary}>
+                    <Text
+                      style={[styles.unitBadge, { color: colors.text, borderColor: colors.border }]}
+                    >
+                      {plural(approval.units.length, "privileged unit")}
+                    </Text>
+                    {unitSummaryChips(approval).map((chip) => (
                       <Text
+                        key={chip}
                         style={[
                           styles.unitBadge,
                           { color: colors.text, borderColor: colors.border },
                         ]}
                       >
-                        {unitTargetLabel(unit)}
+                        {chip}
                       </Text>
-                    </View>
-                    <Text style={[styles.unitMeta, { color: colors.textSecondary }]}>
-                      {unitSourceLabel(unit)}
-                    </Text>
-                    <Text style={[styles.unitMeta, { color: colors.textSecondary }]}>
-                      {unitCapabilitiesLabel(unit)}
-                    </Text>
+                    ))}
                   </View>
-                ))}
-              </View>
-            ))}
+                  <Pressable
+                    style={[
+                      styles.secondaryButton,
+                      styles.inlineSecondaryButton,
+                      { borderColor: colors.border },
+                      busy && styles.buttonDisabled,
+                    ]}
+                    onPress={() => toggleApprovalDetails(approval.approvalId)}
+                    disabled={busy}
+                  >
+                    <Text style={[styles.secondaryButtonText, { color: colors.text }]}>
+                      {detailsOpen ? "Hide details" : "Review details"}
+                    </Text>
+                  </Pressable>
+                  {detailsOpen
+                    ? approval.units.map((unit, index) => {
+                        const row = unitReviewRows(approval)[index]!;
+                        return (
+                          <View
+                            key={`${approval.approvalId}:${unit.unitName}`}
+                            style={[styles.unitCard, { borderColor: colors.border }]}
+                          >
+                            <View style={styles.unitHeader}>
+                              <Text style={[styles.approvalItem, { color: colors.text }]}>
+                                {row.name}
+                              </Text>
+                              <Text
+                                style={[
+                                  styles.unitBadge,
+                                  { color: colors.text, borderColor: colors.border },
+                                ]}
+                              >
+                                {unitKindLabel(unit)}
+                              </Text>
+                            </View>
+                            <Text style={[styles.unitMeta, { color: colors.textSecondary }]}>
+                              {unitSourceLabel(unit)}
+                            </Text>
+                            <Text style={[styles.unitMeta, { color: colors.textSecondary }]}>
+                              {formatCapabilities(unit)}
+                            </Text>
+                          </View>
+                        );
+                      })
+                    : null}
+                </View>
+              );
+            })}
           </View>
           <Pressable
             style={[
@@ -600,6 +641,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginTop: 8,
   },
+  inlineSecondaryButton: {
+    height: 40,
+    marginTop: 0,
+  },
   secondaryButtonText: {
     fontSize: 16,
     fontWeight: "600",
@@ -632,6 +677,12 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    gap: 8,
+  },
+  unitSummary: {
+    width: "100%",
+    flexDirection: "row",
+    flexWrap: "wrap",
     gap: 8,
   },
   approvalItem: {

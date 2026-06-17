@@ -31,6 +31,11 @@ export interface MobileRpcClientConfig {
   serverUrl: string;
   /** Mint a fresh one-time app-scoped connection grant from the native host. */
   issueConnectionGrant: () => Promise<MobileConnectionGrant>;
+  initialConnectionRetry?: {
+    maxMs?: number;
+    delayMs?: number;
+    maxDelayMs?: number;
+  };
 }
 
 export function createMobileRpcClient(config: MobileRpcClientConfig): MobileRpcClient {
@@ -117,7 +122,10 @@ function describeWebSocketEvent(event: unknown): Record<string, unknown> {
 
 type MobileWsTransport = ReturnType<typeof wsClientTransport>;
 
-export class MobileRpcClient implements Pick<RpcClient, "selfId" | "call" | "emit" | "on" | "stream"> {
+export class MobileRpcClient implements Pick<
+  RpcClient,
+  "selfId" | "call" | "emit" | "on" | "stream"
+> {
   private config: MobileRpcClientConfig;
   private transport: MobileWsTransport | null = null;
   private rpc: RpcClient | null = null;
@@ -126,10 +134,7 @@ export class MobileRpcClient implements Pick<RpcClient, "selfId" | "call" | "emi
   private statusState: ConnectionStatus = "disconnected";
   private readonly statusListeners = new Set<(status: ConnectionStatus) => void>();
   private readonly recoveryListeners = new Map<RecoveryKind, Set<() => void | Promise<void>>>();
-  private readonly eventSubscriptions = new Map<
-    string,
-    Set<(event: RpcEventContext) => void>
-  >();
+  private readonly eventSubscriptions = new Map<string, Set<(event: RpcEventContext) => void>>();
   private readonly activeEventUnsubs = new Map<string, () => void>();
 
   constructor(config: MobileRpcClientConfig) {
@@ -157,13 +162,12 @@ export class MobileRpcClient implements Pick<RpcClient, "selfId" | "call" | "emi
   async connectAndWait(timeoutMs?: number | null): Promise<void> {
     this.setStatus("connecting");
     try {
-      await this.ensureRpc();
+      await this.connectAndWaitWithRetry(timeoutMs);
     } catch (error) {
-      console.warn("[MobileRpcClient] Failed to initialize mobile host principal:", error);
+      console.warn("[MobileRpcClient] Failed to connect mobile RPC transport:", error);
       this.setStatus("disconnected");
       throw error;
     }
-    await this.transport?.connectAndWait(timeoutMs);
   }
 
   reconnect(): void {
@@ -271,6 +275,74 @@ export class MobileRpcClient implements Pick<RpcClient, "selfId" | "call" | "emi
     return this.rpc;
   }
 
+  private async connectAndWaitWithRetry(timeoutMs?: number | null): Promise<void> {
+    const retry = this.config.initialConnectionRetry ?? {};
+    const startedAt = Date.now();
+    const maxMs =
+      typeof timeoutMs === "number"
+        ? timeoutMs
+        : typeof retry.maxMs === "number"
+          ? retry.maxMs
+          : 120_000;
+    const deadline = startedAt + maxMs;
+    const baseDelayMs =
+      typeof retry.delayMs === "number" && retry.delayMs >= 0 ? retry.delayMs : 750;
+    const maxDelayMs =
+      typeof retry.maxDelayMs === "number" && retry.maxDelayMs >= 0 ? retry.maxDelayMs : 5_000;
+    const perAttemptTimeoutMs =
+      typeof timeoutMs === "number" ? Math.min(timeoutMs, 15_000) : 15_000;
+    let attempt = 0;
+    let lastError: unknown = null;
+
+    while (Date.now() < deadline) {
+      attempt += 1;
+      this.setStatus("connecting");
+      await this.ensureRpc();
+      try {
+        await this.transport?.connectAndWait(perAttemptTimeoutMs);
+        if (attempt > 1) {
+          smokePhase("workspace-ws-retry-connected", { attempt });
+        }
+        return;
+      } catch (error) {
+        lastError = error;
+        await this.resetTransportAfterFailedInitialConnection();
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) break;
+        const delayMs = Math.min(
+          baseDelayMs * 2 ** Math.max(0, attempt - 1),
+          maxDelayMs,
+          remainingMs
+        );
+        smokePhase("workspace-ws-retry", {
+          attempt,
+          delayMs,
+          message: errorMessage(error),
+        });
+        console.warn(
+          `[MobileRpcClient] Initial WebSocket connection failed; retrying in ${delayMs}ms`,
+          error
+        );
+        await sleep(delayMs);
+      }
+    }
+
+    throw lastError instanceof Error
+      ? lastError
+      : new Error(
+          `Server WS connection timeout (${maxMs}ms): ${buildWsUrl(this.config.serverUrl)}`
+        );
+  }
+
+  private async resetTransportAfterFailedInitialConnection(): Promise<void> {
+    const transport = this.transport;
+    this.transport = null;
+    this.rpc = null;
+    this.preissuedGrant = null;
+    this.activeEventUnsubs.clear();
+    await transport?.close().catch(() => undefined);
+  }
+
   private async issueNativeGrant(): Promise<MobileConnectionGrant> {
     const grant = await this.config.issueConnectionGrant();
     if (
@@ -336,6 +408,14 @@ export class MobileRpcClient implements Pick<RpcClient, "selfId" | "call" | "emi
     this.statusState = status;
     for (const listener of this.statusListeners) listener(status);
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export function buildWsUrl(serverUrl: string): string {
