@@ -741,6 +741,9 @@ export interface CommonDeps {
     | Promise<import("./services/workspaceService.js").WorkspaceAppVersions>
     | import("./services/workspaceService.js").WorkspaceAppVersions;
   rollbackAppVersion?: (sourceOrName: string, buildKey?: string) => Promise<unknown> | unknown;
+  listRecurringJobs?: () =>
+    | Promise<import("./services/workspaceService.js").WorkspaceRecurringJobStatus[]>
+    | import("./services/workspaceService.js").WorkspaceRecurringJobStatus[];
   listHostTargetCandidates?: (
     target: HostTarget
   ) => Promise<HostTargetCandidate[]> | HostTargetCandidate[];
@@ -862,6 +865,7 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
         bakeAppDist: deps.bakeAppDist,
         listAppVersions: deps.listAppVersions,
         rollbackAppVersion: deps.rollbackAppVersion,
+        listRecurringJobs: deps.listRecurringJobs,
         listHostTargetCandidates: deps.listHostTargetCandidates,
         getHostTargetSelection: deps.getHostTargetSelection,
         setHostTargetSelection: deps.setHostTargetSelection,

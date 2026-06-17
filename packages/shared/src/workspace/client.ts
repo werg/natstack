@@ -19,6 +19,7 @@ export type {
   WorkspaceUnitLogRecord,
   WorkspaceUnitBuildEvent,
   WorkspaceUnitDiagnostics,
+  WorkspaceRecurringJobStatus,
 } from "../serviceSchemas/workspace.js";
 
 type WorkspaceTypedClient = TypedServiceClient<typeof workspaceMethods>;

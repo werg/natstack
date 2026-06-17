@@ -214,6 +214,21 @@ services:
 routes: []
 
 # =============================================================================
+# Declarative scheduled jobs ("cron"). The server's RecurringRegistry syncs
+# this list on startup and after approved meta pushes, then dispatches each
+# job's method on its target Durable Object on schedule. Adding or changing an
+# entry surfaces in the meta-push approval as a scheduled-job install before
+# it ever runs. Example:
+#
+# recurring:
+#   - name: news-briefing-default
+#     target: { source: workers/news-agent, className: NewsAgentWorker, objectKey: my-agent }
+#     method: runScheduledJob
+#     args: [{ job: briefing }]
+#     schedule: { every: 1d, at: "08:00" }   # or just `every: 6h`
+# =============================================================================
+
+# =============================================================================
 # Declarative extension set. This list is the single source of truth for which
 # extensions the workspace uses. Editing it triggers one joint approval (at
 # startup, or combined with the meta-change prompt) before any newly-declared

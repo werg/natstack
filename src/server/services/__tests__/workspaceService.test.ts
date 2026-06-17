@@ -171,6 +171,7 @@ describe("workspace service ↔ client contract", () => {
     await client.units.logs("extensions/foo");
     await client.units.versions("apps/shell");
     await client.units.rollback("apps/shell");
+    await client.recurring.list();
 
     const service = makeService();
     for (const { method } of captured) {
@@ -204,6 +205,7 @@ describe("workspace service ↔ client contract", () => {
     void client.units.logs("extensions/foo");
     void client.units.versions("apps/shell");
     void client.units.rollback("apps/shell");
+    void client.recurring.list();
 
     // The server should have a method handler for each captured wire name.
     const service = makeService();
@@ -460,6 +462,44 @@ describe("workspace service handler", () => {
     });
     await service.handler(panelCtx, "setConfigField", ["title", "Test"]);
     expect(setConfigField).toHaveBeenCalledWith("title", "Test");
+  });
+
+  it("recurring.list returns declarative scheduled job diagnostics", async () => {
+    const jobs = [
+      {
+        name: "news-briefing",
+        target: {
+          source: "workers/news-agent",
+          className: "NewsAgentWorker",
+          objectKey: "news",
+          method: "runScheduledJob",
+        },
+        args: [{ job: "briefing" }],
+        schedule: { intervalMs: 86_400_000, atMinutes: 480 },
+        specHash: "hash",
+        status: "scheduled" as const,
+        nextRunAt: 20_000,
+        lastRunAt: null,
+        lastStartedAt: null,
+        lastSucceededAt: null,
+        lastFailedAt: null,
+        lastError: null,
+        lastDurationMs: null,
+        failCount: 0,
+        backoffUntil: null,
+      },
+    ];
+    const service = createWorkspaceService({
+      workspace: makeWorkspace(),
+      getConfig: () => makeConfig(),
+      setConfigField: vi.fn(),
+      centralData: makeCentralData(),
+      createWorkspace: vi.fn(),
+      deleteWorkspaceDir: vi.fn(),
+      listRecurringJobs: vi.fn(() => jobs),
+    });
+
+    await expect(service.handler(shellCtx, "recurring.list", [])).resolves.toEqual(jobs);
   });
 });
 

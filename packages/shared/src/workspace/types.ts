@@ -193,6 +193,29 @@ export type WorkspaceServiceDecl = {
 );
 
 /**
+ * One declarative scheduled job ("cron") in `workspace/meta/natstack.yml`'s
+ * `recurring:` section. The server's RecurringRegistry dispatches `method` on
+ * the target DO on schedule. Editing the list is a gated meta write: newly
+ * declared or changed jobs surface in the meta-push approval as scheduled-job
+ * entries before they ever run.
+ */
+export interface WorkspaceRecurringDecl {
+  /** Unique job name within the workspace, e.g. "news-briefing-default". */
+  name: string;
+  /** Target Durable Object. `objectKey` defaults to the job name. */
+  target: { source: string; className: string; objectKey?: string };
+  /** DO method to invoke on schedule. */
+  method: string;
+  /** JSON-serializable arguments passed to the method. */
+  args?: unknown[];
+  /**
+   * Cadence: `every` is a duration ("30m", "6h", "1d"); optional `at` is a
+   * local-time anchor "HH:MM" for day-multiple intervals (e.g. daily at 08:00).
+   */
+  schedule: { every: string; at?: string };
+}
+
+/**
  * Extension declaration in `workspace/meta/natstack.yml`. The declared list is
  * the single source of truth for which extensions a workspace uses and the only
  * install/remove surface. Editing it (a gated meta write) triggers the joint
@@ -279,6 +302,12 @@ export interface WorkspaceConfig {
    * extensions (reconciliation removes any left in the registry).
    */
   extensions?: WorkspaceExtensionDecl[];
+  /**
+   * Declarative scheduled jobs ("cron"). The RecurringRegistry syncs this
+   * list on startup and after approved meta pushes; absent or empty removes
+   * all scheduled jobs.
+   */
+  recurring?: WorkspaceRecurringDecl[];
   /**
    * Declarative privileged frontend app set for this workspace. Absent or
    * empty means no apps; the reconciler removes anything not declared here.

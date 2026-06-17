@@ -174,6 +174,33 @@ export const WorkspaceUnitDiagnosticsSchema = z.object({
 });
 export type WorkspaceUnitDiagnostics = z.infer<typeof WorkspaceUnitDiagnosticsSchema>;
 
+export const WorkspaceRecurringJobStatusSchema = z.object({
+  name: z.string(),
+  target: z.object({
+    source: z.string(),
+    className: z.string(),
+    objectKey: z.string(),
+    method: z.string(),
+  }),
+  args: z.array(z.unknown()),
+  schedule: z.object({
+    intervalMs: z.number(),
+    atMinutes: z.number().nullable(),
+  }),
+  specHash: z.string(),
+  status: z.enum(["scheduled", "backing-off", "failing"]),
+  nextRunAt: z.number(),
+  lastRunAt: z.number().nullable(),
+  lastStartedAt: z.number().nullable(),
+  lastSucceededAt: z.number().nullable(),
+  lastFailedAt: z.number().nullable(),
+  lastError: z.string().nullable(),
+  lastDurationMs: z.number().nullable(),
+  failCount: z.number(),
+  backoffUntil: z.number().nullable(),
+});
+export type WorkspaceRecurringJobStatus = z.infer<typeof WorkspaceRecurringJobStatusSchema>;
+
 export const SkillEntrySchema = z.object({
   /** Skill identifier (from frontmatter `name:`, falling back to the directory name). */
   name: z.string(),
@@ -209,9 +236,7 @@ export const WorkspaceFindUnitForPathResultSchema = z
     relativePath: z.string(),
   })
   .nullable();
-export type WorkspaceFindUnitForPathResult = z.infer<
-  typeof WorkspaceFindUnitForPathResultSchema
->;
+export type WorkspaceFindUnitForPathResult = z.infer<typeof WorkspaceFindUnitForPathResultSchema>;
 
 /** Options accepted by `units.logs`. */
 const UnitLogsOptionsSchema = z.object({
@@ -318,6 +343,11 @@ export const workspaceMethods = defineServiceMethods({
     args: z.tuple([z.string(), z.object({ outDir: z.string().optional() }).optional()]),
     returns: z.unknown(),
     policy: { allowed: ["shell", "server"] },
+  },
+  "recurring.list": {
+    args: z.tuple([]),
+    returns: z.array(WorkspaceRecurringJobStatusSchema),
+    policy: { allowed: ["shell", "shell-remote", "app", "panel", "worker", "do", "server"] },
   },
   "hostTargets.list": {
     args: z.tuple([HostTargetSchema]),

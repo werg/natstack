@@ -6,7 +6,7 @@ import {
   canonicalEntityId,
   type EntityRecord,
 } from "../../../packages/shared/src/runtime/entitySpec.js";
-import { WorkspaceDO } from "./workspaceDO.js";
+import { WorkspaceDO, type RecurringJobRow } from "./workspaceDO.js";
 import { WorkspaceDOTestable } from "./workspaceDO.testFixture.js";
 
 const SOURCE = "panels/example";
@@ -21,7 +21,9 @@ const WORKSPACE_TABLES = [
   "lifecycle_leases",
   "lifecycle_ops",
   "do_alarms",
+  "recurring_jobs",
 ];
+const CURRENT_SCHEMA_VERSION = WorkspaceDO.schemaVersion;
 
 async function createDbAtSchemaVersion(schemaVersion: number) {
   const SQL = await initSqlJs();
@@ -54,7 +56,7 @@ function doInput(overrides: Partial<Parameters<WorkspaceDO["entityActivate"]>[0]
 
 describe("WorkspaceDO schema migration", () => {
   it("recreates current tables after destructive pre-release migrations", async () => {
-    const db = await createDbAtSchemaVersion(10);
+    const db = await createDbAtSchemaVersion(CURRENT_SCHEMA_VERSION - 1);
     const { sql } = await createTestDO(WorkspaceDOTestable, undefined, { db });
 
     for (const table of WORKSPACE_TABLES) {
@@ -63,12 +65,12 @@ describe("WorkspaceDO schema migration", () => {
       ).toEqual({ name: table });
     }
     expect(sql.exec(`SELECT value FROM state WHERE key = 'schema_version'`).one()).toEqual({
-      value: "11",
+      value: String(CURRENT_SCHEMA_VERSION),
     });
   });
 
   it("repairs a stamped current schema that is missing required tables", async () => {
-    const db = await createDbAtSchemaVersion(11);
+    const db = await createDbAtSchemaVersion(CURRENT_SCHEMA_VERSION);
     const { sql } = await createTestDO(WorkspaceDOTestable, undefined, { db });
 
     for (const table of WORKSPACE_TABLES) {
@@ -77,7 +79,7 @@ describe("WorkspaceDO schema migration", () => {
       ).toEqual({ name: table });
     }
     expect(sql.exec(`SELECT value FROM state WHERE key = 'schema_version'`).one()).toEqual({
-      value: "11",
+      value: String(CURRENT_SCHEMA_VERSION),
     });
   });
 });
@@ -155,6 +157,98 @@ describe("WorkspaceDO.entityActivate", () => {
     instance.entityActivate(doInput({ stateArgs: { a: 1 } }));
     const rec = instance.entityActivate(doInput({ stateArgs: { a: 2 } }));
     expect(rec.stateArgs).toEqual({ a: 1 });
+  });
+});
+
+describe("WorkspaceDO recurring jobs", () => {
+  let instance: WorkspaceDO;
+  const job = (overrides: Partial<RecurringJobRow> = {}): RecurringJobRow => ({
+    name: "news-briefing",
+    source: "workers/news-agent",
+    className: "NewsAgentWorker",
+    objectKey: "news",
+    method: "runScheduledJob",
+    argsJson: JSON.stringify([{ job: "briefing" }]),
+    intervalMs: 3_600_000,
+    atMinutes: null,
+    specHash: "hash-1",
+    initialNextRunAt: 10_000,
+    ...overrides,
+  });
+
+  beforeEach(async () => {
+    ({ instance } = await createTestDO(WorkspaceDOTestable));
+  });
+
+  it("marks success and failure state durably", () => {
+    instance.recurringSync({ jobs: [job()] });
+    expect(instance.recurringDue(10_000)).toHaveLength(1);
+
+    instance.recurringMarkRun({ name: "news-briefing", lastRunAt: 10_000, nextRunAt: 20_000 });
+    instance.recurringMarkFailed({
+      name: "news-briefing",
+      failedAt: 10_050,
+      nextRunAt: 15_000,
+      failCount: 1,
+      error: "boom",
+      durationMs: 50,
+    });
+    expect(instance.recurringList()[0]).toMatchObject({
+      name: "news-briefing",
+      nextRunAt: 15_000,
+      failCount: 1,
+      backoffUntil: 15_000,
+      lastFailedAt: 10_050,
+      lastError: "boom",
+      lastDurationMs: 50,
+    });
+    expect(instance.recurringDue(14_999)).toHaveLength(0);
+    expect(instance.recurringDue(15_000)).toHaveLength(1);
+
+    instance.recurringMarkRun({ name: "news-briefing", lastRunAt: 15_000, nextRunAt: 25_000 });
+    instance.recurringMarkSucceeded({
+      name: "news-briefing",
+      finishedAt: 15_025,
+      durationMs: 25,
+    });
+    expect(instance.recurringList()[0]).toMatchObject({
+      nextRunAt: 25_000,
+      failCount: 0,
+      backoffUntil: null,
+      lastSucceededAt: 15_025,
+      lastError: null,
+      lastDurationMs: 25,
+    });
+  });
+
+  it("preserves recurring run state across unchanged syncs and clears failure state on spec changes", () => {
+    instance.recurringSync({ jobs: [job()] });
+    instance.recurringMarkFailed({
+      name: "news-briefing",
+      failedAt: 10_050,
+      nextRunAt: 15_000,
+      failCount: 2,
+      error: "still broken",
+      durationMs: 50,
+    });
+
+    instance.recurringSync({ jobs: [job({ initialNextRunAt: 99_000 })] });
+    expect(instance.recurringList()[0]).toMatchObject({
+      nextRunAt: 15_000,
+      failCount: 2,
+      lastError: "still broken",
+    });
+
+    instance.recurringSync({
+      jobs: [job({ specHash: "hash-2", initialNextRunAt: 99_000 })],
+    });
+    expect(instance.recurringList()[0]).toMatchObject({
+      nextRunAt: 99_000,
+      failCount: 0,
+      backoffUntil: null,
+      lastError: null,
+      lastFailedAt: null,
+    });
   });
 });
 

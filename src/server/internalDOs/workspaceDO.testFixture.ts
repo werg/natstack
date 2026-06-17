@@ -131,5 +131,27 @@ export class WorkspaceDOTestable extends WorkspaceDO {
         PRIMARY KEY (source, class_name, object_key)
       )
     `);
+    sql.exec(`
+      CREATE TABLE IF NOT EXISTS recurring_jobs (
+        name TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        class_name TEXT NOT NULL,
+        object_key TEXT NOT NULL,
+        method TEXT NOT NULL,
+        args_json TEXT NOT NULL,
+        interval_ms INTEGER NOT NULL,
+        at_minutes INTEGER,
+        spec_hash TEXT NOT NULL,
+        next_run_at INTEGER NOT NULL,
+        last_run_at INTEGER,
+        fail_count INTEGER NOT NULL DEFAULT 0,
+        backoff_until INTEGER,
+        last_started_at INTEGER,
+        last_succeeded_at INTEGER,
+        last_failed_at INTEGER,
+        last_error TEXT,
+        last_duration_ms INTEGER
+      )
+    `);
   }
 }

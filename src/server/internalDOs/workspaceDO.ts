@@ -148,10 +148,66 @@ const WORKSPACE_REQUIRED_TABLES = [
   "lifecycle_leases",
   "lifecycle_ops",
   "do_alarms",
+  "recurring_jobs",
 ] as const;
 
+/** One declared recurring job (see meta/natstack.yml `recurring:`). */
+export interface RecurringJobRow {
+  name: string;
+  source: string;
+  className: string;
+  objectKey: string;
+  method: string;
+  argsJson: string;
+  intervalMs: number;
+  /** Local-time anchor (minutes after midnight) for day-aligned schedules. */
+  atMinutes?: number | null;
+  /** Hash of the declared spec; preserves next_run_at across unchanged syncs. */
+  specHash: string;
+  /** Used for new/changed jobs at sync time. */
+  initialNextRunAt: number;
+  lastRunAt?: number | null;
+  nextRunAt?: number;
+  failCount?: number;
+  backoffUntil?: number | null;
+  lastStartedAt?: number | null;
+  lastSucceededAt?: number | null;
+  lastFailedAt?: number | null;
+  lastError?: string | null;
+  lastDurationMs?: number | null;
+}
+
+function rowToRecurringJob(row: Record<string, unknown>): RecurringJobRow {
+  const nullableNumber = (key: string): number | null =>
+    row[key] === null || row[key] === undefined ? null : Number(row[key]);
+  return {
+    name: String(row["name"]),
+    source: String(row["source"]),
+    className: String(row["class_name"]),
+    objectKey: String(row["object_key"]),
+    method: String(row["method"]),
+    argsJson: String(row["args_json"]),
+    intervalMs: Number(row["interval_ms"]),
+    atMinutes: row["at_minutes"] === null ? null : Number(row["at_minutes"]),
+    specHash: String(row["spec_hash"]),
+    initialNextRunAt: Number(row["next_run_at"]),
+    lastRunAt: row["last_run_at"] === null ? null : Number(row["last_run_at"]),
+    nextRunAt: Number(row["next_run_at"]),
+    failCount: Number(row["fail_count"] ?? 0),
+    backoffUntil: nullableNumber("backoff_until"),
+    lastStartedAt: nullableNumber("last_started_at"),
+    lastSucceededAt: nullableNumber("last_succeeded_at"),
+    lastFailedAt: nullableNumber("last_failed_at"),
+    lastError:
+      row["last_error"] === null || row["last_error"] === undefined
+        ? null
+        : String(row["last_error"]),
+    lastDurationMs: nullableNumber("last_duration_ms"),
+  };
+}
+
 export class WorkspaceDO extends DurableObjectBase {
-  static override schemaVersion = 11;
+  static override schemaVersion = 13;
 
   constructor(ctx: DurableObjectContext, env: unknown) {
     super(ctx, env);
@@ -314,6 +370,7 @@ export class WorkspaceDO extends DurableObjectBase {
     this.sql.exec(`DROP TABLE IF EXISTS lifecycle_leases`);
     this.sql.exec(`DROP TABLE IF EXISTS lifecycle_epochs`);
     this.sql.exec(`DROP TABLE IF EXISTS do_alarms`);
+    this.sql.exec(`DROP TABLE IF EXISTS recurring_jobs`);
   }
 
   getWorkspaceId(): string {
@@ -583,6 +640,162 @@ export class WorkspaceDO extends DurableObjectBase {
         wakeAt: r.wake_at,
       }));
     });
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // recurring jobs (declared in meta/natstack.yml `recurring:`;
+  // driven by the server's RecurringRegistry)
+  // ─────────────────────────────────────────────────────────────
+
+  /**
+   * Declaratively replace the recurring-job set. Jobs absent from `jobs` are
+   * deleted; jobs whose `specHash` is unchanged keep their durable
+   * `next_run_at`; new or respecified jobs adopt `initialNextRunAt`.
+   */
+  recurringSync(input: { jobs: RecurringJobRow[] }): void {
+    this.ctx.storage.transactionSync(() => {
+      const names = input.jobs.map((j) => j.name);
+      if (names.length === 0) {
+        this.sql.exec(`DELETE FROM recurring_jobs`);
+      } else {
+        const placeholders = names.map(() => "?").join(", ");
+        this.sql.exec(`DELETE FROM recurring_jobs WHERE name NOT IN (${placeholders})`, ...names);
+      }
+      for (const job of input.jobs) {
+        this.sql.exec(
+          `INSERT INTO recurring_jobs
+             (name, source, class_name, object_key, method, args_json, interval_ms, at_minutes, spec_hash, next_run_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(name) DO UPDATE SET
+             source = excluded.source,
+             class_name = excluded.class_name,
+             object_key = excluded.object_key,
+             method = excluded.method,
+             args_json = excluded.args_json,
+             interval_ms = excluded.interval_ms,
+             at_minutes = excluded.at_minutes,
+             next_run_at = CASE
+               WHEN recurring_jobs.spec_hash = excluded.spec_hash THEN recurring_jobs.next_run_at
+               ELSE excluded.next_run_at
+             END,
+             fail_count = CASE
+               WHEN recurring_jobs.spec_hash = excluded.spec_hash THEN recurring_jobs.fail_count
+               ELSE 0
+             END,
+             backoff_until = CASE
+               WHEN recurring_jobs.spec_hash = excluded.spec_hash THEN recurring_jobs.backoff_until
+               ELSE NULL
+             END,
+             last_error = CASE
+               WHEN recurring_jobs.spec_hash = excluded.spec_hash THEN recurring_jobs.last_error
+               ELSE NULL
+             END,
+             last_failed_at = CASE
+               WHEN recurring_jobs.spec_hash = excluded.spec_hash THEN recurring_jobs.last_failed_at
+               ELSE NULL
+             END,
+             last_duration_ms = CASE
+               WHEN recurring_jobs.spec_hash = excluded.spec_hash THEN recurring_jobs.last_duration_ms
+               ELSE NULL
+             END,
+             spec_hash = excluded.spec_hash`,
+          job.name,
+          job.source,
+          job.className,
+          job.objectKey,
+          job.method,
+          job.argsJson,
+          job.intervalMs,
+          job.atMinutes ?? null,
+          job.specHash,
+          Math.round(job.initialNextRunAt)
+        );
+      }
+    });
+  }
+
+  /** Jobs due at/before `now`. Rows stay put; the registry marks each run. */
+  recurringDue(now: number): RecurringJobRow[] {
+    return (
+      this.sql
+        .exec(
+          `SELECT * FROM recurring_jobs
+           WHERE next_run_at <= ? AND COALESCE(backoff_until, 0) <= ?
+           ORDER BY next_run_at, name`,
+          now,
+          now
+        )
+        .toArray() as Array<Record<string, unknown>>
+    ).map(rowToRecurringJob);
+  }
+
+  recurringMarkRun(input: { name: string; lastRunAt: number; nextRunAt: number }): void {
+    this.sql.exec(
+      `UPDATE recurring_jobs
+       SET last_run_at = ?, last_started_at = ?, next_run_at = ?
+       WHERE name = ?`,
+      Math.round(input.lastRunAt),
+      Math.round(input.lastRunAt),
+      Math.round(input.nextRunAt),
+      input.name
+    );
+  }
+
+  recurringMarkSucceeded(input: { name: string; finishedAt: number; durationMs: number }): void {
+    this.sql.exec(
+      `UPDATE recurring_jobs
+       SET fail_count = 0,
+           backoff_until = NULL,
+           last_succeeded_at = ?,
+           last_error = NULL,
+           last_duration_ms = ?
+       WHERE name = ?`,
+      Math.round(input.finishedAt),
+      Math.max(0, Math.round(input.durationMs)),
+      input.name
+    );
+  }
+
+  recurringMarkFailed(input: {
+    name: string;
+    failedAt: number;
+    nextRunAt: number;
+    failCount: number;
+    error: string;
+    durationMs: number;
+  }): void {
+    this.sql.exec(
+      `UPDATE recurring_jobs
+       SET fail_count = ?,
+           backoff_until = ?,
+           next_run_at = ?,
+           last_failed_at = ?,
+           last_error = ?,
+           last_duration_ms = ?
+       WHERE name = ?`,
+      Math.max(1, Math.round(input.failCount)),
+      Math.round(input.nextRunAt),
+      Math.round(input.nextRunAt),
+      Math.round(input.failedAt),
+      input.error.slice(0, 1000),
+      Math.max(0, Math.round(input.durationMs)),
+      input.name
+    );
+  }
+
+  recurringNextWakeAt(): number | null {
+    const row = this.sql
+      .exec(`SELECT MIN(next_run_at) AS next FROM recurring_jobs`)
+      .toArray()[0] as { next: number | null } | undefined;
+    return row && row.next !== null ? row.next : null;
+  }
+
+  recurringList(): RecurringJobRow[] {
+    return (
+      this.sql.exec(`SELECT * FROM recurring_jobs ORDER BY name`).toArray() as Array<
+        Record<string, unknown>
+      >
+    ).map(rowToRecurringJob);
   }
 
   lifecycleListLeases(): LifecycleLease[] {
@@ -1249,6 +1462,34 @@ export class WorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_do_alarms_wake ON do_alarms(wake_at)`);
+    // Declarative recurring jobs from meta/natstack.yml `recurring:`. The
+    // RecurringRegistry syncs declarations here and dispatches due jobs;
+    // durable next_run_at survives restarts without re-running missed bursts.
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS recurring_jobs (
+        name TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        class_name TEXT NOT NULL,
+        object_key TEXT NOT NULL,
+        method TEXT NOT NULL,
+        args_json TEXT NOT NULL,
+        interval_ms INTEGER NOT NULL,
+        at_minutes INTEGER,
+        spec_hash TEXT NOT NULL,
+        next_run_at INTEGER NOT NULL,
+        last_run_at INTEGER,
+        fail_count INTEGER NOT NULL DEFAULT 0,
+        backoff_until INTEGER,
+        last_started_at INTEGER,
+        last_succeeded_at INTEGER,
+        last_failed_at INTEGER,
+        last_error TEXT,
+        last_duration_ms INTEGER
+      )
+    `);
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_recurring_jobs_next ON recurring_jobs(next_run_at)`
+    );
   }
 
   private insertLifecycleOp(

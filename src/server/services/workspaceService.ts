@@ -38,6 +38,7 @@ import type {
 import { workspaceMethods } from "@natstack/shared/serviceSchemas/workspace";
 import type {
   WorkspaceAppVersions,
+  WorkspaceRecurringJobStatus,
   WorkspaceUnitDiagnostics,
   WorkspaceUnitLogRecord,
   WorkspaceUnitStatus,
@@ -51,6 +52,7 @@ import type { WorkspaceTreeScanner } from "../gadVcs/workspaceTree.js";
 export type {
   WorkspaceAppVersionRecord,
   WorkspaceAppVersions,
+  WorkspaceRecurringJobStatus,
   WorkspaceUnitDiagnostics,
   WorkspaceUnitLogRecord,
   WorkspaceUnitStatus,
@@ -164,6 +166,8 @@ export interface WorkspaceServiceDeps {
   listAppVersions?: (sourceOrName: string) => Promise<WorkspaceAppVersions> | WorkspaceAppVersions;
   /** Roll an app unit back to a previous active build. */
   rollbackAppVersion?: (sourceOrName: string, buildKey?: string) => Promise<unknown> | unknown;
+  /** List declarative scheduled jobs from meta/natstack.yml with durable run state. */
+  listRecurringJobs?: () => Promise<WorkspaceRecurringJobStatus[]> | WorkspaceRecurringJobStatus[];
   /** List app candidates that can be selected as the active app for a host target. */
   listHostTargetCandidates?: (
     target: HostTarget
@@ -717,6 +721,9 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
           const [sourceOrName, opts] = args as [string, { outDir?: string } | undefined];
           return await deps.bakeAppDist(sourceOrName, opts);
         }
+
+        case "recurring.list":
+          return deps.listRecurringJobs ? await deps.listRecurringJobs() : [];
 
         case "hostTargets.list": {
           if (!deps.listHostTargetCandidates) return [];

@@ -742,6 +742,12 @@ async function main() {
     if (!file || file.content.kind !== "text") return null;
     return file.content.text;
   };
+  const { createRecurringMetaChangeProvider } = await import("./services/recurringRegistry.js");
+  const recurringMetaChangeProvider = createRecurringMetaChangeProvider({
+    workspaceId: workspace.config.id,
+    getCurrentRecurring: () => workspaceConfig.recurring ?? [],
+    readWorkspaceFileAtCommit,
+  });
   // Create ContextFolderManager before core services. Context folders are
   // GAD branch forks of the workspace main head, materialized from the CAS.
   const { ContextFolderManager } = await import("@natstack/shared/contextFolderManager");
@@ -939,6 +945,7 @@ async function main() {
             return;
           }
           void reconcileDeclaredWorkspaceUnits(nextConfig, "meta-change");
+          recurringRegistryInstance?.notifyChanged();
           syncDeclaredRemotesForSource().catch((err: unknown) =>
             console.warn("[GitRemotes] Failed to sync declared remotes after meta change:", err)
           );
@@ -1096,7 +1103,7 @@ async function main() {
       grantStore: new FileMetaApprovalGrantStore({ statePath }),
       grantTtlMs: 4 * 60 * 60 * 1000,
       capabilityGrantStore,
-      getProviders: () => trustedUnitHosts(),
+      getProviders: () => [...trustedUnitHosts(), recurringMetaChangeProvider],
     });
     let buildSystemForVcs: import("./buildV2/index.js").BuildSystemV2 | null = null;
     container.registerManaged({
@@ -1474,6 +1481,12 @@ async function main() {
   // Server-driven DO alarms (workerd lacks SQLite/facet alarms). Created as a
   // managed service below; the workspace-state `onAlarmChanged` hook pokes it.
   let alarmDriverInstance: import("./services/alarmDriver.js").AlarmDriver | null = null;
+
+  // Declarative scheduled jobs from natstack.yml `recurring:`. Managed service
+  // below; the meta-change reload hook pokes it after approved config changes.
+  let recurringRegistryInstance:
+    | import("./services/recurringRegistry.js").RecurringRegistry
+    | null = null;
 
   {
     const { createWorkspaceStateService } = await import("./services/workspaceStateService.js");
@@ -2212,6 +2225,28 @@ async function main() {
     });
   }
 
+  {
+    container.registerManaged({
+      name: "recurringRegistry",
+      dependencies: ["doDispatch"],
+      async start(resolve) {
+        const { RecurringRegistry } = await import("./services/recurringRegistry.js");
+        const registry = new RecurringRegistry({
+          doDispatch: assertPresent(resolve<import("./doDispatch.js").DODispatch>("doDispatch")),
+          workspaceId: workspace.config.id,
+          loadRecurring: () => workspaceConfig.recurring ?? [],
+        });
+        recurringRegistryInstance = registry;
+        await registry.start();
+        return registry;
+      },
+      async stop(instance: import("./services/recurringRegistry.js").RecurringRegistry | null) {
+        instance?.stop();
+        recurringRegistryInstance = null;
+      },
+    });
+  }
+
   // ===========================================================================
   // Panel services, workspace info, PanelHttpServer, FS RPC
   // (extracted to panelRuntimeRegistration.ts)
@@ -2520,6 +2555,7 @@ async function main() {
       if (!appHost) throw new Error("App host is not available");
       return appHost.rollbackAppVersion(sourceOrName, buildKey);
     },
+    listRecurringJobs: () => recurringRegistryInstance?.listJobs() ?? [],
     listHostTargetCandidates: (target: import("@natstack/shared/hostTargets").HostTarget) => {
       const appHost = appHostForGateway;
       return appHost?.listHostTargetCandidates(target) ?? [];
