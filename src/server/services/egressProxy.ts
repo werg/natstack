@@ -36,7 +36,7 @@ import { deleteDynamicProperty } from "../../lintHelpers";
 import type { VerifiedCaller } from "@natstack/shared/serviceDispatcher";
 import type { CapabilityGrantStore } from "./capabilityGrantStore.js";
 import { requestCapabilityPermission } from "./capabilityPermission.js";
-import { connect as netConnect } from "node:net";
+import { connect as netConnect, isIP } from "node:net";
 import type { ResolvedCodeIdentity } from "./principalIdentity.js";
 
 const HOP_BY_HOP_REQUEST_HEADERS = new Set([
@@ -1408,6 +1408,7 @@ export class EgressProxy {
         inputHeaders,
         credentialUse: "fetch",
         replaySafe: false,
+        maxRetries: 0,
         execute: async (preparedPolicyUrl, headers) => {
           const upstreamUrl = websocketUpstreamUrlFor(preparedPolicyUrl, targetUrl.protocol);
           const forwardHeaders = this.prepareWebSocketForwardHeaders(inputHeaders, headers);
@@ -1482,6 +1483,7 @@ export class EgressProxy {
       const defaultPort = requestUrl.protocol === "https:" ? 443 : 80;
       const requestHeaders = diagnosticWebSocketRequestHeaders(headers);
       let settled = false;
+      let activeRequest: ReturnType<typeof httpRequest> | null = null;
 
       const settle = (result: ForwardResult) => {
         if (settled) return;
@@ -1489,76 +1491,104 @@ export class EgressProxy {
         resolve(result);
       };
 
-      const upstreamRequest = requestFn({
-        protocol: requestUrl.protocol,
-        hostname: requestUrl.hostname,
-        port: requestUrl.port ? Number(requestUrl.port) : defaultPort,
-        method: req.method ?? "GET",
-        path: `${requestUrl.pathname}${requestUrl.search}`,
-        headers,
-      });
-
-      upstreamRequest.on("upgrade", (upstreamResponse, upstreamSocket, upstreamHead) => {
-        const statusCode = upstreamResponse.statusCode ?? 101;
-        socket.write(serializeRawHttpResponseHead(statusCode, upstreamResponse.headers));
-        if (upstreamHead.length > 0) {
-          socket.write(upstreamHead);
-        }
-        if (head.length > 0) {
-          upstreamSocket.write(head);
-        }
-        upstreamSocket.pipe(socket);
-        socket.pipe(upstreamSocket);
-        settle({ statusCode, bytesIn: 0, bytesOut: 0 });
-      });
-
-      upstreamRequest.on("response", (upstreamResponse) => {
-        const statusCode = upstreamResponse.statusCode ?? 502;
-        let diagnosticBodyBytes = 0;
-        const diagnosticBodyChunks: Buffer[] = [];
-        socket.write(
-          serializeRawHttpResponseHead(
-            statusCode,
-            websocketNonUpgradeResponseHeaders(upstreamResponse.headers)
-          )
-        );
-        upstreamResponse.on("data", (chunk: Buffer | string) => {
-          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-          if (diagnosticBodyBytes < WEBSOCKET_DIAGNOSTIC_BODY_LIMIT) {
-            const remaining = WEBSOCKET_DIAGNOSTIC_BODY_LIMIT - diagnosticBodyBytes;
-            diagnosticBodyChunks.push(buffer.subarray(0, remaining));
-            diagnosticBodyBytes += Math.min(buffer.byteLength, remaining);
-          }
-          socket.write(chunk);
+      const startAttempt = (family?: 4, fallbackFrom?: unknown) => {
+        const upstreamRequest = requestFn({
+          protocol: requestUrl.protocol,
+          hostname: requestUrl.hostname,
+          port: requestUrl.port ? Number(requestUrl.port) : defaultPort,
+          method: req.method ?? "GET",
+          path: `${requestUrl.pathname}${requestUrl.search}`,
+          headers,
+          ...(family ? { family } : {}),
         });
-        upstreamResponse.on("end", () => {
-          this.logWebSocketUpgradeDiagnostic("upstream_response", {
-            reason: "upstream_non_upgrade_response",
-            statusCode,
-            target: diagnosticWebSocketTarget(targetUrl),
-            requestHeaders,
-            responseHeaders: diagnosticResponseHeaders(upstreamResponse.headers),
-            body: Buffer.concat(diagnosticBodyChunks).toString("utf8"),
-          });
-          socket.end();
+
+        activeRequest = upstreamRequest;
+
+        upstreamRequest.on("upgrade", (upstreamResponse, upstreamSocket, upstreamHead) => {
+          const statusCode = upstreamResponse.statusCode ?? 101;
+          socket.write(serializeRawHttpResponseHead(statusCode, upstreamResponse.headers));
+          if (upstreamHead.length > 0) {
+            socket.write(upstreamHead);
+          }
+          if (head.length > 0) {
+            upstreamSocket.write(head);
+          }
+          upstreamSocket.pipe(socket);
+          socket.pipe(upstreamSocket);
           settle({ statusCode, bytesIn: 0, bytesOut: 0 });
         });
-        upstreamResponse.on("error", reject);
-      });
 
-      upstreamRequest.on("error", (error) => {
-        this.logWebSocketUpgradeDiagnostic("upstream_error", {
-          reason: "upstream_request_error",
-          target: diagnosticWebSocketTarget(targetUrl),
-          requestHeaders,
-          message: error instanceof Error ? error.message : String(error),
+        upstreamRequest.on("response", (upstreamResponse) => {
+          const statusCode = upstreamResponse.statusCode ?? 502;
+          let diagnosticBodyBytes = 0;
+          const diagnosticBodyChunks: Buffer[] = [];
+          socket.write(
+            serializeRawHttpResponseHead(
+              statusCode,
+              websocketNonUpgradeResponseHeaders(upstreamResponse.headers)
+            )
+          );
+          upstreamResponse.on("data", (chunk: Buffer | string) => {
+            const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            if (diagnosticBodyBytes < WEBSOCKET_DIAGNOSTIC_BODY_LIMIT) {
+              const remaining = WEBSOCKET_DIAGNOSTIC_BODY_LIMIT - diagnosticBodyBytes;
+              diagnosticBodyChunks.push(buffer.subarray(0, remaining));
+              diagnosticBodyBytes += Math.min(buffer.byteLength, remaining);
+            }
+            socket.write(chunk);
+          });
+          upstreamResponse.on("end", () => {
+            this.logWebSocketUpgradeDiagnostic("upstream_response", {
+              reason: "upstream_non_upgrade_response",
+              statusCode,
+              target: diagnosticWebSocketTarget(targetUrl),
+              requestHeaders,
+              responseHeaders: diagnosticResponseHeaders(upstreamResponse.headers),
+              body: Buffer.concat(diagnosticBodyChunks).toString("utf8"),
+            });
+            socket.end();
+            settle({ statusCode, bytesIn: 0, bytesOut: 0 });
+          });
+          upstreamResponse.on("error", reject);
         });
-        reject(error);
-      });
+
+        upstreamRequest.on("error", (error) => {
+          if (settled) return;
+          if (
+            family === undefined &&
+            !socket.destroyed &&
+            shouldRetryWebSocketConnectWithIpv4(error, requestUrl)
+          ) {
+            this.logWebSocketUpgradeFallbackDiagnostic({
+              reason: "initial_connect_failed_ipv4_fallback",
+              target: diagnosticWebSocketTarget(targetUrl),
+              requestHeaders,
+              error: diagnosticThrownError(error),
+            });
+            startAttempt(4, error);
+            return;
+          }
+          this.logWebSocketUpgradeDiagnostic("upstream_error", {
+            reason: "upstream_request_error",
+            target: diagnosticWebSocketTarget(targetUrl),
+            requestHeaders,
+            ...(family ? { family } : {}),
+            message: error instanceof Error ? error.message : String(error),
+            error: diagnosticThrownError(error),
+            ...(fallbackFrom !== undefined
+              ? { fallbackFrom: diagnosticThrownError(fallbackFrom) }
+              : {}),
+          });
+          reject(error);
+        });
+
+        upstreamRequest.end();
+      };
+
       socket.on("error", () => {
-        upstreamRequest.destroy();
+        activeRequest?.destroy();
       });
-      upstreamRequest.end();
+      startAttempt();
     });
   }
 
@@ -1574,6 +1604,13 @@ export class EgressProxy {
     details: Record<string, unknown>
   ): void {
     console.warn("[EgressProxy] WebSocket upgrade failed", { phase, ...details });
+  }
+
+  private logWebSocketUpgradeFallbackDiagnostic(details: Record<string, unknown>): void {
+    console.warn("[EgressProxy] WebSocket upgrade retrying with IPv4", {
+      phase: "fallback",
+      ...details,
+    });
   }
 
   private async forwardHttpRequest(
@@ -1914,6 +1951,29 @@ function diagnosticWebSocketRequestHeaders(headers: OutgoingHttpHeaders): Record
   return safeHeaders;
 }
 
+const WEBSOCKET_IPV4_FALLBACK_ERROR_CODES = new Set([
+  "ETIMEDOUT",
+  "ENETUNREACH",
+  "EHOSTUNREACH",
+  "ECONNREFUSED",
+]);
+
+export function shouldRetryWebSocketConnectWithIpv4(error: unknown, requestUrl: URL): boolean {
+  if (requestUrl.hostname.length === 0 || isIP(requestUrl.hostname) !== 0) {
+    return false;
+  }
+  if (webSocketConnectErrorCode(error)) return true;
+  if (!(error instanceof AggregateError)) return false;
+  const aggregateErrors = (error as AggregateError & { errors?: unknown[] })["errors"];
+  return Array.isArray(aggregateErrors) && aggregateErrors.some(webSocketConnectErrorCode);
+}
+
+function webSocketConnectErrorCode(error: unknown): string | null {
+  if (!(error instanceof Error)) return null;
+  const code = (error as Error & Record<string, unknown>)["code"];
+  return typeof code === "string" && WEBSOCKET_IPV4_FALLBACK_ERROR_CODES.has(code) ? code : null;
+}
+
 function diagnosticAuthorizationHeader(value: number | string | string[]): string {
   const normalized = diagnosticHeaderValue(value).trim();
   const scheme = normalized.match(/^([A-Za-z][A-Za-z0-9._~-]*)\s+/)?.[1];
@@ -1932,6 +1992,50 @@ function diagnosticCookieHeader(value: number | string | string[]): string {
 function diagnosticHeaderValue(value: number | string | string[]): string {
   if (Array.isArray(value)) return value.join(", ");
   return String(value);
+}
+
+function diagnosticThrownError(error: unknown): Record<string, unknown> | string {
+  if (!(error instanceof Error)) return String(error);
+  const details: Record<string, unknown> = {
+    name: error.name,
+    message: error.message,
+  };
+  const errorRecord = error as Error & Record<string, unknown>;
+  const code = errorRecord["code"];
+  const syscall = errorRecord["syscall"];
+  const address = errorRecord["address"];
+  const port = errorRecord["port"];
+  if (typeof code === "string") details["code"] = code;
+  if (typeof syscall === "string") details["syscall"] = syscall;
+  if (typeof address === "string") details["address"] = address;
+  if (typeof port === "number") details["port"] = port;
+  if (error instanceof AggregateError) {
+    const aggregateErrors = (error as AggregateError & { errors?: unknown[] })["errors"];
+    if (Array.isArray(aggregateErrors)) {
+      details["errors"] = aggregateErrors
+        .slice(0, 5)
+        .map((item) => diagnosticThrownErrorLine(item));
+    }
+  }
+  const cause = (error as Error & { cause?: unknown })["cause"];
+  if (cause !== undefined) details["cause"] = diagnosticThrownError(cause);
+  return details;
+}
+
+function diagnosticThrownErrorLine(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const errorRecord = error as Error & Record<string, unknown>;
+  const parts = [error.name];
+  const code = errorRecord["code"];
+  const syscall = errorRecord["syscall"];
+  const address = errorRecord["address"];
+  const port = errorRecord["port"];
+  if (typeof code === "string") parts.push(`code=${code}`);
+  if (typeof syscall === "string") parts.push(`syscall=${syscall}`);
+  if (typeof address === "string") parts.push(`address=${address}`);
+  if (typeof port === "number") parts.push(`port=${port}`);
+  if (error.message) parts.push(`message=${error.message}`);
+  return parts.join(" ");
 }
 
 function websocketNonUpgradeResponseHeaders(headers: IncomingHttpHeaders): IncomingHttpHeaders {

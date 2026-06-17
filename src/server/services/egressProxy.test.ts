@@ -5,6 +5,7 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
+import { createServer as createNetServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -13,7 +14,7 @@ import { WebSocketServer } from "ws";
 
 import type { AuditEntry, Credential } from "../../../packages/shared/src/credentials/types.js";
 import { createVerifiedCaller } from "@natstack/shared/serviceDispatcher";
-import { EgressProxy } from "./egressProxy.js";
+import { EgressProxy, shouldRetryWebSocketConnectWithIpv4 } from "./egressProxy.js";
 import { CredentialSessionGrantStore } from "./credentialSessionGrants.js";
 import { CredentialLifecycleError } from "./credentialLifecycle.js";
 import { CapabilityGrantStore } from "./capabilityGrantStore.js";
@@ -209,6 +210,46 @@ describe("EgressProxy", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it("detects multi-address WebSocket connect failures eligible for IPv4 fallback", () => {
+    const timeout = Object.assign(new Error("connect ETIMEDOUT 104.18.32.47:443"), {
+      code: "ETIMEDOUT",
+      syscall: "connect",
+      address: "104.18.32.47",
+      port: 443,
+    });
+    const unreachable = Object.assign(
+      new Error("connect ENETUNREACH 2a06:98c1:3100::6812:202f:443"),
+      {
+        code: "ENETUNREACH",
+        syscall: "connect",
+        address: "2a06:98c1:3100::6812:202f",
+        port: 443,
+      }
+    );
+    const aggregate = Object.assign(new AggregateError([timeout, unreachable], ""), {
+      code: "ETIMEDOUT",
+    });
+
+    expect(
+      shouldRetryWebSocketConnectWithIpv4(
+        aggregate,
+        new URL("https://chatgpt.com/backend-api/codex/responses")
+      )
+    ).toBe(true);
+    expect(
+      shouldRetryWebSocketConnectWithIpv4(
+        aggregate,
+        new URL("https://104.18.32.47/backend-api/codex/responses")
+      )
+    ).toBe(false);
+    expect(
+      shouldRetryWebSocketConnectWithIpv4(
+        new Error("HTTP parser failed"),
+        new URL("https://chatgpt.com/backend-api/codex/responses")
+      )
+    ).toBe(false);
   });
 
   it("injects URL-bound credentials and strips incoming credential carriers", () => {
@@ -545,6 +586,78 @@ describe("EgressProxy", () => {
         (call) => call[0] === "[EgressProxy] WebSocket upgrade failed"
       )?.[1] as { requestHeaders?: Record<string, string> } | undefined;
       expect(diagnostic?.requestHeaders).not.toHaveProperty("sec-websocket-extensions");
+    } finally {
+      warn.mockRestore();
+      await proxy.stop();
+      await new Promise<void>((resolve) => upstreamServer.close(() => resolve()));
+    }
+  });
+
+  it("does not retry WebSocket upgrades after upstream request errors", async () => {
+    const auditLog = new MemoryAuditLog();
+    const upstreamServer = createNetServer((socket) => {
+      socket.destroy();
+    });
+    const upstreamPort = await new Promise<number>((resolve) => {
+      upstreamServer.listen(0, "127.0.0.1", () => {
+        resolve((upstreamServer.address() as AddressInfo).port);
+      });
+    });
+    const credential = createCredential({
+      bindings: [
+        {
+          id: "api",
+          use: "fetch",
+          audience: [{ url: `http://127.0.0.1:${upstreamPort}/v1`, match: "path-prefix" }],
+          injection: { type: "header", name: "authorization", valueTemplate: "Bearer {token}" },
+        },
+      ],
+      grants: [
+        {
+          bindingId: "api",
+          use: "fetch",
+          resource: `http://127.0.0.1:${upstreamPort}/v1`,
+          action: "use",
+          scope: "caller",
+          callerId: "worker:test",
+          grantedAt: 1,
+          grantedBy: "self",
+        },
+      ],
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const proxy = createProxy(credential, auditLog);
+    proxy.setCallerResolver((callerId) =>
+      callerId === "worker:test" ? workerCaller(callerId) : null
+    );
+    const proxyPort = await proxy.startShared("secret");
+
+    try {
+      const response = await requestWebSocketUpgradeThroughProxy({
+        proxyPort,
+        targetUrl: `ws://127.0.0.1:${upstreamPort}/v1/socket`,
+        headers: {
+          "X-NatStack-Egress-Caller": "worker:test",
+          "X-NatStack-Egress-Secret": "secret",
+        },
+      });
+
+      expect(response.status).toBe(502);
+      const upstreamErrors = warn.mock.calls.filter(
+        (call) =>
+          call[0] === "[EgressProxy] WebSocket upgrade failed" &&
+          (call[1] as { phase?: string } | undefined)?.phase === "upstream_error"
+      );
+      expect(upstreamErrors).toHaveLength(1);
+      expect(upstreamErrors[0]?.[1]).toEqual(
+        expect.objectContaining({
+          reason: "upstream_request_error",
+          error: expect.objectContaining({
+            name: expect.any(String),
+            message: expect.any(String),
+          }),
+        })
+      );
     } finally {
       warn.mockRestore();
       await proxy.stop();
