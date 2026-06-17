@@ -434,6 +434,10 @@ Allowed callers: `shell`, `shell-remote`, `app`, `panel`, `worker`, `do`, `exten
 | `workspace.hostTargets.versions` |  |
 | `workspace.hostTargets.preparePinnedRef` |  |
 | `workspace.hostTargets.launch` |  |
+| `workspace.hostTargets.beginLaunch` |  |
+| `workspace.hostTargets.getLaunchSession` |  |
+| `workspace.hostTargets.resolveLaunchSessionApproval` |  |
+| `workspace.hostTargets.cancelLaunchSession` |  |
 
 ## `workspace-state`
 
