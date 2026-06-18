@@ -59,7 +59,7 @@ import { SubscriptionManager } from "./subscription-manager.js";
 import { ChannelClient } from "./channel-client.js";
 import { FeedbackIngest } from "./feedback-ingest.js";
 import { CardManager } from "./custom-cards.js";
-import { AgentLoopDriver } from "./agent-loop-driver.js";
+import { AgentLoopDriver, type DriverDeps } from "./agent-loop-driver.js";
 import {
   CredentialApprovalDeferredError,
   CredentialPendingError,
@@ -110,6 +110,15 @@ export interface AgentPromptOverride {
 
 function isSystemPromptMode(value: unknown): value is SystemPromptMode {
   return value === "append" || value === "replace" || value === "replace-natstack";
+}
+
+/** Context handed to {@link AgentVesselBase.onChannelForked} after a clone. */
+export interface ClonedChannelContext {
+  /** Channel id the parent was subscribed to (the clone is NOT subscribed to it). */
+  oldChannelId: string;
+  /** Channel id the clone is about to be subscribed to. */
+  newChannelId: string;
+  forkPointPubsubId: number;
 }
 
 export abstract class AgentVesselBase extends DurableObjectBase {
@@ -255,6 +264,13 @@ export abstract class AgentVesselBase extends DurableObjectBase {
     return defaultPolicies();
   }
 
+  /** Test seam: replace effect executors (e.g. inject a scripted model so a
+   *  full turn can be driven without a live model). Production returns
+   *  undefined — the real executors run. */
+  protected getDriverExecutorOverride(): DriverDeps["executorOverride"] {
+    return undefined;
+  }
+
   /** Roster method names this agent expects (warning surface only). */
   protected getExpectedChannelToolNames(_channelId: string): readonly string[] {
     return [];
@@ -278,8 +294,14 @@ export abstract class AgentVesselBase extends DurableObjectBase {
     return {};
   }
 
-  /** Subclass hook after fork bookkeeping. */
-  protected async onPostClone(): Promise<void> {}
+  /** Fork hook. The clone has been re-identified and its subscription renamed
+   *  old→new, but the new channel is not yet (re)subscribed. Subclasses purge
+   *  or migrate the per-channel state the clone copied wholesale from the
+   *  parent here — and may set flags that the subsequent subscribeChannel
+   *  reads. Without this, any agent that keys SQLite by channelId or runs a
+   *  per-channel scheduler would have the clone act on a channel it no longer
+   *  holds a subscription on. */
+  protected async onChannelForked(_ctx: ClonedChannelContext): Promise<void> {}
 
   // ── Wiring ────────────────────────────────────────────────────────────────
 
@@ -369,6 +391,7 @@ export abstract class AgentVesselBase extends DurableObjectBase {
         const promise = fn();
         this.ctx.waitUntil?.(promise);
       },
+      executorOverride: this.getDriverExecutorOverride(),
     });
     this._driver.connectSpecProvider = async (providerId) =>
       this.getModelCredentialSetupProps(providerId) ?? { providerId };
@@ -1917,13 +1940,16 @@ export abstract class AgentVesselBase extends DurableObjectBase {
     this.sql.exec(`DELETE FROM effect_outbox`);
     this.sql.exec(`DELETE FROM fold_cache`);
     this.subscriptions.rename(oldChannelId, newChannelId);
+    // Subclass fork cleanup/setup runs with the rename applied but BEFORE the
+    // new channel is (re)subscribed, so subclasses can purge per-channel state
+    // the clone copied and influence the upcoming subscribe.
+    await this.onChannelForked({ oldChannelId, newChannelId, forkPointPubsubId });
     await this.subscribeChannel({
       channelId: newChannelId,
       contextId: this.subscriptions.getContextId(newChannelId),
       config: this.subscriptions.getConfig(newChannelId) ?? undefined,
       replay: false,
     });
-    await this.onPostClone();
     await driver.wake(newChannelId); // fork policy settles pre-cut pendings
   }
 

@@ -181,6 +181,8 @@ export interface UseAgenticChatOptions {
   installedAgentInfos?: InstalledAgentInfo[];
   /** If set, automatically sent as the first user message once connected */
   initialPrompt?: string;
+  /** Send initialPrompt even if the channel already has history (idempotent). */
+  forceInitialPrompt?: boolean;
   /** Sandbox config — provides RPC and import loading (keeps agentic-chat runtime-agnostic) */
   sandbox: SandboxConfig;
   /** Context-relative TSX file to load into the panel-local action bar on mount */
@@ -207,6 +209,7 @@ export function useAgenticChat({
   theme = "dark",
   installedAgentInfos,
   initialPrompt,
+  forceInitialPrompt,
   sandbox,
   initialActionBarFile,
   initialActionBarProps,
@@ -259,6 +262,7 @@ export function useAgenticChat({
     metadata,
     theme,
     initialPrompt,
+    forceInitialPrompt,
   });
   const publishTypedAgenticEvent = useCallback(
     async (

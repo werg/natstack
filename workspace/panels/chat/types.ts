@@ -18,6 +18,8 @@ export interface ChatStateArgs {
   agentClass?: string;
   agentConfig?: Record<string, unknown>;
   initialPrompt?: string;
+  /** Send initialPrompt even if the channel already has history (e.g. a fork). */
+  forceInitialPrompt?: boolean;
   systemPrompt?: string;
   systemPromptMode?: "append" | "replace-natstack" | "replace";
   actionBarFile?: string | null;

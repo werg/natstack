@@ -52,6 +52,11 @@ class TestNewsAgentWorker extends NewsAgentWorker {
     return this.getLoopTools(channelId).map((tool) => tool.name);
   }
 
+  /** The exact loop tool object the model loop would dispatch for `name`. */
+  loopTool(name: string, channelId = "ch-1") {
+    return this.getLoopTools(channelId).find((tool) => tool.name === name);
+  }
+
   async alarmAt(time: number): Promise<void> {
     this.clock = time;
     await this.alarm();
@@ -288,7 +293,7 @@ describe("NewsAgentWorker", () => {
     expect(worker.capturedAlarms.length).toBeGreaterThan(0);
 
     expect(worker.agentInitiatedTurns).toHaveLength(1);
-    expect(worker.agentInitiatedTurns[0]!.content).toContain("not configured any news sources");
+    expect(worker.agentInitiatedTurns[0]!.content).toContain("fresh personal news channel");
     // Re-subscribe does not re-prompt.
     await worker.subscribeChannel({ channelId: "ch-1", contextId: "ctx-1" } as never);
     expect(worker.agentInitiatedTurns).toHaveLength(1);
@@ -431,6 +436,31 @@ describe("NewsAgentWorker", () => {
     expect(next).toBeGreaterThan(worker.clock);
   });
 
+  it("importOpml bulk-adds the feeds it can validate", async () => {
+    const worker = await makeWorker();
+    const goodA = "https://example.com/a.xml";
+    const goodB = "https://example.com/b.xml";
+    const bad = "https://bad.example/feed.xml";
+    worker.feedResponses.set(goodA, [{ status: 200, body: rss([{ title: "A1", link: "https://example.com/a1" }]) }]);
+    worker.feedResponses.set(goodB, [{ status: 200, body: rss([{ title: "B1", link: "https://example.com/b1" }]) }]);
+    worker.feedResponses.set(bad, [{ status: 500 }]);
+
+    const opml = `<opml><body>
+      <outline title="A" xmlUrl="${goodA}" />
+      <outline text="Group"><outline xmlUrl="${goodB}" /><outline xmlUrl="${bad}" /></outline>
+    </body></opml>`;
+    const result = (await worker.importOpml("ch-1", { opml })) as Record<string, unknown>;
+    expect(result).toMatchObject({ imported: 2, failed: 1, total: 3 });
+    expect(worker.rowsForTest(`SELECT url FROM news_feeds ORDER BY url`).map((r) => r["url"])).toEqual([
+      goodA,
+      goodB,
+    ]);
+
+    expect(await worker.importOpml("ch-1", { opml: "<opml><body></body></opml>" })).toMatchObject({
+      error: expect.stringContaining("no feed subscriptions"),
+    });
+  });
+
   it("requestDeepDive resolves id prefixes and emits the typed signal", async () => {
     const worker = await makeWorker();
     await addExampleFeed(worker, [{ title: "Dive story", link: "https://example.com/dive" }]);
@@ -484,6 +514,117 @@ describe("NewsAgentWorker", () => {
     expect(turn.content).not.toContain("Read me not");
   });
 
+  it("startDeepDive switches a forked channel to analyst mode and seeds an analyst turn", async () => {
+    const worker = await makeWorker();
+    worker.seedSubscription("fork-1", "agent-fork");
+    // A clone copies the parent's jobs wholesale; startDeepDive must clear them.
+    worker.execSqlForTest(
+      `INSERT INTO recurring_jobs (job_id, channel_id, interval_ms, jitter_ms, next_run_at)
+       VALUES ('poll:fork-1', 'fork-1', 1800000, 0, ?)`,
+      worker.clock
+    );
+
+    const result = await worker.startDeepDive("fork-1", {
+      articleId: "abc12345",
+      url: "https://example.com/story",
+      title: "A consequential story",
+      source: "Example",
+      briefingTldr: "Yesterday: the thing shipped.",
+    });
+    expect(result).toMatchObject({ ok: true });
+
+    expect(
+      worker.rowsForTest(`SELECT mode FROM news_channel_state WHERE channel_id = 'fork-1'`)[0]!["mode"]
+    ).toBe("analyst");
+    expect(worker.rowsForTest(`SELECT job_id FROM recurring_jobs WHERE channel_id = 'fork-1'`)).toHaveLength(0);
+
+    const turn = worker.agentInitiatedTurns[worker.agentInitiatedTurns.length - 1]!;
+    expect(turn.channelId).toBe("fork-1");
+    expect(turn.content).toContain("A consequential story");
+    expect(turn.content).toContain("https://example.com/story");
+    expect(turn.content).toContain("Yesterday: the thing shipped.");
+
+    expect(await worker.startDeepDive("fork-1", { url: "" } as never)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("required"),
+    });
+  });
+
+  it("analyst (deep-dive) channels skip curator bootstrap on subscribe", async () => {
+    const worker = await makeWorker();
+    worker.seedSubscription("an-1", "agent-an");
+    worker.execSqlForTest(
+      `INSERT INTO news_channel_state (channel_id, poll_interval_ms, briefing_interval_ms, setup_status, mode)
+       VALUES ('an-1', 1800000, 86400000, 'configured', 'analyst')`
+    );
+
+    await worker.subscribeChannel({ channelId: "an-1", contextId: "ctx-1" } as never);
+
+    const kinds = worker.published.map((entry) => entry.event.kind);
+    expect(kinds).toContain("messageType.registered"); // UI still installed
+    expect(kinds).not.toContain("custom.started"); // but no setup card
+    expect(worker.rowsForTest(`SELECT job_id FROM recurring_jobs WHERE channel_id = 'an-1'`)).toHaveLength(0);
+    expect(worker.agentInitiatedTurns).toHaveLength(0); // no onboarding
+  });
+
+  it("drops scheduler jobs for channels it is no longer subscribed to", async () => {
+    const worker = await makeWorker();
+    await worker.subscribeChannel({ channelId: "ch-1", contextId: "ctx-1" } as never);
+    // A stale job a clone might carry, for a channel we hold no subscription on.
+    worker.execSqlForTest(
+      `INSERT INTO recurring_jobs (job_id, channel_id, interval_ms, jitter_ms, next_run_at)
+       VALUES ('poll:ghost', 'ghost', 1800000, 0, ?)`,
+      worker.clock
+    );
+
+    await worker.alarmAt(worker.clock + 1);
+
+    expect(worker.rowsForTest(`SELECT job_id FROM recurring_jobs WHERE channel_id = 'ghost'`)).toHaveLength(0);
+    expect(
+      worker.rowsForTest(`SELECT job_id FROM recurring_jobs WHERE channel_id = 'ch-1'`).length
+    ).toBeGreaterThan(0);
+  });
+
+  it("arms a self-canceling watchdog that flips a stalled briefing to error", async () => {
+    const worker = await makeWorker();
+    await worker.subscribeChannel({ channelId: "ch-1", contextId: "ctx-1" } as never);
+    await addExampleFeed(worker, [{ title: "Story", link: "https://example.com/s" }]);
+
+    await worker.refreshNow("ch-1", { briefing: true });
+    expect(
+      worker.rowsForTest(`SELECT job_id FROM recurring_jobs WHERE job_id = 'watchdog:ch-1'`)
+    ).toHaveLength(1);
+    const briefingId = String(
+      worker.rowsForTest(`SELECT briefing_id FROM news_briefings`)[0]!["briefing_id"]
+    );
+
+    await worker.alarmAt(worker.clock + 11 * 60_000);
+
+    expect(
+      worker.rowsForTest(`SELECT status FROM news_briefings WHERE briefing_id = ?`, briefingId)[0]![
+        "status"
+      ]
+    ).toBe("error");
+    expect(
+      worker.rowsForTest(`SELECT job_id FROM recurring_jobs WHERE job_id = 'watchdog:ch-1'`)
+    ).toHaveLength(0);
+  });
+
+  it("does not re-emit the setup card when only volatile fields change", async () => {
+    const worker = await makeWorker();
+    await worker.subscribeChannel({ channelId: "ch-1", contextId: "ctx-1" } as never);
+    const setupEmits = () =>
+      worker.published.filter(
+        (entry) => entry.event.kind === "custom.started" || entry.event.kind === "custom.updated"
+      ).length;
+    const before = setupEmits();
+    // Two polls with no source changes only bump lastRunAt — which is excluded
+    // from the dedup signature — so the card must not re-emit.
+    await worker.refreshNow("ch-1", {});
+    await worker.refreshNow("ch-1", {});
+    expect(setupEmits()).toBe(before);
+  });
+
   it("recovers card identities from replay via ensureRecovered", async () => {
     const worker = await makeWorker();
     const folded = new Map<string, Map<string, unknown>>([
@@ -510,6 +651,86 @@ describe("NewsAgentWorker", () => {
       expect.objectContaining({ natural_key: "ch-1:news:briefing:b-1", message_id: "msg-brief" }),
       expect.objectContaining({ natural_key: "ch-1:news:setup", message_id: "msg-setup" }),
     ]);
+  });
+});
+
+describe("NewsAgentWorker deep-dive fork (postClone integration)", () => {
+  it("postClone purges the parent channel and marks the fork an analyst thread", async () => {
+    const worker = await makeWorker();
+    await worker.subscribeChannel({ channelId: "ch-1", contextId: "ctx-1" } as never);
+    await addExampleFeed(worker, [{ title: "Story A", link: "https://example.com/a" }]);
+    // Parent is a configured curator channel with jobs + feeds.
+    expect(
+      worker.rowsForTest(`SELECT job_id FROM recurring_jobs WHERE channel_id = 'ch-1'`).length
+    ).toBeGreaterThan(0);
+    expect(worker.rowsForTest(`SELECT feed_id FROM news_feeds WHERE channel_id = 'ch-1'`)).toHaveLength(1);
+
+    // Simulate the clone running postClone: parent ch-1 → forked deep-dive channel.
+    const publishedBefore = worker.published.length;
+    await worker.postClone("parent-key", "fork:ch-1:xyz", "ch-1", 7);
+
+    // Parent channel's copied state is purged from the clone.
+    expect(worker.rowsForTest(`SELECT job_id FROM recurring_jobs WHERE channel_id = 'ch-1'`)).toHaveLength(0);
+    expect(worker.rowsForTest(`SELECT feed_id FROM news_feeds WHERE channel_id = 'ch-1'`)).toHaveLength(0);
+    expect(
+      worker.rowsForTest(`SELECT channel_id FROM news_channel_state WHERE channel_id = 'ch-1'`)
+    ).toHaveLength(0);
+
+    // The fork is an analyst thread: marked analyst, no curator jobs, no setup card.
+    expect(
+      worker.rowsForTest(`SELECT mode FROM news_channel_state WHERE channel_id = 'fork:ch-1:xyz'`)[0]![
+        "mode"
+      ]
+    ).toBe("analyst");
+    expect(
+      worker.rowsForTest(`SELECT job_id FROM recurring_jobs WHERE channel_id = 'fork:ch-1:xyz'`)
+    ).toHaveLength(0);
+    const newSetupCards = worker.published
+      .slice(publishedBefore)
+      .filter((entry) => entry.event.kind === "custom.started");
+    expect(newSetupCards).toHaveLength(0);
+
+    // And the analyst opening turn can be seeded on the fork.
+    const turnsBefore = worker.agentInitiatedTurns.length;
+    await worker.startDeepDive("fork:ch-1:xyz", { url: "https://example.com/a", title: "Story A" });
+    expect(worker.agentInitiatedTurns.length).toBe(turnsBefore + 1);
+  });
+});
+
+describe("NewsAgentWorker loop tool execution (integration)", () => {
+  // The generic model→tool→model→close loop is covered by the agent-loop driver
+  // tests. This asserts the news-specific seam: the exact tool object the loop
+  // dispatches for a model's news_publish_briefing call runs the real operation
+  // and finalizes the briefing (status → ready, stories marked briefed).
+  it("the news_publish_briefing loop tool runs the real operation end to end", async () => {
+    const worker = await makeWorker();
+    await worker.subscribeChannel({ channelId: "ch-1", contextId: "ctx-1" } as never);
+    await addExampleFeed(worker, [{ title: "Story A", link: "https://example.com/a" }]);
+    const aid = await articleId("https://example.com/a");
+    worker.execSqlForTest(
+      `INSERT INTO news_briefings (channel_id, briefing_id, created_at, status, story_ids_json)
+       VALUES ('ch-1', 'b-1', ?, 'summarizing', ?)`,
+      worker.clock,
+      JSON.stringify([aid])
+    );
+
+    // Execute the exact loop tool the model would call (tool.execute → op.run →
+    // publishBriefing), the same dispatch the agent loop performs.
+    const tool = worker.loopTool("news_publish_briefing")!;
+    expect(tool).toBeTruthy();
+    const result = (await tool.execute("inv-1", {
+      briefingId: "b-1",
+      tldr: "**Story A** shipped.",
+    })) as { content?: Array<{ text?: string }>; details?: { published?: string } };
+
+    expect(
+      worker.rowsForTest(`SELECT status, tldr FROM news_briefings WHERE briefing_id = 'b-1'`)[0]
+    ).toMatchObject({ status: "ready", tldr: "**Story A** shipped." });
+    expect(worker.rowsForTest(`SELECT briefed_in FROM news_articles WHERE article_id = ?`, aid)[0]![
+      "briefed_in"
+    ]).toBe("b-1");
+    // The tool hands the model structured details + protocol text.
+    expect(result.details?.published).toBe("b-1");
   });
 });
 

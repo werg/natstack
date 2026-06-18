@@ -222,6 +222,11 @@ routes: []
 #
 # recurring:
 #   - name: news-briefing-default
+#     # objectKey must be a real, pinned agent instance (the News panel mints a
+#     # fresh per-channel key, so this is only for a shared/standing agent). For
+#     # ordinary use the News agent already self-schedules per channel — this
+#     # workspace-level entry is optional and runScheduledJob skips deep-dive
+#     # (analyst) channels.
 #     target: { source: workers/news-agent, className: NewsAgentWorker, objectKey: my-agent }
 #     method: runScheduledJob
 #     args: [{ job: briefing }]

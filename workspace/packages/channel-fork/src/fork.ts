@@ -25,6 +25,9 @@ export interface ForkResult {
   clonedParticipants: string[];
   replacedParticipants: string[];
   excluded: string[];
+  /** DO refs of the freshly-cloned agents, so the caller can address them
+   *  (e.g. to seed a per-fork turn) without re-resolving the new roster. */
+  clonedAgents: Array<{ participantId: string } & DORef>;
 }
 
 interface ParticipantInfo {
@@ -122,6 +125,7 @@ export async function fork(runtime: ForkRuntime, opts: ForkOpts): Promise<ForkRe
   const forkedChannelRef = await channelRef(runtime, forkedChannelId);
   const clonedRefs: DORef[] = [];
   const clonedParticipants: string[] = [];
+  const clonedAgents: Array<{ participantId: string } & DORef> = [];
   const replacedParticipants: string[] = [];
 
   try {
@@ -139,6 +143,7 @@ export async function fork(runtime: ForkRuntime, opts: ForkOpts): Promise<ForkRe
       clonedRefs.push(clonedRef);
       await callDoTarget(rpc, clonedRef, "postClone", ref.objectKey, forkedChannelId, opts.channelId, opts.forkPointPubsubId);
       clonedParticipants.push(p.participantId);
+      clonedAgents.push({ participantId: p.participantId, ...clonedRef });
     }
 
     // Subscribe replacement DOs
@@ -164,5 +169,5 @@ export async function fork(runtime: ForkRuntime, opts: ForkOpts): Promise<ForkRe
     throw new Error(`Fork failed: ${message}`);
   }
 
-  return { forkedChannelId, clonedParticipants, replacedParticipants, excluded };
+  return { forkedChannelId, clonedParticipants, replacedParticipants, excluded, clonedAgents };
 }

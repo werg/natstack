@@ -10,7 +10,12 @@
 
 export { AgentWorkerBase } from "./agent-worker-base.js";
 export { AgentVesselBase } from "./agent-vessel.js";
-export type { AgentSettings, ApprovalLevel, CustomMessageReducer } from "./agent-vessel.js";
+export type {
+  AgentSettings,
+  ApprovalLevel,
+  ClonedChannelContext,
+  CustomMessageReducer,
+} from "./agent-vessel.js";
 export {
   DEFAULT_APPROVAL_LEVEL,
   DEFAULT_MODEL,

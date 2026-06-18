@@ -235,6 +235,38 @@ Allowed callers: `shell`, `app`, `server`
 | `panelRuntime.takeOver` |  |
 | `panelRuntime.release` |  |
 
+## `panelTree`
+
+Server-mediated panel tree handles and control operations
+
+Allowed callers: `panel`, `worker`, `do`, `shell`, `shell-remote`, `server`
+
+| Method | Description |
+|--------|-------------|
+| `panelTree.list` |  |
+| `panelTree.roots` |  |
+| `panelTree.create` |  |
+| `panelTree.ensureLoaded` |  |
+| `panelTree.focus` |  |
+| `panelTree.getRuntimeLease` |  |
+| `panelTree.getStateArgs` |  |
+| `panelTree.setStateArgs` |  |
+| `panelTree.reload` |  |
+| `panelTree.close` |  |
+| `panelTree.archive` |  |
+| `panelTree.unload` |  |
+| `panelTree.movePanel` |  |
+| `panelTree.navigate` |  |
+| `panelTree.navigateHistory` |  |
+| `panelTree.takeOver` |  |
+| `panelTree.openDevTools` |  |
+| `panelTree.rebuildPanel` |  |
+| `panelTree.rebuildAndReload` |  |
+| `panelTree.updatePanelState` |  |
+| `panelTree.snapshot` |  |
+| `panelTree.callAgent` |  |
+| `panelTree.metadata` |  |
+
 ## `presence`
 
 Active shell/panel ownership

@@ -21,6 +21,7 @@
     "@workspace/agentic-core": "workspace:*",
     "@workspace/channel-fork": "workspace:*",
     "@workspace/feeds": "workspace:*",
+    "@workspace/model-catalog": "workspace:*",
     "@workspace/pubsub": "workspace:*",
     "@workspace/react": "workspace:*",
     "@workspace/runtime": "workspace:*",

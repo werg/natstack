@@ -2,6 +2,7 @@ import {
   AgentWorkerBase,
   RecurringScheduler,
   installMessageTypes,
+  type ClonedChannelContext,
   type RespondPolicy,
 } from "@workspace/agentic-do";
 import type { DurableObjectContext } from "@workspace/runtime/worker";
@@ -11,6 +12,7 @@ import type { AgentTool } from "@workspace/pi-core";
 import {
   articleId as canonicalArticleId,
   parseFeed,
+  parseOpml,
   fetchFeed,
   type Fetcher,
 } from "@workspace/feeds";
@@ -25,6 +27,7 @@ import {
 import { createNewsTables, dropNewsTables } from "./schema.js";
 import {
   BRIEFING_WATCHDOG_MS,
+  BRIEFING_WATCHDOG_TICK_MS,
   DEFAULT_BRIEFING_INTERVAL_MS,
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_TOP_K,
@@ -32,6 +35,7 @@ import {
   numberArg,
   record,
   stringArg,
+  type NewsChannelMode,
   type NewsChannelState,
 } from "./types.js";
 import { NewsSyncEngine } from "./sync-engine.js";
@@ -53,9 +57,11 @@ import {
   type NewsOperationContext,
 } from "./operations.js";
 import {
+  NEWS_ANALYST_PROMPT,
   NEWS_SETUP_ONBOARDING_PROMPT,
   NEWS_SYSTEM_PROMPT,
   buildBriefingPrompt,
+  buildDeepDivePrompt,
 } from "./prompts.js";
 
 type NewsTool = AgentTool;
@@ -69,6 +75,8 @@ const NEWS_BASE_LOOP_TOOL_NAMES = new Set([
   "web_read",
 ]);
 const MAX_SEARCH_STORIES_PER_BRIEFING = 10;
+/** Cap feeds added in a single OPML import so a huge export can't hammer hosts. */
+const MAX_OPML_FEEDS = 30;
 
 /** Next run for the briefing job: anchored to local HH:MM when set. */
 function nextBriefingRunAt(now: number, intervalMs: number, atMinutes?: number): number {
@@ -82,8 +90,9 @@ function nextBriefingRunAt(now: number, intervalMs: number, atMinutes?: number):
 
 export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
   // News tables are versioned by drop-and-recreate (dev mode: articles
-  // re-ingest from feeds; configuration is cheap to redo).
-  static override schemaVersion = AgentWorkerBase.schemaVersion + 1;
+  // re-ingest from feeds; configuration is cheap to redo). Bump when the
+  // news_* schema changes (e.g. the channel-mode column).
+  static override schemaVersion = AgentWorkerBase.schemaVersion + 2;
 
   private readonly syncEngine: NewsSyncEngine;
   private readonly scheduler: RecurringScheduler;
@@ -175,14 +184,35 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
       lastRunAt: (row["last_run_at"] as number | null) ?? undefined,
       lastError: (row["last_error"] as string | null) ?? undefined,
       lastSetupJson: (row["last_setup_json"] as string | null) ?? undefined,
+      mode: row["mode"] === "analyst" ? "analyst" : "curator",
     };
+  }
+
+  /** Cheap, side-effect-free mode read (used in the per-turn prompt path). */
+  private getMode(channelId: string): NewsChannelMode {
+    const row = this.sql
+      .exec(`SELECT mode FROM news_channel_state WHERE channel_id = ?`, channelId)
+      .toArray()[0];
+    return row?.["mode"] === "analyst" ? "analyst" : "curator";
+  }
+
+  private setChannelMode(channelId: string, mode: NewsChannelMode): void {
+    this.sql.exec(
+      `INSERT INTO news_channel_state (channel_id, poll_interval_ms, briefing_interval_ms, setup_status, mode)
+       VALUES (?, ?, ?, 'configured', ?)
+       ON CONFLICT(channel_id) DO UPDATE SET mode = excluded.mode`,
+      channelId,
+      DEFAULT_POLL_INTERVAL_MS,
+      DEFAULT_BRIEFING_INTERVAL_MS,
+      mode
+    );
   }
 
   private saveChannelState(state: NewsChannelState): void {
     this.sql.exec(
       `INSERT OR REPLACE INTO news_channel_state
-       (channel_id, poll_interval_ms, briefing_interval_ms, briefing_at_minutes, top_k, setup_status, setup_prompted_at, preferences_text, last_briefing_id, last_run_at, last_error, last_setup_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (channel_id, poll_interval_ms, briefing_interval_ms, briefing_at_minutes, top_k, setup_status, setup_prompted_at, preferences_text, last_briefing_id, last_run_at, last_error, last_setup_json, mode)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       state.channelId,
       state.pollIntervalMs,
       state.briefingIntervalMs,
@@ -194,18 +224,23 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
       state.lastBriefingId ?? null,
       state.lastRunAt ?? null,
       state.lastError ?? null,
-      state.lastSetupJson ?? null
+      state.lastSetupJson ?? null,
+      state.mode
     );
   }
 
   // ── agent configuration ───────────────────────────────────────────────────
 
   protected override getRespondPolicy(_channelId: string): RespondPolicy {
-    return "mentioned-or-followup";
+    // A news channel is the user's private 1:1 reader — every message they
+    // send is for the agent, so always reply. Background polls are silent
+    // (no channel messages) and agent-initiated briefings bypass this path,
+    // so "all" never produces unsolicited chatter.
+    return "all";
   }
 
-  protected override getAgentPrompt(_channelId: string): string {
-    return NEWS_SYSTEM_PROMPT;
+  protected override getAgentPrompt(channelId: string): string {
+    return this.getMode(channelId) === "analyst" ? NEWS_ANALYST_PROMPT : NEWS_SYSTEM_PROMPT;
   }
 
   protected override getLoopTools(channelId: string): AgentTool[] {
@@ -253,7 +288,11 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
   ): Promise<{ ok: boolean; participantId: string }> {
     const result = await super.subscribeChannel(opts);
     this.ensureChannelState(opts.channelId);
+    // Register card types on the (new) channel so inherited/own cards render.
     await this.installChannelUi(opts.channelId);
+    // Deep-dive analyst forks are focused analysis threads: no feed polling,
+    // no setup card, no onboarding. startDeepDive seeds their opening turn.
+    if (this.getMode(opts.channelId) === "analyst") return result;
     await this.publishSetupCard(opts.channelId);
     this.seedJobs(opts.channelId);
     await this.startSetupTurnIfNeeded(opts.channelId);
@@ -278,12 +317,87 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
     });
   }
 
+  // ── deep-dive forks ─────────────────────────────────────────────────────────
+
+  /** A clone copies the parent DO's SQLite wholesale. Strip the parent
+   *  channel's curator state/jobs (the clone never holds its subscription) and
+   *  pre-mark the forked channel as an analyst thread, so the subscribe the
+   *  base runs next skips feed polling, the setup card, and onboarding. */
+  protected override async onChannelForked(ctx: ClonedChannelContext): Promise<void> {
+    this.scheduler.removeChannel(ctx.oldChannelId);
+    this.dropChannelData(ctx.oldChannelId);
+    this.setChannelMode(ctx.newChannelId, "analyst");
+  }
+
+  private dropChannelData(channelId: string): void {
+    for (const table of [
+      "news_channel_state",
+      "news_feeds",
+      "news_topics",
+      "news_articles",
+      "news_briefings",
+    ]) {
+      this.sql.exec(`DELETE FROM ${table} WHERE channel_id = ?`, channelId);
+    }
+  }
+
+  /** Seed a forked deep-dive channel's opening analyst turn. The panel calls
+   *  this on the freshly-cloned agent after fork(); idempotent via steeringId. */
+  async startDeepDive(
+    channelId: string,
+    args: Record<string, unknown>
+  ): Promise<{ ok: boolean; error?: string }> {
+    const input = record(args);
+    const url = stringArg(input, "url");
+    const title = stringArg(input, "title");
+    if (!url || !title) return { ok: false, error: "url and title are required" };
+    this.setChannelMode(channelId, "analyst");
+    this.scheduler.removeChannel(channelId); // analyst threads never poll/brief
+    const source = stringArg(input, "source");
+    const briefingTldr = stringArg(input, "briefingTldr");
+    const articleId = stringArg(input, "articleId");
+    await this.submitAgentInitiatedTurn(
+      channelId,
+      {
+        content: buildDeepDivePrompt({
+          title,
+          url,
+          ...(source ? { source } : {}),
+          ...(briefingTldr ? { briefingTldr } : {}),
+        }),
+      },
+      { mode: "sequential", steeringId: `news-deepdive:${channelId}:${articleId ?? url}` }
+    );
+    return { ok: true };
+  }
+
   override async alarm(): Promise<void> {
     await super.alarm();
     await this.scheduler.onAlarm(this.now(), async (jobId, channelId) => {
+      // Defense in depth: a clone copies the parent's jobs wholesale, and
+      // other paths can unsubscribe. A job for a channel we no longer hold a
+      // participant on can never publish — retire it instead of churning.
+      if (!this.subscriptions.getParticipantId(channelId)) {
+        this.scheduler.removeChannel(channelId);
+        return;
+      }
       if (jobId.startsWith("poll:")) await this.runPoll(channelId);
       else if (jobId.startsWith("briefing:")) await this.runBriefing(channelId);
+      else if (jobId.startsWith("watchdog:")) this.runWatchdog(channelId);
     });
+  }
+
+  /** Active watchdog tick: flip stalled briefings to error, then retire once
+   *  none remain in flight (armed by runBriefing, self-cancels here). */
+  private runWatchdog(channelId: string): void {
+    this.watchdogStuckBriefings(channelId);
+    const stillSummarizing = this.sql
+      .exec(
+        `SELECT 1 FROM news_briefings WHERE channel_id = ? AND status = 'summarizing' LIMIT 1`,
+        channelId
+      )
+      .toArray();
+    if (stillSummarizing.length === 0) this.scheduler.removeJob(`watchdog:${channelId}`);
   }
 
   /** Entry point for workspace-level `recurring:` jobs (natstack.yml). */
@@ -291,6 +405,8 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
     const input = record(args);
     const job = stringArg(input, "job") ?? "briefing";
     for (const channelId of this.subscribedChannelIds()) {
+      if (!this.subscriptions.getParticipantId(channelId)) continue;
+      if (this.getMode(channelId) === "analyst") continue; // deep-dive threads don't brief
       if (job === "poll") await this.runPoll(channelId);
       else await this.runBriefing(channelId);
     }
@@ -377,6 +493,14 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
       now,
       JSON.stringify(stories.map((story) => story.articleId))
     );
+    // Arm the self-canceling watchdog so a dead turn surfaces as an error in
+    // minutes rather than waiting for the next scheduled poll.
+    this.scheduler.upsertJob({
+      jobId: `watchdog:${channelId}`,
+      channelId,
+      intervalMs: BRIEFING_WATCHDOG_TICK_MS,
+      nextRunAt: now + BRIEFING_WATCHDOG_TICK_MS,
+    });
 
     const previousTldr = this.previousTldr(channelId, briefingId);
     await this.submitAgentInitiatedTurn(
@@ -518,10 +642,14 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
   private async publishSetupCard(channelId: string): Promise<void> {
     const payload = this.buildSetupCardState(channelId);
     const state = this.getChannelState(channelId);
-    const json = JSON.stringify(payload);
-    if (state.lastSetupJson === json) return;
+    // Dedup on the meaningful fields only. `lastRunAt` ticks on every poll but
+    // isn't rendered, so including it would defeat the dedup and re-emit the
+    // card constantly.
+    const { lastRunAt: _lastRunAt, ...stable } = payload;
+    const signature = JSON.stringify(stable);
+    if (state.lastSetupJson === signature) return;
     await this.newsCards.publishSetup(channelId, payload);
-    state.lastSetupJson = json;
+    state.lastSetupJson = signature;
     this.saveChannelState(state);
   }
 
@@ -679,6 +807,27 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
     await this.markConfigured(channelId);
     await this.publishSetupCard(channelId);
     return { feedId, title: parsed.title, itemCount: parsed.items.length, newArticles: added };
+  }
+
+  async importOpml(channelId: string, args: Record<string, unknown>): Promise<unknown> {
+    const opml = stringArg(args, "opml");
+    if (!opml) return { error: "opml is required" };
+    const feeds = parseOpml(opml);
+    if (feeds.length === 0) return { error: "no feed subscriptions found in the OPML" };
+    const slice = feeds.slice(0, MAX_OPML_FEEDS);
+    let imported = 0;
+    const failed: string[] = [];
+    for (const feed of slice) {
+      const result = (await this.addFeed(channelId, { url: feed.url })) as Record<string, unknown>;
+      if (result["error"]) failed.push(feed.url);
+      else imported += 1;
+    }
+    return {
+      imported,
+      failed: failed.length,
+      total: feeds.length,
+      ...(feeds.length > slice.length ? { skipped: feeds.length - slice.length } : {}),
+    };
   }
 
   async removeFeed(channelId: string, args: Record<string, unknown>): Promise<unknown> {

@@ -86,6 +86,15 @@ describe("fork()", () => {
     expect(result.replacedParticipants).toEqual([]);
     expect(result.excluded).toEqual([]);
 
+    // Cloned agent refs are returned so callers can address the fresh clone.
+    expect(result.clonedAgents).toHaveLength(1);
+    expect(result.clonedAgents[0]).toMatchObject({
+      participantId: agentParticipant.participantId,
+      source: agentDoRef.source,
+      className: agentDoRef.className,
+    });
+    expect(result.clonedAgents[0]!.objectKey).toMatch(/^fork:agent-1:/);
+
     // Should have called workerd.cloneDO twice (channel + agent)
     const cloneCalls = mainCalls.filter(c => c.method === "workerd.cloneDO");
     expect(cloneCalls).toHaveLength(2);

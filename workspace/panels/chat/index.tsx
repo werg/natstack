@@ -151,6 +151,8 @@ interface ChatStateArgs {
   agentClass?: string;
   /** If set, automatically sent as the first user message once connected */
   initialPrompt?: string;
+  /** Send initialPrompt even if the channel already has history (e.g. a fork). */
+  forceInitialPrompt?: boolean;
   /** System prompt for the agent harness */
   systemPrompt?: string;
   /** How systemPrompt interacts with NatStack base, workspace prompt, and skills */
@@ -763,6 +765,7 @@ export default function ChatPanel() {
         theme={theme}
         installedAgents={installedAgents}
         initialPrompt={initialPromptCaptured.current}
+        forceInitialPrompt={stateArgs.forceInitialPrompt}
         sandbox={sandboxConfig}
         initialActionBarFile={stateArgs.actionBarFile ?? undefined}
         initialActionBarProps={stateArgs.actionBarProps ?? undefined}

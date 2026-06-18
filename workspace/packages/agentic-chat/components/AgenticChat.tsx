@@ -27,6 +27,8 @@ export interface AgenticChatProps {
   installedAgents?: Array<{ agentId: string; handle: string }>;
   /** If set, automatically sent as the first user message once connected */
   initialPrompt?: string;
+  /** Send initialPrompt even if the channel already has history (idempotent). */
+  forceInitialPrompt?: boolean;
   /** Sandbox config — provides RPC and import loading */
   sandbox: SandboxConfig;
   /** Context-relative TSX file to load into the panel-local action bar on mount */
@@ -57,6 +59,7 @@ export function AgenticChat({
   theme,
   installedAgents: installedAgentInfos,
   initialPrompt,
+  forceInitialPrompt,
   sandbox,
   initialActionBarFile,
   initialActionBarProps,
@@ -74,6 +77,7 @@ export function AgenticChat({
     theme,
     installedAgentInfos,
     initialPrompt,
+    forceInitialPrompt,
     sandbox,
     initialActionBarFile,
     initialActionBarProps,

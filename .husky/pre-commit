@@ -1,1 +1,1 @@
-pnpm type-check && pnpm lint && pnpm format:check
+pnpm check:runtime-docs && pnpm check:agent-docs && pnpm type-check && pnpm lint && pnpm format:check

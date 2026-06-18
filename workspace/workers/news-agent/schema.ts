@@ -19,7 +19,10 @@ export function createNewsTables(sql: SqlStorage): void {
       last_briefing_id TEXT,
       last_run_at INTEGER,
       last_error TEXT,
-      last_setup_json TEXT
+      last_setup_json TEXT,
+      -- 'curator' (normal personal channel) or 'analyst' (deep-dive fork):
+      -- analyst channels skip feed polling, the setup card, and onboarding.
+      mode TEXT NOT NULL DEFAULT 'curator'
     )
   `);
   sql.exec(`

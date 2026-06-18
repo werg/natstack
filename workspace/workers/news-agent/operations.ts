@@ -8,6 +8,7 @@ import { record } from "./types.js";
  */
 export interface NewsHandlers {
   addFeed(channelId: string, args: Record<string, unknown>): Promise<unknown>;
+  importOpml(channelId: string, args: Record<string, unknown>): Promise<unknown>;
   removeFeed(channelId: string, args: Record<string, unknown>): Promise<unknown>;
   setFeedEnabled(channelId: string, args: Record<string, unknown>): Promise<unknown>;
   followTopic(channelId: string, args: Record<string, unknown>): Promise<unknown>;
@@ -58,6 +59,20 @@ export const NEWS_OPERATIONS: NewsOperation[] = [
     },
     exposure: ["tool", "method"],
     run: (ctx, channelId, args) => ctx.handlers.addFeed(channelId, args),
+  },
+  {
+    name: "news_import_opml",
+    methodAliases: ["importOpml"],
+    description:
+      "Bulk-import feed subscriptions from an OPML document (e.g. an export from another reader). Validates and adds each feed; returns { imported, failed, total }.",
+    schema: {
+      type: "object",
+      properties: { opml: { type: "string", minLength: 1 } },
+      required: ["opml"],
+      additionalProperties: false,
+    },
+    exposure: ["tool", "method"],
+    run: (ctx, channelId, args) => ctx.handlers.importOpml(channelId, args),
   },
   {
     name: "news_remove_feed",

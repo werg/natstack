@@ -11,10 +11,13 @@ and publishes a TLDR briefing card.
   followed topics, articles (deduped by canonical-URL sha256), briefings, and
   a `RecurringScheduler` driving `poll:{channelId}` / `briefing:{channelId}`
   jobs off the single DO alarm.
-- **Panel**: `panels/news` — reader UI (latest TLDR + article list) with the
-  full `AgenticChat` embedded on the same channel. Story "Deep-dive" forks the
-  channel via `@workspace/channel-fork` (cloning the agent DO) into a fresh
-  analysis chat panel.
+- **Panel**: `panels/news` — reader UI (latest TLDR + article list, a first-run
+  quick-start with one-click feeds/topics, and an in-progress briefing hero)
+  with the full `AgenticChat` embedded on the same channel. It resolves the
+  workspace-configured model and subscribes the agent with it. Story "Deep-dive"
+  forks the channel via `@workspace/channel-fork` (cloning the agent DO) into a
+  fresh analysis chat and calls `startDeepDive` on the clone to seed the
+  analyst's opening turn.
 - **Renderers** (this skill): `renderers/news-briefing.tsx` and
   `renderers/news-setup.tsx`, registered as `news.briefing` / `news.setup`
   message types by the agent on subscribe.
@@ -26,14 +29,28 @@ and publishes a TLDR briefing card.
 
 One operations table (`workers/news-agent/operations.ts`) drives the model
 tools, `onMethodCall` methods, and the participant descriptor: `news_add_feed`,
-`news_remove_feed`, `news_follow_topic`, `news_unfollow_topic`,
-`news_set_preferences`, `news_list_articles`, `news_publish_briefing`,
-`news_get_briefing_history`, plus method-only `setSchedule`, `markRead`,
-`refreshNow`, `requestDeepDive`, `getOverview`, `setFeedEnabled`.
+`news_import_opml`, `news_remove_feed`, `news_follow_topic`,
+`news_unfollow_topic`, `news_set_preferences`, `news_list_articles`,
+`news_publish_briefing`, `news_get_briefing_history`, plus method-only
+`setSchedule`, `markRead`, `refreshNow`, `requestDeepDive`, `getOverview`,
+`setFeedEnabled`. `startDeepDive` is a direct DO method the panel calls on a
+freshly-cloned agent after forking.
+
+## Channel modes
+
+A channel is either `curator` (a normal personal news channel: polls feeds,
+publishes the setup card, runs briefings) or `analyst` (a deep-dive fork:
+focused on one story, no polling/setup/onboarding). `postClone` marks forks as
+`analyst` and strips the parent channel's copied jobs/state; `subscribeChannel`
+skips curator bootstrap for analyst channels.
 
 ## Standing schedules
 
-Per-channel cadence is DO-internal (configure via the setup card or
-`setSchedule`). Workspace-level standing jobs can also be declared in
-`meta/natstack.yml` under `recurring:` (approval-gated); the agent exposes
-`runScheduledJob({ job: "poll" | "briefing" })` for that path.
+Per-channel cadence is DO-internal and automatic — each curator channel's
+`RecurringScheduler` drives its own `poll:` / `briefing:` jobs (configure via
+the setup card or `setSchedule`); a self-canceling `watchdog:` job flips a
+stalled briefing to error within minutes. Workspace-level standing jobs are
+**optional** and can be declared in `meta/natstack.yml` under `recurring:`
+(approval-gated) to drive a specific pinned agent instance by objectKey; the
+agent exposes `runScheduledJob({ job: "poll" | "briefing" })` for that path
+(it skips analyst channels).

@@ -54,13 +54,17 @@ export function shouldAutoSendInitialPrompt({
   connected,
   alreadySent,
   hasPriorMessages,
+  force,
 }: {
   prompt: string | undefined;
   connected: boolean;
   alreadySent: boolean;
   hasPriorMessages: boolean;
+  /** Seed the prompt even when the channel already has transcript history
+   *  (e.g. a fork). Still idempotent via the channel idempotency key. */
+  force?: boolean;
 }): boolean {
-  return Boolean(prompt && connected && !alreadySent && !hasPriorMessages);
+  return Boolean(prompt && connected && !alreadySent && (force || !hasPriorMessages));
 }
 
 // =============================================================================
@@ -76,6 +80,8 @@ export interface UseChatCoreOptions {
   theme?: "light" | "dark";
   /** If set, automatically sent as the first user message once connected */
   initialPrompt?: string;
+  /** Send initialPrompt even if the channel already has history (idempotent). */
+  forceInitialPrompt?: boolean;
 }
 
 export interface ChatCoreState {
@@ -173,6 +179,7 @@ export function useChatCore({
   metadata = DEFAULT_METADATA,
   theme = "dark",
   initialPrompt,
+  forceInitialPrompt = false,
 }: UseChatCoreOptions): ChatCoreState {
   // --- Stable refs ---
   const selfIdRef = useRef<string | null>(null);
@@ -587,6 +594,7 @@ export function useChatCore({
         connected,
         alreadySent: initialPromptSentRef.current,
         hasPriorMessages,
+        force: forceInitialPrompt,
       })
     ) {
       return;
@@ -610,7 +618,7 @@ export function useChatCore({
       })
       .then(({ pubsubId }) => backfillAfterLocalPublish(pubsubId))
       .catch((err) => console.warn("[Chat] Failed to send initial prompt:", err));
-  }, [backfillAfterLocalPublish, connected, client, channelName, initialPrompt]);
+  }, [backfillAfterLocalPublish, connected, client, channelName, initialPrompt, forceInitialPrompt]);
 
   // --- Load earlier messages (delegates to useChannelMessages pagination) ---
   const loadEarlierMessages = channelLoadEarlier;

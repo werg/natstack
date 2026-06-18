@@ -1110,6 +1110,9 @@ importers:
 
   workspace/packages/gmail:
     dependencies:
+      '@workspace/integrations':
+        specifier: workspace:*
+        version: link:../integrations
       '@workspace/runtime':
         specifier: workspace:*
         version: link:../runtime
@@ -1609,6 +1612,9 @@ importers:
       '@workspace/feeds':
         specifier: workspace:*
         version: link:../../packages/feeds
+      '@workspace/model-catalog':
+        specifier: workspace:*
+        version: link:../../packages/model-catalog
       '@workspace/pubsub':
         specifier: workspace:*
         version: link:../../packages/pubsub
@@ -16166,9 +16172,7 @@ snapshots:
       metro-runtime: 0.82.5
     transitivePeerDependencies:
       - '@babel/core'
-      - bufferutil
       - supports-color
-      - utf-8-validate
 
   '@react-native/normalize-colors@0.79.7': {}
 

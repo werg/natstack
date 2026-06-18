@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { deepDivePrompt, newsAgentKey, newsChannelName, resolveNewsContextId } from "./bootstrap.js";
+import {
+  newsAgentKey,
+  newsChannelName,
+  relativeAge,
+  resolveNewsContextId,
+  SUGGESTED_FEEDS,
+  SUGGESTED_TOPICS,
+} from "./bootstrap.js";
 
 describe("resolveNewsContextId", () => {
   it("prefers stateArgs, falls back to runtime, rejects blanks", () => {
@@ -17,11 +24,28 @@ describe("name minting", () => {
   });
 });
 
-describe("deepDivePrompt", () => {
-  it("is self-contained: carries title and url", () => {
-    const prompt = deepDivePrompt({ title: "Big story", url: "https://example.com/a" });
-    expect(prompt).toContain("Big story");
-    expect(prompt).toContain("https://example.com/a");
-    expect(prompt).toContain("web_fetch");
+describe("relativeAge", () => {
+  const now = Date.parse("2026-06-18T12:00:00Z");
+  it("renders compact buckets and rejects junk/future", () => {
+    expect(relativeAge(undefined, now)).toBeNull();
+    expect(relativeAge("not-a-date", now)).toBeNull();
+    expect(relativeAge("2026-06-18T12:30:00Z", now)).toBeNull(); // future
+    expect(relativeAge("2026-06-18T11:59:30Z", now)).toBe("now");
+    expect(relativeAge("2026-06-18T11:30:00Z", now)).toBe("30m");
+    expect(relativeAge("2026-06-18T09:00:00Z", now)).toBe("3h");
+    expect(relativeAge("2026-06-16T12:00:00Z", now)).toBe("2d");
+    expect(relativeAge("2026-06-04T12:00:00Z", now)).toBe("2w");
+  });
+});
+
+describe("quick-start suggestions", () => {
+  it("offers curated http(s) feeds and non-empty topics", () => {
+    expect(SUGGESTED_FEEDS.length).toBeGreaterThan(0);
+    for (const feed of SUGGESTED_FEEDS) {
+      expect(feed.url).toMatch(/^https?:\/\//);
+      expect(feed.label.length).toBeGreaterThan(0);
+    }
+    expect(SUGGESTED_TOPICS.length).toBeGreaterThan(0);
+    expect(new Set(SUGGESTED_TOPICS).size).toBe(SUGGESTED_TOPICS.length);
   });
 });
