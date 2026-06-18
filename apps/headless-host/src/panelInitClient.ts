@@ -121,6 +121,7 @@ export class PanelInitClient {
     if (!source) throw new Error(`panel ${slotId} has no source`);
 
     const url = new URL(this.serverUrl);
+    const basePath = url.pathname.replace(/\/+$/, "");
     const panelUrl = source.startsWith("browser:")
       ? source.slice("browser:".length)
       : buildPanelUrl({
@@ -130,6 +131,7 @@ export class PanelInitClient {
           gatewayPort: Number.parseInt(url.port, 10) || (url.protocol === "https:" ? 443 : 80),
           externalHost: url.hostname,
           protocol: url.protocol === "https:" ? "https" : "http",
+          basePath: basePath === "/" ? "" : basePath,
         });
 
     return {

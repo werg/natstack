@@ -390,6 +390,8 @@ export interface RemoteCredCurrent {
   fingerprint?: string;
   tokenPreview?: string;
   deviceId?: string;
+  hubUrl?: string;
+  workspaceName?: string;
 }
 export interface RemoteCredSaveArgs {
   url: string;
@@ -429,7 +431,7 @@ export interface PairingInvite {
   expiresInMs: number;
   serverId: string;
   serverBootId: string;
-  workspaceId: string;
+  workspaceId?: string | null;
 }
 export interface DiscoveredServer {
   url: string;

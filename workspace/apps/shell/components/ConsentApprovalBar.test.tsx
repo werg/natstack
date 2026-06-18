@@ -17,6 +17,7 @@ const shellClient = vi.hoisted(() => ({
   resolve: vi.fn(() => Promise.resolve()),
   subscribe: vi.fn(() => Promise.resolve()),
   unsubscribe: vi.fn(() => Promise.resolve()),
+  onRpcEvent: vi.fn((_event: string, _listener: (event: { payload: unknown }) => void) => () => {}),
 }));
 
 vi.mock("../shell/client", () => ({
@@ -37,11 +38,7 @@ vi.mock("../shell/client", () => ({
     subscribe: shellClient.subscribe,
     unsubscribe: shellClient.unsubscribe,
   },
-  onRpcEvent: vi.fn(() => () => {}),
-}));
-
-vi.mock("../shell/useShellEvent", () => ({
-  useShellEvent: vi.fn(),
+  onRpcEvent: shellClient.onRpcEvent,
 }));
 
 vi.mock("./NavigationContext", () => ({
@@ -53,7 +50,6 @@ vi.mock("./NavigationContext", () => ({
   }),
 }));
 
-import { useShellEvent } from "../shell/useShellEvent";
 import { ConsentApprovalBar } from "./ConsentApprovalBar";
 
 describe("ConsentApprovalBar shell presence", () => {
@@ -65,6 +61,7 @@ describe("ConsentApprovalBar shell presence", () => {
     shellClient.resolve.mockImplementation(() => Promise.resolve());
     shellClient.subscribe.mockClear();
     shellClient.unsubscribe.mockClear();
+    shellClient.onRpcEvent.mockClear();
   });
 
   afterEach(() => {
@@ -75,19 +72,23 @@ describe("ConsentApprovalBar shell presence", () => {
     const { unmount } = render(React.createElement(ConsentApprovalBar));
 
     expect(shellClient.heartbeat).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
     expect(shellClient.listPending).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       vi.advanceTimersByTime(5_000);
     });
     expect(shellClient.heartbeat).toHaveBeenCalledTimes(2);
-    expect(shellClient.listPending).toHaveBeenCalledTimes(2);
+    expect(shellClient.listPending).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       vi.advanceTimersByTime(5_000);
     });
     expect(shellClient.heartbeat).toHaveBeenCalledTimes(3);
-    expect(shellClient.listPending).toHaveBeenCalledTimes(3);
+    expect(shellClient.listPending).toHaveBeenCalledTimes(1);
 
     unmount();
 
@@ -95,7 +96,7 @@ describe("ConsentApprovalBar shell presence", () => {
       vi.advanceTimersByTime(5_000);
     });
     expect(shellClient.heartbeat).toHaveBeenCalledTimes(3);
-    expect(shellClient.listPending).toHaveBeenCalledTimes(3);
+    expect(shellClient.listPending).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -165,7 +166,11 @@ function unitBatchApproval(
         unitName: `@workspace-extensions/ext-${index + 1}`,
         displayName: `Extension ${index + 1}`,
         version: "0.1.0",
-        source: { kind: "workspace-repo" as const, repo: `extensions/ext-${index + 1}`, ref: "main" },
+        source: {
+          kind: "workspace-repo" as const,
+          repo: `extensions/ext-${index + 1}`,
+          ref: "main",
+        },
         ev: `ev-${index + 1}`,
         capabilities: ["node:fs", "node:process"],
       })),
@@ -178,7 +183,7 @@ describe("ConsentApprovalBar queue browsing", () => {
     shellClient.listPending.mockClear();
     shellClient.resolve.mockClear();
     shellClient.resolve.mockImplementation(() => Promise.resolve());
-    vi.mocked(useShellEvent).mockClear();
+    shellClient.onRpcEvent.mockClear();
   });
 
   it("shows a queue navigator when multiple approvals are pending and steps through them", async () => {
@@ -515,18 +520,20 @@ describe("ConsentApprovalBar queue browsing", () => {
       expect(screen.getByText("First approval")).toBeTruthy();
     });
 
-    const eventCallback = vi
-      .mocked(useShellEvent)
-      .mock.calls.find(([event]) => event === "shell-approval:pending-changed")?.[1];
+    const eventCallback = shellClient.onRpcEvent.mock.calls.find(
+      ([event]) => event === "event:shell-approval:pending-changed"
+    )?.[1];
     expect(eventCallback).toBeTruthy();
 
     await act(async () => {
       eventCallback?.({
-        pending: [
-          userlandApproval({ approvalId: "a1", title: "First approval" }),
-          userlandApproval({ approvalId: "a2", title: "Event approval" }),
-        ],
-      } as never);
+        payload: {
+          pending: [
+            userlandApproval({ approvalId: "a1", title: "First approval" }),
+            userlandApproval({ approvalId: "a2", title: "Event approval" }),
+          ],
+        },
+      });
     });
 
     await waitFor(() => {

@@ -47,6 +47,14 @@ export interface ConfigOverrides {
   leanBrowser?: boolean;
 }
 
+// Parse an optional non-negative integer env var, honoring an explicit 0 (so `|| undefined`
+// doesn't silently swallow it). Returns undefined for missing or non-numeric values.
+function parseOptionalNonNegativeInt(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
 export function resolveConfig(overrides: ConfigOverrides = {}, env = process.env): HeadlessHostConfig {
   const serverUrl =
     overrides.serverUrl ?? overrides.deviceCredential?.serverUrl ?? env["NATSTACK_SERVER_URL"];
@@ -70,8 +78,7 @@ export function resolveConfig(overrides: ConfigOverrides = {}, env = process.env
     clientSessionId: overrides.clientSessionId ?? `headless-${randomUUID()}`,
     maxPanels: overrides.maxPanels ?? 8,
     idleUnloadMs: overrides.idleUnloadMs ?? 5 * 60_000,
-    idleExitMs:
-      overrides.idleExitMs ?? (idleExitEnv ? Number.parseInt(idleExitEnv, 10) || undefined : undefined),
+    idleExitMs: overrides.idleExitMs ?? parseOptionalNonNegativeInt(idleExitEnv),
     chromiumPath: overrides.chromiumPath ?? env["NATSTACK_CHROMIUM_PATH"],
     cacheDir: overrides.cacheDir ?? path.join(os.homedir(), ".cache", "natstack", "chromium"),
     profileDir:

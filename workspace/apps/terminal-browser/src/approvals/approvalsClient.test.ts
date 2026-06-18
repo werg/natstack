@@ -113,10 +113,13 @@ describe("createApprovalsClient", () => {
     const listener = vi.fn();
 
     const unsubscribe = client.onChange(listener);
-    listeners.get("shell-approval:pending-changed")?.forEach((emit) => emit([]));
+    listeners.get("event:shell-approval:pending-changed")?.forEach((emit) => emit([]));
     unsubscribe();
-    listeners.get("shell-approval:pending-changed")?.forEach((emit) => emit([]));
+    listeners.get("event:shell-approval:pending-changed")?.forEach((emit) => emit([]));
 
     expect(listener).toHaveBeenCalledTimes(1);
+    expect(rpc.call).toHaveBeenCalledWith("main", "events.subscribe", [
+      "shell-approval:pending-changed",
+    ]);
   });
 });

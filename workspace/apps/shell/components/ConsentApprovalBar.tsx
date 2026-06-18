@@ -48,8 +48,12 @@ import {
   shouldOpenApprovalDetails,
 } from "@natstack/shared/approvalCopy";
 import { filterRuntimeApprovals } from "@natstack/shared/bootstrapApprovals";
-import { useShellEvent } from "../shell/useShellEvent";
-import { shellApproval, shellPresence } from "../shell/client";
+import {
+  createApprovalStateController,
+  SHELL_APPROVAL_PENDING_CHANGED_CHANNEL,
+  SHELL_APPROVAL_PENDING_CHANGED_EVENT,
+} from "@natstack/shared/shell/approvalState";
+import { events, onRpcEvent, shellApproval, shellPresence } from "../shell/client";
 import { useNavigation } from "./NavigationContext";
 
 interface CallerInfo {
@@ -84,35 +88,7 @@ export function ConsentApprovalBar() {
     approvalId: string;
     message: string;
   } | null>(null);
-  const pendingAccessRefreshSeq = useRef(0);
   const { navigateToId } = useNavigation();
-
-  const refreshPendingAccess = useCallback(async () => {
-    const seq = ++pendingAccessRefreshSeq.current;
-    try {
-      const list = await shellApproval.listPending();
-      if (seq === pendingAccessRefreshSeq.current) {
-        setPendingAccess(filterRuntimeApprovals(list));
-      }
-    } catch (err) {
-      console.warn("[ConsentApprovalBar] listPending failed:", err);
-    }
-  }, []);
-
-  useShellEvent(
-    "shell-approval:pending-changed",
-    useCallback(
-      (event) => {
-        if (Array.isArray(event?.pending)) {
-          pendingAccessRefreshSeq.current++;
-          setPendingAccess(filterRuntimeApprovals(event.pending));
-          return;
-        }
-        void refreshPendingAccess();
-      },
-      [refreshPendingAccess]
-    )
-  );
 
   useEffect(() => {
     const heartbeat = () => {
@@ -126,12 +102,21 @@ export function ConsentApprovalBar() {
   }, []);
 
   useEffect(() => {
-    void refreshPendingAccess();
-    const intervalId = window.setInterval(() => {
-      void refreshPendingAccess();
-    }, 5_000);
-    return () => window.clearInterval(intervalId);
-  }, [refreshPendingAccess]);
+    const controller = createApprovalStateController({
+      listPending: () => shellApproval.listPending(),
+      subscribePendingChanged: () => events.subscribe(SHELL_APPROVAL_PENDING_CHANGED_EVENT),
+      unsubscribePendingChanged: () => events.unsubscribe(SHELL_APPROVAL_PENDING_CHANGED_EVENT),
+      onPendingChanged: (listener) =>
+        onRpcEvent(SHELL_APPROVAL_PENDING_CHANGED_CHANNEL, (event) => listener(event.payload)),
+      filter: filterRuntimeApprovals,
+      onChange: (pending) => setPendingAccess(pending),
+      onError: (err, phase) => {
+        console.warn(`[ConsentApprovalBar] approval state ${phase} failed:`, err);
+      },
+    });
+    controller.start();
+    return () => controller.stop();
+  }, []);
 
   // Replays the attention pulse whenever a not-yet-seen approval enters the
   // queue — including ones that line up behind the currently shown approval,
@@ -260,22 +245,17 @@ export function ConsentApprovalBar() {
     const approval = current;
     setDecisionError(null);
     setPendingAccess((items) => items.filter((item) => item.approvalId !== approval.approvalId));
-    void shellApproval
-      .resolve(approval.approvalId, decision)
-      .then(() => refreshPendingAccess())
-      .catch((err: unknown) => {
-        console.error("[ConsentApprovalBar] resolve failed:", err);
-        const message = err instanceof Error ? err.message : String(err);
-        setPendingAccess((items) =>
-          items.some((item) => item.approvalId === approval.approvalId)
-            ? items
-            : [approval, ...items]
-        );
-        setDecisionError({
-          approvalId: approval.approvalId,
-          message: message || "Approval decision failed.",
-        });
+    void shellApproval.resolve(approval.approvalId, decision).catch((err: unknown) => {
+      console.error("[ConsentApprovalBar] resolve failed:", err);
+      const message = err instanceof Error ? err.message : String(err);
+      setPendingAccess((items) =>
+        items.some((item) => item.approvalId === approval.approvalId) ? items : [approval, ...items]
+      );
+      setDecisionError({
+        approvalId: approval.approvalId,
+        message: message || "Approval decision failed.",
       });
+    });
   };
   const submitClientConfig = () => {
     if (current?.kind !== "client-config") return;

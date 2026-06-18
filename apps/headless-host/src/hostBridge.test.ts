@@ -87,6 +87,19 @@ describe("CdpHostBridgeClient", () => {
     });
   }
 
+  it("preserves selected workspace paths in the bridge URL", () => {
+    client = new CdpHostBridgeClient({
+      serverUrl: "https://server.example/_workspace/dev/",
+      hostConnectionId: "headless test",
+      getToken: () => "good-token",
+      handlers: handlers(),
+    });
+
+    expect((client as unknown as { wsUrl(): string }).wsUrl()).toBe(
+      "wss://server.example/_workspace/dev/api/cdp-host?hostConnectionId=headless+test"
+    );
+  });
+
   it("authenticates and re-registers targets on auth-ok", async () => {
     const h = handlers();
     await startClient(h);

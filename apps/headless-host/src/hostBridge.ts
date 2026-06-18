@@ -3,12 +3,13 @@
  * (src/server/cdpBridge.ts), a port of Electron's CdpHostProvider transport
  * (src/main/cdpHostProvider.ts) without the webContents specifics.
  *
- * Connects to ws(s)://server/api/cdp-host?hostConnectionId=..., authenticates
+ * Connects to ws(s)://server[/_workspace/name]/api/cdp-host?hostConnectionId=..., authenticates
  * with {"type":"natstack:cdp-auth", token}, re-registers all targets on every
  * auth-ok (reconnects), and dispatches server commands to injected handlers.
  */
 import { WebSocket } from "ws";
 import { createDevLogger } from "@natstack/dev-log";
+import { serverCdpHostWsUrl } from "@natstack/shared/connect";
 
 const log = createDevLogger("HeadlessHost:bridge");
 
@@ -91,8 +92,7 @@ export class CdpHostBridgeClient {
   }
 
   private wsUrl(): string {
-    const base = this.opts.serverUrl.replace(/^http/, "ws");
-    return `${base}/api/cdp-host?hostConnectionId=${encodeURIComponent(this.opts.hostConnectionId)}`;
+    return serverCdpHostWsUrl(this.opts.serverUrl, this.opts.hostConnectionId);
   }
 
   private connect(): void {

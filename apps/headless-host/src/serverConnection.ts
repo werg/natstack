@@ -6,37 +6,12 @@
 import { WebSocket } from "ws";
 import { createRpcClient, type RpcClient } from "@natstack/rpc";
 import { wsClientTransport } from "@natstack/rpc/transports/wsClient";
-import type { WsLike } from "@natstack/rpc/protocol/wsAdapter";
+import { NodeWsLike } from "@natstack/shared/shell/transport/nodeWsLike";
 import { createDevLogger } from "@natstack/dev-log";
 import type { HeadlessHostConfig } from "./config.js";
+import { serverAuthRouteUrl, serverRpcWsUrl } from "@natstack/shared/connect";
 
 const log = createDevLogger("HeadlessHost:rpc");
-
-class NodeWsLike implements WsLike {
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { data: unknown }) => void) | null = null;
-  onclose: ((event: { code?: number; reason?: string }) => void) | null = null;
-  onerror: ((event: unknown) => void) | null = null;
-
-  constructor(private readonly ws: WebSocket) {
-    ws.on("open", () => this.onopen?.());
-    ws.on("message", (data) => this.onmessage?.({ data: data.toString() }));
-    ws.on("close", (code, reason) => this.onclose?.({ code, reason: reason.toString() }));
-    ws.on("error", (error) => this.onerror?.(error));
-  }
-
-  get readyState(): number {
-    return this.ws.readyState;
-  }
-
-  send(data: string): void {
-    this.ws.send(data);
-  }
-
-  close(code?: number, reason?: string): void {
-    this.ws.close(code, reason);
-  }
-}
 
 /** Exchange a paired device credential for a short-lived shell token. */
 async function refreshShellToken(auth: {
@@ -44,7 +19,7 @@ async function refreshShellToken(auth: {
   deviceId: string;
   refreshToken: string;
 }): Promise<string> {
-  const response = await fetch(new URL("/_r/s/auth/refresh-shell", auth.serverUrl), {
+  const response = await fetch(serverAuthRouteUrl(auth.serverUrl, "refresh-shell"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ deviceId: auth.deviceId, refreshToken: auth.refreshToken }),
@@ -77,7 +52,7 @@ export async function connectToServer(config: HeadlessHostConfig): Promise<Serve
   let currentToken =
     config.auth.kind === "token" ? config.auth.token : await refreshShellToken(config.auth);
   const eventListeners = new Set<(event: string, payload: unknown) => void>();
-  const wsUrl = `${config.serverUrl.replace(/^http/, "ws")}/rpc`;
+  const wsUrl = serverRpcWsUrl(config.serverUrl);
 
   const transport = wsClientTransport({
     selfId: config.clientSessionId,

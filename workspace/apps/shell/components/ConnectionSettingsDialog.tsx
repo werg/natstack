@@ -145,7 +145,9 @@ export function ConnectionSettingsDialog({ open, onOpenChange }: Props) {
           setError(describeTestError(res));
         }
         setBusy(false);
+        return;
       }
+      await remoteCred.relaunch();
     } catch (err) {
       setError((err as Error).message);
       setBusy(false);
@@ -154,7 +156,7 @@ export function ConnectionSettingsDialog({ open, onOpenChange }: Props) {
 
   const testAdmin = async (): Promise<TestConnectionResult | null> => {
     if (!url || !token) {
-      setError("URL and admin token are required.");
+      setError("Selected workspace URL and admin token are required.");
       return null;
     }
     try {
@@ -373,6 +375,12 @@ export function ConnectionSettingsDialog({ open, onOpenChange }: Props) {
                 busy={busy}
                 onFetchFingerprint={onFetchFingerprint}
               />
+              <Callout.Root size="1" color="amber">
+                <Callout.Text>
+                  Admin-token startup requires a selected workspace URL such as
+                  https://server.example/_workspace/dev.
+                </Callout.Text>
+              </Callout.Root>
               <Box>
                 <Text as="label" size="2" weight="medium">
                   Admin token{" "}
