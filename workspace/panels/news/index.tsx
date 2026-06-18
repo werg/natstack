@@ -43,14 +43,18 @@ import {
 } from "@radix-ui/themes";
 import {
   CheckIcon,
+  CopyIcon,
   Cross2Icon,
   ExclamationTriangleIcon,
   EyeNoneIcon,
   GearIcon,
   GlobeIcon,
   LightningBoltIcon,
+  MagnifyingGlassIcon,
   PlusIcon,
   ReloadIcon,
+  StarFilledIcon,
+  StarIcon,
   ThickArrowDownIcon,
   ThickArrowUpIcon,
 } from "@radix-ui/react-icons";
@@ -95,11 +99,65 @@ interface ArticleRow {
   publishedAt?: string;
   /** Epoch ms we first ingested it — drives the "new since last visit" marker. */
   fetchedAt?: number;
+  /** Title-similarity key for collapsing near-duplicate coverage. */
+  simKey?: string;
   briefedIn?: string;
   read: boolean;
+  saved?: boolean;
+}
+
+/** A cluster of near-duplicate coverage: one primary story + other sources. */
+interface ArticleCluster {
+  primary: ArticleRow;
+  others: ArticleRow[];
+}
+
+type FeedView = "all" | "unread" | "saved";
+
+interface SearchResults {
+  query: string;
+  articles: ArticleRow[];
+  briefings: BriefingRow[];
+}
+
+/** Group articles by title-similarity key so syndicated / near-identical
+ *  coverage collapses into one row, preserving the input order by primary. */
+function clusterArticles(articles: ArticleRow[]): ArticleCluster[] {
+  const clusters: ArticleCluster[] = [];
+  const byKey = new Map<string, ArticleCluster>();
+  for (const article of articles) {
+    const key = article.simKey;
+    if (!key) {
+      clusters.push({ primary: article, others: [] });
+      continue;
+    }
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.others.push(article);
+    } else {
+      const cluster: ArticleCluster = { primary: article, others: [] };
+      byKey.set(key, cluster);
+      clusters.push(cluster);
+    }
+  }
+  return clusters;
+}
+
+/** Render a briefing as portable markdown for the clipboard. */
+function briefingToMarkdown(createdAt: string, tldr: string): string {
+  const date = new Date(createdAt).toLocaleString();
+  return `# News briefing — ${date}\n\n${tldr}\n`;
 }
 
 const MARKDOWN_REMARK_PLUGINS = [remarkGfm];
+
+/** Minutes-after-midnight → "HH:MM" for a native time input ("" when unset). */
+function minutesToHHMM(minutes: number | undefined): string {
+  if (typeof minutes !== "number") return "";
+  const hh = String(Math.floor(minutes / 60)).padStart(2, "0");
+  const mm = String(minutes % 60).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
 
 /** "3h ago" / "just now" / a date for older briefings. */
 function agoLabel(iso: string): string {
@@ -229,6 +287,167 @@ async function ensureAgentSubscribed(args: {
   return handle.targetId;
 }
 
+/** True when the panel is too narrow for the side-by-side reader+chat layout. */
+function useNarrow(breakpoint = 720): boolean {
+  const [narrow, setNarrow] = useState(
+    typeof window !== "undefined" ? window.innerWidth < breakpoint : false
+  );
+  useEffect(() => {
+    const onResize = () => setNarrow(window.innerWidth < breakpoint);
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [breakpoint]);
+  return narrow;
+}
+
+/** One story row: title + summary + source/age + actions (deep-dive, save,
+ *  feedback, mark-read), plus an "also covered by" line for clustered coverage.
+ *  Extracted so the feed, the Saved view, and search results share one row. */
+function ArticleItem({
+  article,
+  others,
+  busy,
+  fresh,
+  selected,
+  innerRef,
+  onDeepDive,
+  onReact,
+  onSetSaved,
+  onMarkRead,
+}: {
+  article: ArticleRow;
+  others: ArticleRow[];
+  busy: boolean;
+  fresh: boolean;
+  selected: boolean;
+  innerRef?: (el: HTMLDivElement | null) => void;
+  onDeepDive: (article: ArticleRow) => void;
+  onReact: (articleId: string, reaction: "more" | "less" | "mute_source") => void;
+  onSetSaved: (articleId: string, saved: boolean) => void;
+  onMarkRead: (articleId: string) => void;
+}) {
+  const age = relativeAge(article.publishedAt);
+  return (
+    <Box
+      ref={innerRef}
+      px="2"
+      py="1"
+      style={{
+        opacity: article.read ? 0.55 : 1,
+        borderRadius: "var(--radius-2)",
+        boxShadow: selected ? "inset 0 0 0 1px var(--accent-8)" : undefined,
+        background: selected ? "var(--accent-a2)" : undefined,
+      }}
+    >
+      <Flex direction="column" gap="1">
+        <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+          <Favicon url={article.url} />
+          <Link
+            href={article.url}
+            target="_blank"
+            rel="noreferrer"
+            size="2"
+            weight={article.read ? "regular" : "medium"}
+            style={{ minWidth: 0, wordBreak: "break-word" }}
+            onClick={() => onMarkRead(article.articleId)}
+          >
+            {article.title}
+          </Link>
+          {fresh ? (
+            <Badge size="1" color="blue" variant="soft" style={{ flexShrink: 0 }}>
+              New
+            </Badge>
+          ) : null}
+        </Flex>
+        {article.blurb ? (
+          <Text size="1" color="gray" style={{ wordBreak: "break-word" }}>
+            {article.blurb}
+          </Text>
+        ) : null}
+        {others.length > 0 ? (
+          <Text size="1" color="gray">
+            also covered by{" "}
+            {others.map((other, index) => (
+              <span key={other.articleId}>
+                {index > 0 ? ", " : ""}
+                <Link
+                  href={other.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  size="1"
+                  onClick={() => onMarkRead(other.articleId)}
+                >
+                  {other.source}
+                </Link>
+              </span>
+            ))}
+          </Text>
+        ) : null}
+        <Flex align="center" gap="2" wrap="wrap">
+          <Text size="1" color="gray">
+            {article.source}
+            {age ? ` · ${age}` : ""}
+          </Text>
+          <Button size="1" variant="soft" disabled={busy} onClick={() => onDeepDive(article)}>
+            Deep-dive
+          </Button>
+          <IconButton
+            size="1"
+            variant="ghost"
+            color={article.saved ? "amber" : "gray"}
+            title={article.saved ? "Saved — click to remove" : "Save for later"}
+            aria-label="Save for later"
+            onClick={() => onSetSaved(article.articleId, !article.saved)}
+          >
+            {article.saved ? <StarFilledIcon /> : <StarIcon />}
+          </IconButton>
+          <IconButton
+            size="1"
+            variant="ghost"
+            color="grass"
+            title="More like this"
+            aria-label="More like this"
+            onClick={() => onReact(article.articleId, "more")}
+          >
+            <ThickArrowUpIcon />
+          </IconButton>
+          <IconButton
+            size="1"
+            variant="ghost"
+            color="gray"
+            title="Less like this"
+            aria-label="Less like this"
+            onClick={() => onReact(article.articleId, "less")}
+          >
+            <ThickArrowDownIcon />
+          </IconButton>
+          <IconButton
+            size="1"
+            variant="ghost"
+            color="gray"
+            title={`Mute ${article.source}`}
+            aria-label={`Mute ${article.source}`}
+            onClick={() => onReact(article.articleId, "mute_source")}
+          >
+            <EyeNoneIcon />
+          </IconButton>
+          {!article.read ? (
+            <Button
+              size="1"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => onMarkRead(article.articleId)}
+            >
+              Mark read
+            </Button>
+          ) : null}
+        </Flex>
+      </Flex>
+    </Box>
+  );
+}
+
 export default function NewsPanel() {
   const theme = usePanelTheme();
   const stateArgs = useStateArgs<NewsStateArgs>();
@@ -244,9 +463,17 @@ export default function NewsPanel() {
   const [feedDraft, setFeedDraft] = useState("");
   const [modelConnect, setModelConnect] = useState<{ providerId: string; baseUrl: string } | null>(null);
   const [connecting, setConnecting] = useState(false);
-  const [unreadOnly, setUnreadOnly] = useState(false);
+  const [view, setView] = useState<FeedView>("all");
   const [sourceFilter, setSourceFilter] = useState("");
   const [pastOpen, setPastOpen] = useState(false);
+  const [savedArticles, setSavedArticles] = useState<ArticleRow[]>([]);
+  const [searchInput, setSearchInput] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchResults | null>(null);
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [mobilePane, setMobilePane] = useState<"reader" | "chat">("reader");
+  const narrow = useNarrow();
+  const selectedRowRef = useRef<HTMLDivElement | null>(null);
   const lastSeenEventId = useRef(0);
   const latestTldrRef = useRef<string | undefined>(undefined);
   const bootstrapAttempted = useRef(false);
@@ -392,30 +619,52 @@ export default function NewsPanel() {
     [agentTarget, channelName]
   );
 
+  /** Apply an optimistic patch to a story across every list it may appear in
+   *  (the feed, the Saved view, and search results). */
+  const patchArticle = useCallback((articleId: string, patch: Partial<ArticleRow>) => {
+    const apply = (list: ArticleRow[]) =>
+      list.map((article) => (article.articleId === articleId ? { ...article, ...patch } : article));
+    setArticles(apply);
+    setSavedArticles(apply);
+    setSearchResults((prev) => (prev ? { ...prev, articles: apply(prev.articles) } : prev));
+  }, []);
+
   const markReadLocal = useCallback(
     (articleId: string) => {
-      setArticles((prev) =>
-        prev.map((article) => (article.articleId === articleId ? { ...article, read: true } : article))
-      );
+      patchArticle(articleId, { read: true });
       quietAgentCall("markRead", { articleIds: [articleId] });
     },
-    [quietAgentCall]
+    [patchArticle, quietAgentCall]
+  );
+
+  const setSavedLocal = useCallback(
+    (articleId: string, saved: boolean) => {
+      patchArticle(articleId, { saved });
+      if (!saved) setSavedArticles((prev) => prev.filter((a) => a.articleId !== articleId));
+      quietAgentCall("setSaved", { articleId, saved });
+    },
+    [patchArticle, quietAgentCall]
   );
 
   /** Reader feedback tap. "less"/"mute" also drop the story from view at once. */
   const reactToStory = useCallback(
     (articleId: string, reaction: "more" | "less" | "mute_source") => {
-      if (reaction !== "more") {
-        setArticles((prev) =>
-          prev.map((article) =>
-            article.articleId === articleId ? { ...article, read: true } : article
-          )
-        );
-      }
+      if (reaction !== "more") patchArticle(articleId, { read: true });
       quietAgentCall("reactToStory", { articleId, reaction });
     },
-    [quietAgentCall]
+    [patchArticle, quietAgentCall]
   );
+
+  /** Copy a briefing to the clipboard as portable markdown. */
+  const exportBriefing = useCallback((id: string, createdAt: string, tldr: string) => {
+    void navigator.clipboard?.writeText(briefingToMarkdown(createdAt, tldr)).then(
+      () => {
+        setCopiedId(id);
+        setTimeout(() => setCopiedId((current) => (current === id ? null : current)), 1500);
+      },
+      (err) => console.warn("[NewsPanel] copy failed:", err)
+    );
+  }, []);
 
   // ── deep-dive: fork the channel into a per-story analysis chat ────────────
   const handleDeepDive = useCallback(
@@ -570,6 +819,110 @@ export default function NewsPanel() {
     []
   );
 
+  // Saved view: fetch on demand (saved items can be older than the feed window).
+  useEffect(() => {
+    if (view !== "saved" || !agentTarget || !channelName) return;
+    let cancelled = false;
+    void rpc
+      .call<{ articles: ArticleRow[] }>(agentTarget, "listArticles", [
+        channelName,
+        { savedOnly: true, limit: 200 },
+      ])
+      .then((res) => {
+        if (!cancelled) setSavedArticles(res.articles);
+      })
+      .catch((err) => console.warn("[NewsPanel] saved fetch failed:", err));
+    return () => {
+      cancelled = true;
+    };
+  }, [view, agentTarget, channelName]);
+
+  // Archive search: debounced; empty query clears results back to the feed.
+  useEffect(() => {
+    const query = searchInput.trim();
+    if (!query || !agentTarget || !channelName) {
+      setSearchResults(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void rpc
+        .call<SearchResults>(agentTarget, "searchArchive", [channelName, { query, limit: 60 }])
+        .then((res) => {
+          if (!cancelled) setSearchResults(res);
+        })
+        .catch((err) => console.warn("[NewsPanel] search failed:", err));
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [searchInput, agentTarget, channelName]);
+
+  // The list the reader is showing right now (search > saved > feed), with the
+  // source filter applied, grouped into near-duplicate clusters.
+  const searching = searchInput.trim().length > 0;
+  const clusters = useMemo(() => {
+    const base = searching
+      ? searchResults?.articles ?? []
+      : view === "saved"
+        ? savedArticles
+        : articles.filter((article) => view !== "unread" || !article.read);
+    const filtered = sourceFilter ? base.filter((article) => article.source === sourceFilter) : base;
+    return clusterArticles(filtered);
+  }, [searching, searchResults, view, savedArticles, articles, sourceFilter]);
+  const selectable = useMemo(() => clusters.map((cluster) => cluster.primary), [clusters]);
+
+  // Reset + keep the keyboard selection in range as the visible list changes.
+  useEffect(() => setSelectedIndex(0), [view, searchInput, sourceFilter]);
+  useEffect(() => {
+    selectedRowRef.current?.scrollIntoView({ block: "nearest" });
+  }, [selectedIndex]);
+
+  // Reader keyboard shortcuts (ignored while typing or when the chat pane shows).
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
+      ) {
+        return;
+      }
+      if (narrow && mobilePane !== "reader") return;
+      if (selectable.length === 0) return;
+      const current = selectable[Math.min(selectedIndex, selectable.length - 1)];
+      switch (event.key) {
+        case "j":
+          setSelectedIndex((index) => Math.min(index + 1, selectable.length - 1));
+          break;
+        case "k":
+          setSelectedIndex((index) => Math.max(index - 1, 0));
+          break;
+        case "o":
+          if (current) {
+            window.open(current.url, "_blank", "noopener");
+            markReadLocal(current.articleId);
+          }
+          break;
+        case "s":
+          if (current) setSavedLocal(current.articleId, !current.saved);
+          break;
+        case "m":
+          if (current) markReadLocal(current.articleId);
+          break;
+        case "d":
+          if (current) void handleDeepDive(current);
+          break;
+        default:
+          return;
+      }
+      event.preventDefault();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectable, selectedIndex, narrow, mobilePane, markReadLocal, setSavedLocal, handleDeepDive]);
+
   if (!channelName) {
     return (
       <ErrorBoundary>
@@ -605,10 +958,6 @@ export default function NewsPanel() {
   const showConnectNudge = Boolean(modelConnect) && !modelProvenWorking;
 
   const sources = [...new Set(articles.map((article) => article.source))].sort();
-  const visibleArticles = articles.filter(
-    (article) =>
-      (!unreadOnly || !article.read) && (sourceFilter === "" || article.source === sourceFilter)
-  );
   const unreadIds = articles.filter((article) => !article.read).map((article) => article.articleId);
   // "New since your last visit": arrived after the snapshotted visit time. The
   // 0 guard avoids badging the entire feed on a first-ever visit.
@@ -616,13 +965,29 @@ export default function NewsPanel() {
   const isNewSinceVisit = (article: ArticleRow): boolean =>
     previousVisit > 0 && typeof article.fetchedAt === "number" && article.fetchedAt > previousVisit;
   const newCount = articles.filter(isNewSinceVisit).length;
+  const searchBriefings = searchResults?.briefings ?? [];
 
   return (
     <ErrorBoundary>
       <Theme appearance={theme}>
-        <Flex style={{ height: "100dvh" }}>
-          {/* ── reader region ── */}
-          <Flex direction="column" style={{ flex: "1 1 55%", minWidth: 0 }}>
+        <Flex direction="column" style={{ height: "100dvh" }}>
+          {/* On narrow panels the two panes don't fit side by side — toggle. */}
+          {narrow ? (
+            <Flex p="2" justify="center" style={{ borderBottom: "1px solid var(--gray-a5)" }}>
+              <SegmentedControl.Root
+                size="1"
+                value={mobilePane}
+                onValueChange={(value) => setMobilePane(value as "reader" | "chat")}
+              >
+                <SegmentedControl.Item value="reader">📰 Reader</SegmentedControl.Item>
+                <SegmentedControl.Item value="chat">💬 Chat</SegmentedControl.Item>
+              </SegmentedControl.Root>
+            </Flex>
+          ) : null}
+          <Flex style={{ flex: 1, minHeight: 0 }}>
+            {/* ── reader region ── */}
+            {!narrow || mobilePane === "reader" ? (
+            <Flex direction="column" style={{ flex: narrow ? "1 1 auto" : "1 1 55%", minWidth: 0 }}>
             <Flex align="center" gap="2" p="3">
               <Text size="3" weight="bold">📰 News</Text>
               {overview ? (
@@ -705,17 +1070,31 @@ export default function NewsPanel() {
 
                 {latestReady?.tldr ? (
                   <Flex direction="column" gap="1">
-                    <Text
-                      size="1"
-                      weight="bold"
-                      color="gray"
-                      title={new Date(latestReady.createdAt).toLocaleString()}
-                    >
-                      LATEST BRIEFING · {agoLabel(latestReady.createdAt)}
-                      {latestReady.sourcesRead
-                        ? ` · synthesized from ${latestReady.sourcesRead} source${latestReady.sourcesRead > 1 ? "s" : ""}`
-                        : ""}
-                    </Text>
+                    <Flex align="center" gap="2">
+                      <Text
+                        size="1"
+                        weight="bold"
+                        color="gray"
+                        title={new Date(latestReady.createdAt).toLocaleString()}
+                      >
+                        LATEST BRIEFING · {agoLabel(latestReady.createdAt)}
+                        {latestReady.sourcesRead
+                          ? ` · synthesized from ${latestReady.sourcesRead} source${latestReady.sourcesRead > 1 ? "s" : ""}`
+                          : ""}
+                      </Text>
+                      <IconButton
+                        size="1"
+                        variant="ghost"
+                        color={copiedId === latestReady.briefingId ? "green" : "gray"}
+                        title="Copy briefing as markdown"
+                        aria-label="Copy briefing"
+                        onClick={() =>
+                          exportBriefing(latestReady.briefingId, latestReady.createdAt, latestReady.tldr ?? "")
+                        }
+                      >
+                        {copiedId === latestReady.briefingId ? <CheckIcon /> : <CopyIcon />}
+                      </IconButton>
+                    </Flex>
                     <Markdown>{latestReady.tldr}</Markdown>
                   </Flex>
                 ) : null}
@@ -729,15 +1108,31 @@ export default function NewsPanel() {
                       <Flex direction="column" gap="2" pt="2">
                         {pastReady.map((briefing) => (
                           <Flex key={briefing.briefingId} direction="column" gap="1">
-                            <Text
-                              size="1"
-                              weight="bold"
-                              color="gray"
-                              title={new Date(briefing.createdAt).toLocaleString()}
-                            >
-                              {agoLabel(briefing.createdAt)}
-                              {briefing.sourcesRead ? ` · ${briefing.sourcesRead} sources` : ""}
-                            </Text>
+                            <Flex align="center" gap="2">
+                              <Text
+                                size="1"
+                                weight="bold"
+                                color="gray"
+                                title={new Date(briefing.createdAt).toLocaleString()}
+                              >
+                                {agoLabel(briefing.createdAt)}
+                                {briefing.sourcesRead ? ` · ${briefing.sourcesRead} sources` : ""}
+                              </Text>
+                              {briefing.tldr ? (
+                                <IconButton
+                                  size="1"
+                                  variant="ghost"
+                                  color={copiedId === briefing.briefingId ? "green" : "gray"}
+                                  title="Copy briefing as markdown"
+                                  aria-label="Copy briefing"
+                                  onClick={() =>
+                                    exportBriefing(briefing.briefingId, briefing.createdAt, briefing.tldr ?? "")
+                                  }
+                                >
+                                  {copiedId === briefing.briefingId ? <CheckIcon /> : <CopyIcon />}
+                                </IconButton>
+                              ) : null}
+                            </Flex>
                             {briefing.tldr ? <Markdown>{briefing.tldr}</Markdown> : null}
                           </Flex>
                         ))}
@@ -751,132 +1146,122 @@ export default function NewsPanel() {
                 ) : null}
 
                 {articles.length > 0 ? (
-                  <Flex align="center" gap="2" wrap="wrap">
-                    <SegmentedControl.Root
-                      size="1"
-                      value={unreadOnly ? "unread" : "all"}
-                      onValueChange={(value) => setUnreadOnly(value === "unread")}
-                    >
-                      <SegmentedControl.Item value="all">All</SegmentedControl.Item>
-                      <SegmentedControl.Item value="unread">Unread</SegmentedControl.Item>
-                    </SegmentedControl.Root>
-                    {newCount > 0 ? (
-                      <Badge size="1" color="blue" variant="soft">
-                        {newCount} new since last visit
-                      </Badge>
-                    ) : null}
-                    {sources.length > 1 ? (
-                      <Select.Root size="1" value={sourceFilter || "__all"} onValueChange={(value) => setSourceFilter(value === "__all" ? "" : value)}>
-                        <Select.Trigger placeholder="All sources" variant="soft" />
-                        <Select.Content>
-                          <Select.Item value="__all">All sources</Select.Item>
-                          {sources.map((source) => (
-                            <Select.Item key={source} value={source}>{source}</Select.Item>
-                          ))}
-                        </Select.Content>
-                      </Select.Root>
-                    ) : null}
-                    <Box flexGrow="1" />
-                    {unreadIds.length > 0 ? (
-                      <Button
+                  <Flex direction="column" gap="2">
+                    <Flex align="center" gap="2" wrap="wrap">
+                      <SegmentedControl.Root
                         size="1"
-                        variant="ghost"
-                        disabled={busy}
-                        onClick={() => void callAgent("markRead", { articleIds: unreadIds.slice(0, 200) })}
+                        value={view}
+                        onValueChange={(value) => setView(value as FeedView)}
                       >
-                        Mark all read
-                      </Button>
-                    ) : null}
+                        <SegmentedControl.Item value="all">All</SegmentedControl.Item>
+                        <SegmentedControl.Item value="unread">Unread</SegmentedControl.Item>
+                        <SegmentedControl.Item value="saved">Saved</SegmentedControl.Item>
+                      </SegmentedControl.Root>
+                      {newCount > 0 && !searching ? (
+                        <Badge size="1" color="blue" variant="soft">
+                          {newCount} new since last visit
+                        </Badge>
+                      ) : null}
+                      {sources.length > 1 && !searching && view !== "saved" ? (
+                        <Select.Root size="1" value={sourceFilter || "__all"} onValueChange={(value) => setSourceFilter(value === "__all" ? "" : value)}>
+                          <Select.Trigger placeholder="All sources" variant="soft" />
+                          <Select.Content>
+                            <Select.Item value="__all">All sources</Select.Item>
+                            {sources.map((source) => (
+                              <Select.Item key={source} value={source}>{source}</Select.Item>
+                            ))}
+                          </Select.Content>
+                        </Select.Root>
+                      ) : null}
+                      <Box flexGrow="1" />
+                      {unreadIds.length > 0 ? (
+                        <Button
+                          size="1"
+                          variant="ghost"
+                          disabled={busy}
+                          onClick={() => void callAgent("markRead", { articleIds: unreadIds.slice(0, 200) })}
+                        >
+                          Mark all read
+                        </Button>
+                      ) : null}
+                    </Flex>
+                    <TextField.Root
+                      size="1"
+                      placeholder="Search your news…"
+                      value={searchInput}
+                      onChange={(event) => setSearchInput(event.target.value)}
+                    >
+                      <TextField.Slot>
+                        <MagnifyingGlassIcon />
+                      </TextField.Slot>
+                      {searchInput ? (
+                        <TextField.Slot side="right">
+                          <IconButton
+                            size="1"
+                            variant="ghost"
+                            color="gray"
+                            title="Clear search"
+                            aria-label="Clear search"
+                            onClick={() => setSearchInput("")}
+                          >
+                            <Cross2Icon />
+                          </IconButton>
+                        </TextField.Slot>
+                      ) : null}
+                    </TextField.Root>
                   </Flex>
                 ) : null}
 
-                {visibleArticles.map((article) => {
-                  const age = relativeAge(article.publishedAt);
-                  const fresh = isNewSinceVisit(article);
-                  return (
-                    <Flex key={article.articleId} direction="column" gap="1" style={{ opacity: article.read ? 0.55 : 1 }}>
-                      <Flex align="center" gap="2" style={{ minWidth: 0 }}>
-                        <Favicon url={article.url} />
-                        <Link
-                          href={article.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          size="2"
-                          weight={article.read ? "regular" : "medium"}
-                          style={{ minWidth: 0, wordBreak: "break-word" }}
-                          onClick={() => markReadLocal(article.articleId)}
-                        >
-                          {article.title}
-                        </Link>
-                        {fresh ? (
-                          <Badge size="1" color="blue" variant="soft" style={{ flexShrink: 0 }}>
-                            New
-                          </Badge>
-                        ) : null}
-                      </Flex>
-                      {article.blurb ? (
-                        <Text size="1" color="gray" style={{ wordBreak: "break-word" }}>
-                          {article.blurb}
+                {searching && searchBriefings.length > 0 ? (
+                  <Flex direction="column" gap="2">
+                    <Text size="1" weight="bold" color="gray">
+                      BRIEFINGS MENTIONING “{searchInput.trim()}”
+                    </Text>
+                    {searchBriefings.map((briefing) => (
+                      <Flex key={briefing.briefingId} direction="column" gap="1">
+                        <Text size="1" color="gray" title={new Date(briefing.createdAt).toLocaleString()}>
+                          {agoLabel(briefing.createdAt)}
                         </Text>
-                      ) : null}
-                      <Flex align="center" gap="2" wrap="wrap">
-                        <Text size="1" color="gray">
-                          {article.source}
-                          {age ? ` · ${age}` : ""}
-                        </Text>
-                        <Button size="1" variant="soft" disabled={busy} onClick={() => void handleDeepDive(article)}>
-                          Deep-dive
-                        </Button>
-                        {/* Feedback taps teach curation what to surface more/less of. */}
-                        <IconButton
-                          size="1"
-                          variant="ghost"
-                          color="grass"
-                          title="More like this"
-                          aria-label="More like this"
-                          onClick={() => reactToStory(article.articleId, "more")}
-                        >
-                          <ThickArrowUpIcon />
-                        </IconButton>
-                        <IconButton
-                          size="1"
-                          variant="ghost"
-                          color="gray"
-                          title="Less like this"
-                          aria-label="Less like this"
-                          onClick={() => reactToStory(article.articleId, "less")}
-                        >
-                          <ThickArrowDownIcon />
-                        </IconButton>
-                        <IconButton
-                          size="1"
-                          variant="ghost"
-                          color="gray"
-                          title={`Mute ${article.source}`}
-                          aria-label={`Mute ${article.source}`}
-                          onClick={() => reactToStory(article.articleId, "mute_source")}
-                        >
-                          <EyeNoneIcon />
-                        </IconButton>
-                        {!article.read ? (
-                          <Button
-                            size="1"
-                            variant="ghost"
-                            disabled={busy}
-                            onClick={() => markReadLocal(article.articleId)}
-                          >
-                            Mark read
-                          </Button>
-                        ) : null}
+                        {briefing.tldr ? <Markdown>{briefing.tldr}</Markdown> : null}
                       </Flex>
-                    </Flex>
-                  );
-                })}
-                {articles.length > 0 && visibleArticles.length === 0 ? (
-                  <Text size="2" color="gray">No articles match this filter.</Text>
+                    ))}
+                    <Separator size="4" my="1" />
+                  </Flex>
                 ) : null}
 
-                {articles.length === 0 && overview ? (
+                {clusters.map((cluster, index) => (
+                  <ArticleItem
+                    key={cluster.primary.articleId}
+                    article={cluster.primary}
+                    others={cluster.others}
+                    busy={busy}
+                    fresh={isNewSinceVisit(cluster.primary)}
+                    selected={index === selectedIndex}
+                    innerRef={
+                      index === selectedIndex
+                        ? (el) => {
+                            selectedRowRef.current = el;
+                          }
+                        : undefined
+                    }
+                    onDeepDive={(item) => void handleDeepDive(item)}
+                    onReact={reactToStory}
+                    onSetSaved={setSavedLocal}
+                    onMarkRead={markReadLocal}
+                  />
+                ))}
+
+                {clusters.length === 0 && (searching || view === "saved" || articles.length > 0) ? (
+                  <Text size="2" color="gray">
+                    {searching
+                      ? "No matches in your news."
+                      : view === "saved"
+                        ? "No saved stories yet — tap the ☆ on any story to keep it here."
+                        : "No articles match this filter."}
+                  </Text>
+                ) : null}
+
+                {articles.length === 0 && !searching && view !== "saved" && overview ? (
                   <QuickStart
                     busy={busy}
                     hasSources={hasSources}
@@ -892,21 +1277,25 @@ export default function NewsPanel() {
                 ) : null}
               </Flex>
             </ScrollArea>
+            </Flex>
+            ) : null}
+
+            {!narrow ? <Separator orientation="vertical" size="4" /> : null}
+
+            {/* ── embedded agentic chat ── */}
+            {!narrow || mobilePane === "chat" ? (
+              <Box style={{ flex: narrow ? "1 1 auto" : "1 1 45%", minWidth: 0 }}>
+                <AgenticChat
+                  config={config}
+                  channelName={channelName}
+                  contextId={resolvedContextId}
+                  theme={theme}
+                  installedAgents={installedAgents}
+                  sandbox={sandboxConfig}
+                />
+              </Box>
+            ) : null}
           </Flex>
-
-          <Separator orientation="vertical" size="4" />
-
-          {/* ── embedded agentic chat ── */}
-          <Box style={{ flex: "1 1 45%", minWidth: 0 }}>
-            <AgenticChat
-              config={config}
-              channelName={channelName}
-              contextId={resolvedContextId}
-              theme={theme}
-              installedAgents={installedAgents}
-              sandbox={sandboxConfig}
-            />
-          </Box>
         </Flex>
       </Theme>
     </ErrorBoundary>
@@ -1064,6 +1453,40 @@ function ReaderSettings({
                 <PlusIcon /> Follow
               </Button>
             </Flex>
+          </Flex>
+
+          <Flex direction="column" gap="1">
+            <Text size="1" weight="bold" color="gray">BRIEFING</Text>
+            <Flex align="center" gap="2" wrap="wrap">
+              <Text size="1" color="gray">Daily at</Text>
+              <input
+                type="time"
+                value={minutesToHHMM(setup.briefingAtMinutes)}
+                disabled={busy}
+                onChange={(event) => {
+                  if (event.target.value) callAgent("setSchedule", { briefingAt: event.target.value });
+                }}
+                style={{
+                  fontSize: "var(--font-size-1)",
+                  padding: "2px 6px",
+                  borderRadius: "var(--radius-2)",
+                  border: "1px solid var(--gray-a6)",
+                  background: "var(--color-surface)",
+                  color: "var(--gray-12)",
+                }}
+              />
+              <Box flexGrow="1" />
+              <Text size="1" color="gray">{setup.briefingPaused ? "Paused" : "Active"}</Text>
+              <Switch
+                size="1"
+                checked={!setup.briefingPaused}
+                disabled={busy}
+                onCheckedChange={(active) => callAgent("setBriefingPaused", { paused: !active })}
+              />
+            </Flex>
+            {setup.scheduleSummary ? (
+              <Text size="1" color="gray">{setup.scheduleSummary}</Text>
+            ) : null}
           </Flex>
         </Flex>
       ) : null}
