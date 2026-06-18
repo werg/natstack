@@ -22,7 +22,10 @@ export function createNewsTables(sql: SqlStorage): void {
       last_setup_json TEXT,
       -- 'curator' (normal personal channel) or 'analyst' (deep-dive fork):
       -- analyst channels skip feed polling, the setup card, and onboarding.
-      mode TEXT NOT NULL DEFAULT 'curator'
+      mode TEXT NOT NULL DEFAULT 'curator',
+      -- JSON array of capped reader feedback signals (👍/👎/mute) folded into
+      -- each briefing prompt so curation visibly learns from taps.
+      feedback_json TEXT
     )
   `);
   sql.exec(`
@@ -87,6 +90,8 @@ export function createNewsTables(sql: SqlStorage): void {
       tldr TEXT,
       story_ids_json TEXT NOT NULL DEFAULT '[]',
       card_message_id TEXT,
+      -- Count of concrete sources the agent fetched/read for this briefing.
+      sources_read INTEGER,
       PRIMARY KEY (channel_id, briefing_id)
     )
   `);

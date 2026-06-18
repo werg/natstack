@@ -31,10 +31,13 @@ import {
   DEFAULT_BRIEFING_INTERVAL_MS,
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_TOP_K,
+  INITIAL_BRIEFING_DELAY_MS,
+  MAX_FEEDBACK_SIGNALS,
   booleanArg,
   numberArg,
   record,
   stringArg,
+  type FeedbackSignal,
   type NewsChannelMode,
   type NewsChannelState,
 } from "./types.js";
@@ -91,8 +94,9 @@ function nextBriefingRunAt(now: number, intervalMs: number, atMinutes?: number):
 export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
   // News tables are versioned by drop-and-recreate (dev mode: articles
   // re-ingest from feeds; configuration is cheap to redo). Bump when the
-  // news_* schema changes (e.g. the channel-mode column, the article source).
-  static override schemaVersion = AgentWorkerBase.schemaVersion + 3;
+  // news_* schema changes (e.g. the channel-mode column, the article source,
+  // the feedback signals + sources-read columns).
+  static override schemaVersion = AgentWorkerBase.schemaVersion + 4;
 
   private readonly syncEngine: NewsSyncEngine;
   private readonly scheduler: RecurringScheduler;
@@ -185,6 +189,7 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
       lastError: (row["last_error"] as string | null) ?? undefined,
       lastSetupJson: (row["last_setup_json"] as string | null) ?? undefined,
       mode: row["mode"] === "analyst" ? "analyst" : "curator",
+      feedbackJson: (row["feedback_json"] as string | null) ?? undefined,
     };
   }
 
@@ -211,8 +216,8 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
   private saveChannelState(state: NewsChannelState): void {
     this.sql.exec(
       `INSERT OR REPLACE INTO news_channel_state
-       (channel_id, poll_interval_ms, briefing_interval_ms, briefing_at_minutes, top_k, setup_status, setup_prompted_at, preferences_text, last_briefing_id, last_run_at, last_error, last_setup_json, mode)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (channel_id, poll_interval_ms, briefing_interval_ms, briefing_at_minutes, top_k, setup_status, setup_prompted_at, preferences_text, last_briefing_id, last_run_at, last_error, last_setup_json, mode, feedback_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       state.channelId,
       state.pollIntervalMs,
       state.briefingIntervalMs,
@@ -225,8 +230,56 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
       state.lastRunAt ?? null,
       state.lastError ?? null,
       state.lastSetupJson ?? null,
-      state.mode
+      state.mode,
+      state.feedbackJson ?? null
     );
+  }
+
+  // ── reader feedback signals (👍 / 👎 / mute) ───────────────────────────────
+
+  private getFeedback(channelId: string): FeedbackSignal[] {
+    const raw = this.getChannelState(channelId).feedbackJson;
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as FeedbackSignal[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private addFeedback(channelId: string, signal: FeedbackSignal): void {
+    const state = this.getChannelState(channelId);
+    const existing: FeedbackSignal[] = (() => {
+      if (!state.feedbackJson) return [];
+      try {
+        const parsed = JSON.parse(state.feedbackJson);
+        return Array.isArray(parsed) ? (parsed as FeedbackSignal[]) : [];
+      } catch {
+        return [];
+      }
+    })();
+    // Drop a prior identical signal so repeated taps don't crowd out the window.
+    const deduped = existing.filter(
+      (entry) => !(entry.reaction === signal.reaction && entry.label === signal.label)
+    );
+    deduped.push(signal);
+    const capped = deduped.slice(-MAX_FEEDBACK_SIGNALS);
+    state.feedbackJson = JSON.stringify(capped);
+    this.saveChannelState(state);
+  }
+
+  /** Recent reader feedback as natural-language lines for the briefing prompt. */
+  private feedbackLines(channelId: string): string[] {
+    return this.getFeedback(channelId)
+      .slice(-12)
+      .reverse()
+      .map((signal) => {
+        const where = signal.source ? ` (${signal.source})` : "";
+        if (signal.reaction === "more") return `More like: "${signal.label}"${where}`;
+        if (signal.reaction === "less") return `Less like: "${signal.label}"${where}`;
+        return `Avoid source: ${signal.label}`;
+      });
   }
 
   // ── agent configuration ───────────────────────────────────────────────────
@@ -513,6 +566,7 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
           followedTopics: topics,
           previousTldr,
           preferencesText: state.preferencesText,
+          feedbackLines: this.feedbackLines(channelId),
           articleCountScanned: scanned,
         }),
       },
@@ -551,6 +605,7 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
       stories: this.storiesByIds(channelId, storyIds),
       articleCountScanned: storyIds.length,
       newSinceLastRun: 0,
+      sourcesRead: row["sources_read"] === null ? undefined : Number(row["sources_read"]),
     };
   }
 
@@ -895,6 +950,16 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
     if (state.setupStatus === "configured") return;
     state.setupStatus = "configured";
     this.saveChannelState(state);
+    // Cold-start delight: the very first time sources are configured, pull the
+    // first briefing forward to minutes-from-now instead of a full interval out,
+    // so a new reader sees a real digest almost immediately. The job keeps its
+    // normal interval, so subsequent runs resume the regular cadence.
+    this.scheduler.upsertJob({
+      jobId: `briefing:${channelId}`,
+      channelId,
+      intervalMs: state.briefingIntervalMs,
+      nextRunAt: this.now() + INITIAL_BRIEFING_DELAY_MS,
+    });
   }
 
   async listArticles(channelId: string, args: Record<string, unknown>): Promise<unknown> {
@@ -913,7 +978,7 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
     }
     const rows = this.sql
       .exec(
-        `SELECT a.article_id, a.title, a.canonical_url, a.published_at, a.briefed_in, a.read, a.origin,
+        `SELECT a.article_id, a.title, a.canonical_url, a.published_at, a.fetched_at, a.briefed_in, a.read, a.origin,
                 a.blurb, a.summary, a.source, f.title AS feed_title
          FROM news_articles a
          LEFT JOIN news_feeds f ON f.channel_id = a.channel_id AND f.feed_id = a.feed_id
@@ -943,6 +1008,9 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
           row["published_at"] === null
             ? undefined
             : new Date(Number(row["published_at"])).toISOString(),
+        // Epoch ms when WE first ingested it — lets the reader flag "new since
+        // your last visit" independent of the story's own publish date.
+        fetchedAt: Number(row["fetched_at"]),
         briefedIn: (row["briefed_in"] as string | null) ?? undefined,
         read: Number(row["read"]) === 1,
       })),
@@ -953,6 +1021,7 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
     const briefingId = stringArg(args, "briefingId");
     const tldr = stringArg(args, "tldr");
     if (!briefingId || !tldr) return { error: "briefingId and tldr are required" };
+    const sourcesRead = numberArg(args, "sourcesRead");
     const briefing = this.briefingState(channelId, briefingId);
     if (!briefing) return { error: `unknown briefing: ${briefingId}` };
 
@@ -1028,9 +1097,10 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
 
     const now = this.now();
     this.sql.exec(
-      `UPDATE news_briefings SET status = 'ready', tldr = ?, story_ids_json = ? WHERE channel_id = ? AND briefing_id = ?`,
+      `UPDATE news_briefings SET status = 'ready', tldr = ?, story_ids_json = ?, sources_read = ? WHERE channel_id = ? AND briefing_id = ?`,
       tldr,
       JSON.stringify(kept.map((story) => story.articleId)),
+      sourcesRead ?? null,
       channelId,
       briefingId
     );
@@ -1064,15 +1134,35 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
       stories: kept,
       articleCountScanned: briefing.articleCountScanned,
       newSinceLastRun: briefing.newSinceLastRun,
+      ...(sourcesRead !== undefined ? { sourcesRead } : {}),
     });
+    this.notifyBriefingReady(kept, sourcesRead);
     return { published: briefingId, storyCount: kept.length, at: new Date(now).toISOString() };
+  }
+
+  /** Proactive "your briefing is ready" shell notification. Best-effort — a
+   *  notification failure must never fail the briefing. */
+  private notifyBriefingReady(stories: NewsStoryRef[], sourcesRead?: number): void {
+    if (stories.length === 0) return;
+    const headlines = stories.slice(0, 3).map((story) => story.title);
+    const more = stories.length > headlines.length ? ` +${stories.length - headlines.length} more` : "";
+    const readNote =
+      sourcesRead && sourcesRead > 0 ? ` · ${sourcesRead} source${sourcesRead > 1 ? "s" : ""} read` : "";
+    this.notifications
+      .show({
+        type: "info",
+        title: `📰 Your briefing is ready — ${stories.length} stor${stories.length > 1 ? "ies" : "y"}${readNote}`,
+        message: `${headlines.join(" · ")}${more}`,
+        ttl: 12_000,
+      })
+      .catch((err) => console.warn("[NewsAgent] briefing notification failed:", err));
   }
 
   async briefingHistory(channelId: string, args: Record<string, unknown>): Promise<unknown> {
     const limit = Math.min(numberArg(args, "limit") ?? 5, 50);
     const rows = this.sql
       .exec(
-        `SELECT briefing_id, created_at, status, tldr FROM news_briefings
+        `SELECT briefing_id, created_at, status, tldr, sources_read FROM news_briefings
          WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?`,
         channelId,
         limit
@@ -1084,6 +1174,7 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
         createdAt: new Date(Number(row["created_at"])).toISOString(),
         status: String(row["status"]),
         tldr: (row["tldr"] as string | null) ?? undefined,
+        sourcesRead: row["sources_read"] === null ? undefined : Number(row["sources_read"]),
       })),
     };
   }
@@ -1153,13 +1244,88 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
     return { markedRead: ids.length };
   }
 
+  /** Reader tap that teaches curation: more/less of this kind, or mute the
+   *  source. Signals are folded into every future briefing prompt; muting also
+   *  disables the feed so it stops being polled. */
+  async reactToStory(channelId: string, args: Record<string, unknown>): Promise<unknown> {
+    const idOrPrefix = stringArg(args, "articleId");
+    const reaction = stringArg(args, "reaction");
+    if (!idOrPrefix || (reaction !== "more" && reaction !== "less" && reaction !== "mute_source")) {
+      return { error: "articleId and reaction ('more' | 'less' | 'mute_source') are required" };
+    }
+    const row = this.sql
+      .exec(
+        `SELECT a.article_id, a.title, a.feed_id, a.source, a.origin, f.title AS feed_title
+         FROM news_articles a
+         LEFT JOIN news_feeds f ON f.channel_id = a.channel_id AND f.feed_id = a.feed_id
+         WHERE a.channel_id = ? AND (a.article_id = ? OR a.article_id LIKE ? || '%') LIMIT 1`,
+        channelId,
+        idOrPrefix,
+        idOrPrefix
+      )
+      .toArray()[0];
+    if (!row) return { error: `unknown article: ${idOrPrefix}` };
+    const articleId = String(row["article_id"]);
+    const title = String(row["title"]);
+    const source =
+      (row["feed_title"] as string | null) ??
+      (row["source"] as string | null) ??
+      (String(row["origin"]) === "search" ? "web search" : "feed");
+    const feedId = (row["feed_id"] as string | null) ?? undefined;
+    const now = this.now();
+    const shortTitle = title.length > 80 ? `${title.slice(0, 80)}…` : title;
+
+    if (reaction === "mute_source") {
+      if (feedId) {
+        this.sql.exec(
+          `UPDATE news_feeds SET enabled = 0 WHERE channel_id = ? AND feed_id = ?`,
+          channelId,
+          feedId
+        );
+      }
+      this.addFeedback(channelId, { at: now, reaction: "avoid", label: source, source });
+      this.sql.exec(
+        `UPDATE news_articles SET read = 1 WHERE channel_id = ? AND article_id = ?`,
+        channelId,
+        articleId
+      );
+      await this.publishSetupCard(channelId);
+      return { muted: source, feedDisabled: Boolean(feedId) };
+    }
+
+    this.addFeedback(channelId, { at: now, reaction, label: shortTitle, source });
+    if (reaction === "less") {
+      this.sql.exec(
+        `UPDATE news_articles SET read = 1 WHERE channel_id = ? AND article_id = ?`,
+        channelId,
+        articleId
+      );
+    }
+    return { recorded: reaction, articleId };
+  }
+
   async refreshNow(channelId: string, args: Record<string, unknown>): Promise<unknown> {
     await this.runPoll(channelId, { force: true });
     if (booleanArg(args, "briefing")) {
       await this.runBriefing(channelId);
+      // A manual briefing runs outside the scheduler (which only realigns jobs
+      // it fires), so push the next scheduled briefing to the normal cadence —
+      // otherwise an early cold-start slot could fire a duplicate minutes later.
+      this.rescheduleNextBriefing(channelId);
       return { polled: true, briefingStarted: true };
     }
     return { polled: true, unbriefed: this.syncEngine.countUnbriefed(channelId) };
+  }
+
+  /** Advance the briefing job to its next normal run (cadence/anchor aware). */
+  private rescheduleNextBriefing(channelId: string): void {
+    const state = this.getChannelState(channelId);
+    this.scheduler.upsertJob({
+      jobId: `briefing:${channelId}`,
+      channelId,
+      intervalMs: state.briefingIntervalMs,
+      nextRunAt: nextBriefingRunAt(this.now(), state.briefingIntervalMs, state.briefingAtMinutes),
+    });
   }
 
   async requestDeepDive(channelId: string, args: Record<string, unknown>): Promise<unknown> {

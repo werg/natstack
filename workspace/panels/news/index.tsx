@@ -28,6 +28,7 @@ import {
   Card,
   Flex,
   Heading,
+  IconButton,
   Link,
   ScrollArea,
   SegmentedControl,
@@ -42,10 +43,13 @@ import {
 import {
   CheckIcon,
   ExclamationTriangleIcon,
+  EyeNoneIcon,
   GlobeIcon,
   LightningBoltIcon,
   PlusIcon,
   ReloadIcon,
+  ThickArrowDownIcon,
+  ThickArrowUpIcon,
 } from "@radix-ui/react-icons";
 import { AgenticChat, ErrorBoundary, markdownComponents } from "@workspace/agentic-chat";
 import type { ConnectionConfig } from "@workspace/agentic-chat";
@@ -86,11 +90,45 @@ interface ArticleRow {
   source: string;
   blurb?: string;
   publishedAt?: string;
+  /** Epoch ms we first ingested it — drives the "new since last visit" marker. */
+  fetchedAt?: number;
   briefedIn?: string;
   read: boolean;
 }
 
 const MARKDOWN_REMARK_PLUGINS = [remarkGfm];
+
+/** "3h ago" / "just now" / a date for older briefings. */
+function agoLabel(iso: string): string {
+  const age = relativeAge(iso);
+  if (!age) return new Date(iso).toLocaleDateString();
+  return age === "now" ? "just now" : `${age} ago`;
+}
+
+/** A site favicon with a graceful globe fallback. Derives the icon from the
+ *  article's OWN origin (no third-party favicon service → no domain leak). */
+function Favicon({ url }: { url: string }) {
+  const [failed, setFailed] = useState(false);
+  let origin: string | null = null;
+  try {
+    origin = new URL(url).origin;
+  } catch {
+    origin = null;
+  }
+  if (!origin || failed) {
+    return <GlobeIcon style={{ flexShrink: 0, color: "var(--gray-9)" }} />;
+  }
+  return (
+    <img
+      src={`${origin}/favicon.ico`}
+      alt=""
+      width={16}
+      height={16}
+      onError={() => setFailed(true)}
+      style={{ flexShrink: 0, borderRadius: 3, objectFit: "contain" }}
+    />
+  );
+}
 
 /** Render a briefing TLDR / story blurb as markdown, reusing the chat's
  *  component mapping so the reader matches the embedded AgenticChat. */
@@ -112,6 +150,7 @@ interface BriefingRow {
   createdAt: string;
   status: string;
   tldr?: string;
+  sourcesRead?: number;
 }
 
 interface Overview {
@@ -210,8 +249,18 @@ export default function NewsPanel() {
   const bootstrapAttempted = useRef(false);
   const modelServiceRef = useRef<DurableObjectServiceClient | null>(null);
   const modelProbeRef = useRef<{ catalog: ModelCatalog; modelRef: string } | null>(null);
+  // Snapshot the last-visit time at mount; articles fetched after it are "new".
+  // 0 (first ever visit) means "don't badge everything", so isNew requires > 0.
+  const previousVisitRef = useRef<number>(
+    typeof stateArgs.lastVisitAt === "number" ? stateArgs.lastVisitAt : 0
+  );
 
   const channelName = stateArgs.channelName ?? bootstrapChannel;
+
+  // Stamp this visit so the next open can mark what's arrived since.
+  useEffect(() => {
+    void setStateArgs({ lastVisitAt: Date.now() });
+  }, []);
 
   // ── bootstrap: mint channel + agent, resolve model, ensure-subscribe ──────
   useEffect(() => {
@@ -325,10 +374,48 @@ export default function NewsPanel() {
     return () => clearInterval(timer);
   }, [agentTarget, refresh]);
 
+  // ── lightweight agent calls (no busy/refresh churn) + optimistic updates ──
+  const quietAgentCall = useCallback(
+    (method: string, args: Record<string, unknown>) => {
+      if (!agentTarget || !channelName) return;
+      void rpc
+        .call(agentTarget, method, [channelName, args])
+        .catch((err) => console.warn(`[NewsPanel] ${method} failed:`, err));
+    },
+    [agentTarget, channelName]
+  );
+
+  const markReadLocal = useCallback(
+    (articleId: string) => {
+      setArticles((prev) =>
+        prev.map((article) => (article.articleId === articleId ? { ...article, read: true } : article))
+      );
+      quietAgentCall("markRead", { articleIds: [articleId] });
+    },
+    [quietAgentCall]
+  );
+
+  /** Reader feedback tap. "less"/"mute" also drop the story from view at once. */
+  const reactToStory = useCallback(
+    (articleId: string, reaction: "more" | "less" | "mute_source") => {
+      if (reaction !== "more") {
+        setArticles((prev) =>
+          prev.map((article) =>
+            article.articleId === articleId ? { ...article, read: true } : article
+          )
+        );
+      }
+      quietAgentCall("reactToStory", { articleId, reaction });
+    },
+    [quietAgentCall]
+  );
+
   // ── deep-dive: fork the channel into a per-story analysis chat ────────────
   const handleDeepDive = useCallback(
     async (story: DeepDiveStory) => {
       if (!channelName || !resolvedContextId) return;
+      // Opening a story to dig in counts as reading it.
+      markReadLocal(story.articleId);
       setBusy(true);
       setError(null);
       try {
@@ -392,7 +479,7 @@ export default function NewsPanel() {
         setBusy(false);
       }
     },
-    [channelName, resolvedContextId]
+    [channelName, resolvedContextId, markReadLocal]
   );
 
   // ── channel listener: live refresh + card-initiated deep-dive signals ─────
@@ -516,6 +603,12 @@ export default function NewsPanel() {
       (!unreadOnly || !article.read) && (sourceFilter === "" || article.source === sourceFilter)
   );
   const unreadIds = articles.filter((article) => !article.read).map((article) => article.articleId);
+  // "New since your last visit": arrived after the snapshotted visit time. The
+  // 0 guard avoids badging the entire feed on a first-ever visit.
+  const previousVisit = previousVisitRef.current;
+  const isNewSinceVisit = (article: ArticleRow): boolean =>
+    previousVisit > 0 && typeof article.fetchedAt === "number" && article.fetchedAt > previousVisit;
+  const newCount = articles.filter(isNewSinceVisit).length;
 
   return (
     <ErrorBoundary>
@@ -597,8 +690,16 @@ export default function NewsPanel() {
 
                 {latestReady?.tldr ? (
                   <Flex direction="column" gap="1">
-                    <Text size="1" weight="bold" color="gray">
-                      LATEST BRIEFING · {new Date(latestReady.createdAt).toLocaleString()}
+                    <Text
+                      size="1"
+                      weight="bold"
+                      color="gray"
+                      title={new Date(latestReady.createdAt).toLocaleString()}
+                    >
+                      LATEST BRIEFING · {agoLabel(latestReady.createdAt)}
+                      {latestReady.sourcesRead
+                        ? ` · synthesized from ${latestReady.sourcesRead} source${latestReady.sourcesRead > 1 ? "s" : ""}`
+                        : ""}
                     </Text>
                     <Markdown>{latestReady.tldr}</Markdown>
                   </Flex>
@@ -613,8 +714,14 @@ export default function NewsPanel() {
                       <Flex direction="column" gap="2" pt="2">
                         {pastReady.map((briefing) => (
                           <Flex key={briefing.briefingId} direction="column" gap="1">
-                            <Text size="1" weight="bold" color="gray">
-                              {new Date(briefing.createdAt).toLocaleString()}
+                            <Text
+                              size="1"
+                              weight="bold"
+                              color="gray"
+                              title={new Date(briefing.createdAt).toLocaleString()}
+                            >
+                              {agoLabel(briefing.createdAt)}
+                              {briefing.sourcesRead ? ` · ${briefing.sourcesRead} sources` : ""}
                             </Text>
                             {briefing.tldr ? <Markdown>{briefing.tldr}</Markdown> : null}
                           </Flex>
@@ -638,6 +745,11 @@ export default function NewsPanel() {
                       <SegmentedControl.Item value="all">All</SegmentedControl.Item>
                       <SegmentedControl.Item value="unread">Unread</SegmentedControl.Item>
                     </SegmentedControl.Root>
+                    {newCount > 0 ? (
+                      <Badge size="1" color="blue" variant="soft">
+                        {newCount} new since last visit
+                      </Badge>
+                    ) : null}
                     {sources.length > 1 ? (
                       <Select.Root size="1" value={sourceFilter || "__all"} onValueChange={(value) => setSourceFilter(value === "__all" ? "" : value)}>
                         <Select.Trigger placeholder="All sources" variant="soft" />
@@ -665,10 +777,11 @@ export default function NewsPanel() {
 
                 {visibleArticles.map((article) => {
                   const age = relativeAge(article.publishedAt);
+                  const fresh = isNewSinceVisit(article);
                   return (
                     <Flex key={article.articleId} direction="column" gap="1" style={{ opacity: article.read ? 0.55 : 1 }}>
                       <Flex align="center" gap="2" style={{ minWidth: 0 }}>
-                        <GlobeIcon style={{ flexShrink: 0, color: "var(--gray-9)" }} />
+                        <Favicon url={article.url} />
                         <Link
                           href={article.url}
                           target="_blank"
@@ -676,16 +789,22 @@ export default function NewsPanel() {
                           size="2"
                           weight={article.read ? "regular" : "medium"}
                           style={{ minWidth: 0, wordBreak: "break-word" }}
+                          onClick={() => markReadLocal(article.articleId)}
                         >
                           {article.title}
                         </Link>
+                        {fresh ? (
+                          <Badge size="1" color="blue" variant="soft" style={{ flexShrink: 0 }}>
+                            New
+                          </Badge>
+                        ) : null}
                       </Flex>
                       {article.blurb ? (
                         <Text size="1" color="gray" style={{ wordBreak: "break-word" }}>
                           {article.blurb}
                         </Text>
                       ) : null}
-                      <Flex align="center" gap="2">
+                      <Flex align="center" gap="2" wrap="wrap">
                         <Text size="1" color="gray">
                           {article.source}
                           {age ? ` · ${age}` : ""}
@@ -693,12 +812,43 @@ export default function NewsPanel() {
                         <Button size="1" variant="soft" disabled={busy} onClick={() => void handleDeepDive(article)}>
                           Deep-dive
                         </Button>
+                        {/* Feedback taps teach curation what to surface more/less of. */}
+                        <IconButton
+                          size="1"
+                          variant="ghost"
+                          color="grass"
+                          title="More like this"
+                          aria-label="More like this"
+                          onClick={() => reactToStory(article.articleId, "more")}
+                        >
+                          <ThickArrowUpIcon />
+                        </IconButton>
+                        <IconButton
+                          size="1"
+                          variant="ghost"
+                          color="gray"
+                          title="Less like this"
+                          aria-label="Less like this"
+                          onClick={() => reactToStory(article.articleId, "less")}
+                        >
+                          <ThickArrowDownIcon />
+                        </IconButton>
+                        <IconButton
+                          size="1"
+                          variant="ghost"
+                          color="gray"
+                          title={`Mute ${article.source}`}
+                          aria-label={`Mute ${article.source}`}
+                          onClick={() => reactToStory(article.articleId, "mute_source")}
+                        >
+                          <EyeNoneIcon />
+                        </IconButton>
                         {!article.read ? (
                           <Button
                             size="1"
                             variant="ghost"
                             disabled={busy}
-                            onClick={() => void callAgent("markRead", { articleIds: [article.articleId] })}
+                            onClick={() => markReadLocal(article.articleId)}
                           >
                             Mark read
                           </Button>

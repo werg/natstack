@@ -22,7 +22,8 @@ export const NEWS_SYSTEM_PROMPT = [
   "- Read before you write: web_fetch the stories you intend to feature so your summary reflects their real content. Never summarize from a headline alone.",
   "",
   "Briefing runs:",
-  "- A briefing turn arrives as a self-contained prompt with the ranked candidate stories, followed topics, the previous TLDR, and the user's preferences. Everything you need is in the prompt; do not ask questions mid-run.",
+  "- A briefing turn arrives as a self-contained prompt with the ranked candidate stories, followed topics, the previous TLDR, the user's preferences, and any reader feedback (👍/👎/mute taps). Everything you need is in the prompt; do not ask questions mid-run.",
+  "- Honor reader feedback signals: they outrank generic preferences, and 'avoid source' is a hard exclusion.",
   "- Go deep: web_fetch the most important stories to read them (aim for the top ~6-8 across feeds and topics — depth beats breadth). web_search each followed topic, then web_fetch the 1-2 most substantive concrete articles it surfaces (not the search page).",
   "- Write summaries that stand on their own: what happened, the load-bearing specifics (names, numbers, what's new), and why it matters — not 'an article about X'.",
   "- Every search-discovered story you keep must include its canonical article URL and a real source/publication name in news_publish_briefing.searchStories, plus a substantive blurb. Do not cite claims that are not present in the candidate metadata, search result, or fetched page.",
@@ -95,6 +96,8 @@ export interface BriefingPromptInput {
   followedTopics: string[];
   previousTldr?: string;
   preferencesText?: string;
+  /** Recent reader feedback (👍/👎/mute) as natural-language lines to honor. */
+  feedbackLines?: string[];
   articleCountScanned: number;
 }
 
@@ -109,6 +112,13 @@ export function buildBriefingPrompt(input: BriefingPromptInput): string {
   ];
   if (input.preferencesText) {
     lines.push("User preferences (honor these):", input.preferencesText, "");
+  }
+  if (input.feedbackLines && input.feedbackLines.length > 0) {
+    lines.push(
+      "Reader feedback from story taps (most recent first — weight these heavily; 'avoid source' is a hard exclusion):",
+      ...input.feedbackLines.map((line) => `- ${line}`),
+      ""
+    );
   }
   if (input.previousTldr) {
     lines.push(
@@ -138,10 +148,11 @@ export function buildBriefingPrompt(input: BriefingPromptInput): string {
     "2. Go deep: web_fetch the most important candidate stories to read their real content (aim for the top ~6-8). For each followed topic, web_search it, then web_fetch the 1-2 most substantive CONCRETE articles it surfaces — cite those specific articles, never a search page, homepage, listing/'recent' index, or aggregator.",
     "3. Call news_publish_briefing exactly once with:",
     `   - briefingId: "${input.briefingId}"`,
-    "   - tldr: a comprehensive, self-contained markdown digest. Group the day's news by theme; under each, synthesize what actually happened with the load-bearing specifics (names, numbers, what's new, why it matters) so the user gets the full picture WITHOUT clicking through. Bold the load-bearing nouns; note follow-ups from the previous TLDR.",
+    "   - tldr: a comprehensive, self-contained markdown digest the user can read WITHOUT clicking through. Structure it as: a one-line **lede** naming the single most important development; then 2-5 themed sections, each a `## Heading` followed by 1-3 tight bullets that synthesize what actually happened with the load-bearing specifics (names, numbers, what's new, why it matters); end with a `## Worth watching` section noting follow-ups from the previous TLDR. Bold the load-bearing nouns.",
     "   - storyBlurbs: a substantive 2-3 sentence summary per kept story (its real content, not 'an article about X'), keyed by the [articleId] prefixes above (full ids are fine too)",
     "   - searchStories: at most 10 concrete, canonical, non-duplicate articles you found via topic search — each {url: the specific article (NOT a search/listing/home page), title, source: the publication name, blurb: 2-3 substantive sentences}",
     "   - droppedArticleIds: candidates you cut",
+    "   - sourcesRead: how many concrete sources you actually web_fetched/read this run (your honest count — it's shown to the reader as a trust signal)",
     "4. End with one short chat line pointing at the briefing card. No long prose in chat."
   );
   return lines.join("\n");
