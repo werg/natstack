@@ -53,6 +53,7 @@ function writeCredentials(tmpDir: string, url = "https://host.tailnet.ts.net"): 
       schemaVersion: 1,
       kind: "device",
       url,
+      workspaceName: "dev",
       deviceId: "dev_cli",
       refreshToken: "refresh_cli",
     })

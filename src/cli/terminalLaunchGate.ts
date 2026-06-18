@@ -5,6 +5,10 @@ import {
   targetLabel,
   type BootstrapDecision,
 } from "@natstack/shared/bootstrapLaunchGate";
+import { createRpcClient } from "@natstack/rpc";
+import { NodeWsLike } from "@natstack/shared/shell/transport/nodeWsLike";
+import { createServerWsTransport } from "@natstack/shared/shell/transport/serverWsTransport";
+import { WebSocket } from "ws";
 import {
   HOST_TARGET_LAUNCH_SESSION_WAKE_EVENTS,
   isLaunchSessionEventForTarget,
@@ -17,7 +21,6 @@ import type {
 import { workspaceMethods } from "@natstack/shared/serviceSchemas/workspace";
 import { typedClient } from "./typedClients.js";
 import { refreshShell, RpcClient, type DeviceCredential } from "./rpcClient.js";
-import { createServerClient, type ServerClient } from "../main/serverClient.js";
 
 export interface TerminalLaunchGateOptions {
   target?: HostTarget;
@@ -143,6 +146,50 @@ interface TerminalLaunchEventClient {
   close(): Promise<void>;
 }
 
+interface EventServerClient {
+  call(service: string, method: string, args: unknown[]): Promise<unknown>;
+  close(): Promise<void>;
+}
+
+async function createEventServerClient(
+  shellToken: string,
+  opts: {
+    serverUrl: string;
+    refreshAuthToken: () => Promise<string>;
+    onServerEvent: (event: string, payload: unknown) => void;
+    onRecovery: () => void | Promise<void>;
+  }
+): Promise<EventServerClient> {
+  let activeToken = shellToken;
+  const transport = createServerWsTransport({
+    selfId: "admin",
+    serverUrl: opts.serverUrl,
+    reconnect: true,
+    logPrefix: "TerminalLaunchGate",
+    onServerEvent: opts.onServerEvent,
+    onRecovery: opts.onRecovery,
+    adapter: {
+      now: () => Date.now(),
+      getAuthToken: async () => activeToken,
+      refreshAuthToken: async () => {
+        activeToken = await opts.refreshAuthToken();
+        return activeToken;
+      },
+      createSocket: (url) => new NodeWsLike(new WebSocket(url)),
+    },
+  });
+  await transport.connectAndWait();
+  const rpc = createRpcClient({ selfId: "admin", callerKind: "server", transport });
+  return {
+    call(service, method, args) {
+      return rpc.call("main", `${service}.${method}`, args);
+    },
+    close() {
+      return transport.close();
+    },
+  };
+}
+
 async function createTerminalLaunchEventClient(
   creds: Pick<DeviceCredential, "url" | "deviceId" | "refreshToken">,
   target: HostTarget
@@ -156,15 +203,14 @@ async function createTerminalLaunchEventClient(
     revision += 1;
     for (const waiter of [...waiters]) waiter();
   };
-  const subscribeAll = async (nextClient: ServerClient | null) => {
+  const subscribeAll = async (nextClient: EventServerClient | null) => {
     if (!nextClient) return;
     await Promise.all(eventNames.map((event) => nextClient.call("events", "subscribe", [event])));
   };
   const shellToken = (await refreshShell(creds)).shellToken;
-  let client: ServerClient | null = null;
-  client = await createServerClient(0, shellToken, {
-    wsUrl: rpcWsUrl(creds.url),
-    reconnect: true,
+  let client: EventServerClient | null = null;
+  client = await createEventServerClient(shellToken, {
+    serverUrl: creds.url,
     refreshAuthToken: async () => (await refreshShell(creds)).shellToken,
     onServerEvent: (event, payload) => {
       if (isLaunchSessionEventForTarget(target, event, payload)) {
@@ -201,13 +247,6 @@ async function createTerminalLaunchEventClient(
       return client?.close() ?? Promise.resolve();
     },
   };
-}
-
-function rpcWsUrl(rawUrl: string): string {
-  const url = new URL("/rpc", rawUrl);
-  if (url.protocol === "https:") url.protocol = "wss:";
-  else url.protocol = "ws:";
-  return url.toString();
 }
 
 function formatLaunchSessionProgress(session: HostTargetLaunchSessionSnapshot): string {

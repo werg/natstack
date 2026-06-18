@@ -1,5 +1,7 @@
 import * as os from "node:os";
 import {
+  serverAuthRouteUrl,
+  serverWorkspaceRouteUrl,
   createConnectDeepLink,
   PAIRING_CODE_PATTERN,
   parseConnectLink,
@@ -18,6 +20,7 @@ export interface PairOptions {
   code?: string;
   link?: string;
   label?: string;
+  platform?: string;
 }
 
 export interface PairingInvite {
@@ -28,17 +31,24 @@ export interface PairingInvite {
   expiresAt?: number;
 }
 
-export async function completePairing(options: PairOptions): Promise<DeviceCredential> {
+export interface RemoteWorkspaceEntry {
+  name: string;
+  lastOpened: number;
+  running?: boolean;
+  ephemeral?: boolean;
+}
+
+export async function pairRemoteServer(options: PairOptions): Promise<DeviceCredential> {
   const parsed = parsePairOptions(options);
   let response: Response;
   try {
-    response = await fetch(new URL("/_r/s/auth/complete-pairing", parsed.url), {
+    response = await fetch(serverAuthRouteUrl(parsed.url, "complete-pairing"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         code: parsed.code,
         label: options.label ?? `${os.userInfo().username}@${os.hostname()}`,
-        platform: "desktop",
+        platform: options.platform ?? "desktop",
       }),
     });
   } catch (error) {
@@ -60,8 +70,67 @@ export async function completePairing(options: PairOptions): Promise<DeviceCrede
     schemaVersion: 1,
     kind: "device",
     url: parsed.url,
+    hubUrl: parsed.url,
     deviceId: body.deviceId,
     refreshToken: body.refreshToken,
+  };
+}
+
+async function postHubWorkspaceJson(
+  creds: Pick<DeviceCredential, "hubUrl" | "deviceId" | "refreshToken">,
+  route: string,
+  body: Record<string, unknown> = {}
+): Promise<Record<string, unknown>> {
+  if (!creds.hubUrl) {
+    throw new AuthError("stored credential is missing a hub URL; pair again");
+  }
+  const response = await fetch(serverWorkspaceRouteUrl(creds.hubUrl, route), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...body,
+      deviceId: creds.deviceId,
+      refreshToken: creds.refreshToken,
+    }),
+  });
+  const json = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!response.ok) {
+    throw new AuthError(remoteErrorMessage(json, `workspace ${route} failed (${response.status})`));
+  }
+  return json;
+}
+
+export async function listRemoteWorkspaces(
+  creds: Pick<DeviceCredential, "hubUrl" | "deviceId" | "refreshToken">
+): Promise<RemoteWorkspaceEntry[]> {
+  const json = await postHubWorkspaceJson(creds, "list");
+  const workspaces = Array.isArray(json["workspaces"]) ? json["workspaces"] : [];
+  const result: RemoteWorkspaceEntry[] = [];
+  for (const entry of workspaces) {
+    const record = entry as Record<string, unknown>;
+    if (typeof record["name"] !== "string") continue;
+    result.push({
+      name: record["name"],
+      lastOpened: typeof record["lastOpened"] === "number" ? record["lastOpened"] : 0,
+      running: typeof record["running"] === "boolean" ? record["running"] : undefined,
+      ephemeral: typeof record["ephemeral"] === "boolean" ? record["ephemeral"] : undefined,
+    });
+  }
+  return result;
+}
+
+export async function selectRemoteWorkspace(
+  creds: DeviceCredential,
+  name: string
+): Promise<DeviceCredential> {
+  const json = await postHubWorkspaceJson(creds, "select", { name });
+  const serverUrl = typeof json["serverUrl"] === "string" ? json["serverUrl"] : null;
+  const workspaceName = typeof json["workspaceName"] === "string" ? json["workspaceName"] : name;
+  if (!serverUrl) throw new AuthError("server did not return a workspace URL");
+  return {
+    ...creds,
+    url: serverUrl,
+    workspaceName,
   };
 }
 

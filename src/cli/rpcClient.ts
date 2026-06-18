@@ -1,4 +1,5 @@
 import { AuthError } from "./output.js";
+import { serverAuthRouteUrl, serverRpcHttpUrl } from "@natstack/shared/connect";
 
 /**
  * HTTP RPC client for a paired NatStack server.
@@ -14,6 +15,8 @@ export interface DeviceCredential {
   schemaVersion: 1;
   kind: "device";
   url: string;
+  hubUrl?: string;
+  workspaceName?: string;
   deviceId: string;
   refreshToken: string;
 }
@@ -26,7 +29,7 @@ export interface RefreshShellResponse {
   label?: string;
   serverId?: string;
   serverBootId?: string;
-  workspaceId?: string;
+  workspaceId?: string | null;
 }
 
 /** Server-reported RPC failure (HTTP 200 with an `error` body). */
@@ -59,7 +62,7 @@ async function fetchOrAuthError(url: URL, init: RequestInit): Promise<Response> 
 export async function refreshShell(
   creds: Pick<DeviceCredential, "url" | "deviceId" | "refreshToken">
 ): Promise<RefreshShellResponse> {
-  const response = await fetchOrAuthError(new URL("/_r/s/auth/refresh-shell", creds.url), {
+  const response = await fetchOrAuthError(serverAuthRouteUrl(creds.url, "refresh-shell"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ deviceId: creds.deviceId, refreshToken: creds.refreshToken }),
@@ -77,7 +80,10 @@ export async function refreshShell(
     label: typeof body["label"] === "string" ? body["label"] : undefined,
     serverId: typeof body["serverId"] === "string" ? body["serverId"] : undefined,
     serverBootId: typeof body["serverBootId"] === "string" ? body["serverBootId"] : undefined,
-    workspaceId: typeof body["workspaceId"] === "string" ? body["workspaceId"] : undefined,
+    workspaceId:
+      typeof body["workspaceId"] === "string" || body["workspaceId"] === null
+        ? body["workspaceId"]
+        : undefined,
   };
 }
 
@@ -176,7 +182,7 @@ export class RpcClient {
   }
 
   private postRpc(token: string, body: Record<string, unknown>): Promise<Response> {
-    return fetchOrAuthError(new URL("/rpc", this.creds.url), {
+    return fetchOrAuthError(serverRpcHttpUrl(this.creds.url), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

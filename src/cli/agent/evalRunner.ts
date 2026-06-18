@@ -19,6 +19,7 @@ import {
   deserializeScope,
   type SerializedScope,
 } from "@workspace/eval";
+import { serverRpcHttpUrl } from "@natstack/shared/connect";
 import { buildMethods } from "@natstack/shared/serviceSchemas/build";
 import { metaMethods } from "@natstack/shared/serviceSchemas/meta";
 import { typedClient } from "../typedClients.js";
@@ -75,7 +76,7 @@ export interface RunnerRpc {
 /** Minimal Bearer-token POST /rpc bridge (token refresh is the parent's job). */
 export function createRunnerRpc(serverUrl: string, shellToken: string): RunnerRpc {
   async function post(body: Record<string, unknown>): Promise<unknown> {
-    const response = await fetch(new URL("/rpc", serverUrl), {
+    const response = await fetch(serverRpcHttpUrl(serverUrl), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

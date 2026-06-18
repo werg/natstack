@@ -4,7 +4,7 @@ import { runtimeMethods } from "@natstack/shared/serviceSchemas/runtime";
 import { workspaceMethods } from "@natstack/shared/serviceSchemas/workspace";
 import { JSON_FLAG, type CliCommand, type ParsedInvocation } from "../commandTable.js";
 import { loadCliCredentials, saveCliCredentials, type CliCredentials } from "../credentialStore.js";
-import { completePairing } from "../remoteClient.js";
+import { pairRemoteServer, selectRemoteWorkspace } from "../remoteClient.js";
 import { RpcClient, RpcError } from "../rpcClient.js";
 import {
   deleteAgentSession,
@@ -34,10 +34,13 @@ import { skillCommand } from "./skillCommand.js";
 
 const DEFAULT_SESSION = "default";
 
-function requireCredentials(): CliCredentials {
+function requireWorkspaceCredentials(): CliCredentials {
   const creds = loadCliCredentials();
   if (!creds) {
     throw new AuthError('not paired — run `natstack remote pair "natstack://connect?..."` first');
+  }
+  if (!creds.workspaceName) {
+    throw new AuthError("no remote workspace selected — run `natstack remote select <workspace>`");
   }
   return creds;
 }
@@ -69,6 +72,8 @@ async function attach(inv: ParsedInvocation): Promise<number> {
   const json = jsonMode(inv.flags["json"] === true);
   try {
     const link = inv.positionals.find((arg) => arg.startsWith("natstack://"));
+    const workspace =
+      typeof inv.flags["workspace"] === "string" ? inv.flags["workspace"].trim() : "";
     const name = sessionName({
       ...inv,
       positionals: inv.positionals.filter((arg) => !arg.startsWith("natstack://")),
@@ -83,7 +88,7 @@ async function attach(inv: ParsedInvocation): Promise<number> {
     }
     if (!creds) {
       if (link || (url && code)) {
-        creds = await completePairing({ link, url, code });
+        creds = await pairRemoteServer({ link, url, code });
         saveCliCredentials(creds);
       } else if (process.stdin.isTTY) {
         throw new AuthError(
@@ -92,6 +97,15 @@ async function attach(inv: ParsedInvocation): Promise<number> {
       } else {
         throw new AuthError("not paired and no pairing options given");
       }
+    }
+    if (workspace) {
+      creds = await selectRemoteWorkspace(creds, workspace);
+      saveCliCredentials(creds);
+    }
+    if (!creds.workspaceName) {
+      throw new AuthError(
+        "no remote workspace selected — pass --workspace <name> or run `natstack remote select <workspace>`"
+      );
     }
     const client = new RpcClient(creds);
 
@@ -156,7 +170,7 @@ async function status(inv: ParsedInvocation): Promise<number> {
     const name = sessionName(inv);
     const session = loadAgentSession(name);
     if (!session) throw new CliError(`no session named ${name} — run \`natstack agent attach\``);
-    const creds = requireCredentials();
+    const creds = requireWorkspaceCredentials();
     const client = new RpcClient(creds);
     const live = await sessionEntityExists(client, session.entityId);
     if (!live) {
@@ -189,7 +203,7 @@ async function detach(inv: ParsedInvocation): Promise<number> {
     const name = sessionName(inv);
     const session = loadAgentSession(name);
     if (!session) throw new CliError(`no session named ${name}`);
-    const creds = requireCredentials();
+    const creds = requireWorkspaceCredentials();
     const client = new RpcClient(creds);
     const runtime = typedClient("runtime", runtimeMethods, client);
     let entityMissing = false;
@@ -229,7 +243,7 @@ async function sessions(inv: ParsedInvocation): Promise<number> {
     // Unpaired: still list local session files, with unknown liveness.
     const creds = loadCliCredentials();
     let liveIds: Set<string> | null = null;
-    if (creds) {
+    if (creds?.workspaceName) {
       const client = new RpcClient(creds);
       const runtime = typedClient("runtime", runtimeMethods, client);
       const entities = await runtime.listEntities({ kind: "session" });
@@ -285,7 +299,7 @@ async function call(inv: ParsedInvocation): Promise<number> {
       if (!Array.isArray(parsed)) throw new UsageError("ARGS_JSON must be a JSON array");
       args = parsed;
     }
-    const client = new RpcClient(requireCredentials());
+    const client = new RpcClient(requireWorkspaceCredentials());
     const result = target
       ? await client.callTarget(target, method, args)
       : await client.call(method, args);
@@ -299,7 +313,7 @@ async function call(inv: ParsedInvocation): Promise<number> {
 async function services(inv: ParsedInvocation): Promise<number> {
   const json = jsonMode(inv.flags["json"] === true);
   try {
-    const meta = typedClient("meta", metaMethods, new RpcClient(requireCredentials()));
+    const meta = typedClient("meta", metaMethods, new RpcClient(requireWorkspaceCredentials()));
     const name = inv.positionals[0];
     if (name) {
       const def = await meta.describeService(name);
@@ -327,7 +341,7 @@ async function skills(inv: ParsedInvocation): Promise<number> {
     const workspace = typedClient(
       "workspace",
       workspaceMethods,
-      new RpcClient(requireCredentials())
+      new RpcClient(requireWorkspaceCredentials())
     );
     const name = inv.positionals[0];
     if (name) {
@@ -384,7 +398,7 @@ async function logs(inv: ParsedInvocation): Promise<number> {
     const workspace = typedClient(
       "workspace",
       workspaceMethods,
-      new RpcClient(requireCredentials())
+      new RpcClient(requireWorkspaceCredentials())
     );
     const records = await workspace.units.logs(unit, options);
     printResult(records, { json });
@@ -417,7 +431,7 @@ async function diag(inv: ParsedInvocation): Promise<number> {
     const workspace = typedClient(
       "workspace",
       workspaceMethods,
-      new RpcClient(requireCredentials())
+      new RpcClient(requireWorkspaceCredentials())
     );
     const result = await workspace.units.diagnostics(unit, options);
     if (json) {
@@ -465,10 +479,11 @@ export const agentCommands: CliCommand[] = [
     group: "agent",
     name: "attach",
     summary: "Attach (create or reuse) a durable agent session entity",
-    usage: "natstack agent attach [NAME] [--url U --code C]",
+    usage: "natstack agent attach [NAME] [--url U --code C] [--workspace NAME]",
     flags: [
       { name: "url", takesValue: true, description: "Server URL (pairs first when not paired)" },
       { name: "code", takesValue: true, description: "Pairing code (with --url)" },
+      { name: "workspace", takesValue: true, description: "Select a workspace before attaching" },
       JSON_FLAG,
     ],
     run: attach,

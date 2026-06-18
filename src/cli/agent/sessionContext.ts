@@ -39,6 +39,9 @@ export function resolveSessionScope(inv: ParsedInvocation): SessionScope {
   if (!creds) {
     throw new AuthError('not paired — run `natstack remote pair "natstack://connect?..."` first');
   }
+  if (!creds.workspaceName) {
+    throw new AuthError("no remote workspace selected — run `natstack remote select <workspace>`");
+  }
   if (session.serverUrl !== creds.url) {
     throw new StaleSessionError(
       `session ${name} was created for ${session.serverUrl}, but the stored credential targets ${creds.url}`

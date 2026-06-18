@@ -65,6 +65,7 @@ describe("natstack CLI", () => {
       schemaVersion: 1,
       kind: "device",
       url: "https://host.tailnet.ts.net",
+      hubUrl: "https://host.tailnet.ts.net",
       deviceId: "dev_cli",
       refreshToken: "refresh_cli",
     });
@@ -139,9 +140,12 @@ describe("natstack CLI", () => {
     const { main } = await import("./client.js");
     await expect(main(["--help"])).resolves.toBe(0);
 
-    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("natstack remote start"));
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("natstack remote pair"));
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining("natstack mobile install"));
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining("natstack mobile smoke"));
+    expect(console.log).not.toHaveBeenCalledWith(
+      expect.stringContaining(["natstack", "remote", "start"].join(" "))
+    );
     expect(console.log).not.toHaveBeenCalledWith(expect.stringContaining("natstack-client"));
   });
 
@@ -202,7 +206,9 @@ describe("natstack CLI", () => {
       JSON.stringify({
         schemaVersion: 1,
         kind: "device",
-        url: "https://host.tailnet.ts.net",
+        url: "https://host.tailnet.ts.net/_workspace/dev",
+        hubUrl: "https://host.tailnet.ts.net",
+        workspaceName: "dev",
         deviceId: "dev_cli",
         refreshToken: "refresh_cli",
       })
@@ -234,6 +240,30 @@ describe("natstack CLI", () => {
     expect(JSON.parse(output)).toMatchObject({ workspaceId: "ws_1", serverId: "srv_1" });
   });
 
+  it("requires workspace selection before checking remote status", async () => {
+    const credentialDir = path.join(tmpDir, ".config", "natstack");
+    fs.mkdirSync(credentialDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(credentialDir, "cli-credentials.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        kind: "device",
+        url: "https://host.tailnet.ts.net",
+        hubUrl: "https://host.tailnet.ts.net",
+        deviceId: "dev_cli",
+        refreshToken: "refresh_cli",
+      })
+    );
+
+    const { main } = await import("./client.js");
+    await expect(main(["remote", "status", "--json"])).resolves.toBe(3);
+    const output = vi
+      .mocked(console.error)
+      .mock.calls.map((call) => String(call[0]))
+      .join("\n");
+    expect(output).toContain("natstack remote select <workspace>");
+  });
+
   it("reports missing credentials for status as an auth error (exit 3)", async () => {
     const { main } = await import("./client.js");
     await expect(main(["remote", "status", "--json"])).resolves.toBe(3);
@@ -254,6 +284,7 @@ describe("natstack CLI", () => {
         schemaVersion: 1,
         kind: "device",
         url: "https://host.tailnet.ts.net",
+        hubUrl: "https://host.tailnet.ts.net",
         deviceId: "dev_cli",
         refreshToken: "refresh_cli",
       })
@@ -307,6 +338,29 @@ describe("natstack CLI", () => {
     });
   });
 
+  it("requires a hub credential before creating pairing invites", async () => {
+    const credentialDir = path.join(tmpDir, ".config", "natstack");
+    fs.mkdirSync(credentialDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(credentialDir, "cli-credentials.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        kind: "device",
+        url: "https://host.tailnet.ts.net",
+        deviceId: "dev_cli",
+        refreshToken: "refresh_cli",
+      })
+    );
+
+    const { main } = await import("./client.js");
+    await expect(main(["remote", "invite", "--json"])).resolves.toBe(3);
+    const output = vi
+      .mocked(console.error)
+      .mock.calls.map((call) => String(call[0]))
+      .join("\n");
+    expect(output).toContain("missing a hub URL");
+  });
+
   it("pairs inline before starting the terminal app through the launch gate", async () => {
     const rpcMethods: string[] = [];
     const bodies: Array<{ url: string; body: unknown }> = [];
@@ -341,6 +395,15 @@ describe("natstack CLI", () => {
         if (String(url).endsWith("/_r/s/auth/complete-pairing")) {
           return new Response(
             JSON.stringify({ deviceId: "dev_terminal", refreshToken: "refresh_terminal" })
+          );
+        }
+        if (String(url).endsWith("/_r/s/workspaces/select")) {
+          return new Response(
+            JSON.stringify({
+              workspaceName: "dev",
+              serverUrl: "https://host.tailnet.ts.net/_workspace/dev",
+              running: true,
+            })
           );
         }
         if (String(url).endsWith("/_r/s/auth/refresh-shell")) {
@@ -405,6 +468,8 @@ describe("natstack CLI", () => {
       "start",
       "--pair",
       createConnectDeepLink("https://host.tailnet.ts.net", "A".repeat(24)),
+      "--workspace",
+      "dev",
       "--yes",
       "--json",
     ]);
@@ -415,7 +480,7 @@ describe("natstack CLI", () => {
       body: {
         code: "A".repeat(24),
         label: expect.stringContaining("Terminal on "),
-        platform: "desktop",
+        platform: "terminal",
       },
     });
     expect(rpcMethods).toEqual([
@@ -426,7 +491,9 @@ describe("natstack CLI", () => {
     expect(JSON.parse(fs.readFileSync(filePath, "utf8"))).toMatchObject({
       schemaVersion: 1,
       kind: "device",
-      url: "https://host.tailnet.ts.net",
+      url: "https://host.tailnet.ts.net/_workspace/dev",
+      hubUrl: "https://host.tailnet.ts.net",
+      workspaceName: "dev",
       deviceId: "dev_terminal",
       refreshToken: "refresh_terminal",
     });
@@ -456,7 +523,9 @@ describe("natstack CLI", () => {
         JSON.stringify({
           schemaVersion: 1,
           kind: "device",
-          url: "https://host.tailnet.ts.net",
+          url: "https://host.tailnet.ts.net/_workspace/dev",
+          hubUrl: "https://host.tailnet.ts.net",
+          workspaceName: "dev",
           deviceId: "dev_cli",
           refreshToken: "refresh_cli",
         })

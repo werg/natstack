@@ -246,10 +246,11 @@ async function evalRun(inv: ParsedInvocation): Promise<number> {
     const { client, contextId, session } = resolveSessionScope(inv);
     const creds = loadCliCredentials();
     if (!creds) throw new CliError("not paired");
+    if (!creds.workspaceName) throw new CliError("no remote workspace selected");
     // Reuse the client's shell token (one refresh) for both the scope RPC
     // calls below and the runner handshake.
     const shellToken = await client.getShellToken();
-    const workspaceId = client.lastRefresh?.workspaceId;
+    const workspaceId = client.lastRefresh?.workspaceId ?? undefined;
 
     const scope = typedClient("scope", scopeMethods, client);
     const channelId = scopeChannelId(session.scopeKey);

@@ -3,15 +3,24 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as readline from "node:readline/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { discoverNatstackServers } from "@natstack/shared/tailscaleDiscovery";
+import { appendServerPath, isSelectedWorkspaceUrl } from "@natstack/shared/connect";
 import {
   clearCliCredentials,
   loadCliCredentials,
   saveCliCredentials,
   credentialPath,
 } from "./credentialStore.js";
-import { completePairing, createPairingInvite, type PairOptions } from "./remoteClient.js";
+import {
+  createPairingInvite,
+  listRemoteWorkspaces,
+  pairRemoteServer,
+  selectRemoteWorkspace,
+  type PairOptions,
+  type RemoteWorkspaceEntry,
+} from "./remoteClient.js";
 import { refreshShell, type DeviceCredential } from "./rpcClient.js";
 import { runTerminalLaunchGate } from "./terminalLaunchGate.js";
 import { agentCommands } from "./agent/index.js";
@@ -46,7 +55,7 @@ async function remotePair(inv: ParsedInvocation): Promise<number> {
   if (positional?.startsWith("natstack://")) opts.link = positional;
   else if (positional) opts.url = positional;
   try {
-    const creds = await completePairing(opts);
+    const creds = await pairRemoteServer(opts);
     saveCliCredentials(creds);
     const result = { url: creds.url, credentialPath: credentialPath() };
     printResult(result, {
@@ -67,8 +76,13 @@ async function remoteStatus(inv: ParsedInvocation): Promise<number> {
   try {
     const creds = loadCliCredentials();
     if (!creds) throw new AuthError("not paired");
+    if (!creds.workspaceName || !isSelectedWorkspaceUrl(creds.url)) {
+      throw new AuthError(
+        "no remote workspace selected - run `natstack remote select <workspace>`"
+      );
+    }
     const refresh = await refreshShell(creds);
-    const response = await fetch(new URL("/healthz", creds.url));
+    const response = await fetch(appendServerPath(creds.url, "/healthz"));
     if (!response.ok) throw new AuthError(`unreachable (${response.status})`);
     const body = (await response.json()) as Record<string, unknown>;
     const result = {
@@ -107,7 +121,8 @@ async function remoteInvite(inv: ParsedInvocation): Promise<number> {
       }
       ttlMs = value;
     }
-    const invite = await createPairingInvite(creds, { ttlMs });
+    if (!creds.hubUrl) throw new AuthError("stored credential is missing a hub URL; pair again");
+    const invite = await createPairingInvite({ ...creds, url: creds.hubUrl }, { ttlMs });
     printResult(invite, {
       json,
       human: () => {
@@ -118,6 +133,60 @@ async function remoteInvite(inv: ParsedInvocation): Promise<number> {
         }
       },
     });
+    return 0;
+  } catch (error) {
+    return printError(error, { json });
+  }
+}
+
+async function remoteWorkspaceList(inv: ParsedInvocation): Promise<number> {
+  const json = jsonMode(inv.flags["json"] === true);
+  try {
+    const creds = loadCliCredentials();
+    if (!creds) throw new AuthError("not paired");
+    const workspaces = await listRemoteWorkspaces(creds);
+    printResult(
+      { workspaces },
+      {
+        json,
+        human: () => {
+          for (const workspace of workspaces) {
+            console.log(`${workspace.name}${workspace.running ? " (running)" : ""}`);
+          }
+        },
+      }
+    );
+    return 0;
+  } catch (error) {
+    return printError(error, { json });
+  }
+}
+
+async function remoteWorkspaceSelect(inv: ParsedInvocation): Promise<number> {
+  const json = jsonMode(inv.flags["json"] === true);
+  try {
+    const name =
+      inv.positionals[0] ??
+      (typeof inv.flags["workspace"] === "string" ? inv.flags["workspace"] : "");
+    if (!name) throw new UsageError("workspace name is required");
+    const creds = loadCliCredentials();
+    if (!creds) throw new AuthError("not paired");
+    const selected = await selectRemoteWorkspace(creds, name);
+    saveCliCredentials(selected);
+    printResult(
+      {
+        workspaceName: selected.workspaceName,
+        url: selected.url,
+        credentialPath: credentialPath(),
+      },
+      {
+        json,
+        human: () => {
+          console.log(`workspace: ${selected.workspaceName}`);
+          console.log(`server: ${selected.url}`);
+        },
+      }
+    );
     return 0;
   } catch (error) {
     return printError(error, { json });
@@ -141,6 +210,7 @@ function terminalPairOptions(inv: ParsedInvocation): PairOptions | null {
 
   if (opts.link || opts.url || opts.code) {
     if (!opts.label) opts.label = `Terminal on ${os.hostname()}`;
+    opts.platform = "terminal";
     return opts;
   }
   if (opts.label) {
@@ -153,20 +223,80 @@ async function terminalCredentials(
   inv: ParsedInvocation,
   json: boolean
 ): Promise<DeviceCredential> {
+  const requestedWorkspace =
+    typeof inv.flags["workspace"] === "string" ? inv.flags["workspace"].trim() : undefined;
   const pairOptions = terminalPairOptions(inv);
+  let creds: DeviceCredential;
   if (pairOptions) {
-    const creds = await completePairing(pairOptions);
+    creds = await pairRemoteServer(pairOptions);
     saveCliCredentials(creds);
     if (!json) console.log(`paired ${creds.url}`);
-    return creds;
+  } else {
+    const loaded = loadCliCredentials();
+    if (!loaded) {
+      throw new AuthError(
+        'not paired - run `natstack terminal start --pair "natstack://connect?url=...&code=..."`'
+      );
+    }
+    creds = loaded;
   }
-  const creds = loadCliCredentials();
-  if (!creds) {
+
+  if (requestedWorkspace || !creds.workspaceName) {
+    creds = await chooseTerminalWorkspace(creds, { requestedWorkspace, json });
+    saveCliCredentials(creds);
+  }
+  if (!isSelectedWorkspaceUrl(creds.url)) {
     throw new AuthError(
-      'not paired - run `natstack terminal start --pair "natstack://connect?url=...&code=..."`'
+      "stored remote credential is not scoped to a workspace; select a workspace"
     );
   }
   return creds;
+}
+
+async function chooseTerminalWorkspace(
+  creds: DeviceCredential,
+  opts: { requestedWorkspace?: string; json: boolean }
+): Promise<DeviceCredential> {
+  if (!creds.hubUrl) throw new AuthError("stored credential is missing a hub URL; pair again");
+  if (opts.requestedWorkspace) {
+    return await selectRemoteWorkspace(creds, opts.requestedWorkspace);
+  }
+  const workspaces = await listRemoteWorkspaces(creds);
+  if (workspaces.length === 0) {
+    throw new AuthError("server has no workspaces to open");
+  }
+  if (opts.json || !process.stdin.isTTY) {
+    throw new UsageError(
+      `choose a workspace with --workspace <name> (${workspaces
+        .map((workspace) => workspace.name)
+        .join(", ")})`
+    );
+  }
+  const selected = await promptWorkspaceSelection(workspaces);
+  return await selectRemoteWorkspace(creds, selected);
+}
+
+async function promptWorkspaceSelection(workspaces: RemoteWorkspaceEntry[]): Promise<string> {
+  console.log("Choose a workspace:");
+  workspaces.forEach((workspace, index) => {
+    const status = workspace.running ? " running" : "";
+    console.log(`  ${index + 1}. ${workspace.name}${status}`);
+  });
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    while (true) {
+      const answer = (await rl.question("Workspace: ")).trim();
+      const numeric = Number(answer);
+      if (Number.isInteger(numeric) && numeric >= 1 && numeric <= workspaces.length) {
+        return workspaces[numeric - 1]!.name;
+      }
+      const byName = workspaces.find((workspace) => workspace.name === answer);
+      if (byName) return byName.name;
+      console.log("Enter a workspace number or name.");
+    }
+  } finally {
+    rl.close();
+  }
 }
 
 async function terminalStart(inv: ParsedInvocation): Promise<number> {
@@ -242,16 +372,6 @@ function scriptCommand(
 }
 
 const remoteCommands: CliCommand[] = [
-  scriptCommand(
-    "remote",
-    "start",
-    "remote-start.mjs",
-    "Launch Electron against the paired server",
-    {
-      aliases: ["desktop"],
-      usage: "natstack remote start [--pair <link>]",
-    }
-  ),
   scriptCommand("remote", "serve", "remote-serve.mjs", "Start a QR/deep-link pairing server", {
     aliases: ["server"],
     usage: "natstack remote serve [--host tailscale] [--port 3030]",
@@ -289,9 +409,25 @@ const remoteCommands: CliCommand[] = [
   },
   {
     group: "remote",
+    name: "workspaces",
+    summary: "List workspaces on the paired server",
+    usage: "natstack remote workspaces",
+    flags: [JSON_FLAG],
+    run: remoteWorkspaceList,
+  },
+  {
+    group: "remote",
+    name: "select",
+    summary: "Select a workspace on the paired server",
+    usage: "natstack remote select <workspace>",
+    flags: [{ name: "workspace", takesValue: true }, JSON_FLAG],
+    run: remoteWorkspaceSelect,
+  },
+  {
+    group: "remote",
     name: "terminal",
     summary: "Review approvals and start the selected terminal app",
-    usage: "natstack remote terminal [--pair <link>] [--yes]",
+    usage: "natstack remote terminal [--pair <link>] [--workspace <name>] [--yes]",
     flags: [
       {
         name: "pair",
@@ -301,6 +437,7 @@ const remoteCommands: CliCommand[] = [
       { name: "url", takesValue: true, description: "Server URL for --code pairing" },
       { name: "code", takesValue: true, description: "Pairing code for --url pairing" },
       { name: "label", takesValue: true, description: "Device label used while pairing" },
+      { name: "workspace", takesValue: true, description: "Remote workspace to open" },
       {
         name: "yes",
         takesValue: false,
@@ -385,7 +522,7 @@ const terminalCommands: CliCommand[] = [
     name: "start",
     aliases: ["launch"],
     summary: "Review approvals and start the selected terminal app",
-    usage: "natstack terminal start [--pair <link>] [--yes]",
+    usage: "natstack terminal start [--pair <link>] [--workspace <name>] [--yes]",
     flags: [
       {
         name: "pair",
@@ -395,6 +532,7 @@ const terminalCommands: CliCommand[] = [
       { name: "url", takesValue: true, description: "Server URL for --code pairing" },
       { name: "code", takesValue: true, description: "Pairing code for --url pairing" },
       { name: "label", takesValue: true, description: "Device label used while pairing" },
+      { name: "workspace", takesValue: true, description: "Remote workspace to open" },
       {
         name: "yes",
         takesValue: false,
@@ -418,6 +556,10 @@ async function remoteHost(inv: ParsedInvocation): Promise<number> {
 
   const explicitUrl = flagStr("url");
   const explicitToken = flagStr("token");
+  if (explicitUrl && !isSelectedWorkspaceUrl(explicitUrl)) {
+    console.error("remote host requires a selected workspace URL");
+    return 3;
+  }
   let auth:
     | { serverUrl: string; token: string }
     | { deviceCredential: { serverUrl: string; deviceId: string; refreshToken: string } };
@@ -427,6 +569,14 @@ async function remoteHost(inv: ParsedInvocation): Promise<number> {
     const creds = loadCliCredentials();
     if (!creds) {
       console.error("not paired — run `natstack remote pair` first or pass --url and --token");
+      return 3;
+    }
+    if (!explicitUrl && !creds.workspaceName) {
+      console.error("no remote workspace selected — run `natstack remote select <workspace>`");
+      return 3;
+    }
+    if (!explicitUrl && !isSelectedWorkspaceUrl(creds.url)) {
+      console.error("stored remote credential is not scoped to a workspace");
       return 3;
     }
     auth = {
@@ -499,7 +649,8 @@ const mobileCommands: CliCommand[] = [
     "mobile-smoke.mjs",
     "Verify the installed internal APK can pair and reach the workspace app",
     {
-      usage: "natstack mobile smoke [--avd <name>] [--device <serial>]",
+      usage: "natstack mobile smoke [options]",
+      passthroughHelp: true,
     }
   ),
   scriptCommand("mobile", "build", "mobile-install.mjs", "Build the trusted internal APK", {

@@ -6,6 +6,8 @@ export interface CliCredentials {
   schemaVersion: 1;
   kind: "device";
   url: string;
+  hubUrl?: string;
+  workspaceName?: string;
   deviceId: string;
   refreshToken: string;
 }
