@@ -98,6 +98,19 @@ describe("CdpHostProvider", () => {
     expect(getSocketUrl()).toBe("wss://server.example/api/cdp-host?hostConnectionId=host-a");
   });
 
+  it("preserves selected workspace paths for remote gateway URLs", () => {
+    const { provider, socket, getSocketUrl } = createHarness(
+      "https://server.example/_workspace/dev"
+    );
+
+    provider.start();
+    socket.emit("open");
+
+    expect(getSocketUrl()).toBe(
+      "wss://server.example/_workspace/dev/api/cdp-host?hostConnectionId=host-a"
+    );
+  });
+
   it("forwards broker CDP commands to webContents.debugger", async () => {
     const { provider, socket, debuggerApi } = createHarness();
     provider.registerTarget("panel-1", 42);

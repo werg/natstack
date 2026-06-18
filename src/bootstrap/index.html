@@ -28,6 +28,9 @@
       main {
         width: min(680px, calc(100vw - 40px));
       }
+      main[data-bootstrap-mode="connection"] {
+        width: min(860px, calc(100vw - 40px));
+      }
       h1 {
         font-size: 28px;
         line-height: 1.12;
@@ -70,6 +73,85 @@
         border-radius: 8px;
         padding: 18px;
         box-shadow: 0 16px 40px rgb(0 0 0 / 24%);
+      }
+      .connection-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+      .connection-option {
+        border: 1px solid #31383d;
+        background: #171b1f;
+        border-radius: 8px;
+        padding: 16px;
+        min-height: 132px;
+        display: grid;
+        align-content: start;
+        gap: 12px;
+        box-shadow: 0 16px 40px rgb(0 0 0 / 18%);
+      }
+      .connection-form {
+        grid-row: span 2;
+      }
+      .connection-error {
+        grid-column: 1 / -1;
+        border: 1px solid #763636;
+        background: #341c1e;
+        color: #ffd0d0;
+        border-radius: 8px;
+        padding: 10px 12px;
+        line-height: 1.4;
+      }
+      .field-grid {
+        display: grid;
+        gap: 10px;
+      }
+      label {
+        display: grid;
+        gap: 6px;
+        color: #c4cdd2;
+        font-size: 12px;
+        font-weight: 650;
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid #3a4349;
+        background: #11161a;
+        color: #f5f7f8;
+        border-radius: 6px;
+        padding: 9px 10px;
+        font: inherit;
+        font-size: 13px;
+        outline: none;
+      }
+      input:focus {
+        border-color: #8bd8cb;
+        box-shadow: 0 0 0 3px rgb(139 216 203 / 14%);
+      }
+      .workspace-list {
+        display: grid;
+        gap: 8px;
+      }
+      .workspace-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 12px;
+        align-items: center;
+        border: 1px solid #2b3237;
+        background: #12171a;
+        border-radius: 6px;
+        padding: 10px;
+      }
+      .workspace-name {
+        font-weight: 700;
+        overflow-wrap: anywhere;
+      }
+      .inline-form {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        margin-top: 2px;
       }
       .approval {
         display: grid;
@@ -187,6 +269,8 @@
         display: inline-flex;
         align-items: center;
         gap: 8px;
+        justify-content: center;
+        min-height: 36px;
       }
       button.primary {
         background: #9de3d4;
@@ -264,6 +348,30 @@
       .launch-phase.failed .launch-phase-dot {
         background: #d56b6b;
       }
+      @media (max-width: 760px) {
+        body {
+          place-items: start center;
+          padding: 28px 0;
+        }
+        main,
+        main[data-bootstrap-mode="connection"] {
+          width: min(100vw - 28px, 680px);
+        }
+        .connection-grid {
+          grid-template-columns: 1fr;
+        }
+        .connection-form {
+          grid-row: auto;
+        }
+        .inline-form,
+        .workspace-row {
+          grid-template-columns: 1fr;
+        }
+        .workspace-row button,
+        .inline-form button {
+          width: 100%;
+        }
+      }
       @keyframes spin {
         to {
           transform: rotate(360deg);
@@ -272,12 +380,12 @@
     </style>
   </head>
   <body>
-    <main data-bootstrap-launch-gate="true">
+    <main data-bootstrap-launch-gate="true" data-bootstrap-mode="approval">
       <section class="launch-header">
         <div class="launch-mark">N</div>
         <div>
-          <p class="eyebrow">Workspace Approval</p>
-          <h1>Do you trust the code in this workspace?</h1>
+          <p id="bootstrap-eyebrow" class="eyebrow">Workspace Approval</p>
+          <h1 id="bootstrap-title">Do you trust the code in this workspace?</h1>
           <p id="launch-copy">NatStack needs your approval before it can run this workspace.</p>
         </div>
       </section>

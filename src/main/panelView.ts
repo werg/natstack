@@ -28,6 +28,9 @@ import type { BrowserHistoryRecorder, BrowserNavigationIntent } from "./browserH
 // Persistence removed — server panel service handles all persistence
 
 const log = createDevLogger("PanelView");
+const TRANSIENT_MAIN_FRAME_LOAD_RETRY_CODES = new Set([-21]); // ERR_NETWORK_CHANGED
+const MAX_TRANSIENT_MAIN_FRAME_LOAD_RETRIES = 2;
+const TRANSIENT_MAIN_FRAME_LOAD_RETRY_DELAY_MS = 500;
 
 // syncSnapshotFromManifest moved server-side (panelService snapshot replacement handles autoArchiveWhenEmpty)
 
@@ -327,6 +330,8 @@ export class PanelView implements PanelViewLike {
   private setupBrowserStateTracking(panelId: string, contents: Electron.WebContents): void {
     let pendingState: Partial<PanelNavigationState> = {};
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    let transientMainFrameLoadRetries = 0;
+    let transientLoadRetryTimer: ReturnType<typeof setTimeout> | null = null;
     let cleaned = false;
 
     const flushPendingState = () => {
@@ -391,6 +396,29 @@ export class PanelView implements PanelViewLike {
         console.warn(`[PanelView] Panel ${panelId} failed to load: ${desc} (${code}) - ${url}`);
         // -3 is ERR_ABORTED (navigation superseded) — routine, not a failure.
         if (isMainFrame && code !== -3) {
+          if (
+            TRANSIENT_MAIN_FRAME_LOAD_RETRY_CODES.has(code) &&
+            /^https?:\/\//i.test(url) &&
+            transientMainFrameLoadRetries < MAX_TRANSIENT_MAIN_FRAME_LOAD_RETRIES
+          ) {
+            transientMainFrameLoadRetries += 1;
+            if (transientLoadRetryTimer) clearTimeout(transientLoadRetryTimer);
+            transientLoadRetryTimer = setTimeout(() => {
+              transientLoadRetryTimer = null;
+              if (cleaned || contents.isDestroyed()) return;
+              log.info(
+                `Retrying transient main-frame load for ${panelId} (${transientMainFrameLoadRetries}/${MAX_TRANSIENT_MAIN_FRAME_LOAD_RETRIES}): ${url}`
+              );
+              contents.loadURL(url).catch((error: unknown) => {
+                log.warn(
+                  `[PanelView] Retry load failed for ${panelId}: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`
+                );
+              });
+            }, TRANSIENT_MAIN_FRAME_LOAD_RETRY_DELAY_MS);
+            return;
+          }
           this.showPanelErrorPage(
             panelId,
             "Panel failed to load",
@@ -419,6 +447,13 @@ export class PanelView implements PanelViewLike {
           canGoForward: contents.canGoForward(),
         });
       },
+      didFinishLoad: () => {
+        transientMainFrameLoadRetries = 0;
+        if (transientLoadRetryTimer) {
+          clearTimeout(transientLoadRetryTimer);
+          transientLoadRetryTimer = null;
+        }
+      },
       pageTitleUpdated: (_event: Electron.Event, title: string) => {
         queueStateUpdate({ pageTitle: title });
         const panel = this.panelRegistry.getPanel(panelId);
@@ -437,12 +472,14 @@ export class PanelView implements PanelViewLike {
     contents.on("responsive", handlers.responsive);
     contents.on("did-start-loading", handlers.didStartLoading);
     contents.on("did-stop-loading", handlers.didStopLoading);
+    contents.on("did-finish-load", handlers.didFinishLoad);
     contents.on("page-title-updated", handlers.pageTitleUpdated);
 
     const cleanup = () => {
       if (cleaned) return;
       cleaned = true;
       if (debounceTimer) clearTimeout(debounceTimer);
+      if (transientLoadRetryTimer) clearTimeout(transientLoadRetryTimer);
       if (!contents.isDestroyed()) {
         contents.off("did-navigate", handlers.didNavigate);
         contents.off("did-navigate-in-page", handlers.didNavigateInPage);
@@ -452,6 +489,7 @@ export class PanelView implements PanelViewLike {
         contents.off("responsive", handlers.responsive);
         contents.off("did-start-loading", handlers.didStartLoading);
         contents.off("did-stop-loading", handlers.didStopLoading);
+        contents.off("did-finish-load", handlers.didFinishLoad);
         contents.off("page-title-updated", handlers.pageTitleUpdated);
       }
       this.browserStateCleanup.delete(panelId);

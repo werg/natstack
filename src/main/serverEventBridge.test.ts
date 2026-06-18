@@ -19,15 +19,25 @@ function createHarness() {
     call: vi.fn(async () => undefined),
   };
   const warn = vi.fn();
+  const onAppHostTargetChanged = vi.fn();
   const handle = createServerEventBridge({
     eventService: eventService as never,
     getPanelOrchestrator: () => panelOrchestrator as never,
     getAppOrchestrator: () => appOrchestrator as never,
     getServerClient: () => serverClient as never,
     openExternal: vi.fn(async () => {}),
+    onAppHostTargetChanged,
     warn,
   });
-  return { handle, eventService, panelOrchestrator, appOrchestrator, serverClient, warn };
+  return {
+    handle,
+    eventService,
+    panelOrchestrator,
+    appOrchestrator,
+    serverClient,
+    onAppHostTargetChanged,
+    warn,
+  };
 }
 
 describe("createServerEventBridge", () => {
@@ -114,7 +124,7 @@ describe("createServerEventBridge", () => {
   });
 
   it("applies app availability locally and still forwards the app event to shell UI", async () => {
-    const { handle, eventService, appOrchestrator } = createHarness();
+    const { handle, eventService, appOrchestrator, onAppHostTargetChanged } = createHarness();
     const payload = {
       appId: "@workspace-apps/shell",
       target: "electron",
@@ -126,6 +136,22 @@ describe("createServerEventBridge", () => {
     await Promise.resolve();
 
     expect(appOrchestrator.applyAppAvailable).toHaveBeenCalledWith(payload);
+    expect(onAppHostTargetChanged).toHaveBeenCalledWith({ event: "apps:available", payload });
     expect(eventService.emit).toHaveBeenCalledWith("apps:available", payload);
+  });
+
+  it("only wakes desktop host sync for host-target changes that can affect Electron", () => {
+    const { handle, onAppHostTargetChanged } = createHarness();
+
+    handle("event:host-targets:changed", { target: "react-native", reason: "app-status" });
+    expect(onAppHostTargetChanged).not.toHaveBeenCalled();
+
+    const payload = { target: "electron", reason: "selection-changed" };
+    handle("event:host-targets:changed", payload);
+
+    expect(onAppHostTargetChanged).toHaveBeenCalledWith({
+      event: "host-targets:changed",
+      payload,
+    });
   });
 });

@@ -20,7 +20,17 @@ export interface ServerEventBridgeDeps {
   /** OS-level attention (badge/flash/notification) for pending approvals. */
   onApprovalPendingChanged?(pending: PendingApproval[]): void;
   /** Host-target apps changed state; desktop bootstrap can retry launch. */
-  onAppHostTargetChanged?(): void;
+  onAppHostTargetChanged?(event: ServerHostTargetChangeEvent): void;
+}
+
+export interface ServerHostTargetChangeEvent {
+  event:
+    | "apps:available"
+    | "apps:status"
+    | "extensions:status"
+    | "host-targets:changed"
+    | "host-target-launch:session-changed";
+  payload: unknown;
 }
 
 /**
@@ -122,7 +132,7 @@ export function createServerEventBridge(deps: ServerEventBridgeDeps) {
     }
 
     if (bareEvent === "apps:available") {
-      deps.onAppHostTargetChanged?.();
+      deps.onAppHostTargetChanged?.({ event: "apps:available", payload });
       void appOrchestrator
         ?.applyAppAvailable(payload as AppAvailableEvent)
         .catch((err: unknown) => {
@@ -144,7 +154,9 @@ export function createServerEventBridge(deps: ServerEventBridgeDeps) {
     ) {
       const target =
         payload && typeof payload === "object" ? (payload as { target?: unknown }).target : null;
-      if (!target || target === "electron") deps.onAppHostTargetChanged?.();
+      if (!target || target === "electron") {
+        deps.onAppHostTargetChanged?.({ event: bareEvent, payload });
+      }
       if (isValidEventName(bareEvent)) {
         emitNormalized(bareEvent, payload);
       }
@@ -152,7 +164,7 @@ export function createServerEventBridge(deps: ServerEventBridgeDeps) {
     }
 
     if (bareEvent === "apps:status" || bareEvent === "extensions:status") {
-      deps.onAppHostTargetChanged?.();
+      deps.onAppHostTargetChanged?.({ event: bareEvent, payload });
     }
 
     if (bareEvent === "panel-tree-updated") {

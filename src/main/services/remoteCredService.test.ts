@@ -90,13 +90,14 @@ describe("remoteCredService", () => {
     expect(mocks.saveRemoteCredentials).toHaveBeenCalledWith({
       kind: "device",
       url,
+      hubUrl: url,
       deviceId: "dev_1",
       refreshToken: "refresh_1",
       caPath: undefined,
       fingerprint: undefined,
     });
-    expect(mocks.app.relaunch).toHaveBeenCalled();
-    expect(mocks.app.exit).toHaveBeenCalledWith(0);
+    expect(mocks.app.relaunch).not.toHaveBeenCalled();
+    expect(mocks.app.exit).not.toHaveBeenCalled();
   });
 
   it("probes a CA-valid HTTP health endpoint without TOFU", async () => {
@@ -147,6 +148,40 @@ describe("remoteCredService", () => {
         error: "tls-mismatch",
         observedFingerprint: fixture.fingerprint,
       });
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it.runIf(hasOpenssl())("uses stored TLS pins when choosing workspaces on the hub", async () => {
+    const fixture = await startSelfSignedWorkspaceHub();
+    try {
+      mocks.loadRemoteCredentials.mockReturnValue({
+        kind: "device",
+        url: fixture.url,
+        hubUrl: fixture.url,
+        deviceId: "dev_self",
+        refreshToken: "refresh",
+        fingerprint: fixture.fingerprint,
+      });
+      const { listRemoteWorkspaces, selectRemoteWorkspace } =
+        await import("./remoteCredService.js");
+
+      await expect(listRemoteWorkspaces()).resolves.toEqual([
+        { name: "dev", lastOpened: 123, running: true, ephemeral: undefined },
+      ]);
+      await expect(selectRemoteWorkspace("dev")).resolves.toEqual({
+        workspaceName: "dev",
+        serverUrl: `${fixture.url}/_workspace/dev`,
+      });
+      expect(mocks.saveRemoteCredentials).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: `${fixture.url}/_workspace/dev`,
+          hubUrl: fixture.url,
+          workspaceName: "dev",
+          fingerprint: fixture.fingerprint,
+        })
+      );
     } finally {
       await fixture.close();
     }
@@ -286,6 +321,76 @@ async function startSelfSignedHealthServer(): Promise<{
   fingerprint: string;
   close: () => Promise<void>;
 }> {
+  return startSelfSignedServer((req, res) => {
+    if (req.method === "GET" && req.url === "/healthz") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          product: "natstack",
+          discoveryVersion: 1,
+          serverId: "srv_tls",
+          workspaceId: "ws_tls",
+        })
+      );
+      return;
+    }
+    res.writeHead(404).end();
+  });
+}
+
+async function startSelfSignedWorkspaceHub(): Promise<{
+  url: string;
+  fingerprint: string;
+  close: () => Promise<void>;
+}> {
+  return startSelfSignedServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as Record<
+        string,
+        unknown
+      >;
+      if (body["deviceId"] !== "dev_self" || body["refreshToken"] !== "refresh") {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Unauthorized" }));
+        return;
+      }
+      if (req.method === "POST" && req.url === "/_r/s/workspaces/list") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            workspaces: [{ name: "dev", lastOpened: 123, running: true }],
+          })
+        );
+        return;
+      }
+      if (req.method === "POST" && req.url === "/_r/s/workspaces/select") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            workspaceName: "dev",
+            serverUrl: `https://${req.headers.host}/_workspace/${body["name"]}`,
+          })
+        );
+        return;
+      }
+      res.writeHead(404).end();
+    });
+  });
+}
+
+async function startSelfSignedServer(
+  handler: (
+    req: import("node:http").IncomingMessage,
+    res: import("node:http").ServerResponse
+  ) => void
+): Promise<{
+  url: string;
+  fingerprint: string;
+  close: () => Promise<void>;
+}> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-remotecred-tls-"));
   const keyPath = path.join(tmpDir, "key.pem");
   const certPath = path.join(tmpDir, "cert.pem");
@@ -316,22 +421,7 @@ async function startSelfSignedHealthServer(): Promise<{
     cert: fs.readFileSync(certPath),
     key: fs.readFileSync(keyPath),
   });
-  httpsServer.on("request", (req, res) => {
-    if (req.method === "GET" && req.url === "/healthz") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          ok: true,
-          product: "natstack",
-          discoveryVersion: 1,
-          serverId: "srv_tls",
-          workspaceId: "ws_tls",
-        })
-      );
-      return;
-    }
-    res.writeHead(404).end();
-  });
+  httpsServer.on("request", handler);
 
   const port = await new Promise<number>((resolve) => {
     httpsServer.listen(0, "127.0.0.1", () => {

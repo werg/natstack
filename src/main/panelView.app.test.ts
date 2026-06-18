@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { PanelView } from "./panelView.js";
 
@@ -115,5 +116,50 @@ describe("PanelView app views", () => {
     );
     expect(viewManager.navigateView).not.toHaveBeenCalled();
     expect(viewManager.createView).not.toHaveBeenCalled();
+  });
+
+  it("retries transient main-frame load failures for app views", async () => {
+    vi.useFakeTimers();
+    const url = "https://server.example/_workspace/dev/_a/app/index.html";
+    const loadURL = vi.fn(async () => undefined);
+    const webContents = Object.assign(new EventEmitter(), {
+      id: 10,
+      isDestroyed: vi.fn(() => false),
+      getURL: vi.fn(() => url),
+      canGoBack: vi.fn(() => false),
+      canGoForward: vi.fn(() => false),
+      loadURL,
+      setWindowOpenHandler: vi.fn(),
+    });
+    const viewManager = {
+      hasView: vi.fn(() => false),
+      getViewUrl: vi.fn(() => null),
+      navigateView: vi.fn(async () => undefined),
+      updateAppView: vi.fn(async () => undefined),
+      createView: vi.fn(() => ({ webContents })),
+      getWebContents: vi.fn(() => webContents),
+    };
+    const panelView = new PanelView({
+      viewManager,
+      panelRegistry: {
+        findParentId: vi.fn(() => null),
+        getPanel: vi.fn(() => null),
+      },
+      serverInfo: { gatewayPort: 1234, externalHost: "server.example" },
+      cdpHost: {
+        registerTarget: vi.fn(),
+        unregisterTarget: vi.fn(),
+        cleanupPanelAccess: vi.fn(),
+      },
+      panelOrchestrator: {},
+      appPreloadPath: "/app-preload.js",
+    } as never);
+
+    await panelView.createViewForApp("@workspace-apps/shell", url, undefined, ["panel-hosting"]);
+    webContents.emit("did-fail-load", {}, -21, "ERR_NETWORK_CHANGED", url, true);
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(loadURL).toHaveBeenCalledWith(url);
+    vi.useRealTimers();
   });
 });

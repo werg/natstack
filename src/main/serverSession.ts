@@ -25,10 +25,11 @@ import type { PanelHttpServerLike } from "@natstack/shared/panelInterfaces";
 import type { ServerInfo } from "./serverInfo.js";
 import type { WorkspaceConfig } from "@natstack/shared/workspace/types";
 import type { CentralDataManager } from "@natstack/shared/centralData";
-import type { StartupMode } from "./startupMode.js";
-import { saveRemoteCredentials } from "./remoteCredentialStore.js";
+import { workspaceRelaunchArgs, type ConnectedStartupMode } from "./startupMode.js";
+import { loadRemoteCredentials, saveRemoteCredentials } from "./remoteCredentialStore.js";
 import { createTypedServiceClient } from "@natstack/shared/typedServiceClient";
 import { workspaceMethods } from "@natstack/shared/serviceSchemas/workspace";
+import { serverAuthRouteUrl, serverRpcWsUrl } from "@natstack/shared/connect";
 
 const log = createDevLogger("ServerSession");
 
@@ -51,7 +52,11 @@ export interface SessionConnection {
 }
 
 export function remoteGatewayServerUrl(remoteUrl: URL): string {
-  return remoteUrl.origin;
+  const url = new URL(remoteUrl.href);
+  url.search = "";
+  url.hash = "";
+  url.pathname = url.pathname.replace(/\/+$/, "") || "/";
+  return url.href.replace(/\/$/, "");
 }
 
 /**
@@ -90,7 +95,9 @@ async function postAuthJson(
   bearerToken: string | null,
   tls?: TlsPinningOptions
 ): Promise<{ statusCode: number; statusMessage: string; body: string }> {
-  const requestUrl = new URL(path, remoteUrl);
+  const requestUrl = path.startsWith("/_r/s/auth/")
+    ? serverAuthRouteUrl(remoteUrl, path.slice("/_r/s/auth/".length))
+    : new URL(path, remoteUrl);
   const body = JSON.stringify(bodyValue);
   return new Promise<{
     statusCode: number;
@@ -194,14 +201,20 @@ async function refreshShellCredential(
 }
 
 function persistRemoteShellCredential(
-  mode: Extract<StartupMode, { kind: "remote" }>,
+  mode: Extract<ConnectedStartupMode, { kind: "remote" }>,
   credential: ShellCredentialResponse
 ): void {
   if (!credential.refreshToken) return;
+  const current = loadRemoteCredentials();
+  const preserved =
+    current?.url === mode.remoteUrl.href
+      ? { hubUrl: current.hubUrl, workspaceName: current.workspaceName }
+      : {};
   if (mode.bootstrap === "device") {
     saveRemoteCredentials({
       kind: "device",
       url: mode.remoteUrl.href,
+      ...preserved,
       deviceId: credential.deviceId,
       refreshToken: credential.refreshToken,
       caPath: mode.tls?.caPath,
@@ -211,6 +224,7 @@ function persistRemoteShellCredential(
     saveRemoteCredentials({
       kind: "hybrid",
       url: mode.remoteUrl.href,
+      ...preserved,
       adminToken: mode.adminToken,
       deviceId: credential.deviceId,
       refreshToken: credential.refreshToken,
@@ -224,7 +238,7 @@ function persistRemoteShellCredential(
 }
 
 async function acquireShellCredential(
-  mode: Extract<StartupMode, { kind: "remote" }>
+  mode: Extract<ConnectedStartupMode, { kind: "remote" }>
 ): Promise<ShellCredentialResponse> {
   if (mode.deviceId && mode.refreshToken) {
     try {
@@ -258,7 +272,7 @@ async function acquireShellCredential(
  * Establish a server session — either by spawning a local server or connecting to remote.
  */
 export async function establishServerSession(args: {
-  mode: StartupMode;
+  mode: ConnectedStartupMode;
   centralData: CentralDataManager;
   onServerEvent: (event: string, payload: unknown) => void;
   onConnectionStatusChanged?: (status: ConnectionStatus) => void;
@@ -295,7 +309,7 @@ export async function establishServerSession(args: {
     };
 
     serverClient = await createServerClient(remotePort, shellToken, {
-      wsUrl: `${protocol === "https" ? "wss" : "ws"}://${externalHost}:${remotePort}/rpc`,
+      wsUrl: serverRpcWsUrl(remoteUrl),
       tls,
       reconnect: true,
       refreshAuthToken: async () => {
@@ -361,23 +375,8 @@ export async function establishServerSession(args: {
         return null;
       },
       onRelaunch: (name) => {
-        // workspace.select on the server side asked us to relaunch into a
-        // different workspace. Strip any existing --workspace=<...> args from
-        // process.argv and add the new one, then relaunch + exit cleanly.
-        const filteredArgs: string[] = [];
-        const rawArgs = process.argv.slice(1);
-        for (let i = 0; i < rawArgs.length; i++) {
-          const arg = rawArgs[i];
-          if (arg === "--workspace" && i + 1 < rawArgs.length) {
-            i++; // skip the value
-            continue;
-          }
-          if (arg && arg.startsWith("--workspace=")) continue;
-          if (arg !== undefined) filteredArgs.push(arg);
-        }
-        filteredArgs.push("--workspace", name);
         log.info(`[App] Relaunching into workspace "${name}"`);
-        app.relaunch({ args: filteredArgs });
+        app.relaunch({ args: workspaceRelaunchArgs(name) });
         app.exit(0);
       },
     });
@@ -395,7 +394,7 @@ export async function establishServerSession(args: {
       reconnect: true,
       getWsUrl: () => {
         const url = serverProcessManager?.getCurrentGatewayUrl();
-        return url ?? `ws://127.0.0.1:${ports.gatewayPort}/rpc`;
+        return url ?? serverRpcWsUrl(`http://127.0.0.1:${ports.gatewayPort}`);
       },
       refreshAuthToken: async () => {
         if (!ports.shellToken) {

@@ -13,6 +13,22 @@ import { assertBootstrapRpcMessageAllowed } from "./bootstrapTransportPolicy.js"
 
 type AnyMessageHandler = (fromId: string, message: unknown) => void;
 
+type BootstrapBridge = {
+  getState: () => Promise<unknown>;
+  launchLocalWorkspace: (workspaceName?: string) => Promise<unknown>;
+  launchEphemeralWorkspace: () => Promise<unknown>;
+  connectSelectedRemoteWorkspace: () => Promise<unknown>;
+  listRemoteWorkspaces: () => Promise<unknown>;
+  connectRemoteWorkspace: (workspaceName: string) => Promise<unknown>;
+  pairRemote: (payload: {
+    url: string;
+    code: string;
+    caPath?: string;
+    fingerprint?: string;
+    label?: string;
+  }) => Promise<unknown>;
+};
+
 const bootstrapTransport: TransportBridge = (() => {
   const listeners = new Set<AnyMessageHandler>();
 
@@ -43,4 +59,19 @@ const bootstrapTransport: TransportBridge = (() => {
   };
 })();
 
+const bootstrapBridge: BootstrapBridge = {
+  getState: () => ipcRenderer.invoke("natstack:bootstrap:get-state"),
+  launchLocalWorkspace: (workspaceName) =>
+    ipcRenderer.invoke("natstack:bootstrap:launch-local-workspace", workspaceName),
+  launchEphemeralWorkspace: () =>
+    ipcRenderer.invoke("natstack:bootstrap:launch-ephemeral-workspace"),
+  connectSelectedRemoteWorkspace: () =>
+    ipcRenderer.invoke("natstack:bootstrap:connect-selected-remote-workspace"),
+  listRemoteWorkspaces: () => ipcRenderer.invoke("natstack:bootstrap:list-remote-workspaces"),
+  connectRemoteWorkspace: (workspaceName) =>
+    ipcRenderer.invoke("natstack:bootstrap:connect-remote-workspace", workspaceName),
+  pairRemote: (payload) => ipcRenderer.invoke("natstack:bootstrap:pair-remote", payload),
+};
+
 contextBridge.exposeInMainWorld("__natstackTransport", bootstrapTransport);
+contextBridge.exposeInMainWorld("__natstackBootstrap", bootstrapBridge);

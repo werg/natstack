@@ -11,10 +11,11 @@ import {
   type RpcMessage,
 } from "@natstack/rpc";
 import { wsClientTransport } from "@natstack/rpc/transports/wsClient";
-import type { WsLike } from "@natstack/rpc/protocol/wsAdapter";
+import { NodeWsLike } from "@natstack/shared/shell/transport/nodeWsLike";
 import { authMethods } from "@natstack/shared/serviceSchemas/auth";
 import type { CallerKind } from "@natstack/shared/serviceDispatcher";
 import { createTypedServiceClient } from "@natstack/shared/typedServiceClient";
+import { serverRpcWsUrl } from "@natstack/shared/connect";
 import { createPinnedTlsSocket } from "./tlsPinning.js";
 
 export type ConnectionStatus = RpcConnectionStatus;
@@ -76,32 +77,6 @@ export interface ServerClientOptions {
   refreshAuthToken?: () => Promise<string>;
 }
 
-class NodeWsLike implements WsLike {
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { data: unknown }) => void) | null = null;
-  onclose: ((event: { code?: number; reason?: string }) => void) | null = null;
-  onerror: ((event: unknown) => void) | null = null;
-
-  constructor(private readonly ws: WebSocket) {
-    ws.on("open", () => this.onopen?.());
-    ws.on("message", (data) => this.onmessage?.({ data: data.toString() }));
-    ws.on("close", (code, reason) => this.onclose?.({ code, reason: reason.toString() }));
-    ws.on("error", (error) => this.onerror?.(error));
-  }
-
-  get readyState(): number {
-    return this.ws.readyState;
-  }
-
-  send(data: string): void {
-    this.ws.send(data);
-  }
-
-  close(code?: number, reason?: string): void {
-    this.ws.close(code, reason);
-  }
-}
-
 function createWsOptions(
   wsUrl: string,
   tlsOpts: TlsPinningOptions | undefined
@@ -135,7 +110,8 @@ export async function createServerClient(
 ): Promise<ServerClient> {
   let activeAuthToken = authToken;
   const getWsUrl =
-    options?.getWsUrl ?? (() => options?.wsUrl ?? `ws://127.0.0.1:${serverRpcPort}/rpc`);
+    options?.getWsUrl ??
+    (() => options?.wsUrl ?? serverRpcWsUrl(`http://127.0.0.1:${serverRpcPort}`));
   const shouldReconnect = options?.reconnect ?? !!(options?.wsUrl || options?.getWsUrl);
   const refreshAuthToken = options?.refreshAuthToken;
 

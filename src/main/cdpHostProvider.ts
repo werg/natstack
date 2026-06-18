@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { WebSocket } from "ws";
 import { webContents } from "electron";
 import { createDevLogger } from "@natstack/dev-log";
+import { serverCdpHostWsUrl } from "@natstack/shared/connect";
 import type { ViewManager } from "./viewManager.js";
 import type {
   RuntimeDiagnosticRecord,
@@ -134,12 +135,9 @@ export class CdpHostProvider {
     ) {
       return;
     }
-    const url = new URL("/api/cdp-host", this.options.serverUrl);
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    url.searchParams.set("hostConnectionId", this.options.hostConnectionId);
+    const url = serverCdpHostWsUrl(this.options.serverUrl, this.options.hostConnectionId);
     const socket: CdpHostProviderSocket =
-      this.options.socketFactory?.(url.toString()) ??
-      (new WebSocket(url.toString()) as CdpHostProviderSocket);
+      this.options.socketFactory?.(url) ?? (new WebSocket(url) as CdpHostProviderSocket);
     this.socket = socket;
     this.authenticated = false;
 

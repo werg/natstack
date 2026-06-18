@@ -10,6 +10,7 @@ import {
   type WebContents,
 } from "electron";
 import * as path from "path";
+import { randomBytes } from "node:crypto";
 // Silence Electron security warnings in dev; panels run in isolated webviews.
 process.env["ELECTRON_DISABLE_SECURITY_WARNINGS"] = "true";
 
@@ -77,18 +78,24 @@ import { loadCentralEnv, deleteWorkspaceDir } from "@natstack/shared/workspace/l
 import { CentralDataManager } from "@natstack/shared/centralData";
 import {
   resolveStartupMode,
-  resolveLocalStartupMode,
   shouldRequestSingleInstanceLock,
   getRemoteUserDataDir,
+  getPendingUserDataDir,
+  workspaceRelaunchArgs,
+  connectSelectedRemoteRelaunchArgs,
+  ephemeralWorkspaceRelaunchArgs,
+  stripStartupSelectionArgs,
   type StartupMode,
+  type ConnectedStartupMode,
 } from "./startupMode.js";
 import { establishServerSession, type SessionConnection } from "./serverSession.js";
+import { clearRemoteCredentials, loadRemoteCredentials } from "./remoteCredentialStore.js";
 import type { ServerClient } from "./serverClient.js";
 import { CdpHostProvider } from "./cdpHostProvider.js";
 import { EventService } from "@natstack/shared/eventsService";
 import type { EventName } from "@natstack/shared/events";
 import { HOST_TARGET_LAUNCH_SESSION_CHANGED_EVENT } from "@natstack/shared/hostTargetLaunchGate";
-import { createServerEventBridge } from "./serverEventBridge.js";
+import { createServerEventBridge, type ServerHostTargetChangeEvent } from "./serverEventBridge.js";
 import { createServerEventSubscriptionBridge } from "./serverEventSubscriptionBridge.js";
 import { createApprovalAttention, type ApprovalAttention } from "./approvalAttention.js";
 import type { PendingApproval } from "@natstack/shared/approvals";
@@ -155,7 +162,7 @@ let startupMode: StartupMode;
 let workspaceId: string = "unknown";
 
 try {
-  startupMode = resolveStartupMode(centralData);
+  startupMode = resolveStartupMode(centralData, { interactiveDesktop: !IS_HEADLESS_HOST });
 } catch (error) {
   console.error("[Workspace] Failed to initialize workspace:", error);
   app.quit();
@@ -182,32 +189,31 @@ if (startupMode.kind === "local") {
     "userData",
     path.join(startupMode.wsDir, IS_HEADLESS_HOST ? "state-headless-host" : "state")
   );
-} else {
+} else if (startupMode.kind === "remote") {
   app.setPath(
     "userData",
     IS_HEADLESS_HOST ? path.join(getRemoteUserDataDir(), "headless-host") : getRemoteUserDataDir()
   );
+} else {
+  app.setPath("userData", getPendingUserDataDir());
 }
 
 installRemoteTlsPinning(startupMode);
 
-function applyLocalStartupMode(reason: string): void {
-  const localMode = resolveLocalStartupMode(centralData);
-  startupMode = localMode;
-  workspaceId = localMode.workspaceId;
-  app.setPath(
-    "userData",
-    path.join(localMode.wsDir, IS_HEADLESS_HOST ? "state-headless-host" : "state")
-  );
-  log.warn(`[Workspace] Falling back to local mode: ${reason}`);
-}
-
-function shouldFallbackToLocalForRemoteCredential(error: unknown): boolean {
+function shouldReturnToBootstrapForRemoteCredential(error: unknown): boolean {
   if (startupMode.kind !== "remote" || startupMode.bootstrap !== "device") {
     return false;
   }
   const message = error instanceof Error ? error.message : String(error);
   return /Device credential expired or revoked|re-pair from the server/i.test(message);
+}
+
+function returnToBootstrapAfterRemoteCredentialFailure(error: unknown): never {
+  const message = error instanceof Error ? error.message : String(error);
+  log.warn(`[Workspace] Remote credential invalid; returning to server chooser: ${message}`);
+  clearRemoteCredentials();
+  relaunchWithArgs(stripStartupSelectionArgs(process.argv.slice(1)));
+  throw error instanceof Error ? error : new Error(message);
 }
 
 let cdpHostProvider: CdpHostProvider | null = null;
@@ -219,6 +225,9 @@ let pendingReadyElectronLaunch: AppAvailableEvent | null = null;
 let electronHostLaunchTimer: ReturnType<typeof setTimeout> | null = null;
 let electronHostLaunchBlockedByApproval = false;
 let electronHostLaunchInFlight = false;
+let bootstrapWorkspaceRpcReady = false;
+let appliedElectronHostTargetKey: string | null = null;
+let electronHostLaunchLastStatusKey: string | null = null;
 let panelTreeInitializationStarted = false;
 let shellCore: ReturnType<
   typeof import("./shellCore/createElectronShellCore.js").createElectronShellCore
@@ -918,10 +927,79 @@ async function applyReadyElectronLaunchResult(result: unknown): Promise<boolean>
     );
     return false;
   }
+  const launchKey = electronHostTargetKey(event);
+  if (appliedElectronHostTargetKey === launchKey) {
+    return true;
+  }
   log.info(`[apps] Applying ready Electron host target: ${event.appId}`);
   await appOrchestrator.applyAppAvailable(event);
+  appliedElectronHostTargetKey = launchKey;
   initializePanelTreeOnce("electron-host-ready");
   return true;
+}
+
+function electronHostTargetKey(event: AppAvailableEvent): string {
+  return [
+    event.appId,
+    event.source,
+    event.url,
+    event.buildKey ?? "",
+    event.effectiveVersion ?? "",
+  ].join("\u001f");
+}
+
+function recordFromUnknown(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function electronHostTargetKeyFromPayload(payload: unknown): string | null {
+  const record = recordFromUnknown(payload);
+  if (!record) return null;
+  if (record["target"] !== undefined && record["target"] !== "electron") return null;
+  if (record["selectedForHost"] === false) return null;
+  const appId = record["appId"];
+  const source = record["source"];
+  const url = record["url"];
+  if (typeof appId !== "string" || typeof source !== "string" || typeof url !== "string") {
+    return null;
+  }
+  return [
+    appId,
+    source,
+    url,
+    typeof record["buildKey"] === "string" ? record["buildKey"] : "",
+    typeof record["effectiveVersion"] === "string" ? record["effectiveVersion"] : "",
+  ].join("\u001f");
+}
+
+function shouldSyncElectronHostTargetForChange(change: ServerHostTargetChangeEvent): boolean {
+  const payload = recordFromUnknown(change.payload);
+  const target = payload?.["target"];
+  if (target !== undefined && target !== "electron") return false;
+
+  if (change.event === "apps:available") {
+    const launchKey = electronHostTargetKeyFromPayload(change.payload);
+    if (launchKey) return appliedElectronHostTargetKey !== launchKey;
+    return appliedElectronHostTargetKey === null;
+  }
+
+  if (change.event === "host-targets:changed") {
+    const reason = payload?.["reason"];
+    if (
+      reason === "selection-changed" ||
+      reason === "selection-cleared" ||
+      reason === "app-removed"
+    ) {
+      return true;
+    }
+    return appliedElectronHostTargetKey === null;
+  }
+
+  if (change.event === "host-target-launch:session-changed") {
+    return appliedElectronHostTargetKey === null;
+  }
+
+  return appliedElectronHostTargetKey === null;
 }
 
 function electronLaunchFromSessionResult(result: unknown): unknown | null {
@@ -934,8 +1012,14 @@ function electronLaunchFromSessionResult(result: unknown): unknown | null {
 async function drainPendingReadyElectronLaunch(): Promise<void> {
   if (!pendingReadyElectronLaunch || !appOrchestrator) return;
   const event = pendingReadyElectronLaunch;
+  const launchKey = electronHostTargetKey(event);
+  if (appliedElectronHostTargetKey === launchKey) {
+    pendingReadyElectronLaunch = null;
+    return;
+  }
   log.info(`[apps] Applying held Electron host target: ${event.appId}`);
   await appOrchestrator.applyAppAvailable(event);
+  appliedElectronHostTargetKey = launchKey;
   pendingReadyElectronLaunch = null;
   initializePanelTreeOnce("held-electron-host-ready");
 }
@@ -964,28 +1048,35 @@ function stopElectronHostTargetLaunchLoop(): void {
 
 type ElectronHostTargetSyncResult = "adopted" | "blocked-by-approval" | "preparing" | "retry";
 
+function rememberElectronHostLaunchStatus(
+  status: string,
+  launch: Record<string, unknown> | null
+): boolean {
+  const rawDetails = launch?.["details"];
+  const details = Array.isArray(rawDetails) ? rawDetails.join("\n") : "";
+  const key = [
+    status,
+    typeof launch?.["reason"] === "string" ? launch["reason"] : "",
+    details,
+    typeof launch?.["appId"] === "string" ? launch["appId"] : "",
+    typeof launch?.["buildKey"] === "string" ? launch["buildKey"] : "",
+    typeof launch?.["effectiveVersion"] === "string" ? launch["effectiveVersion"] : "",
+  ].join("\u001f");
+  if (electronHostLaunchLastStatusKey === key) return false;
+  electronHostLaunchLastStatusKey = key;
+  return true;
+}
+
 async function syncElectronHostTarget(
   serverClient: Pick<ServerClient, "call">
 ): Promise<ElectronHostTargetSyncResult> {
   try {
     const result = await serverClient.call("workspace", "hostTargets.launch", ["electron"]);
-    const launch =
-      typeof result === "object" && result !== null
-        ? (result as {
-            status?: unknown;
-            appId?: unknown;
-            source?: unknown;
-            target?: unknown;
-            url?: unknown;
-            capabilities?: unknown;
-            buildKey?: unknown;
-            effectiveVersion?: unknown;
-            adoptionPolicy?: unknown;
-          })
-        : null;
-    const status = launch?.status ?? null;
+    const launch = recordFromUnknown(result);
+    const status = launch?.["status"] ?? null;
     if (status === "approval-required") {
-      if (!electronHostLaunchBlockedByApproval) {
+      const statusChanged = rememberElectronHostLaunchStatus("approval-required", launch);
+      if (!electronHostLaunchBlockedByApproval || statusChanged) {
         log.info("[apps] Electron host target launch is waiting for startup approval");
       }
       electronHostLaunchBlockedByApproval = true;
@@ -993,16 +1084,21 @@ async function syncElectronHostTarget(
     }
     if (status === "ready") {
       electronHostLaunchBlockedByApproval = false;
+      rememberElectronHostLaunchStatus("ready", launch);
       return (await applyReadyElectronLaunchResult(result)) ? "adopted" : "retry";
     }
     if (status === "preparing") {
       electronHostLaunchBlockedByApproval = false;
-      log.info("[apps] Electron host target is approved and preparing");
+      if (rememberElectronHostLaunchStatus("preparing", launch)) {
+        log.info("[apps] Electron host target is approved and preparing");
+      }
       return "preparing";
     }
     electronHostLaunchBlockedByApproval = false;
     if (status !== "ready") {
-      log.warn("[apps] No launchable Electron host target is selected");
+      if (rememberElectronHostLaunchStatus("unavailable", launch)) {
+        log.warn("[apps] No launchable Electron host target is selected");
+      }
     }
     return "retry";
   } catch (error) {
@@ -1018,6 +1114,7 @@ async function syncElectronHostTarget(
 function startElectronHostTargetLaunchLoop(serverClient: Pick<ServerClient, "call">): void {
   stopElectronHostTargetLaunchLoop();
   electronHostLaunchBlockedByApproval = false;
+  electronHostLaunchLastStatusKey = null;
   scheduleElectronHostTargetLaunch(serverClient);
 }
 
@@ -1044,17 +1141,306 @@ function retryElectronHostTargetLaunchAfterApprovalChange(pending: PendingApprov
   scheduleElectronHostTargetLaunch(client);
 }
 
-function retryElectronHostTargetLaunchAfterAppEvent(): void {
+function retryElectronHostTargetLaunchAfterAppEvent(change: ServerHostTargetChangeEvent): void {
+  if (!shouldSyncElectronHostTargetForChange(change)) return;
   const client = serverSession?.serverClient;
   if (!client) return;
   scheduleElectronHostTargetLaunch(client);
+}
+
+type BootstrapWorkspaceEntry = { name: string; lastOpened: number };
+type BootstrapSavedRemote = {
+  url: string;
+  hubUrl?: string;
+  workspaceName?: string;
+  bootstrap: "device" | "admin-token" | "hybrid";
+  deviceId?: string;
+  tokenPreview?: string;
+};
+
+type BootstrapConnectionState = {
+  mode: "choose-connection" | "starting" | "connected";
+  localWorkspaces: BootstrapWorkspaceEntry[];
+  lastLocalWorkspaceName: string | null;
+  savedRemote: BootstrapSavedRemote | null;
+  isDev: boolean;
+};
+
+const WORKSPACE_NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
+
+function requireBootstrapShellSender(event: Electron.IpcMainInvokeEvent, channel: string): void {
+  const shellContents = viewManager?.getShellWebContents();
+  if (!shellContents || shellContents.isDestroyed() || shellContents.id !== event.sender.id) {
+    console.warn(`[ipc] Rejecting ${channel} from non-bootstrap sender`);
+    throw new Error(`Channel '${channel}' is bootstrap-shell-only`);
+  }
+}
+
+function summarizeStoredRemote(): BootstrapSavedRemote | null {
+  const creds = loadRemoteCredentials();
+  if (!creds) return null;
+  const adminToken =
+    creds.kind === "admin-token" || creds.kind === "hybrid" ? creds.adminToken : undefined;
+  return {
+    url: creds.url,
+    hubUrl: creds.hubUrl,
+    workspaceName: creds.workspaceName,
+    bootstrap: creds.kind,
+    deviceId: creds.kind === "device" || creds.kind === "hybrid" ? creds.deviceId : undefined,
+    tokenPreview: adminToken ? `${adminToken.slice(0, 4)}...${adminToken.slice(-4)}` : undefined,
+  };
+}
+
+function getBootstrapConnectionState(): BootstrapConnectionState {
+  const mode =
+    startupMode.kind === "pending"
+      ? "choose-connection"
+      : bootstrapWorkspaceRpcReady
+        ? "connected"
+        : "starting";
+  // Only the chooser reads localWorkspaces/savedRemote. The renderer polls getState every 500ms
+  // while "starting", so computing the workspace scan + credential decrypt on every tick is pure
+  // waste — the poll only watches for the mode flip. Compute the heavy fields only when shown.
+  if (mode !== "choose-connection") {
+    return {
+      mode,
+      localWorkspaces: [],
+      lastLocalWorkspaceName: null,
+      savedRemote: null,
+      isDev: isDev(),
+    };
+  }
+  const localWorkspaces = centralData.listWorkspaces().map((entry) => ({
+    name: entry.name,
+    lastOpened: entry.lastOpened,
+  }));
+  return {
+    mode,
+    localWorkspaces,
+    lastLocalWorkspaceName: centralData.getLastOpenedWorkspace()?.name ?? null,
+    savedRemote: summarizeStoredRemote(),
+    isDev: isDev(),
+  };
+}
+
+function normalizeBootstrapWorkspaceName(rawName: unknown): string {
+  const name =
+    typeof rawName === "string" && rawName.trim().length > 0
+      ? rawName.trim()
+      : (centralData.getLastOpenedWorkspace()?.name ?? "default");
+  if (!WORKSPACE_NAME_RE.test(name)) {
+    throw new Error("Workspace name must contain only letters, numbers, hyphens, and underscores");
+  }
+  return name;
+}
+
+function relaunchWithArgs(args: string[]): void {
+  if (
+    isDev() &&
+    process.env["NATSTACK_DEV_RUNNER_IPC"] === "1" &&
+    typeof (process as typeof process & { send?: (message: unknown) => boolean }).send ===
+      "function"
+  ) {
+    const sent = (process as typeof process & { send: (message: unknown) => boolean }).send({
+      type: "natstack:dev-relaunch",
+      args,
+    });
+    if (!sent) {
+      app.relaunch({ args });
+    }
+    const exitTimer = setTimeout(() => app.exit(0), 1_000);
+    exitTimer.unref?.();
+    return;
+  }
+  app.relaunch({ args });
+  app.exit(0);
+}
+
+/**
+ * Recover a headless host that is paired with a remote hub but has not selected a workspace yet.
+ * A headless host has no chooser UI, so: auto-select when exactly one workspace exists, otherwise
+ * log an actionable error and stay alive (never hard-quit a recoverable state — a supervisor can
+ * create/select a workspace or set NATSTACK_REMOTE_URL and restart).
+ */
+async function recoverHeadlessPendingWorkspace(): Promise<void> {
+  try {
+    const { listRemoteWorkspaces, selectRemoteWorkspace } =
+      await import("./services/remoteCredService.js");
+    const workspaces = await listRemoteWorkspaces();
+    if (workspaces.length === 1) {
+      const only = workspaces[0]!;
+      log.info(`[headless] Auto-selecting the only remote workspace "${only.name}"`);
+      await selectRemoteWorkspace(only.name);
+      relaunchWithArgs(connectSelectedRemoteRelaunchArgs());
+      return;
+    }
+    log.error(
+      workspaces.length === 0
+        ? "[headless] Paired with remote server but it has no workspaces. Create a workspace on the " +
+            "server, then restart the headless host."
+        : `[headless] Paired with remote server but no workspace is selected and ${workspaces.length} ` +
+            "are available. Set NATSTACK_REMOTE_URL to a /_workspace/<name> URL (or select a " +
+            "workspace) and restart the headless host."
+    );
+  } catch (error) {
+    log.error(
+      `[headless] Failed to resolve remote workspace selection: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+}
+
+function installBootstrapConnectionHandlers(): void {
+  ipcMain.handle("natstack:bootstrap:get-state", (event) => {
+    requireBootstrapShellSender(event, "natstack:bootstrap:get-state");
+    return getBootstrapConnectionState();
+  });
+
+  ipcMain.handle("natstack:bootstrap:launch-local-workspace", (event, workspaceName?: string) => {
+    requireBootstrapShellSender(event, "natstack:bootstrap:launch-local-workspace");
+    const name = normalizeBootstrapWorkspaceName(workspaceName);
+    log.info(`[bootstrap] Launching local workspace "${name}" by user request`);
+    relaunchWithArgs(workspaceRelaunchArgs(name));
+    return { ok: true };
+  });
+
+  ipcMain.handle("natstack:bootstrap:launch-ephemeral-workspace", (event) => {
+    requireBootstrapShellSender(event, "natstack:bootstrap:launch-ephemeral-workspace");
+    if (!isDev()) {
+      throw new Error("Ephemeral workspaces are only available in development mode");
+    }
+    const name = `dev-${randomBytes(4).toString("hex")}`;
+    log.info(`[bootstrap] Launching ephemeral dev workspace "${name}" by user request`);
+    relaunchWithArgs(ephemeralWorkspaceRelaunchArgs(name));
+    return { ok: true };
+  });
+
+  ipcMain.handle("natstack:bootstrap:connect-selected-remote-workspace", (event) => {
+    requireBootstrapShellSender(event, "natstack:bootstrap:connect-selected-remote-workspace");
+    const creds = loadRemoteCredentials();
+    if (!creds) {
+      throw new Error("No saved remote server credentials are available");
+    }
+    if (!creds.workspaceName) {
+      throw new Error("Choose a remote workspace before connecting");
+    }
+    log.info(`[bootstrap] Connecting to selected remote workspace "${creds.workspaceName}"`);
+    relaunchWithArgs(connectSelectedRemoteRelaunchArgs());
+    return { ok: true };
+  });
+
+  ipcMain.handle("natstack:bootstrap:pair-remote", async (event, payload: unknown) => {
+    requireBootstrapShellSender(event, "natstack:bootstrap:pair-remote");
+    const { exchangePairingCodeForDeviceCredential } =
+      await import("./services/remoteCredService.js");
+    const result = await exchangePairingCodeForDeviceCredential(
+      payload as {
+        url: string;
+        code: string;
+        caPath?: string;
+        fingerprint?: string;
+        label?: string;
+      }
+    );
+    if (result.ok) {
+      log.info("[bootstrap] Paired remote server by user request");
+    }
+    return result;
+  });
+
+  ipcMain.handle("natstack:bootstrap:list-remote-workspaces", async (event) => {
+    requireBootstrapShellSender(event, "natstack:bootstrap:list-remote-workspaces");
+    const { listRemoteWorkspaces } = await import("./services/remoteCredService.js");
+    return { workspaces: await listRemoteWorkspaces() };
+  });
+
+  ipcMain.handle(
+    "natstack:bootstrap:connect-remote-workspace",
+    async (event, workspaceName: unknown) => {
+      requireBootstrapShellSender(event, "natstack:bootstrap:connect-remote-workspace");
+      if (typeof workspaceName !== "string" || workspaceName.trim().length === 0) {
+        throw new Error("Workspace name is required");
+      }
+      const { selectRemoteWorkspace } = await import("./services/remoteCredService.js");
+      const result = await selectRemoteWorkspace(workspaceName.trim());
+      log.info(`[bootstrap] Connecting to remote workspace "${result.workspaceName}"`);
+      relaunchWithArgs(connectSelectedRemoteRelaunchArgs());
+      return { ok: true };
+    }
+  );
 }
 
 // =============================================================================
 // Window Creation
 // =============================================================================
 
+function attachWorkspaceWindowServices(): void {
+  if (!viewManager || !panelRegistry || !panelOrchestrator || !serverSession || panelView) return;
+
+  const browserHistoryRecorder = new BrowserHistoryRecorder(serverSession.serverClient);
+  panelView = new PanelView({
+    viewManager,
+    panelRegistry,
+    serverInfo: serverSession.serverInfo,
+    cdpHost: createCdpRegistrationAdapter(),
+    panelOrchestrator,
+    sendPanelEvent: (panelId, event, payload) => {
+      const wc = viewManager?.getWebContents(panelId);
+      if (wc && !wc.isDestroyed()) {
+        wc.send("natstack:event", event, payload);
+      }
+    },
+    autofillManager: autofillManager ?? undefined,
+    autofillPreloadPath: path.join(__dirname, "autofillPreload.cjs"),
+    panelPreloadPath: path.join(__dirname, "panelPreload.cjs"),
+    appPreloadPath: path.join(__dirname, "appPreload.cjs"),
+    browserPreloadPath: path.join(__dirname, "browserPreload.cjs"),
+    browserHistoryRecorder,
+  });
+  appOrchestrator = new AppOrchestrator({
+    getPanelView: () => panelView,
+    statePath: startupMode.kind === "remote" ? getRemoteUserDataDir() : serverSession.statePath,
+  });
+  void drainPendingReadyElectronLaunch().catch((error: unknown) => {
+    log.warn(
+      `[apps] Failed to apply held Electron host target: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  });
+  startElectronHostTargetLaunchLoop(serverSession.serverClient);
+  void appOrchestrator
+    .loadBakedApp(path.join(getResourcesPath(), "baked-app"))
+    .then((loaded) => {
+      if (loaded) initializePanelTreeOnce("baked-electron-host");
+    })
+    .catch((error: unknown) => {
+      log.error(
+        `[dist] Failed to load baked app payload: ${error instanceof Error ? error.message : String(error)}`
+      );
+    });
+
+  // Wire autofill overlay to window, z-order changes, and panel switches
+  if (autofillManager && mainWindow && viewManager) {
+    autofillManager.setWindow(mainWindow);
+    viewManager.onViewOrderChanged(() => autofillManager?.onViewOrderChanged());
+    viewManager.onViewHidden((viewId) => autofillManager?.onPanelHidden(viewId));
+  }
+
+  viewManager.onViewCrashed((viewId, reason) => {
+    assertPresent(panelView).handleViewCrashed(viewId, reason);
+  });
+
+  setupTestApi(panelOrchestrator, panelRegistry, panelView);
+}
+
 function createWindow(): void {
+  if (mainWindow && viewManager) {
+    attachWorkspaceWindowServices();
+    return;
+  }
+
   // Create BaseWindow (no webContents of its own)
   // Start hidden to avoid layout flash - shown after shell content loads
   mainWindow = new BaseWindow({
@@ -1084,7 +1470,11 @@ function createWindow(): void {
 
   // Set native window title for OS taskbar / window switcher (Alt+Tab / dock)
   mainWindow.setTitle(
-    IS_HEADLESS_HOST ? `NatStack Headless Host — ${workspaceId}` : `NatStack — ${workspaceId}`
+    startupMode.kind === "pending"
+      ? "NatStack - Connect"
+      : IS_HEADLESS_HOST
+        ? `NatStack Headless Host — ${workspaceId}`
+        : `NatStack — ${workspaceId}`
   );
 
   mainWindow.on("focus", () => approvalAttention?.handleWindowFocus());
@@ -1096,65 +1486,11 @@ function createWindow(): void {
     panelView = null; // Clear so getPanelView() returns null until recreated
     appOrchestrator = null;
     panelTreeInitializationStarted = false;
+    appliedElectronHostTargetKey = null;
+    electronHostLaunchLastStatusKey = null;
   });
 
-  if (viewManager && panelRegistry && panelOrchestrator && serverSession) {
-    const browserHistoryRecorder = new BrowserHistoryRecorder(serverSession.serverClient);
-    panelView = new PanelView({
-      viewManager,
-      panelRegistry,
-      serverInfo: serverSession.serverInfo,
-      cdpHost: createCdpRegistrationAdapter(),
-      panelOrchestrator,
-      sendPanelEvent: (panelId, event, payload) => {
-        const wc = viewManager?.getWebContents(panelId);
-        if (wc && !wc.isDestroyed()) {
-          wc.send("natstack:event", event, payload);
-        }
-      },
-      autofillManager: autofillManager ?? undefined,
-      autofillPreloadPath: path.join(__dirname, "autofillPreload.cjs"),
-      panelPreloadPath: path.join(__dirname, "panelPreload.cjs"),
-      appPreloadPath: path.join(__dirname, "appPreload.cjs"),
-      browserPreloadPath: path.join(__dirname, "browserPreload.cjs"),
-      browserHistoryRecorder,
-    });
-    appOrchestrator = new AppOrchestrator({
-      getPanelView: () => panelView,
-      statePath: startupMode.kind === "remote" ? getRemoteUserDataDir() : serverSession.statePath,
-    });
-    void drainPendingReadyElectronLaunch().catch((error: unknown) => {
-      log.warn(
-        `[apps] Failed to apply held Electron host target: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    });
-    startElectronHostTargetLaunchLoop(serverSession.serverClient);
-    void appOrchestrator
-      .loadBakedApp(path.join(getResourcesPath(), "baked-app"))
-      .then((loaded) => {
-        if (loaded) initializePanelTreeOnce("baked-electron-host");
-      })
-      .catch((error: unknown) => {
-        log.error(
-          `[dist] Failed to load baked app payload: ${error instanceof Error ? error.message : String(error)}`
-        );
-      });
-
-    // Wire autofill overlay to window, z-order changes, and panel switches
-    if (autofillManager && mainWindow && viewManager) {
-      autofillManager.setWindow(mainWindow);
-      viewManager.onViewOrderChanged(() => autofillManager?.onViewOrderChanged());
-      viewManager.onViewHidden((viewId) => autofillManager?.onPanelHidden(viewId));
-    }
-
-    viewManager.onViewCrashed((viewId, reason) => {
-      assertPresent(panelView).handleViewCrashed(viewId, reason);
-    });
-
-    setupTestApi(panelOrchestrator, panelRegistry, panelView);
-  }
+  attachWorkspaceWindowServices();
 
   // Optional memory diagnostics (env-driven).
   if (viewManager) setMemoryMonitorViewManager(viewManager);
@@ -1208,6 +1544,7 @@ app.on("ready", async () => {
     mainWindow?.show();
     mainWindow?.focus();
   });
+  installBootstrapConnectionHandlers();
 
   // Default to browser CORS. For panel fetch/XHR responses, relax CORS only
   // after the trusted shell approval flow grants that panel access to the
@@ -1367,6 +1704,23 @@ app.on("ready", async () => {
     }
   }
 
+  if (startupMode.kind === "pending") {
+    if (IS_HEADLESS_HOST) {
+      // No chooser UI on a headless host — recover by auto-selecting (or surface an actionable
+      // error) instead of opening a window that nothing can drive.
+      void recoverHeadlessPendingWorkspace();
+      return;
+    }
+    performance.mark("startup:window-created");
+    createWindow();
+    return;
+  }
+
+  if (!IS_HEADLESS_HOST) {
+    performance.mark("startup:window-created");
+    createWindow();
+  }
+
   const dispatcher = new ServiceDispatcher();
 
   performance.mark("startup:services-registered");
@@ -1430,7 +1784,8 @@ app.on("ready", async () => {
     });
 
     let previousStatus: import("./serverClient.js").ConnectionStatus | null = null;
-    const establish = (mode: StartupMode) =>
+    const connectedStartupMode: ConnectedStartupMode = startupMode;
+    const establish = (mode: ConnectedStartupMode) =>
       establishServerSession({
         mode,
         centralData,
@@ -1466,11 +1821,10 @@ app.on("ready", async () => {
 
     // Phase 1: Establish server session (spawn or connect)
     try {
-      serverSession = await establish(startupMode);
+      serverSession = await establish(connectedStartupMode);
     } catch (error) {
-      if (!shouldFallbackToLocalForRemoteCredential(error)) throw error;
-      applyLocalStartupMode(error instanceof Error ? error.message : String(error));
-      serverSession = await establish(startupMode);
+      if (!shouldReturnToBootstrapForRemoteCredential(error)) throw error;
+      returnToBootstrapAfterRemoteCredentialFailure(error);
     }
     serverClientRef = serverSession.serverClient;
     serverEventSubscriptions.add("apps:available");
@@ -1586,6 +1940,11 @@ app.on("ready", async () => {
     });
     log.info(`[PanelHTTP] Using server's panel HTTP via gateway port ${conn.gatewayPort}`);
 
+    const gatewayBasePath = (() => {
+      const pathname = new URL(conn.gatewayConfig.serverUrl).pathname.replace(/\/+$/, "");
+      return pathname === "/" ? "" : pathname;
+    })();
+
     // Create PanelOrchestrator
     panelOrchestrator = new PanelOrchestrator({
       registry: panelRegistry,
@@ -1598,6 +1957,7 @@ app.on("ready", async () => {
       externalHost: conn.externalHost,
       protocol: conn.protocol,
       gatewayPort: conn.gatewayPort,
+      gatewayBasePath,
       sendPanelEvent: (panelId, event, payload) => {
         const wc = viewManager?.getWebContents(panelId);
         if (wc && !wc.isDestroyed()) {
@@ -2130,10 +2490,17 @@ app.on("ready", async () => {
       );
     });
 
-    // createWindow will create ViewManager, PanelView, and initialize panel tree
+    // Workspace RPC is now registered; the bootstrap shell may leave its
+    // starting state and open the startup approval gate.
+    bootstrapWorkspaceRpcReady = true;
+    // createWindow is idempotent: early startup creates the shell, this call
+    // attaches workspace services once the server session is ready.
+    if (IS_HEADLESS_HOST) {
+      performance.mark("startup:window-created");
+    }
     void createWindow();
 
-    performance.mark("startup:window-created");
+    performance.mark("startup:workspace-window-attached");
 
     // Log startup timing in dev mode
     if (isDev()) {
@@ -2298,7 +2665,7 @@ app.on("will-quit", (event) => {
 });
 
 app.on("activate", () => {
-  if (mainWindow === null && serverSession) {
+  if (mainWindow === null && (serverSession || startupMode.kind === "pending")) {
     void createWindow();
   }
   const focusedPanelId = panelRegistry?.getFocusedPanelId();

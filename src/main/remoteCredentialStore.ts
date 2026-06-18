@@ -26,6 +26,8 @@ type StoredV2 =
       schemaVersion: 2;
       kind: "admin-token";
       url: string;
+      hubUrl?: string;
+      workspaceName?: string;
       caPath?: string;
       fingerprint?: string;
       adminToken: EncryptedField;
@@ -34,6 +36,8 @@ type StoredV2 =
       schemaVersion: 2;
       kind: "device";
       url: string;
+      hubUrl?: string;
+      workspaceName?: string;
       caPath?: string;
       fingerprint?: string;
       deviceId: string;
@@ -43,6 +47,8 @@ type StoredV2 =
       schemaVersion: 2;
       kind: "hybrid";
       url: string;
+      hubUrl?: string;
+      workspaceName?: string;
       caPath?: string;
       fingerprint?: string;
       adminToken: EncryptedField;
@@ -54,6 +60,8 @@ export type LoadedCredentials =
   | {
       kind: "admin-token";
       url: string;
+      hubUrl?: string;
+      workspaceName?: string;
       adminToken: string;
       caPath?: string;
       fingerprint?: string;
@@ -61,6 +69,8 @@ export type LoadedCredentials =
   | {
       kind: "device";
       url: string;
+      hubUrl?: string;
+      workspaceName?: string;
       deviceId: string;
       refreshToken: string;
       caPath?: string;
@@ -69,6 +79,8 @@ export type LoadedCredentials =
   | {
       kind: "hybrid";
       url: string;
+      hubUrl?: string;
+      workspaceName?: string;
       adminToken: string;
       deviceId: string;
       refreshToken: string;
@@ -110,6 +122,8 @@ export function saveRemoteCredentials(creds: LoadedCredentials): void {
     schemaVersion: 2 as const,
     kind: creds.kind,
     url: creds.url,
+    hubUrl: creds.hubUrl,
+    workspaceName: creds.workspaceName,
     caPath: creds.caPath,
     fingerprint: creds.fingerprint,
   };
@@ -158,6 +172,8 @@ function loadV2(stored: StoredV2, p: string): LoadedCredentials | null {
       return {
         kind: "admin-token",
         url: stored.url,
+        hubUrl: stored.hubUrl,
+        workspaceName: stored.workspaceName,
         adminToken,
         caPath: stored.caPath,
         fingerprint: stored.fingerprint,
@@ -169,6 +185,8 @@ function loadV2(stored: StoredV2, p: string): LoadedCredentials | null {
       return {
         kind: "device",
         url: stored.url,
+        hubUrl: stored.hubUrl,
+        workspaceName: stored.workspaceName,
         deviceId: stored.deviceId,
         refreshToken,
         caPath: stored.caPath,
@@ -181,6 +199,8 @@ function loadV2(stored: StoredV2, p: string): LoadedCredentials | null {
     return {
       kind: "hybrid",
       url: stored.url,
+      hubUrl: stored.hubUrl,
+      workspaceName: stored.workspaceName,
       adminToken,
       deviceId: stored.deviceId,
       refreshToken,

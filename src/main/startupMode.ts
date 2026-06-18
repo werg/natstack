@@ -12,12 +12,20 @@ import { isDev } from "./utils.js";
 import { getAppRoot, getCentralConfigDirectory } from "./paths.js";
 import { resolveWorkspaceName } from "@natstack/shared/workspace/loader";
 import { resolveLocalWorkspaceStartup } from "@natstack/shared/workspace/startup";
-import { isTrustedCleartextHost } from "@natstack/shared/connect";
+import { isSelectedWorkspaceUrl, isTrustedCleartextHost } from "@natstack/shared/connect";
 import type { CentralDataManager } from "@natstack/shared/centralData";
 import { loadRemoteCredentials } from "./remoteCredentialStore.js";
 import { assertPresent } from "../lintHelpers";
 
 const log = createDevLogger("StartupMode");
+export const CONNECT_SELECTED_REMOTE_ARG = "--connect-selected-remote";
+export const WORKSPACE_CREATE_IF_MISSING_ARG = "--workspace-create-if-missing";
+/**
+ * Marks a local launch as a disposable dev workspace: the workspace dir is deleted on exit
+ * (see the will-quit cleanup). Paired with `--workspace <name>` so the same workspace is kept
+ * across relaunches within a session rather than minting a new one each time.
+ */
+export const EPHEMERAL_WORKSPACE_ARG = "--ephemeral-workspace";
 
 export interface RemoteTlsOptions {
   /** Absolute path to a CA certificate (PEM) for self-signed servers */
@@ -27,6 +35,9 @@ export interface RemoteTlsOptions {
 }
 
 export type StartupMode =
+  | {
+      kind: "pending";
+    }
   | {
       kind: "local";
       wsDir: string;
@@ -45,6 +56,8 @@ export type StartupMode =
     };
 
 export type LocalStartupMode = Extract<StartupMode, { kind: "local" }>;
+export type RemoteStartupMode = Extract<StartupMode, { kind: "remote" }>;
+export type ConnectedStartupMode = LocalStartupMode | RemoteStartupMode;
 
 export function shouldRequestSingleInstanceLock(
   mode: StartupMode,
@@ -67,24 +80,44 @@ export function isTrustworthyRemoteOrigin(remoteUrl: URL): boolean {
   return isTrustedCleartextHost(remoteUrl.hostname);
 }
 
-/**
- * Parse remote startup mode from env vars or the safeStorage-backed store.
- * Returns null if not in remote mode.
- *
- * Priority: environment variables > safeStorage-backed store > nothing
- */
-export function parseRemoteStartupMode(): {
+export type RemoteStartupCredentials = {
   remoteUrl: URL;
   bootstrap: "admin-token" | "device" | "hybrid";
   adminToken?: string;
   deviceId?: string;
   refreshToken?: string;
   tls?: RemoteTlsOptions;
-} | null {
-  const stored = loadRemoteCredentials();
+};
 
-  // Resolution order: env var -> safeStorage-backed store.
-  const rawUrl = process.env["NATSTACK_REMOTE_URL"] ?? stored?.url;
+/**
+ * Outcome of resolving remote startup inputs (env vars and/or the safeStorage store):
+ *  - "none": not in remote mode (no URL or no credentials).
+ *  - "ready": fully resolved, workspace-scoped remote credentials.
+ *  - "awaiting-workspace-selection": a stored device/admin credential is paired with a hub but
+ *    has not selected a workspace yet. This is a RECOVERABLE state, not a fatal misconfiguration —
+ *    the caller should drive workspace selection (chooser UI, or headless auto-select) rather than
+ *    crash. An explicit NATSTACK_REMOTE_URL that lacks a workspace path still throws (misconfig).
+ */
+export type RemoteStartupResolution =
+  | { status: "none" }
+  | { status: "ready"; credentials: RemoteStartupCredentials }
+  | { status: "awaiting-workspace-selection" };
+
+/**
+ * Resolve remote startup from env vars or the safeStorage-backed store.
+ *
+ * Priority: environment variables > safeStorage-backed store > nothing
+ */
+export function resolveRemoteStartup(opts?: {
+  includeStoredCredentials?: boolean;
+}): RemoteStartupResolution {
+  const includeStoredCredentials = opts?.includeStoredCredentials ?? true;
+  const stored = includeStoredCredentials ? loadRemoteCredentials() : null;
+
+  // Resolution order: env var -> safeStorage-backed store. Track the URL's provenance so a
+  // not-yet-selected stored credential can recover, while an explicit env URL still fails loudly.
+  const envUrl = process.env["NATSTACK_REMOTE_URL"];
+  const rawUrl = envUrl ?? stored?.url;
   const adminToken =
     process.env["NATSTACK_REMOTE_TOKEN"] ??
     (stored?.kind === "admin-token" || stored?.kind === "hybrid" ? stored.adminToken : undefined);
@@ -95,10 +128,10 @@ export function parseRemoteStartupMode(): {
     process.env["NATSTACK_REMOTE_REFRESH_TOKEN"] ??
     (stored?.kind === "device" || stored?.kind === "hybrid" ? stored.refreshToken : undefined);
 
-  if (!rawUrl) return null;
+  if (!rawUrl) return { status: "none" };
   const hasAdmin = !!adminToken;
   const hasDevice = !!deviceId && !!refreshToken;
-  if (!hasAdmin && !hasDevice) return null;
+  if (!hasAdmin && !hasDevice) return { status: "none" };
   const bootstrap = hasAdmin && hasDevice ? "hybrid" : hasAdmin ? "admin-token" : "device";
 
   let remoteUrl: URL;
@@ -120,13 +153,42 @@ export function parseRemoteStartupMode(): {
         "(loopback, private LAN, Tailscale, or local hostnames)"
     );
   }
+  if (!isSelectedWorkspaceUrl(remoteUrl)) {
+    if (envUrl) {
+      // An explicit env URL without a workspace path is a misconfiguration — fail loudly.
+      throw new Error(
+        "Invalid NATSTACK_REMOTE_URL: remote startup requires a selected workspace URL. " +
+          "Pair with the server first, then choose a workspace."
+      );
+    }
+    // A stored credential paired with a hub but not yet scoped to a workspace is recoverable.
+    return { status: "awaiting-workspace-selection" };
+  }
 
   const caPath = process.env["NATSTACK_REMOTE_CA"] ?? stored?.caPath;
   const fingerprint = process.env["NATSTACK_REMOTE_FINGERPRINT"] ?? stored?.fingerprint;
   const tls: RemoteTlsOptions | undefined =
     caPath || fingerprint ? { caPath, fingerprint: normalizeFingerprint(fingerprint) } : undefined;
 
-  return { remoteUrl, bootstrap, adminToken, deviceId, refreshToken, tls };
+  return {
+    status: "ready",
+    credentials: { remoteUrl, bootstrap, adminToken, deviceId, refreshToken, tls },
+  };
+}
+
+/**
+ * Parse remote startup mode from env vars or the safeStorage-backed store.
+ * Returns null when not in (ready) remote mode. Throws on an explicit env misconfiguration.
+ */
+export function parseRemoteStartupMode(): RemoteStartupCredentials | null {
+  return parseRemoteStartupModeWithOptions();
+}
+
+export function parseRemoteStartupModeWithOptions(opts?: {
+  includeStoredCredentials?: boolean;
+}): RemoteStartupCredentials | null {
+  const resolution = resolveRemoteStartup(opts);
+  return resolution.status === "ready" ? resolution.credentials : null;
 }
 
 /**
@@ -151,27 +213,124 @@ export function getRemoteUserDataDir(): string {
 }
 
 /**
+ * Get the user data directory for the pre-session bootstrap shell.
+ * This keeps chooser state separate from workspace state because no workspace
+ * has been selected yet.
+ */
+export function getPendingUserDataDir(): string {
+  const dir = path.join(getCentralConfigDirectory(), "bootstrap-state");
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/**
  * Resolve the startup mode from environment and CLI args.
  *
  * Local mode: resolves workspace from disk, returns wsDir.
  * Remote mode: parses URL, returns remoteUrl + adminToken.
  */
-export function resolveStartupMode(centralData: CentralDataManager): StartupMode {
-  const remote = parseRemoteStartupMode();
-  if (remote) {
-    log.info(`[Workspace] Remote mode — workspace on server (${remote.bootstrap})`);
-    return {
-      kind: "remote",
-      remoteUrl: remote.remoteUrl,
-      bootstrap: remote.bootstrap,
-      adminToken: remote.adminToken,
-      deviceId: remote.deviceId,
-      refreshToken: remote.refreshToken,
-      tls: remote.tls,
-    };
+export function resolveStartupMode(
+  centralData: CentralDataManager,
+  opts?: { interactiveDesktop?: boolean }
+): StartupMode {
+  const explicitRemote = resolveRemoteStartup({ includeStoredCredentials: false });
+  if (explicitRemote.status === "ready") {
+    return toRemoteStartupMode(explicitRemote.credentials);
+  }
+
+  const shouldUseStoredRemote =
+    process.argv.includes(CONNECT_SELECTED_REMOTE_ARG) || opts?.interactiveDesktop !== true;
+  if (shouldUseStoredRemote) {
+    const storedRemote = resolveRemoteStartup();
+    if (storedRemote.status === "ready") {
+      return toRemoteStartupMode(storedRemote.credentials);
+    }
+    if (storedRemote.status === "awaiting-workspace-selection") {
+      // Paired with a hub but no workspace chosen yet. Recoverable for desktop AND headless:
+      // surface `pending` so workspace selection can be driven (chooser UI, or headless
+      // auto-select/relaunch) instead of crashing the process at startup.
+      log.info(
+        "[Workspace] Paired with remote server but no workspace selected; awaiting selection"
+      );
+      return { kind: "pending" };
+    }
+  }
+
+  if (opts?.interactiveDesktop === true && !hasExplicitWorkspaceSelection()) {
+    log.info("[Workspace] Waiting for user to choose a server or local workspace");
+    return { kind: "pending" };
   }
 
   return resolveLocalStartupMode(centralData);
+}
+
+function toRemoteStartupMode(remote: RemoteStartupCredentials): RemoteStartupMode {
+  log.info(`[Workspace] Remote mode — workspace on server (${remote.bootstrap})`);
+  return {
+    kind: "remote",
+    remoteUrl: remote.remoteUrl,
+    bootstrap: remote.bootstrap,
+    adminToken: remote.adminToken,
+    deviceId: remote.deviceId,
+    refreshToken: remote.refreshToken,
+    tls: remote.tls,
+  };
+}
+
+function hasExplicitWorkspaceSelection(): boolean {
+  return resolveWorkspaceName() !== null;
+}
+
+function shouldCreateExplicitWorkspaceIfMissing(): boolean {
+  return process.argv.includes(WORKSPACE_CREATE_IF_MISSING_ARG);
+}
+
+export function stripStartupSelectionArgs(rawArgs: readonly string[]): string[] {
+  const filteredArgs: string[] = [];
+  for (let i = 0; i < rawArgs.length; i++) {
+    const arg = rawArgs[i];
+    if (arg === "--workspace" && i + 1 < rawArgs.length) {
+      i++;
+      continue;
+    }
+    if (arg?.startsWith("--workspace=")) continue;
+    if (arg === CONNECT_SELECTED_REMOTE_ARG) continue;
+    if (arg === WORKSPACE_CREATE_IF_MISSING_ARG) continue;
+    if (arg === EPHEMERAL_WORKSPACE_ARG) continue;
+    if (arg !== undefined) filteredArgs.push(arg);
+  }
+  return filteredArgs;
+}
+
+export function workspaceRelaunchArgs(name: string, rawArgs = process.argv.slice(1)): string[] {
+  return [
+    ...stripStartupSelectionArgs(rawArgs),
+    "--workspace",
+    name,
+    WORKSPACE_CREATE_IF_MISSING_ARG,
+  ];
+}
+
+export function connectSelectedRemoteRelaunchArgs(rawArgs = process.argv.slice(1)): string[] {
+  return [...stripStartupSelectionArgs(rawArgs), CONNECT_SELECTED_REMOTE_ARG];
+}
+
+/**
+ * Relaunch into a fresh disposable dev workspace. Pins the generated name via `--workspace` so the
+ * workspace is stable across relaunches in the session, and tags it ephemeral so it is deleted on
+ * exit. Dev-only — the caller gates on isDev().
+ */
+export function ephemeralWorkspaceRelaunchArgs(
+  name: string,
+  rawArgs = process.argv.slice(1)
+): string[] {
+  return [
+    ...stripStartupSelectionArgs(rawArgs),
+    "--workspace",
+    name,
+    WORKSPACE_CREATE_IF_MISSING_ARG,
+    EPHEMERAL_WORKSPACE_ARG,
+  ];
 }
 
 export function resolveLocalStartupMode(centralData: CentralDataManager): LocalStartupMode {
@@ -182,6 +341,7 @@ export function resolveLocalStartupMode(centralData: CentralDataManager): LocalS
     appRoot,
     centralData,
     name: wsName ?? undefined,
+    ...(wsName ? { init: shouldCreateExplicitWorkspaceIfMissing() } : {}),
     isDev: isDev(),
   });
   log.info(
@@ -191,7 +351,9 @@ export function resolveLocalStartupMode(centralData: CentralDataManager): LocalS
     kind: "local",
     wsDir: startup.resolved.wsDir,
     workspaceId: startup.resolved.workspace.config.id,
-    isEphemeral: startup.isEphemeral,
+    // A named launch tagged --ephemeral-workspace (the dev "new ephemeral workspace" button) is
+    // disposable even though it was resolved by name; mark it so will-quit deletes it.
+    isEphemeral: startup.isEphemeral || process.argv.includes(EPHEMERAL_WORKSPACE_ARG),
     createdFromTemplate: startup.resolved.created,
   };
 }

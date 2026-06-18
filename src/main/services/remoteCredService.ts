@@ -18,7 +18,15 @@ import {
 import { createServerClient, type ServerClient, type TlsPinningOptions } from "../serverClient.js";
 import { createPinnedHttpsAgent } from "../tlsPinning.js";
 import { discoverNatstackServers } from "@natstack/shared/tailscaleDiscovery";
-import { PAIRING_CODE_PATTERN, parseConnectServerUrl } from "@natstack/shared/connect";
+import {
+  isTrustedCleartextHost,
+  PAIRING_CODE_PATTERN,
+  parseConnectServerUrl,
+  selectedWorkspaceNameFromUrl,
+  serverAuthRouteUrl,
+  serverWorkspaceRouteUrl,
+  serverRpcWsUrl,
+} from "@natstack/shared/connect";
 import { assertPresent } from "../../lintHelpers";
 
 export interface RemoteCredCurrent {
@@ -30,6 +38,8 @@ export interface RemoteCredCurrent {
   fingerprint?: string;
   tokenPreview?: string;
   deviceId?: string;
+  hubUrl?: string;
+  workspaceName?: string;
 }
 
 export interface TestConnectionResult {
@@ -61,7 +71,27 @@ export interface PairingInvite {
   expiresInMs: number;
   serverId: string;
   serverBootId: string;
-  workspaceId: string;
+  workspaceId?: string | null;
+}
+
+export interface PairingCodeExchangePayload {
+  url: string;
+  code: string;
+  caPath?: string;
+  fingerprint?: string;
+  label?: string;
+}
+
+export interface RemoteWorkspaceEntry {
+  name: string;
+  lastOpened: number;
+  running?: boolean;
+  ephemeral?: boolean;
+}
+
+export interface RemoteWorkspaceSelectionResult {
+  workspaceName: string;
+  serverUrl: string;
 }
 
 const TEST_CONNECT_TIMEOUT_MS = 7_000;
@@ -121,7 +151,7 @@ async function healthProbe(
     method: "GET",
     host: parsed.hostname,
     port,
-    path: "/healthz",
+    path: `${parsed.pathname.replace(/\/+$/, "") || ""}/healthz`,
     timeout: TEST_CONNECT_TIMEOUT_MS,
   };
 
@@ -173,6 +203,31 @@ export async function probeRemoteTrust(payload: {
     return { ok: false, error: "invalid-url", message: parsedUrl.reason };
   }
   const parsed = new URL(parsedUrl.url);
+  return await probeTrustAtUrl(parsed, payload);
+}
+
+async function probeSelectedWorkspaceTrust(payload: {
+  url: string;
+  caPath?: string;
+  fingerprint?: string;
+}): Promise<TestConnectionResult> {
+  let selected: ReturnType<typeof parseSelectedWorkspaceUrl>;
+  try {
+    selected = parseSelectedWorkspaceUrl(payload.url);
+  } catch (error) {
+    return {
+      ok: false,
+      error: "invalid-url",
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+  return await probeTrustAtUrl(new URL(selected.serverUrl), payload);
+}
+
+async function probeTrustAtUrl(
+  parsed: URL,
+  payload: { caPath?: string; fingerprint?: string }
+): Promise<TestConnectionResult> {
   const isTls = parsed.protocol === "https:";
 
   try {
@@ -254,13 +309,11 @@ function healthProbeToResult(probe: { status: number; body: string; fingerprint?
   } satisfies TestConnectionResult;
 }
 
-async function postAuthJson(
-  remoteUrl: URL,
-  route: string,
+async function postJsonUrl(
+  requestUrl: URL,
   bodyValue: unknown,
   tlsOpts?: TlsPinningOptions
 ): Promise<{ statusCode: number; statusMessage: string; body: string }> {
-  const requestUrl = new URL(route, remoteUrl);
   const body = JSON.stringify(bodyValue);
   const isHttps = requestUrl.protocol === "https:";
   const agent =
@@ -298,8 +351,150 @@ async function postAuthJson(
   });
 }
 
+async function postAuthJson(
+  remoteUrl: URL,
+  route: string,
+  bodyValue: unknown,
+  tlsOpts?: TlsPinningOptions
+): Promise<{ statusCode: number; statusMessage: string; body: string }> {
+  const requestUrl = route.startsWith("/_r/s/auth/")
+    ? serverAuthRouteUrl(remoteUrl, route.slice("/_r/s/auth/".length))
+    : new URL(route, remoteUrl);
+  return postJsonUrl(requestUrl, bodyValue, tlsOpts);
+}
+
 function authClientFor(client: ServerClient) {
   return createTypedServiceClient("auth", authMethods, (svc, m, a) => client.call(svc, m, a));
+}
+
+async function postHubWorkspaceJson(
+  hubUrl: string,
+  route: string,
+  creds: { deviceId: string; refreshToken: string; caPath?: string; fingerprint?: string },
+  body: Record<string, unknown> = {}
+): Promise<Record<string, unknown>> {
+  const requestUrl = serverWorkspaceRouteUrl(hubUrl, route);
+  const response = await postJsonUrl(
+    requestUrl,
+    {
+      ...body,
+      deviceId: creds.deviceId,
+      refreshToken: creds.refreshToken,
+    },
+    { caPath: creds.caPath, fingerprint: creds.fingerprint }
+  );
+  let json: Record<string, unknown> = {};
+  try {
+    json = JSON.parse(response.body || "{}") as Record<string, unknown>;
+  } catch {
+    json = {};
+  }
+  if (response.statusCode < 200 || response.statusCode >= 300) {
+    throw new Error(
+      typeof json["error"] === "string"
+        ? json["error"]
+        : `Workspace ${route} failed (${response.statusCode})`
+    );
+  }
+  return json;
+}
+
+export async function listRemoteWorkspaces(): Promise<RemoteWorkspaceEntry[]> {
+  const creds = loadRemoteCredentials();
+  if (!creds || (creds.kind !== "device" && creds.kind !== "hybrid")) {
+    throw new Error("Pair with a server before choosing a workspace");
+  }
+  if (!creds.hubUrl) throw new Error("Stored credential is missing a hub URL; pair again");
+  const hubUrl = creds.hubUrl;
+  const json = await postHubWorkspaceJson(hubUrl, "list", creds);
+  const workspaces = Array.isArray(json["workspaces"]) ? json["workspaces"] : [];
+  const result: RemoteWorkspaceEntry[] = [];
+  for (const entry of workspaces) {
+    const record = entry as Record<string, unknown>;
+    if (typeof record["name"] !== "string") continue;
+    result.push({
+      name: record["name"],
+      lastOpened: typeof record["lastOpened"] === "number" ? record["lastOpened"] : 0,
+      running: typeof record["running"] === "boolean" ? record["running"] : undefined,
+      ephemeral: typeof record["ephemeral"] === "boolean" ? record["ephemeral"] : undefined,
+    });
+  }
+  return result;
+}
+
+export async function selectRemoteWorkspace(name: string): Promise<RemoteWorkspaceSelectionResult> {
+  const creds = loadRemoteCredentials();
+  if (!creds || (creds.kind !== "device" && creds.kind !== "hybrid")) {
+    throw new Error("Pair with a server before choosing a workspace");
+  }
+  if (!creds.hubUrl) throw new Error("Stored credential is missing a hub URL; pair again");
+  const hubUrl = creds.hubUrl;
+  const json = await postHubWorkspaceJson(hubUrl, "select", creds, { name });
+  const workspaceName = typeof json["workspaceName"] === "string" ? json["workspaceName"] : name;
+  const serverUrl = typeof json["serverUrl"] === "string" ? json["serverUrl"] : null;
+  if (!serverUrl) throw new Error("Server did not return a workspace URL");
+  saveRemoteCredentials({
+    ...creds,
+    url: serverUrl,
+    hubUrl,
+    workspaceName,
+  });
+  return { workspaceName, serverUrl };
+}
+
+export async function exchangePairingCodeForDeviceCredential(
+  payload: PairingCodeExchangePayload
+): Promise<TestConnectionResult> {
+  if (!PAIRING_CODE_PATTERN.test(payload.code)) {
+    return {
+      ok: false,
+      error: "invalid-url",
+      message: "Pairing code has an unexpected format",
+    };
+  }
+  const trust = await probeRemoteTrust(payload);
+  if (!trust.ok) return trust;
+  const canonicalUrl = parseOkUrl(payload.url);
+  const response = await postAuthJson(
+    new URL(canonicalUrl),
+    "/_r/s/auth/complete-pairing",
+    {
+      code: payload.code,
+      label: payload.label?.trim() || `Electron on ${os.hostname()}`,
+      platform: "desktop",
+    },
+    { caPath: payload.caPath, fingerprint: payload.fingerprint }
+  );
+  const json = JSON.parse(response.body || "{}") as {
+    deviceId?: unknown;
+    refreshToken?: unknown;
+    error?: unknown;
+  };
+  if (
+    response.statusCode < 200 ||
+    response.statusCode >= 300 ||
+    typeof json.deviceId !== "string" ||
+    typeof json.refreshToken !== "string"
+  ) {
+    return {
+      ok: false,
+      error: response.statusCode === 401 ? "unauthorized" : "unknown",
+      message:
+        typeof json.error === "string"
+          ? json.error
+          : `Pairing failed (${response.statusCode}): ${response.statusMessage}`,
+    };
+  }
+  saveRemoteCredentials({
+    kind: "device",
+    url: canonicalUrl,
+    hubUrl: canonicalUrl,
+    deviceId: json.deviceId,
+    refreshToken: json.refreshToken,
+    caPath: payload.caPath,
+    fingerprint: payload.fingerprint,
+  });
+  return { ok: true };
 }
 
 export function createRemoteCredService(deps: {
@@ -329,6 +524,8 @@ export function createRemoteCredService(deps: {
             isActive: deps.startupMode.kind === "remote",
             bootstrap: creds.kind,
             url: creds.url,
+            hubUrl: creds.hubUrl,
+            workspaceName: creds.workspaceName,
             caPath: creds.caPath,
             fingerprint: creds.fingerprint,
             deviceId:
@@ -345,11 +542,12 @@ export function createRemoteCredService(deps: {
             caPath?: string;
             fingerprint?: string;
           };
-          const parsed = parseConnectServerUrl(payload.url);
-          if (parsed.kind === "error") throw new Error(parsed.reason);
+          const selected = parseSelectedWorkspaceUrl(payload.url);
           saveRemoteCredentials({
             kind: "admin-token",
-            url: parsed.url,
+            url: selected.serverUrl,
+            hubUrl: selected.hubUrl,
+            workspaceName: selected.workspaceName,
             adminToken: payload.token,
             caPath: payload.caPath,
             fingerprint: payload.fingerprint,
@@ -363,12 +561,22 @@ export function createRemoteCredService(deps: {
             caPath?: string;
             fingerprint?: string;
           };
-          const trust = await probeRemoteTrust(payload);
+          let selected: ReturnType<typeof parseSelectedWorkspaceUrl>;
+          try {
+            selected = parseSelectedWorkspaceUrl(payload.url);
+          } catch (error) {
+            return {
+              ok: false,
+              error: "invalid-url",
+              message: error instanceof Error ? error.message : String(error),
+            } satisfies TestConnectionResult;
+          }
+          const trust = await probeSelectedWorkspaceTrust(payload);
           if (!trust.ok) return trust;
-          const parsed = new URL(parseOkUrl(payload.url));
+          const parsed = new URL(selected.serverUrl);
           const isTls = parsed.protocol === "https:";
           const gatewayPort = parseInt(parsed.port, 10) || (isTls ? 443 : 80);
-          const wsUrl = `${isTls ? "wss" : "ws"}://${parsed.hostname}:${gatewayPort}/rpc`;
+          const wsUrl = serverRpcWsUrl(parsed);
           let client: Awaited<ReturnType<typeof createServerClient>> | null = null;
           try {
             client = await createServerClient(gatewayPort, payload.token, {
@@ -395,64 +603,10 @@ export function createRemoteCredService(deps: {
           return trust;
         }
         case "exchangePairingCode": {
-          const payload = args[0] as {
-            url: string;
-            code: string;
-            caPath?: string;
-            fingerprint?: string;
-            label?: string;
-          };
-          if (!PAIRING_CODE_PATTERN.test(payload.code)) {
-            return {
-              ok: false,
-              error: "invalid-url",
-              message: "Pairing code has an unexpected format",
-            } satisfies TestConnectionResult;
-          }
-          const trust = await probeRemoteTrust(payload);
-          if (!trust.ok) return trust;
-          const canonicalUrl = parseOkUrl(payload.url);
-          const response = await postAuthJson(
-            new URL(canonicalUrl),
-            "/_r/s/auth/complete-pairing",
-            {
-              code: payload.code,
-              label: payload.label?.trim() || `Electron on ${os.hostname()}`,
-              platform: "desktop",
-            },
-            { caPath: payload.caPath, fingerprint: payload.fingerprint }
+          const result = await exchangePairingCodeForDeviceCredential(
+            args[0] as PairingCodeExchangePayload
           );
-          const json = JSON.parse(response.body || "{}") as {
-            deviceId?: unknown;
-            refreshToken?: unknown;
-            error?: unknown;
-          };
-          if (
-            response.statusCode < 200 ||
-            response.statusCode >= 300 ||
-            typeof json.deviceId !== "string" ||
-            typeof json.refreshToken !== "string"
-          ) {
-            return {
-              ok: false,
-              error: response.statusCode === 401 ? "unauthorized" : "unknown",
-              message:
-                typeof json.error === "string"
-                  ? json.error
-                  : `Pairing failed (${response.statusCode}): ${response.statusMessage}`,
-            } satisfies TestConnectionResult;
-          }
-          saveRemoteCredentials({
-            kind: "device",
-            url: canonicalUrl,
-            deviceId: json.deviceId,
-            refreshToken: json.refreshToken,
-            caPath: payload.caPath,
-            fingerprint: payload.fingerprint,
-          });
-          app.relaunch();
-          app.exit(0);
-          return { ok: true };
+          return result;
         }
         case "discoverServers":
           return discoverNatstackServers();
@@ -537,4 +691,40 @@ function parseOkUrl(raw: string): string {
   const parsed = parseConnectServerUrl(raw);
   if (parsed.kind === "error") throw new Error(parsed.reason);
   return parsed.url;
+}
+
+function parseSelectedWorkspaceUrl(raw: string): {
+  serverUrl: string;
+  hubUrl: string;
+  workspaceName: string;
+} {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`Server URL is not parseable: ${raw}`);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`Server URL must use http:// or https:// (got ${url.protocol || "no scheme"})`);
+  }
+  if (!url.hostname) throw new Error("Server URL is missing a hostname");
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error("Workspace URL must not include credentials, query, or fragment");
+  }
+  if (url.protocol === "http:" && !isTrustedCleartextHost(url.hostname)) {
+    throw new Error(
+      `Cleartext HTTP is only allowed for loopback, private LAN, Tailscale, or local hostnames. Use https:// for ${url.hostname}.`
+    );
+  }
+  const workspaceName = selectedWorkspaceNameFromUrl(url);
+  if (!workspaceName) {
+    throw new Error("Remote credentials require a selected workspace URL");
+  }
+  const pathName = url.pathname.replace(/\/+$/, "");
+  const hubUrl = `${url.protocol}//${url.host}`;
+  return {
+    serverUrl: `${hubUrl}${pathName}`,
+    hubUrl,
+    workspaceName,
+  };
 }

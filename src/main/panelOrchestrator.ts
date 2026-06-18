@@ -80,6 +80,7 @@ export interface PanelOrchestratorDeps {
   externalHost: string;
   protocol: "http" | "https";
   gatewayPort: number;
+  gatewayBasePath?: string;
 
   /**
    * Send an event to a panel. In IPC mode, this calls
@@ -1284,6 +1285,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
       gatewayPort: this.deps.gatewayPort,
       externalHost: this.externalHost,
       protocol: this.deps.protocol,
+      basePath: this.deps.gatewayBasePath,
     });
   }
 
@@ -1391,6 +1393,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
       gatewayPort: this.deps.gatewayPort,
       externalHost: this.externalHost,
       protocol: this.deps.protocol,
+      basePath: this.deps.gatewayBasePath,
     });
   }
 
@@ -1428,6 +1431,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
       gatewayPort: this.deps.gatewayPort,
       externalHost: this.externalHost,
       protocol: this.deps.protocol,
+      basePath: this.deps.gatewayBasePath,
     });
     await view.createViewForPanel(panelId, panelUrl, snapshot.contextId);
     this.bumpViewRevision();
@@ -1477,6 +1481,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
       gatewayPort: this.deps.gatewayPort,
       externalHost: this.externalHost,
       protocol: this.deps.protocol,
+      basePath: this.deps.gatewayBasePath,
     });
     await view.createViewForPanel(panelId, panelUrl, snapshot.contextId);
     this.bumpViewRevision();

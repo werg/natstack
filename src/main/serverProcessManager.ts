@@ -7,6 +7,7 @@
 
 import { type ProcessAdapter } from "@natstack/process-adapter";
 import { shell, utilityProcess } from "electron";
+import { serverRpcWsUrl } from "@natstack/shared/connect";
 import { getEsbuildBinaryPath, getServerProcessEntryPath } from "./paths.js";
 
 const SERVER_SHUTDOWN_TIMEOUT_MS = 12_000;
@@ -170,7 +171,7 @@ export class ServerProcessManager {
   }
 
   getCurrentGatewayUrl(): string | null {
-    return this.ports ? `ws://127.0.0.1:${this.ports.gatewayPort}/rpc` : null;
+    return this.ports ? serverRpcWsUrl(`http://127.0.0.1:${this.ports.gatewayPort}`) : null;
   }
 
   private async handleUnexpectedExit(code: number | null): Promise<void> {
