@@ -18,9 +18,17 @@ describe("resolveNewsContextId", () => {
 });
 
 describe("name minting", () => {
-  it("derives stable prefixed names from the random source", () => {
-    expect(newsChannelName(() => "abcdef1234")).toBe("news-abcdef12");
-    expect(newsAgentKey(() => "abcdef1234")).toBe("news-agent-abcdef12");
+  it("derives stable, per-context, format-safe reader ids", () => {
+    const channel = newsChannelName("ctx-a");
+    const agent = newsAgentKey("ctx-a");
+    // Deterministic: same context → same ids (so reloads re-resolve one reader).
+    expect(newsChannelName("ctx-a")).toBe(channel);
+    expect(newsAgentKey("ctx-a")).toBe(agent);
+    // Per-context: a different context → a different reader.
+    expect(newsChannelName("ctx-b")).not.toBe(channel);
+    // Format-safe ids that share the context digest.
+    expect(channel).toMatch(/^news-[a-z0-9]+$/);
+    expect(agent).toBe(`news-agent-${channel.slice("news-".length)}`);
   });
 });
 

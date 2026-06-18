@@ -35,6 +35,7 @@ import {
   Select,
   Separator,
   Spinner,
+  Switch,
   Text,
   TextArea,
   TextField,
@@ -42,8 +43,10 @@ import {
 } from "@radix-ui/themes";
 import {
   CheckIcon,
+  Cross2Icon,
   ExclamationTriangleIcon,
   EyeNoneIcon,
+  GearIcon,
   GlobeIcon,
   LightningBoltIcon,
   PlusIcon,
@@ -268,8 +271,12 @@ export default function NewsPanel() {
     bootstrapAttempted.current = true;
     void (async () => {
       try {
-        const channel = stateArgs.channelName ?? newsChannelName();
-        const agentKey = stateArgs.agentKey ?? newsAgentKey();
+        // Identity is a deterministic function of the panel's contextId, so a
+        // reload that lost its stateArgs still re-resolves the same reader.
+        // stateArgs stays as a fast-path cache (and keeps any pre-existing
+        // random-keyed reader attached).
+        const channel = stateArgs.channelName ?? newsChannelName(resolvedContextId);
+        const agentKey = stateArgs.agentKey ?? newsAgentKey(resolvedContextId);
         if (!stateArgs.channelName || !stateArgs.agentKey) {
           void setStateArgs({ channelName: channel, agentKey, contextId: resolvedContextId });
         }
@@ -676,6 +683,14 @@ export default function NewsPanel() {
             <Separator size="4" my="2" />
             <ScrollArea style={{ flex: 1 }}>
               <Flex direction="column" gap="3" p="3" pt="0">
+                {overview && hasSources ? (
+                  <ReaderSettings
+                    setup={overview.setup}
+                    busy={busy}
+                    callAgent={(method, args) => void callAgent(method, args)}
+                  />
+                ) : null}
+
                 {preparing ? (
                   <Card variant="surface">
                     <Flex align="center" gap="2">
@@ -895,6 +910,164 @@ export default function NewsPanel() {
         </Flex>
       </Theme>
     </ErrorBoundary>
+  );
+}
+
+/** Always-available, collapsible view of the reader's persisted configuration
+ *  — preferences, feeds, and followed topics — fed by overview.setup (which the
+ *  agent DO persists). Keeps your curation visible and editable in the reader
+ *  itself, not only in the chat setup card, so it survives any reload. */
+function ReaderSettings({
+  setup,
+  busy,
+  callAgent,
+}: {
+  setup: NewsSetupCardState;
+  busy: boolean;
+  callAgent: (method: string, args: Record<string, unknown>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [newFeedUrl, setNewFeedUrl] = useState("");
+  const [newTopic, setNewTopic] = useState("");
+  const [prefsDraft, setPrefsDraft] = useState<string | null>(null);
+  const feeds = setup.feeds ?? [];
+  const topics = setup.followedTopics ?? [];
+  const prefsDirty = prefsDraft !== null && prefsDraft !== (setup.preferencesText ?? "");
+  return (
+    <Box>
+      <Button size="1" variant="ghost" onClick={() => setOpen((value) => !value)}>
+        <GearIcon /> {open ? "▾" : "▸"} Sources & preferences
+        <Text size="1" color="gray">
+          · {feeds.length} feed{feeds.length === 1 ? "" : "s"} · {topics.length} topic
+          {topics.length === 1 ? "" : "s"}
+        </Text>
+      </Button>
+      {open ? (
+        <Flex direction="column" gap="3" pt="2">
+          <Flex direction="column" gap="1">
+            <Text size="1" weight="bold" color="gray">PREFERENCES</Text>
+            <Flex gap="2">
+              <TextField.Root
+                size="1"
+                placeholder="e.g. more open source, less crypto, terse blurbs"
+                value={prefsDraft ?? setup.preferencesText ?? ""}
+                onChange={(event) => setPrefsDraft(event.target.value)}
+                style={{ flex: 1 }}
+              />
+              {prefsDirty ? (
+                <Button
+                  size="1"
+                  disabled={busy}
+                  onClick={() => {
+                    callAgent("setPreferences", { text: prefsDraft ?? "" });
+                    setPrefsDraft(null);
+                  }}
+                >
+                  Save
+                </Button>
+              ) : null}
+            </Flex>
+          </Flex>
+
+          <Flex direction="column" gap="1">
+            <Text size="1" weight="bold" color="gray">FEEDS</Text>
+            {feeds.map((feed) => (
+              <Flex key={feed.feedId} align="center" gap="2" style={{ minWidth: 0 }}>
+                <Switch
+                  size="1"
+                  checked={feed.enabled}
+                  disabled={busy}
+                  onCheckedChange={(enabled) =>
+                    callAgent("setFeedEnabled", { feedId: feed.feedId, enabled })
+                  }
+                />
+                <Text size="1" truncate style={{ flex: 1, minWidth: 0 }}>
+                  {feed.title ?? feed.url}
+                </Text>
+                {feed.failCount > 0 ? (
+                  <Badge size="1" color="red" title={feed.lastStatus}>
+                    {feed.failCount} fail{feed.failCount === 1 ? "" : "s"}
+                  </Badge>
+                ) : null}
+                <IconButton
+                  size="1"
+                  variant="ghost"
+                  color="red"
+                  disabled={busy}
+                  title="Remove feed"
+                  aria-label="Remove feed"
+                  onClick={() => callAgent("removeFeed", { feedId: feed.feedId })}
+                >
+                  <Cross2Icon />
+                </IconButton>
+              </Flex>
+            ))}
+            <Flex gap="2">
+              <TextField.Root
+                size="1"
+                placeholder="https://example.com/feed.xml"
+                value={newFeedUrl}
+                onChange={(event) => setNewFeedUrl(event.target.value)}
+                style={{ flex: 1 }}
+              />
+              <Button
+                size="1"
+                disabled={busy || newFeedUrl.trim().length === 0}
+                onClick={() => {
+                  callAgent("addFeed", { url: newFeedUrl.trim() });
+                  setNewFeedUrl("");
+                }}
+              >
+                <PlusIcon /> Add
+              </Button>
+            </Flex>
+          </Flex>
+
+          <Flex direction="column" gap="1">
+            <Text size="1" weight="bold" color="gray">FOLLOWED TOPICS</Text>
+            {topics.length > 0 ? (
+              <Flex gap="2" wrap="wrap">
+                {topics.map((topic) => (
+                  <Badge key={topic.topic} size="2" color={topic.enabled ? "blue" : "gray"}>
+                    {topic.topic}
+                    <IconButton
+                      size="1"
+                      variant="ghost"
+                      color="red"
+                      disabled={busy}
+                      title="Unfollow topic"
+                      aria-label="Unfollow topic"
+                      onClick={() => callAgent("unfollowTopic", { topic: topic.topic })}
+                    >
+                      <Cross2Icon />
+                    </IconButton>
+                  </Badge>
+                ))}
+              </Flex>
+            ) : null}
+            <Flex gap="2">
+              <TextField.Root
+                size="1"
+                placeholder="e.g. AI agents"
+                value={newTopic}
+                onChange={(event) => setNewTopic(event.target.value)}
+                style={{ flex: 1 }}
+              />
+              <Button
+                size="1"
+                disabled={busy || newTopic.trim().length === 0}
+                onClick={() => {
+                  callAgent("followTopic", { topic: newTopic.trim() });
+                  setNewTopic("");
+                }}
+              >
+                <PlusIcon /> Follow
+              </Button>
+            </Flex>
+          </Flex>
+        </Flex>
+      ) : null}
+    </Box>
   );
 }
 

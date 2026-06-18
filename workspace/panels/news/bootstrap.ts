@@ -10,12 +10,32 @@ export function resolveNewsContextId(
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-export function newsChannelName(random: () => string = () => crypto.randomUUID()): string {
-  return `news-${random().slice(0, 8)}`;
+/**
+ * Stable, format-safe digest of a contextId (djb2 → base36). Deterministic and
+ * bounded, so the reader's channel/agent ids are a pure function of the panel's
+ * context rather than a random value that must be remembered in stateArgs.
+ */
+export function hashContext(contextId: string): string {
+  let hash = 5381;
+  for (let i = 0; i < contextId.length; i += 1) {
+    hash = ((hash << 5) + hash + contextId.charCodeAt(i)) >>> 0;
+  }
+  return hash.toString(36);
 }
 
-export function newsAgentKey(random: () => string = () => crypto.randomUUID()): string {
-  return `news-agent-${random().slice(0, 8)}`;
+/**
+ * Derive the reader's channel + agent ids deterministically from the panel's
+ * contextId. Because a panel keeps its contextId across reloads (it persists in
+ * the panel tree), any reload — even one that lost its stateArgs — re-resolves
+ * the SAME reader DO and channel. Different contexts (the usual per-panel case)
+ * get independent readers.
+ */
+export function newsChannelName(contextId: string): string {
+  return `news-${hashContext(contextId)}`;
+}
+
+export function newsAgentKey(contextId: string): string {
+  return `news-agent-${hashContext(contextId)}`;
 }
 
 /** Curated one-click feeds for the empty-state quick start. */
