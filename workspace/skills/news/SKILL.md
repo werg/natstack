@@ -1,9 +1,18 @@
 # News
 
-Agentic news aggregation: the `workers/news-agent` Durable Object polls
-RSS/Atom/JSON feeds deterministically (Tier 1, zero tokens), and a scheduled
-briefing turn (Tier 2) web-searches followed topics, ranks the top stories,
-and publishes a TLDR briefing card.
+Agentic news aggregation in three tiers:
+- **Tier 1 — poll** (deterministic, zero tokens): the `workers/news-agent`
+  Durable Object polls RSS/Atom/JSON feeds, dedupes, and stores items.
+- **Tier 1.5 — triage** (agent, light): `runTriage` batches un-triaged items
+  into a `news_triage` turn that categorizes, clusters same-event coverage,
+  one-line-summarizes, and drops noise. The reader only shows triaged items
+  (`listArticles triagedOnly`), so nothing raw/un-curated surfaces. Fired on
+  demand (the reader's `triageNow` when it opens with a backlog) and at
+  briefing time.
+- **Tier 2 — briefing** (agent, deep): a scheduled/cold-start briefing turn
+  web-searches followed topics, reads the top stories, and publishes a
+  structured TLDR briefing card. A manual "Brief me now" runs the same turn
+  silently (scheduled runs fire a "ready" notification).
 
 ## Pieces
 

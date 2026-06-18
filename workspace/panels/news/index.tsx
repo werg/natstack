@@ -19,7 +19,7 @@ import {
   type DurableObjectServiceClient,
 } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Badge,
   Box,
@@ -99,8 +99,10 @@ interface ArticleRow {
   publishedAt?: string;
   /** Epoch ms we first ingested it — drives the "new since last visit" marker. */
   fetchedAt?: number;
-  /** Title-similarity key for collapsing near-duplicate coverage. */
-  simKey?: string;
+  /** Agent-assigned section. */
+  category?: string;
+  /** Agent-assigned key shared by same-event coverage (semantic clustering). */
+  clusterKey?: string;
   briefedIn?: string;
   read: boolean;
   saved?: boolean;
@@ -120,13 +122,13 @@ interface SearchResults {
   briefings: BriefingRow[];
 }
 
-/** Group articles by title-similarity key so syndicated / near-identical
- *  coverage collapses into one row, preserving the input order by primary. */
+/** Group articles by the agent's cluster key so same-event coverage collapses
+ *  into one row, preserving the input order by primary. */
 function clusterArticles(articles: ArticleRow[]): ArticleCluster[] {
   const clusters: ArticleCluster[] = [];
   const byKey = new Map<string, ArticleCluster>();
   for (const article of articles) {
-    const key = article.simKey;
+    const key = article.clusterKey;
     if (!key) {
       clusters.push({ primary: article, others: [] });
       continue;
@@ -218,6 +220,7 @@ interface Overview {
   setup: NewsSetupCardState;
   articleCount: number;
   unbriefedCount: number;
+  untriagedCount?: number;
   lastBriefingId?: string;
 }
 
@@ -474,6 +477,7 @@ export default function NewsPanel() {
   const [mobilePane, setMobilePane] = useState<"reader" | "chat">("reader");
   const narrow = useNarrow();
   const selectedRowRef = useRef<HTMLDivElement | null>(null);
+  const triageInFlightRef = useRef(false);
   const lastSeenEventId = useRef(0);
   const latestTldrRef = useRef<string | undefined>(undefined);
   const bootstrapAttempted = useRef(false);
@@ -568,7 +572,10 @@ export default function NewsPanel() {
     try {
       const [nextOverview, articleList, history] = await Promise.all([
         rpc.call<Overview>(agentTarget, "getOverview", [channelName, {}]),
-        rpc.call<{ articles: ArticleRow[] }>(agentTarget, "listArticles", [channelName, { limit: 60 }]),
+        rpc.call<{ articles: ArticleRow[] }>(agentTarget, "listArticles", [
+          channelName,
+          { limit: 60, triagedOnly: true },
+        ]),
         rpc.call<{ briefings: BriefingRow[] }>(agentTarget, "briefingHistory", [channelName, { limit: 12 }]),
       ]);
       setOverview(nextOverview);
@@ -819,6 +826,22 @@ export default function NewsPanel() {
     []
   );
 
+  // On-demand triage: when the reader has a backlog of un-triaged items, ask the
+  // agent to categorize/cluster/summarize them. Fired once per backlog (the flag
+  // resets when the count returns to 0), so refreshes don't spam triage turns.
+  useEffect(() => {
+    const pending = overview?.untriagedCount ?? 0;
+    if (pending === 0) {
+      triageInFlightRef.current = false;
+      return;
+    }
+    if (triageInFlightRef.current || !agentTarget || !channelName) return;
+    triageInFlightRef.current = true;
+    void rpc
+      .call(agentTarget, "triageNow", [channelName, {}])
+      .catch((err) => console.warn("[NewsPanel] triageNow failed:", err));
+  }, [overview?.untriagedCount, agentTarget, channelName]);
+
   // Saved view: fetch on demand (saved items can be older than the feed window).
   useEffect(() => {
     if (view !== "saved" || !agentTarget || !channelName) return;
@@ -860,18 +883,37 @@ export default function NewsPanel() {
   }, [searchInput, agentTarget, channelName]);
 
   // The list the reader is showing right now (search > saved > feed), with the
-  // source filter applied, grouped into near-duplicate clusters.
+  // source filter applied, grouped into same-event clusters and then into the
+  // agent's category sections. `flatRows` is the render+selection order.
   const searching = searchInput.trim().length > 0;
-  const clusters = useMemo(() => {
+  const flatRows = useMemo(() => {
     const base = searching
       ? searchResults?.articles ?? []
       : view === "saved"
         ? savedArticles
         : articles.filter((article) => view !== "unread" || !article.read);
     const filtered = sourceFilter ? base.filter((article) => article.source === sourceFilter) : base;
-    return clusterArticles(filtered);
+    const clusters = clusterArticles(filtered);
+    // Group clusters by category, category order = first appearance (≈ recency).
+    const byCategory = new Map<string, ArticleCluster[]>();
+    const order: string[] = [];
+    for (const cluster of clusters) {
+      const category = cluster.primary.category?.trim() || "Other";
+      if (!byCategory.has(category)) {
+        byCategory.set(category, []);
+        order.push(category);
+      }
+      byCategory.get(category)!.push(cluster);
+    }
+    const rows: Array<{ cluster: ArticleCluster; category: string; sectionStart: boolean }> = [];
+    for (const category of order) {
+      byCategory.get(category)!.forEach((cluster, index) => {
+        rows.push({ cluster, category, sectionStart: index === 0 });
+      });
+    }
+    return rows;
   }, [searching, searchResults, view, savedArticles, articles, sourceFilter]);
-  const selectable = useMemo(() => clusters.map((cluster) => cluster.primary), [clusters]);
+  const selectable = useMemo(() => flatRows.map((row) => row.cluster.primary), [flatRows]);
 
   // Reset + keep the keyboard selection in range as the visible list changes.
   useEffect(() => setSelectedIndex(0), [view, searchInput, sourceFilter]);
@@ -1056,6 +1098,16 @@ export default function NewsPanel() {
                   />
                 ) : null}
 
+                {(overview?.untriagedCount ?? 0) > 0 ? (
+                  <Flex align="center" gap="2">
+                    <Spinner size="1" />
+                    <Text size="1" color="gray">
+                      Categorizing {overview?.untriagedCount} new stor
+                      {overview?.untriagedCount === 1 ? "y" : "ies"}…
+                    </Text>
+                  </Flex>
+                ) : null}
+
                 {preparing ? (
                   <Card variant="surface">
                     <Flex align="center" gap="2">
@@ -1229,39 +1281,54 @@ export default function NewsPanel() {
                   </Flex>
                 ) : null}
 
-                {clusters.map((cluster, index) => (
-                  <ArticleItem
-                    key={cluster.primary.articleId}
-                    article={cluster.primary}
-                    others={cluster.others}
-                    busy={busy}
-                    fresh={isNewSinceVisit(cluster.primary)}
-                    selected={index === selectedIndex}
-                    innerRef={
-                      index === selectedIndex
-                        ? (el) => {
-                            selectedRowRef.current = el;
-                          }
-                        : undefined
-                    }
-                    onDeepDive={(item) => void handleDeepDive(item)}
-                    onReact={reactToStory}
-                    onSetSaved={setSavedLocal}
-                    onMarkRead={markReadLocal}
-                  />
+                {flatRows.map((row, index) => (
+                  <Fragment key={row.cluster.primary.articleId}>
+                    {row.sectionStart ? (
+                      <Text
+                        size="1"
+                        weight="bold"
+                        color="gray"
+                        style={{ marginTop: index > 0 ? "var(--space-3)" : 0 }}
+                      >
+                        {row.category.toUpperCase()}
+                      </Text>
+                    ) : null}
+                    <ArticleItem
+                      article={row.cluster.primary}
+                      others={row.cluster.others}
+                      busy={busy}
+                      fresh={isNewSinceVisit(row.cluster.primary)}
+                      selected={index === selectedIndex}
+                      innerRef={
+                        index === selectedIndex
+                          ? (el) => {
+                              selectedRowRef.current = el;
+                            }
+                          : undefined
+                      }
+                      onDeepDive={(item) => void handleDeepDive(item)}
+                      onReact={reactToStory}
+                      onSetSaved={setSavedLocal}
+                      onMarkRead={markReadLocal}
+                    />
+                  </Fragment>
                 ))}
 
-                {clusters.length === 0 && (searching || view === "saved" || articles.length > 0) ? (
+                {flatRows.length === 0 && (searching || view === "saved" || hasSources) ? (
                   <Text size="2" color="gray">
                     {searching
                       ? "No matches in your news."
                       : view === "saved"
                         ? "No saved stories yet — tap the ☆ on any story to keep it here."
-                        : "No articles match this filter."}
+                        : (overview?.untriagedCount ?? 0) > 0
+                          ? "Your latest stories are being categorized…"
+                          : sourceFilter
+                            ? "No stories match this filter."
+                            : "No stories yet — hit Refresh, or wait for your next briefing."}
                   </Text>
                 ) : null}
 
-                {articles.length === 0 && !searching && view !== "saved" && overview ? (
+                {!hasSources && !searching && view !== "saved" && overview ? (
                   <QuickStart
                     busy={busy}
                     hasSources={hasSources}
