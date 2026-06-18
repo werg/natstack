@@ -1126,11 +1126,18 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
     // The reader passes triagedOnly so nothing un-curated surfaces; the agent's
     // own listing (no flag) still sees everything.
     const triagedOnly = booleanArg(args, "triagedOnly") ?? false;
+    // The reader uses untriagedOnly to peek at the not-yet-categorized backlog
+    // (so an impatient user can click straight through while triage runs).
+    const untriagedOnly = booleanArg(args, "untriagedOnly") ?? false;
     const sinceMs = numberArg(args, "sinceMs");
     const clauses = ["a.channel_id = ?"];
     const params: unknown[] = [channelId];
     if (savedOnly) {
       clauses.push("a.saved = 1"); // saved is an explicit keep — show it regardless
+    } else if (untriagedOnly) {
+      clauses.push("a.triaged = 0");
+      clauses.push("a.read = 0");
+      clauses.push("(a.briefed_in IS NULL OR a.briefed_in NOT LIKE 'dropped:%')");
     } else if (unbriefedOnly) {
       clauses.push("a.briefed_in IS NULL");
     } else {

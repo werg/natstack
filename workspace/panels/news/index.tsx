@@ -470,6 +470,8 @@ export default function NewsPanel() {
   const [sourceFilter, setSourceFilter] = useState("");
   const [pastOpen, setPastOpen] = useState(false);
   const [savedArticles, setSavedArticles] = useState<ArticleRow[]>([]);
+  const [pendingArticles, setPendingArticles] = useState<ArticleRow[]>([]);
+  const [pendingOpen, setPendingOpen] = useState(false);
   const [searchInput, setSearchInput] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResults | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -842,6 +844,30 @@ export default function NewsPanel() {
       .catch((err) => console.warn("[NewsPanel] triageNow failed:", err));
   }, [overview?.untriagedCount, agentTarget, channelName]);
 
+  // Peek at the un-triaged backlog when the "Categorizing…" disclosure is open,
+  // so an impatient reader can click through before the agent finishes. Re-fetch
+  // as the count shrinks (triage processes items).
+  useEffect(() => {
+    if (!pendingOpen || !agentTarget || !channelName) return;
+    if ((overview?.untriagedCount ?? 0) === 0) {
+      setPendingArticles([]);
+      return;
+    }
+    let cancelled = false;
+    void rpc
+      .call<{ articles: ArticleRow[] }>(agentTarget, "listArticles", [
+        channelName,
+        { untriagedOnly: true, limit: 50 },
+      ])
+      .then((res) => {
+        if (!cancelled) setPendingArticles(res.articles);
+      })
+      .catch((err) => console.warn("[NewsPanel] pending fetch failed:", err));
+    return () => {
+      cancelled = true;
+    };
+  }, [pendingOpen, overview?.untriagedCount, agentTarget, channelName]);
+
   // Saved view: fetch on demand (saved items can be older than the feed window).
   useEffect(() => {
     if (view !== "saved" || !agentTarget || !channelName) return;
@@ -1099,13 +1125,62 @@ export default function NewsPanel() {
                 ) : null}
 
                 {(overview?.untriagedCount ?? 0) > 0 ? (
-                  <Flex align="center" gap="2">
-                    <Spinner size="1" />
-                    <Text size="1" color="gray">
-                      Categorizing {overview?.untriagedCount} new stor
-                      {overview?.untriagedCount === 1 ? "y" : "ies"}…
-                    </Text>
-                  </Flex>
+                  <Box>
+                    <Flex align="center" gap="1">
+                      <Spinner size="1" />
+                      <Button size="1" variant="ghost" onClick={() => setPendingOpen((open) => !open)}>
+                        {pendingOpen ? "▾" : "▸"} Categorizing {overview?.untriagedCount} new stor
+                        {overview?.untriagedCount === 1 ? "y" : "ies"}…
+                      </Button>
+                    </Flex>
+                    {pendingOpen ? (
+                      <Flex direction="column" gap="2" pt="2" pl="3">
+                        {pendingArticles.length === 0 ? (
+                          <Text size="1" color="gray">Loading…</Text>
+                        ) : (
+                          pendingArticles.map((article) => {
+                            const age = relativeAge(article.publishedAt);
+                            return (
+                              <Flex
+                                key={article.articleId}
+                                direction="column"
+                                gap="1"
+                                style={{ opacity: article.read ? 0.55 : 1 }}
+                              >
+                                <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+                                  <Favicon url={article.url} />
+                                  <Link
+                                    href={article.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    size="2"
+                                    style={{ minWidth: 0, wordBreak: "break-word" }}
+                                    onClick={() => {
+                                      markReadLocal(article.articleId);
+                                      setPendingArticles((prev) =>
+                                        prev.filter((item) => item.articleId !== article.articleId)
+                                      );
+                                    }}
+                                  >
+                                    {article.title}
+                                  </Link>
+                                </Flex>
+                                <Text size="1" color="gray">
+                                  {article.source}
+                                  {age ? ` · ${age}` : ""} · not yet categorized
+                                </Text>
+                                {article.blurb ? (
+                                  <Text size="1" color="gray" style={{ wordBreak: "break-word" }}>
+                                    {article.blurb}
+                                  </Text>
+                                ) : null}
+                              </Flex>
+                            );
+                          })
+                        )}
+                      </Flex>
+                    ) : null}
+                  </Box>
                 ) : null}
 
                 {preparing ? (

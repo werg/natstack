@@ -160,6 +160,7 @@ export const NEWS_OPERATIONS: NewsOperation[] = [
         unbriefedOnly: { type: "boolean" },
         savedOnly: { type: "boolean" },
         triagedOnly: { type: "boolean" },
+        untriagedOnly: { type: "boolean" },
         sinceMs: { type: "number" },
       },
       additionalProperties: false,

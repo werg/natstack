@@ -625,10 +625,15 @@ describe("NewsAgentWorker", () => {
       { title: "Earthquake update", link: "https://b.example/quake2" },
       { title: "SEO spam listicle", link: "https://spam.example/x" },
     ]);
-    // Nothing is triaged yet → the reader (triagedOnly) shows nothing.
+    // Nothing is triaged yet → the reader (triagedOnly) shows nothing, but the
+    // un-triaged backlog is peekable (for the "Categorizing…" drill-down).
     expect(
       ((await worker.listArticles("ch-1", { triagedOnly: true })) as { articles: unknown[] }).articles
     ).toHaveLength(0);
+    expect(
+      ((await worker.listArticles("ch-1", { untriagedOnly: true })) as { articles: unknown[] })
+        .articles
+    ).toHaveLength(3);
 
     const started = (await worker.triageNow("ch-1", {})) as { started: boolean; pending: number };
     expect(started).toMatchObject({ started: true });
