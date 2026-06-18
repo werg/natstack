@@ -531,6 +531,23 @@ describe("NewsAgentWorker", () => {
     expect(history.briefings[0]!.sourcesRead).toBe(7);
   });
 
+  it("flags scheduled briefings to notify but keeps manual 'brief me now' silent", async () => {
+    const worker = await makeWorker();
+    await worker.subscribeChannel({ channelId: "ch-1", contextId: "ctx-1" } as never);
+    await addExampleFeed(worker, [{ title: "A", link: "https://example.com/a" }]);
+
+    // The cold-start briefing fires via the scheduler alarm → flagged to notify.
+    await worker.alarmAt(worker.clock + INITIAL_BRIEFING_DELAY_MS + 1_000);
+    // A manual brief-me-now is silent.
+    await worker.refreshNow("ch-1", { briefing: true });
+
+    const flags = worker
+      .rowsForTest(`SELECT notify FROM news_briefings`)
+      .map((row) => Number(row["notify"]));
+    expect(flags).toContain(1); // scheduled / cold-start
+    expect(flags).toContain(0); // manual
+  });
+
   it("scheduler alarm drives polls and watchdogs stuck briefings", async () => {
     const worker = await makeWorker();
     await worker.subscribeChannel({ channelId: "ch-1", contextId: "ctx-1" } as never);

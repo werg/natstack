@@ -95,8 +95,8 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
   // News tables are versioned by drop-and-recreate (dev mode: articles
   // re-ingest from feeds; configuration is cheap to redo). Bump when the
   // news_* schema changes (e.g. the channel-mode column, the article source,
-  // the feedback signals + sources-read columns).
-  static override schemaVersion = AgentWorkerBase.schemaVersion + 4;
+  // the feedback signals, sources-read, and notify columns).
+  static override schemaVersion = AgentWorkerBase.schemaVersion + 5;
 
   private readonly syncEngine: NewsSyncEngine;
   private readonly scheduler: RecurringScheduler;
@@ -516,7 +516,7 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
 
   // ── Tier 2: briefing ──────────────────────────────────────────────────────
 
-  private async runBriefing(channelId: string): Promise<void> {
+  private async runBriefing(channelId: string, opts?: { notify?: boolean }): Promise<void> {
     // Fresh articles first; a stale snapshot makes a stale briefing.
     await this.runPoll(channelId);
     const state = this.getChannelState(channelId);
@@ -538,13 +538,17 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
       newSinceLastRun: scanned,
     };
     await this.newsCards.createBriefing(channelId, card);
+    // notify defaults on (scheduled/cold-start runs); a manual "Brief me now"
+    // passes notify:false so it stays silent for a reader already watching.
+    const notify = opts?.notify === false ? 0 : 1;
     this.sql.exec(
-      `INSERT OR REPLACE INTO news_briefings (channel_id, briefing_id, created_at, status, story_ids_json)
-       VALUES (?, ?, ?, 'summarizing', ?)`,
+      `INSERT OR REPLACE INTO news_briefings (channel_id, briefing_id, created_at, status, story_ids_json, notify)
+       VALUES (?, ?, ?, 'summarizing', ?, ?)`,
       channelId,
       briefingId,
       now,
-      JSON.stringify(stories.map((story) => story.articleId))
+      JSON.stringify(stories.map((story) => story.articleId)),
+      notify
     );
     // Arm the self-canceling watchdog so a dead turn surfaces as an error in
     // minutes rather than waiting for the next scheduled poll.
@@ -1136,7 +1140,17 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
       newSinceLastRun: briefing.newSinceLastRun,
       ...(sourcesRead !== undefined ? { sourcesRead } : {}),
     });
-    this.notifyBriefingReady(kept, sourcesRead);
+    // Only scheduled/cold-start briefings notify; a manual "Brief me now" is silent.
+    const notifyRow = this.sql
+      .exec(
+        `SELECT notify FROM news_briefings WHERE channel_id = ? AND briefing_id = ?`,
+        channelId,
+        briefingId
+      )
+      .toArray()[0];
+    if (Number(notifyRow?.["notify"] ?? 1) !== 0) {
+      this.notifyBriefingReady(kept, sourcesRead);
+    }
     return { published: briefingId, storyCount: kept.length, at: new Date(now).toISOString() };
   }
 
@@ -1307,7 +1321,8 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
   async refreshNow(channelId: string, args: Record<string, unknown>): Promise<unknown> {
     await this.runPoll(channelId, { force: true });
     if (booleanArg(args, "briefing")) {
-      await this.runBriefing(channelId);
+      // Manual "Brief me now" — the reader is right here, so stay silent.
+      await this.runBriefing(channelId, { notify: false });
       // A manual briefing runs outside the scheduler (which only realigns jobs
       // it fires), so push the next scheduled briefing to the normal cadence —
       // otherwise an early cold-start slot could fire a duplicate minutes later.

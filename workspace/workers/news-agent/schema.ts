@@ -92,6 +92,9 @@ export function createNewsTables(sql: SqlStorage): void {
       card_message_id TEXT,
       -- Count of concrete sources the agent fetched/read for this briefing.
       sources_read INTEGER,
+      -- 1 → fire a "ready" notification on publish (scheduled/cold-start runs);
+      -- 0 → stay silent (a manual "Brief me now" the reader is already watching).
+      notify INTEGER NOT NULL DEFAULT 1,
       PRIMARY KEY (channel_id, briefing_id)
     )
   `);
