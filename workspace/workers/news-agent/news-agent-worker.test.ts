@@ -409,6 +409,54 @@ describe("NewsAgentWorker", () => {
     );
   });
 
+  it("rejects search/listing URLs and persists the real source + blurb for search stories", async () => {
+    const worker = await makeWorker();
+    await addExampleFeed(worker, [{ title: "Keep me", link: "https://example.com/keep" }]);
+    await worker.refreshNow("ch-1", { briefing: true });
+    const briefingId = String(
+      worker.rowsForTest(`SELECT briefing_id FROM news_briefings`)[0]!["briefing_id"]
+    );
+
+    const result = (await worker.publishBriefing("ch-1", {
+      briefingId,
+      tldr: "**Today** in review.",
+      searchStories: [
+        {
+          url: "https://acme.example/articles/the-real-story",
+          title: "The real story",
+          source: "ACME Times",
+          blurb: "A concrete, substantive summary of what happened.",
+        },
+        // Search-engine result page — must be rejected by the guard.
+        { url: "https://www.google.com/search?q=ai+news", title: "Search results", source: "Google" },
+        // On-site search endpoint — also rejected.
+        { url: "https://acme.example/search?query=ai", title: "Site search", source: "ACME" },
+      ],
+    })) as Record<string, unknown>;
+    // Only the concrete article survives (1 feed keep + 1 search = 2).
+    expect(result).toMatchObject({ storyCount: 2 });
+
+    const search = worker.rowsForTest(
+      `SELECT canonical_url, source, blurb FROM news_articles WHERE origin = 'search'`
+    );
+    expect(search).toHaveLength(1);
+    expect(search[0]!["source"]).toBe("ACME Times");
+    expect(search[0]!["blurb"]).toBe("A concrete, substantive summary of what happened.");
+    expect(
+      worker
+        .rowsForTest(`SELECT canonical_url FROM news_articles`)
+        .some((row) => String(row["canonical_url"]).includes("/search"))
+    ).toBe(false);
+
+    // listArticles surfaces the real source + blurb and hides dropped items.
+    const listed = (await worker.listArticles("ch-1", {})) as {
+      articles: Array<{ title: string; source: string; blurb?: string }>;
+    };
+    const real = listed.articles.find((a) => a.title === "The real story")!;
+    expect(real.source).toBe("ACME Times");
+    expect(real.blurb).toBe("A concrete, substantive summary of what happened.");
+  });
+
   it("scheduler alarm drives polls and watchdogs stuck briefings", async () => {
     const worker = await makeWorker();
     await worker.subscribeChannel({ channelId: "ch-1", contextId: "ctx-1" } as never);

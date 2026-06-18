@@ -62,6 +62,10 @@ export function createNewsTables(sql: SqlStorage): void {
       title_sim_key TEXT,
       summary TEXT,
       author TEXT,
+      -- Display source for non-feed (search) articles: the publication name the
+      -- agent attributed the story to. Feed articles derive their source from
+      -- the joined feed title instead.
+      source TEXT,
       published_at INTEGER,
       fetched_at INTEGER NOT NULL,
       read INTEGER NOT NULL DEFAULT 0,

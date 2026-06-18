@@ -44,12 +44,14 @@ import {
   ExclamationTriangleIcon,
   GlobeIcon,
   LightningBoltIcon,
-  MagnifyingGlassIcon,
   PlusIcon,
   ReloadIcon,
 } from "@radix-ui/react-icons";
-import { AgenticChat, ErrorBoundary } from "@workspace/agentic-chat";
+import { AgenticChat, ErrorBoundary, markdownComponents } from "@workspace/agentic-chat";
 import type { ConnectionConfig } from "@workspace/agentic-chat";
+import ReactMarkdown from "react-markdown";
+import type { Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { createPanelSandboxConfig, parseSignalEvent } from "@workspace/agentic-core";
 import { connectViaRpc } from "@workspace/pubsub";
 import { fork } from "@workspace/channel-fork";
@@ -82,9 +84,27 @@ interface ArticleRow {
   title: string;
   url: string;
   source: string;
+  blurb?: string;
   publishedAt?: string;
   briefedIn?: string;
   read: boolean;
+}
+
+const MARKDOWN_REMARK_PLUGINS = [remarkGfm];
+
+/** Render a briefing TLDR / story blurb as markdown, reusing the chat's
+ *  component mapping so the reader matches the embedded AgenticChat. */
+function Markdown({ children }: { children: string }) {
+  return (
+    <div className="message-prose">
+      <ReactMarkdown
+        remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+        components={markdownComponents as Components}
+      >
+        {children}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 interface BriefingRow {
@@ -189,6 +209,7 @@ export default function NewsPanel() {
   const latestTldrRef = useRef<string | undefined>(undefined);
   const bootstrapAttempted = useRef(false);
   const modelServiceRef = useRef<DurableObjectServiceClient | null>(null);
+  const modelProbeRef = useRef<{ catalog: ModelCatalog; modelRef: string } | null>(null);
 
   const channelName = stateArgs.channelName ?? bootstrapChannel;
 
@@ -227,7 +248,10 @@ export default function NewsPanel() {
         setAgentTarget(targetId);
 
         // Nudge the user to connect a model if the agent's turns would stall.
+        // Stash the catalog so refresh() can re-reconcile (the credential may
+        // be connected later, e.g. by the agent's own recovery flow).
         if (settings?.catalog) {
+          modelProbeRef.current = { catalog: settings.catalog, modelRef: model };
           setModelConnect(await detectMissingModelCredential(settings.catalog, model));
         }
       } catch (err) {
@@ -273,6 +297,24 @@ export default function NewsPanel() {
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    }
+    // Reconcile the connect nudge against current credentials so a model that
+    // gets connected later clears the banner without a reload. Only flip state
+    // when connectedness actually changes, to avoid re-render churn.
+    const probe = modelProbeRef.current;
+    if (probe) {
+      try {
+        const next = await detectMissingModelCredential(probe.catalog, probe.modelRef);
+        setModelConnect((prev) => {
+          if (prev === null && next === null) return prev;
+          if (prev && next && prev.providerId === next.providerId && prev.baseUrl === next.baseUrl) {
+            return prev;
+          }
+          return next;
+        });
+      } catch {
+        // leave the existing nudge state untouched on a transient failure
+      }
     }
   }, [agentTarget, channelName]);
 
@@ -461,6 +503,13 @@ export default function NewsPanel() {
   const latestReady = readyBriefings[0];
   const pastReady = readyBriefings.slice(1);
 
+  // A completed briefing is hard proof the model resolved a credential and ran,
+  // so never nag to "connect a model" once one exists — the client-side
+  // credential probe can false-negative (e.g. OAuth providers like openai-codex
+  // whose stored audience doesn't path-match the catalog baseUrl).
+  const modelProvenWorking = readyBriefings.length > 0 || Boolean(overview?.lastBriefingId);
+  const showConnectNudge = Boolean(modelConnect) && !modelProvenWorking;
+
   const sources = [...new Set(articles.map((article) => article.source))].sort();
   const visibleArticles = articles.filter(
     (article) =>
@@ -512,7 +561,7 @@ export default function NewsPanel() {
               <Text size="1" color="red" style={{ padding: "0 var(--space-3)" }}>{error}</Text>
             ) : null}
 
-            {modelConnect ? (
+            {showConnectNudge && modelConnect ? (
               <Box px="3" pt="2">
                 <Callout.Root color="amber" size="1">
                   <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
@@ -551,9 +600,7 @@ export default function NewsPanel() {
                     <Text size="1" weight="bold" color="gray">
                       LATEST BRIEFING · {new Date(latestReady.createdAt).toLocaleString()}
                     </Text>
-                    <Text size="2" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                      {latestReady.tldr}
-                    </Text>
+                    <Markdown>{latestReady.tldr}</Markdown>
                   </Flex>
                 ) : null}
 
@@ -569,9 +616,7 @@ export default function NewsPanel() {
                             <Text size="1" weight="bold" color="gray">
                               {new Date(briefing.createdAt).toLocaleString()}
                             </Text>
-                            <Text size="1" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                              {briefing.tldr}
-                            </Text>
+                            {briefing.tldr ? <Markdown>{briefing.tldr}</Markdown> : null}
                           </Flex>
                         ))}
                       </Flex>
@@ -623,11 +668,7 @@ export default function NewsPanel() {
                   return (
                     <Flex key={article.articleId} direction="column" gap="1" style={{ opacity: article.read ? 0.55 : 1 }}>
                       <Flex align="center" gap="2" style={{ minWidth: 0 }}>
-                        {article.briefedIn?.startsWith("dropped:") ? null : article.source === "search" ? (
-                          <MagnifyingGlassIcon />
-                        ) : (
-                          <GlobeIcon />
-                        )}
+                        <GlobeIcon style={{ flexShrink: 0, color: "var(--gray-9)" }} />
                         <Link
                           href={article.url}
                           target="_blank"
@@ -639,6 +680,11 @@ export default function NewsPanel() {
                           {article.title}
                         </Link>
                       </Flex>
+                      {article.blurb ? (
+                        <Text size="1" color="gray" style={{ wordBreak: "break-word" }}>
+                          {article.blurb}
+                        </Text>
+                      ) : null}
                       <Flex align="center" gap="2">
                         <Text size="1" color="gray">
                           {article.source}

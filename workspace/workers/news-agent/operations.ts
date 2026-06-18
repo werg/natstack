@@ -146,7 +146,7 @@ export const NEWS_OPERATIONS: NewsOperation[] = [
     name: "news_list_articles",
     methodAliases: ["getArticles"],
     description:
-      "List ingested articles, newest first. Returns { count, articles: [{ articleId, title, url, source, publishedAt, briefedIn, read }] }. Filters: unbriefedOnly, sinceMs (epoch), limit (default 30).",
+      "List ingested articles, newest first. Returns { count, articles: [{ articleId, title, url, source, blurb, publishedAt, briefedIn, read }] }. Filters: unbriefedOnly, sinceMs (epoch), limit (default 30).",
     schema: {
       type: "object",
       properties: {

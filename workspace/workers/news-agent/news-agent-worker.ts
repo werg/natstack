@@ -91,8 +91,8 @@ function nextBriefingRunAt(now: number, intervalMs: number, atMinutes?: number):
 export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
   // News tables are versioned by drop-and-recreate (dev mode: articles
   // re-ingest from feeds; configuration is cheap to redo). Bump when the
-  // news_* schema changes (e.g. the channel-mode column).
-  static override schemaVersion = AgentWorkerBase.schemaVersion + 2;
+  // news_* schema changes (e.g. the channel-mode column, the article source).
+  static override schemaVersion = AgentWorkerBase.schemaVersion + 3;
 
   private readonly syncEngine: NewsSyncEngine;
   private readonly scheduler: RecurringScheduler;
@@ -573,6 +573,7 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
         title: String(row["title"]),
         source:
           (row["feed_title"] as string | null) ??
+          (row["source"] as string | null) ??
           (String(row["origin"]) === "search" ? "web search" : "feed"),
         origin: String(row["origin"]) === "search" ? "search" : "feed",
         publishedAt:
@@ -903,6 +904,9 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
     const clauses = ["a.channel_id = ?"];
     const params: unknown[] = [channelId];
     if (unbriefedOnly) clauses.push("a.briefed_in IS NULL");
+    // Dropped candidates were explicitly cut from a briefing — never surface
+    // them in the reader (they are the opposite of "interesting").
+    else clauses.push("(a.briefed_in IS NULL OR a.briefed_in NOT LIKE 'dropped:%')");
     if (sinceMs !== undefined) {
       clauses.push("a.fetched_at >= ?");
       params.push(sinceMs);
@@ -910,7 +914,7 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
     const rows = this.sql
       .exec(
         `SELECT a.article_id, a.title, a.canonical_url, a.published_at, a.briefed_in, a.read, a.origin,
-                f.title AS feed_title
+                a.blurb, a.summary, a.source, f.title AS feed_title
          FROM news_articles a
          LEFT JOIN news_feeds f ON f.channel_id = a.channel_id AND f.feed_id = a.feed_id
          WHERE ${clauses.join(" AND ")}
@@ -926,7 +930,15 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
         articleId: String(row["article_id"]),
         title: String(row["title"]),
         url: String(row["canonical_url"]),
-        source: (row["feed_title"] as string | null) ?? String(row["origin"]),
+        source:
+          (row["feed_title"] as string | null) ??
+          (row["source"] as string | null) ??
+          (String(row["origin"]) === "search" ? "web" : "feed"),
+        // The agent's blurb is a real summary; fall back to a cleaned snippet of
+        // the feed item's own description so every row carries some substance.
+        blurb:
+          (row["blurb"] as string | null) ??
+          plainTextSnippet(row["summary"] as string | null, 400),
         publishedAt:
           row["published_at"] === null
             ? undefined
@@ -973,7 +985,9 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
       keptIds.add(story.articleId);
     }
 
-    // Search-found stories become first-class articles (deduped by URL).
+    // Search-found stories become first-class articles (deduped by URL). The
+    // agent is instructed to cite concrete articles; reject the obvious
+    // search/listing offenders here as defense in depth.
     let searchStoryCount = 0;
     for (const entry of Array.isArray(args["searchStories"]) ? args["searchStories"] : []) {
       if (searchStoryCount >= MAX_SEARCH_STORIES_PER_BRIEFING) break;
@@ -982,6 +996,7 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
       const title = stringArg(item, "title");
       if (!url || !title) continue;
       if (!isHttpUrl(url)) continue;
+      if (isLikelySearchOrIndexUrl(url)) continue;
       let id: string;
       try {
         id = await canonicalArticleId(url);
@@ -989,11 +1004,14 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
         continue;
       }
       if (keptIds.has(id)) continue;
+      const source = stringArg(item, "source");
+      const blurb = stringArg(item, "blurb");
       await this.syncEngine.insertArticle(channelId, {
         url,
         title,
         origin: "search",
-        blurb: stringArg(item, "blurb"),
+        ...(source ? { source } : {}),
+        ...(blurb ? { blurb } : {}),
       });
       keptIds.add(id);
       searchStoryCount += 1;
@@ -1001,10 +1019,10 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
         articleId: id,
         url,
         title,
-        source: stringArg(item, "source") ?? "web search",
+        source: source ?? "web search",
         origin: "search",
         score: 0,
-        blurb: stringArg(item, "blurb"),
+        ...(blurb ? { blurb } : {}),
       });
     }
 
@@ -1193,4 +1211,49 @@ function isHttpUrl(raw: string): boolean {
   } catch {
     return false;
   }
+}
+
+const SEARCH_ENGINE_HOSTS = new Set([
+  "google.com",
+  "news.google.com",
+  "bing.com",
+  "duckduckgo.com",
+  "search.brave.com",
+  "search.yahoo.com",
+  "yandex.com",
+  "baidu.com",
+]);
+
+/**
+ * Reject obvious non-article URLs the agent should never cite as a source:
+ * search-engine result pages, on-site search endpoints, and bare homepages.
+ * Conservative on purpose — section/listing pages that look like real article
+ * paths are left to the prompt's judgment rather than guessed at here.
+ */
+function isLikelySearchOrIndexUrl(raw: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  const host = url.hostname.replace(/^www\./, "").toLowerCase();
+  if (SEARCH_ENGINE_HOSTS.has(host)) return true;
+  if (/(^|\/)search(\/|$)/i.test(url.pathname)) return true;
+  if (url.searchParams.has("q") || url.searchParams.has("query")) return true;
+  const path = url.pathname.replace(/\/+$/, "");
+  if (path === "") return true; // bare homepage — not a specific article
+  return false;
+}
+
+/** Best-effort plain-text snippet from a possibly-HTML feed summary. */
+function plainTextSnippet(raw: string | null | undefined, max: number): string | undefined {
+  if (!raw) return undefined;
+  const text = raw
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&[a-z]+;|&#\d+;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return undefined;
+  return text.length > max ? `${text.slice(0, max).trimEnd()}…` : text;
 }
