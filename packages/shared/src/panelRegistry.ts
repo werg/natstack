@@ -701,11 +701,15 @@ export class PanelRegistry implements PanelRelationshipProvider {
     try {
       const previousSnapshot = getCurrentSnapshot(previous);
       const nextSnapshot = getCurrentSnapshot(next);
-      return (
-        previousSnapshot.source === nextSnapshot.source &&
-        previousSnapshot.contextId === nextSnapshot.contextId &&
-        previousSnapshot.options.ref === nextSnapshot.options.ref
-      );
+      // Runtime artifacts (htmlPath, build state, navigation) are owned by the
+      // Electron main process and are authoritative for the live view, which is
+      // keyed by the view-session contextId. The contextId is stable across an
+      // in-place navigate (the source changes but the slot/session does not), so
+      // preserve on contextId alone. Previously also requiring source/ref
+      // equality dropped htmlPath whenever a panel was navigated to a new source,
+      // and the next server repopulate (which carries no artifacts) left the
+      // panel stuck on "Preparing panel…".
+      return previousSnapshot.contextId === nextSnapshot.contextId;
     } catch {
       return false;
     }

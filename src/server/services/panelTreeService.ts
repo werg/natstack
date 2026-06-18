@@ -26,6 +26,7 @@ const METHOD_ACCESS: Partial<Record<string, PanelAccessOperation>> = {
   unload: "unload",
   movePanel: "movePanel",
   navigate: "replacePanel",
+  navigateHistory: "replacePanel",
   takeOver: "takeOver",
   openDevTools: "openDevTools",
   rebuildPanel: "rebuildPanel",
@@ -52,6 +53,7 @@ const methodSchemas = {
           parentId: z.string().nullable().optional(),
           name: z.string().optional(),
           focus: z.boolean().optional(),
+          ref: z.string().optional(),
           stateArgs: z.record(z.unknown()).optional(),
         })
         .optional(),
@@ -88,6 +90,9 @@ const methodSchemas = {
         })
         .optional(),
     ]),
+  },
+  navigateHistory: {
+    args: z.tuple([z.string(), z.union([z.literal(-1), z.literal(1)])]),
   },
   takeOver: { args: z.tuple([z.string()]) },
   openDevTools: { args: z.tuple([z.string(), z.enum(["detach", "right", "bottom"]).optional()]) },
@@ -137,7 +142,10 @@ export function createPanelTreeService(deps: PanelTreeServiceDeps): ServiceDefin
   return {
     name: "panelTree",
     description: "Server-mediated panel tree handles and control operations",
-    policy: { allowed: ["panel", "worker", "do"] },
+    // shell/shell-remote/server: trusted chrome — desktop routes via the
+    // electron-main serverClient (identity "server"); mobile routes via its
+    // transport (identity "shell"/"shell-remote").
+    policy: { allowed: ["panel", "worker", "do", "shell", "shell-remote", "server"] },
     methods: methodSchemas,
     handler: async (ctx, method, args) => {
       assertAllowedAgentMethod(method, args);
@@ -168,6 +176,7 @@ export function createPanelTreeService(deps: PanelTreeServiceDeps): ServiceDefin
         case "unload":
         case "movePanel":
         case "navigate":
+        case "navigateHistory":
         case "takeOver":
         case "openDevTools":
         case "rebuildPanel":

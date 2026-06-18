@@ -63,6 +63,7 @@ export class WorkspaceDOTestable extends WorkspaceDO {
         source TEXT NOT NULL,
         context_id TEXT NOT NULL,
         state_args TEXT,
+        options TEXT,
         recorded_at INTEGER NOT NULL,
         PRIMARY KEY (slot_id, cursor)
       )

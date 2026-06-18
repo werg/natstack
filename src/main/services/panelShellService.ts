@@ -117,6 +117,17 @@ async function getRepoState(
   }
 }
 
+/**
+ * The desktop shell is a thin view-host + read-mirror: all panel-tree mutations
+ * go through the single server authority (panelTree). The serverClient is always
+ * present once the shell is running, so this asserts rather than falling back to
+ * a (removed) local mutation path.
+ */
+function requireServer(client: ServerClient | null | undefined): ServerClient {
+  if (!client) throw new Error("panel tree mutations require a server connection");
+  return client;
+}
+
 export function createPanelShellService(deps: {
   panelOrchestrator: PanelOrchestrator;
   panelRegistry: PanelRegistry;
@@ -201,7 +212,7 @@ export function createPanelShellService(deps: {
 
         case "takeOver": {
           const panelId = args[0] as string;
-          await lifecycle.takeOverPanel(panelId);
+          await requireServer(deps.serverClient).call("panelTree", "takeOver", [panelId]);
           return;
         }
 
@@ -223,7 +234,7 @@ export function createPanelShellService(deps: {
 
         case "reload": {
           const panelId = args[0] as string;
-          return lifecycle.reloadPanel(panelId);
+          return requireServer(deps.serverClient).call("panelTree", "reload", [panelId]);
         }
 
         case "reloadView": {
@@ -240,22 +251,30 @@ export function createPanelShellService(deps: {
 
         case "rebuildPanel": {
           const panelId = args[0] as string;
-          return lifecycle.rebuildPanel(panelId);
+          return requireServer(deps.serverClient).call("panelTree", "rebuildPanel", [panelId]);
         }
 
         case "rebuildAndReload": {
           const panelId = args[0] as string;
-          return lifecycle.rebuildAndReloadPanel(panelId);
+          return requireServer(deps.serverClient).call("panelTree", "rebuildAndReload", [panelId]);
         }
 
         case "goBack": {
           const panelId = args[0] as string;
           const panel = registry.getPanel(panelId);
           const contents = vm.getWebContents(panelId);
-          if (panel && getPanelSource(panel).startsWith("browser:") && contents?.canGoBack()) {
-            contents.goBack();
+          // Browser in-page history stays a local view operation.
+          if (
+            panel &&
+            getPanelSource(panel).startsWith("browser:") &&
+            contents?.navigationHistory.canGoBack()
+          ) {
+            contents.navigationHistory.goBack();
             return;
           }
+          // Panel source-history routes through the orchestrator, which writes via
+          // the server authority AND rebuilds the view (server-side navigate
+          // changes the entity; the view must be rebuilt imperatively).
           await lifecycle.navigatePanelHistory(panelId, -1);
           return;
         }
@@ -264,8 +283,12 @@ export function createPanelShellService(deps: {
           const panelId = args[0] as string;
           const panel = registry.getPanel(panelId);
           const contents = vm.getWebContents(panelId);
-          if (panel && getPanelSource(panel).startsWith("browser:") && contents?.canGoForward()) {
-            contents.goForward();
+          if (
+            panel &&
+            getPanelSource(panel).startsWith("browser:") &&
+            contents?.navigationHistory.canGoForward()
+          ) {
+            contents.navigationHistory.goForward();
             return;
           }
           await lifecycle.navigatePanelHistory(panelId, 1);
@@ -275,13 +298,15 @@ export function createPanelShellService(deps: {
         case "unload": {
           const panelId = args[0] as string;
           log.verbose(` Unload requested for panel: ${panelId}`);
-          return lifecycle.unloadPanel(panelId);
+          return requireServer(deps.serverClient).call("panelTree", "unload", [panelId]);
         }
 
         case "archive": {
           const panelId = args[0] as string;
+          // Server authority closes the slot + emits; the desktop reactively
+          // prunes the removed panel's view/lease via applyServerPanelTreeSnapshot.
           try {
-            await lifecycle.closePanel(panelId);
+            await requireServer(deps.serverClient).call("panelTree", "archive", [panelId]);
           } catch (error) {
             log.warn(
               ` Archive failed for panel ${panelId}: ${error instanceof Error ? error.message : String(error)}`
@@ -302,12 +327,21 @@ export function createPanelShellService(deps: {
               canGoForward?: boolean;
             },
           ];
+          // Browser navigation state (url/title/loading/canGoBack/Forward) is
+          // per-host view state, NOT authoritative tree state: the snapshot diff
+          // treats it as non-semantic, so it must update the hosting client's own
+          // registry directly (this drives the chrome's history buttons).
           await lifecycle.updatePanelState(panelId, state satisfies PanelNavigationState);
           return;
         }
 
         case "createAboutPanel": {
           const page = args[0] as string;
+          // Goes through the orchestrator, which writes via the server authority
+          // AND builds the new panel's view from the response (createViaServer →
+          // attachCreatedPanel). Routing straight to panelTree would create the
+          // slot but never build the view (endless spinner) — the reactive
+          // reconcile only RELOADS existing views, it does not build new ones.
           return lifecycle.createAboutPanel(page);
         }
 
@@ -330,12 +364,17 @@ export function createPanelShellService(deps: {
           const opts = args[2] as
             | { ref?: string; contextId?: string; stateArgs?: Record<string, unknown> }
             | undefined;
+          // Through the orchestrator: it writes via the server authority AND
+          // rebuilds the view (a server-side navigate mints a new entity, so the
+          // view must be rebuilt imperatively — the reactive reconcile is racy
+          // because the old entity retires before the broadcast arrives).
           return lifecycle.navigatePanel(panelId, source, opts);
         }
 
         case "createBrowser": {
           const url = args[0] as string;
           const opts = args[1] as { name?: string; focus?: boolean } | undefined;
+          // "shell" caller ⇒ no registry parent ⇒ root browser panel.
           return lifecycle.createBrowserUrlPanel("shell", url, {
             ...opts,
             focus: opts?.focus ?? true,
@@ -353,12 +392,12 @@ export function createPanelShellService(deps: {
         }
 
         case "movePanel": {
-          const { panelId, newParentId, targetPosition } = args[0] as {
+          const moveArgs = args[0] as {
             panelId: string;
             newParentId: string | null;
             targetPosition: number;
           };
-          await lifecycle.movePanel(panelId, newParentId, targetPosition);
+          await requireServer(deps.serverClient).call("panelTree", "movePanel", [moveArgs]);
           return;
         }
 

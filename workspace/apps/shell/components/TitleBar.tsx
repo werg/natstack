@@ -56,6 +56,7 @@ import {
   panel,
   type NativeShellOverlayEvent,
   type NativeShellOverlayOptions,
+  type ShellOverlayRow,
 } from "../shell/client";
 import { useNativeShellOverlay } from "../shell/useNativeShellOverlay";
 
@@ -88,6 +89,15 @@ export function TitleBar({
   const handleNavigationToggle = () => {
     const nextMode: NavigationMode = navigationMode === "stack" ? "tree" : "stack";
     setMode(nextMode);
+  };
+
+  // Address-bar commands: after a navigate (Enter or picking a suggestion),
+  // return to breadcrumb view. Browser controls (back/forward/reload) stay put.
+  const handleAddressChromeCommand = (command: ChromeCommand) => {
+    onChromeCommand?.(command);
+    if (command.type === "navigate") {
+      setAddressBarVisible(false);
+    }
   };
 
   const handleHamburgerClick = (e: MouseEvent<HTMLButtonElement>) => {
@@ -131,32 +141,29 @@ export function TitleBar({
             </Tooltip>
           </Flex>
 
-          <Text
-            size="2"
-            weight="medium"
-            truncate
-            style={{ flex: 1, minWidth: 0, textAlign: "center" }}
+          <Box
+            onClick={() => setAddressBarVisible(true)}
+            title="Edit address"
+            style={
+              {
+                flex: 1,
+                minWidth: 0,
+                appRegion: "no-drag",
+                WebkitAppRegion: "no-drag",
+                cursor: "text",
+              } as CSSProperties
+            }
           >
-            {title}
-          </Text>
+            <Text size="2" weight="medium" truncate style={{ width: "100%", textAlign: "center" }}>
+              {title}
+            </Text>
+          </Box>
 
           <Flex
             align="center"
             gap="1"
             style={{ appRegion: "no-drag", WebkitAppRegion: "no-drag" } as CSSProperties}
           >
-            <Tooltip content={addressBarVisible ? "Hide address bar" : "Show address bar"}>
-              <IconButton
-                variant="ghost"
-                size="2"
-                onClick={() => setAddressBarVisible(!addressBarVisible)}
-                aria-label={addressBarVisible ? "Hide address bar" : "Show address bar"}
-              >
-                <Text size="1" weight="bold">
-                  URL
-                </Text>
-              </IconButton>
-            </Tooltip>
             <Tooltip content="New panel">
               <IconButton
                 variant="ghost"
@@ -184,7 +191,24 @@ export function TitleBar({
             pb="2"
             style={{ appRegion: "no-drag", WebkitAppRegion: "no-drag" } as CSSProperties}
           >
-            <AddressBar chromeState={chromeState} onChromeCommand={onChromeCommand} />
+            <Flex align="center" gap="1">
+              <Box style={{ flex: 1, minWidth: 0 }}>
+                <AddressBar
+                  chromeState={chromeState}
+                  onChromeCommand={handleAddressChromeCommand}
+                />
+              </Box>
+              <Tooltip content="Back to breadcrumbs">
+                <IconButton
+                  variant="ghost"
+                  size="2"
+                  onClick={() => setAddressBarVisible(false)}
+                  aria-label="Back to breadcrumbs"
+                >
+                  <Cross2Icon />
+                </IconButton>
+              </Tooltip>
+            </Flex>
           </Box>
         )}
 
@@ -239,19 +263,6 @@ export function TitleBar({
             </IconButton>
           </Tooltip>
 
-          <Tooltip content={addressBarVisible ? "Hide address bar" : "Show address bar"}>
-            <IconButton
-              variant="ghost"
-              size="1"
-              onClick={() => setAddressBarVisible(!addressBarVisible)}
-              aria-label={addressBarVisible ? "Hide address bar" : "Show address bar"}
-            >
-              <Text size="1" weight="bold">
-                URL
-              </Text>
-            </IconButton>
-          </Tooltip>
-
           <Tooltip content="New panel (Cmd/Ctrl+T)">
             <IconButton
               variant="ghost"
@@ -282,7 +293,30 @@ export function TitleBar({
           }
         >
           {addressBarVisible ? (
-            <AddressBar chromeState={chromeState} onChromeCommand={onChromeCommand} />
+            <Flex
+              align="center"
+              gap="1"
+              style={
+                { width: "100%", appRegion: "no-drag", WebkitAppRegion: "no-drag" } as CSSProperties
+              }
+            >
+              <Box style={{ flex: 1, minWidth: 0 }}>
+                <AddressBar
+                  chromeState={chromeState}
+                  onChromeCommand={handleAddressChromeCommand}
+                />
+              </Box>
+              <Tooltip content="Back to breadcrumbs">
+                <IconButton
+                  variant="ghost"
+                  size="1"
+                  onClick={() => setAddressBarVisible(false)}
+                  aria-label="Back to breadcrumbs"
+                >
+                  <Cross2Icon />
+                </IconButton>
+              </Tooltip>
+            </Flex>
           ) : (
             <BreadcrumbBar
               title={title}
@@ -290,6 +324,7 @@ export function TitleBar({
               statusNavigation={statusNavigation}
               onNavigateToId={onNavigateToId}
               onPanelAction={onPanelAction}
+              onEditAddress={() => setAddressBarVisible(true)}
             />
           )}
         </Box>
@@ -319,6 +354,8 @@ interface BreadcrumbBarProps {
   statusNavigation?: LazyStatusNavigationData | null;
   onNavigateToId?: (panelId: string) => void;
   onPanelAction?: (panelId: string, action: PanelContextMenuAction) => void;
+  /** Clicking the already-active breadcrumb switches to the address/controls view. */
+  onEditAddress?: () => void;
 }
 
 const MAX_VISIBLE_ANCESTORS = 2;
@@ -429,6 +466,14 @@ function BrowserAddressBar({
     [autocompleteItems.length, isMobile]
   );
 
+  // Resize the overlay as suggestions stream in (they load async after openOverlay).
+  // Depend on the open *boolean* (not the bounds object) to avoid a render loop;
+  // openOverlay's identity changes with the row count, which re-runs this.
+  const isBrowserOverlayOpen = overlayBounds !== null;
+  useEffect(() => {
+    if (focused && isBrowserOverlayOpen) openOverlay(inputRef.current);
+  }, [focused, isBrowserOverlayOpen, openOverlay]);
+
   const submitValue = useCallback(
     (nextValue: string, event?: KeyboardEvent<HTMLInputElement>) => {
       if (!nextValue.trim()) return;
@@ -442,8 +487,8 @@ function BrowserAddressBar({
     [onChromeCommand]
   );
 
-  const overlayHtml = useMemo(
-    () => buildBrowserAddressOverlayHtml(autocompleteItems, value),
+  const overlayData = useMemo(
+    () => buildBrowserAddressRows(autocompleteItems, value),
     [autocompleteItems, value]
   );
 
@@ -471,7 +516,8 @@ function BrowserAddressBar({
       ? {
           id: "browser-address-overlay",
           open: true,
-          html: overlayHtml,
+          rows: overlayData.rows,
+          empty: overlayData.empty,
           bounds: overlayBounds,
           focus: false,
         }
@@ -483,7 +529,14 @@ function BrowserAddressBar({
     <Flex
       align="center"
       gap="1"
-      style={{ appRegion: "no-drag", WebkitAppRegion: "no-drag", minWidth: 0 } as CSSProperties}
+      style={
+        {
+          appRegion: "no-drag",
+          WebkitAppRegion: "no-drag",
+          minWidth: 0,
+          width: "100%",
+        } as CSSProperties
+      }
     >
       <Tooltip content="Back">
         <IconButton
@@ -558,8 +611,7 @@ function BrowserAddressBar({
   );
 }
 
-type PanelAddressOverlayState =
-  | { kind: "path"; bounds: NativeShellOverlayOptions["bounds"] };
+type PanelAddressOverlayState = { kind: "path"; bounds: NativeShellOverlayOptions["bounds"] };
 
 function PanelAddressBar({
   chromeState,
@@ -643,43 +695,51 @@ function PanelAddressBar({
         },
       });
     },
-    [
-      addressOptions?.suggestions.length,
-      isMobile,
-    ]
+    [addressOptions?.suggestions.length, isMobile]
   );
 
-  const overlayHtml = useMemo(
-    () => (overlay ? buildPathOverlayHtml(addressOptions?.suggestions ?? [], pathValue) : ""),
-    [addressOptions?.suggestions, overlay, pathValue]
+  // Resize the overlay as suggestions stream in (loaded async after openOverlay).
+  const isPanelOverlayOpen = overlay !== null;
+  useEffect(() => {
+    if (isPanelOverlayOpen) openOverlay("path", pathInputRef.current);
+  }, [isPanelOverlayOpen, openOverlay]);
+
+  const overlayData = useMemo(
+    () => buildPathRows(addressOptions?.suggestions ?? [], pathValue),
+    [addressOptions?.suggestions, pathValue]
   );
 
   const overlayOptions = overlay
     ? {
         id: "panel-address-overlay",
         open: true,
-        html: overlayHtml,
+        rows: overlayData.rows,
+        empty: overlayData.empty,
         bounds: overlay.bounds,
         focus: false,
       }
     : null;
 
-  const handleOverlayEvent = useCallback((event: NativeShellOverlayEvent) => {
-    const payload = event.payload as
-      | { source?: string }
-      | undefined;
-    if (event.type === "path-select" && payload?.source) {
-      setPathValue(payload.source);
-      setOverlay(null);
-      window.requestAnimationFrame(() => pathInputRef.current?.focus());
-    } else if (event.type === "dismiss") {
-      setOverlay(null);
-    }
-  }, []);
+  const handleOverlayEvent = useCallback(
+    (event: NativeShellOverlayEvent) => {
+      const payload = event.payload as { source?: string } | undefined;
+      if (event.type === "path-select" && payload?.source) {
+        setPathValue(payload.source);
+        setOverlay(null);
+        onChromeCommand?.({
+          type: "navigate",
+          value: payload.source,
+          ref: chromeState.ref,
+          mode: "current",
+        });
+      } else if (event.type === "dismiss") {
+        setOverlay(null);
+      }
+    },
+    [onChromeCommand, chromeState.ref]
+  );
 
   useNativeShellOverlay(overlayOptions, handleOverlayEvent);
-
-  const pathInputWidth = `${Math.max(18, Math.min(pathValue.length + 2, 64))}ch`;
 
   return (
     <Flex
@@ -690,6 +750,7 @@ function PanelAddressBar({
           appRegion: "no-drag",
           WebkitAppRegion: "no-drag",
           minWidth: 0,
+          width: "100%",
           flexWrap: isMobile ? "wrap" : "nowrap",
           rowGap: 4,
         } as CSSProperties
@@ -734,10 +795,8 @@ function PanelAddressBar({
 
       <Box
         style={{
-          flex: isMobile ? "1 1 180px" : "0 1 auto",
-          width: pathInputWidth,
+          flex: 1,
           minWidth: isMobile ? 0 : 120,
-          maxWidth: isMobile ? "100%" : "min(100%, 52vw)",
           position: "relative",
         }}
       >
@@ -778,8 +837,11 @@ function PanelAddressBar({
   );
 }
 
-function buildPathOverlayHtml(suggestions: PanelSourceSuggestion[], query: string): string {
-  const rows = buildAddressAutocompleteItems({
+function buildPathRows(
+  suggestions: PanelSourceSuggestion[],
+  query: string
+): { rows: ShellOverlayRow[]; empty: string } {
+  const rows: ShellOverlayRow[] = buildAddressAutocompleteItems({
     kind: "panel",
     input: query,
     panelSuggestions: suggestions,
@@ -790,14 +852,14 @@ function buildPathOverlayHtml(suggestions: PanelSourceSuggestion[], query: strin
     payload: { source: item.value },
     type: "path-select",
   }));
-  return buildListOverlayHtml({
-    empty: query ? "No matching panels" : "Start typing a panel path",
-    rows,
-  });
+  return { rows, empty: query ? "No matching panels" : "Start typing a panel path" };
 }
 
-function buildBrowserAddressOverlayHtml(items: AddressAutocompleteItem[], query: string): string {
-  const rows = items.slice(0, 8).map((item) => ({
+function buildBrowserAddressRows(
+  items: AddressAutocompleteItem[],
+  query: string
+): { rows: ShellOverlayRow[]; empty: string } {
+  const rows: ShellOverlayRow[] = items.slice(0, 8).map((item) => ({
     label: item.label,
     meta: item.meta,
     labelRanges: item.matchRanges?.label,
@@ -806,68 +868,7 @@ function buildBrowserAddressOverlayHtml(items: AddressAutocompleteItem[], query:
     payload: { value: item.value, action: item.action },
     type: "browser-address-select",
   }));
-  return buildListOverlayHtml({
-    empty: query ? "No matching history" : "No browser history yet",
-    rows,
-  });
-}
-
-function buildListOverlayHtml(args: {
-  empty: string;
-  rows: Array<{
-    label: string;
-    meta?: string;
-    labelRanges?: Array<{ start: number; end: number }>;
-    metaRanges?: Array<{ start: number; end: number }>;
-    icon?: string;
-    selected?: boolean;
-    type: string;
-    payload: Record<string, unknown>;
-  }>;
-}): string {
-  const overlayData = escapeOverlayHtmlText(
-    JSON.stringify({
-      empty: args.empty,
-      rows: args.rows,
-    })
-  );
-  return `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'none'">
-<style>
-* { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; background: transparent; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-.panel { margin: 0; border: 1px solid #d7d7dc; border-radius: 6px; overflow: hidden; background: #fff; color: #1f1f24; box-shadow: 0 8px 22px rgba(0,0,0,.18); }
-.row { width: 100%; border: 0; border-bottom: 1px solid #eeeeef; background: transparent; text-align: left; padding: 7px 10px; cursor: pointer; display: block; color: inherit; }
-.row:last-child { border-bottom: 0; }
-.row:hover, .row:focus, .row[data-selected="true"] { background: #edf4ff; outline: none; }
-.row-inner { display: flex; gap: 8px; align-items: center; min-width: 0; }
-.icon { width: 16px; flex: 0 0 16px; text-align: center; color: #6f6f77; font-size: 12px; }
-.text { min-width: 0; flex: 1; }
-.label { font-size: 12px; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.meta { margin-top: 1px; font-size: 11px; line-height: 14px; color: #6f6f77; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.match { font-weight: 700; color: #0b57d0; }
-.empty { padding: 12px; font-size: 12px; color: #6f6f77; }
-@media (prefers-color-scheme: dark) {
-  .panel { background: #202024; border-color: #3b3b42; color: #f0f0f3; box-shadow: 0 8px 22px rgba(0,0,0,.45); }
-  .row { border-bottom-color: #303038; }
-  .row:hover, .row:focus, .row[data-selected="true"] { background: #28364d; }
-  .meta, .empty { color: #a5a5ad; }
-  .match { color: #8ab4ff; }
-}
-</style>
-</head>
-<body>
-<div class="panel" role="listbox" id="panel"></div>
-<template id="overlay-data">${overlayData}</template>
-</body>
-</html>`;
-}
-
-function escapeOverlayHtmlText(value: string): string {
-  return value.replace(/[&<]/g, (ch) => (ch === "&" ? "&amp;" : "&lt;"));
+  return { rows, empty: query ? "No matching history" : "No browser history yet" };
 }
 
 // Shared styles for breadcrumb items
@@ -886,7 +887,9 @@ const itemStyle: CSSProperties = {
   transition: "background-color 100ms",
 } as CSSProperties;
 
-// Style for sibling group container
+// Style for sibling group container. Border kept transparent (width preserved
+// to avoid layout shift) so breadcrumb groups don't read as boxed tab groups —
+// the only frame is the slight one on the current breadcrumb item itself.
 const groupStyle = {
   display: "inline-flex",
   alignItems: "center",
@@ -896,7 +899,7 @@ const groupStyle = {
   flexShrink: 0,
   padding: "1px",
   borderRadius: "4px",
-  border: "1px solid var(--gray-6)",
+  border: "1px solid transparent",
   appRegion: "drag",
   WebkitAppRegion: "drag",
 } as CSSProperties;
@@ -909,6 +912,7 @@ interface HoverableBreadcrumbItemProps {
   isCurrent: boolean;
   onNavigate: () => void;
   onContextMenu: (e: MouseEvent<HTMLSpanElement>) => void;
+  onEditAddress?: () => void;
 }
 
 function HoverableBreadcrumbItem({
@@ -918,9 +922,21 @@ function HoverableBreadcrumbItem({
   isCurrent,
   onNavigate,
   onContextMenu,
+  onEditAddress,
 }: HoverableBreadcrumbItemProps) {
   const [isHovered, setIsHovered] = useState(false);
   const isTouch = useTouchDevice();
+
+  // Clicking the already-active breadcrumb opens the address/controls view;
+  // any other breadcrumb navigates to that panel.
+  const isCurrentActive = isCurrent && isActive;
+  const handleActivate = () => {
+    if (isCurrentActive && onEditAddress) {
+      onEditAddress();
+    } else {
+      onNavigate();
+    }
+  };
 
   const archivePanel = () => {
     void panel.archive(panelId).catch((error) => {
@@ -937,7 +953,7 @@ function HoverableBreadcrumbItem({
   const handleKeyDown = (e: KeyboardEvent<HTMLSpanElement>) => {
     if (e.key !== "Enter" && e.key !== " ") return;
     e.preventDefault();
-    onNavigate();
+    handleActivate();
   };
 
   return (
@@ -947,23 +963,18 @@ function HoverableBreadcrumbItem({
         tabIndex={0}
         data-breadcrumb-focusable="true"
         data-breadcrumb-id={panelId}
-        data-breadcrumb-current={isCurrent && isActive ? "true" : undefined}
+        data-breadcrumb-current={isCurrentActive ? "true" : undefined}
+        title={isCurrentActive ? "Edit address" : undefined}
         style={{
           position: "relative",
           ...itemStyle,
-          borderColor: isCurrent && isActive ? "var(--accent-7)" : "transparent",
-          backgroundColor:
-            isCurrent && isActive
-              ? "var(--accent-a3)"
-              : isActive
-                ? "var(--gray-a3)"
-                : isHovered
-                  ? "var(--gray-a3)"
-                  : undefined,
-          color: isCurrent && isActive ? "var(--accent-12)" : undefined,
-          boxShadow: isCurrent && isActive ? "inset 0 -1px 0 var(--accent-8)" : undefined,
+          // Breadcrumb look (not tabs): no per-item background fills, just a
+          // slight frame around the current breadcrumb.
+          borderColor: isCurrentActive ? "var(--accent-7)" : "transparent",
+          backgroundColor: isHovered ? "var(--gray-a3)" : undefined,
+          color: isCurrentActive ? "var(--accent-12)" : undefined,
         }}
-        onClick={onNavigate}
+        onClick={handleActivate}
         onContextMenu={onContextMenu}
         onKeyDown={handleKeyDown}
         onMouseEnter={() => setIsHovered(true)}
@@ -1111,6 +1122,7 @@ function BreadcrumbBar({
   statusNavigation,
   onNavigateToId,
   onPanelAction,
+  onEditAddress,
 }: BreadcrumbBarProps) {
   const ancestors = navigationData?.ancestors ?? [];
   const currentSiblings = navigationData?.currentSiblings ?? [];
@@ -1229,6 +1241,7 @@ function BreadcrumbBar({
       isCurrent={isCurrent}
       onNavigate={() => onNavigateToId?.(panel.id)}
       onContextMenu={(e) => handlePanelContextMenu(e, panel)}
+      onEditAddress={onEditAddress}
     />
   );
 
@@ -1443,6 +1456,7 @@ function BreadcrumbBar({
                 if (navigationData?.currentId) onNavigateToId?.(navigationData.currentId);
               }}
               onContextMenu={handleCurrentPanelContextMenu}
+              onEditAddress={onEditAddress}
             />
           </span>
         )}

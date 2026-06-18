@@ -68,12 +68,68 @@ body,
 .app-shell-panel-card {
   background-color: var(--app-chrome-bg-strong);
   box-shadow: inset 0 0 0 1px var(--app-chrome-border);
+  /* Structural panes fill their slot flush — the rounded global radius is for
+     controls (buttons, rows, badges), not these big rectangular containers. */
+  border-radius: 0;
 }
 
 /* Constrain dropdown menus to reasonable height */
 .rt-DropdownMenuContent {
   max-height: var(--radix-dropdown-menu-content-available-height, 300px);
   overflow-y: auto;
+}
+
+/* Panel tree: build-state spinner */
+@keyframes app-tree-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.app-tree-spinner {
+  animation: app-tree-spin 0.7s linear infinite;
+}
+
+/* Panel tree: row action buttons (add child / archive) */
+.app-tree-action {
+  opacity: 0.6;
+  color: var(--gray-10);
+  transition:
+    opacity 120ms ease,
+    color 120ms ease,
+    background-color 120ms ease;
+}
+
+.app-tree-action:hover {
+  opacity: 1;
+  color: var(--gray-12);
+  background-color: var(--accent-a4);
+}
+
+.app-tree-action-danger:hover {
+  color: var(--red-11);
+  background-color: var(--red-a4);
+}
+
+/* Panel tree: workspace selector row (whole row switches workspace) */
+.app-tree-workspace {
+  outline: none;
+  transition: background-color 120ms ease;
+}
+
+.app-tree-workspace:hover {
+  background-color: var(--gray-a3);
+}
+
+.app-tree-workspace:focus-visible {
+  outline: 2px solid var(--accent-8);
+  outline-offset: -1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-tree-spinner {
+    animation: none;
+  }
 }
 
 /* Responsive file overview panels: stack vertically on narrow viewports */

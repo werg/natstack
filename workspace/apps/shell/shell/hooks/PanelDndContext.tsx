@@ -58,7 +58,7 @@ import { assertPresent } from "../../utils/assertPresent";
 // ============================================================================
 
 /** Indentation width per depth level in pixels */
-export const INDENTATION_WIDTH = 8;
+export const INDENTATION_WIDTH = 14;
 
 /** Special ID for the end-of-list drop zone */
 export const END_DROP_ZONE_ID = "__end_drop_zone__";

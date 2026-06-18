@@ -261,6 +261,61 @@ export async function createServerPanelTreeBridge(
   const emitTreeSnapshot = () => {
     deps.eventService?.emit("panel-tree-updated", registry.getPanelTreeSnapshot());
   };
+
+  // Serialize bridge operations against the self-heal. The self-heal does a full
+  // registry replace (sync force → loadTree); if it races an in-flight
+  // create/navigate it can read an intermediate DB state and broadcast a stale
+  // tree, making every client mirror OSCILLATE (e.g. 2 roots → 1 → 2), which
+  // crashes mid-build attachCreatedPanel and spuriously prunes views. A single
+  // op-chain makes mutations and the self-heal mutually exclusive. (Bridge
+  // requests never re-enter the handler, so this can't deadlock.)
+  let opChain: Promise<unknown> = Promise.resolve();
+  const serialize = <T>(fn: () => Promise<T>): Promise<T> => {
+    const run = opChain.then(fn, fn);
+    opChain = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  };
+
+  // Self-heal: whenever the authoritative slot tree changes (any client, via the
+  // shared workspace-state service), force a fresh sync and re-broadcast so every
+  // client mirror converges. Debounced — one logical mutation (e.g. a navigate)
+  // emits several slot writes. Reads only, so it never re-triggers itself.
+  let selfHealRunning = false;
+  let selfHealQueued = false;
+  const runSelfHeal = async () => {
+    if (selfHealRunning) {
+      selfHealQueued = true;
+      return;
+    }
+    selfHealRunning = true;
+    selfHealQueued = false;
+    try {
+      await serialize(async () => {
+        await sync({ force: true });
+        emitTreeSnapshot();
+      });
+    } catch (error) {
+      log.warn(
+        `Panel tree self-heal failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    } finally {
+      selfHealRunning = false;
+      if (selfHealQueued) queueMicrotask(() => void runSelfHeal());
+    }
+  };
+  let selfHealTimer: ReturnType<typeof setTimeout> | null = null;
+  const scheduleSelfHeal = () => {
+    if (selfHealTimer) return;
+    selfHealTimer = setTimeout(() => {
+      selfHealTimer = null;
+      void runSelfHeal();
+    }, 16);
+  };
+  deps.registerSlotStateListener?.(scheduleSelfHeal);
+
   deps.registerEntityTitleListener?.(async (entityId, title, origin) => {
     if (origin === "mirror") return;
     const normalized = title?.trim();
@@ -368,32 +423,10 @@ export async function createServerPanelTreeBridge(
     }
     return cdpBridge;
   };
-  const navigateViaActiveHost = async (
-    panelId: string,
-    source: string,
-    options:
-      | {
-          ref?: string;
-          contextId?: string;
-          env?: Record<string, string>;
-          stateArgs?: Record<string, unknown>;
-        }
-      | undefined
-  ): Promise<{ handled: true; result: unknown } | { handled: false }> => {
-    const holder = deps.panelRuntimeCoordinator?.resolveHostForSlot(panelId) ?? null;
-    if (!holder?.supportsCdp) return { handled: false };
-    const cdpBridge = deps.container.get<import("./cdpBridge.js").CdpBridge>("cdpBridge");
-    if (!cdpBridge.isProviderConnected(holder.hostConnectionId)) return { handled: false };
-    if (!cdpBridge.isTargetRegisteredForHost(panelId, holder.hostConnectionId)) {
-      return { handled: false };
-    }
-    return {
-      handled: true,
-      result: await cdpBridge.sendHostCommand(panelId, "navigatePanel", [source, options ?? {}]),
-    };
-  };
 
-  return async (request) => {
+  const handleBridgeRequest = async (
+    request: import("./services/panelTreeService.js").PanelTreeBridgeRequest
+  ): Promise<unknown> => {
     const method = request.method;
     const args = request.args;
     switch (method) {
@@ -442,6 +475,7 @@ export async function createServerPanelTreeBridge(
           parentId?: string | null;
           name?: string;
           focus?: boolean;
+          ref?: string;
           stateArgs?: Record<string, unknown>;
         };
         const parentId = resolveImplicitCreateParentId({
@@ -453,9 +487,22 @@ export async function createServerPanelTreeBridge(
           hasPanel: (panelId) => Boolean(registry.getPanel(panelId)),
         });
         const isBrowser = /^https?:\/\//i.test(source);
+        // A null parent means a root panel. addPanel() treats a null parent
+        // WITHOUT addAsRoot as "replace the tree with this single panel", so root
+        // creates MUST set addAsRoot/isRoot — otherwise a root create would wipe
+        // the in-memory mirror to one panel before the next sync restores it.
+        const isRoot = parentId == null;
         const created = isBrowser
-          ? await panelManager.createBrowser(parentId ?? null, source, options)
-          : await panelManager.create(source, { ...options, parentId });
+          ? await panelManager.createBrowser(parentId ?? null, source, {
+              name: options.name,
+              addAsRoot: isRoot,
+            })
+          : await panelManager.create(source, {
+              ...options,
+              parentId,
+              isRoot,
+              addAsRoot: isRoot,
+            });
         emitTreeSnapshot();
         const runtimeEntityId = await panelManager.getCurrentEntityId(
           asPanelSlotId(created.panelId)
@@ -467,6 +514,8 @@ export async function createServerPanelTreeBridge(
           id: created.panelId,
           title: created.title,
           kind: isBrowser ? "browser" : "workspace",
+          contextId: created.contextId,
+          source: created.source,
           runtimeEntityId,
           effectiveVersion: entitySource?.effectiveVersion ?? null,
         };
@@ -544,19 +593,29 @@ export async function createServerPanelTreeBridge(
         const panelId = String(args[0]);
         const source = String(args[1]);
         const options = normalizePanelTreeNavigateOptions(args[2]);
-        const hosted = await navigateViaActiveHost(panelId, source, options);
-        if (hosted.handled) {
-          await sync({ force: true });
-          emitTreeSnapshot();
-          return hosted.result;
-        }
+        // Server is the sole writer: mutate WorkspaceDO here, then broadcast.
+        // The hosting client reloads the panel's view reactively from the new
+        // snapshot (no per-mutation host command).
         const result = await panelManager.navigate(asPanelSlotId(panelId), source, options);
         emitTreeSnapshot();
         return {
           id: result.panelId,
           title: result.title,
           kind: result.source.startsWith("browser:") ? "browser" : "workspace",
+          source: result.source,
+          contextId: result.contextId,
         };
+      }
+      case "navigateHistory": {
+        const panelId = String(args[0]);
+        const delta = (args[1] === 1 ? 1 : -1) as -1 | 1;
+        // Server is the sole writer; the hosting client rebuilds the view from
+        // this response (source/contextId) after refreshing its entity cache.
+        const panel = await panelManager.navigateHistory(asPanelSlotId(panelId), delta);
+        emitTreeSnapshot();
+        if (!panel) return null;
+        const snap = getCurrentSnapshot(panel);
+        return { id: panel.id, title: panel.title, source: snap.source, contextId: snap.contextId };
       }
       case "updatePanelState":
         await panelManager.updatePanelState(
@@ -647,6 +706,10 @@ export async function createServerPanelTreeBridge(
         throw new Error(`Unknown panelTree bridge method: ${method}`);
     }
   };
+
+  // Every bridge request runs on the shared op-chain so mutations and the
+  // self-heal reload never interleave (prevents mirror oscillation).
+  return (request) => serialize(() => handleBridgeRequest(request));
 }
 
 export async function snapshotBrowserPanelFromCdpBridge(
@@ -780,6 +843,12 @@ export interface CommonDeps {
       origin: "set" | "set-explicit" | "mirror" | "clear"
     ) => void | Promise<void>
   ) => () => void;
+  /**
+   * Register a listener fired whenever the authoritative panel slot/history tree
+   * changes (any client). The panel-tree bridge uses it to re-sync its in-memory
+   * mirror and re-broadcast `panel-tree-updated` so every client converges.
+   */
+  registerSlotStateListener?: (listener: () => void) => () => void;
 }
 
 export async function registerPanelServices(deps: CommonDeps): Promise<void> {

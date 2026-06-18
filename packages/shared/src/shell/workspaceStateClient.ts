@@ -20,6 +20,8 @@ export interface SlotHistoryEntryInput {
   source: string;
   contextId: string;
   stateArgs?: unknown;
+  /** Per-entry navigation options (env/ref), persisted so any client reconstructs them. */
+  options?: unknown;
 }
 
 export interface SlotCreateInput {
@@ -48,6 +50,7 @@ export interface SlotHistoryRow {
   source: string;
   context_id: string;
   state_args: string | null;
+  options?: string | null;
   recorded_at: number;
 }
 

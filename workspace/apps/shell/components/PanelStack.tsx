@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Cross2Icon } from "@radix-ui/react-icons";
-import { Box, Button, Card, Flex, Heading, IconButton, Spinner, Text } from "@radix-ui/themes";
+import { Box, Button, Card, Flex, IconButton, Spinner, Text } from "@radix-ui/themes";
 import { useIsMobile } from "@workspace/react/responsive";
 
 import type { LazyTitleNavigationData, LazyStatusNavigationData } from "./navigationTypes";
@@ -119,10 +119,22 @@ export function PanelStack({
     setLazyTitleNavigation,
     setLazyStatusNavigation,
     registerNavigateToId,
+    setAddressBarVisible,
   } = useNavigation();
 
   // ID-based visible panel state
   const [visiblePanelId, setVisiblePanelId] = useState<string | null>(null);
+
+  // Switching to a *different* panel returns the title bar to breadcrumb view.
+  // Guard on an actual id change: the context's setAddressBarVisible identity is
+  // unstable, so an unguarded effect would re-run every render and clobber the
+  // address view the moment a breadcrumb click opened it.
+  const lastAddressResetPanelIdRef = useRef(visiblePanelId);
+  useEffect(() => {
+    if (lastAddressResetPanelIdRef.current === visiblePanelId) return;
+    lastAddressResetPanelIdRef.current = visiblePanelId;
+    setAddressBarVisible(false);
+  }, [visiblePanelId, setAddressBarVisible]);
   const [hostThemeCss, setHostThemeCss] = useState<string | null>(null);
   const [visibleRuntimeLease, setVisibleRuntimeLease] = useState<PanelRuntimeLease | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState<number>(260);
@@ -954,26 +966,18 @@ export function PanelStack({
             }}
           >
             <Flex direction="column" gap="2" style={{ flex: 1, minHeight: 0 }}>
-              <Flex align="center" justify="between" px="1" pt="1">
-                <Heading size="2" weight="medium">
-                  {isMobile ? "Panels" : "Panel tree"}
-                </Heading>
-                <Flex align="center" gap="2">
-                  <Text size="1" color="gray">
-                    {rootPanels.length} root{rootPanels.length === 1 ? "" : "s"}
-                  </Text>
-                  {isMobile && (
-                    <IconButton
-                      size="1"
-                      variant="ghost"
-                      aria-label="Close panel tree"
-                      onClick={closeMobileTree}
-                    >
-                      <Cross2Icon />
-                    </IconButton>
-                  )}
+              {isMobile && (
+                <Flex align="center" justify="end" px="1" pt="1">
+                  <IconButton
+                    size="1"
+                    variant="ghost"
+                    aria-label="Close panel tree"
+                    onClick={closeMobileTree}
+                  >
+                    <Cross2Icon />
+                  </IconButton>
                 </Flex>
-              </Flex>
+              )}
               <LazyPanelTreeSidebar
                 selectedId={visiblePanelId}
                 ancestorIds={ancestorIds}
@@ -1004,11 +1008,7 @@ export function PanelStack({
         )}
 
         {/* Current Panel Content */}
-        <Flex
-          direction="column"
-          gap="0"
-          style={{ flex: "1 1 0", minHeight: 0, minWidth: 0 }}
-        >
+        <Flex direction="column" gap="0" style={{ flex: "1 1 0", minHeight: 0, minWidth: 0 }}>
           <SavePasswordBar visiblePanelId={visiblePanelId} />
           <Card
             className="app-shell-panel-card"

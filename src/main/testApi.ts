@@ -262,24 +262,17 @@ export function setupTestApi(
       panelDiagnostics.set(panelId, { records, cleanup: () => {} });
 
       const consoleMessage = (
-        _event: Electron.Event,
-        levelOrDetails: number | { level?: number | string; message?: string },
-        message?: string,
-        line?: number,
-        sourceId?: string
+        event: Electron.Event<Electron.WebContentsConsoleMessageEventParams>
       ) => {
-        const level =
-          typeof levelOrDetails === "object"
-            ? String(levelOrDetails.level ?? "")
-            : String(levelOrDetails);
-        const text =
-          typeof levelOrDetails === "object"
-            ? String(levelOrDetails.message ?? "")
-            : String(message ?? "");
         recordPanelDiagnostic(panelId, {
           type: "console",
-          level,
-          message: [text, sourceId ? `${sourceId}:${line ?? 0}` : ""].filter(Boolean).join(" @ "),
+          level: String(event.level ?? ""),
+          message: [
+            event.message ?? "",
+            event.sourceId ? `${event.sourceId}:${event.lineNumber ?? 0}` : "",
+          ]
+            .filter(Boolean)
+            .join(" @ "),
         });
       };
       const didFailLoad = (_event: Electron.Event, code: number, desc: string, url: string) => {

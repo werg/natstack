@@ -32,8 +32,12 @@ function createHarness(serverUrl = "ws://127.0.0.1:1234") {
     getURL: vi.fn(() => "https://example.com/app"),
     loadURL: vi.fn(async () => undefined),
     reload: vi.fn(),
-    goBack: vi.fn(),
-    goForward: vi.fn(),
+    navigationHistory: {
+      goBack: vi.fn(),
+      goForward: vi.fn(),
+      canGoBack: vi.fn(() => false),
+      canGoForward: vi.fn(() => false),
+    },
     stop: vi.fn(),
     debugger: debuggerApi,
   });
@@ -421,8 +425,18 @@ describe("CdpHostProvider", () => {
     provider.start();
     socket.emit("open");
 
-    contents.emit("console-message", {}, "info", "loaded", 12, "app.tsx");
-    contents.emit("console-message", {}, "error", "render failed", 34, "view.tsx");
+    contents.emit("console-message", {
+      level: "info",
+      message: "loaded",
+      lineNumber: 12,
+      sourceId: "app.tsx",
+    });
+    contents.emit("console-message", {
+      level: "error",
+      message: "render failed",
+      lineNumber: 34,
+      sourceId: "view.tsx",
+    });
 
     await provider.handleProviderMessageForTest({
       type: "host:command",
@@ -469,8 +483,18 @@ describe("CdpHostProvider", () => {
     const { provider, contents } = createHarness();
     provider.registerTarget("panel-1", 42);
 
-    contents.emit("console-message", {}, "info", "context", 1, "app.tsx");
-    contents.emit("console-message", {}, "error", "boom", 2, "app.tsx");
+    contents.emit("console-message", {
+      level: "info",
+      message: "context",
+      lineNumber: 1,
+      sourceId: "app.tsx",
+    });
+    contents.emit("console-message", {
+      level: "error",
+      message: "boom",
+      lineNumber: 2,
+      sourceId: "app.tsx",
+    });
 
     expect(provider.getConsoleHistory("panel-1", { levels: ["info"] })).toMatchObject({
       entries: [expect.objectContaining({ level: "info", message: "context" })],
@@ -547,8 +571,8 @@ describe("CdpHostProvider", () => {
 
     expect(contents.loadURL).toHaveBeenCalledWith("https://example.com");
     expect(contents.reload).toHaveBeenCalledTimes(1);
-    expect(contents.goBack).toHaveBeenCalledTimes(1);
-    expect(contents.goForward).toHaveBeenCalledTimes(1);
+    expect(contents.navigationHistory.goBack).toHaveBeenCalledTimes(1);
+    expect(contents.navigationHistory.goForward).toHaveBeenCalledTimes(1);
     expect(contents.stop).toHaveBeenCalledTimes(1);
     expect(socket.sent.map((entry) => JSON.parse(entry))).toEqual(
       expect.arrayContaining([

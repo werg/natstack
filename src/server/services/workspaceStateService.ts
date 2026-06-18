@@ -34,6 +34,14 @@ export interface WorkspaceStateServiceDeps {
    * can re-arm its timer. Called after `alarmSet`/`alarmClear` persist.
    */
   onAlarmChanged?: () => void;
+  /**
+   * Notify listeners that the panel slot/history tree changed (create, navigate,
+   * move, close, …) so the server's in-memory panel-tree mirror can re-sync and
+   * re-broadcast. Fires after any mutating `slot.*` method persists — regardless
+   * of which client initiated it — which is what keeps every client's mirror
+   * consistent with the authoritative WorkspaceDO.
+   */
+  onSlotStateChanged?: () => void;
 }
 
 export function createWorkspaceStateService(deps: WorkspaceStateServiceDeps): ServiceDefinition {
@@ -69,45 +77,55 @@ export function createWorkspaceStateService(deps: WorkspaceStateServiceDeps): Se
         case "slot.create": {
           const [input] = args as [unknown];
           await dispatch<undefined>("slotCreate", [input]);
+          deps.onSlotStateChanged?.();
           return;
         }
         case "slot.appendHistory": {
           const [slotId, entry] = args as [string, unknown];
-          return await dispatch<number>("slotAppendHistory", [slotId, entry]);
+          const result = await dispatch<number>("slotAppendHistory", [slotId, entry]);
+          deps.onSlotStateChanged?.();
+          return result;
         }
         case "slot.setCurrent": {
           const [slotId, entryKey] = args as [string, string];
           await dispatch<undefined>("slotSetCurrent", [slotId, entryKey]);
+          deps.onSlotStateChanged?.();
           return;
         }
         case "slot.updateCurrentStateArgs": {
           const [slotId, stateArgs] = args as [string, unknown];
           await dispatch<undefined>("slotUpdateCurrentStateArgs", [slotId, stateArgs]);
+          deps.onSlotStateChanged?.();
           return;
         }
         case "slot.replaceHistory": {
           const [slotId, entries, cursor] = args as [string, unknown[], number];
           await dispatch<undefined>("slotReplaceHistory", [slotId, entries, cursor]);
+          deps.onSlotStateChanged?.();
           return;
         }
         case "slot.setParent": {
           const [slotId, parentSlotId] = args as [string, string | null];
           await dispatch<undefined>("slotSetParent", [slotId, parentSlotId]);
+          deps.onSlotStateChanged?.();
           return;
         }
         case "slot.setPosition": {
           const [slotId, positionId] = args as [string, string];
           await dispatch<undefined>("slotSetPosition", [slotId, positionId]);
+          deps.onSlotStateChanged?.();
           return;
         }
         case "slot.move": {
           const [slotId, parentSlotId, positionId] = args as [string, string | null, string];
           await dispatch<undefined>("slotMove", [slotId, parentSlotId, positionId]);
+          deps.onSlotStateChanged?.();
           return;
         }
         case "slot.close": {
           const [slotId] = args as [string];
           await dispatch<undefined>("slotClose", [slotId]);
+          deps.onSlotStateChanged?.();
           return;
         }
         case "panel.search": {

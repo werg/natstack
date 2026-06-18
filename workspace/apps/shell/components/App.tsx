@@ -74,7 +74,7 @@ export function App() {
   useShellEvent("navigate-about", handleNavigateAbout);
 
   return (
-    <Theme appearance={effectiveTheme} radius="none" className="app-shell-theme">
+    <Theme appearance={effectiveTheme} radius="large" className="app-shell-theme">
       <ChunkErrorBoundary
         onRetry={() => {
           // Reassign to create a fresh lazy() with a new import() promise

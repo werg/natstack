@@ -62,10 +62,14 @@ export function createMenuService(deps: {
               const panel = panelId ? registry.getPanel(panelId) : null;
               if (!panelId || !panel) return;
               const contents = vm.getWebContents(panelId);
-              if (getPanelSource(panel).startsWith("browser:") && contents?.canGoBack()) {
-                contents.goBack();
+              if (
+                getPanelSource(panel).startsWith("browser:") &&
+                contents?.navigationHistory.canGoBack()
+              ) {
+                contents.navigationHistory.goBack();
                 return;
               }
+              // Through the orchestrator: server write + imperative view rebuild.
               void lifecycle.navigatePanelHistory(panelId, -1);
             },
             onHistoryForward: () => {
@@ -73,8 +77,11 @@ export function createMenuService(deps: {
               const panel = panelId ? registry.getPanel(panelId) : null;
               if (!panelId || !panel) return;
               const contents = vm.getWebContents(panelId);
-              if (getPanelSource(panel).startsWith("browser:") && contents?.canGoForward()) {
-                contents.goForward();
+              if (
+                getPanelSource(panel).startsWith("browser:") &&
+                contents?.navigationHistory.canGoForward()
+              ) {
+                contents.navigationHistory.goForward();
                 return;
               }
               void lifecycle.navigatePanelHistory(panelId, 1);

@@ -46,14 +46,18 @@ function ctx() {
 }
 
 describe("panelTreeService", () => {
-  it("is exposed only to userland runtimes; the trusted shell keeps its IPC service", () => {
+  it("is exposed to userland runtimes and trusted shell/server hosts", () => {
     const service = createPanelTreeService({
       approvalQueue: approvalQueueMock("deny"),
       grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
       bridge: vi.fn(),
     });
 
-    expect(service.policy).toEqual({ allowed: ["panel", "worker", "do"] });
+    // shell/shell-remote/server are trusted chrome (desktop routes via the
+    // electron-main serverClient as "server"; mobile routes via its transport).
+    expect(service.policy).toEqual({
+      allowed: ["panel", "worker", "do", "shell", "shell-remote", "server"],
+    });
   });
 
   it("delegates open list operations without approval", async () => {

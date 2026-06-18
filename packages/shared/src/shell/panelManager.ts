@@ -284,6 +284,7 @@ export class PanelManager {
           source: relativePath,
           contextId,
           stateArgs: stateArgsPayload,
+          options: snapshot.options,
         },
       });
     } catch (error) {
@@ -367,6 +368,7 @@ export class PanelManager {
           source: browserSource,
           contextId,
           stateArgs: {},
+          options: snapshot.options,
         },
       });
     } catch (error) {
@@ -603,6 +605,7 @@ export class PanelManager {
       source: nextSnapshot.source,
       contextId: nextSnapshot.contextId,
       stateArgs: stateArgsPayload,
+      options: nextSnapshot.options,
     });
     await this.workspaceState.setSlotCurrent(slotId, historyEntryKey);
 
@@ -851,6 +854,44 @@ export class PanelManager {
     return this.resolveCurrentEntityIdForSlot(slotId);
   }
 
+  /**
+   * Force-refresh a slot's cached current entity + source from the authoritative
+   * store. Required after a SERVER-side mutation (navigate / history): the
+   * panel-tree broadcast refreshes the registry mirror, but these caches are only
+   * repopulated by fetchPanelTree, so a thin client (e.g. the desktop, which
+   * applies the broadcast without re-syncing) would otherwise keep resolving —
+   * and leasing — the now-retired previous entity.
+   */
+  async refreshSlotEntity(slotId: PanelSlotId): Promise<PanelEntityId | null> {
+    this.currentEntityBySlot.delete(slotId);
+    this.currentEntitySourceBySlot.delete(slotId);
+    const slot = await this.workspaceState.getSlot(slotId);
+    if (!slot?.current_entity_id) return null;
+    this.currentEntityBySlot.set(slotId, slot.current_entity_id);
+    return slot.current_entity_id;
+  }
+
+  /**
+   * Sync the entity caches from the (already-repopulated) registry mirror. A thin
+   * client applies the panel-tree broadcast to its registry but does NOT re-read
+   * the DB, so without this its `currentEntityBySlot` cache would drift from the
+   * authoritative tree after ANY server-side mutation by ANY client — leaving
+   * `getPanelInit`/`acquireRuntimeLease` resolving a retired entity. The registry
+   * panels carry the authoritative `runtimeEntityId` straight from the broadcast,
+   * so this is an in-memory reconcile (no RPC). Source cache is dropped so it is
+   * re-resolved lazily against the new entity.
+   */
+  syncEntityCachesFromRegistry(): void {
+    for (const { panelId } of this.registry.listPanels()) {
+      const panel = this.registry.getPanel(panelId);
+      const entityId = panel?.runtimeEntityId;
+      if (!entityId) continue;
+      const slotId = asPanelSlotId(panelId);
+      this.currentEntityBySlot.set(slotId, asPanelEntityId(entityId));
+      this.currentEntitySourceBySlot.delete(slotId);
+    }
+  }
+
   async getCurrentEntitySource(
     slotId: PanelSlotId
   ): Promise<{ repoPath: string; effectiveVersion: string } | null> {
@@ -962,7 +1003,13 @@ export class PanelManager {
 
   private snapshotFromHistoryRow(slotId: PanelSlotId, row: SlotHistoryRow): PanelSnapshot {
     const stateArgs = row.state_args ? this.safeParseJson(row.state_args) : undefined;
-    const options = this.optionsForEntry(slotId, row.entry_key) ?? {};
+    // Prefer the server-persisted per-entry options (env/ref) so they survive
+    // restart and cross-client; fall back to the in-memory record for entries
+    // written before persistence, then to empty.
+    const persistedOptions = row.options ? this.safeParseJson(row.options) : undefined;
+    const options = (persistedOptions ??
+      this.optionsForEntry(slotId, row.entry_key) ??
+      {}) as PanelSnapshot["options"];
     return {
       source: row.source,
       contextId: row.context_id,

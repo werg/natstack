@@ -415,8 +415,8 @@ export class PanelView implements PanelViewLike {
         if (contents.isDestroyed()) return;
         queueStateUpdate({
           isLoading: false,
-          canGoBack: contents.canGoBack(),
-          canGoForward: contents.canGoForward(),
+          canGoBack: contents.navigationHistory.canGoBack(),
+          canGoForward: contents.navigationHistory.canGoForward(),
         });
       },
       pageTitleUpdated: (_event: Electron.Event, title: string) => {

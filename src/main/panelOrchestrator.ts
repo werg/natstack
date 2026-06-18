@@ -189,6 +189,63 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
   // Panel creation
   // =========================================================================
 
+  /**
+   * Route a tree-creating mutation through the single server authority, then
+   * build the local view from the server's response. The server is the sole
+   * writer; it broadcasts the new tree (the mirror updates reactively). We await
+   * the panel landing in our mirror before attaching its view so the artifact
+   * updates inside attachCreatedPanel have a registry target.
+   */
+  private async createViaServer(
+    source: string,
+    createOpts: {
+      parentId?: string | null;
+      name?: string;
+      ref?: string;
+      stateArgs?: Record<string, unknown>;
+    },
+    attachOpts: { focus?: boolean; browserUrl?: string }
+  ): Promise<{ id: string; title: string }> {
+    const result = (await this.serverClient.call("panelTree", "create", [source, createOpts])) as {
+      id: string;
+      title: string;
+      contextId?: string;
+      source?: string;
+    };
+    try {
+      await this.awaitPanelInMirror(result.id);
+      await this.attachCreatedPanel(
+        {
+          panelId: result.id,
+          title: result.title,
+          contextId: result.contextId,
+          source: result.source,
+        },
+        attachOpts
+      );
+      return { id: result.id, title: result.title };
+    } catch (err) {
+      await this.serverClient.call("panelTree", "archive", [result.id]).catch(() => {});
+      throw err;
+    }
+  }
+
+  /** Wait (briefly) for a server-created panel to land in the broadcast mirror. */
+  private async awaitPanelInMirror(panelId: string, timeoutMs = 4000): Promise<void> {
+    if (this.registry.getPanel(panelId)) return;
+    await new Promise<void>((resolve) => {
+      const start = Date.now();
+      const tick = () => {
+        if (this.registry.getPanel(panelId) || Date.now() - start > timeoutMs) {
+          resolve();
+          return;
+        }
+        setTimeout(tick, 16);
+      };
+      tick();
+    });
+  }
+
   async createPanel(
     callerId: string,
     source: string,
@@ -197,20 +254,11 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
   ): Promise<{ id: string; title: string }> {
     const caller = this.registry.getPanel(callerId);
     if (!caller) throw new Error(`Caller panel not found: ${callerId}`);
-
-    const result = await this.shellCore.create(source, {
-      parentId: asPanelSlotId(callerId),
-      ...options,
-      stateArgs,
-    });
-
-    try {
-      await this.attachCreatedPanel(result, { focus: options?.focus });
-      return { id: result.panelId, title: result.title };
-    } catch (err) {
-      await this.shellCore.close(result.panelId).catch(() => {});
-      throw err;
-    }
+    return this.createViaServer(
+      source,
+      { parentId: asPanelSlotId(callerId), name: options?.name, ref: options?.ref, stateArgs },
+      { focus: options?.focus }
+    );
   }
 
   async navigatePanel(
@@ -223,23 +271,64 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
       stateArgs?: Record<string, unknown>;
     }
   ): Promise<{ id: string; title: string }> {
-    const result = await this.shellCore.navigate(asPanelSlotId(panelId), source, options);
-    const panel = this.registry.getPanel(panelId);
-    if (!panel) throw new Error(`Panel not found after navigation: ${panelId}`);
-    await this.loadSnapshotIntoView(panelId, getCurrentSnapshot(panel));
-    await this.focusPanel(panelId);
-    return { id: result.panelId, title: result.title };
+    // Server is the sole writer: it mutates WorkspaceDO (retiring the old entity,
+    // minting a new one) and broadcasts. We then rebuild the view IMPERATIVELY
+    // from the response rather than via the reactive reconcile — the reconcile is
+    // racy here because the old entity's retirement tears the view down before the
+    // broadcast arrives, so it can't see the panel as hosted.
+    const result = (await this.serverClient.call("panelTree", "navigate", [
+      panelId,
+      source,
+      options,
+    ])) as { id?: string; title?: string; source?: string; contextId?: string } | null;
+    const newSource = result?.source ?? source;
+    const contextId = result?.contextId;
+    await this.rebuildViewAfterServerNavigate(panelId, newSource, contextId, options);
+    return { id: result?.id ?? panelId, title: result?.title ?? "" };
   }
 
   async navigatePanelHistory(
     panelId: string,
     delta: -1 | 1
   ): Promise<{ id: string; title: string } | null> {
-    const panel = await this.shellCore.navigateHistory(asPanelSlotId(panelId), delta);
-    if (!panel) return null;
-    await this.loadSnapshotIntoView(panelId, getCurrentSnapshot(panel));
-    await this.focusPanel(panelId);
-    return { id: panel.id, title: panel.title };
+    const result = (await this.serverClient.call("panelTree", "navigateHistory", [
+      panelId,
+      delta,
+    ])) as { id?: string; title?: string; source?: string; contextId?: string } | null;
+    if (!result) return null;
+    await this.rebuildViewAfterServerNavigate(panelId, result.source ?? "", result.contextId);
+    return { id: result.id ?? panelId, title: result.title ?? "" };
+  }
+
+  /**
+   * Rebuild a panel's view after a server-side navigate/history mutation. The
+   * desktop applies the broadcast to its registry mirror but does NOT re-sync the
+   * panelManager's entity cache, so we explicitly refresh it (otherwise the lease
+   * would target the retired previous entity). Browser panels are driven by their
+   * own webContents (already navigated), so they only record the source change.
+   */
+  private async rebuildViewAfterServerNavigate(
+    panelId: string,
+    newSource: string,
+    contextId: string | undefined,
+    options?: Record<string, unknown>
+  ): Promise<void> {
+    if (!newSource || newSource.startsWith("browser:")) return;
+    this.explicitTitlePanelIds.delete(panelId);
+    await this.shellCore.refreshSlotEntity(asPanelSlotId(panelId));
+    this.ensureStateArgsPush(panelId);
+    const view = this.getPanelView();
+    if (view && contextId) {
+      this.destroyViewIfPartitionChanged(view, panelId, {
+        source: newSource,
+        contextId,
+        options: {},
+      } as PanelSnapshot);
+    }
+    await this.attachCreatedPanel(
+      { panelId, title: "", contextId, source: newSource, options },
+      { focus: true }
+    );
   }
 
   /**
@@ -253,49 +342,22 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     options?: { name?: string; isRoot?: boolean; ref?: string }
   ): Promise<{ id: string; title: string }> {
     const name = options?.name ?? `${source.replace(/\//g, "-")}~${Date.now().toString(36)}`;
-
-    const result = await this.shellCore.create(source, {
-      name,
-      ref: options?.ref,
-      isRoot: options?.isRoot ?? true,
-      addAsRoot: true,
-    });
-    try {
-      await this.attachCreatedPanel(result, { focus: true });
-      return { id: result.panelId, title: result.title };
-    } catch (error) {
-      await this.shellCore.close(result.panelId).catch(() => {});
-      throw error;
-    }
+    return this.createViaServer(source, { name, ref: options?.ref }, { focus: true });
   }
 
   async createAboutPanel(page: string): Promise<{ id: string; title: string }> {
-    const result = await this.shellCore.createAboutPanel(page);
-    try {
-      await this.attachCreatedPanel({ panelId: result.id, title: result.title }, { focus: true });
-      return result;
-    } catch (error) {
-      await this.shellCore.close(asPanelSlotId(result.id)).catch(() => {});
-      throw error;
-    }
+    return this.createViaServer(
+      `about/${page}`,
+      { name: `${page}~${Date.now().toString(36)}` },
+      { focus: true }
+    );
   }
 
   async createInitPanel(
     source: string,
     stateArgs?: Record<string, unknown>
   ): Promise<{ id: string; title: string }> {
-    const result = await this.shellCore.create(source, {
-      isRoot: true,
-      addAsRoot: true,
-      stateArgs,
-    });
-    try {
-      await this.attachCreatedPanel(result);
-      return { id: result.panelId, title: result.title };
-    } catch (error) {
-      await this.shellCore.close(result.panelId).catch(() => {});
-      throw error;
-    }
+    return this.createViaServer(source, { stateArgs }, {});
   }
 
   async createBrowserUrlPanel(
@@ -307,25 +369,13 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     if (typeof url !== "string" || !/^https?:\/\//i.test(url)) {
       throw new Error(`Invalid browser panel URL (must be http/https string): ${String(url)}`);
     }
-
     const callerPanel = this.registry.getPanel(callerId);
     const parentId = callerPanel ? asPanelSlotId(callerId) : null;
-    let createdPanelId: string | null = null;
-
-    try {
-      const result = await this.shellCore.createBrowser(parentId, url, {
-        name: options?.name,
-        addAsRoot: parentId == null,
-      });
-      createdPanelId = result.panelId;
-      await this.attachCreatedPanel(result, { focus: options?.focus, browserUrl: url });
-      return { id: result.panelId, title: result.title };
-    } catch (err) {
-      if (createdPanelId) {
-        await this.shellCore.close(asPanelSlotId(createdPanelId)).catch(() => {});
-      }
-      throw err;
-    }
+    return this.createViaServer(
+      url,
+      { parentId, name: options?.name },
+      { focus: options?.focus, browserUrl: url }
+    );
   }
 
   async createRuntimePanel(
@@ -380,18 +430,10 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
       siblingToFocus = nextRoot?.id ?? null;
     }
 
-    // Server handles recursive close + resource cleanup
-    const { closedIds } = await this.shellCore.close(asPanelSlotId(panelId));
-
-    // Destroy views and remove from in-memory tree
-    for (const id of closedIds) {
-      this.rejectAgentCallsForPanel(id, new Error("panel-closed"));
-      this.stateArgsPushUnsubs.get(id)?.();
-      this.stateArgsPushUnsubs.delete(id);
-      this.explicitTitlePanelIds.delete(id);
-      this.releaseLocalPanelRuntime(id, "close");
-      this.registry.removePanel(id);
-    }
+    // Server authority closes the subtree + emits; the desktop reactively tears
+    // down views/leases for the removed panels (applyServerPanelTreeSnapshot →
+    // pruneRemovedPanelLocally).
+    await this.serverClient.call("panelTree", "archive", [panelId]);
 
     if (siblingToFocus) {
       this.eventService.emit("navigate-to-panel", { panelId: siblingToFocus });
@@ -569,8 +611,17 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
     const next = previous
       .catch(() => undefined)
       .then(async () => {
-        const validated = await this.shellCore.updateStateArgs(asPanelSlotId(panelId), updates);
-        this.registry.updateStateArgs(panelId, validated as Record<string, unknown>);
+        // Route through the single server authority (panelTree): the server is the
+        // sole WorkspaceDO writer and broadcasts panel-tree-updated. Update the
+        // local mirror optimistically so the panel sees its merged state without
+        // waiting for the broadcast round-trip.
+        const validated = (await this.serverClient.call("panelTree", "setStateArgs", [
+          panelId,
+          updates,
+        ])) as Record<string, unknown>;
+        if (this.registry.getPanel(panelId)) {
+          this.registry.updateStateArgs(panelId, validated);
+        }
         return validated;
       });
     this.stateArgsUpdateQueues.set(panelId, next);
@@ -1026,7 +1077,55 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
       this.applyPanelTitlesFromSnapshot(rootPanels);
       return;
     }
+    const beforeIds = new Set(this.registry.listPanels().map((p) => p.panelId));
+    // Capture the source/contextId of panels we currently host, so we can reload
+    // their views if the authoritative snapshot navigated them. The server is the
+    // sole writer; the desktop is a view-host that reconciles its views to the
+    // broadcast: it builds views on display (notifyFocused → focusPanel), reloads
+    // them here when their snapshot changed, and destroys them on removal.
+    const view = this.getPanelView();
+    const hostedBefore = new Map<string, { source: string; contextId: string }>();
+    if (view) {
+      for (const { panelId } of this.registry.listPanels()) {
+        if (!view.hasView(panelId)) continue;
+        const panel = this.registry.getPanel(panelId);
+        if (!panel) continue;
+        const snap = getCurrentSnapshot(panel);
+        hostedBefore.set(panelId, { source: snap.source, contextId: snap.contextId });
+      }
+    }
     this.registry.repopulate(rootPanels);
+    // Keep the panelManager's entity caches coherent with the authoritative tree
+    // after EVERY broadcast (any client's mutation). The registry now carries the
+    // new runtimeEntityIds; without this the desktop would resolve/lease retired
+    // entities (stale getPanelInit, cross-client navigate). In-memory, no RPC.
+    this.shellCore.syncEntityCachesFromRegistry();
+    for (const panelId of beforeIds) {
+      if (!this.registry.getPanel(panelId)) this.pruneRemovedPanelLocally(panelId);
+    }
+    // Reactive navigate: reload the view of any still-hosted panel whose current
+    // snapshot changed source/contextId (a navigate/history/replace by any client).
+    // Entity caches were already refreshed above, so the lease targets the new entity.
+    for (const [panelId, before] of hostedBefore) {
+      const panel = this.registry.getPanel(panelId);
+      if (!panel || !view?.hasView(panelId)) continue;
+      const snap = getCurrentSnapshot(panel);
+      if (snap.source === before.source && snap.contextId === before.contextId) continue;
+      // Browser panels are driven by their own webContents (in-page navigation,
+      // address-bar browserNavigate). Their source changes are *recorded* into
+      // the tree after the view already navigated, so a server-driven reload here
+      // would redundantly (and destructively) re-navigate the page. Skip them.
+      if (snap.source.startsWith("browser:") || before.source.startsWith("browser:")) continue;
+      this.explicitTitlePanelIds.delete(panelId);
+      this.ensureStateArgsPush(panelId);
+      await this.loadSnapshotIntoView(panelId, snap).catch((error: unknown) => {
+        log.warn(
+          `[applyServerPanelTreeSnapshot] view reload after navigate failed for ${panelId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      });
+    }
     await this.syncRuntimeLeaseSnapshot().catch((error: unknown) => {
       log.warn(
         `[applyServerPanelTreeSnapshot] Failed to sync runtime leases: ${
@@ -1034,6 +1133,15 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
         }`
       );
     });
+  }
+
+  /** Local teardown for a panel the authoritative tree no longer contains. */
+  private pruneRemovedPanelLocally(panelId: string): void {
+    this.rejectAgentCallsForPanel(panelId, new Error("panel-closed"));
+    this.stateArgsPushUnsubs.get(panelId)?.();
+    this.stateArgsPushUnsubs.delete(panelId);
+    this.explicitTitlePanelIds.delete(panelId);
+    this.releaseLocalPanelRuntime(panelId, "close");
   }
 
   applyServerPanelTitleUpdate(update: {
@@ -1227,18 +1335,6 @@ export class PanelOrchestrator implements BridgePanelLifecycle {
   // =========================================================================
   // Persistence delegation (server-first)
   // =========================================================================
-
-  async movePanel(
-    panelId: string,
-    newParentId: string | null,
-    targetPosition: number
-  ): Promise<void> {
-    await this.shellCore.movePanel(
-      asPanelSlotId(panelId),
-      newParentId ? asPanelSlotId(newParentId) : null,
-      targetPosition
-    );
-  }
 
   async setCollapsed(panelId: string, collapsed: boolean): Promise<void> {
     await this.shellCore.setCollapsed(asPanelSlotId(panelId), collapsed);

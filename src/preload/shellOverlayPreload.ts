@@ -11,88 +11,96 @@ interface OverlayRow {
   payload?: unknown;
 }
 
+interface OverlayPayload {
+  empty?: unknown;
+  rows?: OverlayRow[];
+}
+
 contextBridge.exposeInMainWorld("__natstack_shell_overlay", {
   emit: emitOverlay,
   hide: () => ipcRenderer.send("natstack:shell-overlay:hide"),
 });
 
-window.addEventListener("DOMContentLoaded", () => {
-  const panel = document.getElementById("panel");
-  const data = document.getElementById("overlay-data");
-  if (!panel || !data) return;
+// Rows are pushed from the main process over IPC (the document is loaded once).
+ipcRenderer.on("natstack:shell-overlay:render", (_event, payload: OverlayPayload) => {
+  renderPayload(payload);
+});
 
-  let parsed: { empty?: unknown; rows?: OverlayRow[] };
-  try {
-    parsed = JSON.parse(data.textContent ?? "{}") as { empty?: unknown; rows?: OverlayRow[] };
-  } catch {
-    parsed = { empty: "No items", rows: [] };
-  }
+function getPanel(): HTMLElement | null {
+  return document.getElementById("panel");
+}
 
-  const rows = Array.isArray(parsed.rows) ? parsed.rows : [];
+function renderPayload(payload: OverlayPayload): void {
+  const panel = getPanel();
+  if (!panel) return;
+  panel.replaceChildren();
+
+  const rows = Array.isArray(payload?.rows) ? payload.rows : [];
   if (rows.length === 0) {
     const empty = document.createElement("div");
     empty.className = "empty";
-    empty.textContent = String(parsed.empty ?? "");
+    empty.textContent = String(payload?.empty ?? "");
     panel.append(empty);
-  } else {
-    rows.forEach((row, index) => {
-      const button = document.createElement("button");
-      button.className = "row";
-      button.dataset["index"] = String(index);
-      button.dataset["selected"] = row.selected ? "true" : "false";
-      button.type = "button";
-
-      const inner = document.createElement("div");
-      inner.className = "row-inner";
-      if (typeof row.icon === "string" && row.icon.length > 0) {
-        const icon = document.createElement("div");
-        icon.className = "icon";
-        icon.textContent = iconText(row.icon);
-        inner.append(icon);
-      }
-
-      const text = document.createElement("div");
-      text.className = "text";
-      const label = document.createElement("div");
-      label.className = "label";
-      appendMatchedText(label, String(row.label ?? ""), row.labelRanges);
-      text.append(label);
-
-      if (row.meta) {
-        const meta = document.createElement("div");
-        meta.className = "meta";
-        appendMatchedText(meta, String(row.meta), row.metaRanges);
-        text.append(meta);
-      }
-
-      inner.append(text);
-      button.append(inner);
-      button.addEventListener("click", () => {
-        if (typeof row.type !== "string") return;
-        emitOverlay(row.type, row.payload);
-      });
-      button.addEventListener("keydown", (event) => {
-        if (event.key === "Enter") button.click();
-        if (event.key === "Tab") {
-          event.preventDefault();
-          button.click();
-        }
-        if (event.key === "Escape") emitOverlay("dismiss");
-        if (event.key === "ArrowDown") {
-          event.preventDefault();
-          const target = button.nextElementSibling ?? panel.querySelector(".row");
-          if (target instanceof HTMLElement) target.focus();
-        }
-        if (event.key === "ArrowUp") {
-          event.preventDefault();
-          const target = button.previousElementSibling ?? panel.querySelector(".row:last-child");
-          if (target instanceof HTMLElement) target.focus();
-        }
-      });
-      panel.append(button);
-    });
+    return;
   }
-});
+
+  rows.forEach((row, index) => {
+    const button = document.createElement("button");
+    button.className = "row";
+    button.dataset["index"] = String(index);
+    button.dataset["selected"] = row.selected ? "true" : "false";
+    button.type = "button";
+
+    const inner = document.createElement("div");
+    inner.className = "row-inner";
+    if (typeof row.icon === "string" && row.icon.length > 0) {
+      const icon = document.createElement("div");
+      icon.className = "icon";
+      icon.textContent = iconText(row.icon);
+      inner.append(icon);
+    }
+
+    const text = document.createElement("div");
+    text.className = "text";
+    const label = document.createElement("div");
+    label.className = "label";
+    appendMatchedText(label, String(row.label ?? ""), row.labelRanges);
+    text.append(label);
+
+    if (row.meta) {
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      appendMatchedText(meta, String(row.meta), row.metaRanges);
+      text.append(meta);
+    }
+
+    inner.append(text);
+    button.append(inner);
+    button.addEventListener("click", () => {
+      if (typeof row.type !== "string") return;
+      emitOverlay(row.type, row.payload);
+    });
+    button.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") button.click();
+      if (event.key === "Tab") {
+        event.preventDefault();
+        button.click();
+      }
+      if (event.key === "Escape") emitOverlay("dismiss");
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        const target = button.nextElementSibling ?? panel.querySelector(".row");
+        if (target instanceof HTMLElement) target.focus();
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        const target = button.previousElementSibling ?? panel.querySelector(".row:last-child");
+        if (target instanceof HTMLElement) target.focus();
+      }
+    });
+    panel.append(button);
+  });
+}
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") emitOverlay("dismiss");

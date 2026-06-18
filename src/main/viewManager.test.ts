@@ -22,10 +22,12 @@ vi.mock("electron", () => {
     getTitle: vi.fn().mockReturnValue("Mock Title"),
     isLoading: vi.fn().mockReturnValue(false),
     getOSProcessId: vi.fn().mockReturnValue(1234),
-    canGoBack: vi.fn().mockReturnValue(false),
-    canGoForward: vi.fn().mockReturnValue(false),
-    goBack: vi.fn(),
-    goForward: vi.fn(),
+    navigationHistory: {
+      canGoBack: vi.fn().mockReturnValue(false),
+      canGoForward: vi.fn().mockReturnValue(false),
+      goBack: vi.fn(),
+      goForward: vi.fn(),
+    },
     reload: vi.fn(),
     stop: vi.fn(),
     close: vi.fn(),
@@ -227,7 +229,8 @@ describe("ViewManager", () => {
       vm.setViewVisible("panel-1", true);
       vm.showNativeShellOverlay({
         id: "menu-1",
-        html: "<!doctype html><button>Menu</button>",
+        rows: [{ label: "Menu", type: "select" }],
+        empty: "No items",
         bounds: { x: 20, y: 40, width: 240, height: 180 },
       });
 
@@ -1033,17 +1036,17 @@ describe("ViewManager", () => {
         preload: null,
       });
 
-      (view.webContents.canGoBack as Mock).mockReturnValue(true);
-      (view.webContents.canGoForward as Mock).mockReturnValue(true);
+      (view.webContents.navigationHistory.canGoBack as Mock).mockReturnValue(true);
+      (view.webContents.navigationHistory.canGoForward as Mock).mockReturnValue(true);
 
       expect(vm.canGoBack("test-view")).toBe(true);
       expect(vm.canGoForward("test-view")).toBe(true);
 
       vm.goBack("test-view");
-      expect(view.webContents.goBack).toHaveBeenCalled();
+      expect(view.webContents.navigationHistory.goBack).toHaveBeenCalled();
 
       vm.goForward("test-view");
-      expect(view.webContents.goForward).toHaveBeenCalled();
+      expect(view.webContents.navigationHistory.goForward).toHaveBeenCalled();
 
       vm.reload("test-view");
       expect(view.webContents.reload).toHaveBeenCalled();

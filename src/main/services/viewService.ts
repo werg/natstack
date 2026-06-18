@@ -221,7 +221,8 @@ export function createViewService(deps: { getViewManager: () => ViewManager }): 
           const [options] = args as [
             {
               id: string;
-              html: string;
+              rows: import("../shellOverlayView.js").ShellOverlayRow[];
+              empty: string;
               bounds: { x: number; y: number; width: number; height: number };
               focus?: boolean;
             },
@@ -239,7 +240,8 @@ export function createViewService(deps: { getViewManager: () => ViewManager }): 
           const [options] = args as [
             {
               id?: string;
-              html?: string;
+              rows?: import("../shellOverlayView.js").ShellOverlayRow[];
+              empty?: string;
               bounds?: { x: number; y: number; width: number; height: number };
               focus?: boolean;
             },
@@ -279,7 +281,7 @@ export function createViewService(deps: { getViewManager: () => ViewManager }): 
             browserId,
             "browserGoBack"
           );
-          vm.getWebContents(browserId)?.goBack();
+          vm.getWebContents(browserId)?.navigationHistory.goBack();
           return;
         }
         case "browserGoForward": {
@@ -291,7 +293,7 @@ export function createViewService(deps: { getViewManager: () => ViewManager }): 
             browserId,
             "browserGoForward"
           );
-          vm.getWebContents(browserId)?.goForward();
+          vm.getWebContents(browserId)?.navigationHistory.goForward();
           return;
         }
         case "browserReload": {

@@ -16,6 +16,18 @@ export type ViewBounds = z.infer<typeof ViewBoundsSchema>;
 export const ViewPointSchema = z.object({ x: z.number(), y: z.number() });
 export type ViewPoint = z.infer<typeof ViewPointSchema>;
 
+const OverlayRangeSchema = z.object({ start: z.number(), end: z.number() });
+export const ShellOverlayRowSchema = z.object({
+  label: z.string(),
+  meta: z.string().optional(),
+  labelRanges: z.array(OverlayRangeSchema).optional(),
+  metaRanges: z.array(OverlayRangeSchema).optional(),
+  icon: z.string().optional(),
+  selected: z.boolean().optional(),
+  type: z.string(),
+  payload: z.unknown().optional(),
+});
+
 export const NativePanelSlotSyncResultSchema = z.union([
   z.object({ status: z.enum(["bound", "updated"]) }),
   z.object({ status: z.literal("missing"), reason: z.string() }),
@@ -78,7 +90,8 @@ export const viewMethods = defineServiceMethods({
     args: z.tuple([
       z.object({
         id: z.string(),
-        html: z.string(),
+        rows: z.array(ShellOverlayRowSchema),
+        empty: z.string(),
         bounds: ViewBoundsSchema,
         focus: z.boolean().optional(),
       }),
@@ -89,7 +102,8 @@ export const viewMethods = defineServiceMethods({
     args: z.tuple([
       z.object({
         id: z.string().optional(),
-        html: z.string().optional(),
+        rows: z.array(ShellOverlayRowSchema).optional(),
+        empty: z.string().optional(),
         bounds: ViewBoundsSchema.optional(),
         focus: z.boolean().optional(),
       }),

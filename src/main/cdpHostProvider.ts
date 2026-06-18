@@ -316,10 +316,10 @@ export class CdpHostProvider {
           contents.reload();
           break;
         case "goBack":
-          contents.goBack();
+          contents.navigationHistory.goBack();
           break;
         case "goForward":
-          contents.goForward();
+          contents.navigationHistory.goForward();
           break;
         case "stop":
           contents.stop();
@@ -384,13 +384,16 @@ export class CdpHostProvider {
     this.detachConsoleHistory(targetId);
     this.historyFor(targetId);
     const consoleMessage = (
-      _event: unknown,
-      level: unknown,
-      message: unknown,
-      line: unknown,
-      sourceId: unknown
+      event: Electron.Event<Electron.WebContentsConsoleMessageEventParams>
     ) => {
-      this.recordConsoleMessage(targetId, contents, level, message, line, sourceId);
+      this.recordConsoleMessage(
+        targetId,
+        contents,
+        event.level,
+        event.message,
+        event.lineNumber,
+        event.sourceId
+      );
     };
     const renderProcessGone = (_event: unknown, details: unknown) => {
       this.recordLifecycleDiagnostic(targetId, contents, "error", "render-process-gone", details);
@@ -414,7 +417,9 @@ export class CdpHostProvider {
     };
     const emitter = contents as unknown as EventEmitter;
     const handlers = [
-      { event: "console-message", handler: consoleMessage },
+      // consoleMessage uses the typed Event<...> signature; the registry stores
+      // handlers as (...args: unknown[]).
+      { event: "console-message", handler: consoleMessage as (...args: unknown[]) => void },
       { event: "render-process-gone", handler: renderProcessGone },
       { event: "did-fail-load", handler: didFailLoad },
       { event: "unresponsive", handler: unresponsive },

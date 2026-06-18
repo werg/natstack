@@ -32,7 +32,8 @@ export function useNativeShellOverlay(
     lastOptionsKeyRef.current = key;
     void view.updateNativeShellOverlay({
       id: options.id,
-      html: options.html,
+      rows: options.rows,
+      empty: options.empty,
       bounds: options.bounds,
       focus: options.focus,
     });
@@ -42,7 +43,8 @@ export function useNativeShellOverlay(
     options?.bounds.x,
     options?.bounds.y,
     options?.focus,
-    options?.html,
+    options?.empty,
+    options?.rows,
     options?.id,
     options?.open,
   ]);
@@ -59,5 +61,5 @@ export function useNativeShellOverlay(
 
 function getOverlayOptionsKey(options: NativeShellOverlayOptions): string {
   const { bounds } = options;
-  return `${options.id}:${bounds.x}:${bounds.y}:${bounds.width}:${bounds.height}:${options.focus ? "1" : "0"}:${options.html}`;
+  return `${options.id}:${bounds.x}:${bounds.y}:${bounds.width}:${bounds.height}:${options.focus ? "1" : "0"}:${options.empty}:${JSON.stringify(options.rows)}`;
 }

@@ -57,6 +57,7 @@ interface DbSlotHistoryRow {
   source: string;
   context_id: string;
   state_args: string | null;
+  options: string | null;
   recorded_at: number;
 }
 
@@ -126,6 +127,8 @@ export interface SlotHistoryEntryInput {
   source: string;
   contextId: string;
   stateArgs?: unknown;
+  /** Per-entry navigation options (env/ref) so any client/host reconstructs them. */
+  options?: unknown;
 }
 
 export interface GcOptions {
@@ -207,7 +210,7 @@ function rowToRecurringJob(row: Record<string, unknown>): RecurringJobRow {
 }
 
 export class WorkspaceDO extends DurableObjectBase {
-  static override schemaVersion = 13;
+  static override schemaVersion = 14;
 
   constructor(ctx: DurableObjectContext, env: unknown) {
     super(ctx, env);
@@ -269,6 +272,7 @@ export class WorkspaceDO extends DurableObjectBase {
         source TEXT NOT NULL,
         context_id TEXT NOT NULL,
         state_args TEXT,
+        options TEXT,
         recorded_at INTEGER NOT NULL,
         PRIMARY KEY (slot_id, cursor)
       )
@@ -1617,8 +1621,8 @@ export class WorkspaceDO extends DurableObjectBase {
     now: number
   ): void {
     this.sql.exec(
-      `INSERT INTO slot_history (slot_id, cursor, entry_key, entity_id, source, context_id, state_args, recorded_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO slot_history (slot_id, cursor, entry_key, entity_id, source, context_id, state_args, options, recorded_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       slotId,
       cursor,
       entry.entryKey,
@@ -1626,6 +1630,7 @@ export class WorkspaceDO extends DurableObjectBase {
       entry.source,
       entry.contextId,
       entry.stateArgs === undefined ? null : JSON.stringify(entry.stateArgs),
+      entry.options === undefined ? null : JSON.stringify(entry.options),
       now
     );
   }

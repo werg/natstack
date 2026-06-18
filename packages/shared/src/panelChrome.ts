@@ -60,7 +60,13 @@ export interface BrowserAddressOptions {
 export type AddressAction =
   | { type: "navigate-url"; url: string; recordAsTyped?: boolean }
   | { type: "search"; query: string; template: string; recordAsTyped: true }
-  | { type: "keyword-search"; engineId: number; query: string; template: string; recordAsTyped: true }
+  | {
+      type: "keyword-search";
+      engineId: number;
+      query: string;
+      template: string;
+      recordAsTyped: true;
+    }
   | { type: "panel-source"; source: string; ref?: string };
 
 export interface TextMatchRange {
@@ -140,9 +146,7 @@ export function isBrowserPanelSource(source: string): boolean {
 }
 
 export function browserUrlFromPanelSource(source: string): string | null {
-  return isBrowserPanelSource(source)
-    ? source.slice(BROWSER_SOURCE_PREFIX.length)
-    : null;
+  return isBrowserPanelSource(source) ? source.slice(BROWSER_SOURCE_PREFIX.length) : null;
 }
 
 export function panelSourceFromBrowserUrl(url: string): string {
@@ -153,7 +157,10 @@ export function getPanelSourceKind(source: string): PanelSourceKind {
   return isBrowserPanelSource(source) ? "browser" : "panel";
 }
 
-export function getPanelDisplayAddress(panel: Pick<Panel, "id" | "snapshot">, navigation?: PanelNavigationState): string {
+export function getPanelDisplayAddress(
+  panel: Pick<Panel, "id" | "snapshot">,
+  navigation?: PanelNavigationState
+): string {
   const snapshot = getCurrentSnapshot(panel);
   const source = snapshot.source;
   const browserUrl = browserUrlFromPanelSource(source);
@@ -161,7 +168,10 @@ export function getPanelDisplayAddress(panel: Pick<Panel, "id" | "snapshot">, na
   return source;
 }
 
-export function getPanelEditableAddress(panel: Pick<Panel, "id" | "snapshot">, navigation?: PanelNavigationState): string {
+export function getPanelEditableAddress(
+  panel: Pick<Panel, "id" | "snapshot">,
+  navigation?: PanelNavigationState
+): string {
   return getPanelDisplayAddress(panel, navigation);
 }
 
@@ -211,7 +221,8 @@ export function collectPanelSourceSuggestions(nodes: WorkspaceNode[]): PanelSour
     if (node.launchable || node.packageInfo || node.skillInfo || node.isUnit) {
       suggestions.push({
         source: node.path,
-        title: node.launchable?.title ?? node.packageInfo?.name ?? node.skillInfo?.name ?? node.name,
+        title:
+          node.launchable?.title ?? node.packageInfo?.name ?? node.skillInfo?.name ?? node.name,
         kind,
       });
     }
@@ -226,21 +237,22 @@ export function collectPanelSourceSuggestions(nodes: WorkspaceNode[]): PanelSour
 export function filterPanelSourceSuggestions(
   suggestions: PanelSourceSuggestion[],
   query: string,
-  limit = 50,
+  limit = 50
 ): PanelSourceSuggestion[] {
   const normalizedQuery = query.trim().toLowerCase();
   return suggestions
-    .filter((item) =>
-      !normalizedQuery ||
-      item.source.toLowerCase().includes(normalizedQuery) ||
-      item.title?.toLowerCase().includes(normalizedQuery)
+    .filter(
+      (item) =>
+        !normalizedQuery ||
+        item.source.toLowerCase().includes(normalizedQuery) ||
+        item.title?.toLowerCase().includes(normalizedQuery)
     )
     .slice(0, limit);
 }
 
 export function normalizeBrowserAddressSuggestions(
   rows: BrowserHistoryAddressRow[],
-  source: BrowserAddressSuggestion["source"] = "history",
+  source: BrowserAddressSuggestion["source"] = "history"
 ): BrowserAddressSuggestion[] {
   const seen = new Set<string>();
   const suggestions: BrowserAddressSuggestion[] = [];
@@ -261,7 +273,9 @@ export function normalizeBrowserAddressSuggestions(
   return suggestions;
 }
 
-export function normalizeBookmarkAddressSuggestions(rows: BrowserBookmarkAddressRow[]): BrowserAddressSuggestion[] {
+export function normalizeBookmarkAddressSuggestions(
+  rows: BrowserBookmarkAddressRow[]
+): BrowserAddressSuggestion[] {
   const seen = new Set<string>();
   const suggestions: BrowserAddressSuggestion[] = [];
   for (const row of rows) {
@@ -279,12 +293,15 @@ export function normalizeBookmarkAddressSuggestions(rows: BrowserBookmarkAddress
   return suggestions;
 }
 
-export function normalizeSearchEngineAddressSuggestions(rows: SearchEngineAddressRow[]): BrowserAddressSuggestion[] {
+export function normalizeSearchEngineAddressSuggestions(
+  rows: SearchEngineAddressRow[]
+): BrowserAddressSuggestion[] {
   const suggestions: BrowserAddressSuggestion[] = [];
   for (const row of rows) {
-    const searchTemplate = typeof (row.searchUrl ?? row.search_url) === "string"
-      ? String(row.searchUrl ?? row.search_url).trim()
-      : "";
+    const searchTemplate =
+      typeof (row.searchUrl ?? row.search_url) === "string"
+        ? String(row.searchUrl ?? row.search_url).trim()
+        : "";
     const name = typeof row.name === "string" ? row.name.trim() : "";
     if (!searchTemplate || !name) continue;
     suggestions.push({
@@ -301,7 +318,9 @@ export function normalizeSearchEngineAddressSuggestions(rows: SearchEngineAddres
   return suggestions;
 }
 
-export function collectBrowserAddressSuggestionsFromPanels(panels: Panel[]): BrowserAddressSuggestion[] {
+export function collectBrowserAddressSuggestionsFromPanels(
+  panels: Panel[]
+): BrowserAddressSuggestion[] {
   const rows: BrowserHistoryAddressRow[] = [];
   const visit = (panel: Panel) => {
     const snapshot = getCurrentSnapshot(panel);
@@ -321,7 +340,7 @@ export function collectBrowserAddressSuggestionsFromPanels(panels: Panel[]): Bro
 export function mergeBrowserAddressSuggestions(
   groups: BrowserAddressSuggestion[][],
   query = "",
-  limit = 50,
+  limit = 50
 ): BrowserAddressSuggestion[] {
   const normalizedQuery = query.trim().toLowerCase();
   const byUrl = new Map<string, BrowserAddressSuggestion>();
@@ -335,13 +354,20 @@ export function mergeBrowserAddressSuggestions(
       if (!matchesBrowserAddressSuggestion(item, normalizedQuery)) continue;
       const key = canonicalizeUrlForAddress(item.url) ?? item.url;
       const existing = byUrl.get(key);
-      if (!existing || scoreBrowserAddressSuggestion(item) > scoreBrowserAddressSuggestion(existing)) {
+      if (
+        !existing ||
+        scoreBrowserAddressSuggestion(item) > scoreBrowserAddressSuggestion(existing)
+      ) {
         byUrl.set(key, item);
       }
     }
   }
   return [...byUrl.values()]
-    .sort((a, b) => scoreBrowserAddressSuggestion(b, normalizedQuery) - scoreBrowserAddressSuggestion(a, normalizedQuery))
+    .sort(
+      (a, b) =>
+        scoreBrowserAddressSuggestion(b, normalizedQuery) -
+        scoreBrowserAddressSuggestion(a, normalizedQuery)
+    )
     .slice(0, limit);
 }
 
@@ -355,73 +381,115 @@ export function buildAddressAutocompleteItems(args: {
 }): AddressAutocompleteItem[] {
   const limit = args.limit ?? 8;
   if (args.kind === "panel") {
-    return filterPanelSourceSuggestions(args.panelSuggestions ?? [], args.input, limit).map((panel) => ({
-      id: `panel-source:${panel.source}`,
-      kind: "panel-source",
-      value: panel.source,
-      label: panel.source,
-      meta: panel.title ? `${panel.kind} · ${panel.title}` : panel.kind,
-      iconKind: "panel",
-      matchRanges: {
-        label: findMatchRanges(panel.source, args.input),
-        meta: findMatchRanges(panel.title ? `${panel.kind} · ${panel.title}` : panel.kind, args.input),
-      },
-      action: { type: "panel-source", source: panel.source },
-      panel,
-    }));
+    return filterPanelSourceSuggestions(args.panelSuggestions ?? [], args.input, limit).map(
+      (panel) => ({
+        id: `panel-source:${panel.source}`,
+        kind: "panel-source",
+        value: panel.source,
+        label: panel.source,
+        meta: panel.title ? `${panel.kind} · ${panel.title}` : panel.kind,
+        iconKind: "panel",
+        matchRanges: {
+          label: findMatchRanges(panel.source, args.input),
+          meta: findMatchRanges(
+            panel.title ? `${panel.kind} · ${panel.title}` : panel.kind,
+            args.input
+          ),
+        },
+        action: { type: "panel-source", source: panel.source },
+        panel,
+      })
+    );
   }
 
   const items: AddressAutocompleteItem[] = [];
   const input = args.input.trim();
-  const defaultSearchTemplate = args.browserSuggestions?.find((item) =>
-    item.source === "search-engine" && item.typedCount === 1 && item.searchTemplate
-  )?.searchTemplate ?? args.defaultSearchTemplate ?? DEFAULT_SEARCH_TEMPLATE;
+  const defaultSearchTemplate =
+    args.browserSuggestions?.find(
+      (item) => item.source === "search-engine" && item.typedCount === 1 && item.searchTemplate
+    )?.searchTemplate ??
+    args.defaultSearchTemplate ??
+    DEFAULT_SEARCH_TEMPLATE;
   if (input) {
     const parsed = parseAddressInput(input);
     if (parsed?.type === "browser-url") {
-      items.push(browserItem({
-        kind: "url",
-        browser: { url: parsed.url, source: "history" },
-        label: `Go to ${parsed.url}`,
-        meta: parsed.url,
-        iconKind: "globe",
-        query: input,
-        action: { type: "navigate-url", url: parsed.url, recordAsTyped: true },
-      }));
+      items.push(
+        browserItem({
+          kind: "url",
+          browser: { url: parsed.url, source: "history" },
+          label: `Go to ${parsed.url}`,
+          meta: parsed.url,
+          iconKind: "globe",
+          query: input,
+          action: { type: "navigate-url", url: parsed.url, recordAsTyped: true },
+        })
+      );
     } else {
       const searchQuery = parsed?.type === "search" ? parsed.query : input;
-      items.push(browserItem({
-        kind: "search",
-        browser: { url: defaultSearchTemplate, title: searchQuery, source: "search-engine", searchTemplate: defaultSearchTemplate },
-        label: `Search ${searchQuery}`,
-        meta: "default search",
-        iconKind: "search",
-        query: input,
-        action: { type: "search", query: searchQuery, template: defaultSearchTemplate, recordAsTyped: true },
-      }));
+      items.push(
+        browserItem({
+          kind: "search",
+          browser: {
+            url: defaultSearchTemplate,
+            title: searchQuery,
+            source: "search-engine",
+            searchTemplate: defaultSearchTemplate,
+          },
+          label: `Search ${searchQuery}`,
+          meta: "default search",
+          iconKind: "search",
+          query: input,
+          action: {
+            type: "search",
+            query: searchQuery,
+            template: defaultSearchTemplate,
+            recordAsTyped: true,
+          },
+        })
+      );
     }
   }
 
   const keywordRows = buildKeywordSearchRows(args.browserSuggestions ?? [], input);
-  const ranked = mergeBrowserAddressSuggestions([args.browserSuggestions ?? []], input, Math.max(limit * 2, limit))
+  const ranked = mergeBrowserAddressSuggestions(
+    [args.browserSuggestions ?? []],
+    input,
+    Math.max(limit * 2, limit)
+  )
     .filter((item) => item.source !== "search-engine")
     .slice(0, Math.max(0, limit - items.length - keywordRows.length));
 
   items.push(...keywordRows.slice(0, Math.max(0, limit - items.length)));
-  items.push(...ranked.map((browser) => {
-    const kind = browser.source === "session" ? "session" : browser.source === "bookmark" ? "bookmark" : "history";
-    const label = browser.title || browser.url;
-    const meta = browser.title ? browser.url : browser.source === "session" ? "open browser panel" : browser.source;
-    return browserItem({
-      kind,
-      browser,
-      label,
-      meta,
-      iconKind: browser.source === "session" ? "session" : browser.source === "bookmark" ? "bookmark" : "history",
-      query: input,
-      action: { type: "navigate-url", url: browser.url },
-    });
-  }));
+  items.push(
+    ...ranked.map((browser) => {
+      const kind =
+        browser.source === "session"
+          ? "session"
+          : browser.source === "bookmark"
+            ? "bookmark"
+            : "history";
+      const label = browser.title || browser.url;
+      const meta = browser.title
+        ? browser.url
+        : browser.source === "session"
+          ? "open browser panel"
+          : browser.source;
+      return browserItem({
+        kind,
+        browser,
+        label,
+        meta,
+        iconKind:
+          browser.source === "session"
+            ? "session"
+            : browser.source === "bookmark"
+              ? "bookmark"
+              : "history",
+        query: input,
+        action: { type: "navigate-url", url: browser.url },
+      });
+    })
+  );
   return items.slice(0, limit);
 }
 
@@ -474,6 +542,11 @@ export interface AddressProviderBrowserDataAdapter {
   getSearchEngines(): Promise<SearchEngineAddressRow[]>;
 }
 
+/** Panel-path suggestions are scoped to navigable panel sources: `panels/*` and `about/*`. */
+function isPanelOrAboutSource(suggestion: PanelSourceSuggestion): boolean {
+  return suggestion.source.startsWith("panels/") || suggestion.source.startsWith("about/");
+}
+
 export async function getSharedPanelAddressOptions(args: {
   source: string;
   ref?: string;
@@ -483,7 +556,11 @@ export async function getSharedPanelAddressOptions(args: {
   if (!repoProvider) return { source, suggestions: [] };
 
   const tree = await repoProvider.sourceTree();
-  const suggestions = filterPanelSourceSuggestions(collectPanelSourceSuggestions(tree.children), source, 50);
+  const suggestions = filterPanelSourceSuggestions(
+    collectPanelSourceSuggestions(tree.children).filter(isPanelOrAboutSource),
+    source,
+    50
+  );
   try {
     const unit = await repoProvider.findUnitForPath(source);
     if (!unit) return { source, suggestions };
@@ -528,12 +605,16 @@ export async function getSharedBrowserAddressOptions(args: {
     ]);
     return {
       query: args.query,
-      suggestions: mergeBrowserAddressSuggestions([
-        sessionSuggestions,
-        normalizeBrowserAddressSuggestions(historyRows),
-        normalizeBookmarkAddressSuggestions(bookmarkRows),
-        normalizeSearchEngineAddressSuggestions(searchEngineRows),
-      ], args.query, 50),
+      suggestions: mergeBrowserAddressSuggestions(
+        [
+          sessionSuggestions,
+          normalizeBrowserAddressSuggestions(historyRows),
+          normalizeBookmarkAddressSuggestions(bookmarkRows),
+          normalizeSearchEngineAddressSuggestions(searchEngineRows),
+        ],
+        args.query,
+        50
+      ),
     };
   } catch {
     return {
@@ -557,26 +638,54 @@ function readOptionalNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function matchesBrowserAddressSuggestion(item: BrowserAddressSuggestion, normalizedQuery: string): boolean {
+function matchesBrowserAddressSuggestion(
+  item: BrowserAddressSuggestion,
+  normalizedQuery: string
+): boolean {
   if (!normalizedQuery) return true;
-  return item.url.toLowerCase().includes(normalizedQuery) ||
+  return (
+    item.url.toLowerCase().includes(normalizedQuery) ||
     Boolean(item.title?.toLowerCase().includes(normalizedQuery)) ||
-    Boolean(item.keyword?.toLowerCase() === normalizedQuery.split(/\s+/, 1)[0]);
+    Boolean(item.keyword?.toLowerCase() === normalizedQuery.split(/\s+/, 1)[0])
+  );
 }
 
-function scoreBrowserAddressSuggestion(item: BrowserAddressSuggestion, normalizedQuery = ""): number {
+function scoreBrowserAddressSuggestion(
+  item: BrowserAddressSuggestion,
+  normalizedQuery = ""
+): number {
   const haystacks = [item.url, item.title ?? ""].map((value) => value.toLowerCase());
-  const exactBoost = normalizedQuery && haystacks.some((value) => value === normalizedQuery) ? 500_000_000_000_000 : 0;
-  const prefixBoost = normalizedQuery && haystacks.some((value) => value.startsWith(normalizedQuery)) ? 100_000_000_000_000 : 0;
-  const substringBoost = normalizedQuery && haystacks.some((value) => value.includes(normalizedQuery)) ? 10_000_000_000_000 : 0;
+  const exactBoost =
+    normalizedQuery && haystacks.some((value) => value === normalizedQuery)
+      ? 500_000_000_000_000
+      : 0;
+  const prefixBoost =
+    normalizedQuery && haystacks.some((value) => value.startsWith(normalizedQuery))
+      ? 100_000_000_000_000
+      : 0;
+  const substringBoost =
+    normalizedQuery && haystacks.some((value) => value.includes(normalizedQuery))
+      ? 10_000_000_000_000
+      : 0;
   const sourceBoost =
-    item.source === "session" ? 1_000_000_000_000 :
-      item.source === "bookmark" ? 500_000_000_000 :
-        item.source === "history" ? 100_000_000_000 :
-          0;
+    item.source === "session"
+      ? 1_000_000_000_000
+      : item.source === "bookmark"
+        ? 500_000_000_000
+        : item.source === "history"
+          ? 100_000_000_000
+          : 0;
   const typedBoost = (item.typedCount ?? 0) * 10_000_000_000;
   const visitBoost = (item.visitCount ?? 0) * 1_000_000;
-  return exactBoost + prefixBoost + substringBoost + sourceBoost + typedBoost + visitBoost + (item.lastVisit ?? 0);
+  return (
+    exactBoost +
+    prefixBoost +
+    substringBoost +
+    sourceBoost +
+    typedBoost +
+    visitBoost +
+    (item.lastVisit ?? 0)
+  );
 }
 
 export function canonicalizeUrlForAddress(url: string): string | null {
@@ -586,7 +695,10 @@ export function canonicalizeUrlForAddress(url: string): string | null {
     parsed.protocol = parsed.protocol.toLowerCase();
     parsed.hostname = parsed.hostname.toLowerCase();
     parsed.hash = "";
-    if ((parsed.protocol === "http:" && parsed.port === "80") || (parsed.protocol === "https:" && parsed.port === "443")) {
+    if (
+      (parsed.protocol === "http:" && parsed.port === "80") ||
+      (parsed.protocol === "https:" && parsed.port === "443")
+    ) {
       parsed.port = "";
     }
     if (parsed.pathname === "/") parsed.pathname = "/";
@@ -609,7 +721,8 @@ export function splitTextByMatchRanges(text: string, ranges?: TextMatchRange[]):
   let cursor = 0;
   for (const range of normalized) {
     if (range.start < cursor) continue;
-    if (range.start > cursor) parts.push({ text: text.slice(cursor, range.start), highlighted: false });
+    if (range.start > cursor)
+      parts.push({ text: text.slice(cursor, range.start), highlighted: false });
     parts.push({ text: text.slice(range.start, range.end), highlighted: true });
     cursor = range.end;
   }
@@ -618,7 +731,10 @@ export function splitTextByMatchRanges(text: string, ranges?: TextMatchRange[]):
 }
 
 function browserItem(args: {
-  kind: Extract<AddressAutocompleteItem["kind"], "url" | "history" | "bookmark" | "session" | "search" | "search-engine">;
+  kind: Extract<
+    AddressAutocompleteItem["kind"],
+    "url" | "history" | "bookmark" | "session" | "search" | "search-engine"
+  >;
   browser: BrowserAddressSuggestion;
   label: string;
   meta: string;
@@ -649,28 +765,39 @@ function actionValue(action: AddressAction, fallback: string): string {
   return fallback;
 }
 
-function buildKeywordSearchRows(suggestions: BrowserAddressSuggestion[], input: string): AddressAutocompleteItem[] {
+function buildKeywordSearchRows(
+  suggestions: BrowserAddressSuggestion[],
+  input: string
+): AddressAutocompleteItem[] {
   const [keyword, ...queryParts] = input.trim().split(/\s+/);
   const query = queryParts.join(" ").trim();
   if (!keyword || !query) return [];
   return suggestions
-    .filter((item) => item.source === "search-engine" && item.keyword === keyword && item.searchTemplate && item.engineId !== undefined)
+    .filter(
+      (item) =>
+        item.source === "search-engine" &&
+        item.keyword === keyword &&
+        item.searchTemplate &&
+        item.engineId !== undefined
+    )
     .slice(0, 3)
-    .map((engine) => browserItem({
-      kind: "search-engine",
-      browser: engine,
-      label: `Search ${engine.engineName ?? engine.title ?? keyword} for ${query}`,
-      meta: `${keyword} search`,
-      iconKind: "search",
-      query: input,
-      action: {
-        type: "keyword-search",
-        engineId: engine.engineId!,
-        query,
-        template: engine.searchTemplate!,
-        recordAsTyped: true,
-      },
-    }));
+    .map((engine) =>
+      browserItem({
+        kind: "search-engine",
+        browser: engine,
+        label: `Search ${engine.engineName ?? engine.title ?? keyword} for ${query}`,
+        meta: `${keyword} search`,
+        iconKind: "search",
+        query: input,
+        action: {
+          type: "keyword-search",
+          engineId: engine.engineId!,
+          query,
+          template: engine.searchTemplate!,
+          recordAsTyped: true,
+        },
+      })
+    );
 }
 
 function findMatchRanges(text: string, query: string): TextMatchRange[] | undefined {

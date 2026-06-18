@@ -1,18 +1,30 @@
 /**
  * LazyPanelTreeSidebar - Sortable panel tree sidebar with drag-and-drop.
  *
- * Features:
- * - Horizontal offset determines nesting depth (drag right = nest deeper)
- * - Flattened tree rendered as sortable list
- * - Projected depth indicator shows where item will land
+ * Visual design:
+ * - Clean rows: a caret gutter, the title, and (on demand) a count / status / actions.
+ * - Hierarchy is shown by indentation alone — no leading icons, no guide lines.
+ * - Selection is a restrained accent wash; the selected *title* is the signal.
+ *
+ * Behavior:
+ * - Horizontal drag offset determines nesting depth (drag right = nest deeper)
+ * - Flattened tree rendered as a virtualized sortable list
+ * - Projected depth indicator shows where a dragged item will land
  * - Context menu for panel actions
  */
 
 import { useState, useCallback, useEffect, useMemo, useRef, memo, type CSSProperties } from "react";
 import { useTouchDevice } from "@workspace/react/responsive";
 import { useAtomValue, useSetAtom } from "jotai";
-import { CaretRightIcon, Cross2Icon, PlusIcon, UpdateIcon } from "@radix-ui/react-icons";
-import { Badge, Box, Flex, IconButton, Text } from "@radix-ui/themes";
+import {
+  CaretRightIcon,
+  CaretSortIcon,
+  Cross2Icon,
+  CubeIcon,
+  LayersIcon,
+  PlusIcon,
+} from "@radix-ui/react-icons";
+import { Badge, Box, Button, Flex, IconButton, Text } from "@radix-ui/themes";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -33,18 +45,31 @@ import { assertPresent } from "../utils/assertPresent";
 // Style Constants
 // ============================================================================
 
-const EXPAND_BUTTON_SIZE = 12;
-const BUILD_INDICATOR_SIZE = 6;
+const ROW_HEIGHT = 30;
+/** Left padding before the caret gutter of a depth-0 row. */
+const ROW_PADDING_LEFT = 8;
+/** Fixed-width gutter that holds the expand caret so titles align by depth. */
+const CARET_SLOT = 16;
+const ACTION_BUTTON_SIZE = 18;
 
-/** Delay before auto-expanding collapsed item during drag hover (ms) */
+/** Delay before auto-expanding a collapsed item while dragging over it (ms) */
 const AUTO_EXPAND_DELAY_MS = 600;
 
+// Connector geometry: stems sit in the indent gutter and a rounded elbow turns
+// into each child row. Encoded per-row as a `guides` string (see buildGuides).
+/** Horizontal offset of a stem within its indent step. */
+const GUIDE_OFFSET = 6;
+/** Width of the elbow's horizontal run — ends exactly at the row's content. */
+const ELBOW_WIDTH = INDENTATION_WIDTH - GUIDE_OFFSET;
+const ELBOW_RADIUS = 6;
+const GUIDE_COLOR = "var(--gray-a5)";
+const GUIDE_COLOR_ACTIVE = "var(--accent-8)";
+
 const COLORS = {
-  selected: "var(--app-chrome-selected)",
-  selectedHover: "var(--app-chrome-selected-hover)",
-  hover: "var(--app-chrome-hover)",
+  selected: "var(--accent-a3)",
+  selectedHover: "var(--accent-a4)",
+  hover: "var(--gray-a3)",
   dropIndicator: "var(--accent-9)",
-  connector: "var(--gray-a5)",
 } as const;
 
 function getWindowPositionFromMouseEvent(e: React.MouseEvent): { x: number; y: number } {
@@ -69,13 +94,13 @@ function getWindowPositionFromMouseEvent(e: React.MouseEvent): { x: number; y: n
 function getDropIndicatorStyle(depth: number, top: number | string): CSSProperties {
   return {
     position: "absolute",
-    left: depth * INDENTATION_WIDTH + 4,
-    right: 4,
+    left: ROW_PADDING_LEFT + depth * INDENTATION_WIDTH,
+    right: 8,
     height: 2,
     backgroundColor: COLORS.dropIndicator,
     borderRadius: 1,
     top,
-    zIndex: 1,
+    zIndex: 2,
   };
 }
 
@@ -85,12 +110,196 @@ function getRowBackground(isSelected: boolean, isHovered: boolean): string | und
   return undefined;
 }
 
+/**
+ * Compute a per-row connector descriptor from the flattened list.
+ *
+ * Each row's string has one char per ancestor depth:
+ *  - ' ' blank   — ancestor at this level was a last child; no stem here
+ *  - 'v' vertical — ancestor's branch continues below; draw a pass-through stem
+ *  - 'L' / 'T'    — the elbow into this row: 'L' = last child (rounded corner,
+ *                   terminate), 'T' = has a following sibling (corner + continue)
+ */
+function buildGuides(items: FlattenedPanel[]): Map<string, string> {
+  const n = items.length;
+  const indexById = new Map<string, number>();
+  for (let i = 0; i < n; i++) {
+    indexById.set(assertPresent(items[i]).id, i);
+  }
+
+  // A node is the last child of its parent if, scanning forward, we pop above
+  // its depth before meeting another node at the same depth.
+  const isLast = new Array<boolean>(n).fill(true);
+  for (let i = 0; i < n; i++) {
+    const d = assertPresent(items[i]).depth;
+    for (let j = i + 1; j < n; j++) {
+      const dj = assertPresent(items[j]).depth;
+      if (dj < d) break;
+      if (dj === d) {
+        isLast[i] = false;
+        break;
+      }
+    }
+  }
+
+  const guides = new Map<string, string>();
+  for (let i = 0; i < n; i++) {
+    const item = assertPresent(items[i]);
+    const { depth } = item;
+    if (depth === 0) {
+      guides.set(item.id, "");
+      continue;
+    }
+
+    // Walk up the parent chain collecting each level's last-child flag.
+    const colLast = new Array<boolean>(depth).fill(true);
+    let curId: string | null = item.id;
+    for (let col = depth - 1; col >= 0 && curId != null; col--) {
+      const idx = indexById.get(curId);
+      if (idx === undefined) break;
+      colLast[col] = isLast[idx] ?? true;
+      curId = assertPresent(items[idx]).parentId;
+    }
+
+    let s = "";
+    for (let col = 0; col < depth; col++) {
+      if (col < depth - 1) {
+        s += colLast[col] ? " " : "v";
+      } else {
+        s += colLast[col] ? "L" : "T";
+      }
+    }
+    guides.set(item.id, s);
+  }
+  return guides;
+}
+
+/**
+ * Rounded elbow / stem connectors drawn in the indent gutter (left of content),
+ * so they never overlap the title. Rendered as an overlay above the row's
+ * background but outside the text region.
+ */
+function TreeConnectors({ guides, isSelected }: { guides: string; isSelected: boolean }) {
+  const depth = guides.length;
+  if (depth === 0) return null;
+
+  const mid = ROW_HEIGHT / 2;
+  const elems: React.ReactNode[] = [];
+
+  for (let col = 0; col < depth; col++) {
+    const ch = guides[col];
+    const x = ROW_PADDING_LEFT + col * INDENTATION_WIDTH + GUIDE_OFFSET;
+
+    if (col < depth - 1) {
+      if (ch === "v") {
+        elems.push(
+          <Box
+            key={`v${col}`}
+            style={{
+              position: "absolute",
+              left: x,
+              top: 0,
+              bottom: 0,
+              width: 1,
+              backgroundColor: GUIDE_COLOR,
+            }}
+          />
+        );
+      }
+      continue;
+    }
+
+    // Elbow column (this row's connector into its parent stem).
+    const color = isSelected ? GUIDE_COLOR_ACTIVE : GUIDE_COLOR;
+    elems.push(
+      <Box
+        key={`e${col}`}
+        style={{
+          position: "absolute",
+          left: x,
+          top: 0,
+          height: mid,
+          width: ELBOW_WIDTH,
+          borderLeft: `1px solid ${color}`,
+          borderBottom: `1px solid ${color}`,
+          borderBottomLeftRadius: ELBOW_RADIUS,
+        }}
+      />
+    );
+    // 'T' = has a following sibling: continue the stem below the corner.
+    if (ch === "T") {
+      elems.push(
+        <Box
+          key={`t${col}`}
+          style={{
+            position: "absolute",
+            left: x,
+            top: mid,
+            bottom: 0,
+            width: 1,
+            backgroundColor: color,
+          }}
+        />
+      );
+    }
+  }
+
+  return (
+    <Box aria-hidden style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+      {elems}
+    </Box>
+  );
+}
+
+// ============================================================================
+// Build status indicator
+// ============================================================================
+
+/** Spinner while building/cloning, colored dot for error/pending, nothing otherwise. */
+function BuildIndicator({ buildState }: { buildState?: string }) {
+  if (buildState === "building" || buildState === "cloning") {
+    return (
+      <Box
+        className="app-tree-spinner"
+        aria-label="Building"
+        style={{
+          width: 10,
+          height: 10,
+          borderRadius: "50%",
+          border: "1.5px solid var(--amber-a5)",
+          borderTopColor: "var(--amber-9)",
+          flexShrink: 0,
+        }}
+      />
+    );
+  }
+  const dotColor =
+    buildState === "error"
+      ? "var(--red-9)"
+      : buildState === "pending"
+        ? "var(--gray-8)"
+        : undefined;
+  if (!dotColor) return null;
+  return (
+    <Box
+      aria-label={buildState === "error" ? "Build error" : "Pending build"}
+      style={{
+        width: 6,
+        height: 6,
+        borderRadius: "50%",
+        backgroundColor: dotColor,
+        flexShrink: 0,
+      }}
+    />
+  );
+}
+
 // ============================================================================
 // Sortable Tree Item Component
 // ============================================================================
 
 interface SortableTreeItemProps {
   item: FlattenedPanel;
+  guides: string;
   isSelected: boolean;
   showIndicator: boolean;
   projectedDepth: number | null;
@@ -109,6 +318,7 @@ interface SortableTreeItemProps {
 const SortableTreeItem = memo(
   function SortableTreeItem({
     item,
+    guides,
     isSelected,
     showIndicator,
     projectedDepth,
@@ -147,21 +357,9 @@ const SortableTreeItem = memo(
     };
 
     const hasChildren = panel.childCount > 0;
-
-    // Build state indicator color
-    const buildStateColor = useMemo(() => {
-      switch (panel.buildState) {
-        case "building":
-        case "cloning":
-          return "var(--amber-9)";
-        case "error":
-          return "var(--red-9)";
-        case "pending":
-          return "var(--gray-8)";
-        default:
-          return undefined;
-      }
-    }, [panel.buildState]);
+    const showActions = (isHovered || isTouch) && !isDraggingAny;
+    // The count is only meaningful when children are hidden behind a collapsed node.
+    const showCount = hasChildren && collapsed && !showActions;
 
     const handleContextMenu = useCallback(
       async (e: React.MouseEvent) => {
@@ -217,37 +415,20 @@ const SortableTreeItem = memo(
       [panel.id, onAddChild]
     );
 
-    // Connector line for visual hierarchy (only for non-root nodes)
-    const connectorStyle: CSSProperties =
-      depth > 0
-        ? {
-            borderLeft: `1px solid ${COLORS.connector}`,
-            marginLeft: depth * INDENTATION_WIDTH - 1,
-            paddingLeft: 4,
-          }
-        : {
-            marginLeft: depth * INDENTATION_WIDTH,
-          };
-
     const rowStyle: CSSProperties = {
+      height: ROW_HEIGHT,
       cursor: "pointer",
       backgroundColor: getRowBackground(isSelected, isHovered),
-      borderRadius: "var(--radius-2)",
-      transition: "background-color 100ms ease-out",
+      borderRadius: "var(--radius-3)",
+      paddingLeft: ROW_PADDING_LEFT + depth * INDENTATION_WIDTH,
+      transition: "background-color 120ms ease-out",
     };
 
     // Show drop indicator when this item is designated to show it
     const showDropIndicator = showIndicator && projectedDepth !== null;
 
     return (
-      <Box
-        ref={setNodeRef}
-        style={{
-          position: "relative",
-          ...style,
-          ...connectorStyle,
-        }}
-      >
+      <Box ref={setNodeRef} style={{ position: "relative", ...style }}>
         {showDropIndicator && (
           <Box style={getDropIndicatorStyle(projectedDepth, showIndicatorBelow ? "100%" : -1)} />
         )}
@@ -259,8 +440,7 @@ const SortableTreeItem = memo(
           onKeyDown={handleKeyDown}
           align="center"
           gap="1"
-          px="1"
-          py="1"
+          pr="2"
           style={rowStyle}
           data-active={isSelected ? "true" : "false"}
           onClick={handleSelect}
@@ -283,28 +463,34 @@ const SortableTreeItem = memo(
             }
           }}
         >
-          {/* Expand/collapse button */}
-          {hasChildren ? (
-            <IconButton
-              size="1"
-              variant="ghost"
-              color="gray"
-              aria-label={collapsed ? "Expand" : "Collapse"}
-              onClick={handleToggleExpand}
-              style={{
-                width: EXPAND_BUTTON_SIZE,
-                height: EXPAND_BUTTON_SIZE,
-                transition: "transform 150ms ease",
-                transform: collapsed ? "rotate(0deg)" : "rotate(90deg)",
-              }}
-            >
-              <CaretRightIcon />
-            </IconButton>
-          ) : (
-            <Box style={{ width: EXPAND_BUTTON_SIZE, height: EXPAND_BUTTON_SIZE, flexShrink: 0 }} />
-          )}
+          {/* Caret gutter — fixed width so titles align by depth */}
+          <Flex
+            align="center"
+            justify="center"
+            style={{ width: CARET_SLOT, height: CARET_SLOT, flexShrink: 0 }}
+          >
+            {hasChildren && (
+              <IconButton
+                size="1"
+                variant="ghost"
+                color="gray"
+                aria-label={collapsed ? "Expand" : "Collapse"}
+                onClick={handleToggleExpand}
+                style={{
+                  width: CARET_SLOT,
+                  height: CARET_SLOT,
+                  margin: 0,
+                  color: isSelected ? "var(--accent-11)" : "var(--gray-9)",
+                  transition: "transform 150ms ease",
+                  transform: collapsed ? "rotate(0deg)" : "rotate(90deg)",
+                }}
+              >
+                <CaretRightIcon />
+              </IconButton>
+            )}
+          </Flex>
 
-          {/* Title */}
+          {/* Title — the focal element; brightened + weighted when selected */}
           <Text
             size="2"
             weight={isSelected ? "medium" : "regular"}
@@ -314,18 +500,21 @@ const SortableTreeItem = memo(
               whiteSpace: "nowrap",
               overflow: "hidden",
               textOverflow: "ellipsis",
-              color: isSelected ? "var(--gray-12)" : "var(--gray-11)",
+              color: isSelected ? "var(--accent-12)" : "var(--gray-11)",
             }}
           >
             {panel.title}
           </Text>
 
-          {/* Child count badge */}
-          {hasChildren && (
+          {/* Build state indicator */}
+          <BuildIndicator buildState={panel.buildState} />
+
+          {/* Hidden-children count (collapsed nodes only) */}
+          {showCount && (
             <Badge
               size="1"
               variant="soft"
-              color="gray"
+              color={isSelected ? undefined : "gray"}
               radius="full"
               style={{ fontSize: "10px", flexShrink: 0 }}
             >
@@ -333,73 +522,46 @@ const SortableTreeItem = memo(
             </Badge>
           )}
 
-          {/* Build state indicator */}
-          {buildStateColor && (
-            <Box
-              style={{
-                width: BUILD_INDICATOR_SIZE,
-                height: BUILD_INDICATOR_SIZE,
-                borderRadius: "50%",
-                backgroundColor: buildStateColor,
-                flexShrink: 0,
-              }}
-            />
-          )}
-
-          {/* Add child panel (+) button - shown on hover (or always on touch), hidden during drag */}
-          {(isHovered || isTouch) && !isDraggingAny && (
-            <IconButton
-              size="1"
-              variant="ghost"
-              color="gray"
-              aria-label="Add child panel"
-              onClick={handleAddChild}
-              style={{
-                width: 16,
-                height: 16,
-                flexShrink: 0,
-                opacity: 0.7,
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.opacity = "1";
-                e.currentTarget.style.backgroundColor = "var(--accent-a4)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.opacity = "0.7";
-                e.currentTarget.style.backgroundColor = "transparent";
-              }}
-            >
-              <PlusIcon width={10} height={10} />
-            </IconButton>
-          )}
-
-          {/* Archive (X) button - shown on hover (or always on touch), hidden during drag */}
-          {(isHovered || isTouch) && !isDraggingAny && (
-            <IconButton
-              size="1"
-              variant="ghost"
-              color="gray"
-              aria-label="Archive panel"
-              onClick={handleArchive}
-              style={{
-                width: 16,
-                height: 16,
-                flexShrink: 0,
-                opacity: 0.7,
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.opacity = "1";
-                e.currentTarget.style.backgroundColor = "var(--red-a4)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.opacity = "0.7";
-                e.currentTarget.style.backgroundColor = "transparent";
-              }}
-            >
-              <Cross2Icon width={10} height={10} />
-            </IconButton>
+          {/* Row actions — on hover (or always on touch), hidden while dragging */}
+          {showActions && (
+            <>
+              <IconButton
+                size="1"
+                variant="ghost"
+                color="gray"
+                aria-label="Add child panel"
+                onClick={handleAddChild}
+                className="app-tree-action"
+                style={{
+                  width: ACTION_BUTTON_SIZE,
+                  height: ACTION_BUTTON_SIZE,
+                  flexShrink: 0,
+                  margin: 0,
+                }}
+              >
+                <PlusIcon width={12} height={12} />
+              </IconButton>
+              <IconButton
+                size="1"
+                variant="ghost"
+                color="gray"
+                aria-label="Archive panel"
+                onClick={handleArchive}
+                className="app-tree-action app-tree-action-danger"
+                style={{
+                  width: ACTION_BUTTON_SIZE,
+                  height: ACTION_BUTTON_SIZE,
+                  flexShrink: 0,
+                  margin: 0,
+                }}
+              >
+                <Cross2Icon width={12} height={12} />
+              </IconButton>
+            </>
           )}
         </Flex>
+
+        <TreeConnectors guides={guides} isSelected={isSelected} />
       </Box>
     );
   },
@@ -408,6 +570,7 @@ const SortableTreeItem = memo(
     // since flattenTree() creates fresh FlattenedPanel objects every call.
     return (
       prev.item.id === next.item.id &&
+      prev.guides === next.guides &&
       prev.item.depth === next.item.depth &&
       prev.item.collapsed === next.item.collapsed &&
       prev.item.parentId === next.item.parentId &&
@@ -465,6 +628,68 @@ function EndDropZone({ isOver, projectedDepth, isDragging }: EndDropZoneProps) {
 }
 
 // ============================================================================
+// Sidebar Footer (new panel CTA + workspace switcher)
+// ============================================================================
+
+interface SidebarFooterProps {
+  activeWorkspaceName: string | null;
+  onSwitchWorkspace: () => void;
+  onNewPanel: () => void;
+}
+
+function SidebarFooter({ activeWorkspaceName, onSwitchWorkspace, onNewPanel }: SidebarFooterProps) {
+  const handleWorkspaceKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onSwitchWorkspace();
+      }
+    },
+    [onSwitchWorkspace]
+  );
+
+  return (
+    <Box p="2">
+      <Button
+        variant="soft"
+        size="2"
+        onClick={onNewPanel}
+        aria-label="New panel"
+        style={{ width: "100%" }}
+      >
+        <PlusIcon />
+        New panel
+      </Button>
+
+      {/* Workspace selector — the whole row is the switch affordance */}
+      {activeWorkspaceName && (
+        <Flex
+          className="app-tree-workspace"
+          role="button"
+          tabIndex={0}
+          align="center"
+          gap="2"
+          mt="2"
+          px="2"
+          py="1"
+          onClick={onSwitchWorkspace}
+          onKeyDown={handleWorkspaceKeyDown}
+          aria-label={`Workspace: ${activeWorkspaceName}. Activate to switch workspace.`}
+          title="Switch workspace"
+          style={{ borderRadius: "var(--radius-2)", cursor: "pointer" }}
+        >
+          <CubeIcon style={{ flexShrink: 0, color: "var(--gray-9)" }} />
+          <Text size="2" truncate style={{ flex: 1, minWidth: 0, color: "var(--gray-12)" }}>
+            {activeWorkspaceName}
+          </Text>
+          <CaretSortIcon style={{ flexShrink: 0, color: "var(--gray-9)" }} />
+        </Flex>
+      )}
+    </Box>
+  );
+}
+
+// ============================================================================
 // Sidebar Component
 // ============================================================================
 
@@ -493,6 +718,9 @@ export function LazyPanelTreeSidebar({
   const { activeId, overId, projectedDepth, indicatorItemId, showIndicatorBelow } =
     usePanelDndDrag();
 
+  // Per-row connector descriptors (rounded elbows + sibling stems).
+  const guidesById = useMemo(() => buildGuides(flattenedItems), [flattenedItems]);
+
   // Auto-expand ancestors of selected panel (batched for performance)
   useEffect(() => {
     if (ancestorIds.length > 0) {
@@ -511,6 +739,10 @@ export function LazyPanelTreeSidebar({
       })
     );
   }, []);
+
+  const handleSwitchWorkspace = useCallback(() => {
+    setWorkspaceChooserOpen(true);
+  }, [setWorkspaceChooserOpen]);
 
   const handleAddChild = useCallback(
     async (parentId: string) => {
@@ -538,7 +770,7 @@ export function LazyPanelTreeSidebar({
   const virtualizer = useVirtualizer({
     count: flattenedItems.length + 1,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => 32,
+    estimateSize: () => ROW_HEIGHT,
     overscan: 10,
   });
 
@@ -555,38 +787,43 @@ export function LazyPanelTreeSidebar({
   if (flattenedItems.length === 0) {
     return (
       <Flex direction="column" style={{ flex: 1, minHeight: 0 }}>
-        <Flex style={{ flex: 1 }} align="center" justify="center">
-          <Text color="gray">No panels yet</Text>
-        </Flex>
-        <Box p="2" style={{ borderTop: "1px solid var(--app-chrome-border)" }}>
-          {activeWorkspaceName && (
-            <Flex align="center" justify="between" mb="1">
-              <Text size="1" color="gray" truncate style={{ flex: 1 }}>
-                {activeWorkspaceName}
-              </Text>
-              <IconButton
-                variant="ghost"
-                size="1"
-                onClick={() => setWorkspaceChooserOpen(true)}
-                aria-label="Switch workspace"
-              >
-                <UpdateIcon />
-              </IconButton>
-            </Flex>
-          )}
-          <IconButton
-            variant="ghost"
-            size="1"
-            onClick={handleNewPanel}
-            aria-label="New panel"
-            style={{ width: "100%" }}
+        <Flex
+          direction="column"
+          align="center"
+          justify="center"
+          gap="2"
+          px="4"
+          style={{ flex: 1, textAlign: "center" }}
+        >
+          <Flex
+            align="center"
+            justify="center"
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: "var(--radius-4)",
+              backgroundColor: "var(--gray-a3)",
+              color: "var(--gray-9)",
+            }}
           >
+            <LayersIcon width={22} height={22} />
+          </Flex>
+          <Text size="2" weight="medium" style={{ color: "var(--gray-12)" }}>
+            No panels yet
+          </Text>
+          <Text size="1" color="gray">
+            Create your first panel to get started.
+          </Text>
+          <Button variant="soft" size="2" mt="1" onClick={handleNewPanel} aria-label="New panel">
             <PlusIcon />
-            <Text size="1" ml="1">
-              New Panel
-            </Text>
-          </IconButton>
-        </Box>
+            New panel
+          </Button>
+        </Flex>
+        <SidebarFooter
+          activeWorkspaceName={activeWorkspaceName}
+          onSwitchWorkspace={handleSwitchWorkspace}
+          onNewPanel={handleNewPanel}
+        />
       </Flex>
     );
   }
@@ -640,6 +877,7 @@ export function LazyPanelTreeSidebar({
               >
                 <SortableTreeItem
                   item={item}
+                  guides={guidesById.get(item.id) ?? ""}
                   isSelected={item.id === selectedId}
                   showIndicator={item.id === indicatorItemId}
                   projectedDepth={item.id === indicatorItemId ? projectedDepth : null}
@@ -659,35 +897,11 @@ export function LazyPanelTreeSidebar({
           })}
         </Box>
       </div>
-      <Box p="2" style={{ borderTop: "1px solid var(--app-chrome-border)" }}>
-        {activeWorkspaceName && (
-          <Flex align="center" justify="between" mb="1">
-            <Text size="1" color="gray" truncate style={{ flex: 1 }}>
-              {activeWorkspaceName}
-            </Text>
-            <IconButton
-              variant="ghost"
-              size="1"
-              onClick={() => setWorkspaceChooserOpen(true)}
-              aria-label="Switch workspace"
-            >
-              <UpdateIcon />
-            </IconButton>
-          </Flex>
-        )}
-        <IconButton
-          variant="ghost"
-          size="1"
-          onClick={handleNewPanel}
-          aria-label="New panel"
-          style={{ width: "100%" }}
-        >
-          <PlusIcon />
-          <Text size="1" ml="1">
-            New Panel
-          </Text>
-        </IconButton>
-      </Box>
+      <SidebarFooter
+        activeWorkspaceName={activeWorkspaceName}
+        onSwitchWorkspace={handleSwitchWorkspace}
+        onNewPanel={handleNewPanel}
+      />
     </Flex>
   );
 }

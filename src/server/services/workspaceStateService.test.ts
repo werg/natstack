@@ -14,6 +14,7 @@ function makeCtx(): MockHandlerCtx {
 
 function makeService(opts: {
   onPanelTitleChanged?: (entityId: string, title: string) => void;
+  onSlotStateChanged?: () => void;
   /**
    * Map of DO method → return value. The dispatcher uses this to drive
    * outcomes (e.g. simulating the entity-id WorkspaceDO returns from
@@ -32,6 +33,7 @@ function makeService(opts: {
     doDispatch: doDispatch as never,
     workspaceId: "test-workspace",
     ...(opts.onPanelTitleChanged ? { onPanelTitleChanged: opts.onPanelTitleChanged } : {}),
+    ...(opts.onSlotStateChanged ? { onSlotStateChanged: opts.onSlotStateChanged } : {}),
   });
   return { svc, calls };
 }
@@ -111,4 +113,45 @@ describe("workspaceStateService — title mirror hooks", () => {
     await svc.handler(makeCtx() as never, "panel.incrementAccess", ["panel:abc"]);
     expect(onPanelTitleChanged).not.toHaveBeenCalled();
   });
+});
+
+describe("workspaceStateService — slot-state change hook", () => {
+  const mutating: Array<[method: string, args: unknown[]]> = [
+    ["slot.create", [{ slotId: "s1" }]],
+    ["slot.appendHistory", ["s1", { entryKey: "e1" }]],
+    ["slot.setCurrent", ["s1", "e1"]],
+    ["slot.updateCurrentStateArgs", ["s1", {}]],
+    ["slot.replaceHistory", ["s1", [], 0]],
+    ["slot.setParent", ["s1", null]],
+    ["slot.setPosition", ["s1", "p1"]],
+    ["slot.move", ["s1", null, "p1"]],
+    ["slot.close", ["s1"]],
+  ];
+
+  for (const [method, args] of mutating) {
+    it(`fires onSlotStateChanged after ${method}`, async () => {
+      const onSlotStateChanged = vi.fn();
+      const { svc } = makeService({ onSlotStateChanged });
+      await svc.handler(makeCtx() as never, method, args);
+      expect(onSlotStateChanged).toHaveBeenCalledTimes(1);
+    });
+  }
+
+  const reads: Array<[method: string, args: unknown[]]> = [
+    ["slot.list", []],
+    ["slot.get", ["s1"]],
+    ["slot.history", ["s1"]],
+    ["entity.resolveActive", ["e1"]],
+    ["panel.search", ["q", 10]],
+    ["panel.incrementAccess", ["e1"]],
+  ];
+
+  for (const [method, args] of reads) {
+    it(`does not fire onSlotStateChanged for read/non-tree method ${method}`, async () => {
+      const onSlotStateChanged = vi.fn();
+      const { svc } = makeService({ onSlotStateChanged });
+      await svc.handler(makeCtx() as never, method, args);
+      expect(onSlotStateChanged).not.toHaveBeenCalled();
+    });
+  }
 });

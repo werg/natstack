@@ -273,9 +273,11 @@ export class ViewManager {
     this.nativeShellOverlay = new ShellOverlayView(
       options.shellOverlayPreload ?? options.shellPreload,
       (event) => {
-        if (!this.shellView.webContents.isDestroyed()) {
-          this.shellView.webContents.send("natstack:shell-overlay:event", event);
-        }
+        // Route overlay events (e.g. suggestion clicks) to the renderer that owns
+        // the address bar — the hosted shell app view when ready, otherwise the
+        // bootstrap shell. Sending only to the bootstrap shell meant clicks were
+        // silently dropped while the hosted shell was active.
+        this.getShellChromeWebContents()?.send("natstack:shell-overlay:event", event);
       }
     );
     this.nativeShellOverlay.setWindow(this.window);
@@ -639,8 +641,16 @@ export class ViewManager {
     if (!params.isEditable) {
       if (items.length > 0) items.push({ type: "separator" });
       items.push(
-        { label: "Back", enabled: contents.canGoBack(), click: () => contents.goBack() },
-        { label: "Forward", enabled: contents.canGoForward(), click: () => contents.goForward() },
+        {
+          label: "Back",
+          enabled: contents.navigationHistory.canGoBack(),
+          click: () => contents.navigationHistory.goBack(),
+        },
+        {
+          label: "Forward",
+          enabled: contents.navigationHistory.canGoForward(),
+          click: () => contents.navigationHistory.goForward(),
+        },
         { label: "Reload", click: () => contents.reload() },
         { label: "Copy Page Address", click: () => clipboard.writeText(contents.getURL()) }
       );
@@ -749,6 +759,10 @@ export class ViewManager {
     }
 
     if (ready) {
+      // Shell chrome (with the address bar) is up — create + load the hidden
+      // suggestion overlay now so its first show doesn't create/load the view on
+      // demand, which stole focus from the address input the first time.
+      this.nativeShellOverlay.prewarm();
       if (
         this.nativePanelSlots.activeHostedShellViewId === ownerViewId &&
         this.nativePanelSlots.hostedShellReady
@@ -1028,16 +1042,34 @@ export class ViewManager {
     wc.focus();
   }
 
+  /**
+   * The webContents that hosts the shell chrome (address bar, breadcrumbs): the
+   * hosted shell app view when ready, otherwise the bootstrap shell view. Overlay
+   * events and focus restoration must target this, not always the bootstrap shell.
+   */
+  private getShellChromeWebContents() {
+    const hostId = this.nativePanelSlots.hostedShellReady
+      ? this.nativePanelSlots.activeHostedShellViewId
+      : null;
+    const hosted = hostId ? this.views.get(hostId) : undefined;
+    if (hosted && !hosted.view.webContents.isDestroyed()) return hosted.view.webContents;
+    if (!this.shellView.webContents.isDestroyed()) return this.shellView.webContents;
+    return null;
+  }
+
   showNativeShellOverlay(options: ShellOverlayOptions): void {
+    // Mirror the autofill overlay (which keeps the page input focused): just show
+    // and raise the view. Running refreshActivePanelSlots()/reconcileNativeLayerOrder()
+    // here re-stacks the managed views and steals focus from the hosted shell's
+    // address input the moment the suggestion box appears.
     this.nativeShellOverlay.show(options);
-    this.refreshActivePanelSlots();
-    this.reconcileNativeLayerOrder();
   }
 
   updateNativeShellOverlay(options: Partial<ShellOverlayOptions> & { id?: string }): void {
+    // Updates only push row data (and maybe resize) to the already-shown overlay.
+    // No native re-stacking happens, so there's nothing to reconcile or refocus —
+    // keeping this light is what stops the address input losing focus per keystroke.
     this.nativeShellOverlay.update(options);
-    this.refreshActivePanelSlots();
-    this.reconcileNativeLayerOrder();
   }
 
   hideNativeShellOverlay(id?: string): void {
@@ -1988,7 +2020,7 @@ export class ViewManager {
    */
   canGoBack(id: string): boolean {
     const contents = this.getWebContents(id);
-    return contents?.canGoBack() ?? false;
+    return contents?.navigationHistory.canGoBack() ?? false;
   }
 
   /**
@@ -1996,7 +2028,7 @@ export class ViewManager {
    */
   canGoForward(id: string): boolean {
     const contents = this.getWebContents(id);
-    return contents?.canGoForward() ?? false;
+    return contents?.navigationHistory.canGoForward() ?? false;
   }
 
   /**
@@ -2004,8 +2036,8 @@ export class ViewManager {
    */
   goBack(id: string): void {
     const contents = this.getWebContents(id);
-    if (contents?.canGoBack()) {
-      contents.goBack();
+    if (contents?.navigationHistory.canGoBack()) {
+      contents.navigationHistory.goBack();
     }
   }
 
@@ -2014,8 +2046,8 @@ export class ViewManager {
    */
   goForward(id: string): void {
     const contents = this.getWebContents(id);
-    if (contents?.canGoForward()) {
-      contents.goForward();
+    if (contents?.navigationHistory.canGoForward()) {
+      contents.navigationHistory.goForward();
     }
   }
 

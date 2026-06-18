@@ -151,7 +151,10 @@ describe("PanelRegistry", () => {
       expect(registry.getPanel("root")?.title).toBe("root from server");
     });
 
-    it("does not preserve runtime artifacts when the panel source changes", () => {
+    it("preserves runtime artifacts across an in-place navigate (same contextId, new source)", () => {
+      // Navigating a panel in place keeps the view session (contextId) but
+      // changes the source; the Electron-main artifacts are authoritative for the
+      // live view and must survive the next server repopulate.
       registry.addPanel(
         makePanel("root", {
           artifacts: {
@@ -168,6 +171,35 @@ describe("PanelRegistry", () => {
           snapshot: {
             source: "panels/other",
             contextId: "ctx-root",
+            options: {},
+          },
+          artifacts: {},
+        }),
+      ]);
+
+      expect(registry.getPanel("root")?.artifacts).toEqual({
+        htmlPath: "http://localhost:1234/panels/chat/",
+        buildState: "ready",
+      });
+    });
+
+    it("does not preserve runtime artifacts when the view session (contextId) changes", () => {
+      registry.addPanel(
+        makePanel("root", {
+          artifacts: {
+            htmlPath: "http://localhost:1234/panels/chat/",
+            buildState: "ready",
+          },
+        }),
+        null,
+        { addAsRoot: true }
+      );
+
+      registry.repopulate([
+        makePanel("root", {
+          snapshot: {
+            source: "panels/other",
+            contextId: "ctx-different",
             options: {},
           },
           artifacts: {},

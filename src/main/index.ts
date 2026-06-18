@@ -1150,8 +1150,8 @@ function createWindow(): void {
         const panelId = panelRegistry.getFocusedPanelId();
         if (!panelId) return;
         const contents = viewManager.getWebContents(panelId);
-        if (contents && !contents.isDestroyed() && contents.canGoBack()) {
-          contents.goBack();
+        if (contents && !contents.isDestroyed() && contents.navigationHistory.canGoBack()) {
+          contents.navigationHistory.goBack();
         }
       },
       onHistoryForward: () => {
@@ -1159,8 +1159,8 @@ function createWindow(): void {
         const panelId = panelRegistry.getFocusedPanelId();
         if (!panelId) return;
         const contents = viewManager.getWebContents(panelId);
-        if (contents && !contents.isDestroyed() && contents.canGoForward()) {
-          contents.goForward();
+        if (contents && !contents.isDestroyed() && contents.navigationHistory.canGoForward()) {
+          contents.navigationHistory.goForward();
         }
       },
     });
@@ -1654,22 +1654,10 @@ app.on("ready", async () => {
         if (action === "reloadPanel") {
           return panelOrchestrator?.reloadPanel(panelId) ?? null;
         }
-        if (action === "navigatePanel") {
-          const source = typeof args[0] === "string" ? args[0] : "";
-          if (!source) throw new Error("navigatePanel requires a source");
-          const options = (args[1] ?? {}) as {
-            ref?: string;
-            contextId?: string;
-            env?: Record<string, string>;
-            stateArgs?: Record<string, unknown>;
-          };
-          return panelOrchestrator?.navigatePanel(panelId, source, options) ?? null;
-        }
-        if (action === "navigatePanelHistory") {
-          const delta = args[0] === -1 || args[0] === 1 ? args[0] : 0;
-          if (!delta) throw new Error("navigatePanelHistory requires delta -1 or 1");
-          return panelOrchestrator?.navigatePanelHistory(panelId, delta) ?? null;
-        }
+        // navigatePanel / navigatePanelHistory host commands were removed: the
+        // server is the sole panel-tree writer (panelManager.navigate /
+        // navigateHistory) and broadcasts; the desktop reloads views reactively
+        // (panelOrchestrator.applyServerPanelTreeSnapshot reconcile).
         if (action === "accessibilityTree") {
           if (!cdpHostProvider) throw new Error("CDP host provider not initialized");
           return cdpHostProvider.getAccessibilityTree(panelId);
@@ -1975,9 +1963,7 @@ app.on("ready", async () => {
       "natstack:bridge.setStateArgs",
       async (event, updates: Record<string, unknown>) => {
         const callerId = resolveCallerId(event);
-        return panelOrchestrator
-          ? panelOrchestrator.handleSetStateArgs(callerId, updates)
-          : shellCore?.panelManager.updateStateArgs(asPanelSlotId(callerId), updates);
+        return assertPresent(panelOrchestrator).handleSetStateArgs(callerId, updates);
       }
     );
     ipcMain.handle("natstack:panel.getStateArgs", async (event, panelId: string) => {
