@@ -125,6 +125,8 @@ export function chatMessagesFromChannelView(state: ChannelViewState): ChatMessag
         providerId: request.providerId,
         connectSpec: request.connectSpec,
         modelBaseUrl: request.modelBaseUrl,
+        reason: request.reason,
+        failureCode: request.failureCode,
         expiresAt: request.expiresAt,
         agentParticipantId: request.participantId,
       },
@@ -435,10 +437,7 @@ function messageShouldRenderStandalone(message: ProjectedMessage): boolean {
 }
 
 function isCredentialSuspensionReason(reason: string | undefined): boolean {
-  return (
-    reason === "model_credential_required" ||
-    reason === "model_credential_reconnect_required"
-  );
+  return reason === "model_credential_required" || reason === "model_credential_reconnect_required";
 }
 
 function diagnosticNoticeFromMessage(message: ProjectedMessage): DiagnosticNotice | null {
@@ -462,9 +461,9 @@ function diagnosticNoticeFromMessage(message: ProjectedMessage): DiagnosticNotic
         ? "Model call limit reached"
         : metadata.failureCode === "usage_limit_terminal"
           ? "Model usage limit reached"
-        : metadata.severity === "error"
-          ? "Message failed"
-          : "No assistant response",
+          : metadata.severity === "error"
+            ? "Message failed"
+            : "No assistant response",
     detail: content,
     reason: metadata.reason,
     recoverable: metadata.recoverable,
@@ -654,7 +653,8 @@ function actionBarInvocationDescription(invocation: ProjectedInvocation): string
   const clear = request["clear"] === true || result["cleared"] === true;
   const error = methodError(result);
   if (error) return `Action bar failed: ${error}`;
-  if (clear) return invocation.status === "completed" ? "Cleared action bar" : "Clearing action bar";
+  if (clear)
+    return invocation.status === "completed" ? "Cleared action bar" : "Clearing action bar";
   const source = uiSourceLabel(request);
   return invocation.status === "completed"
     ? `Loaded action bar${source ? ` from ${source}` : ""}`
@@ -878,7 +878,8 @@ function formatConsoleStreamOutput(value: unknown): string | undefined {
   if (record["type"] !== "console") return undefined;
 
   const content = record["content"];
-  const text = typeof content === "string" ? content : content == null ? "" : stringifyOutput(content);
+  const text =
+    typeof content === "string" ? content : content == null ? "" : stringifyOutput(content);
   const level = typeof record["level"] === "string" ? record["level"].toLowerCase() : "";
   if (!level || level === "log") return text;
   return `[${level.toUpperCase()}] ${text}`;

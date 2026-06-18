@@ -51,6 +51,7 @@ import {
   type EphemeralEmit,
   type ExecutorDeps,
 } from "./effect-executors/index.js";
+import { modelCredentialReconnectOutcome } from "./model-credential-suspension.js";
 
 export interface LoopInstance {
   channelId: string;
@@ -653,7 +654,11 @@ export class AgentLoopDriver {
     newEnvelopes: LogEnvelope[],
     published: Array<{ originEnvelopeId: string; channelId: string; envelopeId: string }>
   ): Promise<void> {
-    if (!this.deps.broadcastStoredEnvelopes || newEnvelopes.length === 0 || published.length === 0) {
+    if (
+      !this.deps.broadcastStoredEnvelopes ||
+      newEnvelopes.length === 0 ||
+      published.length === 0
+    ) {
       return;
     }
     const newOriginIds = new Set(newEnvelopes.map((envelope) => String(envelope.envelopeId)));
@@ -739,14 +744,16 @@ export class AgentLoopDriver {
       effectId: row.effectId,
       channelId: row.channelId,
     });
-    const executor =
-      this.deps.executorOverride?.(row.descriptor) ?? executorFor(row.descriptor);
+    const executor = this.deps.executorOverride?.(row.descriptor) ?? executorFor(row.descriptor);
     // Storage boundary, read side: effects re-derived from a RELOADED fold
     // carry journaled blob refs for spilled fields (tool args, http request).
     // Executors get fully hydrated descriptors — the single hydration point.
-    const descriptor = this.dispatchDescriptor(row, (await hydrateStoredValueRefs(row.descriptor, {
-      getText: (digest) => this.deps.executorDeps.blobstore.getText(digest),
-    })) as EffectDescriptor);
+    const descriptor = this.dispatchDescriptor(
+      row,
+      (await hydrateStoredValueRefs(row.descriptor, {
+        getText: (digest) => this.deps.executorDeps.blobstore.getText(digest),
+      })) as EffectDescriptor
+    );
     let outcome: EffectOutcome | { deferred: true };
     try {
       outcome = await executor.execute({
@@ -761,19 +768,34 @@ export class AgentLoopDriver {
       // driver-level crashes and must propagate so the reconcile heals them.)
       const message = err instanceof Error ? err.message : String(err);
       if (row.kind === "model_call") {
-        const request =
-          row.descriptor.kind === "model_call" ? row.descriptor.request : undefined;
-        const failure = classifyModelFailure(modelFailureInputFromUnknown(err, {
-          provider: request?.provider,
-          model: request?.model,
-          now: new Date(this.deps.now()).toISOString(),
-        }));
+        const request = row.descriptor.kind === "model_call" ? row.descriptor.request : undefined;
+        const failure = classifyModelFailure(
+          modelFailureInputFromUnknown(err, {
+            provider: request?.provider,
+            model: request?.model,
+            now: new Date(this.deps.now()).toISOString(),
+          })
+        );
         if (failure.recoverable && failure.retryAfterMs !== undefined) {
           await this.retryEffect(row, {
             reason: failure.reason,
             retryAfterMs: failure.retryAfterMs,
             code: failure.code,
           });
+          this.aborts.delete(this.rowKey(row));
+          return;
+        }
+        if (failure.code === "auth_or_credentials" && request?.provider) {
+          await this.suspendOnCredential(
+            loop,
+            row,
+            modelCredentialReconnectOutcome({
+              providerId: request.provider,
+              modelBaseUrl: request.modelBaseUrl,
+              reason: failure.reason,
+              failureCode: failure.code,
+            })
+          );
           this.aborts.delete(this.rowKey(row));
           return;
         }
@@ -854,9 +876,12 @@ export class AgentLoopDriver {
     }
     let envelopes: LogEnvelope[] | null = null;
     for (let attempt = 0; envelopes === null; attempt += 1) {
-      const items = this.transformOutcome(loop, outcomeEvents(row.descriptor, outcome, {
-        now: new Date(this.deps.now()).toISOString(),
-      }));
+      const items = this.transformOutcome(
+        loop,
+        outcomeEvents(row.descriptor, outcome, {
+          now: new Date(this.deps.now()).toISOString(),
+        })
+      );
       try {
         envelopes = await this.append(loop, items);
       } catch (err) {
@@ -957,8 +982,12 @@ export class AgentLoopDriver {
     const credKey = ids.credKey(loop.channelId, outcome.providerId);
     const expiresAt = new Date(this.deps.now() + 10 * 60 * 1000).toISOString();
     const connectSpec = await this.connectSpecFor(outcome.providerId);
-    const messageId =
-      row.descriptor.kind === "model_call" ? row.descriptor.messageId : undefined;
+    const waitReason = outcome.waitReason ?? "model_credential_required";
+    const waitSummary =
+      waitReason === "model_credential_reconnect_required"
+        ? "Waiting for model credential reconnect"
+        : "Waiting for model credential approval";
+    const messageId = row.descriptor.kind === "model_call" ? row.descriptor.messageId : undefined;
     const items: AppendItem[] = [
       ...(messageId
         ? [
@@ -967,8 +996,9 @@ export class AgentLoopDriver {
               payloadKind: "message.failed" as const,
               payload: {
                 protocol: "agentic.trajectory.v1",
-                reason: "model_credential_required",
+                reason: waitReason,
                 recoverable: true,
+                ...(outcome.failureCode ? { code: outcome.failureCode } : {}),
               },
               causality: { messageId: messageId as never },
               publish: true,
@@ -990,12 +1020,18 @@ export class AgentLoopDriver {
           credKey,
           providerId: outcome.providerId,
           expiresAt,
+          waitReason,
+          ...(outcome.diagnosticReason ? { reason: outcome.diagnosticReason } : {}),
+          ...(outcome.failureCode ? { failureCode: outcome.failureCode } : {}),
           ...(messageId ? { messageId } : {}),
           ...(outcome.modelBaseUrl ? { modelBaseUrl: outcome.modelBaseUrl } : {}),
           details: {
             kind: "credential.wait_started",
             credKey,
             providerId: outcome.providerId,
+            waitReason,
+            ...(outcome.diagnosticReason ? { reason: outcome.diagnosticReason } : {}),
+            ...(outcome.failureCode ? { failureCode: outcome.failureCode } : {}),
             ...(messageId ? { messageId } : {}),
             ...(outcome.modelBaseUrl ? { modelBaseUrl: outcome.modelBaseUrl } : {}),
             connectSpec,
@@ -1016,7 +1052,8 @@ export class AgentLoopDriver {
               payloadKind: "turn.waiting" as const,
               payload: {
                 protocol: "agentic.trajectory.v1",
-                reason: "model_credential_required",
+                reason: waitReason,
+                summary: waitSummary,
               },
               causality: { turnId: turn.turnId },
               publish: true,

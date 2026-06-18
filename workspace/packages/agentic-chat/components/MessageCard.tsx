@@ -97,11 +97,7 @@ export const MessageCard = React.memo(function MessageCard({
     setResumeScheduleState("scheduling");
     try {
       const result = await (
-        callMethod as (
-          participantId: string,
-          method: string,
-          args: unknown
-        ) => Promise<unknown>
+        callMethod as (participantId: string, method: string, args: unknown) => Promise<unknown>
       )(msg.senderId, "scheduleResumeAtReset", {
         messageId: diagnostic.messageId,
         resetAt: diagnostic.resetAt,
@@ -122,10 +118,7 @@ export const MessageCard = React.memo(function MessageCard({
     if (data) {
       const compiled = inlineUiComponents?.get(data.id);
       return (
-        <Box
-          key={key}
-          className="message-row message-row-agent"
-        >
+        <Box key={key} className="message-row message-row-agent">
           <InlineUiMessage
             data={data}
             compiledComponent={compiled?.Component}
@@ -147,9 +140,19 @@ export const MessageCard = React.memo(function MessageCard({
             ...(request.connectSpec as Record<string, unknown>),
             providerId: request.providerId,
             ...(request.modelBaseUrl ? { modelBaseUrl: request.modelBaseUrl } : {}),
+            ...(request.reason ? { reason: request.reason } : {}),
+            ...(request.failureCode ? { failureCode: request.failureCode } : {}),
             agentParticipantId: request.agentParticipantId,
           }}
-          chat={chat as { callMethod: (participantId: string, method: string, args: unknown) => Promise<unknown> }}
+          chat={
+            chat as {
+              callMethod: (
+                participantId: string,
+                method: string,
+                args: unknown
+              ) => Promise<unknown>;
+            }
+          }
         />
       </Box>
     );
@@ -158,10 +161,7 @@ export const MessageCard = React.memo(function MessageCard({
   // Handle system messages (e.g., agent disconnection notifications)
   if (msg.kind === "system" && msg.disconnectedAgent) {
     return (
-      <Box
-        key={key}
-        className="message-row message-row-system"
-      >
+      <Box key={key} className="message-row message-row-system">
         <AgentDisconnectedMessage
           agent={msg.disconnectedAgent}
           onFocusPanel={onFocusPanel}
@@ -172,11 +172,12 @@ export const MessageCard = React.memo(function MessageCard({
   }
 
   if (msg.contentType === "lifecycle" && msg.lifecycle) {
-    const color = msg.lifecycle.status === "recovered"
-      ? "green"
-      : msg.lifecycle.status === "failed"
-        ? "red"
-        : "amber";
+    const color =
+      msg.lifecycle.status === "recovered"
+        ? "green"
+        : msg.lifecycle.status === "failed"
+          ? "red"
+          : "amber";
     const badgeLabel =
       msg.lifecycle.status === "recovered"
         ? "Recovered"
@@ -186,10 +187,7 @@ export const MessageCard = React.memo(function MessageCard({
             ? "Waiting"
             : "Interrupted";
     return (
-      <Box
-        key={key}
-        className="message-row message-row-system"
-      >
+      <Box key={key} className="message-row message-row-system">
         <Card className="message-card message-card-lifecycle">
           <Flex align="start" gap="2">
             <Box className="message-lifecycle-icon" aria-hidden="true">
@@ -217,16 +215,14 @@ export const MessageCard = React.memo(function MessageCard({
   }
 
   if (msg.contentType === "diagnostic" && msg.diagnostic) {
-    const color = msg.diagnostic.severity === "error"
-      ? "red"
-      : msg.diagnostic.severity === "warning"
-        ? "amber"
-        : "blue";
+    const color =
+      msg.diagnostic.severity === "error"
+        ? "red"
+        : msg.diagnostic.severity === "warning"
+          ? "amber"
+          : "blue";
     return (
-      <Box
-        key={key}
-        className="message-row message-row-system"
-      >
+      <Box key={key} className="message-row message-row-system">
         <Card className="message-card message-card-lifecycle">
           <Flex align="start" gap="2">
             <Box className="message-lifecycle-icon" aria-hidden="true">
@@ -256,7 +252,9 @@ export const MessageCard = React.memo(function MessageCard({
                     size="1"
                     variant="soft"
                     color={resumeScheduleState === "failed" ? "red" : "blue"}
-                    disabled={resumeScheduleState === "scheduling" || resumeScheduleState === "scheduled"}
+                    disabled={
+                      resumeScheduleState === "scheduling" || resumeScheduleState === "scheduled"
+                    }
                     onClick={handleScheduleResumeAtReset}
                     title="Resume this turn when the provider limit resets"
                   >
@@ -280,21 +278,16 @@ export const MessageCard = React.memo(function MessageCard({
 
   if (msg.contentType === "approval" && msg.approval) {
     const approval = msg.approval;
-    const color = approval.status === "granted"
-      ? "green"
-      : approval.status === "denied"
-        ? "red"
-        : "amber";
-    const title = approval.status === "granted"
-      ? "Approved"
-      : approval.status === "denied"
-        ? "Denied"
-        : "Approval requested";
+    const color =
+      approval.status === "granted" ? "green" : approval.status === "denied" ? "red" : "amber";
+    const title =
+      approval.status === "granted"
+        ? "Approved"
+        : approval.status === "denied"
+          ? "Denied"
+          : "Approval requested";
     return (
-      <Box
-        key={key}
-        className="message-row message-row-agent"
-      >
+      <Box key={key} className="message-row message-row-agent">
         <Card className="message-card">
           <Flex direction="column" gap="2">
             <Flex align="center" gap="2" wrap="wrap">
@@ -321,10 +314,7 @@ export const MessageCard = React.memo(function MessageCard({
   const custom = msg.contentType === "custom" ? msg.custom : undefined;
   if (custom && custom.displayMode !== "inline") {
     return (
-      <Box
-        key={key}
-        className="message-row message-row-agent"
-      >
+      <Box key={key} className="message-row message-row-agent">
         <CustomMessageCard
           payload={custom}
           entry={messageTypeComponents?.get(custom.typeId)}
@@ -352,7 +342,7 @@ export const MessageCard = React.memo(function MessageCard({
         className={classNames(
           "message-card",
           isClient && "message-card-client",
-          hasError && "message-card-error",
+          hasError && "message-card-error"
         )}
         style={{
           opacity: msg.pending ? 0.7 : 1,
@@ -415,9 +405,7 @@ export const MessageCard = React.memo(function MessageCard({
               />
             </Box>
           )}
-          {hasAttachments && (
-            <ImageGallery attachments={msg.attachments!} />
-          )}
+          {hasAttachments && <ImageGallery attachments={msg.attachments!} />}
           {hasError && (
             <Text size="2" color="red" style={{ whiteSpace: "pre-wrap" }}>
               Error: {msg.error}

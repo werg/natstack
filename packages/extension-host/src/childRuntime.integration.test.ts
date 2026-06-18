@@ -7,14 +7,16 @@ import * as esbuild from "esbuild";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer } from "ws";
 import { createNodeProcessAdapter, type ProcessAdapter } from "@natstack/process-adapter";
-import type { RpcMessage, RpcRequest, RpcResponse } from "@natstack/rpc";
+import type { RpcEnvelope, RpcMessage, RpcRequest, RpcResponse } from "@natstack/rpc";
 import type { WsClientMessage, WsServerMessage } from "@natstack/shared/ws/protocol";
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "natstack-extension-runtime-"));
 }
 
-function waitForMessage<T>(subscribe: (resolve: (value: T) => void, reject: (err: Error) => void) => void): Promise<T> {
+function waitForMessage<T>(
+  subscribe: (resolve: (value: T) => void, reject: (err: Error) => void) => void
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     subscribe(resolve, reject);
   });
@@ -52,10 +54,13 @@ describe("extension child runtime process", () => {
         "      const invocation = ctx.invocation.current();",
         "      return invocation?.chainCaller?.contextId ?? invocation?.caller.contextId ?? null;",
         "    },",
+        "    targetEcho(targetId, method, value) {",
+        "      return ctx.rpc.call(targetId, method, value);",
+        "    },",
         "  };",
         "}",
         "",
-      ].join("\n"),
+      ].join("\n")
     );
 
     await esbuild.build({
@@ -78,35 +83,66 @@ describe("extension child runtime process", () => {
     if (!address || typeof address === "string") throw new Error("WebSocket server did not bind");
     const gatewayUrl = `http://127.0.0.1:${address.port}`;
 
-    const readyPromise = waitForMessage<{ ws: import("ws").WebSocket; message: RpcRequest }>((resolve, reject) => {
-      server!.once("connection", (ws) => {
-        ws.on("message", (raw) => {
-          try {
-            const message = JSON.parse(String(raw)) as WsClientMessage;
-            if (message.type === "ws:auth") {
-              ws.send(JSON.stringify({ type: "ws:auth-result", success: true } satisfies WsServerMessage));
-              return;
+    const readyPromise = waitForMessage<{ ws: import("ws").WebSocket; message: RpcRequest }>(
+      (resolve, reject) => {
+        server!.once("connection", (ws) => {
+          ws.on("message", (raw) => {
+            try {
+              const message = JSON.parse(String(raw)) as WsClientMessage;
+              if (message.type === "ws:auth") {
+                ws.send(
+                  JSON.stringify({
+                    type: "ws:auth-result",
+                    success: true,
+                  } satisfies WsServerMessage)
+                );
+                return;
+              }
+              if (message.type === "ws:route") {
+                const envelope = message.envelope as RpcEnvelope | undefined;
+                const rpc = envelope?.message as RpcMessage | undefined;
+                if (!envelope || rpc?.type !== "request") return;
+                ws.send(
+                  JSON.stringify({
+                    type: "ws:routed",
+                    fromId: envelope.target,
+                    fromKind: "do",
+                    message: {
+                      type: "response",
+                      requestId: rpc.requestId,
+                      result: {
+                        targetId: envelope.target,
+                        method: rpc.method,
+                        args: rpc.args,
+                      },
+                    } satisfies RpcResponse,
+                  } satisfies WsServerMessage)
+                );
+                return;
+              }
+              if (message.type !== "ws:rpc") return;
+              const rpc = message.message as RpcMessage;
+              if (rpc.type !== "request") return;
+              ws.send(
+                JSON.stringify({
+                  type: "ws:rpc",
+                  message: {
+                    type: "response",
+                    requestId: rpc.requestId,
+                    result: null,
+                  } satisfies RpcResponse,
+                } satisfies WsServerMessage)
+              );
+              if (rpc.method === "extensions.ready") {
+                resolve({ ws, message: rpc });
+              }
+            } catch (err) {
+              reject(err instanceof Error ? err : new Error(String(err)));
             }
-            if (message.type !== "ws:rpc") return;
-            const rpc = message.message as RpcMessage;
-            if (rpc.type !== "request") return;
-            ws.send(JSON.stringify({
-              type: "ws:rpc",
-              message: {
-                type: "response",
-                requestId: rpc.requestId,
-                result: null,
-              } satisfies RpcResponse,
-            } satisfies WsServerMessage));
-            if (rpc.method === "extensions.ready") {
-              resolve({ ws, message: rpc });
-            }
-          } catch (err) {
-            reject(err instanceof Error ? err : new Error(String(err)));
-          }
+          });
         });
-      });
-    });
+      }
+    );
 
     proc = createNodeProcessAdapter(childRuntimePath, {
       ...process.env,
@@ -119,7 +155,10 @@ describe("extension child runtime process", () => {
     });
 
     const ready = await readyPromise;
-    expect(ready.message.args[0]).toEqual({ methods: ["ping", "callerContext"], hasFetch: false });
+    expect(ready.message.args[0]).toEqual({
+      methods: ["ping", "callerContext", "targetEcho"],
+      hasFetch: false,
+    });
 
     const requestId = randomUUID();
     const response = await waitForMessage<RpcResponse>((resolve, reject) => {
@@ -135,25 +174,27 @@ describe("extension child runtime process", () => {
           reject(err instanceof Error ? err : new Error(String(err)));
         }
       });
-      ready.ws.send(JSON.stringify({
-        type: "ws:rpc",
-        message: {
-          type: "request",
-          requestId,
-          fromId: "main",
-          method: "extension.invoke",
-          args: [
-            "ping",
-            ["ok"],
-            {
-              requestId,
-              extensionName: "@workspace-extensions/process-test",
-              method: "ping",
-              caller: { callerId: "test", callerKind: "shell" },
-            },
-          ],
-        } satisfies RpcRequest,
-      } satisfies WsServerMessage));
+      ready.ws.send(
+        JSON.stringify({
+          type: "ws:rpc",
+          message: {
+            type: "request",
+            requestId,
+            fromId: "main",
+            method: "extension.invoke",
+            args: [
+              "ping",
+              ["ok"],
+              {
+                requestId,
+                extensionName: "@workspace-extensions/process-test",
+                method: "ping",
+                caller: { callerId: "test", callerKind: "shell" },
+              },
+            ],
+          } satisfies RpcRequest,
+        } satisfies WsServerMessage)
+      );
     });
 
     expect(response).toEqual({
@@ -176,38 +217,87 @@ describe("extension child runtime process", () => {
           reject(err instanceof Error ? err : new Error(String(err)));
         }
       });
-      ready.ws.send(JSON.stringify({
-        type: "ws:rpc",
-        message: {
-          type: "request",
-          requestId: contextRequestId,
-          fromId: "main",
-          method: "extension.invoke",
-          args: [
-            "callerContext",
-            [],
-            {
-              requestId: contextRequestId,
-              extensionName: "@workspace-extensions/process-test",
-              method: "callerContext",
-              caller: { callerId: "panel-1", callerKind: "panel", contextId: "ctx-panel" },
-              chainCaller: {
-                callerId: "panel-1",
-                callerKind: "panel",
-                repoPath: "panels/test",
-                effectiveVersion: "ev-test",
-                contextId: "ctx-panel",
+      ready.ws.send(
+        JSON.stringify({
+          type: "ws:rpc",
+          message: {
+            type: "request",
+            requestId: contextRequestId,
+            fromId: "main",
+            method: "extension.invoke",
+            args: [
+              "callerContext",
+              [],
+              {
+                requestId: contextRequestId,
+                extensionName: "@workspace-extensions/process-test",
+                method: "callerContext",
+                caller: { callerId: "panel-1", callerKind: "panel", contextId: "ctx-panel" },
+                chainCaller: {
+                  callerId: "panel-1",
+                  callerKind: "panel",
+                  repoPath: "panels/test",
+                  effectiveVersion: "ev-test",
+                  contextId: "ctx-panel",
+                },
               },
-            },
-          ],
-        } satisfies RpcRequest,
-      } satisfies WsServerMessage));
+            ],
+          } satisfies RpcRequest,
+        } satisfies WsServerMessage)
+      );
     });
 
     expect(contextResponse).toEqual({
       type: "response",
       requestId: contextRequestId,
       result: "ctx-panel",
+    });
+
+    const targetRequestId = randomUUID();
+    const targetResponse = await waitForMessage<RpcResponse>((resolve, reject) => {
+      ready.ws.on("message", (raw) => {
+        try {
+          const message = JSON.parse(String(raw)) as WsClientMessage;
+          if (message.type !== "ws:rpc") return;
+          const rpc = message.message as RpcMessage;
+          if (rpc.type === "response" && rpc.requestId === targetRequestId) {
+            resolve(rpc);
+          }
+        } catch (err) {
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      });
+      ready.ws.send(
+        JSON.stringify({
+          type: "ws:rpc",
+          message: {
+            type: "request",
+            requestId: targetRequestId,
+            fromId: "main",
+            method: "extension.invoke",
+            args: [
+              "targetEcho",
+              ["do:workers/example:ExampleDO:object-1", "lookup", "value"],
+              {
+                requestId: targetRequestId,
+                extensionName: "@workspace-extensions/process-test",
+                method: "targetEcho",
+                caller: { callerId: "test", callerKind: "shell" },
+              },
+            ],
+          } satisfies RpcRequest,
+        } satisfies WsServerMessage)
+      );
+    });
+
+    expect(targetResponse).toEqual({
+      type: "response",
+      requestId: targetRequestId,
+      result: {
+        targetId: "do:workers/example:ExampleDO:object-1",
+        method: "lookup",
+        args: ["value"],
+      },
     });
   });
 });

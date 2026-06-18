@@ -79,6 +79,8 @@ export interface CredentialRequestCardPayload {
   providerId: string;
   connectSpec: Record<string, unknown>;
   modelBaseUrl?: string;
+  reason?: string;
+  failureCode?: string;
   expiresAt?: string;
   agentParticipantId: string;
 }

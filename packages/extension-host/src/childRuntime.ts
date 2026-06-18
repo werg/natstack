@@ -517,13 +517,11 @@ async function connectRuntimeBridge(): Promise<RpcClient> {
           : envelope.message;
       const stampedEnvelope =
         stampedMessage === envelope.message ? envelope : { ...envelope, message: stampedMessage };
-      ws.send(
-        JSON.stringify({
-          type: "ws:rpc",
-          envelope: stampedEnvelope,
-          message: stampedMessage,
-        } satisfies WsClientMessage)
-      );
+      const frame: WsClientMessage =
+        stampedEnvelope.target === "main"
+          ? { type: "ws:rpc", envelope: stampedEnvelope, message: stampedMessage }
+          : { type: "ws:route", envelope: stampedEnvelope };
+      ws.send(JSON.stringify(frame));
     },
     onMessage(handler: (envelope: RpcEnvelope) => void): () => void {
       listeners.add(handler);
@@ -580,15 +578,17 @@ async function connectRuntimeBridge(): Promise<RpcClient> {
     } catch {
       return;
     }
-    if (message.type === "ws:rpc") {
+    if (message.type === "ws:rpc" || message.type === "ws:routed") {
+      const fromId = message.type === "ws:routed" ? (message.fromId ?? "unknown") : "main";
+      const callerKind = message.type === "ws:routed" ? (message.fromKind ?? "unknown") : "server";
       const envelope =
         message.envelope ??
         (message.message
           ? envelopeFromMessage({
               selfId: extensionName,
-              from: "main",
+              from: fromId,
               target: extensionName,
-              callerKind: "server",
+              callerKind,
               message: message.message,
             })
           : null);

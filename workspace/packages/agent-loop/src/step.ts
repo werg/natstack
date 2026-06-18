@@ -134,7 +134,13 @@ function turnClosedItem(
 function turnWaitingItem(
   turnId: string,
   waitingCount: number,
-  opts: { reason: "model_usage_limit_reset" | "model_credential_required"; summary?: string }
+  opts: {
+    reason:
+      | "model_usage_limit_reset"
+      | "model_credential_required"
+      | "model_credential_reconnect_required";
+    summary?: string;
+  }
 ): AppendItem {
   return {
     envelopeId: ids.turnWaiting(turnId, waitingCount),

@@ -126,6 +126,9 @@ export const credentialWaitExecutor: EffectExecutor<CredentialWaitEffect> = {
         providerId: descriptor.providerId,
         connectSpec: descriptor.connectSpec,
         ...(descriptor.modelBaseUrl ? { modelBaseUrl: descriptor.modelBaseUrl } : {}),
+        ...(descriptor.waitReason ? { waitReason: descriptor.waitReason } : {}),
+        ...(descriptor.reason ? { reason: descriptor.reason } : {}),
+        ...(descriptor.failureCode ? { failureCode: descriptor.failureCode } : {}),
         expiresAt: descriptor.expiresAt,
       },
       // Include the occurrence discriminator (startedAtSeq) so a LATER wait for

@@ -76,6 +76,8 @@ export interface ProjectedCredentialRequest {
   /** Connect-preset props for the credential card (ModelCredentialSetupProps). */
   connectSpec: Record<string, unknown>;
   modelBaseUrl?: string;
+  reason?: string;
+  failureCode?: string;
   expiresAt?: string;
   envelopeId: string;
   seq: number;
@@ -150,6 +152,9 @@ export function reduceChannelView(
           connectSpec: (payload["connectSpec"] ?? {}) as Record<string, unknown>,
           modelBaseUrl:
             typeof payload["modelBaseUrl"] === "string" ? payload["modelBaseUrl"] : undefined,
+          reason: typeof payload["reason"] === "string" ? payload["reason"] : undefined,
+          failureCode:
+            typeof payload["failureCode"] === "string" ? payload["failureCode"] : undefined,
           expiresAt: typeof payload["expiresAt"] === "string" ? payload["expiresAt"] : undefined,
           envelopeId: String(envelope.envelopeId),
           seq: envelope.seq,
@@ -365,8 +370,7 @@ export function reduceChannelView(
     // (lower seq than already applied) so a replayed turn.opened or a late
     // turn.waiting can never resurrect a closed turn.
     const existingTurn = turnId ? next.turns[turnId] : undefined;
-    const staleTurnEvent =
-      existingTurn?.lastSeq !== undefined && parsed.seq < existingTurn.lastSeq;
+    const staleTurnEvent = existingTurn?.lastSeq !== undefined && parsed.seq < existingTurn.lastSeq;
     if (turnId && !staleTurnEvent) {
       const existing = existingTurn;
       const summary = "summary" in event.payload ? event.payload.summary : existing?.summary;

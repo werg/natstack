@@ -70,8 +70,7 @@ async function makeHarness(opts: {
   const deps: DriverDeps = {
     sql: driverHost.sql as never,
     gad: {
-      call: <T,>(method: string, args: Record<string, unknown>) =>
-        gad.call<T>(method, args),
+      call: <T>(method: string, args: Record<string, unknown>) => gad.call<T>(method, args),
     },
     executorDeps: {
       blobstore: {
@@ -95,8 +94,7 @@ async function makeHarness(opts: {
       },
     } as never, // fakes only touch blobstore
     selfRefFor:
-      opts.selfRefFor ??
-      (() => ({ kind: "agent", id: "agent:self", participantId: "agent:self" })),
+      opts.selfRefFor ?? (() => ({ kind: "agent", id: "agent:self", participantId: "agent:self" })),
     configFor: () => config,
     policiesFor: () => opts.policies ?? [],
     onEphemeral: (emit) => ephemerals.push(emit),
@@ -356,6 +354,72 @@ describe("AgentLoopDriver", () => {
     ]);
     const loop = await harness.driver.loop(CHANNEL);
     expect(loop.state.inFlightModelCall).toBeNull();
+  });
+
+  it("parks model auth failures behind a credential reconnect card", async () => {
+    const reason = "Provided authentication token is expired. Please try signing in again.";
+    const harness = await makeHarness({
+      script: {
+        model: [
+          {
+            kind: "model-suspended",
+            reason: "credential",
+            providerId: "openai-codex",
+            modelBaseUrl: "https://chatgpt.com/backend-api/codex",
+            waitReason: "model_credential_reconnect_required",
+            diagnosticReason: reason,
+            failureCode: "auth_or_credentials",
+          },
+        ],
+        tool: [],
+      },
+    });
+
+    await harness.driver.handleIncoming(CHANNEL, promptIncoming());
+    await settle(harness.driver);
+
+    expect(await logKinds(harness.gad)).toEqual([
+      "message.completed",
+      "turn.opened",
+      "message.started",
+      "message.failed",
+      "system.event",
+      "turn.waiting",
+    ]);
+    const failedRows = await harness.gad.call<{ rows: Array<{ payload_ref_json: string }> }>(
+      "query",
+      `SELECT payload_ref_json FROM log_events WHERE log_id = '${LOG_ID}' AND payload_kind = 'message.failed'`,
+      []
+    );
+    expect(JSON.parse(failedRows.rows[0]!.payload_ref_json)).toMatchObject({
+      reason: "model_credential_reconnect_required",
+      recoverable: true,
+      code: "auth_or_credentials",
+    });
+    const waitingRows = await harness.gad.call<{ rows: Array<{ payload_ref_json: string }> }>(
+      "query",
+      `SELECT payload_ref_json FROM log_events WHERE log_id = '${LOG_ID}' AND payload_kind = 'turn.waiting'`,
+      []
+    );
+    expect(JSON.parse(waitingRows.rows[0]!.payload_ref_json)).toMatchObject({
+      reason: "model_credential_reconnect_required",
+      summary: "Waiting for model credential reconnect",
+    });
+    expect(harness.channelPublishes).toContainEqual(
+      expect.objectContaining({
+        channelId: CHANNEL,
+        payloadKind: CREDENTIAL_CONNECT_PAYLOAD_KIND,
+        payload: expect.objectContaining({
+          providerId: "openai-codex",
+          modelBaseUrl: "https://chatgpt.com/backend-api/codex",
+          reason,
+          failureCode: "auth_or_credentials",
+        }),
+      })
+    );
+    expect(harness.driver.outbox.all()).toEqual([
+      expect.objectContaining({ kind: "credential_wait" }),
+    ]);
   });
 
   it("does not mark a queued model call failed when wake races the pump", async () => {

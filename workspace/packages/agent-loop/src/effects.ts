@@ -91,6 +91,9 @@ export interface CredentialWaitEffect extends EffectDescriptorBase {
   turnId: string;
   connectSpec: Record<string, unknown>;
   modelBaseUrl?: string;
+  waitReason?: "model_credential_required" | "model_credential_reconnect_required";
+  reason?: string;
+  failureCode?: string;
   expiresAt: string;
 }
 
@@ -202,6 +205,9 @@ export function credentialWaitEffect(
     turnId: wait.turnId,
     connectSpec: wait.connectSpec,
     ...(wait.modelBaseUrl ? { modelBaseUrl: wait.modelBaseUrl } : {}),
+    ...(wait.waitReason ? { waitReason: wait.waitReason } : {}),
+    ...(wait.reason ? { reason: wait.reason } : {}),
+    ...(wait.failureCode ? { failureCode: wait.failureCode } : {}),
     expiresAt: wait.expiresAt,
   };
 }
@@ -253,7 +259,15 @@ export type EffectOutcome =
       retryAfterMs?: number;
       code?: string;
     }
-  | { kind: "model-suspended"; reason: "credential"; providerId: string; modelBaseUrl?: string }
+  | {
+      kind: "model-suspended";
+      reason: "credential";
+      providerId: string;
+      modelBaseUrl?: string;
+      waitReason?: "model_credential_required" | "model_credential_reconnect_required";
+      diagnosticReason?: string;
+      failureCode?: string;
+    }
   | { kind: "tool"; result: unknown; summary?: string; isError: boolean; reason?: string }
   | { kind: "approval"; granted: boolean; resolvedBy: ParticipantRef; reason?: string }
   | { kind: "credential"; resolved: boolean; reason?: string };

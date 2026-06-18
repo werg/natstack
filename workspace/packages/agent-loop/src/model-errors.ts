@@ -101,6 +101,7 @@ const TERMINAL_QUOTA_CODES = new Set([
 
 const AUTH_CODES = new Set([
   "invalid_api_key",
+  "token_expired",
   "unauthorized",
   "authentication_error",
   "permission_error",
@@ -234,10 +235,7 @@ export function modelFailureInputFromUnknown(
   return input;
 }
 
-function normalizeInput(
-  input: ModelFailureInputArg,
-  opts: { now?: string }
-): ModelFailureInput {
+function normalizeInput(input: ModelFailureInputArg, opts: { now?: string }): ModelFailureInput {
   if (typeof input === "string" || input === undefined) {
     return { rawReason: input, message: input, now: opts.now };
   }
@@ -245,11 +243,7 @@ function normalizeInput(
 }
 
 function compactMessage(input: ModelFailureInput): string {
-  return (
-    input.message?.trim() ||
-    input.rawReason?.trim() ||
-    GENERIC_MODEL_ERROR_MESSAGE
-  );
+  return input.message?.trim() || input.rawReason?.trim() || GENERIC_MODEL_ERROR_MESSAGE;
 }
 
 function collectFields(
@@ -264,7 +258,7 @@ function collectFields(
 } {
   const bodyRecord = record(body);
   const error = record(bodyRecord["error"]);
-  const details = record(bodyRecord["details"]);
+  const details = record(bodyRecord["details"] ?? bodyRecord["detail"]);
   return {
     status:
       input.status ??
@@ -324,9 +318,7 @@ function codexUsageLimitMessage(
     timestampFromUnknown(bodyRecord["resets_at"]) ??
     timestampFromUnknown(headerValue(headers, "x-codex-primary-reset-at")) ??
     timestampFromUnknown(headerValue(headers, "x-codex-secondary-reset-at")) ??
-    (retryAfterMs !== undefined
-      ? new Date(baseNow(input) + retryAfterMs).toISOString()
-      : null);
+    (retryAfterMs !== undefined ? new Date(baseNow(input) + retryAfterMs).toISOString() : null);
 
   const subject = limitName ? ` for ${limitName}` : "";
   const reset = resetAt ? ` Try again after ${formatResetTime(resetAt)}.` : "";
@@ -336,7 +328,11 @@ function codexUsageLimitMessage(
   };
 }
 
-function isTerminalQuotaError(codeKey: string, status: number | undefined, message: string): boolean {
+function isTerminalQuotaError(
+  codeKey: string,
+  status: number | undefined,
+  message: string
+): boolean {
   if (TERMINAL_QUOTA_CODES.has(codeKey)) return true;
   const lower = message.toLowerCase();
   if (looksLikeUsageLimit(message)) return true;
@@ -365,16 +361,11 @@ function isRetryableRateLimit(
   return (
     /\b(?:rate limit|rate-limit|too many requests|resource exhausted|throttl\w*)\b/i.test(
       message
-    ) ||
-    /\bplease retry in\s+\d+(?:\.\d+)?\s*(?:ms|s|sec|seconds|m|min|minutes)?/i.test(message)
+    ) || /\bplease retry in\s+\d+(?:\.\d+)?\s*(?:ms|s|sec|seconds|m|min|minutes)?/i.test(message)
   );
 }
 
-function isOverloadedError(
-  codeKey: string,
-  status: number | undefined,
-  message: string
-): boolean {
+function isOverloadedError(codeKey: string, status: number | undefined, message: string): boolean {
   if (OVERLOAD_CODES.has(codeKey)) return true;
   if (status === 529 || status === 503) return true;
   return /\b(?:overloaded|temporarily overloaded|capacity|service unavailable|try again later)\b/i.test(
@@ -389,7 +380,7 @@ function isAuthOrCredentialError(
 ): boolean {
   if (AUTH_CODES.has(codeKey)) return true;
   if (status === 401 || status === 403) return true;
-  return /\b(?:invalid api key|unauthorized|permission denied|forbidden|authentication)\b/i.test(
+  return /\b(?:invalid api key|token expired|expired token|unauthorized|permission denied|forbidden|authentication)\b/i.test(
     message
   );
 }
@@ -544,8 +535,7 @@ function baseNow(input: { now?: string }): number {
 
 function looksLikeUsageLimit(reason: string): boolean {
   return (
-    /usage[_ -]?limit[_ -]?reached/i.test(reason) ||
-    /usage limit has been reached/i.test(reason)
+    /usage[_ -]?limit[_ -]?reached/i.test(reason) || /usage limit has been reached/i.test(reason)
   );
 }
 

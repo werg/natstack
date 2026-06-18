@@ -140,6 +140,9 @@ export interface PendingCredentialWait {
   startedAtSeq: number;
   connectSpec: Record<string, unknown>;
   modelBaseUrl?: string;
+  waitReason?: "model_credential_required" | "model_credential_reconnect_required";
+  reason?: string;
+  failureCode?: string;
   /** ISO; from the logged event, never wall clock. */
   expiresAt: string;
 }

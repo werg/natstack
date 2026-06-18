@@ -77,6 +77,39 @@ describe("classifyModelFailure", () => {
     });
   });
 
+  it("treats ChatGPT token_expired detail bodies as auth failures", () => {
+    const failure = classifyModelFailure({
+      provider: "openai-codex",
+      status: 401,
+      body: {
+        detail: {
+          code: "token_expired",
+          message: "Provided authentication token is expired. Please try signing in again.",
+        },
+      },
+      now,
+    });
+
+    expect(failure).toMatchObject({
+      code: "auth_or_credentials",
+      recoverable: false,
+      reason: "Provided authentication token is expired. Please try signing in again.",
+    });
+  });
+
+  it("treats token-expired prose as an auth failure", () => {
+    const failure = classifyModelFailure({
+      provider: "openai-codex",
+      rawReason: "WebSocket failed: token expired",
+      now,
+    });
+
+    expect(failure).toMatchObject({
+      code: "auth_or_credentials",
+      recoverable: false,
+    });
+  });
+
   it("treats OpenAI-compatible insufficient quota as terminal", () => {
     const failure = classifyModelFailure({
       provider: "openrouter",
@@ -143,8 +176,7 @@ describe("classifyModelFailure", () => {
       body: {
         error: {
           status: "RESOURCE_EXHAUSTED",
-          message:
-            "You exceeded your current quota, please check your plan and billing details.",
+          message: "You exceeded your current quota, please check your plan and billing details.",
         },
       },
       now,

@@ -283,6 +283,9 @@ export function applyEvent(prev: AgentState, envelope: LogEnvelope): AgentState 
         // top level so an (oversized-details) blob spill can't blind the fold.
         const credKey = String(payload["credKey"] ?? details["credKey"] ?? "");
         const modelBaseUrl = payload["modelBaseUrl"] ?? details["modelBaseUrl"];
+        const waitReason = payload["waitReason"] ?? details["waitReason"];
+        const reason = payload["reason"] ?? details["reason"];
+        const failureCode = payload["failureCode"] ?? details["failureCode"];
         const messageId = String(payload["messageId"] ?? details["messageId"] ?? causality["messageId"] ?? "");
         const next: AgentState = {
           ...state,
@@ -295,6 +298,13 @@ export function applyEvent(prev: AgentState, envelope: LogEnvelope): AgentState 
               startedAtSeq: envelope.seq,
               connectSpec: (details["connectSpec"] ?? {}) as Record<string, unknown>,
               modelBaseUrl: typeof modelBaseUrl === "string" ? modelBaseUrl : undefined,
+              waitReason:
+                waitReason === "model_credential_reconnect_required" ||
+                waitReason === "model_credential_required"
+                  ? waitReason
+                  : undefined,
+              reason: typeof reason === "string" ? reason : undefined,
+              failureCode: typeof failureCode === "string" ? failureCode : undefined,
               expiresAt: String(payload["expiresAt"] ?? details["expiresAt"] ?? ""),
             },
           },

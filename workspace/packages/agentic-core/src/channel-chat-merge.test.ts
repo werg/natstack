@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AGENTIC_EVENT_PAYLOAD_KIND,
   AGENTIC_PROTOCOL_VERSION,
+  CREDENTIAL_CONNECT_PAYLOAD_KIND,
   brandId,
   createInitialChannelViewState,
   reduceChannelView,
@@ -200,6 +201,39 @@ describe("chatMessagesFromChannelView", () => {
         },
       },
     });
+  });
+
+  it("projects credential reconnect metadata into credential request cards", () => {
+    const state = reduceChannelView(createInitialChannelViewState(), {
+      envelopeId: brandId<EnvelopeId>("env-credential-reconnect"),
+      channelId: brandId<ChannelId>("channel-1"),
+      seq: 1,
+      from: participant,
+      payloadKind: CREDENTIAL_CONNECT_PAYLOAD_KIND,
+      payload: {
+        credKey: "cred-openai-codex",
+        providerId: "openai-codex",
+        connectSpec: { modelRef: "openai-codex:gpt-5.1-codex" },
+        modelBaseUrl: "https://chatgpt.com/backend-api/codex",
+        reason: "Provided authentication token is expired. Please try signing in again.",
+        failureCode: "auth_or_credentials",
+        expiresAt: "2026-06-18T13:21:18.000Z",
+      },
+      publishedAt: "2026-06-18T13:11:18.000Z",
+    } satisfies ChannelEnvelope);
+
+    expect(chatMessagesFromChannelView(state)).toEqual([
+      expect.objectContaining({
+        id: "credential:cred-openai-codex",
+        contentType: "credential-connect",
+        credentialRequest: expect.objectContaining({
+          providerId: "openai-codex",
+          modelBaseUrl: "https://chatgpt.com/backend-api/codex",
+          reason: "Provided authentication token is expired. Please try signing in again.",
+          failureCode: "auth_or_credentials",
+        }),
+      }),
+    ]);
   });
 
   it("projects UI method invocations with user-facing descriptions", () => {
@@ -502,10 +536,7 @@ describe("chatMessagesFromChannelView", () => {
       createdAt: "2026-05-20T12:00:01.000Z",
     };
 
-    const state = [envelope(failed, 1)].reduce(
-      reduceChannelView,
-      createInitialChannelViewState()
-    );
+    const state = [envelope(failed, 1)].reduce(reduceChannelView, createInitialChannelViewState());
 
     expect(chatMessagesFromChannelView(state)).toEqual([
       expect.objectContaining({

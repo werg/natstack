@@ -26,6 +26,7 @@ import {
   CredentialPendingError,
   type EffectExecutor,
 } from "./types.js";
+import { modelCredentialReconnectOutcome } from "../model-credential-suspension.js";
 
 const DEFAULT_MODEL_STREAM_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 const PI_REPLAY_METADATA_KEY = "pi";
@@ -108,7 +109,11 @@ function modelStreamIdleTimeoutReason(timeoutMs: number, phase: ModelStreamIdleP
   return `model_stream_idle_timeout: no ${phase} within ${timeoutMs}ms`;
 }
 
-function modelFailureOutcome(err: unknown, request: ModelCallEffect["request"]): EffectOutcome {
+function modelFailureOutcome(
+  err: unknown,
+  request: ModelCallEffect["request"],
+  opts: { modelBaseUrl?: string } = {}
+): EffectOutcome {
   const failure = classifyModelFailure(
     modelFailureInputFromUnknown(err, {
       provider: request.provider,
@@ -116,6 +121,14 @@ function modelFailureOutcome(err: unknown, request: ModelCallEffect["request"]):
       now: new Date().toISOString(),
     })
   );
+  if (failure.code === "auth_or_credentials") {
+    return modelCredentialReconnectOutcome({
+      providerId: request.provider,
+      modelBaseUrl: opts.modelBaseUrl ?? request.modelBaseUrl,
+      reason: failure.reason,
+      failureCode: failure.code,
+    });
+  }
   if (failure.recoverable && failure.retryAfterMs !== undefined) {
     return {
       kind: "retry",
@@ -136,9 +149,10 @@ function modelFailureOutcome(err: unknown, request: ModelCallEffect["request"]):
 
 function modelFailureOutcomeFromMessage(
   message: string,
-  request: ModelCallEffect["request"]
+  request: ModelCallEffect["request"],
+  opts: { modelBaseUrl?: string } = {}
 ): EffectOutcome {
-  return modelFailureOutcome(new Error(message), request);
+  return modelFailureOutcome(new Error(message), request, opts);
 }
 
 function traceModelCallStage(
@@ -587,7 +601,7 @@ export const modelCallExecutor: EffectExecutor<ModelCallEffect> = {
       trace("stream.failed", {
         error: err instanceof Error ? err.message : String(err),
       });
-      return modelFailureOutcome(err, request);
+      return modelFailureOutcome(err, request, { modelBaseUrl });
     }
     void deltaCounter;
 
@@ -633,7 +647,8 @@ export const modelCallExecutor: EffectExecutor<ModelCallEffect> = {
       }
       return modelFailureOutcome(
         err instanceof Error ? err : new Error("model stream failed"),
-        request
+        request,
+        { modelBaseUrl }
       );
     } finally {
       signal.removeEventListener("abort", forwardAbort);
@@ -654,7 +669,8 @@ export const modelCallExecutor: EffectExecutor<ModelCallEffect> = {
     if (stopReason === "error") {
       return modelFailureOutcomeFromMessage(
         String(result["errorMessage"] ?? "model error"),
-        request
+        request,
+        { modelBaseUrl }
       );
     }
     return {

@@ -7,18 +7,19 @@ describe("extension child runtime", () => {
   it("exposes unified RPC for extension userland targets", () => {
     const source = fs.readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), "childRuntime.ts"),
-      "utf8",
+      "utf8"
     );
 
     expect(source).toContain("rpc: {");
     expect(source).toContain("rpcCall<T>(method, args, targetId)");
+    expect(source).toContain('type: "ws:route"');
     expect(source.includes("call" + "DO")).toBe(false);
   });
 
   it("supports chunked streaming extension fetch bodies", () => {
     const source = fs.readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), "childRuntime.ts"),
-      "utf8",
+      "utf8"
     );
 
     expect(source).toContain("__stream");
@@ -31,7 +32,7 @@ describe("extension child runtime", () => {
   it("does not block fetch responses on waitUntil work", () => {
     const source = fs.readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), "childRuntime.ts"),
-      "utf8",
+      "utf8"
     );
 
     expect(source).toContain("settleWaitUntil(waitUntil)");
@@ -41,12 +42,12 @@ describe("extension child runtime", () => {
   it("installs CommonJS globals before importing the extension bundle", () => {
     const source = fs.readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), "childRuntime.ts"),
-      "utf8",
+      "utf8"
     );
 
     expect(source).toContain("installCommonJsGlobals(bundlePath)");
     expect(source.indexOf("installCommonJsGlobals(bundlePath)")).toBeLessThan(
-      source.indexOf("await importExtensionModule(bundlePath)"),
+      source.indexOf("await importExtensionModule(bundlePath)")
     );
     expect(source).toContain("return import(pathToFileURL(bundlePath).href)");
     expect(source).toContain("createRequire(pathToFileURL(bundlePath).href)");
