@@ -25,7 +25,10 @@ export function createNewsTables(sql: SqlStorage): void {
       mode TEXT NOT NULL DEFAULT 'curator',
       -- JSON array of capped reader feedback signals (👍/👎/mute) folded into
       -- each briefing prompt so curation visibly learns from taps.
-      feedback_json TEXT
+      feedback_json TEXT,
+      -- 1 → scheduled/cold-start briefings are paused ("vacation"); manual
+      -- "Brief me now" and feed polling still run.
+      briefing_paused INTEGER NOT NULL DEFAULT 0
     )
   `);
   sql.exec(`
@@ -72,6 +75,8 @@ export function createNewsTables(sql: SqlStorage): void {
       published_at INTEGER,
       fetched_at INTEGER NOT NULL,
       read INTEGER NOT NULL DEFAULT 0,
+      -- Reader bookmark: 1 → kept in the "Saved" view regardless of read state.
+      saved INTEGER NOT NULL DEFAULT 0,
       briefed_in TEXT,
       blurb TEXT,
       PRIMARY KEY (channel_id, article_id)

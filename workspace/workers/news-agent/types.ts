@@ -48,6 +48,8 @@ export interface NewsChannelState {
   mode: NewsChannelMode;
   /** Raw JSON of FeedbackSignal[] (parsed on demand). */
   feedbackJson?: string;
+  /** Scheduled briefings paused ("vacation"); manual briefing still works. */
+  briefingPaused: boolean;
 }
 
 export function record(value: unknown): Record<string, unknown> {

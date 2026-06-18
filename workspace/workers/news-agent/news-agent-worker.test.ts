@@ -251,8 +251,26 @@ describe("NewsAgentWorker", () => {
     });
     worker.feedResponses.set("https://html.example/page", [{ status: 200, body: "<html></html>" }]);
     expect(await worker.addFeed("ch-1", { url: "https://html.example/page" })).toMatchObject({
-      error: expect.stringContaining("not a parseable feed"),
+      error: expect.stringContaining("no RSS/Atom link found"),
     });
+  });
+
+  it("autodiscovers a feed when given a site URL instead of a feed URL", async () => {
+    const worker = await makeWorker();
+    const siteUrl = "https://blog.example/";
+    const feedUrl = "https://blog.example/rss.xml";
+    worker.feedResponses.set(siteUrl, [
+      {
+        status: 200,
+        body: `<html><head><link rel="alternate" type="application/rss+xml" href="/rss.xml"></head></html>`,
+      },
+    ]);
+    worker.feedResponses.set(feedUrl, [
+      { status: 200, body: rss([{ title: "Hello", link: "https://blog.example/hello" }]) },
+    ]);
+    const result = (await worker.addFeed("ch-1", { url: siteUrl })) as Record<string, unknown>;
+    expect(result).toMatchObject({ url: feedUrl, discoveredFrom: siteUrl, newArticles: 1 });
+    expect(worker.rowsForTest(`SELECT url FROM news_feeds`)[0]!["url"]).toBe(feedUrl);
   });
 
   it("applies growing backoff to failing feeds and recovers on success", async () => {
@@ -546,6 +564,58 @@ describe("NewsAgentWorker", () => {
       .map((row) => Number(row["notify"]));
     expect(flags).toContain(1); // scheduled / cold-start
     expect(flags).toContain(0); // manual
+  });
+
+  it("setSaved bookmarks an article and the Saved filter returns it", async () => {
+    const worker = await makeWorker();
+    await addExampleFeed(worker, [
+      { title: "Keep this", link: "https://example.com/a" },
+      { title: "Skip this", link: "https://example.com/b" },
+    ]);
+    const aId = await articleId("https://example.com/a");
+    await worker.setSaved("ch-1", { articleId: aId.slice(0, 8), saved: true });
+    const saved = (await worker.listArticles("ch-1", { savedOnly: true })) as {
+      articles: Array<{ title: string; saved: boolean }>;
+    };
+    expect(saved.articles).toHaveLength(1);
+    expect(saved.articles[0]).toMatchObject({ title: "Keep this", saved: true });
+    await worker.setSaved("ch-1", { articleId: aId.slice(0, 8), saved: false });
+    expect(
+      ((await worker.listArticles("ch-1", { savedOnly: true })) as { articles: unknown[] }).articles
+    ).toHaveLength(0);
+  });
+
+  it("searchArchive matches article fields and past briefing TLDRs", async () => {
+    const worker = await makeWorker();
+    await addExampleFeed(worker, [
+      { title: "Rust async runtimes", link: "https://example.com/rust" },
+      { title: "Crypto regulation", link: "https://example.com/crypto" },
+    ]);
+    await worker.refreshNow("ch-1", { briefing: true });
+    const briefingId = String(
+      worker.rowsForTest(`SELECT briefing_id FROM news_briefings`)[0]!["briefing_id"]
+    );
+    await worker.publishBriefing("ch-1", { briefingId, tldr: "## Rust\nBig **Rust** news today." });
+    const res = (await worker.searchArchive("ch-1", { query: "rust" })) as {
+      articles: Array<{ title: string }>;
+      briefings: Array<{ briefingId: string }>;
+    };
+    expect(res.articles.some((article) => article.title === "Rust async runtimes")).toBe(true);
+    expect(res.articles.some((article) => article.title === "Crypto regulation")).toBe(false);
+    expect(res.briefings).toHaveLength(1);
+  });
+
+  it("pausing skips scheduled briefings but manual brief-me-now still runs", async () => {
+    const worker = await makeWorker();
+    await worker.subscribeChannel({ channelId: "ch-1", contextId: "ctx-1" } as never);
+    await addExampleFeed(worker, [{ title: "A", link: "https://example.com/a" }]);
+    await worker.setBriefingPaused("ch-1", { paused: true });
+    // The cold-start briefing slot fires via the alarm → must NOT brief while paused.
+    await worker.alarmAt(worker.clock + INITIAL_BRIEFING_DELAY_MS + 1_000);
+    expect(worker.rowsForTest(`SELECT briefing_id FROM news_briefings`)).toHaveLength(0);
+    // Manual "Brief me now" still works while paused.
+    await worker.refreshNow("ch-1", { briefing: true });
+    expect(worker.rowsForTest(`SELECT briefing_id FROM news_briefings`).length).toBeGreaterThan(0);
   });
 
   it("scheduler alarm drives polls and watchdogs stuck briefings", async () => {

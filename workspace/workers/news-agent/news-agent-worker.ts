@@ -11,6 +11,7 @@ import type { ParticipantDescriptor } from "@workspace/harness";
 import type { AgentTool } from "@workspace/pi-core";
 import {
   articleId as canonicalArticleId,
+  discoverFeedUrl,
   parseFeed,
   parseOpml,
   fetchFeed,
@@ -80,6 +81,10 @@ const NEWS_BASE_LOOP_TOOL_NAMES = new Set([
 const MAX_SEARCH_STORIES_PER_BRIEFING = 10;
 /** Cap feeds added in a single OPML import so a huge export can't hammer hosts. */
 const MAX_OPML_FEEDS = 30;
+/** Columns (with the feed-title join) behind the reader-facing article shape. */
+const ARTICLE_COLUMNS = `a.article_id, a.title, a.canonical_url, a.published_at, a.fetched_at,
+  a.briefed_in, a.read, a.saved, a.origin, a.blurb, a.summary, a.source, a.title_sim_key,
+  f.title AS feed_title`;
 
 /** Next run for the briefing job: anchored to local HH:MM when set. */
 function nextBriefingRunAt(now: number, intervalMs: number, atMinutes?: number): number {
@@ -95,8 +100,8 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
   // News tables are versioned by drop-and-recreate (dev mode: articles
   // re-ingest from feeds; configuration is cheap to redo). Bump when the
   // news_* schema changes (e.g. the channel-mode column, the article source,
-  // the feedback signals, sources-read, and notify columns).
-  static override schemaVersion = AgentWorkerBase.schemaVersion + 5;
+  // the feedback signals, sources-read, notify, saved, and briefing-paused columns).
+  static override schemaVersion = AgentWorkerBase.schemaVersion + 6;
 
   private readonly syncEngine: NewsSyncEngine;
   private readonly scheduler: RecurringScheduler;
@@ -190,6 +195,7 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
       lastSetupJson: (row["last_setup_json"] as string | null) ?? undefined,
       mode: row["mode"] === "analyst" ? "analyst" : "curator",
       feedbackJson: (row["feedback_json"] as string | null) ?? undefined,
+      briefingPaused: Number(row["briefing_paused"]) === 1,
     };
   }
 
@@ -216,8 +222,8 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
   private saveChannelState(state: NewsChannelState): void {
     this.sql.exec(
       `INSERT OR REPLACE INTO news_channel_state
-       (channel_id, poll_interval_ms, briefing_interval_ms, briefing_at_minutes, top_k, setup_status, setup_prompted_at, preferences_text, last_briefing_id, last_run_at, last_error, last_setup_json, mode, feedback_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (channel_id, poll_interval_ms, briefing_interval_ms, briefing_at_minutes, top_k, setup_status, setup_prompted_at, preferences_text, last_briefing_id, last_run_at, last_error, last_setup_json, mode, feedback_json, briefing_paused)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       state.channelId,
       state.pollIntervalMs,
       state.briefingIntervalMs,
@@ -231,7 +237,8 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
       state.lastError ?? null,
       state.lastSetupJson ?? null,
       state.mode,
-      state.feedbackJson ?? null
+      state.feedbackJson ?? null,
+      state.briefingPaused ? 1 : 0
     );
   }
 
@@ -435,8 +442,10 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
         return;
       }
       if (jobId.startsWith("poll:")) await this.runPoll(channelId);
-      else if (jobId.startsWith("briefing:")) await this.runBriefing(channelId);
-      else if (jobId.startsWith("watchdog:")) this.runWatchdog(channelId);
+      else if (jobId.startsWith("briefing:")) {
+        // "Vacation": keep polling, but skip the scheduled digest while paused.
+        if (!this.getChannelState(channelId).briefingPaused) await this.runBriefing(channelId);
+      } else if (jobId.startsWith("watchdog:")) this.runWatchdog(channelId);
     });
   }
 
@@ -461,7 +470,7 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
       if (!this.subscriptions.getParticipantId(channelId)) continue;
       if (this.getMode(channelId) === "analyst") continue; // deep-dive threads don't brief
       if (job === "poll") await this.runPoll(channelId);
-      else await this.runBriefing(channelId);
+      else if (!this.getChannelState(channelId).briefingPaused) await this.runBriefing(channelId);
     }
     return { ok: true };
   }
@@ -682,8 +691,9 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
         failCount: Number(row["fail_count"]) || 0,
       }));
     const followedTopics = this.listTopics(channelId);
-    const briefingLabel =
-      state.briefingAtMinutes !== undefined
+    const briefingLabel = state.briefingPaused
+      ? "paused"
+      : state.briefingAtMinutes !== undefined
         ? `daily at ${String(Math.floor(state.briefingAtMinutes / 60)).padStart(2, "0")}:${String(state.briefingAtMinutes % 60).padStart(2, "0")}`
         : `every ${Math.round(state.briefingIntervalMs / 3_600_000)}h`;
     return {
@@ -693,6 +703,8 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
       scheduleSummary: `polls every ${Math.round(state.pollIntervalMs / 60_000)}m, briefing ${briefingLabel}`,
       pollIntervalMs: state.pollIntervalMs,
       briefingIntervalMs: state.briefingIntervalMs,
+      briefingAtMinutes: state.briefingAtMinutes,
+      briefingPaused: state.briefingPaused,
       preferencesText: state.preferencesText,
       lastRunAt: state.lastRunAt ? new Date(state.lastRunAt).toISOString() : undefined,
       lastError: state.lastError,
@@ -839,13 +851,36 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
         error: `feed not reachable: ${fetched.status === "error" ? fetched.error : fetched.status}`,
       };
     }
+    // Accept either a feed URL or a normal site URL: if the body isn't a feed,
+    // try autodiscovery (<link rel="alternate" type="application/rss+xml">) and
+    // re-fetch the advertised feed.
+    let feedUrl = url;
     let parsed;
     try {
-      parsed = parseFeed(fetched.body, undefined, url);
-    } catch (err) {
-      return { error: `not a parseable feed: ${err instanceof Error ? err.message : String(err)}` };
+      parsed = parseFeed(fetched.body, undefined, feedUrl);
+    } catch (parseErr) {
+      const discovered = discoverFeedUrl(fetched.body, url);
+      if (!discovered) {
+        return {
+          error: `not a feed, and no RSS/Atom link found on the page: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`,
+        };
+      }
+      const refetched = await fetchFeed(discovered, { fetcher: this.feedFetcher() });
+      if (refetched.status !== "ok") {
+        return {
+          error: `discovered feed not reachable: ${refetched.status === "error" ? refetched.error : refetched.status}`,
+        };
+      }
+      try {
+        parsed = parseFeed(refetched.body, undefined, discovered);
+        feedUrl = discovered;
+      } catch (err) {
+        return {
+          error: `discovered feed not parseable: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
     }
-    const feedId = (await canonicalArticleId(url)).slice(0, 16);
+    const feedId = (await canonicalArticleId(feedUrl)).slice(0, 16);
     this.sql.exec(
       `INSERT INTO news_feeds (channel_id, feed_id, url, title, weight)
        VALUES (?, ?, ?, ?, ?)
@@ -853,7 +888,7 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
          url = excluded.url, title = excluded.title, weight = excluded.weight, enabled = 1`,
       channelId,
       feedId,
-      url,
+      feedUrl,
       parsed.title ?? null,
       numberArg(args, "weight") ?? 1.0
     );
@@ -866,7 +901,14 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
     }
     await this.markConfigured(channelId);
     await this.publishSetupCard(channelId);
-    return { feedId, title: parsed.title, itemCount: parsed.items.length, newArticles: added };
+    return {
+      feedId,
+      title: parsed.title,
+      url: feedUrl,
+      ...(feedUrl !== url ? { discoveredFrom: url } : {}),
+      itemCount: parsed.items.length,
+      newArticles: added,
+    };
   }
 
   async importOpml(channelId: string, args: Record<string, unknown>): Promise<unknown> {
@@ -966,24 +1008,59 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
     });
   }
 
+  /** Map a SELECT row (using ARTICLE_COLUMNS) to the reader-facing shape. */
+  private mapArticleRow(row: Record<string, unknown>): Record<string, unknown> {
+    return {
+      articleId: String(row["article_id"]),
+      title: String(row["title"]),
+      url: String(row["canonical_url"]),
+      source:
+        (row["feed_title"] as string | null) ??
+        (row["source"] as string | null) ??
+        (String(row["origin"]) === "search" ? "web" : "feed"),
+      // The agent's blurb is a real summary; fall back to a cleaned snippet of
+      // the feed item's own description so every row carries some substance.
+      blurb:
+        (row["blurb"] as string | null) ??
+        plainTextSnippet(row["summary"] as string | null, 400),
+      publishedAt:
+        row["published_at"] === null
+          ? undefined
+          : new Date(Number(row["published_at"])).toISOString(),
+      // Epoch ms when WE first ingested it — lets the reader flag "new since
+      // your last visit" independent of the story's own publish date.
+      fetchedAt: Number(row["fetched_at"]),
+      // Title-similarity key: lets the reader collapse near-duplicate coverage.
+      simKey: (row["title_sim_key"] as string | null) ?? undefined,
+      briefedIn: (row["briefed_in"] as string | null) ?? undefined,
+      read: Number(row["read"]) === 1,
+      saved: Number(row["saved"]) === 1,
+    };
+  }
+
   async listArticles(channelId: string, args: Record<string, unknown>): Promise<unknown> {
     const limit = Math.min(numberArg(args, "limit") ?? 30, 200);
     const unbriefedOnly = booleanArg(args, "unbriefedOnly") ?? false;
+    const savedOnly = booleanArg(args, "savedOnly") ?? false;
     const sinceMs = numberArg(args, "sinceMs");
     const clauses = ["a.channel_id = ?"];
     const params: unknown[] = [channelId];
-    if (unbriefedOnly) clauses.push("a.briefed_in IS NULL");
-    // Dropped candidates were explicitly cut from a briefing — never surface
-    // them in the reader (they are the opposite of "interesting").
-    else clauses.push("(a.briefed_in IS NULL OR a.briefed_in NOT LIKE 'dropped:%')");
+    if (savedOnly) {
+      clauses.push("a.saved = 1"); // saved is an explicit keep — show it regardless
+    } else if (unbriefedOnly) {
+      clauses.push("a.briefed_in IS NULL");
+    } else {
+      // Dropped candidates were explicitly cut from a briefing — never surface
+      // them in the reader (they are the opposite of "interesting").
+      clauses.push("(a.briefed_in IS NULL OR a.briefed_in NOT LIKE 'dropped:%')");
+    }
     if (sinceMs !== undefined) {
       clauses.push("a.fetched_at >= ?");
       params.push(sinceMs);
     }
     const rows = this.sql
       .exec(
-        `SELECT a.article_id, a.title, a.canonical_url, a.published_at, a.fetched_at, a.briefed_in, a.read, a.origin,
-                a.blurb, a.summary, a.source, f.title AS feed_title
+        `SELECT ${ARTICLE_COLUMNS}
          FROM news_articles a
          LEFT JOIN news_feeds f ON f.channel_id = a.channel_id AND f.feed_id = a.feed_id
          WHERE ${clauses.join(" AND ")}
@@ -993,32 +1070,81 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
         limit
       )
       .toArray();
+    return { count: rows.length, articles: rows.map((row) => this.mapArticleRow(row)) };
+  }
+
+  /** Full-text-ish archive search over ingested articles and past briefing
+   *  TLDRs (SQLite LIKE; wildcards in the query are escaped). */
+  async searchArchive(channelId: string, args: Record<string, unknown>): Promise<unknown> {
+    const query = stringArg(args, "query");
+    if (!query) return { query: "", articles: [], briefings: [] };
+    const limit = Math.min(numberArg(args, "limit") ?? 40, 100);
+    const like = `%${query.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+    const articleRows = this.sql
+      .exec(
+        `SELECT ${ARTICLE_COLUMNS}
+         FROM news_articles a
+         LEFT JOIN news_feeds f ON f.channel_id = a.channel_id AND f.feed_id = a.feed_id
+         WHERE a.channel_id = ?
+           AND (a.briefed_in IS NULL OR a.briefed_in NOT LIKE 'dropped:%')
+           AND (a.title LIKE ? ESCAPE '\\' OR a.blurb LIKE ? ESCAPE '\\'
+                OR a.summary LIKE ? ESCAPE '\\' OR a.source LIKE ? ESCAPE '\\')
+         ORDER BY COALESCE(a.published_at, a.fetched_at) DESC
+         LIMIT ?`,
+        channelId,
+        like,
+        like,
+        like,
+        like,
+        limit
+      )
+      .toArray();
+    const briefingRows = this.sql
+      .exec(
+        `SELECT briefing_id, created_at, tldr, sources_read FROM news_briefings
+         WHERE channel_id = ? AND status = 'ready' AND tldr LIKE ? ESCAPE '\\'
+         ORDER BY created_at DESC LIMIT ?`,
+        channelId,
+        like,
+        Math.min(limit, 20)
+      )
+      .toArray();
     return {
-      count: rows.length,
-      articles: rows.map((row) => ({
-        articleId: String(row["article_id"]),
-        title: String(row["title"]),
-        url: String(row["canonical_url"]),
-        source:
-          (row["feed_title"] as string | null) ??
-          (row["source"] as string | null) ??
-          (String(row["origin"]) === "search" ? "web" : "feed"),
-        // The agent's blurb is a real summary; fall back to a cleaned snippet of
-        // the feed item's own description so every row carries some substance.
-        blurb:
-          (row["blurb"] as string | null) ??
-          plainTextSnippet(row["summary"] as string | null, 400),
-        publishedAt:
-          row["published_at"] === null
-            ? undefined
-            : new Date(Number(row["published_at"])).toISOString(),
-        // Epoch ms when WE first ingested it — lets the reader flag "new since
-        // your last visit" independent of the story's own publish date.
-        fetchedAt: Number(row["fetched_at"]),
-        briefedIn: (row["briefed_in"] as string | null) ?? undefined,
-        read: Number(row["read"]) === 1,
+      query,
+      articles: articleRows.map((row) => this.mapArticleRow(row)),
+      briefings: briefingRows.map((row) => ({
+        briefingId: String(row["briefing_id"]),
+        createdAt: new Date(Number(row["created_at"])).toISOString(),
+        tldr: (row["tldr"] as string | null) ?? undefined,
+        sourcesRead: row["sources_read"] === null ? undefined : Number(row["sources_read"]),
       })),
     };
+  }
+
+  async setSaved(channelId: string, args: Record<string, unknown>): Promise<unknown> {
+    const idOrPrefix = stringArg(args, "articleId");
+    const saved = booleanArg(args, "saved");
+    if (!idOrPrefix || saved === undefined) {
+      return { error: "articleId and saved are required" };
+    }
+    this.sql.exec(
+      `UPDATE news_articles SET saved = ? WHERE channel_id = ? AND (article_id = ? OR article_id LIKE ? || '%')`,
+      saved ? 1 : 0,
+      channelId,
+      idOrPrefix,
+      idOrPrefix
+    );
+    return { articleId: idOrPrefix, saved };
+  }
+
+  async setBriefingPaused(channelId: string, args: Record<string, unknown>): Promise<unknown> {
+    const paused = booleanArg(args, "paused");
+    if (paused === undefined) return { error: "paused is required" };
+    const state = this.getChannelState(channelId);
+    state.briefingPaused = paused;
+    this.saveChannelState(state);
+    await this.publishSetupCard(channelId);
+    return { briefingPaused: paused };
   }
 
   async publishBriefing(channelId: string, args: Record<string, unknown>): Promise<unknown> {

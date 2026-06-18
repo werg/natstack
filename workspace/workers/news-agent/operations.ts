@@ -18,8 +18,11 @@ export interface NewsHandlers {
   publishBriefing(channelId: string, args: Record<string, unknown>): Promise<unknown>;
   briefingHistory(channelId: string, args: Record<string, unknown>): Promise<unknown>;
   setSchedule(channelId: string, args: Record<string, unknown>): Promise<unknown>;
+  setBriefingPaused(channelId: string, args: Record<string, unknown>): Promise<unknown>;
   markRead(channelId: string, args: Record<string, unknown>): Promise<unknown>;
+  setSaved(channelId: string, args: Record<string, unknown>): Promise<unknown>;
   reactToStory(channelId: string, args: Record<string, unknown>): Promise<unknown>;
+  searchArchive(channelId: string, args: Record<string, unknown>): Promise<unknown>;
   refreshNow(channelId: string, args: Record<string, unknown>): Promise<unknown>;
   requestDeepDive(channelId: string, args: Record<string, unknown>): Promise<unknown>;
   getOverview(channelId: string, args: Record<string, unknown>): Promise<unknown>;
@@ -233,6 +236,19 @@ export const NEWS_OPERATIONS: NewsOperation[] = [
     run: (ctx, channelId, args) => ctx.handlers.setSchedule(channelId, args),
   },
   {
+    name: "setBriefingPaused",
+    description:
+      "Pause or resume scheduled briefings ('vacation mode'). While paused, feed polling continues and manual 'Brief me now' still works.",
+    schema: {
+      type: "object",
+      properties: { paused: { type: "boolean" } },
+      required: ["paused"],
+      additionalProperties: false,
+    },
+    exposure: ["method"],
+    run: (ctx, channelId, args) => ctx.handlers.setBriefingPaused(channelId, args),
+  },
+  {
     name: "markRead",
     description: "Mark articles read so ranking skips them.",
     schema: {
@@ -245,6 +261,34 @@ export const NEWS_OPERATIONS: NewsOperation[] = [
     },
     exposure: ["method"],
     run: (ctx, channelId, args) => ctx.handlers.markRead(channelId, args),
+  },
+  {
+    name: "setSaved",
+    description: "Bookmark (or un-bookmark) an article for the reader's Saved view.",
+    schema: {
+      type: "object",
+      properties: { articleId: { type: "string", minLength: 1 }, saved: { type: "boolean" } },
+      required: ["articleId", "saved"],
+      additionalProperties: false,
+    },
+    exposure: ["method"],
+    run: (ctx, channelId, args) => ctx.handlers.setSaved(channelId, args),
+  },
+  {
+    name: "searchArchive",
+    description:
+      "Search ingested articles and past briefing TLDRs by keyword. Returns { query, articles, briefings }.",
+    schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", minLength: 1 },
+        limit: { type: "number", minimum: 1, maximum: 100 },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+    exposure: ["method"],
+    run: (ctx, channelId, args) => ctx.handlers.searchArchive(channelId, args),
   },
   {
     name: "reactToStory",

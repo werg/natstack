@@ -75,6 +75,10 @@ export interface NewsSetupCardState {
   scheduleSummary: string;
   pollIntervalMs: number;
   briefingIntervalMs: number;
+  /** Local-time anchor for daily briefings (minutes after midnight), when set. */
+  briefingAtMinutes?: number;
+  /** Scheduled briefings paused ("vacation"); manual briefing still works. */
+  briefingPaused?: boolean;
   preferencesText?: string;
   lastRunAt?: string;
   lastError?: string;
@@ -167,6 +171,8 @@ export const NEWS_SETUP_STATE_SCHEMA: Record<string, unknown> = {
     scheduleSummary: { type: "string" },
     pollIntervalMs: { type: "number" },
     briefingIntervalMs: { type: "number" },
+    briefingAtMinutes: { type: "number" },
+    briefingPaused: { type: "boolean" },
     preferencesText: { type: "string" },
     lastRunAt: { type: "string" },
     lastError: { type: "string" },
