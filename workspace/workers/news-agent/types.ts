@@ -1,6 +1,11 @@
 export const DEFAULT_POLL_INTERVAL_MS = 30 * 60_000;
 export const DEFAULT_BRIEFING_INTERVAL_MS = 24 * 3_600_000;
 export const DEFAULT_TOP_K = 12;
+/** After the user first configures sources, run the first briefing this soon
+ *  (instead of waiting a full briefing interval) so the value lands fast. */
+export const INITIAL_BRIEFING_DELAY_MS = 90_000;
+/** Keep at most this many reader feedback signals; oldest fall off. */
+export const MAX_FEEDBACK_SIGNALS = 24;
 /** Prune unbriefed articles older than this during polls. */
 export const ARTICLE_RETENTION_MS = 14 * 24 * 3_600_000;
 /** A briefing stuck in "summarizing" longer than this is marked errored.
@@ -14,6 +19,17 @@ export const BRIEFING_WATCHDOG_TICK_MS = 2 * 60_000;
 
 /** Channel role: a normal personal news channel, or a deep-dive analyst fork. */
 export type NewsChannelMode = "curator" | "analyst";
+
+/** A reader's tap on a story: teaches curation what to surface more/less of. */
+export interface FeedbackSignal {
+  /** epoch ms when recorded. */
+  at: number;
+  reaction: "more" | "less" | "avoid";
+  /** Story title (more/less) or source name (avoid), already truncated. */
+  label: string;
+  /** Source/publication the story came from, when known. */
+  source?: string;
+}
 
 export interface NewsChannelState {
   channelId: string;
@@ -30,6 +46,8 @@ export interface NewsChannelState {
   lastError?: string;
   lastSetupJson?: string;
   mode: NewsChannelMode;
+  /** Raw JSON of FeedbackSignal[] (parsed on demand). */
+  feedbackJson?: string;
 }
 
 export function record(value: unknown): Record<string, unknown> {

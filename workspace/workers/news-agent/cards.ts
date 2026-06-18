@@ -6,13 +6,19 @@ import {
   type NewsSetupCardState,
 } from "@workspace/feeds/card-types";
 
-export const NEWS_UI_INSTALL_VERSION = 1;
+// Bump when NEWS_UI_IMPORTS or a renderer's import surface changes so channels
+// re-register and rebuild their importmap (v2: react-markdown for the briefing).
+export const NEWS_UI_INSTALL_VERSION = 2;
 
 export const NEWS_UI_IMPORTS = {
   react: "latest",
   "react/jsx-runtime": "latest",
   "@radix-ui/themes": "npm:^3.2.1",
   "@radix-ui/react-icons": "npm:^1.3.2",
+  // The briefing renderer renders its markdown TLDR with react-markdown; the
+  // sandbox build service loads these on demand, same as @radix-ui above.
+  "react-markdown": "npm:^9.0.1",
+  "remark-gfm": "npm:^4.0.0",
 } satisfies Record<string, string>;
 
 export const NEWS_MESSAGE_TYPES: MessageTypeSpec[] = [

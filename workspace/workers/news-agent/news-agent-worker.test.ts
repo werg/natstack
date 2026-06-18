@@ -7,6 +7,7 @@ import type { NewsBriefingCardState } from "@workspace/feeds/card-types";
 
 import { NewsAgentWorker } from "./news-agent-worker.js";
 import { NEWS_MESSAGE_TYPES } from "./cards.js";
+import { INITIAL_BRIEFING_DELAY_MS } from "./types.js";
 
 const FEED_URL = "https://example.com/feed.xml";
 
@@ -407,6 +408,144 @@ describe("NewsAgentWorker", () => {
     expect(worker.agentInitiatedTurns[worker.agentInitiatedTurns.length - 1]!.content).toContain(
       "**Keep me** shipped."
     );
+  });
+
+  it("rejects search/listing URLs and persists the real source + blurb for search stories", async () => {
+    const worker = await makeWorker();
+    await addExampleFeed(worker, [{ title: "Keep me", link: "https://example.com/keep" }]);
+    await worker.refreshNow("ch-1", { briefing: true });
+    const briefingId = String(
+      worker.rowsForTest(`SELECT briefing_id FROM news_briefings`)[0]!["briefing_id"]
+    );
+
+    const result = (await worker.publishBriefing("ch-1", {
+      briefingId,
+      tldr: "**Today** in review.",
+      searchStories: [
+        {
+          url: "https://acme.example/articles/the-real-story",
+          title: "The real story",
+          source: "ACME Times",
+          blurb: "A concrete, substantive summary of what happened.",
+        },
+        // Search-engine result page — must be rejected by the guard.
+        { url: "https://www.google.com/search?q=ai+news", title: "Search results", source: "Google" },
+        // On-site search endpoint — also rejected.
+        { url: "https://acme.example/search?query=ai", title: "Site search", source: "ACME" },
+      ],
+    })) as Record<string, unknown>;
+    // Only the concrete article survives (1 feed keep + 1 search = 2).
+    expect(result).toMatchObject({ storyCount: 2 });
+
+    const search = worker.rowsForTest(
+      `SELECT canonical_url, source, blurb FROM news_articles WHERE origin = 'search'`
+    );
+    expect(search).toHaveLength(1);
+    expect(search[0]!["source"]).toBe("ACME Times");
+    expect(search[0]!["blurb"]).toBe("A concrete, substantive summary of what happened.");
+    expect(
+      worker
+        .rowsForTest(`SELECT canonical_url FROM news_articles`)
+        .some((row) => String(row["canonical_url"]).includes("/search"))
+    ).toBe(false);
+
+    // listArticles surfaces the real source + blurb and hides dropped items.
+    const listed = (await worker.listArticles("ch-1", {})) as {
+      articles: Array<{ title: string; source: string; blurb?: string }>;
+    };
+    const real = listed.articles.find((a) => a.title === "The real story")!;
+    expect(real.source).toBe("ACME Times");
+    expect(real.blurb).toBe("A concrete, substantive summary of what happened.");
+  });
+
+  it("pulls the first briefing forward to minutes after the first source is configured", async () => {
+    const worker = await makeWorker();
+    await worker.subscribeChannel({ channelId: "ch-1", contextId: "ctx-1" } as never);
+    const briefingDue = () =>
+      Number(
+        worker.rowsForTest(
+          `SELECT next_run_at FROM recurring_jobs WHERE job_id = 'briefing:ch-1'`
+        )[0]!["next_run_at"]
+      );
+    // Before any source: the first briefing is a full interval out.
+    expect(briefingDue() - worker.clock).toBeGreaterThan(60 * 60_000);
+    await addExampleFeed(worker, [{ title: "A", link: "https://example.com/a" }]);
+    // After the first source: pulled forward to the cold-start window.
+    expect(briefingDue() - worker.clock).toBeLessThanOrEqual(INITIAL_BRIEFING_DELAY_MS);
+  });
+
+  it("reactToStory records feedback, mutes the source feed, and folds signals into the next briefing", async () => {
+    const worker = await makeWorker();
+    await addExampleFeed(worker, [
+      { title: "Crypto thing", link: "https://example.com/crypto" },
+      { title: "Rust async runtimes", link: "https://example.com/rust" },
+      { title: "Neutral thing", link: "https://example.com/neutral" },
+    ]);
+    const cryptoId = await articleId("https://example.com/crypto");
+    const rustId = await articleId("https://example.com/rust");
+
+    await worker.reactToStory("ch-1", { articleId: rustId.slice(0, 8), reaction: "more" });
+    const less = (await worker.reactToStory("ch-1", {
+      articleId: cryptoId.slice(0, 8),
+      reaction: "less",
+    })) as Record<string, unknown>;
+    expect(less).toMatchObject({ recorded: "less" });
+    // "less" marks the story read so ranking skips it.
+    expect(
+      Number(worker.rowsForTest(`SELECT read FROM news_articles WHERE article_id = ?`, cryptoId)[0]!["read"])
+    ).toBe(1);
+
+    const mute = (await worker.reactToStory("ch-1", {
+      articleId: cryptoId.slice(0, 8),
+      reaction: "mute_source",
+    })) as Record<string, unknown>;
+    expect(mute).toMatchObject({ feedDisabled: true });
+    expect(Number(worker.rowsForTest(`SELECT enabled FROM news_feeds`)[0]!["enabled"])).toBe(0);
+
+    await worker.refreshNow("ch-1", { briefing: true });
+    const turn = worker.agentInitiatedTurns[worker.agentInitiatedTurns.length - 1]!;
+    expect(turn.content).toContain("Reader feedback");
+    expect(turn.content).toContain("More like:");
+    expect(turn.content).toContain("Avoid source:");
+  });
+
+  it("records sourcesRead and exposes it on the briefing and its history", async () => {
+    const worker = await makeWorker();
+    await addExampleFeed(worker, [{ title: "Keep", link: "https://example.com/keep" }]);
+    await worker.refreshNow("ch-1", { briefing: true });
+    const briefingId = String(
+      worker.rowsForTest(`SELECT briefing_id FROM news_briefings`)[0]!["briefing_id"]
+    );
+    await worker.publishBriefing("ch-1", { briefingId, tldr: "**Lede.**", sourcesRead: 7 });
+    expect(
+      Number(
+        worker.rowsForTest(
+          `SELECT sources_read FROM news_briefings WHERE briefing_id = ?`,
+          briefingId
+        )[0]!["sources_read"]
+      )
+    ).toBe(7);
+    const history = (await worker.briefingHistory("ch-1", {})) as {
+      briefings: Array<{ sourcesRead?: number }>;
+    };
+    expect(history.briefings[0]!.sourcesRead).toBe(7);
+  });
+
+  it("flags scheduled briefings to notify but keeps manual 'brief me now' silent", async () => {
+    const worker = await makeWorker();
+    await worker.subscribeChannel({ channelId: "ch-1", contextId: "ctx-1" } as never);
+    await addExampleFeed(worker, [{ title: "A", link: "https://example.com/a" }]);
+
+    // The cold-start briefing fires via the scheduler alarm → flagged to notify.
+    await worker.alarmAt(worker.clock + INITIAL_BRIEFING_DELAY_MS + 1_000);
+    // A manual brief-me-now is silent.
+    await worker.refreshNow("ch-1", { briefing: true });
+
+    const flags = worker
+      .rowsForTest(`SELECT notify FROM news_briefings`)
+      .map((row) => Number(row["notify"]));
+    expect(flags).toContain(1); // scheduled / cold-start
+    expect(flags).toContain(0); // manual
   });
 
   it("scheduler alarm drives polls and watchdogs stuck briefings", async () => {

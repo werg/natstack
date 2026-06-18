@@ -41,6 +41,8 @@ export interface NewsBriefingCardState {
   stories: NewsStoryRef[];
   articleCountScanned: number;
   newSinceLastRun: number;
+  /** How many concrete sources the agent actually fetched/read for this digest. */
+  sourcesRead?: number;
   lastError?: string;
 }
 
@@ -120,6 +122,7 @@ export const NEWS_BRIEFING_STATE_SCHEMA: Record<string, unknown> = {
     stories: { type: "array", items: STORY_REF_SCHEMA },
     articleCountScanned: { type: "number" },
     newSinceLastRun: { type: "number" },
+    sourcesRead: { type: "number" },
     lastError: { type: "string" },
   },
   required: ["briefingId", "status", "stories"],

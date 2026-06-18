@@ -19,6 +19,7 @@ export interface NewsHandlers {
   briefingHistory(channelId: string, args: Record<string, unknown>): Promise<unknown>;
   setSchedule(channelId: string, args: Record<string, unknown>): Promise<unknown>;
   markRead(channelId: string, args: Record<string, unknown>): Promise<unknown>;
+  reactToStory(channelId: string, args: Record<string, unknown>): Promise<unknown>;
   refreshNow(channelId: string, args: Record<string, unknown>): Promise<unknown>;
   requestDeepDive(channelId: string, args: Record<string, unknown>): Promise<unknown>;
   getOverview(channelId: string, args: Record<string, unknown>): Promise<unknown>;
@@ -146,7 +147,7 @@ export const NEWS_OPERATIONS: NewsOperation[] = [
     name: "news_list_articles",
     methodAliases: ["getArticles"],
     description:
-      "List ingested articles, newest first. Returns { count, articles: [{ articleId, title, url, source, publishedAt, briefedIn, read }] }. Filters: unbriefedOnly, sinceMs (epoch), limit (default 30).",
+      "List ingested articles, newest first. Returns { count, articles: [{ articleId, title, url, source, blurb, publishedAt, briefedIn, read }] }. Filters: unbriefedOnly, sinceMs (epoch), limit (default 30).",
     schema: {
       type: "object",
       properties: {
@@ -162,7 +163,7 @@ export const NEWS_OPERATIONS: NewsOperation[] = [
   {
     name: "news_publish_briefing",
     description:
-      "Finalize the current briefing run: writes the TLDR and per-story blurbs to the briefing card, marks kept stories as briefed, and records the briefing for day-over-day continuity. Call exactly once per briefing run. Search stories must be canonical http(s) URLs; duplicates and entries beyond the first 10 are ignored.",
+      "Finalize the current briefing run: writes the TLDR and per-story blurbs to the briefing card, marks kept stories as briefed, and records the briefing for day-over-day continuity. Call exactly once per briefing run. Search stories must be canonical http(s) URLs; duplicates and entries beyond the first 10 are ignored. Pass sourcesRead = how many concrete sources you actually fetched/read, for the reader's trust signal.",
     schema: {
       type: "object",
       properties: {
@@ -195,6 +196,7 @@ export const NEWS_OPERATIONS: NewsOperation[] = [
           },
         },
         droppedArticleIds: { type: "array", items: { type: "string" } },
+        sourcesRead: { type: "number", minimum: 0 },
       },
       required: ["briefingId", "tldr"],
       additionalProperties: false,
@@ -243,6 +245,23 @@ export const NEWS_OPERATIONS: NewsOperation[] = [
     },
     exposure: ["method"],
     run: (ctx, channelId, args) => ctx.handlers.markRead(channelId, args),
+  },
+  {
+    name: "reactToStory",
+    description:
+      "Record a reader's tap on a story so curation learns. reaction: 'more' (surface more like it), 'less' (fewer like it; marks it read), or 'mute_source' (avoid this source and disable its feed). Signals are folded into every future briefing.",
+    schema: {
+      type: "object",
+      properties: {
+        articleId: { type: "string", minLength: 1 },
+        reaction: { enum: ["more", "less", "mute_source"] },
+      },
+      required: ["articleId", "reaction"],
+      additionalProperties: false,
+    },
+    exposure: ["method"],
+    needsRecovery: true,
+    run: (ctx, channelId, args) => ctx.handlers.reactToStory(channelId, args),
   },
   {
     name: "refreshNow",

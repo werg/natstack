@@ -31,10 +31,13 @@ import {
   DEFAULT_BRIEFING_INTERVAL_MS,
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_TOP_K,
+  INITIAL_BRIEFING_DELAY_MS,
+  MAX_FEEDBACK_SIGNALS,
   booleanArg,
   numberArg,
   record,
   stringArg,
+  type FeedbackSignal,
   type NewsChannelMode,
   type NewsChannelState,
 } from "./types.js";
@@ -91,8 +94,9 @@ function nextBriefingRunAt(now: number, intervalMs: number, atMinutes?: number):
 export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
   // News tables are versioned by drop-and-recreate (dev mode: articles
   // re-ingest from feeds; configuration is cheap to redo). Bump when the
-  // news_* schema changes (e.g. the channel-mode column).
-  static override schemaVersion = AgentWorkerBase.schemaVersion + 2;
+  // news_* schema changes (e.g. the channel-mode column, the article source,
+  // the feedback signals, sources-read, and notify columns).
+  static override schemaVersion = AgentWorkerBase.schemaVersion + 5;
 
   private readonly syncEngine: NewsSyncEngine;
   private readonly scheduler: RecurringScheduler;
@@ -185,6 +189,7 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
       lastError: (row["last_error"] as string | null) ?? undefined,
       lastSetupJson: (row["last_setup_json"] as string | null) ?? undefined,
       mode: row["mode"] === "analyst" ? "analyst" : "curator",
+      feedbackJson: (row["feedback_json"] as string | null) ?? undefined,
     };
   }
 
@@ -211,8 +216,8 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
   private saveChannelState(state: NewsChannelState): void {
     this.sql.exec(
       `INSERT OR REPLACE INTO news_channel_state
-       (channel_id, poll_interval_ms, briefing_interval_ms, briefing_at_minutes, top_k, setup_status, setup_prompted_at, preferences_text, last_briefing_id, last_run_at, last_error, last_setup_json, mode)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (channel_id, poll_interval_ms, briefing_interval_ms, briefing_at_minutes, top_k, setup_status, setup_prompted_at, preferences_text, last_briefing_id, last_run_at, last_error, last_setup_json, mode, feedback_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       state.channelId,
       state.pollIntervalMs,
       state.briefingIntervalMs,
@@ -225,8 +230,56 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
       state.lastRunAt ?? null,
       state.lastError ?? null,
       state.lastSetupJson ?? null,
-      state.mode
+      state.mode,
+      state.feedbackJson ?? null
     );
+  }
+
+  // ── reader feedback signals (👍 / 👎 / mute) ───────────────────────────────
+
+  private getFeedback(channelId: string): FeedbackSignal[] {
+    const raw = this.getChannelState(channelId).feedbackJson;
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as FeedbackSignal[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private addFeedback(channelId: string, signal: FeedbackSignal): void {
+    const state = this.getChannelState(channelId);
+    const existing: FeedbackSignal[] = (() => {
+      if (!state.feedbackJson) return [];
+      try {
+        const parsed = JSON.parse(state.feedbackJson);
+        return Array.isArray(parsed) ? (parsed as FeedbackSignal[]) : [];
+      } catch {
+        return [];
+      }
+    })();
+    // Drop a prior identical signal so repeated taps don't crowd out the window.
+    const deduped = existing.filter(
+      (entry) => !(entry.reaction === signal.reaction && entry.label === signal.label)
+    );
+    deduped.push(signal);
+    const capped = deduped.slice(-MAX_FEEDBACK_SIGNALS);
+    state.feedbackJson = JSON.stringify(capped);
+    this.saveChannelState(state);
+  }
+
+  /** Recent reader feedback as natural-language lines for the briefing prompt. */
+  private feedbackLines(channelId: string): string[] {
+    return this.getFeedback(channelId)
+      .slice(-12)
+      .reverse()
+      .map((signal) => {
+        const where = signal.source ? ` (${signal.source})` : "";
+        if (signal.reaction === "more") return `More like: "${signal.label}"${where}`;
+        if (signal.reaction === "less") return `Less like: "${signal.label}"${where}`;
+        return `Avoid source: ${signal.label}`;
+      });
   }
 
   // ── agent configuration ───────────────────────────────────────────────────
@@ -463,7 +516,7 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
 
   // ── Tier 2: briefing ──────────────────────────────────────────────────────
 
-  private async runBriefing(channelId: string): Promise<void> {
+  private async runBriefing(channelId: string, opts?: { notify?: boolean }): Promise<void> {
     // Fresh articles first; a stale snapshot makes a stale briefing.
     await this.runPoll(channelId);
     const state = this.getChannelState(channelId);
@@ -485,13 +538,17 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
       newSinceLastRun: scanned,
     };
     await this.newsCards.createBriefing(channelId, card);
+    // notify defaults on (scheduled/cold-start runs); a manual "Brief me now"
+    // passes notify:false so it stays silent for a reader already watching.
+    const notify = opts?.notify === false ? 0 : 1;
     this.sql.exec(
-      `INSERT OR REPLACE INTO news_briefings (channel_id, briefing_id, created_at, status, story_ids_json)
-       VALUES (?, ?, ?, 'summarizing', ?)`,
+      `INSERT OR REPLACE INTO news_briefings (channel_id, briefing_id, created_at, status, story_ids_json, notify)
+       VALUES (?, ?, ?, 'summarizing', ?, ?)`,
       channelId,
       briefingId,
       now,
-      JSON.stringify(stories.map((story) => story.articleId))
+      JSON.stringify(stories.map((story) => story.articleId)),
+      notify
     );
     // Arm the self-canceling watchdog so a dead turn surfaces as an error in
     // minutes rather than waiting for the next scheduled poll.
@@ -513,6 +570,7 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
           followedTopics: topics,
           previousTldr,
           preferencesText: state.preferencesText,
+          feedbackLines: this.feedbackLines(channelId),
           articleCountScanned: scanned,
         }),
       },
@@ -551,6 +609,7 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
       stories: this.storiesByIds(channelId, storyIds),
       articleCountScanned: storyIds.length,
       newSinceLastRun: 0,
+      sourcesRead: row["sources_read"] === null ? undefined : Number(row["sources_read"]),
     };
   }
 
@@ -573,6 +632,7 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
         title: String(row["title"]),
         source:
           (row["feed_title"] as string | null) ??
+          (row["source"] as string | null) ??
           (String(row["origin"]) === "search" ? "web search" : "feed"),
         origin: String(row["origin"]) === "search" ? "search" : "feed",
         publishedAt:
@@ -894,6 +954,16 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
     if (state.setupStatus === "configured") return;
     state.setupStatus = "configured";
     this.saveChannelState(state);
+    // Cold-start delight: the very first time sources are configured, pull the
+    // first briefing forward to minutes-from-now instead of a full interval out,
+    // so a new reader sees a real digest almost immediately. The job keeps its
+    // normal interval, so subsequent runs resume the regular cadence.
+    this.scheduler.upsertJob({
+      jobId: `briefing:${channelId}`,
+      channelId,
+      intervalMs: state.briefingIntervalMs,
+      nextRunAt: this.now() + INITIAL_BRIEFING_DELAY_MS,
+    });
   }
 
   async listArticles(channelId: string, args: Record<string, unknown>): Promise<unknown> {
@@ -903,14 +973,17 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
     const clauses = ["a.channel_id = ?"];
     const params: unknown[] = [channelId];
     if (unbriefedOnly) clauses.push("a.briefed_in IS NULL");
+    // Dropped candidates were explicitly cut from a briefing — never surface
+    // them in the reader (they are the opposite of "interesting").
+    else clauses.push("(a.briefed_in IS NULL OR a.briefed_in NOT LIKE 'dropped:%')");
     if (sinceMs !== undefined) {
       clauses.push("a.fetched_at >= ?");
       params.push(sinceMs);
     }
     const rows = this.sql
       .exec(
-        `SELECT a.article_id, a.title, a.canonical_url, a.published_at, a.briefed_in, a.read, a.origin,
-                f.title AS feed_title
+        `SELECT a.article_id, a.title, a.canonical_url, a.published_at, a.fetched_at, a.briefed_in, a.read, a.origin,
+                a.blurb, a.summary, a.source, f.title AS feed_title
          FROM news_articles a
          LEFT JOIN news_feeds f ON f.channel_id = a.channel_id AND f.feed_id = a.feed_id
          WHERE ${clauses.join(" AND ")}
@@ -926,11 +999,22 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
         articleId: String(row["article_id"]),
         title: String(row["title"]),
         url: String(row["canonical_url"]),
-        source: (row["feed_title"] as string | null) ?? String(row["origin"]),
+        source:
+          (row["feed_title"] as string | null) ??
+          (row["source"] as string | null) ??
+          (String(row["origin"]) === "search" ? "web" : "feed"),
+        // The agent's blurb is a real summary; fall back to a cleaned snippet of
+        // the feed item's own description so every row carries some substance.
+        blurb:
+          (row["blurb"] as string | null) ??
+          plainTextSnippet(row["summary"] as string | null, 400),
         publishedAt:
           row["published_at"] === null
             ? undefined
             : new Date(Number(row["published_at"])).toISOString(),
+        // Epoch ms when WE first ingested it — lets the reader flag "new since
+        // your last visit" independent of the story's own publish date.
+        fetchedAt: Number(row["fetched_at"]),
         briefedIn: (row["briefed_in"] as string | null) ?? undefined,
         read: Number(row["read"]) === 1,
       })),
@@ -941,6 +1025,7 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
     const briefingId = stringArg(args, "briefingId");
     const tldr = stringArg(args, "tldr");
     if (!briefingId || !tldr) return { error: "briefingId and tldr are required" };
+    const sourcesRead = numberArg(args, "sourcesRead");
     const briefing = this.briefingState(channelId, briefingId);
     if (!briefing) return { error: `unknown briefing: ${briefingId}` };
 
@@ -973,7 +1058,9 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
       keptIds.add(story.articleId);
     }
 
-    // Search-found stories become first-class articles (deduped by URL).
+    // Search-found stories become first-class articles (deduped by URL). The
+    // agent is instructed to cite concrete articles; reject the obvious
+    // search/listing offenders here as defense in depth.
     let searchStoryCount = 0;
     for (const entry of Array.isArray(args["searchStories"]) ? args["searchStories"] : []) {
       if (searchStoryCount >= MAX_SEARCH_STORIES_PER_BRIEFING) break;
@@ -982,6 +1069,7 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
       const title = stringArg(item, "title");
       if (!url || !title) continue;
       if (!isHttpUrl(url)) continue;
+      if (isLikelySearchOrIndexUrl(url)) continue;
       let id: string;
       try {
         id = await canonicalArticleId(url);
@@ -989,11 +1077,14 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
         continue;
       }
       if (keptIds.has(id)) continue;
+      const source = stringArg(item, "source");
+      const blurb = stringArg(item, "blurb");
       await this.syncEngine.insertArticle(channelId, {
         url,
         title,
         origin: "search",
-        blurb: stringArg(item, "blurb"),
+        ...(source ? { source } : {}),
+        ...(blurb ? { blurb } : {}),
       });
       keptIds.add(id);
       searchStoryCount += 1;
@@ -1001,18 +1092,19 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
         articleId: id,
         url,
         title,
-        source: stringArg(item, "source") ?? "web search",
+        source: source ?? "web search",
         origin: "search",
         score: 0,
-        blurb: stringArg(item, "blurb"),
+        ...(blurb ? { blurb } : {}),
       });
     }
 
     const now = this.now();
     this.sql.exec(
-      `UPDATE news_briefings SET status = 'ready', tldr = ?, story_ids_json = ? WHERE channel_id = ? AND briefing_id = ?`,
+      `UPDATE news_briefings SET status = 'ready', tldr = ?, story_ids_json = ?, sources_read = ? WHERE channel_id = ? AND briefing_id = ?`,
       tldr,
       JSON.stringify(kept.map((story) => story.articleId)),
+      sourcesRead ?? null,
       channelId,
       briefingId
     );
@@ -1046,15 +1138,45 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
       stories: kept,
       articleCountScanned: briefing.articleCountScanned,
       newSinceLastRun: briefing.newSinceLastRun,
+      ...(sourcesRead !== undefined ? { sourcesRead } : {}),
     });
+    // Only scheduled/cold-start briefings notify; a manual "Brief me now" is silent.
+    const notifyRow = this.sql
+      .exec(
+        `SELECT notify FROM news_briefings WHERE channel_id = ? AND briefing_id = ?`,
+        channelId,
+        briefingId
+      )
+      .toArray()[0];
+    if (Number(notifyRow?.["notify"] ?? 1) !== 0) {
+      this.notifyBriefingReady(kept, sourcesRead);
+    }
     return { published: briefingId, storyCount: kept.length, at: new Date(now).toISOString() };
+  }
+
+  /** Proactive "your briefing is ready" shell notification. Best-effort — a
+   *  notification failure must never fail the briefing. */
+  private notifyBriefingReady(stories: NewsStoryRef[], sourcesRead?: number): void {
+    if (stories.length === 0) return;
+    const headlines = stories.slice(0, 3).map((story) => story.title);
+    const more = stories.length > headlines.length ? ` +${stories.length - headlines.length} more` : "";
+    const readNote =
+      sourcesRead && sourcesRead > 0 ? ` · ${sourcesRead} source${sourcesRead > 1 ? "s" : ""} read` : "";
+    this.notifications
+      .show({
+        type: "info",
+        title: `📰 Your briefing is ready — ${stories.length} stor${stories.length > 1 ? "ies" : "y"}${readNote}`,
+        message: `${headlines.join(" · ")}${more}`,
+        ttl: 12_000,
+      })
+      .catch((err) => console.warn("[NewsAgent] briefing notification failed:", err));
   }
 
   async briefingHistory(channelId: string, args: Record<string, unknown>): Promise<unknown> {
     const limit = Math.min(numberArg(args, "limit") ?? 5, 50);
     const rows = this.sql
       .exec(
-        `SELECT briefing_id, created_at, status, tldr FROM news_briefings
+        `SELECT briefing_id, created_at, status, tldr, sources_read FROM news_briefings
          WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?`,
         channelId,
         limit
@@ -1066,6 +1188,7 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
         createdAt: new Date(Number(row["created_at"])).toISOString(),
         status: String(row["status"]),
         tldr: (row["tldr"] as string | null) ?? undefined,
+        sourcesRead: row["sources_read"] === null ? undefined : Number(row["sources_read"]),
       })),
     };
   }
@@ -1135,13 +1258,89 @@ export class NewsAgentWorker extends AgentWorkerBase implements NewsHandlers {
     return { markedRead: ids.length };
   }
 
+  /** Reader tap that teaches curation: more/less of this kind, or mute the
+   *  source. Signals are folded into every future briefing prompt; muting also
+   *  disables the feed so it stops being polled. */
+  async reactToStory(channelId: string, args: Record<string, unknown>): Promise<unknown> {
+    const idOrPrefix = stringArg(args, "articleId");
+    const reaction = stringArg(args, "reaction");
+    if (!idOrPrefix || (reaction !== "more" && reaction !== "less" && reaction !== "mute_source")) {
+      return { error: "articleId and reaction ('more' | 'less' | 'mute_source') are required" };
+    }
+    const row = this.sql
+      .exec(
+        `SELECT a.article_id, a.title, a.feed_id, a.source, a.origin, f.title AS feed_title
+         FROM news_articles a
+         LEFT JOIN news_feeds f ON f.channel_id = a.channel_id AND f.feed_id = a.feed_id
+         WHERE a.channel_id = ? AND (a.article_id = ? OR a.article_id LIKE ? || '%') LIMIT 1`,
+        channelId,
+        idOrPrefix,
+        idOrPrefix
+      )
+      .toArray()[0];
+    if (!row) return { error: `unknown article: ${idOrPrefix}` };
+    const articleId = String(row["article_id"]);
+    const title = String(row["title"]);
+    const source =
+      (row["feed_title"] as string | null) ??
+      (row["source"] as string | null) ??
+      (String(row["origin"]) === "search" ? "web search" : "feed");
+    const feedId = (row["feed_id"] as string | null) ?? undefined;
+    const now = this.now();
+    const shortTitle = title.length > 80 ? `${title.slice(0, 80)}…` : title;
+
+    if (reaction === "mute_source") {
+      if (feedId) {
+        this.sql.exec(
+          `UPDATE news_feeds SET enabled = 0 WHERE channel_id = ? AND feed_id = ?`,
+          channelId,
+          feedId
+        );
+      }
+      this.addFeedback(channelId, { at: now, reaction: "avoid", label: source, source });
+      this.sql.exec(
+        `UPDATE news_articles SET read = 1 WHERE channel_id = ? AND article_id = ?`,
+        channelId,
+        articleId
+      );
+      await this.publishSetupCard(channelId);
+      return { muted: source, feedDisabled: Boolean(feedId) };
+    }
+
+    this.addFeedback(channelId, { at: now, reaction, label: shortTitle, source });
+    if (reaction === "less") {
+      this.sql.exec(
+        `UPDATE news_articles SET read = 1 WHERE channel_id = ? AND article_id = ?`,
+        channelId,
+        articleId
+      );
+    }
+    return { recorded: reaction, articleId };
+  }
+
   async refreshNow(channelId: string, args: Record<string, unknown>): Promise<unknown> {
     await this.runPoll(channelId, { force: true });
     if (booleanArg(args, "briefing")) {
-      await this.runBriefing(channelId);
+      // Manual "Brief me now" — the reader is right here, so stay silent.
+      await this.runBriefing(channelId, { notify: false });
+      // A manual briefing runs outside the scheduler (which only realigns jobs
+      // it fires), so push the next scheduled briefing to the normal cadence —
+      // otherwise an early cold-start slot could fire a duplicate minutes later.
+      this.rescheduleNextBriefing(channelId);
       return { polled: true, briefingStarted: true };
     }
     return { polled: true, unbriefed: this.syncEngine.countUnbriefed(channelId) };
+  }
+
+  /** Advance the briefing job to its next normal run (cadence/anchor aware). */
+  private rescheduleNextBriefing(channelId: string): void {
+    const state = this.getChannelState(channelId);
+    this.scheduler.upsertJob({
+      jobId: `briefing:${channelId}`,
+      channelId,
+      intervalMs: state.briefingIntervalMs,
+      nextRunAt: nextBriefingRunAt(this.now(), state.briefingIntervalMs, state.briefingAtMinutes),
+    });
   }
 
   async requestDeepDive(channelId: string, args: Record<string, unknown>): Promise<unknown> {
@@ -1193,4 +1392,49 @@ function isHttpUrl(raw: string): boolean {
   } catch {
     return false;
   }
+}
+
+const SEARCH_ENGINE_HOSTS = new Set([
+  "google.com",
+  "news.google.com",
+  "bing.com",
+  "duckduckgo.com",
+  "search.brave.com",
+  "search.yahoo.com",
+  "yandex.com",
+  "baidu.com",
+]);
+
+/**
+ * Reject obvious non-article URLs the agent should never cite as a source:
+ * search-engine result pages, on-site search endpoints, and bare homepages.
+ * Conservative on purpose — section/listing pages that look like real article
+ * paths are left to the prompt's judgment rather than guessed at here.
+ */
+function isLikelySearchOrIndexUrl(raw: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  const host = url.hostname.replace(/^www\./, "").toLowerCase();
+  if (SEARCH_ENGINE_HOSTS.has(host)) return true;
+  if (/(^|\/)search(\/|$)/i.test(url.pathname)) return true;
+  if (url.searchParams.has("q") || url.searchParams.has("query")) return true;
+  const path = url.pathname.replace(/\/+$/, "");
+  if (path === "") return true; // bare homepage — not a specific article
+  return false;
+}
+
+/** Best-effort plain-text snippet from a possibly-HTML feed summary. */
+function plainTextSnippet(raw: string | null | undefined, max: number): string | undefined {
+  if (!raw) return undefined;
+  const text = raw
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&[a-z]+;|&#\d+;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return undefined;
+  return text.length > max ? `${text.slice(0, max).trimEnd()}…` : text;
 }

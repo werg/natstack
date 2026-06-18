@@ -143,6 +143,8 @@ export class NewsSyncEngine {
       feedId?: string;
       origin: "feed" | "search";
       blurb?: string;
+      /** Display source/publication for search articles (feed articles use the feed title). */
+      source?: string;
     }
   ): Promise<boolean> {
     let canonical: string;
@@ -156,8 +158,8 @@ export class NewsSyncEngine {
     const before = this.countArticles(channelId);
     this.deps.sql.exec(
       `INSERT OR IGNORE INTO news_articles
-         (channel_id, article_id, feed_id, origin, canonical_url, title, title_sim_key, summary, author, published_at, fetched_at, blurb)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (channel_id, article_id, feed_id, origin, canonical_url, title, title_sim_key, summary, author, source, published_at, fetched_at, blurb)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       channelId,
       id,
       item.feedId ?? null,
@@ -167,6 +169,7 @@ export class NewsSyncEngine {
       titleSimilarityKey(item.title),
       item.summary ?? null,
       item.author ?? null,
+      item.source ?? null,
       item.publishedAt ?? null,
       this.deps.now(),
       item.blurb ?? null
@@ -180,7 +183,7 @@ export class NewsSyncEngine {
     const rows = this.deps.sql
       .exec(
         `SELECT a.article_id, a.canonical_url, a.title, a.summary, a.published_at, a.fetched_at,
-                a.origin, a.read, a.blurb, f.title AS feed_title, f.weight AS feed_weight
+                a.origin, a.read, a.blurb, a.source, f.title AS feed_title, f.weight AS feed_weight
          FROM news_articles a
          LEFT JOIN news_feeds f ON f.channel_id = a.channel_id AND f.feed_id = a.feed_id
          WHERE a.channel_id = ? AND a.briefed_in IS NULL AND a.read = 0`,
@@ -201,6 +204,7 @@ export class NewsSyncEngine {
         title: String(row["title"]),
         source:
           (row["feed_title"] as string | null) ??
+          (row["source"] as string | null) ??
           (String(row["origin"]) === "search" ? "web search" : "feed"),
         origin: String(row["origin"]) === "search" ? "search" : "feed",
         publishedAt:
