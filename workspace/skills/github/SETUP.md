@@ -87,14 +87,15 @@ await requestGitHubTokenCredential({
 Choose the token mode only when the user needs something other than the
 friendly access levels:
 
-   - API only: GitHub API calls such as issues, pull requests, contents API, or
-     Actions reads.
-   - Git clone/pull/push: direct repository transport through
-     `credentials.gitHttp()`.
-   - API and Git: both of the above.
-   Shared workspace remotes can be declared later with
-   `git.setSharedRemote("panels/name", { name: "origin", url })`; that commits
-   `meta/natstack.yml` and propagates the remote into workspace contexts.
+- API only: GitHub API calls such as issues, pull requests, contents API, or
+  Actions reads.
+- Git clone/pull/push: direct repository transport through
+  `credentials.gitHttp()`.
+- API and Git: both of the above.
+  Shared workspace remotes can be declared later with
+  `git.setSharedRemote("panels/name", { name: "origin", url, branch })`; that
+  commits `meta/natstack.yml`, propagates the remote into workspace contexts,
+  and lets missing configured repos auto-import on startup.
 
 ## Example Eval
 
@@ -112,7 +113,10 @@ if (before.stage === "needs-token") {
     accessLevel: "read-only",
   });
   const verification = await verifyGitHubCredential(stored.id);
-  const gitVerification = await verifyGitHubGitRemoteAccess("https://github.com/owner/repo.git", stored.id);
+  const gitVerification = await verifyGitHubGitRemoteAccess(
+    "https://github.com/owner/repo.git",
+    stored.id
+  );
   return { before, stored, verification, gitVerification };
 }
 
@@ -160,11 +164,7 @@ import {
   Separator,
   Text,
 } from "@radix-ui/themes";
-import {
-  CheckCircledIcon,
-  GlobeIcon,
-  OpenInNewWindowIcon,
-} from "@radix-ui/react-icons";
+import { CheckCircledIcon, GlobeIcon, OpenInNewWindowIcon } from "@radix-ui/react-icons";
 import {
   buildGitHubTokenSettingsUrl,
   openGitHubTokenSettings,
@@ -172,7 +172,11 @@ import {
 } from "@workspace-skills/github";
 
 const accessLevels = [
-  ["read-only", "Read Only", "Inspect repositories, issues, PRs, Actions, and clone/pull without changing code."],
+  [
+    "read-only",
+    "Read Only",
+    "Inspect repositories, issues, PRs, Actions, and clone/pull without changing code.",
+  ],
   ["collaborate", "Collaborate", "Make normal code/content changes and work with issues and PRs."],
   ["code-workflows", "Code + Workflows", "Collaborate and edit GitHub Actions workflow files."],
   ["broad", "Broad", "High-trust access. Use with All repositories or a classic PAT."],
@@ -204,7 +208,8 @@ export default function GitHubSetup({ onSubmit, onCancel }) {
         <Box>
           <Heading size="4">GitHub access</Heading>
           <Text size="2" color="gray">
-            Choose a token style and access level, then save the generated token in NatStack's trusted prompt.
+            Choose a token style and access level, then save the generated token in NatStack's
+            trusted prompt.
           </Text>
         </Box>
         <Badge color={tokenKind === "classic" ? "amber" : "green"} variant="soft">
@@ -213,25 +218,42 @@ export default function GitHubSetup({ onSubmit, onCancel }) {
       </Flex>
 
       <Box>
-        <Text size="2" weight="bold">Token style</Text>
-        <RadioCards.Root value={tokenKind} onValueChange={setTokenKind} columns={{ initial: "1", sm: "2" }} mt="2">
+        <Text size="2" weight="bold">
+          Token style
+        </Text>
+        <RadioCards.Root
+          value={tokenKind}
+          onValueChange={setTokenKind}
+          columns={{ initial: "1", sm: "2" }}
+          mt="2"
+        >
           <RadioCards.Item value="fine-grained">
             <Flex direction="column" gap="1">
-              <Text size="2" weight="bold">Fine-grained</Text>
-              <Text size="1" color="gray">Recommended. Prefills GitHub's permission fields.</Text>
+              <Text size="2" weight="bold">
+                Fine-grained
+              </Text>
+              <Text size="1" color="gray">
+                Recommended. Prefills GitHub's permission fields.
+              </Text>
             </Flex>
           </RadioCards.Item>
           <RadioCards.Item value="classic">
             <Flex direction="column" gap="1">
-              <Text size="2" weight="bold">Classic broad</Text>
-              <Text size="1" color="gray">Legacy blanket scopes such as repo. Choose only when needed.</Text>
+              <Text size="2" weight="bold">
+                Classic broad
+              </Text>
+              <Text size="1" color="gray">
+                Legacy blanket scopes such as repo. Choose only when needed.
+              </Text>
             </Flex>
           </RadioCards.Item>
         </RadioCards.Root>
       </Box>
 
       <Box>
-        <Text size="2" weight="bold">Access level</Text>
+        <Text size="2" weight="bold">
+          Access level
+        </Text>
         <Grid columns={{ initial: "1", sm: "2" }} gap="2" mt="2">
           {accessLevels.map(([value, label, description]) => (
             <Button
@@ -241,7 +263,9 @@ export default function GitHubSetup({ onSubmit, onCancel }) {
               style={{ justifyContent: "flex-start", minHeight: 52 }}
             >
               <Flex direction="column" align="start" gap="1">
-                <Text size="2" weight="bold">{label}</Text>
+                <Text size="2" weight="bold">
+                  {label}
+                </Text>
                 <Text size="1">{description}</Text>
               </Flex>
             </Button>
@@ -251,12 +275,21 @@ export default function GitHubSetup({ onSubmit, onCancel }) {
 
       <Box style={{ border: "1px solid var(--gray-6)", borderRadius: 8, padding: 12 }}>
         <Flex direction="column" gap="2">
-          <Text size="2" weight="bold">GitHub page</Text>
-          <Text size="1" color="gray" style={{ overflowWrap: "anywhere" }}>{tokenUrl}</Text>
+          <Text size="2" weight="bold">
+            GitHub page
+          </Text>
+          <Text size="1" color="gray" style={{ overflowWrap: "anywhere" }}>
+            {tokenUrl}
+          </Text>
           {tokenKind === "classic" ? (
-            <Text size="1" color="amber">On GitHub, select the repo scope for broad private-repository access.</Text>
+            <Text size="1" color="amber">
+              On GitHub, select the repo scope for broad private-repository access.
+            </Text>
           ) : (
-            <Text size="1" color="gray">GitHub will prefill the supported permission fields. Choose selected repositories or All repositories on GitHub.</Text>
+            <Text size="1" color="gray">
+              GitHub will prefill the supported permission fields. Choose selected repositories or
+              All repositories on GitHub.
+            </Text>
           )}
           <Flex gap="2" wrap="wrap">
             <Button size="1" variant="soft" onClick={() => openTokenPage("internal")}>
@@ -272,7 +305,9 @@ export default function GitHubSetup({ onSubmit, onCancel }) {
       <Separator size="4" />
 
       <Flex justify="end" gap="2" wrap="wrap">
-        <Button variant="soft" color="gray" onClick={onCancel}>Cancel</Button>
+        <Button variant="soft" color="gray" onClick={onCancel}>
+          Cancel
+        </Button>
         <Button disabled={saving} onClick={saveToken}>
           <CheckCircledIcon /> Save token
         </Button>

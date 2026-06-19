@@ -88,22 +88,25 @@ your context head and project it to disk, so rebuilt panels, workers, packages,
 or skills pick it up with no separate commit step. Use `git` only for external
 project import, shared remotes, and build-event lookup. For external Git smart
 HTTP, construct `GitClient` from `@natstack/git` with `credentials.gitHttp()`.
+For workspace-managed external repo declarations, startup auto-import, branches,
+approvals, and private repo retries, see
+`skills/onboarding/EXTERNAL_GIT_PROJECTS.md`.
 
 ### Workspace VCS Call Shape
 
 The `vcs` API is state-based, not cwd-based. Do not pass the workspace root,
 `process.cwd()`, or a repo path to methods that ask for a head/ref or state hash.
 
-| Task | Call shape |
-| --- | --- |
-| Current context status | `await vcs.status()` |
-| Status for a materialized head | `await vcs.status("main")`, `await vcs.status("ctx:...")` |
-| Log current context/head | `await vcs.log()` or `await vcs.log(20)` |
-| Resolve a head to a state hash | `(await vcs.resolveHead("main")).stateHash` |
-| Diff two states | `await vcs.diff(leftStateHash, rightStateHash)` |
-| Read from current context/head | `await vcs.readFile("", "path/to/file.txt")` |
-| Apply an edit (commits + projects atomically) | `await vcs.applyEdits({ baseStateHash, edits: [...] })` |
-| Check unpublished context changes | `await vcs.publishStatus()` |
+| Task                                          | Call shape                                                |
+| --------------------------------------------- | --------------------------------------------------------- |
+| Current context status                        | `await vcs.status()`                                      |
+| Status for a materialized head                | `await vcs.status("main")`, `await vcs.status("ctx:...")` |
+| Log current context/head                      | `await vcs.log()` or `await vcs.log(20)`                  |
+| Resolve a head to a state hash                | `(await vcs.resolveHead("main")).stateHash`               |
+| Diff two states                               | `await vcs.diff(leftStateHash, rightStateHash)`           |
+| Read from current context/head                | `await vcs.readFile("", "path/to/file.txt")`              |
+| Apply an edit (commits + projects atomically) | `await vcs.applyEdits({ baseStateHash, edits: [...] })`   |
+| Check unpublished context changes             | `await vcs.publishStatus()`                               |
 
 `vcs.status` reports a head's unpublished changes vs `main` — a GAD state-diff,
 not filesystem dirtiness. Editing a file does not make `vcs.status` report
@@ -316,7 +319,7 @@ right trust scope and audit model.
 Workspace runtime source is activated from committed GAD states, and edits are
 edit-first: the `edit`/`write` tools and `vcs.applyEdits` apply each change as
 one atomic GAD transition on your context head and project it to disk. The edit
-*is* the commit — there is no separate commit step. Each applied change advances
+_is_ the commit — there is no separate commit step. Each applied change advances
 effective versions, triggers rebuilds, and is immediately visible to workspace
 runtime units. Do not edit source through `fs.writeFile` and expect it to build:
 the worktree is a disposable projection, and builds read GAD state, so source

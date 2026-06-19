@@ -59,9 +59,7 @@ const stored = await credentials.requestCredentialInput({
     },
     metadata: { providerId: "example" },
   },
-  fields: [
-    { name: "token", label: "Token", type: "secret", required: true },
-  ],
+  fields: [{ name: "token", label: "Token", type: "secret", required: true }],
   material: { type: "bearer-token", tokenField: "token" },
 });
 ```
@@ -96,14 +94,14 @@ const stored = await credentials.connect({
 
 ### Choosing an OAuth flow type
 
-| Flow | When to use |
-|---|---|
-| `oauth2-auth-code-pkce` | Default. Provider supports public PKCE clients. Most modern providers. |
-| `oauth2-auth-code` | Legacy. Requires `pkce: false` and `compatibilityReason`. Avoid unless the provider rejects PKCE. |
-| `oauth2-device-code` | Provider issues a short code the user types into a verification page. Best fallback when redirect-based flows can't reach the server — e.g., providers that won't accept a Tailscale `*.ts.net` redirect URI, headless installs, environments without app-link infrastructure. |
-| `oauth2-client-credentials` | Server-to-server. No user identity. |
-| `oauth2-jwt-bearer` / `oauth2-token-exchange` | Federated / STS-style. |
-| `oauth1a` | Legacy providers (some Twitter/X API surfaces). |
+| Flow                                          | When to use                                                                                                                                                                                                                                                                    |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `oauth2-auth-code-pkce`                       | Default. Provider supports public PKCE clients. Most modern providers.                                                                                                                                                                                                         |
+| `oauth2-auth-code`                            | Legacy. Requires `pkce: false` and `compatibilityReason`. Avoid unless the provider rejects PKCE.                                                                                                                                                                              |
+| `oauth2-device-code`                          | Provider issues a short code the user types into a verification page. Best fallback when redirect-based flows can't reach the server — e.g., providers that won't accept a Tailscale `*.ts.net` redirect URI, headless installs, environments without app-link infrastructure. |
+| `oauth2-client-credentials`                   | Server-to-server. No user identity.                                                                                                                                                                                                                                            |
+| `oauth2-jwt-bearer` / `oauth2-token-exchange` | Federated / STS-style.                                                                                                                                                                                                                                                         |
+| `oauth1a`                                     | Legacy providers (some Twitter/X API surfaces).                                                                                                                                                                                                                                |
 
 ### Device-code flow
 
@@ -174,6 +172,7 @@ import { git } from "@workspace/runtime";
 await git.setSharedRemote("panels/my-panel", {
   name: "origin",
   url: "https://github.com/owner/my-panel.git",
+  branch: "main",
 });
 ```
 
@@ -183,13 +182,26 @@ For an external repository that should live under workspace source, use
 ```ts
 await git.importProject({
   path: "skills/example",
-  remote: { name: "origin", url: "https://github.com/owner/example.git" },
+  remote: {
+    name: "origin",
+    url: "https://github.com/owner/example.git",
+    branch: "feature/workspace-integration",
+  },
+  branch: "feature/workspace-integration",
+  credentialId: "cred_github_...",
 });
 ```
 
 Repos declared in `meta/natstack.yml` are imported automatically at startup.
 Use `git.completeWorkspaceDependencies()` as an explicit retry/backfill when a
-configured workspace repo is still missing.
+configured workspace repo is still missing. For private repos, pass a
+credential id on the retry call because startup auto-import has no interactive
+`credentialId` argument.
+
+`git.importProject()` uses one workspace config approval showing the destination
+path, remote URL, and branch. The durable declaration is written to
+`meta/natstack.yml` before clone so a failed clone can be retried from config.
+For the full model, see `skills/onboarding/EXTERNAL_GIT_PROJECTS.md`.
 
 ## Provider Setup UI Pattern
 
@@ -205,7 +217,9 @@ export default function ProviderSetup({ onSubmit, onCancel }) {
 
   return (
     <Flex direction="column" gap="3" p="2">
-      <Text size="2" weight="bold">Provider setup</Text>
+      <Text size="2" weight="bold">
+        Provider setup
+      </Text>
       <Flex align="center" justify="between" gap="3" wrap="wrap">
         <Flex align="center" gap="2">
           <Checkbox checked={done} onCheckedChange={(checked) => setDone(checked === true)} />
@@ -221,8 +235,12 @@ export default function ProviderSetup({ onSubmit, onCancel }) {
         </Flex>
       </Flex>
       <Flex justify="end" gap="2">
-        <Button variant="soft" color="gray" onClick={onCancel}>Cancel</Button>
-        <Button disabled={!done} onClick={() => onSubmit({ ready: true })}>Continue</Button>
+        <Button variant="soft" color="gray" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button disabled={!done} onClick={() => onSubmit({ ready: true })}>
+          Continue
+        </Button>
       </Flex>
     </Flex>
   );

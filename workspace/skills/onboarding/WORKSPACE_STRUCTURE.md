@@ -50,7 +50,9 @@ Like every other source directory, `meta/` is tracked by workspace VCS. This mea
 - External git remotes declared under `git.remotes` are imported at startup
   when missing, then materialized into `.git/config` for interop checkouts. Prefer
   `git.setSharedRemote(path, { name, url })` for targeted approval and
-  propagation instead of editing a context-local remote by hand.
+  propagation instead of editing a context-local remote by hand. See
+  [EXTERNAL_GIT_PROJECTS.md](EXTERNAL_GIT_PROJECTS.md) for config shape,
+  approvals, branch declarations, and private repo retry behavior.
 
 ## Context Folders
 
@@ -111,6 +113,10 @@ Plain projects are still external Git-backed projects when imported that way:
   backfill operation.
 - They are not launchable runtime units and do not become `@workspace/*`
   packages.
+
+For branch-aware declarations, import approvals, startup auto-import, and
+credentialed private repo retries, see
+[EXTERNAL_GIT_PROJECTS.md](EXTERNAL_GIT_PROJECTS.md).
 
 ## Template vs Live Workspace
 

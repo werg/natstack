@@ -58,9 +58,9 @@ PATs do not cover, such as Checks API writes.
      `openPanel(url, { focus: true })`.
    - External: `openGitHubTokenSettings({ tokenKind, accessLevel, browser: "external" })` or
      `openExternal(url)`.
-   If the agent opens an internal browser panel only to guide setup or verify a
-   page, keep the handle and close it when that step is complete. Leave it open
-   only when the user needs to continue interacting with GitHub in that panel.
+     If the agent opens an internal browser panel only to guide setup or verify a
+     page, keep the handle and close it when that step is complete. Leave it open
+     only when the user needs to continue interacting with GitHub in that panel.
 5. Call `requestGitHubTokenCredential()` so the shell-owned approval UI collects
    the PAT. Do not ask the user to paste the PAT into chat or a panel-owned form.
    Access levels choose the right mode automatically. Use explicit
@@ -152,8 +152,7 @@ only when raw isomorphic-git HEAD/WORKDIR/STAGE tuples are needed.
 
 To make a GitHub remote available to future workspace contexts, configure it as
 a shared remote instead of only editing the current context's `.git/config`.
-This uses a targeted approval prompt and commits the declaration to
-`meta/natstack.yml`:
+This records the declaration in `meta/natstack.yml`:
 
 ```ts
 import { git } from "@workspace/runtime";
@@ -197,19 +196,26 @@ await git.importProject({
 ```
 
 Supported parent directories are `panels`, `packages`, `agents`, `workers`,
-`skills`, `about`, `templates`, and `projects`. `git.importProject()` clones
-into canonical workspace source, records the shared remote in
-`meta/natstack.yml`, and makes the repo available to future contexts. It may
-also prompt to use the selected GitHub credential for the clone.
+`skills`, `about`, `templates`, and `projects`. `git.importProject()` uses one
+workspace config approval showing destination path, remote URL, and branch;
+then it records the shared remote in `meta/natstack.yml`, clones into canonical
+workspace source, and makes the repo available to future contexts. It may also
+prompt to use the selected GitHub credential for the clone.
 
 Repos declared in `meta/natstack.yml` are imported automatically at startup.
 Use `git.completeWorkspaceDependencies()` as an explicit retry/backfill when a
-configured workspace repo is still missing:
+configured workspace repo is still missing. For private repos, pass the GitHub
+credential id on this retry path because startup auto-import has no interactive
+`credentialId` argument:
 
 ```ts
 const result = await git.completeWorkspaceDependencies({ credentialId: "cred_github_..." });
 console.log(result.imported, result.skipped, result.failed);
 ```
+
+For the full external-project model, including string vs `{ url, branch }`
+config declarations, see
+`skills/onboarding/EXTERNAL_GIT_PROJECTS.md`.
 
 ## Permission Presets
 

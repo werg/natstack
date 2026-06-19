@@ -318,9 +318,7 @@ import { rpc } from "@workspace/runtime";
 return {
   recent: await rpc.call("main", "build.listRecentBuildEvents", []),
   forUnit: await rpc.call("main", "build.listRecentBuildEvents", ["panels/example"]),
-  unit: await rpc.call("main", "build.inspectBuildProvenance", [
-    "panels/example",
-  ]),
+  unit: await rpc.call("main", "build.inspectBuildProvenance", ["panels/example"]),
 };
 ```
 
@@ -359,22 +357,22 @@ For each failure, determine the root cause category and act accordingly:
 
 ## Phase 4: Identify Files to Change
 
-| Symptom                     | Likely files                                                                                       |
-| --------------------------- | -------------------------------------------------------------------------------------------------- |
-| fs operation failed         | `src/server/services/fsService.ts`, `workspace/packages/runtime/src/panel/fs.ts`                   |
-| DO storage operation failed | `src/server/internalDOs/*`, `workspace/packages/runtime/src/worker/durable-base.ts`                |
-| GAD VCS operation failed    | `src/server/services/vcsService.ts`, `src/server/gadVcs/`, `workspace/packages/runtime/src/shared/vcsClient.ts` |
-| external Git operation failed | `packages/git/src/client.ts`, `src/server/services/gitInteropService.ts`                         |
-| Build failed                | `src/server/buildV2/`, `build.mjs`                                                                 |
-| Worker/DO issue             | `src/server/services/workerService.ts`, `workspace/packages/runtime/src/worker/`                   |
-| Panel lifecycle             | `src/main/panelOrchestrator.ts`, `src/server/services/bridgeService.ts`                            |
-| Credential/OAuth error      | `src/server/services/credentialService.ts`, `workspace/packages/runtime/src/shared/credentials.ts` |
-| Harness crash               | `workspace/packages/harness/src/entry.ts`, `src/server/harnessManager.ts`                          |
-| PubSub issue                | `workspace/packages/pubsub/src/`, `workspace/workers/pubsub-channel/`                              |
-| Skill import                | `src/server/buildV2/`, package.json exports                                                        |
-| Agent behavior              | `workspace/workers/agent-worker/ai-chat-worker.ts`, harness config                                 |
-| RPC routing                 | `src/shared/serviceDispatcher.ts`, `packages/rpc/src/`                                             |
-| Error swallowed             | Search for `.catch(` and empty catch blocks near the failure site                                  |
+| Symptom                       | Likely files                                                                                                    |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| fs operation failed           | `src/server/services/fsService.ts`, `workspace/packages/runtime/src/panel/fs.ts`                                |
+| DO storage operation failed   | `src/server/internalDOs/*`, `workspace/packages/runtime/src/worker/durable-base.ts`                             |
+| GAD VCS operation failed      | `src/server/services/vcsService.ts`, `src/server/gadVcs/`, `workspace/packages/runtime/src/shared/vcsClient.ts` |
+| external Git operation failed | `packages/git/src/client.ts`, `src/server/services/gitInteropService.ts`                                        |
+| Build failed                  | `src/server/buildV2/`, `build.mjs`                                                                              |
+| Worker/DO issue               | `src/server/services/workerService.ts`, `workspace/packages/runtime/src/worker/`                                |
+| Panel lifecycle               | `src/main/panelOrchestrator.ts`, `src/server/services/bridgeService.ts`                                         |
+| Credential/OAuth error        | `src/server/services/credentialService.ts`, `workspace/packages/runtime/src/shared/credentials.ts`              |
+| Harness crash                 | `workspace/packages/harness/src/entry.ts`, `src/server/harnessManager.ts`                                       |
+| PubSub issue                  | `workspace/packages/pubsub/src/`, `workspace/workers/pubsub-channel/`                                           |
+| Skill import                  | `src/server/buildV2/`, package.json exports                                                                     |
+| Agent behavior                | `workspace/workers/agent-worker/ai-chat-worker.ts`, harness config                                              |
+| RPC routing                   | `src/shared/serviceDispatcher.ts`, `packages/rpc/src/`                                                          |
+| Error swallowed               | Search for `.catch(` and empty catch blocks near the failure site                                               |
 
 ## Phase 5: Prepare an Editable Checkout
 
@@ -451,11 +449,12 @@ restarting NatStack from that checkout or handing the branch to a developer.
 
 Prefer an existing `projects/natstack` workspace repo when it exists. If it
 does not exist yet and the workspace is not dogfood-managed, import it with
-`git.importProject()`. That uses targeted approval copy, clones into canonical
-workspace source, records the shared remote in `meta/natstack.yml`, and
-propagates the repo into contexts. The same API can import panels, packages,
-skills, workers, agents, templates, about pages, and plain projects by choosing
-the destination path.
+`git.importProject()`. That uses one workspace config approval showing the
+destination path, remote URL, and branch; records the shared remote in
+`meta/natstack.yml`; clones into canonical workspace source; and propagates the
+repo into contexts. The same API can import panels, packages, skills, workers,
+agents, templates, about pages, and plain projects by choosing the destination
+path.
 
 ```
 eval({
@@ -472,7 +471,9 @@ eval({
         remote: {
           name: "origin",
           url: "https://github.com/YOUR_ORG/natstack.git",
+          branch: "main",
         },
+        branch: "main",
       });
     }
 
@@ -594,7 +595,8 @@ if (retest.result.passed) {
   `projects/name`.
 - **Use `git.completeWorkspaceDependencies()` as a retry/backfill.** It imports
   each configured remote whose workspace repo is missing and reports imported,
-  skipped, and failed paths.
+  skipped, and failed paths. Pass `{ credentialId }` for private repo retries;
+  startup auto-import has no interactive credential argument.
 - **If an API is confusing, fix the API.** Don't add comments explaining the confusion.
 - **If an error message is unhelpful, fix the error message.** Don't add try/catch wrappers that translate it.
 - **If a service is missing a method, add the method.** Don't chain multiple calls to work around it.
