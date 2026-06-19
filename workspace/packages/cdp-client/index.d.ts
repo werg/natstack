@@ -89,6 +89,8 @@ export interface CdpLocator {
   allTextContents(): Promise<string[]>;
   boundingBox(): Promise<BoundingBox | null>;
   inspect(): Promise<LightweightDomInspection>;
+  /** Playwright-style description, e.g. `getByRole("button", { name: "Go" })`. */
+  toString(): string;
 }
 
 /** A Playwright-style page bound to one CDP target. */
@@ -100,8 +102,12 @@ export interface CdpPage {
   title(): Promise<string>;
   url(): string;
   content(): Promise<string>;
+  /** Set the default timeout (ms) for auto-waiting actions/reads. Default 30000. */
+  setDefaultTimeout(timeoutMs: number): void;
   evaluate(pageFunction: string | ((arg?: unknown) => unknown), arg?: unknown): Promise<unknown>;
+  /** Find by CSS selector. Prefer the `getBy*` helpers for resilient locators. */
   locator(selector: string): CdpLocator;
+  /** Find by ARIA role, optionally narrowed by accessible name. */
   getByRole(role: string, options?: ByRoleOptions): CdpLocator;
   getByText(text: string, options?: ByTextOptions): CdpLocator;
   getByLabel(text: string, options?: ByTextOptions): CdpLocator;
@@ -144,6 +150,12 @@ export class CdpConnection {
   send(method: string, params?: Record<string, unknown>): Promise<unknown>;
   on(method: string, listener: (params: unknown) => void): () => void;
   close(): void;
+}
+
+/** Error thrown by locator actions/reads; the message names the target locator. */
+export class CdpError extends Error {
+  readonly locator?: string;
+  constructor(message: string, options?: { cause?: unknown; locator?: string });
 }
 
 export interface Browser {

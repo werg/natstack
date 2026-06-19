@@ -1,7 +1,7 @@
 import { BrowserImpl } from "./worker";
 
 export { BrowserImpl };
-export { CdpConnection } from "./worker";
+export { CdpConnection, CdpError } from "./worker";
 
 export type Browser = Awaited<ReturnType<typeof BrowserImpl.connect>>;
 

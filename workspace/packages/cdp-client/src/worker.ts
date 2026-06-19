@@ -395,8 +395,65 @@ const KEY_DEFS: Record<string, { keyCode?: number; key?: string; text?: string }
   Space: { keyCode: 32, key: " ", text: " " },
 };
 
+/**
+ * Error thrown by locator actions/reads. `message` names the target locator
+ * (Playwright-style) and the underlying reason; `.locator` holds the rendered
+ * locator string and `.cause` the original error.
+ */
+export class CdpError extends Error {
+  readonly locator?: string;
+  constructor(message: string, options?: { cause?: unknown; locator?: string }) {
+    super(message);
+    this.name = "CdpError";
+    this.locator = options?.locator;
+    if (options?.cause !== undefined) (this as { cause?: unknown }).cause = options.cause;
+  }
+}
+
+/** Render a locator descriptor as a Playwright-style string for errors/toString(). */
+function describeLocator(descriptor: LocatorDescriptor): string {
+  const q = (s: string) => JSON.stringify(s);
+  const parts = descriptor.steps.map((step) => {
+    if ("filter" in step) {
+      return `filter(${
+        step.filter.hasText != null ? `{ hasText: ${q(step.filter.hasText)} }` : "{}"
+      })`;
+    }
+    if ("nth" in step) {
+      if (step.nth === 0) return "first()";
+      if (step.nth === -1) return "last()";
+      return `nth(${step.nth})`;
+    }
+    const exact = "exact" in step && step.exact ? ", { exact: true }" : "";
+    switch (step.by) {
+      case "css":
+        return `locator(${q(step.value)})`;
+      case "role": {
+        const opts: string[] = [];
+        if (step.name != null) opts.push(`name: ${q(step.name)}`);
+        if (step.exact) opts.push("exact: true");
+        return `getByRole(${q(step.value)}${opts.length ? `, { ${opts.join(", ")} }` : ""})`;
+      }
+      case "text":
+        return `getByText(${q(step.value)}${exact})`;
+      case "label":
+        return `getByLabel(${q(step.value)}${exact})`;
+      case "placeholder":
+        return `getByPlaceholder(${q(step.value)}${exact})`;
+      case "testid":
+        return `getByTestId(${q(step.value)})`;
+      case "alt":
+        return `getByAltText(${q(step.value)}${exact})`;
+      case "title":
+        return `getByTitle(${q(step.value)}${exact})`;
+    }
+  });
+  return parts.length ? parts.join(".") : "locator()";
+}
+
 class WorkerCdpPage {
   private currentUrl = "";
+  private defaultTimeout = 30_000;
   private readonly consoleBuffer: LightweightConsoleEvent[] = [];
 
   constructor(readonly connection: CdpConnection) {
@@ -466,6 +523,11 @@ class WorkerCdpPage {
     return String((await this.evaluate(() => document.documentElement?.outerHTML ?? "")) ?? "");
   }
 
+  /** Set the default timeout (ms) used by auto-waiting actions/reads. Default 30000. */
+  setDefaultTimeout(timeoutMs: number): void {
+    this.defaultTimeout = timeoutMs;
+  }
+
   // ---- Evaluate ---------------------------------------------------------
   async evaluate(
     pageFunction: string | ((arg?: unknown) => unknown),
@@ -486,7 +548,7 @@ class WorkerCdpPage {
     return result.result?.value;
   }
 
-  /** Run an in-page op against a locator descriptor. */
+  /** Run an in-page op against a locator descriptor; failures name the locator. */
   async runLocatorOp(
     op: string,
     descriptor: LocatorDescriptor,
@@ -497,13 +559,19 @@ class WorkerCdpPage {
       op,
       descriptor,
       arg: arg ?? null,
-      timeout: opts.timeout ?? 30_000,
+      timeout: opts.timeout ?? this.defaultTimeout,
       state: opts.state ?? null,
     };
     const expr = `(async function(P){ ${INPAGE}\n return await __nsRun(P); })(${JSON.stringify(
       payload
     )})`;
-    return this.evaluate(expr);
+    try {
+      return await this.evaluate(expr);
+    } catch (err) {
+      const where = describeLocator(descriptor);
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new CdpError(`${op} failed on ${where}: ${detail}`, { cause: err, locator: where });
+    }
   }
 
   // ---- Locators ---------------------------------------------------------
@@ -565,7 +633,7 @@ class WorkerCdpPage {
       actualArg = undefined;
       actualOptions = arg as { timeout?: number; polling?: number | "raf" };
     }
-    const timeout = actualOptions.timeout ?? 30_000;
+    const timeout = actualOptions.timeout ?? this.defaultTimeout;
     const polling =
       typeof actualOptions.polling === "number" && actualOptions.polling > 0
         ? actualOptions.polling
@@ -599,7 +667,7 @@ class WorkerCdpPage {
     state: "load" | "domcontentloaded" | "networkidle" = "load",
     options: { timeout?: number } = {}
   ): Promise<void> {
-    const timeout = options.timeout ?? 30_000;
+    const timeout = options.timeout ?? this.defaultTimeout;
     await this.evaluate(
       `(async function(state, timeout) {
         const deadline = Date.now() + timeout;
@@ -631,7 +699,7 @@ class WorkerCdpPage {
   /** Resolve a stable, actionable hit point for a descriptor (auto-waits). */
   async resolveHitPoint(
     descriptor: LocatorDescriptor,
-    timeout: number
+    timeout: number = this.defaultTimeout
   ): Promise<{ x: number; y: number }> {
     const probe = (await this.runLocatorOp("probe", descriptor, null, { timeout })) as {
       ok: boolean;
@@ -640,7 +708,11 @@ class WorkerCdpPage {
       reason?: string;
     };
     if (!probe.ok || typeof probe.x !== "number" || typeof probe.y !== "number") {
-      throw new Error(`Element not actionable (${probe.reason ?? "timeout"})`);
+      const where = describeLocator(descriptor);
+      throw new CdpError(
+        `not actionable (${probe.reason ?? "timeout"}) after ${timeout}ms: ${where}`,
+        { locator: where }
+      );
     }
     return { x: probe.x, y: probe.y };
   }
@@ -649,7 +721,7 @@ class WorkerCdpPage {
     descriptor: LocatorDescriptor,
     opts: { clickCount?: number; button?: "left" | "right" | "middle"; timeout?: number } = {}
   ): Promise<void> {
-    const { x, y } = await this.resolveHitPoint(descriptor, opts.timeout ?? 30_000);
+    const { x, y } = await this.resolveHitPoint(descriptor, opts.timeout);
     const button = opts.button ?? "left";
     const clickCount = opts.clickCount ?? 1;
     await this.connection.send("Input.dispatchMouseEvent", {
@@ -675,7 +747,7 @@ class WorkerCdpPage {
   }
 
   async hoverDescriptor(descriptor: LocatorDescriptor, opts: ActionOptions = {}): Promise<void> {
-    const { x, y } = await this.resolveHitPoint(descriptor, opts.timeout ?? 30_000);
+    const { x, y } = await this.resolveHitPoint(descriptor, opts.timeout);
     await this.connection.send("Input.dispatchMouseEvent", {
       type: "mouseMoved",
       x,
@@ -689,7 +761,7 @@ class WorkerCdpPage {
     key: string,
     opts: ActionOptions = {}
   ): Promise<void> {
-    await this.runLocatorOp("focusForKey", descriptor, null, { timeout: opts.timeout ?? 30_000 });
+    await this.runLocatorOp("focusForKey", descriptor, null, { timeout: opts.timeout });
     await this.pressKey(key);
   }
 
@@ -774,6 +846,11 @@ class WorkerCdpLocator {
 
   private extend(step: LocatorStep): WorkerCdpLocator {
     return new WorkerCdpLocator(this.page, { steps: [...this.descriptor.steps, step] });
+  }
+
+  /** Playwright-style description, e.g. `getByRole("button", { name: "Go" })`. */
+  toString(): string {
+    return describeLocator(this.descriptor);
   }
 
   // ---- Scoped sub-locators / chaining -----------------------------------

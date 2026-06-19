@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { BrowserImpl, CdpConnection } from "./worker";
+import { BrowserImpl, CdpConnection, CdpError } from "./worker";
 
 /**
  * Fake CDP transport. Understands two kinds of Runtime.evaluate:
@@ -107,10 +107,16 @@ class FakeWebSocket {
     const payload = JSON.parse(expression.slice(start, end)) as {
       op: string;
       arg: { name?: string; value?: string; values?: string[]; checked?: boolean } | null;
+      descriptor: { steps: Array<Record<string, unknown>> };
     };
+    const targetsMissing = payload.descriptor.steps.some(
+      (s) => s["by"] === "testid" && s["value"] === "missing"
+    );
     switch (payload.op) {
       case "probe":
-        return { ok: true, x: 50, y: 10, box: { x: 0, y: 0, width: 100, height: 20 } };
+        return targetsMissing
+          ? { ok: false, reason: "not found" }
+          : { ok: true, x: 50, y: 10, box: { x: 0, y: 0, width: 100, height: 20 } };
       case "waitFor":
         return true;
       case "count":
@@ -287,5 +293,45 @@ describe("worker CDP client", () => {
     conn.on("Custom.event", (p) => events.push(p));
     await expect(conn.send("Page.navigate", { url: "https://x" })).resolves.toBeDefined();
     conn.close();
+  });
+
+  it("renders Playwright-style locator descriptions via toString()", async () => {
+    installFakeWebSocket();
+    const browser = await BrowserImpl.connect("ws://cdp");
+    const page = browser.contexts()[0]!.pages()[0]!;
+
+    expect(page.getByRole("button", { name: "Go" }).toString()).toBe(
+      'getByRole("button", { name: "Go" })'
+    );
+    expect(page.getByText("Hello").nth(2).toString()).toBe('getByText("Hello").nth(2)');
+    expect(page.locator("div").first().toString()).toBe('locator("div").first()');
+    expect(page.getByTestId("save").toString()).toBe('getByTestId("save")');
+  });
+
+  it("throws a CdpError that names the locator when an element is not actionable", async () => {
+    installFakeWebSocket();
+    const browser = await BrowserImpl.connect("ws://cdp");
+    const page = browser.contexts()[0]!.pages()[0]!;
+
+    const err = await page
+      .getByTestId("missing")
+      .click()
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CdpError);
+    expect((err as CdpError).message).toContain('getByTestId("missing")');
+    expect((err as CdpError).locator).toBe('getByTestId("missing")');
+  });
+
+  it("honors setDefaultTimeout in actionability errors", async () => {
+    installFakeWebSocket();
+    const browser = await BrowserImpl.connect("ws://cdp");
+    const page = browser.contexts()[0]!.pages()[0]!;
+    page.setDefaultTimeout(1234);
+
+    const err = await page
+      .getByTestId("missing")
+      .click()
+      .catch((e: unknown) => e);
+    expect((err as Error).message).toContain("1234ms");
   });
 });
