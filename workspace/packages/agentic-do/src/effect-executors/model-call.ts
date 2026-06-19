@@ -10,6 +10,7 @@ import { getModel, stream, type Context, type Message } from "@earendil-works/pi
 import {
   buildModelContext,
   classifyModelFailure,
+  type AgentTurnContextPolicy,
   type EffectOutcome,
   modelFailureInputFromUnknown,
   type ModelCallEffect,
@@ -459,7 +460,7 @@ export const modelCallExecutor: EffectExecutor<ModelCallEffect> = {
       hasSystemPrompt: systemPromptRaw !== null,
       hasTools: toolsJson !== null,
     });
-    const systemPrompt = systemPromptRaw ?? undefined;
+    const systemPrompt = systemPromptForPolicy(systemPromptRaw ?? undefined, request.turnMetadata?.contextPolicy);
     const tools = toolsJson ? (JSON.parse(toolsJson) as Context["tools"]) : undefined;
 
     const model = registryModel as ReturnType<typeof getModel>;
@@ -477,7 +478,7 @@ export const modelCallExecutor: EffectExecutor<ModelCallEffect> = {
     // the actual bytes, never `natstack.blob-ref.v1` pointers (a model that
     // reads pointer JSON emits garbage tool args and pointer-shaped paths).
     const hydratedMessages = (await hydrateStoredValueRefs(
-      buildModelContext(state, request.contextThroughSeq),
+      modelContextForPolicy(state, request.contextThroughSeq, request.turnMetadata?.contextPolicy),
       { getText: (digest) => deps.blobstore.getText(digest) }
     )) as ModelMessage[];
     const context: Context = {
@@ -681,6 +682,71 @@ export const modelCallExecutor: EffectExecutor<ModelCallEffect> = {
     };
   },
 };
+
+function systemPromptForPolicy(
+  workspacePrompt: string | undefined,
+  policy?: AgentTurnContextPolicy
+): string | undefined {
+  if (!policy || policy.mode === "full") {
+    return appendPromptFile(workspacePrompt, policy?.promptFileContent);
+  }
+  const parts = [
+    "You are running an unattended agent heartbeat. Inspect the provided heartbeat prompt and recent relevant context, then act only when useful. Keep the turn concise and avoid user-facing chatter unless delivery explicitly requires it.",
+  ];
+  if (policy.includeWorkspacePrompt !== false && workspacePrompt) {
+    parts.push(workspacePrompt);
+  }
+  if (policy.promptFileContent) parts.push(policy.promptFileContent);
+  return parts.filter(Boolean).join("\n\n");
+}
+
+function appendPromptFile(prompt: string | undefined, promptFileContent?: string): string | undefined {
+  if (!promptFileContent) return prompt;
+  return [prompt, promptFileContent].filter(Boolean).join("\n\n");
+}
+
+function modelContextForPolicy(
+  state: Parameters<typeof buildModelContext>[0],
+  contextThroughSeq: number,
+  policy?: AgentTurnContextPolicy
+): ModelMessage[] {
+  if (!policy || policy.mode === "full") {
+    return trimMessagesToBudget(buildModelContext(state, contextThroughSeq), policy?.tokenBudget);
+  }
+  const entries = state.entries.filter((entry) => entry.seq <= contextThroughSeq);
+  const targetOrigin = state.openTurn?.metadata?.origin ?? "heartbeat";
+  let startIndex = -1;
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i];
+    if (entry?.kind === "user" && entry.metadata?.origin === targetOrigin) {
+      startIndex = i;
+      break;
+    }
+  }
+  if (startIndex < 0) {
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      if (entries[i]?.kind === "user") {
+        startIndex = i;
+        break;
+      }
+    }
+  }
+  const selectedEntries = startIndex >= 0 ? entries.slice(startIndex) : entries.slice(-1);
+  return trimMessagesToBudget(
+    buildModelContext({ ...state, entries: selectedEntries }, contextThroughSeq),
+    policy.tokenBudget
+  );
+}
+
+function trimMessagesToBudget(messages: ModelMessage[], tokenBudget?: number): ModelMessage[] {
+  if (tokenBudget === undefined || tokenBudget <= 0 || messages.length <= 1) return messages;
+  const charBudget = tokenBudget * 4;
+  const trimmed = [...messages];
+  while (trimmed.length > 1 && JSON.stringify(trimmed).length > charBudget) {
+    trimmed.shift();
+  }
+  return trimmed;
+}
 
 /** Block content is class-INLINE (the fold and step read block structure;
  *  there is no implicit spill), so this emitter must bound it: text and

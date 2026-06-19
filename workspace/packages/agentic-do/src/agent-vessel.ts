@@ -44,6 +44,7 @@ import {
   silentPolicy,
   type AgentLoopConfig,
   type AgentState,
+  type AgentTurnMetadata,
   type EffectOutcome,
   type RespondPolicy,
   type RosterEntry,
@@ -150,6 +151,17 @@ export interface ClonedChannelContext {
   forkPointPubsubId: number;
 }
 
+export interface AgentAlarmSource {
+  id: string;
+  nextWakeAt(): number | null;
+  fire(now: number): Promise<void>;
+}
+
+export interface AgentInitiatedTurnOptions extends AgentTurnMetadata {
+  steeringId?: string;
+  mode?: "auto" | "sequential";
+}
+
 export abstract class AgentVesselBase extends DurableObjectBase {
   protected readonly identity: DOIdentity;
   protected readonly subscriptions: SubscriptionManager;
@@ -172,6 +184,8 @@ export abstract class AgentVesselBase extends DurableObjectBase {
   >();
   private readonly blobTextCache = new Map<string, { value: string; bytes: number }>();
   private blobTextCacheBytes = 0;
+  private readonly alarmSources = new Map<string, AgentAlarmSource>();
+  private readonly alarmDeadlines = new Map<string, number>();
 
   constructor(ctx: DurableObjectContext, env: unknown) {
     super(ctx, env);
@@ -195,6 +209,13 @@ export abstract class AgentVesselBase extends DurableObjectBase {
       getParticipantId: (channelId) => this.subscriptions.getParticipantId(channelId),
       getActor: () => ({ kind: "agent", id: this.participantId() }),
       getAgentId: () => this.objectKey,
+    });
+    this.registerAgentAlarmSource({
+      id: "agent-loop-driver",
+      nextWakeAt: () => this._driver?.nextWakeAt() ?? this.driverNextWakeAtFromSql(),
+      fire: async () => {
+        await this.driver.alarm();
+      },
     });
   }
 
@@ -438,13 +459,16 @@ export abstract class AgentVesselBase extends DurableObjectBase {
       broadcastStoredEnvelopes: async (channelId, envelopeIds) => {
         await this.createChannelClient(channelId).broadcastStoredEnvelopes(envelopeIds);
       },
+      onHeartbeatOutcome: (input) => this.onHeartbeatOutcome(input),
       now: () => Date.now(),
       // Idle-history budget before a fold-shrinking compaction. Kept well
       // below typical model context windows so context never grows to the
       // model's hard limit (the deleted CompactionTrigger used ~0.8× the
       // window); a subclass can tune via getCompactionTriggerBytes.
       compaction: { triggerBytes: this.getCompactionTriggerBytes() },
-      scheduleAlarm: (at) => this.setAlarm(Math.max(at - Date.now(), 50)),
+      scheduleAlarm: (at) => {
+        this.scheduleAgentAlarm("agent-loop-driver", Math.max(at, Date.now() + 50));
+      },
       runBackground: (fn) => {
         const promise = fn();
         this.ctx.waitUntil?.(promise);
@@ -454,6 +478,109 @@ export abstract class AgentVesselBase extends DurableObjectBase {
     this._driver.connectSpecProvider = async (providerId) =>
       this.getModelCredentialSetupProps(providerId) ?? { providerId };
     return this._driver;
+  }
+
+  protected onHeartbeatOutcome(_input: {
+    channelId: string;
+    descriptor: import("@workspace/agent-loop").EffectDescriptor;
+    outcome: EffectOutcome;
+  }): void | Promise<void> {}
+
+  protected registerAgentAlarmSource(source: AgentAlarmSource): void {
+    this.alarmSources.set(source.id, source);
+    const next = source.nextWakeAt();
+    if (next === null) {
+      this.alarmDeadlines.delete(source.id);
+    } else {
+      this.alarmDeadlines.set(source.id, next);
+      this.rearmAgentAlarm();
+    }
+  }
+
+  protected unregisterAgentAlarmSource(sourceId: string): void {
+    this.alarmSources.delete(sourceId);
+    this.alarmDeadlines.delete(sourceId);
+    this.rearmAgentAlarm();
+  }
+
+  protected scheduleAgentAlarm(sourceId: string, timeMs: number): void {
+    if (!Number.isFinite(timeMs)) return;
+    this.alarmDeadlines.set(sourceId, Math.max(Math.round(timeMs), Date.now() + 1));
+    this.rearmAgentAlarm();
+  }
+
+  protected clearAgentAlarm(sourceId: string): void {
+    this.alarmDeadlines.delete(sourceId);
+    this.rearmAgentAlarm();
+  }
+
+  private rearmAgentAlarm(): void {
+    const deadlines = [...this.alarmSources.values()]
+      .map((source) => {
+        const next = source.nextWakeAt();
+        if (next === null) this.alarmDeadlines.delete(source.id);
+        else this.alarmDeadlines.set(source.id, next);
+        return next;
+      })
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+    if (deadlines.length === 0) {
+      try {
+        this.deleteAlarm();
+      } catch {
+        // Object key may not be available during constructor-time source registration.
+      }
+      return;
+    }
+    try {
+      this.setAlarmAt(Math.min(...deadlines));
+    } catch {
+      // Object key may not be available during constructor-time source registration.
+    }
+  }
+
+  private async fireAgentAlarms(now: number): Promise<void> {
+    const due = [...this.alarmSources.values()]
+      .map((source) => ({ source, wakeAt: source.nextWakeAt() }))
+      .filter(
+        (entry): entry is { source: AgentAlarmSource; wakeAt: number } =>
+          typeof entry.wakeAt === "number" && entry.wakeAt <= now
+      )
+      .sort((a, b) => a.wakeAt - b.wakeAt);
+    for (const { source } of due) {
+      this.alarmDeadlines.delete(source.id);
+      await source.fire(now);
+    }
+    this.rearmAgentAlarm();
+  }
+
+  private driverNextWakeAtFromSql(): number | null {
+    const due: number[] = [];
+    try {
+      const row = this.sql
+        .exec(
+          `SELECT MIN(
+             CASE WHEN lease_expires_at IS NOT NULL
+                  THEN lease_expires_at
+                  ELSE COALESCE(next_attempt_at, 0)
+             END
+           ) AS due FROM effect_outbox`
+        )
+        .toArray()[0];
+      const value = row?.["due"];
+      if (typeof value === "number") due.push(value);
+    } catch {
+      // Driver tables are created lazily.
+    }
+    try {
+      const row = this.sql
+        .exec(`SELECT MIN(reset_at_ms) AS due FROM scheduled_model_resumes`)
+        .toArray()[0];
+      const value = row?.["due"];
+      if (typeof value === "number") due.push(value);
+    } catch {
+      // Driver tables are created lazily.
+    }
+    return due.length ? Math.min(...due) : null;
   }
 
   private _gadClient: DurableObjectServiceClient | null = null;
@@ -1890,9 +2017,17 @@ export abstract class AgentVesselBase extends DurableObjectBase {
   protected async submitAgentInitiatedTurn(
     channelId: string,
     input: { content: string },
-    opts?: { steeringId?: string; mode?: "auto" | "sequential" }
+    opts?: AgentInitiatedTurnOptions
   ): Promise<void> {
     await this.ensurePromptArtifacts(channelId);
+    const metadata: AgentTurnMetadata = {
+      origin: opts?.origin ?? "agent-initiated",
+      ...(opts?.contextPolicy ? { contextPolicy: opts.contextPolicy } : {}),
+      ...(opts?.loopConfigPatch ? { loopConfigPatch: opts.loopConfigPatch } : {}),
+      ...(opts?.delivery ? { delivery: opts.delivery } : {}),
+      ...(opts?.ackToken ? { ackToken: opts.ackToken } : {}),
+      ...(opts?.silentOk !== undefined ? { silentOk: opts.silentOk } : {}),
+    };
     await this.driver.handleIncoming(channelId, {
       type: "command",
       command: {
@@ -1900,7 +2035,8 @@ export abstract class AgentVesselBase extends DurableObjectBase {
         channelId,
         source: { envelopeId: opts?.steeringId ?? `agent-init:${Date.now()}` },
         content: input.content,
-        senderRef: { kind: "system", id: "agent-initiated" },
+        senderRef: { kind: "system", id: metadata.origin ?? "agent-initiated" },
+        metadata,
       },
     });
   }
@@ -2060,7 +2196,7 @@ export abstract class AgentVesselBase extends DurableObjectBase {
 
   override async alarm(): Promise<void> {
     await super.alarm();
-    await this.driver.alarm();
+    await this.fireAgentAlarms(Date.now());
   }
 
   async getDebugState(channelId?: string): Promise<Record<string, unknown>> {

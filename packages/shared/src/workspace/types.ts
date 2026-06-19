@@ -214,6 +214,36 @@ export interface WorkspaceRecurringDecl {
   schedule: { every: string; at?: string };
 }
 
+export interface WorkspaceHeartbeatDecl {
+  name: string;
+  target: { source: string; className: string; objectKey?: string };
+  channel?: {
+    mode?: "subscribed" | "fixed";
+    id?: string;
+    handle?: string;
+  };
+  schedule: {
+    every: string;
+    jitter?: string;
+    at?: string;
+    activeHours?: { start: string; end: string; timezone?: "local" | string };
+  };
+  context?: {
+    mode?: "heartbeat" | "full" | "isolated";
+    promptFile?: string;
+    includeWorkspacePrompt?: boolean;
+    includeSkillIndex?: boolean;
+    tokenBudget?: number;
+  };
+  behavior?: {
+    skipWhenBusy?: boolean;
+    delivery?: "none" | "channel" | "last-contact";
+    ackToken?: string;
+    maxModelCalls?: number;
+    failureBackoff?: { base?: string; max?: string };
+  };
+}
+
 /**
  * Extension declaration in `workspace/meta/natstack.yml`. The declared list is
  * the single source of truth for which extensions a workspace uses and the only
@@ -307,6 +337,11 @@ export interface WorkspaceConfig {
    * all scheduled jobs.
    */
   recurring?: WorkspaceRecurringDecl[];
+  /**
+   * Agent-owned heartbeat declarations. The workspace reconciler configures
+   * target DOs; target agents own scheduling and model turns.
+   */
+  heartbeats?: WorkspaceHeartbeatDecl[];
   /**
    * Declarative privileged frontend app set for this workspace. Absent or
    * empty means no apps; the reconciler removes anything not declared here.

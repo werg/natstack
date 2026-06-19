@@ -21,7 +21,7 @@ import {
 import { applyEvent } from "./fold.js";
 import { ids } from "./ids.js";
 import { classifyModelFailure, type ModelFailureInfo } from "./model-errors.js";
-import type { AgentState, ModelRequestDescriptor } from "./state.js";
+import type { AgentLoopConfig, AgentState, AgentTurnMetadata, ModelRequestDescriptor } from "./state.js";
 import type { LogEnvelope } from "@workspace/agentic-protocol";
 
 export interface StepOutput {
@@ -56,27 +56,29 @@ function modelStartItems(
 ): { item: AppendItem; effect: EffectDescriptor } {
   const messageId = ids.messageId(turnId, modelCallCount);
   const attemptId = ids.attemptId(messageId);
-  const { provider, model } = parseModel(state.config.model);
+  const config = turnConfig(state);
+  const { provider, model } = parseModel(config.model);
   const request: ModelRequestDescriptor = {
     provider,
     model,
-    thinkingLevel: state.config.thinkingLevel,
-    systemPromptHash: state.config.systemPromptHash,
-    ...(state.config.skillIndexHash ? { skillIndexHash: state.config.skillIndexHash } : {}),
-    ...(state.config.toolSchemasHash ? { toolSchemasHash: state.config.toolSchemasHash } : {}),
-    activeToolNames: state.config.activeToolNames,
+    thinkingLevel: config.thinkingLevel,
+    systemPromptHash: config.systemPromptHash,
+    ...(config.skillIndexHash ? { skillIndexHash: config.skillIndexHash } : {}),
+    ...(config.toolSchemasHash ? { toolSchemasHash: config.toolSchemasHash } : {}),
+    activeToolNames: config.activeToolNames,
     contextThroughSeq: state.lastSeq + itemsBefore,
     attemptId,
-    ...(state.config.modelStreamIdleTimeoutMs !== undefined
-      ? { streamOptions: { idleTimeoutMs: state.config.modelStreamIdleTimeoutMs } }
+    ...(config.modelStreamIdleTimeoutMs !== undefined
+      ? { streamOptions: { idleTimeoutMs: config.modelStreamIdleTimeoutMs } }
       : {}),
+    ...(state.openTurn?.metadata ? { turnMetadata: state.openTurn.metadata } : {}),
   };
   const item: AppendItem = {
     envelopeId: ids.messageStarted(messageId),
     payloadKind: "message.started",
     payload: { protocol: AGENTIC_PROTOCOL_VERSION, role: "assistant", modelRequest: request },
     causality: { messageId: messageId as never, turnId },
-    publish: true,
+    publish: shouldPublishTurnLifecycle(state.openTurn?.metadata),
   };
   return {
     item,
@@ -92,6 +94,20 @@ function modelStartItems(
   };
 }
 
+function turnConfig(state: AgentState): AgentLoopConfig {
+  const patch = state.openTurn?.metadata?.loopConfigPatch;
+  if (!patch) return state.config;
+  return { ...state.config, ...patch };
+}
+
+function turnMetadata(command: Extract<Command, { kind: "prompt" | "steer" }>): AgentTurnMetadata | undefined {
+  return command.metadata;
+}
+
+function shouldPublishTurnLifecycle(metadata?: AgentTurnMetadata): boolean {
+  return metadata?.delivery !== "none";
+}
+
 function recvItem(command: Extract<Command, { kind: "prompt" | "steer" }>): AppendItem {
   return {
     envelopeId: ids.recvUserMessage(command.channelId, command.source.envelopeId),
@@ -103,6 +119,7 @@ function recvItem(command: Extract<Command, { kind: "prompt" | "steer" }>): Appe
         ? command.content
         : [{ type: "text", content: String(command.content ?? "") }],
       outcome: "completed",
+      ...(command.metadata ? { metadata: command.metadata } : {}),
     },
     causality: {
       messageId: ids.recvUserMessage(command.channelId, command.source.envelopeId) as never,
@@ -401,7 +418,7 @@ function nextModelCall(state: AgentState, itemsBefore: number): StepOutput {
             messageId: `diag:${turn.turnId}:max-model-calls-per-turn` as never,
             turnId: turn.turnId,
           },
-          publish: true,
+          publish: turn.metadata?.delivery !== "none",
         },
         turnClosedItem(turn.turnId, { reason: "max_model_calls_per_turn" }),
       ],
@@ -447,11 +464,25 @@ function commandStep(state: AgentState, command: Command, ctx: StepContext): Ste
       const opened: AppendItem = {
         envelopeId: ids.turnOpened(turnId),
         payloadKind: "turn.opened",
-        payload: { protocol: AGENTIC_PROTOCOL_VERSION },
+        payload: {
+          protocol: AGENTIC_PROTOCOL_VERSION,
+          ...(turnMetadata(command) ? { metadata: turnMetadata(command) } : {}),
+        },
         causality: { turnId },
-        publish: true,
+        publish: shouldPublishTurnLifecycle(turnMetadata(command)),
       };
-      const { item, effect } = modelStartItems(state, turnId, 0, 2);
+      const afterOpened = {
+        ...state,
+        openTurn: {
+          turnId,
+          openedAtSeq: state.lastSeq + 2,
+          modelCallCount: 0,
+          interrupted: false,
+          waitingCount: 0,
+          ...(turnMetadata(command) ? { metadata: turnMetadata(command) } : {}),
+        },
+      };
+      const { item, effect } = modelStartItems(afterOpened, turnId, 0, 2);
       return { append: [recv, opened, item], effects: [effect] };
     }
 
@@ -617,11 +648,25 @@ function commandStep(state: AgentState, command: Command, ctx: StepContext): Ste
         const opened: AppendItem = {
           envelopeId: ids.turnOpened(turnId),
           payloadKind: "turn.opened",
-          payload: { protocol: AGENTIC_PROTOCOL_VERSION },
+          payload: {
+            protocol: AGENTIC_PROTOCOL_VERSION,
+            ...(prompt.metadata ? { metadata: prompt.metadata } : {}),
+          },
           causality: { turnId },
           publish: true,
         };
-        const { item, effect } = modelStartItems(afterOrphan, turnId, 0, append.length + 1);
+        const afterOpened = {
+          ...afterOrphan,
+          openTurn: {
+            turnId,
+            openedAtSeq: afterOrphan.lastSeq + append.length + 1,
+            modelCallCount: 0,
+            interrupted: false,
+            waitingCount: 0,
+            ...(prompt.metadata ? { metadata: prompt.metadata } : {}),
+          },
+        };
+        const { item, effect } = modelStartItems(afterOpened, turnId, 0, append.length + 1);
         return { append: [...append, opened, item], effects: [effect] };
       }
       return { append, effects: [] };

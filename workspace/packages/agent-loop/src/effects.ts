@@ -331,10 +331,11 @@ export function outcomeEvents(
           payloadKind: "message.failed",
           payload: modelFailurePayload(failure, outcome.recoverable),
           causality: { messageId: descriptor.messageId as never },
-          publish: true,
+          publish: shouldPublishModelOutcome(descriptor.request, []),
         },
       ];
     }
+    const publish = shouldPublishModelOutcome(descriptor.request, outcome.blocks);
     return [
       {
         envelopeId: ids.messageTerminal(descriptor.messageId),
@@ -347,7 +348,7 @@ export function outcomeEvents(
           ...(outcome.usage ? { usage: outcome.usage } : {}),
         },
         causality: { messageId: descriptor.messageId as never },
-        publish: true,
+        publish,
       },
     ];
   }
@@ -430,4 +431,36 @@ export function outcomeEvents(
   }
 
   return []; // publish_envelope: fire-and-forget, no outcome events
+}
+
+function shouldPublishModelOutcome(
+  request: ModelRequestDescriptor,
+  blocks: unknown[]
+): boolean {
+  const metadata = request.turnMetadata;
+  if (!metadata) return true;
+  if (metadata.delivery === "none") return false;
+  if (metadata.silentOk && blocksLookSuccessful(blocks)) return false;
+  if (metadata.ackToken && blocksContainText(blocks, metadata.ackToken)) return false;
+  return true;
+}
+
+function blocksLookSuccessful(blocks: unknown[]): boolean {
+  const text = blocks
+    .map((block) =>
+      block && typeof block === "object" && typeof (block as { content?: unknown }).content === "string"
+        ? (block as { content: string }).content.toLowerCase()
+        : ""
+    )
+    .join("\n");
+  return !/\b(error|failed|failure|blocked|unable|cannot)\b/u.test(text);
+}
+
+function blocksContainText(blocks: unknown[], needle: string): boolean {
+  if (!needle) return false;
+  return blocks.some((block) => {
+    if (!block || typeof block !== "object") return false;
+    const content = (block as { content?: unknown }).content;
+    return typeof content === "string" && content.includes(needle);
+  });
 }

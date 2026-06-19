@@ -78,6 +78,11 @@ export interface DriverDeps {
   /** Live fan-out for GAD-created channel publication rows. The trajectory log
    *  append is authoritative; this only wakes channel subscribers in-process. */
   broadcastStoredEnvelopes?(channelId: string, envelopeIds: string[]): Promise<void>;
+  onHeartbeatOutcome?(input: {
+    channelId: string;
+    descriptor: EffectDescriptor;
+    outcome: EffectOutcome;
+  }): void | Promise<void>;
   /** Compaction trigger thresholds. The vessel sizes `triggerBytes` relative
    *  to the model context window (the deleted CompactionTrigger used ~0.8× the
    *  window); the constants are conservative fallbacks. A turn is never
@@ -701,15 +706,25 @@ export class AgentLoopDriver {
   }
 
   scheduleEarliest(): void {
+    const earliest = this.nextWakeAt();
+    if (earliest != null) {
+      this.deps.scheduleAlarm(Math.max(earliest, this.deps.now() + 50));
+    }
+  }
+
+  nextWakeAt(): number | null {
     const outboxDue = this.outbox.earliestDueAt();
     const resumeDue = this.earliestScheduledModelResumeAt();
     const candidates = [outboxDue, resumeDue].filter(
       (value): value is number => typeof value === "number"
     );
-    const earliest = candidates.length ? Math.min(...candidates) : null;
-    if (earliest != null) {
-      this.deps.scheduleAlarm(Math.max(earliest, this.deps.now() + 50));
-    }
+    return candidates.length ? Math.min(...candidates) : null;
+  }
+
+  hasOpenTurn(channelId: string): boolean {
+    const loop = this.loops.get(channelId);
+    if (loop?.state.openTurn) return true;
+    return this.outbox.forBranch(ids.logIdForChannel(channelId)).length > 0;
   }
 
   async dispatchDue(): Promise<void> {
@@ -921,6 +936,16 @@ export class AgentLoopDriver {
       loop.state = applyEvent(loop.state, envelope);
     }
     this.foldCache.write(loop.state);
+    if (
+      row.descriptor.kind === "model_call" &&
+      row.descriptor.request.turnMetadata?.origin === "heartbeat"
+    ) {
+      await this.deps.onHeartbeatOutcome?.({
+        channelId: loop.channelId,
+        descriptor: row.descriptor,
+        outcome,
+      });
+    }
     for (const envelope of envelopes) {
       await this.runStep(loop, { type: "event-appended", envelope }, APPEND_RETRIES);
     }

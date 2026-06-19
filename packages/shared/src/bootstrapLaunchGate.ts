@@ -47,6 +47,8 @@ export function unitKindLabel(unit: UnitBatchEntry): string {
   if (unit.target === "electron") return "Desktop";
   if (unit.target === "react-native") return "Mobile";
   if (unit.target === "terminal") return "Terminal";
+  if (unit.unitKind === "agent-heartbeat") return "Agent heartbeat";
+  if (unit.unitKind === "scheduled-job") return "Scheduled job";
   return unit.unitKind === "extension" ? "Extension" : "App";
 }
 

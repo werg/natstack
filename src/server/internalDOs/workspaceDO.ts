@@ -152,6 +152,7 @@ const WORKSPACE_REQUIRED_TABLES = [
   "lifecycle_ops",
   "do_alarms",
   "recurring_jobs",
+  "heartbeat_registry",
 ] as const;
 
 /** One declared recurring job (see meta/natstack.yml `recurring:`). */
@@ -180,6 +181,23 @@ export interface RecurringJobRow {
   lastDurationMs?: number | null;
 }
 
+export interface HeartbeatRegistryRow {
+  name: string;
+  source: string;
+  className: string;
+  objectKey: string;
+  channelId?: string | null;
+  participantHandle?: string | null;
+  kind: "declarative" | "code-owned";
+  status: "running" | "paused" | "stopped";
+  nextRunAt?: number | null;
+  lastWakeAt?: number | null;
+  lastActionSummary?: string | null;
+  lastError?: string | null;
+  specHash?: string | null;
+  updatedAt: number;
+}
+
 function rowToRecurringJob(row: Record<string, unknown>): RecurringJobRow {
   const nullableNumber = (key: string): number | null =>
     row[key] === null || row[key] === undefined ? null : Number(row[key]);
@@ -206,6 +224,32 @@ function rowToRecurringJob(row: Record<string, unknown>): RecurringJobRow {
         ? null
         : String(row["last_error"]),
     lastDurationMs: nullableNumber("last_duration_ms"),
+  };
+}
+
+function rowToHeartbeatRegistry(row: Record<string, unknown>): HeartbeatRegistryRow {
+  const nullableNumber = (key: string): number | null =>
+    row[key] === null || row[key] === undefined ? null : Number(row[key]);
+  const nullableString = (key: string): string | null =>
+    row[key] === null || row[key] === undefined ? null : String(row[key]);
+  const kind = row["kind"] === "declarative" ? "declarative" : "code-owned";
+  const status =
+    row["status"] === "paused" || row["status"] === "stopped" ? row["status"] : "running";
+  return {
+    name: String(row["name"]),
+    source: String(row["source"]),
+    className: String(row["class_name"]),
+    objectKey: String(row["object_key"]),
+    channelId: nullableString("channel_id"),
+    participantHandle: nullableString("participant_handle"),
+    kind,
+    status,
+    nextRunAt: nullableNumber("next_run_at"),
+    lastWakeAt: nullableNumber("last_wake_at"),
+    lastActionSummary: nullableString("last_action_summary"),
+    lastError: nullableString("last_error"),
+    specHash: nullableString("spec_hash"),
+    updatedAt: Number(row["updated_at"]),
   };
 }
 
@@ -375,6 +419,7 @@ export class WorkspaceDO extends DurableObjectBase {
     this.sql.exec(`DROP TABLE IF EXISTS lifecycle_epochs`);
     this.sql.exec(`DROP TABLE IF EXISTS do_alarms`);
     this.sql.exec(`DROP TABLE IF EXISTS recurring_jobs`);
+    this.sql.exec(`DROP TABLE IF EXISTS heartbeat_registry`);
   }
 
   getWorkspaceId(): string {
@@ -800,6 +845,69 @@ export class WorkspaceDO extends DurableObjectBase {
         Record<string, unknown>
       >
     ).map(rowToRecurringJob);
+  }
+
+  heartbeatRegister(input: HeartbeatRegistryRow): void {
+    const now = Date.now();
+    this.sql.exec(
+      `INSERT INTO heartbeat_registry (
+         name, source, class_name, object_key, channel_id, participant_handle, kind,
+         status, next_run_at, last_wake_at, last_action_summary, last_error, spec_hash, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(name, source, class_name, object_key) DO UPDATE SET
+         channel_id = excluded.channel_id,
+         participant_handle = excluded.participant_handle,
+         kind = excluded.kind,
+         status = excluded.status,
+         next_run_at = excluded.next_run_at,
+         last_wake_at = excluded.last_wake_at,
+         last_action_summary = excluded.last_action_summary,
+         last_error = excluded.last_error,
+         spec_hash = excluded.spec_hash,
+         updated_at = excluded.updated_at`,
+      input.name,
+      input.source,
+      input.className,
+      input.objectKey,
+      input.channelId ?? null,
+      input.participantHandle ?? null,
+      input.kind,
+      input.status,
+      input.nextRunAt ?? null,
+      input.lastWakeAt ?? null,
+      input.lastActionSummary ?? null,
+      input.lastError ?? null,
+      input.specHash ?? null,
+      Math.round(input.updatedAt || now)
+    );
+  }
+
+  heartbeatRemove(input: {
+    name: string;
+    source?: string;
+    className?: string;
+    objectKey?: string;
+  }): void {
+    if (input.source && input.className && input.objectKey) {
+      this.sql.exec(
+        `DELETE FROM heartbeat_registry
+         WHERE name = ? AND source = ? AND class_name = ? AND object_key = ?`,
+        input.name,
+        input.source,
+        input.className,
+        input.objectKey
+      );
+      return;
+    }
+    this.sql.exec(`DELETE FROM heartbeat_registry WHERE name = ?`, input.name);
+  }
+
+  heartbeatList(): HeartbeatRegistryRow[] {
+    return (
+      this.sql.exec(`SELECT * FROM heartbeat_registry ORDER BY name`).toArray() as Array<
+        Record<string, unknown>
+      >
+    ).map(rowToHeartbeatRegistry);
   }
 
   lifecycleListLeases(): LifecycleLease[] {
@@ -1494,6 +1602,56 @@ export class WorkspaceDO extends DurableObjectBase {
     this.sql.exec(
       `CREATE INDEX IF NOT EXISTS idx_recurring_jobs_next ON recurring_jobs(next_run_at)`
     );
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS heartbeat_registry (
+        name TEXT NOT NULL,
+        source TEXT NOT NULL,
+        class_name TEXT NOT NULL,
+        object_key TEXT NOT NULL,
+        channel_id TEXT,
+        participant_handle TEXT,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        next_run_at INTEGER,
+        last_wake_at INTEGER,
+        last_action_summary TEXT,
+        last_error TEXT,
+        spec_hash TEXT,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (name, source, class_name, object_key)
+      )
+    `);
+    for (const ddl of [
+      `ALTER TABLE heartbeat_registry RENAME TO heartbeat_registry_legacy`,
+      `CREATE TABLE heartbeat_registry (
+        name TEXT NOT NULL,
+        source TEXT NOT NULL,
+        class_name TEXT NOT NULL,
+        object_key TEXT NOT NULL,
+        channel_id TEXT,
+        participant_handle TEXT,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        next_run_at INTEGER,
+        last_wake_at INTEGER,
+        last_action_summary TEXT,
+        last_error TEXT,
+        spec_hash TEXT,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (name, source, class_name, object_key)
+      )`,
+      `INSERT OR REPLACE INTO heartbeat_registry
+        SELECT name, source, class_name, object_key, channel_id, participant_handle, kind,
+               status, next_run_at, last_wake_at, last_action_summary, last_error, spec_hash, updated_at
+        FROM heartbeat_registry_legacy`,
+      `DROP TABLE heartbeat_registry_legacy`,
+    ]) {
+      try {
+        this.sql.exec(ddl);
+      } catch {
+        // Already migrated or table absent.
+      }
+    }
   }
 
   private insertLifecycleOp(

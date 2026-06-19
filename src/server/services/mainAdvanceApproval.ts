@@ -255,12 +255,14 @@ function metaChangeTitle(units: UnitBatchEntry[]): string {
   const hasApps = units.some((unit) => unit.unitKind === "app");
   const hasExtensions = units.some((unit) => unit.unitKind === "extension");
   const hasScheduledJobs = units.some((unit) => unit.unitKind === "scheduled-job");
-  if ([hasApps, hasExtensions, hasScheduledJobs].filter(Boolean).length > 1) {
+  const hasAgentHeartbeats = units.some((unit) => unit.unitKind === "agent-heartbeat");
+  if ([hasApps, hasExtensions, hasScheduledJobs, hasAgentHeartbeats].filter(Boolean).length > 1) {
     return "Workspace units changed";
   }
   if (hasApps) return "Workspace apps changed";
   if (hasExtensions) return "Workspace extensions changed";
   if (hasScheduledJobs) return "Workspace scheduled jobs changed";
+  if (hasAgentHeartbeats) return "Workspace agent heartbeats changed";
   return "Edit workspace config";
 }
 
@@ -268,6 +270,7 @@ function metaChangeDescription(units: UnitBatchEntry[]): string {
   const appCount = units.filter((unit) => unit.unitKind === "app").length;
   const extensionCount = units.filter((unit) => unit.unitKind === "extension").length;
   const jobCount = units.filter((unit) => unit.unitKind === "scheduled-job").length;
+  const heartbeatCount = units.filter((unit) => unit.unitKind === "agent-heartbeat").length;
   const parts: string[] = [];
   if (extensionCount > 0) {
     parts.push(
@@ -281,6 +284,11 @@ function metaChangeDescription(units: UnitBatchEntry[]): string {
   }
   if (jobCount > 0) {
     parts.push(`${jobCount} scheduled job${jobCount === 1 ? "" : "s"} that will run automatically`);
+  }
+  if (heartbeatCount > 0) {
+    parts.push(
+      `${heartbeatCount} agent heartbeat${heartbeatCount === 1 ? "" : "s"} that will run unattended`
+    );
   }
   return parts.length > 0
     ? `This publish edits workspace config and adds ${parts.join(" and ")}.`

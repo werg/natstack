@@ -641,16 +641,25 @@ function unitBatchLabel(approval: PendingUnitBatchApproval): {
   const hasExtensions = approval.units.some((unit) => unit.unitKind === "extension");
   const hasApps = approval.units.some((unit) => unit.unitKind === "app");
   const hasScheduledJobs = approval.units.some((unit) => unit.unitKind === "scheduled-job");
-  if (hasExtensions && !hasApps && !hasScheduledJobs) {
+  const hasAgentHeartbeats = approval.units.some((unit) => unit.unitKind === "agent-heartbeat");
+  if (hasExtensions && !hasApps && !hasScheduledJobs && !hasAgentHeartbeats) {
     return { singular: "extension", plural: "extensions", nativeCode: true, scheduledJob: false };
   }
-  if (hasApps && !hasExtensions && !hasScheduledJobs) {
+  if (hasApps && !hasExtensions && !hasScheduledJobs && !hasAgentHeartbeats) {
     return { singular: "app", plural: "apps", nativeCode: false, scheduledJob: false };
   }
-  if (hasScheduledJobs && !hasApps && !hasExtensions) {
+  if (hasScheduledJobs && !hasApps && !hasExtensions && !hasAgentHeartbeats) {
     return {
       singular: "scheduled job",
       plural: "scheduled jobs",
+      nativeCode: false,
+      scheduledJob: true,
+    };
+  }
+  if (hasAgentHeartbeats && !hasApps && !hasExtensions && !hasScheduledJobs) {
+    return {
+      singular: "agent heartbeat",
+      plural: "agent heartbeats",
       nativeCode: false,
       scheduledJob: true,
     };
@@ -667,6 +676,7 @@ function unitBatchWarning(approval: PendingUnitBatchApproval): string {
   const hasExtensions = approval.units.some((unit) => unit.unitKind === "extension");
   const hasApps = approval.units.some((unit) => unit.unitKind === "app");
   const hasScheduledJobs = approval.units.some((unit) => unit.unitKind === "scheduled-job");
+  const hasAgentHeartbeats = approval.units.some((unit) => unit.unitKind === "agent-heartbeat");
   const warnings: string[] = [];
   if (hasExtensions) {
     warnings.push("runs native code with filesystem, network, and process access");
@@ -677,7 +687,11 @@ function unitBatchWarning(approval: PendingUnitBatchApproval): string {
   if (hasScheduledJobs) {
     warnings.push("allows these scheduled jobs to run automatically");
   }
+  if (hasAgentHeartbeats) {
+    warnings.push("allows these agent heartbeats to run unattended and invoke agent tools");
+  }
   if (warnings.length === 1) return `Approving ${warnings[0]}.`;
+  if (warnings.length === 0) return "Approving these workspace units.";
   return `Approving ${warnings.slice(0, -1).join("; ")}; and ${warnings[warnings.length - 1]}.`;
 }
 
@@ -692,6 +706,9 @@ function unitBatchUnitKinds(approval: PendingUnitBatchApproval): string[] {
   if (approval.units.some((unit) => unit.unitKind === "scheduled-job")) {
     kinds.push("scheduled jobs");
   }
+  if (approval.units.some((unit) => unit.unitKind === "agent-heartbeat")) {
+    kinds.push("agent heartbeats");
+  }
   return kinds;
 }
 
@@ -702,6 +719,9 @@ function unitBatchApproveDescription(
   const count = approval.units.length;
   if (unitLabel === "scheduled job") {
     return `Approve ${count} scheduled job${count === 1 ? "" : "s"} to run automatically.`;
+  }
+  if (unitLabel === "agent heartbeat") {
+    return `Approve ${count} agent heartbeat${count === 1 ? "" : "s"} to run unattended.`;
   }
   if (unitLabel === "unit") {
     const kinds = unitBatchUnitKinds(approval);

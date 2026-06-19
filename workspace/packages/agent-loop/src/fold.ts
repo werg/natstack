@@ -8,6 +8,7 @@
 import type { LogEnvelope } from "@workspace/agentic-protocol";
 import type {
   AgentState,
+  AgentTurnMetadata,
   ModelRequestDescriptor,
   PendingInvocation,
   SessionEntry,
@@ -18,6 +19,13 @@ function payloadRecord(envelope: LogEnvelope): Record<string, unknown> {
   return payload && typeof payload === "object" && !Array.isArray(payload)
     ? (payload as Record<string, unknown>)
     : {};
+}
+
+function metadataFromPayload(payload: Record<string, unknown>): AgentTurnMetadata | undefined {
+  const metadata = payload["metadata"];
+  return metadata && typeof metadata === "object" && !Array.isArray(metadata)
+    ? (metadata as AgentTurnMetadata)
+    : undefined;
 }
 
 function withAdvance(state: AgentState, envelope: LogEnvelope): AgentState {
@@ -47,6 +55,7 @@ export function applyEvent(prev: AgentState, envelope: LogEnvelope): AgentState 
           modelCallCount: 0,
           interrupted: false,
           waitingCount: 0,
+          ...(metadataFromPayload(payload) ? { metadata: metadataFromPayload(payload) } : {}),
         },
         pendingPrompt: null,
       };
@@ -118,12 +127,14 @@ export function applyEvent(prev: AgentState, envelope: LogEnvelope): AgentState 
         envelopeId: String(envelope.envelopeId),
         senderRef: envelope.actor,
         content: payload,
+        ...(metadataFromPayload(payload) ? { metadata: metadataFromPayload(payload) } : {}),
       };
       const steering = {
         envelopeId: String(envelope.envelopeId),
         seq: envelope.seq,
         senderRef: envelope.actor,
         content: payload,
+        ...(metadataFromPayload(payload) ? { metadata: metadataFromPayload(payload) } : {}),
       };
       if (state.openTurn) {
         return {
@@ -140,6 +151,7 @@ export function applyEvent(prev: AgentState, envelope: LogEnvelope): AgentState 
           seq: envelope.seq,
           senderRef: envelope.actor,
           content: payload,
+          ...(metadataFromPayload(payload) ? { metadata: metadataFromPayload(payload) } : {}),
           agentHops:
             typeof causality["agentHops"] === "number"
               ? (causality["agentHops"] as number)

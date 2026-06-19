@@ -53,6 +53,27 @@ export interface AgentLoopConfig {
   modelStreamIdleTimeoutMs?: number | null;
 }
 
+export interface AgentTurnContextPolicy {
+  mode?: "full" | "heartbeat" | "isolated";
+  includeWorkspacePrompt?: boolean;
+  includeSkillIndex?: boolean;
+  promptFile?: string;
+  promptFileContent?: string;
+  tokenBudget?: number;
+}
+
+export interface AgentTurnMetadata {
+  origin?: "agent-initiated" | "heartbeat" | "scheduled";
+  contextPolicy?: AgentTurnContextPolicy;
+  loopConfigPatch?: {
+    maxModelCallsPerTurn?: number | null;
+    modelStreamIdleTimeoutMs?: number | null;
+  };
+  delivery?: "none" | "channel" | "last-contact";
+  ackToken?: string;
+  silentOk?: boolean;
+}
+
 /** Config fields that are FOLD-OWNED: the reducer derives them from the log
  *  (roster from `roster.snapshot` events), so a reload must keep the folded
  *  value, NOT the vessel's injected input config (which carries an empty
@@ -89,6 +110,7 @@ export interface ModelRequestDescriptor {
   contextThroughSeq: number;
   attemptId: string;
   streamOptions?: { deltaBatchMs?: number; idleTimeoutMs?: number | null };
+  turnMetadata?: AgentTurnMetadata;
 }
 
 export interface OpenTurn {
@@ -101,6 +123,7 @@ export interface OpenTurn {
   interrupted: boolean;
   /** count of turn.waiting events (drives waiting envelope id suffix). */
   waitingCount: number;
+  metadata?: AgentTurnMetadata;
 }
 
 export interface InFlightModelCall {
@@ -152,6 +175,7 @@ export interface SteeringEntry {
   seq: number;
   senderRef: ParticipantRef;
   content: unknown;
+  metadata?: AgentTurnMetadata;
 }
 
 export interface PendingPrompt {
@@ -160,6 +184,7 @@ export interface PendingPrompt {
   senderRef: ParticipantRef;
   content: unknown;
   agentHops?: number;
+  metadata?: AgentTurnMetadata;
 }
 
 /** Linear session entry — the materialized model-context path. */
@@ -170,6 +195,7 @@ export type SessionEntry =
       envelopeId: string;
       senderRef?: ParticipantRef;
       content: unknown;
+      metadata?: AgentTurnMetadata;
     }
   | {
       kind: "assistant";

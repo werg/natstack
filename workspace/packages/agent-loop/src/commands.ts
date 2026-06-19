@@ -5,7 +5,7 @@
  */
 
 import type { LogEnvelope, ParticipantRef } from "@workspace/agentic-protocol";
-import type { AgentLoopConfig } from "./state.js";
+import type { AgentLoopConfig, AgentTurnMetadata } from "./state.js";
 import type { EffectKind } from "./effects.js";
 
 export interface SerializedError {
@@ -25,6 +25,7 @@ export type Command =
       content: UserContent;
       senderRef: ParticipantRef;
       agentHops?: number;
+      metadata?: AgentTurnMetadata;
     }
   | {
       kind: "steer";
@@ -33,6 +34,7 @@ export type Command =
       content: UserContent;
       senderRef: ParticipantRef;
       agentHops?: number;
+      metadata?: AgentTurnMetadata;
     }
   | { kind: "interrupt" }
   | { kind: "abort"; reason?: string }

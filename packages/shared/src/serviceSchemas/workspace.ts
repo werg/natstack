@@ -216,6 +216,53 @@ export const WorkspaceRecurringJobStatusSchema = z.object({
 });
 export type WorkspaceRecurringJobStatus = z.infer<typeof WorkspaceRecurringJobStatusSchema>;
 
+export const WorkspaceHeartbeatStatusSchema = z.object({
+  name: z.string(),
+  target: z.object({
+    source: z.string(),
+    className: z.string(),
+    objectKey: z.string(),
+  }),
+  channelId: z.string().nullable(),
+  participantHandle: z.string().nullable(),
+  kind: z.enum(["declarative", "code-owned"]),
+  status: z.enum(["running", "paused", "stopped"]),
+  nextRunAt: z.number().nullable(),
+  lastWakeAt: z.number().nullable(),
+  lastActionSummary: z.string().nullable(),
+  lastError: z.string().nullable(),
+  specHash: z.string().nullable(),
+  updatedAt: z.number(),
+});
+export type WorkspaceHeartbeatStatus = z.infer<typeof WorkspaceHeartbeatStatusSchema>;
+
+export const WorkspaceHeartbeatSelectorSchema = z.union([
+  z.string(),
+  z.object({
+    name: z.string().optional(),
+    target: z
+      .object({
+        source: z.string().optional(),
+        className: z.string().optional(),
+        objectKey: z.string().optional(),
+      })
+      .optional(),
+    channelId: z.string().optional(),
+    participantHandle: z.string().optional(),
+  }),
+]);
+export type WorkspaceHeartbeatSelector = z.infer<typeof WorkspaceHeartbeatSelectorSchema>;
+
+export const HeartbeatTickResultSchema = z.object({
+  action: z.enum(["skip", "prompt", "continue", "none"]),
+  enqueued: z.boolean(),
+  skippedReason: z.string().optional(),
+  nextRunAt: z.number().nullable().optional(),
+  decision: z.unknown().optional(),
+  error: z.string().optional(),
+});
+export type WorkspaceHeartbeatTickResult = z.infer<typeof HeartbeatTickResultSchema>;
+
 export const SkillEntrySchema = z.object({
   /** Skill identifier (from frontmatter `name:`, falling back to the directory name). */
   name: z.string(),
@@ -362,6 +409,26 @@ export const workspaceMethods = defineServiceMethods({
   "recurring.list": {
     args: z.tuple([]),
     returns: z.array(WorkspaceRecurringJobStatusSchema),
+    policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
+  },
+  "heartbeats.list": {
+    args: z.tuple([]),
+    returns: z.array(WorkspaceHeartbeatStatusSchema),
+    policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
+  },
+  "heartbeats.runNow": {
+    args: z.tuple([WorkspaceHeartbeatSelectorSchema]),
+    returns: HeartbeatTickResultSchema,
+    policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
+  },
+  "heartbeats.pause": {
+    args: z.tuple([WorkspaceHeartbeatSelectorSchema]),
+    returns: z.object({ ok: z.literal(true) }),
+    policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
+  },
+  "heartbeats.resume": {
+    args: z.tuple([WorkspaceHeartbeatSelectorSchema]),
+    returns: z.object({ ok: z.literal(true) }),
     policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
   },
   "hostTargets.list": {

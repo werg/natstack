@@ -154,5 +154,24 @@ export class WorkspaceDOTestable extends WorkspaceDO {
         last_duration_ms INTEGER
       )
     `);
+    sql.exec(`
+      CREATE TABLE IF NOT EXISTS heartbeat_registry (
+        name TEXT NOT NULL,
+        source TEXT NOT NULL,
+        class_name TEXT NOT NULL,
+        object_key TEXT NOT NULL,
+        channel_id TEXT,
+        participant_handle TEXT,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        next_run_at INTEGER,
+        last_wake_at INTEGER,
+        last_action_summary TEXT,
+        last_error TEXT,
+        spec_hash TEXT,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (name, source, class_name, object_key)
+      )
+    `);
   }
 }

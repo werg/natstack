@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { createDevLogger } from "@natstack/dev-log";
 import { parseWorkspaceConfigContentWithId } from "@natstack/shared/workspace/configParser";
-import type { WorkspaceRecurringDecl } from "@natstack/shared/workspace/types";
+import type { WorkspaceHeartbeatDecl, WorkspaceRecurringDecl } from "@natstack/shared/workspace/types";
 import type { UnitBatchEntry } from "@natstack/shared/approvals";
 import type { UnitMetaChangeApprovalProvider } from "@natstack/unit-host";
 import type { DODispatch, DORef } from "../doDispatch.js";
@@ -128,6 +128,10 @@ export function recurringSpecHash(decl: WorkspaceRecurringDecl): string {
     schedule: { every: decl.schedule.every, at: decl.schedule.at ?? null },
   });
   return createHash("sha256").update(canonical).digest("hex");
+}
+
+export function heartbeatSpecHash(decl: WorkspaceHeartbeatDecl): string {
+  return createHash("sha256").update(JSON.stringify(decl)).digest("hex");
 }
 
 export function declToJobRow(decl: WorkspaceRecurringDecl, now: number): RecurringJobRow {
@@ -339,6 +343,137 @@ export class RecurringRegistry {
   }
 }
 
+export interface HeartbeatDeclarationRegistryDeps {
+  doDispatch: DODispatch;
+  workspaceId: string;
+  loadHeartbeats: () => WorkspaceHeartbeatDecl[];
+}
+
+export class HeartbeatDeclarationRegistry {
+  private stopped = false;
+  private readonly workspaceRef: DORef;
+
+  constructor(private readonly deps: HeartbeatDeclarationRegistryDeps) {
+    this.workspaceRef = {
+      source: INTERNAL_DO_SOURCE,
+      className: "WorkspaceDO",
+      objectKey: deps.workspaceId,
+    };
+  }
+
+  async start(): Promise<void> {
+    this.stopped = false;
+    await this.sync();
+  }
+
+  stop(): void {
+    this.stopped = true;
+  }
+
+  notifyChanged(): void {
+    void this.sync();
+  }
+
+  private async sync(): Promise<void> {
+    if (this.stopped) return;
+    const declarations = this.deps.loadHeartbeats();
+    const desired = new Set(declarations.map((decl) => decl.name));
+    await this.pruneRemoved(desired);
+    for (const decl of declarations) {
+      for (const ref of await this.refsForDeclaration(decl)) {
+        try {
+          await this.deps.doDispatch.dispatch(ref, "configureHeartbeat", decl);
+        } catch (err) {
+          log.warn(`heartbeat ${decl.name} configure dispatch failed:`, err);
+        }
+      }
+    }
+  }
+
+  private async refsForDeclaration(decl: WorkspaceHeartbeatDecl): Promise<DORef[]> {
+    if (decl.channel?.mode === "subscribed") {
+      const rows = await this.listHeartbeatRows();
+      const matches = rows.filter((row) => {
+        if (row.kind !== "code-owned") return false;
+        if (row.source !== decl.target.source || row.className !== decl.target.className) {
+          return false;
+        }
+        if (decl.channel?.id && row.channelId !== decl.channel.id) return false;
+        if (decl.channel?.handle && row.participantHandle !== decl.channel.handle) return false;
+        return true;
+      });
+      return matches.map((row) => ({
+        source: row.source,
+        className: row.className,
+        objectKey: row.objectKey,
+      }));
+    }
+    return [
+      {
+        source: decl.target.source,
+        className: decl.target.className,
+        objectKey: decl.target.objectKey ?? decl.name,
+      },
+    ];
+  }
+
+  private async pruneRemoved(desired: Set<string>): Promise<void> {
+    let rows: HeartbeatRegistryListRow[];
+    try {
+      rows = await this.listHeartbeatRows();
+    } catch (err) {
+      log.warn("heartbeat prune could not list registry:", err);
+      return;
+    }
+    for (const row of rows) {
+      const declarationName = heartbeatDeclarationNameFromRegistryRow(row.name);
+      if (row.kind !== "declarative" || desired.has(declarationName)) continue;
+      const ref: DORef = {
+        source: row.source,
+        className: row.className,
+        objectKey: row.objectKey,
+      };
+      try {
+        await this.deps.doDispatch.dispatch(ref, "removeHeartbeat", row.name);
+      } catch (err) {
+        log.warn(`heartbeat ${row.name} remove dispatch failed:`, err);
+      }
+      try {
+        await this.deps.doDispatch.dispatch(this.workspaceRef, "heartbeatRemove", {
+          name: row.name,
+          source: row.source,
+          className: row.className,
+          objectKey: row.objectKey,
+        });
+      } catch (err) {
+        log.warn(`heartbeat ${row.name} registry remove failed:`, err);
+      }
+    }
+  }
+
+  private async listHeartbeatRows(): Promise<HeartbeatRegistryListRow[]> {
+    return (await this.deps.doDispatch.dispatch(
+      this.workspaceRef,
+      "heartbeatList"
+    )) as HeartbeatRegistryListRow[];
+  }
+}
+
+type HeartbeatRegistryListRow = {
+  name: string;
+  source: string;
+  className: string;
+  objectKey: string;
+  channelId?: string | null;
+  participantHandle?: string | null;
+  kind: "declarative" | "code-owned";
+};
+
+function heartbeatDeclarationNameFromRegistryRow(name: string): string {
+  const idx = name.indexOf("#");
+  return idx >= 0 ? name.slice(0, idx) : name;
+}
+
 function parseArgs(argsJson: string): unknown[] {
   try {
     const parsed = JSON.parse(argsJson) as unknown;
@@ -394,6 +529,7 @@ function recurringJobStatus(row: RecurringJobRow, now: number): RecurringJobStat
 export interface RecurringMetaChangeProviderDeps {
   workspaceId: string;
   getCurrentRecurring(): WorkspaceRecurringDecl[];
+  getCurrentHeartbeats?: () => WorkspaceHeartbeatDecl[];
   readWorkspaceFileAtCommit(commit: string, filePath: string): Promise<string | null>;
 }
 
@@ -405,6 +541,19 @@ async function readRecurringAtCommit(
     const out = await deps.readWorkspaceFileAtCommit(commit, "meta/natstack.yml");
     if (!out) return [];
     return parseWorkspaceConfigContentWithId(out, deps.workspaceId).recurring ?? [];
+  } catch {
+    return [];
+  }
+}
+
+async function readHeartbeatsAtCommit(
+  deps: RecurringMetaChangeProviderDeps,
+  commit: string
+): Promise<WorkspaceHeartbeatDecl[]> {
+  try {
+    const out = await deps.readWorkspaceFileAtCommit(commit, "meta/natstack.yml");
+    if (!out) return [];
+    return parseWorkspaceConfigContentWithId(out, deps.workspaceId).heartbeats ?? [];
   } catch {
     return [];
   }
@@ -430,8 +579,12 @@ export function createRecurringMetaChangeProvider(
       commit: string
     ): Promise<{ units: UnitBatchEntry[]; identityKeys: string[] }> {
       const proposed = await readRecurringAtCommit(deps, commit);
+      const proposedHeartbeats = await readHeartbeatsAtCommit(deps, commit);
       const current = new Map(
         deps.getCurrentRecurring().map((decl) => [decl.name, recurringSpecHash(decl)])
+      );
+      const currentHeartbeats = new Map(
+        (deps.getCurrentHeartbeats?.() ?? []).map((decl) => [decl.name, heartbeatSpecHash(decl)])
       );
       const units: UnitBatchEntry[] = [];
       const identityKeys: string[] = [];
@@ -453,6 +606,32 @@ export function createRecurringMetaChangeProvider(
           capabilities: [`invokes ${target}.${decl.method} on schedule, unattended`],
         });
         identityKeys.push(`scheduled-job:${decl.name}:${hash}`);
+      }
+      for (const decl of proposedHeartbeats) {
+        let hash: string;
+        try {
+          hash = heartbeatSpecHash(decl);
+        } catch {
+          continue;
+        }
+        if (currentHeartbeats.get(decl.name) === hash) continue;
+        const target = `${decl.target.source}:${decl.target.className}/${decl.target.objectKey ?? decl.name}`;
+        const delivery = decl.behavior?.delivery ?? "none";
+        const maxModelCalls = decl.behavior?.maxModelCalls ?? 1;
+        const tokenBudget = decl.context?.tokenBudget ?? 12_000;
+        const label = decl.schedule.at
+          ? `every ${decl.schedule.every} at ${decl.schedule.at}`
+          : `every ${decl.schedule.every}`;
+        units.push({
+          unitKind: "agent-heartbeat",
+          unitName: decl.name,
+          displayName: `${decl.name} (${label})`,
+          source: { kind: "workspace-repo", repo: "meta", ref: commit },
+          capabilities: [
+            `unattended agent wake ${label}, may invoke tools through ${target}, delivery ${delivery}, maxModelCalls ${maxModelCalls}, tokenBudget ${tokenBudget}`,
+          ],
+        });
+        identityKeys.push(`agent-heartbeat:${decl.name}:${hash}`);
       }
       return { units, identityKeys };
     },

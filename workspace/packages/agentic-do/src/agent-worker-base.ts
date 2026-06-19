@@ -21,8 +21,12 @@ import {
 } from "@workspace/harness";
 import type { AgentTool } from "@workspace/pi-core";
 import type { ParticipantDescriptor } from "@workspace/harness";
-import type { ThinkingLevel } from "@workspace/agent-loop";
+import type { AgentTurnContextPolicy, ThinkingLevel } from "@workspace/agent-loop";
 import { AgentVesselBase, type AgentPromptResources, type ApprovalLevel } from "./agent-vessel.js";
+import {
+  AgentHeartbeatLoop,
+  type AgentHeartbeatLoopDeps,
+} from "./agent-heartbeat-loop.js";
 import {
   DEFAULT_APPROVAL_LEVEL,
   DEFAULT_MODEL,
@@ -123,6 +127,135 @@ export abstract class AgentWorkerBase extends AgentVesselBase {
   protected override invalidatePromptResources(_channelId?: string): void {
     this.promptResourceCache = null;
     this.promptResourceLoad = null;
+  }
+
+  protected createHeartbeatLoop(options: {
+    namespace: string;
+    defaultPromptText?: string;
+    evaluate: AgentHeartbeatLoopDeps["evaluate"];
+    channelId: () => string | null;
+    registry?: {
+      participantHandle?: () => string | null;
+      enabled?: boolean;
+    };
+  }): AgentHeartbeatLoop {
+    const sourceId = `heartbeat:${options.namespace.replace(/[^a-zA-Z0-9_]/gu, "_")}`;
+    const loop = new AgentHeartbeatLoop({
+      sql: this.sql,
+      namespace: options.namespace,
+      defaultPromptText: options.defaultPromptText,
+      evaluate: options.evaluate,
+      scheduleWakeAt: (id, timeMs) => this.scheduleAgentAlarm(id, timeMs),
+      clearWake: (id) => this.clearAgentAlarm(id),
+      isTurnInFlight: () => {
+        const channelId = options.channelId();
+        return channelId ? this.driver.hasOpenTurn(channelId) : false;
+      },
+      enqueueTurn: async (turn) => {
+        const channelId = options.channelId();
+        if (!channelId) throw new Error(`heartbeat ${options.namespace} has no bound channel`);
+        const content =
+          turn.kind === "prompt"
+            ? turn.promptText
+            : (options.defaultPromptText ?? "Continue this heartbeat turn.");
+        const contextPolicy = await this.resolveHeartbeatContextPolicy(turn.decision.contextPolicy);
+        await this.submitAgentInitiatedTurn(
+          channelId,
+          { content },
+          {
+            mode: "sequential",
+            steeringId: `${sourceId}:${turn.trigger.kind}:${Date.now()}`,
+            origin: "heartbeat",
+            delivery: turn.decision.delivery ?? "none",
+            ...(turn.decision.ackToken ? { ackToken: turn.decision.ackToken } : {}),
+            ...(turn.decision.silentOk !== undefined ? { silentOk: turn.decision.silentOk } : {}),
+            ...(turn.decision.maxModelCalls !== undefined
+              ? { loopConfigPatch: { maxModelCallsPerTurn: turn.decision.maxModelCalls } }
+              : { loopConfigPatch: { maxModelCallsPerTurn: 1 } }),
+            contextPolicy,
+          }
+        );
+        if (options.registry?.enabled !== false) {
+          await this.registerGenericHeartbeat(options.namespace, channelId, loop, options);
+        }
+      },
+    });
+    this.registerAgentAlarmSource({
+      id: sourceId,
+      nextWakeAt: () => loop.nextWakeAt(),
+      fire: async (now) => {
+        await loop.onAlarm(now);
+        const channelId = options.channelId();
+        if (channelId && options.registry?.enabled !== false) {
+          await this.registerGenericHeartbeat(options.namespace, channelId, loop, options);
+        }
+      },
+    });
+    return loop;
+  }
+
+  private async registerGenericHeartbeat(
+    namespace: string,
+    channelId: string,
+    loop: AgentHeartbeatLoop,
+    options?: {
+      registry?: {
+        participantHandle?: () => string | null;
+      };
+    }
+  ): Promise<void> {
+    const state = loop.getState();
+    const ref = this.identity.ref;
+    await this.rpc
+      .call("main", "workspace-state.heartbeatRegister", [
+        {
+          name: `${namespace}-${channelId}`,
+          source: ref.source,
+          className: ref.className,
+          objectKey: ref.objectKey,
+          channelId,
+          participantHandle: options?.registry?.participantHandle?.() ?? null,
+          kind: "code-owned",
+          status: state.status,
+          nextRunAt: state.nextRunAt,
+          lastWakeAt: state.lastWakeAt || null,
+          lastActionSummary: state.lastActionSummary || null,
+          lastError: state.lastError || null,
+          specHash: state.specHash || null,
+          updatedAt: Date.now(),
+        },
+      ])
+      .catch((err) => {
+        console.warn("[AgentWorkerBase] heartbeat registry update failed:", err);
+      });
+  }
+
+  private async resolveHeartbeatContextPolicy(
+    decisionPolicy?: AgentTurnContextPolicy
+  ): Promise<AgentTurnContextPolicy> {
+    const contextPolicy: AgentTurnContextPolicy = {
+      mode: "heartbeat",
+      includeWorkspacePrompt: false,
+      includeSkillIndex: false,
+      tokenBudget: 12_000,
+      ...decisionPolicy,
+    };
+    if (contextPolicy.promptFile) {
+      try {
+        const fs = createRpcFs(this.rpc as never);
+        const path = contextPolicy.promptFile.startsWith("/")
+          ? contextPolicy.promptFile
+          : `/${contextPolicy.promptFile}`;
+        const raw = await fs.readFile(path, "utf8");
+        contextPolicy.promptFileContent = typeof raw === "string" ? raw : raw.toString("utf8");
+      } catch (err) {
+        console.warn(
+          "[AgentWorkerBase] failed to read heartbeat promptFile:",
+          err instanceof Error ? err.message : String(err)
+        );
+      }
+    }
+    return contextPolicy;
   }
 
   /** The six workerd-clean file tools over the agent's context folder

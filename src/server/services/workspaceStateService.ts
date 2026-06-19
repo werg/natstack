@@ -34,6 +34,7 @@ export interface WorkspaceStateServiceDeps {
    * can re-arm its timer. Called after `alarmSet`/`alarmClear` persist.
    */
   onAlarmChanged?: () => void;
+  onHeartbeatRegistryChanged?: () => void;
   /**
    * Notify listeners that the panel slot/history tree changed (create, navigate,
    * move, close, …) so the server's in-memory panel-tree mirror can re-sync and
@@ -182,9 +183,26 @@ export function createWorkspaceStateService(deps: WorkspaceStateServiceDeps): Se
           deps.onAlarmChanged?.();
           return;
         }
+        case "heartbeatRegister": {
+          const [input] = args as [unknown];
+          await dispatch<undefined>("heartbeatRegister", [input]);
+          if (isHeartbeatCodeOwnedRegistration(input)) {
+            deps.onHeartbeatRegistryChanged?.();
+          }
+          return;
+        }
+        case "heartbeatRemove": {
+          const [input] = args as [unknown];
+          await dispatch<undefined>("heartbeatRemove", [input]);
+          return;
+        }
         default:
           throw new Error(`Unknown workspace-state method: ${method}`);
       }
     },
   };
+}
+
+function isHeartbeatCodeOwnedRegistration(input: unknown): boolean {
+  return !!input && typeof input === "object" && (input as { kind?: unknown }).kind === "code-owned";
 }

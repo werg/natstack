@@ -213,7 +213,7 @@ export interface UnitApprovalCommit {
   timestamp: number;
 }
 
-export type UnitBatchEntryKind = "extension" | "app" | "scheduled-job";
+export type UnitBatchEntryKind = "extension" | "app" | "scheduled-job" | "agent-heartbeat";
 
 /**
  * One workspace-owned unit in a joint `unit-batch` approval. Carries the

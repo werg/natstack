@@ -40,6 +40,9 @@ import type {
 import { workspaceMethods } from "@natstack/shared/serviceSchemas/workspace";
 import type {
   WorkspaceAppVersions,
+  WorkspaceHeartbeatSelector,
+  WorkspaceHeartbeatStatus,
+  WorkspaceHeartbeatTickResult,
   WorkspaceRecurringJobStatus,
   WorkspaceUnitDiagnostics,
   WorkspaceUnitLogRecord,
@@ -55,6 +58,9 @@ import { isAuthorizedChrome } from "./chromeTrust.js";
 export type {
   WorkspaceAppVersionRecord,
   WorkspaceAppVersions,
+  WorkspaceHeartbeatSelector,
+  WorkspaceHeartbeatStatus,
+  WorkspaceHeartbeatTickResult,
   WorkspaceRecurringJobStatus,
   WorkspaceUnitDiagnostics,
   WorkspaceUnitLogRecord,
@@ -171,6 +177,12 @@ export interface WorkspaceServiceDeps {
   rollbackAppVersion?: (sourceOrName: string, buildKey?: string) => Promise<unknown> | unknown;
   /** List declarative scheduled jobs from meta/natstack.yml with durable run state. */
   listRecurringJobs?: () => Promise<WorkspaceRecurringJobStatus[]> | WorkspaceRecurringJobStatus[];
+  listHeartbeats?: () => Promise<WorkspaceHeartbeatStatus[]> | WorkspaceHeartbeatStatus[];
+  runHeartbeatNow?: (
+    selector: WorkspaceHeartbeatSelector
+  ) => Promise<WorkspaceHeartbeatTickResult> | WorkspaceHeartbeatTickResult;
+  pauseHeartbeat?: (selector: WorkspaceHeartbeatSelector) => Promise<{ ok: true }> | { ok: true };
+  resumeHeartbeat?: (selector: WorkspaceHeartbeatSelector) => Promise<{ ok: true }> | { ok: true };
   /** List app candidates that can be selected as the active app for a host target. */
   listHostTargetCandidates?: (
     target: HostTarget
@@ -738,6 +750,33 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
 
         case "recurring.list":
           return deps.listRecurringJobs ? await deps.listRecurringJobs() : [];
+
+        case "heartbeats.list":
+          return deps.listHeartbeats ? await deps.listHeartbeats() : [];
+
+        case "heartbeats.runNow": {
+          const [name] = args as [string];
+          if (!deps.runHeartbeatNow) {
+            throw new ServiceError("workspace", method, "Heartbeat controls are unavailable", "ENOENT");
+          }
+          return deps.runHeartbeatNow(name);
+        }
+
+        case "heartbeats.pause": {
+          const [name] = args as [string];
+          if (!deps.pauseHeartbeat) {
+            throw new ServiceError("workspace", method, "Heartbeat controls are unavailable", "ENOENT");
+          }
+          return deps.pauseHeartbeat(name);
+        }
+
+        case "heartbeats.resume": {
+          const [name] = args as [string];
+          if (!deps.resumeHeartbeat) {
+            throw new ServiceError("workspace", method, "Heartbeat controls are unavailable", "ENOENT");
+          }
+          return deps.resumeHeartbeat(name);
+        }
 
         case "hostTargets.list": {
           if (!deps.listHostTargetCandidates) return [];
