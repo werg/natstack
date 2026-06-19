@@ -15,7 +15,7 @@ function subjectLabel(value: string): string {
 }
 
 function detailValue(value: string): string {
-  return truncate(value, 200);
+  return truncate(value, 1000);
 }
 
 function summaryValue(value: string): string {
@@ -35,16 +35,17 @@ export function buildExecApproval(req: {
   shell: boolean;
 }): UserlandApprovalRequest {
   const argv = [req.command, ...req.args];
+  const command = argv.map(shellQuoteForDisplay).join(" ");
   return {
     subject: {
       id: `user.exec.${digest([req.command, ...req.args, req.cwd, req.shell ? "sh" : "argv"])}`,
-      label: subjectLabel(argv.join(" ")),
+      label: subjectLabel(command),
     },
     title: "Run command",
-    summary: summaryValue(argv.join(" ")),
+    summary: summaryValue(["Run this command:", "", markdownShellBlock(command)].join("\n")),
     warning: req.shell ? "Runs through /bin/sh -c; shell metacharacters will be interpreted." : undefined,
     details: [
-      { label: "Command", value: detailValue(argv.join(" ")) },
+      { label: "Command", value: detailValue(markdownShellBlock(command)), format: "markdown" },
       { label: "Directory", value: detailValue(req.cwd) },
       { label: "Mode", value: req.shell ? "shell" : "argv" },
     ],
@@ -59,19 +60,33 @@ export function buildOpenApproval(req: {
   label?: string;
 }): UserlandApprovalRequest {
   const argv = [req.command, ...req.args];
+  const command = argv.map(shellQuoteForDisplay).join(" ");
   return {
     subject: {
       id: `user.open.${digest([req.command, ...req.args, req.cwd])}`,
-      label: subjectLabel(req.label ?? argv.join(" ")),
+      label: subjectLabel(req.label ?? command),
     },
     title: "Open terminal session",
-    summary: summaryValue(req.label ?? argv.join(" ")),
+    summary: summaryValue([
+      req.label ? `Open ${req.label} with:` : "Open a terminal session with:",
+      "",
+      markdownShellBlock(command),
+    ].join("\n")),
     details: [
-      { label: "Command", value: detailValue(argv.join(" ")) },
+      { label: "Command", value: detailValue(markdownShellBlock(command)), format: "markdown" },
       { label: "Directory", value: detailValue(req.cwd) },
     ],
     options,
   };
+}
+
+function markdownShellBlock(value: string): string {
+  return `\`\`\`sh\n${truncate(value, 500).replace(/```/g, "'''")}\n\`\`\``;
+}
+
+function shellQuoteForDisplay(value: string): string {
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 export function buildUrlOpenApproval(req: { url: string }): UserlandApprovalRequest {
@@ -88,5 +103,38 @@ export function buildUrlOpenApproval(req: { url: string }): UserlandApprovalRequ
       { label: "Origin", value: detailValue(parsed.origin) },
     ],
     options,
+  };
+}
+
+export function buildDangerousActionApproval(req: {
+  idParts: string[];
+  label: string;
+  title: string;
+  summary?: string;
+  warning?: string;
+  details?: Array<{ label: string; value: string; format?: "plain" | "markdown" | "code" }>;
+  positiveEvidence?: Array<{ label: string; value: string; format?: "plain" | "markdown" | "code" }>;
+}): UserlandApprovalRequest {
+  return {
+    subject: {
+      id: `user.danger.${digest(req.idParts)}`,
+      label: subjectLabel(req.label),
+    },
+    title: req.title,
+    summary: req.summary ? summaryValue(req.summary) : undefined,
+    warning: req.warning ? detailValue(req.warning) : undefined,
+    details: req.details?.map((detail) => ({
+      label: detail.label,
+      value: detailValue(detail.value),
+      ...(detail.format ? { format: detail.format } : {}),
+    })),
+    positiveEvidence: req.positiveEvidence?.map((detail) => ({
+      label: detail.label,
+      value: detailValue(detail.value),
+      ...(detail.format ? { format: detail.format } : {}),
+    })),
+    severity: "dangerous",
+    defaultAction: "deny",
+    promptOptions: "scoped",
   };
 }

@@ -20,6 +20,7 @@ import type {
   PendingCapabilityApproval,
   PendingCredentialApproval,
   PendingCredentialInputApproval,
+  PendingSecretInputApproval,
   PendingClientConfigApproval,
   PendingDeviceCodeApproval,
   PendingUnitBatchApproval,
@@ -116,6 +117,15 @@ export interface CredentialInputApprovalQueueRequest extends ApprovalQueueReques
   fields: PendingCredentialInputApproval["fields"];
 }
 
+export interface SecretInputApprovalQueueRequest extends ApprovalQueueRequestBase {
+  kind: "secret-input";
+  title: string;
+  description?: string;
+  warning?: string;
+  details?: PendingSecretInputApproval["details"];
+  fields: PendingSecretInputApproval["fields"];
+}
+
 export interface UserlandApprovalQueueRequest {
   principal: ApprovalPrincipal;
   /** Issuer of the request — defaults to principal when omitted. */
@@ -125,6 +135,9 @@ export interface UserlandApprovalQueueRequest {
   summary?: string;
   warning?: string;
   details?: PendingUserlandApproval["details"];
+  positiveEvidence?: PendingUserlandApproval["positiveEvidence"];
+  severity?: PendingUserlandApproval["severity"];
+  defaultAction?: PendingUserlandApproval["defaultAction"];
   promptOptions: PendingUserlandApproval["promptOptions"];
   options: UserlandApprovalOption[];
   signal?: AbortSignal;
@@ -158,6 +171,7 @@ export type ApprovalQueueRequest =
   | UnitBatchApprovalQueueRequest
   | ClientConfigApprovalQueueRequest
   | CredentialInputApprovalQueueRequest
+  | SecretInputApprovalQueueRequest
   | DeviceCodeApprovalQueueRequest;
 export type DecisionApprovalQueueRequest =
   | CredentialApprovalQueueRequest
@@ -208,6 +222,7 @@ export interface ApprovalQueue {
   requestCredentialInput(
     req: CredentialInputApprovalQueueRequest
   ): Promise<FieldInputApprovalResult>;
+  requestSecretInput(req: SecretInputApprovalQueueRequest): Promise<FieldInputApprovalResult>;
   requestUserland(req: UserlandApprovalQueueRequest): Promise<UserlandApprovalResult>;
   presentDeviceCode(req: DeviceCodeApprovalQueueRequest): DeviceCodeApprovalHandle;
   onPendingChanged?(listener: (pending: PendingApproval[]) => void): () => void;
@@ -223,6 +238,7 @@ export interface ApprovalQueue {
   ): number;
   submitClientConfig(approvalId: string, values: Record<string, string>): void;
   submitCredentialInput(approvalId: string, values: Record<string, string>): void;
+  submitSecretInput(approvalId: string, values: Record<string, string>): void;
   listPending(): PendingApproval[];
   /** Cleanup hook: cancel any pending approvals associated with a caller id. */
   cancelForCaller(callerId: string): void;
@@ -362,6 +378,12 @@ export function createApprovalQueue(deps: {
       // waiters and create duplicate credentials.
       return canonicalKey(["credential-input-isolated", randomUUID()]);
     }
+    if (req.kind === "secret-input") {
+      // A submitted secret is a one-shot input, not a reusable approval. Keep
+      // concurrent prompts isolated so one submission cannot satisfy another
+      // privileged operation.
+      return canonicalKey(["secret-input-isolated", randomUUID()]);
+    }
     if (req.kind === "device-code") {
       // Each device-code flow is independent — the user_code is unique and
       // the polling loop is tied to a specific outstanding request.
@@ -462,6 +484,13 @@ export function createApprovalQueue(deps: {
         object: { type: "credential", label: "Credential", value: req.credentialLabel },
       };
     }
+    if (req.kind === "secret-input") {
+      return {
+        kind: "service-setup",
+        verb: req.title,
+        object: { type: "secret-input", label: "Input", value: req.title },
+      };
+    }
     return {
       kind: "credential",
       verb: "use credential",
@@ -535,6 +564,17 @@ export function createApprovalQueue(deps: {
         fields: req.fields,
       } satisfies PendingCredentialInputApproval;
     }
+    if (req.kind === "secret-input") {
+      return {
+        ...base,
+        kind: "secret-input",
+        title: req.title,
+        description: req.description,
+        warning: req.warning,
+        details: req.details,
+        fields: req.fields,
+      } satisfies PendingSecretInputApproval;
+    }
     if (req.kind === "device-code") {
       return {
         ...base,
@@ -569,8 +609,11 @@ export function createApprovalQueue(deps: {
   }
 
   function enqueueFieldInputRequest(
-    req: ClientConfigApprovalQueueRequest | CredentialInputApprovalQueueRequest,
-    expectedKind: "client-config" | "credential-input",
+    req:
+      | ClientConfigApprovalQueueRequest
+      | CredentialInputApprovalQueueRequest
+      | SecretInputApprovalQueueRequest,
+    expectedKind: "client-config" | "credential-input" | "secret-input",
     collisionMessage: string
   ): Promise<FieldInputApprovalResult> {
     const dedupKey = dedupKeyFor(req);
@@ -637,7 +680,7 @@ export function createApprovalQueue(deps: {
 
   function submitFieldInput(
     approvalId: string,
-    expectedKind: "client-config" | "credential-input",
+    expectedKind: "client-config" | "credential-input" | "secret-input",
     values: Record<string, string>
   ): void {
     const entry = entriesById.get(approvalId);
@@ -819,6 +862,14 @@ export function createApprovalQueue(deps: {
       );
     },
 
+    requestSecretInput(req) {
+      return enqueueFieldInputRequest(
+        req,
+        "secret-input",
+        "Approval dedup collision for secret input request"
+      );
+    },
+
     presentDeviceCode(req) {
       const dedupKey = dedupKeyFor(req);
       const approval = createPendingApproval(req) as PendingDeviceCodeApproval;
@@ -920,6 +971,9 @@ export function createApprovalQueue(deps: {
           summary: req.summary,
           warning: req.warning,
           details: req.details,
+          positiveEvidence: req.positiveEvidence,
+          severity: req.severity,
+          defaultAction: req.defaultAction,
           promptOptions: req.promptOptions,
           options: req.options,
         } satisfies PendingUserlandApproval;
@@ -1038,6 +1092,10 @@ export function createApprovalQueue(deps: {
 
     submitCredentialInput(approvalId, values) {
       submitFieldInput(approvalId, "credential-input", values);
+    },
+
+    submitSecretInput(approvalId, values) {
+      submitFieldInput(approvalId, "secret-input", values);
     },
 
     listPending() {

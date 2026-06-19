@@ -52,4 +52,20 @@ describe("userland approval validation", () => {
 
     expect(parsed.subject).toEqual({ id: "team-x:foo", label: "Team X" });
   });
+
+  it("accepts dangerous-action metadata and positive evidence", () => {
+    expect(
+      userlandApprovalRequestSchema.parse({
+        subject: { id: "team-x:danger" },
+        title: "Run privileged command",
+        severity: "dangerous",
+        defaultAction: "deny",
+        positiveEvidence: [{ label: "Gate", value: "sudoers" }],
+      })
+    ).toMatchObject({
+      severity: "dangerous",
+      defaultAction: "deny",
+      positiveEvidence: [{ label: "Gate", value: "sudoers" }],
+    });
+  });
 });

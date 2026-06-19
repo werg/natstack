@@ -6,6 +6,7 @@ import type {
   PendingCredentialApproval,
   PendingCredentialInputApproval,
   PendingDeviceCodeApproval,
+  PendingSecretInputApproval,
   PendingUnitBatchApproval,
 } from "./approvals.js";
 
@@ -149,7 +150,11 @@ export function getApprovalCategoryLabel(approval: PendingApproval): string {
   if (approval.kind === "credential-input") {
     return "Service setup";
   }
+  if (approval.kind === "secret-input") {
+    return "Privileged input";
+  }
   if (approval.kind === "userland") {
+    if (approval.severity === "dangerous") return "Privileged action";
     return `${userlandCallerKindLabel(approval.callerKind)} request`;
   }
   if (approval.kind === "device-code") {
@@ -719,6 +724,15 @@ export function getApprovalCopy(approval: PendingApproval): {
     return {
       title: `Add ${approval.credentialLabel}`,
       summary: `Saves ${approval.credentialLabel} for ${audience}. Secrets stay encrypted and are only sent to matching requests.`,
+    };
+  }
+  if (approval.kind === "secret-input") {
+    return {
+      title: approval.title,
+      summary:
+        approval.description ??
+        "Requests a secret for one privileged operation. The value is not stored.",
+      warning: approval.warning,
     };
   }
   if (approval.kind === "userland") {

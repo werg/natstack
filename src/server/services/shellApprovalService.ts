@@ -118,6 +118,17 @@ export function createShellApprovalService(deps: {
           }
           return;
         }
+        case "submitSecretInput": {
+          const [approvalId, values] = args as [string, Record<string, string>];
+          const existed = approvalQueue
+            .listPending()
+            .some((approval) => approval.approvalId === approvalId);
+          approvalQueue.submitSecretInput(approvalId, values);
+          if (existed) {
+            metrics.recordApprovalResolved({ decision: "submit", source: ctx.caller.runtime.kind });
+          }
+          return;
+        }
         case "listPending": {
           return approvalQueue.listPending();
         }

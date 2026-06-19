@@ -405,7 +405,13 @@ class NatStackMobileHostModule(
     }
 
     private fun clearStoredCredentials() {
-        prefs.edit().remove(CREDENTIAL_KEY).remove(ACTIVE_APP_SOURCE_KEY).apply()
+        prefs.edit()
+            .remove(CREDENTIAL_KEY)
+            .remove(ACTIVE_APP_SOURCE_KEY)
+            .remove(PUBLIC_DEVICE_ID_KEY)
+            .remove(PUBLIC_SERVER_ID_KEY)
+            .remove(PUBLIC_SERVER_URL_KEY)
+            .apply()
     }
 
     private fun isWorkspaceMobileAppCaller(callerId: String, deviceId: String): Boolean =
@@ -553,7 +559,12 @@ class NatStackMobileHostModule(
             .put("refreshToken", credential.refreshToken)
             .put("serverId", credential.serverId)
             .put("workspaceId", credential.workspaceId)
-        prefs.edit().putString(CREDENTIAL_KEY, encrypt(json.toString())).apply()
+        prefs.edit()
+            .putString(CREDENTIAL_KEY, encrypt(json.toString()))
+            .putString(PUBLIC_DEVICE_ID_KEY, credential.deviceId)
+            .putString(PUBLIC_SERVER_ID_KEY, credential.serverId)
+            .putString(PUBLIC_SERVER_URL_KEY, credential.serverUrl)
+            .apply()
     }
 
     private fun loadCredential(): Credential? {
@@ -630,6 +641,9 @@ class NatStackMobileHostModule(
 
     private companion object {
         const val CREDENTIAL_KEY = "credential"
+        const val PUBLIC_DEVICE_ID_KEY = "public.deviceId"
+        const val PUBLIC_SERVER_ID_KEY = "public.serverId"
+        const val PUBLIC_SERVER_URL_KEY = "public.serverUrl"
         const val ACTIVE_APP_SOURCE_KEY = "activeBundle.source"
         const val TAG = "NatStackMobileHost"
         const val KEY_ALIAS = "natstack-mobile-refresh"

@@ -1,6 +1,10 @@
 import React from "react";
 import { Box, Text } from "ink";
 import type { PendingApproval } from "@natstack/shared/approvals";
+import {
+  parseApprovalMarkdown,
+  type ApprovalMarkdownInline,
+} from "@natstack/shared/approvalMarkdown";
 
 export interface ApprovalsOverlayProps {
   pending: PendingApproval[];
@@ -52,7 +56,7 @@ export function ApprovalsOverlay({
           })}
           {current ? (
             <Box flexDirection="column" marginTop={1}>
-              <Text dimColor>{summarize(current).detail}</Text>
+              <ApprovalMarkdown source={summarize(current).detail} />
               <Text>
                 {"[1] once  [2] session  [3] version  [4] repo  [5] deny  · ↑/↓ select · Esc dismiss"}
               </Text>
@@ -61,5 +65,75 @@ export function ApprovalsOverlay({
         </>
       )}
     </Box>
+  );
+}
+
+function ApprovalMarkdown({ source }: { source: string }): React.ReactElement | null {
+  const blocks = parseApprovalMarkdown(source);
+  if (blocks.length === 0) return null;
+  return (
+    <Box flexDirection="column">
+      {blocks.map((block, index) => {
+        if (block.kind === "code-block") {
+          return (
+            <Box key={index} flexDirection="column" paddingLeft={1}>
+              {block.text.split(/\r?\n/).map((line, lineIndex) => (
+                <Text key={lineIndex} color="cyan">
+                  {line || " "}
+                </Text>
+              ))}
+            </Box>
+          );
+        }
+        if (block.kind === "bullet-list" || block.kind === "ordered-list") {
+          return (
+            <Box key={index} flexDirection="column">
+              {block.items.map((item, itemIndex) => (
+                <Text key={itemIndex} dimColor>
+                  {block.kind === "ordered-list" ? `${itemIndex + 1}. ` : "- "}
+                  <ApprovalMarkdownInlineNodes nodes={item} />
+                </Text>
+              ))}
+            </Box>
+          );
+        }
+        return (
+          <Text key={index} dimColor>
+            <ApprovalMarkdownInlineNodes nodes={block.children} />
+          </Text>
+        );
+      })}
+    </Box>
+  );
+}
+
+function ApprovalMarkdownInlineNodes({ nodes }: { nodes: ApprovalMarkdownInline[] }): React.ReactElement {
+  return (
+    <>
+      {nodes.map((node, index) => {
+        if (node.kind === "code") {
+          return (
+            <Text key={index} color="cyan">
+              {node.text}
+            </Text>
+          );
+        }
+        if (node.kind === "strong") {
+          return (
+            <Text key={index} bold>
+              <ApprovalMarkdownInlineNodes nodes={node.children} />
+            </Text>
+          );
+        }
+        if (node.kind === "emphasis") {
+          return (
+            <Text key={index}>
+              <ApprovalMarkdownInlineNodes nodes={node.children} />
+            </Text>
+          );
+        }
+        return <React.Fragment key={index}>{node.text}</React.Fragment>;
+      })}
+    </>
   );
 }

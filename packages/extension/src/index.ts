@@ -33,7 +33,10 @@ export interface UserlandApprovalRequest {
   title: string;
   summary?: string;
   warning?: string;
-  details?: Array<{ label: string; value: string }>;
+  details?: Array<{ label: string; value: string; format?: "plain" | "markdown" | "code" }>;
+  positiveEvidence?: Array<{ label: string; value: string; format?: "plain" | "markdown" | "code" }>;
+  severity?: "standard" | "dangerous";
+  defaultAction?: "allow" | "deny";
   promptOptions?: "scoped" | "choices";
   options?: Array<{ value: string; label: string; description?: string; tone?: "primary" | "danger" | "neutral" }>;
 }

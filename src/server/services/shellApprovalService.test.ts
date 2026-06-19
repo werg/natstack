@@ -36,6 +36,7 @@ describe("shellApprovalService", () => {
       approvalQueue: {
         request: vi.fn(),
         requestClientConfig: vi.fn(),
+        requestSecretInput: vi.fn(async () => ({ decision: "deny" as const })),
         requestCredentialInput: vi.fn(),
         requestUserland: vi.fn(),
         presentDeviceCode: vi.fn(),
@@ -43,6 +44,7 @@ describe("shellApprovalService", () => {
         resolve: vi.fn(),
         resolveUserland: vi.fn(),
         submitClientConfig: vi.fn(),
+        submitSecretInput: vi.fn(),
         submitCredentialInput: vi.fn(),
         listPending: vi.fn(() => []),
         cancelForCaller: vi.fn(),
@@ -61,6 +63,7 @@ describe("shellApprovalService", () => {
       approvalQueue: {
         request: vi.fn(),
         requestClientConfig: vi.fn(),
+        requestSecretInput: vi.fn(async () => ({ decision: "deny" as const })),
         requestCredentialInput: vi.fn(),
         requestUserland: vi.fn(),
         presentDeviceCode: vi.fn(),
@@ -68,6 +71,7 @@ describe("shellApprovalService", () => {
         resolve,
         resolveUserland,
         submitClientConfig: vi.fn(),
+        submitSecretInput: vi.fn(),
         submitCredentialInput: vi.fn(),
         listPending: vi.fn(() => [
           {
@@ -117,6 +121,7 @@ describe("shellApprovalService", () => {
       approvalQueue: {
         request: vi.fn(),
         requestClientConfig: vi.fn(),
+        requestSecretInput: vi.fn(async () => ({ decision: "deny" as const })),
         requestCredentialInput: vi.fn(),
         requestUserland: vi.fn(),
         presentDeviceCode: vi.fn(),
@@ -124,6 +129,7 @@ describe("shellApprovalService", () => {
         resolve: vi.fn(),
         resolveUserland: vi.fn(),
         submitClientConfig: vi.fn(),
+        submitSecretInput: vi.fn(),
         submitCredentialInput: vi.fn(),
         listPending: vi.fn(() => []),
         cancelForCaller: vi.fn(),
@@ -147,6 +153,7 @@ describe("shellApprovalService", () => {
       approvalQueue: {
         request: vi.fn(),
         requestClientConfig: vi.fn(),
+        requestSecretInput: vi.fn(async () => ({ decision: "deny" as const })),
         requestCredentialInput: vi.fn(),
         requestUserland: vi.fn(),
         presentDeviceCode: vi.fn(),
@@ -154,6 +161,7 @@ describe("shellApprovalService", () => {
         resolve,
         resolveUserland: vi.fn(),
         submitClientConfig: vi.fn(),
+        submitSecretInput: vi.fn(),
         submitCredentialInput: vi.fn(),
         listPending: vi.fn(() => [
           {
@@ -188,6 +196,7 @@ describe("shellApprovalService", () => {
       approvalQueue: {
         request: vi.fn(),
         requestClientConfig: vi.fn(),
+        requestSecretInput: vi.fn(async () => ({ decision: "deny" as const })),
         requestCredentialInput: vi.fn(),
         requestUserland: vi.fn(),
         presentDeviceCode: vi.fn(),
@@ -195,6 +204,7 @@ describe("shellApprovalService", () => {
         resolve,
         resolveUserland: vi.fn(),
         submitClientConfig: vi.fn(),
+        submitSecretInput: vi.fn(),
         submitCredentialInput: vi.fn(),
         listPending: vi.fn(() => [startupApproval("startup-1")]),
         cancelForCaller: vi.fn(),

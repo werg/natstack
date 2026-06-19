@@ -2,6 +2,8 @@ import { z } from "zod";
 
 import type {
   ApprovalPrincipal,
+  SecretInputRequest,
+  SecretInputResult,
   UserlandApprovalChoice,
   UserlandApprovalGrantScope,
   UserlandApprovalGrant,
@@ -10,6 +12,8 @@ import type {
   UserlandApprovalRequest,
 } from "@natstack/shared/approvals";
 import {
+  approvalPrincipalSchema,
+  secretInputRequestSchema,
   userlandApprovalRequestSchema,
   userlandApprovalSubjectIdSchema,
 } from "@natstack/shared/approvals";
@@ -57,6 +61,21 @@ function scopedAllowOptions(principal: ApprovalPrincipal): UserlandApprovalOptio
   ];
 }
 
+// Dangerous prompts (or those defaulting to deny) present Deny first so the
+// safe choice leads; other prompts keep the allow-first ordering.
+function scopedOptionsFor(
+  principal: ApprovalPrincipal,
+  req: UserlandApprovalRequest
+): UserlandApprovalOption[] {
+  const options = scopedAllowOptions(principal);
+  if (req.severity === "dangerous" || req.defaultAction === "deny") {
+    const deny = options.filter((option) => option.value === "deny");
+    const rest = options.filter((option) => option.value !== "deny");
+    return [...deny, ...rest];
+  }
+  return options;
+}
+
 export function createUserlandApprovalService(deps: {
   approvalQueue: ApprovalQueue;
   grantStore: Pick<UserlandApprovalGrantStore, "lookup" | "record" | "revoke" | "list">;
@@ -71,6 +90,17 @@ export function createUserlandApprovalService(deps: {
     req: UserlandApprovalRequest,
     issuer: UserlandApprovalIssuer | undefined
   ): UserlandApprovalRequest {
+    if (!issuer || issuer.kind !== "extension") return req;
+    return {
+      ...req,
+      details: [{ label: "Extension", value: issuer.id }, ...(req.details ?? [])].slice(0, 8),
+    };
+  }
+
+  function decorateSecretInputForIssuer(
+    req: SecretInputRequest,
+    issuer: UserlandApprovalIssuer | undefined
+  ): SecretInputRequest {
     if (!issuer || issuer.kind !== "extension") return req;
     return {
       ...req,
@@ -135,12 +165,91 @@ export function createUserlandApprovalService(deps: {
     const req = userlandApprovalRequestSchema.parse(rawReq);
     const principal = await resolvePrincipal(ctx, "request");
     if (!principal) return { kind: "uncallable", reason: "no-user-context" };
+    return requestForPrincipal(ctx, principal, req);
+  }
+
+  async function requestAs(
+    ctx: ServiceContext,
+    rawPrincipal: ApprovalPrincipal,
+    rawReq: UserlandApprovalRequest
+  ): Promise<UserlandApprovalChoice> {
+    if (ctx.caller.runtime.kind !== "extension") {
+      throw new ServiceError(
+        SERVICE_NAME,
+        "requestAs",
+        "requestAs is only available to attributed extension callbacks",
+        "EACCES"
+      );
+    }
+    const principal = approvalPrincipalSchema.parse(rawPrincipal);
+    const req = userlandApprovalRequestSchema.parse(rawReq);
+    return requestForPrincipal(ctx, principal, req);
+  }
+
+  async function requestSecretInput(
+    ctx: ServiceContext,
+    rawReq: SecretInputRequest
+  ): Promise<SecretInputResult> {
+    const req = secretInputRequestSchema.parse(rawReq);
+    const principal = await resolvePrincipal(ctx, "requestSecretInput");
+    if (!principal) return { decision: "deny" };
+    return requestSecretInputForPrincipal(ctx, principal, req);
+  }
+
+  async function requestSecretInputAs(
+    ctx: ServiceContext,
+    rawPrincipal: ApprovalPrincipal,
+    rawReq: SecretInputRequest
+  ): Promise<SecretInputResult> {
+    if (ctx.caller.runtime.kind !== "extension") {
+      throw new ServiceError(
+        SERVICE_NAME,
+        "requestSecretInputAs",
+        "requestSecretInputAs is only available to attributed extension callbacks",
+        "EACCES"
+      );
+    }
+    const principal = approvalPrincipalSchema.parse(rawPrincipal);
+    const req = secretInputRequestSchema.parse(rawReq);
+    return requestSecretInputForPrincipal(ctx, principal, req);
+  }
+
+  async function requestSecretInputForPrincipal(
+    ctx: ServiceContext,
+    principal: ApprovalPrincipal,
+    req: SecretInputRequest
+  ): Promise<SecretInputResult> {
+    const issuer = extensionIssuer(ctx);
+    const decoratedReq = decorateSecretInputForIssuer(req, issuer);
+    return deps.approvalQueue.requestSecretInput({
+      kind: "secret-input",
+      callerId: principal.callerId,
+      callerKind: principal.callerKind,
+      repoPath: principal.repoPath,
+      effectiveVersion: principal.effectiveVersion,
+      title: decoratedReq.title,
+      description: decoratedReq.description,
+      warning: decoratedReq.warning,
+      details: decoratedReq.details,
+      fields: decoratedReq.fields.map((field) => ({
+        ...field,
+        required: field.required ?? false,
+      })),
+      signal: undefined,
+    });
+  }
+
+  async function requestForPrincipal(
+    ctx: ServiceContext,
+    principal: ApprovalPrincipal,
+    req: UserlandApprovalRequest
+  ): Promise<UserlandApprovalChoice> {
     const issuer = extensionIssuer(ctx);
     const decoratedReq = decorateForIssuer(req, issuer);
     const promptOptions = decoratedReq.promptOptions ?? "scoped";
     const options =
       promptOptions === "scoped"
-        ? scopedAllowOptions(principal)
+        ? scopedOptionsFor(principal, decoratedReq)
         : (decoratedReq.options ?? BINARY_OPTIONS);
     const hit = deps.grantStore.lookup(principal, decoratedReq.subject.id, issuer);
     if (hit) {
@@ -210,6 +319,15 @@ export function createUserlandApprovalService(deps: {
     policy: { allowed: ["panel", "app", "worker", "do", "extension"] },
     methods: {
       request: { args: z.tuple([userlandApprovalRequestSchema]) },
+      requestSecretInput: { args: z.tuple([secretInputRequestSchema]) },
+      requestAs: {
+        args: z.tuple([approvalPrincipalSchema, userlandApprovalRequestSchema]),
+        policy: { allowed: ["extension"] },
+      },
+      requestSecretInputAs: {
+        args: z.tuple([approvalPrincipalSchema, secretInputRequestSchema]),
+        policy: { allowed: ["extension"] },
+      },
       revoke: { args: z.tuple([userlandApprovalSubjectIdSchema]) },
       list: { args: z.tuple([]) },
     },
@@ -217,6 +335,16 @@ export function createUserlandApprovalService(deps: {
       switch (method) {
         case "request":
           return request(ctx, args[0] as UserlandApprovalRequest);
+        case "requestSecretInput":
+          return requestSecretInput(ctx, args[0] as SecretInputRequest);
+        case "requestAs":
+          return requestAs(ctx, args[0] as ApprovalPrincipal, args[1] as UserlandApprovalRequest);
+        case "requestSecretInputAs":
+          return requestSecretInputAs(
+            ctx,
+            args[0] as ApprovalPrincipal,
+            args[1] as SecretInputRequest
+          );
         case "revoke": {
           const principal = await resolvePrincipal(ctx, "revoke");
           if (!principal) return { kind: "uncallable", reason: "no-user-context" };

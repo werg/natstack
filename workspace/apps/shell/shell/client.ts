@@ -432,6 +432,7 @@ export interface RemoteCredCurrent {
   configured: boolean;
   isActive: boolean;
   bootstrap: "device" | "admin-token" | "hybrid" | "none";
+  remoteId?: string;
   url?: string;
   caPath?: string;
   fingerprint?: string;
@@ -579,6 +580,8 @@ export const shellApproval = {
     shellApprovalClient.submitClientConfig(approvalId, values),
   submitCredentialInput: (approvalId: string, values: Record<string, string>) =>
     shellApprovalClient.submitCredentialInput(approvalId, values),
+  submitSecretInput: (approvalId: string, values: Record<string, string>) =>
+    shellApprovalClient.submitSecretInput(approvalId, values),
   listPending: () => shellApprovalClient.listPending(),
 };
 // =============================================================================

@@ -418,6 +418,49 @@ describe("userlandApprovalService", () => {
     expect(list).toHaveBeenCalledWith(extensionCtx.chainCaller, issuer);
   });
 
+  it("requestAs lets attributed extension callbacks request for a captured principal", async () => {
+    const { service, queued } = createDeps();
+    queued.mockResolvedValueOnce({ kind: "choice", choice: "once" });
+    const principal = {
+      callerId: "worker:deploy",
+      callerKind: "worker" as const,
+      repoPath: "workers/deploy",
+      effectiveVersion: "hash-deploy",
+    };
+
+    await expect(
+      service.handler(extensionCtx, "requestAs", [
+        principal,
+        {
+          subject: validRequest.subject,
+          title: validRequest.title,
+          severity: "dangerous",
+          defaultAction: "deny",
+        },
+      ])
+    ).resolves.toEqual({ kind: "choice", choice: "allow" });
+
+    expect(queued).toHaveBeenCalledWith(
+      expect.objectContaining({
+        principal,
+        options: expect.arrayContaining([
+          expect.objectContaining({ value: "deny", tone: "danger" }),
+        ]),
+        severity: "dangerous",
+        defaultAction: "deny",
+      })
+    );
+    expect(queued.mock.calls[0]![0].options[0]).toMatchObject({ value: "deny" });
+  });
+
+  it("rejects requestAs from non-extension callers", async () => {
+    const { service } = createDeps();
+
+    await expect(
+      service.handler(workerCtx, "requestAs", [workerCtx.caller.code, validRequest])
+    ).rejects.toMatchObject({ code: "EACCES" });
+  });
+
   it("throws ServiceError for unknown methods", async () => {
     const { service } = createDeps();
 

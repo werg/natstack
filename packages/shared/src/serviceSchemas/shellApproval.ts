@@ -72,6 +72,10 @@ export const shellApprovalMethods = defineServiceMethods({
     access: RESOLVE_ACCESS,
     examples: [{ args: ["approval-123", { token: "secret-value" }] }],
   },
+  submitSecretInput: {
+    args: z.tuple([z.string(), shellApprovalValuesSchema]),
+    returns: z.void(),
+  },
   listPending: {
     description:
       "List the approvals currently awaiting a decision, used to rehydrate the consent approval bar on mount.",

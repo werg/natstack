@@ -12,7 +12,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { WebSocketServer } from "ws";
 
-import type { AuditEntry, Credential } from "../../../packages/shared/src/credentials/types.js";
+import type {
+  AuditEntry,
+  Credential,
+  CredentialUseGrant,
+} from "../../../packages/shared/src/credentials/types.js";
 import { createVerifiedCaller } from "@natstack/shared/serviceDispatcher";
 import {
   EgressProxy,
@@ -45,6 +49,46 @@ class MemoryAuditLog {
 
   append(entry: AuditEntry): void {
     this.entries.push(entry);
+  }
+}
+
+class MemoryCredentialUseGrantStore {
+  private readonly grants: Array<CredentialUseGrant & { credentialId: string }> = [];
+
+  list(credentialId: string): CredentialUseGrant[] {
+    return this.grants
+      .filter((grant) => grant.credentialId === credentialId)
+      .map(({ credentialId: _credentialId, ...grant }) => ({ ...grant }));
+  }
+
+  upsert(credentialId: string, grant: CredentialUseGrant): void {
+    const key = [
+      credentialId,
+      grant.bindingId,
+      grant.use,
+      grant.resource,
+      grant.action,
+      grant.scope,
+      grant.callerId ?? "",
+      grant.repoPath ?? "",
+      grant.effectiveVersion ?? "",
+    ].join("\x00");
+    const index = this.grants.findIndex(
+      (entry) =>
+        [
+          entry.credentialId,
+          entry.bindingId,
+          entry.use,
+          entry.resource,
+          entry.action,
+          entry.scope,
+          entry.callerId ?? "",
+          entry.repoPath ?? "",
+          entry.effectiveVersion ?? "",
+        ].join("\x00") === key
+    );
+    if (index >= 0) this.grants.splice(index, 1);
+    this.grants.push({ credentialId, ...grant });
   }
 }
 
@@ -116,6 +160,7 @@ function createApprovalQueueMock(
   return {
     request: vi.fn(async () => decision),
     requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
+    requestSecretInput: vi.fn(async () => ({ decision: "deny" as const })),
     requestCredentialInput: vi.fn(async () => ({ decision: "deny" as const })),
     requestUserland: vi.fn(async () => ({ kind: "dismissed" as const })),
     presentDeviceCode: vi.fn(() => ({
@@ -126,6 +171,7 @@ function createApprovalQueueMock(
     resolve: vi.fn(),
     resolveUserland: vi.fn(),
     submitClientConfig: vi.fn(),
+    submitSecretInput: vi.fn(),
     submitCredentialInput: vi.fn(),
     listPending: vi.fn(() => []),
     cancelForCaller: vi.fn(),
@@ -1697,6 +1743,46 @@ describe("EgressProxy", () => {
     });
 
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores central embedded credential grants when a workspace grant store is active", async () => {
+    const credential = createCredential({
+      grants: [
+        {
+          bindingId: "api",
+          use: "fetch",
+          resource: "https://api.example.test/v1",
+          action: "use",
+          scope: "version",
+          repoPath: "/repo",
+          effectiveVersion: "hash-1",
+          grantedAt: 1,
+          grantedBy: "version",
+        },
+      ],
+    });
+    const approvalQueue = {
+      request: vi.fn(async () => "once" as const),
+      resolve: vi.fn(),
+      listPending: vi.fn(() => []),
+    };
+    const proxy = createProxy(credential, new MemoryAuditLog(), {
+      approvalQueue: approvalQueue as never,
+      credentialUseGrantStore: new MemoryCredentialUseGrantStore(),
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("ok", { status: 200, statusText: "OK" }))
+    );
+
+    await proxy.forwardProxyFetch({
+      caller: workerCaller("worker:test"),
+      credentialId: "cred-1",
+      url: "https://api.example.test/v1/items",
+      method: "GET",
+    });
+
+    expect(approvalQueue.request).toHaveBeenCalledTimes(1);
   });
 
   it("keys session grants to the concrete caller identity", async () => {

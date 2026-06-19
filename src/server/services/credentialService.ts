@@ -88,6 +88,7 @@ import {
   type CredentialSessionGrantResource,
   type CredentialSessionGrantScope,
 } from "./credentialSessionGrants.js";
+import type { CredentialUseGrantStoreLike } from "./credentialUseGrantStore.js";
 import { assertPresent } from "../../lintHelpers";
 
 const log = createDevLogger("CredentialService");
@@ -383,6 +384,7 @@ interface CredentialServiceDeps {
   egressProxy?: Pick<EgressProxy, "forwardProxyFetch" | "forwardGitHttp">;
   approvalQueue?: ApprovalQueue;
   sessionGrantStore?: CredentialSessionGrantStore;
+  credentialUseGrantStore?: CredentialUseGrantStoreLike;
   credentialLifecycle?: CredentialLifecycle;
   sessionCredentialCapture?: SessionCredentialCapture;
   hasAppCapability?: (callerId: string, capability: AppCapability) => boolean;
@@ -466,6 +468,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   const egressProxy = deps.egressProxy;
   const approvalQueue = deps.approvalQueue;
   const sessionGrantStore = deps.sessionGrantStore ?? new CredentialSessionGrantStore();
+  const credentialUseGrantStore = deps.credentialUseGrantStore ?? null;
   const sessionCredentialCapture = deps.sessionCredentialCapture;
   const runtimeInspector = deps.runtimeInspector;
   const credentialLifecycle =
@@ -711,7 +714,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     };
 
     if (opts.preapprovedUseDecision) {
-      applyPreapprovedCredentialUseGrants(
+      await applyPreapprovedCredentialUseGrants(
         ctx,
         credential as Credential & { id: string },
         bindings,
@@ -3918,6 +3921,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     if (!credential.id) {
       throw new Error("Credential is missing URL-bound metadata");
     }
+    const credentialId = credential.id;
     const identity = resolveApprovalIdentity(ctx);
     const decision = await approvalQueue.request({
       // When the caller deferred, this signal is aborted on TTL expiry so the
@@ -3957,27 +3961,21 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       // returns to the runner, then resolves credentials again during resume.
       // Treat that deferred one-shot approval as a session grant for the same
       // caller/resource so the approved turn can actually continue.
-      grantSessionCredentialUse(credential.id, identity, usage.sessionResource);
-      resolvePendingCredentialUseGrants(credential.id, identity, "session", usage);
+      grantSessionCredentialUse(credentialId, identity, usage.sessionResource);
+      resolvePendingCredentialUseGrants(credentialId, identity, "session", usage);
       return;
     }
     if (decision === "session") {
-      grantSessionCredentialUse(credential.id, identity, usage.sessionResource);
-      resolvePendingCredentialUseGrants(credential.id, identity, decision, usage);
+      grantSessionCredentialUse(credentialId, identity, usage.sessionResource);
+      resolvePendingCredentialUseGrants(credentialId, identity, decision, usage);
       return;
     }
-    await credentialStore.saveUrlBound({
-      ...credential,
-      grants: upsertCredentialUseGrant(
-        credential.grants ?? [],
-        grantForDecision(ctx.caller.runtime.id, identity, decision, now, usage)
-      ),
-      metadata: {
-        ...(credential.metadata ?? {}),
-        updatedAt: String(now),
-      },
-    } as Credential & { id: string });
-    resolvePendingCredentialUseGrants(credential.id, identity, decision, usage);
+    await persistCredentialUseGrant(
+      credential as Credential & { id: string },
+      grantForDecision(ctx.caller.runtime.id, identity, decision, now, usage),
+      now
+    );
+    resolvePendingCredentialUseGrants(credentialId, identity, decision, usage);
   }
 
   function canCallerUseStoredCredential(
@@ -4033,13 +4031,13 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     }, "once");
   }
 
-  function applyPreapprovedCredentialUseGrants(
+  async function applyPreapprovedCredentialUseGrants(
     ctx: ServiceContext,
     credential: Credential & { id: string },
     bindings: CredentialBinding[],
     decision: Exclude<GrantedDecision, "deny">,
     now: number
-  ): void {
+  ): Promise<void> {
     const identity = resolveApprovalIdentity(ctx);
     const usageContexts = bindings.flatMap(preapprovedUseContextsForBinding);
     if (decision === "once" || decision === "session") {
@@ -4048,14 +4046,13 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       }
       return;
     }
-    credential.grants = usageContexts.reduce(
-      (grants, usage) =>
-        upsertCredentialUseGrant(
-          grants,
-          grantForDecision(ctx.caller.runtime.id, identity, decision, now, usage)
-        ),
-      credential.grants ?? []
-    );
+    for (const usage of usageContexts) {
+      await persistCredentialUseGrant(
+        credential,
+        grantForDecision(ctx.caller.runtime.id, identity, decision, now, usage),
+        now
+      );
+    }
   }
 
   function hasSessionCredentialUse(
@@ -4076,7 +4073,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     usage: CredentialUseContext
   ): boolean {
     const identity = resolveApprovalIdentity(ctx);
-    return !!credential.grants?.some(
+    return persistentCredentialUseGrants(credential).some(
       (grant) =>
         grant.bindingId === usage.binding.id &&
         grant.use === usage.binding.use &&
@@ -4084,6 +4081,35 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         grant.action === usage.action &&
         grantAppliesToIdentity(grant, identity)
     );
+  }
+
+  function persistentCredentialUseGrants(credential: Credential): CredentialUseGrant[] {
+    const credentialId = credential.id ?? credential.connectionId;
+    if (credentialUseGrantStore && credentialId) {
+      return credentialUseGrantStore.list(credentialId);
+    }
+    return credential.grants ?? [];
+  }
+
+  async function persistCredentialUseGrant(
+    credential: Credential & { id: string },
+    grant: CredentialUseGrant,
+    now: number
+  ): Promise<void> {
+    if (credentialUseGrantStore) {
+      await credentialUseGrantStore.upsert(credential.id, grant);
+      return;
+    }
+    const grants = upsertCredentialUseGrant(credential.grants ?? [], grant);
+    credential.grants = grants;
+    await credentialStore.saveUrlBound({
+      ...credential,
+      grants,
+      metadata: {
+        ...(credential.metadata ?? {}),
+        updatedAt: String(now),
+      },
+    } as Credential & { id: string });
   }
 
   const definition: ServiceDefinition = {

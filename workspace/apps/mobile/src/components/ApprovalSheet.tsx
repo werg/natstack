@@ -26,17 +26,23 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import ReactNativeHapticFeedback from "react-native-haptic-feedback";
 import type {
+  ApprovalDetailFormat,
   ApprovalDecision,
   PendingApproval,
   PendingCapabilityApproval,
   PendingClientConfigApproval,
   PendingCredentialApproval,
   PendingCredentialInputApproval,
+  PendingSecretInputApproval,
   PendingDeviceCodeApproval,
   PendingUnitBatchApproval,
   PendingUserlandApproval,
   UserlandApprovalOption,
 } from "@natstack/shared/approvals";
+import {
+  parseApprovalMarkdown,
+  type ApprovalMarkdownInline,
+} from "@natstack/shared/approvalMarkdown";
 import {
   type ApprovalAttribution,
   formatAccount,
@@ -189,6 +195,10 @@ export interface ApprovalSheetProps {
     approvalId: string,
     values: Record<string, string>
   ) => Promise<void> | void;
+  onSubmitSecretInput: (
+    approvalId: string,
+    values: Record<string, string>
+  ) => Promise<void> | void;
   onResolveUserland: (approvalId: string, choice: string | "dismiss") => Promise<void> | void;
   /**
    * Optional. When supplied and the current approval comes from a panel,
@@ -202,6 +212,7 @@ type PendingAction =
   | ApprovalDecision
   | "submit-client-config"
   | "submit-credential-input"
+  | "submit-secret-input"
   | `userland:${string}`;
 
 type ButtonVariant = "primary" | "surface" | "danger" | "dangerPrimary" | "outline";
@@ -215,6 +226,7 @@ export function ApprovalSheet({
   onResolve,
   onSubmitClientConfig,
   onSubmitCredentialInput,
+  onSubmitSecretInput,
   onResolveUserland,
   onNavigateToPanel,
 }: ApprovalSheetProps) {
@@ -424,10 +436,11 @@ export function ApprovalSheet({
                   canNavigate={!!onNavigateToPanel && !!callerInfo.panelId}
                   onPress={showRequestingPanel}
                 />
+                {copy.summary ? <ApprovalMarkdown source={copy.summary} tone="muted" /> : null}
                 {copy.warning ? <WarningBand message={copy.warning} /> : null}
                 {current.kind === "device-code" ? <DeviceCodePanel approval={current} /> : null}
                 {error ? <InlineError message={error} /> : null}
-                {current.kind === "client-config" || current.kind === "credential-input" ? (
+                {current.kind === "client-config" || current.kind === "credential-input" || current.kind === "secret-input" ? (
                   <SecretConfigFields
                     approval={current}
                     values={values}
@@ -475,6 +488,19 @@ export function ApprovalSheet({
                     onSubmit={() =>
                       runAction("submit-credential-input", () =>
                         onSubmitCredentialInput(current.approvalId, values)
+                      )
+                    }
+                    onDeny={() => runAction("deny", () => onResolve(current.approvalId, "deny"))}
+                  />
+                ) : current.kind === "secret-input" ? (
+                  <SecretInputActions
+                    approval={current}
+                    values={values}
+                    busy={isBusy}
+                    pendingAction={pendingAction}
+                    onSubmit={() =>
+                      runAction("submit-secret-input", () =>
+                        onSubmitSecretInput(current.approvalId, values)
                       )
                     }
                     onDeny={() => runAction("deny", () => onResolve(current.approvalId, "deny"))}
@@ -684,7 +710,7 @@ function CallerRow({
 
 function getCategoryIcon(approval: PendingApproval): IconComponent {
   if (approval.kind === "capability") return ExternalLink;
-  if (approval.kind === "client-config" || approval.kind === "credential-input") return Settings2;
+  if (approval.kind === "client-config" || approval.kind === "credential-input" || approval.kind === "secret-input") return Settings2;
   if (approval.kind === "userland")
     return approval.callerKind === "worker"
       ? Workflow
@@ -706,8 +732,119 @@ function WarningBand({ message }: { message: string }) {
       ]}
     >
       <AlertTriangle size={14} color={colors.danger} />
-      <Text style={[styles.warningText, { color: colors.danger }]}>{message}</Text>
+      <View style={styles.markdownFlex}>
+        <ApprovalMarkdown source={message} tone="danger" compact />
+      </View>
     </View>
+  );
+}
+
+function ApprovalMarkdown({
+  source,
+  tone = "default",
+  compact = false,
+}: {
+  source: string;
+  tone?: "default" | "muted" | "danger";
+  compact?: boolean;
+}) {
+  const colors = useAtomValue(themeColorsAtom);
+  const blocks = parseApprovalMarkdown(source);
+  if (blocks.length === 0) return null;
+  const color =
+    tone === "danger"
+      ? colors.danger
+      : tone === "muted"
+        ? colors.textSecondary
+        : colors.text;
+  return (
+    <View style={[styles.markdownBlock, compact ? styles.markdownBlockCompact : null]}>
+      {blocks.map((block, index) => {
+        if (block.kind === "code-block") {
+          return (
+            <Text
+              key={index}
+              selectable
+              style={[
+                styles.markdownCodeBlock,
+                { color: colors.text, backgroundColor: colors.codeBackground },
+              ]}
+            >
+              {block.text}
+            </Text>
+          );
+        }
+        if (block.kind === "bullet-list" || block.kind === "ordered-list") {
+          return (
+            <View key={index} style={styles.markdownList}>
+              {block.items.map((item, itemIndex) => (
+                <View key={itemIndex} style={styles.markdownListRow}>
+                  <Text style={[styles.markdownBullet, { color }]}>
+                    {block.kind === "ordered-list" ? `${itemIndex + 1}.` : "-"}
+                  </Text>
+                  <Text style={[styles.markdownText, { color }]}>
+                    <ApprovalMarkdownInlineNodes nodes={item} color={color} />
+                  </Text>
+                </View>
+              ))}
+            </View>
+          );
+        }
+        return (
+          <Text key={index} style={[styles.markdownText, { color }]}>
+            <ApprovalMarkdownInlineNodes nodes={block.children} color={color} />
+          </Text>
+        );
+      })}
+    </View>
+  );
+}
+
+function ApprovalMarkdownInlineNodes({
+  nodes,
+  color,
+}: {
+  nodes: ApprovalMarkdownInline[];
+  color: string;
+}) {
+  const colors = useAtomValue(themeColorsAtom);
+  return (
+    <>
+      {nodes.map((node, index) => {
+        if (node.kind === "code") {
+          return (
+            <Text
+              key={index}
+              style={[
+                styles.markdownInlineCode,
+                { color: colors.text, backgroundColor: colors.codeBackground },
+              ]}
+            >
+              {node.text}
+            </Text>
+          );
+        }
+        if (node.kind === "strong") {
+          return (
+            <Text key={index} style={styles.markdownStrong}>
+              <ApprovalMarkdownInlineNodes nodes={node.children} color={color} />
+            </Text>
+          );
+        }
+        if (node.kind === "emphasis") {
+          return (
+            <Text key={index} style={styles.markdownEmphasis}>
+              <ApprovalMarkdownInlineNodes nodes={node.children} color={color} />
+            </Text>
+          );
+        }
+        return (
+          <Text key={index} style={{ color }}>
+            {node.text}
+          </Text>
+        );
+      })}
+    </>
   );
 }
 
@@ -731,7 +868,7 @@ function SecretConfigFields({
   values,
   onChange,
 }: {
-  approval: PendingClientConfigApproval | PendingCredentialInputApproval;
+  approval: PendingClientConfigApproval | PendingCredentialInputApproval | PendingSecretInputApproval;
   values: Record<string, string>;
   onChange: (name: string, value: string) => void;
 }) {
@@ -739,8 +876,9 @@ function SecretConfigFields({
   return (
     <View style={styles.fields}>
       <Text style={[styles.helperText, { color: colors.textSecondary }]}>
-        Secrets are entered in NatStack's shell UI, not exposed to panels or workers, and stored
-        encrypted after submission.
+        {approval.kind === "secret-input"
+          ? "Secrets are entered in NatStack's shell UI, not exposed to panels or workers, and used once without being stored."
+          : "Secrets are entered in NatStack's shell UI, not exposed to panels or workers, and stored encrypted after submission."}
       </Text>
       {approval.fields.map((field) => (
         <View key={field.name} style={styles.fieldBlock}>
@@ -769,9 +907,7 @@ function SecretConfigFields({
             value={values[field.name] ?? ""}
           />
           {field.description ? (
-            <Text style={[styles.helperText, { color: colors.textSecondary }]}>
-              {field.description}
-            </Text>
+            <ApprovalMarkdown source={field.description} tone="muted" compact />
           ) : null}
         </View>
       ))}
@@ -878,6 +1014,8 @@ function ApprovalDetails({
             <ClientConfigDetails approval={approval} />
           ) : approval.kind === "credential-input" ? (
             <CredentialInputDetails approval={approval} />
+          ) : approval.kind === "secret-input" ? (
+            <SecretInputDetails approval={approval} />
           ) : approval.kind === "userland" ? (
             <UserlandDetails approval={approval} />
           ) : approval.kind === "device-code" ? (
@@ -990,6 +1128,31 @@ function CredentialInputDetails({ approval }: { approval: PendingCredentialInput
   );
 }
 
+function SecretInputDetails({ approval }: { approval: PendingSecretInputApproval }) {
+  return (
+    <>
+      {(approval.details ?? []).map((detail) => (
+        <DetailRow
+          key={detail.label}
+          icon={Lock}
+          label={detail.label}
+          value={detail.value}
+          code={!detail.format}
+          format={detail.format}
+        />
+      ))}
+      <DetailRow
+        icon={Lock}
+        label="Fields"
+        value={approval.fields
+          .map((field) => `${field.name}${field.type === "secret" ? " (secret)" : ""}`)
+          .join(", ")}
+        code
+      />
+    </>
+  );
+}
+
 function CapabilityDetails({ approval }: { approval: PendingCapabilityApproval }) {
   return (
     <>
@@ -1002,7 +1165,14 @@ function CapabilityDetails({ approval }: { approval: PendingCapabilityApproval }
         />
       ) : null}
       {(approval.details ?? []).map((detail) => (
-        <DetailRow key={detail.label} icon={Lock} label={detail.label} value={detail.value} code />
+        <DetailRow
+          key={detail.label}
+          icon={Lock}
+          label={detail.label}
+          value={detail.value}
+          code={!detail.format}
+          format={detail.format}
+        />
       ))}
     </>
   );
@@ -1027,7 +1197,14 @@ function UserlandDetails({ approval }: { approval: PendingUserlandApproval }) {
         <DetailRow icon={Lock} label="Label" value={approval.subject.label} code />
       ) : null}
       {(approval.details ?? []).map((detail) => (
-        <DetailRow key={detail.label} icon={Lock} label={detail.label} value={detail.value} code />
+        <DetailRow
+          key={detail.label}
+          icon={Lock}
+          label={detail.label}
+          value={detail.value}
+          code={!detail.format}
+          format={detail.format}
+        />
       ))}
     </>
   );
@@ -1161,6 +1338,7 @@ function DetailRow({
   label,
   value,
   code,
+  format,
   danger,
   secondary,
   secondarySelectable,
@@ -1169,29 +1347,36 @@ function DetailRow({
   label: string;
   value: string;
   code?: boolean;
+  format?: ApprovalDetailFormat;
   danger?: boolean;
   /** Optional supplementary value (e.g. the full opaque id under a label). */
   secondary?: string;
   secondarySelectable?: boolean;
 }) {
   const colors = useAtomValue(themeColorsAtom);
+  const content =
+    format === "markdown" ? (
+      <ApprovalMarkdown source={value} tone={danger ? "danger" : "default"} compact />
+    ) : (
+      <Text
+        style={[
+          styles.detailValue,
+          code || format === "code" ? styles.codeText : null,
+          {
+            color: danger ? colors.danger : colors.text,
+            backgroundColor: code || format === "code" ? colors.codeBackground : "transparent",
+          },
+        ]}
+      >
+        {value}
+      </Text>
+    );
   return (
     <View accessibilityLabel={`${label}: ${value}`} style={styles.detailRow}>
       <RowIcon size={14} color={danger ? colors.danger : colors.textSecondary} />
       <Text style={[styles.detailLabel, { color: colors.textSecondary }]}>{label}</Text>
       <View style={styles.detailValueColumn}>
-        <Text
-          style={[
-            styles.detailValue,
-            code ? styles.codeText : null,
-            {
-              color: danger ? colors.danger : colors.text,
-              backgroundColor: code ? colors.codeBackground : "transparent",
-            },
-          ]}
-        >
-          {value}
-        </Text>
+        {content}
         {secondary ? (
           <Text
             selectable={secondarySelectable}
@@ -1345,6 +1530,25 @@ function CredentialInputActions(props: {
   return <InputApprovalActions {...props} submitAction="submit-credential-input" />;
 }
 
+function SecretInputActions(props: {
+  approval: PendingSecretInputApproval;
+  values: Record<string, string>;
+  busy: boolean;
+  pendingAction: PendingAction | null;
+  onSubmit: () => void;
+  onDeny: () => void;
+}) {
+  return (
+    <InputApprovalActions
+      {...props}
+      submitAction="submit-secret-input"
+      submitLabel="Continue"
+      submitDescription="Use this secret once."
+      denyDescription="Do not provide this secret."
+    />
+  );
+}
+
 function InputApprovalActions({
   approval,
   values,
@@ -1353,14 +1557,20 @@ function InputApprovalActions({
   onSubmit,
   onDeny,
   submitAction,
+  submitLabel = "Save service",
+  submitDescription = "Save this connected service.",
+  denyDescription = "Do not save this connected service.",
 }: {
-  approval: PendingClientConfigApproval | PendingCredentialInputApproval;
+  approval: PendingClientConfigApproval | PendingCredentialInputApproval | PendingSecretInputApproval;
   values: Record<string, string>;
   busy: boolean;
   pendingAction: PendingAction | null;
   onSubmit: () => void;
   onDeny: () => void;
   submitAction: PendingAction;
+  submitLabel?: string;
+  submitDescription?: string;
+  denyDescription?: string;
 }) {
   const missingRequired = approval.fields.some(
     (field) => field.required && !values[field.name]?.trim()
@@ -1368,8 +1578,8 @@ function InputApprovalActions({
   return (
     <View style={styles.actionRow}>
       <DecisionButton
-        label="Save service"
-        description="Save this connected service."
+        label={submitLabel}
+        description={submitDescription}
         variant="primary"
         disabled={busy || missingRequired}
         loading={pendingAction === submitAction}
@@ -1378,7 +1588,7 @@ function InputApprovalActions({
       />
       <DecisionButton
         label="Deny"
-        description="Do not save this connected service."
+        description={denyDescription}
         variant="danger"
         disabled={busy}
         loading={pendingAction === "deny"}
@@ -1705,6 +1915,55 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "500",
     lineHeight: 18,
+  },
+  markdownFlex: {
+    flex: 1,
+  },
+  markdownBlock: {
+    gap: 6,
+    marginTop: 8,
+  },
+  markdownBlockCompact: {
+    marginTop: 0,
+  },
+  markdownText: {
+    fontSize: 13,
+    fontWeight: "400",
+    lineHeight: 18,
+  },
+  markdownList: {
+    gap: 3,
+  },
+  markdownListRow: {
+    alignItems: "flex-start",
+    flexDirection: "row",
+    gap: 6,
+  },
+  markdownBullet: {
+    fontSize: 13,
+    lineHeight: 18,
+    width: 18,
+  },
+  markdownStrong: {
+    fontWeight: "700",
+  },
+  markdownEmphasis: {
+    fontStyle: "italic",
+  },
+  markdownInlineCode: {
+    borderRadius: 4,
+    fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
+    fontSize: 12,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+  },
+  markdownCodeBlock: {
+    borderRadius: 6,
+    fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
+    fontSize: 12,
+    lineHeight: 17,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
   },
   issuerPanel: {
     borderRadius: 8,

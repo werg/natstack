@@ -429,6 +429,14 @@ export function MainScreen() {
     },
     [removeResolvedApproval, shellClient]
   );
+  const submitSecretInput = useCallback(
+    async (approvalId: string, values: Record<string, string>) => {
+      if (!shellClient) throw new Error("Shell client not available");
+      await shellClient.shellApproval.submitSecretInput(approvalId, values);
+      removeResolvedApproval(approvalId);
+    },
+    [removeResolvedApproval, shellClient]
+  );
   const resolveUserland = useCallback(
     async (approvalId: string, choice: string | "dismiss") => {
       if (!shellClient) throw new Error("Shell client not available");
@@ -1452,6 +1460,7 @@ export function MainScreen() {
         onResolve={resolveApproval}
         onSubmitClientConfig={submitClientConfig}
         onSubmitCredentialInput={submitCredentialInput}
+        onSubmitSecretInput={submitSecretInput}
         onResolveUserland={resolveUserland}
         onNavigateToPanel={activatePanel}
       />

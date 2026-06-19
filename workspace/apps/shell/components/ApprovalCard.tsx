@@ -40,6 +40,7 @@ import type {
   PendingCapabilityApproval,
   PendingCredentialApproval,
   PendingCredentialInputApproval,
+  PendingSecretInputApproval,
   PendingClientConfigApproval,
   PendingDeviceCodeApproval,
   PendingUnitBatchApproval,
@@ -122,6 +123,26 @@ export function ApprovalCard({ approval, caller, queue, decisionError, emit }: A
         approval={approval}
         decide={(decision) => emitForApproval({ type: "decide", decision })}
       />
+    ) : approval.kind === "secret-input" ? (
+      <Flex align="center" className="approval-actions" gap="2" wrap="wrap">
+        <DecisionButton
+          label="Deny"
+          description="Do not provide this input."
+          color="red"
+          icon={<CrossCircledIcon />}
+          onClick={() => emitForApproval({ type: "decide", decision: "deny" })}
+        />
+        <Tooltip content="Dismiss">
+          <IconButton
+            size="1"
+            variant="ghost"
+            color="gray"
+            onClick={() => emitForApproval({ type: "decide", decision: "dismiss" })}
+          >
+            <Cross2Icon />
+          </IconButton>
+        </Tooltip>
+      </Flex>
     ) : (
       <StandardApprovalActions
         approval={approval}
@@ -816,6 +837,8 @@ function ApprovalDetails({
           <DeviceCodeDetails approval={approval} />
         ) : approval.kind === "unit-batch" ? (
           <UnitBatchDetails approval={approval} />
+        ) : approval.kind === "secret-input" ? (
+          <SecretInputDetails approval={approval} />
         ) : (
           <CapabilityDetails approval={approval} />
         )}
@@ -957,6 +980,29 @@ function ClientConfigDetails({ approval }: { approval: PendingClientConfigApprov
               >
                 {field.name}
                 {field.type === "secret" ? " (secret)" : ""}
+              </Badge>
+            ))}
+          </Flex>
+        }
+      />
+    </>
+  );
+}
+
+function SecretInputDetails({ approval }: { approval: PendingSecretInputApproval }) {
+  return (
+    <>
+      {approval.description ? (
+        <Detail icon={<LockClosedIcon />} label="Request" value={approval.description} />
+      ) : null}
+      <Detail
+        icon={<LockClosedIcon />}
+        label="Fields"
+        value={
+          <Flex align="center" gap="1" wrap="wrap">
+            {approval.fields.map((field) => (
+              <Badge key={field.name} color={field.type === "secret" ? "amber" : "gray"}>
+                {field.label}
               </Badge>
             ))}
           </Flex>

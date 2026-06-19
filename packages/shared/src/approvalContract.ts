@@ -25,7 +25,15 @@ export const APPROVAL_CATEGORY_INPUT_REQUIRED = "natstack-approval-input-require
 export type PushApprovalDataPayload = {
   kind: "approval-prompt" | "approval-cancel";
   approvalId: string;
-  approvalKind?: "credential" | "capability" | "unit-batch" | "client-config" | "credential-input" | "userland" | "device-code";
+  approvalKind?:
+    | "credential"
+    | "capability"
+    | "unit-batch"
+    | "client-config"
+    | "credential-input"
+    | "secret-input"
+    | "userland"
+    | "device-code";
   title?: string;
   body?: string;
   category?: string;
@@ -40,6 +48,7 @@ export const RPC_METHODS = {
     resolveBootstrap: "shellApproval.resolveBootstrap",
     submitClientConfig: "shellApproval.submitClientConfig",
     submitCredentialInput: "shellApproval.submitCredentialInput",
+    submitSecretInput: "shellApproval.submitSecretInput",
     resolveUserland: "shellApproval.resolveUserland",
     listPending: "shellApproval.listPending",
   },

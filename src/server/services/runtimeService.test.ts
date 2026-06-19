@@ -40,6 +40,8 @@ function approvalQueueMock(
     resolveUserland: vi.fn(),
     submitClientConfig: vi.fn(),
     submitCredentialInput: vi.fn(),
+    requestSecretInput: vi.fn(async () => ({ decision: "deny" as const })),
+    submitSecretInput: vi.fn(),
     listPending: vi.fn(() => []),
     cancelForCaller: vi.fn(),
   };

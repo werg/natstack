@@ -344,6 +344,7 @@ Allowed callers: `shell`, `app`, `server`
 | `shellApproval.resolveUserland` | Resolve a pending userland approval by selecting one of the presented option values (or 'dismiss'); rejects if the choice was not offered to the user. |
 | `shellApproval.submitClientConfig` | Submit the user-entered client-configuration field values for a pending approval, fulfilling its config request. |
 | `shellApproval.submitCredentialInput` | Submit the user-entered credential/secret field values for a pending approval, fulfilling its credential-input request. |
+| `shellApproval.submitSecretInput` |  |
 | `shellApproval.listPending` | List the approvals currently awaiting a decision, used to rehydrate the consent approval bar on mount. |
 
 ## `shellPresence`

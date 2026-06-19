@@ -10,6 +10,7 @@ import type { ApprovalDecisionId } from "./approvalContract.js";
 
 export type ApprovalDecision = ApprovalDecisionId;
 export type ApprovalConfigFieldType = "text" | "secret";
+export type ApprovalDetailFormat = "plain" | "markdown" | "code";
 
 const CONTROL_CHARS = /[\u0000-\u001F\u007F]/;
 const ZERO_WIDTH_CHARS = /[\u200B-\u200F]/g;
@@ -44,7 +45,16 @@ export const userlandApprovalSubjectIdSchema = approvalCleanString(
 
 export const userlandApprovalDetailSchema = z.object({
   label: approvalCleanString("detail label", { max: 40 }),
-  value: approvalCleanString("detail value", { max: 200 }),
+  value: approvalCleanString("detail value", { max: 1000 }),
+  format: z.enum(["plain", "markdown", "code"]).optional(),
+}).strict();
+
+export const approvalPrincipalSchema = z.object({
+  callerId: approvalCleanString("caller id", { min: 1, max: 200 }),
+  callerKind: z.enum(["panel", "app", "worker", "do"]),
+  repoPath: approvalCleanString("repo path", { min: 1, max: 300 }),
+  effectiveVersion: approvalCleanString("effective version", { min: 1, max: 200 }),
+  callerTitle: approvalCleanString("caller title", { max: 120 }).optional(),
 }).strict();
 
 export const userlandApprovalOptionSchema = z.object({
@@ -64,6 +74,9 @@ export const userlandApprovalRequestSchema = z.object({
   summary: approvalCleanString("summary", { max: 1000 }).optional(),
   warning: approvalCleanString("warning", { max: 200 }).optional(),
   details: z.array(userlandApprovalDetailSchema).max(8).optional(),
+  positiveEvidence: z.array(userlandApprovalDetailSchema).max(6).optional(),
+  severity: z.enum(["standard", "dangerous"]).optional(),
+  defaultAction: z.enum(["allow", "deny"]).optional(),
   promptOptions: z.enum(["scoped", "choices"]).optional(),
   options: z.array(userlandApprovalOptionSchema).min(1).max(6).optional(),
 }).strict().superRefine((req, ctx) => {
@@ -176,6 +189,22 @@ export type ApprovalResourceScope =
       kind: "network";
       value: "*";
     };
+
+const approvalInputFieldSchema = z.object({
+  name: approvalCleanString("field name", { min: 1, max: 128, pattern: /^[a-zA-Z0-9][a-zA-Z0-9._@+=:-]{0,127}$/ }),
+  label: approvalCleanString("field label", { min: 1, max: 128 }),
+  type: z.enum(["text", "secret"]),
+  required: z.boolean().optional(),
+  description: approvalCleanString("field description", { max: 512 }).optional(),
+}).strict();
+
+export const secretInputRequestSchema = z.object({
+  title: approvalCleanString("title", { min: 1, max: 120 }),
+  description: approvalCleanString("description", { max: 1000 }).optional(),
+  warning: approvalCleanString("warning", { max: 200 }).optional(),
+  details: z.array(userlandApprovalDetailSchema).max(8).optional(),
+  fields: z.array(approvalInputFieldSchema).length(1),
+}).strict();
 
 /** The verified runtime caller that issued the prompt. Populated by the dispatcher. */
 export interface ApprovalPrincipal {
@@ -299,6 +328,7 @@ export interface PendingCapabilityApproval extends PendingApprovalBase {
   details?: Array<{
     label: string;
     value: string;
+    format?: ApprovalDetailFormat;
   }>;
 }
 
@@ -397,6 +427,19 @@ export interface PendingCredentialInputApproval extends PendingApprovalBase {
   fields: PendingClientConfigField[];
 }
 
+export interface PendingSecretInputApproval extends PendingApprovalBase {
+  kind: "secret-input";
+  title: string;
+  description?: string;
+  warning?: string;
+  details?: Array<{
+    label: string;
+    value: string;
+    format?: ApprovalDetailFormat;
+  }>;
+  fields: PendingClientConfigField[];
+}
+
 export interface UserlandApprovalOption {
   value: string;
   label: string;
@@ -418,7 +461,15 @@ export interface PendingUserlandApproval extends PendingApprovalBase {
   details?: Array<{
     label: string;
     value: string;
+    format?: ApprovalDetailFormat;
   }>;
+  positiveEvidence?: Array<{
+    label: string;
+    value: string;
+    format?: ApprovalDetailFormat;
+  }>;
+  severity?: "standard" | "dangerous";
+  defaultAction?: "allow" | "deny";
   promptOptions: UserlandApprovalPromptOptions;
   options: UserlandApprovalOption[];
 }
@@ -467,7 +518,18 @@ export interface UserlandApprovalRequest {
   details?: Array<{
     label: string;
     value: string;
+    format?: ApprovalDetailFormat;
   }>;
+  /** Positive proof for security claims displayed by the prompt. */
+  positiveEvidence?: Array<{
+    label: string;
+    value: string;
+    format?: ApprovalDetailFormat;
+  }>;
+  /** Dangerous prompts default to denial and render with stronger copy. */
+  severity?: "standard" | "dangerous";
+  /** Default action for scoped prompts. Dangerous actions should use deny. */
+  defaultAction?: "allow" | "deny";
   /**
    * `scoped` (default) shows host-managed Allow once / Session / Trust version-or-identity
    * choices and returns `choice: "allow"` or `choice: "deny"`.
@@ -483,11 +545,18 @@ export type UserlandApprovalChoice =
   | { kind: "dismissed" }
   | { kind: "uncallable"; reason: "no-user-context" };
 
+export type SecretInputResult =
+  | { decision: "submit"; values: Record<string, string> }
+  | { decision: "deny" };
+
+export type SecretInputRequest = z.infer<typeof secretInputRequestSchema>;
+
 export type PendingApproval =
   | PendingCredentialApproval
   | PendingCapabilityApproval
   | PendingUnitBatchApproval
   | PendingClientConfigApproval
   | PendingCredentialInputApproval
+  | PendingSecretInputApproval
   | PendingUserlandApproval
   | PendingDeviceCodeApproval;

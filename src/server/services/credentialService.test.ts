@@ -24,6 +24,7 @@ import type {
   Credential,
   CredentialAuditEvent,
   ManagedCredentialSummary,
+  CredentialUseGrant,
   StoredCredentialSummary,
 } from "../../../packages/shared/src/credentials/types.js";
 import type { ClientConfigRecord } from "../../../packages/shared/src/credentials/clientConfigStore.js";
@@ -121,6 +122,46 @@ class MemoryCredentialStore {
   }
 }
 
+class MemoryCredentialUseGrantStore {
+  private readonly grants: Array<CredentialUseGrant & { credentialId: string }> = [];
+
+  list(credentialId: string): CredentialUseGrant[] {
+    return this.grants
+      .filter((grant) => grant.credentialId === credentialId)
+      .map(({ credentialId: _credentialId, ...grant }) => ({ ...grant }));
+  }
+
+  upsert(credentialId: string, grant: CredentialUseGrant): void {
+    const key = [
+      credentialId,
+      grant.bindingId,
+      grant.use,
+      grant.resource,
+      grant.action,
+      grant.scope,
+      grant.callerId ?? "",
+      grant.repoPath ?? "",
+      grant.effectiveVersion ?? "",
+    ].join("\x00");
+    const index = this.grants.findIndex(
+      (entry) =>
+        [
+          entry.credentialId,
+          entry.bindingId,
+          entry.use,
+          entry.resource,
+          entry.action,
+          entry.scope,
+          entry.callerId ?? "",
+          entry.repoPath ?? "",
+          entry.effectiveVersion ?? "",
+        ].join("\x00") === key
+    );
+    if (index >= 0) this.grants.splice(index, 1);
+    this.grants.push({ credentialId, ...grant });
+  }
+}
+
 class MemoryAuditLog {
   readonly entries: CredentialAuditEvent[] = [];
 
@@ -194,6 +235,7 @@ function approvingQueue(decision: "once" | "session" | "version" | "repo" | "den
   return {
     request: vi.fn(async () => decision),
     requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
+    requestSecretInput: vi.fn(async () => ({ decision: "deny" as const })),
     requestCredentialInput: vi.fn(async () => ({ decision: "deny" as const })),
     requestUserland: vi.fn(async () => ({ kind: "dismissed" as const })),
     presentDeviceCode: vi.fn((_req: unknown) => ({
@@ -204,6 +246,7 @@ function approvingQueue(decision: "once" | "session" | "version" | "repo" | "den
     resolve: vi.fn(),
     resolveUserland: vi.fn(),
     submitClientConfig: vi.fn(),
+    submitSecretInput: vi.fn(),
     submitCredentialInput: vi.fn(),
     listPending: vi.fn(() => []),
   };
@@ -479,12 +522,14 @@ describe("credentialService", () => {
     const approvalQueue = {
       request: vi.fn(async () => "deny" as const),
       requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
+      requestSecretInput: vi.fn(async () => ({ decision: "deny" as const })),
       requestCredentialInput: vi.fn(async () => ({
         decision: "submit" as const,
         values: { token: "github_pat_secret" },
       })),
       resolve: vi.fn(),
       submitClientConfig: vi.fn(),
+      submitSecretInput: vi.fn(),
       submitCredentialInput: vi.fn(),
       listPending: vi.fn(() => []),
     };
@@ -535,12 +580,14 @@ describe("credentialService", () => {
     const approvalQueue = {
       request: vi.fn(async () => "deny" as const),
       requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
+      requestSecretInput: vi.fn(async () => ({ decision: "deny" as const })),
       requestCredentialInput: vi.fn(async () => ({
         decision: "submit" as const,
         values: { token: "agent_secret" },
       })),
       resolve: vi.fn(),
       submitClientConfig: vi.fn(),
+      submitSecretInput: vi.fn(),
       submitCredentialInput: vi.fn(),
       listPending: vi.fn(() => []),
     };
@@ -586,12 +633,14 @@ describe("credentialService", () => {
     const approvalQueue = {
       request: vi.fn(async () => "deny" as const),
       requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
+      requestSecretInput: vi.fn(async () => ({ decision: "deny" as const })),
       requestCredentialInput: vi.fn(async () => ({
         decision: "submit" as const,
         values: { token: "github_pat_secret" },
       })),
       resolve: vi.fn(),
       submitClientConfig: vi.fn(),
+      submitSecretInput: vi.fn(),
       submitCredentialInput: vi.fn(),
       listPending: vi.fn(() => []),
     };
@@ -1044,6 +1093,63 @@ describe("credentialService", () => {
     );
   });
 
+  it("ignores central embedded credential grants when a workspace grant store is active", async () => {
+    const store = new MemoryCredentialStore();
+    const seedService = createCredentialService({
+      credentialStore: store as never,
+    });
+    const stored = (await seedService.handler(
+      { caller: verifiedTestCaller("worker:owner", "worker") },
+      "storeCredential",
+      [
+        {
+          label: "Example API",
+          audience: [{ url: "https://api.example.test/", match: "origin" }],
+          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+          material: { type: "bearer-token", token: "secret-token" },
+        },
+      ]
+    )) as StoredCredentialSummary;
+    const persisted = await store.loadUrlBound(stored.id);
+    await store.saveUrlBound({
+      ...(persisted as Credential & { id: string }),
+      grants: [
+        {
+          bindingId: "fetch",
+          use: "fetch",
+          resource: "https://api.example.test/",
+          action: "use",
+          scope: "version",
+          repoPath: "/consumer",
+          effectiveVersion: "hash-1",
+          grantedAt: 1,
+          grantedBy: "version",
+        },
+      ],
+    });
+
+    const approvalQueue = {
+      request: vi.fn(async () => "once" as const),
+      resolve: vi.fn(),
+      listPending: vi.fn(() => []),
+    };
+    const service = createCredentialService({
+      credentialStore: store as never,
+      approvalQueue: approvalQueue as never,
+      sessionGrantStore: new CredentialSessionGrantStore(),
+      credentialUseGrantStore: new MemoryCredentialUseGrantStore(),
+    });
+
+    await expect(
+      service.handler(
+        { caller: verifiedTestCaller("worker:consumer", "worker") },
+        "resolveCredential",
+        [{ url: "https://api.example.test/v1" }]
+      )
+    ).resolves.toMatchObject({ id: stored.id });
+    expect(approvalQueue.request).toHaveBeenCalledTimes(1);
+  });
+
   it("resolves queued credential use approvals covered by a trusted version grant", async () => {
     const store = new MemoryCredentialStore();
     const seedService = createCredentialService({
@@ -1277,9 +1383,11 @@ describe("credentialService", () => {
     const approvalQueue = {
       request: vi.fn(async () => "session" as const),
       requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
+      requestSecretInput: vi.fn(async () => ({ decision: "deny" as const })),
       requestCredentialInput: vi.fn(async () => ({ decision: "deny" as const })),
       resolve: vi.fn(),
       submitClientConfig: vi.fn(),
+      submitSecretInput: vi.fn(),
       submitCredentialInput: vi.fn(),
       listPending: vi.fn(() => []),
     };
@@ -2306,9 +2414,11 @@ describe("credentialService", () => {
           clientSecret: "secret-1",
         },
       })),
+      requestSecretInput: vi.fn(async () => ({ decision: "deny" as const })),
       requestCredentialInput: vi.fn(async () => ({ decision: "deny" as const })),
       resolve: vi.fn(),
       submitClientConfig: vi.fn(),
+      submitSecretInput: vi.fn(),
       submitCredentialInput: vi.fn(),
       listPending: vi.fn(() => []),
     };
@@ -2419,9 +2529,11 @@ describe("credentialService", () => {
       approvalQueue: {
         request: vi.fn(),
         requestClientConfig: vi.fn(),
+        requestSecretInput: vi.fn(async () => ({ decision: "deny" as const })),
         requestCredentialInput: vi.fn(),
         resolve: vi.fn(),
         submitClientConfig: vi.fn(),
+        submitSecretInput: vi.fn(),
         submitCredentialInput: vi.fn(),
         listPending: vi.fn(() => []),
       } as never,
@@ -2685,9 +2797,11 @@ describe("credentialService", () => {
           clientSecret: "secret-2",
         },
       })),
+      requestSecretInput: vi.fn(async () => ({ decision: "deny" as const })),
       requestCredentialInput: vi.fn(async () => ({ decision: "deny" as const })),
       resolve: vi.fn(),
       submitClientConfig: vi.fn(),
+      submitSecretInput: vi.fn(),
       submitCredentialInput: vi.fn(),
       listPending: vi.fn(() => []),
     };
@@ -2723,9 +2837,11 @@ describe("credentialService", () => {
     const approvalQueue = {
       request: vi.fn(async () => "session" as const),
       requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
+      requestSecretInput: vi.fn(async () => ({ decision: "deny" as const })),
       requestCredentialInput: vi.fn(async () => ({ decision: "deny" as const })),
       resolve: vi.fn(),
       submitClientConfig: vi.fn(),
+      submitSecretInput: vi.fn(),
       submitCredentialInput: vi.fn(),
       listPending: vi.fn(() => []),
     };

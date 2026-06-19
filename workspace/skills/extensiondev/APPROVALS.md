@@ -65,6 +65,7 @@ The `subject` is the **durable key** for grant lookup. The host stores grants ke
 
 - `subject.id` must be `[A-Za-z0-9._:/-]+`, 1–128 chars, and must not start with a reserved prefix (`shell:`, `server:`, `system:`, `@`).
 - `title`, `summary`, `warning`, `details[].value` are length-capped and stripped of control characters. The host re-validates the request before showing it; an invalid request throws `EINVAL` *before* the prompt fires.
+- Approval body text supports a safe Markdown subset: paragraphs, bullets, numbered lists, bold, italics, inline code, and fenced code. HTML and links are rendered as inert text. Use Markdown for `summary`, `warning`, secret/credential field descriptions, and details with `format: "markdown"`.
 - `options` are 1–6, each with a unique `value` of `[A-Za-z0-9_-]+`. The reserved `dismiss` value is not allowed — dismissal is handled by the host and collapses to `deny`.
 
 ### Choice handling
@@ -107,7 +108,7 @@ Don't prompt when:
 
 ## Prompt copy
 
-The host shows a standard userland-approval card with attribution: "Panel `<callerId>` is being asked by extension `<extensionName>`." Your `title`/`summary`/`warning` text appears underneath. `details` (up to 8 `{label, value}` pairs) renders as a key-value list — useful for showing what's about to be changed.
+The host shows a standard userland-approval card with attribution: "Panel `<callerId>` is being asked by extension `<extensionName>`." Your `title`/`summary`/`warning` text appears underneath. `details` (up to 8 `{label, value, format?}` pairs) renders as a key-value list — useful for showing what's about to be changed. Keep titles plain and put structured explanation in Markdown body text.
 
 The prompt's **default action on dismissal is deny**. Don't write code that depends on the prompt being answered in a specific time window — the user may walk away.
 

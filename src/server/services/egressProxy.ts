@@ -31,6 +31,7 @@ import {
   CredentialSessionGrantStore,
   type CredentialSessionGrantResource,
 } from "./credentialSessionGrants.js";
+import type { CredentialUseGrantStoreLike } from "./credentialUseGrantStore.js";
 import { CredentialLifecycleError, type CredentialLifecycle } from "./credentialLifecycle.js";
 import { deleteDynamicProperty } from "../../lintHelpers";
 import type { VerifiedCaller } from "@natstack/shared/serviceDispatcher";
@@ -87,6 +88,7 @@ export interface EgressProxyDeps {
   approvalQueue?: ApprovalQueue;
   grantStore?: CapabilityGrantStore;
   sessionGrantStore?: CredentialSessionGrantStore;
+  credentialUseGrantStore?: CredentialUseGrantStoreLike;
   credentialLifecycle?: Pick<CredentialLifecycle, "refreshIfNeeded" | "refreshCredential">;
 }
 
@@ -152,6 +154,7 @@ export class EgressProxy {
   private readonly attributedServers = new Map<string, { server: Server; port: number }>();
   private readonly circuits = new Map<string, CircuitState>();
   private readonly sessionGrantStore: CredentialSessionGrantStore;
+  private readonly credentialUseGrantStore: CredentialUseGrantStoreLike | null;
   /** Shared attributed-by-header listener (dynamic worker host). One server for
    *  all dynamically-loaded workers; identity travels in a trusted header
    *  instead of a per-caller port. */
@@ -161,6 +164,7 @@ export class EgressProxy {
 
   constructor(private readonly deps: EgressProxyDeps) {
     this.sessionGrantStore = deps.sessionGrantStore ?? new CredentialSessionGrantStore();
+    this.credentialUseGrantStore = deps.credentialUseGrantStore ?? null;
   }
 
   /** Wire the resolver that maps an egress-caller id (from the trusted header)
@@ -1192,24 +1196,13 @@ export class EgressProxy {
       this.resolvePendingCredentialUseGrants(credential.id, attribution, decision, usage);
       return;
     }
-    const saveUrlBound = this.deps.credentialStore.saveUrlBound;
-    if (saveUrlBound) {
-      const now = Date.now();
-      await Promise.resolve(
-        saveUrlBound.call(this.deps.credentialStore, {
-          ...credential,
-          grants: upsertCredentialUseGrant(
-            credential.grants ?? [],
-            grantForDecision(callerId, attribution, decision, now, binding, usage)
-          ),
-          metadata: {
-            ...(credential.metadata ?? {}),
-            updatedAt: String(now),
-          },
-        } as Credential & { id: string })
-      );
-      this.resolvePendingCredentialUseGrants(credential.id, attribution, decision, usage);
-    }
+    const now = Date.now();
+    await this.persistCredentialUseGrant(
+      credential as Credential & { id: string },
+      grantForDecision(callerId, attribution, decision, now, binding, usage),
+      now
+    );
+    this.resolvePendingCredentialUseGrants(credential.id, attribution, decision, usage);
   }
 
   private resolvePendingCredentialUseGrants(
@@ -1271,7 +1264,46 @@ export class EgressProxy {
     ) {
       return true;
     }
-    return isCallerAllowed(credential, callerId, attribution, resource);
+    return isCallerAllowed(
+      credential,
+      callerId,
+      attribution,
+      resource,
+      this.persistentCredentialUseGrants(credential)
+    );
+  }
+
+  private persistentCredentialUseGrants(credential: Credential): CredentialUseGrant[] {
+    const credentialId = credential.id ?? credential.connectionId;
+    if (this.credentialUseGrantStore && credentialId) {
+      return this.credentialUseGrantStore.list(credentialId);
+    }
+    return credential.grants ?? [];
+  }
+
+  private async persistCredentialUseGrant(
+    credential: Credential & { id: string },
+    grant: CredentialUseGrant,
+    now: number
+  ): Promise<void> {
+    if (this.credentialUseGrantStore) {
+      await this.credentialUseGrantStore.upsert(credential.id, grant);
+      return;
+    }
+    const saveUrlBound = this.deps.credentialStore.saveUrlBound;
+    if (!saveUrlBound) return;
+    const grants = upsertCredentialUseGrant(credential.grants ?? [], grant);
+    credential.grants = grants;
+    await Promise.resolve(
+      saveUrlBound.call(this.deps.credentialStore, {
+        ...credential,
+        grants,
+        metadata: {
+          ...(credential.metadata ?? {}),
+          updatedAt: String(now),
+        },
+      } as Credential & { id: string })
+    );
   }
 
   private credentialBindings(credential: Credential): CredentialBinding[] {
@@ -1799,9 +1831,10 @@ function isCallerAllowed(
   credential: Credential,
   callerId: string,
   attribution: RequestAttribution | null,
-  resource: CredentialSessionGrantResource
+  resource: CredentialSessionGrantResource,
+  grants = credential.grants ?? []
 ): boolean {
-  return !!credential.grants?.some(
+  return grants.some(
     (grant) =>
       grant.bindingId === resource.bindingId &&
       grant.resource === resource.resource &&

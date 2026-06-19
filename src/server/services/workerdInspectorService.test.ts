@@ -20,6 +20,7 @@ function createApprovalQueueMock(
   return {
     request: vi.fn(async () => decision),
     requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
+    requestSecretInput: vi.fn(async () => ({ decision: "deny" as const })),
     requestCredentialInput: vi.fn(async () => ({ decision: "deny" as const })),
     requestUserland: vi.fn(async () => ({ kind: "dismissed" as const })),
     presentDeviceCode: vi.fn(() => ({
@@ -30,6 +31,7 @@ function createApprovalQueueMock(
     resolve: vi.fn(),
     resolveUserland: vi.fn(),
     submitClientConfig: vi.fn(),
+    submitSecretInput: vi.fn(),
     submitCredentialInput: vi.fn(),
     listPending: vi.fn(() => []),
     cancelForCaller: vi.fn(),

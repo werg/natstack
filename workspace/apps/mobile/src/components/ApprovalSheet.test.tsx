@@ -60,6 +60,16 @@ const credentialInput: PendingApproval = {
   fields: [{ name: "apiKey", label: "API Key", type: "secret", required: true }],
 };
 
+const secretInput: PendingApproval = {
+  ...base,
+  kind: "secret-input",
+  title: "Enter sudo password",
+  description: "Authenticate sudo for: sudo id",
+  warning: "This password is used once and is not stored.",
+  details: [{ label: "Command", value: "sudo id" }],
+  fields: [{ name: "password", label: "Sudo password", type: "secret", required: true }],
+};
+
 const userland: PendingApproval = {
   ...base,
   kind: "userland",
@@ -133,6 +143,7 @@ function renderSheet(
     onResolve: jest.fn(async () => undefined),
     onSubmitClientConfig: jest.fn(async () => undefined),
     onSubmitCredentialInput: jest.fn(async () => undefined),
+    onSubmitSecretInput: jest.fn(async () => undefined),
     onResolveUserland: jest.fn(async () => undefined),
     ...overrides,
   };
@@ -146,6 +157,7 @@ describe("ApprovalSheet", () => {
     [credential, "Connect Google Calendar"],
     [clientConfig, "Set up Google Calendar"],
     [credentialInput, "Add Acme API"],
+    [secretInput, "Enter sudo password"],
     [userland, "Allow foo?"],
     [deviceCode, "Sign in to GitHub"],
     [unitBatch, "Run 2 workspace units"],
@@ -202,6 +214,24 @@ describe("ApprovalSheet", () => {
     );
   });
 
+  it("submits one-shot secret input only after required fields are filled", async () => {
+    const onSubmitSecretInput = jest.fn(async () => undefined);
+    const { getByTestId, getByText } = renderSheet(secretInput, { onSubmitSecretInput });
+
+    expect(getByText("Continue")).toBeTruthy();
+    fireEvent.press(getByTestId("approval-submit"));
+    expect(onSubmitSecretInput).not.toHaveBeenCalled();
+
+    fireEvent.changeText(getByTestId("approval-field-password"), "hunter2");
+    fireEvent.press(getByTestId("approval-submit"));
+
+    await waitFor(() =>
+      expect(onSubmitSecretInput).toHaveBeenCalledWith("approval-1", {
+        password: "hunter2",
+      })
+    );
+  });
+
   it("renders OAuth mismatch warning conditionally", () => {
     const { getByText, queryByText, rerender } = renderSheet(credential);
     expect(getByText("The sign-in domain differs from the service domain.")).toBeTruthy();
@@ -212,6 +242,7 @@ describe("ApprovalSheet", () => {
         onResolve={jest.fn()}
         onSubmitClientConfig={jest.fn()}
         onSubmitCredentialInput={jest.fn()}
+        onSubmitSecretInput={jest.fn()}
         onResolveUserland={jest.fn()}
       />
     );
@@ -385,6 +416,7 @@ describe("ApprovalSheet", () => {
         onResolve={jest.fn()}
         onSubmitClientConfig={jest.fn()}
         onSubmitCredentialInput={jest.fn()}
+        onSubmitSecretInput={jest.fn()}
         onResolveUserland={jest.fn()}
       />
     );
