@@ -1335,7 +1335,8 @@ async function recoverHeadlessPendingWorkspace(): Promise<void> {
       await import("./services/remoteCredService.js");
     const workspaces = await listRemoteWorkspaces();
     if (workspaces.length === 1) {
-      const only = workspaces[0]!;
+      const only = workspaces[0];
+      if (!only) return;
       log.info(`[headless] Auto-selecting the only remote workspace "${only.name}"`);
       await selectRemoteWorkspace(only.name);
       relaunchWithArgs(connectSelectedRemoteRelaunchArgs());

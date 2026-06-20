@@ -282,7 +282,8 @@ function appendUnitReview(card: HTMLElement, approval: PendingUnitBatchApproval)
   list.className = "unit-list";
   const rows = unitReviewRows(approval);
   approval.units.forEach((unit, index) => {
-    const review = rows[index]!;
+    const review = rows[index];
+    if (review === undefined) return;
     const row = document.createElement("li");
     const text = document.createElement("div");
     const name = document.createElement("div");

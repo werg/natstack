@@ -298,11 +298,12 @@ export function createWebhookIngressService(deps: WebhookIngressServiceDeps = {}
   ): Promise<WebhookIngressSubscriptionSummary> {
     const parsed = createSubscriptionSchema.parse(input) as CreateWebhookIngressSubscriptionRequest;
     ensureTargetIsCallerSource(ctx, parsed.target);
-    if (parsed.delivery.mode === "direct" && !directPublicBaseUrl) {
-      throw new Error("direct webhook subscriptions require a configured direct public URL");
+    const resolvedBase =
+      parsed.delivery.mode === "direct" ? directPublicBaseUrl : relayPublicBaseUrl;
+    if (resolvedBase === undefined) {
+      throw new Error("webhook subscriptions require a configured public base URL");
     }
-    const pendingBase =
-      parsed.delivery.mode === "direct" ? directPublicBaseUrl! : relayPublicBaseUrl;
+    const pendingBase = resolvedBase;
     const subscription = await store.create({
       label: parsed.label,
       ownerCallerId: ctx.caller.runtime.id,
@@ -315,7 +316,7 @@ export function createWebhookIngressService(deps: WebhookIngressServiceDeps = {}
       response: parsed.response,
       publicUrl: `${pendingBase}/i/pending`,
     });
-    const base = parsed.delivery.mode === "direct" ? directPublicBaseUrl! : relayPublicBaseUrl;
+    const base = resolvedBase;
     const withUrl = {
       ...subscription,
       publicUrl:

@@ -288,7 +288,8 @@ async function promptWorkspaceSelection(workspaces: RemoteWorkspaceEntry[]): Pro
       const answer = (await rl.question("Workspace: ")).trim();
       const numeric = Number(answer);
       if (Number.isInteger(numeric) && numeric >= 1 && numeric <= workspaces.length) {
-        return workspaces[numeric - 1]!.name;
+        const selected = workspaces[numeric - 1];
+        if (selected) return selected.name;
       }
       const byName = workspaces.find((workspace) => workspace.name === answer);
       if (byName) return byName.name;

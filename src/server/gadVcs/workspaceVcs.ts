@@ -631,9 +631,10 @@ export class WorkspaceVcs implements WorkspaceStateSource, BuildSourceProvider {
 
   async unitHashes(stateHash: string, relPaths: string[]): Promise<Record<string, string | null>> {
     if (relPaths.length === 0) return {};
-    if (!this.attached && this.localMain?.stateHash === stateHash) {
+    const localMain = this.localMain;
+    if (!this.attached && localMain && localMain.stateHash === stateHash) {
       return Object.fromEntries(
-        relPaths.map((relPath) => [relPath, this.localMain!.subtreeHash(relPath)])
+        relPaths.map((relPath) => [relPath, localMain.subtreeHash(relPath)])
       );
     }
     const result = await this.gad().call<{

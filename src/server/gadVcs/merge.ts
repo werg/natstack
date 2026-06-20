@@ -199,7 +199,8 @@ export class MergeEngine {
       if (!o || !t) {
         // delete vs change — keep the surviving change, flag the conflict
         conflicts.push({ path, kind: "delete-vs-change" });
-        keep((o ?? t)!);
+        const survivor = o ?? t;
+        if (survivor != null) keep(survivor);
         continue;
       }
       // Content-level: diff3 when all three are text.

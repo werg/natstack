@@ -62,6 +62,8 @@ export function parseScheduleSpec(schedule: WorkspaceRecurringDecl["schedule"]):
       `invalid schedule.every ${JSON.stringify(schedule.every)} — expected e.g. "30m", "6h", "1d"`
     );
   }
+  // DURATION_RE matched (checked above), so both capture groups and the unit lookup exist.
+  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   const intervalMs = Number(match[1]) * UNIT_MS[match[2]!]!;
   if (intervalMs < MIN_INTERVAL_MS) {
     throw new Error(`schedule.every must be at least 1m (got ${schedule.every})`);

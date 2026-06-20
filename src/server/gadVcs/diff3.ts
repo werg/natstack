@@ -7,6 +7,11 @@
  * differently.
  */
 
+/* eslint-disable @typescript-eslint/no-non-null-assertion --
+   Vendored, bounds-checked diff3: every array/typed-array index below is provably in
+   range (the LCS table is (n+1)×(m+1); cursors are bounded by their loop conditions).
+   The `!`s reflect noUncheckedIndexedAccess, not unsafe access. */
+
 export interface Diff3Result {
   ok: boolean;
   /** Merged text (with conflict markers when !ok). */

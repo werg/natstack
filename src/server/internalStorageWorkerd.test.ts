@@ -296,7 +296,6 @@ describe("internal storage DOs under workerd", () => {
     const startedAt = Number(result["started_at"]);
     const ranAt = result["ran_at"] ? Number(result["ran_at"]) : null;
     const deltaMs = ranAt != null && !Number.isNaN(startedAt) ? ranAt - startedAt : null;
-    // eslint-disable-next-line no-console
     console.log("BG-PROBE RESULT:", JSON.stringify({ probeRet, result, deltaMs }));
     // No hard assertion — this is an exploratory probe; the console line is the finding.
     expect(result["started_at"]).toBeDefined();
@@ -331,7 +330,6 @@ describe("internal storage DOs under workerd", () => {
     const startedAt = Number(result["started_at"]);
     const ranAt = result["ran_at"] ? Number(result["ran_at"]) : null;
     const deltaMs = ranAt != null && !Number.isNaN(startedAt) ? ranAt - startedAt : null;
-    // eslint-disable-next-line no-console
     console.log("BG-DURATION RESULT:", JSON.stringify({ result, deltaMs }));
     expect(result["started_at"]).toBeDefined();
   }, 240_000);

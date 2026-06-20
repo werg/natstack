@@ -107,12 +107,12 @@ export async function assertWritableVcsPath(p: string): Promise<void> {
     "VCS tracks workspace source — write to a non-ignored path (e.g. projects/…, panels/…, packages/…), " +
     "not a platform-ignored dir (.natstack, .git, .gad, .tmp, node_modules, dist) or ignored file (.env, *.log).";
   const segs = p.split("/");
-  for (let i = 0; i < segs.length - 1; i++) {
-    if (ALWAYS_IGNORED_DIRS.has(segs[i]!)) {
+  for (const seg of segs.slice(0, -1)) {
+    if (ALWAYS_IGNORED_DIRS.has(seg)) {
       throw new Error(`vcs path is in a platform-ignored directory: ${JSON.stringify(p)}. ${hint}`);
     }
   }
-  const base = segs[segs.length - 1]!;
+  const base = segs.at(-1) ?? "";
   if (ALWAYS_IGNORED_DIRS.has(base) || ALWAYS_IGNORED_FILES.has(base)) {
     throw new Error(`vcs path is platform-ignored: ${JSON.stringify(p)}. ${hint}`);
   }
@@ -640,7 +640,7 @@ export class GadVcs {
     const parts = relPath.split("/");
     let cur = dir;
     for (let i = 0; i < parts.length - 1; i++) {
-      cur = path.join(cur, parts[i]!);
+      cur = path.join(cur, parts[i] ?? "");
       let stat: fs.Stats;
       try {
         stat = await fsp.lstat(cur);

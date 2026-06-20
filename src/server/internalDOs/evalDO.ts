@@ -754,7 +754,7 @@ export class EvalDO extends DurableObjectBase {
     const MAX = 1_000_000; // hard cap so the persisted scope can't balloon
     const stash = (key: string, text: string): void => {
       if (text.length <= THRESHOLD) {
-        delete scope[key];
+        Reflect.deleteProperty(scope, key);
         return;
       }
       scope[key] =
