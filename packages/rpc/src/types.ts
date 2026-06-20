@@ -20,6 +20,15 @@ export interface RpcRequest {
    * from its active-invocation table; callers never supply identity directly.
    */
   parentInvocationToken?: string;
+  /**
+   * Explicit opt-in (set ONLY by `callDeferred`) that this call may complete
+   * out-of-band: a human-gated server method (approval, credential use) may
+   * park the call, ack immediately with `{deferred, requestId}`, and deliver
+   * the result later via an inbound `onDeferredResult` call that revives a
+   * hibernated DO. Plain `call()` never sets this, so the server holds it
+   * inline. See `DeferrableRpcClient.callDeferred`.
+   */
+  deferrable?: boolean;
 }
 
 /**
@@ -267,6 +276,14 @@ export interface EnvelopeRpcTransport {
   status?: () => RpcConnectionStatus;
   ready?: () => Promise<void>;
   onStatusChange?: (handler: (status: RpcConnectionStatus) => void) => () => void;
+  /**
+   * First-class streaming for transports that physically stream a response body
+   * (HTTP). When present, `createRpcClient.stream()` delegates here instead of
+   * the duplex `stream-request`/`stream-frame` envelope path. The core builds a
+   * `stream-request` envelope; the transport POSTs it and returns the streaming
+   * `Response`. Socket transports omit this and keep the frame-envelope path.
+   */
+  stream?(envelope: RpcEnvelope, signal?: AbortSignal | null): Promise<Response>;
 }
 
 export type RpcConnectionStatus = "connected" | "connecting" | "disconnected";
@@ -338,39 +355,40 @@ export type RpcContract = Record<
   }
 >;
 
-export interface TopologyAdapter {
-  parent?(): Promise<string | null> | string | null;
-  children?(): Promise<string[]> | string[];
-  root?(): Promise<string | null> | string | null;
-  siblings?(): Promise<string[]> | string[];
-}
-
-export interface AutomationAdapter<TAutomation = unknown> {
-  automation(targetId: string): TAutomation;
-}
-
 export interface RpcClientConfig {
   selfId: string;
   transport: EnvelopeRpcTransport;
   streamIdleTimeoutMs?: number;
   callerKind?: CallerKind | "unknown";
   provenance?: AuthenticatedCaller[];
-  topology?: TopologyAdapter;
-  automation?: AutomationAdapter;
 }
 
-export interface RpcTree {
-  root<TMethods extends MethodMap = MethodMap, TEvents extends EventMap = EventMap>(): Promise<
-    RpcPeer<TMethods, TEvents> | null
-  >;
-  self<TMethods extends MethodMap = MethodMap, TEvents extends EventMap = EventMap>(): RpcPeer<
-    TMethods,
-    TEvents
-  >;
-  siblings<TMethods extends MethodMap = MethodMap, TEvents extends EventMap = EventMap>(): Promise<
-    Array<RpcPeer<TMethods, TEvents>>
-  >;
-}
+/**
+ * Outcome of a `callDeferred`. `completed` carries the inline result (fast
+ * path); `deferred` means the result will arrive later via an inbound
+ * `onDeferredResult(requestId, …)` call — the caller MUST persist whatever it
+ * needs to resume, keyed by `requestId`, before relying on this ack.
+ */
+export type DeferredCallAck =
+  | { status: "deferred"; requestId: string }
+  | { status: "completed"; result: unknown };
+
+/**
+ * `RpcClient` plus the one connectionless extension the convergence keeps:
+ * `callDeferred`. A DO calling a human-gated method hibernates before the
+ * reply, so it cannot hold an inbound request open; `callDeferred` surfaces the
+ * `{deferred, requestId}` ack so the DO can persist its continuation. The base
+ * client runs the shared core; this is layered over the connectionless
+ * transport. Socket clients never need it (the socket stays open).
+ */
+export type DeferrableRpcClient = RpcClient & {
+  callDeferred(
+    targetId: string,
+    method: string,
+    args: unknown[],
+    options?: { requestId?: string; idempotencyKey?: string },
+  ): Promise<DeferredCallAck>;
+};
 
 export interface RpcClient {
   readonly selfId: string;
@@ -404,16 +422,6 @@ export interface RpcClient {
   status(): RpcConnectionStatus;
   ready(): Promise<void>;
   onStatusChange(handler: (status: RpcConnectionStatus) => void): () => void;
-  parent<
-    TMethods extends MethodMap = MethodMap,
-    TEvents extends EventMap = EventMap,
-  >(): Promise<RpcPeer<TMethods, TEvents> | null>;
-  children<
-    TMethods extends MethodMap = MethodMap,
-    TEvents extends EventMap = EventMap,
-  >(): Promise<Array<RpcPeer<TMethods, TEvents>>>;
-  readonly tree: RpcTree;
-  automation<TAutomation = unknown>(targetId: string): TAutomation;
 }
 
 // =============================================================================

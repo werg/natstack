@@ -51,6 +51,13 @@ export const LifecycleLeaseSchema = LifecycleKeySchema.extend({
 
 export const AlarmSetSchema = LifecycleKeySchema.extend({
   wakeAt: z.number(),
+  /**
+   * Best-effort alarms (e.g. EvalDO idle eviction) fire once and are NOT re-armed on
+   * dispatch failure: the handler aborts its own DO, so a failed dispatch is the expected
+   * outcome, not a lost wake. Omitted/false = the default at-least-once alarm. See
+   * AlarmDriver.fire().
+   */
+  bestEffort: z.boolean().optional(),
 });
 
 export const HeartbeatRegistryRowSchema = z.object({
@@ -104,6 +111,14 @@ export const workspaceStateMethods = defineServiceMethods({
     description: "Resolve a single active entity record by id.",
     policy: WORKSPACE_STATE_READ_POLICY,
     returns: z.unknown(),
+  },
+  "slot.resolveByEntity": {
+    args: z.tuple([z.string()]),
+    description:
+      "Resolve the OPEN slot id whose current entity is the given runtime-entity (nav) id, or null. " +
+      "Durable nav→slot mapping used to nest launches under the owning panel's tree slot.",
+    policy: WORKSPACE_STATE_READ_POLICY,
+    returns: z.string().nullable(),
   },
   "slot.create": {
     args: z.tuple([SlotCreateInputSchema]),

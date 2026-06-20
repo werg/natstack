@@ -34,6 +34,7 @@ import {
   getPanelStateArgs,
 } from "@natstack/shared/panel/accessors";
 import { asPanelSlotId } from "@natstack/shared/panel/ids";
+import { resolveOwningPanelSlot } from "@natstack/shared/panel/owningPanelSlot";
 import { PanelManager } from "@natstack/shared/shell/panelManager";
 import type {
   RuntimeClient,
@@ -155,23 +156,6 @@ export function panelHostCommandAssignmentError(
   return null;
 }
 
-export function resolveImplicitCreateParentId(input: {
-  explicitParentId?: string | null;
-  callerId: string;
-  callerKind: string;
-  getCallerLeaseSlotId?: (callerId: string) => string | undefined;
-  hasPanel: (panelId: string) => boolean;
-}): ReturnType<typeof asPanelSlotId> | undefined {
-  if (typeof input.explicitParentId === "string") {
-    return asPanelSlotId(input.explicitParentId);
-  }
-  const callerSlotId =
-    input.callerKind === "panel"
-      ? (input.getCallerLeaseSlotId?.(input.callerId) ?? input.callerId)
-      : input.callerId;
-  return input.hasPanel(callerSlotId) ? asPanelSlotId(callerSlotId) : undefined;
-}
-
 export async function createServerPanelTreeBridge(
   deps: CommonDeps
 ): Promise<
@@ -187,6 +171,8 @@ export async function createServerPanelTreeBridge(
     getSlotHistory: (slotId) => call<SlotHistoryRow[]>("workspace-state", "slot.history", [slotId]),
     resolveActiveEntity: (id) =>
       call<EntityRecord | null>("workspace-state", "entity.resolveActive", [id]),
+    resolveSlotByEntity: (entityId) =>
+      call<string | null>("workspace-state", "slot.resolveByEntity", [entityId]),
     createSlot: (input: SlotCreateInput) =>
       call<undefined>("workspace-state", "slot.create", [input]),
     appendSlotHistory: (slotId, entry: SlotHistoryEntryInput) =>
@@ -488,14 +474,23 @@ export async function createServerPanelTreeBridge(
           ref?: string;
           stateArgs?: Record<string, unknown>;
         };
-        const parentId = resolveImplicitCreateParentId({
-          explicitParentId: options.parentId,
-          callerId: request.callerId,
-          callerKind: request.callerKind,
-          getCallerLeaseSlotId: (callerId) =>
-            deps.panelRuntimeCoordinator?.getLease(callerId)?.slotId,
-          hasPanel: (panelId) => Boolean(registry.getPanel(panelId)),
-        });
+        // Resolve the owning panel TREE SLOT once, durably. Explicit null = root; an explicit id or
+        // the implicit caller = walk the entity lineage to the nearest OPEN panel and return its slot
+        // id (parity for panel/worker/agent/eval callers + removal-robustness, in one resolver). This
+        // is the single fix for the nav-id-vs-slot-id mismatch that rooted agent/eval-launched panels.
+        const explicitParentProvided =
+          options.parentId === null || typeof options.parentId === "string";
+        const parentStartId = explicitParentProvided ? options.parentId : request.callerId;
+        const parentId =
+          parentStartId == null
+            ? undefined
+            : await resolveOwningPanelSlot(parentStartId, {
+                isOpenSlot: (id) => Boolean(registry.getPanel(id)),
+                resolveOpenSlotForEntity: async (id) =>
+                  (await workspaceState.resolveSlotByEntity(id)) ?? undefined,
+                resolveParentId: async (id) =>
+                  (await workspaceState.resolveActiveEntity(id))?.parentId,
+              });
         const isBrowser = /^https?:\/\//i.test(source);
         // A null parent means a root panel. addPanel() treats a null parent
         // WITHOUT addAsRoot as "replace the tree with this single panel", so root
@@ -1049,6 +1044,12 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
             return { kind: target.kind, source: target.source };
           },
           isPanelKnown: isKnownPanelSlot,
+          // Keep a CDP-automated panel loaded (and eviction-exempt) on its
+          // serving host while ≥1 CDP client is connected to its target.
+          onTargetClientPinChange: (targetId, pinned) => {
+            if (pinned) deps.panelRuntimeCoordinator?.pinSlotLoaded(targetId);
+            else deps.panelRuntimeCoordinator?.unpinSlotLoaded(targetId);
+          },
         });
         deps.panelRuntimeCoordinator?.onLeaseChanged((event) => {
           cdpBridge.handleRuntimeLeaseChanged(event);

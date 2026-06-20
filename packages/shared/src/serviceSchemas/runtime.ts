@@ -53,6 +53,7 @@ export const CreateEntitySpecSchema = z.discriminatedUnion("kind", [
     className: z.string(),
     key: z.string().optional(),
     contextId: z.string().nullable().optional(),
+    stateArgs: z.unknown().optional(),
   }),
   z.object({
     kind: z.literal("session"),

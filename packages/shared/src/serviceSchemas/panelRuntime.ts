@@ -10,6 +10,7 @@ import type {
   RuntimeLeaseVersion,
 } from "../panel/panelLease.js";
 import { asPanelEntityId, asPanelSlotId } from "../panel/ids.js";
+import type { SchemaCoversType } from "../schemaTypeGuard.js";
 import { defineServiceMethods } from "../typedServiceClient.js";
 
 export const clientPlatformSchema = z.enum(["desktop", "headless", "mobile"]);
@@ -53,6 +54,8 @@ export const panelRuntimeLeaseSchema = z
     loadOnLeaseAssignment: z.boolean(),
     acquiredAt: z.number(),
     expiresAt: z.number().optional(),
+    // Set while an agent is actively automating the panel via CDP — pins it loaded (no unload/evict).
+    keepLoaded: z.boolean().optional(),
   })
   .strict() satisfies z.ZodType<PanelRuntimeLease, z.ZodTypeDef, unknown>;
 
@@ -62,6 +65,26 @@ export const runtimeLeaseSnapshotSchema = z
     leases: z.array(panelRuntimeLeaseSchema),
   })
   .strict() satisfies z.ZodType<RuntimeLeaseSnapshot, z.ZodTypeDef, unknown>;
+
+// ── Compile-time drift guards ────────────────────────────────────────────────────────────────────
+// The `satisfies z.ZodType<T>` above only checks schema⊆type; these add the missing direction so a
+// field added to a hand-written lease type WITHOUT adding it to its strict schema fails to compile
+// HERE (naming the missing key) instead of rejecting that field at runtime parse. See SchemaCoversType.
+const _leaseSchemaCoversType: SchemaCoversType<
+  PanelRuntimeLease,
+  z.infer<typeof panelRuntimeLeaseSchema>
+> = true;
+const _snapshotSchemaCoversType: SchemaCoversType<
+  RuntimeLeaseSnapshot,
+  z.infer<typeof runtimeLeaseSnapshotSchema>
+> = true;
+const _versionSchemaCoversType: SchemaCoversType<
+  RuntimeLeaseVersion,
+  z.infer<typeof runtimeLeaseVersionSchema>
+> = true;
+void _leaseSchemaCoversType;
+void _snapshotSchemaCoversType;
+void _versionSchemaCoversType;
 
 export const panelRuntimeAcquireResultSchema = z.union([
   z

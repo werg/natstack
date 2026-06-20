@@ -328,6 +328,59 @@ export function createNoPanelHandle(): PanelHandle {
   return handle;
 }
 
+export interface ParentHandleApi {
+  readonly parent: PanelHandle;
+  getParent<
+    T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+    E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
+    EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap,
+  >(): PanelHandle<T, E, EmitE> | null;
+  getParentWithContract<C extends PanelContract>(
+    contract: C
+  ): PanelHandleFromContract<C, "parent"> | null;
+}
+
+/**
+ * Resolve a parent PanelHandle from launch metadata, portable across every
+ * target (panel/worker/eval). A `panel` parent resolves to a real panel handle
+ * via `getPanelHandle`; a `worker`/`do` parent resolves to a non-panel handle
+ * (RPC-callable, not panel-navigable); no parent → null. Generalized from the
+ * worker's former `createWorkerParentPanelHandle` so eval can reuse it.
+ */
+export function createRuntimeParentHandle(
+  getPanelHandle: (id: string) => PanelHandle,
+  parentId: string | null,
+  parentEntityId: string | null,
+  parentKind: "panel" | "worker" | "do" | null
+): PanelHandle | null {
+  if (!parentId) return null;
+  if (parentKind === "panel") return getPanelHandle(parentId);
+  if (parentKind === "worker" || parentKind === "do") {
+    return createNonPanelRuntimeHandle({ id: parentEntityId ?? parentId });
+  }
+  if (parentId.startsWith("worker:") || parentId.startsWith("do:")) {
+    return createNonPanelRuntimeHandle({ id: parentId });
+  }
+  return getPanelHandle(parentId);
+}
+
+export function createParentHandleApi(resolveParent: () => PanelHandle | null): ParentHandleApi {
+  const parent = resolveParent() ?? createNoPanelHandle();
+  const getParent = <
+    T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+    E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
+    EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap,
+  >(): PanelHandle<T, E, EmitE> | null => {
+    return resolveParent() as PanelHandle<T, E, EmitE> | null;
+  };
+  const getParentWithContract = <C extends PanelContract>(
+    contract: C
+  ): PanelHandleFromContract<C, "parent"> | null => {
+    return getParent()?.withContract(contract, "parent") ?? null;
+  };
+  return { parent, getParent, getParentWithContract };
+}
+
 export function createNonPanelRuntimeHandle(options: {
   id: string;
   title?: string;

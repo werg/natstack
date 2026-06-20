@@ -5,27 +5,15 @@
  */
 
 import type { RpcTransport } from "@natstack/rpc";
-import { createBaseRuntime, type BaseRuntimeDeps } from "./createBaseRuntime.js";
-import {
-  type PanelContract,
-  type PanelHandle,
-  type PanelHandleFromContract,
-  type EndpointInfo,
-  type Rpc,
-} from "../core/index.js";
+import { createBaseRuntime } from "./createBaseRuntime.js";
+import type { EndpointInfo } from "../core/index.js";
 import type { GatewayConfig } from "../shared/globals.js";
-import {
-  createNoPanelHandle,
-  createPanelHandle,
-  type PanelHandleHostOps,
-  type PanelHandleMetadata,
-} from "../shared/handles.js";
-import { createCdpAutomation } from "../panel/cdpAutomation.js";
+import { createParentHandleApi } from "../shared/handles.js";
+import { createPanelRuntime } from "../shared/panelRuntime.js";
 import type { RuntimeFs, ThemeAppearance } from "../types.js";
 import { _applyStateArgsFromHost, _initStateArgsRuntime } from "../panel/stateArgs.js";
 import { exposeAgentApi } from "../panel/agentApi.js";
 import type { PanelEntityId, PanelSlotId } from "@natstack/shared/panel/ids";
-import type { PanelLifecycleResult } from "@natstack/shared/types";
 
 export interface RuntimeDeps {
   selfId: PanelEntityId;
@@ -40,25 +28,13 @@ export interface RuntimeDeps {
   fs: RuntimeFs;
   setupGlobals?: () => void;
   gatewayConfig?: GatewayConfig | null;
-}
-
-interface PanelTreeItem {
-  id?: string;
-  panelId?: string;
-  title?: string;
-  source?: string;
-  kind?: "workspace" | "browser";
-  parentId?: string | null;
-  contextId?: string | null;
-  runtimeEntityId?: string | null;
   effectiveVersion?: string | null;
-  ref?: string | null;
 }
 
 export function createRuntime(deps: RuntimeDeps) {
   const entityId = deps.entityId;
   const slotId = deps.slotId ?? (entityId as unknown as PanelSlotId);
-  const parentRuntimeId = deps.parentEntityId ?? deps.parentId;
+  const parentRuntimeId = deps.parentEntityId ?? deps.parentId ?? null;
   const base = createBaseRuntime({ ...deps, id: entityId });
   const workers = {
     ...base.workers,
@@ -82,89 +58,18 @@ export function createRuntime(deps: RuntimeDeps) {
     });
   }
 
-  const panelCall = <T>(method: string, args: unknown[]) =>
-    base.rpc.call<T>("main", `panelTree.${method}`, args);
-  const itemToMetadata = (item: PanelTreeItem): PanelHandleMetadata => {
-    const id = item.panelId ?? item.id ?? "";
-    return {
-      id,
-      title: item.title ?? id,
-      source: item.source ?? id,
-      kind: item.kind ?? (item.source?.startsWith("browser:") ? "browser" : "workspace"),
-      parentId: item.parentId ?? null,
-      contextId: item.contextId ?? null,
-      rpcTargetId: item.runtimeEntityId ?? null,
-      effectiveVersion: item.effectiveVersion ?? null,
-      ref: item.ref ?? null,
-    };
-  };
-  const metadataForId = (id: string): PanelHandleMetadata => ({
-    id,
-    title: id,
-    source: id,
-    kind: "workspace",
-    parentId: null,
-    contextId: null,
-    rpcTargetId: null,
-    effectiveVersion: null,
-  });
-  const hydrateRuntimeHandle = (metadata: PanelHandleMetadata): PanelHandle =>
-    createPanelHandle({
-      rpc: base.rpc,
-      metadata,
-      cdp: createCdpAutomation(base.rpc, metadata.id, {
-        kind: metadata.kind,
-        requesterPanelId: slotId,
-      }),
-      ops: panelHandleOps,
-    });
-  const panelHandleOps: PanelHandleHostOps = {
-    refresh: async (id) => {
-      const meta = await panelCall<PanelTreeItem | null>("metadata", [id]);
-      return meta ? itemToMetadata(meta) : metadataForId(id);
-    },
-    children: async (id) => {
-      const children = await panelCall<PanelTreeItem[]>("list", [id]);
-      return children.map((item) => hydrateRuntimeHandle(itemToMetadata(item)));
-    },
-    parent: (_id, parentId) => (parentId ? hydrateRuntimeHandle(metadataForId(parentId)) : null),
-    ensureLoaded: (id) => panelCall("ensureLoaded", [id]),
-    isLoaded: async (id) => {
-      try {
-        const lease = await panelCall<{ leased?: boolean } | null>("getRuntimeLease", [id]);
-        return Boolean(lease?.leased);
-      } catch {
-        return false;
-      }
-    },
-    reload: (id) => panelCall<PanelLifecycleResult>("reload", [id]),
-    close: (id) => panelCall<PanelLifecycleResult>("close", [id]),
-    archive: (id) => panelCall("archive", [id]),
-    unload: (id) => panelCall<PanelLifecycleResult>("unload", [id]),
-    navigate: (id, source, options) =>
-      panelCall<{ id: string; title: string }>("navigate", [id, source, options]),
-    movePanel: (id, newParentId, targetPosition) =>
-      panelCall("movePanel", [{ panelId: id, newParentId, targetPosition }]),
-    takeOver: (id) => panelCall("takeOver", [id]),
-    openDevTools: (id, mode) => panelCall("openDevTools", [id, mode]),
-    rebuildPanel: (id) => panelCall<PanelLifecycleResult>("rebuildPanel", [id]),
-    rebuildAndReload: (id) => panelCall<PanelLifecycleResult>("rebuildAndReload", [id]),
-    updatePanelState: (id, state) => panelCall("updatePanelState", [id, state]),
-    focus: (id) => panelCall("focus", [id]),
-    stateArgs: {
-      get: (id) => panelCall("getStateArgs", [id]),
-      set: (id, updates) => panelCall("setStateArgs", [id, updates]),
-    },
-    snapshot: (id) => panelCall("snapshot", [id]),
-    callAgent: (id, method, args) => panelCall("callAgent", [id, method, args]),
-  };
-
-  const parentHandleOrNull = parentRuntimeId
-    ? (() => {
-        const parentSlotId = deps.parentId ?? parentRuntimeId;
-        return createPanelHandle({
-          rpc: base.rpc,
-          metadata: {
+  const parentSlotId = parentRuntimeId ? (deps.parentId ?? parentRuntimeId) : null;
+  const panelRuntime = createPanelRuntime({
+    rpc: base.rpc,
+    selfId: slotId,
+    selfRpcTargetId: entityId,
+    parentId: deps.parentId,
+    defaultOpenParentId: slotId,
+    requesterPanelId: slotId,
+    effectiveVersion: deps.effectiveVersion ?? null,
+    initialMetadata: parentSlotId
+      ? [
+          {
             id: parentSlotId,
             title: parentSlotId,
             source: parentSlotId,
@@ -172,29 +77,16 @@ export function createRuntime(deps: RuntimeDeps) {
             parentId: null,
             rpcTargetId: parentRuntimeId,
           },
-          cdp: createCdpAutomation(base.rpc, parentSlotId, {
-            kind: "workspace",
-            requesterPanelId: slotId,
-          }),
-          ops: panelHandleOps,
-        });
-      })()
-    : null;
-  const parent: PanelHandle = parentHandleOrNull ?? createNoPanelHandle();
+        ]
+      : [],
+  });
 
-  const getParent = <
-    T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
-    E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
-    EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap,
-  >(): PanelHandle<T, E, EmitE> | null => {
-    return parentHandleOrNull as PanelHandle<T, E, EmitE> | null;
-  };
-
-  const getParentWithContract = <C extends PanelContract>(
-    contract: C
-  ): PanelHandleFromContract<C, "parent"> | null => {
-    return getParent()?.withContract(contract, "parent") ?? null;
-  };
+  const parentHandleOrNull = parentSlotId ? panelRuntime.getPanelHandle(parentSlotId) : null;
+  // The barrel feeds this resolver to the host so `createHostedRuntime` derives
+  // the portable `parent`/`getParent`/`getParentWithContract`. The same handles
+  // are also exposed here for the panel runtime's own (non-barrel) consumers.
+  const resolveParent = () => parentHandleOrNull;
+  const parentApi = createParentHandleApi(resolveParent);
 
   return {
     id: base.id,
@@ -204,12 +96,14 @@ export function createRuntime(deps: RuntimeDeps) {
     parentEntityId: deps.parentEntityId ?? null,
 
     rpc: base.rpc,
+    callMain: base.callMain,
     fs: base.fs,
     workers,
 
-    parent,
-    getParent,
-    getParentWithContract,
+    resolveParent,
+    parent: parentApi.parent,
+    getParent: parentApi.getParent,
+    getParentWithContract: parentApi.getParentWithContract,
 
     onConnectionError: base.onConnectionError,
 

@@ -21,16 +21,13 @@ import {
   type RuntimeEntityCreateSpec,
   type RuntimeEntityHandle,
 } from "@natstack/shared/runtime/entitySpec";
-import type { EntityCache } from "@natstack/shared/runtime/entityCache";
-import type { DODispatch } from "../doDispatch.js";
-import { INTERNAL_DO_SOURCE } from "../internalDOs/internalDoLoader.js";
+import type { WorkspaceEntityStore } from "../workspaceEntityStore.js";
 import {
   requestCapabilityPermission,
   type CapabilityPermissionDeps,
 } from "./capabilityPermission.js";
 import { isAuthorizedChrome } from "./chromeTrust.js";
 
-const WORKSPACE_DO_CLASS = "WorkspaceDO";
 export const RUNTIME_CROSS_CONTEXT_ENTITY = "runtime.crossContextEntity" as const;
 
 export interface RuntimeEntityHooks {
@@ -51,6 +48,9 @@ export interface RuntimeEntityHooks {
     contextId: string;
     stateArgs?: unknown;
     env?: Record<string, string>;
+    /** Launch parent (the verified caller) → worker `PARENT_*` env, so the
+     *  worker's `parent` resolves from the same source as `EntityRecord.parentId`. */
+    parent?: { parentId: string; parentEntityId: string; parentKind?: "panel" | "worker" | "do" };
   }) => Promise<{ targetId: string; effectiveVersion: string }>;
 
   /** Resolve effective version for "panel" entities (no runtime prep). */
@@ -76,11 +76,15 @@ export interface RuntimeContextFolders {
 }
 
 export interface RuntimeServiceDeps {
-  doDispatch: DODispatch;
-  workspaceId: string;
+  /**
+   * The single owner of WorkspaceDO entity state. The runtime service never
+   * dispatches `entityActivate`/`entityRetire` or touches the cache mirror
+   * directly — the store pairs the durable write with the cache update so they
+   * can't drift.
+   */
+  entityStore: WorkspaceEntityStore;
   hooks: RuntimeEntityHooks;
   capability: CapabilityPermissionDeps;
-  entityCache: EntityCache;
   contextFolders: RuntimeContextFolders;
   /**
    * Server-controlled display-title registry. Workers (and DOs / panels)
@@ -100,13 +104,7 @@ export interface RuntimeServiceDeps {
 }
 
 export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinition {
-  const workspaceDORef = {
-    source: INTERNAL_DO_SOURCE,
-    className: WORKSPACE_DO_CLASS,
-    objectKey: deps.workspaceId,
-  };
-  const dispatchDO = <T>(method: string, args: unknown[]) =>
-    deps.doDispatch.dispatch(workspaceDORef, method, ...args) as Promise<T>;
+  const store = deps.entityStore;
 
   async function resolveContextPolicy(
     caller: VerifiedCaller,
@@ -123,13 +121,8 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
     if (await deps.canCreateCrossContextEntity?.(caller, spec)) {
       return requested;
     }
-    // Pull caller's current contextId from the local cache; falls back to DO if absent.
-    let callerContextId = deps.entityCache.resolveContext(caller.runtime.id);
-    if (callerContextId == null) {
-      callerContextId = await dispatchDO<string | null>("entityResolveContext", [
-        caller.runtime.id,
-      ]);
-    }
+    // Pull caller's current contextId (cache-first, falls back to the WorkspaceDO).
+    const callerContextId = await store.resolveContext(caller.runtime.id);
     if (callerContextId === requested) {
       return requested;
     }
@@ -196,7 +189,7 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
         className: spec.className,
         key,
       });
-      existing = await dispatchDO<EntityRecord | null>("entityResolve", [canonicalId]);
+      existing = await store.resolveRecord(canonicalId);
       const prepared = await deps.hooks.prepareDurableObject({
         source: spec.source,
         ref: spec.ref,
@@ -211,7 +204,8 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
       targetId = prepared.targetId;
     } else if (spec.kind === "worker") {
       canonicalId = canonicalEntityId({ kind: "worker", source: spec.source, key });
-      existing = await dispatchDO<EntityRecord | null>("entityResolve", [canonicalId]);
+      existing = await store.resolveRecord(canonicalId);
+      const parentKind = caller.runtime.kind;
       const prepared = await deps.hooks.prepareWorker({
         source: spec.source,
         ref: spec.ref,
@@ -219,6 +213,16 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
         contextId,
         stateArgs: spec.stateArgs,
         env: spec.env,
+        // Same launch parent recorded on the entity (parentId below), threaded to
+        // the worker's PARENT_* env so its `parent` runtime API resolves.
+        parent: {
+          parentId: caller.runtime.id,
+          parentEntityId: caller.runtime.id,
+          parentKind:
+            parentKind === "panel" || parentKind === "worker" || parentKind === "do"
+              ? parentKind
+              : undefined,
+        },
       });
       effectiveVersion =
         existing?.status === "retired"
@@ -227,7 +231,7 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
       targetId = prepared.targetId;
     } else if (spec.kind === "app") {
       canonicalId = canonicalEntityId({ kind: "app", source: spec.source, key });
-      existing = await dispatchDO<EntityRecord | null>("entityResolve", [canonicalId]);
+      existing = await store.resolveRecord(canonicalId);
       const resolvedVersion = await deps.hooks.resolveAppEffectiveVersion({
         source: spec.source,
         ref: spec.ref,
@@ -237,7 +241,7 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
       targetId = canonicalId;
     } else if (spec.kind === "session") {
       canonicalId = canonicalEntityId({ kind: "session", key });
-      existing = await dispatchDO<EntityRecord | null>("entityResolve", [canonicalId]);
+      existing = await store.resolveRecord(canonicalId);
       // Entity identity columns are write-once, so re-attaching to an
       // existing session key must reuse its contextId — a freshly minted one
       // would throw IDENTITY_COLLISION even against a retired row. The
@@ -253,7 +257,7 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
       targetId = canonicalId;
     } else {
       canonicalId = canonicalEntityId({ kind: "panel", key });
-      existing = await dispatchDO<EntityRecord | null>("entityResolve", [canonicalId]);
+      existing = await store.resolveRecord(canonicalId);
       const resolvedVersion = await deps.hooks.resolvePanelEffectiveVersion({
         source: spec.source,
         ref: spec.ref,
@@ -277,9 +281,12 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
           : "stateArgs" in spec
             ? spec.stateArgs
             : undefined,
+      // Record the verified caller as this entity's launch parent (server-
+      // authoritative) so a runtime can later resolve its nearest panel ancestor
+      // (e.g. eval launched by an agent inherits the agent's owning panel).
+      parentId: caller.runtime.id,
     };
-    const record = await dispatchDO<EntityRecord>("entityActivate", [activateInput]);
-    deps.entityCache._onActivate(record);
+    const record = await store.activate(activateInput);
     if (spec.kind === "session" && spec.title) {
       await deps.setEntityTitle?.(record.id, spec.title, { explicit: true });
     }
@@ -294,17 +301,16 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
   }
 
   async function retireEntity(id: string, removeContext?: boolean): Promise<void> {
-    const record = await dispatchDO<EntityRecord | null>("entityRetire", [id]);
+    const record = await store.retire(id);
     if (!record) return;
-    deps.entityCache._onRetire(record);
     try {
       await deps.hooks.onRetire(record);
-      await dispatchDO<undefined>("entityCleanupComplete", [id]);
+      await store.cleanupComplete(id);
     } catch {
       // Leave cleanup_complete=0; cleanupReaper will retry.
     }
     if (removeContext) {
-      const live = await dispatchDO<EntityRecord[]>("entityListActive", []);
+      const live = await store.listActive();
       if (!live.some((e) => e.contextId === record.contextId)) {
         await deps.contextFolders.removeContext(record.contextId);
       }
@@ -321,9 +327,7 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
   }
 
   async function listEntities(kind?: string): Promise<EntitySummary[]> {
-    const live = kind
-      ? await dispatchDO<EntityRecord[]>("entityListActiveByKind", [kind])
-      : await dispatchDO<EntityRecord[]>("entityListActive", []);
+    const live = await store.listActive(kind);
     return live.map((record) => {
       const stateArgs = record.stateArgs;
       const title =
@@ -344,9 +348,7 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
   }
 
   async function resolveContext(id: string): Promise<string | null> {
-    const cached = deps.entityCache.resolveContext(id);
-    if (cached != null) return cached;
-    return await dispatchDO<string | null>("entityResolveContext", [id]);
+    return await store.resolveContext(id);
   }
 
   return {

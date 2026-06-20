@@ -1,13 +1,43 @@
 import type { RuntimeSurface } from "./runtimeSurface.js";
 import { namespaceEntry, valueEntry } from "./runtimeSurface.js";
+import { coreRuntimeSurface, PANEL_TREE_MEMBERS, WORKSPACE_MEMBERS } from "./runtimeSurface.core.js";
 
 const panelTreeDescription =
-  "Top-level export, not workspace.panelTree. Signatures: self(): PanelHandle; get(id): PanelHandle; list(): Promise<PanelHandle[]>; roots(): Promise<PanelHandle[]>; children(id): Promise<PanelHandle[]>; parent(id): PanelHandle | null; navigate(id, source, opts?): Promise<{ id, title }>; open(source, opts?): Promise<PanelHandle>. Use list/roots/children/get for existing panels; navigate replaces an existing panel slot; open creates a new panel. self/get are sync; async methods refresh metadata as needed.";
+  "Top-level export, not workspace.panelTree. Signatures: self(): PanelHandle; get(id): PanelHandle; list(): Promise<PanelHandle[]>; roots(): Promise<PanelHandle[]>; children(id): Promise<PanelHandle[]>; parent(id): PanelHandle | null; navigate(id, source, opts?): Promise<{ id, title }>. Use list/roots/children/get for existing panels; navigate replaces an existing panel slot; openPanel creates a new panel. self/get are sync; async methods refresh metadata as needed.";
+
+// Panel-only affordances, grouped under one `panel` namespace (was ~16 flat
+// top-level exports). Identity/introspection/theme/focus/lifecycle + stateArgs.
+const PANEL_MEMBERS = [
+  "entityId",
+  "slotId",
+  "parentId",
+  "env",
+  "getInfo",
+  "focusPanel",
+  "getTheme",
+  "onThemeChange",
+  "onFocus",
+  "onConnectionError",
+  "onChildCreated",
+  "reopen",
+  "stateArgs",
+];
 
 export const panelRuntimeSurface: RuntimeSurface = {
   target: "panel",
   description: "Top-level value exports available from @workspace/runtime in panel eval contexts.",
   exports: {
+    ...coreRuntimeSurface,
+    // Entries whose description is panel-specific (member arrays shared with core).
+    workspace: namespaceEntry(
+      WORKSPACE_MEMBERS,
+      "Workspace catalog, source tree, and unit helpers. Does not include panelTree; import top-level panelTree for panel-tree handles."
+    ),
+    openPanel: valueEntry(),
+    listPanels: valueEntry(),
+    getPanelHandle: valueEntry(),
+    panelTree: namespaceEntry(PANEL_TREE_MEMBERS, panelTreeDescription),
+    // Portable authoring helpers (also on worker + eval — pure, target-independent).
     Rpc: valueEntry("RPC helpers namespace export."),
     z: valueEntry("Zod export."),
     defineContract: valueEntry(),
@@ -15,78 +45,22 @@ export const panelRuntimeSurface: RuntimeSurface = {
     parseContextId: valueEntry(),
     isValidContextId: valueEntry(),
     getInstanceId: valueEntry(),
-    id: valueEntry(),
-    entityId: valueEntry("Panel entity id (panel:<historyEntryKey>) - same as `id`."),
-    slotId: valueEntry("Stable panel slot id for panel tree operations and panel channel/client identity."),
-    rpc: valueEntry(),
-    parent: valueEntry(),
-    getParent: valueEntry(),
-    getParentWithContract: valueEntry(),
-    onConnectionError: valueEntry(),
-    getInfo: valueEntry(),
-    focusPanel: valueEntry(),
-    getTheme: valueEntry(),
-    onThemeChange: valueEntry(),
-    onFocus: valueEntry(),
-    expose: valueEntry(),
-    contextId: valueEntry(),
-    recoveryCoordinator: valueEntry("Panel transport recovery phase coordinator."),
-    parentId: valueEntry(),
-    fs: valueEntry(),
-    createGatewayFetch: valueEntry(
-      "Create a gateway-authenticated fetch helper from an explicit config."
-    ),
-    gatewayConfig: valueEntry("Gateway base URL and bearer token for NatStack service routes."),
-    gatewayFetch: valueEntry(
-      "Fetch helper that prefixes gateway-relative paths and adds Authorization: Bearer."
-    ),
-    env: valueEntry(),
-    doTargetId: valueEntry("Build a unified RPC target ID for a Durable Object reference."),
-    createDurableObjectServiceClient: valueEntry(
-      "Resolve a Durable Object-backed service and call it through unified RPC."
-    ),
-    workers: namespaceEntry([
-      "create",
-      "destroy",
-      "update",
-      "list",
-      "status",
-      "listInstanceSources",
-      "listServices",
-      "resolveService",
-      "resolveDurableObject",
-      "durableObjectService",
-      "getPort",
-      "restartAll",
-      "cloneDO",
-      "destroyDO",
-    ]),
     normalizePath: valueEntry(),
     getFileName: valueEntry(),
     resolvePath: valueEntry(),
-    getStateArgs: valueEntry(),
-    useStateArgs: valueEntry(),
-    setStateArgs: valueEntry(),
-    setStateArgsForPanel: valueEntry(),
-    reopen: valueEntry(
-      "Replace the current panel slot with a source/context/stateArgs using panelTree.navigate."
+    createGatewayFetch: valueEntry(
+      "Create a gateway-authenticated fetch helper from an explicit config."
     ),
-    openExternal: valueEntry(),
-    onChildCreated: valueEntry(),
-    openPanel: valueEntry(),
-    listPanels: valueEntry(),
-    getPanelHandle: valueEntry(),
-    panelTree: namespaceEntry(
-      ["self", "get", "list", "roots", "children", "parent", "navigate", "open"],
-      panelTreeDescription
+    // Panel-only namespaces.
+    panel: namespaceEntry(
+      PANEL_MEMBERS,
+      "Panel-only affordances: identity (entityId/slotId/parentId/env), introspection (getInfo/getTheme/onThemeChange/onFocus/onConnectionError), lifecycle (focusPanel/onChildCreated/reopen), and stateArgs (get/set/use/setForPanel)."
     ),
-    buildPanelRenderErrorPrompt: valueEntry(),
-    installPanelErrorDiagnosticLauncher: valueEntry(),
-    openPanelErrorDiagnosticChat: valueEntry(),
+    journal: namespaceEntry(
+      ["Journal", "with", "current"],
+      "Panel operation journaling: journal.Journal (class), journal.with(journal, fn), journal.current()."
+    ),
     agentApi: valueEntry(),
-    Journal: valueEntry(),
-    withJournal: valueEntry(),
-    currentJournal: valueEntry(),
     adblock: namespaceEntry([
       "getStats",
       "isActive",
@@ -98,105 +72,5 @@ export const panelRuntimeSurface: RuntimeSurface = {
       "addToWhitelist",
       "removeFromWhitelist",
     ]),
-    workspace: namespaceEntry([
-      "list",
-      "getActive",
-      "getActiveEntry",
-      "getConfig",
-      "create",
-      "delete",
-      "setInitPanels",
-      "setConfigField",
-      "switchTo",
-      "sourceTree",
-      "findUnitForPath",
-      "openPanel",
-      "units",
-    ], "Workspace catalog, source tree, and unit helpers. Does not include panelTree; import top-level panelTree for panel-tree handles."),
-    credentials: namespaceEntry([
-      "store",
-      "connect",
-      "configureClient",
-      "requestCredentialInput",
-      "getClientConfigStatus",
-      "deleteClientConfig",
-      "listStoredCredentials",
-      "revokeCredential",
-      "grantCredential",
-      "resolveCredential",
-      "fetch",
-      "hookForUrl",
-      "gitHttp",
-    ]),
-    git: namespaceEntry([
-      "http",
-      "importProject",
-      "completeWorkspaceDependencies",
-      "setSharedRemote",
-      "removeSharedRemote",
-    ]),
-    vcs: namespaceEntry([
-      "applyEdits",
-      "readFile",
-      "listFiles",
-      "revert",
-      "status",
-      "unitStatus",
-      "log",
-      "diff",
-      "resolveHead",
-      "merge",
-      "abortMerge",
-      "pendingMerge",
-      "publishStatus",
-      "publish",
-      "recall",
-    ], "Workspace GAD VCS (edit-first): applyEdits commits and projects edits atomically; status reports a head's unpublished changes vs main; diff compares state hashes."),
-    gad: namespaceEntry([
-      "rawSql",
-      "query",
-      "status",
-      "ensureBlob",
-      "getTrajectoryBranchHead",
-      "appendTrajectoryBatch",
-      "listTrajectoryEvents",
-      "appendChannelEnvelope",
-      "getChannelEnvelope",
-      "getTrajectoryForEnvelope",
-      "listPublishedEnvelopesForTrajectory",
-      "getEnvelopesForTrajectory",
-      "getPublishedArtifactsForTurn",
-      "getPrivateLineageForPublishedEnvelope",
-      "getDownstreamConsumers",
-      "getChannelReplayWindow",
-      "listChannelEnvelopesAfter",
-      "listChannelEnvelopesBefore",
-      "getInitialChannelWindow",
-      "listChannelEnvelopes",
-      "inspectChannelEnvelopes",
-      "listStoredValueRefs",
-      "inspectStorageDiagnostics",
-      "listGadBranchFiles",
-      "diffGadStates",
-      "readGadFileAtState",
-      "getGadStateProducer",
-      "blameGadFileSnippet",
-      "validateGadHashes",
-      "clearDirtyAfterValidation",
-      "checkGadIntegrity",
-      "rebuildTrajectoryProjections",
-    ]),
-    webhooks: namespaceEntry([
-      "createSubscription",
-      "listSubscriptions",
-      "revokeSubscription",
-      "rotateSecret",
-    ]),
-    extensions: namespaceEntry(["use", "on", "list", "reload"]),
-    approvals: namespaceEntry(["request", "revoke", "list"]),
-    requestApproval: valueEntry(),
-    revokeApproval: valueEntry(),
-    listApprovals: valueEntry(),
-    notifications: namespaceEntry(["show", "dismiss"]),
   },
 };

@@ -897,6 +897,77 @@ describe("connectViaRpc", () => {
       client.close();
     });
 
+    it("only warns about a redelivery skip once the handler is wedged (proportionate logging)", async () => {
+      vi.useFakeTimers();
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const executeFn = vi.fn(() => new Promise(() => undefined)); // never resolves: stays in-flight
+      const client = connectViaRpc({
+        rpc: mockRpc as any,
+        channel: CHANNEL,
+        methods: {
+          compute: { description: "compute", parameters: z.object({}), execute: executeFn },
+        },
+      });
+
+      const emitStarted = (id: number) =>
+        emit({
+          stream: "log",
+          phase: "live",
+          id,
+          type: AGENTIC_EVENT_PAYLOAD_KIND,
+          payload: invocation(
+            "invocation.started",
+            CALL_ID_1,
+            {
+              name: "compute",
+              request: {},
+              transport: {
+                kind: "channel",
+                channelId: CHANNEL,
+                target: { kind: "panel", id: SELF_ID, participantId: SELF_ID },
+                transportCallId: TRANSPORT_ID_1,
+              },
+            },
+            { transportCallId: TRANSPORT_ID_1 }
+          ),
+          senderId: "caller-1",
+          ts: Date.now(),
+        });
+
+      try {
+        await emitReplayAndReady(emit, []);
+        await client.ready();
+        warnSpy.mockClear();
+
+        emitStarted(201);
+        await vi.waitFor(() => expect(executeFn).toHaveBeenCalledTimes(1));
+
+        const wedgeWarns = () =>
+          warnSpy.mock.calls.filter((c: unknown[]) => String(c[0]).includes("still executing"));
+
+        // A redelivery racing a freshly in-flight handler is a benign at-least-once race — skipped
+        // (deduped) but NOT logged.
+        emitStarted(202);
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(executeFn).toHaveBeenCalledTimes(1);
+        expect(wedgeWarns()).toHaveLength(0);
+
+        // Once the handler has been stuck well past the wedge threshold, a redelivery DOES warn.
+        await vi.advanceTimersByTimeAsync(31_000);
+        emitStarted(203);
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(executeFn).toHaveBeenCalledTimes(1);
+        expect(wedgeWarns().length).toBeGreaterThanOrEqual(1);
+        expect(String(wedgeWarns()[0]![0])).toMatch(/still executing after \d+s/);
+      } finally {
+        warnSpy.mockRestore();
+        client.close();
+        vi.useRealTimers();
+      }
+    });
+
     it("retries a redelivered method call when the terminal submit was not accepted", async () => {
       const executeFn = vi.fn(async () => ({ answer: 42 }));
 

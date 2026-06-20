@@ -47,6 +47,8 @@ export function createMobileShellCore(deps: {
     getSlotHistory: (slotId) => call<SlotHistoryRow[]>("workspace-state.slot.history", [slotId]),
     resolveActiveEntity: (id) =>
       call<EntityRecord | null>("workspace-state.entity.resolveActive", [id]),
+    resolveSlotByEntity: (entityId) =>
+      call<string | null>("workspace-state.slot.resolveByEntity", [entityId]),
     createSlot: (input: SlotCreateInput) => callVoid("workspace-state.slot.create", [input]),
     appendSlotHistory: (slotId, entry: SlotHistoryEntryInput) =>
       call<number>("workspace-state.slot.appendHistory", [slotId, entry]),

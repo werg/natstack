@@ -93,12 +93,11 @@ export class AlarmDriver {
   private async fire(): Promise<void> {
     this.timer = null;
     if (this.stopped) return;
-    let due: Array<LifecycleKey & { wakeAt: number }> = [];
+    let due: Array<LifecycleKey & { wakeAt: number; bestEffort?: boolean }> = [];
     try {
-      due = await this.dispatchWorkspace<Array<LifecycleKey & { wakeAt: number }>>(
-        "alarmTakeDue",
-        Date.now()
-      );
+      due = await this.dispatchWorkspace<
+        Array<LifecycleKey & { wakeAt: number; bestEffort?: boolean }>
+      >("alarmTakeDue", Date.now());
     } catch (err) {
       log.warn("alarmTakeDue failed:", err);
       void this.reschedule();
@@ -112,11 +111,17 @@ export class AlarmDriver {
           objectKey: target.objectKey,
         });
       } catch (err) {
-        // Alarms are at-least-once: `alarmTakeDue` already removed the row, so
-        // a failed dispatch MUST re-arm or the wake is lost forever (stuck
-        // effect-outbox nudges, dead lease recovery — "typing forever").
-        // Re-arm with a short backoff; a destroyed DO keeps failing and keeps
-        // its (cheap) retry row until it is cleaned up with the entity.
+        // Best-effort alarms (e.g. EvalDO idle eviction) fire once and are NOT
+        // re-armed: the handler aborts its own DO, so a failed dispatch is the
+        // EXPECTED outcome — re-arming would resurrect the DO just to re-evict it
+        // (an abort→fail→retry→reconstruct loop). A missed eviction is harmless;
+        // the next run re-arms a fresh idle alarm.
+        if (target.bestEffort) return;
+        // At-least-once alarms: `alarmTakeDue` already removed the row, so a failed
+        // dispatch MUST re-arm or the wake is lost forever (stuck effect-outbox
+        // nudges, dead lease recovery — "typing forever"). Re-arm with a short
+        // backoff; a destroyed DO keeps failing and keeps its (cheap) retry row
+        // until it is cleaned up with the entity.
         log.warn(
           `alarm dispatch failed for ${target.source}:${target.className}/${target.objectKey}; re-arming:`,
           err

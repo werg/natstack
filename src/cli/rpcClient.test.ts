@@ -8,6 +8,26 @@ const CREDS = {
   refreshToken: "refresh_cli",
 };
 
+function rpcResult(result: unknown): string {
+  return JSON.stringify({
+    from: "main",
+    target: CREDS.deviceId,
+    delivery: { caller: { callerId: "server", callerKind: "server" } },
+    provenance: [{ callerId: "server", callerKind: "server" }],
+    message: { type: "response", requestId: "test-request", result },
+  });
+}
+
+function rpcError(error: string, errorCode?: string): string {
+  return JSON.stringify({
+    from: "main",
+    target: CREDS.deviceId,
+    delivery: { caller: { callerId: "server", callerKind: "server" } },
+    provenance: [{ callerId: "server", callerKind: "server" }],
+    message: { type: "response", requestId: "test-request", error, errorCode },
+  });
+}
+
 describe("rpcClient", () => {
   beforeEach(() => {
     clearShellTokenCache();
@@ -71,7 +91,7 @@ describe("rpcClient", () => {
             JSON.stringify({ shellToken: "tok", callerId: "c", deviceId: "dev_cli" })
           );
         }
-        return new Response(JSON.stringify({ result: { ok: true } }));
+        return new Response(rpcResult({ ok: true }));
       })
     );
 
@@ -87,7 +107,18 @@ describe("rpcClient", () => {
     ]);
     expect(requests[1]?.auth).toBe("Bearer tok");
     expect(requests[2]?.auth).toBe("Bearer tok");
-    expect(requests[1]?.body).toEqual({ method: "meta.listServices", args: [] });
+    expect(requests[1]?.body).toMatchObject({
+      from: CREDS.deviceId,
+      target: "main",
+      delivery: { caller: { callerId: CREDS.deviceId, callerKind: "shell" } },
+      provenance: [{ callerId: CREDS.deviceId, callerKind: "shell" }],
+      message: {
+        type: "request",
+        fromId: CREDS.deviceId,
+        method: "meta.listServices",
+        args: [],
+      },
+    });
   });
 
   it("refreshes exactly once on a 401 and retries the call", async () => {
@@ -106,7 +137,7 @@ describe("rpcClient", () => {
         if (rpcCalls === 1) {
           return new Response(JSON.stringify({ error: "Invalid token" }), { status: 401 });
         }
-        return new Response(JSON.stringify({ result: 42 }));
+        return new Response(rpcResult(42));
       })
     );
 
@@ -141,7 +172,7 @@ describe("rpcClient", () => {
             JSON.stringify({ shellToken: "tok", callerId: "c", deviceId: "dev_cli" })
           );
         }
-        return new Response(JSON.stringify({ error: "boom", errorCode: "ENOENT" }));
+        return new Response(rpcError("boom", "ENOENT"));
       })
     );
     const client = new RpcClient(CREDS);
@@ -163,14 +194,23 @@ describe("rpcClient", () => {
           );
         }
         bodies.push(JSON.parse(String(init?.body ?? "{}")));
-        return new Response(JSON.stringify({ result: "pong" }));
+        return new Response(rpcResult("pong"));
       })
     );
     const client = new RpcClient(CREDS);
     await expect(client.callTarget("worker:repo:abc", "ping", ["x"])).resolves.toBe("pong");
-    expect(bodies).toEqual([
-      { type: "call", targetId: "worker:repo:abc", method: "ping", args: ["x"] },
-    ]);
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toMatchObject({
+      from: CREDS.deviceId,
+      target: "worker:repo:abc",
+      delivery: { caller: { callerId: CREDS.deviceId, callerKind: "shell" } },
+      message: {
+        type: "request",
+        fromId: CREDS.deviceId,
+        method: "ping",
+        args: ["x"],
+      },
+    });
   });
 
   it("rejects a 200 /rpc response without result or error keys as malformed", async () => {
@@ -188,7 +228,7 @@ describe("rpcClient", () => {
     const client = new RpcClient(CREDS);
     await expect(client.call("meta.listServices", [])).rejects.toMatchObject({
       name: "RpcError",
-      message: "malformed rpc response (non-JSON or proxy response?)",
+      message: "malformed rpc response (non-envelope or proxy response?)",
     });
   });
 
@@ -207,7 +247,7 @@ describe("rpcClient", () => {
     const client = new RpcClient(CREDS);
     await expect(client.call("meta.listServices", [])).rejects.toMatchObject({
       name: "RpcError",
-      message: "malformed rpc response (non-JSON or proxy response?)",
+      message: "malformed rpc response (non-envelope or proxy response?)",
     });
   });
 
@@ -220,7 +260,7 @@ describe("rpcClient", () => {
             JSON.stringify({ shellToken: "tok", callerId: "c", deviceId: "dev_cli" })
           );
         }
-        return new Response(JSON.stringify({ result: null }));
+        return new Response(rpcResult(null));
       })
     );
     const client = new RpcClient(CREDS);

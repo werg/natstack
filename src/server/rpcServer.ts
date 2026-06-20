@@ -11,12 +11,15 @@ import { randomUUID } from "crypto";
 import {
   createRpcClient,
   envelopeFromMessage,
+  responseEnvelopeFor,
   type EnvelopeRpcTransport,
   type RpcClient,
+  type RpcEnvelope,
   type RpcEvent,
   type RpcMessage,
   type RpcRequest,
   type RpcResponse,
+  type RpcStreamRequest,
 } from "@natstack/rpc";
 import { createWsServerTransport, type WsServerTransportInternal } from "./wsServerTransport.js";
 import type { WsClientMessage, WsServerMessage } from "@natstack/shared/ws/protocol";
@@ -68,6 +71,9 @@ function parseDOTarget(targetId: string): { source: string; className: string; o
   const objectKey = rest.slice(nextColon + 1);
   return { source, className, objectKey };
 }
+
+/** The server's identity stamped onto response envelopes it returns over /rpc. */
+const SERVER_RESPONDER = { callerId: "main", callerKind: "server" as const };
 
 function envelopeTransportFromWsServer(transport: WsServerTransportInternal): EnvelopeRpcTransport {
   return {
@@ -1493,37 +1499,92 @@ export class RpcServer {
       return;
     }
 
+    // The body is an `RpcEnvelope`; `from`/`delivery.caller` are self-reported
+    // and NOT trusted — the authenticated (callerId, callerKind) above are the
+    // authority. We dispatch `envelope.message` and reply with a response
+    // envelope, mirroring the WS `ws:route` path.
+    const envelope = body as unknown as RpcEnvelope;
+    const message = envelope.message;
+    if (!message || typeof message !== "object" || typeof message.type !== "string") {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Expected an RpcEnvelope body with a message" }));
+      return;
+    }
+
+    if (message.type === "event") {
+      try {
+        await this.handleEnvelopeEvent(callerId, callerKind, envelope, message);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({}));
+      } catch (err) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+      }
+      return;
+    }
+
+    if (message.type !== "request") {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: `Unsupported /rpc message type: ${message.type}` }));
+      return;
+    }
+
+    const requestId = message.requestId;
     try {
-      const result = await this.handleHttpRpc(callerId, callerKind, body);
+      const result = await this.handleEnvelopeRequest(callerId, callerKind, envelope, message);
       res.writeHead(200, { "Content-Type": "application/json" });
       if (isDeferredResult(result)) {
         // Handler parked the call; ack now and deliver later via onDeferredResult.
         res.end(JSON.stringify({ deferred: true, requestId: result.requestId }));
       } else {
-        res.end(JSON.stringify({ result }));
+        res.end(
+          JSON.stringify(
+            responseEnvelopeFor(envelope, SERVER_RESPONDER, {
+              type: "response",
+              requestId,
+              result,
+            })
+          )
+        );
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const errMessage = err instanceof Error ? err.message : String(err);
       const errorCode = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
+      const errorStack = err instanceof Error ? err.stack : undefined;
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: message, ...(errorCode ? { errorCode } : {}) }));
+      res.end(
+        JSON.stringify(
+          responseEnvelopeFor(envelope, SERVER_RESPONDER, {
+            type: "response",
+            requestId,
+            error: errMessage,
+            ...(errorCode ? { errorCode } : {}),
+            ...(errorStack ? { errorStack } : {}),
+          })
+        )
+      );
     }
   }
 
-  private async handleHttpRpc(
+  /**
+   * Dispatch a `request` envelope arriving over HTTP `/rpc`. `target === "main"`
+   * is a direct service-dispatch (with deferral opt-in); any other target is a
+   * relay. Returns the raw result, or a `DeferredResult` sentinel when parked.
+   */
+  private async handleEnvelopeRequest(
     callerId: string,
     callerKind: CallerKind,
-    body: Record<string, unknown>
+    envelope: RpcEnvelope,
+    message: RpcRequest
   ): Promise<unknown> {
-    const type = body["type"] as string | undefined;
-    const targetId = body["targetId"] as string | undefined;
-    const method = body["method"] as string;
-    const args = (body["args"] as unknown[]) ?? [];
-    const requestId = body["requestId"] as string | undefined;
-    const idempotencyKey = body["idempotencyKey"] as string | undefined;
+    const targetId = envelope.target;
+    const method = message.method;
+    const args = message.args ?? [];
+    const requestId = message.requestId;
+    const idempotencyKey = envelope.delivery.idempotencyKey;
 
-    // Direct service dispatch (no type or targetId === "main")
-    if (!type || targetId === "main") {
+    // Direct service dispatch
+    if (targetId === "main") {
       const parsed = parseServiceMethod(method);
       if (!parsed) throw new Error(`Invalid method format: "${method}"`);
 
@@ -1533,7 +1594,7 @@ export class RpcServer {
       // in (via callDeferred → `deferrable`), stamped a requestId, and can receive
       // an inbound onDeferredResult (DO/worker). Plain `call` callers never defer.
       const canDefer =
-        body["deferrable"] === true &&
+        message.deferrable === true &&
         !!requestId &&
         (callerKind === "do" || callerKind === "worker");
       const deferredRequestId = canDefer ? requestId : undefined;
@@ -1554,29 +1615,26 @@ export class RpcServer {
       return await this.dispatcher.dispatch(ctx, parsed.service, parsed.method, args);
     }
 
-    // Relay call to another target
-    if (type === "call") {
-      if (!targetId) throw new Error("Missing targetId for relay call");
-      const auth = this.checkRelayAuth(callerId, callerKind, targetId);
-      if (!auth.ok) throw new Error(auth.reason);
-      return await this.relayCall(callerId, callerKind, targetId, method, args, undefined, {
-        ...(requestId ? { requestId } : {}),
-        ...(idempotencyKey ? { idempotencyKey } : {}),
-      });
-    }
+    // Relay to another target
+    const auth = this.checkRelayAuth(callerId, callerKind, targetId);
+    if (!auth.ok) throw new Error(auth.reason);
+    return await this.relayCall(callerId, callerKind, targetId, method, args, undefined, {
+      ...(requestId ? { requestId } : {}),
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    });
+  }
 
-    // Relay event to a target
-    if (type === "emit") {
-      const event = body["event"] as string;
-      const payload = body["payload"];
-      if (!targetId) throw new Error("Missing targetId for emit");
-      const auth = this.checkRelayAuth(callerId, callerKind, targetId);
-      if (!auth.ok) throw new Error(auth.reason);
-      await this.relayEvent(callerId, callerKind, targetId, event, payload);
-      return "ok";
-    }
-
-    throw new Error(`Unknown message type: ${type}`);
+  /** Dispatch an `event` envelope arriving over HTTP `/rpc` (relay to a target). */
+  private async handleEnvelopeEvent(
+    callerId: string,
+    callerKind: CallerKind,
+    envelope: RpcEnvelope,
+    message: RpcEvent
+  ): Promise<void> {
+    const targetId = envelope.target;
+    const auth = this.checkRelayAuth(callerId, callerKind, targetId);
+    if (!auth.ok) throw new Error(auth.reason);
+    await this.relayEvent(callerId, callerKind, targetId, message.event, message.payload);
   }
 
   /**
@@ -1737,9 +1795,13 @@ export class RpcServer {
       return;
     }
 
-    const method = body["method"] as string | undefined;
-    const args = (body["args"] as unknown[]) ?? [];
-    const targetId = body["targetId"] as string | undefined;
+    // Envelope-native: the streaming request rides an RpcEnvelope whose message
+    // is a `stream-request` carrying method/args; the target is the envelope's.
+    const streamEnvelope = body as unknown as RpcEnvelope;
+    const streamMessage = streamEnvelope.message as RpcStreamRequest | undefined;
+    const method = streamMessage?.method;
+    const args = streamMessage?.args ?? [];
+    const targetId = streamEnvelope.target;
     const effectiveCaller = this.verifiedCallerFor(callerId, callerKind);
 
     if (targetId && targetId !== "main") {
@@ -2164,6 +2226,17 @@ export class RpcServer {
     return this.relayCall("main", "server", targetId, method, args) as Promise<T>;
   }
 
+  /**
+   * Server→caller event push. Used by the `EventService` DO push-subscriber to
+   * deliver `events.subscribe` pushes to a connectionless DO/worker: `channel`
+   * is the full `event:<name>` the caller's `rpc.on(...)` listens on, so the
+   * DO's `handleEvent` matches it directly. Throws if the target is unreachable
+   * (the subscriber treats that as a reap signal).
+   */
+  async pushEventToCaller(targetId: string, channel: string, payload: unknown): Promise<void> {
+    await this.relayEvent("main", "server", targetId, channel, payload);
+  }
+
   async streamCallTarget(targetId: string, method: string, ...args: unknown[]): Promise<Response> {
     const wsClient = this.pickRoutableTarget(targetId);
     if (wsClient?.ws.readyState !== WebSocket.OPEN) {
@@ -2237,7 +2310,7 @@ export class RpcServer {
     }
 
     if (targetId.startsWith("worker:")) {
-      return await this.relayToWorker(targetId, method, args);
+      return await this.relayToWorker(callerId, callerKind, targetId, method, args, meta);
     }
 
     throw createRelayError(`Unknown target kind: ${targetId}`, "UNKNOWN_TARGET_KIND");
@@ -2322,10 +2395,33 @@ export class RpcServer {
     }
   }
 
-  private async relayToWorker(targetId: string, method: string, args: unknown[]): Promise<unknown> {
+  private async relayToWorker(
+    callerId: string,
+    callerKind: CallerKind,
+    targetId: string,
+    method: string,
+    args: unknown[],
+    meta?: { requestId?: string; idempotencyKey?: string }
+  ): Promise<unknown> {
     // targetId format: "worker:{workerName}"
     const workerName = targetId.slice(7); // Remove "worker:"
     if (!this.workerdUrl) throw new Error("workerdUrl not configured");
+
+    const caller = { callerId, callerKind };
+    const envelope = envelopeFromMessage({
+      selfId: callerId,
+      from: callerId,
+      target: targetId,
+      caller,
+      ...(meta?.idempotencyKey ? { idempotencyKey: meta.idempotencyKey } : {}),
+      message: {
+        type: "request",
+        requestId: meta?.requestId ?? randomUUID(),
+        fromId: callerId,
+        method,
+        args,
+      },
+    });
 
     const url = `${this.workerdUrl}/${workerName}/__rpc`;
     const res = await fetch(url, {
@@ -2336,7 +2432,7 @@ export class RpcServer {
           ? { Authorization: `Bearer ${this.workerdGatewayToken}` }
           : {}),
       },
-      body: JSON.stringify({ type: "call", method, args }),
+      body: JSON.stringify(envelope),
     });
 
     if (!res.ok) {
@@ -2353,15 +2449,19 @@ export class RpcServer {
       throw new Error(`Worker relay to ${targetId} failed (${res.status}): ${text}`);
     }
 
-    const json = (await res.json()) as Record<string, unknown>;
-    if (json["error"]) {
-      const err = new Error(json["error"] as string);
-      if (json["errorCode"]) {
-        (err as Error & { code?: unknown }).code = json["errorCode"];
+    const raw = (await res.json()) as { envelope?: RpcEnvelope; message?: RpcMessage } | undefined;
+    const responseEnvelope =
+      raw && "envelope" in raw ? raw.envelope : (raw as RpcEnvelope | undefined);
+    const responseMessage = responseEnvelope?.message as RpcResponse | undefined;
+    if (responseMessage && responseMessage.type === "response") {
+      if ("error" in responseMessage) {
+        const err = new Error(responseMessage.error) as Error & { code?: unknown };
+        if (responseMessage.errorCode) err.code = responseMessage.errorCode;
+        throw err;
       }
-      throw err;
+      return responseMessage.result;
     }
-    return json["result"];
+    return undefined;
   }
 
   private async relayEvent(
@@ -2424,10 +2524,10 @@ export class RpcServer {
         );
       }
 
-      const { postToDurableObject } = await import("./workerdRpcRelay.js");
-      // Don't pass fromId as callerId — callerId is for parent tracking,
-      // fromId is the event source (already in the args).
-      await postToDurableObject(ref, "__event", [event, payload, fromId], {
+      const { postEventToDurableObject } = await import("./workerdRpcRelay.js");
+      // `fromId`/`fromKind` become the event envelope's caller — the DO's
+      // `handleEvent` surfaces it to listeners as `event.caller`.
+      await postEventToDurableObject(ref, event, payload, {
         workerdUrl: this.workerdUrl,
         workerdGatewayToken: this.workerdGatewayToken,
         ...(this.workerdDispatchSecret
@@ -2444,6 +2544,13 @@ export class RpcServer {
       const workerName = targetId.slice(7);
       if (!this.workerdUrl) throw new Error("workerdUrl not configured");
 
+      const eventEnvelope = envelopeFromMessage({
+        selfId: fromId,
+        from: fromId,
+        target: targetId,
+        caller: { callerId: fromId, callerKind: fromKind },
+        message: { type: "event", fromId, event, payload },
+      });
       const res = await fetch(`${this.workerdUrl}/${workerName}/__rpc`, {
         method: "POST",
         headers: {
@@ -2452,7 +2559,7 @@ export class RpcServer {
             ? { Authorization: `Bearer ${this.workerdGatewayToken}` }
             : {}),
         },
-        body: JSON.stringify({ type: "emit", event, payload, fromId }),
+        body: JSON.stringify(eventEnvelope),
       });
       if (!res.ok) {
         let text: string;

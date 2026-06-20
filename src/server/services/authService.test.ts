@@ -639,22 +639,34 @@ describe("auth service pairing invite flow", () => {
         }
       );
 
+      const inviteCaller = { callerId: "shell:test", callerKind: "shell" };
       const inviteResponse = await fetch(`http://127.0.0.1:${gatewayPort}/rpc`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${refreshed.body.shellToken}`,
         },
-        body: JSON.stringify({ method: "auth.createPairingInvite", args: [{}] }),
+        body: JSON.stringify({
+          from: inviteCaller.callerId,
+          target: "main",
+          delivery: { caller: inviteCaller },
+          provenance: [inviteCaller],
+          message: {
+            type: "request",
+            requestId: "invite-1",
+            fromId: inviteCaller.callerId,
+            method: "auth.createPairingInvite",
+            args: [{}],
+          },
+        }),
       });
       expect(inviteResponse.status).toBe(200);
-      const inviteBody = (await inviteResponse.json()) as {
-        result?: PairingCodeResponse;
-        error?: string;
+      const inviteEnvelope = (await inviteResponse.json()) as {
+        message?: { result?: PairingCodeResponse; error?: string };
       };
-      expect(inviteBody.error).toBeUndefined();
-      expect(inviteBody.result).toBeDefined();
-      const invite = inviteBody.result!;
+      expect(inviteEnvelope.message?.error).toBeUndefined();
+      expect(inviteEnvelope.message?.result).toBeDefined();
+      const invite = inviteEnvelope.message!.result!;
       expect(invite.deepLink).toContain("natstack://connect");
 
       const secondDevice = await postLocal<PairingCompleteResponse>(

@@ -183,6 +183,17 @@ export const recentBuildEventSchema = z
   })
   .strict();
 
+/**
+ * Which execution environment will run a library bundle — selects the module
+ * resolution conditions. `worker` covers any workerd isolate, including the eval
+ * sandbox (a DO): it must NOT resolve a package's panel entry, whose top-level
+ * `initRuntime()` crashes outside a panel. There is intentionally NO default —
+ * every library build must state where its bundle will run, so a wrong host can't
+ * be chosen silently.
+ */
+export const libraryBuildTargetSchema = z.enum(["panel", "worker"]);
+export type LibraryBuildTarget = z.infer<typeof libraryBuildTargetSchema>;
+
 export const buildMethods = defineServiceMethods({
   getBuild: {
     args: z.tuple([
@@ -192,6 +203,11 @@ export const buildMethods = defineServiceMethods({
         .object({
           library: z.boolean().optional(),
           externals: z.array(z.string()).optional(),
+          libraryTarget: libraryBuildTargetSchema.optional(),
+        })
+        .refine((o) => !o.library || o.libraryTarget !== undefined, {
+          message:
+            "getBuild: a library build requires an explicit libraryTarget ('panel' or 'worker')",
         })
         .optional(),
     ]),

@@ -25,7 +25,7 @@ import { panelTreeMethods } from "./panelTree.js";
 import { pushMethods } from "./push.js";
 import { remoteCredMethods } from "./remoteCred.js";
 import { runtimeMethods } from "./runtime.js";
-import { scopeMethods } from "./scope.js";
+import { evalMethods } from "./eval.js";
 import { settingsMethods } from "./settings.js";
 import { shellApprovalMethods } from "./shellApproval.js";
 import { tokensMethods } from "./tokens.js";
@@ -64,7 +64,7 @@ const serviceTables: ServiceTable[] = [
   { service: "push", file: "push.ts", methods: pushMethods },
   { service: "remoteCred", file: "remoteCred.ts", methods: remoteCredMethods },
   { service: "runtime", file: "runtime.ts", methods: runtimeMethods },
-  { service: "scope", file: "scope.ts", methods: scopeMethods },
+  { service: "eval", file: "eval.ts", methods: evalMethods },
   { service: "settings", file: "settings.ts", methods: settingsMethods },
   { service: "shellApproval", file: "shellApproval.ts", methods: shellApprovalMethods },
   { service: "tokens", file: "tokens.ts", methods: tokensMethods },

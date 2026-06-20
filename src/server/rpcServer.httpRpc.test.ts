@@ -48,6 +48,11 @@ function createTestSetup(opts?: { entityCache?: EntityCache }) {
     dispatch: vi.fn(
       async (ctx: ServiceContext, service: string, method: string, args: unknown[]) => {
         dispatched.push({ ctx, service, method, args });
+        // When the caller opted into deferral (ctx.deferral present), park the
+        // call — return the sentinel so the server acks {deferred,requestId}.
+        const deferral = (ctx as { deferral?: { run: (w: () => Promise<unknown>) => unknown } })
+          .deferral;
+        if (deferral) return deferral.run(async () => ({ deferredResolved: true }));
         const key = `${service}.${method}`;
         if (dispatchResults.has(key)) return dispatchResults.get(key);
         return { ok: true };
@@ -86,6 +91,70 @@ function createTestSetup(opts?: { entityCache?: EntityCache }) {
   };
 }
 
+/**
+ * POST to the envelope-native `/rpc`. Tests still pass the legacy-shaped body
+ * (`{method,args}` / `{type:"call",targetId,…}` / `{type:"emit",…}` / deferrable)
+ * for readability; this helper wraps it into an `RpcEnvelope` and unwraps the
+ * response envelope back into the legacy `{result}`/`{error,errorCode}`/`{deferred}`
+ * shape the assertions expect.
+ */
+function toEnvelope(body: Record<string, unknown>): Record<string, unknown> {
+  const caller = { callerId: "test-caller", callerKind: "shell" };
+  const type = body["type"] as string | undefined;
+  const target = (body["targetId"] as string | undefined) ?? "main";
+  if (type === "emit") {
+    return {
+      from: caller.callerId,
+      target,
+      delivery: { caller },
+      provenance: [caller],
+      message: {
+        type: "event",
+        fromId: caller.callerId,
+        event: body["event"],
+        payload: body["payload"],
+      },
+    };
+  }
+  const requestId =
+    (body["requestId"] as string | undefined) ?? `req-${Math.random().toString(36).slice(2)}`;
+  return {
+    from: caller.callerId,
+    target,
+    delivery: {
+      caller,
+      ...(body["idempotencyKey"] ? { idempotencyKey: body["idempotencyKey"] } : {}),
+    },
+    provenance: [caller],
+    message: {
+      type: "request",
+      requestId,
+      fromId: caller.callerId,
+      method: body["method"],
+      args: body["args"] ?? [],
+      ...(body["deferrable"] ? { deferrable: true } : {}),
+    },
+  };
+}
+
+/** Wrap a legacy `{targetId,method,args}` stream body into a stream-request envelope. */
+function toStreamEnvelope(body: Record<string, unknown>): Record<string, unknown> {
+  const caller = { callerId: "test-caller", callerKind: "shell" };
+  return {
+    from: caller.callerId,
+    target: (body["targetId"] as string | undefined) ?? "main",
+    delivery: { caller },
+    provenance: [caller],
+    message: {
+      type: "stream-request",
+      requestId: `s-${Math.random().toString(36).slice(2)}`,
+      fromId: caller.callerId,
+      method: body["method"],
+      args: body["args"] ?? [],
+    },
+  };
+}
+
 async function postRpc(
   port: number,
   token: string,
@@ -99,10 +168,17 @@ async function postRpc(
       Authorization: `Bearer ${token}`,
       ...headers,
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(toEnvelope(body)),
   });
   const json = (await res.json()) as Record<string, unknown>;
-  return { status: res.status, body: json };
+  // Auth/transport failures return a bare `{error}` (not an envelope).
+  if (!res.ok || "deferred" in json || !("message" in json || "envelope" in json)) {
+    return { status: res.status, body: json };
+  }
+  const message = (
+    ("envelope" in json ? json["envelope"] : json) as { message?: Record<string, unknown> }
+  ).message;
+  return { status: res.status, body: (message ?? {}) as Record<string, unknown> };
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -467,6 +543,45 @@ describe("RpcServer HTTP POST /rpc", () => {
     });
   });
 
+  // ── Deferral (callDeferred opt-in) ──────────────────────────────────────────
+
+  describe("deferral", () => {
+    it("parks a deferrable call from a worker and acks {deferred,requestId}", async () => {
+      const res = await postRpc(port, setup.workerToken, {
+        deferrable: true,
+        requestId: "rid-defer-1",
+        method: "credentials.resolveCredential",
+        args: [{}],
+      });
+      expect(res.status).toBe(200);
+      // postRpc surfaces the raw deferral ack (not an envelope).
+      expect(res.body).toMatchObject({ deferred: true, requestId: "rid-defer-1" });
+    });
+
+    it("does NOT defer a plain (non-deferrable) call — completes inline", async () => {
+      const res = await postRpc(port, setup.workerToken, {
+        requestId: "rid-plain-1",
+        method: "credentials.resolveCredential",
+        args: [{}],
+      });
+      expect(res.status).toBe(200);
+      expect(res.body["result"]).toEqual({ ok: true });
+      expect("deferred" in res.body).toBe(false);
+    });
+
+    it("ignores the deferrable flag for a shell caller (defer is do/worker-only)", async () => {
+      const res = await postRpc(port, setup.shellToken, {
+        deferrable: true,
+        requestId: "rid-shell-1",
+        method: "credentials.resolveCredential",
+        args: [{}],
+      });
+      expect(res.status).toBe(200);
+      expect(res.body["result"]).toEqual({ ok: true });
+      expect("deferred" in res.body).toBe(false);
+    });
+  });
+
   // ── Policy enforcement ──────────────────────────────────────────────────────
 
   describe("policy enforcement", () => {
@@ -628,11 +743,13 @@ describe("RpcServer HTTP POST /rpc", () => {
             "Content-Type": "application/json",
             Authorization: `Bearer ${workerToken}`,
           },
-          body: JSON.stringify({
-            targetId: "main",
-            method: "credentials.proxyFetch",
-            args: [{ url: "https://example.com/", method: "GET" }],
-          }),
+          body: JSON.stringify(
+            toStreamEnvelope({
+              targetId: "main",
+              method: "credentials.proxyFetch",
+              args: [{ url: "https://example.com/", method: "GET" }],
+            })
+          ),
         });
         expect(res.status).toBe(403);
         expect(stubEgress.forwardProxyFetchStream).not.toHaveBeenCalled();
@@ -651,11 +768,13 @@ describe("RpcServer HTTP POST /rpc", () => {
           "Content-Type": "application/json",
           Authorization: `Bearer ${setup.workerToken}`,
         },
-        body: JSON.stringify({
-          targetId: "main",
-          method: "credentials.proxyFetch",
-          args: [{ url: "https://example.com/", method: "GET" }],
-        }),
+        body: JSON.stringify(
+          toStreamEnvelope({
+            targetId: "main",
+            method: "credentials.proxyFetch",
+            args: [{ url: "https://example.com/", method: "GET" }],
+          })
+        ),
       });
       expect(res.status).toBe(503);
     });
@@ -722,11 +841,13 @@ describe("RpcServer HTTP POST /rpc", () => {
             Authorization: `Bearer ${serviceToken}`,
             "X-Natstack-Runtime-Id": "do:workers/agent-worker:AiChatWorker:agent-1",
           },
-          body: JSON.stringify({
-            targetId: "main",
-            method: "credentials.proxyFetch",
-            args: [{ url: "https://example.com/", method: "GET" }],
-          }),
+          body: JSON.stringify(
+            toStreamEnvelope({
+              targetId: "main",
+              method: "credentials.proxyFetch",
+              args: [{ url: "https://example.com/", method: "GET" }],
+            })
+          ),
         });
         expect(res.status).toBe(200);
         await res.arrayBuffer();
@@ -790,11 +911,13 @@ describe("RpcServer HTTP POST /rpc", () => {
             "Content-Type": "application/json",
             Authorization: `Bearer ${workerToken}`,
           },
-          body: JSON.stringify({
-            targetId: "main",
-            method: "credentials.listStoredCredentials",
-            args: [],
-          }),
+          body: JSON.stringify(
+            toStreamEnvelope({
+              targetId: "main",
+              method: "credentials.listStoredCredentials",
+              args: [],
+            })
+          ),
         });
         expect(res.status).toBe(500);
         const body = (await res.json()) as { error: string };
@@ -845,11 +968,13 @@ describe("RpcServer HTTP POST /rpc", () => {
             "Content-Type": "application/json",
             Authorization: `Bearer ${workerToken}`,
           },
-          body: JSON.stringify({
-            targetId: "main",
-            method: "extensions.invokeStream",
-            args: ["@workspace-extensions/shell", "attach", ["session-1"]],
-          }),
+          body: JSON.stringify(
+            toStreamEnvelope({
+              targetId: "main",
+              method: "extensions.invokeStream",
+              args: ["@workspace-extensions/shell", "attach", ["session-1"]],
+            })
+          ),
         });
         expect(res.status).toBe(200);
         const { decodeFramedResponseToStreaming } =
@@ -939,11 +1064,13 @@ describe("RpcServer HTTP POST /rpc", () => {
             "Content-Type": "application/json",
             Authorization: `Bearer ${workerToken}`,
           },
-          body: JSON.stringify({
-            targetId: "main",
-            method: "credentials.proxyFetch",
-            args: [{ url: "https://example.com/", method: "GET" }],
-          }),
+          body: JSON.stringify(
+            toStreamEnvelope({
+              targetId: "main",
+              method: "credentials.proxyFetch",
+              args: [{ url: "https://example.com/", method: "GET" }],
+            })
+          ),
         });
         expect(res.status).toBe(200);
         const buf = new Uint8Array(await res.arrayBuffer());
@@ -1019,11 +1146,13 @@ describe("RpcServer HTTP POST /rpc", () => {
             "Content-Type": "application/json",
             Authorization: `Bearer ${workerToken}`,
           },
-          body: JSON.stringify({
-            targetId: "main",
-            method: "credentials.proxyFetch",
-            args: [{ url: "https://example.com/", method: "GET" }],
-          }),
+          body: JSON.stringify(
+            toStreamEnvelope({
+              targetId: "main",
+              method: "credentials.proxyFetch",
+              args: [{ url: "https://example.com/", method: "GET" }],
+            })
+          ),
         });
         expect(res.status).toBe(200);
         const { FrameDecoder, FRAME_ERROR, parseErrorFrame } =

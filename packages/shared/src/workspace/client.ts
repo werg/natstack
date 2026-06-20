@@ -8,6 +8,7 @@
 
 import type { RpcCaller } from "@natstack/rpc";
 import { createTypedServiceClient, type TypedServiceClient } from "../typedServiceClient.js";
+import { eventsMethods } from "../serviceSchemas/events.js";
 import { workspaceMethods, type WorkspaceUnitStatus } from "../serviceSchemas/workspace.js";
 
 export type { InitPanelEntry, WorkspaceConfig } from "./types.js";
@@ -23,6 +24,7 @@ export type {
 } from "../serviceSchemas/workspace.js";
 
 type WorkspaceTypedClient = TypedServiceClient<typeof workspaceMethods>;
+type EventsTypedClient = TypedServiceClient<typeof eventsMethods>;
 
 export type WorkspaceUnitsClient = WorkspaceTypedClient["units"] & {
   /**
@@ -62,6 +64,9 @@ function createUnitsWatch(
   rpc: WorkspaceRpc,
   listUnits: () => Promise<WorkspaceUnitStatus[]>
 ): AsyncIterable<WorkspaceUnitStatus[]> {
+  const events = createTypedServiceClient("events", eventsMethods, (svc, method, args) =>
+    rpc.call("main", `${svc}.${method}`, args)
+  ) as EventsTypedClient;
   return {
     [Symbol.asyncIterator]() {
       let closed = false;
@@ -83,15 +88,25 @@ function createUnitsWatch(
             // Watch is best-effort; callers can still call list() for errors.
           });
       };
-      const unsubscribers = [
-        rpc.on?.("event:extensions:status", pushSnapshot),
-        rpc.on?.("event:extensions:health", pushSnapshot),
-        rpc.on?.("event:extensions:error", pushSnapshot),
-        rpc.on?.("event:apps:available", pushSnapshot),
-        rpc.on?.("event:apps:status", pushSnapshot),
-        rpc.on?.("event:apps:lifecycle", pushSnapshot),
-        rpc.on?.("event:workspace:unit-log", pushSnapshot),
-      ].filter((unsubscribe): unsubscribe is () => void => typeof unsubscribe === "function");
+      // Topics this watch reflects. We MUST `events.subscribe` each (not just
+      // register an `rpc.on` listener): a connectionless DO/worker only receives
+      // server→DO pushes for topics it explicitly subscribed. The matching
+      // `rpc.on` channel is `event:<topic>`.
+      const topics = [
+        "extensions:status",
+        "extensions:health",
+        "extensions:error",
+        "apps:available",
+        "apps:status",
+        "apps:lifecycle",
+        "workspace:unit-log",
+      ];
+      const unsubscribers = topics
+        .map((topic) => rpc.on?.(`event:${topic}`, pushSnapshot))
+        .filter((unsubscribe): unsubscribe is () => void => typeof unsubscribe === "function");
+      for (const topic of topics) {
+        void events.subscribe(topic).catch(() => {});
+      }
 
       pushSnapshot();
       return {
@@ -107,6 +122,9 @@ function createUnitsWatch(
         return(): Promise<IteratorResult<WorkspaceUnitStatus[]>> {
           closed = true;
           for (const unsubscribe of unsubscribers) unsubscribe();
+          for (const topic of topics) {
+            void events.unsubscribe(topic).catch(() => {});
+          }
           if (pendingResolve) {
             pendingResolve({ done: true, value: undefined });
             pendingResolve = null;

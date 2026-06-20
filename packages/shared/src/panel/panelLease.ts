@@ -48,6 +48,12 @@ export interface PanelRuntimeLease {
   platform: ClientPlatform;
   supportsCdp: boolean;
   loadOnLeaseAssignment: boolean;
+  /**
+   * Pin: while true the host serving this lease MUST keep the panel loaded and
+   * MUST NOT capacity-evict it. Set by the coordinator while ≥1 CDP client is
+   * connected to the panel target, so mid-automation unloads can't yank the page.
+   */
+  keepLoaded?: boolean;
   acquiredAt: number;
   expiresAt?: number;
 }

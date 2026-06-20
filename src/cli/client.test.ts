@@ -15,6 +15,34 @@ vi.mock("@natstack/shared/tailscaleDiscovery", () => ({
   discoverNatstackServers: mocks.discoverNatstackServers,
 }));
 
+function rpcResult(result: unknown): string {
+  return JSON.stringify({
+    from: "main",
+    target: "dev_cli",
+    delivery: { caller: { callerId: "server", callerKind: "server" } },
+    provenance: [{ callerId: "server", callerKind: "server" }],
+    message: { type: "response", requestId: "test-request", result },
+  });
+}
+
+function rpcError(error: string): string {
+  return JSON.stringify({
+    from: "main",
+    target: "dev_cli",
+    delivery: { caller: { callerId: "server", callerKind: "server" } },
+    provenance: [{ callerId: "server", callerKind: "server" }],
+    message: { type: "response", requestId: "test-request", error },
+  });
+}
+
+function rpcRequestMethod(body: unknown): string | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const message = (body as { message?: unknown }).message;
+  if (!message || typeof message !== "object") return undefined;
+  const method = (message as { method?: unknown }).method;
+  return typeof method === "string" ? method : undefined;
+}
+
 describe("natstack CLI", () => {
   let tmpDir = "";
 
@@ -298,18 +326,16 @@ describe("natstack CLI", () => {
           return new Response(JSON.stringify({ shellToken: "shell_token" }));
         }
         return new Response(
-          JSON.stringify({
-            result: {
-              code: "A".repeat(24),
-              deepLink: createConnectDeepLink("https://host.tailnet.ts.net", "A".repeat(24)),
-              connectUrl: "https://host.tailnet.ts.net",
-              serverUrl: "https://host.tailnet.ts.net",
-              expiresAt: 123,
-              expiresInMs: 60_000,
-              serverId: "srv",
-              serverBootId: "boot",
-              workspaceId: "ws",
-            },
+          rpcResult({
+            code: "A".repeat(24),
+            deepLink: createConnectDeepLink("https://host.tailnet.ts.net", "A".repeat(24)),
+            connectUrl: "https://host.tailnet.ts.net",
+            serverUrl: "https://host.tailnet.ts.net",
+            expiresAt: 123,
+            expiresInMs: 60_000,
+            serverId: "srv",
+            serverBootId: "boot",
+            workspaceId: "ws",
           })
         );
       })
@@ -318,16 +344,22 @@ describe("natstack CLI", () => {
     const { main } = await import("./client.js");
     await expect(main(["remote", "invite", "--ttl-ms", "60000", "--json"])).resolves.toBe(0);
 
-    expect(bodies).toEqual([
-      {
-        url: "https://host.tailnet.ts.net/_r/s/auth/refresh-shell",
-        body: { deviceId: "dev_cli", refreshToken: "refresh_cli" },
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]).toEqual({
+      url: "https://host.tailnet.ts.net/_r/s/auth/refresh-shell",
+      body: { deviceId: "dev_cli", refreshToken: "refresh_cli" },
+    });
+    expect(bodies[1]).toMatchObject({
+      url: "https://host.tailnet.ts.net/rpc",
+      body: {
+        target: "main",
+        message: {
+          type: "request",
+          method: "auth.createPairingInvite",
+          args: [{ ttlMs: 60_000 }],
+        },
       },
-      {
-        url: "https://host.tailnet.ts.net/rpc",
-        body: { method: "auth.createPairingInvite", args: [{ ttlMs: 60_000 }] },
-      },
-    ]);
+    });
     const output = vi
       .mocked(console.log)
       .mock.calls.map((call) => String(call[0]))
@@ -409,54 +441,51 @@ describe("natstack CLI", () => {
         if (String(url).endsWith("/_r/s/auth/refresh-shell")) {
           return new Response(JSON.stringify({ shellToken: "shell_token" }));
         }
-        rpcMethods.push(body.method);
-        if (body.method === "workspace.hostTargets.beginLaunch") {
+        const method = rpcRequestMethod(body);
+        rpcMethods.push(method ?? "");
+        if (method === "workspace.hostTargets.beginLaunch") {
           return new Response(
-            JSON.stringify({
-              result: {
-                sessionId: "launch_terminal",
-                target: "terminal",
-                status: "approval-required",
-                currentPhase: "review-trust",
-                message: "Terminal launch needs approval.",
-                timeline: [],
-                approvals: [approval],
-                approvalViews: [],
-                approvalsResolved: 0,
-                startedAt: 1,
-                updatedAt: 1,
-                settled: false,
-              },
+            rpcResult({
+              sessionId: "launch_terminal",
+              target: "terminal",
+              status: "approval-required",
+              currentPhase: "review-trust",
+              message: "Terminal launch needs approval.",
+              timeline: [],
+              approvals: [approval],
+              approvalViews: [],
+              approvalsResolved: 0,
+              startedAt: 1,
+              updatedAt: 1,
+              settled: false,
             })
           );
         }
-        if (body.method === "workspace.hostTargets.resolveLaunchSessionApproval") {
+        if (method === "workspace.hostTargets.resolveLaunchSessionApproval") {
           return new Response(
-            JSON.stringify({
-              result: {
-                sessionId: "launch_terminal",
-                target: "terminal",
+            rpcResult({
+              sessionId: "launch_terminal",
+              target: "terminal",
+              status: "ready",
+              currentPhase: "connected",
+              message: "Terminal app is ready.",
+              timeline: [],
+              approvals: [],
+              approvalViews: [],
+              approvalsResolved: 1,
+              startedAt: 1,
+              updatedAt: 2,
+              settled: true,
+              launch: {
                 status: "ready",
-                currentPhase: "connected",
-                message: "Terminal app is ready.",
-                timeline: [],
-                approvals: [],
-                approvalViews: [],
-                approvalsResolved: 1,
-                startedAt: 1,
-                updatedAt: 2,
-                settled: true,
-                launch: {
-                  status: "ready",
-                  target: "terminal",
-                  appId: "@workspace-apps/remote-cli",
-                  buildKey: "build-terminal",
-                },
+                target: "terminal",
+                appId: "@workspace-apps/remote-cli",
+                buildKey: "build-terminal",
               },
             })
           );
         }
-        return new Response(JSON.stringify({ error: `unexpected ${body.method}` }), {
+        return new Response(rpcError(`unexpected ${method ?? "<missing method>"}`), {
           status: 500,
         });
       })
@@ -559,18 +588,20 @@ describe("natstack CLI", () => {
           return new Response(JSON.stringify({ shellToken: "shell_token" }));
         }
         return new Response(
-          JSON.stringify({
-            result: { code: "A".repeat(24), connectUrl: "https://host.tailnet.ts.net" },
-          })
+          rpcResult({ code: "A".repeat(24), connectUrl: "https://host.tailnet.ts.net" })
         );
       })
     );
 
     const { main } = await import("./client.js");
     await expect(main(["remote", "invite", "--ttl-ms=60000", "--json"])).resolves.toBe(0);
-    expect(bodies[1]?.body).toEqual({
-      method: "auth.createPairingInvite",
-      args: [{ ttlMs: 60_000 }],
+    expect(bodies[1]?.body).toMatchObject({
+      target: "main",
+      message: {
+        type: "request",
+        method: "auth.createPairingInvite",
+        args: [{ ttlMs: 60_000 }],
+      },
     });
   });
 

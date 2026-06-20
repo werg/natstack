@@ -48,46 +48,46 @@ describe("PanelRegistry", () => {
 
   describe("addPanel", () => {
     it("adds a root panel (replaces tree by default)", () => {
-      const p = makePanel("root-1");
+      const p = makePanel("panel:tree/root-1");
       registry.addPanel(p, null);
 
-      expect(registry.getPanel("root-1")).toBe(p);
+      expect(registry.getPanel("panel:tree/root-1")).toBe(p);
       expect(registry.getRootPanels()).toEqual([p]);
     });
 
     it("adds a root panel with addAsRoot without clearing existing roots", () => {
-      const p1 = makePanel("root-1");
-      const p2 = makePanel("root-2");
+      const p1 = makePanel("panel:tree/root-1");
+      const p2 = makePanel("panel:tree/root-2");
 
       registry.addPanel(p1, null, { addAsRoot: true });
       registry.addPanel(p2, null, { addAsRoot: true });
 
       expect(registry.getRootPanels().length).toBe(2);
-      expect(registry.getRootPanels()[0]!.id).toBe("root-1");
-      expect(registry.getRootPanels()[1]!.id).toBe("root-2");
+      expect(registry.getRootPanels()[0]!.id).toBe("panel:tree/root-1");
+      expect(registry.getRootPanels()[1]!.id).toBe("panel:tree/root-2");
     });
 
     it("adds a child panel under a parent", () => {
-      const parent = makePanel("parent");
+      const parent = makePanel("panel:tree/parent");
       registry.addPanel(parent, null, { addAsRoot: true });
 
-      const child = makePanel("child");
-      registry.addPanel(child, "parent");
+      const child = makePanel("panel:tree/child");
+      registry.addPanel(child, "panel:tree/parent");
 
-      expect(registry.getPanel("child")).toBe(child);
+      expect(registry.getPanel("panel:tree/child")).toBe(child);
       expect(parent.children[0]).toBe(child);
     });
 
     it("throws when adding a child to a nonexistent parent", () => {
-      const child = makePanel("child");
-      expect(() => registry.addPanel(child, "no-such-parent")).toThrow("Parent panel not found");
+      const child = makePanel("panel:tree/child");
+      expect(() => registry.addPanel(child, "panel:tree/no-such-parent")).toThrow("Parent panel not found");
     });
   });
 
   describe("listPanels/getChildren", () => {
     it("includes kind and hydrates direct children", () => {
-      const root = makePanel("root");
-      const child = makePanel("child", {
+      const root = makePanel("panel:tree/root");
+      const child = makePanel("panel:tree/child", {
         snapshot: {
           source: "browser:https://example.com",
           contextId: "ctx-child",
@@ -95,20 +95,20 @@ describe("PanelRegistry", () => {
         },
       });
       registry.addPanel(root, null, { addAsRoot: true });
-      registry.addPanel(child, "root");
+      registry.addPanel(child, "panel:tree/root");
 
       expect(registry.listPanels()).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ panelId: "root", kind: "workspace", parentId: null }),
-          expect.objectContaining({ panelId: "child", kind: "browser", parentId: "root" }),
+          expect.objectContaining({ panelId: "panel:tree/root", kind: "workspace", parentId: null }),
+          expect.objectContaining({ panelId: "panel:tree/child", kind: "browser", parentId: "panel:tree/root" }),
         ])
       );
-      expect(registry.getChildren("root")).toEqual([
+      expect(registry.getChildren("panel:tree/root")).toEqual([
         expect.objectContaining({
-          panelId: "child",
+          panelId: "panel:tree/child",
           source: "browser:https://example.com",
           kind: "browser",
-          parentId: "root",
+          parentId: "panel:tree/root",
         }),
       ]);
     });
@@ -117,7 +117,7 @@ describe("PanelRegistry", () => {
   describe("repopulate", () => {
     it("preserves runtime artifacts and navigation for unchanged panels", () => {
       registry.addPanel(
-        makePanel("root", {
+        makePanel("panel:tree/root", {
           artifacts: {
             htmlPath: "http://localhost:1234/panels/chat/",
             buildState: "ready",
@@ -133,22 +133,22 @@ describe("PanelRegistry", () => {
       );
 
       registry.repopulate([
-        makePanel("root", {
+        makePanel("panel:tree/root", {
           title: "root from server",
           artifacts: {},
         }),
       ]);
 
-      expect(registry.getPanel("root")?.artifacts).toEqual({
+      expect(registry.getPanel("panel:tree/root")?.artifacts).toEqual({
         htmlPath: "http://localhost:1234/panels/chat/",
         buildState: "ready",
       });
-      expect(registry.getPanel("root")?.navigation).toEqual({
+      expect(registry.getPanel("panel:tree/root")?.navigation).toEqual({
         url: "http://localhost:1234/panels/chat/",
         isLoading: false,
         canGoBack: true,
       });
-      expect(registry.getPanel("root")?.title).toBe("root from server");
+      expect(registry.getPanel("panel:tree/root")?.title).toBe("root from server");
     });
 
     it("preserves runtime artifacts across an in-place navigate (same contextId, new source)", () => {
@@ -156,7 +156,7 @@ describe("PanelRegistry", () => {
       // changes the source; the Electron-main artifacts are authoritative for the
       // live view and must survive the next server repopulate.
       registry.addPanel(
-        makePanel("root", {
+        makePanel("panel:tree/root", {
           artifacts: {
             htmlPath: "http://localhost:1234/panels/chat/",
             buildState: "ready",
@@ -167,17 +167,17 @@ describe("PanelRegistry", () => {
       );
 
       registry.repopulate([
-        makePanel("root", {
+        makePanel("panel:tree/root", {
           snapshot: {
             source: "panels/other",
-            contextId: "ctx-root",
+            contextId: "ctx-panel:tree/root",
             options: {},
           },
           artifacts: {},
         }),
       ]);
 
-      expect(registry.getPanel("root")?.artifacts).toEqual({
+      expect(registry.getPanel("panel:tree/root")?.artifacts).toEqual({
         htmlPath: "http://localhost:1234/panels/chat/",
         buildState: "ready",
       });
@@ -185,7 +185,7 @@ describe("PanelRegistry", () => {
 
     it("does not preserve runtime artifacts when the view session (contextId) changes", () => {
       registry.addPanel(
-        makePanel("root", {
+        makePanel("panel:tree/root", {
           artifacts: {
             htmlPath: "http://localhost:1234/panels/chat/",
             buildState: "ready",
@@ -196,7 +196,7 @@ describe("PanelRegistry", () => {
       );
 
       registry.repopulate([
-        makePanel("root", {
+        makePanel("panel:tree/root", {
           snapshot: {
             source: "panels/other",
             contextId: "ctx-different",
@@ -206,20 +206,20 @@ describe("PanelRegistry", () => {
         }),
       ]);
 
-      expect(registry.getPanel("root")?.artifacts).toEqual({});
+      expect(registry.getPanel("panel:tree/root")?.artifacts).toEqual({});
     });
   });
 
   describe("explicit state", () => {
     it("derives build and view state from artifacts", () => {
-      registry.addPanel(makePanel("root"), null, { addAsRoot: true });
+      registry.addPanel(makePanel("panel:tree/root"), null, { addAsRoot: true });
 
-      registry.updateArtifacts("root", {
+      registry.updateArtifacts("panel:tree/root", {
         buildState: "ready",
         htmlPath: "http://localhost:1234/panels/root/",
       });
 
-      expect(registry.getPanel("root")?.state).toMatchObject({
+      expect(registry.getPanel("panel:tree/root")?.state).toMatchObject({
         build: {
           state: "ready",
           artifactUrl: "http://localhost:1234/panels/root/",
@@ -235,13 +235,13 @@ describe("PanelRegistry", () => {
     });
 
     it("applies runtime leases by slot id while preserving runtime entity id", () => {
-      registry.addPanel(makePanel("slot-a"), null, { addAsRoot: true });
+      registry.addPanel(makePanel("panel:tree/slot-a"), null, { addAsRoot: true });
 
       registry.applyRuntimeLeaseSnapshot({
         version: { epoch: "test", counter: 1 },
         leases: [
           {
-            slotId: asPanelSlotId("slot-a"),
+            slotId: asPanelSlotId("panel:tree/slot-a"),
             runtimeEntityId: asPanelEntityId("panel:nav-entity-a"),
             clientSessionId: "desktop-a",
             hostConnectionId: "desktop-a",
@@ -255,11 +255,11 @@ describe("PanelRegistry", () => {
         ],
       });
 
-      expect(registry.getRuntimeLease("slot-a")).toMatchObject({
-        slotId: "slot-a",
+      expect(registry.getRuntimeLease("panel:tree/slot-a")).toMatchObject({
+        slotId: "panel:tree/slot-a",
         runtimeEntityId: "panel:nav-entity-a",
       });
-      expect(registry.getPanel("slot-a")?.state?.runtime).toMatchObject({
+      expect(registry.getPanel("panel:tree/slot-a")?.state?.runtime).toMatchObject({
         leased: true,
         holderLabel: "Desktop A",
         clientSessionId: "desktop-a",
@@ -274,19 +274,19 @@ describe("PanelRegistry", () => {
 
   describe("findParentId", () => {
     it("returns null for root panels", () => {
-      const root = makePanel("root");
+      const root = makePanel("panel:tree/root");
       registry.addPanel(root, null, { addAsRoot: true });
-      expect(registry.findParentId("root")).toBeNull();
+      expect(registry.findParentId("panel:tree/root")).toBeNull();
     });
 
     it("returns the parent ID for a child panel", () => {
-      const parent = makePanel("parent");
+      const parent = makePanel("panel:tree/parent");
       registry.addPanel(parent, null, { addAsRoot: true });
 
-      const child = makePanel("child");
-      registry.addPanel(child, "parent");
+      const child = makePanel("panel:tree/child");
+      registry.addPanel(child, "panel:tree/parent");
 
-      expect(registry.findParentId("child")).toBe("parent");
+      expect(registry.findParentId("panel:tree/child")).toBe("panel:tree/parent");
     });
 
     it("returns null for unknown panel IDs", () => {
@@ -300,41 +300,41 @@ describe("PanelRegistry", () => {
 
   describe("isDescendantOf", () => {
     it("returns true for a direct child", () => {
-      const parent = makePanel("parent");
+      const parent = makePanel("panel:tree/parent");
       registry.addPanel(parent, null, { addAsRoot: true });
 
-      const child = makePanel("child");
-      registry.addPanel(child, "parent");
+      const child = makePanel("panel:tree/child");
+      registry.addPanel(child, "panel:tree/parent");
 
-      expect(registry.isDescendantOf("child", "parent")).toBe(true);
+      expect(registry.isDescendantOf("panel:tree/child", "panel:tree/parent")).toBe(true);
     });
 
     it("returns true for a grandchild", () => {
-      const root = makePanel("root");
+      const root = makePanel("panel:tree/root");
       registry.addPanel(root, null, { addAsRoot: true });
 
-      const mid = makePanel("mid");
-      registry.addPanel(mid, "root");
+      const mid = makePanel("panel:tree/mid");
+      registry.addPanel(mid, "panel:tree/root");
 
-      const leaf = makePanel("leaf");
-      registry.addPanel(leaf, "mid");
+      const leaf = makePanel("panel:tree/leaf");
+      registry.addPanel(leaf, "panel:tree/mid");
 
-      expect(registry.isDescendantOf("leaf", "root")).toBe(true);
+      expect(registry.isDescendantOf("panel:tree/leaf", "panel:tree/root")).toBe(true);
     });
 
     it("returns false when there is no ancestor relationship", () => {
-      const a = makePanel("a");
-      const b = makePanel("b");
+      const a = makePanel("panel:tree/a");
+      const b = makePanel("panel:tree/b");
       registry.addPanel(a, null, { addAsRoot: true });
       registry.addPanel(b, null, { addAsRoot: true });
 
-      expect(registry.isDescendantOf("a", "b")).toBe(false);
+      expect(registry.isDescendantOf("panel:tree/a", "panel:tree/b")).toBe(false);
     });
 
     it("returns false for the same panel", () => {
-      const p = makePanel("p");
+      const p = makePanel("panel:tree/p");
       registry.addPanel(p, null, { addAsRoot: true });
-      expect(registry.isDescendantOf("p", "p")).toBe(false);
+      expect(registry.isDescendantOf("panel:tree/p", "panel:tree/p")).toBe(false);
     });
   });
 
@@ -344,25 +344,25 @@ describe("PanelRegistry", () => {
 
   describe("removePanel", () => {
     it("removes a root panel", () => {
-      const p = makePanel("root");
+      const p = makePanel("panel:tree/root");
       registry.addPanel(p, null, { addAsRoot: true });
 
-      registry.removePanel("root");
+      registry.removePanel("panel:tree/root");
 
-      expect(registry.getPanel("root")).toBeUndefined();
+      expect(registry.getPanel("panel:tree/root")).toBeUndefined();
       expect(registry.getRootPanels().length).toBe(0);
     });
 
     it("removes a child panel from its parent", () => {
-      const parent = makePanel("parent");
+      const parent = makePanel("panel:tree/parent");
       registry.addPanel(parent, null, { addAsRoot: true });
 
-      const child = makePanel("child");
-      registry.addPanel(child, "parent");
+      const child = makePanel("panel:tree/child");
+      registry.addPanel(child, "panel:tree/parent");
 
-      registry.removePanel("child");
+      registry.removePanel("panel:tree/child");
 
-      expect(registry.getPanel("child")).toBeUndefined();
+      expect(registry.getPanel("panel:tree/child")).toBeUndefined();
       expect(parent.children.length).toBe(0);
     });
   });
@@ -373,39 +373,39 @@ describe("PanelRegistry", () => {
 
   describe("movePanel", () => {
     it("moves a root panel under another root", () => {
-      const a = makePanel("a");
-      const b = makePanel("b");
+      const a = makePanel("panel:tree/a");
+      const b = makePanel("panel:tree/b");
       registry.addPanel(a, null, { addAsRoot: true });
       registry.addPanel(b, null, { addAsRoot: true });
 
-      registry.movePanel("a", "b", 0);
+      registry.movePanel("panel:tree/a", "panel:tree/b", 0);
 
-      expect(registry.findParentId("a")).toBe("b");
-      expect(registry.getRootPanels().map((p) => p.id)).toEqual(["b"]);
+      expect(registry.findParentId("panel:tree/a")).toBe("panel:tree/b");
+      expect(registry.getRootPanels().map((p) => p.id)).toEqual(["panel:tree/b"]);
     });
 
     it("moves a child to root level", () => {
-      const parent = makePanel("parent");
+      const parent = makePanel("panel:tree/parent");
       registry.addPanel(parent, null, { addAsRoot: true });
 
-      const child = makePanel("child");
-      registry.addPanel(child, "parent");
+      const child = makePanel("panel:tree/child");
+      registry.addPanel(child, "panel:tree/parent");
 
-      registry.movePanel("child", null, 0);
+      registry.movePanel("panel:tree/child", null, 0);
 
-      expect(registry.findParentId("child")).toBeNull();
-      expect(registry.getRootPanels().map((p) => p.id)).toContain("child");
+      expect(registry.findParentId("panel:tree/child")).toBeNull();
+      expect(registry.getRootPanels().map((p) => p.id)).toContain("panel:tree/child");
       expect(parent.children.length).toBe(0);
     });
 
     it("throws when moving into own subtree", () => {
-      const parent = makePanel("parent");
+      const parent = makePanel("panel:tree/parent");
       registry.addPanel(parent, null, { addAsRoot: true });
 
-      const child = makePanel("child");
-      registry.addPanel(child, "parent");
+      const child = makePanel("panel:tree/child");
+      registry.addPanel(child, "panel:tree/parent");
 
-      expect(() => registry.movePanel("parent", "child", 0)).toThrow(
+      expect(() => registry.movePanel("panel:tree/parent", "panel:tree/child", 0)).toThrow(
         "Cannot move panel into its own subtree"
       );
     });
@@ -415,21 +415,21 @@ describe("PanelRegistry", () => {
     });
 
     it("throws when new parent not found", () => {
-      const p = makePanel("p");
+      const p = makePanel("panel:tree/p");
       registry.addPanel(p, null, { addAsRoot: true });
-      expect(() => registry.movePanel("p", "no-parent", 0)).toThrow("New parent panel not found");
+      expect(() => registry.movePanel("panel:tree/p", "no-parent", 0)).toThrow("New parent panel not found");
     });
 
     it("clamps target position to valid range", () => {
-      const a = makePanel("a");
-      const b = makePanel("b");
+      const a = makePanel("panel:tree/a");
+      const b = makePanel("panel:tree/b");
       registry.addPanel(a, null, { addAsRoot: true });
       registry.addPanel(b, null, { addAsRoot: true });
 
       // Position 999 should be clamped
-      registry.movePanel("a", "b", 999);
-      expect(registry.findParentId("a")).toBe("b");
-      expect(b.children[0]!.id).toBe("a");
+      registry.movePanel("panel:tree/a", "panel:tree/b", 999);
+      expect(registry.findParentId("panel:tree/a")).toBe("panel:tree/b");
+      expect(b.children[0]!.id).toBe("panel:tree/a");
     });
   });
 
@@ -448,9 +448,9 @@ describe("PanelRegistry", () => {
     });
 
     it("returns false when reserving an ID that already has a panel", () => {
-      const p = makePanel("existing");
+      const p = makePanel("panel:tree/existing");
       registry.addPanel(p, null, { addAsRoot: true });
-      expect(registry.reservePanelId("existing")).toBe(false);
+      expect(registry.reservePanelId("panel:tree/existing")).toBe(false);
     });
 
     it("allows re-reservation after release", () => {
@@ -466,20 +466,20 @@ describe("PanelRegistry", () => {
 
   describe("updateSelectedPath", () => {
     it("walks up the tree setting selectedChildId", () => {
-      const root = makePanel("root");
+      const root = makePanel("panel:tree/root");
       registry.addPanel(root, null, { addAsRoot: true });
 
-      const mid = makePanel("mid");
-      registry.addPanel(mid, "root");
+      const mid = makePanel("panel:tree/mid");
+      registry.addPanel(mid, "panel:tree/root");
 
-      const leaf = makePanel("leaf");
-      registry.addPanel(leaf, "mid");
+      const leaf = makePanel("panel:tree/leaf");
+      registry.addPanel(leaf, "panel:tree/mid");
 
-      registry.updateSelectedPath("leaf");
+      registry.updateSelectedPath("panel:tree/leaf");
 
-      expect(registry.getFocusedPanelId()).toBe("leaf");
-      expect(registry.getPanel("root")?.selectedChildId).toBe("mid");
-      expect(registry.getPanel("mid")?.selectedChildId).toBe("leaf");
+      expect(registry.getFocusedPanelId()).toBe("panel:tree/leaf");
+      expect(registry.getPanel("panel:tree/root")?.selectedChildId).toBe("panel:tree/mid");
+      expect(registry.getPanel("panel:tree/mid")?.selectedChildId).toBe("panel:tree/leaf");
     });
   });
 
@@ -489,17 +489,17 @@ describe("PanelRegistry", () => {
 
   describe("getSerializablePanelTree", () => {
     it("returns a deep copy of the tree", () => {
-      const root = makePanel("root");
+      const root = makePanel("panel:tree/root");
       registry.addPanel(root, null, { addAsRoot: true });
 
-      const child = makePanel("child");
-      registry.addPanel(child, "root");
+      const child = makePanel("panel:tree/child");
+      registry.addPanel(child, "panel:tree/root");
 
       const tree = registry.getSerializablePanelTree();
       expect(tree.length).toBe(1);
-      expect(tree[0]!.id).toBe("root");
+      expect(tree[0]!.id).toBe("panel:tree/root");
       expect(tree[0]!.children.length).toBe(1);
-      expect(tree[0]!.children[0]!.id).toBe("child");
+      expect(tree[0]!.children[0]!.id).toBe("panel:tree/child");
 
       // Should be a copy, not the same reference
       expect(tree[0]).not.toBe(root);
@@ -510,9 +510,9 @@ describe("PanelRegistry", () => {
       registry = makeRegistry((snapshot) => updates.push(snapshot));
 
       expect(registry.getTreeRevision()).toBe(0);
-      registry.addPanel(makePanel("root"), null, { addAsRoot: true });
+      registry.addPanel(makePanel("panel:tree/root"), null, { addAsRoot: true });
       const afterAdd = registry.getTreeRevision();
-      registry.updateTitle("root", "Root");
+      registry.updateTitle("panel:tree/root", "Root");
       const afterTitle = registry.getTreeRevision();
 
       expect(afterAdd).toBeGreaterThan(0);
@@ -521,7 +521,7 @@ describe("PanelRegistry", () => {
       await new Promise((resolve) => setTimeout(resolve, 25));
       expect(updates[updates.length - 1]).toMatchObject({
         revision: afterTitle,
-        rootPanels: [expect.objectContaining({ id: "root", title: "Root" })],
+        rootPanels: [expect.objectContaining({ id: "panel:tree/root", title: "Root" })],
       });
     });
   });
@@ -538,14 +538,14 @@ describe("PanelRegistry", () => {
 
   describe("paginated queries (in-memory)", () => {
     it("getChildrenPaginated returns children slice", () => {
-      const parent = makePanel("parent");
+      const parent = makePanel("panel:tree/parent");
       registry.addPanel(parent, null, { addAsRoot: true });
 
       for (let i = 0; i < 5; i++) {
-        registry.addPanel(makePanel(`c${i}`), "parent");
+        registry.addPanel(makePanel(`c${i}`), "panel:tree/parent");
       }
 
-      const page = registry.getChildrenPaginated("parent", 1, 2);
+      const page = registry.getChildrenPaginated("panel:tree/parent", 1, 2);
       expect(page.total).toBe(5);
       expect(page.children.length).toBe(2);
       expect(page.hasMore).toBe(true);

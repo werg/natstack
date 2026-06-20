@@ -102,3 +102,71 @@ describe("AlarmDriver", () => {
     expect(fired).toHaveLength(0);
   });
 });
+
+/** Harness whose `dispatchAlarm` always fails (as when an EvalDO aborts itself in
+ *  `alarm()`), recording any re-arm so we can assert the re-arm decision. */
+function makeFailingHarness(initial: Array<Alarm & { bestEffort?: boolean }>) {
+  const alarms = [...initial];
+  const reArmed: Array<{ objectKey: string }> = [];
+  const doDispatch = {
+    dispatch: async (_ref: DORef, method: string, ...args: unknown[]) => {
+      if (method === "alarmNextWakeAt") {
+        return alarms.length ? Math.min(...alarms.map((a) => a.wakeAt)) : null;
+      }
+      if (method === "alarmTakeDue") {
+        const now = args[0] as number;
+        const due = alarms.filter((a) => a.wakeAt <= now);
+        for (const d of due) alarms.splice(alarms.indexOf(d), 1);
+        return due; // carries bestEffort through to the driver
+      }
+      if (method === "alarmSet") {
+        reArmed.push(args[0] as { objectKey: string });
+      }
+      return undefined;
+    },
+    dispatchAlarm: async () => {
+      throw new Error("dispatch failed (DO aborted itself)");
+    },
+  } as unknown as DODispatch;
+  const driver = new AlarmDriver({ doDispatch, workspaceId: "ws-1" });
+  return { driver, reArmed };
+}
+
+describe("AlarmDriver re-arm on dispatch failure", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it("re-arms a normal at-least-once alarm whose dispatch fails (wake must not be lost)", async () => {
+    vi.setSystemTime(0);
+    const { driver, reArmed } = makeFailingHarness([
+      { source: "workers/poller", className: "PollerDO", objectKey: "k", wakeAt: 1_000 },
+    ]);
+    driver.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000); // fire → dispatch fails → re-arm
+    expect(reArmed).toHaveLength(1);
+    expect(reArmed[0]).toMatchObject({ objectKey: "k" });
+    driver.stop();
+  });
+
+  it("does NOT re-arm a best-effort alarm whose dispatch fails (EvalDO idle eviction — no resurrection loop)", async () => {
+    vi.setSystemTime(0);
+    const { driver, reArmed } = makeFailingHarness([
+      {
+        source: "natstack/internal",
+        className: "EvalDO",
+        objectKey: "k",
+        wakeAt: 1_000,
+        bestEffort: true,
+      },
+    ]);
+    driver.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000); // fire → dispatch fails → best-effort → no re-arm
+    expect(reArmed).toEqual([]);
+    driver.stop();
+  });
+});

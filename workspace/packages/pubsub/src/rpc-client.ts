@@ -297,9 +297,13 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
   // Method auto-execution
   const registeredMethods: Record<string, MethodDefinition> = { ...(providedMethods ?? {}) };
 
-  // Track AbortControllers for methods we're executing, keyed by callId.
-  // When a caller cancels, we abort the controller so the handler sees signal.aborted.
-  const executingMethods = new Map<string, AbortController>();
+  // Track AbortControllers (+ start time) for methods we're executing, keyed by callId. When a caller
+  // cancels, we abort the controller so the handler sees signal.aborted; the start time lets us treat
+  // a routine redelivery-vs-in-flight race as benign while still surfacing a genuinely WEDGED handler.
+  const executingMethods = new Map<string, { controller: AbortController; startedAt: number }>();
+  // A redelivery skip is only worth logging when the handler has been running implausibly long (a hung
+  // handler), not for the normal at-least-once race against a fast handler.
+  const STILL_EXECUTING_WARN_MS = 30_000;
   const submittedMethodTransportCallIds = new Set<string>();
   const MAX_SUBMITTED_METHOD_TRANSPORT_CALL_IDS = 2000;
 
@@ -959,16 +963,19 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       executingMethods.has(event.transportCallId) ||
       submittedMethodTransportCallIds.has(event.transportCallId)
     ) {
-      // Redelivery while a previous execution is still running (or already
-      // terminally submitted). Silent skips here have hidden real wedges —
-      // log so a hung handler is visible in the panel console.
-      console.warn(
-        `[PubSub] Skipping redelivered method call ${event.methodName} ` +
-          `(${event.transportCallId}): ` +
-          (executingMethods.has(event.transportCallId)
-            ? "still executing from a previous delivery"
-            : "terminal already submitted")
-      );
+      // Redelivery while a previous execution is still running (or already terminally submitted). This
+      // is the at-least-once delivery racing our in-flight (or just-settled) handler — the dedup is
+      // working and it's benign in the normal case. Only a handler still running WELL past any sane
+      // settle time is a real signal (a hung handler), so stay quiet for the routine race and warn
+      // only past the wedge threshold — so a genuine wedge stands out instead of drowning in noise.
+      const executing = executingMethods.get(event.transportCallId);
+      const elapsed = executing ? Date.now() - executing.startedAt : 0;
+      if (elapsed > STILL_EXECUTING_WARN_MS) {
+        console.warn(
+          `[PubSub] Method ${event.methodName} (${event.transportCallId}) still executing after ` +
+            `${Math.round(elapsed / 1000)}s — possible hung handler; skipping redelivery`
+        );
+      }
       return;
     }
 
@@ -1009,7 +1016,10 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     }
 
     const abortController = new AbortController();
-    executingMethods.set(event.transportCallId, abortController);
+    executingMethods.set(event.transportCallId, {
+      controller: abortController,
+      startedAt: Date.now(),
+    });
     let terminalSubmitted = false;
     const pendingStreamSubmissions = new Set<Promise<void>>();
     const trackStreamSubmission = (promise: Promise<void>): Promise<void> => {
@@ -1679,9 +1689,9 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
   // the local execution immediately; the method's abort path submits a
   // terminal invocation result, which settles the caller's pending result.
   function abortExecutingMethod(callId: string): boolean {
-    const controller = executingMethods.get(callId);
-    if (!controller) return false;
-    controller.abort();
+    const executing = executingMethods.get(callId);
+    if (!executing) return false;
+    executing.controller.abort();
     executingMethods.delete(callId);
     return true;
   }
@@ -1732,8 +1742,8 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       methodCallStates.delete(callId);
     }
     // Abort all executing methods so handlers see signal.aborted
-    for (const [, controller] of executingMethods) {
-      controller.abort();
+    for (const [, executing] of executingMethods) {
+      executing.controller.abort();
     }
     executingMethods.clear();
     for (const handler of disconnectHandlers) handler();

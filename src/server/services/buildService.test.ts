@@ -115,11 +115,12 @@ describe("build service extension diagnostics", () => {
       service.handler({ caller: createVerifiedCaller("shell", "shell") }, "getBuild", [
         "@workspace-packages/example",
         undefined,
-        { library: true },
+        { library: true, libraryTarget: "worker" },
       ])
     ).resolves.toEqual({ bundle: "module.exports = {};" });
     expect(buildSystem.getBuild).toHaveBeenCalledWith("@workspace-packages/example", undefined, {
       library: true,
+      libraryTarget: "worker",
     });
   });
 

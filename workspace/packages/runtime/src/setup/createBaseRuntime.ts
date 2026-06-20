@@ -14,6 +14,7 @@ import {
 } from "@natstack/rpc";
 import { createWorkerdClient } from "../shared/workerd.js";
 import type { GatewayConfig } from "../shared/globals.js";
+import { createMainCaller } from "../shared/mainRpc.js";
 import type { RuntimeFs, ThemeAppearance } from "../types.js";
 export interface BaseRuntimeDeps {
     selfId: string;
@@ -34,7 +35,7 @@ export function createBaseRuntime(deps: BaseRuntimeDeps) {
         transport: envelopeTransportFromLegacy(deps.selfId, primaryTransport),
     });
     const fs = deps.fs;
-    const callMain = <T>(method: string, ...args: unknown[]) => rpc.call<T>("main", method, [...args]);
+    const callMain = createMainCaller(rpc);
     const workers = createWorkerdClient(rpc);
     let currentTheme: ThemeAppearance = deps.initialTheme;
     const themeListeners = new Set<(theme: ThemeAppearance) => void>();

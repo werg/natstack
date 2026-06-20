@@ -29,7 +29,7 @@ export const vcsFileReadContentSchema = z.discriminatedUnion("kind", [
 ]);
 export type VcsFileReadContent = z.infer<typeof vcsFileReadContentSchema>;
 
-export const vcsEditOpSchema = z.discriminatedUnion("kind", [
+const vcsEditOpStrictSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("replace"),
     path: z.string(),
@@ -57,7 +57,43 @@ export const vcsEditOpSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("delete"), path: z.string() }),
   z.object({ kind: z.literal("chmod"), path: z.string(), mode: z.number().int() }),
 ]);
-export type VcsEditOp = z.infer<typeof vcsEditOpSchema>;
+
+/**
+ * Normalize ergonomic edit shorthands → the strict discriminated union, so agents can write the
+ * natural `{ path, content: "text" }` form rather than the verbose
+ * `{ kind: "write", path, content: { kind: "text", text } }`:
+ *  - a string `content` → `{ kind: "text", text }`
+ *  - an omitted `kind` (when a `content` is present) → defaults to `"write"`
+ * Genuinely-malformed edits (no `kind`, no `content`) pass through untouched so the discriminated
+ * union still reports its precise discriminator error. The strict union is what serializes into
+ * `help('vcs')` (zod-to-json-schema renders the inner schema of a preprocess), so discovery is
+ * unchanged — the shorthand is an accepted superset, not a replacement.
+ */
+function normalizeVcsEditOp(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const e = raw as Record<string, unknown>;
+  // Fail LOUD on a mis-keyed discriminator: an edit op has no `type` field, so `type` present
+  // without `kind` is almost always a wrong-key mistake. Silently defaulting it to "write" (below)
+  // would discard the intended op — e.g. `{ type: "replace", content }` would quietly become a
+  // write. Surface the fix instead of guessing.
+  if (e["kind"] === undefined && typeof e["type"] === "string") {
+    throw new Error(
+      `vcs edit op is missing "kind" but has type:"${e["type"]}" — edit ops are discriminated by ` +
+        `"kind", not "type" (use { kind: "write" | "replace" | "create" | "delete" | "chmod", path, … }).`
+    );
+  }
+  const asContent = (c: unknown) => (typeof c === "string" ? { kind: "text", text: c } : c);
+  if (e["kind"] === "write" || e["kind"] === "create") {
+    return typeof e["content"] === "string" ? { ...e, content: asContent(e["content"]) } : raw;
+  }
+  if (e["kind"] === undefined && e["content"] !== undefined) {
+    return { ...e, kind: "write", content: asContent(e["content"]) };
+  }
+  return raw;
+}
+
+export const vcsEditOpSchema = z.preprocess(normalizeVcsEditOp, vcsEditOpStrictSchema);
+export type VcsEditOp = z.infer<typeof vcsEditOpStrictSchema>;
 
 export const vcsApplyEditsInputSchema = z.object({
   baseStateHash: z.string().optional(),
@@ -268,7 +304,9 @@ export const vcsMethods = defineServiceMethods({
     returns: vcsDiffResultSchema,
   },
   resolveHead: {
-    args: z.tuple([z.string()]),
+    // Head is optional: omitted ⇒ the caller's current context head (consistent with
+    // status/publishStatus/applyEdits). Pass "main"/"ctx:…" to resolve an explicit ref.
+    args: z.tuple([z.string().optional()]),
     returns: vcsResolveHeadResultSchema,
   },
   merge: {

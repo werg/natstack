@@ -445,6 +445,18 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
     args: unknown[],
     options?: { signal?: AbortSignal; idempotencyKey?: string },
   ): Promise<Response> {
+    // Connectionless transports (HTTP) physically stream the response body, so
+    // delegate to their first-class `stream` hook. Socket transports omit it
+    // and fall back to the duplex stream-request/stream-frame envelope path.
+    if (config.transport.stream) {
+      const envelope = makeEnvelope(
+        targetId,
+        { type: "stream-request", requestId: generateRequestId(), fromId: config.selfId, method, args },
+        options,
+        provenance,
+      );
+      return config.transport.stream(envelope, options?.signal ?? null);
+    }
     return streamImpl(provenance, targetId, method, args, options);
   }
 
@@ -615,31 +627,6 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
     },
     onStatusChange(handler): () => void {
       return config.transport.onStatusChange?.(handler) ?? (() => {});
-    },
-    async parent() {
-      const id = await config.topology?.parent?.();
-      return id ? peer(id) : null;
-    },
-    async children() {
-      const ids = await config.topology?.children?.();
-      return (ids ?? []).map((id) => peer(id));
-    },
-    tree: {
-      async root() {
-        const id = await config.topology?.root?.();
-        return id ? peer(id) : null;
-      },
-      self() {
-        return peer(config.selfId);
-      },
-      async siblings() {
-        const ids = await config.topology?.siblings?.();
-        return (ids ?? []).map((id) => peer(id));
-      },
-    },
-    automation(targetId) {
-      if (!config.automation) throw new Error("RPC automation adapter is not configured");
-      return config.automation.automation(targetId) as never;
     },
   };
 

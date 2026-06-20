@@ -92,6 +92,60 @@ export class WsEventSession extends WsSubscriber implements EventSession {
   }
 }
 
+/**
+ * Delivers an event to a connectionless Durable Object by POSTing an event
+ * envelope to it (the server's relay path). Rejecting means the DO is gone /
+ * hibernated / uninterested, which reaps the subscriber.
+ */
+export type DoEventPushDelivery = (
+  callerId: string,
+  channel: string,
+  payload: unknown,
+) => Promise<void>;
+
+/**
+ * Push-subscriber for a connectionless DO/worker caller. Unlike `WsSubscriber`
+ * there is no socket whose close reaps it, so it self-reaps on the first failed
+ * delivery (DO evicted/hibernated) — and `EventService` also drops it when the
+ * caller's last topic unsubscribes (ref-counted in `removeSubscriber`).
+ */
+export class DoPushSubscriber implements Subscriber {
+  private destroyed = false;
+  private destroyHandlers: (() => void)[] = [];
+
+  constructor(
+    public readonly callerId: string,
+    public callerKind: CallerKind,
+    private readonly deliver: DoEventPushDelivery,
+  ) {}
+
+  get isAlive(): boolean {
+    return !this.destroyed;
+  }
+
+  send(channel: string, payload: unknown): void {
+    if (this.destroyed) return;
+    void this.deliver(this.callerId, channel, payload).catch(() => {
+      // Delivery failed: the DO is gone/hibernated — stop pushing to a corpse.
+      this.destroy();
+    });
+  }
+
+  isBoundTo(): boolean {
+    return false;
+  }
+
+  onDestroyed(handler: () => void): void {
+    this.destroyHandlers.push(handler);
+  }
+
+  destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    for (const handler of this.destroyHandlers) handler();
+  }
+}
+
 // =============================================================================
 // Event service
 // =============================================================================
@@ -133,6 +187,17 @@ export class EventService {
 
   private subscribers = new Map<EventName, Map<string, Map<string, Subscriber>>>();
   private sessionsByCallerId = new Map<string, Map<string, EventSession>>();
+  /**
+   * Server→DO event push. Set once at wiring time. Lets a connectionless DO
+   * receive real `events.subscribe` pushes (e.g. `vcs.subscribeHead`) — without
+   * it, a DO subscription would silently never deliver.
+   */
+  private doPushDelivery: DoEventPushDelivery | null = null;
+
+  /** Wire the server→DO event push delivery (POSTs an event envelope to the DO). */
+  setDoPushDelivery(delivery: DoEventPushDelivery): void {
+    this.doPushDelivery = delivery;
+  }
 
   private getConnectionId(connectionId?: string): string {
     return connectionId ?? EventService.DEFAULT_CONNECTION_ID;
@@ -202,12 +267,29 @@ export class EventService {
    * Unsubscribe a caller from an event.
    */
   unsubscribe(event: EventName, callerId: string, connectionId?: string): void {
+    const resolvedConnectionId = this.getConnectionId(connectionId);
     const callerSubs = this.subscribers.get(event)?.get(callerId);
     if (!callerSubs) return;
-    callerSubs.delete(this.getConnectionId(connectionId));
+    callerSubs.delete(resolvedConnectionId);
     if (callerSubs.size === 0) {
       this.subscribers.get(event)?.delete(callerId);
     }
+    this.reapIdleDoSubscriber(callerId, resolvedConnectionId);
+  }
+
+  /**
+   * A `DoPushSubscriber` has no socket to reap it, so once its caller's last
+   * topic unsubscribes, drop the session — otherwise the server keeps an idle
+   * subscription (and would re-push to a hibernated DO). WS sessions are left
+   * alone (reaped by connection close).
+   */
+  private reapIdleDoSubscriber(callerId: string, connectionId: string): void {
+    const session = this.sessionsByCallerId.get(callerId)?.get(connectionId);
+    if (!(session instanceof DoPushSubscriber)) return;
+    for (const subs of this.subscribers.values()) {
+      if (subs.get(callerId)?.has(connectionId)) return; // still subscribed to something
+    }
+    session.destroy();
   }
 
   /**
@@ -223,6 +305,10 @@ export class EventService {
         subs.delete(callerId);
       }
     }
+    // Drop the DO push-subscriber too (it has no socket to reap it) — without
+    // this, a DO that subscribes then unsubscribeAlls leaks its DoPushSubscriber
+    // forever and the server keeps re-waking a hibernated/uninterested DO.
+    this.reapIdleDoSubscriber(callerId, resolvedConnectionId);
   }
 
   /**
@@ -339,6 +425,19 @@ export class EventService {
     if (preRegistered && preRegistered.isAlive) return preRegistered;
 
     if (!ctx.wsClient) {
+      // Connectionless DO/worker callers have no socket; mint a push-subscriber
+      // that POSTs event envelopes to them (server→DO push). This is what makes
+      // `vcs.subscribeHead` / `workspace.units.watch` real on a DO.
+      const kind = ctx.caller.runtime.kind;
+      if ((kind === "do" || kind === "worker") && this.doPushDelivery) {
+        const subscriber = new DoPushSubscriber(
+          ctx.caller.runtime.id,
+          kind,
+          this.doPushDelivery,
+        );
+        this.registerSubscriber(ctx.caller.runtime.id, subscriber, connectionId);
+        return subscriber;
+      }
       throw new Error("Event subscriptions require a WS connection or pre-registered subscriber");
     }
 

@@ -150,14 +150,25 @@ export function createRpcFs(rpc: Pick<RpcClient, "call">): RuntimeFs {
                     buffer.set(decoded, offset);
                     return { bytesRead: result.bytesRead, buffer };
                 },
-                async write(buffer: Uint8Array, offset?: number, length?: number, position?: number | null): Promise<{
+                async write(buffer: Uint8Array | string, offset?: number, length?: number, position?: number | null): Promise<{
                     bytesWritten: number;
-                    buffer: Uint8Array;
+                    buffer: Uint8Array | string;
                 }> {
-                    const slice = buffer.subarray(offset ?? 0, (offset ?? 0) + (length ?? buffer.length));
+                    // Node parity: `write(string[, position[, encoding]])` as well as
+                    // `write(buffer[, offset[, length[, position]]])`. A string is encoded (utf-8)
+                    // and the 2nd arg is the file POSITION, not a byte offset.
+                    let slice: Uint8Array;
+                    let pos: number | null;
+                    if (typeof buffer === "string") {
+                        slice = new TextEncoder().encode(buffer);
+                        pos = typeof offset === "number" ? offset : null;
+                    } else {
+                        slice = buffer.subarray(offset ?? 0, (offset ?? 0) + (length ?? buffer.length));
+                        pos = position ?? null;
+                    }
                     const result = await call<{
                         bytesWritten: number;
-                    }>("handleWrite", handleId, encodeBinary(slice), position ?? null);
+                    }>("handleWrite", handleId, encodeBinary(slice), pos);
                     return { bytesWritten: result.bytesWritten, buffer };
                 },
                 async close(): Promise<void> {

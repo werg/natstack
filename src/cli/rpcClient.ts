@@ -132,7 +132,7 @@ export class RpcClient {
 
   /** Direct service dispatch: `service.method` on the server dispatcher. */
   async call<T = unknown>(method: string, args: unknown[] = []): Promise<T> {
-    return await this.post<T>({ method, args });
+    return await this.dispatch<T>("main", method, args);
   }
 
   /** Relay call to a runtime target (worker, DO, panel) by entity/target id. */
@@ -141,7 +141,24 @@ export class RpcClient {
     method: string,
     args: unknown[] = []
   ): Promise<T> {
-    return await this.post<T>({ type: "call", targetId, method, args });
+    return await this.dispatch<T>(targetId, method, args);
+  }
+
+  /** Build an `RpcEnvelope` and POST it to the envelope-native `/rpc`. */
+  private async dispatch<T>(targetId: string, method: string, args: unknown[]): Promise<T> {
+    const requestId =
+      typeof globalThis.crypto?.randomUUID === "function"
+        ? globalThis.crypto.randomUUID()
+        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    const caller = { callerId: this.creds.deviceId, callerKind: "shell" as const };
+    const envelope = {
+      from: caller.callerId,
+      target: targetId,
+      delivery: { caller },
+      provenance: [caller],
+      message: { type: "request", requestId, fromId: caller.callerId, method, args },
+    };
+    return await this.post<T>(envelope);
   }
 
   private async post<T>(body: Record<string, unknown>): Promise<T> {
@@ -157,28 +174,32 @@ export class RpcClient {
         throw new AuthError(remoteErrorMessage(errorBody, "unauthorized after token refresh"));
       }
     }
-    const parsed = (await response.json().catch(() => ({}))) as {
-      result?: unknown;
-      error?: unknown;
-      errorCode?: unknown;
-    };
+    const raw = (await response.json().catch(() => ({}))) as Record<string, unknown>;
     if (!response.ok) {
       throw new RpcError(
-        typeof parsed.error === "string"
-          ? parsed.error
+        typeof raw["error"] === "string"
+          ? (raw["error"] as string)
           : `rpc failed (${response.status} ${response.statusText})`
       );
     }
-    if (typeof parsed.error === "string") {
+    // The server replies with a response envelope { …, message: { result | error } }.
+    const responseEnvelope = ("envelope" in raw ? raw["envelope"] : raw) as
+      | { message?: { result?: unknown; error?: unknown; errorCode?: unknown } }
+      | undefined;
+    const message = responseEnvelope?.message;
+    if (!message) {
+      throw new RpcError("malformed rpc response (non-envelope or proxy response?)");
+    }
+    if (typeof message.error === "string") {
       throw new RpcError(
-        parsed.error,
-        typeof parsed.errorCode === "string" ? parsed.errorCode : undefined
+        message.error,
+        typeof message.errorCode === "string" ? message.errorCode : undefined
       );
     }
-    if (!("result" in parsed) && !("error" in parsed)) {
-      throw new RpcError("malformed rpc response (non-JSON or proxy response?)");
+    if (!("result" in message)) {
+      throw new RpcError("malformed rpc response (no result)");
     }
-    return parsed.result as T;
+    return message.result as T;
   }
 
   private postRpc(token: string, body: Record<string, unknown>): Promise<Response> {

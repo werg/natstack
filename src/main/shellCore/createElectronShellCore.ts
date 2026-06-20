@@ -40,6 +40,8 @@ export function createElectronShellCore(deps: {
     getSlotHistory: (slotId) => call<SlotHistoryRow[]>("workspace-state", "slot.history", [slotId]),
     resolveActiveEntity: (id) =>
       call<EntityRecord | null>("workspace-state", "entity.resolveActive", [id]),
+    resolveSlotByEntity: (entityId) =>
+      call<string | null>("workspace-state", "slot.resolveByEntity", [entityId]),
     createSlot: (input: SlotCreateInput) =>
       call<undefined>("workspace-state", "slot.create", [input]),
     appendSlotHistory: (slotId, entry: SlotHistoryEntryInput) =>

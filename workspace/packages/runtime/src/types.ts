@@ -36,7 +36,8 @@ export interface OpenOptions {
 export interface FileHandle {
   fd: number;
   read(buffer: Uint8Array, offset: number, length: number, position: number | null): Promise<{ bytesRead: number; buffer: Uint8Array }>;
-  write(buffer: Uint8Array, offset?: number, length?: number, position?: number | null): Promise<{ bytesWritten: number; buffer: Uint8Array }>;
+  // A string is encoded (utf-8) and the 2nd arg is the file position (Node's `write(string[, position[, encoding]])`).
+  write(buffer: Uint8Array | string, offset?: number, length?: number, position?: number | null): Promise<{ bytesWritten: number; buffer: Uint8Array | string }>;
   close(): Promise<void>;
   stat(): Promise<FileStats>;
 }

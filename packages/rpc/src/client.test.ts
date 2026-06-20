@@ -138,4 +138,28 @@ describe("createRpcClient", () => {
     expect(response.headers.get("content-type")).toBe("text/plain");
     await expect(response.text()).resolves.toBe("hello");
   });
+
+  it("delegates stream() to the transport's stream hook when present (connectionless path)", async () => {
+    const streamCalls: Array<{ target: string; message: unknown }> = [];
+    const transport = {
+      send: async () => {},
+      onMessage: () => () => {},
+      stream: async (envelope: { target: string; message: unknown }) => {
+        streamCalls.push({ target: envelope.target, message: envelope.message });
+        return new Response("streamed-bytes", { status: 206 });
+      },
+    };
+    const rpc = createRpcClient({ selfId: "do:x", transport });
+
+    const response = await rpc.stream("main", "credentials.proxyFetch", [{ url: "u" }]);
+    // The transport hook is used (not the duplex frame path), with a stream-request envelope.
+    expect(streamCalls).toHaveLength(1);
+    expect(streamCalls[0]!.target).toBe("main");
+    expect(streamCalls[0]!.message).toMatchObject({
+      type: "stream-request",
+      method: "credentials.proxyFetch",
+    });
+    expect(response.status).toBe(206);
+    await expect(response.text()).resolves.toBe("streamed-bytes");
+  });
 });

@@ -55,7 +55,7 @@ describe("createServerEventBridge", () => {
     const payload = {
       type: "panel:runtimeLeaseChanged" as const,
       version: { epoch: "test", counter: 1 },
-      slotId: asPanelSlotId("slot-a"),
+      slotId: asPanelSlotId("panel:tree/slot-a"),
       runtimeEntityId: asPanelEntityId("panel:nav-a"),
       previous: null,
       next: null,
@@ -96,10 +96,14 @@ describe("createServerEventBridge", () => {
   it("applies server panel title updates without forwarding raw events", () => {
     const { handle, eventService, panelOrchestrator } = createHarness();
 
-    handle("event:panel-title-updated", { panelId: "panel-1", title: "New title", explicit: true });
+    handle("event:panel-title-updated", {
+      panelId: "panel:tree/panel-1",
+      title: "New title",
+      explicit: true,
+    });
 
     expect(panelOrchestrator.applyServerPanelTitleUpdate).toHaveBeenCalledWith({
-      panelId: "panel-1",
+      panelId: "panel:tree/panel-1",
       title: "New title",
       explicit: true,
     });
@@ -111,7 +115,7 @@ describe("createServerEventBridge", () => {
 
     handle("event:browser-panel:open", {
       url: "https://example.com/",
-      parentPanelId: "slot-a",
+      parentPanelId: "panel:tree/slot-a",
     });
     await Promise.resolve();
 

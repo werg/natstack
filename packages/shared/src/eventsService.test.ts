@@ -134,4 +134,84 @@ describe("EventService", () => {
       })
     );
   });
+
+  // ── Server→DO event push (connectionless subscribers) ──────────────────────
+
+  describe("DO push-subscriber", () => {
+    const EVENT = "panel-tree-updated" as const;
+    const doCtx = (callerId: string, connectionId = "c1"): ServiceContext => ({
+      caller: createVerifiedCaller(callerId, "do"),
+      connectionId,
+    });
+
+    it("mints a push-subscriber for a no-WS do caller and routes emit through it", async () => {
+      const eventService = new EventService();
+      const delivered: Array<[string, string, unknown]> = [];
+      eventService.setDoPushDelivery(async (callerId, channel, payload) => {
+        delivered.push([callerId, channel, payload]);
+      });
+      const service = createEventsServiceDefinition(eventService);
+
+      await service.handler(doCtx("do:test:EvalDO:k1"), "subscribe", [EVENT]);
+      eventService.emit(EVENT, emptyPanelTreeSnapshot);
+
+      expect(delivered).toEqual([
+        ["do:test:EvalDO:k1", "event:panel-tree-updated", emptyPanelTreeSnapshot],
+      ]);
+    });
+
+    it("reaps the push-subscriber once the caller's last topic unsubscribes", async () => {
+      const eventService = new EventService();
+      const deliver = vi.fn(async () => {});
+      eventService.setDoPushDelivery(deliver);
+      const service = createEventsServiceDefinition(eventService);
+      const ctx = doCtx("do:test:EvalDO:k2");
+
+      await service.handler(ctx, "subscribe", [EVENT]);
+      await service.handler(ctx, "unsubscribe", [EVENT]);
+      eventService.emit(EVENT, emptyPanelTreeSnapshot);
+
+      expect(deliver).not.toHaveBeenCalled();
+    });
+
+    it("reaps the push-subscriber on unsubscribeAll (idle EvalDO eviction path)", async () => {
+      const eventService = new EventService();
+      const deliver = vi.fn(async () => {});
+      eventService.setDoPushDelivery(deliver);
+      const service = createEventsServiceDefinition(eventService);
+      const ctx = doCtx("do:test:EvalDO:k5");
+
+      await service.handler(ctx, "subscribe", [EVENT]);
+      await service.handler(ctx, "unsubscribeAll", []);
+      eventService.emit(EVENT, emptyPanelTreeSnapshot);
+
+      expect(deliver).not.toHaveBeenCalled();
+    });
+
+    it("self-reaps a push-subscriber whose delivery fails (hibernated/gone DO)", async () => {
+      const eventService = new EventService();
+      const deliver = vi.fn(async () => {
+        throw new Error("DO unreachable");
+      });
+      eventService.setDoPushDelivery(deliver);
+      const service = createEventsServiceDefinition(eventService);
+
+      await service.handler(doCtx("do:test:EvalDO:k3"), "subscribe", [EVENT]);
+      eventService.emit(EVENT, emptyPanelTreeSnapshot); // delivery rejects → subscriber destroyed
+      await Promise.resolve();
+      await Promise.resolve();
+      eventService.emit(EVENT, emptyPanelTreeSnapshot); // gone — no second delivery
+
+      expect(deliver).toHaveBeenCalledTimes(1);
+    });
+
+    it("still requires a WS or push delivery — bare do caller with no delivery wired throws", async () => {
+      const eventService = new EventService(); // no setDoPushDelivery
+      const service = createEventsServiceDefinition(eventService);
+
+      await expect(
+        service.handler(doCtx("do:test:EvalDO:k4"), "subscribe", [EVENT])
+      ).rejects.toThrow(/WS connection or pre-registered subscriber/);
+    });
+  });
 });

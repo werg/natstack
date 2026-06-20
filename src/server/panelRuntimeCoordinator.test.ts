@@ -27,27 +27,50 @@ describe("PanelRuntimeCoordinator", () => {
     const { coordinator } = createCoordinator();
 
     const result = coordinator.acquire("panel:nav-entity-a", {
-      slotId: "slot-a",
+      slotId: "panel:tree/slot-a",
       clientSessionId: "desktop-a",
       connectionId: "conn-a1",
     });
 
     expect(result.acquired).toBe(true);
     expect(result.lease).toMatchObject({
-      slotId: "slot-a",
+      slotId: "panel:tree/slot-a",
       runtimeEntityId: "panel:nav-entity-a",
       clientSessionId: "desktop-a",
       hostConnectionId: "desktop-a",
       connectionId: "conn-a1",
       supportsCdp: true,
     });
-    expect(coordinator.getLease("panel:nav-entity-a")?.slotId).toBe("slot-a");
+    expect(coordinator.getLease("panel:nav-entity-a")?.slotId).toBe("panel:tree/slot-a");
     expect(coordinator.getSnapshot().leases).toMatchObject([
       {
-        slotId: "slot-a",
+        slotId: "panel:tree/slot-a",
         runtimeEntityId: "panel:nav-entity-a",
       },
     ]);
+  });
+
+  it("treats non-panel ids as having no panel lease in routing (does not throw)", () => {
+    // RPC routing probes EVERY target id here — including worker/DO ids. A non-panel id has no panel
+    // lease, so route resolution must return null, NOT throw on the (now-validating) id casts.
+    // Regression for the real production crash where resolveRouteLease laundered a `do:…` id.
+    const { coordinator } = createCoordinator();
+    coordinator.acquire("panel:nav-entity-a", {
+      slotId: "panel:tree/slot-a",
+      clientSessionId: "desktop-a",
+      connectionId: "conn-a1",
+    });
+
+    // Non-panel targets: graceful null, never a throw.
+    expect(coordinator.getLease("do:workers/x:Worker:k")).toBeNull();
+    expect(coordinator.resolveRouteLease("do:workers/x:Worker:k")).toBeNull();
+    expect(coordinator.resolveRouteRuntimeEntityId("worker:src:w")).toBeNull();
+
+    // Panel targets still resolve — by entity (nav) id AND by slot id.
+    expect(coordinator.resolveRouteLease("panel:nav-entity-a")?.slotId).toBe("panel:tree/slot-a");
+    expect(coordinator.resolveRouteLease("panel:tree/slot-a")?.runtimeEntityId).toBe(
+      "panel:nav-entity-a"
+    );
   });
 
   it("stores a stable host connection id separately from the per-panel runtime connection", () => {
@@ -63,12 +86,12 @@ describe("PanelRuntimeCoordinator", () => {
     });
 
     const first = coordinator.acquire("panel:nav-entity-a", {
-      slotId: "slot-a",
+      slotId: "panel:tree/slot-a",
       clientSessionId: "desktop-session",
       connectionId: "runtime-conn-1",
     });
     const second = coordinator.acquire("panel:nav-entity-a", {
-      slotId: "slot-a",
+      slotId: "panel:tree/slot-a",
       clientSessionId: "desktop-session",
       connectionId: "runtime-conn-2",
     });
@@ -104,8 +127,8 @@ describe("PanelRuntimeCoordinator", () => {
       platform: "mobile",
     });
 
-    const result = coordinator.acquire("panel:mobile-held", {
-      slotId: "slot-mobile",
+    const result = coordinator.acquire("panel:nav-mobile-held", {
+      slotId: "panel:tree/slot-mobile",
       clientSessionId: "mobile-session",
       connectionId: "mobile-runtime-conn",
     });
@@ -115,7 +138,7 @@ describe("PanelRuntimeCoordinator", () => {
       platform: "mobile",
       supportsCdp: false,
     });
-    expect(coordinator.resolveHostForSlot("slot-mobile")).toEqual({
+    expect(coordinator.resolveHostForSlot("panel:tree/slot-mobile")).toEqual({
       hostConnectionId: "mobile-host",
       supportsCdp: false,
     });
@@ -131,24 +154,24 @@ describe("PanelRuntimeCoordinator", () => {
     });
 
     coordinator.acquire("panel:nav-entity-a", {
-      slotId: "slot-a",
+      slotId: "panel:tree/slot-a",
       clientSessionId: "desktop-session",
       connectionId: "runtime-conn",
     });
 
     expect(coordinator.hasClientHostConnection("desktop-host")).toBe(true);
-    expect(coordinator.resolveHostForSlot("slot-a")).toEqual({
+    expect(coordinator.resolveHostForSlot("panel:tree/slot-a")).toEqual({
       hostConnectionId: "desktop-host",
       supportsCdp: true,
     });
-    expect(coordinator.resolveHostForSlot("slot-missing")).toBeNull();
+    expect(coordinator.resolveHostForSlot("panel:tree/slot-missing")).toBeNull();
   });
 
   it("resolves route targets from either runtime entity id or stable panel slot", () => {
     const { coordinator } = createCoordinator();
 
     coordinator.acquire("panel:nav-entity-a", {
-      slotId: "slot-a",
+      slotId: "panel:tree/slot-a",
       clientSessionId: "desktop-a",
       connectionId: "runtime-conn",
     });
@@ -157,10 +180,10 @@ describe("PanelRuntimeCoordinator", () => {
     expect(coordinator.resolveRouteRuntimeEntityId("panel:nav-entity-a")).toBe(
       "panel:nav-entity-a"
     );
-    expect(coordinator.resolveRouteConnection("slot-a")).toBe("runtime-conn");
-    expect(coordinator.resolveRouteRuntimeEntityId("slot-a")).toBe("panel:nav-entity-a");
-    expect(coordinator.resolveRouteConnection("slot-missing")).toBeNull();
-    expect(coordinator.resolveRouteRuntimeEntityId("slot-missing")).toBeNull();
+    expect(coordinator.resolveRouteConnection("panel:tree/slot-a")).toBe("runtime-conn");
+    expect(coordinator.resolveRouteRuntimeEntityId("panel:tree/slot-a")).toBe("panel:nav-entity-a");
+    expect(coordinator.resolveRouteConnection("panel:tree/slot-missing")).toBeNull();
+    expect(coordinator.resolveRouteRuntimeEntityId("panel:tree/slot-missing")).toBeNull();
   });
 
   it("assigns unheld panels to a registered headless CDP host", () => {
@@ -176,12 +199,12 @@ describe("PanelRuntimeCoordinator", () => {
       loadOnLeaseAssignment: true,
     });
 
-    const result = coordinator.ensureDefaultCdpHostForSlot("slot-a", "panel:nav-slot-a");
+    const result = coordinator.ensureDefaultCdpHostForSlot("panel:tree/slot-a", "panel:nav-slot-a");
 
     expect(result).toMatchObject({
       assigned: true,
       lease: {
-        slotId: "slot-a",
+        slotId: "panel:tree/slot-a",
         runtimeEntityId: "panel:nav-slot-a",
         clientSessionId: "headless-session",
         hostConnectionId: "headless-host",
@@ -190,7 +213,7 @@ describe("PanelRuntimeCoordinator", () => {
         supportsCdp: true,
       },
     });
-    expect(coordinator.resolveHostForSlot("slot-a")).toEqual({
+    expect(coordinator.resolveHostForSlot("panel:tree/slot-a")).toEqual({
       hostConnectionId: "headless-host",
       supportsCdp: true,
     });
@@ -205,15 +228,19 @@ describe("PanelRuntimeCoordinator", () => {
       platform: "headless",
     });
 
-    const result = coordinator.ensureDefaultCdpHostForSlot("slot-a", "panel:nav-slot-a", {
-      isHostAvailable: () => true,
-    });
+    const result = coordinator.ensureDefaultCdpHostForSlot(
+      "panel:tree/slot-a",
+      "panel:nav-slot-a",
+      {
+        isHostAvailable: () => true,
+      }
+    );
 
     expect(result).toEqual({
       assigned: false,
       reason: "no_default_cdp_host",
     });
-    expect(coordinator.resolveHostForSlot("slot-a")).toBeNull();
+    expect(coordinator.resolveHostForSlot("panel:tree/slot-a")).toBeNull();
   });
 
   it("skips unavailable headless clients when assigning the default CDP host", () => {
@@ -233,9 +260,13 @@ describe("PanelRuntimeCoordinator", () => {
       loadOnLeaseAssignment: true,
     });
 
-    const result = coordinator.ensureDefaultCdpHostForSlot("slot-a", "panel:nav-slot-a", {
-      isHostAvailable: (hostConnectionId) => hostConnectionId === "headless-host-b",
-    });
+    const result = coordinator.ensureDefaultCdpHostForSlot(
+      "panel:tree/slot-a",
+      "panel:nav-slot-a",
+      {
+        isHostAvailable: (hostConnectionId) => hostConnectionId === "headless-host-b",
+      }
+    );
 
     expect(result).toMatchObject({
       assigned: true,
@@ -256,15 +287,19 @@ describe("PanelRuntimeCoordinator", () => {
       loadOnLeaseAssignment: true,
     });
 
-    const result = coordinator.ensureDefaultCdpHostForSlot("slot-a", "panel:nav-slot-a", {
-      isHostAvailable: () => false,
-    });
+    const result = coordinator.ensureDefaultCdpHostForSlot(
+      "panel:tree/slot-a",
+      "panel:nav-slot-a",
+      {
+        isHostAvailable: () => false,
+      }
+    );
 
     expect(result).toEqual({
       assigned: false,
       reason: "no_default_cdp_host",
     });
-    expect(coordinator.resolveHostForSlot("slot-a")).toBeNull();
+    expect(coordinator.resolveHostForSlot("panel:tree/slot-a")).toBeNull();
   });
 
   it("falls released panel leases back to the registered headless CDP host", () => {
@@ -286,7 +321,7 @@ describe("PanelRuntimeCoordinator", () => {
       platform: "desktop",
     });
     coordinator.acquire("panel:nav-slot-a", {
-      slotId: "slot-a",
+      slotId: "panel:tree/slot-a",
       clientSessionId: "desktop-session",
       connectionId: "desktop-runtime",
     });
@@ -294,7 +329,7 @@ describe("PanelRuntimeCoordinator", () => {
     coordinator.release("panel:nav-slot-a", "desktop-runtime", "released");
 
     expect(coordinator.getLease("panel:nav-slot-a")).toMatchObject({
-      slotId: "slot-a",
+      slotId: "panel:tree/slot-a",
       clientSessionId: "headless-session",
       hostConnectionId: "headless-host",
       platform: "headless",
@@ -304,7 +339,7 @@ describe("PanelRuntimeCoordinator", () => {
     expect(eventService.emit).toHaveBeenLastCalledWith(
       "panel:runtimeLeaseChanged",
       expect.objectContaining({
-        slotId: "slot-a",
+        slotId: "panel:tree/slot-a",
         runtimeEntityId: "panel:nav-slot-a",
         reason: "acquired",
         next: expect.objectContaining({ clientSessionId: "headless-session" }),
@@ -333,7 +368,7 @@ describe("PanelRuntimeCoordinator", () => {
       platform: "desktop",
     });
     coordinator.acquire("panel:nav-slot-a", {
-      slotId: "slot-a",
+      slotId: "panel:tree/slot-a",
       clientSessionId: "desktop-session",
       connectionId: "desktop-runtime",
     });
@@ -348,7 +383,7 @@ describe("PanelRuntimeCoordinator", () => {
       "Panel runtime host unregistered"
     );
     expect(coordinator.getLease("panel:nav-slot-a")).toMatchObject({
-      slotId: "slot-a",
+      slotId: "panel:tree/slot-a",
       clientSessionId: "headless-session",
       hostConnectionId: "headless-host",
       platform: "headless",
@@ -358,7 +393,7 @@ describe("PanelRuntimeCoordinator", () => {
     expect(eventService.emit).toHaveBeenLastCalledWith(
       "panel:runtimeLeaseChanged",
       expect.objectContaining({
-        slotId: "slot-a",
+        slotId: "panel:tree/slot-a",
         runtimeEntityId: "panel:nav-slot-a",
         reason: "acquired",
         next: expect.objectContaining({ clientSessionId: "headless-session" }),
@@ -378,7 +413,7 @@ describe("PanelRuntimeCoordinator", () => {
       loadOnLeaseAssignment: true,
     });
     coordinator.acquire("panel:nav-slot-a", {
-      slotId: "slot-a",
+      slotId: "panel:tree/slot-a",
       clientSessionId: "headless-session",
       connectionId: "headless-runtime",
     });
@@ -410,19 +445,19 @@ describe("PanelRuntimeCoordinator", () => {
       loadOnLeaseAssignment: true,
     });
     coordinator.acquire("panel:nav-slot-a", {
-      slotId: "slot-a",
+      slotId: "panel:tree/slot-a",
       clientSessionId: "headless-session",
       connectionId: "headless-runtime",
     });
 
-    const previous = coordinator.unloadSlot("slot-a");
+    const previous = coordinator.unloadSlot("panel:tree/slot-a");
 
     expect(previous).toMatchObject({
-      slotId: "slot-a",
+      slotId: "panel:tree/slot-a",
       clientSessionId: "headless-session",
       connectionId: "headless-runtime",
     });
-    expect(coordinator.resolveHostForSlot("slot-a")).toBeNull();
+    expect(coordinator.resolveHostForSlot("panel:tree/slot-a")).toBeNull();
     expect(closeConnection).toHaveBeenCalledWith(
       "panel:nav-slot-a",
       "headless-runtime",
@@ -432,7 +467,7 @@ describe("PanelRuntimeCoordinator", () => {
     expect(eventService.emit).toHaveBeenLastCalledWith(
       "panel:runtimeLeaseChanged",
       expect.objectContaining({
-        slotId: "slot-a",
+        slotId: "panel:tree/slot-a",
         runtimeEntityId: "panel:nav-slot-a",
         reason: "released",
         next: null,
@@ -455,13 +490,15 @@ describe("PanelRuntimeCoordinator", () => {
       label: "Phone",
       platform: "mobile",
     });
-    coordinator.acquire("panel:mobile", {
-      slotId: "slot-mobile",
+    coordinator.acquire("panel:nav-mobile", {
+      slotId: "panel:tree/slot-mobile",
       clientSessionId: "mobile-session",
       connectionId: "mobile-conn",
     });
 
-    expect(coordinator.ensureDefaultCdpHostForSlot("slot-mobile", "panel:mobile")).toMatchObject({
+    expect(
+      coordinator.ensureDefaultCdpHostForSlot("panel:tree/slot-mobile", "panel:nav-mobile")
+    ).toMatchObject({
       assigned: false,
       reason: "mobile_held",
       lease: { hostConnectionId: "mobile-host", supportsCdp: false },
@@ -471,13 +508,13 @@ describe("PanelRuntimeCoordinator", () => {
   it("lets the same client session reacquire on reconnect without takeover", () => {
     const { coordinator, closeConnection } = createCoordinator();
     coordinator.acquire("panel:nav-entity-a", {
-      slotId: "slot-a",
+      slotId: "panel:tree/slot-a",
       clientSessionId: "desktop-a",
       connectionId: "conn-a1",
     });
 
     const result = coordinator.acquire("panel:nav-entity-a", {
-      slotId: "slot-a",
+      slotId: "panel:tree/slot-a",
       clientSessionId: "desktop-a",
       connectionId: "conn-a2",
     });
@@ -490,13 +527,13 @@ describe("PanelRuntimeCoordinator", () => {
   it("does not grant a live runtime lease to a different client session", () => {
     const { coordinator } = createCoordinator();
     coordinator.acquire("panel:nav-entity-a", {
-      slotId: "slot-a",
+      slotId: "panel:tree/slot-a",
       clientSessionId: "desktop-a",
       connectionId: "conn-a1",
     });
 
     const result = coordinator.acquire("panel:nav-entity-a", {
-      slotId: "slot-a",
+      slotId: "panel:tree/slot-a",
       clientSessionId: "desktop-b",
       connectionId: "conn-b1",
     });
@@ -509,13 +546,13 @@ describe("PanelRuntimeCoordinator", () => {
   it("emits slot and runtime entity ids separately on takeover", () => {
     const { coordinator, eventService, closeConnection } = createCoordinator();
     coordinator.acquire("panel:nav-entity-a", {
-      slotId: "slot-a",
+      slotId: "panel:tree/slot-a",
       clientSessionId: "desktop-a",
       connectionId: "conn-a1",
     });
 
     const result = coordinator.takeOver("panel:nav-entity-a", {
-      slotId: "slot-a",
+      slotId: "panel:tree/slot-a",
       clientSessionId: "desktop-b",
       connectionId: "conn-b1",
     });
@@ -530,7 +567,7 @@ describe("PanelRuntimeCoordinator", () => {
     expect(eventService.emit).toHaveBeenLastCalledWith(
       "panel:runtimeLeaseChanged",
       expect.objectContaining({
-        slotId: "slot-a",
+        slotId: "panel:tree/slot-a",
         runtimeEntityId: "panel:nav-entity-a",
         reason: "acquired",
         next: expect.objectContaining({ clientSessionId: "desktop-b" }),
@@ -538,10 +575,71 @@ describe("PanelRuntimeCoordinator", () => {
     );
   });
 
+  it("stamps keepLoaded and refuses release/unload while a slot is pinned", () => {
+    const { coordinator, eventService, closeConnection } = createCoordinator();
+    coordinator.acquire("panel:nav-entity-a", {
+      slotId: "panel:tree/slot-a",
+      clientSessionId: "desktop-a",
+      connectionId: "conn-a1",
+    });
+
+    // Pin (first CDP client connects) re-stamps the live lease with keepLoaded.
+    coordinator.pinSlotLoaded("panel:tree/slot-a");
+    expect(coordinator.getLease("panel:nav-entity-a")?.keepLoaded).toBe(true);
+    expect(coordinator.getSnapshot().leases[0]?.keepLoaded).toBe(true);
+    expect(eventService.emit).toHaveBeenLastCalledWith(
+      "panel:runtimeLeaseChanged",
+      expect.objectContaining({
+        slotId: "panel:tree/slot-a",
+        reason: "acquired",
+        next: expect.objectContaining({ keepLoaded: true }),
+      })
+    );
+
+    // While pinned, release and unload are refused: the lease stays in the snapshot.
+    coordinator.release("panel:nav-entity-a", "conn-a1", "released");
+    expect(coordinator.getLease("panel:nav-entity-a")?.keepLoaded).toBe(true);
+    expect(coordinator.unloadSlot("panel:tree/slot-a")).toBeNull();
+    expect(coordinator.getLease("panel:nav-entity-a")).not.toBeNull();
+    expect(closeConnection).not.toHaveBeenCalled();
+  });
+
+  it("resumes normal unload after the pin is released", () => {
+    const { coordinator } = createCoordinator();
+    coordinator.acquire("panel:nav-entity-a", {
+      slotId: "panel:tree/slot-a",
+      clientSessionId: "desktop-a",
+      connectionId: "conn-a1",
+    });
+    coordinator.pinSlotLoaded("panel:tree/slot-a");
+
+    // Last CDP client disconnects → unpin clears keepLoaded and re-enables unload.
+    coordinator.unpinSlotLoaded("panel:tree/slot-a");
+    expect(coordinator.getLease("panel:nav-entity-a")?.keepLoaded).toBe(false);
+
+    expect(coordinator.unloadSlot("panel:tree/slot-a")).toMatchObject({
+      slotId: "panel:tree/slot-a",
+    });
+    expect(coordinator.getLease("panel:nav-entity-a")).toBeNull();
+  });
+
+  it("stamps keepLoaded on leases acquired while the slot is already pinned", () => {
+    const { coordinator } = createCoordinator();
+    coordinator.pinSlotLoaded("panel:tree/slot-a");
+
+    const result = coordinator.acquire("panel:nav-entity-a", {
+      slotId: "panel:tree/slot-a",
+      clientSessionId: "desktop-a",
+      connectionId: "conn-a1",
+    });
+
+    expect(result.lease.keepLoaded).toBe(true);
+  });
+
   it("closes and releases runtime leases when the entity is retired", () => {
     const { coordinator, eventService, closeConnection } = createCoordinator();
     coordinator.acquire("panel:nav-entity-a", {
-      slotId: "slot-a",
+      slotId: "panel:tree/slot-a",
       clientSessionId: "desktop-a",
       connectionId: "conn-a1",
     });
@@ -558,7 +656,7 @@ describe("PanelRuntimeCoordinator", () => {
     expect(eventService.emit).toHaveBeenLastCalledWith(
       "panel:runtimeLeaseChanged",
       expect.objectContaining({
-        slotId: "slot-a",
+        slotId: "panel:tree/slot-a",
         runtimeEntityId: "panel:nav-entity-a",
         reason: "retired",
         next: null,

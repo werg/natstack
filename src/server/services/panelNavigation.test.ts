@@ -17,6 +17,7 @@ import { requestCapabilityPermission } from "./capabilityPermission.js";
 import { createRuntimeService } from "./runtimeService.js";
 import type { ApprovalQueue } from "./approvalQueue.js";
 import { EntityCache } from "@natstack/shared/runtime/entityCache";
+import { WorkspaceEntityStore } from "../workspaceEntityStore.js";
 import { canonicalEntityId, type EntityRecord } from "@natstack/shared/runtime/entitySpec";
 import { createVerifiedCaller } from "@natstack/shared/serviceDispatcher";
 import type { DODispatch, DORef } from "../doDispatch.js";
@@ -146,8 +147,11 @@ describe("panel navigation: capability grants and retire hooks", () => {
     const retiredRecords: EntityRecord[] = [];
 
     const service = createRuntimeService({
-      doDispatch: dispatch,
-      workspaceId: "workspace-nav",
+      entityStore: new WorkspaceEntityStore({
+        doDispatch: dispatch,
+        workspaceId: "workspace-nav",
+        entityCache,
+      }),
       hooks: {
         prepareDurableObject: vi.fn(async () => ({ targetId: "t", effectiveVersion: "v" })),
         prepareWorker: vi.fn(async () => ({ targetId: "t", effectiveVersion: "v" })),
@@ -158,7 +162,6 @@ describe("panel navigation: capability grants and retire hooks", () => {
         },
       },
       capability: { approvalQueue, grantStore },
-      entityCache,
       contextFolders: {
         ensureContextFolder: vi.fn(async (contextId: string) => `/tmp/contexts/${contextId}`),
         removeContext: vi.fn(async () => {}),

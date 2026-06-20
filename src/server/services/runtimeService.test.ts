@@ -8,6 +8,7 @@ import { CapabilityGrantStore } from "./capabilityGrantStore.js";
 import { createRuntimeService } from "./runtimeService.js";
 import type { ApprovalQueue } from "./approvalQueue.js";
 import { EntityCache } from "@natstack/shared/runtime/entityCache";
+import { WorkspaceEntityStore } from "../workspaceEntityStore.js";
 import {
   canonicalEntityId,
   type EntityRecord,
@@ -122,9 +123,14 @@ async function buildDeps(opts: BuildDepsOptions = {}) {
     opts.resolvePanelEffectiveVersion ?? vi.fn(async () => "ev-panel");
   const resolveAppEffectiveVersion = opts.resolveAppEffectiveVersion ?? vi.fn(async () => "ev-app");
 
-  const service = createRuntimeService({
+  const entityStore = new WorkspaceEntityStore({
     doDispatch: dispatch,
     workspaceId: "workspace-main",
+    entityCache,
+  });
+
+  const service = createRuntimeService({
+    entityStore,
     hooks: {
       prepareDurableObject,
       prepareWorker,
@@ -133,7 +139,6 @@ async function buildDeps(opts: BuildDepsOptions = {}) {
       onRetire,
     },
     capability: { approvalQueue, grantStore },
-    entityCache,
     contextFolders,
     setEntityTitle: opts.setEntityTitle,
     canCreateCrossContextEntity: opts.canCreateCrossContextEntity,

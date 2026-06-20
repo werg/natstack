@@ -34,8 +34,8 @@ export type {
   EventMap,
   TypedCallProxy,
   RpcConnectionStatus,
-  TopologyAdapter,
-  AutomationAdapter,
+  DeferredCallAck,
+  DeferrableRpcClient,
   StreamingMethodHandler,
   StreamingMethodFrame,
   ParentPortEnvelope,
@@ -44,6 +44,17 @@ export type {
 
 export { isParentPortEnvelope, ELECTRON_LOCAL_SERVICE_NAMES } from "./types.js";
 export { createRpcClient, defineContract } from "./client.js";
+export {
+  createConnectionlessRpcClient,
+  collectExposableMethods,
+  rpc,
+  rpcExposedMethodNames,
+  rpcMethodPolicy,
+  type RpcCallerPolicy,
+  type ConnectionlessRpcClient,
+  type ConnectionlessRpcConfig,
+} from "./connectionless.js";
+export { httpClientTransport, type HttpClientTransportConfig } from "./transports/httpClient.js";
 export {
   authenticatedCaller,
   envelopeFromMessage,

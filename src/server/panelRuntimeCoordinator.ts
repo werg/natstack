@@ -10,7 +10,12 @@ import type {
   RuntimeLeaseSnapshot,
   RuntimeLeaseVersion,
 } from "@natstack/shared/panel/panelLease";
-import { asPanelEntityId, asPanelSlotId } from "@natstack/shared/panel/ids";
+import {
+  asPanelEntityId,
+  asPanelSlotId,
+  isPanelEntityId,
+  isPanelSlotId,
+} from "@natstack/shared/panel/ids";
 import type { PanelEntityId, PanelSlotId } from "@natstack/shared/panel/ids";
 
 const LEASE_RECONNECT_GRACE_MS = 3000;
@@ -32,6 +37,12 @@ export class PanelRuntimeCoordinator {
   private leases = new Map<PanelEntityId, PanelRuntimeLease>();
   private clients = new Map<string, ClientSession>();
   private expiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
+   * Slots that must stay loaded on their serving host (≥1 CDP client attached).
+   * Leases for a pinned slot carry `keepLoaded: true` and are refused for
+   * release/unload/expiry so mid-automation operations can't yank the page.
+   */
+  private keptLoadedSlots = new Set<PanelSlotId>();
   private closeConnection: RuntimeLeaseClose | null = null;
   private leaseChangeListeners = new Set<(event: PanelRuntimeLeaseChangedEvent) => void>();
 
@@ -46,6 +57,35 @@ export class PanelRuntimeCoordinator {
     return () => {
       this.leaseChangeListeners.delete(listener);
     };
+  }
+
+  /**
+   * Pin a slot loaded while a CDP client is connected. Re-stamps any existing
+   * lease(s) for the slot with `keepLoaded: true` and emits a lease change so
+   * the serving host's tracker keeps the panel loaded (and skips eviction).
+   */
+  pinSlotLoaded(slotId: string): void {
+    const normalizedSlotId = asPanelSlotId(slotId);
+    if (this.keptLoadedSlots.has(normalizedSlotId)) return;
+    this.keptLoadedSlots.add(normalizedSlotId);
+    this.restampSlotKeepLoaded(normalizedSlotId, true);
+  }
+
+  /** Release the keep-loaded pin; normal unload/eviction resumes for the slot. */
+  unpinSlotLoaded(slotId: string): void {
+    const normalizedSlotId = asPanelSlotId(slotId);
+    if (!this.keptLoadedSlots.delete(normalizedSlotId)) return;
+    this.restampSlotKeepLoaded(normalizedSlotId, false);
+  }
+
+  private restampSlotKeepLoaded(slotId: PanelSlotId, keepLoaded: boolean): void {
+    for (const [entityId, lease] of this.leases) {
+      if (lease.slotId !== slotId) continue;
+      if ((lease.keepLoaded ?? false) === keepLoaded) continue;
+      const next: PanelRuntimeLease = { ...lease, keepLoaded };
+      this.leases.set(entityId, next);
+      this.emitChange(entityId, slotId, lease, next, "acquired");
+    }
   }
 
   registerClient(input: PanelHostRegistration): void {
@@ -98,7 +138,10 @@ export class PanelRuntimeCoordinator {
   }
 
   getLease(runtimeEntityId: string): PanelRuntimeLease | null {
-    return this.leases.get(asPanelEntityId(runtimeEntityId)) ?? null;
+    // Called with arbitrary caller ids during routing (panels, workers, DOs). The lease map is keyed
+    // by panel ENTITY ids, so a non-panel id simply has no panel lease — return null, don't throw.
+    if (!isPanelEntityId(runtimeEntityId)) return null;
+    return this.leases.get(runtimeEntityId) ?? null;
   }
 
   hasClientHostConnection(hostConnectionId: string, ownerCallerId?: string): boolean {
@@ -232,6 +275,12 @@ export class PanelRuntimeCoordinator {
     const entityId = asPanelEntityId(runtimeEntityId);
     const existing = this.leases.get(entityId);
     if (!existing || existing.connectionId !== connectionId) return;
+    // Keep-loaded pin: a CDP client is mid-automation on this slot. Refuse the
+    // drop so the lease stays in the snapshot and the host keeps the panel.
+    if (this.keptLoadedSlots.has(existing.slotId)) {
+      this.clearExpiry(entityId);
+      return;
+    }
     this.clearExpiry(entityId);
     this.leases.delete(entityId);
     this.emitChange(entityId, existing.slotId, existing, null, reason);
@@ -242,6 +291,8 @@ export class PanelRuntimeCoordinator {
 
   unloadSlot(slotId: string): PanelRuntimeLease | null {
     const normalizedSlotId = asPanelSlotId(slotId);
+    // Keep-loaded pin wins over an explicit unload while CDP automation is live.
+    if (this.keptLoadedSlots.has(normalizedSlotId)) return null;
     for (const [entityId, lease] of this.leases) {
       if (lease.slotId !== normalizedSlotId) continue;
       this.clearExpiry(entityId);
@@ -259,7 +310,10 @@ export class PanelRuntimeCoordinator {
   }
 
   retireRuntimeEntity(runtimeEntityId: string): void {
-    const entityId = asPanelEntityId(runtimeEntityId);
+    // Runs for EVERY retiring entity (panels, workers, DOs — see runtimeEntityCleanup). Only panel
+    // entities can hold a panel lease, so a non-panel id has nothing to retire here — return, don't throw.
+    if (!isPanelEntityId(runtimeEntityId)) return;
+    const entityId = runtimeEntityId;
     const existing = this.leases.get(entityId);
     if (!existing) return;
     this.clearExpiry(entityId);
@@ -316,11 +370,17 @@ export class PanelRuntimeCoordinator {
   }
 
   resolveRouteLease(targetId: string): PanelRuntimeLease | null {
-    const entityLease = this.leases.get(asPanelEntityId(targetId));
-    if (entityLease) return entityLease;
-    const slotId = asPanelSlotId(targetId);
-    for (const lease of this.leases.values()) {
-      if (lease.slotId === slotId) return lease;
+    // The router probes EVERY target id here — panel entity, panel slot, worker, or do. Branch on the
+    // id KIND (a non-panel target has no panel lease) instead of laundering it through asPanel*, which
+    // now throws. A panel entity id matches a lease directly; a panel slot id scans for the slot.
+    if (isPanelEntityId(targetId)) {
+      const entityLease = this.leases.get(targetId);
+      if (entityLease) return entityLease;
+    }
+    if (isPanelSlotId(targetId)) {
+      for (const lease of this.leases.values()) {
+        if (lease.slotId === targetId) return lease;
+      }
     }
     return null;
   }
@@ -360,6 +420,7 @@ export class PanelRuntimeCoordinator {
       platform: client.platform,
       supportsCdp: client.supportsCdp ?? client.platform !== "mobile",
       loadOnLeaseAssignment: client.loadOnLeaseAssignment ?? false,
+      keepLoaded: this.keptLoadedSlots.has(slotId),
       acquiredAt: Date.now(),
     };
     this.leases.set(runtimeEntityId, lease);

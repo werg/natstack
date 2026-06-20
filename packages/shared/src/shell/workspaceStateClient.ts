@@ -65,6 +65,11 @@ export interface WorkspaceStateClient {
   getSlot(slotId: PanelSlotId): Promise<SlotRow | null>;
   getSlotHistory(slotId: PanelSlotId): Promise<SlotHistoryRow[]>;
   resolveActiveEntity(id: string): Promise<EntityRecord | null>;
+  /**
+   * Durable nav→slot: the OPEN slot id whose current runtime entity is `entityId`, or null.
+   * Returns a raw string; callers brand it via `asPanelSlotId` (validated) at the use site.
+   */
+  resolveSlotByEntity(entityId: string): Promise<string | null>;
 
   createSlot(input: SlotCreateInput): Promise<void>;
   appendSlotHistory(slotId: PanelSlotId, entry: SlotHistoryEntryInput): Promise<number>;

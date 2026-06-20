@@ -62,7 +62,13 @@ export function createVcsClient(
       const topic = `vcs:head:${head}`;
       const off = events.on(`event:${topic}`, (ev) => onAdvance(ev.payload as VcsHeadAdvance));
       void callMain("events.subscribe", topic).catch(() => {});
-      return off;
+      // Pair the server-side subscription with an unsubscribe on teardown.
+      // A DO push-subscriber persists (no socket to reap it), so an un-torn-down
+      // `events.subscribe` would leak and keep the server pushing to a corpse.
+      return () => {
+        off();
+        void callMain("events.unsubscribe", topic).catch(() => {});
+      };
     },
   };
 }

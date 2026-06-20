@@ -113,6 +113,12 @@ function createWorkspaceMemory() {
         cleanupComplete: false,
       };
     },
+    async resolveSlotByEntity(entityId) {
+      for (const s of slots.values()) {
+        if (s.current_entity_id === entityId && s.closed_at == null) return s.slot_id;
+      }
+      return null;
+    },
     async createSlot(input: SlotCreateInput) {
       slots.set(input.slotId, {
         slot_id: input.slotId,

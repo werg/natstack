@@ -801,9 +801,31 @@ export class PanelOrchestrator implements BridgePanelLifecycle, PanelHost {
         JSON.stringify(entries)
       );
       if (entries && entries.length > 0) {
+        // Diagnostic: identical entries (same source + stateArgs) each spawn a SEPARATE root panel —
+        // almost always a stale/duplicated initPanels config. Surface it loudly, and stamp each create
+        // line with index/total + stateArgs so the duplication is visible even when only the create
+        // lines (not the config line above) are captured.
+        const entryKey = (e: { source: string; stateArgs?: Record<string, unknown> }): string =>
+          `${e.source} ${JSON.stringify(e.stateArgs ?? null)}`;
+        const counts = new Map<string, number>();
+        for (const e of entries) counts.set(entryKey(e), (counts.get(entryKey(e)) ?? 0) + 1);
+        const dupes = [...counts].filter(([, n]) => n > 1);
+        if (dupes.length > 0) {
+          log.warn(
+            `[initializePanelTree] DUPLICATE initPanels entries (${entries.length} total): ` +
+              dupes.map(([k, n]) => `${n}× {${k}}`).join("; ") +
+              ` — each creates its own root panel; this is almost certainly a stale/duplicated ` +
+              `initPanels config (check the setInitPanels writer / workspace setup).`
+          );
+        }
+        let index = 0;
         for (const entry of entries) {
+          index += 1;
           try {
-            log.info(`[initializePanelTree] Creating init panel: ${entry.source}`);
+            log.info(
+              `[initializePanelTree] Creating init panel ${index}/${entries.length}: ${entry.source} ` +
+                `stateArgs=${JSON.stringify(entry.stateArgs ?? null)}`
+            );
             await this.createInitPanel(entry.source, entry.stateArgs);
           } catch (err) {
             console.error(`[PanelOrchestrator] Failed to create init panel ${entry.source}:`, err);
@@ -1575,6 +1597,8 @@ export class PanelOrchestrator implements BridgePanelLifecycle, PanelHost {
     };
     if (this.assignedPanelIdleMs !== null && this.assignedPanelIdleMs > 0) {
       next.idleTimer = setTimeout(() => {
+        // Pinned by an active CDP client → exempt from idle unload.
+        if (this.registry.getRuntimeLease(panelId)?.keepLoaded) return;
         void this.unloadAssignedPanelResource(panelId, "idle-timeout");
       }, this.assignedPanelIdleMs);
     }
@@ -1592,6 +1616,8 @@ export class PanelOrchestrator implements BridgePanelLifecycle, PanelHost {
     while (this.assignedPanelResources.size > this.maxAssignedPanelViews) {
       const oldest = [...this.assignedPanelResources.entries()]
         .filter(([panelId]) => panelId !== keepPanelId)
+        // Never evict a panel pinned by an active CDP client (mid-automation).
+        .filter(([panelId]) => !this.registry.getRuntimeLease(panelId)?.keepLoaded)
         .sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt)[0]?.[0];
       if (!oldest) return;
       await this.unloadAssignedPanelResource(oldest, "resource-cap");

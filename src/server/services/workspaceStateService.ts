@@ -75,6 +75,10 @@ export function createWorkspaceStateService(deps: WorkspaceStateServiceDeps): Se
           const [id] = args as [string];
           return await dispatch<EntityRecord | null>("entityResolveActive", [id]);
         }
+        case "slot.resolveByEntity": {
+          const [entityId] = args as [string];
+          return await dispatch<string | null>("slotResolveByEntity", [entityId]);
+        }
         case "slot.create": {
           const [input] = args as [unknown];
           await dispatch<undefined>("slotCreate", [input]);

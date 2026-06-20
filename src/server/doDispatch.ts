@@ -17,6 +17,7 @@
 import { constantTimeStringEqual, type TokenManager } from "@natstack/shared/tokenManager";
 import { assertPresent } from "../lintHelpers";
 import { isInternalDOSource } from "./internalDOs/internalDoLoader.js";
+import { HELD_CONNECTION_DISPATCHER } from "./workerdRpcRelay.js";
 
 // ---------------------------------------------------------------------------
 // DORef — source-scoped Durable Object identity
@@ -68,6 +69,9 @@ export interface PostToDOWithTokenDeps {
   tokenManager: TokenManager;
   workerdUrl: string;
   workerdGatewayToken: string;
+  /** Held-connection call (EvalDO `executeRun`): no-`headersTimeout` dispatcher so the held fetch
+   *  isn't reaped at undici's ~300s while the DO holds the response for a long run. */
+  heldConnection?: boolean;
   /**
    * Per-process dispatch secret stamped onto internal `/_w/` dispatches as
    * the `X-NatStack-Dispatch-Secret` header. The auto-generated workerd router
@@ -131,7 +135,8 @@ export async function postToDOWithToken(
     method: "POST",
     headers,
     body: JSON.stringify(envelope),
-  });
+    ...(deps.heldConnection ? { dispatcher: HELD_CONNECTION_DISPATCHER } : {}),
+  } as RequestInit);
 
   if (!res.ok) {
     const text = await res.text();
@@ -313,17 +318,36 @@ export class DODispatch {
   }
 
   /**
+   * Like `dispatch`, but for a HELD long-running handler (the EvalDO's `executeRun`): the server→DO
+   * fetch uses a no-`headersTimeout` dispatcher so it isn't reaped at undici's ~300s while the DO
+   * holds the response. Pair with the DO disabling its own `respond` reaper (`respondTimeoutMs`).
+   */
+  async dispatchHeld(ref: DORef, method: string, ...args: unknown[]): Promise<unknown> {
+    // A held call is INTENTIONALLY long (the eval runs for its whole duration), so warn at a coarse
+    // 5-min cadence — enough to confirm liveness without spamming ~180 lines over a 30-min run.
+    return this.withSlowWarning(
+      `${doRefKey(ref)}.${method} (held)`,
+      () => this.dispatchImpl(ref, method, args, true),
+      300_000
+    );
+  }
+
+  /**
    * Slow-call watchdog: a DO call that never returns (loader stall, deadlock,
    * dead workerd socket) otherwise hangs its caller with zero output. Warns
-   * every 10s while the call is pending so the offender is named in the log.
+   * every `intervalMs` (default 10s) while the call is pending so the offender is named in the log.
    */
-  private async withSlowWarning<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  private async withSlowWarning<T>(
+    label: string,
+    fn: () => Promise<T>,
+    intervalMs = 10_000
+  ): Promise<T> {
     const startedAt = Date.now();
     const timer = setInterval(() => {
       console.warn(
         `[DODispatch] ${label} still pending after ${Math.round((Date.now() - startedAt) / 1000)}s`
       );
-    }, 10_000);
+    }, intervalMs);
     timer.unref?.();
     try {
       return await fn();
@@ -332,19 +356,30 @@ export class DODispatch {
     }
   }
 
-  private async dispatchImpl(ref: DORef, method: string, args: unknown[]): Promise<unknown> {
+  private async dispatchImpl(
+    ref: DORef,
+    method: string,
+    args: unknown[],
+    held = false
+  ): Promise<unknown> {
     await Promise.resolve(this.beforeDispatchFn?.(ref));
 
-    // Token-based path: use postToDOWithToken when tokenManager + getWorkerdUrl are set
+    // Token-based path: use postToDOWithToken when tokenManager + getWorkerdUrl are set.
+    // `DODispatch.dispatch` is the SERVER's internal service→DO channel (eval.run,
+    // workspace methods, …), so the caller is always the server — stamp it so the
+    // DO's converged envelope dispatch surfaces `callerKind: "server"` (e.g. the
+    // EvalDO server-only gate). Mirrors dispatchLifecycle/dispatchAlarm.
     if (this.tokenManager && this.getWorkerdUrl && this.getWorkerdGatewayToken) {
       const buildDeps = (): PostToDOWithTokenDeps => ({
         tokenManager: assertPresent(this.tokenManager),
         workerdUrl: assertPresent(this.getWorkerdUrl)(),
         workerdGatewayToken: assertPresent(this.getWorkerdGatewayToken)(),
         dispatchSecret: this.getDispatchSecret ? this.getDispatchSecret() : undefined,
+        ...(held ? { heldConnection: true } : {}),
       });
+      const serverCaller: DOCallerEnvelope = { callerId: "main", callerKind: "server" };
       try {
-        return await postToDOWithToken(ref, method, args, buildDeps());
+        return await postToDOWithToken(ref, method, args, buildDeps(), "main", serverCaller);
       } catch (err) {
         if (this.ensureDOFn && this.isRetryable(err)) {
           console.warn(
@@ -352,7 +387,7 @@ export class DODispatch {
           );
           await this.ensureDOFn(ref.source, ref.className, ref.objectKey);
           await Promise.resolve(this.beforeDispatchFn?.(ref));
-          return await postToDOWithToken(ref, method, args, buildDeps());
+          return await postToDOWithToken(ref, method, args, buildDeps(), "main", serverCaller);
         }
         throw err;
       }

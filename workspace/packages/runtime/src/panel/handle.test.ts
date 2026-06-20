@@ -150,6 +150,26 @@ describe("PanelHandle", () => {
     });
   });
 
+  it("defaults panel opens under self but treats parentId null as root", async () => {
+    const { _initPanelHandleBridge, openPanel } = await import("./handle.js");
+    const rpcCall = createRpcCall();
+    _initPanelHandleBridge({ call: rpcCall, on: vi.fn() } as never, {
+      selfId: "panel-self",
+    });
+
+    await openPanel("panels/child");
+    await openPanel("panels/root", { parentId: null });
+
+    expect(rpcCall).toHaveBeenCalledWith("main", "panelTree.create", [
+      "panels/child",
+      { parentId: "panel-self" },
+    ]);
+    expect(rpcCall).toHaveBeenCalledWith("main", "panelTree.create", [
+      "panels/root",
+      { parentId: null },
+    ]);
+  });
+
   it("hydrates rediscovered browser handles with CDP automation", async () => {
     const { _initPanelHandleBridge, listPanels } = await import("./handle.js");
     _initPanelHandleBridge({ call: createRpcCall(), on: vi.fn() } as never);
