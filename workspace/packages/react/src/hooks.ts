@@ -37,10 +37,10 @@ export function usePanel() {
  * ```
  */
 export function usePanelTheme(): ThemeAppearance {
-  const [theme, setTheme] = useState<ThemeAppearance>(() => runtime.getTheme());
+  const [theme, setTheme] = useState<ThemeAppearance>(() => runtime.panel.getTheme());
 
   useEffect(() => {
-    const unsubscribe = runtime.onThemeChange((nextTheme) => {
+    const unsubscribe = runtime.panel.onThemeChange((nextTheme) => {
       setTheme(nextTheme);
     });
     return unsubscribe;
@@ -101,7 +101,7 @@ export function usePanelPartition(): string | null {
   const [partition, setPartition] = useState<string | null>(null);
 
   useEffect(() => {
-    runtime
+    runtime.panel
       .getInfo()
       .then((info) => setPartition(info.partition))
       .catch(console.error);
@@ -196,7 +196,7 @@ export function usePanelFocus(): boolean {
   const [isFocused, setIsFocused] = useState(false);
 
   useEffect(() => {
-    const unsubscribe = runtime.onFocus(() => {
+    const unsubscribe = runtime.panel.onFocus(() => {
       setIsFocused(true);
     });
 
@@ -240,7 +240,7 @@ export function useConnectionError(): { code: number; reason: string } | null {
   const [error, setError] = useState<{ code: number; reason: string } | null>(null);
 
   useEffect(() => {
-    return runtime.onConnectionError((err) => {
+    return runtime.panel.onConnectionError((err) => {
       setError(err);
     });
   }, []);

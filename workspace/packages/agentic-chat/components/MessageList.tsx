@@ -205,8 +205,6 @@ export interface MessageListProps {
   messageTypeComponents?: Map<string, MessageTypeComponentEntry>;
   chat?: Record<string, unknown>;
   browserHandoffCaller?: BrowserHandoffCaller;
-  scope?: Record<string, unknown>;
-  scopes?: Record<string, unknown>;
   hasMoreHistory?: boolean;
   loadingMore?: boolean;
   onLoadEarlierMessages?: () => void;
@@ -244,8 +242,6 @@ export const MessageList = React.memo(function MessageList({
   messageTypeComponents,
   chat,
   browserHandoffCaller,
-  scope,
-  scopes,
   hasMoreHistory,
   loadingMore,
   onLoadEarlierMessages,
@@ -519,7 +515,7 @@ export const MessageList = React.memo(function MessageList({
       if (customRenderInlineGroup) {
         return <Flex className="message-item" direction="column">{customRenderInlineGroup(item.inlineItems)}</Flex>;
       }
-      return <Flex className="message-item" direction="column"><InlineGroup key={item.key} items={item.inlineItems} messageTypeComponents={messageTypeComponents} chat={chat} scope={scope} scopes={scopes} onInterrupt={handleTypingInterrupt} onCancelInvocation={onCancelInvocation} /></Flex>;
+      return <Flex className="message-item" direction="column"><InlineGroup key={item.key} items={item.inlineItems} messageTypeComponents={messageTypeComponents} chat={chat} onInterrupt={handleTypingInterrupt} onCancelInvocation={onCancelInvocation} /></Flex>;
     }
 
     const { msg, index: msgIndex } = item;
@@ -561,8 +557,6 @@ export const MessageList = React.memo(function MessageList({
           messageTypeComponents={messageTypeComponents}
           chat={chat}
           browserHandoffCaller={browserHandoffCaller}
-          scope={scope}
-          scopes={scopes}
           onInterrupt={handleInterruptMessage}
           onCopy={handleCopyMessage}
           onClearCopied={handleClearCopiedMessage}
@@ -573,7 +567,7 @@ export const MessageList = React.memo(function MessageList({
         />
       </Flex>
     );
-  }, [getSenderInfo, inlineUiComponents, messageTypeComponents, chat, browserHandoffCaller, scope, scopes, mdxActions, allParticipants, messagesById, onReply,
+  }, [getSenderInfo, inlineUiComponents, messageTypeComponents, chat, browserHandoffCaller, mdxActions, allParticipants, messagesById, onReply,
       handleInterruptMessage, handleCopyMessage, handleClearCopiedMessage, handleTypingInterrupt, onCancelInvocation, onFocusPanel, onReloadPanel,
       customRenderMessage, customRenderInlineGroup]);
 
@@ -628,7 +622,7 @@ export const MessageList = React.memo(function MessageList({
                   <Flex className="message-item" direction="column">
                     {customRenderInlineGroup
                       ? customRenderInlineGroup(activeTypingItems)
-                      : <InlineGroup items={activeTypingItems} messageTypeComponents={messageTypeComponents} chat={chat} scope={scope} scopes={scopes} onInterrupt={handleTypingInterrupt} onCancelInvocation={onCancelInvocation} />}
+                      : <InlineGroup items={activeTypingItems} messageTypeComponents={messageTypeComponents} chat={chat} onInterrupt={handleTypingInterrupt} onCancelInvocation={onCancelInvocation} />}
                   </Flex>
                 </div>
               )}

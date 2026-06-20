@@ -6,7 +6,7 @@
  * idempotent `start()` flow:
  *
  *   1. ensure a channel name exists (mint + persist on first run)
- *   2. connect the PubSub client (eval method advertised from day one)
+ *   2. connect the PubSub client
  *   3. register Spectrolite's custom message types
  *   4. subscribe roster + consume the event stream into the store
  *   5. if a vault is already selected: bootstrap the default agent
@@ -17,11 +17,11 @@
  */
 
 import { connectViaRpc, type PubSubClient } from "@workspace/pubsub";
-import { rpc, recoveryCoordinator, setStateArgs, slotId } from "@workspace/runtime";
+import { rpc, panel } from "@workspace/runtime";
+import { recoveryCoordinator } from "@workspace/runtime/internal/diagnostics";
 import type { ChatParticipantMetadata } from "@workspace/agentic-core";
 import type { Store } from "./store";
 import type { ChannelMessage, RosterAgent, SpectroliteState } from "./state";
-import { createEvalRuntime, type EvalRuntime } from "./evalTool";
 import {
   createAndSubscribeAgent,
   getChannelDOParticipants,
@@ -74,13 +74,8 @@ function buildAgentConfig(opts: { handle: string; repoRoot: string | null; class
   return base;
 }
 
-export interface SessionControllerHooks {
-  getDepsForEval(): Record<string, string>;
-}
-
 export class SessionController {
   private client: PubSubClient<ChatParticipantMetadata> | null = null;
-  private evalRuntime: EvalRuntime | null = null;
   private disposed = false;
   private started = false;
   /** Vault the agents were last scoped to; null until the first selection is observed. */
@@ -93,23 +88,7 @@ export class SessionController {
 
   constructor(
     private readonly store: Store<SpectroliteState>,
-    private readonly hooks: SessionControllerHooks,
   ) {}
-
-  getEvalRuntime(): EvalRuntime | null {
-    return this.evalRuntime;
-  }
-
-  /** Prefetch a doc's frontmatter dependencies into the sandbox module map
-   *  (so inline JSX + the agent's eval can resolve them). Best-effort. */
-  async prefetchDeps(deps: Record<string, string>): Promise<void> {
-    if (Object.keys(deps).length === 0) return;
-    try {
-      await this.evalRuntime?.prefetch(deps);
-    } catch (err) {
-      console.warn("[Spectrolite] dependency prefetch failed:", err);
-    }
-  }
 
   async start(): Promise<void> {
     if (this.started || this.disposed) return;
@@ -125,24 +104,15 @@ export class SessionController {
     if (!channelName) {
       channelName = newChannelName();
       this.store.setState({ channelName });
-      void setStateArgs({ channelName, contextId, repoRoot: state.repoRoot ?? undefined });
+      void panel.stateArgs.set({ channelName, contextId, repoRoot: state.repoRoot ?? undefined });
     }
-
-    this.evalRuntime = createEvalRuntime({
-      channelName,
-      contextId,
-      panelId: slotId,
-      getClient: () => this.client,
-      getDeps: () => this.hooks.getDepsForEval(),
-    });
 
     const client = connectViaRpc<ChatParticipantMetadata>({
       rpc,
       channel: channelName,
       contextId,
-      clientId: slotId,
+      clientId: panel.slotId,
       metadata: PANEL_METADATA,
-      methods: { eval: this.evalRuntime.evalTool },
       recoveryCoordinator,
     });
     this.client = client;
@@ -174,7 +144,6 @@ export class SessionController {
       clearTimeout(this.agentEnsureRetryTimer);
       this.agentEnsureRetryTimer = null;
     }
-    this.evalRuntime?.dispose();
     this.client?.close();
     this.client = null;
   }
@@ -254,7 +223,7 @@ export class SessionController {
 
   private persistInstalled(installed: InstalledAgentRecord[]): void {
     this.store.setState({ installedAgents: installed });
-    void setStateArgs({ installedAgents: installed });
+    void panel.stateArgs.set({ installedAgents: installed });
   }
 
   /**

@@ -34,8 +34,6 @@ interface MessageCardProps {
   messageTypeComponents?: Map<string, MessageTypeComponentEntry>;
   chat?: Record<string, unknown>;
   browserHandoffCaller?: BrowserHandoffCaller;
-  scope?: Record<string, unknown>;
-  scopes?: Record<string, unknown>;
   onInterrupt: (msgId: string, senderId: string) => void;
   onCopy: (msgId: string, content: string) => void;
   onClearCopied: (msgId: string) => void;
@@ -69,8 +67,6 @@ export const MessageCard = React.memo(function MessageCard({
   messageTypeComponents,
   chat = {},
   browserHandoffCaller,
-  scope = {},
-  scopes = {},
   onInterrupt,
   onCopy,
   onClearCopied,
@@ -336,8 +332,6 @@ export const MessageCard = React.memo(function MessageCard({
           payload={custom}
           entry={messageTypeComponents?.get(custom.typeId)}
           chat={chat}
-          scope={scope}
-          scopes={scopes}
         />
       </Box>
     );

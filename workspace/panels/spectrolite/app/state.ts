@@ -69,7 +69,7 @@ export interface SpectroliteState {
   // ---- editor ----
   activePath: string | null;
   recentPaths: string[];
-  /** Frontmatter-declared dependencies of the active doc (feeds inline JSX + eval imports). */
+  /** Frontmatter-declared dependencies of the active doc (feeds inline JSX imports). */
   activeDeps: Record<string, string>;
 
   // ---- co-edit surfaces ----

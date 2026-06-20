@@ -15,8 +15,10 @@ vi.mock("@workspace/runtime", () => ({
     applyEdits: vi.fn(),
     readFile: vi.fn(),
   },
-  reopen: runtimeMocks.reopen,
-  setStateArgs: runtimeMocks.setStateArgs,
+  panel: {
+    reopen: runtimeMocks.reopen,
+    stateArgs: { set: runtimeMocks.setStateArgs },
+  },
 }));
 
 function makeStore() {

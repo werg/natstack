@@ -40,7 +40,7 @@ export function useInlineUi({ messages, loadSourceFile, loadImport }: UseInlineU
             : data.source.code;
           if (!sourceCode) throw new Error(`Unable to load inline UI source for ${data.id}`);
           const sourcePath = data.source.type === "file" ? data.source.path : undefined;
-          const result = await compileComponent<import("react").ComponentType<{ props: Record<string, unknown>; chat: Record<string, unknown>; scope: Record<string, unknown>; scopes: Record<string, unknown> }>>(sourceCode, {
+          const result = await compileComponent<import("react").ComponentType<{ props: Record<string, unknown>; chat: Record<string, unknown> }>>(sourceCode, {
             sourcePath,
             loadSourceFile,
             loadImport,

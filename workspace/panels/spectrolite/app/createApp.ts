@@ -13,7 +13,8 @@
  * the only writers.
  */
 
-import { getStateArgs, setStateArgs, contextId as runtimeContextId, vcs } from "@workspace/runtime";
+import { panel, contextId as runtimeContextId, rpc, vcs } from "@workspace/runtime";
+import { createPanelSandboxConfig } from "@workspace/agentic-core";
 import { createStore, type Store } from "./store";
 import { initialState, type PendingSuggestion, type SpectroliteState } from "./state";
 import { SessionController } from "./sessionController";
@@ -21,6 +22,7 @@ import { VaultController } from "./vaultController";
 import { PublishController } from "./publishController";
 import { createViewStateStore, type ViewStateStore } from "../coedit/viewState";
 import { parseFrontmatter, diffDependencies } from "../mdx/frontmatter";
+import { prefetchDependencies } from "../mdx/depPrefetch";
 import type { Collision } from "../coedit/blockReconcile";
 import { resolveContextId, type InstalledAgentRecord } from "../bootstrap";
 
@@ -42,7 +44,7 @@ export interface SpectroliteApp {
   vaultHead: string;
   /** Open a document (vault-relative path) in the editor. */
   openFile(path: string): void;
-  /** Recompute the active doc's frontmatter dependency map (feeds inline JSX + eval). */
+  /** Recompute the active doc's frontmatter dependency map (feeds inline JSX). */
   setActiveDocSource(path: string, markdown: string): void;
   /** Mark/unmark a vault-relative path as having uncommitted edits. */
   setDirty(path: string, dirty: boolean): void;
@@ -79,7 +81,7 @@ export interface SuggestionResolution {
 export type SuggestionApplier = (resolution: SuggestionResolution) => void;
 
 export function createSpectroliteApp(): SpectroliteApp {
-  const args = getStateArgs<PersistedStateArgs>();
+  const args = panel.stateArgs.get<PersistedStateArgs>();
   const contextId = resolveContextId(args.contextId, runtimeContextId) ?? null;
   const store = createStore(initialState({
     contextId,
@@ -96,8 +98,14 @@ export function createSpectroliteApp(): SpectroliteApp {
   const viewState = createViewStateStore();
   const publish = new PublishController(vcs);
 
-  // The active doc's last-seen frontmatter deps (so inline JSX + eval imports
-  // track edits without re-parsing on every keystroke at the app layer).
+  // A panel sandbox used solely to prefetch frontmatter-declared dependencies
+  // into the panel's module map so inline JSX (LiveJsxEditor) + Preview-mode
+  // compilation can resolve them. Mirrors the local sandbox LiveJsxEditor and
+  // runtimeNamespace each build for live compile.
+  const depSandbox = createPanelSandboxConfig(rpc);
+
+  // The active doc's last-seen frontmatter deps (so inline JSX tracks edits
+  // without re-parsing on every keystroke at the app layer).
   let lastDeps: Record<string, string> = {};
   // How the active document applies a user-chosen collision resolution.
   let suggestionApplier: SuggestionApplier | null = null;
@@ -111,12 +119,12 @@ export function createSpectroliteApp(): SpectroliteApp {
     if (Object.keys(added).length === 0 && Object.keys(changed).length === 0 && removed.length === 0) return;
     lastDeps = next;
     store.setState({ activeDeps: next });
-    void session.prefetchDeps({ ...added, ...changed });
+    void prefetchDependencies(depSandbox, { ...added, ...changed }, (line) => {
+      console.info(line);
+    }).catch((err) => console.warn("[Spectrolite] dependency prefetch failed:", err));
   };
 
-  const session = new SessionController(store, {
-    getDepsForEval: () => store.getState().activeDeps,
-  });
+  const session = new SessionController(store);
 
   const vault = new VaultController(store, {
     onVaultSelected: (repoRoot) => {
@@ -147,7 +155,7 @@ export function createSpectroliteApp(): SpectroliteApp {
         ),
       }));
       lastDeps = {};
-      void setStateArgs({ openPath: path });
+      void panel.stateArgs.set({ openPath: path });
     },
     setActiveDocSource,
     setDirty(path, dirty) {

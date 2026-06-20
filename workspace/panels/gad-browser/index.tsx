@@ -13,7 +13,7 @@ import {
   Theme,
 } from "@radix-ui/themes";
 import { ReloadIcon } from "@radix-ui/react-icons";
-import { gad, useStateArgs } from "@workspace/runtime";
+import { gad, panel } from "@workspace/runtime";
 import { useIsMobile, usePanelTheme } from "@workspace/react";
 
 interface StateArgs {
@@ -65,7 +65,7 @@ function DataTable({ rows, columns }: { rows: Row[]; columns: string[] }) {
 function App() {
   const appearance = usePanelTheme();
   const isMobile = useIsMobile();
-  const stateArgs = useStateArgs<StateArgs>();
+  const stateArgs = panel.stateArgs.use<StateArgs>();
   const [branches, setBranches] = useState<Row[]>([]);
   const [selectedBranchId, setSelectedBranchId] = useState<string | null>(
     stateArgs.branchId ?? null

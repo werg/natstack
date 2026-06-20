@@ -15,7 +15,8 @@ export interface InstalledAgentRecord {
   key: string;
   source: string;
   className: string;
-  /** Per-agent subscription config (model/effort/etc.), excluding handle. */
+  /** Per-agent config (model/effort/approval/respondPolicy/…) used to (re)create
+   *  the agent — seeded into its creation stateArgs, NOT the subscription. */
   config?: Record<string, unknown>;
 }
 

@@ -11,7 +11,7 @@ import {
   PaperPlaneIcon,
   ChevronRightIcon,
 } from "@radix-ui/react-icons";
-import { buildPanelLink, onFocus, workspace } from "@workspace/runtime";
+import { buildPanelLink, panel, workspace } from "@workspace/runtime";
 import { useIsMobile } from "@workspace/react";
 import { mountAboutPanel, AboutPage, Section } from "@workspace/about-shared/ui";
 import type { WorkspaceTree, WorkspaceNode } from "@workspace/runtime";
@@ -79,7 +79,7 @@ function NewPanelPage() {
 
   useEffect(() => {
     void fetchData();
-    return onFocus(() => void fetchData());
+    return panel.onFocus(() => void fetchData());
   }, [fetchData]);
 
   const handleNewChat = useCallback(() => {

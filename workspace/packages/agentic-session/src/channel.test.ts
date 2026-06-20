@@ -70,6 +70,9 @@ describe("subscribeHeadlessAgent — unified contract", () => {
       className: "AiChatWorker",
       key: "obj-1",
       contextId: "ctx-1",
+      // Per-agent config is seeded from creation stateArgs — here the full
+      // subscriptionConfig (headless full-auto approval, no extraConfig).
+      stateArgs: { agentConfig: { approvalLevel: 2 } },
     });
     expect(captured.subscribeTarget).toBe("do:workers/agent-worker:AiChatWorker:obj-1");
     expect(result.entityId).toBe("do:workers/agent-worker:AiChatWorker:obj-1");
@@ -123,8 +126,8 @@ describe("subscribeHeadlessAgent — unified contract", () => {
     expect(captured.config!["systemPromptMode"]).toBeUndefined();
   });
 
-  it("sets full-auto approval (the only headless-specific channel config)", async () => {
-    const captured: { config?: Record<string, unknown> } = {};
+  it("seeds full-auto approval into the agent's creation config (per-agent), not the subscription", async () => {
+    const captured: { config?: Record<string, unknown>; createSpec?: Record<string, unknown> } = {};
     await subscribeHeadlessAgent({
       rpcCall: makeRpcCall(captured),
       source: "workers/agent-worker",
@@ -134,11 +137,16 @@ describe("subscribeHeadlessAgent — unified contract", () => {
       contextId: "ctx-1",
     });
 
-    expect(captured.config!["approvalLevel"]).toBe(2);
+    const agentConfig = (
+      captured.createSpec!["stateArgs"] as { agentConfig: Record<string, unknown> }
+    ).agentConfig;
+    expect(agentConfig["approvalLevel"]).toBe(2);
+    // Settings no longer ride the (membership-only) subscription.
+    expect(captured.config!["approvalLevel"]).toBeUndefined();
   });
 
-  it("forwards extraConfig pass-through values without smuggling in a toolAllowlist", async () => {
-    const captured: { config?: Record<string, unknown> } = {};
+  it("seeds extraConfig settings into the creation config, not the subscription, and no toolAllowlist", async () => {
+    const captured: { config?: Record<string, unknown>; createSpec?: Record<string, unknown> } = {};
     await subscribeHeadlessAgent({
       rpcCall: makeRpcCall(captured),
       source: "workers/agent-worker",
@@ -149,9 +157,14 @@ describe("subscribeHeadlessAgent — unified contract", () => {
       extraConfig: { model: "anthropic:claude-opus-4-5", thinkingLevel: "high" },
     });
 
-    expect(captured.config!["model"]).toBe("anthropic:claude-opus-4-5");
-    expect(captured.config!["thinkingLevel"]).toBe("high");
+    const agentConfig = (
+      captured.createSpec!["stateArgs"] as { agentConfig: Record<string, unknown> }
+    ).agentConfig;
+    expect(agentConfig["model"]).toBe("anthropic:claude-opus-4-5");
+    expect(agentConfig["thinkingLevel"]).toBe("high");
+    expect(captured.config!["model"]).toBeUndefined();
     expect(captured.config!["toolAllowlist"]).toBeUndefined();
+    expect(agentConfig["toolAllowlist"]).toBeUndefined();
   });
 
   it("forwards prompt pass-through values when explicitly provided", async () => {
@@ -171,6 +184,28 @@ describe("subscribeHeadlessAgent — unified contract", () => {
 
     expect(captured.config!["systemPrompt"]).toBe("Headless prompt");
     expect(captured.config!["systemPromptMode"]).toBe("replace-natstack");
+  });
+
+  it("preserves worker-specific extras on the subscription while stripping settings", async () => {
+    const captured: { config?: Record<string, unknown> } = {};
+    await subscribeHeadlessAgent({
+      rpcCall: makeRpcCall(captured),
+      source: "workers/test-agent",
+      className: "TestAgentWorker",
+      objectKey: "obj-1",
+      channelId: "ch-1",
+      contextId: "ctx-1",
+      extraConfig: {
+        model: "anthropic:claude-opus-4-5", // a setting — stripped
+        deterministicResponse: true, // worker extras — survive
+        responseText: "hi",
+      },
+    });
+
+    expect(captured.config!["deterministicResponse"]).toBe(true);
+    expect(captured.config!["responseText"]).toBe("hi");
+    expect(captured.config!["model"]).toBeUndefined();
+    expect(captured.config!["approvalLevel"]).toBeUndefined();
   });
 });
 

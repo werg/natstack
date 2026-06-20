@@ -15,6 +15,14 @@
  */
 import type { RpcClient } from "@natstack/rpc";
 import { createExtensionProxy } from "@natstack/extension";
+// Resolve the host RPC client through the module system, NOT
+// `globalThis.__natstackRequire__`. A normal import is externalized by the build
+// and resolved via the bundle's own require — which maps to the panel runtime in
+// a panel and to the EvalDO's per-owner runtime in eval. Reaching for the global
+// require only works in panels (where `@workspace/runtime` sits in the per-isolate
+// global map); the eval sandbox keeps each owner's runtime in a per-object map, so
+// the global lookup misses there.
+import { rpc as runtimeRpc } from "@workspace/runtime";
 // ---- Types (mirrored from @natstack/browser-data for browser context) ----
 export type BrowserName = "firefox" | "zen" | "chrome" | "chrome-beta" | "chrome-dev" | "chrome-canary" | "chromium" | "edge" | "edge-beta" | "edge-dev" | "brave" | "vivaldi" | "opera" | "opera-gx" | "arc" | "safari";
 export type BrowserFamily = "firefox" | "chromium" | "safari";
@@ -215,24 +223,15 @@ export function createBrowserDataApi(rpc: Pick<RpcClient, "call" | "stream">): B
     // every call goes through extensions.invoke.
     return createExtensionProxy<BrowserDataApi>(rpc, BROWSER_DATA_EXTENSION, () => false);
 }
-// Auto-initialize using the runtime's RPC client via __natstackRequire__
-// (the module system for panel bundles and eval/inline_ui blocks).
-// Routing to the correct backend (Electron IPC vs server WebSocket) is
-// handled by the panel transport layer — callers don't need to know
-// where browser-data lives.
+// Auto-initialize from the host runtime's RPC client (imported above). Routing
+// to the correct backend (Electron IPC vs server WebSocket vs eval DO) is handled
+// by the runtime/transport layer — callers don't need to know where browser-data
+// lives. Lazy so the API is built on first use, after the runtime is ready.
 let _browserData: BrowserDataApi | undefined;
 export function getBrowserData(): BrowserDataApi {
     if (_browserData)
         return _browserData;
-    const require = (globalThis as Record<string, unknown>)["__natstackRequire__"] as ((id: string) => {
-        rpc: Pick<RpcClient, "call" | "stream">;
-    }) | undefined;
-    if (!require) {
-        throw new Error("browserData requires __natstackRequire__ (panel runtime). " +
-            "In other contexts, use: createBrowserDataApi(rpc)");
-    }
-    const { rpc } = require("@workspace/runtime");
-    _browserData = createBrowserDataApi(rpc);
+    _browserData = createBrowserDataApi(runtimeRpc);
     return _browserData;
 }
 /** Pre-initialized browser data API (lazy, uses runtime's RPC bridge) */

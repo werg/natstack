@@ -6,13 +6,14 @@
  * directly — no cross-context navigation needed.
  */
 
-import { contextId, rpc, recoveryCoordinator, focusPanel, useStateArgs, getStateArgs, setStateArgs, buildPanelLink, createDurableObjectServiceClient, slotId } from "@workspace/runtime";
+import { contextId, rpc, panel, buildPanelLink, createDurableObjectServiceClient } from "@workspace/runtime";
+import { recoveryCoordinator } from "@workspace/runtime/internal/diagnostics";
 import { usePanelTheme } from "@workspace/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Flex, Text, Theme } from "@radix-ui/themes";
 import { AgenticChat, ErrorBoundary } from "@workspace/agentic-chat";
-import type { ConnectionConfig, AgenticChatActions, ToolProvider, ToolProviderDeps } from "@workspace/agentic-chat";
-import { createPanelSandboxConfig, buildEvalTool } from "@workspace/agentic-core";
+import type { ConnectionConfig, AgenticChatActions, ToolProvider } from "@workspace/agentic-chat";
+import { createPanelSandboxConfig } from "@workspace/agentic-core";
 import type { AvailableAgent, ModelCatalog, AgentSubscriptionConfig, ConnectProviderResult } from "@workspace/agentic-core";
 import { toPanelConnectRequest } from "@workspace/model-catalog/providerConnect";
 import {
@@ -24,6 +25,7 @@ import { findMatchingUrlAudience } from "@natstack/shared/credentials/urlAudienc
 import type { UrlAudience } from "@natstack/shared/credentials/urlAudience";
 import type { DurableObjectServiceClient } from "@workspace/runtime";
 import { appendInstalledAgent, resolveChatContextId } from "./bootstrap.js";
+import { createAndSubscribeAgent } from "./agentLifecycle.js";
 
 function detectHostPlatform(): "mobile" | "electron" {
   const explicitPlatform = (globalThis as { __natstackHostPlatform?: unknown }).__natstackHostPlatform;
@@ -167,44 +169,6 @@ interface ChatStateArgs {
   actionBarMaxHeight?: number | null;
 }
 
-/** Create the agent DO entity (or reactivate it if it already exists), then
- *  subscribe it to the channel. Two explicit steps so the entity is created
- *  by name via `runtime.createEntity` rather than as a side effect of dispatch. */
-async function createAndSubscribeAgent(args: {
-  source: string;
-  className: string;
-  key: string;
-  channelId: string;
-  channelContextId: string;
-  config?: Record<string, unknown>;
-  replay?: boolean;
-}): Promise<{ ok: boolean; participantId?: string }> {
-  if (!args.channelContextId) {
-    throw new Error("Cannot subscribe an agent DO without a context ID");
-  }
-  const handle = await rpc.call<{ targetId: string }>(
-    "main",
-    "runtime.createEntity",
-    [{
-      kind: "do",
-      source: args.source,
-      className: args.className,
-      key: args.key,
-      contextId: args.channelContextId,
-    }],
-  );
-  return rpc.call<{ ok: boolean; participantId?: string }>(
-    handle.targetId,
-    "subscribeChannel",
-    [{
-      channelId: args.channelId,
-      contextId: args.channelContextId,
-      config: args.config,
-      replay: args.replay,
-    }],
-  );
-}
-
 /** Unsubscribe a DO from a channel via unified RPC. */
 async function unsubscribeDOFromChannel(
   source: string,
@@ -222,7 +186,7 @@ async function unsubscribeDOFromChannel(
 
 export default function ChatPanel() {
   const theme = usePanelTheme();
-  const stateArgs = useStateArgs<ChatStateArgs>();
+  const stateArgs = panel.stateArgs.use<ChatStateArgs>();
   const resolvedContextId = resolveChatContextId(stateArgs.contextId, contextId);
   const initialPromptCaptured = useRef(stateArgs.initialPrompt);
   const modelSettingsServiceRef = useRef<DurableObjectServiceClient | null>(null);
@@ -287,7 +251,7 @@ export default function ChatPanel() {
         config: perAgentConfig,
       }];
 
-      void setStateArgs({ channelName, contextId: resolvedContextId, installedAgents: installed });
+      void panel.stateArgs.set({ channelName, contextId: resolvedContextId, installedAgents: installed });
 
       const subscribeConfig: Record<string, unknown> = {
         model: defaultModel,
@@ -395,7 +359,7 @@ export default function ChatPanel() {
 
   // Build ConnectionConfig from runtime
   const config: ConnectionConfig = {
-    clientId: slotId,
+    clientId: panel.slotId,
     rpc,
     recoveryCoordinator,
   };
@@ -405,11 +369,11 @@ export default function ChatPanel() {
   }, []);
 
   const handleFocusPanel = useCallback((panelId: string) => {
-    void focusPanel(panelId);
+    void panel.focusPanel(panelId);
   }, []);
 
   const handleReloadPanel = useCallback(async (panelId: string) => {
-    void focusPanel(panelId);
+    void panel.focusPanel(panelId);
   }, []);
 
   const handleActionBarFileChange = useCallback((value: {
@@ -417,7 +381,7 @@ export default function ChatPanel() {
     props?: Record<string, unknown>;
     maxHeight?: number;
   }) => {
-    void setStateArgs({
+    void panel.stateArgs.set({
       actionBarFile: value.path,
       actionBarProps: value.path ? (value.props ?? null) : null,
       actionBarMaxHeight: value.path ? (value.maxHeight ?? null) : null,
@@ -488,7 +452,7 @@ export default function ChatPanel() {
   const buildSubscribeConfig = useCallback((handle: string, config?: AgentSubscriptionConfig) => {
     const perAgent: Record<string, unknown> = { ...(config ?? {}) };
     delete perAgent["handle"];
-    const globalConfig = getStateArgs<ChatStateArgs>().agentConfig ?? {};
+    const globalConfig = panel.stateArgs.get<ChatStateArgs>().agentConfig ?? {};
     const subscribeConfig: Record<string, unknown> = {
       model: workspaceDefaultModelRef ?? DEFAULT_AGENT_MODEL_REF,
       ...globalConfig,
@@ -551,7 +515,7 @@ export default function ChatPanel() {
     // Persist into stateArgs.installedAgents so the agent rehydrates on reload.
     // Read the latest snapshot (rather than the captured `stateArgs`) to avoid
     // clobbering concurrent additions.
-    const currentArgs = getStateArgs<ChatStateArgs>();
+    const currentArgs = panel.stateArgs.get<ChatStateArgs>();
     const nextInstalled = appendInstalledAgent(currentArgs.installedAgents, {
       agentId: className,
       handle,
@@ -560,7 +524,7 @@ export default function ChatPanel() {
       className,
       ...(Object.keys(perAgent).length > 0 ? { config: perAgent } : {}),
     });
-    await setStateArgs({ installedAgents: nextInstalled });
+    await panel.stateArgs.set({ installedAgents: nextInstalled });
     return { agentId: source, handle };
   }, [availableAgents, buildSubscribeConfig, persistWorkspaceDefaultModel]);
 
@@ -606,7 +570,7 @@ export default function ChatPanel() {
 
     // Rewrite the matching persisted record (matched by old objectKey) so reload
     // rehydrates the new model rather than the old one.
-    const currentArgs = getStateArgs<ChatStateArgs>();
+    const currentArgs = panel.stateArgs.get<ChatStateArgs>();
     const newRecord = {
       agentId: className,
       handle,
@@ -620,7 +584,7 @@ export default function ChatPanel() {
     const nextInstalled = replaced
       ? existing.map((a) => (a.key === target.objectKey ? newRecord : a))
       : [...existing, newRecord];
-    await setStateArgs({ installedAgents: nextInstalled });
+    await panel.stateArgs.set({ installedAgents: nextInstalled });
     return { agentId: source, handle };
   }, [availableAgents, buildSubscribeConfig, persistWorkspaceDefaultModel]);
 
@@ -651,7 +615,7 @@ export default function ChatPanel() {
     if (!target) {
       throw new Error(`Cannot resolve agent participant: ${participantId}`);
     }
-    const currentArgs = getStateArgs<ChatStateArgs>();
+    const currentArgs = panel.stateArgs.get<ChatStateArgs>();
     const existing = currentArgs.installedAgents ?? [];
     const nextInstalled = existing.map((agent) => {
       if (agent.key !== target.objectKey) return agent;
@@ -666,7 +630,7 @@ export default function ChatPanel() {
     if (!existing.some((agent) => agent.key === target.objectKey)) {
       throw new Error(`No persisted agent record found for ${participantId}`);
     }
-    await setStateArgs({ installedAgents: nextInstalled });
+    await panel.stateArgs.set({ installedAgents: nextInstalled });
     void persistWorkspaceDefaultModel(model).catch((err: unknown) => {
       console.warn("[ChatPanel] Failed to persist workspace default model:", err);
     });
@@ -708,21 +672,10 @@ export default function ChatPanel() {
   // Sandbox config — provides RPC and import loading to agentic-chat.
   const sandboxConfig = useMemo(() => createPanelSandboxConfig(rpc), []);
 
-  // Tool provider: only eval tool — all other operations use eval + runtime APIs
-  const toolProvider: ToolProvider = useCallback((deps: ToolProviderDeps) => {
-    return {
-      eval: buildEvalTool({
-        sandbox: sandboxConfig,
-        rpc: sandboxConfig.rpc,
-        runtimeTarget: "panel",
-        // Panel's useAgenticChat provides boundExecuteSandbox which handles
-        // scope enter/exit lifecycle, so we pass it as the override.
-        executeSandbox: deps.executeSandbox,
-        getChatSandboxValue: () => deps.chat,
-        getScope: () => deps.scope,
-      }),
-    };
-  }, []);
+  // Tool provider: the panel advertises no local channel tools. eval now runs
+  // server-side in the per-agent EvalDO (invoked by the agent's local tool);
+  // all other operations use runtime APIs.
+  const toolProvider: ToolProvider = useCallback(() => ({}), []);
 
   // Resolve channel name: from stateArgs (existing chat) or bootstrap (new chat)
   const channelName = stateArgs.channelName ?? bootstrapChannel;

@@ -17,8 +17,6 @@ interface CustomRenderProps {
   payload: CustomMessageCardPayload;
   entry?: MessageTypeComponentEntry;
   chat: Record<string, unknown>;
-  scope: Record<string, unknown>;
-  scopes: Record<string, unknown>;
 }
 
 interface ReadyCustomRenderProps extends CustomRenderProps {
@@ -152,8 +150,6 @@ function CustomRenderer({
   entry,
   expanded,
   chat,
-  scope,
-  scopes,
 }: ReadyCustomRenderProps) {
   const state = useFoldedState(payload, entry);
   // Validate folded state against the registered JSON Schema before handing it
@@ -193,8 +189,6 @@ function CustomRenderer({
       expanded={expanded}
       displayMode={payload.displayMode}
       chat={chat}
-      scope={scope}
-      scopes={scopes}
     />
   );
 }
@@ -205,8 +199,6 @@ export const CustomPill = React.memo(function CustomPill({
   entry,
   expanded,
   chat,
-  scope,
-  scopes,
   onExpand,
 }: CustomRenderProps & {
   id: string;
@@ -302,8 +294,6 @@ export const CustomPill = React.memo(function CustomPill({
             entry={entry}
             expanded={expanded}
             chat={chat}
-            scope={scope}
-            scopes={scopes}
           />
         </Suspense>
       </EventErrorBoundary>
@@ -316,8 +306,6 @@ export const ExpandedCustom = React.memo(function ExpandedCustom({
   entry,
   expanded,
   chat,
-  scope,
-  scopes,
   onCollapse,
 }: CustomRenderProps & {
   expanded: boolean;
@@ -363,8 +351,6 @@ export const ExpandedCustom = React.memo(function ExpandedCustom({
               entry={entry}
               expanded={expanded}
               chat={chat}
-              scope={scope}
-              scopes={scopes}
             />
           </Suspense>
         </EventErrorBoundary>

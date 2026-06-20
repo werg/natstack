@@ -1,5 +1,5 @@
 /**
- * wrapSandboxApis — wrap chat & scopes APIs for async error reporting.
+ * wrapSandboxApis — wrap the chat API for async error reporting.
  *
  * Each async method is wrapped via `trackPromise` so that if the compiled
  * component awaits the call without try/catch, the unhandled rejection is
@@ -11,7 +11,6 @@
 
 import { trackPromise } from "@workspace/tool-ui/utils/trackAsyncErrors";
 import type { ChatSandboxValue } from "@workspace/agentic-core";
-import type { ScopesApi } from "@workspace/eval";
 
 /**
  * Return a ChatSandboxValue where every async method is tracked.
@@ -30,6 +29,8 @@ export function wrapChatForErrorReporting(
       trackPromise(chat.publishCustomMessage(...args), onError),
     updateCustomMessage: (...args: Parameters<ChatSandboxValue["updateCustomMessage"]>) =>
       trackPromise(chat.updateCustomMessage(...args), onError),
+    participantByHandle: (...args: Parameters<ChatSandboxValue["participantByHandle"]>) =>
+      trackPromise(chat.participantByHandle(...args), onError),
     callMethod: (...args: Parameters<ChatSandboxValue["callMethod"]>) =>
       trackPromise(chat.callMethod(...args), onError),
     callMethodResult: (...args: Parameters<ChatSandboxValue["callMethodResult"]>) =>
@@ -44,25 +45,5 @@ export function wrapChatForErrorReporting(
       call: (...args: Parameters<ChatSandboxValue["rpc"]["call"]>) =>
         trackPromise(chat.rpc.call(...args), onError),
     },
-  };
-}
-
-/**
- * Return a ScopesApi where every async method is tracked.
- */
-export function wrapScopesForErrorReporting(
-  scopes: ScopesApi,
-  onError: (err: Error) => void,
-): ScopesApi {
-  return {
-    get currentId() { return scopes.currentId; },
-    push: (...args: Parameters<ScopesApi["push"]>) =>
-      trackPromise(scopes.push(...args), onError),
-    get: (...args: Parameters<ScopesApi["get"]>) =>
-      trackPromise(scopes.get(...args), onError),
-    list: (...args: Parameters<ScopesApi["list"]>) =>
-      trackPromise(scopes.list(...args), onError),
-    save: (...args: Parameters<ScopesApi["save"]>) =>
-      trackPromise(scopes.save(...args), onError),
   };
 }

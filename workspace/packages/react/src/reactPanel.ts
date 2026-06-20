@@ -1,6 +1,6 @@
 import type { ComponentType, ReactNode } from "react";
 import type { Root } from "react-dom/client";
-import { getTheme, onThemeChange, onConnectionError } from "@workspace/runtime";
+import { panel } from "@workspace/runtime";
 
 interface PanelRenderErrorDiagnosticRequest {
   surfaceName?: string;
@@ -58,11 +58,11 @@ export function createReactPanelMount(
     ? (() => {
         const ThemeComponent = options.ThemeComponent!;
         return function NatstackRadixThemeProvider({ children }: { children?: ReactNode }): ReactNode {
-          const [theme, setTheme] = ReactLib.useState(() => getTheme());
+          const [theme, setTheme] = ReactLib.useState(() => panel.getTheme());
 
           ReactLib.useEffect(() => {
             let mounted = true;
-            const unsubscribe = onThemeChange((nextTheme) => {
+            const unsubscribe = panel.onThemeChange((nextTheme) => {
               if (mounted) setTheme(nextTheme);
             });
             return () => {
@@ -80,7 +80,7 @@ export function createReactPanelMount(
     const [connError, setConnError] = ReactLib.useState<{ code: number; reason: string; source?: "electron" | "server" } | null>(null);
 
     ReactLib.useEffect(() => {
-      return onConnectionError((err) => setConnError(err));
+      return panel.onConnectionError((err) => setConnError(err));
     }, []);
 
     if (connError) {

@@ -1656,7 +1656,7 @@ describe("chatMessagesFromChannelView", () => {
     ]);
   });
 
-  it("suppresses open turn typing while an assistant message is streaming in that turn", () => {
+  it("keeps the open-turn typing pill visible while an assistant message is streaming in that turn", () => {
     const opened: AgenticEvent<"turn.opened"> = {
       kind: "turn.opened",
       actor: agent,
@@ -1681,11 +1681,15 @@ describe("chatMessagesFromChannelView", () => {
       .map((event, index) => envelope(event, index + 1))
       .reduce(reduceChannelView, createInitialChannelViewState());
 
-    expect(chatMessagesFromChannelView(state).map((message) => message.id)).toEqual(["msg-1"]);
-    expect(chatMessagesFromChannelView(state)[0]).toMatchObject({
+    const result = chatMessagesFromChannelView(state);
+    // The streaming assistant message renders...
+    expect(result.find((message) => message.id === "msg-1")).toMatchObject({
       content: "partial",
       complete: false,
     });
+    // ...AND the open-turn typing pill stays visible alongside it — it is no longer suppressed during
+    // streaming, so the "agent is working" signal doesn't flicker off every time a bubble streams.
+    expect(result.some((message) => message.contentType === "typing")).toBe(true);
   });
 
   it("uses failure payload metadata when only a terminal invocation failure is available", () => {

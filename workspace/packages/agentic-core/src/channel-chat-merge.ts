@@ -55,17 +55,6 @@ export function chatMessagesFromChannelView(state: ChannelViewState): ChatMessag
   );
   const invocations = Object.values(state.invocations).map(projectedInvocationToChatMessage);
   const approvals = Object.values(state.approvals).map(projectedApprovalToChatMessage);
-  const activeStreamingTurns = new Set(
-    Object.values(state.messages)
-      .filter(
-        (message) =>
-          message.turnId &&
-          message.role === "assistant" &&
-          (message.status === "started" || message.status === "streaming") &&
-          summarizeMessageBlocks(message.blocks).hasText
-      )
-      .map((message) => message.turnId as string)
-  );
   const terminalAssistantMessageTurnIds = new Set(
     Object.values(state.messages)
       .filter(
@@ -87,9 +76,10 @@ export function chatMessagesFromChannelView(state: ChannelViewState): ChatMessag
       .filter((invocation) => invocation.turnId)
       .map((invocation) => invocation.turnId as string)
   );
-  const turns = Object.values(state.turns).flatMap((turn) =>
-    activeStreamingTurns.has(turn.turnId) ? [] : projectedTurnToTypingMessage(turn)
-  );
+  // The open-turn typing pill stays visible for the WHOLE open turn — including while an assistant
+  // message streams — so the "agent is working" signal is stable instead of flickering off every time
+  // the agent emits a message bubble. It sorts to the bottom (by turn.updatedAt), beneath the stream.
+  const turns = Object.values(state.turns).flatMap(projectedTurnToTypingMessage);
   const waitingTurns = Object.values(state.turns).flatMap(projectedWaitingTurnMessage);
   const silentClosedTurns = Object.values(state.turns).flatMap((turn) =>
     projectedClosedTurnWithoutResponseMessage(turn, {

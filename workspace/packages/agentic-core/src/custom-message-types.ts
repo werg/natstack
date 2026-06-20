@@ -9,8 +9,6 @@ export interface CustomMessageComponentProps {
   expanded: boolean;
   displayMode: "inline" | "row";
   chat: Record<string, unknown>;
-  scope: Record<string, unknown>;
-  scopes: Record<string, unknown>;
 }
 
 export interface MessageTypeModule {

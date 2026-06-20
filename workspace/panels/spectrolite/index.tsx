@@ -14,7 +14,7 @@
 
 import { useEffect, useMemo } from "react";
 import { Flex, Spinner, Text, Theme } from "@radix-ui/themes";
-import { contextId as runtimeContextId, reopen } from "@workspace/runtime";
+import { contextId as runtimeContextId, panel } from "@workspace/runtime";
 import { usePanelTheme, useAgentState } from "@workspace/react";
 import { ErrorBoundary } from "@workspace/agentic-chat";
 import { createSpectroliteApp } from "./app/createApp";
@@ -41,7 +41,7 @@ export default function SpectrolitePanel() {
     if (repoRoot === null) return;
     const want = vaultContextId(repoRoot);
     if (runtimeContextId && runtimeContextId !== want) {
-      void reopen({ contextId: want, stateArgs: { repoRoot, openPath: app.store.getState().activePath ?? undefined } })
+      void panel.reopen({ contextId: want, stateArgs: { repoRoot, openPath: app.store.getState().activePath ?? undefined } })
         .catch((err) => console.warn("[Spectrolite] reopen to vault context failed:", err));
     }
   }, [app]);

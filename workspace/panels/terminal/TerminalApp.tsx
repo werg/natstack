@@ -1,12 +1,16 @@
 import { Box, Button, Flex, Text, Theme } from "@radix-ui/themes";
 import { useIsMobile, usePanelTheme } from "@workspace/react";
 import {
-  expose,
-  getStateArgs,
-  setStateArgs,
+  rpc,
+  panel,
   workspace,
   type WorkspaceUnitStatus,
 } from "@workspace/runtime";
+
+// Top-level `expose` was removed from @workspace/runtime; this is the same
+// arg-spreading wrapper over the portable `rpc.expose`, kept local to the panel.
+const expose = (method: string, handler: (...args: any[]) => unknown | Promise<unknown>) =>
+  rpc.expose(method, (request) => handler(...request.args));
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CommandLauncher } from "./CommandLauncher.js";
 import { documentTitleForSession } from "./documentTitle.js";
@@ -70,7 +74,7 @@ export function TerminalApp() {
   const sessionStore = useMemo(() => new SessionStore(), []);
   const sessions = useAllSessions(sessionStore);
   const [state, setState] = useState<TerminalState>(() =>
-    migrateState(getStateArgs<TerminalState>())
+    migrateState(panel.stateArgs.get<TerminalState>())
   );
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -275,7 +279,7 @@ export function TerminalApp() {
   );
 
   useEffect(() => {
-    void setStateArgs(state as unknown as Record<string, unknown>);
+    void panel.stateArgs.set(state as unknown as Record<string, unknown>);
   }, [state]);
 
   useEffect(() => {

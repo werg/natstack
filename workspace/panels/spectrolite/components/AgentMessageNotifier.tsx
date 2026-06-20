@@ -14,7 +14,7 @@
  */
 
 import { useEffect, useRef } from "react";
-import { notifications, id as panelId, focusPanel } from "@workspace/runtime";
+import { notifications, id as panelId, panel } from "@workspace/runtime";
 import { usePanelFocus } from "@workspace/react";
 import { useApp, useAppState } from "../app/context";
 import { PANEL_HANDLE } from "../app/sessionController";
@@ -81,7 +81,7 @@ export function AgentMessageNotifier() {
                 label: "Open chat",
                 variant: "soft",
                 onClick: () => {
-                  void focusPanel(panelId);
+                  void panel.focusPanel(panelId);
                   app.session.openDock();
                 },
               }],

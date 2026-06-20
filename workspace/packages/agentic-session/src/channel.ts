@@ -9,6 +9,7 @@
  */
 
 import type { AgentSubscriptionConfig } from "@workspace/agentic-core";
+import { toSubscriptionConfig } from "@workspace/agentic-core";
 import type { ChannelConfig } from "@workspace/pubsub";
 
 /** Recommended channel config for headless sessions: full-auto approval (level 2). */
@@ -71,9 +72,17 @@ export async function subscribeHeadlessAgent(
       className: opts.className,
       key: opts.objectKey,
       contextId: opts.contextId,
+      // Agent config is PER-AGENT, seeded from creation stateArgs — so the model
+      // AND the headless-recommended config (e.g. approvalLevel: 2 / Full Auto)
+      // ride creation, not the (now membership-only) subscription. Seed from the
+      // FULL subscriptionConfig so full-auto isn't lost. Vessel reads STATE_ARGS.agentConfig.
+      stateArgs: { agentConfig: subscriptionConfig },
     },
   ])) as { id: string; targetId: string };
 
+  // The subscription carries presentation (handle/name/systemPrompt) + any
+  // worker extras — the behavior settings rode the creation stateArgs above and
+  // are stripped here (the subscription type forbids them).
   try {
     const result = (await opts.rpcCall(
       entity.targetId,
@@ -82,7 +91,7 @@ export async function subscribeHeadlessAgent(
         {
           channelId: opts.channelId,
           contextId: opts.contextId,
-          config: subscriptionConfig,
+          config: toSubscriptionConfig(subscriptionConfig),
         },
       ],
     )) as { ok: boolean; participantId?: string };

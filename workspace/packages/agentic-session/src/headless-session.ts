@@ -21,14 +21,11 @@
 
 import {
   ConnectionManager,
-  buildEvalTool,
-  isAgentParticipantType,
   chatMessagesFromChannelView,
   type ConnectionConfig,
   type AgentSubscriptionConfig,
   type ChatParticipantMetadata,
   type ChatMessage,
-  type SandboxConfig,
   type DirtyRepoDetails,
   unwrapChatMethodResult,
   type ChatMethodResult,
@@ -41,7 +38,6 @@ import type {
   AttachmentInput,
   AgentDebugPayload,
   IncomingEvent,
-  RegisterMessageTypeInput,
 } from "@workspace/pubsub";
 import {
   AGENTIC_EVENT_PAYLOAD_KIND,
@@ -52,54 +48,12 @@ import {
   type ChannelViewState,
 } from "@workspace/agentic-protocol";
 import { z } from "zod";
-import { ScopeManager, RpcScopePersistence } from "@workspace/eval";
 import {
   getRecommendedChannelConfig,
   retireHeadlessAgent,
   subscribeHeadlessAgent,
   unsubscribeHeadlessAgent,
 } from "./channel.js";
-
-async function waitForMethodHandle<T>(
-  handle: { result: Promise<T>; cancel?: () => Promise<void> },
-  options?: { timeoutMs?: number; signal?: AbortSignal }
-): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  let abortCleanup: (() => void) | undefined;
-  const cancel = () => {
-    void handle.cancel?.().catch(() => undefined);
-  };
-  try {
-    const blockers: Array<Promise<never>> = [];
-    if (options?.timeoutMs !== undefined && options.timeoutMs > 0) {
-      const timeoutMs = options.timeoutMs;
-      blockers.push(new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => {
-          cancel();
-          reject(new Error(`Method call timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
-      }));
-    }
-    if (options?.signal) {
-      if (options.signal.aborted) {
-        cancel();
-        throw new Error("Method call aborted");
-      }
-      blockers.push(new Promise<never>((_, reject) => {
-        const onAbort = () => {
-          cancel();
-          reject(new Error("Method call aborted"));
-        };
-        options.signal!.addEventListener("abort", onAbort, { once: true });
-        abortCleanup = () => options.signal!.removeEventListener("abort", onAbort);
-      }));
-    }
-    return await Promise.race([handle.result, ...blockers]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
-    abortCleanup?.();
-  }
-}
 
 // ===========================================================================
 // Types
@@ -127,10 +81,6 @@ export interface SessionSnapshot {
 export interface HeadlessSessionConfig {
   config: ConnectionConfig;
   metadata?: ChatParticipantMetadata;
-  /** Optional sandbox config for eval support */
-  sandbox?: SandboxConfig;
-  /** Optional pre-built ScopeManager */
-  scopeManager?: ScopeManager;
 }
 
 export interface HeadlessWithAgentConfig extends HeadlessSessionConfig {
@@ -188,8 +138,6 @@ export class HeadlessSession {
   private _connection: ConnectionManager;
   private _client: PubSubClient<ChatParticipantMetadata> | null = null;
   private _channelId: string | null = null;
-  private _sandbox: SandboxConfig | null;
-  private _scopeManager: ScopeManager | null;
   private _clientId: string;
   private _createdAt = Date.now();
   private _config: HeadlessSessionConfig;
@@ -213,22 +161,9 @@ export class HeadlessSession {
   // Listeners
   private _messageListeners = new Set<MessageListener>();
 
-  private constructor(config: HeadlessSessionConfig, channelId?: string) {
+  private constructor(config: HeadlessSessionConfig) {
     this._config = config;
-    this._sandbox = config.sandbox ?? null;
     this._clientId = config.config.clientId;
-
-    if (config.scopeManager) {
-      this._scopeManager = config.scopeManager;
-    } else if (config.sandbox && channelId) {
-      this._scopeManager = new ScopeManager({
-        channelId,
-        panelId: config.config.clientId,
-        persistence: new RpcScopePersistence(config.sandbox.rpc),
-      });
-    } else {
-      this._scopeManager = null;
-    }
 
     this._connection = new ConnectionManager({
       config: config.config,
@@ -282,23 +217,13 @@ export class HeadlessSession {
   static async createWithAgent(config: HeadlessWithAgentConfig): Promise<HeadlessSession> {
     const channelId = config.channelId ?? `headless-${crypto.randomUUID()}`;
     const objectKey = config.objectKey ?? `headless-${crypto.randomUUID()}`;
-    const session = new HeadlessSession(config, channelId);
-
-    if (session._scopeManager) {
-      await session._scopeManager.hydrate();
-    }
+    const session = new HeadlessSession(config);
 
     const defaultMethods = session.buildDefaultMethods();
     const methods: Record<string, MethodDefinition> = {
       ...defaultMethods,
       ...config.methods,
     };
-    if (config.sandbox && !methods["eval"]) {
-      throw new Error(
-        "HeadlessSession sandbox was provided but no eval method is registered. " +
-          "Expected the headless client to expose eval before subscribing the agent."
-      );
-    }
 
     const channelConfig: ChannelConfig = {
       ...getRecommendedChannelConfig(),
@@ -352,116 +277,7 @@ export class HeadlessSession {
       },
     };
 
-    if (this._sandbox) {
-      methods["eval"] = buildEvalTool({
-        sandbox: this._sandbox,
-        rpc: this._sandbox.rpc,
-        runtimeTarget: "workerRuntime",
-        scopeManager: this._scopeManager,
-        getChatSandboxValue: () => this.buildChatSandboxValue(),
-        getScope: () => this._scopeManager?.current ?? {},
-      });
-    }
-
     return methods;
-  }
-
-  private buildChatSandboxValue() {
-    return {
-      // Headless sessions have no rendered transcript to scroll.
-      focusMessage: async (_messageId: string) => false,
-      send: async (content: string, options?: { idempotencyKey?: string }) => {
-        if (!this._client) throw new Error("Not connected");
-        const result = await this._client.send(content, options);
-        return result.pubsubId;
-      },
-      publish: async (eventType: string, payload: unknown, options?: { idempotencyKey?: string }) => {
-        if (!this._client) throw new Error("Not connected");
-        return this._client.publish(eventType, payload, options);
-      },
-      publishCustomMessage: async (
-        input: { typeId: string; initialState?: unknown; displayMode?: "inline" | "row" },
-        options?: { idempotencyKey?: string }
-      ) => {
-        if (!this._client) throw new Error("Not connected");
-        return this._client.publishCustomMessage(input, options);
-      },
-      updateCustomMessage: async (
-        messageId: string,
-        update: unknown,
-        options?: { idempotencyKey?: string }
-      ) => {
-        if (!this._client) throw new Error("Not connected");
-        return this._client.updateCustomMessage(messageId, update, options);
-      },
-      registerMessageType: async (input: RegisterMessageTypeInput, options?: { idempotencyKey?: string }) => {
-        if (!this._client) throw new Error("Not connected");
-        return this._client.registerMessageType(input, options);
-      },
-      clearMessageType: async (typeId: string, options?: { idempotencyKey?: string }) => {
-        if (!this._client) throw new Error("Not connected");
-        return this._client.clearMessageType(typeId, options);
-      },
-      getMessageType: async (typeId: string) => {
-        if (!this._client) throw new Error("Not connected");
-        return this._client.getMessageType(typeId);
-      },
-      getMessageTypes: async () => {
-        if (!this._client) throw new Error("Not connected");
-        return this._client.getMessageTypes();
-      },
-      callMethod: async (participantId: string, method: string, args: unknown, options?: { timeoutMs?: number; signal?: AbortSignal }) => {
-        if (!this._client) throw new Error("Not connected");
-        const handle = this._client.callMethod(participantId, method, args, options);
-        const result = await waitForMethodHandle(
-          handle as { result: Promise<ChatMethodResult>; cancel?: () => Promise<void> },
-          options
-        );
-        return unwrapChatMethodResult(result);
-      },
-      callMethodResult: async (participantId: string, method: string, args: unknown, options?: { timeoutMs?: number; signal?: AbortSignal }) => {
-        if (!this._client) throw new Error("Not connected");
-        const handle = this._client.callMethod(participantId, method, args, options);
-        return waitForMethodHandle(
-          handle as { result: Promise<ChatMethodResult>; cancel?: () => Promise<void> },
-          options
-        );
-      },
-      participantByHandle: (rawHandle: string) => {
-        if (!this._client) return null;
-        const handle = rawHandle.startsWith("@") ? rawHandle.slice(1) : rawHandle;
-        return Object.values(this._client.roster).find((participant) => {
-          const metadataHandle = participant.metadata?.handle;
-          return typeof metadataHandle === "string" && metadataHandle === handle;
-        }) ?? null;
-      },
-      callMethodByHandle: async (rawHandle: string, method: string, args: unknown, options?: { timeoutMs?: number; signal?: AbortSignal }) => {
-        if (!this._client) throw new Error("Not connected");
-        const handle = rawHandle.startsWith("@") ? rawHandle.slice(1) : rawHandle;
-        const participant = Object.values(this._client.roster).find((item) => item.metadata?.handle === handle);
-        if (!participant) throw new Error(`No participant with handle @${handle}`);
-        const methodHandle = this._client.callMethod(participant.id, method, args, options);
-        const result = await waitForMethodHandle(
-          methodHandle as { result: Promise<ChatMethodResult>; cancel?: () => Promise<void> },
-          options
-        );
-        return unwrapChatMethodResult(result);
-      },
-      callMethodResultByHandle: async (rawHandle: string, method: string, args: unknown, options?: { timeoutMs?: number; signal?: AbortSignal }) => {
-        if (!this._client) throw new Error("Not connected");
-        const handle = rawHandle.startsWith("@") ? rawHandle.slice(1) : rawHandle;
-        const participant = Object.values(this._client.roster).find((item) => item.metadata?.handle === handle);
-        if (!participant) throw new Error(`No participant with handle @${handle}`);
-        const methodHandle = this._client.callMethod(participant.id, method, args, options);
-        return waitForMethodHandle(
-          methodHandle as { result: Promise<ChatMethodResult>; cancel?: () => Promise<void> },
-          options
-        );
-      },
-      contextId: "",
-      channelId: this._channelId,
-      rpc: this._sandbox?.rpc ?? { call: async () => undefined as unknown },
-    };
   }
 
   // ===========================================================================
@@ -492,15 +308,6 @@ export class HeadlessSession {
     channelId: string,
     options?: { channelConfig?: ChannelConfig; contextId?: string; methods?: Record<string, MethodDefinition> },
   ): Promise<void> {
-    if (!this._scopeManager && this._sandbox) {
-      this._scopeManager = new ScopeManager({
-        channelId,
-        panelId: this._clientId,
-        persistence: new RpcScopePersistence(this._sandbox.rpc),
-      });
-      await this._scopeManager.hydrate();
-    }
-
     const methods = options?.methods ?? this.buildDefaultMethods();
     this._registeredMethodNames = Object.keys(methods).sort();
 
@@ -653,7 +460,6 @@ export class HeadlessSession {
     if (this._disposed) return;
     this._disposed = true;
     this.disconnect();
-    this._scopeManager?.dispose();
     this._messageListeners.clear();
   }
 
@@ -708,14 +514,6 @@ export class HeadlessSession {
 
   get channelId(): string | null {
     return this._channelId;
-  }
-
-  get scope(): Record<string, unknown> {
-    return this._scopeManager?.current ?? {};
-  }
-
-  get scopeManager(): ScopeManager | null {
-    return this._scopeManager;
   }
 
   get debugEvents(): readonly (AgentDebugPayload & { ts: number })[] {

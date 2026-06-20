@@ -6,7 +6,6 @@
 // package provides:
 // - Pi message/event type re-exports (single import surface for consumers)
 // - The signal event envelope used by transient structured channel payloads
-// - The eval tool factory
 // - The sandbox config factory
 // - Connection management primitives
 // =============================================================================
@@ -35,10 +34,15 @@ export type {
 } from "@workspace/model-catalog/catalog";
 export type {
   AgentApprovalLevel,
+  AgentConfig,
   AgentRespondPolicy,
+  AgentSettingKey,
   AgentSubscriptionConfig,
+  AgentSystemPromptMode,
   AgentThinkingLevel,
+  ChannelSubscriptionConfig,
 } from "./agent-subscription-config.js";
+export { AGENT_SETTING_KEYS, toSubscriptionConfig } from "./agent-subscription-config.js";
 
 // Re-exported from @workspace/pubsub for convenience — canonical role-based
 // predicates for distinguishing agent participants from client participants.
@@ -50,10 +54,6 @@ export { TypedEmitter } from "./emitter.js";
 // --- Connection ---
 export { ConnectionManager } from "./connection.js";
 export type { ConnectionStatus } from "./connection.js";
-
-// --- Eval Tool ---
-export { buildEvalTool } from "./eval-tool.js";
-export type { BuildEvalToolOptions } from "./eval-tool.js";
 
 // --- SandboxConfig Factories ---
 export { createPanelSandboxConfig } from "./sandbox-factory.js";

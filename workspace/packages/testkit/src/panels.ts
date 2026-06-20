@@ -7,7 +7,7 @@
  * (handle.snapshot() → _agent.snapshot inside the panel); CDP is the
  * escalation for input, viewport emulation and layout measurement.
  */
-import { panelTree } from "@workspace/runtime";
+import { openPanel as runtimeOpenPanel, panelTree } from "@workspace/runtime";
 import type { PanelHandle } from "@workspace/runtime";
 import { activeTestContext } from "./run.js";
 import { withCdpSession } from "./cdp.js";
@@ -105,7 +105,7 @@ export async function waitFor<T>(
 
 /** Open a panel, auto-watch it with the active test's supervisor, wait for load. */
 export async function openPanel(source: string, opts: OpenPanelOptions = {}): Promise<PanelHandle> {
-  const handle = await panelTree.open(source, {
+  const handle = await runtimeOpenPanel(source, {
     parentId: opts.parentId,
     name: opts.name,
     focus: opts.focus,

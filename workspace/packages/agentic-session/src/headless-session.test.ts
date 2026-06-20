@@ -214,10 +214,6 @@ describe("HeadlessSession", () => {
         objectKey: "agent-1",
         contextId: "ctx-1",
         channelId: "headless-1",
-        sandbox: {
-          rpc: { call: vi.fn() },
-          loadImport: vi.fn(),
-        },
       });
     } finally {
       connect.mockRestore();
@@ -225,7 +221,7 @@ describe("HeadlessSession", () => {
     }
 
     expect(order).toEqual([
-      "connect:headless-1:eval,set_title",
+      "connect:headless-1:set_title",
       "rpc:main:runtime.createEntity",
       "rpc:agent-target:subscribeChannel",
     ]);
@@ -245,79 +241,6 @@ describe("HeadlessSession", () => {
 
     await expect(session.callMethod("agent-1", "work", {})).resolves.toEqual({ ok: true });
     await expect(session.callMethodResult("agent-1", "work", {})).resolves.toEqual(envelope);
-  });
-
-  it("sandbox callMethod follows the same raw-payload contract", async () => {
-    const session = HeadlessSession.create({
-      config: createConfig(),
-    });
-    (session as any)._client = {
-      callMethod: vi.fn(() => ({
-        result: Promise.resolve({ content: { resumed: true } }),
-      })),
-    };
-
-    const chat = (session as any).buildChatSandboxValue();
-
-    await expect(chat.callMethod("agent-1", "credentialConnected", {})).resolves.toEqual({ resumed: true });
-    await expect(chat.callMethodResult("agent-1", "credentialConnected", {})).resolves.toEqual({
-      content: { resumed: true },
-    });
-  });
-
-  it("sandbox callMethod times out and cancels pending participant calls", async () => {
-    vi.useFakeTimers();
-    const session = HeadlessSession.create({
-      config: createConfig(),
-    });
-    const cancel = vi.fn(async () => undefined);
-    (session as any)._client = {
-      callMethod: vi.fn(() => ({
-        result: new Promise(() => undefined),
-        cancel,
-      })),
-    };
-    const chat = (session as any).buildChatSandboxValue();
-    const promise = chat.callMethod("agent-1", "getDebugState", {}, { timeoutMs: 5 });
-    const expectation = expect(promise).rejects.toThrow("Method call timed out after 5ms");
-
-    await vi.advanceTimersByTimeAsync(5);
-
-    await expectation;
-    expect(cancel).toHaveBeenCalledTimes(1);
-    vi.useRealTimers();
-  });
-
-  it("sandbox callMethod has no default timeout", async () => {
-    vi.useFakeTimers();
-    const session = HeadlessSession.create({
-      config: createConfig(),
-    });
-    const cancel = vi.fn(async () => undefined);
-    (session as any)._client = {
-      callMethod: vi.fn(() => ({
-        result: new Promise(() => undefined),
-        cancel,
-      })),
-    };
-    const chat = (session as any).buildChatSandboxValue();
-    const promise = chat.callMethod("agent-1", "getDebugState", {});
-    let settled = false;
-    void promise.then(
-      () => {
-        settled = true;
-      },
-      () => {
-        settled = true;
-      }
-    );
-
-    await vi.advanceTimersByTimeAsync(20 * 60 * 1000 + 1);
-    await Promise.resolve();
-
-    expect(cancel).not.toHaveBeenCalled();
-    expect(settled).toBe(false);
-    vi.useRealTimers();
   });
 
   it("sendAndWait starts waiting before publishing the prompt", async () => {

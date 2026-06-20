@@ -4,7 +4,7 @@
  * connection error handling equivalent to React's ConnectionErrorBarrier.
  */
 
-import { getTheme, onThemeChange, onConnectionError } from "@workspace/runtime";
+import { panel } from "@workspace/runtime";
 
 export interface AutoMountConfig {
   rootId?: string;
@@ -63,7 +63,7 @@ export function shouldAutoMount(userModule: any): boolean {
  * Matches behavior of React's ConnectionErrorBarrier in reactPanel.ts.
  */
 function setupConnectionErrorOverlay(): void {
-  onConnectionError((err) => {
+  panel.onConnectionError((err) => {
     // Remove any existing overlay
     const existing = document.getElementById("__natstack-conn-error");
     if (existing) existing.remove();

@@ -11,7 +11,7 @@
  * rebinds `vcs.*` (and the scribe) to the new vault's durable head.
  */
 
-import { reopen, setStateArgs, vcs } from "@workspace/runtime";
+import { panel, vcs } from "@workspace/runtime";
 import type { Store } from "./store";
 import type { SpectroliteState } from "./state";
 import { createQueuedRefresh } from "./queuedRefresh";
@@ -43,7 +43,7 @@ export class VaultController {
    */
   selectVault(contextPath: string): void {
     const repoRoot = normalizeVaultPath(contextPath);
-    void reopen({
+    void panel.reopen({
       contextId: vaultContextId(repoRoot),
       stateArgs: { repoRoot, openPath: undefined },
     }).catch((err) => {
@@ -53,7 +53,7 @@ export class VaultController {
 
   /** Forget the selection so the picker shows (reopen without a repoRoot). */
   async switchVault(): Promise<void> {
-    await reopen({ stateArgs: { repoRoot: undefined, openPath: undefined } }).catch((err) => {
+    await panel.reopen({ stateArgs: { repoRoot: undefined, openPath: undefined } }).catch((err) => {
       console.warn("[Spectrolite] reopen for vault switch failed:", err);
     });
   }

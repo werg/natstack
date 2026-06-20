@@ -26,28 +26,19 @@ const bootstrapMocks = vi.hoisted(() => ({
   unsubscribeDOFromChannel: vi.fn(),
 }));
 
-const evalToolMocks = vi.hoisted(() => ({
-  createEvalRuntime: vi.fn(() => ({
-    evalTool: {},
-    sandbox: {},
-    prefetch: vi.fn(),
-    dispose: vi.fn(),
-  })),
-}));
-
 vi.mock("@workspace/pubsub", () => ({
   connectViaRpc: pubsubMocks.connectViaRpc,
 }));
 
 vi.mock("@workspace/runtime", () => ({
   rpc: {},
-  recoveryCoordinator: {},
-  slotId: "panel:slot-test",
-  setStateArgs: vi.fn(),
+  panel: {
+    slotId: "panel:slot-test",
+    stateArgs: { set: vi.fn() },
+  },
 }));
-
-vi.mock("./evalTool", () => ({
-  createEvalRuntime: evalToolMocks.createEvalRuntime,
+vi.mock("@workspace/runtime/internal/diagnostics", () => ({
+  recoveryCoordinator: {},
 }));
 
 vi.mock("../messages/register", () => ({
@@ -90,12 +81,9 @@ describe("SessionController", () => {
         className: "SilentAgentWorker",
       }],
     }));
-    const session = new SessionController(store, { getDepsForEval: () => ({}) });
+    const session = new SessionController(store);
 
     await session.start();
-    expect(evalToolMocks.createEvalRuntime).toHaveBeenCalledWith(expect.objectContaining({
-      panelId: "panel:slot-test",
-    }));
     expect(pubsubMocks.connectViaRpc).toHaveBeenCalledWith(expect.objectContaining({
       clientId: "panel:slot-test",
     }));
@@ -132,7 +120,7 @@ describe("SessionController", () => {
     bootstrapMocks.createAndSubscribeAgent
       .mockRejectedValueOnce(new Error("transient"))
       .mockResolvedValueOnce(undefined);
-    const session = new SessionController(store, { getDepsForEval: () => ({}) });
+    const session = new SessionController(store);
 
     await session.start();
     expect(bootstrapMocks.createAndSubscribeAgent).toHaveBeenCalledTimes(1);

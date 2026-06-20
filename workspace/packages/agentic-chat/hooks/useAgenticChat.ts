@@ -17,8 +17,8 @@ import { createTypedServiceClient } from "@natstack/shared/typedServiceClient";
 import { runtimeMethods } from "@natstack/shared/serviceSchemas/runtime";
 import { fsMethods } from "@natstack/shared/serviceSchemas/fs";
 import type { ChannelConfig, MethodDefinition, MethodExecutionContext } from "@workspace/pubsub";
-import { executeSandbox, ScopeManager, RpcScopePersistence } from "@workspace/eval";
-import type { SandboxOptions, SandboxResult, HydrateResult } from "@workspace/eval";
+import { executeSandbox } from "@workspace/eval";
+import type { SandboxOptions, SandboxResult } from "@workspace/eval";
 import type { ActiveFeedbackSchema, FeedbackResult } from "@workspace/tool-ui";
 import {
   AGENTIC_EVENT_PAYLOAD_KIND,
@@ -230,37 +230,6 @@ export function useAgenticChat({
   // --- Sandbox config ref (stable access in callbacks) ---
   const sandboxRef = useRef(sandbox);
   sandboxRef.current = sandbox;
-  // --- Scope manager (REPL-style persistent scope) ---
-  const scopeManagerRef = useRef<ScopeManager | null>(null);
-  const hydratePromiseRef = useRef<Promise<HydrateResult> | null>(null);
-  if (!scopeManagerRef.current && channelName) {
-    scopeManagerRef.current = new ScopeManager({
-      channelId: channelName,
-      panelId: config.clientId,
-      persistence: new RpcScopePersistence(sandbox.rpc),
-    });
-  }
-  // Hydration + lifecycle hooks (declared BEFORE connect effect so it fires first)
-  useEffect(() => {
-    const mgr = scopeManagerRef.current;
-    if (!mgr) return;
-    hydratePromiseRef.current = mgr.hydrate();
-    const onUnload = () => {
-      if (mgr.isDirty)
-        mgr.persist().catch((err) => console.warn("[Chat] Scope persist on unload failed:", err));
-    };
-    const onHidden = () => {
-      if (document.hidden && mgr.isDirty)
-        mgr.persist().catch((err) => console.warn("[Chat] Scope persist on hidden failed:", err));
-    };
-    window.addEventListener("beforeunload", onUnload);
-    document.addEventListener("visibilitychange", onHidden);
-    return () => {
-      window.removeEventListener("beforeunload", onUnload);
-      document.removeEventListener("visibilitychange", onHidden);
-      mgr.dispose();
-    };
-  }, []);
   // --- Core (durable channel trajectory events -> transcript view model) ---
   const core = useChatCore({
     config,
@@ -375,7 +344,7 @@ export function useAgenticChat({
           options
         );
       },
-      participantByHandle: (rawHandle: string) => {
+      participantByHandle: async (rawHandle: string) => {
         const handle = rawHandle.startsWith("@") ? rawHandle.slice(1) : rawHandle;
         const roster = core.clientRef.current?.roster ?? {};
         return (
@@ -461,24 +430,13 @@ export function useAgenticChat({
     }),
     [contextId, channelName, sandbox.rpc, core.clientRef, metadata, publishTypedAgenticEvent]
   );
-  // --- Bound executeSandbox with loadImport wired + scope enter/exit ---
+  // --- Bound executeSandbox with loadImport wired ---
   const boundExecuteSandbox = useCallback(
     async (code: string, opts: SandboxOptions = {}): Promise<SandboxResult> => {
-      const mgr = scopeManagerRef.current;
-      mgr?.enterEval();
-      try {
-        return await executeSandbox(code, {
-          ...opts,
-          loadImport: opts.loadImport ?? sandboxRef.current.loadImport,
-          bindings: {
-            ...opts.bindings,
-            scope: mgr?.current ?? {},
-            scopes: mgr?.api ?? {},
-          },
-        });
-      } finally {
-        await mgr?.exitEval();
-      }
+      return executeSandbox(code, {
+        ...opts,
+        loadImport: opts.loadImport ?? sandboxRef.current.loadImport,
+      });
     },
     []
   );
@@ -501,22 +459,12 @@ export function useAgenticChat({
     clientRef: core.clientRef,
     connected: core.connected,
   });
-  const scopeProxy = scopeManagerRef.current?.current ?? {};
-  const scopesApi = scopeManagerRef.current?.api ?? {
-    currentId: "",
-    push: async () => "",
-    get: async () => null,
-    list: async () => [],
-    save: async () => {},
-  };
   const chatTools = useChatTools({
     clientRef: core.clientRef,
     tools,
     contextId: contextId ?? "",
     executeSandbox: boundExecuteSandbox,
     chat,
-    scope: scopeProxy,
-    scopes: scopesApi,
   });
   const debug = useChatDebug();
   const inlineUi = useInlineUi({ messages: core.messages, loadSourceFile, loadImport });
@@ -913,10 +861,8 @@ export function useAgenticChat({
 - \`inline_ui\`: User-triggered side-effects + rich data presentation. Renders controls/visualizations. Users interact when they choose. Non-blocking.
 - \`feedback_form\`/\`feedback_custom\`: Blocks until user responds. Returns data to agent.
 
-**The component receives { props, chat, scope, scopes }:**
+**The component receives { props, chat }:**
 - props: data you pass via the props parameter
-- scope: REPL scope — shared read+write state that persists across eval calls
-- scopes: scope management API — call scopes.save() after modifying scope from component handlers
 - chat: full chat API for interacting with the conversation:
   - chat.send(content, options?) — send a visible message to the conversation.
     Example: chat.send("User clicked Deploy")
@@ -1044,7 +990,7 @@ export default function App({ props, chat }) {
 
 Use this for small always-available controls or status for the current workflow.
 The TSX source is read from a file in this panel's current filesystem context.
-The loaded component receives { props, chat, scope, scopes }, supports the same
+The loaded component receives { props, chat }, supports the same
 imports as inline_ui, supports static relative imports from the loaded file,
 infers bare package imports from the nearest package.json when possible, and
 must export default.
@@ -1223,51 +1169,6 @@ Use package imports available to inline_ui plus relative imports for local helpe
           },
         };
         await core.connectToChannel({ channelId: channelName, methods, channelConfig, contextId });
-        // Scope hydration system message (best-effort — must not poison chat startup)
-        let hr: HydrateResult | null = null;
-        try {
-          hr = await hydratePromiseRef.current;
-        } catch (err) {
-          console.warn("[Chat] Scope hydration failed:", err);
-        }
-        if (hr && (hr.restored.length || hr.lost.length || hr.partial.length)) {
-          const parts: string[] = [];
-          if (hr.restored.length) parts.push(`Restored: [${hr.restored.join(", ")}]`);
-          if (hr.partial.length)
-            parts.push(`Partially restored (some properties lost): [${hr.partial.join(", ")}]`);
-          if (hr.lost.length) parts.push(`Lost (must be re-created): [${hr.lost.join(", ")}]`);
-          const hasDegradation = hr.partial.length > 0 || hr.lost.length > 0;
-          const hint = hasDegradation
-            ? " Functions and class instances don't survive reload — re-create them with eval if needed."
-            : "";
-          const scopeMsgId = crypto.randomUUID();
-          const client = core.clientRef.current!;
-          await publishTypedAgenticEvent(
-            {
-              kind: "message.completed",
-              actor: {
-                kind: "system",
-                id: client.clientId ?? "system",
-                displayName: "System",
-              },
-              causality: { messageId: scopeMsgId as never },
-              payload: {
-                protocol: AGENTIC_PROTOCOL_VERSION,
-                role: "system",
-                blocks: [
-                  {
-                    blockId: `${scopeMsgId}:block:0` as never,
-                    type: "text",
-                    content: `Scope refreshed (panel session restarted). ${parts.join(". ")}.${hint}`,
-                  },
-                ],
-                outcome: "completed",
-              },
-              createdAt: new Date().toISOString(),
-            },
-            { idempotencyKey: `scope_hydrate:${scopeMsgId}` }
-          );
-        }
       } catch (err) {
         console.error("[Chat] Connection error:", err);
         core.hasConnectedRef.current = false;
@@ -1348,9 +1249,6 @@ Use package imports available to inline_ui plus relative imports for local helpe
       dismissConnectionError: core.dismissConnectionError,
       chat,
       clientRef: core.clientRef,
-      scope: scopeProxy,
-      scopes: scopesApi,
-      scopeManager: scopeManagerRef.current,
       messages: core.messages,
       inlineUiComponents: inlineUi.inlineUiComponents,
       messageTypeComponents: messageTypes.messageTypeComponents,

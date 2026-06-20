@@ -6,8 +6,6 @@
  *
  *   - inline JSX in the doc (rendered by `LiveJsxEditor`) can import the
  *     package immediately
- *   - the agent's `eval` tool can do the same without redeclaring imports
- *     per call
  *   - Preview-mode compilation has the package already cached in the
  *     panel's module map (`__natstackModuleMap__`)
  *

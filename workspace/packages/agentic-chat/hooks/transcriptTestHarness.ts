@@ -42,18 +42,14 @@ export async function createTranscriptHarness(channelId = TRANSCRIPT_TEST_CHANNE
     return { digest, size: value.length };
   };
 
-  (
-    channel.instance as unknown as {
-      _rpc: {
-        emit: (target: string, event: string, payload: unknown) => Promise<void>;
-        call: (target: string, method: string, args: unknown[]) => Promise<unknown>;
-      };
-    }
-  )._rpc = {
-    emit: vi.fn(async (target, event, payload) => {
+  // The DO base now holds a ConnectionlessRpcClient ({ client, respond, deliver })
+  // behind the `rpc` getter; pre-setting `_connectionless` short-circuits the
+  // real (network) client construction.
+  const mockClient = {
+    emit: vi.fn(async (target: string, _event: string, payload: unknown) => {
       listeners.get(target)?.({ payload });
     }),
-    call: vi.fn(async (target, method, args) => {
+    call: vi.fn(async (target: string, method: string, args: unknown[]) => {
       if (target === "main" && method === "workers.resolveService") {
         return {
           kind: "durable-object",
@@ -77,8 +73,43 @@ export async function createTranscriptHarness(channelId = TRANSCRIPT_TEST_CHANNE
         >;
         return await callable[method]!(...args);
       }
+      // Fire-and-forget server housekeeping (alarmSet, setTitle,
+      // resolveDurableObject validation) is a no-op in these unit tests.
+      if (target === "main") return undefined;
       throw new Error(`unexpected channel rpc call ${target}.${method}`);
     }),
+    expose: () => {},
+    exposeAll: () => {},
+    on: () => () => {},
+  };
+  (
+    channel.instance as unknown as {
+      _connectionless: { client: unknown; respond: unknown; deliver: unknown };
+    }
+  )._connectionless = {
+    client: mockClient,
+    // Inbound dispatch: `harness.channel.call(...)` reaches the DO via fetch →
+    // the method-path adapter calls `respond(envelope)` to invoke the method.
+    // Dispatch it straight onto the instance (the converged core's respond would
+    // need a real exposeAll/transport; this mock invokes the class method).
+    respond: async (envelope: {
+      from?: string;
+      target?: string;
+      message?: { type?: string; requestId?: string; method?: string; args?: unknown[] };
+    }) => {
+      const msg = envelope.message ?? {};
+      if (msg.type !== "request") return null;
+      const callable = channel.instance as unknown as Record<string, (...a: unknown[]) => unknown>;
+      const result = await callable[msg.method ?? ""]!(...(msg.args ?? []));
+      return {
+        from: envelope.target,
+        target: envelope.from,
+        delivery: { caller: { callerId: "main", callerKind: "server" } },
+        provenance: [],
+        message: { type: "response", requestId: msg.requestId, result },
+      };
+    },
+    deliver: () => {},
   };
 
   function createParticipantRpc(opts: { id: string; name: string; type: string; handle: string }) {

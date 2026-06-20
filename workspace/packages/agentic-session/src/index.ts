@@ -17,15 +17,11 @@ export {
 } from "./channel.js";
 export type { SubscribeHeadlessAgentOptions } from "./channel.js";
 
-// --- SandboxConfig Factory (RPC-based, for non-panel contexts) ---
-export { createRpcSandboxConfig } from "./sandbox-factory.js";
-
 // --- Re-export Pi-native types from agentic-core for convenience ---
 export type {
   ChatMessage,
   ChatParticipantMetadata,
   ConnectionConfig,
-  SandboxConfig,
   AgentMessage,
   ChatMethodResult,
 } from "@workspace/agentic-core";

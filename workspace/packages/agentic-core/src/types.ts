@@ -19,7 +19,6 @@ import type {
 } from "@workspace/pubsub";
 import type { MessageTier } from "@workspace/agentic-protocol";
 import type { RecoveryCoordinator } from "@natstack/shared/shell/recoveryCoordinator";
-import type { ScopesApi } from "@workspace/eval";
 import type { SandboxOptions, SandboxResult } from "@workspace/eval";
 import type { ChatMethodResult } from "./invocation-result.js";
 import type { AgentSubscriptionConfig } from "./agent-subscription-config.js";
@@ -153,8 +152,12 @@ export interface ChatSandboxValue {
     args: unknown,
     options?: { timeoutMs?: number; signal?: AbortSignal }
   ) => Promise<ChatMethodResult>;
-  /** Resolve a participant by handle, accepting either "handle" or "@handle". */
-  participantByHandle: (handle: string) => Participant<ChatParticipantMetadata> | null;
+  /**
+   * Resolve a participant by handle, accepting either "handle" or "@handle".
+   * Async so the same surface works server-side (agent eval), where the roster
+   * is fetched over RPC rather than held in memory.
+   */
+  participantByHandle: (handle: string) => Promise<Participant<ChatParticipantMetadata> | null>;
   /** Call a participant method by handle and resolve to the provider's result payload. */
   callMethodByHandle: (
     handle: string,
@@ -193,8 +196,6 @@ export interface ToolProviderDeps {
   contextId: string;
   executeSandbox: (code: string, options: SandboxOptions) => Promise<SandboxResult>;
   chat: ChatSandboxValue;
-  scope: Record<string, unknown>;
-  scopes: ScopesApi;
 }
 
 /** Inject tools at connect time */

@@ -1,9 +1,9 @@
-import { Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent } from "react";
 import { Box, Spinner } from "@radix-ui/themes";
 import { EventErrorBoundary } from "@workspace/tool-ui/components/EventErrorBoundary";
 import { useChatContext } from "../context/ChatContext";
-import { wrapChatForErrorReporting, wrapScopesForErrorReporting } from "../utils/wrapSandboxApis";
+import { wrapChatForErrorReporting } from "../utils/wrapSandboxApis";
 import { InlineUiErrorCallout } from "./InlineUiMessage";
 import type { ActionBarState } from "../types";
 
@@ -17,11 +17,10 @@ function clampMaxHeight(value: number | undefined): number {
 }
 
 function ChatActionBarContent({ actionBar }: { actionBar: ActionBarState }) {
-  const { chat, scope, scopes, scopeManager, onActionBarMaxHeightChange } = useChatContext();
+  const { chat, onActionBarMaxHeightChange } = useChatContext();
   const { data, component } = actionBar;
   const CompiledComponent = component?.Component;
   const componentProps = useMemo(() => data.props ?? {}, [data.props]);
-  const [, forceUpdate] = useReducer((x: number) => x + 1, 0);
   const [asyncError, setAsyncError] = useState<Error | null>(null);
   const [isAtLimit, setIsAtLimit] = useState(false);
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -32,21 +31,6 @@ function ChatActionBarContent({ actionBar }: { actionBar: ActionBarState }) {
     () => wrapChatForErrorReporting(chat, onAsyncError),
     [chat, onAsyncError],
   );
-  const wrappedScopes = useMemo(
-    () => wrapScopesForErrorReporting(scopes, onAsyncError),
-    [scopes, onAsyncError],
-  );
-
-  useEffect(() => {
-    if (!scopeManager) return;
-    return scopeManager.onChange(forceUpdate);
-  }, [scopeManager]);
-
-  const onInteraction = useCallback(() => {
-    void scopeManager?.persist().catch((err) => {
-      console.warn("[ChatActionBar] Scope persist after interaction failed:", err);
-    });
-  }, [scopeManager]);
 
   const resetKey = `${data.id}:${JSON.stringify(data.props ?? {})}`;
   useEffect(() => { setAsyncError(null); }, [resetKey]);
@@ -112,9 +96,6 @@ function ChatActionBarContent({ actionBar }: { actionBar: ActionBarState }) {
       <Box
         className="chat-action-bar-content"
         ref={contentRef}
-        onClickCapture={onInteraction}
-        onInputCapture={onInteraction}
-        onChangeCapture={onInteraction}
       >
         {asyncError ? (
           <InlineUiErrorCallout error={asyncError} componentId={data.id} chat={chat} />
@@ -130,7 +111,7 @@ function ChatActionBarContent({ actionBar }: { actionBar: ActionBarState }) {
             )}
           >
             <Suspense fallback={<Spinner size="1" />}>
-              <CompiledComponent props={componentProps} chat={wrappedChat as unknown as Record<string, unknown>} scope={scope} scopes={wrappedScopes as unknown as Record<string, unknown>} />
+              <CompiledComponent props={componentProps} chat={wrappedChat as unknown as Record<string, unknown>} />
             </Suspense>
           </EventErrorBoundary>
         )}

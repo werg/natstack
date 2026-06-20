@@ -27,7 +27,12 @@ import {
   Theme,
 } from "@radix-ui/themes";
 import { PlayIcon, ReloadIcon } from "@radix-ui/react-icons";
-import { expose } from "@workspace/runtime";
+import { rpc } from "@workspace/runtime";
+
+// Top-level `expose` was removed from @workspace/runtime; this is the same
+// arg-spreading wrapper over the portable `rpc.expose`, kept local to the panel.
+const expose = (method: string, handler: (...args: any[]) => unknown | Promise<unknown>) =>
+  rpc.expose(method, (request) => handler(...request.args));
 import { usePanelTheme } from "@workspace/react";
 import {
   flameTreeFromProfile,

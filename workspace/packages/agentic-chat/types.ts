@@ -34,7 +34,6 @@ import type { AgentDebugPayload, Participant, AttachmentInput, SandboxSource, Pu
 import type { ActiveFeedback, ToolApprovalProps } from "@workspace/tool-ui";
 import type { PendingImage } from "./utils/imageUtils";
 import type { ComponentType, RefObject } from "react";
-import type { ScopeManager, ScopesApi } from "@workspace/eval";
 import type {
   ChatParticipantMetadata,
   ChatSandboxValue,
@@ -55,7 +54,7 @@ import type {
 // ===========================================================================
 
 export interface InlineUiComponentEntry {
-  Component?: ComponentType<{ props: Record<string, unknown>; chat: Record<string, unknown>; scope: Record<string, unknown>; scopes: Record<string, unknown> }>;
+  Component?: ComponentType<{ props: Record<string, unknown>; chat: Record<string, unknown> }>;
   cacheKey: string;
   error?: string;
 }
@@ -153,15 +152,6 @@ export interface ChatContextValue {
   /** Chat API for sandboxed code */
   chat: ChatSandboxValue;
   clientRef: RefObject<PubSubClient<ChatParticipantMetadata> | null>;
-
-  /** Current REPL scope (Proxy) */
-  scope: Record<string, unknown>;
-
-  /** Scopes API — history + persistence */
-  scopes: ScopesApi;
-
-  /** Scope manager for reactivity subscriptions */
-  scopeManager: ScopeManager | null;
 
   // Messages
   messages: ChatMessage[];

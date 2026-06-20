@@ -1,6 +1,6 @@
 import { Box, Button, ContextMenu, Flex, IconButton, Text } from "@radix-ui/themes";
 import { ArrowDownIcon } from "@radix-ui/react-icons";
-import { focusPanel, notifications, openExternal, slotId as runtimeSlotId } from "@workspace/runtime";
+import { notifications, openExternal, panel } from "@workspace/runtime";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { DropOverlay } from "./DropOverlay.js";
@@ -261,7 +261,7 @@ export function PaneView(props: {
 
   function focusPane() {
     props.onFocus();
-    void focusPanel(runtimeSlotId).catch(() => {});
+    void panel.focusPanel(panel.slotId).catch(() => {});
     window.focus();
     requestAnimationFrame(() => terminalRef.current?.focus?.());
   }

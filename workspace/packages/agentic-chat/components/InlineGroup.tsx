@@ -20,8 +20,6 @@ interface InlineGroupProps {
   items: InlineItem[];
   messageTypeComponents?: Map<string, MessageTypeComponentEntry>;
   chat?: Record<string, unknown> & Partial<Pick<ChatSandboxValue, "rpc">>;
-  scope?: Record<string, unknown>;
-  scopes?: Record<string, unknown>;
   /** Callback to interrupt an agent (used for typing indicators). */
   onInterrupt?: (senderId: string) => void;
   /** Callback to cancel one pending tool/invocation dispatch. */
@@ -74,8 +72,6 @@ export const InlineGroup = React.memo(function InlineGroup({
   items,
   messageTypeComponents,
   chat = {},
-  scope = {},
-  scopes = {},
   onInterrupt,
   onCancelInvocation,
 }: InlineGroupProps) {
@@ -131,8 +127,6 @@ export const InlineGroup = React.memo(function InlineGroup({
             entry={messageTypeComponents?.get(item.payload.typeId)}
             expanded={false}
             chat={chat}
-            scope={scope}
-            scopes={scopes}
             onExpand={toggle}
           />
         );
@@ -177,8 +171,6 @@ export const InlineGroup = React.memo(function InlineGroup({
             entry={messageTypeComponents?.get(item.payload.typeId)}
             expanded={true}
             chat={chat}
-            scope={scope}
-            scopes={scopes}
             onCollapse={collapse}
           />
         );
@@ -190,23 +182,26 @@ export const InlineGroup = React.memo(function InlineGroup({
   return (
     <Box className="inline-group">
       <Flex className="inline-group-body" direction="column" gap="1">
-        {segments.map((segment) =>
-          segment.kind === "pills" ? (
-            <Flex
-              key={segment.key}
-              className="inline-pill-row"
-              gap="1"
-              wrap="wrap"
-              align="center"
-            >
-              {segment.items.map(renderPill)}
-            </Flex>
-          ) : (
+        {segments.map((segment) => {
+          if (segment.kind === "pills") {
+            return (
+              <Flex
+                key={segment.key}
+                className="inline-pill-row"
+                gap="1"
+                wrap="wrap"
+                align="center"
+              >
+                {segment.items.map(renderPill)}
+              </Flex>
+            );
+          }
+          return (
             <Box key={segment.key} className="inline-expanded-item">
               {renderExpanded(segment.item)}
             </Box>
-          )
-        )}
+          );
+        })}
       </Flex>
     </Box>
   );

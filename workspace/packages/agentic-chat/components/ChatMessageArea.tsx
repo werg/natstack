@@ -34,8 +34,6 @@ export function ChatMessageArea({ renderMessage, renderInlineGroup }: ChatMessag
     onReloadPanel,
     chat,
     browserHandoffCaller,
-    scope,
-    scopes,
     clientRef,
   } = useChatContext();
   const { setReplyTo } = useChatInputContext();
@@ -58,8 +56,6 @@ export function ChatMessageArea({ renderMessage, renderInlineGroup }: ChatMessag
         messageTypeComponents={messageTypeComponents}
         chat={chat as unknown as Record<string, unknown>}
         browserHandoffCaller={browserHandoffCaller}
-        scope={scope}
-        scopes={scopes as unknown as Record<string, unknown>}
         hasMoreHistory={hasMoreHistory}
         loadingMore={loadingMore}
         onLoadEarlierMessages={onLoadEarlierMessages}

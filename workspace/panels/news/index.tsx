@@ -12,12 +12,11 @@ import {
   contextId as runtimeContextId,
   createDurableObjectServiceClient,
   openPanel,
-  recoveryCoordinator,
+  panel,
   rpc,
-  setStateArgs,
-  useStateArgs,
   type DurableObjectServiceClient,
 } from "@workspace/runtime";
+import { recoveryCoordinator } from "@workspace/runtime/internal/diagnostics";
 import { usePanelTheme } from "@workspace/react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -453,7 +452,7 @@ function ArticleItem({
 
 export default function NewsPanel() {
   const theme = usePanelTheme();
-  const stateArgs = useStateArgs<NewsStateArgs>();
+  const stateArgs = panel.stateArgs.use<NewsStateArgs>();
   const resolvedContextId = resolveNewsContextId(stateArgs.contextId, runtimeContextId);
 
   const [bootstrapChannel, setBootstrapChannel] = useState<string | null>(null);
@@ -511,7 +510,7 @@ export default function NewsPanel() {
         const channel = stateArgs.channelName ?? newsChannelName(resolvedContextId);
         const agentKey = stateArgs.agentKey ?? newsAgentKey(resolvedContextId);
         if (!stateArgs.channelName || !stateArgs.agentKey) {
-          void setStateArgs({ channelName: channel, agentKey, contextId: resolvedContextId });
+          void panel.stateArgs.set({ channelName: channel, agentKey, contextId: resolvedContextId });
         }
         if (!stateArgs.channelName) setBootstrapChannel(channel);
 

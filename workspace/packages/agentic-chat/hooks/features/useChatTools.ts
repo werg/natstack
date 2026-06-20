@@ -15,7 +15,6 @@ import type { ToolApprovalProps } from "@workspace/tool-ui";
 import type { SandboxOptions, SandboxResult } from "@workspace/eval";
 import type { PubSubClient } from "@workspace/pubsub";
 import type { ToolProvider, ChatSandboxValue } from "../../types";
-import type { ScopesApi } from "@workspace/eval";
 import type { ChatParticipantMetadata } from "@workspace/agentic-core";
 
 interface UseChatToolsOptions {
@@ -24,8 +23,6 @@ interface UseChatToolsOptions {
   contextId: string;
   executeSandbox: (code: string, options?: SandboxOptions) => Promise<SandboxResult>;
   chat: ChatSandboxValue;
-  scope: Record<string, unknown>;
-  scopes: ScopesApi;
 }
 
 export interface ChatToolsState {
@@ -41,15 +38,18 @@ export function useChatTools({
   contextId,
   executeSandbox,
   chat,
-  scope,
-  scopes,
 }: UseChatToolsOptions): ChatToolsState {
   const approval = useToolApproval(clientRef.current as Parameters<typeof useToolApproval>[0]);
 
   const buildToolMethods = useCallback((): Record<string, MethodDefinition> => {
     if (!tools) return {};
-    return tools({ clientRef, contextId, executeSandbox, chat, scope, scopes });
-  }, [tools, clientRef, contextId, executeSandbox, chat, scope, scopes]);
+    return tools({
+      clientRef,
+      contextId,
+      executeSandbox,
+      chat,
+    });
+  }, [tools, clientRef, contextId, executeSandbox, chat]);
 
   const toolApprovalValue: ToolApprovalProps = useMemo(() => ({
     settings: approval.settings,

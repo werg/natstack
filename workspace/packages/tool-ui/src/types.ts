@@ -38,15 +38,11 @@ export interface FeedbackCallbacks {
 
 /**
  * Props passed to TSX feedback components (feedback_custom).
- * Extends callbacks with sandbox bindings (chat, scope, scopes).
+ * Extends callbacks with the sandbox chat binding.
  */
 export interface FeedbackComponentProps extends FeedbackCallbacks {
   /** Chat API — publish messages, access runtime, etc. */
   chat: Record<string, unknown>;
-  /** REPL scope — shared read+write state across eval, inline_ui, action bars, feedback_custom */
-  scope: Record<string, unknown>;
-  /** Scopes API — call scopes.save() to persist scope changes from component handlers */
-  scopes: Record<string, unknown>;
 }
 
 // ============================================================================

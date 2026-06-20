@@ -104,8 +104,6 @@ describe("InlineGroup custom messages", () => {
         payload={customItem().payload}
         entry={entry}
         chat={{}}
-        scope={{}}
-        scopes={{}}
       />,
     );
 
@@ -129,8 +127,6 @@ describe("InlineGroup custom messages", () => {
         payload={item.payload}
         entry={entry}
         chat={{ publish }}
-        scope={{}}
-        scopes={{}}
       />,
     );
 
@@ -169,8 +165,6 @@ describe("InlineGroup custom messages", () => {
         payload={item.payload}
         entry={entry}
         chat={{}}
-        scope={{}}
-        scopes={{}}
       />,
     );
 
@@ -298,8 +292,6 @@ describe("InlineGroup custom messages", () => {
         payload={item.payload}
         entry={entry}
         chat={{}}
-        scope={{}}
-        scopes={{}}
       />,
     );
 
