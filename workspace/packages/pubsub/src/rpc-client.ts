@@ -49,6 +49,7 @@ import {
   hydrateStoredValueRefs,
   type AgenticEvent,
   type MessageId,
+  type MessageTier,
 } from "@workspace/agentic-protocol";
 import { AgenticError } from "./protocol-types.js";
 import { ErrorMessageSchema, SignalMessageSchema } from "./protocol.js";
@@ -1505,6 +1506,8 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       to?: Array<{ kind: "all" | "role" | "participant"; role?: string; participantId?: string }>;
       metadata?: Record<string, unknown>;
       idempotencyKey?: string;
+      /** Salience tier stamped onto the message; absent ⇒ "primary". */
+      tier?: MessageTier;
     }
   ): Promise<{ messageId: string; pubsubId: number | undefined }> {
     const id = crypto.randomUUID();
@@ -1536,6 +1539,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
         mentions: sendOptions?.mentions,
         replyTo: sendOptions?.replyTo as never,
         to: sendOptions?.to,
+        ...(sendOptions?.tier ? { tier: sendOptions.tier } : {}),
       },
       createdAt: new Date().toISOString(),
     };

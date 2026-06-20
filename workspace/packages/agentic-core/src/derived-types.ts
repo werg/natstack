@@ -10,7 +10,7 @@
  */
 
 import type { Attachment } from "@workspace/pubsub";
-import type { LifecycleMessageReasonCode, TurnReasonCode } from "@workspace/agentic-protocol";
+import type { LifecycleMessageReasonCode, MessageTier, TurnReasonCode } from "@workspace/agentic-protocol";
 import type { InvocationCardPayload } from "./invocation-card-payload.js";
 
 export type SandboxSource = { type: "code"; code: string } | { type: "file"; path: string };
@@ -190,6 +190,12 @@ export interface ChatMessage {
   mentions?: string[];
   error?: string;
   pending?: boolean;
+  /**
+   * Salience tier driving how prominently the card renders. "primary" (tier 1)
+   * is full presentation; "secondary" (tier 2) is slighter/de-emphasized.
+   * Absent ⇒ "primary". See MessageTier.
+   */
+  tier?: MessageTier;
   attachments?: Attachment[];
   senderMetadata?: { name?: string; type?: string; handle?: string };
   disconnectedAgent?: DisconnectedAgentInfo;

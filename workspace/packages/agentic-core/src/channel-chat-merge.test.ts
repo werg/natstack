@@ -412,6 +412,58 @@ describe("chatMessagesFromChannelView", () => {
     ]);
   });
 
+  it("carries an explicit message tier through the projection, overriding the fallback", () => {
+    // Text-only assistant message — the fallback would call this primary, but an
+    // explicit tier on the wire (stamped by the sender) must win.
+    const message: AgenticEvent<"message.completed"> = {
+      kind: "message.completed",
+      actor: agent,
+      causality: { messageId: brandId<MessageId>("msg-explicit") },
+      payload: { ...textPayload("msg-explicit", "assistant", "noted"), tier: "secondary" },
+      createdAt: "2026-05-20T12:00:00.000Z",
+    };
+    const state = [envelope(message, 1)].reduce(reduceChannelView, createInitialChannelViewState());
+    expect(chatMessagesFromChannelView(state)[0]).toMatchObject({
+      id: "msg-explicit",
+      tier: "secondary",
+    });
+  });
+
+  it("defaults an unstamped text-only assistant answer to the primary tier", () => {
+    const message: AgenticEvent<"message.completed"> = {
+      kind: "message.completed",
+      actor: agent,
+      causality: { messageId: brandId<MessageId>("msg-primary") },
+      payload: textPayload("msg-primary", "assistant", "the answer"),
+      createdAt: "2026-05-20T12:00:00.000Z",
+    };
+    const state = [envelope(message, 1)].reduce(reduceChannelView, createInitialChannelViewState());
+    expect(chatMessagesFromChannelView(state)[0]).toMatchObject({ tier: "primary" });
+  });
+
+  it("falls back to secondary for an unstamped assistant message that carried tool calls", () => {
+    // Simulates a transcript predating explicit tiering: narration text plus a
+    // tool call, no tier on the wire. The turn continued after it ⇒ tier 2.
+    const message: AgenticEvent<"message.completed"> = {
+      kind: "message.completed",
+      actor: agent,
+      causality: { messageId: brandId<MessageId>("msg-legacy") },
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        role: "assistant",
+        blocks: [
+          { blockId: brandId<BlockId>("msg-legacy:block:0"), type: "text", content: "let me check" },
+          { type: "toolCall", id: "tc-9", name: "read" } as never,
+        ],
+        outcome: "completed",
+      },
+      createdAt: "2026-05-20T12:00:00.000Z",
+    };
+    const state = [envelope(message, 1)].reduce(reduceChannelView, createInitialChannelViewState());
+    const standalone = chatMessagesFromChannelView(state).find((m) => m.id === "msg-legacy");
+    expect(standalone).toMatchObject({ tier: "secondary" });
+  });
+
   it("uses the invocation card instead of a blank assistant card for known invocation-only messages", () => {
     const message: AgenticEvent<"message.completed"> = {
       kind: "message.completed",

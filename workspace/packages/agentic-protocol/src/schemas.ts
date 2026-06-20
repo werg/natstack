@@ -4,6 +4,7 @@ import {
   AGENTIC_PROTOCOL_VERSION,
   INVOCATION_OUTCOMES,
   MESSAGE_OUTCOMES,
+  MESSAGE_TIERS,
   TURN_REASON_CODES,
   TURN_SCOPED_OWNER_KINDS,
   validateInvocationTerminalOutcomeForKind,
@@ -93,6 +94,7 @@ const messageStartedPayloadSchema = z
     mentions: z.array(idSchema).optional(),
     replyTo: idSchema.optional(),
     to: z.array(participantSelectorSchema).optional(),
+    tier: z.enum(MESSAGE_TIERS).optional(),
   })
   .strict();
 
@@ -116,6 +118,7 @@ const messageCompletedPayloadSchema = z
     mentions: z.array(idSchema).optional(),
     replyTo: idSchema.optional(),
     to: z.array(participantSelectorSchema).optional(),
+    tier: z.enum(MESSAGE_TIERS).optional(),
   })
   .strict();
 

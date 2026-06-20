@@ -349,17 +349,25 @@ export const MessageCard = React.memo(function MessageCard({
   const hasError = Boolean(msg.error);
   const hasContent = msg.content.length > 0;
   const hasAttachments = msg.attachments && msg.attachments.length > 0;
+  // Tier 2 (secondary salience) renders slighter — see styles.css. Absent ⇒ tier 1.
+  const isSecondary = msg.tier === "secondary";
 
   return (
     <Box
       id={`message-${msg.id}`}
-      className={classNames("message-row", isClient ? "message-row-client" : "message-row-agent")}
+      data-message-tier={msg.tier ?? "primary"}
+      className={classNames(
+        "message-row",
+        isClient ? "message-row-client" : "message-row-agent",
+        isSecondary && "message-row-tier2"
+      )}
     >
       <Card
         className={classNames(
           "message-card",
           isClient && "message-card-client",
-          hasError && "message-card-error"
+          hasError && "message-card-error",
+          isSecondary && "message-card-tier2"
         )}
         style={{
           opacity: msg.pending ? 0.7 : 1,

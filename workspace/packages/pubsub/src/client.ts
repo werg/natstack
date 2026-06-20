@@ -153,6 +153,8 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
       mentions?: string[];
       metadata?: Record<string, unknown>;
       idempotencyKey?: string;
+      /** Salience tier stamped onto the outgoing message; absent ⇒ "primary". */
+      tier?: import("@workspace/agentic-protocol").MessageTier;
     }
   ): Promise<{ messageId: string; pubsubId: number | undefined }>;
 

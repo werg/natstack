@@ -84,6 +84,27 @@ describe("MessageList typing indicators (roster-based)", () => {
     expect(screen.queryByText("User typing")).toBeNull();
   });
 
+  it("gives tier-2 messages the slight styling hook and leaves tier-1 alone", () => {
+    render(React.createElement(MessageList, {
+      messages: [
+        makeMessage({ content: "intermediate step", complete: true, tier: "secondary" }),
+        makeMessage({ content: "final answer", complete: true, tier: "primary" }),
+      ],
+      participants: {},
+      selfId: null,
+      allParticipants: {},
+    } as never));
+
+    const secondary = document.body.querySelector('[data-message-tier="secondary"]');
+    expect(secondary).toBeTruthy();
+    expect(secondary?.querySelector(".message-card-tier2")).toBeTruthy();
+    expect(secondary?.textContent).toContain("intermediate step");
+
+    const primary = document.body.querySelector('[data-message-tier="primary"]');
+    expect(primary).toBeTruthy();
+    expect(primary?.querySelector(".message-card-tier2")).toBeNull();
+  });
+
   it("renders invocation beads in inline groups", () => {
     render(React.createElement(MessageList, {
       messages: [

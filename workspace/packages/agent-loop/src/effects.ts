@@ -305,6 +305,17 @@ function classifyModelOutcome(
   return "completed";
 }
 
+/** Whether a model output carries tool calls — the signal that the turn will
+ *  continue after the tools run (mirrors isToolCallBlock in step.ts). */
+function messageHasToolCalls(blocks: unknown): boolean {
+  if (!Array.isArray(blocks)) return false;
+  return blocks.some((block) => {
+    if (!block || typeof block !== "object") return false;
+    const type = (block as { type?: unknown }).type;
+    return type === "toolCall" || type === "tool_call";
+  });
+}
+
 /** Map an executor outcome to its terminal append items. Pure. */
 export function outcomeEvents(
   descriptor: EffectDescriptor,
@@ -336,6 +347,18 @@ export function outcomeEvents(
       ];
     }
     const publish = shouldPublishModelOutcome(descriptor.request, outcome.blocks);
+    const messageOutcome = classifyModelOutcome(outcome);
+    // Salience tier travels on the wire so every surface (and replay) agrees on
+    // the turn's "final vs preceding" split. A message that carries tool calls
+    // is an intermediate step — the turn continues after the tools run, so it's
+    // tier 2; a text-only completion ends the turn and is the headline answer
+    // (tier 1). This mirrors the exact turn-continues test the loop uses to
+    // decide closure (step.ts: blocks.filter(isToolCallBlock)). An interrupted
+    // turn's terminal message stays tier 1.
+    const tier =
+      messageOutcome !== "interrupted" && messageHasToolCalls(outcome.blocks)
+        ? "secondary"
+        : "primary";
     return [
       {
         envelopeId: ids.messageTerminal(descriptor.messageId),
@@ -344,7 +367,8 @@ export function outcomeEvents(
           protocol: AGENTIC_PROTOCOL_VERSION,
           role: "assistant",
           blocks: outcome.blocks,
-          outcome: classifyModelOutcome(outcome),
+          outcome: messageOutcome,
+          tier,
           ...(outcome.usage ? { usage: outcome.usage } : {}),
         },
         causality: { messageId: descriptor.messageId as never },

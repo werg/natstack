@@ -8,6 +8,7 @@ export {
   LIFECYCLE_MESSAGE_REASON_CODES,
   LIFECYCLE_RECOVERY_NOTICES,
   MESSAGE_OUTCOMES,
+  MESSAGE_TIERS,
   TERMINAL_APPROVAL_KINDS,
   TERMINAL_INVOCATION_KINDS,
   TERMINAL_MESSAGE_KINDS,
@@ -27,6 +28,7 @@ export type {
   LifecycleNoticeStatus,
   LifecycleRecoveryNotice,
   MessageOutcome,
+  MessageTier,
   TerminalInvocationKind,
   TurnReasonCode,
 } from "./constants.js";

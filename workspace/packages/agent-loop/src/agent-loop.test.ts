@@ -144,6 +144,46 @@ describe("agent-loop core lifecycle", () => {
     expect(pendingEffectIds(s)).toEqual([]);
   });
 
+  it("stamps tier secondary on tool-call (intermediate) messages and primary on the final answer", () => {
+    const s = scenario();
+    prompt(s);
+    // First model output carries a tool call → the turn continues → tier 2.
+    resolveEffect(s, ids.modelEffect(msg0), {
+      kind: "model",
+      blocks: [{ type: "toolCall", id: "tc-1", name: "read", arguments: { path: "a.ts" } }],
+      stopReason: "completed",
+    });
+    const intermediate = s.log.find((row) => row.envelopeId === ids.messageTerminal(msg0))!;
+    expect((intermediate.payload as { tier?: string }).tier).toBe("secondary");
+
+    resolveEffect(s, ids.invocationEffect("tc-1"), {
+      kind: "tool",
+      result: "file contents",
+      isError: false,
+    });
+    const msg1 = ids.messageId(turn1, 1);
+    // Final model output is text-only → turn closes → tier 1.
+    resolveEffect(s, ids.modelEffect(msg1), {
+      kind: "model",
+      blocks: [{ type: "text", content: "done" }],
+      stopReason: "completed",
+    });
+    const final = s.log.find((row) => row.envelopeId === ids.messageTerminal(msg1))!;
+    expect((final.payload as { tier?: string }).tier).toBe("primary");
+  });
+
+  it("stamps tier primary on a direct text-only answer", () => {
+    const s = scenario();
+    prompt(s);
+    resolveEffect(s, ids.modelEffect(msg0), {
+      kind: "model",
+      blocks: [{ type: "text", content: "hi there" }],
+      stopReason: "completed",
+    });
+    const completed = s.log.find((row) => row.envelopeId === ids.messageTerminal(msg0))!;
+    expect((completed.payload as { tier?: string }).tier).toBe("primary");
+  });
+
   it("uses a configured per-turn model-call budget", () => {
     const s = scenario({ maxModelCallsPerTurn: 1 });
     prompt(s);

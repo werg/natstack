@@ -17,6 +17,7 @@ import type {
   Participant,
   RegisterMessageTypeInput,
 } from "@workspace/pubsub";
+import type { MessageTier } from "@workspace/agentic-protocol";
 import type { RecoveryCoordinator } from "@natstack/shared/shell/recoveryCoordinator";
 import type { ScopesApi } from "@workspace/eval";
 import type { SandboxOptions, SandboxResult } from "@workspace/eval";
@@ -114,7 +115,7 @@ export interface AgenticChatActions {
 /** Chat API exposed to sandboxed code (eval, inline_ui, action bars, feedback_custom) */
 export interface ChatSandboxValue {
   publish: (eventType: string, payload: unknown, options?: { idempotencyKey?: string }) => Promise<unknown>;
-  send: (content: string, options?: { idempotencyKey?: string }) => Promise<unknown>;
+  send: (content: string, options?: { idempotencyKey?: string; tier?: MessageTier }) => Promise<unknown>;
   publishCustomMessage: (
     input: { typeId: string; initialState?: unknown; displayMode?: CustomMessageDisplayMode },
     options?: { idempotencyKey?: string }

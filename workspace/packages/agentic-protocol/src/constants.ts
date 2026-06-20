@@ -38,6 +38,21 @@ export const MESSAGE_OUTCOMES = [
 
 export type MessageOutcome = (typeof MESSAGE_OUTCOMES)[number];
 
+/**
+ * Salience tier of a message — how prominently the UI should present it.
+ *  - "primary"   (tier 1): a headline the human cares about directly — their
+ *    own typed input, or an agent's final answer for a turn. Full presentation.
+ *  - "secondary" (tier 2): supporting content — intermediate agent steps
+ *    (narration before tool calls), system-injected prompts, and messages
+ *    produced by UI interactions. Rendered slighter/de-emphasized.
+ *
+ * Absent ⇒ treated as "primary" so messages predating this field render as
+ * they always have.
+ */
+export const MESSAGE_TIERS = ["primary", "secondary"] as const;
+
+export type MessageTier = (typeof MESSAGE_TIERS)[number];
+
 export type TerminalInvocationKind = (typeof TERMINAL_INVOCATION_KINDS)[number];
 
 export const TURN_REASON_CODES = [

@@ -461,6 +461,7 @@ function sameChatMessage(a: ChatMessage, b: ChatMessage): boolean {
     a.complete !== b.complete ||
     a.error !== b.error ||
     a.pending !== b.pending ||
+    a.tier !== b.tier ||
     a.replyTo !== b.replyTo
   ) {
     return false;

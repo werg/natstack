@@ -1,5 +1,5 @@
 import { AGENTIC_PROTOCOL_VERSION } from "./constants.js";
-import type { InvocationOutcome, MessageOutcome, TurnReasonCode } from "./constants.js";
+import type { InvocationOutcome, MessageOutcome, MessageTier, TurnReasonCode } from "./constants.js";
 import type {
   ApprovalId,
   BlockId,
@@ -117,6 +117,8 @@ export type MessagePayload =
       mentions?: string[];
       replyTo?: MessageId;
       to?: ParticipantSelector[];
+      /** Salience tier; absent ⇒ "primary". See MessageTier. */
+      tier?: MessageTier;
     }
   | {
       // Streaming content update. Deltas stream incremental text/thinking content
@@ -139,6 +141,8 @@ export type MessagePayload =
       mentions?: string[];
       replyTo?: MessageId;
       to?: ParticipantSelector[];
+      /** Salience tier; absent ⇒ "primary". See MessageTier. */
+      tier?: MessageTier;
     }
   | {
       protocol: "agentic.trajectory.v1";

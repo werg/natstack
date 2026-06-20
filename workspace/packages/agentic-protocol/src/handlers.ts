@@ -9,7 +9,7 @@ import type {
   UsagePayload,
 } from "./events.js";
 import type { ApprovalId, InvocationId, MessageId, TurnId } from "./ids.js";
-import type { InvocationOutcome, MessageOutcome } from "./constants.js";
+import type { InvocationOutcome, MessageOutcome, MessageTier } from "./constants.js";
 
 export type MessageStatus = "started" | "streaming" | "completed" | "failed";
 export type InvocationStatus =
@@ -31,6 +31,8 @@ export interface ProjectedMessage {
   replyTo?: MessageId;
   status: MessageStatus;
   outcome?: MessageOutcome;
+  /** Salience tier declared by the sender; absent ⇒ treated as "primary". */
+  tier?: MessageTier;
   startedAt?: string;
   completedAt?: string;
   failedAt?: string;
@@ -205,6 +207,7 @@ export function applyMessageEvent(
     const blocks = "blocks" in payload ? payload.blocks : existing.blocks;
     const mentions = "mentions" in payload ? payload.mentions : existing.mentions;
     const replyTo = "replyTo" in payload ? payload.replyTo : existing.replyTo;
+    const tier = "tier" in payload ? payload.tier : existing.tier;
     return {
       ...messages,
       [messageId]: {
@@ -215,6 +218,7 @@ export function applyMessageEvent(
         blocks,
         mentions,
         replyTo,
+        tier,
         status: "started",
         startedAt: event.createdAt,
         updatedAt: event.createdAt,
@@ -265,6 +269,7 @@ export function applyMessageEvent(
     }
     const mentions = "mentions" in payload ? payload.mentions : existing.mentions;
     const replyTo = "replyTo" in payload ? payload.replyTo : existing.replyTo;
+    const tier = "tier" in payload ? payload.tier : existing.tier;
     return {
       ...messages,
       [messageId]: {
@@ -275,6 +280,7 @@ export function applyMessageEvent(
         blocks,
         mentions,
         replyTo,
+        tier,
         status: "completed",
         outcome,
         completedAt: event.createdAt,

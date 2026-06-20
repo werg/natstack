@@ -51,6 +51,7 @@ import type { MessageTypeComponentEntry } from "../types";
 import { customInspectorPayload } from "../components/CustomMessage";
 import { unwrapChatMethodResult } from "@workspace/agentic-core";
 import type { ChatMethodResult, AgentSubscriptionConfig } from "@workspace/agentic-core";
+import type { MessageTier } from "@workspace/agentic-protocol";
 /** Installed agent info passed from the host panel. */
 interface InstalledAgentInfo {
   agentId: string;
@@ -292,10 +293,14 @@ export function useAgenticChat({
   // --- Build chat sandbox value (stale-ref safe — dereferences clientRef at call time) ---
   const chat: ChatSandboxValue = useMemo(
     () => ({
-      send: (content: string, opts?: { idempotencyKey?: string }) => {
+      send: (content: string, opts?: { idempotencyKey?: string; tier?: MessageTier }) => {
         return core.clientRef
           .current!.send(content, {
             idempotencyKey: opts?.idempotencyKey ?? crypto.randomUUID(),
+            // Sandbox/UI-interaction sends (inline UI buttons, markdown action
+            // buttons, eval) are supporting content, not the human's own input —
+            // default them to tier 2. Callers may override.
+            tier: opts?.tier ?? "secondary",
           })
           .then((result) => result.pubsubId) as Promise<unknown>;
       },

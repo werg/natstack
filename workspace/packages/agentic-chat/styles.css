@@ -416,6 +416,43 @@
   background-color: var(--blue-a3);
 }
 
+/*
+ * Tier 2 (secondary salience): supporting content — intermediate agent steps,
+ * system-injected prompts, and messages produced by UI interactions. Rendered
+ * with no card fill (just the outline border) as quiet, smaller text that
+ * recedes into the transcript, while keeping comfortable padding and the chrome
+ * (sender header + copy/reply). Applies on both the agent (left) and client
+ * (right) sides; tier 1 keeps the full default card presentation.
+ */
+.message-card-tier2 {
+  background-color: transparent;
+  color: var(--gray-a11);
+}
+
+/* The Radix Card surface paints a translucent panel fill on ::before (and may
+   blur behind it). Clear it so tier 2 truly matches the transcript background;
+   the border lives on ::after and is intentionally kept. */
+.message-card-tier2::before {
+  background-color: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* Smaller text *and* a proportionally tighter line-height — otherwise the line
+   spacing stays sized for tier-1 text and the block looks loose. */
+.message-card-tier2 .message-content,
+.message-card-tier2 .message-content :where(.rt-Text),
+.message-card-tier2 .message-prose,
+.message-card-tier2 .message-prose :where(p, li, blockquote) {
+  font-size: var(--font-size-1);
+  line-height: var(--line-height-1);
+}
+
+/* Quiet the sender header (name + @handle) so it recedes with the body. */
+.message-card-tier2 .message-card-body > .rt-Flex:first-child .rt-Text {
+  color: var(--gray-a10);
+}
+
 .message-card-error {
   background-color: var(--red-3);
 }

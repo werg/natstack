@@ -10,6 +10,7 @@ import {
     AGENTIC_EVENT_PAYLOAD_KIND,
     AGENTIC_PROTOCOL_VERSION,
     type AgenticEvent,
+    type MessageTier,
 } from "@workspace/agentic-protocol";
 interface ChannelSendOptions {
     senderMetadata?: Record<string, unknown>;
@@ -19,6 +20,14 @@ interface ChannelSendOptions {
     to?: Array<{ kind: "all" | "role" | "participant"; role?: string; participantId?: string }>;
     idempotencyKey?: string;
     attachments?: Array<{ id?: string; data: string; mimeType: string; name?: string; size?: number }>;
+    /**
+     * Salience tier. A `ChannelClient.send` is an explicit, deliberate message
+     * — the agent (or headless participant) choosing to surface text to the
+     * channel, e.g. the silent agent's `say` tool — so it defaults to "primary"
+     * (tier 1). The model-loop's own turn narration is tiered separately in
+     * agent-loop. Pass "secondary" to send a deliberately slight message.
+     */
+    tier?: MessageTier;
 }
 const DEFAULT_CHANNEL_SERVICE_PROTOCOL = "natstack.channel.v1";
 interface ResolvedService {
@@ -60,6 +69,7 @@ export class ChannelClient {
                 role: participantType === "agent" ? "assistant" : "user",
                 blocks: [{ blockId: `${messageId}:block:0` as never, type: "text", content }],
                 outcome: "completed",
+                tier: opts?.tier ?? "primary",
                 mentions: opts?.mentions,
                 replyTo: opts?.replyTo as never,
                 to: opts?.to,

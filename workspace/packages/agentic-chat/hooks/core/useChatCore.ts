@@ -615,6 +615,9 @@ export function useChatCore({
     client
       .send(prompt, {
         idempotencyKey: `initial-prompt:${channelName}`,
+        // Injected prompt: rendered as if from the user, but system-originated —
+        // supporting context, not the human's own typed input.
+        tier: "secondary",
       })
       .then(({ pubsubId }) => backfillAfterLocalPublish(pubsubId))
       .catch((err) => console.warn("[Chat] Failed to send initial prompt:", err));
