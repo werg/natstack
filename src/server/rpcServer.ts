@@ -1093,6 +1093,26 @@ export class RpcServer {
     }
 
     if (outboundMessage.type === "event" && !targetConnectionId) {
+      // Connectionless DO/worker participants (e.g. an EvalDO that subscribed to a
+      // channel via connectViaRpc) hold NO WS connection, so `getCallerConnections`
+      // is empty and the WS loop below would SILENTLY DROP the event — leaving the
+      // subscriber's awaiter (e.g. a held eval's sendAndWait) hung forever. Deliver
+      // via HTTP postToDO instead, symmetric with the call path (relayCall→relayToDO).
+      if (targetId.startsWith("do:") || targetId.startsWith("worker:")) {
+        void this.relayEvent(
+          client.caller.runtime.id,
+          client.caller.runtime.kind,
+          targetId,
+          outboundMessage.event,
+          outboundMessage.payload
+        ).catch((err) => {
+          console.warn(
+            `[RpcServer] routed event "${outboundMessage.event}" to ${targetId} failed:`,
+            err instanceof Error ? err.message : err
+          );
+        });
+        return;
+      }
       const leaseConnectionId = this.deps.runtimeCoordinator?.resolveRouteConnection(targetId);
       const routedTargetId = this.resolveRoutableTargetId(targetId);
       const connections = leaseConnectionId

@@ -546,6 +546,32 @@ describe("RpcServer relay behavior", () => {
     });
   });
 
+  it("delivers a routed event to a connectionless DO target via postToDO (no silent drop)", async () => {
+    const { server } = createServer();
+    server.setWorkerdUrl("http://127.0.0.1:1111");
+    server.setWorkerdGatewayToken("gateway-token");
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    // A connectionless DO participant (e.g. an EvalDO subscribed to a channel via
+    // connectViaRpc) holds NO ws connection. Pre-fix, this event was silently dropped
+    // (getCallerConnections empty → the WS loop no-ops), hanging the subscriber.
+    testServer(server).handleRoute(createClient(), "do:natstack/internal:EvalDO:k", {
+      type: "event",
+      fromId: "panel:nav-a",
+      event: "channel:message",
+      payload: { hello: "world" },
+    });
+
+    // Fire-and-forget HTTP delivery — assert the postToDO actually happened.
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toContain("EvalDO");
+    const body = String((init as RequestInit | undefined)?.body ?? "");
+    expect(body).toContain("channel:message");
+    expect(body).toContain("world");
+  });
+
   it("routes stable panel slot events to the current runtime entity connection", () => {
     const { server, runtimeCoordinator } = createServer();
     runtimeCoordinator.acquire("panel:nav-b", {
