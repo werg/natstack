@@ -188,7 +188,16 @@ export class CdpConnection {
   }
 
   private async handleMessage(data: unknown): Promise<void> {
-    const parsed = JSON.parse(await messageText(data)) as CdpResponse & CdpEvent;
+    let parsed: CdpResponse & CdpEvent;
+    try {
+      parsed = JSON.parse(await messageText(data)) as CdpResponse & CdpEvent;
+    } catch (err) {
+      // A malformed CDP frame must not abort the handler with an unhandled
+      // rejection — that would silently stop all further dispatch. Drop the bad
+      // frame and keep the connection processing.
+      console.error("[cdp-client] failed to parse CDP frame:", err);
+      return;
+    }
     if (typeof parsed.id !== "number") {
       if (parsed.method) {
         for (const listener of this.eventListeners.get(parsed.method) ?? []) {

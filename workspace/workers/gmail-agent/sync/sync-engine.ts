@@ -335,7 +335,16 @@ export class SyncEngine {
     decision: GmailAttentionDecision
   ): Promise<void> {
     const row = this.threadRow(channelId, threadId);
-    if (!row) return;
+    if (!row) {
+      // The thread the triage model decided to surface is not in the local
+      // cache, so there is no row to flag actionable and no card to update —
+      // the decision is effectively dropped. Log it instead of vanishing
+      // silently so the divergence is visible.
+      console.warn(
+        `[gmail-agent] applyTriageDecision: no cached thread row channel=${channelId} thread=${threadId}; surface decision dropped`
+      );
+      return;
+    }
     this.sql.exec(
       `UPDATE gmail_threads SET actionable = 1, updated_at = ? WHERE channel_id = ? AND thread_id = ?`,
       this.now(),

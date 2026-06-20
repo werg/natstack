@@ -155,7 +155,19 @@ export class TriageEngine {
         decision: "surface" as const,
         reason: "No triage verdict returned",
       };
-      await this.applyVerdict(channelId, candidate, verdict);
+      try {
+        await this.applyVerdict(channelId, candidate, verdict);
+      } catch (err) {
+        // The decision (e.g. SURFACE) did not stick — the actionable flag /
+        // thread card update failed. Do NOT dequeue: leaving the candidate in
+        // the queue lets the next alarm retry it rather than silently dropping
+        // a thread the model decided to surface.
+        console.error(
+          `[gmail-agent] triage applyVerdict failed channel=${channelId} thread=${candidate.threadId}:`,
+          err
+        );
+        continue;
+      }
       if (verdict.decision === "wake") woke += 1;
       else if (verdict.decision === "surface") surfaced += 1;
       else ignored += 1;
@@ -211,7 +223,9 @@ export class TriageEngine {
       actions: ["surface"],
     };
     this.deps.store.recordHit(channelId, candidate.threadId, decision);
-    await this.deps.applyDecision(channelId, candidate.threadId, decision).catch(() => undefined);
+    // Let errors propagate to runTriagePass's per-candidate handler — a failed
+    // surface/card update must keep the candidate queued, not silently drop it.
+    await this.deps.applyDecision(channelId, candidate.threadId, decision);
     if (verdict.decision === "wake") {
       const event = eventFromCandidate(candidate);
       if (this.deps.store.shouldStartTurn(channelId, event, TRIAGE_SOURCE)) {

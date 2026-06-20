@@ -88,7 +88,15 @@ export class ComposeHandlers {
 
     const complete = Boolean(to && subject && body);
     const extras = await this.composeCardExtras(channelId, body);
-    const from = await this.resolveFrom(channelId, args).catch(() => undefined);
+    // Validate an explicit From against the alias list. An invalid alias is a
+    // hard error — never silently fall back to the default sender (the send
+    // path does not swallow this either; keep the two consistent).
+    let from: string | undefined;
+    try {
+      from = await this.resolveFrom(channelId, args);
+    } catch (err) {
+      return await this.failGmail(channelId, "draft", err);
+    }
     const cardState: GmailComposeCardState = {
       ...(to ? { to } : {}),
       cc: stringArg(args, "cc"),
@@ -263,7 +271,9 @@ export class ComposeHandlers {
   async send(
     channelId: string,
     args: Record<string, unknown>
-  ): Promise<{ sent: true; id: string } | ReturnType<typeof failureResult>> {
+  ): Promise<
+    { sent: true; id: string; archiveWarning?: string } | ReturnType<typeof failureResult>
+  > {
     const messageId = stringArg(args, "messageId");
     await this.deps.cards.updateCompose(channelId, messageId, { status: "sending" });
     try {
@@ -294,20 +304,39 @@ export class ComposeHandlers {
       );
       await this.deps.cards.updateCompose(channelId, messageId, { status: "sent" });
       const sourceThreadId = stringArg(args, "sourceThreadId") ?? stringArg(args, "threadId");
+      let archiveWarning: string | undefined;
       if (sourceThreadId) {
-        await gmail
-          .modifyLabels({ threadId: sourceThreadId, removeLabelIds: ["INBOX"] })
-          .catch(() => undefined);
+        // The reply is sent. The archive (remove INBOX) is a SEPARATE Gmail
+        // call that can fail — if it does we must NOT mark the thread archived
+        // locally, or local state silently diverges from Gmail (the thread is
+        // still in the Gmail inbox and can re-trigger triage). Surface a
+        // warning instead and leave the local flags untouched.
+        let archived = false;
+        try {
+          await gmail.modifyLabels({ threadId: sourceThreadId, removeLabelIds: ["INBOX"] });
+          archived = true;
+        } catch (err) {
+          archiveWarning =
+            "Reply sent, but archiving the thread in Gmail failed: " +
+            (err instanceof Error ? err.message : String(err));
+          console.warn(
+            `[gmail-agent] post-send archive failed channel=${channelId} thread=${sourceThreadId}:`,
+            err
+          );
+        }
         await this.deps.sync
           .refreshThread(channelId, sourceThreadId, this.deps.getChannelState(channelId).emailAddress)
           .catch(() => undefined);
-        await this.deps.sync.applyLocalThreadFlags(channelId, sourceThreadId, {
-          inInbox: false,
-          actionable: false,
-          status: "archived",
-        });
+        // Only mirror the Gmail archive locally when it actually happened.
+        if (archived) {
+          await this.deps.sync.applyLocalThreadFlags(channelId, sourceThreadId, {
+            inInbox: false,
+            actionable: false,
+            status: "archived",
+          });
+        }
       }
-      return { sent: true, id: sent.id };
+      return { sent: true, id: sent.id, ...(archiveWarning ? { archiveWarning } : {}) };
     } catch (err) {
       // Recoverable compose error: keep the card editable with an error badge.
       await this.deps.cards.updateCompose(channelId, messageId, {
