@@ -596,6 +596,29 @@ async function connectRuntimeBridge(): Promise<RpcClient> {
       if (envelope) {
         for (const listener of listeners) listener(envelope);
       }
+    } else if (message.type === "ws:routed-response-error") {
+      // The server could not deliver our routed request. Synthesize a rejecting
+      // response so the pending call settles instead of hanging (silent-drop class).
+      console.warn(
+        `[ExtensionRuntime] routed request to ${message.targetId} failed (requestId=${message.requestId}): ${message.error}`
+      );
+      const envelope = envelopeFromMessage({
+        selfId: extensionName,
+        from: message.targetId,
+        target: extensionName,
+        callerKind: "unknown",
+        message: {
+          type: "response",
+          requestId: message.requestId,
+          error: message.error,
+          ...(message.errorCode ? { errorCode: message.errorCode } : {}),
+        },
+      });
+      for (const listener of listeners) listener(envelope);
+    } else if (message.type === "ws:routed-event-error") {
+      console.warn(
+        `[ExtensionRuntime] routed event "${message.event}" to ${message.targetId} dropped: ${message.error}`
+      );
     } else if (message.type === "ws:event") {
       const callbacks = extensionEventCallbacks.get(message.event);
       if (!callbacks) return;

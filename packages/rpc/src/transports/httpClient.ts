@@ -175,7 +175,28 @@ export function httpClientTransport(config: HttpClientTransportConfig): Connecti
           timeoutMs > 0
             ? setTimeout(() => {
                 captures.delete(requestId);
-                resolve(null);
+                // Resolve with a REJECTING response envelope, not `null`. The
+                // server's relay reads this body and delivers it to the original
+                // caller; a `null` here was unwrapped downstream to `undefined`,
+                // silently handing the caller a wrong (empty) result instead of
+                // an error (silent-drop class). The held exemption above (`<= 0`)
+                // is untouched.
+                console.warn(
+                  `[httpClientTransport:${config.selfId}] respond() timed out after ${timeoutMs}ms ` +
+                    `for "${(message as RpcRequest).method}" (requestId=${requestId})`,
+                );
+                resolve({
+                  from: inbound.target,
+                  target: inbound.from,
+                  delivery: { caller: { callerId: inbound.target, callerKind: "unknown" } },
+                  provenance: inbound.provenance ?? [],
+                  message: {
+                    type: "response",
+                    requestId,
+                    error: `Handler timed out after ${timeoutMs}ms`,
+                    errorCode: "RESPOND_TIMEOUT",
+                  },
+                });
               }, timeoutMs)
             : null;
         captures.set(requestId, (responseEnvelope) => {

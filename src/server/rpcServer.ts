@@ -1007,22 +1007,62 @@ export class RpcServer {
     }
 
     if (message.type === "response") {
+      // MED-7: route the response back to the ORIGIN CONNECTION that issued the
+      // request, not merely to the origin caller's primary connection. A
+      // multi-connection origin would otherwise misroute the reply to the wrong
+      // socket. If the origin is unknown (never recorded, or evicted by the
+      // count cap on `routedRequestOrigins`) there is no correct destination —
+      // reject the responder's relay rather than best-effort delivering to the
+      // primary connection (which is the silent-misroute being fixed here).
       const origin = this.routedRequestOrigins.get(message.requestId);
-      if (origin && origin.callerId === targetId) {
-        this.routedRequestOrigins.delete(message.requestId);
-        void this.resolveWsRelayTarget(origin.callerId, origin.connectionId).then(
-          (originClient) => {
-            this.sendToWs(originClient.ws, {
-              type: "ws:routed",
-              fromId: client.caller.runtime.id,
-              fromKind: client.caller.runtime.kind,
-              message,
-            });
-          },
-          (err) => this.sendRouteError(client, targetId, message, err)
+      if (!origin || origin.callerId !== targetId) {
+        // No correct destination is known — reject the responder's relay
+        // instead of best-effort delivering to the target's primary connection
+        // (the silent misroute). Surfaces the same TARGET_NOT_REACHABLE shape an
+        // unreachable target produced before this connection-keyed routing.
+        this.sendRouteError(
+          client,
+          targetId,
+          message,
+          createRelayError(`Target not reachable: ${targetId}`, "TARGET_NOT_REACHABLE")
         );
         return;
       }
+      this.routedRequestOrigins.delete(message.requestId);
+      void this.resolveWsRelayTarget(origin.callerId, origin.connectionId).then(
+        (originClient) => {
+          this.sendToWs(originClient.ws, {
+            type: "ws:routed",
+            fromId: client.caller.runtime.id,
+            fromKind: client.caller.runtime.kind,
+            message,
+          });
+        },
+        (err) => this.sendRouteError(client, targetId, message, err)
+      );
+      return;
+    }
+
+    // FIX 1 (unification): events ALWAYS flow through the single canonical
+    // `relayEvent` path — whether or not the target currently looks connected,
+    // and across every target kind (panel/shell fan-out, DO, worker). Collapsing
+    // delivery here is what prevents an event path from being silently
+    // re-implemented inline (and a target kind, e.g. connectionless DOs,
+    // forgotten). `relayEvent` is fire-and-forget; an undeliverable event
+    // rejects and surfaces as a logged `ws:routed-event-error` rather than being
+    // dropped or stalling behind a reconnect grace window.
+    if (message.type === "event") {
+      void this.relayEvent(
+        client.caller.runtime.id,
+        client.caller.runtime.kind,
+        targetId,
+        message.event,
+        message.payload,
+        targetConnectionId
+      ).catch((err) => {
+        this.sendRouteError(client, targetId, message, err);
+      });
+      return;
     }
 
     const targetClient = this.pickRoutableTarget(targetId, targetConnectionId);
@@ -1065,77 +1105,25 @@ export class RpcServer {
             ).catch((sendErr) => this.sendRouteError(client, targetId, message, sendErr));
           }
         );
-      } else if (message.type === "response") {
-        void this.relayResponse(client.caller.runtime.id, targetId, message).catch((err) => {
-          this.sendRouteError(client, targetId, message, err);
-        });
-      } else if (message.type === "event") {
-        const { event, payload } = message;
-        const sourceId = client.caller.runtime.id;
-        void this.relayEvent(sourceId, client.caller.runtime.kind, targetId, event, payload).catch(
-          (err) => {
-            this.sendRouteError(client, targetId, message, err);
-          }
-        );
       }
+      // `response` and `event` messages are fully handled (and returned) above,
+      // so only `request`/stream messages reach this not-connected block.
       return;
     }
 
-    // Authenticated direct delivery derives event source from the verified
-    // transport caller. Payload fromId is never authority.
-    let outboundMessage = message;
-    if (message.type === "event") {
-      const sourceId = client.caller.runtime.id;
-      outboundMessage = { ...message, fromId: sourceId };
-    }
-    if (outboundMessage.type === "request") {
-      this.recordRoutedRequestOrigin(outboundMessage.requestId, client);
-    }
-
-    if (outboundMessage.type === "event" && !targetConnectionId) {
-      // Connectionless DO/worker participants (e.g. an EvalDO that subscribed to a
-      // channel via connectViaRpc) hold NO WS connection, so `getCallerConnections`
-      // is empty and the WS loop below would SILENTLY DROP the event — leaving the
-      // subscriber's awaiter (e.g. a held eval's sendAndWait) hung forever. Deliver
-      // via HTTP postToDO instead, symmetric with the call path (relayCall→relayToDO).
-      if (targetId.startsWith("do:") || targetId.startsWith("worker:")) {
-        void this.relayEvent(
-          client.caller.runtime.id,
-          client.caller.runtime.kind,
-          targetId,
-          outboundMessage.event,
-          outboundMessage.payload
-        ).catch((err) => {
-          console.warn(
-            `[RpcServer] routed event "${outboundMessage.event}" to ${targetId} failed:`,
-            err instanceof Error ? err.message : err
-          );
-        });
-        return;
-      }
-      const leaseConnectionId = this.deps.runtimeCoordinator?.resolveRouteConnection(targetId);
-      const routedTargetId = this.resolveRoutableTargetId(targetId);
-      const connections = leaseConnectionId
-        ? [this.getConnection(routedTargetId, leaseConnectionId)].filter(
-            (connection): connection is WsClientState => Boolean(connection)
-          )
-        : this.getCallerConnections(routedTargetId);
-      for (const connection of connections) {
-        this.sendToWs(connection.ws, {
-          type: "ws:routed",
-          fromId: client.caller.runtime.id,
-          fromKind: client.caller.runtime.kind,
-          message: outboundMessage,
-        });
-      }
-      return;
+    // Events and responses were already dispatched and returned above; only
+    // `request`/stream messages reach here. Record the origin connection for
+    // routed requests so the eventual response is delivered back to the exact
+    // connection that issued it (see MED-7 response handling above).
+    if (message.type === "request") {
+      this.recordRoutedRequestOrigin(message.requestId, client);
     }
 
     this.sendToWs(targetClient.ws, {
       type: "ws:routed",
       fromId: client.caller.runtime.id,
       fromKind: client.caller.runtime.kind,
-      message: outboundMessage,
+      message,
     });
   }
 
@@ -2484,54 +2472,54 @@ export class RpcServer {
     return undefined;
   }
 
+  /**
+   * Canonical event delivery used by the `handleRoute` WS path for EVERY target
+   * kind (panel/shell fan-out, DO, worker). Events are fire-and-forget: unlike
+   * `relayCall`, the panel/shell branch does NOT await a reconnect grace window.
+   * A connectionless target throws `TARGET_NOT_REACHABLE` immediately so the
+   * drop is SURFACED (logged + `ws:routed-event-error`) rather than swallowed or
+   * stalled behind a reconnect that may never come. Keeping every target kind in
+   * this one function is what stops a kind (e.g. connectionless DOs) from being
+   * "forgotten" by a duplicate inline delivery path.
+   *
+   * `targetConnectionId`, when supplied, pins delivery to a single connection
+   * (e.g. a lease-resolved slot); otherwise the event fans out to every live
+   * connection for the caller.
+   */
   private async relayEvent(
     fromId: string,
     fromKind: CallerKind,
     targetId: string,
     event: string,
-    payload: unknown
+    payload: unknown,
+    targetConnectionId?: string
   ): Promise<void> {
     const isPanelOrShellTarget = !targetId.startsWith("do:") && !targetId.startsWith("worker:");
     if (isPanelOrShellTarget) {
-      const leaseConnectionId = this.deps.runtimeCoordinator?.resolveRouteConnection(targetId);
       const routedTargetId = this.resolveRoutableTargetId(targetId);
-      const wsClients = leaseConnectionId
-        ? [this.getConnection(routedTargetId, leaseConnectionId)].filter(
+      // Pin to an explicit connection, then a lease-resolved one, else fan out.
+      const pinnedConnectionId =
+        targetConnectionId ?? this.deps.runtimeCoordinator?.resolveRouteConnection(targetId);
+      const wsClients = pinnedConnectionId
+        ? [this.getConnection(routedTargetId, pinnedConnectionId)].filter(
             (connection): connection is WsClientState => Boolean(connection)
           )
         : this.getCallerConnections(routedTargetId);
-      if (wsClients.length > 0) {
-        for (const wsClient of wsClients) {
-          this.sendToWs(wsClient.ws, {
-            type: "ws:routed",
-            fromId,
-            message: { type: "event", fromId, event, payload },
-          });
-        }
-        return;
+      if (wsClients.length === 0) {
+        // Fire-and-forget: no live connection means the event is undeliverable
+        // now. Surface it instead of stalling on a reconnect that may never
+        // come (the call path keeps its reconnect behavior; events do not).
+        throw createRelayError(`Target not reachable: ${targetId}`, "TARGET_NOT_REACHABLE");
       }
-
-      const outcome = await this.awaitReconnectIfPending(routedTargetId);
-      switch (outcome.kind) {
-        case "reconnected":
-          for (const wsClient of this.getCallerConnections(routedTargetId)) {
-            this.sendToWs(wsClient.ws, {
-              type: "ws:routed",
-              fromId,
-              message: { type: "event", fromId, event, payload },
-            });
-          }
-          return;
-        case "server-shutdown":
-          throw createRelayError("Server shutting down", "SERVER_SHUTTING_DOWN");
-        case "grace-expired":
-          throw createRelayError(
-            `Target ${targetId} did not reconnect within grace window`,
-            "RECONNECT_GRACE_EXPIRED"
-          );
-        case "no-waiter":
-          throw createRelayError(`Target not reachable: ${targetId}`, "TARGET_NOT_REACHABLE");
+      for (const wsClient of wsClients) {
+        this.sendToWs(wsClient.ws, {
+          type: "ws:routed",
+          fromId,
+          fromKind,
+          message: { type: "event", fromId, event, payload },
+        });
       }
+      return;
     }
 
     // DO?

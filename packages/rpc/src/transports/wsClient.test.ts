@@ -126,4 +126,64 @@ describe("wsClientTransport", () => {
 
     expect(events).toEqual([{ event: "event:shell-approval:pending-changed", payload }]);
   });
+
+  it("synthesizes a rejecting response envelope from ws:routed-response-error", async () => {
+    const { sockets, transport } = createTransportHarness();
+    const delivered: Array<{ from: string; message: unknown }> = [];
+    transport.onMessage((envelope) => {
+      delivered.push({ from: envelope.from, message: envelope.message });
+    });
+
+    const connected = transport.connectAndWait();
+    await Promise.resolve();
+    sockets[0]?.open();
+    sockets[0]?.authenticate();
+    await connected;
+
+    sockets[0]?.onmessage?.({
+      data: JSON.stringify({
+        type: "ws:routed-response-error",
+        targetId: "do:notes:Bucket:key",
+        requestId: "req-123",
+        error: "Target not reachable: do:notes:Bucket:key",
+        errorCode: "TARGET_NOT_REACHABLE",
+      }),
+    });
+
+    expect(delivered).toEqual([
+      {
+        from: "do:notes:Bucket:key",
+        message: {
+          type: "response",
+          requestId: "req-123",
+          error: "Target not reachable: do:notes:Bucket:key",
+          errorCode: "TARGET_NOT_REACHABLE",
+        },
+      },
+    ]);
+  });
+
+  it("does not synthesize a response for ws:routed-event-error (logs only)", async () => {
+    const { sockets, transport } = createTransportHarness();
+    const delivered: unknown[] = [];
+    transport.onMessage((envelope) => delivered.push(envelope));
+
+    const connected = transport.connectAndWait();
+    await Promise.resolve();
+    sockets[0]?.open();
+    sockets[0]?.authenticate();
+    await connected;
+
+    sockets[0]?.onmessage?.({
+      data: JSON.stringify({
+        type: "ws:routed-event-error",
+        targetId: "panel:gone",
+        event: "ping",
+        error: "Target not reachable: panel:gone",
+        errorCode: "TARGET_NOT_REACHABLE",
+      }),
+    });
+
+    expect(delivered).toEqual([]);
+  });
 });

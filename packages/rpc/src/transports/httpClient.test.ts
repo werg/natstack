@@ -43,4 +43,57 @@ describe("httpClientTransport", () => {
     );
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
+
+  it("respond() resolves a rejecting error envelope on timeout (not null)", async () => {
+    vi.useFakeTimers();
+    try {
+      const transport = httpClientTransport({
+        selfId: "do:notes:Bucket:key",
+        serverUrl: "http://127.0.0.1:65530",
+        authToken: "token",
+        // No handler ever resolves the capture — model a dropped/never-answered
+        // inbound request. A short reaper deadline so the test stays fast.
+        respondTimeoutMs: 100,
+      });
+
+      const settled = transport.respond(requestEnvelope());
+      await vi.advanceTimersByTimeAsync(101);
+      const result = await settled;
+
+      // A9 (silent-drop): the old code resolved `null`, which downstream
+      // unwrapped to `undefined` (a silent wrong result). It must resolve a
+      // rejecting response envelope so the relay rejects the caller's call.
+      expect(result).not.toBeNull();
+      expect(result?.message).toMatchObject({
+        type: "response",
+        requestId: "req-1",
+        errorCode: "RESPOND_TIMEOUT",
+      });
+      expect((result?.message as { error: string }).error).toContain("timed out after 100ms");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("respond() never reaps when respondTimeoutMs <= 0 (held exemption preserved)", async () => {
+    vi.useFakeTimers();
+    try {
+      const transport = httpClientTransport({
+        selfId: "do:eval:EvalDO:key",
+        serverUrl: "http://127.0.0.1:65530",
+        authToken: "token",
+        respondTimeoutMs: 0,
+      });
+
+      let settled = false;
+      void transport.respond(requestEnvelope()).then(() => {
+        settled = true;
+      });
+      // Far beyond any default deadline — the held handler must stay pending.
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(settled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

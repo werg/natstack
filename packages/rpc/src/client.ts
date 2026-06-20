@@ -49,13 +49,16 @@ function base64ToBytes(value: string): Uint8Array {
   return bytes;
 }
 
-function callerForSelf(selfId: string, callerKind: CallerKind | "unknown" = "unknown"): AuthenticatedCaller {
+function callerForSelf(
+  selfId: string,
+  callerKind: CallerKind | "unknown" = "unknown"
+): AuthenticatedCaller {
   return { callerId: selfId, callerKind };
 }
 
 function appendSelf(
   provenance: AuthenticatedCaller[],
-  self: AuthenticatedCaller,
+  self: AuthenticatedCaller
 ): AuthenticatedCaller[] {
   if (provenance.length === 0) return [self];
   const last = provenance[provenance.length - 1];
@@ -64,7 +67,7 @@ function appendSelf(
 }
 
 function createCallProxy<TMethods extends MethodMap>(
-  invoke: (method: string, args: unknown[]) => Promise<unknown>,
+  invoke: (method: string, args: unknown[]) => Promise<unknown>
 ): TypedCallProxy<TMethods> {
   return new Proxy(
     {},
@@ -73,12 +76,12 @@ function createCallProxy<TMethods extends MethodMap>(
         if (typeof prop !== "string") return undefined;
         return (...args: unknown[]) => invoke(prop, args);
       },
-    },
+    }
   ) as TypedCallProxy<TMethods>;
 }
 
 export function defineContract<const TContract extends Record<string, unknown>>(
-  contract: TContract,
+  contract: TContract
 ): TContract {
   return contract;
 }
@@ -86,7 +89,10 @@ export function defineContract<const TContract extends Record<string, unknown>>(
 export function createRpcClient(config: RpcClientConfig): RpcClient {
   const selfCaller = callerForSelf(config.selfId, config.callerKind);
   const baseProvenance = config.provenance?.length ? config.provenance : [selfCaller];
-  const exposedMethods = new Map<string, (request: RpcRequestContext) => unknown | Promise<unknown>>();
+  const exposedMethods = new Map<
+    string,
+    (request: RpcRequestContext) => unknown | Promise<unknown>
+  >();
   const streamingHandlers = new Map<string, RpcContextStreamingHandler>();
   const eventListeners = new Map<string, Set<(event: RpcEventContext) => void>>();
   const pendingRequests = new Map<
@@ -122,7 +128,7 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
     targetId: string,
     message: RpcMessage,
     options?: { idempotencyKey?: string },
-    provenance: AuthenticatedCaller[] = baseProvenance,
+    provenance: AuthenticatedCaller[] = baseProvenance
   ): RpcEnvelope {
     return {
       from: config.selfId,
@@ -139,18 +145,25 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
   function scopedClientFor(inbound: RpcEnvelope): RpcClient {
     const scopedProvenance = appendSelf(
       inbound.provenance.length ? inbound.provenance : [inbound.delivery.caller],
-      selfCaller,
+      selfCaller
     );
     return {
       ...client,
-      call: (targetId, method, args, options) => callWithProvenance(scopedProvenance, targetId, method, args, options),
-      stream: (targetId, method, args, options) => streamWithProvenance(scopedProvenance, targetId, method, args, options),
-      emit: (targetId, event, payload, options) => emitWithProvenance(scopedProvenance, targetId, event, payload, options),
+      call: (targetId, method, args, options) =>
+        callWithProvenance(scopedProvenance, targetId, method, args, options),
+      stream: (targetId, method, args, options) =>
+        streamWithProvenance(scopedProvenance, targetId, method, args, options),
+      emit: (targetId, event, payload, options) =>
+        emitWithProvenance(scopedProvenance, targetId, event, payload, options),
       peer: (targetId) => peer(targetId, scopedProvenance),
     };
   }
 
-  function requestContext(envelope: RpcEnvelope, message: RpcRequest | RpcStreamRequest, signal: AbortSignal): RpcRequestContext {
+  function requestContext(
+    envelope: RpcEnvelope,
+    message: RpcRequest | RpcStreamRequest,
+    signal: AbortSignal
+  ): RpcRequestContext {
     return {
       caller: envelope.delivery.caller,
       origin: originOfEnvelope(envelope),
@@ -165,7 +178,7 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
     targetId: string,
     message: RpcMessage,
     options?: { idempotencyKey?: string },
-    provenance?: AuthenticatedCaller[],
+    provenance?: AuthenticatedCaller[]
   ): Promise<void> {
     const envelope = makeEnvelope(targetId, message, options, provenance);
     await deliverEnvelope(envelope);
@@ -286,34 +299,50 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
 
   function handleRequest(envelope: RpcEnvelope, request: RpcRequest): void {
     const handler = exposedMethods.get(request.method);
+    // A failed response send means the caller's awaiter will hang. We can't
+    // recover the delivery here, but the drop MUST be observable rather than
+    // silently swallowed (silent-drop class).
+    const logResponseSendFailure = (error: unknown): void => {
+      console.warn(
+        `[rpc:${config.selfId}] failed to deliver response for "${request.method}" ` +
+          `(requestId=${request.requestId}) to ${envelope.from}:`,
+        error
+      );
+    };
     if (!handler) {
-      void deliverEnvelope(responseEnvelopeFor(envelope, selfCaller, {
-        type: "response",
-        requestId: request.requestId,
-        error: `Method "${request.method}" is not exposed by this endpoint`,
-      })).catch(() => {});
+      void deliverEnvelope(
+        responseEnvelopeFor(envelope, selfCaller, {
+          type: "response",
+          requestId: request.requestId,
+          error: `Method "${request.method}" is not exposed by this endpoint`,
+        })
+      ).catch(logResponseSendFailure);
       return;
     }
     const abort = new AbortController();
     Promise.resolve()
       .then(() => handler(requestContext(envelope, request, abort.signal)))
       .then((result) =>
-        deliverEnvelope(responseEnvelopeFor(envelope, selfCaller, {
-          type: "response",
-          requestId: request.requestId,
-          result,
-        })),
+        deliverEnvelope(
+          responseEnvelopeFor(envelope, selfCaller, {
+            type: "response",
+            requestId: request.requestId,
+            result,
+          })
+        )
       )
       .catch((error) =>
-        deliverEnvelope(responseEnvelopeFor(envelope, selfCaller, {
-          type: "response",
-          requestId: request.requestId,
-          error: error instanceof Error ? error.message : String(error),
-          ...(error instanceof Error && error.stack ? { errorStack: error.stack } : {}),
-          ...(error instanceof Error && typeof (error as NodeJS.ErrnoException).code === "string"
-            ? { errorCode: (error as NodeJS.ErrnoException).code }
-            : {}),
-        })).catch(() => {}),
+        deliverEnvelope(
+          responseEnvelopeFor(envelope, selfCaller, {
+            type: "response",
+            requestId: request.requestId,
+            error: error instanceof Error ? error.message : String(error),
+            ...(error instanceof Error && error.stack ? { errorStack: error.stack } : {}),
+            ...(error instanceof Error && typeof (error as NodeJS.ErrnoException).code === "string"
+              ? { errorCode: (error as NodeJS.ErrnoException).code }
+              : {}),
+          })
+        ).catch(logResponseSendFailure)
       );
   }
 
@@ -330,7 +359,10 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
     if (!handler) {
       void sendFrame(
         FRAME_ERROR,
-        JSON.stringify({ status: 404, message: `No streaming handler for method "${request.method}"` }),
+        JSON.stringify({
+          status: 404,
+          message: `No streaming handler for method "${request.method}"`,
+        })
       ).catch(() => {});
       return;
     }
@@ -345,20 +377,27 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
             statusText: frame.statusText,
             headerPairs: frame.headerPairs,
             finalUrl: frame.finalUrl,
-          }),
+          })
         );
       }
       if (frame.kind === "chunk") return sendFrame(FRAME_DATA, bytesToBase64(frame.bytes));
-      if (frame.kind === "end") return sendFrame(FRAME_END, JSON.stringify({ bytesIn: frame.bytesIn }));
-      return sendFrame(FRAME_ERROR, JSON.stringify({ status: frame.status, message: frame.message, code: frame.code }));
+      if (frame.kind === "end")
+        return sendFrame(FRAME_END, JSON.stringify({ bytesIn: frame.bytesIn }));
+      return sendFrame(
+        FRAME_ERROR,
+        JSON.stringify({ status: frame.status, message: frame.message, code: frame.code })
+      );
     };
     Promise.resolve()
       .then(() => handler(requestContext(envelope, request, abort.signal), sink))
       .catch((error) =>
         sendFrame(
           FRAME_ERROR,
-          JSON.stringify({ status: 502, message: error instanceof Error ? error.message : String(error) }),
-        ).catch(() => {}),
+          JSON.stringify({
+            status: 502,
+            message: error instanceof Error ? error.message : String(error),
+          })
+        ).catch(() => {})
       )
       .finally(() => activeStreamingHandlers.delete(request.requestId));
   }
@@ -392,7 +431,7 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
     targetId: string,
     method: string,
     args: unknown[],
-    options?: RpcCallOptions,
+    options?: RpcCallOptions
   ): Promise<T> {
     if (options?.signal?.aborted) return Promise.reject(new Error("RPC call aborted by caller"));
     const requestId = generateRequestId();
@@ -408,15 +447,27 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
         pending.abortCleanup?.();
         pending.reject(err);
       };
+      // No default deadline: agentic runtimes vary too wildly for a timeout to
+      // be anything but an arbitrary guillotine. Only an EXPLICIT per-call
+      // timeoutMs arms one; a dropped response is surfaced by genuine-failure
+      // rejection (connection close / routed-error frames), never by a clock.
       if (typeof options?.timeoutMs === "number" && options.timeoutMs >= 0) {
-        timeout = setTimeout(() => rejectPending(new Error(`RPC call timed out after ${options.timeoutMs}ms`)), options.timeoutMs);
+        timeout = setTimeout(
+          () => rejectPending(new Error(`RPC call timed out after ${options.timeoutMs}ms`)),
+          options.timeoutMs
+        );
       }
       if (options?.signal) {
         const onAbort = (): void => rejectPending(new Error("RPC call aborted by caller"));
         options.signal.addEventListener("abort", onAbort, { once: true });
         abortCleanup = () => options.signal?.removeEventListener("abort", onAbort);
       }
-      pendingRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout, abortCleanup });
+      pendingRequests.set(requestId, {
+        resolve: resolve as (value: unknown) => void,
+        reject,
+        timeout,
+        abortCleanup,
+      });
       void send(targetId, request, options, provenance).catch((error) => {
         const pending = pendingRequests.get(requestId);
         pendingRequests.delete(requestId);
@@ -432,7 +483,7 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
     targetId: string,
     event: string,
     payload: unknown,
-    options?: RpcCallOptions,
+    options?: RpcCallOptions
   ): Promise<void> {
     const message: RpcEvent = { type: "event", fromId: config.selfId, event, payload };
     return send(targetId, message, options, provenance);
@@ -443,7 +494,7 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
     targetId: string,
     method: string,
     args: unknown[],
-    options?: { signal?: AbortSignal; idempotencyKey?: string },
+    options?: { signal?: AbortSignal; idempotencyKey?: string }
   ): Promise<Response> {
     // Connectionless transports (HTTP) physically stream the response body, so
     // delegate to their first-class `stream` hook. Socket transports omit it
@@ -451,9 +502,15 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
     if (config.transport.stream) {
       const envelope = makeEnvelope(
         targetId,
-        { type: "stream-request", requestId: generateRequestId(), fromId: config.selfId, method, args },
+        {
+          type: "stream-request",
+          requestId: generateRequestId(),
+          fromId: config.selfId,
+          method,
+          args,
+        },
         options,
-        provenance,
+        provenance
       );
       return config.transport.stream(envelope, options?.signal ?? null);
     }
@@ -466,11 +523,13 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
     TEmitEvents extends EventMap = TEvents,
   >(
     targetId: string,
-    provenance: AuthenticatedCaller[] = baseProvenance,
+    provenance: AuthenticatedCaller[] = baseProvenance
   ): RpcPeer<TMethods, TEvents, TEmitEvents> {
     const result: RpcPeer<TMethods, TEvents, TEmitEvents> = {
       id: targetId,
-      call: createCallProxy<TMethods>((method, args) => callWithProvenance(provenance, targetId, method, args)),
+      call: createCallProxy<TMethods>((method, args) =>
+        callWithProvenance(provenance, targetId, method, args)
+      ),
       on(event, listener) {
         return client.on(event, (ev) => {
           if (ev.caller.callerId === targetId) listener(ev as never);
@@ -491,7 +550,7 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
     targetId: string,
     method: string,
     args: unknown[],
-    options?: { signal?: AbortSignal; idempotencyKey?: string },
+    options?: { signal?: AbortSignal; idempotencyKey?: string }
   ): Promise<Response> {
     if (options?.signal?.aborted) throw new Error("Streaming RPC aborted by caller");
     const requestId = generateRequestId();
@@ -513,7 +572,12 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
     });
     let bodyController: ReadableStreamDefaultController<Uint8Array> | null = null;
     const sendCancel = (): void => {
-      void send(targetId, { type: "stream-cancel", requestId, fromId: config.selfId }, undefined, provenance).catch(() => {});
+      void send(
+        targetId,
+        { type: "stream-cancel", requestId, fromId: config.selfId },
+        undefined,
+        provenance
+      ).catch(() => {});
     };
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -556,7 +620,7 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
         targetId,
         { type: "stream-request", requestId, fromId: config.selfId, method, args },
         options,
-        provenance,
+        provenance
       );
     } catch (error) {
       clearPendingStream(requestId);
@@ -571,7 +635,11 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
     });
     if (head.finalUrl) {
       try {
-        Object.defineProperty(response, "url", { value: head.finalUrl, writable: false, configurable: true });
+        Object.defineProperty(response, "url", {
+          value: head.finalUrl,
+          writable: false,
+          configurable: true,
+        });
       } catch {
         // ignore
       }
@@ -582,11 +650,17 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
   const client: RpcClient = {
     selfId: config.selfId,
     expose(method, handler): void {
-      exposedMethods.set(method, handler as (request: RpcRequestContext) => unknown | Promise<unknown>);
+      exposedMethods.set(
+        method,
+        handler as (request: RpcRequestContext) => unknown | Promise<unknown>
+      );
     },
     exposeAll(methods: RpcContextMethods): void {
       for (const [name, handler] of Object.entries(methods)) {
-        exposedMethods.set(name, handler as (request: RpcRequestContext) => unknown | Promise<unknown>);
+        exposedMethods.set(
+          name,
+          handler as (request: RpcRequestContext) => unknown | Promise<unknown>
+        );
       }
     },
     exposeStreaming(method, handler): void {
@@ -596,7 +670,7 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
       targetId: string,
       method: string,
       args: unknown[],
-      options?: RpcCallOptions,
+      options?: RpcCallOptions
     ): Promise<T> {
       return callWithProvenance(baseProvenance, targetId, method, args, options);
     },

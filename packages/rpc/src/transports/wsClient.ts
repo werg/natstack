@@ -183,9 +183,39 @@ export function wsClientTransport(config: WsClientTransportConfig): EnvelopeRpcT
         }
         config.onServerEvent?.(msg.event, msg.payload);
         return;
-      case "ws:routed-event-error":
-      case "ws:routed-response-error":
+      case "ws:routed-response-error": {
+        // The server could not deliver our routed request to the target. Turn
+        // the explicit error frame into a rejecting `response` so the pending
+        // call settles instead of hanging forever (silent-drop class).
+        const prefix = config.logPrefix ?? "wsClientTransport";
+        console.warn(
+          `[${prefix}] routed request to ${msg.targetId} failed (requestId=${msg.requestId}): ${msg.error}`,
+        );
+        const errorMessage: RpcMessage = {
+          type: "response",
+          requestId: msg.requestId,
+          error: msg.error,
+          ...(msg.errorCode ? { errorCode: msg.errorCode } : {}),
+        };
+        const envelope: RpcEnvelope = {
+          from: msg.targetId,
+          target: config.selfId,
+          delivery: { caller: { callerId: msg.targetId, callerKind: "unknown" } },
+          provenance: [{ callerId: msg.targetId, callerKind: "unknown" }],
+          message: errorMessage,
+        };
+        for (const listener of messageListeners) listener(envelope);
         return;
+      }
+      case "ws:routed-event-error": {
+        // Fire-and-forget event could not be delivered. There is no pending
+        // promise to reject, but the drop MUST be observable rather than silent.
+        const prefix = config.logPrefix ?? "wsClientTransport";
+        console.warn(
+          `[${prefix}] routed event "${msg.event}" to ${msg.targetId} dropped: ${msg.error}`,
+        );
+        return;
+      }
     }
   };
 
