@@ -17,6 +17,21 @@ import { assertPresent } from "../../lintHelpers";
 
 const BATCH_SIZE = 1000;
 
+/**
+ * Direct callers permitted at BrowserDataDO (Layer A). Shell + shell-side server
+ * services, PLUS the `@workspace-extensions/browser-data` extension — the
+ * designated mediator panel/agent access goes through (it gates its own callers
+ * to shell and runs in the server-managed extension host, so its
+ * server-authenticated `callerId` is trustworthy). Every OTHER extension and
+ * every other caller kind is refused (this DO holds user credentials). Exported
+ * so the policy is unit-testable without the FTS5 schema the DO itself needs.
+ */
+export function isBrowserDataDirectCaller(caller: AuthenticatedCaller | null): boolean {
+  const kind = caller?.callerKind;
+  if (kind === "server" || kind === "shell") return true;
+  return kind === "extension" && caller?.callerId === "@workspace-extensions/browser-data";
+}
+
 export class BrowserDataDO extends DurableObjectBase {
   static override schemaVersion = 1;
 
@@ -27,18 +42,21 @@ export class BrowserDataDO extends DurableObjectBase {
 
   /**
    * Receiver-side authorization (Layer A). BrowserDataDO holds user
-   * credentials/passwords/cookies/history. Its only direct callers are the
-   * Electron shell and shell-side services; panel/agent access goes through the
-   * `@workspace-extensions/browser-data` extension, NOT this DO. Refuse any
-   * other caller kind so the open relay cannot read user secrets by addressing
-   * the DO directly. Events are owner-scoped push notifications — accept them.
+   * credentials/passwords/cookies/history. Direct callers are the Electron shell
+   * and shell-side server services, plus the `@workspace-extensions/browser-data`
+   * extension — the designated mediator that panel/agent access goes through. That
+   * extension gates its OWN callers to shell and runs in the server-managed
+   * extension host (so its server-authenticated `callerId` is trustworthy), hence
+   * it is whitelisted by id. Refuse every other caller kind — and every OTHER
+   * extension — so the open relay cannot read user secrets by addressing the DO
+   * directly. Events are owner-scoped push notifications — accept them.
    */
   protected override assertInboundAllowed(
     caller: AuthenticatedCaller | null,
     kind: "call" | "event"
   ): void {
     if (kind === "event") return;
-    if (caller?.callerKind !== "server" && caller?.callerKind !== "shell") {
+    if (!isBrowserDataDirectCaller(caller)) {
       throw new Error(
         `browser-data: BrowserDataDO is shell/server-only (holds user credentials); refusing caller kind ${caller?.callerKind ?? "unknown"}`
       );

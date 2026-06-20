@@ -87,7 +87,12 @@ import {
   SUGGESTED_FEEDS,
   SUGGESTED_TOPICS,
 } from "./bootstrap.js";
-import { NEWS_AGENT_CLASS, NEWS_AGENT_HANDLE, NEWS_AGENT_SOURCE, type NewsStateArgs } from "./types.js";
+import {
+  NEWS_AGENT_CLASS,
+  NEWS_AGENT_HANDLE,
+  NEWS_AGENT_SOURCE,
+  type NewsStateArgs,
+} from "./types.js";
 
 interface ArticleRow {
   articleId: string;
@@ -232,7 +237,10 @@ interface DeepDiveStory {
 }
 
 /** A model is "connected" when a stored credential matches its base URL. */
-function modelHasMatchingCredential(baseUrl: string | undefined, audiences: UrlAudience[]): boolean {
+function modelHasMatchingCredential(
+  baseUrl: string | undefined,
+  audiences: UrlAudience[]
+): boolean {
   if (!baseUrl?.trim() || /\{[^}]+\}/.test(baseUrl)) return false;
   try {
     return findMatchingUrlAudience(baseUrl, audiences) !== null;
@@ -463,7 +471,9 @@ export default function NewsPanel() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [feedDraft, setFeedDraft] = useState("");
-  const [modelConnect, setModelConnect] = useState<{ providerId: string; baseUrl: string } | null>(null);
+  const [modelConnect, setModelConnect] = useState<{ providerId: string; baseUrl: string } | null>(
+    null
+  );
   const [connecting, setConnecting] = useState(false);
   const [view, setView] = useState<FeedView>("all");
   const [sourceFilter, setSourceFilter] = useState("");
@@ -494,7 +504,7 @@ export default function NewsPanel() {
 
   // Stamp this visit so the next open can mark what's arrived since.
   useEffect(() => {
-    void setStateArgs({ lastVisitAt: Date.now() });
+    void panel.stateArgs.set({ lastVisitAt: Date.now() });
   }, []);
 
   // ── bootstrap: mint channel + agent, resolve model, ensure-subscribe ──────
@@ -510,12 +520,18 @@ export default function NewsPanel() {
         const channel = stateArgs.channelName ?? newsChannelName(resolvedContextId);
         const agentKey = stateArgs.agentKey ?? newsAgentKey(resolvedContextId);
         if (!stateArgs.channelName || !stateArgs.agentKey) {
-          void panel.stateArgs.set({ channelName: channel, agentKey, contextId: resolvedContextId });
+          void panel.stateArgs.set({
+            channelName: channel,
+            agentKey,
+            contextId: resolvedContextId,
+          });
         }
         if (!stateArgs.channelName) setBootstrapChannel(channel);
 
         // Honor the workspace-configured model like the chat panel does.
-        modelServiceRef.current ??= createDurableObjectServiceClient(MODEL_SETTINGS_SERVICE_PROTOCOL);
+        modelServiceRef.current ??= createDurableObjectServiceClient(
+          MODEL_SETTINGS_SERVICE_PROTOCOL
+        );
         let settings: ModelSettingsSnapshot | null = null;
         try {
           settings = await modelServiceRef.current.call<ModelSettingsSnapshot>("getSettings");
@@ -577,7 +593,10 @@ export default function NewsPanel() {
           channelName,
           { limit: 60, triagedOnly: true },
         ]),
-        rpc.call<{ briefings: BriefingRow[] }>(agentTarget, "briefingHistory", [channelName, { limit: 12 }]),
+        rpc.call<{ briefings: BriefingRow[] }>(agentTarget, "briefingHistory", [
+          channelName,
+          { limit: 12 },
+        ]),
       ]);
       setOverview(nextOverview);
       setArticles(articleList.articles);
@@ -598,7 +617,12 @@ export default function NewsPanel() {
         const next = await detectMissingModelCredential(probe.catalog, probe.modelRef);
         setModelConnect((prev) => {
           if (prev === null && next === null) return prev;
-          if (prev && next && prev.providerId === next.providerId && prev.baseUrl === next.baseUrl) {
+          if (
+            prev &&
+            next &&
+            prev.providerId === next.providerId &&
+            prev.baseUrl === next.baseUrl
+          ) {
             return prev;
           }
           return next;
@@ -689,8 +713,7 @@ export default function NewsPanel() {
               call: <T,>(target: string, method: string, args: unknown[]) =>
                 rpc.call<T>(target, method, args),
             } as never,
-            callMain: <T,>(method: string, ...args: unknown[]) =>
-              rpc.call<T>("main", method, args),
+            callMain: <T,>(method: string, ...args: unknown[]) => rpc.call<T>("main", method, args),
           },
           { channelId: channelName, forkPointPubsubId: lastSeenEventId.current }
         );
@@ -701,16 +724,20 @@ export default function NewsPanel() {
           // Seed the analyst's opening turn directly on the clone (reliable —
           // agent-initiated, so it bypasses the chat's history-suppression).
           try {
-            await rpc.call(`do:${agent.source}:${agent.className}:${agent.objectKey}`, "startDeepDive", [
-              result.forkedChannelId,
-              {
-                articleId: story.articleId,
-                url: story.url,
-                title: story.title,
-                source: story.source,
-                briefingTldr: latestTldrRef.current,
-              },
-            ]);
+            await rpc.call(
+              `do:${agent.source}:${agent.className}:${agent.objectKey}`,
+              "startDeepDive",
+              [
+                result.forkedChannelId,
+                {
+                  articleId: story.articleId,
+                  url: story.url,
+                  title: story.title,
+                  source: story.source,
+                  briefingTldr: latestTldrRef.current,
+                },
+              ]
+            );
           } catch (err) {
             console.warn("[NewsPanel] startDeepDive failed:", err);
           }
@@ -913,11 +940,13 @@ export default function NewsPanel() {
   const searching = searchInput.trim().length > 0;
   const flatRows = useMemo(() => {
     const base = searching
-      ? searchResults?.articles ?? []
+      ? (searchResults?.articles ?? [])
       : view === "saved"
         ? savedArticles
         : articles.filter((article) => view !== "unread" || !article.read);
-    const filtered = sourceFilter ? base.filter((article) => article.source === sourceFilter) : base;
+    const filtered = sourceFilter
+      ? base.filter((article) => article.source === sourceFilter)
+      : base;
     const clusters = clusterArticles(filtered);
     // Group clusters by category, category order = first appearance (≈ recency).
     const byCategory = new Map<string, ArticleCluster[]>();
@@ -996,7 +1025,9 @@ export default function NewsPanel() {
         <Theme appearance={theme}>
           <Flex align="center" justify="center" gap="2" style={{ height: "100dvh" }}>
             <Spinner />
-            <Text size="2" color="gray">Starting news…</Text>
+            <Text size="2" color="gray">
+              Starting news…
+            </Text>
           </Flex>
         </Theme>
       </ErrorBoundary>
@@ -1013,7 +1044,9 @@ export default function NewsPanel() {
   const latestBriefing = briefings[0];
   const preparing =
     latestBriefing?.status === "summarizing" || latestBriefing?.status === "collecting";
-  const readyBriefings = briefings.filter((briefing) => briefing.status === "ready" && briefing.tldr);
+  const readyBriefings = briefings.filter(
+    (briefing) => briefing.status === "ready" && briefing.tldr
+  );
   const latestReady = readyBriefings[0];
   const pastReady = readyBriefings.slice(1);
 
@@ -1054,371 +1087,438 @@ export default function NewsPanel() {
           <Flex style={{ flex: 1, minHeight: 0 }}>
             {/* ── reader region ── */}
             {!narrow || mobilePane === "reader" ? (
-            <Flex direction="column" style={{ flex: narrow ? "1 1 auto" : "1 1 55%", minWidth: 0 }}>
-            <Flex align="center" gap="2" p="3">
-              <Text size="3" weight="bold">📰 News</Text>
-              {overview ? (
-                <Badge size="1" color="gray">
-                  {overview.articleCount} articles · {overview.unbriefedCount} unbriefed
-                </Badge>
-              ) : null}
-              {failingFeeds.length > 0 ? (
-                <Badge size="1" color="red" title={failingFeeds.map((feed) => feed.title ?? feed.url).join("\n")}>
-                  <ExclamationTriangleIcon /> {failingFeeds.length} feed{failingFeeds.length > 1 ? "s" : ""} failing
-                </Badge>
-              ) : null}
-              <Box flexGrow="1" />
-              <Button
-                size="1"
-                variant="soft"
-                disabled={busy || !agentTarget}
-                onClick={() => void callAgent("refreshNow", {})}
+              <Flex
+                direction="column"
+                style={{ flex: narrow ? "1 1 auto" : "1 1 55%", minWidth: 0 }}
               >
-                <ReloadIcon /> Refresh
-              </Button>
-              <Button
-                size="1"
-                disabled={busy || !agentTarget}
-                onClick={() => void callAgent("refreshNow", { briefing: true })}
-              >
-                <LightningBoltIcon /> Brief me now
-              </Button>
-            </Flex>
-            {overview ? (
-              <Text size="1" color="gray" style={{ paddingLeft: "var(--space-3)" }}>
-                {overview.setup.scheduleSummary}
-              </Text>
-            ) : null}
-            {error ? (
-              <Text size="1" color="red" style={{ padding: "0 var(--space-3)" }}>{error}</Text>
-            ) : null}
-
-            {showConnectNudge && modelConnect ? (
-              <Box px="3" pt="2">
-                <Callout.Root color="amber" size="1">
-                  <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
-                  <Callout.Text>
-                    <Flex align="center" gap="3" wrap="wrap">
-                      <Text size="1">
-                        Connect <Text weight="medium">{modelConnect.providerId}</Text> to enable
-                        briefings and chat.
-                      </Text>
-                      <Button size="1" disabled={connecting} onClick={() => void handleConnectModel()}>
-                        {connecting ? <Spinner size="1" /> : null} Connect model
-                      </Button>
-                    </Flex>
-                  </Callout.Text>
-                </Callout.Root>
-              </Box>
-            ) : null}
-
-            <Separator size="4" my="2" />
-            <ScrollArea style={{ flex: 1 }}>
-              <Flex direction="column" gap="3" p="3" pt="0">
-                {overview && hasSources ? (
-                  <ReaderSettings
-                    setup={overview.setup}
-                    busy={busy}
-                    callAgent={(method, args) => void callAgent(method, args)}
-                  />
-                ) : null}
-
-                {(overview?.untriagedCount ?? 0) > 0 ? (
-                  <Box>
-                    <Flex align="center" gap="1">
-                      <Spinner size="1" />
-                      <Button size="1" variant="ghost" onClick={() => setPendingOpen((open) => !open)}>
-                        {pendingOpen ? "▾" : "▸"} Categorizing {overview?.untriagedCount} new stor
-                        {overview?.untriagedCount === 1 ? "y" : "ies"}…
-                      </Button>
-                    </Flex>
-                    {pendingOpen ? (
-                      <Flex direction="column" gap="2" pt="2" pl="3">
-                        {pendingArticles.length === 0 ? (
-                          <Text size="1" color="gray">Loading…</Text>
-                        ) : (
-                          pendingArticles.map((article) => {
-                            const age = relativeAge(article.publishedAt);
-                            return (
-                              <Flex
-                                key={article.articleId}
-                                direction="column"
-                                gap="1"
-                                style={{ opacity: article.read ? 0.55 : 1 }}
-                              >
-                                <Flex align="center" gap="2" style={{ minWidth: 0 }}>
-                                  <Favicon url={article.url} />
-                                  <Link
-                                    href={article.url}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    size="2"
-                                    style={{ minWidth: 0, wordBreak: "break-word" }}
-                                    onClick={() => {
-                                      markReadLocal(article.articleId);
-                                      setPendingArticles((prev) =>
-                                        prev.filter((item) => item.articleId !== article.articleId)
-                                      );
-                                    }}
-                                  >
-                                    {article.title}
-                                  </Link>
-                                </Flex>
-                                <Text size="1" color="gray">
-                                  {article.source}
-                                  {age ? ` · ${age}` : ""} · not yet categorized
-                                </Text>
-                                {article.blurb ? (
-                                  <Text size="1" color="gray" style={{ wordBreak: "break-word" }}>
-                                    {article.blurb}
-                                  </Text>
-                                ) : null}
-                              </Flex>
-                            );
-                          })
-                        )}
-                      </Flex>
-                    ) : null}
-                  </Box>
-                ) : null}
-
-                {preparing ? (
-                  <Card variant="surface">
-                    <Flex align="center" gap="2">
-                      <Spinner size="2" />
-                      <Flex direction="column">
-                        <Text size="2" weight="medium">Preparing your briefing…</Text>
-                        <Text size="1" color="gray">Scanning sources and writing your digest.</Text>
-                      </Flex>
-                    </Flex>
-                  </Card>
-                ) : null}
-
-                {latestReady?.tldr ? (
-                  <Flex direction="column" gap="1">
-                    <Flex align="center" gap="2">
-                      <Text
-                        size="1"
-                        weight="bold"
-                        color="gray"
-                        title={new Date(latestReady.createdAt).toLocaleString()}
-                      >
-                        LATEST BRIEFING · {agoLabel(latestReady.createdAt)}
-                        {latestReady.sourcesRead
-                          ? ` · synthesized from ${latestReady.sourcesRead} source${latestReady.sourcesRead > 1 ? "s" : ""}`
-                          : ""}
-                      </Text>
-                      <IconButton
-                        size="1"
-                        variant="ghost"
-                        color={copiedId === latestReady.briefingId ? "green" : "gray"}
-                        title="Copy briefing as markdown"
-                        aria-label="Copy briefing"
-                        onClick={() =>
-                          exportBriefing(latestReady.briefingId, latestReady.createdAt, latestReady.tldr ?? "")
-                        }
-                      >
-                        {copiedId === latestReady.briefingId ? <CheckIcon /> : <CopyIcon />}
-                      </IconButton>
-                    </Flex>
-                    <Markdown>{latestReady.tldr}</Markdown>
-                  </Flex>
-                ) : null}
-
-                {pastReady.length > 0 ? (
-                  <Box>
-                    <Button size="1" variant="ghost" onClick={() => setPastOpen((open) => !open)}>
-                      {pastOpen ? "▾" : "▸"} Past briefings ({pastReady.length})
-                    </Button>
-                    {pastOpen ? (
-                      <Flex direction="column" gap="2" pt="2">
-                        {pastReady.map((briefing) => (
-                          <Flex key={briefing.briefingId} direction="column" gap="1">
-                            <Flex align="center" gap="2">
-                              <Text
-                                size="1"
-                                weight="bold"
-                                color="gray"
-                                title={new Date(briefing.createdAt).toLocaleString()}
-                              >
-                                {agoLabel(briefing.createdAt)}
-                                {briefing.sourcesRead ? ` · ${briefing.sourcesRead} sources` : ""}
-                              </Text>
-                              {briefing.tldr ? (
-                                <IconButton
-                                  size="1"
-                                  variant="ghost"
-                                  color={copiedId === briefing.briefingId ? "green" : "gray"}
-                                  title="Copy briefing as markdown"
-                                  aria-label="Copy briefing"
-                                  onClick={() =>
-                                    exportBriefing(briefing.briefingId, briefing.createdAt, briefing.tldr ?? "")
-                                  }
-                                >
-                                  {copiedId === briefing.briefingId ? <CheckIcon /> : <CopyIcon />}
-                                </IconButton>
-                              ) : null}
-                            </Flex>
-                            {briefing.tldr ? <Markdown>{briefing.tldr}</Markdown> : null}
-                          </Flex>
-                        ))}
-                      </Flex>
-                    ) : null}
-                  </Box>
-                ) : null}
-
-                {(latestReady || pastReady.length > 0 || articles.length > 0) ? (
-                  <Separator size="4" my="1" />
-                ) : null}
-
-                {articles.length > 0 ? (
-                  <Flex direction="column" gap="2">
-                    <Flex align="center" gap="2" wrap="wrap">
-                      <SegmentedControl.Root
-                        size="1"
-                        value={view}
-                        onValueChange={(value) => setView(value as FeedView)}
-                      >
-                        <SegmentedControl.Item value="all">All</SegmentedControl.Item>
-                        <SegmentedControl.Item value="unread">Unread</SegmentedControl.Item>
-                        <SegmentedControl.Item value="saved">Saved</SegmentedControl.Item>
-                      </SegmentedControl.Root>
-                      {newCount > 0 && !searching ? (
-                        <Badge size="1" color="blue" variant="soft">
-                          {newCount} new since last visit
-                        </Badge>
-                      ) : null}
-                      {sources.length > 1 && !searching && view !== "saved" ? (
-                        <Select.Root size="1" value={sourceFilter || "__all"} onValueChange={(value) => setSourceFilter(value === "__all" ? "" : value)}>
-                          <Select.Trigger placeholder="All sources" variant="soft" />
-                          <Select.Content>
-                            <Select.Item value="__all">All sources</Select.Item>
-                            {sources.map((source) => (
-                              <Select.Item key={source} value={source}>{source}</Select.Item>
-                            ))}
-                          </Select.Content>
-                        </Select.Root>
-                      ) : null}
-                      <Box flexGrow="1" />
-                      {unreadIds.length > 0 ? (
-                        <Button
-                          size="1"
-                          variant="ghost"
-                          disabled={busy}
-                          onClick={() => void callAgent("markRead", { articleIds: unreadIds.slice(0, 200) })}
-                        >
-                          Mark all read
-                        </Button>
-                      ) : null}
-                    </Flex>
-                    <TextField.Root
+                <Flex align="center" gap="2" p="3">
+                  <Text size="3" weight="bold">
+                    📰 News
+                  </Text>
+                  {overview ? (
+                    <Badge size="1" color="gray">
+                      {overview.articleCount} articles · {overview.unbriefedCount} unbriefed
+                    </Badge>
+                  ) : null}
+                  {failingFeeds.length > 0 ? (
+                    <Badge
                       size="1"
-                      placeholder="Search your news…"
-                      value={searchInput}
-                      onChange={(event) => setSearchInput(event.target.value)}
+                      color="red"
+                      title={failingFeeds.map((feed) => feed.title ?? feed.url).join("\n")}
                     >
-                      <TextField.Slot>
-                        <MagnifyingGlassIcon />
-                      </TextField.Slot>
-                      {searchInput ? (
-                        <TextField.Slot side="right">
-                          <IconButton
-                            size="1"
-                            variant="ghost"
-                            color="gray"
-                            title="Clear search"
-                            aria-label="Clear search"
-                            onClick={() => setSearchInput("")}
-                          >
-                            <Cross2Icon />
-                          </IconButton>
-                        </TextField.Slot>
-                      ) : null}
-                    </TextField.Root>
-                  </Flex>
+                      <ExclamationTriangleIcon /> {failingFeeds.length} feed
+                      {failingFeeds.length > 1 ? "s" : ""} failing
+                    </Badge>
+                  ) : null}
+                  <Box flexGrow="1" />
+                  <Button
+                    size="1"
+                    variant="soft"
+                    disabled={busy || !agentTarget}
+                    onClick={() => void callAgent("refreshNow", {})}
+                  >
+                    <ReloadIcon /> Refresh
+                  </Button>
+                  <Button
+                    size="1"
+                    disabled={busy || !agentTarget}
+                    onClick={() => void callAgent("refreshNow", { briefing: true })}
+                  >
+                    <LightningBoltIcon /> Brief me now
+                  </Button>
+                </Flex>
+                {overview ? (
+                  <Text size="1" color="gray" style={{ paddingLeft: "var(--space-3)" }}>
+                    {overview.setup.scheduleSummary}
+                  </Text>
                 ) : null}
-
-                {searching && searchBriefings.length > 0 ? (
-                  <Flex direction="column" gap="2">
-                    <Text size="1" weight="bold" color="gray">
-                      BRIEFINGS MENTIONING “{searchInput.trim()}”
-                    </Text>
-                    {searchBriefings.map((briefing) => (
-                      <Flex key={briefing.briefingId} direction="column" gap="1">
-                        <Text size="1" color="gray" title={new Date(briefing.createdAt).toLocaleString()}>
-                          {agoLabel(briefing.createdAt)}
-                        </Text>
-                        {briefing.tldr ? <Markdown>{briefing.tldr}</Markdown> : null}
-                      </Flex>
-                    ))}
-                    <Separator size="4" my="1" />
-                  </Flex>
-                ) : null}
-
-                {flatRows.map((row, index) => (
-                  <Fragment key={row.cluster.primary.articleId}>
-                    {row.sectionStart ? (
-                      <Text
-                        size="1"
-                        weight="bold"
-                        color="gray"
-                        style={{ marginTop: index > 0 ? "var(--space-3)" : 0 }}
-                      >
-                        {row.category.toUpperCase()}
-                      </Text>
-                    ) : null}
-                    <ArticleItem
-                      article={row.cluster.primary}
-                      others={row.cluster.others}
-                      busy={busy}
-                      fresh={isNewSinceVisit(row.cluster.primary)}
-                      selected={index === selectedIndex}
-                      innerRef={
-                        index === selectedIndex
-                          ? (el) => {
-                              selectedRowRef.current = el;
-                            }
-                          : undefined
-                      }
-                      onDeepDive={(item) => void handleDeepDive(item)}
-                      onReact={reactToStory}
-                      onSetSaved={setSavedLocal}
-                      onMarkRead={markReadLocal}
-                    />
-                  </Fragment>
-                ))}
-
-                {flatRows.length === 0 && (searching || view === "saved" || hasSources) ? (
-                  <Text size="2" color="gray">
-                    {searching
-                      ? "No matches in your news."
-                      : view === "saved"
-                        ? "No saved stories yet — tap the ☆ on any story to keep it here."
-                        : (overview?.untriagedCount ?? 0) > 0
-                          ? "Your latest stories are being categorized…"
-                          : sourceFilter
-                            ? "No stories match this filter."
-                            : "No stories yet — hit Refresh, or wait for your next briefing."}
+                {error ? (
+                  <Text size="1" color="red" style={{ padding: "0 var(--space-3)" }}>
+                    {error}
                   </Text>
                 ) : null}
 
-                {!hasSources && !searching && view !== "saved" && overview ? (
-                  <QuickStart
-                    busy={busy}
-                    hasSources={hasSources}
-                    scheduleSummary={overview.setup.scheduleSummary}
-                    existingFeedUrls={existingFeedUrls}
-                    existingTopics={existingTopics}
-                    feedDraft={feedDraft}
-                    onFeedDraft={setFeedDraft}
-                    onAddFeed={(url) => void callAgent("addFeed", { url })}
-                    onFollowTopic={(topic) => void callAgent("followTopic", { topic })}
-                    onImportOpml={(opml) => void callAgent("importOpml", { opml })}
-                  />
+                {showConnectNudge && modelConnect ? (
+                  <Box px="3" pt="2">
+                    <Callout.Root color="amber" size="1">
+                      <Callout.Icon>
+                        <ExclamationTriangleIcon />
+                      </Callout.Icon>
+                      <Callout.Text>
+                        <Flex align="center" gap="3" wrap="wrap">
+                          <Text size="1">
+                            Connect <Text weight="medium">{modelConnect.providerId}</Text> to enable
+                            briefings and chat.
+                          </Text>
+                          <Button
+                            size="1"
+                            disabled={connecting}
+                            onClick={() => void handleConnectModel()}
+                          >
+                            {connecting ? <Spinner size="1" /> : null} Connect model
+                          </Button>
+                        </Flex>
+                      </Callout.Text>
+                    </Callout.Root>
+                  </Box>
                 ) : null}
+
+                <Separator size="4" my="2" />
+                <ScrollArea style={{ flex: 1 }}>
+                  <Flex direction="column" gap="3" p="3" pt="0">
+                    {overview && hasSources ? (
+                      <ReaderSettings
+                        setup={overview.setup}
+                        busy={busy}
+                        callAgent={(method, args) => void callAgent(method, args)}
+                      />
+                    ) : null}
+
+                    {(overview?.untriagedCount ?? 0) > 0 ? (
+                      <Box>
+                        <Flex align="center" gap="1">
+                          <Spinner size="1" />
+                          <Button
+                            size="1"
+                            variant="ghost"
+                            onClick={() => setPendingOpen((open) => !open)}
+                          >
+                            {pendingOpen ? "▾" : "▸"} Categorizing {overview?.untriagedCount} new
+                            stor
+                            {overview?.untriagedCount === 1 ? "y" : "ies"}…
+                          </Button>
+                        </Flex>
+                        {pendingOpen ? (
+                          <Flex direction="column" gap="2" pt="2" pl="3">
+                            {pendingArticles.length === 0 ? (
+                              <Text size="1" color="gray">
+                                Loading…
+                              </Text>
+                            ) : (
+                              pendingArticles.map((article) => {
+                                const age = relativeAge(article.publishedAt);
+                                return (
+                                  <Flex
+                                    key={article.articleId}
+                                    direction="column"
+                                    gap="1"
+                                    style={{ opacity: article.read ? 0.55 : 1 }}
+                                  >
+                                    <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+                                      <Favicon url={article.url} />
+                                      <Link
+                                        href={article.url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        size="2"
+                                        style={{ minWidth: 0, wordBreak: "break-word" }}
+                                        onClick={() => {
+                                          markReadLocal(article.articleId);
+                                          setPendingArticles((prev) =>
+                                            prev.filter(
+                                              (item) => item.articleId !== article.articleId
+                                            )
+                                          );
+                                        }}
+                                      >
+                                        {article.title}
+                                      </Link>
+                                    </Flex>
+                                    <Text size="1" color="gray">
+                                      {article.source}
+                                      {age ? ` · ${age}` : ""} · not yet categorized
+                                    </Text>
+                                    {article.blurb ? (
+                                      <Text
+                                        size="1"
+                                        color="gray"
+                                        style={{ wordBreak: "break-word" }}
+                                      >
+                                        {article.blurb}
+                                      </Text>
+                                    ) : null}
+                                  </Flex>
+                                );
+                              })
+                            )}
+                          </Flex>
+                        ) : null}
+                      </Box>
+                    ) : null}
+
+                    {preparing ? (
+                      <Card variant="surface">
+                        <Flex align="center" gap="2">
+                          <Spinner size="2" />
+                          <Flex direction="column">
+                            <Text size="2" weight="medium">
+                              Preparing your briefing…
+                            </Text>
+                            <Text size="1" color="gray">
+                              Scanning sources and writing your digest.
+                            </Text>
+                          </Flex>
+                        </Flex>
+                      </Card>
+                    ) : null}
+
+                    {latestReady?.tldr ? (
+                      <Flex direction="column" gap="1">
+                        <Flex align="center" gap="2">
+                          <Text
+                            size="1"
+                            weight="bold"
+                            color="gray"
+                            title={new Date(latestReady.createdAt).toLocaleString()}
+                          >
+                            LATEST BRIEFING · {agoLabel(latestReady.createdAt)}
+                            {latestReady.sourcesRead
+                              ? ` · synthesized from ${latestReady.sourcesRead} source${latestReady.sourcesRead > 1 ? "s" : ""}`
+                              : ""}
+                          </Text>
+                          <IconButton
+                            size="1"
+                            variant="ghost"
+                            color={copiedId === latestReady.briefingId ? "green" : "gray"}
+                            title="Copy briefing as markdown"
+                            aria-label="Copy briefing"
+                            onClick={() =>
+                              exportBriefing(
+                                latestReady.briefingId,
+                                latestReady.createdAt,
+                                latestReady.tldr ?? ""
+                              )
+                            }
+                          >
+                            {copiedId === latestReady.briefingId ? <CheckIcon /> : <CopyIcon />}
+                          </IconButton>
+                        </Flex>
+                        <Markdown>{latestReady.tldr}</Markdown>
+                      </Flex>
+                    ) : null}
+
+                    {pastReady.length > 0 ? (
+                      <Box>
+                        <Button
+                          size="1"
+                          variant="ghost"
+                          onClick={() => setPastOpen((open) => !open)}
+                        >
+                          {pastOpen ? "▾" : "▸"} Past briefings ({pastReady.length})
+                        </Button>
+                        {pastOpen ? (
+                          <Flex direction="column" gap="2" pt="2">
+                            {pastReady.map((briefing) => (
+                              <Flex key={briefing.briefingId} direction="column" gap="1">
+                                <Flex align="center" gap="2">
+                                  <Text
+                                    size="1"
+                                    weight="bold"
+                                    color="gray"
+                                    title={new Date(briefing.createdAt).toLocaleString()}
+                                  >
+                                    {agoLabel(briefing.createdAt)}
+                                    {briefing.sourcesRead
+                                      ? ` · ${briefing.sourcesRead} sources`
+                                      : ""}
+                                  </Text>
+                                  {briefing.tldr ? (
+                                    <IconButton
+                                      size="1"
+                                      variant="ghost"
+                                      color={copiedId === briefing.briefingId ? "green" : "gray"}
+                                      title="Copy briefing as markdown"
+                                      aria-label="Copy briefing"
+                                      onClick={() =>
+                                        exportBriefing(
+                                          briefing.briefingId,
+                                          briefing.createdAt,
+                                          briefing.tldr ?? ""
+                                        )
+                                      }
+                                    >
+                                      {copiedId === briefing.briefingId ? (
+                                        <CheckIcon />
+                                      ) : (
+                                        <CopyIcon />
+                                      )}
+                                    </IconButton>
+                                  ) : null}
+                                </Flex>
+                                {briefing.tldr ? <Markdown>{briefing.tldr}</Markdown> : null}
+                              </Flex>
+                            ))}
+                          </Flex>
+                        ) : null}
+                      </Box>
+                    ) : null}
+
+                    {latestReady || pastReady.length > 0 || articles.length > 0 ? (
+                      <Separator size="4" my="1" />
+                    ) : null}
+
+                    {articles.length > 0 ? (
+                      <Flex direction="column" gap="2">
+                        <Flex align="center" gap="2" wrap="wrap">
+                          <SegmentedControl.Root
+                            size="1"
+                            value={view}
+                            onValueChange={(value) => setView(value as FeedView)}
+                          >
+                            <SegmentedControl.Item value="all">All</SegmentedControl.Item>
+                            <SegmentedControl.Item value="unread">Unread</SegmentedControl.Item>
+                            <SegmentedControl.Item value="saved">Saved</SegmentedControl.Item>
+                          </SegmentedControl.Root>
+                          {newCount > 0 && !searching ? (
+                            <Badge size="1" color="blue" variant="soft">
+                              {newCount} new since last visit
+                            </Badge>
+                          ) : null}
+                          {sources.length > 1 && !searching && view !== "saved" ? (
+                            <Select.Root
+                              size="1"
+                              value={sourceFilter || "__all"}
+                              onValueChange={(value) =>
+                                setSourceFilter(value === "__all" ? "" : value)
+                              }
+                            >
+                              <Select.Trigger placeholder="All sources" variant="soft" />
+                              <Select.Content>
+                                <Select.Item value="__all">All sources</Select.Item>
+                                {sources.map((source) => (
+                                  <Select.Item key={source} value={source}>
+                                    {source}
+                                  </Select.Item>
+                                ))}
+                              </Select.Content>
+                            </Select.Root>
+                          ) : null}
+                          <Box flexGrow="1" />
+                          {unreadIds.length > 0 ? (
+                            <Button
+                              size="1"
+                              variant="ghost"
+                              disabled={busy}
+                              onClick={() =>
+                                void callAgent("markRead", { articleIds: unreadIds.slice(0, 200) })
+                              }
+                            >
+                              Mark all read
+                            </Button>
+                          ) : null}
+                        </Flex>
+                        <TextField.Root
+                          size="1"
+                          placeholder="Search your news…"
+                          value={searchInput}
+                          onChange={(event) => setSearchInput(event.target.value)}
+                        >
+                          <TextField.Slot>
+                            <MagnifyingGlassIcon />
+                          </TextField.Slot>
+                          {searchInput ? (
+                            <TextField.Slot side="right">
+                              <IconButton
+                                size="1"
+                                variant="ghost"
+                                color="gray"
+                                title="Clear search"
+                                aria-label="Clear search"
+                                onClick={() => setSearchInput("")}
+                              >
+                                <Cross2Icon />
+                              </IconButton>
+                            </TextField.Slot>
+                          ) : null}
+                        </TextField.Root>
+                      </Flex>
+                    ) : null}
+
+                    {searching && searchBriefings.length > 0 ? (
+                      <Flex direction="column" gap="2">
+                        <Text size="1" weight="bold" color="gray">
+                          BRIEFINGS MENTIONING “{searchInput.trim()}”
+                        </Text>
+                        {searchBriefings.map((briefing) => (
+                          <Flex key={briefing.briefingId} direction="column" gap="1">
+                            <Text
+                              size="1"
+                              color="gray"
+                              title={new Date(briefing.createdAt).toLocaleString()}
+                            >
+                              {agoLabel(briefing.createdAt)}
+                            </Text>
+                            {briefing.tldr ? <Markdown>{briefing.tldr}</Markdown> : null}
+                          </Flex>
+                        ))}
+                        <Separator size="4" my="1" />
+                      </Flex>
+                    ) : null}
+
+                    {flatRows.map((row, index) => (
+                      <Fragment key={row.cluster.primary.articleId}>
+                        {row.sectionStart ? (
+                          <Text
+                            size="1"
+                            weight="bold"
+                            color="gray"
+                            style={{ marginTop: index > 0 ? "var(--space-3)" : 0 }}
+                          >
+                            {row.category.toUpperCase()}
+                          </Text>
+                        ) : null}
+                        <ArticleItem
+                          article={row.cluster.primary}
+                          others={row.cluster.others}
+                          busy={busy}
+                          fresh={isNewSinceVisit(row.cluster.primary)}
+                          selected={index === selectedIndex}
+                          innerRef={
+                            index === selectedIndex
+                              ? (el) => {
+                                  selectedRowRef.current = el;
+                                }
+                              : undefined
+                          }
+                          onDeepDive={(item) => void handleDeepDive(item)}
+                          onReact={reactToStory}
+                          onSetSaved={setSavedLocal}
+                          onMarkRead={markReadLocal}
+                        />
+                      </Fragment>
+                    ))}
+
+                    {flatRows.length === 0 && (searching || view === "saved" || hasSources) ? (
+                      <Text size="2" color="gray">
+                        {searching
+                          ? "No matches in your news."
+                          : view === "saved"
+                            ? "No saved stories yet — tap the ☆ on any story to keep it here."
+                            : (overview?.untriagedCount ?? 0) > 0
+                              ? "Your latest stories are being categorized…"
+                              : sourceFilter
+                                ? "No stories match this filter."
+                                : "No stories yet — hit Refresh, or wait for your next briefing."}
+                      </Text>
+                    ) : null}
+
+                    {!hasSources && !searching && view !== "saved" && overview ? (
+                      <QuickStart
+                        busy={busy}
+                        hasSources={hasSources}
+                        scheduleSummary={overview.setup.scheduleSummary}
+                        existingFeedUrls={existingFeedUrls}
+                        existingTopics={existingTopics}
+                        feedDraft={feedDraft}
+                        onFeedDraft={setFeedDraft}
+                        onAddFeed={(url) => void callAgent("addFeed", { url })}
+                        onFollowTopic={(topic) => void callAgent("followTopic", { topic })}
+                        onImportOpml={(opml) => void callAgent("importOpml", { opml })}
+                      />
+                    ) : null}
+                  </Flex>
+                </ScrollArea>
               </Flex>
-            </ScrollArea>
-            </Flex>
             ) : null}
 
             {!narrow ? <Separator orientation="vertical" size="4" /> : null}
@@ -1475,7 +1575,9 @@ function ReaderSettings({
       {open ? (
         <Flex direction="column" gap="3" pt="2">
           <Flex direction="column" gap="1">
-            <Text size="1" weight="bold" color="gray">PREFERENCES</Text>
+            <Text size="1" weight="bold" color="gray">
+              PREFERENCES
+            </Text>
             <Flex gap="2">
               <TextField.Root
                 size="1"
@@ -1500,7 +1602,9 @@ function ReaderSettings({
           </Flex>
 
           <Flex direction="column" gap="1">
-            <Text size="1" weight="bold" color="gray">FEEDS</Text>
+            <Text size="1" weight="bold" color="gray">
+              FEEDS
+            </Text>
             {feeds.map((feed) => (
               <Flex key={feed.feedId} align="center" gap="2" style={{ minWidth: 0 }}>
                 <Switch
@@ -1554,7 +1658,9 @@ function ReaderSettings({
           </Flex>
 
           <Flex direction="column" gap="1">
-            <Text size="1" weight="bold" color="gray">FOLLOWED TOPICS</Text>
+            <Text size="1" weight="bold" color="gray">
+              FOLLOWED TOPICS
+            </Text>
             {topics.length > 0 ? (
               <Flex gap="2" wrap="wrap">
                 {topics.map((topic) => (
@@ -1597,15 +1703,20 @@ function ReaderSettings({
           </Flex>
 
           <Flex direction="column" gap="1">
-            <Text size="1" weight="bold" color="gray">BRIEFING</Text>
+            <Text size="1" weight="bold" color="gray">
+              BRIEFING
+            </Text>
             <Flex align="center" gap="2" wrap="wrap">
-              <Text size="1" color="gray">Daily at</Text>
+              <Text size="1" color="gray">
+                Daily at
+              </Text>
               <input
                 type="time"
                 value={minutesToHHMM(setup.briefingAtMinutes)}
                 disabled={busy}
                 onChange={(event) => {
-                  if (event.target.value) callAgent("setSchedule", { briefingAt: event.target.value });
+                  if (event.target.value)
+                    callAgent("setSchedule", { briefingAt: event.target.value });
                 }}
                 style={{
                   fontSize: "var(--font-size-1)",
@@ -1617,7 +1728,9 @@ function ReaderSettings({
                 }}
               />
               <Box flexGrow="1" />
-              <Text size="1" color="gray">{setup.briefingPaused ? "Paused" : "Active"}</Text>
+              <Text size="1" color="gray">
+                {setup.briefingPaused ? "Paused" : "Active"}
+              </Text>
               <Switch
                 size="1"
                 checked={!setup.briefingPaused}
@@ -1626,7 +1739,9 @@ function ReaderSettings({
               />
             </Flex>
             {setup.scheduleSummary ? (
-              <Text size="1" color="gray">{setup.scheduleSummary}</Text>
+              <Text size="1" color="gray">
+                {setup.scheduleSummary}
+              </Text>
             ) : null}
           </Flex>
         </Flex>
@@ -1675,7 +1790,9 @@ function QuickStart({
         </Flex>
 
         <Flex direction="column" gap="2">
-          <Text size="1" weight="bold" color="gray">POPULAR FEEDS</Text>
+          <Text size="1" weight="bold" color="gray">
+            POPULAR FEEDS
+          </Text>
           <Flex gap="2" wrap="wrap">
             {SUGGESTED_FEEDS.map((feed) => {
               const added = existingFeedUrls.has(feed.url);
@@ -1697,7 +1814,9 @@ function QuickStart({
         </Flex>
 
         <Flex direction="column" gap="2">
-          <Text size="1" weight="bold" color="gray">FOLLOW A TOPIC</Text>
+          <Text size="1" weight="bold" color="gray">
+            FOLLOW A TOPIC
+          </Text>
           <Flex gap="2" wrap="wrap">
             {SUGGESTED_TOPICS.map((topic) => {
               const added = existingTopics.has(topic.toLowerCase());
@@ -1718,7 +1837,9 @@ function QuickStart({
         </Flex>
 
         <Flex direction="column" gap="1">
-          <Text size="1" weight="bold" color="gray">OR PASTE A FEED URL</Text>
+          <Text size="1" weight="bold" color="gray">
+            OR PASTE A FEED URL
+          </Text>
           <Flex gap="2">
             <TextField.Root
               size="1"
@@ -1741,7 +1862,12 @@ function QuickStart({
         </Flex>
 
         <Flex direction="column" gap="1">
-          <Button size="1" variant="ghost" onClick={() => setOpmlOpen((open) => !open)} style={{ alignSelf: "flex-start" }}>
+          <Button
+            size="1"
+            variant="ghost"
+            onClick={() => setOpmlOpen((open) => !open)}
+            style={{ alignSelf: "flex-start" }}
+          >
             {opmlOpen ? "▾" : "▸"} Import from OPML
           </Button>
           {opmlOpen ? (

@@ -324,10 +324,7 @@ export abstract class AgentVesselBase extends DurableObjectBase {
     return DEFAULT_COMPACTION_TRIGGER_BYTES;
   }
 
-  protected abstract getParticipantInfo(
-    channelId: string,
-    config?: unknown
-  ): ParticipantDescriptor;
+  protected abstract getParticipantInfo(channelId: string, config?: unknown): ParticipantDescriptor;
 
   /** Workspace-level prompt resources. Workspace agents load AGENTS.md and the
    *  skill index here; non-workspace agents may return nothing. */
@@ -426,9 +423,7 @@ export abstract class AgentVesselBase extends DurableObjectBase {
       return explicitModelBaseUrl;
     }
     const modelRef =
-      typeof explicitModelRef === "string" && explicitModelRef.length > 0
-        ? explicitModelRef
-        : null;
+      typeof explicitModelRef === "string" && explicitModelRef.length > 0 ? explicitModelRef : null;
     if (!modelRef?.includes(":")) return null;
     const modelProviderId = modelRef.slice(0, modelRef.indexOf(":"));
     const modelId = modelRef.slice(modelRef.indexOf(":") + 1);
@@ -521,8 +516,7 @@ export abstract class AgentVesselBase extends DurableObjectBase {
     this._driver ??= new AgentLoopDriver({
       sql: this.sql,
       gad: {
-        call: <T,>(method: string, args: Record<string, unknown>) =>
-          this.callGad<T>(method, args),
+        call: <T>(method: string, args: Record<string, unknown>) => this.callGad<T>(method, args),
       },
       executorDeps: this.executorDeps(),
       selfRefFor: (channelId) => this.selfRef(channelId),
@@ -660,7 +654,7 @@ export abstract class AgentVesselBase extends DurableObjectBase {
 
   private async callGad<T>(method: string, ...args: unknown[]): Promise<T> {
     this._gadClient ??= createGadServiceClient({
-      call: <R,>(targetId: string, m: string, a: unknown[]) => this.rpc.call<R>(targetId, m, a),
+      call: <R>(targetId: string, m: string, a: unknown[]) => this.rpc.call<R>(targetId, m, a),
     });
     return this._gadClient.call<T>(method, ...args);
   }
@@ -704,16 +698,12 @@ export abstract class AgentVesselBase extends DurableObjectBase {
           );
         },
         publish: async (input) => {
-          await this.rpc.call(
-            await this.channelTarget(input.channelId),
-            "publish",
-            [
-              this.participantId(),
-              input.payloadKind,
-              input.payload,
-              input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : undefined,
-            ]
-          );
+          await this.rpc.call(await this.channelTarget(input.channelId), "publish", [
+            this.participantId(),
+            input.payloadKind,
+            input.payload,
+            input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : undefined,
+          ]);
         },
         sendSignalEvent: async (channelId, event) => {
           await this.createChannelClient(channelId).sendSignalEvent(
@@ -974,12 +964,14 @@ export abstract class AgentVesselBase extends DurableObjectBase {
     const seed: StoredSettings = {};
     if (typeof c["model"] === "string" && c["model"]) seed.model = c["model"];
     const tl = c["thinkingLevel"];
-    if (tl === "minimal" || tl === "low" || tl === "medium" || tl === "high") seed.thinkingLevel = tl;
+    if (tl === "minimal" || tl === "low" || tl === "medium" || tl === "high")
+      seed.thinkingLevel = tl;
     const al = c["approvalLevel"];
     if (al === 0 || al === 1 || al === 2) seed.approvalLevel = al;
     if (isRespondPolicy(c["respondPolicy"])) seed.respondPolicy = c["respondPolicy"];
     const rf = c["respondFrom"];
-    if (Array.isArray(rf) && rf.every((x) => typeof x === "string")) seed.respondFrom = rf as string[];
+    if (Array.isArray(rf) && rf.every((x) => typeof x === "string"))
+      seed.respondFrom = rf as string[];
     const mc = c["maxModelCallsPerTurn"];
     if (mc === null || (typeof mc === "number" && Number.isFinite(mc))) {
       seed.maxModelCallsPerTurn = mc;
@@ -1066,8 +1058,11 @@ export abstract class AgentVesselBase extends DurableObjectBase {
             description:
               method.description ??
               `Channel method on @${participant.handle ?? participant.participantId}`,
-            parameters:
-              method.parameters ?? { type: "object", properties: {}, additionalProperties: true },
+            parameters: method.parameters ?? {
+              type: "object",
+              properties: {},
+              additionalProperties: true,
+            },
           });
         }
       }
@@ -1107,7 +1102,10 @@ export abstract class AgentVesselBase extends DurableObjectBase {
       this.deleteStateValue(`agent:promptArtifactError:${channelId}`);
       if (changed) {
         this.driver.dropLoop(channelId);
-        this.driver.foldCache.delete(ids.logIdForChannel(channelId), ids.logIdForChannel(channelId));
+        this.driver.foldCache.delete(
+          ids.logIdForChannel(channelId),
+          ids.logIdForChannel(channelId)
+        );
       }
     } catch (err) {
       await this.publishPromptArtifactDiagnostic(channelId, err);
@@ -1129,10 +1127,8 @@ export abstract class AgentVesselBase extends DurableObjectBase {
       actor: {
         kind: "agent",
         id: participantId,
-        displayName: this.getParticipantInfo(
-          channelId,
-          this.subscriptions.getConfig(channelId)
-        ).name,
+        displayName: this.getParticipantInfo(channelId, this.subscriptions.getConfig(channelId))
+          .name,
       },
       causality: { messageId: messageId as never },
       payload: {
@@ -1253,10 +1249,7 @@ export abstract class AgentVesselBase extends DurableObjectBase {
           content: [
             {
               type: "text" as const,
-              text:
-                lines.length > 0
-                  ? lines.join("\n\n")
-                  : "No memory matched the query.",
+              text: lines.length > 0 ? lines.join("\n\n") : "No memory matched the query.",
             },
           ],
           details: { resultCount: recall.results.length } as never,
@@ -1431,10 +1424,7 @@ export abstract class AgentVesselBase extends DurableObjectBase {
    *  channel_call at-least-once protocol — without it a turn that invokes a
    *  panel method (eval, set_title, …) never advances. Duplicate delivery is
    *  a no-op: the outbox row is gone after the first settle. */
-  private async routeInvocationTerminal(
-    channelId: string,
-    event: ChannelEvent
-  ): Promise<boolean> {
+  private async routeInvocationTerminal(channelId: string, event: ChannelEvent): Promise<boolean> {
     const agentic = event.payload as AgenticEvent;
     const kind = (agentic as { kind?: string }).kind ?? "";
     if (!kind.startsWith("invocation.")) return false;
@@ -1498,10 +1488,8 @@ export abstract class AgentVesselBase extends DurableObjectBase {
       actor: {
         kind: "agent",
         id: participantId,
-        displayName: this.getParticipantInfo(
-          channelId,
-          this.subscriptions.getConfig(channelId)
-        ).name,
+        displayName: this.getParticipantInfo(channelId, this.subscriptions.getConfig(channelId))
+          .name,
       },
       turnId: descriptor.turnId as never,
       causality: { messageId: messageId as never },
@@ -1540,7 +1528,9 @@ export abstract class AgentVesselBase extends DurableObjectBase {
     const blocks = agentic.payload?.blocks ?? [];
     const text = blocks
       .map((block) =>
-        block && typeof block === "object" && typeof (block as { content?: unknown }).content === "string"
+        block &&
+        typeof block === "object" &&
+        typeof (block as { content?: unknown }).content === "string"
           ? (block as { content: string }).content
           : ""
       )
@@ -1615,7 +1605,9 @@ export abstract class AgentVesselBase extends DurableObjectBase {
       if (payload.replyTo) {
         replyToSenderId =
           (await channel.getMessageSender(this.participantId(), payload.replyTo)) ??
-          (payload.replyTo === lastCompletedMessageId ? lastCompletedSender ?? undefined : undefined);
+          (payload.replyTo === lastCompletedMessageId
+            ? (lastCompletedSender ?? undefined)
+            : undefined);
       }
     } catch {
       /* addressing degrades gracefully without channel state */
@@ -1631,8 +1623,7 @@ export abstract class AgentVesselBase extends DurableObjectBase {
         replyTo: payload.replyTo,
         replyToSenderId,
         to: payload.to,
-        agentHops:
-          (event.annotations?.["agentHops"] as number | undefined) ?? agentStreakHops,
+        agentHops: (event.annotations?.["agentHops"] as number | undefined) ?? agentStreakHops,
       },
       self: { participantId: this.participantId() },
       policy: settings.respondPolicy,
@@ -1714,7 +1705,9 @@ export abstract class AgentVesselBase extends DurableObjectBase {
                 }>
               )
                 .filter((method) => typeof method?.name === "string")
-                .map((method) => this.boundedRosterMethod(method as { name: string } & typeof method))
+                .map((method) =>
+                  this.boundedRosterMethod(method as { name: string } & typeof method)
+                )
             : [],
         }));
       const fingerprint = JSON.stringify(roster);
@@ -1737,7 +1730,8 @@ export abstract class AgentVesselBase extends DurableObjectBase {
     if (cached && cached.expiresAt > now) return cached.value;
     const value =
       (await this.createChannelClient(channelId).getConfig()) ??
-      ((this.subscriptions.getConfig(channelId) as Record<string, unknown> | null) ?? null);
+      (this.subscriptions.getConfig(channelId) as Record<string, unknown> | null) ??
+      null;
     this.channelConfigCache.set(channelId, { value, expiresAt: now + CHANNEL_STATE_CACHE_MS });
     return value;
   }
@@ -1843,7 +1837,7 @@ export abstract class AgentVesselBase extends DurableObjectBase {
         const modelBaseUrl = await this.resolveModelBaseUrlForProvider(
           input.providerId,
           input.modelBaseUrl,
-          input.modelRef ?? this.getAgentSettings(channelId).model
+          input.modelRef ?? this.getAgentSettings().model
         );
         if (!modelBaseUrl) {
           return {
@@ -1877,10 +1871,14 @@ export abstract class AgentVesselBase extends DurableObjectBase {
         const providerId = input.providerId ?? "";
         const effectId = ids.credentialWaitEffect(ids.credKey(channelId, providerId));
         // This is the only reconnect success path that resumes the waiting loop.
-        await this.driver.deliverEffectOutcome(effectId, {
-          kind: "credential",
-          resolved: true,
-        } satisfies EffectOutcome, { channelId });
+        await this.driver.deliverEffectOutcome(
+          effectId,
+          {
+            kind: "credential",
+            resolved: true,
+          } satisfies EffectOutcome,
+          { channelId }
+        );
         await this.driver.wake(channelId);
         return { result: { resumed: true } };
       }
@@ -1907,7 +1905,10 @@ export abstract class AgentVesselBase extends DurableObjectBase {
       case "setApprovalLevel": {
         const level = (args as { level?: unknown } | null)?.level;
         if (level !== 0 && level !== 1 && level !== 2) {
-          return { result: { error: "setApprovalLevel requires level: 0, 1, or 2" }, isError: true };
+          return {
+            result: { error: "setApprovalLevel requires level: 0, 1, or 2" },
+            isError: true,
+          };
         }
         return { result: this.updateSettings({ approvalLevel: level }) };
       }
@@ -1941,7 +1942,8 @@ export abstract class AgentVesselBase extends DurableObjectBase {
         ) {
           return {
             result: {
-              error: "setModelStreamIdleTimeoutMs requires timeoutMs as a positive number of milliseconds, or null to disable",
+              error:
+                "setModelStreamIdleTimeoutMs requires timeoutMs as a positive number of milliseconds, or null to disable",
             },
             isError: true,
           };
@@ -2165,7 +2167,9 @@ export abstract class AgentVesselBase extends DurableObjectBase {
     if (kind === "server") return;
     const callerId = this.rpcCallerId ?? "";
     if (kind === "do" && callerId.includes(":PubSubChannel:")) return;
-    throw new Error(`${method}: refusing caller ${callerId || "unknown"} (kind ${kind ?? "unknown"})`);
+    throw new Error(
+      `${method}: refusing caller ${callerId || "unknown"} (kind ${kind ?? "unknown"})`
+    );
   }
 
   /** Publish a messageType.registered event AS the agent (mirrors the ui-install
@@ -2197,10 +2201,14 @@ export abstract class AgentVesselBase extends DurableObjectBase {
       },
       createdAt: new Date().toISOString(),
     };
-    const res = await this.createChannelClient(channelId).publishAgenticEvent(participantId, event, {
-      ...(idempotencyKey ? { idempotencyKey } : {}),
-      senderMetadata: actor.metadata,
-    });
+    const res = await this.createChannelClient(channelId).publishAgenticEvent(
+      participantId,
+      event,
+      {
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+        senderMetadata: actor.metadata,
+      }
+    );
     this.cards.invalidateType(channelId, input.typeId);
     return res.id;
   }
@@ -2220,10 +2228,14 @@ export abstract class AgentVesselBase extends DurableObjectBase {
       payload: { protocol: AGENTIC_PROTOCOL_VERSION, typeId },
       createdAt: new Date().toISOString(),
     };
-    const res = await this.createChannelClient(channelId).publishAgenticEvent(participantId, event, {
-      ...(idempotencyKey ? { idempotencyKey } : {}),
-      senderMetadata: actor.metadata,
-    });
+    const res = await this.createChannelClient(channelId).publishAgenticEvent(
+      participantId,
+      event,
+      {
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+        senderMetadata: actor.metadata,
+      }
+    );
     this.cards.invalidateType(channelId, typeId);
     return res.id;
   }
@@ -2362,8 +2374,10 @@ export abstract class AgentVesselBase extends DurableObjectBase {
       const message =
         typeof reason === "string" && reason.length > 0
           ? reason
-          : reason && typeof reason === "object" && typeof (reason as { error?: unknown }).error === "string"
-            ? ((reason as { error: string }).error)
+          : reason &&
+              typeof reason === "object" &&
+              typeof (reason as { error?: unknown }).error === "string"
+            ? (reason as { error: string }).error
             : `chat.callMethod failed (${kind})`;
       entry.reject(new Error(message));
     }
@@ -2782,7 +2796,11 @@ export abstract class AgentVesselBase extends DurableObjectBase {
     );
     const from = ids.logIdForChannel(oldChannelId);
     const to = ids.logIdForChannel(newChannelId);
-    const atSeq = await this.resolveTrajectorySeqForChannelSeq(from, oldChannelId, forkPointPubsubId);
+    const atSeq = await this.resolveTrajectorySeqForChannelSeq(
+      from,
+      oldChannelId,
+      forkPointPubsubId
+    );
     await this.callGad("forkLog", {
       fromLogId: from,
       fromHead: from,
@@ -2844,9 +2862,7 @@ export abstract class AgentVesselBase extends DurableObjectBase {
   }
 
   async getDebugState(channelId?: string): Promise<Record<string, unknown>> {
-    const channels = channelId
-      ? [channelId]
-      : this.subscriptions.listChannelIds();
+    const channels = channelId ? [channelId] : this.subscriptions.listChannelIds();
     const loops: Record<string, unknown> = {};
     for (const id of channels) {
       try {
