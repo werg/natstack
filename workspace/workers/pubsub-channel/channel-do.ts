@@ -1241,7 +1241,7 @@ export class PubSubChannel extends DurableObjectBase {
       terminalReasonCode?: string;
       attachments?: StoredAttachment[];
     }
-  ): Promise<{ id?: number }> {
+  ): Promise<{ id?: number; dropped?: boolean; reason?: string }> {
     this.assertParticipantCaller(participantId, "submitMethodResult");
     const resolution = await this.calls.resolveSubmitterForCall(
       participantId,
@@ -1252,11 +1252,18 @@ export class PubSubChannel extends DurableObjectBase {
       return { id: resolution.eventId };
     }
     if (resolution.kind === "missing") {
-      console.log(
+      // No live pending row AND no durable terminal even after reconcile: the
+      // result has nowhere to land. We cannot synthesize a terminal (the fold
+      // invariant pairs every terminal with a journaled `started`, which is
+      // absent here), but the drop MUST be observable rather than swallowed.
+      // The original caller is not left hanging: A4 gives tool calls a
+      // journaled deadline, so the channel's deadline sweep settles it with an
+      // abandoned/cancelled terminal even when a submit is lost.
+      console.warn(
         `[Channel] submitMethodResult dropped: no pending call (already terminal or unknown): ` +
           `channel=${this.objectKey} transportCallId=${transportCallId} isError=${isError}`
       );
-      return { id: undefined };
+      return { id: undefined, dropped: true, reason: "no-pending-call" };
     }
     const id = await this.calls.settleCall(
       transportCallId,

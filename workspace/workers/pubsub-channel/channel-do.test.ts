@@ -783,6 +783,80 @@ describe("PubSubChannel", () => {
     });
   });
 
+  it("reconstructs pending_calls during cancelMethodCall before dropping (cache-cold)", async () => {
+    const { instance, sql, gad } = await createGadBackedChannel();
+
+    setRpcCaller(instance, "panel:caller", "panel");
+    await instance.subscribe("panel:caller", { contextId: "ctx-1", name: "Caller", type: "panel" });
+    setRpcCaller(instance, "panel:provider", "panel");
+    await instance.subscribe("panel:provider", {
+      contextId: "ctx-1",
+      name: "Provider",
+      type: "panel",
+    });
+
+    setRpcCaller(instance, "panel:caller", "panel");
+    await instance.callMethod(
+      "panel:caller",
+      "panel:provider",
+      "transport-cancel-cold",
+      "eval",
+      { code: "1 + 1" },
+      {
+        invocationId: "invocation-cancel-cold",
+        transportCallId: "transport-cancel-cold",
+        turnId: "turn-cancel-cold",
+      }
+    );
+
+    // Simulate a cache-cold row (post-eviction): the durable started survives,
+    // the SQLite cache row is gone. A cancel must reconcile and still settle.
+    sql.exec(`DELETE FROM pending_calls WHERE transport_call_id = ?`, "transport-cancel-cold");
+
+    await instance.cancelMethodCall("transport-cancel-cold");
+
+    const cancelled = gad.sql
+      .exec(
+        `SELECT envelope_id FROM log_events WHERE envelope_id = ?`,
+        "terminal:transport-cancel-cold"
+      )
+      .toArray();
+    expect(cancelled).toHaveLength(1);
+  });
+
+  it("records a deadline_at on a timed call so the sweep can settle a stuck target", async () => {
+    const { instance, sql } = await createGadBackedChannel();
+
+    setRpcCaller(instance, "panel:caller", "panel");
+    await instance.subscribe("panel:caller", { contextId: "ctx-1", name: "Caller", type: "panel" });
+    setRpcCaller(instance, "panel:provider", "panel");
+    await instance.subscribe("panel:provider", {
+      contextId: "ctx-1",
+      name: "Provider",
+      type: "panel",
+    });
+
+    setRpcCaller(instance, "panel:caller", "panel");
+    await instance.callMethod(
+      "panel:caller",
+      "panel:provider",
+      "transport-timed",
+      "eval",
+      { code: "1 + 1" },
+      {
+        invocationId: "invocation-timed",
+        transportCallId: "transport-timed",
+        turnId: "turn-timed",
+        timeoutMs: 60_000,
+      }
+    );
+
+    const row = sql
+      .exec(`SELECT deadline_at FROM pending_calls WHERE transport_call_id = ?`, "transport-timed")
+      .toArray()[0] as { deadline_at: number | null } | undefined;
+    expect(row?.deadline_at).toEqual(expect.any(Number));
+  });
+
   it("settles pending method calls as an error from malformed terminal invocation events", async () => {
     const { instance } = await createGadBackedChannel();
 
@@ -939,6 +1013,30 @@ describe("PubSubChannel", () => {
       )
       .toArray();
     expect(terminals).toHaveLength(1);
+  });
+
+  it("returns an observable {dropped} when a result has no pending row and no terminal", async () => {
+    const { instance } = await createGadBackedChannel();
+
+    setRpcCaller(instance, "panel:provider", "panel");
+    await instance.subscribe("panel:provider", {
+      contextId: "ctx-1",
+      name: "Provider",
+      type: "panel",
+    });
+
+    // No call was ever made for this transportCallId: reconcile finds nothing
+    // and there is no durable terminal, so the result cannot land. The drop
+    // must be observable to the submitter rather than silently swallowed.
+    setRpcCaller(instance, "panel:provider", "panel");
+    const result = await instance.submitMethodResult(
+      "panel:provider",
+      "transport-never-existed",
+      { ok: true },
+      false
+    );
+
+    expect(result).toMatchObject({ id: undefined, dropped: true, reason: "no-pending-call" });
   });
 
   it("appends a durable invocation.completed terminal (no method-result envelope)", async () => {

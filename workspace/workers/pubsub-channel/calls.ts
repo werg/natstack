@@ -569,7 +569,20 @@ export class CallTransport {
   // ── cancel / timeout / abandon ────────────────────────────────────────────
 
   async cancelMethodCall(callId: string, reason = "cancelled"): Promise<PendingCallRow | null> {
-    const pending = this.peek(callId);
+    let pending = this.peek(callId);
+    if (!pending) {
+      // Cache-cold: the row may live in the durable log but not yet in the
+      // SQLite cache (post-eviction / reload). Reconcile then peek again before
+      // concluding the call is gone — otherwise a legitimate cancel/timeout
+      // silently no-ops and the call hangs (mirrors settleCall / resolveSubmitter).
+      const existingTerminal = await this.deps.log.getEventByEnvelopeId(`terminal:${callId}`);
+      if (existingTerminal) {
+        this.deps.scheduleNextAlarm();
+        return null;
+      }
+      await this.reconcilePendingCalls(true);
+      pending = this.peek(callId);
+    }
     if (!pending) {
       this.deps.scheduleNextAlarm();
       return null;
