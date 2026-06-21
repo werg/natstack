@@ -30,6 +30,15 @@ export interface HeadlessHostManagerConfig {
   spawnTimeoutMs?: number;
   idleShutdownMs?: number;
   maxRestarts?: number;
+  /**
+   * Keep a headless host running for the server's whole lifetime: spawn one at
+   * boot and re-spawn it whenever the child exits, so a programmatic panel
+   * always has a default CDP host to lease to. Disables the idle-shutdown
+   * timer (an always-on host must not self-terminate when momentarily idle).
+   * Spawn failures still degrade gracefully via the existing backoff — boot
+   * never blocks on, or crashes from, an unresolvable Chromium.
+   */
+  keepAlive?: boolean;
 }
 
 export interface HeadlessHostManagerDeps {
@@ -89,9 +98,46 @@ export class HeadlessHostManager {
   private disabled = false;
   private stopLeaseListener: (() => void) | null = null;
   private spawnedClientSessionId: string | null = null;
+  private keepAlive = false;
+  private stopped = false;
+  private respawnTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly deps: HeadlessHostManagerDeps) {
     this.stopLeaseListener = deps.coordinator.onLeaseChanged(() => this.updateIdleTimer());
+  }
+
+  /**
+   * Spawn a headless host now and keep one alive for the server's lifetime:
+   * re-ensure it whenever the child exits. Non-blocking and crash-proof —
+   * a spawn failure degrades through the existing backoff (callers then fall
+   * back to the desktop host), it never rejects or throws into boot.
+   */
+  startKeepAlive(): void {
+    if (!this.config.enabled) return;
+    this.keepAlive = true;
+    this.scheduleEnsure();
+  }
+
+  private scheduleEnsure(delayMs = 0): void {
+    if (!this.keepAlive || this.stopped || this.disabled) return;
+    if (this.respawnTimer) return;
+    this.respawnTimer = setTimeout(
+      () => {
+        this.respawnTimer = null;
+        if (!this.keepAlive || this.stopped) return;
+        // ensureDefaultHost is single-flight, backoff-aware, and never throws.
+        void this.ensureDefaultHost().then((host) => {
+          // If we still don't have a host (disabled, backing off, or timed out)
+          // and keep-alive is on, retry on the next backoff window.
+          if (!host && this.keepAlive && !this.stopped && !this.disabled) {
+            const wait = Math.max(0, this.nextAttemptAt - Date.now()) || 1_000;
+            this.scheduleEnsure(wait);
+          }
+        });
+      },
+      Math.max(0, delayMs)
+    );
+    this.respawnTimer.unref?.();
   }
 
   private get config() {
@@ -121,8 +167,12 @@ export class HeadlessHostManager {
   }
 
   async stop(): Promise<void> {
+    this.stopped = true;
+    this.keepAlive = false;
     this.stopLeaseListener?.();
     if (this.idleTimer) clearTimeout(this.idleTimer);
+    if (this.respawnTimer) clearTimeout(this.respawnTimer);
+    this.respawnTimer = null;
     this.terminateChild("manager stopping");
   }
 
@@ -156,8 +206,14 @@ export class HeadlessHostManager {
       log.warn(`[host] ${String(chunk).trimEnd()}`);
     });
     child.once("exit", (code) => {
-      if (this.child === child) this.child = null;
+      if (this.child === child) {
+        this.child = null;
+        this.spawnedClientSessionId = null;
+      }
       log.info(`headless host exited (code ${code})`);
+      // Keep-alive: a host we intend to always run just died — bring it back
+      // (unless the manager is stopping). Backoff-respecting via scheduleEnsure.
+      if (this.keepAlive && !this.stopped) this.scheduleEnsure(250);
     });
 
     // Token over the IPC channel — not visible in /proc/*/environ or ps.
@@ -209,6 +265,8 @@ export class HeadlessHostManager {
   }
 
   private updateIdleTimer(): void {
+    // An always-on host must never idle-terminate.
+    if (this.keepAlive) return;
     if (!this.child || !this.spawnedClientSessionId) return;
     const sessionId = this.spawnedClientSessionId;
     const holdsLeases = this.deps.coordinator

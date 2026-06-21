@@ -219,6 +219,112 @@ describe("PanelRuntimeCoordinator", () => {
     });
   });
 
+  it("prefers the headless host for a programmatic panel even when a desktop host is also a load-on-assignment default", () => {
+    // Production config: BOTH desktop and headless register with
+    // loadOnLeaseAssignment: true (src/main/index.ts). A programmatic panel
+    // (agent/eval/worker — no UI host) reaches host selection via
+    // ensureDefaultCdpHostForSlot with no existing lease, and MUST land on the
+    // headless host. Page.captureScreenshot hangs on an unpainted panel on the
+    // headed desktop host, so desktop-first selection is the 6ab6c7ca regression.
+    const coordinator = new PanelRuntimeCoordinator();
+    coordinator.registerClient({
+      clientSessionId: "desktop-session",
+      hostConnectionId: "desktop-host",
+      label: "Desktop",
+      platform: "desktop",
+      loadOnLeaseAssignment: true,
+    });
+    coordinator.registerClient({
+      clientSessionId: "headless-session",
+      hostConnectionId: "headless-host",
+      label: "Headless",
+      platform: "headless",
+      loadOnLeaseAssignment: true,
+    });
+
+    const result = coordinator.ensureDefaultCdpHostForSlot(
+      "panel:tree/slot-prog",
+      "panel:nav-slot-prog",
+      { isHostAvailable: () => true }
+    );
+
+    expect(result).toMatchObject({
+      assigned: true,
+      lease: {
+        clientSessionId: "headless-session",
+        hostConnectionId: "headless-host",
+        platform: "headless",
+      },
+    });
+  });
+
+  it("falls back to the desktop host for a programmatic panel when no headless host is available", () => {
+    // Graceful degrade: with only a load-on-assignment desktop host reachable,
+    // a programmatic panel still renders on desktop rather than failing.
+    const coordinator = new PanelRuntimeCoordinator();
+    coordinator.registerClient({
+      clientSessionId: "desktop-session",
+      hostConnectionId: "desktop-host",
+      label: "Desktop",
+      platform: "desktop",
+      loadOnLeaseAssignment: true,
+    });
+
+    const result = coordinator.ensureDefaultCdpHostForSlot(
+      "panel:tree/slot-prog",
+      "panel:nav-slot-prog",
+      { isHostAvailable: () => true }
+    );
+
+    expect(result).toMatchObject({
+      assigned: true,
+      lease: {
+        clientSessionId: "desktop-session",
+        hostConnectionId: "desktop-host",
+        platform: "desktop",
+      },
+    });
+  });
+
+  it("keeps a UI-launched panel on its desktop host (self-acquire short-circuits default selection)", () => {
+    // A UI panel is loaded by the desktop orchestrator's own acquire() before
+    // any default selection runs. ensureDefaultCdpHostForSlot must then report
+    // already_held and leave the lease on desktop — it must NOT re-home the
+    // panel to the headless host. This is how UI panels keep reaching desktop.
+    const coordinator = new PanelRuntimeCoordinator();
+    coordinator.registerClient({
+      clientSessionId: "desktop-session",
+      hostConnectionId: "desktop-host",
+      label: "Desktop",
+      platform: "desktop",
+      loadOnLeaseAssignment: true,
+    });
+    coordinator.registerClient({
+      clientSessionId: "headless-session",
+      hostConnectionId: "headless-host",
+      label: "Headless",
+      platform: "headless",
+      loadOnLeaseAssignment: true,
+    });
+
+    // Desktop host self-acquires when it shows the panel in the UI.
+    coordinator.acquire("panel:nav-ui", {
+      slotId: "panel:tree/slot-ui",
+      clientSessionId: "desktop-session",
+      connectionId: "desktop-runtime",
+    });
+
+    const result = coordinator.ensureDefaultCdpHostForSlot("panel:tree/slot-ui", "panel:nav-ui", {
+      isHostAvailable: () => true,
+    });
+
+    expect(result).toMatchObject({ assigned: false, reason: "already_held" });
+    expect(coordinator.resolveHostForSlot("panel:tree/slot-ui")).toEqual({
+      hostConnectionId: "desktop-host",
+      supportsCdp: true,
+    });
+  });
+
   it("does not assign unheld panels to headless clients that cannot load assigned leases", () => {
     const coordinator = new PanelRuntimeCoordinator();
     coordinator.registerClient({

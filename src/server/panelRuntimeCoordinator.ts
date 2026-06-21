@@ -165,9 +165,24 @@ export class PanelRuntimeCoordinator {
     return null;
   }
 
+  /**
+   * Pick the default CDP host for a PROGRAMMATIC panel (no UI launcher).
+   *
+   * Origin is implicit here: a UI-launched panel reaches its desktop host via
+   * the desktop orchestrator's own `acquire()` (the lease already exists, so
+   * `ensureDefaultCdpHostForSlot` short-circuits at `already_held` and never
+   * calls this). Every call into this selection is therefore agent/eval/worker
+   * originated, with no UI host of its own. We MUST prefer the headless host:
+   * `Page.captureScreenshot` and other CDP ops hang on an unpainted panel on a
+   * headed desktop host. The desktop is kept only as a graceful fallback so
+   * programmatic panels still render when no headless host is reachable
+   * (matches the "degrade to desktop" requirement). Regression guard: 6ab6c7ca
+   * flipped this to desktop-first, sending programmatic panels to the headed
+   * host where capture hangs.
+   */
   getDefaultCdpHostClient(options: DefaultCdpHostOptions = {}): ClientSession | null {
     const candidates = [...this.clients.values()].sort((a, b) => {
-      const rank = (client: ClientSession) => (client.platform === "desktop" ? 0 : 1);
+      const rank = (client: ClientSession) => (client.platform === "headless" ? 0 : 1);
       return rank(a) - rank(b);
     });
     for (const client of candidates) {

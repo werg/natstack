@@ -3246,9 +3246,15 @@ async function main() {
           coordinator: panelRuntimeCoordinator,
           isHostAvailable: (hostConnectionId) => cdpBridge.isProviderConnected(hostConnectionId),
           getServerUrl: () => `http://127.0.0.1:${gatewayPort}`,
-          config: { enabled: autospawnEnabled, spawnTimeoutMs },
+          config: { enabled: autospawnEnabled, spawnTimeoutMs, keepAlive: autospawnEnabled },
         });
         headlessHostManager = manager;
+        // Always-on headless host: spawn one now and keep it alive so a
+        // programmatically-opened panel (agent/eval/worker — no UI host) always
+        // has a default CDP host to lease to. Non-blocking and crash-proof: a
+        // spawn failure degrades to the desktop fallback via the existing
+        // backoff; it must never wedge or crash boot.
+        manager.startKeepAlive();
         return manager;
       },
       async stop(instance: import("./headlessHostManager.js").HeadlessHostManager) {
