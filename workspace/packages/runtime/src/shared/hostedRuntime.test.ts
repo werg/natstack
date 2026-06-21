@@ -13,6 +13,7 @@ const WORKSPACE_RUNTIME_KEYS: Array<keyof WorkspaceRuntime> = [
   "rpc",
   "fs",
   "gad",
+  "blobstore",
   "workspace",
   "credentials",
   "git",
@@ -109,6 +110,23 @@ describe("createHostedRuntime", () => {
     const core = createHostedRuntime(host);
     expect(typeof core.credentials.forAudience).toBe("function");
     expect(typeof core.credentials.connect).toBe("function");
+  });
+
+  it("exposes a blobstore client that forwards to the main blobstore service", async () => {
+    const { host, calls } = recordingHost();
+    const core = createHostedRuntime(host);
+
+    // The agent's instinct in eval: persist a screenshot via services.blobstore.
+    // This must reach the `blobstore` RPC service (which admits `do` callers),
+    // not be undefined.
+    expect(typeof core.blobstore.putBase64).toBe("function");
+    await core.blobstore.putBase64("aGVsbG8=");
+
+    expect(calls).toContainEqual({
+      target: "main",
+      method: "blobstore.putBase64",
+      args: ["aGVsbG8="],
+    });
   });
 
   it("vcs.subscribeHead wires through host.rpc (rpc.on + events.subscribe)", () => {

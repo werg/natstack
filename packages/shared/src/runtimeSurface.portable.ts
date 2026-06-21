@@ -132,6 +132,21 @@ export const GAD_MEMBERS = [
   "rebuildTrajectoryProjections",
 ];
 
+export const BLOBSTORE_MEMBERS = [
+  "has",
+  "stat",
+  "putText",
+  "getText",
+  "getRange",
+  "getRangeBytes",
+  "grep",
+  "putBase64",
+  "getBase64",
+  "delete",
+  "list",
+  "pruneUnreferenced",
+];
+
 export const WEBHOOKS_MEMBERS = [
   "createSubscription",
   "listSubscriptions",
@@ -177,6 +192,10 @@ export const portableExports: Record<string, RuntimeSurfaceEntry> = {
   git: namespaceEntry(GIT_MEMBERS),
   vcs: namespaceEntry(VCS_MEMBERS, VCS_DESCRIPTION),
   gad: namespaceEntry(GAD_MEMBERS),
+  blobstore: namespaceEntry(
+    BLOBSTORE_MEMBERS,
+    "Per-workspace content-addressable blob store: putText/putBase64 store, getText/getRange/getRangeBytes/getBase64 fetch, grep searches; returns a sha256 digest. Persist large artifacts/screenshots and return the digest."
+  ),
   webhooks: namespaceEntry(WEBHOOKS_MEMBERS),
   extensions: namespaceEntry(EXTENSIONS_MEMBERS),
   approvals: namespaceEntry(APPROVALS_MEMBERS),

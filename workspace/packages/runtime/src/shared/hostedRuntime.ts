@@ -19,6 +19,7 @@ import type { RpcClient } from "@natstack/rpc";
 import type { OpenExternalOptions, OpenExternalResult } from "@natstack/shared/externalOpen";
 import { helpfulNamespace } from "./helpfulNamespace.js";
 import { createGadClient, type GadClient } from "./gad.js";
+import { createBlobstoreClient, type BlobstoreClient } from "./blobstore.js";
 import { createWorkspaceClient, type WorkspaceClient } from "./workspace.js";
 import { createCredentialClient, type CredentialClient } from "./credentials.js";
 import { createVcsClient, type VcsClient } from "./vcsClient.js";
@@ -93,6 +94,8 @@ export interface WorkspaceRuntime {
   readonly getParent: ParentHandleApi["getParent"];
   readonly getParentWithContract: ParentHandleApi["getParentWithContract"];
   readonly gad: GadClient;
+  /** Per-workspace content-addressable blob store (persist/fetch large artifacts). */
+  readonly blobstore: BlobstoreClient;
   readonly workspace: WorkspaceClient;
   readonly credentials: CredentialClient;
   readonly git: RuntimeGitApi;
@@ -128,6 +131,7 @@ export function createHostedRuntime(host: RuntimeHost): WorkspaceRuntime {
   const rpc = host.rpc;
   const credentials = helpfulNamespace("credentials", createCredentialClient(rpc));
   const gad = helpfulNamespace("gad", createGadClient(rpc));
+  const blobstore = helpfulNamespace("blobstore", createBlobstoreClient(rpc));
   const workspace = helpfulNamespace("workspace", createWorkspaceClient(rpc));
   const vcs = helpfulNamespace(
     "vcs",
@@ -151,6 +155,7 @@ export function createHostedRuntime(host: RuntimeHost): WorkspaceRuntime {
     getParent: parentApi.getParent,
     getParentWithContract: parentApi.getParentWithContract,
     gad,
+    blobstore,
     workspace,
     credentials,
     git,

@@ -107,6 +107,7 @@ export const {
   getParent,
   getParentWithContract,
   gad,
+  blobstore,
   workspace,
   credentials,
   git,

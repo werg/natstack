@@ -197,8 +197,8 @@ eval({ code: `
 ` })
 ```
 
-Importable members: `id`, `contextId`, `rpc`, `fs`, `gad`, `workspace`,
-`credentials`, `git`, `vcs`, `webhooks`, `extensions`, `approvals`,
+Importable members: `id`, `contextId`, `rpc`, `fs`, `gad`, `blobstore`,
+`workspace`, `credentials`, `git`, `vcs`, `webhooks`, `extensions`, `approvals`,
 `notifications`, `workers`, `doTargetId`, `createDurableObjectServiceClient`,
 `gatewayConfig`, `gatewayFetch`, `openExternal`, `openPanel`, `listPanels`,
 `getPanelHandle`, `panelTree`. (`gatewayFetch` in eval is **gateway-relative
@@ -515,15 +515,27 @@ return await rpc.call("gad.inspectInvocationState", [{ transportCallId }]);
 return await rpc.call("gad.inspectPublicationIntegrity", [{ channelId }]);
 ```
 
-If you need a large artifact, store the full text in blobstore and return its
-digest, byte count, and a small head sample. Keep full objects in `scope` only
-for short-lived interactive follow-up.
+If you need a large artifact, store the full bytes/text in the **blobstore** and
+return its digest, byte count, and a small head sample. Keep full objects in
+`scope` only for short-lived interactive follow-up.
+
+The blobstore is a curated runtime binding — reach it as `services.blobstore`
+(equivalently `import { blobstore } from "@workspace/runtime"`, or the raw
+`rpc.call("blobstore.<method>", [...])`). Read/write methods
+(`putText`/`putBase64`/`getText`/`getRange`/`grep`/…) work from agent eval; the
+admin methods (`delete`/`list`/`pruneUnreferenced`) are server-only. A binary
+artifact (e.g. a screenshot you captured) goes in as base64:
+
+```ts
+const { digest, size } = await services.blobstore.putBase64(pngBase64);
+return { digest, size, kind: "image/png" };
+```
 
 Preferred return shape for large artifacts:
 
 ```ts
 const text = JSON.stringify(largeValue);
-const stored = await rpc.call("blobstore.putText", [text]);
+const stored = await services.blobstore.putText(text);
 return {
   omitted: true,
   reason: "large diagnostic value stored in blobstore",
@@ -539,8 +551,8 @@ The method transport also caps oversized durable results and records a blob
 digest when storage is available. Agents should still return bounded summaries
 because compact results are easier to inspect and less likely to hide the
 important error message. Read stored text with
-`rpc.call("blobstore.getRange", [digest, offset, length])` or search it
-server-side with `rpc.call("blobstore.grep", [digest, pattern])`.
+`services.blobstore.getRange(digest, offset, length)` or search it server-side
+with `services.blobstore.grep(digest, pattern)`.
 
 ## Build System
 
