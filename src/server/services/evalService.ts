@@ -396,6 +396,40 @@ export function createEvalService(deps: {
           "reset"
         );
       }
+      if (method === "cancel") {
+        const cancelArgs = (args[0] ?? {}) as {
+          ownerId?: string;
+          contextId?: string;
+          subKey?: string;
+          runId: string;
+        };
+        const owner = await resolveOwner(ctx.caller.runtime.kind, ownerId, {
+          ownerId: cancelArgs.ownerId,
+          contextId: cancelArgs.contextId,
+        });
+        const { objectKey } = await ensureEvalDO(owner, cancelArgs.subKey ?? "default");
+        return deps.doDispatch.dispatch(
+          { source: INTERNAL_DO_SOURCE, className: EVAL_DO_CLASS, objectKey },
+          "cancel",
+          cancelArgs.runId
+        );
+      }
+      if (method === "forceReset") {
+        const forceArgs = (args[0] ?? {}) as {
+          ownerId?: string;
+          contextId?: string;
+          subKey?: string;
+        };
+        const owner = await resolveOwner(ctx.caller.runtime.kind, ownerId, {
+          ownerId: forceArgs.ownerId,
+          contextId: forceArgs.contextId,
+        });
+        const { objectKey } = await ensureEvalDO(owner, forceArgs.subKey ?? "default");
+        return deps.doDispatch.dispatch(
+          { source: INTERNAL_DO_SOURCE, className: EVAL_DO_CLASS, objectKey },
+          "forceReset"
+        );
+      }
       throw new Error(`eval: unknown method ${method}`);
     },
   };

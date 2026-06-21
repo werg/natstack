@@ -274,6 +274,9 @@
       "@workspace/runtime/hosted": [
         "workspace/packages/runtime/src/shared/hostedRuntime.ts"
       ],
+      "@workspace/runtime/panel-runtime": [
+        "workspace/packages/runtime/src/shared/panelRuntime.ts"
+      ],
       "@workspace/runtime/credentials": [
         "workspace/packages/runtime/src/shared/credentials.ts"
       ],

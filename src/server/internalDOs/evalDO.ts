@@ -523,6 +523,48 @@ export class EvalDO extends DurableObjectBase {
     return result;
   }
 
+  /**
+   * Cancel ONE run without touching scope or other runs. CAS the row to `cancelled` FIRST (only if
+   * still pending/running) so a late finish loses — `runEval`'s persist requires `status='running'`
+   * and its post-write status read returns the cancelled failure instead of resurrecting `done`.
+   * Then abort the run's controller so a run wedged on an outbound rpc.call unwinds (the signal is
+   * threaded into every outbound call in `runLocked`). A no-op for an already-terminal run.
+   */
+  @rpc
+  cancel(runId: string): { ok: boolean } {
+    this.sql.exec(
+      `UPDATE runs SET status = 'cancelled' WHERE run_id = ? AND status IN ('pending', 'running')`,
+      runId
+    );
+    this.runAborts.get(runId)?.abort();
+    return { ok: true };
+  }
+
+  /**
+   * Guaranteed recovery for a WEDGED DO: a run stuck on a never-returning outbound call holds
+   * `runChain`, so `reset` (which `.then()`s off that chain) would hang behind it. Instead we:
+   *  1. CAS every non-terminal run to `cancelled` (so any orphaned run's eventual finish loses its
+   *     CAS persist — see `runEval` — and is neutralized; it can never resurrect itself `done`),
+   *  2. abort EVERY in-flight controller (a run wedged on an outbound rpc.call unwinds via its
+   *     threaded signal),
+   *  3. REPLACE `this.runChain` with a fresh resolved promise — we ORPHAN the stuck chain rather
+   *     than `.then()` off it, so we never wait on the wedged run, and
+   *  4. run `resetLocked()` synchronously (NOT queued behind the old chain).
+   * `resetLocked` only drops user tables + the scope table and nulls `this.scopeManager` (forcing a
+   * fresh empty hydrate on the next run); it touches nothing the orphaned run still needs to finish
+   * safely — and even if the orphan later runs `exitEval` against the wiped scope, its `cancelled`
+   * status already discarded its result, so a fresh run is unaffected.
+   */
+  @rpc
+  forceReset(): { ok: boolean } {
+    this.sql.exec(`UPDATE runs SET status = 'cancelled' WHERE status IN ('pending', 'running')`);
+    for (const controller of this.runAborts.values()) controller.abort();
+    // Orphan the (possibly wedged) chain — do NOT `.then()` off it, or we'd hang behind the stuck
+    // run. A subsequently-enqueued run chains off this fresh resolved promise and proceeds at once.
+    this.runChain = Promise.resolve();
+    return this.resetLocked();
+  }
+
   private resetLocked(): { ok: boolean } {
     const tables = this.sql
       .exec(
@@ -575,6 +617,11 @@ export class EvalDO extends DurableObjectBase {
     this.parentMeta = args.parent ?? null;
     const rt = this.ensureHostedRuntime(args.contextId ?? "", args.gatewayToken);
 
+    // Thread THIS run's abort signal into EVERY outbound rpc.call the eval makes, so a
+    // `cancel(runId)`/`forceReset()` that aborts `controller` unwinds a run wedged on an outbound
+    // call (the rpc client honors `options.signal` — client.ts rejects the pending request on abort)
+    // instead of leaving it stuck forever and blocking the run chain behind it.
+    const callOptions = signal ? { signal } : undefined;
     const rpcBinding = {
       // EVAL.md documents the 2-arg ambient sugar `rpc.call(method, args)` (targets "main"). For
       // ergonomics we ALSO accept the full-client habit `rpc.call(target, method, args)`
@@ -582,10 +629,10 @@ export class EvalDO extends DurableObjectBase {
       // with a cryptic "Invalid method format". `rpc.callTarget(targetId, method, args)` is unchanged.
       call: (a: string, b?: unknown, c?: unknown) => {
         const [target, method, callArgs] = normalizeAmbientRpcCall(a, b, c);
-        return this.rpc.call(target, method, callArgs);
+        return this.rpc.call(target, method, callArgs, callOptions);
       },
       callTarget: (targetId: string, method: string, callArgs: unknown[] = []) =>
-        this.rpc.call(targetId, method, callArgs),
+        this.rpc.call(targetId, method, callArgs, callOptions),
     };
     // `services` IS the runtime — `services.vcs` is the SAME curated client object as the bare
     // `vcs` (and `import { vcs } from "@workspace/runtime"`). There is no second, stringly
@@ -662,7 +709,9 @@ export class EvalDO extends DurableObjectBase {
     // (CLI/panel eval) — see buildOwnerBindings.
     Object.assign(
       bindings,
-      buildOwnerBindings(args, (t, m, a) => this.rpc.call(t, m, a))
+      // Same signal threading as `rpcBinding`: the `chat`/`agent` ops the owning agent forwards
+      // are outbound rpc.calls too, so a cancelled run unwinds them instead of wedging the chain.
+      buildOwnerBindings(args, (t, m, a) => this.rpc.call(t, m, a, callOptions))
     );
 
     // In path mode, load the entry file. The eval service validates exactly one of

@@ -51,6 +51,12 @@ function createHarness(contexts: Record<string, string | null>) {
       if (method === "reset") {
         return { ok: true };
       }
+      if (method === "cancel") {
+        return { ok: true };
+      }
+      if (method === "forceReset") {
+        return { ok: true };
+      }
       if (method === "startRun") {
         return { runId: (args[0] as { runId: string }).runId, status: "pending" };
       }
@@ -334,6 +340,39 @@ describe("createEvalService", () => {
     expect(calls.find((c) => c.method === "getRun")).toMatchObject({
       ref: { source: INTERNAL_DO_SOURCE, className: "EvalDO", objectKey },
       args: ["inv-42"],
+    });
+  });
+
+  it("cancel: routes to the owner's EvalDO by (owner, subKey) and forwards the runId", async () => {
+    const ownerId = "do:agents/worker:Agent:abc";
+    const { service, calls } = createHarness({ [ownerId]: "ctx_agent" });
+
+    const ret = await service.handler({ caller: createVerifiedCaller(ownerId, "do") }, "cancel", [
+      { subKey: "chan_1", runId: "inv-42" },
+    ]);
+    expect(ret).toEqual({ ok: true });
+
+    const objectKey = evalKey(ownerId, "chan_1");
+    expect(calls.find((c) => c.method === "cancel")).toMatchObject({
+      ref: { source: INTERNAL_DO_SOURCE, className: "EvalDO", objectKey },
+      args: ["inv-42"],
+    });
+  });
+
+  it("forceReset: routes to the owner's EvalDO by (owner, subKey)", async () => {
+    const ownerId = "do:agents/worker:Agent:abc";
+    const { service, calls } = createHarness({ [ownerId]: "ctx_agent" });
+
+    const ret = await service.handler(
+      { caller: createVerifiedCaller(ownerId, "do") },
+      "forceReset",
+      [{ subKey: "chan_1" }]
+    );
+    expect(ret).toEqual({ ok: true });
+
+    const objectKey = evalKey(ownerId, "chan_1");
+    expect(calls.find((c) => c.method === "forceReset")).toMatchObject({
+      ref: { source: INTERNAL_DO_SOURCE, className: "EvalDO", objectKey },
     });
   });
 });

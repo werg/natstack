@@ -109,6 +109,25 @@ export const evalResetArgsSchema = z
     }
   });
 
+/** Args for cancelling ONE run: routing (owner/subKey, like `reset`) + the runId to cancel. */
+export const evalCancelArgsSchema = z
+  .object({
+    ownerId: z.string().optional(),
+    contextId: z.string().optional(),
+    subKey: z.string().optional(),
+    runId: z.string(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if ((value.ownerId === undefined) !== (value.contextId === undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "ownerId and contextId must be provided together",
+        path: value.ownerId === undefined ? ["ownerId"] : ["contextId"],
+      });
+    }
+  });
+
 export const evalMethods = defineServiceMethods({
   run: {
     args: z.tuple([evalRunArgsSchema]),
@@ -132,5 +151,17 @@ export const evalMethods = defineServiceMethods({
     args: z.tuple([evalGetRunArgsSchema]),
     returns: evalRunStatusSchema,
     description: "Poll an async run started with startRun: returns its status and (when done) result.",
+  },
+  cancel: {
+    args: z.tuple([evalCancelArgsSchema]),
+    returns: z.object({ ok: z.boolean() }).strict(),
+    description:
+      "Cancel a single in-flight or pending run by runId (CAS to cancelled, then abort its outbound calls so a run wedged on an rpc.call unwinds). Other runs and the persistent scope are untouched. A no-op if the run is already terminal.",
+  },
+  forceReset: {
+    args: z.tuple([evalResetArgsSchema]),
+    returns: z.object({ ok: z.boolean() }).strict(),
+    description:
+      "Forced recovery for a wedged eval DO: cancel every non-terminal run, abort all in-flight runs, and reset the eval context (wipe scope + user db) IMMEDIATELY without waiting on the stuck run chain. Use when `reset` itself would hang behind a wedged run.",
   },
 });
