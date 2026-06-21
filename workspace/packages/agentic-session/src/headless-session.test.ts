@@ -109,6 +109,54 @@ describe("HeadlessSession", () => {
     ]);
   });
 
+  it("set_title records the report title without touching the channel config", async () => {
+    // A headless client is a `do` caller; the channel's updateConfig is
+    // panel/server-only, so set_title must NOT route through the channel
+    // (that path fails with `caller kind "do" is not permitted`). Instead it
+    // stores the title on the session/report and best-effort publishes it via
+    // the `do`-permitted runtime.setTitle.
+    const config = createConfig();
+    const session = HeadlessSession.create({ config });
+    const updateChannelConfig = vi.fn(async () => undefined);
+    (session as any)._client = { updateChannelConfig };
+
+    const methods = (session as any).buildDefaultMethods() as Record<
+      string,
+      { execute: (args: unknown) => Promise<unknown> }
+    >;
+    const result = await methods["set_title"]!.execute({ title: "Filesystem Report" });
+
+    expect(result).toEqual({ ok: true });
+    expect(session.title).toBe("Filesystem Report");
+    expect(session.snapshot().title).toBe("Filesystem Report");
+    // The channel config (and thus the panel/server-gated updateConfig) is never touched.
+    expect(updateChannelConfig).not.toHaveBeenCalled();
+    // It DOES publish the entity title via the do-permitted runtime.setTitle.
+    expect(config.rpc.call).toHaveBeenCalledWith("main", "runtime.setTitle", [
+      "Filesystem Report",
+      { explicit: true },
+    ]);
+  });
+
+  it("set_title surfaces a runtime.setTitle failure as a non-fatal warning", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const config = createConfig();
+    (config.rpc.call as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("registry down"));
+    const session = HeadlessSession.create({ config });
+    (session as any)._client = { updateChannelConfig: vi.fn() };
+
+    const methods = (session as any).buildDefaultMethods() as Record<
+      string,
+      { execute: (args: unknown) => Promise<unknown> }
+    >;
+    const result = await methods["set_title"]!.execute({ title: "Network Report" });
+
+    // The report title is still recorded; only the registry publish failed.
+    expect(result).toEqual({ ok: true, warnings: ["registry down"] });
+    expect(session.title).toBe("Network Report");
+    warn.mockRestore();
+  });
+
   it("dispose is idempotent", () => {
     const session = HeadlessSession.create({
       config: createConfig(),

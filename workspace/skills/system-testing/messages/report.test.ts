@@ -154,6 +154,7 @@ describe("reportStage", () => {
       localMethodNames: [],
       connected: true,
       duration: 10,
+      title: null,
     };
     const entries = [
       entry("passing-with-evidence", "smoke", true, {

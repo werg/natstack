@@ -76,6 +76,8 @@ export interface SessionSnapshot {
   localMethodNames: readonly string[];
   connected: boolean;
   duration: number;
+  /** The report title set via the agent's `set_title` tool (null until set). */
+  title: string | null;
 }
 
 export interface HeadlessSessionConfig {
@@ -157,6 +159,14 @@ export class HeadlessSession {
   private _registeredMethodNames: string[] = [];
   private _disposed = false;
   private _consumeAbort: AbortController | null = null;
+  /**
+   * The session/report title set by the agent's `set_title` tool. A headless
+   * session has no chat panel, so the title lives HERE (on the report wrapper),
+   * not on the channel config — the channel's `updateConfig` is panel/server-only
+   * and a headless client is a `do` caller, so routing `set_title` through the
+   * channel would fail the caller-kind gate. Surfaced via `title` + `snapshot()`.
+   */
+  private _title: string | null = null;
 
   // Listeners
   private _messageListeners = new Set<MessageListener>();
@@ -270,10 +280,29 @@ export class HeadlessSession {
       execute: async (args: unknown) => {
         const { title } = args as { title: string };
         if (!title) return { ok: false, error: "Missing title" };
-        if (this._client) {
-          await this._client.updateChannelConfig({ title });
+        // Headless context: there is no chat panel. Store the title on the
+        // session/report itself (the `do`-permitted path) instead of routing it
+        // through the channel's `updateConfig`, which is panel/server-only — a
+        // headless client is a `do` caller and would hit the caller-kind gate
+        // (`updateConfig: caller kind "do" is not permitted (allowed: panel,
+        // server)`). The channel title stays untouched.
+        this._title = title;
+        const warnings: string[] = [];
+        // Best-effort: also publish the title as this client's server-side
+        // entity display title. `runtime.setTitle` admits `do` callers (unlike
+        // `updateConfig`), so this surfaces in approval/registry UIs without
+        // touching channel config. A failure is non-fatal — the report title is
+        // already recorded above.
+        try {
+          await this._config.config.rpc.call("main", "runtime.setTitle", [
+            title,
+            { explicit: true },
+          ]);
+        } catch (err) {
+          warnings.push(err instanceof Error ? err.message : String(err));
+          console.warn("[HeadlessSession] runtime.setTitle failed:", err);
         }
-        return { ok: true };
+        return warnings.length > 0 ? { ok: true, warnings } : { ok: true };
       },
     };
 
@@ -516,6 +545,11 @@ export class HeadlessSession {
     return this._channelId;
   }
 
+  /** The report title set via the agent's `set_title` tool (null until set). */
+  get title(): string | null {
+    return this._title;
+  }
+
   get debugEvents(): readonly (AgentDebugPayload & { ts: number })[] {
     return this._debugEvents;
   }
@@ -565,6 +599,7 @@ export class HeadlessSession {
       localMethodNames: this._registeredMethodNames,
       connected: this._connection.connected,
       duration: now - this._createdAt,
+      title: this._title,
     };
   }
 
