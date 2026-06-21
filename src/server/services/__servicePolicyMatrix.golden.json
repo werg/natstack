@@ -1,0 +1,416 @@
+{
+  "audit": {
+    "service": ["app", "do", "extension", "panel", "server", "shell", "worker"],
+    "methods": {
+      "query": null
+    }
+  },
+  "auth": {
+    "service": ["server", "shell"],
+    "methods": {
+      "createPairingInvite": ["app", "server", "shell"],
+      "getConnectionInfo": null,
+      "grantConnection": ["app", "server", "shell"],
+      "listDevices": null,
+      "revokeDevice": null
+    }
+  },
+  "blobstore": {
+    "service": ["app", "do", "panel", "server", "shell", "worker"],
+    "methods": {
+      "delete": ["server", "shell"],
+      "getBase64": ["app", "do", "panel", "server", "shell", "worker"],
+      "getRange": ["app", "do", "panel", "server", "shell", "worker"],
+      "getRangeBytes": ["app", "do", "panel", "server", "shell", "worker"],
+      "getText": ["app", "do", "panel", "server", "shell", "worker"],
+      "grep": ["app", "do", "panel", "server", "shell", "worker"],
+      "has": ["app", "do", "panel", "server", "shell", "worker"],
+      "list": ["server", "shell"],
+      "pruneUnreferenced": ["server", "shell"],
+      "putBase64": ["app", "do", "panel", "server", "shell", "worker"],
+      "putText": ["app", "do", "panel", "server", "shell", "worker"],
+      "stat": ["app", "do", "panel", "server", "shell", "worker"]
+    }
+  },
+  "build": {
+    "service": ["app", "do", "extension", "panel", "server", "shell", "worker"],
+    "methods": {
+      "doctorExtension": null,
+      "gc": null,
+      "getAboutPages": null,
+      "getBuild": null,
+      "getBuildMetadata": null,
+      "getBuildNpm": null,
+      "getEffectiveVersion": null,
+      "getPanelMetadata": null,
+      "hasUnit": null,
+      "inspectBuildProvenance": null,
+      "listRecentBuildEvents": null,
+      "listSkills": null,
+      "recompute": null
+    }
+  },
+  "corsApproval": {
+    "service": ["app", "do", "panel", "worker"],
+    "methods": {
+      "authorize": null
+    }
+  },
+  "credentials": {
+    "service": ["app", "do", "extension", "panel", "server", "shell", "worker"],
+    "methods": {
+      "audit": null,
+      "configureClient": null,
+      "connect": null,
+      "deleteClientConfig": null,
+      "forwardOAuthCallback": null,
+      "getClientConfigStatus": null,
+      "grantCredential": null,
+      "listStoredCredentials": null,
+      "proxyFetch": null,
+      "proxyGitHttp": null,
+      "requestCredentialInput": null,
+      "resolveCredential": null,
+      "revokeCredential": null,
+      "storeCredential": null
+    }
+  },
+  "eval": {
+    "service": ["app", "do", "extension", "panel", "server", "shell", "worker"],
+    "methods": {
+      "cancel": null,
+      "forceReset": null,
+      "getRun": null,
+      "reset": null,
+      "run": null,
+      "startRun": null
+    }
+  },
+  "externalOpen": {
+    "service": ["app", "do", "extension", "panel", "server", "shell", "worker"],
+    "methods": {
+      "openExternal": null
+    }
+  },
+  "fs": {
+    "service": ["app", "do", "extension", "panel", "server", "shell", "worker"],
+    "methods": {
+      "access": null,
+      "appendFile": null,
+      "chmod": null,
+      "copyFile": null,
+      "exists": null,
+      "glob": null,
+      "grep": null,
+      "handleClose": null,
+      "handleRead": null,
+      "handleStat": null,
+      "handleWrite": null,
+      "lstat": null,
+      "mkdir": null,
+      "mktemp": null,
+      "open": null,
+      "readdir": null,
+      "readFile": null,
+      "readlink": null,
+      "realpath": null,
+      "rename": null,
+      "rm": null,
+      "rmdir": null,
+      "stat": null,
+      "truncate": null,
+      "unlink": null,
+      "utimes": null,
+      "writeFile": null
+    }
+  },
+  "gitInterop": {
+    "service": ["app", "do", "extension", "panel", "server", "shell", "worker"],
+    "methods": {
+      "completeWorkspaceDependencies": null,
+      "importProject": null,
+      "removeSharedRemote": null,
+      "setSharedRemote": null
+    }
+  },
+  "meta": {
+    "service": ["app", "do", "extension", "panel", "server", "shell", "worker"],
+    "methods": {
+      "describeService": null,
+      "getRuntimeSurface": null,
+      "listServices": null
+    }
+  },
+  "notification": {
+    "service": ["app", "do", "extension", "panel", "server", "shell", "worker"],
+    "methods": {
+      "dismiss": null,
+      "reportAction": null,
+      "show": null
+    }
+  },
+  "panelCdp": {
+    "service": ["app", "do", "panel", "server", "shell", "worker"],
+    "methods": {
+      "consoleHistory": null,
+      "getCdpEndpoint": null,
+      "goBack": null,
+      "goForward": null,
+      "navigate": null,
+      "reload": null,
+      "stop": null
+    }
+  },
+  "panelLog": {
+    "service": ["server", "shell"],
+    "methods": {
+      "append": null
+    }
+  },
+  "panelRuntime": {
+    "service": ["app", "server", "shell"],
+    "methods": {
+      "acquire": null,
+      "getSnapshot": null,
+      "registerClient": null,
+      "release": null,
+      "takeOver": null,
+      "unregisterClient": null
+    }
+  },
+  "panelTree": {
+    "service": ["app", "do", "panel", "server", "shell", "worker"],
+    "methods": {
+      "archive": null,
+      "callAgent": null,
+      "close": null,
+      "create": null,
+      "ensureLoaded": null,
+      "expandIds": null,
+      "focus": null,
+      "getCollapsedIds": null,
+      "getFocusedPanelId": null,
+      "getRuntimeLease": null,
+      "getStateArgs": null,
+      "getTreeSnapshot": null,
+      "list": null,
+      "metadata": null,
+      "movePanel": null,
+      "navigate": null,
+      "navigateHistory": null,
+      "openDevTools": null,
+      "rebuildAndReload": null,
+      "rebuildPanel": null,
+      "reload": null,
+      "roots": null,
+      "setCollapsed": null,
+      "setStateArgs": null,
+      "snapshot": null,
+      "takeOver": null,
+      "unload": null,
+      "updatePanelState": null
+    }
+  },
+  "presence": {
+    "service": ["server", "shell"],
+    "methods": {
+      "getPanelActiveOwner": null,
+      "markPanelActive": null,
+      "markPanelsOwned": null
+    }
+  },
+  "push": {
+    "service": ["app", "server", "shell"],
+    "methods": {
+      "listRegistrations": ["server"],
+      "register": null,
+      "send": ["server"],
+      "unregister": null
+    }
+  },
+  "runtime": {
+    "service": ["app", "do", "panel", "server", "shell", "worker"],
+    "methods": {
+      "createEntity": null,
+      "listEntities": null,
+      "resolveContext": null,
+      "retireEntity": null,
+      "setTitle": ["app", "do", "panel", "worker"]
+    }
+  },
+  "shellApproval": {
+    "service": ["app", "server", "shell"],
+    "methods": {
+      "listPending": null,
+      "resolve": null,
+      "resolveBootstrap": null,
+      "resolveUserland": null,
+      "submitClientConfig": null,
+      "submitCredentialInput": null
+    }
+  },
+  "shellPresence": {
+    "service": ["app", "server", "shell"],
+    "methods": {
+      "heartbeat": null
+    }
+  },
+  "tokens": {
+    "service": ["server", "shell"],
+    "methods": {
+      "create": null,
+      "ensure": null,
+      "get": null,
+      "revoke": null,
+      "rotateAdmin": null
+    }
+  },
+  "userlandApproval": {
+    "service": ["app", "do", "extension", "panel", "worker"],
+    "methods": {
+      "list": null,
+      "request": null,
+      "revoke": null
+    }
+  },
+  "vcs": {
+    "service": ["app", "do", "extension", "panel", "server", "shell", "worker"],
+    "methods": {
+      "abortMerge": null,
+      "applyEdits": null,
+      "diff": null,
+      "listFiles": null,
+      "log": null,
+      "merge": null,
+      "pendingMerge": null,
+      "publish": null,
+      "publishStatus": null,
+      "readFile": null,
+      "recall": null,
+      "resolveHead": null,
+      "revert": null,
+      "status": null,
+      "unitStatus": null
+    }
+  },
+  "webhookIngress": {
+    "service": ["app", "do", "extension", "panel", "server", "shell", "worker"],
+    "methods": {
+      "createSubscription": null,
+      "listSubscriptions": null,
+      "revokeSubscription": null,
+      "rotateSecret": null
+    }
+  },
+  "workerd": {
+    "service": ["app", "do", "extension", "panel", "server", "worker"],
+    "methods": {
+      "cloneDO": null,
+      "createInstance": null,
+      "destroyDO": null,
+      "destroyInstance": null,
+      "getInstanceStatus": null,
+      "getPort": null,
+      "listInstances": null,
+      "listInstanceSources": null,
+      "restartAll": null,
+      "updateInstance": null
+    }
+  },
+  "workerdInspector": {
+    "service": ["app", "do", "panel", "server", "shell", "worker"],
+    "methods": {
+      "getEndpoint": null,
+      "listTargets": null
+    }
+  },
+  "workerLog": {
+    "service": ["app", "do", "extension", "panel", "server", "shell", "worker"],
+    "methods": {
+      "write": null
+    }
+  },
+  "workers": {
+    "service": ["app", "do", "extension", "panel", "server", "shell", "worker"],
+    "methods": {
+      "listServices": null,
+      "listSources": null,
+      "resolveDurableObject": null,
+      "resolveService": null
+    }
+  },
+  "workspace": {
+    "service": ["app", "do", "extension", "panel", "server", "shell", "worker"],
+    "methods": {
+      "create": ["app", "do", "panel", "server", "shell", "worker"],
+      "delete": ["app", "do", "panel", "server", "shell", "worker"],
+      "findUnitForPath": null,
+      "getActive": null,
+      "getActiveEntry": null,
+      "getAgentsMd": null,
+      "getConfig": null,
+      "getInfo": null,
+      "heartbeats.list": ["app", "do", "panel", "server", "shell", "worker"],
+      "heartbeats.pause": ["app", "do", "panel", "server", "shell", "worker"],
+      "heartbeats.resume": ["app", "do", "panel", "server", "shell", "worker"],
+      "heartbeats.runNow": ["app", "do", "panel", "server", "shell", "worker"],
+      "hostTargets.beginLaunch": ["app", "server", "shell"],
+      "hostTargets.cancelLaunchSession": ["app", "server", "shell"],
+      "hostTargets.clearSelection": ["server", "shell"],
+      "hostTargets.getLaunchSession": ["app", "server", "shell"],
+      "hostTargets.getSelection": ["server", "shell"],
+      "hostTargets.launch": ["app", "server", "shell"],
+      "hostTargets.list": ["server", "shell"],
+      "hostTargets.preparePinnedRef": ["server", "shell"],
+      "hostTargets.resolveLaunchSessionApproval": ["app", "server", "shell"],
+      "hostTargets.setSelection": ["server", "shell"],
+      "hostTargets.versions": ["server", "shell"],
+      "list": null,
+      "listSkills": null,
+      "readSkill": null,
+      "recurring.list": ["app", "do", "panel", "server", "shell", "worker"],
+      "select": ["app", "do", "panel", "server", "shell", "worker"],
+      "setConfigField": ["app", "do", "panel", "server", "shell", "worker"],
+      "setInitPanels": ["app", "do", "panel", "server", "shell", "worker"],
+      "sourceTree": null,
+      "units.bakeAppDist": ["server", "shell"],
+      "units.diagnostics": null,
+      "units.inspector": null,
+      "units.list": null,
+      "units.logs": null,
+      "units.restart": null,
+      "units.rollback": null,
+      "units.versions": null
+    }
+  },
+  "workspace-state": {
+    "service": ["app", "do", "panel", "server", "shell", "worker"],
+    "methods": {
+      "alarmClear": ["do", "server"],
+      "alarmSet": ["do", "server"],
+      "entity.resolveActive": ["app", "do", "panel", "server", "shell", "worker"],
+      "heartbeatRegister": ["do", "server"],
+      "heartbeatRemove": ["do", "server"],
+      "lifecycleLeaseClear": ["do", "server"],
+      "lifecycleLeaseUpsert": ["do", "server"],
+      "panel.incrementAccess": ["app", "server", "shell"],
+      "panel.index": ["app", "server", "shell"],
+      "panel.rebuildIndex": ["app", "server", "shell"],
+      "panel.search": ["app", "do", "panel", "server", "shell", "worker"],
+      "panel.updateTitle": ["app", "server", "shell"],
+      "slot.appendHistory": ["app", "server", "shell"],
+      "slot.close": ["app", "server", "shell"],
+      "slot.create": ["app", "server", "shell"],
+      "slot.get": ["app", "do", "panel", "server", "shell", "worker"],
+      "slot.history": ["app", "do", "panel", "server", "shell", "worker"],
+      "slot.list": ["app", "do", "panel", "server", "shell", "worker"],
+      "slot.move": ["app", "server", "shell"],
+      "slot.replaceHistory": ["app", "server", "shell"],
+      "slot.resolveByEntity": ["app", "do", "panel", "server", "shell", "worker"],
+      "slot.setCurrent": ["app", "server", "shell"],
+      "slot.setParent": ["app", "server", "shell"],
+      "slot.setPosition": ["app", "server", "shell"],
+      "slot.updateCurrentStateArgs": ["app", "server", "shell"]
+    }
+  }
+}

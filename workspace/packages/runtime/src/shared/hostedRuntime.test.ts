@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { RpcClient } from "@natstack/rpc";
-import { createHostedRuntime, type RuntimeHost, type WorkspaceRuntime } from "./hostedRuntime.js";
+import {
+  createHostedRuntime,
+  createServicesProxy,
+  type RuntimeHost,
+  type WorkspaceRuntime,
+} from "./hostedRuntime.js";
+import { createWorkerdClient } from "./workerd.js";
+import { portableExports, PORTABLE_KEYS } from "@natstack/shared/runtimeSurface.portable";
 
 /**
  * Identity/wiring assertions for the ONE shared runtime assembly: prove the
@@ -71,7 +78,9 @@ function recordingHost() {
       getPanelHandle: () => ({}) as never,
       panelTree: {} as never,
     },
-    workers: {} as never,
+    // A REAL workers client so its bound namespace members are the actual ones
+    // (the parity test below diffs them against the declared WORKERS_MEMBERS).
+    workers: createWorkerdClient(rpc),
     openExternal: async () => ({}) as never,
     resolveParent: () => null,
   };
@@ -149,5 +158,114 @@ describe("createHostedRuntime", () => {
       method: "events.unsubscribe",
       args: ["vcs:head:main"],
     });
+  });
+});
+
+/**
+ * (a) Cross-target binding parity + declared-vs-bound surface drift.
+ *
+ * The runtime binding key-set is identical across panel/worker/eval BECAUSE all
+ * three call this ONE `createHostedRuntime` — so asserting its `Object.keys`
+ * equals the declared portable surface (`runtimeSurface.portable.ts`) proves
+ * parity for every target at once, AND fails if the manifest and the real bound
+ * surface drift in EITHER direction (a key declared-but-not-bound, or
+ * bound-but-not-declared).
+ */
+describe("createHostedRuntime ⟷ portable surface parity", () => {
+  it("top-level bound keys are EXACTLY the declared portable surface (drift fails either way)", () => {
+    const { host } = recordingHost();
+    const bound = new Set(Object.keys(createHostedRuntime(host)));
+    const declared = new Set(PORTABLE_KEYS);
+    // Symmetric: a key added to the runtime but not the manifest (or vice versa) fails.
+    expect(bound).toEqual(declared);
+  });
+
+  it("every declared namespace member is actually bound on its live client (no advertised-but-absent member)", () => {
+    const { host } = recordingHost();
+    const rt = createHostedRuntime(host) as unknown as Record<string, unknown>;
+    // The few namespaces whose live client is host-supplied as a stub here
+    // (panelTree comes from host.panelRuntime) can't be reflected from this
+    // assembly — skip those; `workers` is a REAL client (see recordingHost).
+    const hostPortNamespaces = new Set(["panelTree"]);
+    for (const [name, entry] of Object.entries(portableExports)) {
+      if (entry.kind !== "namespace" || hostPortNamespaces.has(name)) continue;
+      const live = rt[name];
+      expect(live, `${name} should be a bound object`).toBeTypeOf("object");
+      const liveKeys = new Set(Object.keys(live as object));
+      for (const member of entry.members ?? []) {
+        // A declared member MUST exist on the real client — otherwise `help()`
+        // and the manifest advertise a method that isn't there (the member-level
+        // analogue of the old `services.blobstore === undefined` gap).
+        expect(
+          liveKeys.has(member),
+          `${name}.${member} is declared in runtimeSurface.portable.ts but not bound on the live client`
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("the fully-curated namespaces match their declared members EXACTLY (no silent client drift)", () => {
+    const { host } = recordingHost();
+    const rt = createHostedRuntime(host) as unknown as Record<string, unknown>;
+    // These clients are 1:1 with their manifest (unlike vcs/gad/workspace, which
+    // curate a documentation subset of a larger live surface). Exact equality here
+    // catches a member added to/removed from the client without a manifest update.
+    const exactNamespaces = [
+      "workers",
+      "credentials",
+      "git",
+      "blobstore",
+      "webhooks",
+      "extensions",
+      "approvals",
+      "notifications",
+    ];
+    for (const name of exactNamespaces) {
+      const declared = new Set(portableExports[name]?.members ?? []);
+      const live = new Set(Object.keys(rt[name] as object));
+      expect(live, `${name} live members ⟷ declared`).toEqual(declared);
+    }
+  });
+});
+
+/**
+ * createServicesProxy — the COMPLETE `services.<name>` namespace (Fix 1): every
+ * registered service reachable by name, rich clients overriding by identity, all
+ * others a dynamic callMain proxy. No hand-curated list ⇒ no advertised-but-
+ * unreachable gap.
+ */
+describe("createServicesProxy", () => {
+  it("returns the SAME rich client object for a name present on the runtime (ergonomic override)", () => {
+    const { host } = recordingHost();
+    const rt = createHostedRuntime(host);
+    const services = createServicesProxy(rt);
+    // services.vcs === the bare vcs (and `import { vcs }`): one shared client, no copy.
+    expect(services["vcs"]).toBe(rt.vcs);
+    expect(services["blobstore"]).toBe(rt.blobstore);
+    expect(services["fs"]).toBe(rt.fs);
+    expect(services["workers"]).toBe(rt.workers);
+  });
+
+  it("dynamically reaches ANY other service via callMain (no curated list, no gap)", async () => {
+    const { host, calls } = recordingHost();
+    const rt = createHostedRuntime(host);
+    const services = createServicesProxy(rt) as Record<
+      string,
+      Record<string, (...a: unknown[]) => Promise<unknown>>
+    >;
+    // `audit` is a real server service with NO rich runtime client — it must STILL
+    // be reachable by name, dispatching through callMain → rpc.call("main", …).
+    await services["audit"]!["query"]!({ limit: 5 });
+    expect(calls).toContainEqual({
+      target: "main",
+      method: "audit.query",
+      args: [{ limit: 5 }],
+    });
+  });
+
+  it("caches fallback clients so repeated access is stable (===)", () => {
+    const { host } = recordingHost();
+    const services = createServicesProxy(createHostedRuntime(host)) as Record<string, unknown>;
+    expect(services["someUnknownService"]).toBe(services["someUnknownService"]);
   });
 });

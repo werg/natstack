@@ -14,7 +14,7 @@ import {
   type EntityRecord,
   type RuntimeEntityCreateSpec,
 } from "@natstack/shared/runtime/entitySpec";
-import { createVerifiedCaller } from "@natstack/shared/serviceDispatcher";
+import { createVerifiedCaller, ServiceDispatcher } from "@natstack/shared/serviceDispatcher";
 import type { DODispatch, DORef } from "../doDispatch.js";
 import { WorkspaceDO } from "../internalDOs/workspaceDO.js";
 import { WorkspaceDOTestable } from "../internalDOs/workspaceDO.testFixture.js";
@@ -546,6 +546,48 @@ describe("runtimeService.setTitle", () => {
 
     expect(setEntityTitle).toHaveBeenCalledWith("app:apps/shell:desktop", "Workspace Shell", {
       explicit: true,
+    });
+  });
+
+  // Fix 2: setTitle's caller-kind access is declared ONCE in the per-method policy
+  // (runtimeMethods.setTitle: panel/app/worker/do) and enforced by the dispatcher's
+  // single gate — the handler no longer re-rejects. These tests prove declared ==
+  // enforced through the real dispatch path (not the handler-direct shortcut above).
+  it("the dispatcher (single gate) rejects shell/server setTitle via the declared per-method policy", async () => {
+    const setEntityTitle = vi.fn();
+    const { service } = await buildDeps({ setEntityTitle });
+    const dispatcher = new ServiceDispatcher();
+    dispatcher.registerService(service);
+    dispatcher.markInitialized();
+
+    for (const kind of ["shell", "server"] as const) {
+      await expect(
+        dispatcher.dispatch(
+          { caller: createVerifiedCaller(`${kind}:x`, kind) },
+          "runtime",
+          "setTitle",
+          ["T"]
+        )
+      ).rejects.toThrow(/not accessible to/i);
+    }
+    expect(setEntityTitle).not.toHaveBeenCalled();
+  });
+
+  it("the dispatcher admits worker/do setTitle (per-method policy, single gate)", async () => {
+    const setEntityTitle = vi.fn();
+    const { service } = await buildDeps({ setEntityTitle });
+    const dispatcher = new ServiceDispatcher();
+    dispatcher.registerService(service);
+    dispatcher.markInitialized();
+
+    await dispatcher.dispatch(
+      { caller: createVerifiedCaller("do:workers/agent:Agent:k", "do") },
+      "runtime",
+      "setTitle",
+      ["Agent Title"]
+    );
+    expect(setEntityTitle).toHaveBeenCalledWith("do:workers/agent:Agent:k", "Agent Title", {
+      explicit: false,
     });
   });
 });
