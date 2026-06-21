@@ -113,6 +113,19 @@ function parseFrontmatter(content: string): Record<string, string> {
   return result;
 }
 
+function isWorkspaceEntry(value: unknown): value is { name: string; lastOpened: number } {
+  return (
+    Boolean(value) &&
+    typeof value === "object" &&
+    typeof (value as { name?: unknown }).name === "string" &&
+    typeof (value as { lastOpened?: unknown }).lastOpened === "number"
+  );
+}
+
+function fallbackWorkspaceEntry(name: string): { name: string; lastOpened: number } {
+  return { name, lastOpened: 0 };
+}
+
 export interface CentralDataLike {
   listWorkspaces(): unknown[];
   hasWorkspace(name: string): boolean;
@@ -474,9 +487,22 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
         case "getActive":
           return deps.getConfig().id;
 
-        case "getActiveEntry":
-          if (!deps.centralData) return null;
-          return deps.centralData.getWorkspaceEntry(deps.getConfig().id);
+        case "getActiveEntry": {
+          const active = deps.getConfig().id;
+          const catalogEntry = deps.centralData?.getWorkspaceEntry(active);
+          if (isWorkspaceEntry(catalogEntry)) return catalogEntry;
+
+          const entries = deps.centralData
+            ? deps.centralData.listWorkspaces()
+            : deps.requestWorkspaceList
+              ? await deps.requestWorkspaceList()
+              : [];
+          const listedEntry = entries.find(
+            (entry): entry is { name: string; lastOpened: number } =>
+              isWorkspaceEntry(entry) && entry.name === active
+          );
+          return listedEntry ?? fallbackWorkspaceEntry(active);
+        }
 
         case "getConfig":
           return deps.getConfig();

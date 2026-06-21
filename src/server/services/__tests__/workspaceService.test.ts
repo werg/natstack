@@ -271,6 +271,42 @@ describe("workspace service handler", () => {
     expect(result).toEqual({ name: "test-ws", lastOpened: 1000 });
   });
 
+  it("getActiveEntry uses the proxied workspace list when the local catalog is unavailable", async () => {
+    const service = createWorkspaceService({
+      workspace: makeWorkspace(),
+      getConfig: () => makeConfig(),
+      setConfigField: vi.fn(),
+      centralData: null,
+      createWorkspace: vi.fn(),
+      deleteWorkspaceDir: vi.fn(),
+      requestWorkspaceList: vi.fn(async () => [
+        { name: "test-ws", lastOpened: 1234 },
+        { name: "other", lastOpened: 500 },
+      ]),
+      approvalQueue: { requestUserland: vi.fn(async () => grantedApproval()) },
+    });
+
+    const result = await service.handler(panelCtx, "getActiveEntry", []);
+
+    expect(result).toEqual({ name: "test-ws", lastOpened: 1234 });
+  });
+
+  it("getActiveEntry returns a minimal active entry instead of null when no catalog entry exists", async () => {
+    const service = createWorkspaceService({
+      workspace: makeWorkspace(),
+      getConfig: () => makeConfig(),
+      setConfigField: vi.fn(),
+      centralData: null,
+      createWorkspace: vi.fn(),
+      deleteWorkspaceDir: vi.fn(),
+      approvalQueue: { requestUserland: vi.fn(async () => grantedApproval()) },
+    });
+
+    const result = await service.handler(panelCtx, "getActiveEntry", []);
+
+    expect(result).toEqual({ name: "test-ws", lastOpened: 0 });
+  });
+
   it("getConfig returns the workspace config", async () => {
     const service = makeService();
     const result = await service.handler(panelCtx, "getConfig", []);

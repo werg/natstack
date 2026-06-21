@@ -70,4 +70,29 @@ describe("notification client", () => {
 
     expect(onClick).toHaveBeenCalledTimes(1);
   });
+
+  it("defaults to an info notification and accepts body as a message alias", async () => {
+    const rpc = {
+      call: vi.fn(async (_target: string, method: string, args: unknown[]) => {
+        if (method === "notification.show") return "n1";
+        return undefined;
+      }),
+      stream: vi.fn(),
+      on: vi.fn(),
+    };
+    const client = createNotificationClient(rpc as unknown as RpcCaller);
+
+    await client.show({
+      title: "Hello",
+      body: "Shown from a browser-style body field",
+    });
+
+    expect(rpc.call).toHaveBeenCalledWith("main", "notification.show", [
+      expect.objectContaining({
+        type: "info",
+        title: "Hello",
+        message: "Shown from a browser-style body field",
+      }),
+    ]);
+  });
 });
