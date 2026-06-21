@@ -913,7 +913,15 @@ export class CdpBridge {
 
     for (const [requestId, pending] of this.pendingCommands) {
       const registration = this.targetRegistry.get(pending.targetId);
-      if (registration?.hostConnectionId !== hostConnectionId) continue;
+      // Reject this command when the dying host served its target OR the
+      // target's registration is GONE (target dead — no host will ever answer,
+      // and the client's own socket is still open so only the bridge can fail
+      // it). Skip ONLY when the registration still exists and belongs to a
+      // different, live host. Previously `registration?.hostConnectionId !==
+      // hostConnectionId` skipped orphaned commands (registration undefined),
+      // leaving the client's CdpConnection.send() promise to hang forever now
+      // that the per-command timeout is gone.
+      if (registration && registration.hostConnectionId !== hostConnectionId) continue;
       this.sendErrorToClient(pending.ws, pending.clientId, reason, pending.sessionId);
       this.pendingCommands.delete(requestId);
     }

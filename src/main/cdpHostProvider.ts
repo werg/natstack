@@ -543,6 +543,39 @@ export class CdpHostProvider {
     const { targetId, requestId, method } = message;
     if (!targetId || !requestId || !method) return;
     try {
+      // `Page.captureScreenshot` over raw CDP blocks FOREVER on a webContents
+      // whose surface isn't being composited (alive — Runtime.evaluate still
+      // returns — but unslotted/hidden, so the compositor never produces a
+      // frame and Chromium has no timeout). That one hung command parks the
+      // eval's runChain and wedges the whole EvalDO. Route it through Electron's
+      // capturePage (ViewManager.captureView), which force-paints the view
+      // (shows it at bounds + waits for a frame) and reads back a frame even for
+      // an unslotted hidden panel, or declines cleanly (null) only when the view
+      // is missing/destroyed — so this can only ever resolve or fail, never
+      // hang. No timeout.
+      if (method === "Page.captureScreenshot") {
+        const image = await this.options.getViewManager()?.captureView(targetId);
+        if (image) {
+          const format = (message.params?.["format"] ?? message.params?.["type"]) as
+            | string
+            | undefined;
+          const quality = message.params?.["quality"];
+          const data =
+            format === "jpeg"
+              ? image.toJPEG(typeof quality === "number" ? quality : 80).toString("base64")
+              : image.toPNG().toString("base64");
+          this.send({ type: "cdp:result", targetId, requestId, result: { data } });
+        } else {
+          this.send({
+            type: "cdp:error",
+            targetId,
+            requestId,
+            error:
+              "captureScreenshot unavailable: panel view is not capturable (missing or destroyed)",
+          });
+        }
+        return;
+      }
       const contents = this.requireTargetContents(targetId);
       await this.ensureDebuggerAttached(targetId, contents);
       this.activeCdpTargets.add(targetId);

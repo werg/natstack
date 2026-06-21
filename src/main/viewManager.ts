@@ -1616,16 +1616,20 @@ export class ViewManager {
     if (!managed) {
       return null;
     }
-    if (managed.type === "panel" && !managed.visible && !this.isPanelSlotted(id)) {
-      console.warn(`[ViewManager] Refusing to capture unslotted hidden panel: ${id}`);
-      return null;
-    }
 
     const contents = managed.view.webContents;
     if (contents.isDestroyed()) {
       return null;
     }
 
+    // An unslotted hidden panel (e.g. a programmatically-opened panel on the
+    // headless host that was never slotted into the UI) has no composited
+    // surface, so a raw capturePage would read back nothing. Force-paint it via
+    // withViewVisible — it shows the view at bounds, waits for two animation
+    // frames (waitForRender), captures, then restores visibility. This is the
+    // headless host's screenshot path (cdpHostProvider routes
+    // Page.captureScreenshot here), so it MUST render unslotted panels instead
+    // of declining. The isDestroyed bail above keeps it correct.
     const image = await this.withViewVisible(id, async () => {
       return contents.capturePage();
     });

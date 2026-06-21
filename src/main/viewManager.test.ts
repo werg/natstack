@@ -1373,4 +1373,53 @@ describe("ViewManager", () => {
       expect(view.setVisible).not.toHaveBeenCalled();
     });
   });
+
+  describe("captureView", () => {
+    let vm: ViewManager;
+
+    beforeEach(() => {
+      vm = new ViewManager({
+        window: mockWindow,
+        shellPreload: "/path/to/preload.js",
+        shellHtmlPath: "/path/to/index.html",
+      });
+    });
+
+    it("force-paints and captures an unslotted hidden panel", async () => {
+      // Programmatically-opened panels on the headless host are hidden and never
+      // slotted into a UI. captureView must force-paint them via withViewVisible
+      // (show at bounds + waitForRender), not refuse — otherwise the headless
+      // screenshot path returns nothing.
+      const view = vm.createView({ id: "headless-panel", type: "panel" });
+      expect(vm.isViewVisible("headless-panel")).toBe(false);
+      expect(vm.isPanelSlotted("headless-panel")).toBe(false);
+
+      const captured = { isEmpty: () => false, getSize: () => ({ width: 100, height: 100 }) };
+      (view.webContents.capturePage as Mock).mockResolvedValue(captured);
+
+      const image = await vm.captureView("headless-panel");
+
+      expect(image).toBe(captured);
+      // Force-painted: shown for the capture, then restored to hidden.
+      expect(view.setVisible).toHaveBeenCalledWith(true);
+      expect(view.setVisible).toHaveBeenLastCalledWith(false);
+      expect(view.webContents.capturePage).toHaveBeenCalledTimes(1);
+      expect(vm.isViewVisible("headless-panel")).toBe(false);
+    });
+
+    it("returns null for a destroyed panel view without capturing", async () => {
+      const view = vm.createView({ id: "dead-panel", type: "panel" });
+      (view.webContents.isDestroyed as Mock).mockReturnValue(true);
+
+      const image = await vm.captureView("dead-panel");
+
+      expect(image).toBeNull();
+      expect(view.webContents.capturePage).not.toHaveBeenCalled();
+    });
+
+    it("returns null for a missing view", async () => {
+      const image = await vm.captureView("nonexistent");
+      expect(image).toBeNull();
+    });
+  });
 });
