@@ -27,6 +27,15 @@ import type { ChannelCallEventBuilders } from "@workspace/channel-policies";
 import { participantIsAgentVessel, type StoredAttachment } from "./types.js";
 import type { ChannelLog } from "./log-store.js";
 
+/** A promise plus its resolver, used as a start-journaling barrier. */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 export interface PendingCallRow {
   transportCallId: string;
   invocationId: string;
@@ -129,6 +138,31 @@ export interface CallTransportDeps {
 
 export class CallTransport {
   constructor(private readonly deps: CallTransportDeps) {}
+
+  /**
+   * In-flight `callMethod` start-journaling, keyed by transportCallId. The
+   * durable `started` append is a cross-DO RPC to GAD; until it RESOLVES the
+   * row exists in neither the SQLite cache (insertRow runs after) nor the
+   * durable log a concurrent `submitMethodResult` can reconcile from (GAD's
+   * txn hasn't committed). A result racing INTO that window — the target
+   * already holds the call from a prior delivery / redrive and replies while a
+   * re-issued `callMethod` is still appending — would see "no pending row, no
+   * durable started" and fall through to the lost-call recovery, appending a
+   * SYNTHETIC started + terminal instead of settling against the real one.
+   *
+   * The settle/submit paths await this barrier before concluding the call is
+   * missing, so the canonical started is always visible first. Mirrors
+   * `publishDedupInFlight` in channel-do.ts. Cleared in a `finally`, so an
+   * append failure never wedges later submits.
+   */
+  private readonly startInFlight = new Map<string, Promise<void>>();
+
+  /** Await (and forget) any in-flight start for this call so a concurrent
+   *  settle/submit observes the canonical started after it commits. */
+  private async awaitInFlightStart(transportCallId: string): Promise<void> {
+    const inFlight = this.startInFlight.get(transportCallId);
+    if (inFlight) await inFlight.catch(() => {});
+  }
 
   // ── pending_calls cache rows ──────────────────────────────────────────────
 
@@ -249,6 +283,47 @@ export class CallTransport {
     opts?: { invocationId?: string; transportCallId?: string; turnId?: string; timeoutMs?: number }
   ): Promise<void> {
     const transportCallId = opts?.transportCallId ?? callId;
+
+    // Publish the in-flight barrier BEFORE the first await so any concurrent
+    // submitMethodResult for this call observes it and waits for the canonical
+    // started to commit (durable + cached) instead of treating the call as a
+    // lost record and synthesizing a recovery started/terminal. A redrive that
+    // races the target's reply is the realistic trigger. Cleared in `finally`
+    // — an append failure resolves the barrier so later submits aren't wedged.
+    const startBarrier = deferred();
+    this.startInFlight.set(transportCallId, startBarrier.promise);
+    const dispatch = await (async () => {
+      try {
+        return await this.journalCallStart(
+          callerPid,
+          targetPid,
+          callId,
+          method,
+          args,
+          opts
+        );
+      } finally {
+        startBarrier.resolve();
+        if (this.startInFlight.get(transportCallId) === startBarrier.promise) {
+          this.startInFlight.delete(transportCallId);
+        }
+      }
+    })();
+    if (dispatch) await dispatch();
+  }
+
+  /** Journal the started + cache row + broadcast. Returns a dispatcher thunk to
+   *  run AFTER the in-flight barrier resolves (the cache row is visible by then,
+   *  so a settle triggered by dispatch never races the start). */
+  private async journalCallStart(
+    callerPid: string,
+    targetPid: string,
+    callId: string,
+    method: string,
+    args: unknown,
+    opts?: { invocationId?: string; transportCallId?: string; turnId?: string; timeoutMs?: number }
+  ): Promise<(() => Promise<void>) | null> {
+    const transportCallId = opts?.transportCallId ?? callId;
     const invocationId = opts?.invocationId ?? callId;
     const turnId = opts?.turnId;
     const deadlineAt =
@@ -270,7 +345,7 @@ export class CallTransport {
           `re-broadcasting durable terminal (seq ${existingTerminal.id})`
       );
       this.deps.broadcastLive(existingTerminal, existingTerminal.senderId ?? callerPid);
-      return;
+      return null;
     }
 
     // 1. APPEND the durable started intention (deterministic envelopeId =
@@ -315,7 +390,7 @@ export class CallTransport {
     if (terminalAfterStart) {
       this.deleteRow(pendingRow.transportCallId);
       this.deps.broadcastLive(terminalAfterStart, terminalAfterStart.senderId ?? callerPid);
-      return;
+      return null;
     }
 
     // 2. cache row, 3. alarm, 4. broadcast
@@ -324,6 +399,10 @@ export class CallTransport {
     this.deps.scheduleNextAlarm();
     this.deps.broadcastLive(callEvent, callerPid);
 
+    return () => this.dispatchCallStart(pendingRow, callerPid);
+  }
+
+  private async dispatchCallStart(pendingRow: PendingCallRow, callerPid: string): Promise<void> {
     // 5. dispatch
     const transport = this.deps.participantTransport(pendingRow.targetId);
     if (transport === null) {
@@ -405,6 +484,11 @@ export class CallTransport {
       senderId?: string;
     }
   ): Promise<number | undefined> {
+    // 0. If a callMethod start for this call is still journaling, wait for it
+    // to commit so the canonical started/row is visible — never settle against
+    // a half-written start.
+    await this.awaitInFlightStart(transportCallId);
+
     // 1. READ, do not delete. pending_calls is a declared cache, so a submit
     // racing with replay/resubscribe may arrive after the durable start is
     // visible but before the row exists locally. Reconcile from the log before
@@ -597,6 +681,13 @@ export class CallTransport {
     transportCallId: string,
     operation: "submitMethodResult" | "submitMethodProgress"
   ): Promise<SubmitterCallResolution> {
+    // Wait out any concurrent callMethod start-journaling for this call: the
+    // result must not be classified `missing` (→ lost-call recovery) while the
+    // canonical started is still being appended. After the barrier the started
+    // is durable and the row is cached, so the normal pending/terminal paths
+    // resolve it.
+    await this.awaitInFlightStart(transportCallId);
+
     let pending = this.peek(transportCallId);
     if (!pending) {
       const existingTerminal = await this.deps.log.getEventByEnvelopeId(
@@ -657,6 +748,9 @@ export class CallTransport {
   // ── cancel / timeout / abandon ────────────────────────────────────────────
 
   async cancelMethodCall(callId: string, reason = "cancelled"): Promise<PendingCallRow | null> {
+    // Settle against the committed start, never a half-written one (a cancel
+    // racing a redrive's start would otherwise no-op or recover spuriously).
+    await this.awaitInFlightStart(callId);
     let pending = this.peek(callId);
     if (!pending) {
       // Cache-cold: the row may live in the durable log but not yet in the

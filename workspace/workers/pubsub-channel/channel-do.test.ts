@@ -1134,6 +1134,122 @@ describe("PubSubChannel", () => {
     });
   });
 
+  it("settles via the NORMAL path when a result races an in-flight started append (no recovery)", async () => {
+    // Root-cause durability case: callMethod journals the `started` to GAD
+    // (a cross-DO RPC) BEFORE inserting the cache row. If a submitMethodResult
+    // for the same transportCallId arrives WHILE that append is in flight, the
+    // call exists in neither the cache (insertRow hasn't run) nor a committed
+    // durable log a forced reconcile can re-derive it from. Without the
+    // start-journaling barrier the submit fell through to settleMissingCall —
+    // synthesizing a SECOND (synthetic) started + terminal instead of settling
+    // against the canonical one (the observed "recovered a lost call" log).
+    //
+    // With the barrier, submit waits for the canonical started to commit, then
+    // settles via the normal pending path: exactly one started, one terminal,
+    // and result.recovered is never set.
+    const blockStarted = deferred();
+    let blockedOnce = false;
+    const gad = await createTestDO(GadWorkspaceDO, { __objectKey: "workspace-gad" });
+    const { instance } = await createGadBackedChannel({
+      gad,
+      rpcCall: async (target, method, args) => {
+        if (
+          target === "do:workers/gad-store:GadWorkspaceDO:workspace-gad" &&
+          method === "appendLogEvent"
+        ) {
+          const event = (args[0] as { events?: Array<{ payloadKind?: string; payload?: unknown }> })
+            ?.events?.[0];
+          const payload = event?.payload as { kind?: string } | undefined;
+          if (
+            !blockedOnce &&
+            event?.payloadKind === AGENTIC_EVENT_PAYLOAD_KIND &&
+            payload?.kind === "invocation.started"
+          ) {
+            blockedOnce = true;
+            // Hold the started append open, then let the real append proceed
+            // (returning undefined falls through to the default gad handler).
+            await blockStarted.promise;
+          }
+        }
+        return undefined;
+      },
+    });
+
+    setRpcCaller(instance, "panel:caller", "panel");
+    await instance.subscribe("panel:caller", { contextId: "ctx-1", name: "Caller", type: "panel" });
+    setRpcCaller(instance, "panel:provider", "panel");
+    await instance.subscribe("panel:provider", {
+      contextId: "ctx-1",
+      name: "Provider",
+      type: "panel",
+    });
+
+    // Fire callMethod; it parks inside the blocked `started` append.
+    setRpcCaller(instance, "panel:caller", "panel");
+    const callPromise = instance.callMethod(
+      "panel:caller",
+      "panel:provider",
+      "transport-start-race",
+      "eval",
+      { code: "1 + 1" },
+      { invocationId: "invocation-start-race", transportCallId: "transport-start-race" }
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    // The result arrives while the start is mid-append. It must NOT recover —
+    // it parks on the in-flight barrier until the canonical started commits.
+    setRpcCaller(instance, "panel:provider", "panel");
+    const submitPromise = instance.submitMethodResult(
+      "panel:provider",
+      "transport-start-race",
+      99,
+      false,
+      { invocationId: "invocation-start-race" }
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    // Release the started append; both the call and the parked submit drain.
+    blockStarted.resolve();
+    const result = await submitPromise;
+    await callPromise;
+
+    // Settled via the NORMAL path — no lost-call recovery.
+    expect(result.id).toEqual(expect.any(Number));
+    expect(result.recovered).toBeUndefined();
+
+    // Exactly one canonical started (envelopeId = invocationId) and one
+    // terminal; no synthetic root was appended.
+    const started = gad.sql
+      .exec(`SELECT envelope_id FROM log_events WHERE envelope_id = ?`, "invocation-start-race")
+      .toArray();
+    expect(started).toHaveLength(1);
+    const startedEvents = gad.sql
+      .exec(
+        `SELECT payload_ref_json FROM log_events WHERE payload_kind = ? ORDER BY seq ASC`,
+        AGENTIC_EVENT_PAYLOAD_KIND
+      )
+      .toArray()
+      .map((row: Record<string, unknown>) => JSON.parse(row["payload_ref_json"] as string));
+    expect(startedEvents.filter((e) => e.kind === "invocation.started")).toHaveLength(1);
+    expect(startedEvents.filter((e) => e.kind === "invocation.completed")).toHaveLength(1);
+    const terminal = gad.sql
+      .exec(`SELECT envelope_id FROM log_events WHERE envelope_id = ?`, "terminal:transport-start-race")
+      .toArray();
+    expect(terminal).toHaveLength(1);
+
+    // The cache row is consumed.
+    expect(
+      (
+        instance as unknown as { sql: { exec: (...args: unknown[]) => { toArray(): unknown[] } } }
+      ).sql
+        .exec(
+          `SELECT transport_call_id FROM pending_calls WHERE transport_call_id = ?`,
+          "transport-start-race"
+        )
+        .toArray()
+    ).toHaveLength(0);
+  });
+
   it("appends a durable invocation.completed terminal (no method-result envelope)", async () => {
     const emitted: unknown[] = [];
     const { instance, gad } = await createGadBackedChannel({ emitted });
