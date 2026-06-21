@@ -71,7 +71,7 @@ export function useActionBar({ data, loadSourceFile, loadImport }: UseActionBarO
           : data.source.code;
         if (!sourceCode) throw new Error(`Unable to load action bar source for ${data.id}`);
         const sourcePath = data.source.type === "file" ? data.source.path : undefined;
-        const result = await compileComponent<import("react").ComponentType<{ props: Record<string, unknown>; chat: Record<string, unknown> }>>(sourceCode, {
+        const result = await compileComponent<NonNullable<InlineUiComponentEntry["Component"]>>(sourceCode, {
           imports: data.imports,
           sourcePath,
           loadSourceFile,

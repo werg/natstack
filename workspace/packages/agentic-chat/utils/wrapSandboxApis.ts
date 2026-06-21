@@ -11,6 +11,7 @@
 
 import { trackPromise } from "@workspace/tool-ui/utils/trackAsyncErrors";
 import type { ChatSandboxValue } from "@workspace/agentic-core";
+import type { ScopesApi } from "@workspace/eval";
 
 /**
  * Return a ChatSandboxValue where every async method is tracked.
@@ -45,5 +46,20 @@ export function wrapChatForErrorReporting(
       call: (...args: Parameters<ChatSandboxValue["rpc"]["call"]>) =>
         trackPromise(chat.rpc.call(...args), onError),
     },
+  };
+}
+
+export function wrapScopesForErrorReporting(
+  scopes: ScopesApi,
+  onError: (err: Error) => void,
+): ScopesApi {
+  return {
+    get currentId() {
+      return scopes.currentId;
+    },
+    push: () => trackPromise(scopes.push(), onError),
+    get: (...args: Parameters<ScopesApi["get"]>) => trackPromise(scopes.get(...args), onError),
+    list: () => trackPromise(scopes.list(), onError),
+    save: () => trackPromise(scopes.save(), onError),
   };
 }

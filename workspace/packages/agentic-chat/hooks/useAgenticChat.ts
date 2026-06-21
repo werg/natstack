@@ -11,14 +11,14 @@
  *
  * For minimal chat (no tools, no feedback, no debug), use useChatCore directly.
  */
-import { useCallback, useMemo, useRef, useEffect, useState } from "react";
+import { useCallback, useMemo, useReducer, useRef, useEffect, useState } from "react";
 import { z } from "zod";
 import { createTypedServiceClient } from "@natstack/shared/typedServiceClient";
 import { runtimeMethods } from "@natstack/shared/serviceSchemas/runtime";
 import { fsMethods } from "@natstack/shared/serviceSchemas/fs";
 import type { ChannelConfig, MethodDefinition, MethodExecutionContext } from "@workspace/pubsub";
-import { executeSandbox } from "@workspace/eval";
-import type { SandboxOptions, SandboxResult } from "@workspace/eval";
+import { executeSandbox, ScopeManager } from "@workspace/eval";
+import type { SandboxOptions, SandboxResult, ScopeBlobBackend } from "@workspace/eval";
 import type { ActiveFeedbackSchema, FeedbackResult } from "@workspace/tool-ui";
 import {
   AGENTIC_EVENT_PAYLOAD_KIND,
@@ -52,6 +52,10 @@ import { customInspectorPayload } from "../components/CustomMessage";
 import { unwrapChatMethodResult } from "@workspace/agentic-core";
 import type { ChatMethodResult, AgentSubscriptionConfig } from "@workspace/agentic-core";
 import type { MessageTier } from "@workspace/agentic-protocol";
+import {
+  LocalStorageScopePersistence,
+  panelLocalScopeChannelId,
+} from "../utils/localStorageScopePersistence";
 /** Installed agent info passed from the host panel. */
 interface InstalledAgentInfo {
   agentId: string;
@@ -241,6 +245,67 @@ export function useAgenticChat({
     initialPrompt,
     forceInitialPrompt,
   });
+  const scopeBlobBackend = useMemo<ScopeBlobBackend>(
+    () => ({
+      putText: (valueJson: string) =>
+        sandboxRef.current.rpc.call("main", "blobstore.putText", [valueJson]) as Promise<{
+          digest: string;
+          size: number;
+        }>,
+      getText: (digest: string) =>
+        sandboxRef.current.rpc.call("main", "blobstore.getText", [digest]) as Promise<string | null>,
+    }),
+    []
+  );
+  const scopeManager = useMemo(
+    () =>
+      new ScopeManager({
+        channelId: panelLocalScopeChannelId(channelName, config.clientId),
+        panelId: "panel-ui",
+        persistence: new LocalStorageScopePersistence(scopeBlobBackend),
+      }),
+    [channelName, config.clientId, scopeBlobBackend]
+  );
+  const [scopeVersion, bumpScopeVersion] = useReducer((value: number) => value + 1, 0);
+  useEffect(() => {
+    let cancelled = false;
+    const unsubscribe = scopeManager.onChange(bumpScopeVersion);
+    void scopeManager
+      .hydrate()
+      .then((result) => {
+        if (cancelled) return;
+        bumpScopeVersion();
+        if (result.lost.length > 0 || result.partial.length > 0) {
+          const parts: string[] = [];
+          if (result.partial.length) parts.push(`partial=[${result.partial.join(", ")}]`);
+          if (result.lost.length) parts.push(`lost=[${result.lost.join(", ")}]`);
+          console.warn(`[panel-ui-scope] Hydrated with degraded state: ${parts.join(" ")}`);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) console.warn("[panel-ui-scope] Failed to hydrate:", err);
+      });
+    const persistIfDirty = () => {
+      if (!scopeManager.isDirty) return;
+      void scopeManager.persist().catch((err) => {
+        console.warn("[panel-ui-scope] Failed to persist:", err);
+      });
+    };
+    const persistIfHidden = () => {
+      if (document.hidden) persistIfDirty();
+    };
+    window.addEventListener("beforeunload", persistIfDirty);
+    document.addEventListener("visibilitychange", persistIfHidden);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+      window.removeEventListener("beforeunload", persistIfDirty);
+      document.removeEventListener("visibilitychange", persistIfHidden);
+      scopeManager.dispose();
+    };
+  }, [scopeManager]);
+  const scope = useMemo(() => scopeManager.current, [scopeManager]);
+  const scopes = useMemo(() => scopeManager.api, [scopeManager]);
   const publishTypedAgenticEvent = useCallback(
     async (
       event: AgenticEvent,
@@ -861,7 +926,7 @@ export function useAgenticChat({
 - \`inline_ui\`: User-triggered side-effects + rich data presentation. Renders controls/visualizations. Users interact when they choose. Non-blocking.
 - \`feedback_form\`/\`feedback_custom\`: Blocks until user responds. Returns data to agent.
 
-**The component receives { props, chat }:**
+**The component receives { props, chat, scope, scopes }:**
 - props: data you pass via the props parameter
 - chat: full chat API for interacting with the conversation:
   - chat.send(content, options?) — send a visible message to the conversation.
@@ -870,6 +935,11 @@ export function useAgenticChat({
   - chat.rpc.call(target, method, ...args) — call runtime services directly.
     Example: chat.rpc.call("main", "fs.readFile", "/src/config.ts")
   - chat.contextId, chat.channelId — current identifiers
+- scope: panel-local durable UI state shared by inline_ui, feedback_custom, and the action bar in this panel instance. Serializable values persist in localStorage across panel reloads; functions, class instances, DOM objects, and other nonserializable values are live-only and are dropped on restore.
+- scopes: scope API for this panel-local UI scope:
+  - scopes.save() — force-persist now
+  - scopes.push() — archive current scope and start a new snapshot
+  - scopes.list() / scopes.get(id) — inspect snapshots
 
 **Side effects users can trigger from inline UI:**
 - Send messages back to chat (triggers new agent turns)
@@ -889,10 +959,11 @@ import { useState } from "react";
 import { Button, Flex, Text, Table } from "@radix-ui/themes";
 import { CopyIcon, CheckIcon } from "@radix-ui/react-icons";
 
-export default function App({ props, chat }) {
+export default function App({ props, chat, scope }) {
   const [copied, setCopied] = useState(false);
   const handleCopy = () => {
     navigator.clipboard.writeText(JSON.stringify(props.data, null, 2));
+    scope.lastCopiedAt = new Date();
     setCopied(true);
   };
   return (
@@ -990,7 +1061,7 @@ export default function App({ props, chat }) {
 
 Use this for small always-available controls or status for the current workflow.
 The TSX source is read from a file in this panel's current filesystem context.
-The loaded component receives { props, chat }, supports the same
+The loaded component receives { props, chat, scope, scopes }, supports the same
 imports as inline_ui, supports static relative imports from the loaded file,
 infers bare package imports from the nearest package.json when possible, and
 must export default.
@@ -1249,6 +1320,10 @@ Use package imports available to inline_ui plus relative imports for local helpe
       dismissConnectionError: core.dismissConnectionError,
       chat,
       clientRef: core.clientRef,
+      panelScopeId: config.clientId,
+      scope,
+      scopes,
+      scopeManager,
       messages: core.messages,
       inlineUiComponents: inlineUi.inlineUiComponents,
       messageTypeComponents: messageTypes.messageTypeComponents,
@@ -1294,10 +1369,15 @@ Use package imports available to inline_ui plus relative imports for local helpe
       metadata.type,
       core.connectionError,
       core.dismissConnectionError,
+      config.clientId,
       channelName,
       sessionEnabled,
       chat,
       core.clientRef,
+      scope,
+      scopes,
+      scopeManager,
+      scopeVersion,
       core.messages,
       inlineUi.inlineUiComponents,
       messageTypes.messageTypeComponents,

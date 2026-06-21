@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { ScopeManager } from "./scope.js";
+import { ScopePersistenceAdapter } from "./scopePersistenceAdapter.js";
 import { SCOPE_BLOB_REF } from "./scopeSerialize.js";
-import type { ScopeEntry, ScopePersistence } from "./scopePersistence.js";
+import type { ScopeEntry } from "./scopePersistence.js";
+import type { ScopeBlobBackend, ScopeRowBackend } from "./scopePersistenceAdapter.js";
 
-/** In-memory persistence with a content-addressed blob store + GC — mirrors SqlScopePersistence. */
 function memPersistence() {
   const rows = new Map<string, ScopeEntry>();
   const blobs = new Map<string, string>();
@@ -12,36 +13,51 @@ function memPersistence() {
     for (let i = 0; i < s.length; i += 1) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
     return `h${h.toString(16)}-${s.length}`;
   };
-  const p: ScopePersistence & { rows: typeof rows; blobs: typeof blobs } = {
-    rows,
-    blobs,
+  const rowBackend: ScopeRowBackend = {
     async upsert(e) {
       rows.set(e.id, { ...e, blobRefs: [...(e.blobRefs ?? [])] });
     },
-    async loadCurrent() {
-      return [...rows.values()].sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
+    async loadCurrent(channelId, panelId) {
+      return (
+        [...rows.values()]
+          .filter((row) => row.channelId === channelId && row.panelId === panelId)
+          .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null
+      );
     },
     async get(id) {
       return rows.get(id) ?? null;
     },
-    async list() {
-      return [];
+    async list(channelId) {
+      return [...rows.values()]
+        .filter((row) => row.channelId === channelId)
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .map((row) => ({
+          id: row.id,
+          createdAt: row.createdAt,
+          keys: row.serializedKeys,
+          partial: row.partialKeys,
+        }));
     },
-    async putBlob(json) {
+  };
+  const blobBackend: ScopeBlobBackend = {
+    async putText(json) {
       const d = digest(json);
       blobs.set(d, json);
-      return d;
+      return { digest: d, size: json.length };
     },
-    async getBlob(d) {
+    async getText(d) {
       return blobs.get(d) ?? null;
     },
-    async sweepBlobs() {
+    async sweep() {
       const live = new Set<string>();
       for (const e of rows.values()) for (const d of e.blobRefs ?? []) live.add(d);
       for (const d of [...blobs.keys()]) if (!live.has(d)) blobs.delete(d);
     },
   };
-  return p;
+  return Object.assign(new ScopePersistenceAdapter(rowBackend, blobBackend), {
+    storedRows: rows,
+    storedBlobs: blobs,
+  });
 }
 
 const set = (m: ScopeManager, k: string, v: unknown) => {
@@ -58,8 +74,8 @@ describe("ScopeManager — blob-spilled large values", () => {
     set(m1, "small", { ok: 1 });
     await m1.api.save();
 
-    expect(p.blobs.size).toBe(1); // `results` spilled, `small` inline
-    const row = [...p.rows.values()][0]!;
+    expect(p.storedBlobs.size).toBe(1); // `results` spilled, `small` inline
+    const row = [...p.storedRows.values()][0]!;
     expect(row.data.length).toBeLessThan(64 * 1024); // inline row stays tiny
     expect(row.blobRefs).toHaveLength(1);
 
@@ -74,11 +90,11 @@ describe("ScopeManager — blob-spilled large values", () => {
     const m = new ScopeManager({ channelId: "c", panelId: "pn", persistence: p });
     set(m, "results", "x".repeat(512 * 1024));
     await m.api.save();
-    expect(p.blobs.size).toBe(1);
+    expect(p.storedBlobs.size).toBe(1);
 
     set(m, "results", "now small");
     await m.api.save();
-    expect(p.blobs.size).toBe(0); // old blob no longer referenced → GC'd
+    expect(p.storedBlobs.size).toBe(0); // old blob no longer referenced -> GC'd
   });
 
   it("does NOT misinterpret user data that mimics the spill marker (no collision)", async () => {
@@ -87,7 +103,7 @@ describe("ScopeManager — blob-spilled large values", () => {
     const m1 = new ScopeManager({ channelId: "c", panelId: "pn", persistence: p });
     set(m1, "fake", fake);
     await m1.api.save();
-    expect(p.blobs.size).toBe(0); // a small object — nothing actually spilled
+    expect(p.storedBlobs.size).toBe(0); // a small object — nothing actually spilled
 
     const m2 = new ScopeManager({ channelId: "c", panelId: "pn", persistence: p });
     await m2.hydrate();
@@ -100,8 +116,8 @@ describe("ScopeManager — blob-spilled large values", () => {
     set(m1, "results", "x".repeat(300 * 1024));
     set(m1, "keep", 7);
     await m1.api.save();
-    expect(p.blobs.size).toBe(1);
-    p.blobs.clear(); // simulate the referenced blob going missing/corrupt
+    expect(p.storedBlobs.size).toBe(1);
+    p.storedBlobs.clear(); // simulate the referenced blob going missing/corrupt
 
     const m2 = new ScopeManager({ channelId: "c", panelId: "pn", persistence: p });
     const result = await m2.hydrate();
@@ -120,7 +136,9 @@ describe("ScopeManager — blob-spilled large values", () => {
     set(m, "b", big);
     await m.api.save();
 
-    expect(p.blobs.size).toBe(1); // same content → one blob
-    expect(new Set([...p.rows.values()][0]!.blobRefs)).toEqual(new Set(p.blobs.keys()));
+    expect(p.storedBlobs.size).toBe(1); // same content -> one blob
+    expect(new Set([...p.storedRows.values()][0]!.blobRefs)).toEqual(
+      new Set(p.storedBlobs.keys())
+    );
   });
 });

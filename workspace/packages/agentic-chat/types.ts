@@ -34,6 +34,7 @@ import type { AgentDebugPayload, Participant, AttachmentInput, SandboxSource, Pu
 import type { ActiveFeedback, ToolApprovalProps } from "@workspace/tool-ui";
 import type { PendingImage } from "./utils/imageUtils";
 import type { ComponentType, RefObject } from "react";
+import type { ScopeManager, ScopesApi } from "@workspace/eval";
 import type {
   ChatParticipantMetadata,
   ChatSandboxValue,
@@ -55,7 +56,12 @@ import type {
 // ===========================================================================
 
 export interface InlineUiComponentEntry {
-  Component?: ComponentType<{ props: Record<string, unknown>; chat: Record<string, unknown> }>;
+  Component?: ComponentType<{
+    props: Record<string, unknown>;
+    chat: Record<string, unknown>;
+    scope: Record<string, unknown>;
+    scopes: Record<string, unknown>;
+  }>;
   cacheKey: string;
   error?: string;
 }
@@ -153,6 +159,14 @@ export interface ChatContextValue {
   /** Chat API for sandboxed code */
   chat: ChatSandboxValue;
   clientRef: RefObject<PubSubClient<ChatParticipantMetadata> | null>;
+  /** Stable panel identity used to isolate panel-local UI scopes. */
+  panelScopeId: string;
+  /** Panel-local UI scope shared by inline UI, feedback_custom, and action bar. */
+  scope: Record<string, unknown>;
+  /** Scope API for the panel-local UI scope. */
+  scopes: ScopesApi;
+  /** Scope manager for panel-local UI scope reactivity and persistence. */
+  scopeManager: ScopeManager;
 
   // Messages
   messages: ChatMessage[];

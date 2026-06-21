@@ -33,14 +33,14 @@ export interface ScopesApi {
 
   /**
    * Get an archived scope by its durable ID.
-   * Returns a read-only plain object (deserialized from DB).
+   * Returns a read-only plain object from persistence.
    */
   get(id: string): Promise<Record<string, unknown> | null>;
 
   /** List all scope entries for this channel, sorted by creation time. */
   list(): Promise<ScopeListEntry[]>;
 
-  /** Force-persist current scope to DB now. */
+  /** Force-persist current scope now. */
   save(): Promise<void>;
 }
 
@@ -151,7 +151,7 @@ export class ScopeManager {
   // Hydration
   // -------------------------------------------------------------------------
 
-  /** Hydrate from DB on init. Async — call once on mount. */
+  /** Hydrate from persistence on init. Async — call once on mount. */
   async hydrate(): Promise<HydrateResult> {
     const entry = await this.persistence.loadCurrent(this.channelId, this.panelId);
     if (!entry) {
@@ -198,7 +198,7 @@ export class ScopeManager {
   // Persistence
   // -------------------------------------------------------------------------
 
-  /** Persist current state to DB. Called by save triggers. */
+  /** Persist current state. Called by save triggers. */
   async persist(): Promise<void> {
     if (this.disposed) return;
     // Snapshot dirty before the await — if a mutation arrives during the
@@ -240,7 +240,8 @@ export class ScopeManager {
       blobRefs,
       createdAt: this.currentCreatedAt,
     });
-    // GC orphaned blobs so overwritten/cleared large values don't accumulate.
+    // Backends that own blob lifecycle may clean up overwritten/cleared spills here. The shared
+    // workspace blobstore leaves this as a no-op and relies on its admin/prune path.
     if (p.sweepBlobs) await p.sweepBlobs();
   }
 

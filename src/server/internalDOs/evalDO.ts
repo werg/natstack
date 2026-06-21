@@ -10,6 +10,7 @@ import {
 import { eventsMethods } from "@natstack/shared/serviceSchemas/events";
 import { externalOpenMethods } from "@natstack/shared/serviceSchemas/externalOpen";
 import { fsMethods } from "@natstack/shared/serviceSchemas/fs";
+import { blobstoreMethods } from "@natstack/shared/serviceSchemas/blobstore";
 import { metaMethods } from "@natstack/shared/serviceSchemas/meta";
 import { EVAL_AMBIENT_ONLY } from "@natstack/shared/runtimeSurface.eval";
 import { buildOwnerBindings } from "./evalOwnerBindings.js";
@@ -46,7 +47,8 @@ import {
  *  - compiles via the workerd `UNSAFE_EVAL` binding (`new Function` is blocked in workerd;
  *    we install `__natstackCompileFunction__` so the engine's two codegen sites route
  *    through `env.UNSAFE_EVAL.newFunction`),
- *  - persists REPL scope in its own SQLite via `SqlScopePersistence`,
+ *  - persists REPL scope rows in its own SQLite via `SqlScopePersistence` and spills large values
+ *    to the workspace blobstore,
  *  - exposes a synchronous in-DO `db` (its SQLite) to eval'd code, with reserved-table guards.
  *
  * Trust model: only the server `eval` service dispatches to it (owner is enforced there by
@@ -60,7 +62,7 @@ import {
  */
 
 /** Reserved tables the user `db` may not DROP/DELETE/ALTER — base state, scope, sqlite internals. */
-const RESERVED_TABLE = /\b(state|repl_scopes|scope_blobs|sqlite_[A-Za-z0-9_]*)\b/i;
+const RESERVED_TABLE = /\b(state|repl_scopes|sqlite_[A-Za-z0-9_]*)\b/i;
 const DESTRUCTIVE_STMT = /^\s*(DROP|DELETE|ALTER|UPDATE|INSERT|REPLACE|TRUNCATE|CREATE)\b/i;
 
 /**
@@ -91,6 +93,11 @@ interface ScopeManagerLike {
   exitEval(): Promise<void>;
 }
 
+interface ScopeBlobBackendLike {
+  putText(valueJson: string): Promise<{ digest: string; size?: number }>;
+  getText(digest: string): Promise<string | null>;
+}
+
 interface EvalEngine {
   executeSandbox(code: string, options: Record<string, unknown>): Promise<SandboxResult>;
   ScopeManager: new (opts: {
@@ -98,11 +105,12 @@ interface EvalEngine {
     panelId: string;
     persistence: unknown;
   }) => ScopeManagerLike;
-  SqlScopePersistence: new (sql: unknown) => unknown;
+  SqlScopePersistence: new (sql: unknown, blobs: ScopeBlobBackendLike) => unknown;
 }
 
 type GlobalBag = Record<string, unknown>;
 type FsClient = TypedServiceClient<typeof fsMethods>;
+type BlobstoreClient = TypedServiceClient<typeof blobstoreMethods>;
 type MetaClient = TypedServiceClient<typeof metaMethods>;
 type EventsClient = TypedServiceClient<typeof eventsMethods>;
 type ExternalOpenClient = TypedServiceClient<typeof externalOpenMethods>;
@@ -174,6 +182,7 @@ export class EvalDO extends DurableObjectBase {
   private readonly runAborts = new Map<string, AbortController>();
   private buildClient: BuildServiceClient | null = null;
   private fsClient: FsClient | null = null;
+  private blobstoreClient: BlobstoreClient | null = null;
   private metaClient: MetaClient | null = null;
   private eventsClient: EventsClient | null = null;
   private externalOpenClient: ExternalOpenClient | null = null;
@@ -289,6 +298,14 @@ export class EvalDO extends DurableObjectBase {
 
   private mainFs(): FsClient {
     return (this.fsClient ??= createTypedServiceClient("fs", fsMethods, this.callMainService));
+  }
+
+  private mainBlobstore(): BlobstoreClient {
+    return (this.blobstoreClient ??= createTypedServiceClient(
+      "blobstore",
+      blobstoreMethods,
+      this.callMainService
+    ));
   }
 
   private mainMeta(): MetaClient {
@@ -920,7 +937,11 @@ export class EvalDO extends DurableObjectBase {
 
   private async ensureScopeManager(engine: EvalEngine): Promise<ScopeManagerLike> {
     if (this.scopeManager) return this.scopeManager;
-    const persistence = new engine.SqlScopePersistence(this.sql);
+    const blobstore = this.mainBlobstore();
+    const persistence = new engine.SqlScopePersistence(this.sql, {
+      putText: (valueJson: string) => blobstore.putText(valueJson),
+      getText: (digest: string) => blobstore.getText(digest),
+    });
     const mgr = new engine.ScopeManager({
       channelId: this.objectKey, // one scope per EvalDO instance
       panelId: "eval",

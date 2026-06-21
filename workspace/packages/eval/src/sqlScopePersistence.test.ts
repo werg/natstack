@@ -1,75 +1,140 @@
 import { describe, expect, it } from "vitest";
-import { SqlScopePersistence } from "./sqlScopePersistence.js";
+import { ScopeManager } from "./scope.js";
+import { SqlScopePersistence, SqlScopeRowBackend } from "./sqlScopePersistence.js";
 
-/** Minimal in-memory `SqlLike` covering the blob-store + sweep queries (content matched, not parsed). */
+interface FakeScopeRow {
+  id: string;
+  channel_id: string;
+  panel_id: string;
+  data: string;
+  serialized_keys: string;
+  dropped_paths: string;
+  partial_keys: string;
+  blob_refs: string;
+  created_at: number;
+}
+
 class FakeSql {
-  blobs: Array<{ digest: string; seq: number; chunk: string }> = [];
-  scopeBlobRefs: string[][] = [];
+  readonly queries: string[] = [];
+  readonly rows = new Map<string, FakeScopeRow>();
 
-  exec(query: string, ...b: unknown[]) {
+  exec(query: string, ...bindings: unknown[]) {
     const q = query.replace(/\s+/g, " ").trim();
-    const rows = (arr: unknown[]) => ({ toArray: () => arr });
-    if (q.startsWith("PRAGMA table_info(repl_scopes)"))
-      return rows([{ name: "data" }, { name: "blob_refs" }, { name: "created_at" }]); // column present
-    if (q.startsWith("CREATE") || q.startsWith("ALTER") || q.startsWith("INSERT OR REPLACE INTO repl_scopes"))
-      return rows([]);
-    if (q.startsWith("SELECT 1 FROM scope_blobs WHERE digest"))
-      return rows(this.blobs.some((r) => r.digest === b[0]) ? [{ "1": 1 }] : []);
-    if (q.startsWith("INSERT OR IGNORE INTO scope_blobs")) {
-      const [digest, seq, chunk] = b as [string, number, string];
-      if (!this.blobs.some((r) => r.digest === digest && r.seq === seq))
-        this.blobs.push({ digest, seq, chunk });
-      return rows([]);
+    this.queries.push(q);
+    const result = (rows: unknown[]) => ({ toArray: () => rows });
+
+    if (q.startsWith("CREATE TABLE IF NOT EXISTS repl_scopes")) return result([]);
+    if (q.startsWith("CREATE INDEX IF NOT EXISTS idx_scopes_")) return result([]);
+
+    if (q.startsWith("INSERT OR REPLACE INTO repl_scopes")) {
+      const [
+        id,
+        channelId,
+        panelId,
+        data,
+        serializedKeys,
+        droppedPaths,
+        partialKeys,
+        blobRefs,
+        createdAt,
+      ] = bindings as [string, string, string, string, string, string, string, string, number];
+      this.rows.set(id, {
+        id,
+        channel_id: channelId,
+        panel_id: panelId,
+        data,
+        serialized_keys: serializedKeys,
+        dropped_paths: droppedPaths,
+        partial_keys: partialKeys,
+        blob_refs: blobRefs,
+        created_at: createdAt,
+      });
+      return result([]);
     }
-    if (q.startsWith("SELECT chunk FROM scope_blobs WHERE digest"))
-      return rows(
-        this.blobs
-          .filter((r) => r.digest === b[0])
-          .sort((x, y) => x.seq - y.seq)
-          .map((r) => ({ chunk: r.chunk }))
+
+    if (q.startsWith("SELECT * FROM repl_scopes WHERE channel_id = ?")) {
+      const [channelId, panelId] = bindings as [string, string];
+      return result(
+        [...this.rows.values()]
+          .filter((row) => row.channel_id === channelId && row.panel_id === panelId)
+          .sort((a, b) => b.created_at - a.created_at)
+          .slice(0, 1)
       );
-    if (q.startsWith("SELECT DISTINCT digest FROM scope_blobs"))
-      return rows([...new Set(this.blobs.map((r) => r.digest))].map((digest) => ({ digest })));
-    if (q.startsWith("DELETE FROM scope_blobs WHERE digest")) {
-      this.blobs = this.blobs.filter((r) => r.digest !== b[0]);
-      return rows([]);
     }
-    if (q.startsWith("SELECT blob_refs FROM repl_scopes"))
-      return rows(this.scopeBlobRefs.map((refs) => ({ blob_refs: JSON.stringify(refs) })));
-    return rows([]);
+
+    if (q.startsWith("SELECT * FROM repl_scopes WHERE id = ?")) {
+      return result([this.rows.get(String(bindings[0]))].filter(Boolean));
+    }
+
+    if (q.startsWith("SELECT id, serialized_keys, partial_keys, created_at FROM repl_scopes")) {
+      const [channelId] = bindings as [string];
+      return result(
+        [...this.rows.values()]
+          .filter((row) => row.channel_id === channelId)
+          .sort((a, b) => a.created_at - b.created_at)
+          .map((row) => ({
+            id: row.id,
+            serialized_keys: row.serialized_keys,
+            partial_keys: row.partial_keys,
+            created_at: row.created_at,
+          }))
+      );
+    }
+
+    throw new Error(`unexpected SQL query: ${q}`);
   }
 }
 
-describe("SqlScopePersistence blob store", () => {
-  it("chunks a large value, reassembles it on read, and dedupes by content", async () => {
+function blobBackend() {
+  const blobs = new Map<string, string>();
+  let counter = 0;
+  return {
+    blobs,
+    backend: {
+      async putText(valueJson: string) {
+        const digest = `test-digest-${++counter}`;
+        blobs.set(digest, valueJson);
+        return { digest, size: valueJson.length };
+      },
+      async getText(digest: string) {
+        return blobs.get(digest) ?? null;
+      },
+    },
+  };
+}
+
+describe("SqlScopePersistence", () => {
+  it("creates only the scope row schema", () => {
     const sql = new FakeSql();
-    const p = new SqlScopePersistence(sql as never);
-    const big = "z".repeat(300 * 1024); // > one 128KB chunk → 3 chunks
+    new SqlScopeRowBackend(sql as never);
 
-    const d1 = await p.putBlob(big);
-    expect(sql.blobs.filter((r) => r.digest === d1).length).toBe(3);
-    expect(await p.getBlob(d1)).toBe(big); // reassembled losslessly
-
-    const d2 = await p.putBlob(big);
-    expect(d2).toBe(d1); // content-addressed
-    expect(sql.blobs.filter((r) => r.digest === d1).length).toBe(3); // not re-chunked
+    expect(sql.queries.some((query) => query.includes("scope_blobs"))).toBe(false);
+    expect(sql.queries.some((query) => query.startsWith("PRAGMA "))).toBe(false);
+    expect(sql.queries.some((query) => query.startsWith("ALTER TABLE "))).toBe(false);
   });
 
-  it("returns null for an absent digest", async () => {
-    const p = new SqlScopePersistence(new FakeSql() as never);
-    expect(await p.getBlob("nope")).toBeNull();
-  });
-
-  it("sweeps blobs not referenced by any scope row", async () => {
+  it("keeps large spill bytes out of SQLite and hydrates them through the blob backend", async () => {
     const sql = new FakeSql();
-    const p = new SqlScopePersistence(sql as never);
-    const dA = await p.putBlob("a".repeat(200 * 1024));
-    const dB = await p.putBlob("b".repeat(200 * 1024));
+    const { backend, blobs } = blobBackend();
+    const persistence = new SqlScopePersistence(sql as never, backend);
+    const large = "z".repeat(300 * 1024);
 
-    sql.scopeBlobRefs = [[dA]]; // only A is live
-    await p.sweepBlobs();
+    const writer = new ScopeManager({ channelId: "c", panelId: "eval", persistence });
+    writer.current["large"] = large;
+    writer.current["small"] = { ok: true };
+    await writer.api.save();
 
-    expect(sql.blobs.some((r) => r.digest === dA)).toBe(true);
-    expect(sql.blobs.some((r) => r.digest === dB)).toBe(false); // orphan removed
+    expect(blobs.size).toBe(1);
+    const row = [...sql.rows.values()][0]!;
+    expect(row.data.length).toBeLessThan(64 * 1024);
+    expect(JSON.parse(row.blob_refs)).toHaveLength(1);
+    expect(sql.queries.some((query) => query.includes("scope_blobs"))).toBe(false);
+
+    const reader = new ScopeManager({ channelId: "c", panelId: "eval", persistence });
+    const result = await reader.hydrate();
+
+    expect(result.restored).toEqual(expect.arrayContaining(["large", "small"]));
+    expect(reader.current["large"]).toBe(large);
+    expect(reader.current["small"]).toEqual({ ok: true });
   });
 });

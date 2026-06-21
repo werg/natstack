@@ -4,12 +4,12 @@
  * Collapsible card that stays in the chat history. Users can expand/collapse
  * at any time to interact with the component.
  */
-import { Suspense, useCallback, useEffect, useMemo, useState, type ComponentType } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useReducer, useState, type ComponentType } from "react";
 import { Box, Button, Callout, Flex, Spinner, Text } from "@radix-ui/themes";
 import { ExclamationTriangleIcon, ComponentInstanceIcon } from "@radix-ui/react-icons";
 import { EventErrorBoundary } from "@workspace/tool-ui/components/EventErrorBoundary";
 import { SurfaceFrame } from "@workspace/tool-ui/components/SurfaceFrame";
-import { wrapChatForErrorReporting } from "../utils/wrapSandboxApis";
+import { wrapChatForErrorReporting, wrapScopesForErrorReporting } from "../utils/wrapSandboxApis";
 import type { InlineUiData } from "@workspace/pubsub";
 import type { ChatSandboxValue } from "@workspace/agentic-core";
 import { useChatContext } from "../context/ChatContext";
@@ -69,7 +69,12 @@ export function InlineUiErrorCallout({
 
 interface InlineUiMessageProps {
   data: InlineUiData;
-  compiledComponent?: ComponentType<{ props: Record<string, unknown>; chat: Record<string, unknown> }>;
+  compiledComponent?: ComponentType<{
+    props: Record<string, unknown>;
+    chat: Record<string, unknown>;
+    scope: Record<string, unknown>;
+    scopes: Record<string, unknown>;
+  }>;
   compilationError?: string;
 }
 
@@ -80,7 +85,7 @@ function isModelCredentialCard(data: InlineUiData): boolean {
 }
 
 export function InlineUiMessage({ data, compiledComponent: CompiledComponent, compilationError }: InlineUiMessageProps) {
-  const { browserHandoffCaller, chat, selfId } = useChatContext();
+  const { browserHandoffCaller, chat, scope, scopes, scopeManager, selfId } = useChatContext();
   const componentProps = useMemo(() => {
     const props = data.props ?? {};
     if (!isModelCredentialCard(data)) return props;
@@ -100,6 +105,7 @@ export function InlineUiMessage({ data, compiledComponent: CompiledComponent, co
           : browserHandoffCaller.kind,
     };
   }, [browserHandoffCaller.id, browserHandoffCaller.kind, data, selfId]);
+  const [, forceUpdate] = useReducer((value: number) => value + 1, 0);
   const [asyncError, setAsyncError] = useState<Error | null>(null);
 
   // Wrap chat so unhandled async rejections surface visually
@@ -108,6 +114,18 @@ export function InlineUiMessage({ data, compiledComponent: CompiledComponent, co
     () => wrapChatForErrorReporting(chat, onAsyncError),
     [chat, onAsyncError],
   );
+  const wrappedScopes = useMemo(
+    () => wrapScopesForErrorReporting(scopes, onAsyncError),
+    [scopes, onAsyncError],
+  );
+
+  const onInteraction = useCallback(() => {
+    void scopeManager.persist().catch((err) => {
+      console.warn("[InlineUiMessage] Scope persist after interaction failed:", err);
+    });
+  }, [scopeManager]);
+
+  useEffect(() => scopeManager.onChange(forceUpdate), [scopeManager]);
 
   // Reset async error when props change (same trigger as EventErrorBoundary's resetKey)
   const resetKey = JSON.stringify(data.props);
@@ -139,16 +157,27 @@ export function InlineUiMessage({ data, compiledComponent: CompiledComponent, co
       collapsible
       defaultExpanded
     >
-      <EventErrorBoundary
-        resetKey={resetKey}
-        renderFallback={(error) => (
-          <InlineUiErrorCallout error={error} componentId={data.id} chat={chat} />
-        )}
+      <Box
+        onClickCapture={onInteraction}
+        onInputCapture={onInteraction}
+        onChangeCapture={onInteraction}
       >
-        <Suspense fallback={<Spinner size="1" />}>
-          <CompiledComponent props={componentProps} chat={wrappedChat as unknown as Record<string, unknown>} />
-        </Suspense>
-      </EventErrorBoundary>
+        <EventErrorBoundary
+          resetKey={resetKey}
+          renderFallback={(error) => (
+            <InlineUiErrorCallout error={error} componentId={data.id} chat={chat} />
+          )}
+        >
+          <Suspense fallback={<Spinner size="1" />}>
+            <CompiledComponent
+              props={componentProps}
+              chat={wrappedChat as unknown as Record<string, unknown>}
+              scope={scope}
+              scopes={wrappedScopes as unknown as Record<string, unknown>}
+            />
+          </Suspense>
+        </EventErrorBoundary>
+      </Box>
     </SurfaceFrame>
   );
 }

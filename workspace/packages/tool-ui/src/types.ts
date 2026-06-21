@@ -43,6 +43,10 @@ export interface FeedbackCallbacks {
 export interface FeedbackComponentProps extends FeedbackCallbacks {
   /** Chat API — publish messages, access runtime, etc. */
   chat: Record<string, unknown>;
+  /** Panel-local durable UI scope. Serializable values survive panel reloads. */
+  scope: Record<string, unknown>;
+  /** Panel-local scope API — save/list/push/get scope snapshots. */
+  scopes: Record<string, unknown>;
 }
 
 // ============================================================================

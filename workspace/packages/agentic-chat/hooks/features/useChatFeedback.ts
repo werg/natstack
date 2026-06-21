@@ -193,13 +193,15 @@ export function useChatFeedback({ chat, loadImport, clientRef, connected, }: Use
         const feedbackCustomMethodDef: MethodDefinition = {
             description: `Show a custom React component that blocks until user submits or cancels.
 
-**The component receives { onSubmit, onCancel, onError, chat }:**
+**The component receives { onSubmit, onCancel, onError, chat, scope, scopes }:**
 - onSubmit(value) — return data to the agent and close the form
 - onCancel() — signal cancellation to the agent
 - onError(message) — signal error
 - chat — chat API (publish messages, call runtime, etc.)
   - chat.publish(type, payload) — send a message to the conversation
   - chat.rpc.call(target, method, ...args) — call runtime services
+- scope — panel-local durable UI state shared by inline_ui, feedback_custom, and the action bar in this panel instance. Serializable values persist in localStorage across panel reloads; functions, class instances, DOM objects, and other nonserializable values are live-only and are dropped on restore.
+- scopes — scope API for this panel-local UI scope: scopes.save(), scopes.push(), scopes.list(), scopes.get(id)
 
 **Side effects during interaction:**
 - Component can call chat.publish() or chat.rpc.call() before submitting
@@ -220,12 +222,16 @@ export function useChatFeedback({ chat, loadImport, clientRef, connected, }: Use
 import { useState } from "react";
 import { Button, Flex, Text, TextField } from "@radix-ui/themes";
 
-export default function App({ onSubmit, onCancel }) {
-  const [name, setName] = useState("");
+export default function App({ onSubmit, onCancel, scope }) {
+  const [name, setName] = useState(() => typeof scope.name === "string" ? scope.name : "");
+  const setDraft = (value) => {
+    scope.name = value;
+    setName(value);
+  };
   return (
     <Flex direction="column" gap="3" p="2">
       <Text size="2" weight="bold">What is your name?</Text>
-      <TextField.Root value={name} onChange={e => setName(e.target.value)} />
+      <TextField.Root value={name} onChange={e => setDraft(e.target.value)} />
       <Flex gap="2" justify="end">
         <Button variant="soft" onClick={onCancel}>Cancel</Button>
         <Button onClick={() => onSubmit({ name })}>Submit</Button>
