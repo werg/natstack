@@ -14,7 +14,11 @@ Concretely:
 - **Capability missing** → add it to the service layer, don't hack a workaround in eval
 - **Skill docs are misleading** → fix the docs AFTER fixing the underlying API
 
-Only after the infrastructure is solid should you adjust skills or test prompts. The test agent should be able to accomplish any task with minimal hints — if it can't, the platform has a bug.
+Only after the infrastructure is solid should you adjust skills or test prompts.
+The test agent should be able to accomplish any task with minimal hints — if it
+can't, the platform has a bug. Keep system-test prompts as vague as possible:
+state the user-visible goal and final marker, not the API mechanics, object
+shapes, or workaround steps the docs are supposed to teach.
 
 ## Phase 1: Run Tests
 
@@ -351,7 +355,7 @@ For each failure, determine the root cause category and act accordingly:
 ### Test bugs (fix the test — last resort)
 
 - **Validation too strict** → loosen the validator, but only after confirming the agent's response is correct
-- **Prompt ambiguous** → clarify the prompt, but only if the underlying API works correctly
+- **Prompt truly underspecified** → clarify only the user-visible goal or required output marker; never add implementation details that hide a docs or runtime bug
 - **Long-running task** → inspect where progress stopped and fix the blocked operation
 
 **Default assumption: the infrastructure is wrong, not the test.** Only classify as a test bug after reading the service code and confirming the API works correctly.

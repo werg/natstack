@@ -130,6 +130,15 @@ describe("system-testing validation helpers", () => {
     });
   });
 
+  it("rejects marker count values that are not numeric", () => {
+    expect(
+      finalMessageHasMarkerCount(
+        executionWithFinalAgentMessage("OAUTH_PROVIDERS_OK count=unknown"),
+        "OAUTH_PROVIDERS_OK"
+      ).passed
+    ).toBe(false);
+  });
+
   it("accepts explicit field values in final messages", () => {
     expect(
       finalMessageHasField(executionWithFinalAgentMessage("PANEL_OPEN_OK handle=slot-1"), "handle")

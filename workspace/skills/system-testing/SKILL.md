@@ -70,7 +70,9 @@ Workspace packages like `@workspace-skills/system-testing/stages` are auto-resol
 When a test requires workspace development or panel API docs, read the
 canonical skill path from the workspace root, for example
 `skills/workspace-dev/PANEL_API.md`. Do not use bare root paths like
-`workspace-dev/PANEL_API.md`.
+`workspace-dev/PANEL_API.md`. The Files table above is relative to this skill
+directory; when using read/grep tools, use workspace-root paths such as
+`skills/system-testing/tests/oauth.ts`, not `system-testing/tests/oauth.ts`.
 
 ## Full Suite
 
@@ -659,7 +661,11 @@ The test agent is a standard AiChatWorker with full eval + set_title tools and
 full-auto approval. The shared system-test prompt tells it that it is testing
 the harness, should choose relevant skills itself, should report setup/tool/API
 mismatches clearly, should not hunt for unrelated workarounds, and should keep
-evidence bounded. Individual test prompts should stay short and goal-oriented.
+evidence bounded. Individual test prompts should stay as vague as possible:
+state the user-visible goal and required final marker, not the API mechanics,
+object shapes, edge cases, or workaround steps the skill docs are supposed to
+teach. If an agent fails because docs are missing or misleading, fix the docs or
+runtime; do not narrow the test prompt to route around the failure.
 
 ## Auto-Start as Initial Panel
 
