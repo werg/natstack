@@ -92,7 +92,7 @@ async function countRows(
   return Number(result.rows[0]?.cnt ?? 0);
 }
 
-describe("GadWorkspaceDO unified log (schema v15)", () => {
+describe("GadWorkspaceDO unified log (schema v19)", () => {
   // §3.1 — schema shape
   it("creates only the canonical unified-log tables and drops the v14 ledger tables", async () => {
     const { call } = await createTestDO(GadWorkspaceDO);

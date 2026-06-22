@@ -7,23 +7,25 @@ description: Review code provenance using NatStack's canonical trajectory log, c
 
 Use the canonical agentic trajectory architecture:
 
-- Conversation facts: `trajectory_events`, `trajectory_messages`, `trajectory_message_blocks`, `trajectory_invocations`.
-- Channel publications: `channel_envelopes`.
+- Conversation authority: `log_events` + `log_heads` where `log_kind = 'trajectory'`; projections live in `trajectory_messages`, `trajectory_message_blocks`, `trajectory_invocations`, and related `trajectory_*` tables.
+- Channel publications: channel log rows in `log_events` where the joined `log_heads.log_kind = 'channel'`; published trajectory rows are linked by `origin_log_id`, `origin_head`, and `origin_envelope_id`.
 - Worktree provenance: `gad_state_transitions` (input/output state hashes per event) and `gad_worktree_edit_ops` (per-path edit ops with hunks).
-- Branch heads: `trajectory_branches`.
+- Branch heads: `log_heads` plus `refs` entries named `log:<logId>:<head>` and worktree refs named `worktree:<logId>:<head>`.
 
 Core queries:
 
 ```sql
-SELECT trajectory_id, branch_id, head_event_id, head_event_hash, head_state_hash, updated_at
-FROM trajectory_branches
-ORDER BY updated_at DESC;
+SELECT h.log_id, h.head, h.log_kind, r.target_json, r.updated_at
+FROM log_heads h
+LEFT JOIN refs r ON r.ref_name = 'log:' || h.log_id || ':' || h.head
+ORDER BY r.updated_at DESC, h.created_at DESC;
 ```
 
 ```sql
-SELECT event_id, seq, kind, causality_json, payload_ref_json, created_at
-FROM trajectory_events
-WHERE branch_id = ?
+SELECT envelope_id AS event_id, seq, payload_kind AS kind,
+       causality_json, payload_ref_json, appended_at
+FROM log_events
+WHERE log_id = ? AND head = ?
 ORDER BY seq;
 ```
 
@@ -37,14 +39,14 @@ ORDER BY st.created_at, op.ordinal;
 ```
 
 ```sql
-SELECT st.*, e.kind, e.causality_json, e.payload_ref_json
+SELECT st.*, e.payload_kind AS kind, e.causality_json, e.payload_ref_json
 FROM gad_state_transitions st
-JOIN trajectory_events e ON e.event_id = st.event_id
+JOIN log_events e ON e.envelope_id = st.event_id
 WHERE st.output_state_hash = ?
 ORDER BY e.seq DESC;
 ```
 
-Use only canonical trajectory, channel, and worktree-state tables; older event/session table families are not part of this schema.
+Use only canonical log, projection, and worktree-state tables; older event/session table families are not part of this schema.
 
 Prefer diagnostic APIs before raw SQL when investigating a live agent:
 
@@ -56,10 +58,10 @@ Prefer diagnostic APIs before raw SQL when investigating a live agent:
 For the full current diagnostic workflow and planned hardening designs, read
 `../gad-context/DIAGNOSTICS.md`.
 
-Do not treat every agentic channel envelope without a publication join as a bug.
-Only trajectory-published envelopes referenced by `external.envelope_published`
-must have `trajectory_channel_publications` rows; user/channel-origin agentic
-envelopes are expected to be unjoined.
+Do not treat every agentic channel envelope without `origin_*` columns as a bug.
+User/channel-origin agentic envelopes are expected to have no trajectory origin;
+only rows meant to publish private trajectory events should point back to an
+origin log/head/envelope.
 
 Review posture:
 

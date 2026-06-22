@@ -5,16 +5,24 @@ description: Query NatStack's canonical trajectory model for conversation contex
 
 # GAD Context
 
-Use the `gad` runtime namespace. The storage model is canonical trajectory-first:
+Use the `gad` runtime namespace. The storage model is canonical log-first:
 
-- Agent context lives in `trajectory_events` plus projections such as `trajectory_messages`, `trajectory_message_blocks`, `trajectory_invocations`, and `trajectory_approvals`.
-- Channel delivery lives in `channel_envelopes`.
-- Published trajectory events are joined to transmitted channel messages through
-  `trajectory_channel_publications`. Do not infer this relationship by matching
-  payload text or timestamps.
-- Worktree state lives in `gad_worktree_states`, manifest tables, file versions, state transitions, mutations, observations, and hunks.
+- Agent, channel, and VCS history lives in `log_events` plus `log_heads`; `log_kind`
+  on the head distinguishes `trajectory`, `channel`, and `vcs` logs.
+- Agent context projections live in `trajectory_messages`,
+  `trajectory_message_blocks`, `trajectory_invocations`, `trajectory_approvals`,
+  `trajectory_turns`, and usage/checkpoint tables.
+- Channel delivery is represented by channel log rows in `log_events`. Published
+  trajectory events are joined to transmitted channel messages through the
+  channel row's `origin_log_id`, `origin_head`, and `origin_envelope_id` columns;
+  do not infer this relationship by matching payload text or timestamps.
+- Worktree state lives in `gad_worktree_states`, manifest tables, file versions,
+  `gad_state_transitions`, `gad_transition_parents`, and `gad_worktree_edit_ops`.
 
-Use only the canonical tables above; older event/session table families do not exist in this schema.
+Use only the canonical tables above. Older event/session families such as
+`trajectory_events`, `trajectory_branches`, `channel_envelopes`,
+`trajectory_channel_publications`, `gad_file_mutations`,
+`gad_file_observations`, and `gad_file_change_hunks` are not part of this schema.
 
 For live incident work, read [DIAGNOSTICS.md](DIAGNOSTICS.md) first. It explains
 the summary-first inspector APIs, current invariants, and context/worktree model.
@@ -59,36 +67,44 @@ Current implemented hardening:
 For SQL reads, prefer:
 
 ```sql
-SELECT trajectory_id, branch_id, head_event_id, head_event_hash, head_state_hash, updated_at
-FROM trajectory_branches
-ORDER BY updated_at DESC;
+SELECT h.log_id, h.head, h.log_kind, r.target_json, r.updated_at
+FROM log_heads h
+LEFT JOIN refs r ON r.ref_name = 'log:' || h.log_id || ':' || h.head
+ORDER BY r.updated_at DESC, h.created_at DESC;
 ```
 
 ```sql
-SELECT seq, event_id, event_hash, prev_event_hash, kind,
-       causality_json, created_at
-FROM trajectory_events
+SELECT seq, envelope_id AS event_id, hash AS event_hash, prev_hash,
+       payload_kind AS kind, causality_json, appended_at
+FROM log_events
+WHERE log_id = ? AND head = ?
 ORDER BY seq DESC
 LIMIT 100;
 ```
 
 To connect what an agent privately did to what users or other agents actually
-received, query the publication join:
+received, join channel log rows back to their origin trajectory rows:
 
 ```sql
-SELECT p.channel_id, p.channel_seq, p.envelope_id,
-       te.branch_id, te.turn_id, te.kind, te.event_id
-FROM trajectory_channel_publications p
-JOIN trajectory_events te ON te.event_id = p.event_id
-ORDER BY p.channel_id, p.channel_seq;
+SELECT c.log_id AS channel_id, c.seq AS channel_seq, c.envelope_id,
+       t.log_id AS trajectory_id, t.head AS branch_id,
+       t.turn_id, t.payload_kind AS kind, t.envelope_id AS event_id
+FROM log_events c
+JOIN log_heads ch ON ch.log_id = c.log_id
+                 AND ch.head = c.head
+                 AND ch.log_kind = 'channel'
+JOIN log_events t ON t.log_id = c.origin_log_id
+                 AND t.head = c.origin_head
+                 AND t.envelope_id = c.origin_envelope_id
+ORDER BY c.log_id, c.seq;
 ```
 
 Keep the distinction clear:
 
-- `trajectory_events` is the private, branchable agentic trajectory.
-- `channel_envelopes` is the transmitted PubSub history.
-- `trajectory_channel_publications` makes the two queryable together without
-  making them the same record.
+- trajectory log rows are private, branchable agentic history.
+- channel log rows are transmitted PubSub history.
+- the `origin_*` columns make published trajectory events queryable from channel
+  rows without making them the same record.
 
 Large values are stored by reference. Do not run broad hydrated reads and return
 them from `eval`; use `inspect*` APIs first, then fetch one digest or envelope
