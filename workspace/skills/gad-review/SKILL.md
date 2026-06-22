@@ -1,6 +1,6 @@
 ---
 name: gad-review
-description: Review code provenance using NatStack's canonical trajectory log, channel envelopes, worktree state graph, file mutation projections, and blame hunks.
+description: Review code provenance using NatStack's canonical trajectory log, channel envelopes, worktree state graph, state transitions, and per-edit operations.
 ---
 
 # GAD Review
@@ -9,7 +9,7 @@ Use the canonical agentic trajectory architecture:
 
 - Conversation facts: `trajectory_events`, `trajectory_messages`, `trajectory_message_blocks`, `trajectory_invocations`.
 - Channel publications: `channel_envelopes`.
-- Worktree provenance: `gad_file_mutations`, `gad_file_observations`, `gad_state_transitions`, `gad_file_change_hunks`.
+- Worktree provenance: `gad_state_transitions` (input/output state hashes per event) and `gad_worktree_edit_ops` (per-path edit ops with hunks).
 - Branch heads: `trajectory_branches`.
 
 Core queries:
@@ -28,11 +28,12 @@ ORDER BY seq;
 ```
 
 ```sql
-SELECT m.*, h.*
-FROM gad_file_mutations m
-LEFT JOIN gad_file_change_hunks h ON h.mutation_id = m.mutation_id
-WHERE m.invocation_id = ?
-ORDER BY m.created_at, h.id;
+SELECT st.event_id, st.invocation_id, st.input_state_hash, st.output_state_hash,
+       op.ordinal, op.kind, op.path, op.old_content_hash, op.new_content_hash, op.hunks_json
+FROM gad_state_transitions st
+JOIN gad_worktree_edit_ops op ON op.event_id = st.event_id
+WHERE st.invocation_id = ?
+ORDER BY st.created_at, op.ordinal;
 ```
 
 ```sql

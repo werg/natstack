@@ -770,48 +770,23 @@ describe("internal storage DOs under workerd", () => {
             createdAt: new Date(1).toISOString(),
           },
         },
-        {
-          eventId: "01900000-0000-7000-8000-000000000002",
-          event: {
-            kind: "state.file_mutation_intended",
-            actor: { kind: "agent", id: "pi" },
-            causality: { invocationId: "tool-live", modelToolCallId: "tool-live" },
-            payload: {
-              protocol: "agentic.trajectory.v1",
-              mutationId: "mutation-live",
-              path: "src/live.ts",
-              operation: "write",
-              metadata: { plannedParams: { path: "src/live.ts" } },
-            },
-            createdAt: new Date(2).toISOString(),
-          },
-        },
-        {
-          eventId: "01900000-0000-7000-8000-000000000003",
-          event: {
-            kind: "state.file_mutation_applied",
-            actor: { kind: "agent", id: "pi" },
-            causality: { invocationId: "tool-live", modelToolCallId: "tool-live" },
-            payload: {
-              protocol: "agentic.trajectory.v1",
-              mutationId: "mutation-live",
-              path: "src/live.ts",
-              afterHash: "d".repeat(64),
-              size: 12,
-              summary: "ok",
-            },
-            createdAt: new Date(3).toISOString(),
-          },
-        },
       ],
+    });
+    await harness.callDurableObject(ref, "ensureBlob", "d".repeat(64), 12, "text/plain");
+    await harness.callDurableObject(ref, "ingestWorktreeState", {
+      files: [{ path: "src/live.ts", contentHash: "d".repeat(64) }],
+      logId: "trajectory-live",
+      head: "branch-live",
+      actor: { kind: "agent", id: "pi" },
+      eventId: "01900000-0000-7000-8000-000000000002",
     });
     const status = (await harness.callDurableObject(ref, "getStatus")) as Array<{
       metric: string;
       value: number;
     }>;
     expect(status.find((row) => row.metric === "Log heads")?.value).toBe(1);
-    expect(status.find((row) => row.metric === "Log events")?.value).toBe(3);
-    expect(status.find((row) => row.metric === "File mutations")?.value).toBe(1);
+    expect(status.find((row) => row.metric === "Log events")?.value).toBe(2);
+    expect(status.find((row) => row.metric === "Worktree states")?.value).toBe(1);
   }, 30_000);
 
   it("records BrowserDataDO history visits and title updates without double-counting", async () => {

@@ -2019,174 +2019,6 @@ describe("ingestWorktreeState (§3.9)", () => {
   });
 });
 
-describe("file mutation projection (§3.10)", () => {
-  it("projects file intent/apply events into content-addressed state provenance", async () => {
-    const { call } = await createTestDO(GadWorkspaceDO);
-    const appendResult = await call<Record<string, unknown>>("appendTrajectoryBatch", {
-      trajectoryId: "traj-1",
-      branchId: "main",
-      owner,
-      events: [
-        {
-          eventId: "intent-1",
-          event: event("state.file_mutation_intended", {
-            causality: { invocationId: "inv-write" as never },
-            payload: {
-              protocol: AGENTIC_PROTOCOL_VERSION,
-              mutationId: "mut-1",
-              path: "src/index.ts",
-              operation: "write",
-              rationale: "write planned",
-            } as never,
-          }),
-        },
-        {
-          eventId: "apply-1",
-          event: event("state.file_mutation_applied", {
-            causality: { invocationId: "inv-write" as never },
-            payload: {
-              protocol: AGENTIC_PROTOCOL_VERSION,
-              mutationId: "mut-1",
-              path: "src/index.ts",
-              operation: "write",
-              afterHash: "blob:v1",
-              hunks: [
-                {
-                  oldStartLine: 4,
-                  oldLineCount: 2,
-                  newStartLine: 4,
-                  newLineCount: 3,
-                  oldTextHash: "blob:old-lines",
-                  newTextHash: "blob:new-lines",
-                },
-              ],
-            } as never,
-          }),
-        },
-      ],
-    });
-
-    const mutation = await call<{ rows: Array<Record<string, unknown>> }>(
-      "query",
-      "SELECT input_state_hash, output_state_hash FROM gad_file_mutations WHERE mutation_id = ?",
-      ["mut-1"]
-    );
-    const inputStateHash = String(mutation.rows[0]?.["input_state_hash"]);
-    const outputStateHash = String(mutation.rows[0]?.["output_state_hash"]);
-    expect(outputStateHash).toMatch(/^state:/);
-    expect(appendResult["headStateHash"]).toBe(outputStateHash);
-
-    // worktree ref tracks the mutation output
-    const ref = await call<any>("resolveRef", { refName: "worktree:traj-1:main" });
-    expect(ref.target).toEqual({ stateHash: outputStateHash });
-
-    const producer = await call<Record<string, unknown> | null>("getGadStateProducer", {
-      stateHash: outputStateHash,
-    });
-    expect(producer).toMatchObject({
-      event_id: "apply-1",
-      invocation_id: "inv-write",
-      produced_by_mutation_id: "mut-1",
-    });
-
-    const file = await call<Record<string, unknown> | null>("readGadFileAtState", {
-      stateHash: outputStateHash,
-      path: "src/index.ts",
-    });
-    expect(file).toMatchObject({ path: "src/index.ts", content_hash: "blob:v1" });
-
-    const diff = await call<{
-      added: Array<Record<string, unknown>>;
-      removed: unknown[];
-      changed: unknown[];
-    }>("diffGadStates", {
-      leftStateHash: inputStateHash,
-      rightStateHash: outputStateHash,
-    });
-    expect(diff.added).toEqual([expect.objectContaining({ path: "src/index.ts" })]);
-
-    const blame = await call<Array<Record<string, unknown>>>("blameGadFileSnippet", {
-      stateHash: outputStateHash,
-      path: "src/index.ts",
-    });
-    expect(blame[0]).toMatchObject({
-      mutation_id: "mut-1",
-      old_start_line: 4,
-      old_line_count: 2,
-      new_start_line: 4,
-      new_line_count: 3,
-      old_text_hash: "blob:old-lines",
-      new_text_hash: "blob:new-lines",
-    });
-  });
-
-  it("applies nested-path mutations as O(depth) path copies that preserve sibling subtrees", async () => {
-    const { call } = await createTestDO(GadWorkspaceDO);
-    const base = await call<any>("ingestWorktreeState", {
-      files: [
-        { path: "src/a.ts", contentHash: "blob:a1" },
-        { path: "src/lib/util.ts", contentHash: "blob:u1" },
-        { path: "docs/readme.md", contentHash: "blob:r1" },
-      ],
-      logId: "traj-deep",
-      head: "main",
-      actor: owner,
-      eventId: "ingest-base",
-    });
-
-    await call("appendTrajectoryBatch", {
-      trajectoryId: "traj-deep",
-      branchId: "main",
-      owner,
-      events: [
-        {
-          eventId: "apply-deep",
-          event: event("state.file_mutation_applied", {
-            causality: { invocationId: "inv-deep" as never },
-            payload: {
-              protocol: AGENTIC_PROTOCOL_VERSION,
-              mutationId: "mut-deep",
-              path: "src/lib/util.ts",
-              operation: "write",
-              afterHash: "blob:u2",
-            } as never,
-          }),
-        },
-      ],
-    });
-
-    const ref = await call<any>("resolveRef", { refName: "worktree:traj-deep:main" });
-    const outputStateHash = ref.target.stateHash as string;
-    expect(outputStateHash).not.toBe(base.stateHash);
-
-    // mutated leaf updated; siblings untouched
-    expect(
-      await call<any>("readGadFileAtState", { stateHash: outputStateHash, path: "src/lib/util.ts" })
-    ).toMatchObject({ content_hash: "blob:u2" });
-    expect(
-      await call<any>("readGadFileAtState", { stateHash: outputStateHash, path: "src/a.ts" })
-    ).toMatchObject({ content_hash: "blob:a1" });
-
-    // the docs subtree manifest is shared verbatim between input and output states
-    const docsBefore = await call<any>("getSubtreeHash", {
-      stateHash: base.stateHash,
-      path: "docs",
-    });
-    const docsAfter = await call<any>("getSubtreeHash", {
-      stateHash: outputStateHash,
-      path: "docs",
-    });
-    expect(docsAfter.subtreeHash).toBe(docsBefore.subtreeHash);
-    // the mutated ancestor chain re-hashed
-    const srcBefore = await call<any>("getSubtreeHash", { stateHash: base.stateHash, path: "src" });
-    const srcAfter = await call<any>("getSubtreeHash", {
-      stateHash: outputStateHash,
-      path: "src",
-    });
-    expect(srcAfter.subtreeHash).not.toBe(srcBefore.subtreeHash);
-  });
-});
-
 describe("state.merge_applied (§3.11)", () => {
   it("records multi-parent transitions for merge events with a pre-created output state", async () => {
     const { call } = await createTestDO(GadWorkspaceDO);
@@ -2337,197 +2169,6 @@ describe("projection replay (§3.12)", () => {
         status: "streaming",
       }),
     ]);
-  });
-
-  it("deterministically rebuilds state-transition chains for mutations without explicit state hashes", async () => {
-    const { call } = await createTestDO(GadWorkspaceDO);
-    // The real producer (pi-runner) emits file_mutation_applied with only
-    // beforeHash/afterHash and no inputStateHash/outputStateHash, so the store
-    // derives input state from the worktree ref. Replay must reset the ref to
-    // the empty state so the rebuilt chain matches the original append.
-    const appendResult = await call<Record<string, unknown>>("appendTrajectoryBatch", {
-      trajectoryId: "traj-1",
-      branchId: "main",
-      owner,
-      events: [
-        {
-          eventId: "apply-a",
-          event: event("state.file_mutation_applied", {
-            causality: { invocationId: "inv-a" as never },
-            payload: {
-              protocol: AGENTIC_PROTOCOL_VERSION,
-              mutationId: "mut-a",
-              path: "a.ts",
-              operation: "write",
-              afterHash: "blob:a1",
-            } as never,
-          }),
-        },
-        {
-          eventId: "apply-b",
-          event: event("state.file_mutation_applied", {
-            causality: { invocationId: "inv-b" as never },
-            payload: {
-              protocol: AGENTIC_PROTOCOL_VERSION,
-              mutationId: "mut-b",
-              path: "b.ts",
-              operation: "write",
-              afterHash: "blob:b1",
-            } as never,
-          }),
-        },
-      ],
-    });
-
-    const transitionsQuery =
-      "SELECT produced_by_mutation_id, input_state_hash, output_state_hash FROM gad_state_transitions ORDER BY event_id";
-    const before = await call<{ rows: Array<Record<string, unknown>> }>(
-      "query",
-      transitionsQuery,
-      []
-    );
-    expect(before.rows).toHaveLength(2);
-    // Chain is contiguous, and the first mutation's input is NOT the final head
-    // (it is the empty state). This is what a non-reset replay would corrupt.
-    expect(before.rows[1]?.["input_state_hash"]).toBe(before.rows[0]?.["output_state_hash"]);
-    expect(before.rows[0]?.["input_state_hash"]).not.toBe(appendResult["headStateHash"]);
-
-    const statesBefore = await call<{ rows: Array<{ cnt: number }> }>(
-      "query",
-      "SELECT COUNT(*) AS cnt FROM gad_worktree_states",
-      []
-    );
-
-    const replay = await call<{ replayed: number }>("rebuildTrajectoryProjections", {});
-    expect(replay.replayed).toBe(2);
-
-    const after = await call<{ rows: Array<Record<string, unknown>> }>(
-      "query",
-      transitionsQuery,
-      []
-    );
-    expect(after.rows).toEqual(before.rows);
-
-    // values (worktree states) survive replay — only projections are rebuilt
-    const statesAfter = await call<{ rows: Array<{ cnt: number }> }>(
-      "query",
-      "SELECT COUNT(*) AS cnt FROM gad_worktree_states",
-      []
-    );
-    expect(statesAfter.rows).toEqual(statesBefore.rows);
-
-    const ref = await call<any>("resolveRef", { refName: "worktree:traj-1:main" });
-    expect(ref.target).toEqual({ stateHash: appendResult["headStateHash"] });
-  });
-
-  it("rebuilds worktree refs for every head when replaying a forked trajectory", async () => {
-    const { call } = await createTestDO(GadWorkspaceDO);
-    // Parent branch: a file mutation, a fork-point marker, then a second
-    // mutation that stays parent-only. Mutations omit inputStateHash so each
-    // head's input state is derived from its own worktree ref during replay.
-    const parent = await call<Record<string, unknown>>("appendTrajectoryBatch", {
-      trajectoryId: "traj-parent",
-      branchId: "branch-parent",
-      owner,
-      events: [
-        {
-          eventId: "apply-a",
-          event: event("state.file_mutation_applied", {
-            causality: { invocationId: "inv-a" as never },
-            payload: {
-              protocol: AGENTIC_PROTOCOL_VERSION,
-              mutationId: "mut-a",
-              path: "a.ts",
-              operation: "write",
-              afterHash: "blob:a1",
-            } as never,
-          }),
-        },
-        {
-          eventId: "fork-point",
-          event: event("message.completed", {
-            turnId: "turn-1" as never,
-            causality: { messageId: "msg-fork" as never },
-            payload: textMessagePayload("msg-fork", "assistant", "fork here"),
-          }),
-        },
-        {
-          eventId: "apply-b",
-          event: event("state.file_mutation_applied", {
-            causality: { invocationId: "inv-b" as never },
-            payload: {
-              protocol: AGENTIC_PROTOCOL_VERSION,
-              mutationId: "mut-b",
-              path: "b.ts",
-              operation: "write",
-              afterHash: "blob:b1",
-            } as never,
-          }),
-        },
-      ],
-    });
-
-    const forkPointHash = String(
-      (
-        await call<{ rows: Array<Record<string, unknown>> }>(
-          "query",
-          "SELECT hash FROM log_events WHERE envelope_id = ?",
-          ["fork-point"]
-        )
-      ).rows[0]?.["hash"]
-    );
-
-    // Fork through the marker: child inherits apply-a + the marker, NOT apply-b.
-    const fork = await call<Record<string, unknown>>("forkTrajectoryBranch", {
-      fromTrajectoryId: "traj-parent",
-      fromBranchId: "branch-parent",
-      toTrajectoryId: "traj-fork",
-      toBranchId: "branch-fork",
-      throughEventHash: forkPointHash,
-      owner,
-    });
-    expect(fork["copied"]).toBe(2); // inherited count; nothing was physically copied
-    expect((fork as any)["lineage"]).toEqual([]);
-    expect(await countRows(call, "log_id = ?", ["traj-fork"])).toBe(0);
-
-    // The two heads diverge: parent reflects both mutations, the fork only one.
-    expect(String(parent["headStateHash"])).toMatch(/^state:/);
-    expect(String(fork["headStateHash"])).toMatch(/^state:/);
-    expect(parent["headStateHash"]).not.toBe(fork["headStateHash"]);
-
-    const readHeads = async () => ({
-      parent: (await call<any>("resolveRef", { refName: "worktree:traj-parent:branch-parent" }))
-        ?.target,
-      fork: (await call<any>("resolveRef", { refName: "worktree:traj-fork:branch-fork" }))?.target,
-    });
-    const headsBefore = await readHeads();
-    expect(headsBefore).toEqual({
-      parent: { stateHash: parent["headStateHash"] },
-      fork: { stateHash: fork["headStateHash"] },
-    });
-
-    // No-copy fork ⇒ apply-a exists once as a log event; its transition is keyed
-    // by event_id, so the table holds one row per distinct event.
-    const transitionsQuery =
-      "SELECT event_id, input_state_hash, output_state_hash, produced_by_mutation_id FROM gad_state_transitions ORDER BY event_id";
-    const transitionsBefore = await call<{ rows: Array<Record<string, unknown>> }>(
-      "query",
-      transitionsQuery,
-      []
-    );
-    expect(transitionsBefore.rows).toHaveLength(2);
-
-    // Replay folds every head's lineage view (3 parent events + 2 inherited).
-    const replay = await call<{ replayed: number }>("rebuildTrajectoryProjections", {});
-    expect(replay.replayed).toBe(5);
-
-    expect(await readHeads()).toEqual(headsBefore);
-    const transitionsAfter = await call<{ rows: Array<Record<string, unknown>> }>(
-      "query",
-      transitionsQuery,
-      []
-    );
-    expect(transitionsAfter.rows).toEqual(transitionsBefore.rows);
   });
 });
 
@@ -3249,7 +2890,16 @@ describe("cache amnesia (§3.17)", () => {
   it("rebuilds identical derived state after deleting all projections and worktree refs", async () => {
     const { call, sql } = await createTestDO(GadWorkspaceDO);
 
-    // Scenario: turn + message (published) + invocation round trip + file mutation.
+    // Scenario: turn + message (published) + invocation round trip + a
+    // worktree snapshot ingest (live worktree-provenance path).
+    await call("ensureBlob", "blob:out1", 8, "text/plain");
+    await call("ingestWorktreeState", {
+      files: [{ path: "src/out.ts", contentHash: "blob:out1" }],
+      logId: "traj-amnesia",
+      head: "main",
+      actor: owner,
+      eventId: "ingest-out",
+    });
     await call("appendTrajectoryBatch", {
       trajectoryId: "traj-amnesia",
       branchId: "main",
@@ -3279,20 +2929,6 @@ describe("cache amnesia (§3.17)", () => {
             createdAt: "2026-05-20T12:00:02.000Z",
             causality: { invocationId: "inv-1" as never },
             payload: { protocol: AGENTIC_PROTOCOL_VERSION, name: "write_file" },
-          }),
-        },
-        {
-          eventId: "apply-1",
-          event: event("state.file_mutation_applied", {
-            createdAt: "2026-05-20T12:00:03.000Z",
-            causality: { invocationId: "inv-1" as never },
-            payload: {
-              protocol: AGENTIC_PROTOCOL_VERSION,
-              mutationId: "mut-1",
-              path: "src/out.ts",
-              operation: "write",
-              afterHash: "blob:out1",
-            } as never,
           }),
         },
         {
@@ -3361,9 +2997,6 @@ describe("cache amnesia (§3.17)", () => {
       "channel_roster",
       "gad_state_transitions",
       "gad_transition_parents",
-      "gad_file_observations",
-      "gad_file_mutations",
-      "gad_file_change_hunks",
       "gad_claims",
     ]) {
       sql.exec(`DELETE FROM ${table}`);
@@ -3402,57 +3035,6 @@ describe("GC reachability protections (§3.18)", () => {
   // A timestamp far past the GC creation grace window so survival in these
   // tests is attributable to reachability rules, not the grace period.
   const PAST_GRACE = "2026-01-01T00:00:00.000Z";
-
-  it("keeps blobs referenced only by file observations out of GC candidates", async () => {
-    const { call, sql } = await createTestDO(GadWorkspaceDO);
-    await call("ensureBlob", "blob:observed", 12, "text/plain");
-    await call("appendTrajectoryBatch", {
-      trajectoryId: "traj-gc-obs",
-      branchId: "main",
-      owner,
-      events: [
-        {
-          eventId: "obs-1",
-          event: event("state.file_observed", {
-            causality: { invocationId: "inv-obs" as never },
-            payload: {
-              protocol: AGENTIC_PROTOCOL_VERSION,
-              observationId: "obs-1",
-              path: "notes.txt",
-              contentHash: "blob:observed",
-            } as never,
-          }),
-        },
-      ],
-    });
-    sql.exec(`UPDATE gad_blobs SET created_at = ?`, PAST_GRACE);
-    sql.exec(`UPDATE gad_worktree_states SET created_at = ?`, PAST_GRACE);
-
-    await call("runGadGcMark");
-
-    const candidates = await call<{ rows: Array<{ digest: string }> }>(
-      "query",
-      "SELECT digest FROM gad_gc_candidates",
-      []
-    );
-    expect(candidates.rows.map((row) => row.digest)).not.toContain("blob:observed");
-
-    // The observation's file version and blob survive the mark phase.
-    const versions = await call<{ rows: Array<{ content_hash: string }> }>(
-      "query",
-      "SELECT content_hash FROM gad_file_versions WHERE content_hash = ?",
-      ["blob:observed"]
-    );
-    expect(versions.rows).toHaveLength(1);
-    const swept = await call<{ digests: string[] }>("runGadGcSweep", { minAgeMs: 0 });
-    expect(swept.digests).not.toContain("blob:observed");
-    const blobs = await call<{ rows: Array<{ hash: string }> }>(
-      "query",
-      "SELECT hash FROM gad_blobs WHERE hash = ?",
-      ["blob:observed"]
-    );
-    expect(blobs.rows).toHaveLength(1);
-  });
 
   it("protects newly staged worktree states during the creation grace window", async () => {
     const { call } = await createTestDO(GadWorkspaceDO);

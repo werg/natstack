@@ -70,9 +70,6 @@ const GAD_REQUIRED_TABLES = [
   "gad_manifest_entries",
   "gad_state_transitions",
   "gad_transition_parents",
-  "gad_file_observations",
-  "gad_file_mutations",
-  "gad_file_change_hunks",
   "gad_worktree_edit_ops",
   "gad_claims",
   "gad_gc_candidates",
@@ -91,7 +88,6 @@ const TERMINAL_INVOCATION_KINDS = new Set([
 ]);
 
 const STATE_TRANSITION_KINDS = new Set([
-  "state.file_mutation_applied",
   "state.transition_recorded",
   "state.snapshot_ingested",
   "state.merge_applied",
@@ -1055,65 +1051,6 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS gad_file_observations (
-        observation_id TEXT PRIMARY KEY,
-        event_id TEXT NOT NULL,
-        invocation_id TEXT,
-        path TEXT NOT NULL,
-        observed_state_hash TEXT NOT NULL,
-        file_version_id INTEGER,
-        content_hash TEXT,
-        size INTEGER,
-        mime_type TEXT,
-        range_start_line INTEGER,
-        range_end_line INTEGER,
-        summary TEXT,
-        error_message TEXT,
-        created_at TEXT NOT NULL
-      )
-    `);
-    this.sql.exec(
-      `CREATE INDEX IF NOT EXISTS idx_gad_observations_path ON gad_file_observations(path, created_at)`
-    );
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS gad_file_mutations (
-        mutation_id TEXT PRIMARY KEY,
-        intended_event_id TEXT,
-        applied_event_id TEXT,
-        invocation_id TEXT,
-        path TEXT NOT NULL,
-        operation TEXT NOT NULL,
-        status TEXT NOT NULL,
-        planned_params_json TEXT,
-        before_hash TEXT,
-        after_hash TEXT,
-        input_state_hash TEXT,
-        output_state_hash TEXT,
-        state_transition_event_id TEXT,
-        error_message TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      )
-    `);
-    this.sql.exec(
-      `CREATE INDEX IF NOT EXISTS idx_gad_mutations_invocation ON gad_file_mutations(invocation_id)`
-    );
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS gad_file_change_hunks (
-        id INTEGER PRIMARY KEY,
-        mutation_id TEXT NOT NULL,
-        path TEXT NOT NULL,
-        before_file_version_id INTEGER,
-        after_file_version_id INTEGER,
-        old_start_line INTEGER,
-        old_line_count INTEGER,
-        new_start_line INTEGER,
-        new_line_count INTEGER,
-        old_text_hash TEXT,
-        new_text_hash TEXT
-      )
-    `);
-    this.sql.exec(`
       CREATE TABLE IF NOT EXISTS gad_worktree_edit_ops (
         id INTEGER PRIMARY KEY,
         event_id TEXT NOT NULL,
@@ -1869,9 +1806,8 @@ export class GadWorkspaceDO extends DurableObjectBase {
   }
 
   /** Snapshot/merge events reference pre-created VALUES; reject appends whose
-   *  output state does not exist (file mutations compute theirs in-projector). */
+   *  output state does not exist. */
   private assertStateTransitionPayloadValid(payloadKind: string, payload: unknown): void {
-    if (payloadKind === "state.file_mutation_applied") return;
     const record =
       payload && typeof payload === "object" && !Array.isArray(payload)
         ? (payload as Record<string, unknown>)
@@ -2152,14 +2088,6 @@ export class GadWorkspaceDO extends DurableObjectBase {
       this.projectApproval(envelope);
       return;
     }
-    if (kind === "state.file_observed") {
-      this.projectFileObserved(envelope);
-      return;
-    }
-    if (kind === "state.file_mutation_intended") {
-      this.projectFileMutationIntended(envelope);
-      return;
-    }
     if (STATE_TRANSITION_KINDS.has(kind)) {
       this.projectStateTransition(envelope);
       return;
@@ -2428,68 +2356,9 @@ export class GadWorkspaceDO extends DurableObjectBase {
     );
   }
 
-  private projectFileObserved(envelope: LogEnvelope): void {
-    const payload = envelope.payload as JsonRecord;
-    const pathValue = asString(payload["path"]);
-    if (!pathValue) return;
-    const path = normalizePath(pathValue);
-    const stateHash =
-      asString(payload["stateHash"]) ?? this.latestStateHash(envelope.logId, envelope.head);
-    const contentHash = asString(payload["contentHash"]);
-    const versionId = contentHash ? this.ensureFileVersion(path, contentHash, 33188) : null;
-    this.sql.exec(
-      `INSERT OR REPLACE INTO gad_file_observations (
-         observation_id, event_id, invocation_id, path, observed_state_hash, file_version_id,
-         content_hash, size, mime_type, summary, error_message, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      asString(payload["observationId"]) ?? String(envelope.envelopeId),
-      String(envelope.envelopeId),
-      envelope.causality?.invocationId ?? asString(payload["invocationId"]),
-      path,
-      stateHash,
-      versionId,
-      contentHash,
-      typeof payload["size"] === "number" ? payload["size"] : null,
-      asString(payload["mimeType"]),
-      asString(payload["summary"]),
-      asString(payload["error"]),
-      envelope.appendedAt
-    );
-  }
-
-  private projectFileMutationIntended(envelope: LogEnvelope): void {
-    const payload = envelope.payload as JsonRecord;
-    const pathValue =
-      asString(payload["path"]) ??
-      (Array.isArray(payload["paths"]) ? asString(payload["paths"][0]) : null);
-    if (!pathValue) return;
-    const mutationId = asString(payload["mutationId"]) ?? String(envelope.envelopeId);
-    const now = nowIso();
-    this.sql.exec(
-      `INSERT INTO gad_file_mutations (
-         mutation_id, intended_event_id, invocation_id, path, operation, status,
-         planned_params_json, input_state_hash, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(mutation_id) DO UPDATE SET
-         intended_event_id = excluded.intended_event_id,
-         planned_params_json = excluded.planned_params_json,
-         updated_at = excluded.updated_at`,
-      mutationId,
-      String(envelope.envelopeId),
-      envelope.causality?.invocationId ?? asString(payload["invocationId"]),
-      normalizePath(pathValue),
-      asString(payload["operation"]) ?? "write",
-      "intended",
-      JSON.stringify(payload),
-      asString(payload["inputStateHash"]) ?? this.latestStateHash(envelope.logId, envelope.head),
-      now,
-      now
-    );
-  }
-
-  /** Generic state-transition projector (P5 applied to worktree events): file
-   *  mutation, snapshot ingest, and merge transitions are handled uniformly —
-   *  parent rows, ref advance, and mutation/hunk bookkeeping included. */
+  /** Generic state-transition projector (P5 applied to worktree events):
+   *  snapshot ingest and merge transitions are handled uniformly — parent rows
+   *  and ref advance included. */
   private projectStateTransition(envelope: LogEnvelope): void {
     const payload = envelope.payload as JsonRecord;
     const kind = envelope.payloadKind;
@@ -2502,46 +2371,12 @@ export class GadWorkspaceDO extends DurableObjectBase {
       ? (payload["parentStateHashes"] as unknown[]).map((value) => String(value))
       : [];
 
-    let outputStateHash: string;
-    let beforeContentHash: string | null = null;
-    let beforeFileVersionId: number | null = null;
-    let afterFileVersionId: number | null = null;
-    let mutationPath: string | null = null;
-
-    if (kind === "state.file_mutation_applied") {
-      const pathValue =
-        asString(payload["path"]) ??
-        (Array.isArray(payload["paths"]) ? asString(payload["paths"][0]) : null);
-      if (!pathValue) return;
-      mutationPath = normalizePath(pathValue);
-      const afterHash = asString(payload["afterHash"]) ?? asString(payload["contentHash"]);
-      if (!afterHash) {
-        throw new Error("state.file_mutation_applied requires payload.afterHash or contentHash");
-      }
-      const beforeFile = this.readGadFileAtState({
-        stateHash: inputStateHash,
-        path: mutationPath,
-      });
-      beforeContentHash = asString(beforeFile?.["content_hash"]);
-      beforeFileVersionId =
-        typeof beforeFile?.["file_version_id"] === "number"
-          ? (beforeFile["file_version_id"] as number)
-          : null;
-      afterFileVersionId = this.ensureFileVersion(mutationPath, afterHash, 33188);
-      outputStateHash =
-        asString(payload["outputStateHash"]) ??
-        this.applyFileWrite(inputStateHash, mutationPath, afterFileVersionId, afterHash, 33188, {
-          eventId,
-          invocationId,
-        });
-    } else {
-      const declared = asString(payload["outputStateHash"]);
-      if (!declared) throw new Error(`${kind} requires payload.outputStateHash`);
-      if (!this.stateExists(declared)) {
-        throw new Error(`${kind} output state value does not exist: ${declared}`);
-      }
-      outputStateHash = declared;
+    const declared = asString(payload["outputStateHash"]);
+    if (!declared) throw new Error(`${kind} requires payload.outputStateHash`);
+    if (!this.stateExists(declared)) {
+      throw new Error(`${kind} output state value does not exist: ${declared}`);
     }
+    const outputStateHash = declared;
 
     this.sql.exec(
       `INSERT OR IGNORE INTO gad_state_transitions (
@@ -2552,7 +2387,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       invocationId,
       inputStateHash,
       outputStateHash,
-      asString(payload["mutationId"]) ?? (kind === "state.file_mutation_applied" ? eventId : null),
+      asString(payload["mutationId"]) ?? null,
       asString(payload["summary"]) ?? asString(payload["rationale"]),
       JSON.stringify(payload),
       envelope.appendedAt
@@ -2567,78 +2402,6 @@ export class GadWorkspaceDO extends DurableObjectBase {
         ordinal
       );
     });
-
-    if (mutationPath) {
-      const mutationId = asString(payload["mutationId"]) ?? eventId;
-      const now = nowIso();
-      const afterHash = asString(payload["afterHash"]) ?? asString(payload["contentHash"]);
-      this.sql.exec(
-        `INSERT INTO gad_file_mutations (
-           mutation_id, applied_event_id, invocation_id, path, operation, status,
-           before_hash, after_hash, input_state_hash, output_state_hash,
-           state_transition_event_id, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(mutation_id) DO UPDATE SET
-           applied_event_id = excluded.applied_event_id,
-           invocation_id = COALESCE(excluded.invocation_id, gad_file_mutations.invocation_id),
-           status = excluded.status,
-           before_hash = excluded.before_hash,
-           after_hash = excluded.after_hash,
-           input_state_hash = excluded.input_state_hash,
-           output_state_hash = excluded.output_state_hash,
-           state_transition_event_id = excluded.state_transition_event_id,
-           updated_at = excluded.updated_at`,
-        mutationId,
-        eventId,
-        invocationId,
-        mutationPath,
-        asString(payload["operation"]) ?? "write",
-        asString(payload["status"]) ?? "applied",
-        beforeContentHash,
-        afterHash,
-        inputStateHash,
-        outputStateHash,
-        eventId,
-        now,
-        now
-      );
-      const hunks = Array.isArray(payload["hunks"]) ? payload["hunks"] : [];
-      for (const hunk of hunks) {
-        if (!hunk || typeof hunk !== "object" || Array.isArray(hunk)) continue;
-        const record = hunk as JsonRecord;
-        const values: SqlBinding[] = [
-          mutationId,
-          mutationPath,
-          beforeFileVersionId,
-          afterFileVersionId,
-          typeof record["oldStartLine"] === "number" ? record["oldStartLine"] : null,
-          typeof record["oldLineCount"] === "number" ? record["oldLineCount"] : null,
-          typeof record["newStartLine"] === "number" ? record["newStartLine"] : null,
-          typeof record["newLineCount"] === "number" ? record["newLineCount"] : null,
-          asString(record["oldTextHash"]),
-          asString(record["newTextHash"]),
-        ];
-        // Folding the same event under multiple heads (forks, replay) must not
-        // duplicate hunks: insert only when the identical row is absent.
-        this.sql.exec(
-          `INSERT INTO gad_file_change_hunks (
-             mutation_id, path, before_file_version_id, after_file_version_id,
-             old_start_line, old_line_count, new_start_line, new_line_count,
-             old_text_hash, new_text_hash
-           )
-           SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-           WHERE NOT EXISTS (
-             SELECT 1 FROM gad_file_change_hunks
-             WHERE mutation_id = ?1 AND path = ?2
-               AND COALESCE(old_start_line, -1) = COALESCE(?5, -1)
-               AND COALESCE(new_start_line, -1) = COALESCE(?7, -1)
-               AND COALESCE(old_text_hash, '') = COALESCE(?9, '')
-               AND COALESCE(new_text_hash, '') = COALESCE(?10, '')
-           )`,
-          ...values
-        );
-      }
-    }
 
     this.updateRefInternal({
       refName: this.worktreeRefName(envelope.logId, envelope.head),
@@ -2959,75 +2722,6 @@ export class GadWorkspaceDO extends DurableObjectBase {
     return stateHash;
   }
 
-  /** O(depth) path copy: replace one file, rehash only the ancestor chain. */
-  private applyFileWrite(
-    inputStateHash: string,
-    path: string,
-    fileVersionId: number,
-    contentHash: string,
-    mode: number,
-    metadata: Record<string, unknown>
-  ): string {
-    const segments = path.split("/");
-    const rewrite = (manifestHash: string | null, depth: number): string => {
-      const entries = manifestHash ? this.manifestEntries(manifestHash) : [];
-      const name = segments[depth]!;
-      const next: Array<
-        | { name: string; kind: "file"; contentHash: string; mode: number; fileVersionId: number }
-        | { name: string; kind: "dir"; childHash: string }
-      > = [];
-      let replaced = false;
-      for (const entry of entries) {
-        const entryName = String(entry["name"]);
-        if (entryName === name) {
-          replaced = true;
-          if (depth === segments.length - 1) {
-            next.push({ name, kind: "file", contentHash, mode, fileVersionId });
-          } else {
-            const childHash = rewrite(asString(entry["child_manifest_hash"]), depth + 1);
-            next.push({ name, kind: "dir", childHash });
-          }
-          continue;
-        }
-        if (entry["entry_kind"] === "dir") {
-          next.push({
-            name: entryName,
-            kind: "dir",
-            childHash: String(entry["child_manifest_hash"]),
-          });
-        } else {
-          next.push({
-            name: entryName,
-            kind: "file",
-            contentHash: String(entry["content_hash"]),
-            mode: asNumber(entry["mode"]),
-            fileVersionId: asNumber(entry["file_version_id"]),
-          });
-        }
-      }
-      if (!replaced) {
-        if (depth === segments.length - 1) {
-          next.push({ name, kind: "file", contentHash, mode, fileVersionId });
-        } else {
-          next.push({ name, kind: "dir", childHash: rewrite(null, depth + 1) });
-        }
-      }
-      return this.storeManifestNode(next);
-    };
-    const inputRoot = this.manifestRootForState(inputStateHash);
-    const newRoot = rewrite(inputRoot === EMPTY_MANIFEST_HASH ? null : inputRoot, 0);
-    const stateHash = this.stateHashForRoot(newRoot);
-    this.sql.exec(
-      `INSERT OR IGNORE INTO gad_worktree_states (state_hash, manifest_root_hash, metadata_json, created_at)
-       VALUES (?, ?, ?, ?)`,
-      stateHash,
-      newRoot,
-      JSON.stringify(metadata),
-      nowIso()
-    );
-    return stateHash;
-  }
-
   /** Resolve the manifest hash of the dir at `path` (root when empty). */
   private manifestDirAtPath(stateHash: string, path: string | null | undefined): string | null {
     let manifestHash = this.manifestRootForState(stateHash);
@@ -3328,32 +3022,6 @@ export class GadWorkspaceDO extends DurableObjectBase {
         `SELECT ordinal, kind, path, old_content_hash, new_content_hash, hunks_json, mode
          FROM gad_worktree_edit_ops WHERE output_state_hash = ? ORDER BY ordinal ASC`,
         input.outputStateHash
-      )
-      .toArray() as JsonRecord[];
-  }
-
-  @rpc({ callers: ["panel", "do", "worker", "server", "harness"] })
-  blameGadFileSnippet(input: {
-    stateHash?: string | null;
-    fileVersionId?: number | null;
-    path: string;
-  }): JsonRecord[] {
-    this.ensureReady();
-    const path = normalizePath(input.path);
-    const fileVersionId =
-      input.fileVersionId ??
-      this.readGadFileAtState({
-        stateHash: input.stateHash ?? EMPTY_STATE_HASH,
-        path,
-      })?.["file_version_id"];
-    if (fileVersionId == null) return [];
-    return this.sql
-      .exec(
-        `SELECT * FROM gad_file_change_hunks
-         WHERE path = ? AND after_file_version_id = ?
-         ORDER BY id ASC`,
-        path,
-        fileVersionId as SqlBinding
       )
       .toArray() as JsonRecord[];
   }
@@ -4036,25 +3704,13 @@ export class GadWorkspaceDO extends DurableObjectBase {
         if (rootHash) walkManifest(rootHash);
       }
 
-      // 4. Kept file versions: referenced by kept manifests or blame data.
+      // 4. Kept file versions: referenced by kept manifests.
       const keptFileVersions = new Set<number>();
       for (const manifestHash of keptManifests) {
         for (const entry of this.manifestEntries(manifestHash)) {
           const id = entry["file_version_id"];
           if (typeof id === "number") keptFileVersions.add(id);
         }
-      }
-      for (const row of this.sql
-        .exec(`SELECT after_file_version_id AS a FROM gad_file_change_hunks`)
-        .toArray() as JsonRecord[]) {
-        if (typeof row["a"] === "number") keptFileVersions.add(row["a"] as number);
-      }
-      for (const row of this.sql
-        .exec(
-          `SELECT file_version_id AS a FROM gad_file_observations WHERE file_version_id IS NOT NULL`
-        )
-        .toArray() as JsonRecord[]) {
-        if (typeof row["a"] === "number") keptFileVersions.add(row["a"] as number);
       }
 
       // 5. Sweep orphaned rows.
@@ -4087,33 +3743,20 @@ export class GadWorkspaceDO extends DurableObjectBase {
         sweptFileVersions += 1;
       }
 
-      // 6. Blob candidates: not referenced by surviving file versions, log
-      // payload spills, mutations, nor file observations (the same blob
-      // reachability collectGarbageBlobRefs uses); drop candidates that
-      // regained a reference.
+      // 6. Blob candidates: not referenced by surviving file versions nor log
+      // payload spills (the same blob reachability collectGarbageBlobRefs
+      // uses); drop candidates that regained a reference.
       this.sql.exec(
         `INSERT OR IGNORE INTO gad_gc_candidates (digest, marked_at)
          SELECT b.hash, ? FROM gad_blobs b
           WHERE NOT EXISTS (SELECT 1 FROM gad_file_versions fv WHERE fv.content_hash = b.hash)
-            AND NOT EXISTS (SELECT 1 FROM log_blob_refs lbr WHERE lbr.digest = b.hash)
-            AND NOT EXISTS (
-              SELECT 1 FROM gad_file_mutations fm
-               WHERE fm.before_hash = b.hash OR fm.after_hash = b.hash)
-            AND NOT EXISTS (
-              SELECT 1 FROM gad_file_observations fo WHERE fo.content_hash = b.hash)`,
+            AND NOT EXISTS (SELECT 1 FROM log_blob_refs lbr WHERE lbr.digest = b.hash)`,
         nowIso()
       );
       this.sql.exec(
         `DELETE FROM gad_gc_candidates
           WHERE EXISTS (SELECT 1 FROM gad_file_versions fv WHERE fv.content_hash = gad_gc_candidates.digest)
-             OR EXISTS (SELECT 1 FROM log_blob_refs lbr WHERE lbr.digest = gad_gc_candidates.digest)
-             OR EXISTS (
-               SELECT 1 FROM gad_file_mutations fm
-                WHERE fm.before_hash = gad_gc_candidates.digest
-                   OR fm.after_hash = gad_gc_candidates.digest)
-             OR EXISTS (
-               SELECT 1 FROM gad_file_observations fo
-                WHERE fo.content_hash = gad_gc_candidates.digest)`
+             OR EXISTS (SELECT 1 FROM log_blob_refs lbr WHERE lbr.digest = gad_gc_candidates.digest)`
       );
       const candidates = asNumber(
         (this.sql.exec(`SELECT COUNT(*) AS c FROM gad_gc_candidates`).one() as JsonRecord)["c"]
@@ -4149,13 +3792,6 @@ export class GadWorkspaceDO extends DurableObjectBase {
             WHERE marked_at <= ?
               AND NOT EXISTS (SELECT 1 FROM gad_file_versions fv WHERE fv.content_hash = gad_gc_candidates.digest)
               AND NOT EXISTS (SELECT 1 FROM log_blob_refs lbr WHERE lbr.digest = gad_gc_candidates.digest)
-              AND NOT EXISTS (
-                SELECT 1 FROM gad_file_mutations fm
-                 WHERE fm.before_hash = gad_gc_candidates.digest
-                    OR fm.after_hash = gad_gc_candidates.digest)
-              AND NOT EXISTS (
-                SELECT 1 FROM gad_file_observations fo
-                 WHERE fo.content_hash = gad_gc_candidates.digest)
               AND NOT EXISTS (
                 SELECT 1 FROM gad_blobs b
                  WHERE b.hash = gad_gc_candidates.digest AND b.created_at > ?)`,
@@ -4392,9 +4028,6 @@ export class GadWorkspaceDO extends DurableObjectBase {
       "trajectory_approvals",
       "trajectory_usage_rollups",
       "channel_roster",
-      "gad_file_observations",
-      "gad_file_mutations",
-      "gad_file_change_hunks",
       "gad_state_transitions",
       "gad_transition_parents",
       "gad_claims",
@@ -5746,8 +5379,6 @@ export class GadWorkspaceDO extends DurableObjectBase {
        LEFT JOIN (
          SELECT digest FROM log_blob_refs
          UNION
-         SELECT content_hash AS digest FROM gad_file_observations WHERE content_hash IS NOT NULL
-         UNION
          SELECT content_hash AS digest FROM gad_file_versions WHERE content_hash IS NOT NULL
        ) refs ON refs.digest = b.hash
        WHERE refs.digest IS NULL
@@ -5783,10 +5414,6 @@ export class GadWorkspaceDO extends DurableObjectBase {
       {
         metric: "Worktree states",
         value: count(`SELECT COUNT(*) AS value FROM gad_worktree_states`),
-      },
-      {
-        metric: "File mutations",
-        value: count(`SELECT COUNT(*) AS value FROM gad_file_mutations`),
       },
       { metric: "Claims", value: count(`SELECT COUNT(*) AS value FROM gad_claims`) },
     ];

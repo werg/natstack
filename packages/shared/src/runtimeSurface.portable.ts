@@ -125,7 +125,6 @@ export const GAD_MEMBERS = [
   "diffGadStates",
   "readGadFileAtState",
   "getGadStateProducer",
-  "blameGadFileSnippet",
   "validateGadHashes",
   "clearDirtyAfterValidation",
   "checkGadIntegrity",

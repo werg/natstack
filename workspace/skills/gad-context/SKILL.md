@@ -38,7 +38,6 @@ Useful APIs:
 - `gad.diffGadStates({ leftStateHash, rightStateHash })`
 - `gad.readGadFileAtState({ stateHash, path })`
 - `gad.getGadStateProducer({ stateHash })`
-- `gad.blameGadFileSnippet({ stateHash, path })`
 - `gad.inspectStorageDiagnostics({ rowByteLimit, limit })`
 
 Current implemented hardening:

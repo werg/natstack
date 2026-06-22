@@ -297,11 +297,6 @@ export interface GadClient {
   }): Promise<{ added: GadJsonRecord[]; removed: GadJsonRecord[]; changed: GadJsonRecord[] }>;
   readGadFileAtState(input: { stateHash: string; path: string }): Promise<GadJsonRecord | null>;
   getGadStateProducer(input: { stateHash: string }): Promise<GadJsonRecord | null>;
-  blameGadFileSnippet(input: {
-    stateHash?: string | null;
-    fileVersionId?: number | null;
-    path: string;
-  }): Promise<GadJsonRecord[]>;
   validateGadHashes(input?: object): Promise<{ ok: boolean; errors: string[] }>;
   clearDirtyAfterValidation(input?: object): Promise<{ ok: boolean; errors: string[] }>;
   checkGadIntegrity(input?: object): Promise<{ ok: boolean; errors: GadJsonRecord[] }>;
@@ -446,7 +441,6 @@ export function createGadClient(rpc: RpcCaller): GadClient {
     diffGadStates: (input) => call("diffGadStates", input),
     readGadFileAtState: (input) => call("readGadFileAtState", input),
     getGadStateProducer: (input) => call("getGadStateProducer", input),
-    blameGadFileSnippet: (input) => call("blameGadFileSnippet", input),
     validateGadHashes: (input) => call("validateGadHashes", input),
     clearDirtyAfterValidation: (input) => call("clearDirtyAfterValidation", input),
     checkGadIntegrity: (input) => call("checkGadIntegrity", input),
