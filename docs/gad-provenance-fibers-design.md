@@ -3,11 +3,30 @@
 Status: proposal. Pre-release; **no backward compatibility** — schema is reset on
 bump (`GadWorkspaceDO.dropPersistenceTables`), so we add/rename freely.
 
+**Durability boundary (reconciling with the review).** Resetting on bump is free
+for the _runtime_ projections, but the review is right (`§5`, cross-cutting #5)
+that memory which wipes on every bump is not long-term memory. This spec keeps
+claims and fibers on the reset-on-bump substrate _deliberately_: within a schema
+era they are durable working memory; across a bump they are gone. That is
+acceptable only while pre-release. Graduating the knowledge ledger to survive
+schema change — a durable sub-ledger or real migrations (review roadmap §7) — is a
+**precondition for calling the memory pillar "real," not a later nicety.** V1
+builds the loop; it does not yet claim cross-era persistence, and the prompt (§13)
+must not promise the agent more permanence than the substrate delivers.
+
 This spec turns GAD's existing ledger kernel into a single, queryable
 **provenance graph** that joins the worktree VCS, the agent trajectory, and a
 hermeneutic claim model — and feeds the agent a compact, semantically ranked
 provenance summary at read time. It is the concrete plan behind the June 2026
 GAD review (`docs/gad-system-review-2026-06.md`).
+
+**Scope.** This spec operationalizes two of the review's three pillars — the VCS
+(blame) and the memory/hermeneutic (claims) layers — unified on one graph. The
+third pillar, durable task/goal/intent tracking (review §4 Move C, roadmap §5), is
+**out of scope here**: the fiber model is built to absorb it later (an `intent`
+anchor_kind plus `blocks`/`about`/`justified_by` fibers drop into §3–§6 without
+reshaping them), but no intent producers, tables, or tools ship in this plan.
+"One graph" is the eventual frame; this spec delivers its memory+VCS slice.
 
 **Already landed** (the cleanup this design assumed): the dead
 `gad_file_mutations` / `gad_file_change_hunks` / `gad_file_observations`
@@ -94,7 +113,7 @@ nudges density without dominating it.
 ```sql
 CREATE TABLE gad_fibers (
   id INTEGER PRIMARY KEY,
-  event_id TEXT NOT NULL,          -- canonical: the log event that asserted the fiber
+  event_id TEXT,                   -- organic fibers: the log event that asserted them; NULL for soft fibers (see below)
   kind TEXT NOT NULL,
   src_kind TEXT NOT NULL,
   src_id TEXT NOT NULL,
@@ -104,15 +123,24 @@ CREATE TABLE gad_fibers (
   invocation_id TEXT,
   turn_seq INTEGER,                -- creating turn's ordinal in its branch (for turn-decay)
   weight REAL NOT NULL DEFAULT 1,  -- defaulted from kind; a `weight` hook for future hand-boosts
+  hits INTEGER NOT NULL DEFAULT 1, -- soft fibers: coalesced repeat count; organic fibers: always 1
   created_at TEXT NOT NULL
 );
 CREATE INDEX idx_fibers_src ON gad_fibers(src_kind, src_id);
 CREATE INDEX idx_fibers_dst ON gad_fibers(dst_kind, dst_id, id);
 CREATE INDEX idx_fibers_kind ON gad_fibers(kind);
 CREATE INDEX idx_fibers_session ON gad_fibers(session_id);
+-- Soft fibers coalesce instead of appending a row (and a log event) per read:
+-- one counted upsert per edge identity within a session. Organic fibers keep one
+-- row per event_id and never collide here (partial index covers soft rows only).
+CREATE UNIQUE INDEX idx_fibers_soft_coalesce
+  ON gad_fibers(kind, src_kind, src_id, dst_kind, dst_id, session_id)
+  WHERE event_id IS NULL;
 
--- Incrementally maintained on every fiber insert; powers the IDF/specificity
--- and normalization terms (§6.2) without a read-time COUNT.
+-- Incrementally maintained as fibers are created; powers the IDF/specificity and
+-- normalization terms (§6.2) without a read-time COUNT. Counts *distinct*
+-- counterparties — a new neighbor bumps it, a coalesced soft-fiber repeat does
+-- not — so high-traffic nodes don't saturate idf toward uniform.
 CREATE TABLE gad_node_degree (
   node_kind TEXT NOT NULL,
   node_id TEXT NOT NULL,
@@ -121,9 +149,25 @@ CREATE TABLE gad_node_degree (
 );
 ```
 
-Fibers are a projection of fiber-events on the existing log kernel (append a log
-event, project a `gad_fibers` row, bump `gad_node_degree`). They are replayable
-like every other projection — **not** separate authority from the log.
+**Two tiers, because reads are the hot path.** _Organic_ fibers
+(`edited`/`asserted`/`cited`/`relate_*`) are real provenance: each is a projection
+of one log event, replayable like every other projection, **idempotent per
+`event_id`** (folding the same event under multiple heads — forks, replay — must
+not double-insert the row or double-bump `gad_node_degree`, exactly the dedup
+discipline the deleted `gad_file_change_hunks` path carried), and **never pruned**.
+
+_Soft_ fibers (`observed`/`probed`/`included`) are best-effort _signal_, not
+provenance, and they are written on the hottest path in the system — every read.
+If each appended a log event they would bloat the hash-chained, replayed, forkable
+log by 10–100× and put a DO write on every read. So they do **not** append per-read
+log events: they are a **counted upsert** (`event_id IS NULL`, bump `hits`, refresh
+`turn_seq`) coalesced by edge identity within a session. They live off the
+canonical log, are excluded from integrity/replay, and are **prunable** — aged out
+below a relevance floor on the same periodic pass that maintains `gad_fiber_affinity`
+(§6.5). Density (§6) reads both tiers uniformly; a soft fiber contributes its kind
+weight scaled by a _sublinear_ function of `hits` (accumulation, but bounded), so
+repeated showing still compounds without a row per read, while organic repeats
+compound by adding rows (distinct `event_id`s).
 
 ## 4. Keystone: persist the edit → trajectory causal edge
 
@@ -152,7 +196,7 @@ fibers. Sketch — "who last changed these lines of this file at this state":
 
 ```sql
 SELECT eo.path, eo.hunks_json, eo.old_content_hash, eo.new_content_hash,
-       eo.output_state_hash, le.event_id, le.causality_json, st.invocation_id
+       eo.output_state_hash, le.envelope_id AS event_id, le.causality_json, st.invocation_id
 FROM gad_worktree_edit_ops eo
 JOIN log_events le ON le.envelope_id = eo.event_id
 LEFT JOIN gad_state_transitions st ON st.event_id = eo.event_id
@@ -367,11 +411,16 @@ contention; just sequence query → attach → write.
 
 The agent's `provenanceDepth`/`resultBudget` args live in the invocation request,
 so they are logged and replayable like any tool input. Whether (and how much of)
-an attachment appears is timing- and budget-dependent, but that composes cleanly
-with replay determinism because **the log is the source of truth, not the
-ranking**: the rendered block is an ephemeral runtime decision that is never
-replayed, and we only ever persist `included`/`probed` fibers for what was
-genuinely shown/requested.
+an attachment appears is timing- and budget-dependent — and the `included`/`probed`
+fibers it spawns therefore depend on runtime timing (warm hit vs. miss vs.
+degrade), so they are **not** a deterministic function of the log. Do not paper
+over this: it is exactly why those fibers are _soft_ (§3). Determinism is kept
+where it must be — the **organic** graph (edits, claims, relations) is fully
+log-derived, replayable, and the only thing `checkGadIntegrity` covers — while the
+soft layer is an explicitly non-deterministic affinity cache layered on top,
+outside integrity and never replayed. The rendered block itself is ephemeral and
+never persisted; the soft upsert records only what was genuinely shown/requested,
+so the cache never claims more than the agent saw.
 
 ### 7.5 Attachment format
 
@@ -504,8 +553,16 @@ and the dead `StatePayload` fields. Reads are re-homed onto `observed` fibers
 1. **Keystone + blame** — causality through `applyEdits`; `edited` fibers;
    `gad_fibers` + `gad_node_degree` + projection; edit-op blame view.
    _(Dead-table/kind deletion already landed.)_
-2. **Read observation + claims** — `observed` fibers from the read tool;
-   `record_claim`/`relate_claims`/`revise_claim` tools; `gad_claim_relations`.
+2. **Read observation + claims** — `observed`/`probed` _soft_ fibers from the read
+   tool (coalesced upsert, off-log, §3); `record_claim`/`relate_claims`/
+   `revise_claim` tools; `gad_claim_relations`.
+
+   **Value gate before phase 3.** Phases 1–2 already deliver the differentiators —
+   blame that works and agent-recorded claims that return on recall. Confirm _that_
+   is visibly useful on real trajectories **before** building the §6 ranking
+   engine, whose every knob (§12) can only be tuned on logs that do not exist yet.
+   If recency-ranked recall plus working blame suffice, the spreading-activation
+   machinery is a phase-3 enhancement, not a launch dependency.
 3. **Density + attachment** — `provenanceForFile` (§6, capped 2-hop, `idf`/`norm`,
    turn/ordinality decay); mandatory `provenanceDepth`/`resultBudget` read args
    with the depth→cap mapping (§7.1); parallel + best-effort attachment (§7.2–7.5);
@@ -533,6 +590,14 @@ Resolved (locked for the build):
 - **Attachment:** parallel with the fs read, on a standalone budget decoupled from
   read latency, best-effort, warmed ahead; reinforcement (`included`) only for
   what was actually shown.
+- **Fiber tiers:** organic fibers (`edited`/`asserted`/`relate_*`) are log-backed,
+  replayable, idempotent per `event_id`, never pruned; soft fibers
+  (`observed`/`probed`/`included`) are an off-log, coalesced (`hits`), prunable
+  affinity signal excluded from integrity/replay (§3). Reads never append per-read
+  log events.
+- **Determinism:** the organic graph is fully log-derived and replayable and is
+  what `checkGadIntegrity` covers; the soft signal layer is explicitly
+  non-deterministic (timing-dependent) and sits outside it (§7.4).
 
 Remaining knobs (need real logs, set defaults now, tune empirically):
 
@@ -550,6 +615,17 @@ Remaining knobs (need real logs, set defaults now, tune empirically):
   `trace`), the hard ceilings on agent-requested depth/budget, and a sensible
   default `resultBudget`. The `probed` fiber weight tracks `included` (same
   echo-chamber treatment).
+- The soft-fiber `hits` → weight curve (§3): density scales a coalesced soft fiber
+  by a sublinear function of `hits` while organic fibers compound by row. Default
+  `sqrt(hits)`; tune jointly with the `included` ratio against echo-chamber
+  behavior.
+- **Mandatory read budgets are a bet, not a certainty.** `provenanceDepth` /
+  `resultBudget` are mandatory (§7.1) on the wager that the agent makes a genuine
+  per-call judgement rather than mechanically defaulting — which would add tax and
+  defeat the purpose. Ship them mandatory, but instrument the distribution of
+  requested tiers: if it flatlines on one value the judgement isn't happening —
+  fall back to a smart default with override. Scope is the agent read tool only,
+  never the fs RPC or panel/programmatic reads.
 
 ## 13. Prompting the agent
 
