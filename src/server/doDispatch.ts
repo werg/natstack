@@ -85,7 +85,7 @@ export interface PostToDOWithTokenDeps {
 
 export interface DOCallerEnvelope {
   callerId: string;
-  callerKind: "server" | "worker" | "panel" | "do" | "shell" | "harness" | "unknown";
+  callerKind: "server" | "worker" | "panel" | "do" | "shell" | "unknown";
   callerPanelId?: string;
 }
 

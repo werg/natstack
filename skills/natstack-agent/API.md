@@ -112,6 +112,21 @@ Allowed callers: `shell`, `app`, `panel`, `server`, `worker`, `do`, `extension`
 | `credentials.proxyGitHttp` | Forward a Git smart-HTTP request through the egress proxy with credential injection; the request/response bodies are base64-encoded. |
 | `credentials.audit` | Query the credential egress audit log (optionally filtered by provider/connection/caller/since, paged by limit/after). |
 
+## `docs`
+
+Agent-facing capability catalog: discover services and runtime APIs with typed schemas, access rules, and examples (results filtered to what the caller may invoke).
+
+Allowed callers: `panel`, `app`, `worker`, `do`, `extension`, `server`, `shell`
+
+| Method | Description |
+|--------|-------------|
+| `docs.search` | Search the capability catalog (services and runtime APIs) by keyword. Results are filtered to what the calling kind may invoke. Use docs.describe(id) for the full typed schema, access rules, and examples. |
+| `docs.describe` | Return the full catalog entry for an id (typed args/returns schema, access/restrictedness, examples). Returns null if unknown or not visible to the caller. |
+| `docs.getSchema` | Return just the args/returns JSON Schema for a catalog id. |
+| `docs.listSurfaces` | List catalog surfaces and the number of entries the caller can see in each. |
+| `docs.listServices` | List registered RPC services and their methods (per-service view with JSON-Schema args/returns), filtered to what the calling kind may invoke. Every service.method listed is callable as services.<service>.<method>(...). |
+| `docs.describeService` | Describe one registered RPC service by name: its policy and every method the caller may invoke (with JSON-Schema args/returns). Returns null for an unknown service. |
+
 ## `eval`
 
 Owner-scoped sandbox eval backed by a per-owner internal EvalDO
